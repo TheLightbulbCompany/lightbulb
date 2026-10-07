@@ -339,7 +339,8 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
     });
 
     let mut model = Model::new(rows, cols);
-    if runs_claude_code(argv) {
+    let classic = runs_claude_code(argv);
+    if classic {
         model.classic_claude_code();
     }
     let mut log: VecDeque<u8> = VecDeque::new();
@@ -411,7 +412,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 let (rows, cols) = model.size();
                 let facts = serde_json::json!({"protocol": 1, "pid": std::process::id(),
                     "providerPid": provider_pid, "argv": argv, "cwd": cwd, "rows": rows, "cols": cols,
-                    "watch": true, "type": true, "joined": joining, "origin": true, "lastInput": last_input, "end": true,
+                    "watch": true, "type": true, "joined": joining, "origin": true, "lastInput": last_input, "end": true, "history": classic,
                     "ended": ended, "endedAt": ended.then_some(exited_at_ms)});
                 if !client.send(encode(HELLO, facts.to_string().as_bytes())) {
                     continue;
@@ -514,6 +515,10 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 if let Some(client) = clients.get(&id) {
                     client.send(encode(SNAPSHOT, &with_offset(total, &ended_picture.clone().unwrap_or_else(|| model.snapshot()))));
                 }
+            }
+            Event::Frame(id, HISTORY, payload) if watchers.contains(&id) => {
+                let (Some((max, _)), Some(client)) = (split_offset(&payload), clients.get(&id)) else { continue };
+                client.send(encode(HISTORY, &model.history(max.min(LOG_CAP as u64) as usize)));
             }
             Event::Frame(id, REPLAY, payload) => {
                 let (Some((from, _)), Some(client)) = (split_offset(&payload), clients.get(&id)) else { continue };

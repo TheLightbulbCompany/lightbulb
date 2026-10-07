@@ -2,7 +2,7 @@
 //! ack lists a held session as watched, attach to its holder as a `watch` client and send
 //! `local.session.screen` frames on the relay socket: the holder's snapshot first, then output in
 //! chunks of at most 11 KiB raw (base64 plus envelope fits the 16 KiB relay frame), each with the
-//! terminal's size; the holder's recent output as `history` frames before the snapshot of a new or
+//! terminal's size; what is above the holder's screen as `history` frames before the snapshot of a new or
 //! grown viewer set; a fresh snapshot after a resize and after a lost frame (at most one a second);
 //! and every 10 s a snapshot when output went out since the last one or none was asked for in
 //! 30 s (a viewer that lost its first screen is never left without one), else a `ping` (spec §5.2).
@@ -88,15 +88,18 @@ pub(super) struct Ctl {
     leave_hold: Duration,
     pub(super) stop: AtomicBool,
     until: Mutex<Instant>,
-    /// Absence from `watching` does not stop the relay before this (a nudge sets it).
+    /// Absence from `watching` does not stop the relay before this (a nudge sets it, and the
+    /// provider's exit: the backend lists no viewer of an ended session until its kept screen is reported).
     keep: Mutex<Instant>,
+    /// The holder this relay reads, once `run` has found it.
+    holder: Mutex<Option<String>>,
 }
 
 impl Ctl {
     pub(super) fn new(since: u64) -> Self {
         Self { since: AtomicU64::new(since), epoch: AtomicU64::new(0), typist: Mutex::new(None), snapshot: AtomicBool::new(false),
             history: AtomicBool::new(false), beat: SNAPSHOT_EVERY, resync: RESYNC, leave_hold: LEAVE_HOLD, stop: AtomicBool::new(false),
-            until: Mutex::new(Instant::now() + LEASE), keep: Mutex::new(Instant::now()) }
+            until: Mutex::new(Instant::now() + LEASE), keep: Mutex::new(Instant::now()), holder: Mutex::new(None) }
     }
     fn renew(&self) {
         if let Ok(mut until) = self.until.lock() {
@@ -105,6 +108,10 @@ impl Ctl {
     }
     fn nudged(&self) {
         self.renew();
+        self.hold();
+    }
+    /// Acks that do not list this relay's session do not stop it for GRACE.
+    fn hold(&self) {
         if let Ok(mut keep) = self.keep.lock() {
             *keep = Instant::now() + GRACE;
         }
@@ -456,6 +463,9 @@ fn run(sid: &str, ctl: &Ctl) -> Result<(), String> {
         return Err("its holder predates live terminals; restart the session to share its screen".into());
     }
     let mut conn = UnixStream::connect(&holder.socket).map_err(|e| e.to_string())?;
+    if let Ok(mut reads) = ctl.holder.lock() {
+        *reads = Some(holder.id.clone());
+    }
     let socket = holder.socket.clone();
     let history = move |max: usize| manager::history(&socket, max);
     let result = watch(&mut conn, sid, &generation, ctl, &send_out, &history);
@@ -551,13 +561,14 @@ impl Out<'_> {
             }
         }
     }
-    /// The holder's recent output for viewers with no screen in this run yet (spec §5.2), sized to
+    /// What is above the holder's screen, for viewers with none of it yet (spec §5.2), sized to
     /// what the budget allows now so the snapshot after it always fits: a short budget trims it
     /// from its old end. Paced into the shallow relay queue (a burst is up to 24 frames); a frame
-    /// that finds no room within PACE is lost like any other.
+    /// that finds no room within PACE is lost like any other. Nothing above the screen is one
+    /// empty frame: a viewer then knows it has all there is, and no later burst is for it.
     fn history(&mut self, fetch: &dyn Fn(usize) -> Option<Vec<u8>>, size: (u16, u16)) {
         let room = self.budget.room();
-        let Some(bytes) = (room > 0).then(|| fetch(room)).flatten().filter(|b| !b.is_empty()) else { return };
+        let Some(bytes) = (room > 0).then(|| fetch(room)).flatten() else { return };
         let bytes = &bytes[bytes.len().saturating_sub(room)..];
         self.budget.take(bytes.len(), true);
         let deadline = Instant::now() + PACE;
@@ -686,6 +697,14 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
                 // The holder's final picture is its next snapshot: ask now, on this connection.
                 // A relay started after the end depends on the index.
                 exited = true;
+                // The backend drops an ended session's frames, this picture too, until the Mac's
+                // heartbeat reports the kept screen, and its acks list no viewer meanwhile. So this
+                // relay stays through that, and the report does not wait for a pass to ask the
+                // holder: the backend then asks for the picture again (a watch nudge).
+                ctl.hold();
+                if let Some(holder) = ctl.holder.lock().ok().and_then(|holder| holder.clone()) {
+                    super::session_states::holder_ended(&holder);
+                }
                 ctl.snapshot.store(true, SeqCst);
                 last_snapshot = Instant::now().checked_sub(SNAPSHOT_GAP).unwrap_or_else(Instant::now);
             }
@@ -804,6 +823,9 @@ mod tests {
         assert_eq!(holder.asked.len(), 1);
         assert!(holder.asked[0] - started < Duration::from_millis(500), "asked at the exit, not a beat later");
         assert!(started.elapsed() >= Duration::from_millis(1400), "the relay left at the exit; a new one may find no screen indexed yet");
+        // Prod 2026-10-07: an ack built before the kept screen was reported lists no viewer of the
+        // ended session. It stopped the relay, and the next one's new run cost the viewer its scrollback.
+        assert!(ctl.kept(), "acks that do not list the ended session yet do not stop its relay");
     }
 
     #[test]
@@ -1218,6 +1240,18 @@ mod tests {
         out.history(&|_| Some(vec![b'h'; 3 * CHUNK]), (80, 24));
         assert_eq!(kinds(&sent.borrow()), [("history".into(), 0), ("history".into(), 1), ("history".into(), 2)]);
         assert!(!out.stale, "a full queue for a moment is not a lost frame");
+    }
+
+    #[test]
+    fn nothing_above_the_screen_is_one_empty_history_frame_and_a_silent_holder_is_none() {
+        let ctl = Ctl::new(0);
+        let sent = std::cell::RefCell::new(vec![]);
+        let send = |f: Value| { sent.borrow_mut().push(f); true };
+        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget: Budget::new(), stale: false, dirty: false };
+        out.history(&|_| Some(vec![]), (80, 24));
+        out.history(&|_| None, (80, 24));
+        assert_eq!(kinds(&sent.borrow()), [("history".into(), 0)], "the viewer hears it has all there is; no answer says nothing");
+        assert_eq!(sent.borrow()[0]["data"], "");
     }
 
     #[test]

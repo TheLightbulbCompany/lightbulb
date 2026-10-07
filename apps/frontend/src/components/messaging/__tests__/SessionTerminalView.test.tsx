@@ -89,6 +89,31 @@ it("a view mounted in a hidden tab asks for nothing until the tab is shown", asy
   spy.mockRestore();
 });
 
+it("a view that drew frames before it asked starts over with the history its own ask brings, and only then", async () => {
+  // Prod 2026-10-07: a view mounted while its tab was hidden drew the frames another tab's watch brought
+  // (26 lines, no scrollback). Shown, it asked for a fresh screen, and the history that came was never written.
+  vi.useFakeTimers();
+  let state: DocumentVisibilityState = "hidden";
+  const spy = vi.spyOn(document, "visibilityState", "get").mockImplementation(() => state);
+  let emit: (e: LiveEvent) => void = () => {};
+  const watch = vi.fn(async () => undefined);
+  render(<SessionTerminalView session={{ sessionId: "s1", generation: "g1" }} onEvent={(h) => { emit = h; return () => {}; }} watch={watch} onLive={vi.fn()} />);
+  await act(async () => { await vi.dynamicImportSettled(); });
+  act(() => { emit(screenEvent("s1", "snapshot", 3)); emit(screenEvent("s1", "output", 4, 1, btoa("live"))); });
+  expect(watch).not.toHaveBeenCalled();
+  expect([writes.length, hooks.resets]).toEqual([2, 1]);
+  act(() => { state = "visible"; document.dispatchEvent(new Event("visibilitychange")); });
+  expect(watch.mock.calls).toEqual([["s1", true]]);
+  act(() => { emit(screenEvent("s1", "history", 5, 1, btoa("one\r\n"))); emit(screenEvent("s1", "history", 6, 1, btoa("two\r\n"))); emit(screenEvent("s1", "snapshot", 7)); });
+  const text = (s: string) => Array.from(new TextEncoder().encode(s));
+  expect(hooks.resets).toBe(2); // once more, for the burst: its history is the scrollback now
+  expect(writes.slice(2).map((w) => Array.from(w))).toEqual([text("one\r\n"), text("two\r\n"), [...CLEAR, 0x1b, 0x5b, 0x48]]);
+  // The next burst is for someone else who started watching: this view's scrollback stays.
+  act(() => { emit(screenEvent("s1", "history", 8, 1, btoa("one\r\n"))); emit(screenEvent("s1", "snapshot", 9)); });
+  expect([writes.length, hooks.resets]).toEqual([6, 2]);
+  spy.mockRestore();
+});
+
 it("asks for the kept picture once when the session it was watching ends, and draws it in place", async () => {
   // The backend refuses the watch (409) between the end and the Mac's report of the kept screen, and drops
   // the Mac's frames; a renewal after that is no new viewer, so nothing sent the kept picture (prod 2026-10-07).

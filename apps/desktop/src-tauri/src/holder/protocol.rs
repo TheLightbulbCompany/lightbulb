@@ -42,6 +42,11 @@ pub const OWNER_INPUT: u8 = 11;
 /// not exited after `run::END_KILL_AFTER`. Sent only to a holder whose HELLO says `"end": true`;
 /// an older holder is stopped instead (`manager::stop`), and its screen goes with it.
 pub const END: u8 = 12;
+/// Watch client → holder: `u64 BE max`. Holder → that client: the lines above its screen for a
+/// new viewer's scrollback, at most `max` bytes (`Model::history`). Sent only to a holder whose
+/// HELLO says `"history": true` (one that runs Claude Code's classic renderer); any other is
+/// asked for its output log (REPLAY).
+pub const HISTORY: u8 = 13;
 
 /// No frame is larger than this; a longer declared length is refused before allocating it.
 pub const MAX_PAYLOAD: usize = 8 << 20;
@@ -84,7 +89,7 @@ mod tests {
 
     #[test]
     fn holder_frames_round_trip_every_kind() {
-        for kind in [HELLO, OUTPUT, INPUT, RESIZE, EXIT, REPLAY, GAP, SNAPSHOT, DETACHED, PROMOTED, OWNER_INPUT, END] {
+        for kind in [HELLO, OUTPUT, INPUT, RESIZE, EXIT, REPLAY, GAP, SNAPSHOT, DETACHED, PROMOTED, OWNER_INPUT, END, HISTORY] {
             let bytes = encode(kind, b"payload\x00\xff");
             assert_eq!(read_frame(&mut bytes.as_slice()).unwrap(), (kind, b"payload\x00\xff".to_vec()));
         }

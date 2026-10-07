@@ -1,7 +1,7 @@
 //! Starting and finding holders. No registry file: a holder IS its socket, and `HELLO` says
 //! what runs in it. A socket that refuses a connection belongs to a dead holder.
 
-use super::protocol::{encode, read_frame, split_offset, with_offset, END, HELLO, OUTPUT, REPLAY, SNAPSHOT};
+use super::protocol::{encode, read_frame, split_offset, with_offset, END, HELLO, HISTORY, OUTPUT, REPLAY, SNAPSHOT};
 use serde::Serialize;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -288,10 +288,11 @@ pub fn hello(socket: &Path) -> Option<HolderInfo> {
     })
 }
 
-/// The holder's last `max` bytes of output for a viewer's scrollback (spec §5.2 `history`, §5.6),
-/// from a line start unless they start the session. Asked on a short-lived `watch` connection, so
-/// it never mixes with a relay's own stream. Empty when nothing was printed; None when the holder
-/// does not answer.
+/// What goes above the screen in a new viewer's terminal (spec §5.2 `history`, §5.6), at most `max`
+/// bytes: the lines above the holder's own screen when its HELLO says `"history": true`; else the
+/// holder's last output, from a line start unless it starts the session. Asked on a short-lived
+/// `watch` connection, so it never mixes with a relay's own stream. Empty when there is nothing;
+/// None when the holder does not answer.
 pub fn history(socket: &Path, max: usize) -> Option<Vec<u8>> {
     let mut conn = UnixStream::connect(socket).ok()?;
     conn.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
@@ -300,12 +301,23 @@ pub fn history(socket: &Path, max: usize) -> Option<Vec<u8>> {
 
 fn history_on(conn: &mut UnixStream, max: usize) -> Option<Vec<u8>> {
     conn.write_all(&encode(HELLO, br#"{"role":"watch"}"#)).ok()?;
-    if read_frame(conn).ok()?.0 != HELLO {
+    let (kind, facts) = read_frame(conn).ok()?;
+    if kind != HELLO {
         return None;
     }
     // A watch client's first frame is the screen, at the log's current end.
     let (kind, screen) = read_frame(conn).ok()?;
     let (end, _) = split_offset(&screen).filter(|_| kind == SNAPSHOT)?;
+    if serde_json::from_slice::<serde_json::Value>(&facts).is_ok_and(|facts| facts["history"] == true) {
+        conn.write_all(&encode(HISTORY, &with_offset(max as u64, b""))).ok()?;
+        // Live output may come first; a holder that never answers runs into the read timeout.
+        loop {
+            let (kind, lines) = read_frame(conn).ok()?;
+            if kind == HISTORY {
+                return Some(lines);
+            }
+        }
+    }
     if end == 0 || max == 0 {
         return Some(vec![]);
     }
@@ -557,6 +569,24 @@ mod tests {
             Some(split_offset(&ask).unwrap().0)
         });
         (mac, fake)
+    }
+
+    #[test]
+    fn history_is_the_holders_own_lines_when_it_keeps_them() {
+        use super::super::protocol::{split_offset, with_offset, OUTPUT, SNAPSHOT};
+        let (mut mac, mut holder) = UnixStream::pair().unwrap();
+        let fake = std::thread::spawn(move || {
+            assert_eq!(read_frame(&mut holder).unwrap(), (HELLO, br#"{"role":"watch"}"#.to_vec()));
+            holder.write_all(&encode(HELLO, br#"{"history":true}"#)).unwrap();
+            holder.write_all(&encode(SNAPSHOT, &with_offset(19, b"screen"))).unwrap();
+            holder.write_all(&encode(OUTPUT, &with_offset(19, b"live"))).unwrap();
+            let (kind, ask) = read_frame(&mut holder).unwrap();
+            assert_eq!(kind, HISTORY, "never the output log: a classic renderer's log does not start clean in the middle");
+            holder.write_all(&encode(HISTORY, b"line 1\r\nline 2\r\n")).unwrap();
+            split_offset(&ask).unwrap().0
+        });
+        assert_eq!(history_on(&mut mac, 4096).as_deref(), Some(&b"line 1\r\nline 2\r\n"[..]));
+        assert_eq!(fake.join().unwrap(), 4096, "asked for at most what the relay may send");
     }
 
     #[test]

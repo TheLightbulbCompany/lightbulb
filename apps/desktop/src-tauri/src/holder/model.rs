@@ -127,14 +127,24 @@ pub(crate) fn alternate_leaves(hay: &[u8], skip: usize) -> Vec<usize> {
     cuts
 }
 
+/// Where in the new bytes (after the first `skip` bytes of `hay`) each `needle` ends.
+fn ends<'a>(hay: &'a [u8], needle: &'a [u8], skip: usize) -> impl Iterator<Item = usize> + 'a {
+    hay.windows(needle.len()).enumerate().filter(move |(i, w)| *w == needle && i + needle.len() > skip).map(move |(i, _)| i + needle.len() - skip)
+}
+
 /// How many times `needle` ends inside the new bytes (after the first `skip` bytes of `hay`).
 fn completed(hay: &[u8], needle: &[u8], skip: usize) -> usize {
-    hay.windows(needle.len()).enumerate().filter(|(i, w)| *w == needle && i + needle.len() > skip).count()
+    ends(hay, needle, skip).count()
 }
+
+/// Lines the model keeps above its screen: what `Model::history` can give a new viewer.
+const SCROLLBACK: usize = 5000;
+/// Erase the saved lines: a terminal drops everything above its screen. vt100 does not act on it.
+const ERASE_SAVED: &[u8] = b"\x1b[3J";
 
 impl Model {
     pub fn new(rows: u16, cols: u16) -> Self {
-        Self { parser: vt100::Parser::new(rows, cols, 5000), tail: Vec::new(), left_alternate: None, partial_csi: Vec::new(),
+        Self { parser: vt100::Parser::new(rows, cols, SCROLLBACK), tail: Vec::new(), left_alternate: None, partial_csi: Vec::new(),
             last_output: None, typed: None, resting: None, ending: false, classic: false }
     }
 
@@ -155,6 +165,18 @@ impl Model {
         picture
     }
 
+    /// The screen as it is now, as the picture to keep if the session ends from here.
+    fn rest(&self, now: Instant) -> Resting {
+        let screen = self.parser.screen();
+        Resting { picture: self.picture(), began: now, sent: None, since: (!screen.alternate_screen()).then(|| {
+            // Lines leave the top when the cursor passes the bottom, so the cursor is all it needs to start from.
+            let ((rows, cols), (row, col)) = (screen.size(), screen.cursor_position());
+            let mut term = vt100::Parser::new(rows, cols, rows as usize);
+            term.process(format!("\x1b[{};{}H", row + 1, col + 1).as_bytes());
+            term
+        }) }
+    }
+
     /// Someone (the owner or a teammate) is about to type `bytes`. The first key of a new line,
     /// typed at a screen at rest, keeps that screen: the picture the person was reading before
     /// the command that may end the session (`/exit` and its menu) was drawn over it.
@@ -166,17 +188,9 @@ impl Model {
         let since = |at: Instant| now.saturating_duration_since(at);
         let unsent = self.typed.is_some_and(|(at, unsent)| unsent && since(at) < RESTING_FOR);
         if !unsent {
-            let screen = self.parser.screen();
-            let alternate = screen.alternate_screen();
-            let at_rest = (alternate || self.classic) && self.last_output.is_none_or(|at| since(at) >= QUIET);
+            let at_rest = (self.parser.screen().alternate_screen() || self.classic) && self.last_output.is_none_or(|at| since(at) >= QUIET);
             // (Typed over an answer still being drawn: no picture, and the one before an earlier line is not this line's.)
-            self.resting = at_rest.then(|| Resting { picture: self.picture(), began: now, sent: None, since: (!alternate).then(|| {
-                // Lines leave the top when the cursor passes the bottom, so the cursor is all it needs to start from.
-                let ((rows, cols), (row, col)) = (screen.size(), screen.cursor_position());
-                let mut term = vt100::Parser::new(rows, cols, rows as usize);
-                term.process(format!("\x1b[{};{}H", row + 1, col + 1).as_bytes());
-                term
-            }) });
+            self.resting = at_rest.then(|| self.rest(now));
         }
         let enter = bytes.contains(&b'\r');
         if let Some(resting) = self.resting.as_mut().filter(|_| enter) {
@@ -188,9 +202,60 @@ impl Model {
     /// The holder is ending the provider itself (END). The leave that follows answers that, not
     /// the last typed line, so the picture kept is the screen as it is then: a reply drawn right
     /// after that line's Enter stays in it.
+    ///
+    /// The classic renderer has no leave to mark that moment: it prints its resume lines on the
+    /// same screen (`CLAUDE_CLASSIC_SIGNAL_READS`). So its picture is taken here, and
+    /// `ended_picture` takes off its top the lines the way out pushes above the screen.
     pub fn ending(&mut self) {
         self.ending = true;
-        self.resting = None;
+        self.resting = (self.classic && !self.parser.screen().alternate_screen()).then(|| self.rest(Instant::now()));
+    }
+
+    /// `ESC[3J` on the normal screen: the lines above it are gone from every terminal (Claude
+    /// Code's classic renderer clears the terminal and prints the conversation again). The model
+    /// starts over from its own screen, which is all a terminal has left.
+    // ponytail: the scroll region and the saved cursor do not survive this; classic Claude Code
+    // sets neither while it runs. Keep them if a provider that does ever needs this.
+    fn erase_saved(&mut self) {
+        if self.parser.screen().alternate_screen() {
+            return;
+        }
+        let (rows, cols) = self.size();
+        let mut parser = vt100::Parser::new(rows, cols, SCROLLBACK);
+        parser.process(&self.snapshot());
+        self.parser = parser;
+    }
+
+    /// The lines above the screen, oldest first, as bytes for an empty terminal: they end up in
+    /// its scrollback, above a blank screen for the snapshot that follows. Whole lines, the newest
+    /// that fit `max` bytes; empty when nothing is above the screen. Unlike a tail of the output
+    /// log, it starts clean anywhere: the classic renderer redraws with cursor moves relative to
+    /// where it was, so its log read from the middle draws over the wrong rows.
+    pub fn history(&mut self, max: usize) -> Vec<u8> {
+        let (rows, cols) = self.size();
+        let screen = self.parser.screen_mut();
+        screen.set_scrollback(usize::MAX);
+        let above = screen.scrollback();
+        // Line feeds after the last line: they push it, too, off the empty terminal's screen.
+        let feeds = usize::from(rows).saturating_sub(1);
+        let (mut lines, mut size) = (Vec::new(), feeds);
+        for back in 1..=above {
+            screen.set_scrollback(back);
+            let Some(mut line) = screen.rows_formatted(0, cols).next() else { break };
+            line.extend_from_slice(b"\x1b[m\r\n");
+            size += line.len();
+            if size > max {
+                break;
+            }
+            lines.push(line);
+        }
+        screen.set_scrollback(0);
+        if lines.is_empty() {
+            return Vec::new();
+        }
+        let mut out: Vec<u8> = lines.into_iter().rev().flatten().collect();
+        out.resize(out.len() + feeds, b'\n');
+        out
     }
 
     pub fn feed_at(&mut self, bytes: &[u8], now: Instant) -> Vec<u8> {
@@ -198,7 +263,8 @@ impl Model {
         // A picture too old to be the one before the line that ends the session (every rule below
         // and `ended_picture` would refuse it) is dropped, and its terminal with it.
         let old = |at: Instant, limit: Duration| now.saturating_duration_since(at) >= limit;
-        if self.resting.as_ref().is_some_and(|r| old(r.began, RESTING_FOR) || r.sent.is_some_and(|at| old(at, SHUTDOWN_LEAVE))) {
+        // (Not the picture taken at END: nothing typed can follow it, and it is the one to keep however long the way out takes.)
+        if !self.ending && self.resting.as_ref().is_some_and(|r| old(r.began, RESTING_FOR) || r.sent.is_some_and(|at| old(at, SHUTDOWN_LEAVE))) {
             self.resting = None;
         }
         if let Some(since) = self.resting.as_mut().and_then(|r| r.since.as_mut()) {
@@ -213,16 +279,24 @@ impl Model {
                 answers.extend_from_slice(answer);
             }
         }
-        // Stop just before each leave of the alternate screen, to keep the picture it ends.
+        // Stop just before each leave of the alternate screen, to keep the picture it ends, and
+        // (classic Claude Code) just after each erase of the saved lines.
         let mut done = 0;
         let mut csi = std::mem::take(&mut self.partial_csi);
         let carried = csi.len();
         csi.extend_from_slice(bytes);
         self.partial_csi = partial_csi(&csi).to_vec();
-        for cut in alternate_leaves(&csi, carried) {
+        let mut cuts: Vec<(usize, bool)> = alternate_leaves(&csi, carried).into_iter().map(|cut| (cut, true)).collect();
+        if self.classic {
+            cuts.extend(ends(&seen, ERASE_SAVED, skip).map(|cut| (cut, false)));
+            cuts.sort_unstable();
+        }
+        for (cut, leave) in cuts {
             self.parser.process(&bytes[done..cut]);
             done = cut;
-            if self.parser.screen().alternate_screen() {
+            if !leave {
+                self.erase_saved();
+            } else if self.parser.screen().alternate_screen() {
                 // Left right after a line was sent: that line ended the session, and the picture
                 // from before it was typed is the one to keep.
                 let since = |at: Instant| now.saturating_duration_since(at);
@@ -273,7 +347,8 @@ impl Model {
     /// When the line sent last ended the session (the exit came within `SHUTDOWN_LEAVE` of its
     /// Enter; 2.1.293 took 0.39 s), the picture is the screen at rest before that line, without
     /// the lines that have scrolled off its top since: a viewer's terminal has those in its
-    /// scrollback, so its history and this picture are the session as it was at rest.
+    /// scrollback, so its history and this picture are the session as it was at rest. The same
+    /// for the picture taken when the holder ended it (`ending`), however long the way out took.
     ///
     /// None when the final screen is the last picture.
     pub fn ended_picture(&self, exited: Instant) -> Option<Vec<u8>> {
@@ -285,7 +360,7 @@ impl Model {
         if let Some((picture, _)) = self.left_alternate.as_ref().filter(|(_, left)| within(*left, SHUTDOWN_LEAVE)) {
             return Some(picture.clone());
         }
-        let rested = self.resting.as_ref().filter(|r| within(r.began, RESTING_FOR) && r.sent.is_some_and(|at| within(at, SHUTDOWN_LEAVE)))?;
+        let rested = self.resting.as_ref().filter(|r| self.ending || (within(r.began, RESTING_FOR) && r.sent.is_some_and(|at| within(at, SHUTDOWN_LEAVE))))?;
         let mut since = rested.since.as_ref()?.screen().clone();
         since.set_scrollback(usize::MAX);
         let (gone, (rows, cols)) = (since.scrollback() as u16, since.size());
@@ -438,6 +513,108 @@ mod tests {
         assert_eq!(other.ended_picture(exited), None);
     }
 
+    /// Prod 2026-10-07 (desktop 0.4.666): after End session the kept picture of a classic session
+    /// ended with "Resume this session with: / claude --resume <id>". The real session of the test
+    /// above up to its `/exit`, then End instead: the real reads of a hang-up at an empty prompt.
+    #[test]
+    fn holder_model_keeps_the_screen_real_classic_claude_code_showed_when_it_was_ended() {
+        let events: Vec<(u64, String, String)> = serde_json::from_str(include_str!("../../tests/fixtures/claude_classic_exit.json")).unwrap();
+        let slash = events.iter().rposition(|e| e.1 == "i" && e.2 == "/").unwrap();
+        let t0 = Instant::now();
+        let mut model = Model::new(40, 120);
+        model.classic_claude_code();
+        let mut viewer = vt100::Parser::new(40, 120, 1000);
+        for (ms, kind, data) in &events[..slash] {
+            let (at, bytes) = (t0 + Duration::from_millis(*ms), data.chars().map(|c| c as u8).collect::<Vec<u8>>());
+            if kind == "o" {
+                model.feed_at(&bytes, at);
+                viewer.process(&bytes);
+            } else {
+                model.typed(&bytes, at);
+            }
+        }
+        let rested = lines(&mut viewer);
+        let said = |lines: &[String], text: &str| lines.iter().any(|l| l.contains(text));
+        assert!(said(&rested, "Reply with the single word BRAVO.") && !said(&rested, "Resume this session"));
+        let end = t0 + Duration::from_millis(events[slash].0);
+        model.ending();
+        for read in CLAUDE_CLASSIC_SIGNAL_READS {
+            model.feed_at(read, end);
+            viewer.process(read);
+        }
+        assert!(said(&lines(&mut viewer), "Resume this session with:"), "the final screen has the resume lines");
+        let picture = model.ended_picture(end + Duration::from_millis(440)).expect("the screen End found");
+        // Someone who watched it end: their terminal's own lines above, the picture in place of the screen.
+        viewer.process(WEB_CLEAR);
+        viewer.process(&picture);
+        assert_eq!(lines(&mut viewer), rested, "nothing twice, nothing missing, no resume lines");
+        // Someone who opens it after the end: the holder's lines above the screen, then the picture.
+        let mut late = vt100::Parser::new(40, 120, 1000);
+        late.process(&model.history(1 << 20));
+        late.process(WEB_CLEAR);
+        late.process(&picture);
+        assert_eq!(lines(&mut late), rested, "the same session as the one who watched");
+    }
+
+    #[test]
+    fn holder_model_history_is_the_lines_above_the_screen_whole_and_the_newest_that_fit() {
+        let mut model = Model::new(5, 20);
+        model.classic_claude_code();
+        assert!(model.history(1 << 20).is_empty(), "nothing is above the screen yet");
+        for i in 1..=12 {
+            model.feed(format!("\x1b[1mline {i}\x1b[m\r\n").as_bytes());
+        }
+        model.feed(b"> prompt");
+        // A new viewer's empty terminal: the history, then the snapshot as the web view draws it.
+        let viewer = |history: &[u8], model: &Model| {
+            let mut term = vt100::Parser::new(5, 20, 1000);
+            term.process(history);
+            term.process(WEB_CLEAR);
+            term.process(&model.snapshot());
+            lines(&mut term)
+        };
+        let session: Vec<String> = (1..=12).map(|i| format!("line {i}")).chain(["> prompt".to_owned()]).collect();
+        let (screen, all) = (model.snapshot(), model.history(1 << 20));
+        assert_eq!(model.snapshot(), screen, "asking moves nothing on the holder's own screen");
+        assert_eq!(viewer(&all, &model), session, "eight lines above, five on the screen");
+        // One byte short of everything: the oldest line goes, whole.
+        let most = model.history(all.len() - 1);
+        assert_eq!(viewer(&most, &model), session[1..]);
+        assert!(most.len() < all.len() && all.ends_with(&most));
+        // No room for one line: nothing, never part of a line.
+        assert!(model.history(8).is_empty());
+        assert_eq!(viewer(&[], &model), session[8..]);
+    }
+
+    /// Claude Code's classic renderer clears the terminal, saved lines included, and prints the
+    /// conversation again (a resize). A viewer's terminal drops its scrollback then; so does the model.
+    #[test]
+    fn holder_model_drops_the_lines_above_when_classic_claude_code_erases_them() {
+        let print = |model: &mut Model| {
+            for i in 1..=12 {
+                model.feed(format!("old {i}\r\n").as_bytes());
+            }
+            // Split across two reads.
+            model.feed(b"\x1b[2J\x1b[3");
+            model.feed(b"J\x1b[Hnew 1\r\nnew 2\r\nnew 3\r\nnew 4\r\nnew 5\r\nnew 6\r\n> ");
+        };
+        let viewer = |model: &mut Model| {
+            let mut term = vt100::Parser::new(5, 20, 1000);
+            term.process(&model.history(1 << 20));
+            term.process(WEB_CLEAR);
+            term.process(&model.snapshot());
+            lines(&mut term)
+        };
+        let mut model = Model::new(5, 20);
+        model.classic_claude_code();
+        print(&mut model);
+        assert_eq!(viewer(&mut model), ["new 1", "new 2", "new 3", "new 4", "new 5", "new 6", ">"]);
+        // Any other program: as before.
+        let mut other = Model::new(5, 20);
+        print(&mut other);
+        assert_eq!(viewer(&mut other)[0], "old 1");
+    }
+
     #[test]
     fn holder_model_keeps_a_classic_rest_only_when_the_line_sent_last_ended_the_session() {
         let secs = |s: f32| Duration::from_secs_f32(s);
@@ -481,18 +658,24 @@ mod tests {
         model.feed_at(&b"\r\nline".repeat(16), t0 + secs(10.0));
         assert_eq!(model.ended_picture(t0 + secs(10.4)), None);
 
-        // End session at an empty prompt (real reads): nothing was typed over the screen, so it stays as it ended.
+        // End session at an empty prompt (real reads; prod 2026-10-07: the kept picture ended with the
+        // resume lines). The picture is the screen as End found it, the quick reply included, without
+        // the three lines the way out pushed above it (40 columns: the resume command wraps); however
+        // long the way out took (a kill after 5 s).
         let mut model = drawn();
         model.typed(b"another question\r", t0 + secs(10.0));
         model.feed_at(b"\r\na quick reply\r\n> ", t0 + secs(10.5));
         model.ending();
+        model.typed(b"typed after End\r", t0 + secs(10.9));
         for read in CLAUDE_CLASSIC_SIGNAL_READS {
             model.feed_at(read, t0 + secs(11.0));
         }
-        assert_eq!(model.ended_picture(t0 + secs(11.44)), None);
+        let ended = [">", "a quick reply", ">"].map(String::from).to_vec();
+        assert_eq!(shown(model.ended_picture(t0 + secs(11.44))), Some(ended.clone()));
+        assert_eq!(shown(model.ended_picture(t0 + secs(11.0) + SHUTDOWN_LEAVE + RESTING_FOR)), Some(ended));
         let mut live = vt100::Parser::new(10, 40, 0);
         live.process(&model.snapshot());
-        assert!(lines(&mut live).iter().any(|l| l == "a quick reply"));
+        assert!(lines(&mut live).iter().any(|l| l == "Resume this session with:"), "live, the terminal shows what the provider drew last");
 
         // Typed while an answer was still being drawn, a line never sent, and a resize in between: the final screen.
         let mut model = drawn();

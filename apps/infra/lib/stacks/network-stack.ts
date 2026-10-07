@@ -107,6 +107,8 @@ export class NetworkStack extends cdk.Stack {
     // Every rule counts and the default action is allow: this ships to read the
     // metrics. Switching to block is a separate, owner-approved change, and
     // test/network-stack.test.ts fails if a rule stops being count-only.
+    // Request sampling is OFF: samples store raw URLs and headers, and this ALB
+    // carries bearer tokens (device token in the bv- query string, Authorization).
     // -------------------------------------------------------------------------
     const countOnly = { count: {} };
     const managed = (name: string, priority: number): wafv2.CfnWebACL.RuleProperty => ({
@@ -116,7 +118,7 @@ export class NetworkStack extends cdk.Stack {
       statement: { managedRuleGroupStatement: { vendorName: "AWS", name } },
       visibilityConfig: {
         cloudWatchMetricsEnabled: true,
-        sampledRequestsEnabled: true,
+        sampledRequestsEnabled: false,
         metricName: `${env}-${name}`,
       },
     });
@@ -126,7 +128,7 @@ export class NetworkStack extends cdk.Stack {
       defaultAction: { allow: {} },
       visibilityConfig: {
         cloudWatchMetricsEnabled: true,
-        sampledRequestsEnabled: true,
+        sampledRequestsEnabled: false,
         metricName: `lightbulb-${env}-alb`,
       },
       rules: [
@@ -152,7 +154,7 @@ export class NetworkStack extends cdk.Stack {
           },
           visibilityConfig: {
             cloudWatchMetricsEnabled: true,
-            sampledRequestsEnabled: true,
+            sampledRequestsEnabled: false,
             metricName: `${env}-PerIpRateLimit`,
           },
         },

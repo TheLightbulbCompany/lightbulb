@@ -2444,6 +2444,7 @@ async def delete_room(auth: AuthContext, room_id: str) -> None:
 async def revoke_human_membership(owner_id: str, user_id: str) -> None:
     """Rotate every room key before deactivating this user's private stream."""
     discovered = await messaging_repo.list_rooms_for_member(owner_id, "human", user_id)
+    own_session_chats: list[str] = []
     for row in discovered:
         room_id = row["meta"]["roomId"]
         member = await messaging_repo.get_member(room_id, "human", user_id)
@@ -2454,11 +2455,16 @@ async def revoke_human_membership(owner_id: str, user_id: str) -> None:
             continue
         await _remove_member_with_notices(meta, "human", user_id)
         if is_session_room(meta) and meta["session"].get("ownerId") == user_id:
-            # Their session's chat goes silent for everyone: the person it was about is gone.
-            from core.services import session_chat  # lazy: it imports this module
-
-            await session_chat.silence(owner_id, meta["session"]["sessionId"], keep=None)
+            own_session_chats.append(meta["session"]["sessionId"])
     await messaging_repo.deactivate_user_stream(owner_id, user_id)
+    if own_session_chats:
+        # Their sessions' chats go silent for everyone: the person they were about is gone. After
+        # the stream is off, which the chat door reads once it has seated someone: a seat that
+        # lands before this list is removed here, one that lands after it is refused there.
+        from core.services import session_chat  # lazy: it imports this module
+
+        for session_id in own_session_chats:
+            await session_chat.silence(owner_id, session_id, keep=None)
 
 
 async def list_messages(

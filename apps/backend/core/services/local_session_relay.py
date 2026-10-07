@@ -606,7 +606,7 @@ class LocalSessionRelay:
                         from core.services import session_chat  # lazy: it imports local_sessions
 
                         try:  # a resume: its chat takes posts again, also for people who have it open
-                            await session_chat.follow_session(owner, sid, ended=False)
+                            await session_chat.follow_session(owner, sid)
                         except Exception:  # the next chat open reopens it too (_follow_lifecycle)
                             logger.warning("session chat reopen failed for %s", sid, exc_info=True)
                     if previous is None or previous["generation"] != row["generation"]:
@@ -908,7 +908,7 @@ class LocalSessionRelay:
         from core.services import session_chat  # lazy: it imports local_sessions
 
         try:
-            await session_chat.follow_session(owner, row["sessionId"], ended=True)
+            await session_chat.follow_session(owner, row["sessionId"])
         except Exception:  # the next chat open archives it too (session_chat._follow_lifecycle)
             logger.warning("session chat archive failed for %s", row["sessionId"], exc_info=True)
         await publish_resources_changed(owner, row["humanUserId"])

@@ -83,7 +83,6 @@ async def _create(owner_id: str, room_id: str, row: dict) -> dict:
         },
         *await _default_agents(owner_id),
     ]
-    await messaging_repo.ensure_user_stream(owner_id, owner_user)
     try:
         return await messaging_repo.create_room(
             owner_id=owner_id,
@@ -129,11 +128,19 @@ async def _set_archived(meta: dict, archived: bool) -> dict:
     return meta  # pragma: no cover -- the loop returns or raises
 
 
-async def _follow_lifecycle(meta: dict, row: dict) -> dict:
-    """Ended sessions read only; a resumed one (same id, endedAt cleared) takes posts again.
-    The room is named after the session's current title."""
-    ended = row.get("endedAt") is not None
-    if ended != bool(meta.get("archivedAt")):
+async def _follow_lifecycle(owner_id: str, session_id: str, meta: dict) -> dict:
+    """Bring the room in step with the session row AS IT IS NOW, never as a caller saw it: an
+    ended session's chat is read only, a resumed one (same id, endedAt cleared) takes posts
+    again, and the room carries the session's current title. Read again after each write, so a
+    late end handler cannot archive a session that has since resumed (or the reverse)."""
+    row = None
+    for _ in range(4):
+        row = await local_sessions.repo.get_session(owner_id, session_id)
+        if row is None:
+            return meta
+        ended = row.get("endedAt") is not None
+        if ended == bool(meta.get("archivedAt")):
+            break
         meta = await _set_archived(meta, ended)
     name = _room_name(row)
     if meta.get("name") != name:  # the session got its title, or its owner renamed it
@@ -145,6 +152,13 @@ async def _follow_lifecycle(meta: dict, row: dict) -> dict:
             return meta  # lost a revision race: the next open names it
         await messaging._publish_room_metadata(meta)
     return meta
+
+
+async def _active(owner_id: str, user_id: str) -> bool:
+    """A current member of the workspace: their private stream is on (revoke_human_membership
+    turns it off). Strongly read."""
+    stream = await messaging_repo.get_user_stream(owner_id, user_id)
+    return bool(stream and stream.get("active"))
 
 
 async def _seat(owner_id: str, meta: dict, user_id: str) -> dict:
@@ -182,24 +196,51 @@ async def open_chat(auth: AuthContext, session_id: str) -> RoomDetail:
     """The chat door: whoever can read the session gets its room, created on the first open."""
     row, _ = await local_sessions.authorize_session(auth, None, session_id)
     owner_id = resolve_owner_id(auth)
-    room_id = session_room_id(owner_id, row["sessionId"])
-    meta = await messaging_repo.get_room(room_id)
-    if meta is None:
-        meta = await _create(owner_id, room_id, row)
-        # The session may have ended or resumed while the room did not exist, when its hook
-        # (follow_session) had nothing to move: read it again so the new room starts in step.
-        row, _ = await local_sessions.authorize_session(auth, None, session_id)
-    meta = await _follow_lifecycle(meta, row)
+    session_id, owner_user = row["sessionId"], row["humanUserId"]
+    gone = ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
+    # The session row outlives its person's membership: no chat about someone who left.
+    if not await _active(owner_id, owner_user):
+        raise gone
+    room_id = session_room_id(owner_id, session_id)
+    meta = await messaging_repo.get_room(room_id) or await _create(owner_id, room_id, row)
+    meta = await _follow_lifecycle(owner_id, session_id, meta)
     if await messaging_repo.get_member(room_id, "human", auth.user_id) is None:
         meta = await _seat(owner_id, meta, auth.user_id)
-        # Sharing may have paused between the check above and this seat, after the pause's
-        # silence() listed the room. Read the session again: whoever lost it loses the seat.
+        # Everything read above may be stale by now: a pause, or a removal from the workspace,
+        # can silence the room just before this seat lands. Read it all again; whoever lost the
+        # session loses the seat, with the rotation.
         try:
             await local_sessions.authorize_session(auth, None, session_id)
         except ApiProblem:
-            await silence(owner_id, row["sessionId"], keep=row["humanUserId"])
+            await silence(owner_id, session_id, keep=owner_user)
             raise
+        if not await _active(owner_id, owner_user):
+            await silence(owner_id, session_id, keep=None)
+            raise gone
+        if not await _active(owner_id, auth.user_id):
+            await _unseat(room_id, auth.user_id)
+            raise gone
     return await messaging._room_detail(meta, auth.user_id)
+
+
+async def _unseat(room_id: str, user_id: str) -> bool:
+    """Remove one human with a delivery-key rotation. A lost revision race reads again; a seat
+    someone else already removed is the goal, not a conflict. Returns whether this call removed it."""
+    for attempt in range(3):
+        meta = await messaging_repo.get_room(room_id)
+        if meta is None:
+            return False
+        try:
+            await messaging._remove_member_with_notices(meta, "human", user_id)
+            return True
+        except ClientError as exc:
+            if not messaging_repo._is_cancelled(exc):
+                raise
+            if await messaging_repo.get_member(room_id, "human", user_id) is None:
+                return False
+            if attempt == 2:
+                raise
+    return False  # pragma: no cover -- the loop returns or raises
 
 
 async def silence(owner_id: str, session_id: str, *, keep: str | None) -> int:
@@ -208,33 +249,16 @@ async def silence(owner_id: str, session_id: str, *, keep: str | None) -> int:
     room_id = session_room_id(owner_id, session_id)
     removed = 0
     for member in await messaging_repo.list_members(room_id):
-        if member.get("kind") != "human" or member["id"] == keep:
-            continue
-        for attempt in range(3):
-            meta = await messaging_repo.get_room(room_id)
-            if meta is None:
-                return removed
-            try:
-                await messaging._remove_member_with_notices(meta, "human", member["id"])
-                removed += 1
-                break
-            except ClientError as exc:
-                if not messaging_repo._is_cancelled(exc):
-                    raise
-                # A lost revision race, or another silence (a pause racing the door's own
-                # cleanup) took this seat first: a member already gone is the goal.
-                if await messaging_repo.get_member(room_id, "human", member["id"]) is None:
-                    break
-                if attempt == 2:
-                    raise
+        if member.get("kind") == "human" and member["id"] != keep:
+            removed += await _unseat(room_id, member["id"])
     return removed
 
 
-async def follow_session(owner_id: str, session_id: str, *, ended: bool) -> None:
-    """The session ended (archive its chat) or resumed (reopen it), for a chat that already exists."""
+async def follow_session(owner_id: str, session_id: str) -> None:
+    """The session ended or resumed: its chat, if it has one, follows the session row."""
     meta = await messaging_repo.get_room(session_room_id(owner_id, session_id))
-    if meta is not None and ended != bool(meta.get("archivedAt")):
-        await _set_archived(meta, ended)
+    if meta is not None:
+        await _follow_lifecycle(owner_id, session_id, meta)
 
 
 async def chat_state(owner_id: str, viewer: str, session_ids: list[str]) -> dict[str, tuple[str, int]]:

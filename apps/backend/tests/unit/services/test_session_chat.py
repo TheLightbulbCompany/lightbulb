@@ -46,11 +46,14 @@ def env(monkeypatch):
         "get_member": AsyncMock(return_value=None),
         "upsert_member": AsyncMock(return_value={**META, "revision": 2}),
         "ensure_user_stream": AsyncMock(return_value="key"),
+        "get_user_stream": AsyncMock(return_value={"active": True}),
         "patch_room_meta": AsyncMock(side_effect=lambda room_id, updates: {**META, **updates, "revision": 2}),
     }
     for name, fake in fakes.items():
         monkeypatch.setattr(session_chat.messaging_repo, name, fake)
     monkeypatch.setattr(session_chat.local_sessions, "authorize_session", AsyncMock(return_value=(ROW, {})))
+    fakes["session"] = AsyncMock(return_value=ROW)  # the session row, read fresh for every lifecycle write
+    monkeypatch.setattr(session_chat.local_sessions.repo, "get_session", fakes["session"])
     monkeypatch.setattr(session_chat, "_default_agents", AsyncMock(return_value=[CEO]))
     monkeypatch.setattr(
         messaging, "human_display_name", AsyncMock(side_effect=lambda uid: uid.removeprefix("user_").title())
@@ -68,9 +71,8 @@ def env(monkeypatch):
 @pytest.mark.asyncio
 async def test_first_open_creates_one_hidden_room_and_seats_the_reader(env):
     await session_chat.open_chat(BOB, SID)
-    # Read at the door, again after the room is created (an end or resume in between) and again
-    # after the seat (a pause in between must not leave a seat).
-    assert session_chat.local_sessions.authorize_session.await_args_list == [call(BOB, None, SID)] * 3
+    # Read at the door and again after the seat (a pause in between must not leave a seat).
+    assert session_chat.local_sessions.authorize_session.await_args_list == [call(BOB, None, SID)] * 2
     kwargs = env["create_room"].await_args.kwargs
     assert (kwargs["room_id"], kwargs["kind"], kwargs["creator_user_id"]) == (ROOM, "channel", ALICE.user_id)
     assert kwargs["name"] == "Session chat · Fix relay"
@@ -109,13 +111,13 @@ async def test_two_first_opens_at_once_share_the_room(env):
 async def test_the_room_follows_the_session_end_and_a_resume(env):
     env["get_room"].return_value = META
     env["get_member"].return_value = {"kind": "human", "id": BOB.user_id}
-    session_chat.local_sessions.authorize_session.return_value = ({**ROW, "endedAt": 10}, {})
+    env["session"].return_value = {**ROW, "endedAt": 10}
     await session_chat.open_chat(BOB, SID)
     updates = env["patch_room_meta"].await_args.args[1]
     assert updates["archivedAt"] and updates["archivedBy"] == "__system__"
     # The same conversation resumed under the same id: the chat takes posts again.
     env["get_room"].return_value = {**META, "archivedAt": "2026-10-07T00:00:00+00:00"}
-    session_chat.local_sessions.authorize_session.return_value = (ROW, {})
+    env["session"].return_value = ROW
     await session_chat.open_chat(BOB, SID)
     assert env["patch_room_meta"].await_args.args[1] == {"archivedAt": None, "archivedBy": None}
 
@@ -310,15 +312,16 @@ async def test_a_lifecycle_write_that_loses_the_revision_race_is_tried_again(env
 
     lost = ClientError({"Error": {"Code": "TransactionCanceledException"}}, "TransactWriteItems")
     env["get_room"].return_value = META
+    env["session"].return_value = {**ROW, "endedAt": 10}
     env["patch_room_meta"].side_effect = [lost, {**META, "archivedAt": "t", "revision": 3}]
-    await session_chat.follow_session(OWNER, SID, ended=True)
+    await session_chat.follow_session(OWNER, SID)
     assert env["patch_room_meta"].await_count == 2
     messaging._publish_room_metadata.assert_awaited_once()
     # Another writer already installed the state: nothing left to write.
     env["patch_room_meta"].reset_mock(side_effect=True)
     env["patch_room_meta"].side_effect = [lost]
     env["get_room"].side_effect = [META, {**META, "archivedAt": "t"}]
-    await session_chat.follow_session(OWNER, SID, ended=True)
+    await session_chat.follow_session(OWNER, SID)
     assert env["patch_room_meta"].await_count == 1
 
 
@@ -343,8 +346,7 @@ async def test_the_chat_is_named_after_the_session_and_follows_a_rename(env, mon
 @pytest.mark.asyncio
 async def test_a_room_created_as_its_session_ends_is_archived_from_the_fresh_row(env):
     """The end hook found no room yet: the door reads the session again after creating one."""
-    ended = ({**ROW, "endedAt": 10}, {})
-    session_chat.local_sessions.authorize_session.side_effect = [(ROW, {}), ended, ended]
+    env["session"].return_value = {**ROW, "endedAt": 10}  # the door's own read was still live
     await session_chat.open_chat(BOB, SID)
     updates = env["patch_room_meta"].await_args.args[1]
     assert updates["archivedAt"] and updates["archivedBy"] == "__system__"
@@ -369,9 +371,79 @@ async def test_silence_counts_a_member_someone_else_already_removed_as_done(monk
 @pytest.mark.asyncio
 async def test_archiving_the_chat_closes_its_huddle_and_reopening_does_not(env):
     env["get_room"].return_value = META
-    await session_chat.follow_session(OWNER, SID, ended=True)
+    env["session"].return_value = {**ROW, "endedAt": 10}
+    await session_chat.follow_session(OWNER, SID)
     env["close_huddle"].assert_awaited_once_with(ROOM)
     env["close_huddle"].reset_mock()
     env["get_room"].return_value = {**META, "archivedAt": "t"}
-    await session_chat.follow_session(OWNER, SID, ended=False)
+    env["session"].return_value = ROW
+    await session_chat.follow_session(OWNER, SID)
     env["close_huddle"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_late_end_handler_applies_what_the_session_row_says_now(env):
+    """An end handler delayed past a resume must not archive the resumed session's chat."""
+    env["get_room"].return_value = META
+    env["session"].return_value = ROW  # resumed since the handler was queued
+    await session_chat.follow_session(OWNER, SID)
+    env["patch_room_meta"].assert_not_awaited()
+    # The row moves under the write (ended, then resumed): the hook follows it to the end.
+    env["session"].side_effect = [{**ROW, "endedAt": 10}, ROW, ROW]
+    await session_chat.follow_session(OWNER, SID)
+    writes = [c.args[1] for c in env["patch_room_meta"].await_args_list]
+    assert writes[0]["archivedAt"] and writes[1] == {"archivedAt": None, "archivedBy": None}
+
+
+@pytest.mark.asyncio
+async def test_no_chat_opens_for_a_session_whose_person_left_the_workspace(env):
+    env["get_user_stream"].return_value = {"active": False}
+    with pytest.raises(ApiProblem) as refused:
+        await session_chat.open_chat(BOB, SID)
+    assert refused.value.error.code == "LOCAL_SESSION_NOT_FOUND"
+    env["create_room"].assert_not_awaited()
+    env["upsert_member"].assert_not_awaited()
+    env["ensure_user_stream"].assert_not_awaited()  # a revoked person's stream is never reopened here
+
+
+@pytest.mark.asyncio
+async def test_a_seat_that_lands_after_the_owner_was_revoked_is_taken_back(env, monkeypatch):
+    """revoke_human_membership may silence the room before this seat lands (the row is still shared)."""
+    env["get_room"].return_value = META
+    streams = {ALICE.user_id: [{"active": True}, {"active": False}], BOB.user_id: [{"active": True}]}
+    env["get_user_stream"].side_effect = lambda owner, uid: streams[uid].pop(0)
+    silence = AsyncMock(return_value=1)
+    monkeypatch.setattr(session_chat, "silence", silence)
+    with pytest.raises(ApiProblem) as refused:
+        await session_chat.open_chat(BOB, SID)
+    assert refused.value.error.code == "LOCAL_SESSION_NOT_FOUND"
+    silence.assert_awaited_once_with(OWNER, SID, keep=None)
+
+
+@pytest.mark.asyncio
+async def test_a_reader_revoked_while_being_seated_loses_only_their_own_seat(env, monkeypatch):
+    env["get_room"].return_value = META
+    env["get_user_stream"].side_effect = lambda owner, uid: {"active": uid == ALICE.user_id}
+    unseat = AsyncMock(return_value=True)
+    monkeypatch.setattr(session_chat, "_unseat", unseat)
+    with pytest.raises(ApiProblem):
+        await session_chat.open_chat(BOB, SID)
+    unseat.assert_awaited_once_with(ROOM, BOB.user_id)
+
+
+@pytest.mark.asyncio
+async def test_a_removed_owners_chats_are_silenced_after_their_stream_is_off(monkeypatch):
+    """The door's check reads the stream: silencing first would leave a gap a late seat slips through."""
+    order: list[str] = []
+    entry = {"meta": META}
+    monkeypatch.setattr(messaging.messaging_repo, "list_rooms_for_member", AsyncMock(return_value=[entry]))
+    monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value={"id": ALICE.user_id}))
+    monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=META))
+    monkeypatch.setattr(messaging, "_remove_member_with_notices", AsyncMock())
+    monkeypatch.setattr(
+        messaging.messaging_repo, "deactivate_user_stream", AsyncMock(side_effect=lambda *a: order.append("stream off"))
+    )
+    monkeypatch.setattr(session_chat, "silence", AsyncMock(side_effect=lambda *a, **k: order.append("silence")))
+    await messaging.revoke_human_membership(OWNER, ALICE.user_id)
+    assert order == ["stream off", "silence"]
+    session_chat.silence.assert_awaited_once_with(OWNER, SID, keep=None)

@@ -172,7 +172,7 @@ describe("session screen", () => {
     expect(screen.getByText("Worked for 12s")).toBeTruthy();
     // The two grey summary lines moved into the details sheet the header opens.
     await fireEvent.press(screen.getByLabelText("Claude · Fix relay, Idle on your Mac"));
-    expect(screen.getByText("Alice · Idle · ~/lightbulb")).toBeTruthy();
+    expect(screen.getByText("Alice · Idle · lightbulb")).toBeTruthy();
     expect(screen.queryByLabelText("Working")).toBeNull();
   });
 

@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 import type { Continued, SessionState } from '../types'
-import { bandRuns, continuedLine, parseContinued, rememberTyped, requestLine, typist, type Decision } from './state'
+import { bandRuns, continuedLine, keysHint, parseContinued, rememberTyped, requestLine, typist, type Decision } from './state'
 import { bashTouchesProtected, classify, colorFor, protectedPath, rowBody, rowLabel, senderColor, type Sender } from './rules'
 
 export const sharing = atom({ plugin: 'lightbulb-sessions', key: 'state' } as const, null as SessionState | null)
@@ -214,6 +214,9 @@ export const register: Register = on => {
     const ask = s.joinRequests[0]
     const p = await read($, problem)
     const err = p && applies(p.about, s) ? p.text : null
+    // The terminal only: a desktop draws native buttons and has no chord. One hint, on the row
+    // whose answer is waited for.
+    const hint = e.surface === 'terminal' ? <Text dimColor> {keysHint(s)}</Text> : null
     return (
       <Box flexDirection="column">
         <Box>
@@ -221,12 +224,14 @@ export const register: Register = on => {
           {s.paused
  ? <Button key="resume" hotkey="p" label="Resume sharing" onPress={act({ decision: 'unpause' })} />
             : <Button key="pause" hotkey="p" label="Pause" onPress={act({ decision: 'pause' })} />}
+          {!ask && hint}
         </Box>
         {ask && (
           <Box>
             <Text><Text color={colorFor(ask.userId)}>{ask.name}</Text>{requestLine(ask, s.joinRequests.length).slice(ask.name.length)} </Text>
             <Button key="allow" hotkey="a" variant="primary" label="Allow" onPress={act({ decision: 'allow', userId: ask.userId, requestId: ask.requestId })} />
             <Button key="decline" hotkey="d" label="Decline" onPress={act({ decision: 'decline', userId: ask.userId, requestId: ask.requestId })} />
+            {hint}
           </Box>
         )}
         {s.approvalWaiting && <Text dimColor>Waiting on you here or in Lightbulb</Text>}

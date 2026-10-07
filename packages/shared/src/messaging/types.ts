@@ -399,7 +399,7 @@ export interface LocalSession {
   title?: string | null;
   /** Owner-chosen name shared by Lightbulb surfaces. Null uses the harness title. */
   displayTitle?: string | null;
-  /** Basename only; never a full path. */
+  /** Basename only; never a full path. Shown bare: "~/" before it would claim a place it does not have. */
   cwdName?: string | null;
   lastEventAt?: string | null;
   endedAt?: string | null;

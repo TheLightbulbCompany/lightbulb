@@ -118,6 +118,10 @@ async def watch(auth: sessions.Caller, session_id: str, mounted: bool = False) -
     )
     if fresh and "liveTerminal" in row.get("deviceFeatures", ()):
         await _nudge(row, now)
+    # The owner's band names the new viewer now, not at the next heartbeat ack (up to 10 s later).
+    # After the nudge: the picture matters more than the name. The owner is never listed.
+    if fresh and row.get("endedAt") is None and auth.user_id != row["humanUserId"]:
+        await session_presence.push(row)
 
 
 async def _screen_gone(row: dict) -> None:

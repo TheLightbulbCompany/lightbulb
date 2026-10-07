@@ -528,7 +528,7 @@ function SessionBody({
         <View style={styles.sheetContent}>
           <View style={styles.sheetTextGroup}>
             <Text style={[styles.sheetHeadline, { color: palette.fg }]}>
-              {`${ownerName} · ${sessionStatus[session.status]}${session.cwdName ? ` · ~/${session.cwdName}` : ""}`}
+              {`${ownerName} · ${sessionStatus[session.status]}${session.cwdName ? ` · ${session.cwdName}` : ""}`}
             </Text>
             <Text style={[styles.sheetMeta, { color: palette.fgSoft }]}>
               {`${session.providerVersion} · Follow-ups ${session.capabilities.sendMode === "queue" ? "queue" : "wait"} on ${own ? "your" : `${ownerName}’s`} Mac. ${session.provider === "claude" ? "Exact Claude permissions can be answered here; questions stay in the terminal." : "Codex permissions and first-run folder trust stay in the terminal."}${session.workspace?.overlap ? " Multiple sessions may overlap this checkout." : ""}`}

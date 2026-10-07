@@ -101,7 +101,8 @@ it("shows the session title once, in the header, with one compact status line", 
   expect(heading).toHaveTextContent(/^Load test$/);
   expect(screen.getAllByText("Load test")).toHaveLength(1);
   expect(document.querySelectorAll(".session-status-line")).toHaveLength(1);
-  expect([...statusLine().children].map(span => span.textContent)).toEqual(["", "Working", "Alice", "~/lightbulb"]);
+  // The Mac reports the folder's own name and nothing above it, so no "~/": it is not a path from home.
+  expect([...statusLine().children].map(span => span.textContent)).toEqual(["", "Working", "Alice", "lightbulb"]);
 });
 
 it("copies the session link from Details", async () => {

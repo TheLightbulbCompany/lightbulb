@@ -113,7 +113,7 @@ const CLAUDE_FOOTER: Record<string, string> = {
 export function sessionFooter(session: Pick<LocalSession, "provider" | "model" | "permissionMode" | "cwdName">): string {
   const parts = session.provider === "claude"
     ? [CLAUDE_FOOTER[session.permissionMode ?? ""], session.model]
-    : [session.model, session.cwdName ? `~/${session.cwdName}` : ""];
+    : [session.model, session.cwdName ?? ""];
   return parts.filter(Boolean).join(" · ");
 }
 

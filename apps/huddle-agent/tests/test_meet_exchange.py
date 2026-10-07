@@ -479,3 +479,24 @@ async def test_seeded_news_said_to_its_end_stays_said_when_a_later_answer_resets
     await says(h, P1, "Dan, did you push that fix last night?")  # turns away
     assert h._voice is None
     assert [n[2] for n in h._news.get("forge", [])] == ["The deploy is green."]
+
+
+async def test_a_sentence_cut_by_an_answer_boundary_is_completed_by_its_other_half():
+    """Codex on #3803: "Three PRs" before the boundary and "are open." after it, each under the mark on its own."""
+    h, backend, lives, clock = await asked()
+    (row1,) = h._requests.items
+    backend.route_extra = ops([("forge", "check the deploy", "name")])
+    await says(h, P1, "Forge, also check the deploy.")
+    backend.route_extra = ops([])
+    row2 = next(r for r in h._requests.items if r is not row1)
+    clock.t += h_mod.MEET_FOLLOWUP_S
+    await h.tick()
+    await settle(h)
+    answer(h, row1.run_id, "forge", "Three PRs are open.")
+    await says(h, P1, "Forge, go ahead.")
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_said("forge", "Three PRs")  # half the seed, then the boundary
+    answer(h, row2.run_id, "forge", "The deploy is green.")
+    h.on_agent_said("forge", "are open.")  # the other half
+    await says(h, P1, "Dan, did you push that fix last night?")
+    assert [n[2] for n in h._news.get("forge", [])] == ["The deploy is green."]

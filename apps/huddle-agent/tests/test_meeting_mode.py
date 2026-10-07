@@ -424,7 +424,8 @@ async def test_a_meeting_voice_closes_after_its_piece_and_its_answer_is_said_lat
     await settle(h)
     v = h._voice
     assert v is not None and v.agent_id == "forge" and v.path == "announce" and v.label == "Priya"
-    assert "Three PRs are open." in str(lives[1].seed)
+    assert ("say", "Three PRs are open.") in lives[1].calls, "word for word, not a seed line to put in its own words"
+    assert "Three PRs are open." not in str(lives[1].seed)
     h.on_agent_state("forge", "speaking")
     assert row.status == "delivered" and backend.late_answers == []
 
@@ -641,7 +642,7 @@ async def test_a_meeting_voice_stops_for_someone_who_keeps_talking_over_it_and_i
     clock.t += h_mod.MEET_QUIET_S + h_mod.gate.ANNOUNCE_QUIET
     await h.tick()
     await settle(h)
-    assert h._voice is not None and h._voice.path == "announce" and "Three PRs are open." in str(lives[-1].seed)
+    assert h._voice is not None and h._voice.path == "announce" and ("say", "Three PRs are open.") in lives[-1].calls
 
 
 async def test_a_meeting_answer_still_coming_when_its_voice_is_talked_over_is_said_whole_at_the_next_pause():
@@ -667,7 +668,7 @@ async def test_a_meeting_answer_still_coming_when_its_voice_is_talked_over_is_sa
     await h.tick()
     await settle(h)
     assert h._voice is not None and h._voice.path == "announce"
-    assert "Three PRs are open. The oldest is two days old." in str(lives[-1].seed)
+    assert ("say", "Three PRs are open. The oldest is two days old.") in lives[-1].calls
     assert backend.late_answers == []
 
 
@@ -951,7 +952,7 @@ async def test_an_earlier_answer_handed_to_an_open_meeting_voice_is_not_lost_whe
     clock.t += h_mod.MEET_QUIET_S + h_mod.gate.ANNOUNCE_QUIET
     await h.tick()
     await settle(h)
-    assert h._voice is not None and h._voice.path == "announce" and "Three PRs are open." in str(lives[-1].seed)
+    assert h._voice is not None and h._voice.path == "announce" and ("say", "Three PRs are open.") in lives[-1].calls
 
 
 async def test_a_long_presentation_keeps_its_speakers_name():
@@ -977,7 +978,7 @@ async def test_a_meeting_answer_with_no_request_row_is_said_at_the_next_pause_no
     clock.t += h_mod.MEET_QUIET_S
     await h.tick()
     await settle(h)
-    assert h._voice is not None and h._voice.path == "announce" and "Six PRs are open." in str(lives[-1].seed)
+    assert h._voice is not None and h._voice.path == "announce" and ("say", "Six PRs are open.") in lives[-1].calls
     h.on_agent_state("forge", "speaking")
     assert h._rowless == set() and backend.late_answers == []
 
@@ -1025,15 +1026,20 @@ def test_only_the_one_colon_meet_participant_is_the_mixed_meeting():
     assert h_mod.mixed_meet(MEET) and not h_mod.mixed_meet(P1) and not h_mod.mixed_meet("u1")
 
 
-async def test_a_per_person_meet_voice_hears_its_person_under_the_meeting_rule():
-    """10-05 prod Meet: a per-person voice heard its speaker directly and answered the meeting's own talk. It
-    still hears them (the model runs the exchange, owner ruling 10-06) and is told it is a meeting: rig 10-06,
-    0 of 12 side-talk lines answered with the rule, 4 of 4 without."""
+def test_every_meet_voice_is_a_mouth():
+    assert h_mod.mouth(MEET) and h_mod.mouth(P1) and not h_mod.mouth("u1")
+
+
+async def test_a_per_person_meet_voice_is_a_mouth_like_a_mixed_meetings():
+    """10-05 prod Meet and the 10-07 rig: a per-person voice that heard its speaker answered the meeting's own
+    talk and said facts of its own. It has no ears (owner ruling 10-07): it is told what was asked as text and
+    acknowledges that, as a mixed meeting's voice does."""
     h, room, backend, lives, clock, log = await per_person()
     await says(h, P1, "hey Forge what did we ship")
-    assert lives[0].speaker == P1 and ("mute",) not in lives[0].calls
-    assert any("You hear only Priya" in c[1] for c in lives[0].calls if c[0] == "instructions")
-    assert h_mod.MEET_ACK not in str(lives[0].seed) and h._voice.label == "Priya"
+    assert lives[0].speaker == P1 and ("mute",) in lives[0].calls
+    assert not [c for c in lives[0].calls if c[0] == "instructions"], "no rule about who it hears: it hears nobody"
+    assert h_mod.MEET_ACK in str(lives[0].seed) and "Priya asked" in str(lives[0].seed) and h._voice.label == "Priya"
+    assert ("nudge",) in lives[0].calls
 async def test_a_per_person_line_carries_its_persons_identity_and_name():
     h, room, backend, lives, clock, log = await per_person()
     await says(h, P1, "Forge, check the board")
@@ -1116,22 +1122,23 @@ async def test_with_no_voice_a_per_person_statement_wakes_nobody_and_a_question_
     assert backend.presences == []
 
 
-async def test_a_per_person_run_speaks_what_it_writes_before_a_lookup_and_then_its_answer():
-    """10-06 prod Meet: a two-minute run was two minutes of silence. Its own narration is the update."""
+async def test_a_per_person_run_says_nothing_as_it_streams_and_its_answer_word_for_word_when_it_ends():
+    """A mouth, like a mixed meeting's: what a run writes before a lookup is not said over people. Its answer
+    (the last text box) is said when the run ends, as one order, word for word."""
     h, room, backend, lives, clock, log = await per_person()
     backend.route_extra = ops([("forge", "what I worked on", "name")])
     await says(h, P1, "Forge, what did I work on in the last two days?")
     (row,) = h._requests.items
-    said = lambda: [c[1] for c in lives[0].calls if c[0] == "commentary"]
+    said = lambda: [c[1:] for c in lives[0].calls if c[0] in ("commentary", "say")]
     chunk = lambda text, seq: h.on_data(None, "call.frame", packet(frame(row.run_id, "forge", {"type": "chunk", "content": text, "append": True, "seq": seq})))
     chunk("Let me check GitHub. ", 1)
     h.on_data(None, "call.frame", packet(frame(row.run_id, "forge", {"type": "tool_start", "tool": "github", "toolCallId": "t1", "seq": 2})))
     chunk("You merged three pull requests. ", 3)
     chunk("The largest was the audio bridge.", 4)
     await quiet_tick_meet(h, clock, h_mod.MEET_FOLLOWUP_S / 2)
-    assert [x.strip() for x in said()] == ["Let me check GitHub."], "what it wrote before the lookup, said then"
+    assert said() == [], "nothing as it streams"
     h.on_data(None, "call.frame", packet(frame(row.run_id, "forge", {"type": "run_ended", "seq": 5})))
-    assert " ".join(x.strip() for x in said()[1:]) == "You merged three pull requests. The largest was the audio bridge."
+    assert said() == [("You merged three pull requests. The largest was the audio bridge.",)]
 
 
 async def quiet_tick_meet(h, clock, seconds):
@@ -1140,15 +1147,15 @@ async def quiet_tick_meet(h, clock, seconds):
     await settle(h)
 
 
-async def test_a_long_meeting_answer_goes_to_the_voice_in_parts():
+async def test_a_long_meeting_answer_is_one_order_to_say():
+    """Parts cut at a character count would be said word for word, each ending in the middle of a word."""
     h, room, backend, lives, clock, log = await per_person()
     backend.route_extra = ops([("forge", "list the open PRs", "name")])
     await says(h, P1, "Forge, what PRs are open?")
     (row,) = h._requests.items
-    long = "x" * (h_mod.APPEND_CHARS + 10)
+    long = "Three PRs are open. " * 200
     answer(h, row.run_id, "forge", long)
-    said = [c[1] for c in lives[0].calls if c[0] == "commentary"]
-    assert said == [long[: h_mod.APPEND_CHARS], long[h_mod.APPEND_CHARS :]]
+    assert [c for c in lives[0].calls if c[0] in ("commentary", "say")] == [("say", long.strip())]
 
 
 async def test_someone_elses_first_words_do_not_cut_a_meeting_voice_before_the_talk_over_rule():

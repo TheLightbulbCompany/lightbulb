@@ -281,6 +281,13 @@ describe("conversation screen", () => {
     await waitFor(() => expect(screen.getByText("onboarding-band")).toBeTruthy());
   });
 
+  it("reads an archived room without a composer (an ended session's chat)", async () => {
+    mockLive.messaging.getRoom.mockImplementation(async (roomId: string) => ({ ...mockRoom, roomId, archivedAt: "2026-10-07T11:00:00Z", session: { sessionId: "s1" } }));
+    await render(<Conversation />);
+    expect(await screen.findByText("This session ended. Its chat is read-only.")).toBeTruthy();
+    expect(screen.queryByPlaceholderText(/^Message /)).toBeNull();
+  });
+
   it("draws the New messages line at the read cursor the room opened with", async () => {
     await render(<Conversation />);
     await waitFor(() => expect(screen.getByText("New messages")).toBeTruthy());

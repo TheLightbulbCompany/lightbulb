@@ -99,7 +99,7 @@ export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRo
         ? <p role="status" className="room-composer room-archived text-sm text-muted-foreground">This session ended. Its chat is read-only.</p>
         : roomId && <RoomComposer text={text} onTextChange={setText} members={members} clientMessageId={clientMessageId}
           sendState={rooms.sendState(clientMessageId)} onSubmit={send} onRetry={send}
-          onReconcile={(id) => rooms.reconcileSend(id)} disabled={!rooms.httpReady} label="Message the people here" roomKind="channel" />}
+          onReconcile={(id) => rooms.reconcileSend(id)} onUploadAttachment={rooms.uploadAttachment} disabled={!rooms.httpReady} label="Message the people here" roomKind="channel" />}
     </>}
   </aside>;
 }

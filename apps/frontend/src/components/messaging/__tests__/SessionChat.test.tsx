@@ -67,3 +67,10 @@ it("shows a message's attachments (the phone and agents can post them into the s
   render(<SessionChat sessionId="s1" sessionOwnerId="user_alice" openChat={vi.fn(async () => detail)} onClose={vi.fn()} />);
   await waitFor(() => expect(downloadAttachment).toHaveBeenCalledWith("chat-1", "att-1"));
 });
+
+it("lets a person attach a file, as the phone's room screen does", async () => {
+  rooms.value = { ...rooms.value, uploadAttachment: vi.fn() };
+  render(<SessionChat sessionId="s1" sessionOwnerId="user_alice" openChat={vi.fn(async () => detail)} onClose={vi.fn()} />);
+  await screen.findByLabelText("Message the people here");
+  expect(document.querySelector('.session-chat input[type="file"]')).not.toBeNull();
+});

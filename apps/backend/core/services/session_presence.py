@@ -1,7 +1,7 @@
 """What the owner's Mac shows in its Claude terminal about one shared session (spec
 2026-10-04-session-sharing-mod §4.2): who watches, who may type, who is typing, pending join
-requests, paused. A new request is pushed at once so the band shows it; everything else rides
-the heartbeat ack."""
+requests, paused. A new request and a new viewer are pushed at once so the band shows them;
+everything else (a viewer leaving, typing) rides the heartbeat ack."""
 
 from __future__ import annotations
 
@@ -119,7 +119,8 @@ async def ack_with_presence(ack: dict, owner: str, session_ids: list[str]) -> di
 
 
 async def push(row: dict) -> None:
-    """Best effort, now: a join request was made or answered, or sharing paused or resumed.
+    """Best effort, now: a join request was made or answered, sharing paused or resumed, or
+    someone started watching.
     Always a full entry, an empty one included, so the Mac drops what is gone (and an older Mac
     lifts its input freeze). The row is read again here, after `at` is taken, so `at` never
     claims a newer read than it is."""

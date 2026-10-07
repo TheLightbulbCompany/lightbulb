@@ -1,6 +1,6 @@
 import { test, expect, mock } from 'claude-code/testing'
 import type { On } from 'claude-code'
-import { bandLine, bandRuns, continuedLine, parseContinued, rememberTyped, typist } from './state'
+import { bandLine, bandRuns, continuedLine, keysHint, parseContinued, rememberTyped, typist } from './state'
 import { colorFor, type Sender } from './rules'
 import type { SessionState } from '../types'
 
@@ -295,6 +295,48 @@ test('every band Button has its own hotkey', async ($, on) => {
   state = { ...base, paused: true }
   await clock.advance(2000)
   expect(await hotkeys()).toEqual({ resume: 'p' })
+})
+
+// Prod 2026-10-07, Claude Code 2.1.292: `a` at the prompt typed "a"; only a click reached Allow.
+// The engine presses a band Button's letter only while the band holds the keyboard, and it takes
+// the keyboard on ctrl+x tab (abovePrompt:focus) or a click. So the band says so.
+test('the key hint names the way to the band and the letters that work there', () => {
+  expect(keysHint(asking)).toBe('ctrl+x tab, then a or d · or click')
+  expect(keysHint(base)).toBe('ctrl+x tab, then p')
+  expect(keysHint({ ...base, paused: true })).toBe('ctrl+x tab, then p')
+})
+
+test('the terminal band shows the key hint beside its buttons; a desktop, which has no chord, does not', async ($, on) => {
+  let state: SessionState = asking
+  const { clock } = world(on, () => ({ status: 200, body: state }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const hints = async (surface: (typeof SURFACES)[number]) => {
+    const ui = await $.ui.mount({ ...BAND, surface })
+    const found = (await ui.findAll({ type: 'Text', text: /ctrl\+x tab/ })).map(t => t.text.trim())
+    await ui.unmount()
+    return found
+  }
+  // One hint, on the row whose answer is waited for.
+  expect(await hints('terminal')).toEqual(['ctrl+x tab, then a or d · or click'])
+  expect(await hints('desktop')).toEqual([])
+  state = base
+  await clock.advance(2000)
+  expect(await hints('terminal')).toEqual(['ctrl+x tab, then p'])
+})
+
+// A Button's `action` takes one of the engine's own keybinding actions and nothing else: any other
+// name (a mod's own, a `command:` one) makes the engine refuse the whole band, clicks included.
+// Borrowing an engine action (the diff panel's) would put Allow on a key that means something else.
+test('no band Button names a keybinding action', async ($, on) => {
+  const { clock } = world(on, () => ({ status: 200, body: asking }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  const buttons = await ui.findAll({ type: 'Button' })
+  expect(buttons.map(b => b.key)).toEqual(['pause', 'allow', 'decline'])
+  expect(buttons.map(b => b.props.action)).toEqual([undefined, undefined, undefined])
+  await ui.unmount()
 })
 
 test('a removed socket hides the band at once; a failing fetch on a live socket keeps it', async ($, on) => {

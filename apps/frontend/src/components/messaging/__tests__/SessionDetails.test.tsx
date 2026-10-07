@@ -90,6 +90,14 @@ it("About shows the model, the mode and the tokens", () => {
   expect(within(about).getByText("Claude Code 2.1.283")).toBeInTheDocument();
 });
 
+it("About names the folder as the Mac reported it, never as a path from home", () => {
+  // Prod 2026-10-07: a session in ~/Lightbulb/lb-accept2-86aa00 read "~/lb-accept2-86aa00".
+  render(<Details tab="about" s={session({ cwdName: "lb-accept2-86aa00" })} />);
+  const about = screen.getByRole("tabpanel", { name: "About" });
+  expect(within(about).getByText("lb-accept2-86aa00")).toBeInTheDocument();
+  expect(about).not.toHaveTextContent("~/");
+});
+
 it("About says nothing about output arriving block by block: the terminal is live", () => {
   render(<Details tab="about" s={session({ workspace: { revision: 1, coverage: "unknown", changed: false, overlap: false } })} />);
   const about = screen.getByRole("tabpanel", { name: "About" });

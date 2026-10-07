@@ -221,6 +221,36 @@ async def test_a_new_viewer_nudges_a_capable_mac_once_and_a_repeat_post_does_not
     assert len(_nudges(transport)) == 2
 
 
+def _presence(transport):
+    return [body for _, body in transport[3] if body["type"] == "local.session.presence"]
+
+
+@pytest.mark.asyncio
+async def test_a_new_viewer_is_named_to_the_owners_mac_at_once_not_at_the_next_ack(transport):
+    """Prod 2026-10-07: the teammate had the picture in 0.5 s and the owner's band named them
+    10-15 s later, at the next heartbeat ack."""
+    sid = await start(transport)
+    await relay(transport).handle_message("conn-1", {**heartbeat(sid), "sessionPresence": True})
+    transport[3].clear()
+    await session_screen.watch(BOB, sid)
+    # The picture first, then the name.
+    assert [body["type"] for _, body in transport[3]] == ["local.session.watch", "local.session.presence"]
+    assert [[v["userId"] for v in p["viewers"]] for p in _presence(transport)] == [[BOB.user_id]]
+    await session_screen.watch(BOB, sid)  # a renewal is not news
+    assert len(_presence(transport)) == 1
+    await session_screen.watch(ALICE, sid, mounted=True)  # the owner is never listed: nothing to say
+    assert len(_presence(transport)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_mac_without_the_band_gets_no_presence_push_for_a_new_viewer(transport):
+    sid = await start(transport)
+    await ack(transport, sid)  # the golden heartbeat: liveTerminal, no sessionPresence
+    transport[3].clear()
+    await session_screen.watch(BOB, sid)
+    assert _presence(transport) == []
+
+
 @pytest.mark.asyncio
 async def test_a_mac_that_never_advertised_live_terminal_is_never_nudged(transport):
     sid = await start(transport)

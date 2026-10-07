@@ -61,7 +61,7 @@ function About({ session, ownerName, own }: { session: LocalSession; ownerName: 
       <Fact label="Owner">{own ? `${ownerName} (you)` : ownerName}</Fact>
       <Fact label="Tool"><span className="session-fact-value">{toolVersion(session)}</span></Fact>
       {sessionFacts(session) && <Fact label="Model and mode"><span className="session-fact-value">{sessionFacts(session)}</span></Fact>}
-      {session.cwdName && <Fact label="Folder"><span className="session-fact-value">~/{session.cwdName}</span></Fact>}
+      {session.cwdName && <Fact label="Folder"><span className="session-fact-value">{session.cwdName}</span></Fact>}
       {source && <Fact label="Repository"><span className="session-fact-value">{source}</span></Fact>}
       <Fact label="Status">{sessionStatus[session.status]}{session.lastEventAt && <span className="text-muted-foreground"> · active {timeAgo(session.lastEventAt)}</span>}</Fact>
       {usage && <Fact label="Tokens"><span className="session-fact-value" title="As the tool reports them. Neither Claude Code nor Codex reports a cost.">{usage}</span></Fact>}

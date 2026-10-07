@@ -3,6 +3,13 @@
 //! with the person's own `claude`. Claude reads a folder marketplace from the folder itself, so
 //! an app update rewrites the files and the next session loads them. Never fatal: the mod is an
 //! addition to sharing, not part of it.
+//!
+//! Checked against Claude Code 2.1.292 (2026-10-07): a repeat `plugin install` answers "already
+//! installed ... it loads in place from <folder>, so edits there take effect at the next session
+//! start or /reload-plugins". So no version bump is needed for a changed file to load. The copy
+//! under `~/.claude/plugins/cache/lightbulb/lightbulb-sessions/<version>` (the `installPath` in
+//! `installed_plugins.json`) is a snapshot from the first install and is not what a session
+//! loads. A Claude session already running keeps the mod it started with.
 
 use super::*;
 
@@ -109,6 +116,16 @@ mod tests {
         assert!(root.join("lightbulb-sessions/hooks/register.tsx").is_file());
         let socket = std::fs::read_to_string(root.join("lightbulb-sessions/socket")).unwrap();
         assert!(socket.trim().ends_with("/mod.sock"));
+    }
+
+    #[test]
+    fn plugin_a_changed_mod_file_replaces_the_one_an_older_app_wrote() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = write_files(dir.path()).unwrap();
+        let file = root.join("lightbulb-sessions/hooks/register.tsx");
+        std::fs::write(&file, "an older app's mod").unwrap();
+        write_files(dir.path()).unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), include_str!("../../mods/lightbulb-sessions/hooks/register.tsx"));
     }
 
     #[test]

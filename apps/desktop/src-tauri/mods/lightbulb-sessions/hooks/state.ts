@@ -27,6 +27,17 @@ export function requestLine(r: JoinRequest, count: number): string {
   return `${r.name} ${verb}` + (count > 1 ? ` (+${count - 1} more)` : '')
 }
 
+// How the keyboard reaches the band's buttons (Claude Code 2.1.292). A Button's `hotkey` letter
+// is pressed only while the band holds the keyboard: after ctrl+x tab (the engine's
+// abovePrompt:focus; Esc goes back to the prompt) or a click. At the prompt the letter is typed.
+// A mod cannot bind a chord of its own: a Button's `action` takes one of the engine's own
+// keybinding actions and the engine refuses the whole band over any other name.
+// ponytail: the default chord, written out. A person who rebound abovePrompt:focus reads the old
+// one; the API hands a mod no way to ask for theirs.
+export function keysHint(s: SessionState): string {
+  return s.joinRequests.length ? 'ctrl+x tab, then a or d · or click' : 'ctrl+x tab, then p'
+}
+
 const printable = (s: unknown) => (typeof s === 'string' ? s.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').trim().slice(0, 80) : '')
 
 /** Who typed the live terminal's last input, when a teammate did. Their name came from a server. */

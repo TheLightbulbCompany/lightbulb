@@ -168,7 +168,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const footer = sessionFooter(session);
   // The status line has room for the repository's own name and its branch; Details has the rest.
   const repo = session.pickup?.hasCode ? session.pickup.repo?.split("/").pop() : undefined;
-  const where = repo ? [repo, session.pickup?.branch].filter(Boolean).join(" on ") : session.cwdName ? `~/${session.cwdName}` : "";
+  const where = repo ? [repo, session.pickup?.branch].filter(Boolean).join(" on ") : session.cwdName ?? "";
   // Details opens from the button and from the status line's links; focus returns to whichever it was.
   const opener = useRef<HTMLElement | null>(null);
   const show = (next: SessionDetailsTab) => {

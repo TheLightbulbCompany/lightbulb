@@ -126,6 +126,7 @@ FEATURES = [
     "bandOwnerOnly",
     "endedScreens",
     "terminalReason",
+    "endedStartId",
 ]
 
 
@@ -169,6 +170,10 @@ class Ended(ContractModel):
     ended_at: int = Field(ge=0)
     # The holder keeps the final screen (spec §5.4). Sent only once FEATURES lists endedScreens.
     screen: bool = False
+    # The remote start this run was bound to while it was verified. A run that ended before the
+    # relay heard its start identity (the Mac was offline) can only say so here: its draining
+    # register is unverified and may not carry one. Sent only once FEATURES lists endedStartId.
+    start_id: sessions.OpaqueId | None = None
 
 
 Event = sessions.LocalSessionEventBody
@@ -932,6 +937,10 @@ class LocalSessionRelay:
             updated.pop("screenUntil", None)
         updated.pop("pendingApproval", None)
         updated.pop("privateSendApproval", None)
+        # An ended row grants no control, so this opens the transcript for whoever started it and
+        # nothing else. A start identity the row already holds is never replaced.
+        if message.start_id and not row.get("startId"):
+            updated["startId"] = message.start_id
         extra = [self._connection_check(cid, connection)]
         # "Let teammates control this session" turns itself off with the session.
         if updated.pop("teamControl", False):

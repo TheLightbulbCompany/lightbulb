@@ -100,6 +100,9 @@ pub(super) struct Host {
     rediscover: Option<Arc<tokio::sync::Notify>>,
     /// Sessions that have ended and whose end the relay has not been told about.
     ended_pending: Vec<String>,
+    /// Whether the relay on this socket lists `endedStartId`; None until one of its acks has
+    /// said. Per connection, like every feature: a reconnect can reach another relay version.
+    relay_reads_ended_start: Option<bool>,
     /// Sessions whose heartbeat fields moved between heartbeats: one goes out
     /// early rather than up to ten seconds late.
     heartbeat_dirty: BTreeSet<String>,
@@ -343,8 +346,13 @@ impl Host {
         if let Some(origin) = origin {
             frame["session"]["forkedFrom"] = json!(origin);
         }
-        if let Some(start_id) = start_links::linked(&self.dir, &mirror.native, &mirror.generation) {
-            frame["session"]["startId"] = json!(start_id);
+        // An ended mirror registers only to drain, as `runtime-unverified`. The relay refuses a
+        // start identity on an unverified register (LOCAL_SESSION_CONFLICT, every retry), and
+        // keeps the one this generation already bound.
+        if status.is_none() {
+            if let Some(start_id) = start_links::linked(&self.dir, &mirror.native, &mirror.generation) {
+                frame["session"]["startId"] = json!(start_id);
+            }
         }
         if let Some(status) = status {
             frame["session"]["status"] = json!(status);
@@ -594,6 +602,7 @@ impl Host {
 
     fn reset_relay_features(&mut self) {
         super::session_states::read_features(&Value::Null);
+        self.relay_reads_ended_start = None;
         for mirror in self.mirrors.values_mut() {
             mirror.subagents.relay = false;
             mirror.subagents.relay_known = false;
@@ -604,7 +613,7 @@ impl Host {
         recovering_ended.retain(|key| {
             self.mirrors
                 .get(key)
-                .is_some_and(needs_ended_recovery)
+                .is_some_and(|m| needs_ended_recovery(m) || owes_bound_register(&self.dir, m))
         });
         for key in ended_recovery_keys(&self.mirrors) {
             recovering_ended.insert(key.clone());
@@ -826,6 +835,7 @@ impl Host {
             dir,
             mirrors,
             ended_pending,
+            relay_reads_ended_start,
             ..
         } = self;
         let mut index = ended_pending.len();
@@ -848,6 +858,12 @@ impl Host {
                 continue;
             }
             let Some(session) = mirror.session_id.clone() else {
+                if owes_bound_register(dir, mirror) {
+                    // Someone started this run and waits to open it: the relay has to learn
+                    // it existed. The draining register gives it a session, then this end.
+                    recovering_ended.insert(key.clone());
+                    continue;
+                }
                 let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
                 mirror.ended_sent = true;
                 persist_changed(dir, &key, mirror, &before)?;
@@ -855,6 +871,14 @@ impl Host {
                 continue;
             };
             if codex_turn_active_after_end(mirror) {
+                continue;
+            }
+            // `bound`, not `linked`: a mirror restricted since (an app restart marks it
+            // `runtime-unverified` before liveness ends it) was still bound while verified.
+            let start_id = start_links::bound(dir, &mirror.native, &mirror.generation);
+            if start_id.is_some() && relay_reads_ended_start.is_none() {
+                // Nothing has been acked on this socket: the first ack (the caller sends a
+                // heartbeat for it at once) says whether this relay reads a start identity.
                 continue;
             }
             // Upload and discovery run on their own cadence. Recovery keys stay
@@ -870,6 +894,11 @@ impl Host {
                 "generation":mirror.generation,
                 "reason":mirror.ended_reason.as_deref().unwrap_or("exited"),
                 "endedAt":ended_at});
+            // The draining register of an ended mirror carries no start identity. A relay that
+            // has never heard this generation's (the whole run was offline) learns it here.
+            if let Some(start_id) = start_id.filter(|_| *relay_reads_ended_start == Some(true)) {
+                frame["startId"] = json!(start_id);
+            }
             super::session_states::add_screen(&mut frame, mirrors, &key);
             ended_pending.remove(index);
             return Ok(Some((reported, frame)));
@@ -1041,6 +1070,7 @@ impl Host {
             hooks: None,
             rediscover: None,
             ended_pending: vec![],
+            relay_reads_ended_start: None,
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
@@ -1395,7 +1425,18 @@ impl Host {
                     if let Some((reported, frame)) = self.ended_frame(&mut recovering_ended)? {
                         send(socket, &frame).await?;
                         pending_rpc = Some(reported);
-                    } else if let Some(frame) = heartbeat_frames.pop_front() {
+                    } else if let Some(frame) = heartbeat_frames.pop_front().or_else(|| {
+                        // An end is waiting to learn what this relay reads, and nothing
+                        // registers here: ask now, not at the idle heartbeat 30 s on.
+                        (self.relay_reads_ended_start.is_none()
+                            && self.ended_pending.iter().any(|key| {
+                                // A recovering key registers on this socket: that ack says it.
+                                !recovering_ended.contains(key) && self.mirrors.get(key).is_some_and(|m| {
+                                    start_links::bound(&self.dir, &m.native, &m.generation).is_some()
+                                })
+                            }))
+                        .then(idle_heartbeat)
+                    }) {
                         let sent = Instant::now();
                         let wall = SystemTime::now();
                         send(socket, &frame).await?;
@@ -1544,6 +1585,7 @@ impl Host {
                             relay_reads_presence = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "sessionPresence"));
                             relay_reads_pickups = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "pickupRequests"));
                             relay_reads_band_owner_only = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "bandOwnerOnly"));
+                            self.relay_reads_ended_start = Some(reads_ended_start(&body));
                             let sid = body["sessionId"].as_str().filter(|s|uuid::Uuid::parse_str(s).is_ok()).ok_or("invalid session ID")?;
                             let after = body["afterSeq"].as_u64().ok_or("missing upload cursor")?;
                             let server = body["serverTime"].as_u64().ok_or("missing server time")?;
@@ -1590,7 +1632,9 @@ impl Host {
                             // Unless `advance` just promoted a successor -- the relay
                             // has never seen THAT generation, and uploading under it
                             // would only earn a rejection.
-                            let current_start_id = start_links::linked(&self.dir, &mirror.native, &mirror.generation);
+                            // An ended mirror's draining register carries no start identity.
+                            let current_start_id = start_links::linked(&self.dir, &mirror.native, &mirror.generation)
+                                .filter(|_| mirror.ended_at.is_none());
                             if advanced || native_restriction != mirror.native.restriction || start_id != current_start_id {
                                 registered.remove(&key);
                             } else {
@@ -1604,6 +1648,8 @@ impl Host {
                                 }
                             }
                             self.finish_deferred_end(&key)?;
+                            // A register that had nothing to drain is done: its end is next.
+                            self.refresh_ended_recovery(&mut recovering_ended);
                             // Someone watches it now: stream at once, not after every other
                             // session has registered and the first heartbeat is acked.
                             if body["watch"].is_object() {super::screen::nudge(&body["watch"]);}
@@ -1621,6 +1667,7 @@ impl Host {
                             super::snapshot::offer(&body["pickup"], &self.mirrors);
                             super::screen::offer(&body["watching"]);
                             super::session_states::read_ack(&body);
+                            self.relay_reads_ended_start = Some(reads_ended_start(&body));
                             super::presence::offer_ack(&body, &sids);
                             super::resume::offer(&body["resume"], &self.mirrors);
                             let server = body["serverTime"].as_u64().ok_or("missing server time")?;
@@ -2241,6 +2288,15 @@ fn needs_ended_recovery(mirror: &Mirror) -> bool {
         && !codex_turn_active_after_end(mirror)
 }
 
+/// An ended run the relay has never heard of, bound to a remote start: it registers once,
+/// with nothing to drain, so its end has a session to land on. True only until that ack.
+fn owes_bound_register(dir: &Path, mirror: &Mirror) -> bool {
+    mirror.ended_at.is_some()
+        && !mirror.ended_sent
+        && mirror.session_id.is_none()
+        && start_links::bound(dir, &mirror.native, &mirror.generation).is_some()
+}
+
 fn ended_recovery_keys(mirrors: &BTreeMap<String, Mirror>) -> BTreeSet<String> {
     mirrors
         .iter()
@@ -2582,6 +2638,12 @@ fn wire_batch(mut batch: Value) -> Value {
     batch
 }
 
+/// A register or heartbeat ack's `features` lists `endedStartId`. No list is a relay older
+/// than the feature.
+fn reads_ended_start(ack: &Value) -> bool {
+    ack["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "endedStartId"))
+}
+
 fn quarantine_active(quarantined: &BTreeMap<String, Instant>, key: &str) -> bool {
     quarantined
         .get(key)
@@ -2836,6 +2898,7 @@ pub(super) mod tests {
             hooks: None,
             rediscover: None,
             ended_pending: vec![],
+            relay_reads_ended_start: None,
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
@@ -3179,6 +3242,41 @@ pub(super) mod tests {
         let stored: Mirror = private_read(&dir.path().join(format!("{key}.json"))).unwrap();
         assert_eq!(stored.native.status, "ended");
         assert_eq!(stored.ended_reason.as_deref(), Some("exited"));
+    }
+
+    #[test]
+    fn local_sessions_a_restricted_ended_mirror_still_names_its_bound_start_on_the_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.session_id = Some(SID.into());
+        mirror.native.status = "ended".into();
+        // An app restart marks a mirror unverified before liveness finds its process gone.
+        mirror.native.restriction = Some("runtime-unverified".into());
+        mirror.ended_at = Some(1_700_000_042);
+        private_write(
+            &dir.path().join(format!("start-{}.json",
+                fingerprint(&json!([mirror.native.provider, mirror.native.conversation]).to_string()))),
+            &json!({"startId":"11111111-1111-4111-8111-111111111111","provider":mirror.native.provider,
+                "conversation":mirror.native.conversation,"launcher":process(std::process::id()).unwrap(),
+                "boundGeneration":"gen-1"}),
+        )
+        .unwrap();
+        let mut host = test_host(dir.path(), vec![(SID, mirror)]);
+        // Nothing has been acked on this socket: the end waits for the first ack.
+        host.ended_pending = vec![SID.into()];
+        assert!(host.ended_frame(&mut BTreeSet::new()).unwrap().is_none());
+        assert_eq!(host.ended_pending, vec![SID.to_string()]);
+        for (relay_reads, expected) in [(false, Value::Null), (true, json!("11111111-1111-4111-8111-111111111111"))] {
+            host.ended_pending = vec![SID.into()];
+            host.relay_reads_ended_start = Some(relay_reads);
+            let (_, frame) = host.ended_frame(&mut BTreeSet::new()).unwrap().unwrap();
+            assert_eq!(frame["type"], "local.session.ended");
+            assert_eq!(frame["startId"], expected);
+        }
+        // A new socket may reach another relay version: unknown again.
+        host.reset_relay_features();
+        assert_eq!(host.relay_reads_ended_start, None);
+        assert!(host.begin_ended_recovery(SID).unwrap()["session"].get("startId").is_none());
     }
 
     #[test]
@@ -4594,6 +4692,7 @@ pub(super) mod tests {
             hooks: None,
             rediscover: None,
             ended_pending: vec![],
+            relay_reads_ended_start: None,
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
@@ -4786,6 +4885,7 @@ pub(super) mod tests {
             hooks: None,
             rediscover: None,
             ended_pending: vec![],
+            relay_reads_ended_start: None,
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
@@ -5486,6 +5586,7 @@ pub(super) mod tests {
             hooks: None,
             rediscover: None,
             ended_pending: vec![],
+            relay_reads_ended_start: None,
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
@@ -5781,6 +5882,121 @@ pub(super) mod tests {
         assert!(stored.ended_sent, "an acknowledged end is durable across restarts");
     }
 
+    /// Started from the web or a phone, ended offline before it wrote anything: the relay has
+    /// never heard of it. It registers once to exist, then its end names the start.
+    #[tokio::test]
+    async fn local_sessions_a_bound_run_that_ended_unregistered_and_empty_is_still_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native.status = "ended".into();
+        mirror.ended_at = Some(1_700_000_042);
+        private_write(
+            &dir.path().join(format!("start-{}.json",
+                fingerprint(&json!([mirror.native.provider, mirror.native.conversation]).to_string()))),
+            &json!({"startId":"11111111-1111-4111-8111-111111111111","provider":mirror.native.provider,
+                "conversation":mirror.native.conversation,"launcher":process(std::process::id()).unwrap(),
+                "boundGeneration":"gen-1"}),
+        )
+        .unwrap();
+        assert!(!needs_ended_recovery(&mirror), "nothing to drain");
+        // Its neighbour has no bound start: retired silently, as before.
+        let mut silent = test_mirror(SID_B, "gen-2");
+        silent.native.status = "ended".into();
+        silent.ended_at = Some(1_700_000_043);
+        let mut host = test_host(dir.path(), vec![("a-session", mirror), ("b-session", silent)]);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let registration = next_frame(&mut socket).await;
+            assert_eq!(registration["type"], "local.session.register");
+            assert_eq!(registration["session"]["nativeConversationId"], SID);
+            assert_eq!(registration["session"]["controlUnavailableReason"], "runtime-unverified");
+            assert!(registration["session"].get("startId").is_none());
+            reply(&mut socket, json!({"type":"local.session.registered","sessionId":SID,
+                "generation":registration["session"]["generation"],"afterSeq":0,"serverTime":1000,
+                "features":["endedStartId"],"reconcile":null})).await;
+            let ended = next_frame(&mut socket).await;
+            assert_eq!(ended["type"], "local.session.ended", "one register, then the end");
+            assert_eq!(ended["sessionId"], SID);
+            assert_eq!(ended["startId"], "11111111-1111-4111-8111-111111111111");
+            reply(&mut socket, json!({"type":"local.session.ended.ack","sessionId":SID})).await;
+            let quiet = tokio::time::timeout(Duration::from_millis(400), socket.next()).await;
+            assert!(quiet.is_err(), "nothing registers again and the unbound end stays silent: {quiet:?}");
+            socket.close(None).await.unwrap();
+        });
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
+            .await
+            .unwrap();
+        let _ = tokio::time::timeout(
+            Duration::from_secs(5),
+            host.connection(&mut socket, &mut rx, "alice"),
+        )
+        .await;
+        server.await.unwrap();
+        let stored: Mirror = private_read(&dir.path().join("a-session.json")).unwrap();
+        assert!(stored.ended_sent && stored.session_id.as_deref() == Some(SID));
+    }
+
+    /// A drained end retried on a new socket: nothing registers, so the Mac asks with a
+    /// heartbeat at once and the end follows that ack, in the shape this relay reads.
+    #[tokio::test]
+    async fn local_sessions_a_bound_end_on_a_fresh_socket_follows_the_first_heartbeat_ack() {
+        for (features, expected) in [
+            (Some(json!(["endedStartId"])), json!("11111111-1111-4111-8111-111111111111")),
+            (Some(json!([])), Value::Null),
+            (None, Value::Null),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut mirror = test_mirror(SID, "gen-1");
+            mirror.session_id = Some(SID.into());
+            mirror.registration.acknowledged = Some("gen-1".into());
+            mirror.native.status = "ended".into();
+            mirror.ended_at = Some(1_700_000_042);
+            private_write(
+                &dir.path().join(format!("start-{}.json",
+                    fingerprint(&json!([mirror.native.provider, mirror.native.conversation]).to_string()))),
+                &json!({"startId":"11111111-1111-4111-8111-111111111111","provider":mirror.native.provider,
+                    "conversation":mirror.native.conversation,"launcher":process(std::process::id()).unwrap(),
+                    "boundGeneration":"gen-1"}),
+            )
+            .unwrap();
+            let mut host = test_host(dir.path(), vec![("a-session", mirror)]);
+            // What an earlier socket said is not what this relay reads.
+            host.relay_reads_ended_start = Some(true);
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (tcp, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                let asked = next_frame(&mut socket).await;
+                assert_eq!(asked["type"], "local.device.heartbeat", "the end waits for an ack");
+                let mut ack = json!({"type":"local.device.heartbeat.ack","rejected":[],"serverTime":1000,"reconcile":[]});
+                if let Some(features) = features {
+                    ack["features"] = features;
+                }
+                reply(&mut socket, ack).await;
+                let ended = next_frame(&mut socket).await;
+                assert_eq!(ended["type"], "local.session.ended");
+                assert_eq!(ended["startId"], expected);
+                reply(&mut socket, json!({"type":"local.session.ended.ack","sessionId":SID})).await;
+                socket.close(None).await.unwrap();
+            });
+            let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+            let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
+                .await
+                .unwrap();
+            let _ = tokio::time::timeout(
+                Duration::from_secs(5),
+                host.connection(&mut socket, &mut rx, "alice"),
+            )
+            .await;
+            server.await.unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn local_sessions_an_end_missed_while_the_relay_was_down_is_reported_on_reconnect() {
         let dir = tempfile::tempdir().unwrap();
@@ -5989,6 +6205,17 @@ pub(super) mod tests {
         mirror.registration.acknowledged = Some("gen-1".into());
         mirror.ended_at = Some(epoch_secs());
         mirror.ended_reason = Some("exited".into());
+        // Started from the web or a phone: the relay refuses a start identity on an
+        // unverified register, and a refused drain is an end that is never reported.
+        private_write(
+            &dir.path().join(format!("start-{}.json",
+                fingerprint(&json!([mirror.native.provider, mirror.native.conversation]).to_string()))),
+            &json!({"startId":"11111111-1111-4111-8111-111111111111","provider":mirror.native.provider,
+                "conversation":mirror.native.conversation,"launcher":process(std::process::id()).unwrap(),
+                "boundGeneration":"gen-1"}),
+        )
+        .unwrap();
+        assert!(start_links::linked(dir.path(), &mirror.native, &mirror.generation).is_some());
         let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
         host.heartbeat_interval = Duration::from_secs(60);
 
@@ -5999,6 +6226,82 @@ pub(super) mod tests {
             let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
             let registration = next_frame(&mut socket).await;
             assert_eq!(registration["type"], "local.session.register");
+            assert!(registration["session"].get("startId").is_none());
+            assert_eq!(registration["session"]["status"], "idle");
+            assert_eq!(registration["session"]["activeTurnId"], Value::Null);
+            assert_eq!(registration["session"]["controlUnavailableReason"], "runtime-unverified");
+            reply(&mut socket, json!({"type":"local.session.registered","sessionId":SID,
+                "generation":registration["session"]["generation"],"afterSeq":0,"serverTime":1000,
+                "features":["endedStartId"],"reconcile":null})).await;
+
+            let events = next_frame(&mut socket).await;
+            assert_eq!(events["type"], "local.session.events");
+            assert_eq!(events["events"][0]["text"], "short-lived public output");
+            reply(&mut socket, json!({"type":"local.session.events.ack","sessionId":SID,
+                "batchId":events["batchId"],"afterSeq":1})).await;
+
+            let ended = next_frame(&mut socket).await;
+            assert_eq!(ended["type"], "local.session.ended");
+            // The whole run may have been offline: the end names the start it was bound to.
+            assert_eq!(ended["startId"], "11111111-1111-4111-8111-111111111111");
+            reply(&mut socket, json!({"type":"local.session.ended.ack","sessionId":SID})).await;
+            socket.close(None).await.unwrap();
+        });
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
+            .await
+            .unwrap();
+        let _ = tokio::time::timeout(
+            Duration::from_secs(5),
+            host.connection(&mut socket, &mut rx, "alice"),
+        )
+        .await;
+        server.await.unwrap();
+        let stored: Mirror = private_read(&dir.path().join(format!("{key}.json"))).unwrap();
+        assert_eq!(stored.after_seq, 1);
+        assert!(stored.pending.is_none() && stored.queue.is_empty() && stored.ended_sent);
+        assert!(fs::metadata(transcript).is_ok());
+    }
+
+    #[tokio::test]
+    async fn local_sessions_an_older_relay_gets_no_start_identity_on_an_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let native = observed_fixture(dir.path());
+        let key = native_key(&native);
+        let transcript = native.transcript.clone().unwrap();
+        let mut rows = (0..33)
+            .map(|_| format!("{}\n", json!({"type":"progress"})))
+            .collect::<String>();
+        rows.push_str(&fs::read_to_string(&transcript).unwrap());
+        fs::write(&transcript, rows).unwrap();
+        let mut mirror = test_mirror("s", "gen-1");
+        mirror.native = native;
+        mirror.native.status = "ended".into();
+        mirror.registration.acknowledged = Some("gen-1".into());
+        mirror.ended_at = Some(epoch_secs());
+        mirror.ended_reason = Some("exited".into());
+        // Started from the web or a phone: the relay refuses a start identity on an
+        // unverified register, and a refused drain is an end that is never reported.
+        private_write(
+            &dir.path().join(format!("start-{}.json",
+                fingerprint(&json!([mirror.native.provider, mirror.native.conversation]).to_string()))),
+            &json!({"startId":"11111111-1111-4111-8111-111111111111","provider":mirror.native.provider,
+                "conversation":mirror.native.conversation,"launcher":process(std::process::id()).unwrap(),
+                "boundGeneration":"gen-1"}),
+        )
+        .unwrap();
+        assert!(start_links::linked(dir.path(), &mirror.native, &mirror.generation).is_some());
+        let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
+        host.heartbeat_interval = Duration::from_secs(60);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let registration = next_frame(&mut socket).await;
+            assert_eq!(registration["type"], "local.session.register");
+            assert!(registration["session"].get("startId").is_none());
             assert_eq!(registration["session"]["status"], "idle");
             assert_eq!(registration["session"]["activeTurnId"], Value::Null);
             assert_eq!(registration["session"]["controlUnavailableReason"], "runtime-unverified");
@@ -6014,6 +6317,7 @@ pub(super) mod tests {
 
             let ended = next_frame(&mut socket).await;
             assert_eq!(ended["type"], "local.session.ended");
+            assert!(ended.get("startId").is_none(), "an older relay refuses the unknown field");
             reply(&mut socket, json!({"type":"local.session.ended.ack","sessionId":SID})).await;
             socket.close(None).await.unwrap();
         });

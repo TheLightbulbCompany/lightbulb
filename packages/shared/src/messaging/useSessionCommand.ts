@@ -147,8 +147,9 @@ export function useSessionCommand(
   const active = session.status === "busy" && !!session.activeTurnId && canSend;
   const canSteer = active && session.capabilities.steer;
   const canInterrupt = active && session.capabilities.interrupt && allowInterrupt;
-  // The owner's alone, and only while the Mac mirrors it. A Codex process hosts many conversations, so only Claude.
-  const canEnd = allowEnd && session.provider === "claude" && sessionLive(session);
+  // The owner's alone, and only while the Mac mirrors it: a session Lightbulb holds, or a plain Claude.
+  // A Codex app or daemon process hosts many conversations, so it cannot be ended alone.
+  const canEnd = allowEnd && (session.provider === "claude" || session.terminal === "held") && sessionLive(session);
   const unknownCurrent = attempt?.receipt?.state === "unknown" && attempt.receipt.expectedGeneration === session.generation;
   const locked = checking || attempt?.state === "sending" || attempt?.state === "uncertain" || unknownCurrent;
 

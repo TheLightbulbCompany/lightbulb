@@ -528,7 +528,7 @@ async def test_a_person_let_in_cannot_stop_the_owners_run(transport):
 
 
 @pytest.mark.asyncio
-async def test_only_the_owner_ends_a_session_and_only_a_claude_one(transport):
+async def test_only_the_owner_ends_a_session_and_only_one_with_its_own_process(transport):
     sid = await start(transport)
     await ask(BOB, sid)
     await service.decide_join(ALICE, sid, BOB.user_id, "allow")
@@ -541,7 +541,8 @@ async def test_only_the_owner_ends_a_session_and_only_a_claude_one(transport):
     # Ending needs no send capability, so an unverified session can still be ended.
     service._require_control({**row, "provider": "claude", "capabilitiesVerified": False}, end)
     with pytest.raises(ApiProblem, match="on its Mac"):
-        service._require_control({**row, "provider": "codex"}, end)
+        service._require_control({**row, "provider": "codex", "terminal": "attach"}, end)
+    service._require_control({**row, "provider": "codex", "terminal": "held"}, end)  # Lightbulb holds it
     with pytest.raises(ValueError):
         service.LocalSessionCommand(requestId="end-2", expectedGeneration="g", kind="end", text="bye")
 

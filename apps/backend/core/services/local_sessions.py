@@ -1291,9 +1291,10 @@ def _require_control(row: dict, request: LocalSessionCommand, *, allow_offline_s
     if (row["status"] == "offline" or row["onlineUntil"] <= int(time.time())) and not allow_offline_send:
         raise ApiProblem("LOCAL_SESSION_OFFLINE", "The desktop session is offline.")
     if request.kind == "end":
-        # The Mac stops the session's own process. A Codex process hosts many conversations, so
-        # only Claude can be ended; it needs no send capability, so an unverified session can be too.
-        if row["provider"] != "claude":
+        # The Mac stops the session's own process: one Lightbulb holds, or a plain Claude. A Codex
+        # app or daemon process hosts many conversations. Ending needs no send capability, so an
+        # unverified session can be ended too.
+        if row["provider"] != "claude" and session_terminal(row) != "held":
             raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "This session can only be ended on its Mac.")
         return
     caps = row["capabilities"]

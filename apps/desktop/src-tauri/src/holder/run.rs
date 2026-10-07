@@ -407,6 +407,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
             // short-lived `origin` one.
             Event::Frame(_, END, _) if !ending && !ended && exited.is_none() && provider_pid > 1 => {
                 ending = true;
+                model.ending();
                 // The provider leads its terminal's process group (the pty made it a session
                 // leader): what a closing terminal hangs up on.
                 let group = -(provider_pid as libc::pid_t);

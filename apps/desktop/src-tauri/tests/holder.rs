@@ -595,3 +595,23 @@ fn holder_keeps_the_picture_from_before_the_command_that_ended_the_session() {
     assert!(has(&screen, b"the-last-answer"), "{:?}", String::from_utf8_lossy(&screen));
     assert!(!has(&screen, b"Exit the CLI") && !has(&screen, b"/exit") && !has(&screen, b"Resume this session"), "{:?}", String::from_utf8_lossy(&screen));
 }
+
+/// Review of #3818: a prompt whose reply renders quickly, then End within 3 s of its Enter. The
+/// End, not the line, ended the session: the kept picture has the reply.
+#[test]
+fn holder_end_right_after_a_quick_reply_keeps_the_reply() {
+    let dir = temp_dir();
+    let socket = start(&dir, &["/bin/sh", "-c", concat!(
+        r#"trap 'printf "\033[?1049lResume this session with:\r\n"; exit 129' HUP;"#,
+        r" printf '\033[?1049h\033[2J\033[Hearlier-answer\r\n> '; read x; printf '\033[3;1Hthe-quick-reply'; while :; do sleep 0.1; done")]);
+    let mut c = attach(&socket, "interactive");
+    wait_screen(&socket, b"earlier-answer");
+    std::thread::sleep(Duration::from_millis(1700)); // the screen is at rest
+    c.write_all(&encode(INPUT, b"a question\r")).unwrap();
+    wait_screen(&socket, b"the-quick-reply");
+    assert!(manager::end(&manager::list_in(&dir).into_iter().next().unwrap()));
+    while read_frame(&mut c).expect("EXIT before timeout").0 != EXIT {}
+    let screen = ended_screen(&socket);
+    assert!(has(&screen, b"the-quick-reply") && has(&screen, b"earlier-answer"), "{:?}", String::from_utf8_lossy(&screen));
+    assert!(!has(&screen, b"Resume this session"));
+}

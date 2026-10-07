@@ -57,6 +57,8 @@ pub struct Model {
     typed: Option<(Instant, bool)>,
     /// The alternate screen as it rested before the line now being typed (or just sent) was begun.
     resting: Option<Resting>,
+    /// The holder was told to end the provider: no typed line ends this session.
+    ending: bool,
 }
 struct Resting {
     picture: Vec<u8>,
@@ -115,7 +117,7 @@ fn completed(hay: &[u8], needle: &[u8], skip: usize) -> usize {
 impl Model {
     pub fn new(rows: u16, cols: u16) -> Self {
         Self { parser: vt100::Parser::new(rows, cols, 5000), tail: Vec::new(), left_alternate: None, partial_csi: Vec::new(),
-            last_output: None, typed: None, resting: None }
+            last_output: None, typed: None, resting: None, ending: false }
     }
 
     /// Feed provider output. Returns what to write back to the pty: the probe answers.
@@ -135,7 +137,7 @@ impl Model {
     /// the command that may end the session (`/exit` and its menu) was drawn over it.
     pub fn typed(&mut self, bytes: &[u8], now: Instant) {
         // Mouse and focus reports are not typing.
-        if [&b"\x1b[<"[..], b"\x1b[M", b"\x1b[I", b"\x1b[O"].iter().any(|report| bytes.starts_with(report)) {
+        if self.ending || [&b"\x1b[<"[..], b"\x1b[M", b"\x1b[I", b"\x1b[O"].iter().any(|report| bytes.starts_with(report)) {
             return;
         }
         let since = |at: Instant| now.saturating_duration_since(at);
@@ -150,6 +152,14 @@ impl Model {
             resting.sent = Some(now);
         }
         self.typed = Some((now, !enter));
+    }
+
+    /// The holder is ending the provider itself (END). The leave that follows answers that, not
+    /// the last typed line, so the picture kept is the screen as it is then: a reply drawn right
+    /// after that line's Enter stays in it.
+    pub fn ending(&mut self) {
+        self.ending = true;
+        self.resting = None;
     }
 
     pub fn feed_at(&mut self, bytes: &[u8], now: Instant) -> Vec<u8> {
@@ -393,6 +403,17 @@ mod tests {
         model.feed_at(b"\x1b[3;1Ha newer answer", t0 + secs(12.0));
         model.feed_at(LEAVE, t0 + secs(20.0));
         assert!(has(&model.ended_picture(t0 + secs(20.3)).unwrap(), b"a newer answer"));
+
+        // A question, a quick reply, then End within SENT_LEAVE of the Enter (review of #3818):
+        // the End ended the session, so the reply is in the picture.
+        let mut model = drawn(t0);
+        model.typed(b"another question\r", t0 + secs(10.0));
+        model.feed_at(b"\x1b[3;1Ha quick reply", t0 + secs(10.5));
+        model.ending();
+        model.typed(b"\r", t0 + secs(11.0));
+        model.feed_at(LEAVE, t0 + secs(11.5));
+        let picture = model.ended_picture(t0 + secs(11.8)).unwrap();
+        assert!(has(&picture, b"a quick reply") && has(&picture, b"the last answer"));
 
         // A line left unsent for long is not the line being typed: `/exit` after it begins anew.
         let mut model = drawn(t0);

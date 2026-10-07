@@ -19,21 +19,33 @@ function send(kind, payload = new Uint8Array()) {
   ws.send(frame);
 }
 // Joined: a terminal elsewhere (`lightbulb claude`) owns the session's size. This page draws at
-// that size, scaled down to fit, types too, and never resizes the session.
+// that size, types too, and never resizes the session.
 let joined = false;
 const box = document.getElementById("t");
+const wrap = document.getElementById("wrap");
+// How a joined grid (sw x sh) sits in the panel (w x h): scale k, shift dy. It fits the WIDTH, so
+// text is the same size in every session. A grid a little too tall shrinks to fit (down to 85%);
+// a much taller one keeps its size and its last rows, where the prompt is, and loses the top.
+function fitScale(w, h, sw, sh) {
+  if (!(w > 0 && h > 0 && sw > 0 && sh > 0)) return { k: 1, dy: 0 };
+  const wide = Math.min(1, w / sw);
+  const tall = h / sh;
+  const k = tall >= wide * 0.85 ? Math.min(wide, tall) : wide;
+  return { k, dy: Math.min(0, h - sh * k) };
+}
 function scale() {
   const screen = box.querySelector(".xterm-screen");
   if (!screen) return;
-  box.style.transform = "";
-  if (!joined) return;
-  const k = Math.min(1, box.clientWidth / screen.offsetWidth, box.clientHeight / screen.offsetHeight);
+  if (!joined) { box.style.transform = ""; return; }
+  const { k, dy } = fitScale(wrap.clientWidth, wrap.clientHeight, screen.offsetWidth, screen.offsetHeight);
   box.style.transformOrigin = "top left";
-  box.style.transform = `scale(${k})`;
+  box.style.transform = `translateY(${dy}px) scale(${k})`;
 }
 function fixed(cols, rows) {
   term.resize(Math.max(1, cols), Math.max(1, rows));
   scale();
+  // xterm lays the new grid out on its next frame: measure again once it has.
+  requestAnimationFrame(scale);
 }
 function resize() {
   if (joined) { scale(); return; }

@@ -21,7 +21,7 @@ afterEach(() => { delete (window as { __TAURI__?: unknown }).__TAURI__; vi.resto
 it("a session this Mac runs shows its live terminal in place of the transcript, and unmounting only hides it", async () => {
   const invoke = desktop({ live: true });
   const { unmount } = render(panel(session));
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith("terminal_panel", { sessionId: "session", rect: { x: 300, y: 120, width: 800, height: 500 }, at: expect.any(Number) }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("terminal_panel", { sessionId: "session", rect: { x: 300, y: 120, width: 800, height: 500 }, viewport: { width: innerWidth, height: innerHeight }, at: expect.any(Number) }));
   expect(screen.getByRole("region", { name: "Session terminal" })).toBeInTheDocument();
   expect(screen.queryByRole("textbox", { name: /send to/i })).toBeNull();
   expect(screen.queryByRole("region", { name: "Native session history" })).toBeNull();
@@ -80,7 +80,7 @@ it("keeps asking while no holder answers, and promotes the panel when one does",
     expect(invoke).toHaveBeenCalledWith("terminal_panel", { sessionId: "session", rect: null, at: expect.any(Number) });
     expect(screen.getByRole("region", { name: "Session terminal" })).toBeInTheDocument();
     await vi.advanceTimersByTimeAsync(300);
-    expect(invoke).toHaveBeenLastCalledWith("terminal_panel", { sessionId: "session", rect: { x: 300, y: 120, width: 800, height: 500 }, at: expect.any(Number) });
+    expect(invoke).toHaveBeenLastCalledWith("terminal_panel", { sessionId: "session", rect: { x: 300, y: 120, width: 800, height: 500 }, viewport: { width: innerWidth, height: innerHeight }, at: expect.any(Number) });
   } finally { vi.useRealTimers(); }
 });
 
@@ -98,4 +98,22 @@ it("keeps asking after the first half minute, more slowly, while the session run
     expect(invoke.mock.calls.length).toBeGreaterThan(early);
     expect(screen.getByRole("region", { name: "Session terminal" })).toBeInTheDocument();
   } finally { vi.useRealTimers(); }
+});
+
+// The joined-session fit lives in the desktop app's own terminal page (a plain script, no module):
+// read it from there so the one place it is defined is the one place it is checked.
+it("a joined session keeps one text size: fit the width, keep the last rows", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { resolve } = await import("node:path");
+  const source = readFileSync(resolve(process.cwd(), "../desktop/src-tauri/terminal/terminal.js"), "utf8");
+  const body = source.slice(source.indexOf("function fitScale"), source.indexOf("function scale()"));
+  const fitScale = new Function(`${body}; return fitScale;`)() as (w: number, h: number, sw: number, sh: number) => { k: number; dy: number };
+  expect(fitScale(1000, 700, 800, 600)).toEqual({ k: 1, dy: 0 });
+  // Wider than the panel: shrink to the width.
+  expect(fitScale(1000, 700, 2000, 600)).toEqual({ k: 0.5, dy: 0 });
+  // A little too tall: shrink to fit, nothing cut.
+  expect(fitScale(1000, 700, 800, 770).k).toBeCloseTo(700 / 770);
+  // Much too tall: same text size as every other session, the top rows give way to the prompt.
+  expect(fitScale(1000, 700, 800, 1400)).toEqual({ k: 1, dy: -700 });
+  expect(fitScale(0, 700, 800, 600)).toEqual({ k: 1, dy: 0 });
 });

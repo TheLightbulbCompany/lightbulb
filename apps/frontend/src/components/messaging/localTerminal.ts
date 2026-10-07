@@ -72,7 +72,9 @@ export function useLocalTerminal(target: { sessionId: string } | { holderId: str
     const report = () => {
       const box = slot.current?.getBoundingClientRect();
       const rect = visible && box && box.width > 0 && box.height > 0 ? { x: box.left, y: box.top, width: box.width, height: box.height } : null;
-      const shape = JSON.stringify(rect);
+      // The page's own size too: the app places the terminal in the window, and the page can start below the window's top.
+      const viewport = rect ? { width: innerWidth, height: innerHeight } : null;
+      const shape = JSON.stringify([rect, viewport]);
       // The holder can be found after the panel opens (the session can register before its holder
       // is indexed): keep asking while it runs. The slot is unmounted while the answer is "none", so
       // the probe carries no rect; a "live" answer mounts the slot and the next tick places it.
@@ -81,7 +83,7 @@ export function useLocalTerminal(target: { sessionId: string } | { holderId: str
       if (shape === sent && !reprobe) return;
       sent = shape;
       probedAt = Date.now();
-      invoke("terminal_panel", { ...target, rect, at: now() }).then(
+      invoke("terminal_panel", { ...target, rect, ...(viewport ? { viewport } : {}), at: now() }).then(
         (reply) => {
           const r = reply as { live?: boolean; stale?: boolean };
           if (r?.stale) { sent = ""; return; } // lost a race: re-send on the next tick

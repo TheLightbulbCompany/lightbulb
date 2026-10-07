@@ -169,6 +169,7 @@ MEET_RULES = (
     "question that was asked of someone else."
 )
 TRAIL_S = 8.0  # a meeting line that trails off ("Can one of you tell me...") waits this long for its rest
+SAID_LOG_N, SAID_LOG_S = 12, 120.0  # a meeting hand whose words the agent said meanwhile is let go, not said again
 MEET_ACK = (
     " Acknowledge it now in a few words of your own that fit what was asked, a different way each time; say "
     "nothing about this note; then wait for the result."
@@ -463,6 +464,7 @@ class Huddle:
         self._voice_limit = ""  # why the backend refuses to open a voice (its /summon reason); "" when it does not
         self._trail: dict[str, tuple[str, float]] = {}  # a meeting line that trailed off, and when
         self._others_from = 0.0  # when someone other than the open voice's person began talking
+        self._said_log: dict[str, list[tuple[float, str]]] = {}  # what each agent said lately, to let a said hand go
         self._rowless: set[str] = set()  # a meeting's ready answers that have no request row (delivered like one)
         self._level: set[str] = set()  # humans in the SFU's active speakers: sound, maybe not speech
         self._voiced: set[str] = set()  # humans the transcriber's speech detector hears speaking
@@ -1844,6 +1846,9 @@ class Huddle:
         v = self._floor_voice(agent_id)
         if v:
             v.said.append(text)
+        log = self._said_log.setdefault(agent_id, [])
+        log.append((self._clock(), text))
+        del log[:-SAID_LOG_N]
         if v and not mixed_meet(v.speaker):
             self._answer_message(v, text, interrupted)
         to = self._with(v) if v else ""
@@ -1962,7 +1967,12 @@ class Huddle:
             self._drop(v)
         elif v.announcing:
             if in_meet(v.speaker) and not mixed_meet(v.speaker) and started <= {v.speaker}:
-                return  # its own person interrupts it: GPT-Live hears them and stops by itself (a follow-up, a stop)
+                # its own person interrupts it: GPT-Live hears them and stops by itself (a follow-up, a stop), and
+                # the voice stays theirs. What was not heard keeps its hand up; said after all, it is let go
+                # (`_expire_news`, against what the agent says in the meantime).
+                v.announcing = False
+                self._keep_unsaid(v)
+                return
             v.announcing = False
             emit_metric("live.announce.cut", 1, "Count")
             self._note(f"[announce {self._agent_name(v.agent_id)} cut off: someone talked]")
@@ -3101,7 +3111,7 @@ class Huddle:
         ):
             self._talked_over(v)
             return
-        if not mixed:
+        if not mixed_meet(v.speaker):  # a per-person Meet voice: its own person's noise cuts it like a Live call's
             self._cut_answer(v, now)
         self._flush_lines(v)
         self._acknowledge(v, now)
@@ -3370,6 +3380,14 @@ class Huddle:
         return self._quiet(v, now) and not any(r.run_id == v.driven_run for r in self._runs.running(v.agent_id))
 
     def _expire_news(self, now: float) -> None:
+        if self.setting == "meeting":
+            for agent_id, news in list(self._news.items()):
+                said = " ".join(t for at, t in self._said_log.get(agent_id, []) if now - at <= SAID_LOG_S)
+                done = [n for n in news if said and not unsaid_part(n[2], said)]
+                if done:
+                    news[:] = [n for n in news if n not in done]
+                    self._requests.delivered({n[0] for n in done})
+                    emit_metric("live.meet.hand_said_meanwhile", len(done), "Count")
         for agent_id, news in list(self._news.items()):
             kept = [
                 n

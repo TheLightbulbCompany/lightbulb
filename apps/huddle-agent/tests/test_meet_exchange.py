@@ -236,3 +236,68 @@ async def test_a_trailing_piece_stays_on_the_record_even_if_its_rest_never_comes
     await says(h, P1, "Can one of you tell me about my open tasks?")
     assert h._unclaimed is not None and h._unclaimed[2] == "Can one of you tell me about my open tasks?", "too late to join"
     assert h._transcript.text().count("Oh, and...") == 1
+
+
+async def announced(h, backend, lives, clock, text="Three PRs are open. The oldest is two days old."):
+    """Forge's exchange closed while its run worked; the answer came; its announcement is being said."""
+    (row,) = h._requests.items
+    clock.t += h_mod.MEET_FOLLOWUP_S
+    await h.tick()
+    await settle(h)
+    answer(h, row.run_id, "forge", text)
+    quiet(h)
+    clock.t += h_mod.MEET_QUIET_S + h_mod.gate.ANNOUNCE_QUIET
+    await h.tick()
+    await settle(h)
+    assert h._voice is not None and h._voice.path == "announce"
+    h.on_agent_state("forge", "speaking")
+    h.on_agent_said("forge", "Three PRs are open.")
+    return row
+
+
+async def test_its_own_person_interrupting_an_announcement_keeps_the_rest_in_the_hand_and_the_voice_theirs():
+    """Codex on #3792: left to the model, the remainder had no hand, retry or record."""
+    h, backend, lives, clock = await asked()
+    await announced(h, backend, lives, clock)
+    talks(h, P1)  # its own person: "Forge, what about the closed ones?"
+    await settle(h)
+    assert h._voice is not None and ("interrupt",) not in lives[-1].calls, "the voice stays theirs"
+    assert [n[2] for n in h._news.get("forge", [])] == ["The oldest is two days old."], "the rest, from the cut sentence"
+    h.on_speech(P1, False)
+    quiet(h)
+    clock.t += h_mod.MEET_FOLLOWUP_S + h_mod.MEET_QUIET_S + h_mod.gate.ANNOUNCE_QUIET
+    await h.tick()
+    await settle(h)
+    assert h._voice is not None and h._voice.path == "announce" and "The oldest is two days old." in str(lives[-1].seed)
+
+
+async def test_a_hand_the_agent_said_after_all_is_let_go_not_said_again():
+    h, backend, lives, clock = await asked()
+    await announced(h, backend, lives, clock)
+    talks(h, P1)
+    await settle(h)
+    assert h._news.get("forge")
+    h.on_agent_said("forge", "The oldest is two days old.")  # it went on by itself after the interruption
+    h.on_speech(P1, False)
+    quiet(h)
+    clock.t += h_mod.MEET_FOLLOWUP_S + h_mod.MEET_QUIET_S + h_mod.gate.ANNOUNCE_QUIET
+    await h.tick()
+    await settle(h)
+    assert not h._news.get("forge") and backend.late_answers == []
+    assert len(lives) == 2, "the exchange's voice and the one announcement: no second announcement"
+
+
+async def test_a_per_person_answer_cut_by_its_persons_noise_is_said_once_more_like_a_live_call():
+    """Codex on #3792: the per-person voice took the mixed-meet gate and skipped the Live recovery."""
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    text = "Three PRs are open."
+    answer(h, row.run_id, "forge", text)
+    h.on_agent_said("forge", "Three", interrupted=True)  # their sound stopped it after a word
+    await says(h, P1, "Hello, guys.")  # not for it
+    quiet(h)
+    clock.t += h_mod.CUT_HANDLED_S + h_mod.MEET_QUIET_S
+    await h.tick()
+    await settle(h)
+    resays = [c for c in lives[0].calls if c[0] == "commentary" and c[1].startswith("Your answer was cut off")]
+    assert len(resays) == 1 and h_mod.RESAY.format(answer=text) == resays[0][1]

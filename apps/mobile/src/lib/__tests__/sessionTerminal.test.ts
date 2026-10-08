@@ -136,6 +136,20 @@ describe("createTypist", () => {
     expect(send.mock.calls.map(([data]) => decode(data))).toEqual(["a"]);
   });
 
+  it("sends nothing before the screen has an epoch, and keeps a held Ctrl for later", async () => {
+    let at = -1;
+    const send = jest.fn(async () => {});
+    const it = createTypist({ send, epoch: () => at, canType: () => true, onRefused: jest.fn() });
+    it.setCtrl(true);
+    expect(it.type("c")).toBe(false);
+    await settle();
+    expect(send).not.toHaveBeenCalled();
+    at = 0;
+    expect(it.type("c")).toBe(true);
+    await settle();
+    expect(send.mock.calls.map(([data, epoch]: [string, number]) => [decode(data), epoch])).toEqual([["\x03", 0]]);
+  });
+
   it("sends nothing for someone who may not type", async () => {
     const { it, send } = typist({ canType: () => false });
     expect(it.type("rm -rf /\r")).toBe(false);

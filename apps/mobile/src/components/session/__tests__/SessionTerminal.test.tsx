@@ -86,6 +86,23 @@ describe("SessionTerminal", () => {
     expect(watch).toHaveBeenCalledTimes(1);
   });
 
+  it("says a full session is full, stops asking, and asks again on return", async () => {
+    watch.mockRejectedValue(new ApiError(409, { code: "LOCAL_SESSION_VIEWERS_FULL" }, "This session already has 20 live viewers."));
+    const { rerender } = await render(view());
+    expect(await screen.findByText("This session already has 20 live viewers.")).toBeTruthy();
+    await act(async () => { jest.advanceTimersByTime(WATCH_EVERY_MS * 3 + 30_000); });
+    expect(watch).toHaveBeenCalledTimes(1);
+    // Never the "update its Lightbulb app" line: the Mac is fine.
+    expect(screen.queryByText(/Update its Lightbulb app/)).toBeNull();
+    // Away and back: a seat may have freed.
+    watch.mockResolvedValue(undefined);
+    await rerender(view({ active: false }));
+    await rerender(view({ active: true }));
+    expect(watch.mock.calls).toEqual([["s", true], ["s", true]]);
+    expect(screen.queryByText("This session already has 20 live viewers.")).toBeNull();
+    expect(screen.getByText("Connecting…")).toBeTruthy();
+  });
+
   it("holds frames until the page is ready, then writes them in order", async () => {
     await render(view());
     await emit(frame("history", 0));
@@ -129,9 +146,15 @@ describe("SessionTerminal", () => {
     const onCanType = jest.fn();
     await render(view({ input, admitted: true, onCanType }));
     await fromPage({ t: "ready" });
-    expect(told()[0]).toEqual({ t: "canType", can: true });
-    expect(onCanType).toHaveBeenLastCalledWith(true);
+    // No picture yet: there is no screen epoch to type against, so no keyboard, no key bar, nothing sent.
+    expect(told()[0]).toEqual({ t: "canType", can: false });
+    expect(onCanType).toHaveBeenLastCalledWith(false);
+    expect(screen.queryByLabelText("Terminal keys")).toBeNull();
+    await fromPage({ t: "data", d: "rm" });
+    expect(input).not.toHaveBeenCalled();
     await emit(frame("snapshot", 0, { epoch: 4 }));
+    expect(told().at(-1)).toEqual({ t: "canType", can: true });
+    expect(onCanType).toHaveBeenLastCalledWith(true);
     await fromPage({ t: "data", d: "y" });
     expect(input.mock.calls.map(([data, epoch]) => [atob(data), epoch])).toEqual([["y", 4]]);
   });
@@ -139,6 +162,7 @@ describe("SessionTerminal", () => {
   it("offers the keys a phone lacks; Ctrl holds for the next key", async () => {
     await render(view({ input, admitted: true }));
     await fromPage({ t: "ready" });
+    await emit(frame("snapshot", 0));
     await fireEvent.press(screen.getByLabelText("Escape"));
     await fireEvent.press(screen.getByLabelText("Up arrow"));
     expect(told().slice(-2)).toEqual([{ t: "key", key: "esc" }, { t: "key", key: "up" }]);
@@ -153,6 +177,7 @@ describe("SessionTerminal", () => {
   it("pastes the clipboard through the terminal", async () => {
     await render(view({ input, admitted: true }));
     await fromPage({ t: "ready" });
+    await emit(frame("snapshot", 0));
     await fireEvent.press(screen.getByLabelText("Paste"));
     await act(async () => { for (let i = 0; i < 10; i += 1) await Promise.resolve(); });
     expect(told().at(-1)).toEqual({ t: "paste", d: "from clipboard" });
@@ -163,6 +188,7 @@ describe("SessionTerminal", () => {
     input.mockRejectedValue(new ApiError(409, { code: "LOCAL_SESSION_UNSUPPORTED" }));
     await render(view({ input, admitted: true, onCanType }));
     await fromPage({ t: "ready" });
+    await emit(frame("snapshot", 0));
     await fromPage({ t: "data", d: "a" });
     expect(onCanType).toHaveBeenLastCalledWith(false);
     expect(told().at(-1)).toEqual({ t: "canType", can: false });
@@ -181,14 +207,35 @@ describe("SessionTerminal", () => {
     await render(view());
     await fromPage({ t: "ready" });
     await emit(frame("snapshot", 0));
+    expect(screen.queryByText("Connecting…")).toBeNull();
     mockInjected.length = 0;
+    onLive.mockClear();
     await act(async () => { mockEnded?.(); });
     expect(watch.mock.calls.at(-1)).toEqual(["s", true]);
+    // The new page is empty: it says so, and after 30 s with no picture it says that too.
+    expect(onLive).toHaveBeenLastCalledWith(false);
+    expect(screen.getByText("Connecting…")).toBeTruthy();
     await emit(frame("snapshot", 1));
     expect(mockInjected).toEqual([]);
     await fromPage({ t: "ready" });
     // A new page is empty: it is told everything again, and the picture starts over.
     expect(told().map((m) => m.t)).toEqual(["canType", "mode", "draw"]);
     expect((told()[2].steps as { fresh: boolean }[])[0].fresh).toBe(true);
+  });
+
+  it("goes read-only when the page restarts, until its first picture", async () => {
+    await render(view({ input, admitted: true }));
+    await fromPage({ t: "ready" });
+    await emit(frame("snapshot", 0));
+    expect(screen.getByLabelText("Terminal keys")).toBeTruthy();
+    await act(async () => { mockEnded?.(); });
+    expect(screen.queryByLabelText("Terminal keys")).toBeNull();
+    await fromPage({ t: "ready" });
+    await fromPage({ t: "data", d: "x" });
+    expect(input).not.toHaveBeenCalled();
+    await act(async () => { jest.advanceTimersByTime(30_000); });
+    expect(screen.getByText(/Nothing has arrived from the Mac in 30 seconds/)).toBeTruthy();
+    await emit(frame("snapshot", 1));
+    expect(screen.getByLabelText("Terminal keys")).toBeTruthy();
   });
 });

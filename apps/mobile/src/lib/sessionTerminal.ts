@@ -92,9 +92,11 @@ export function createTypist({ send, epoch, canType, onRefused }: {
     type(raw: string): boolean {
       let data = dropMouseReports(dropProbeReplies(raw));
       if (!data || !canType()) return false;
+      const at = epoch();
+      // No screen yet: the input route refuses an epoch below 0, and half a command must not land later.
+      if (at < 0) return false;
       const used = ctrl;
       if (ctrl) { data = withCtrl(data); ctrl = false; }
-      const at = epoch();
       for (const part of chunkInput(new TextEncoder().encode(data))) {
         sending = sending.then(() => (canType() ? send(toBase64(part), at) : undefined)).catch((e) => { if (inputRefused(e)) onRefused(); });
       }

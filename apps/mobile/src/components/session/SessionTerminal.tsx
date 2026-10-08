@@ -58,7 +58,9 @@ export function SessionTerminal({ session, onEvent, watch, onLive, onCanType, in
   // Counts the page's lives: iOS can end a WebView's process, and the page that replaces it is empty.
   const [run, setRun] = useState(0);
   const key = `${session.sessionId}:${session.generation}`;
-  const canType = !!input && admitted && refusedFor !== key;
+  // Read-only until this page has a picture: before the first snapshot the feed has no screen epoch
+  // (-1, which the input route refuses), so keys typed during "Connecting…" would be lost.
+  const canType = !!input && admitted && refusedFor !== key && seen;
   useEffect(() => { onCanType?.(canType); }, [canType, onCanType]);
   const setLive = useCallback((next: boolean) => { setLiveState(next); onLive(next); }, [onLive]);
 
@@ -91,16 +93,25 @@ export function SessionTerminal({ session, onEvent, watch, onLive, onCanType, in
   const screenKey = `${session.sessionId}:${kept}`;
   const asked = useRef("");
   const refused = useRef("");
+  // The backend refused a new viewer: this session is full (LOCAL_SESSION_VIEWERS_FULL), with its message.
+  const [full, setFull] = useState<string | null>(null);
   useEffect(() => {
-    if (!active) { asked.current = ""; return; }
+    // Away: a seat may free meanwhile, so a full session is asked again on return. No access stays refused.
+    if (!active) { asked.current = ""; if (full !== null) { refused.current = ""; setFull(null); } return; }
     if (refused.current === screenKey) return;
     const ping = (fresh: boolean) => void watch(session.sessionId, fresh).catch((e) => {
-      if (e instanceof ApiError && (e.status === 403 || e.status === 404)) { refused.current = screenKey; setLive(false); }
+      if (!(e instanceof ApiError)) return;
+      // The session already has its most live viewers: say so, and stop asking (no retry loop).
+      const isFull = e.status === 409 && (e.body as { code?: string } | null)?.code === "LOCAL_SESSION_VIEWERS_FULL";
+      if (isFull || e.status === 403 || e.status === 404) { refused.current = screenKey; setLive(false); }
+      if (isFull) setFull(e.message);
     });
     ping(asked.current !== screenKey);
     asked.current = screenKey;
     const timer = setInterval(() => { if (refused.current !== screenKey) ping(false); }, WATCH_EVERY_MS);
     return () => clearInterval(timer);
+    // `full` is read only on the way out (away), never a reason to ask again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, run, session.sessionId, screenKey, watch, setLive]);
   // No frame for 30 s of watching: a Mac whose app predates terminal frames never sends one.
   useEffect(() => {
@@ -126,14 +137,14 @@ export function SessionTerminal({ session, onEvent, watch, onLive, onCanType, in
     }
   }, [tell, typist]);
   // A new page starts empty: a new feed, and a fresh ask for the picture.
-  const reloaded = useCallback(() => { page.current = { ready: false, queued: [] }; asked.current = ""; setSeen(false); setRun((n) => n + 1); }, []);
+  const reloaded = useCallback(() => { page.current = { ready: false, queued: [] }; asked.current = ""; setSeen(false); setLive(false); setRun((n) => n + 1); }, [setLive]);
   const paste = useCallback(() => void Clipboard.getStringAsync().then((text) => { if (text) tell({ t: "paste", d: text }); }).catch(() => {}), [tell]);
 
   return (
     <View style={[styles.frame, { paddingBottom: bottomInset }]} accessibilityLabel={canType ? "Live terminal" : "Live terminal (view only)"}>
       <View style={styles.sizes} accessibilityRole="radiogroup" accessibilityLabel="Terminal size">
         {!live && <Text style={styles.wait} maxFontSizeMultiplier={MAX_SCALE} accessibilityLiveRegion="polite" numberOfLines={2}>
-          {seen ? "Reconnecting…" : silent ? "Nothing has arrived from the Mac in 30 seconds. Update its Lightbulb app to watch this session." : "Connecting…"}
+          {full ?? (seen ? "Reconnecting…" : silent ? "Nothing has arrived from the Mac in 30 seconds. Update its Lightbulb app to watch this session." : "Connecting…")}
         </Text>}
         <View style={styles.spacer} />
         {(["fit", "readable"] as const).map((option) => (

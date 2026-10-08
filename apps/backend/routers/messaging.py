@@ -220,6 +220,24 @@ async def list_workspace_sessions(
     return await local_sessions.list_workspace_sessions(auth, include_ended=include_ended)
 
 
+class SessionsRemoved(ContractModel):
+    removed: int
+
+
+@router.delete("/messaging/sessions", response_model=SessionsRemoved)
+async def remove_ended_local_sessions(ended: bool = Query(...), auth: AuthContext = Depends(get_current_user)):
+    """The caller takes every ended session of their own off the lists. Only `ended=true` exists."""
+    if not ended:
+        raise service.ApiProblem("INVALID_REQUEST", "Only ended sessions can be removed.")
+    return SessionsRemoved(removed=await local_sessions.remove_ended_sessions(auth))
+
+
+@router.delete("/messaging/sessions/{session_id}", status_code=204)
+async def remove_local_session(session_id: str, auth: AuthContext = Depends(get_current_user)):
+    """Owner-only: take one ended session off every list. 409 while it is live."""
+    await local_sessions.remove_session(auth, session_id)
+
+
 # Sessions are a workspace thing, not a room's (owner ruling 2026-09-24): any member reads,
 # only the session's own human commands. Agents keep their room-granted routes above.
 @router.get("/messaging/sessions/{session_id}", response_model=local_sessions.LocalSession)

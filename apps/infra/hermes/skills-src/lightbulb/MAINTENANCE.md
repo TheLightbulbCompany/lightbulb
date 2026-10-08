@@ -129,6 +129,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  apps/desktop/src-tauri/src/local_sessions/screen.rs (attach terminals);
                                  apps/desktop/src-tauri/src/local_sessions.rs (track);
                                  apps/frontend/src/components/messaging/{LocalSessionPanel,NativeSessionTranscript,RoomDirectory,SessionFocus,RoomComposer}.tsx;
+                                 apps/frontend/src/components/messaging/SessionRemoveButton.tsx + local_sessions.remove_session ("Remove from list");
                                  packages/shared/src/messaging/mentions.ts (human session tokens);
                                  packages/claude-plugin/lightbulb/skills/lightbulb-session-sharing/SKILL.md; SKILL.md (sessions routing row).
                                  Optional adapter/tool availability requires the promoted Hermes image; docs are not deployment evidence.

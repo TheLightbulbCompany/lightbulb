@@ -59,18 +59,20 @@ removed from the saved copy at your next save.
   `gh repo clone OWNER/REPO "$HERMES_HOME/.run/REPO" -- --filter=blob:none`
   (or `--depth 1`). Without the folder argument it clones into the current
   folder, which is this conversation's.
-- Branches get worktrees, not second clones. A worktree lives under
-  `$HERMES_HOME/.scratch/wt`, which is never saved (and, unlike `/tmp`, your
-  file tools can write there), in a numbered slot you reuse. Your shell starts in the
-  conversation's folder, so name the clone in every worktree command
-  (`C="$HERMES_HOME/.run/REPO"`):
-  `git -C "$C" fetch origin main` then
-  `git -C "$C" worktree add "$HERMES_HOME/.scratch/wt/REPO-1" -b BRANCH origin/main`.
-  `.scratch/` is never saved, so the checkout cannot grow your workspace, and reusing slot
-  names stops git's own record of worktrees (kept inside the clone, which IS
-  saved) from growing with every branch. A slot is gone after a cold start:
-  keep the branch pushed, then `git -C "$C" worktree prune` and
-  `git -C "$C" worktree add "$HERMES_HOME/.scratch/wt/REPO-1" BRANCH` to get it back.
+- Branches get a worktree, not a second clone, under `$HERMES_HOME/.scratch/wt`
+  (unlike `/tmp`, your file tools can write there). `.scratch/` is never saved,
+  but it is on the one ~4 GB disk every teammate shares, and it is emptied only
+  when the microVM is recycled; your shell can write `/tmp`, which is the same
+  disk. So keep **ONE worktree in total**, and remove it when the task ends, not
+  when the PR merges. Your shell starts in the conversation's folder, so name the
+  clone in every command (`C="$HERMES_HOME/.run/REPO"`):
+  `git -C "$C" fetch origin main`, then
+  `git -C "$C" worktree add "$HERMES_HOME/.scratch/wt/REPO" -b BRANCH origin/main`;
+  at the end, `git -C "$C" worktree remove --force "$HERMES_HOME/.scratch/wt/REPO"`.
+  After a cold start it is gone: keep the branch pushed, `git -C "$C" worktree prune`,
+  and add it again from `BRANCH`.
+- In TheLightbulbCompany/lightbulb, never run a package install or a test suite
+  here (one `pnpm install` is 2.4 GB): push the branch and read the CI result.
 - `node_modules`, any `*venv` folder (`.venv`, `.docx-venv`), `.next`, `dist`
   and `build` are never saved: rerun `npm ci` / `uv sync` after a cold start.
   After a cold start only this conversation's `work/` folder is on disk; the

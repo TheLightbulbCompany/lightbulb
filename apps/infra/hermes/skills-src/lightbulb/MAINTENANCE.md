@@ -45,6 +45,11 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               `.scratch/` for worktrees <- the upstream base image's HERMES_WRITE_SAFE_ROOT=/opt/data
                                  (write_file/patch refuse /tmp, which is why the old "/tmp/wt" rule never worked);
                                  sync.py SCRATCH_DIR in EXCLUDE_GLOBS (never synced); save_profile (only the profile dir persists).
+                              ONE worktree, removed at task end, no installs/test suites for the lightbulb repo
+                                 (SKILL.md scripts bullet + software-projects.md "Keep the workspace small"):
+                                 .scratch/ and /tmp share the microVM's ~4 GB disk across teammates until it is
+                                 recycled; numbered slots filled it twice for the founder's engineering agent
+                                 (2026-10-07/08). Mirrors bridge/turn.py `_repo_rule`; edit both together.
   - gog API-not-enabled ..... references/integrations.md ("Google Workspace (`gog`)": quote the error and name
                               the API to enable before any browser workaround)
                               <- owner request 2026-10-05. No code enforces it (Google is BYO: the Cloud

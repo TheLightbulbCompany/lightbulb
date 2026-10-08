@@ -35,8 +35,8 @@ def fixture(name: str) -> dict:
 def _hints_drained_inline(request, monkeypatch):
     """publish_resources_changed fans out in a background task since 2026-10-08; these tests assert
     the hint right after the frame, so drain it inline for them (the off-the-frame test opts out)."""
-    if "off_the_callers_frame" in request.node.name:
-        return
+    if "off_the_callers_frame" in request.node.name or "coalesce" in request.node.name:
+        return  # these two test the background behaviour itself
     import asyncio as _asyncio
 
     from core.services import local_session_relay as _relay
@@ -2560,3 +2560,28 @@ async def test_a_session_hint_fans_out_off_the_callers_frame(monkeypatch):
     await asyncio.wait_for(finished.wait(), timeout=1)  # and the hint still went out
     await asyncio.sleep(0)
     assert not relay._hint_tasks  # the finished task released itself
+
+
+@pytest.mark.asyncio
+async def test_hints_for_one_person_coalesce_while_a_fan_out_is_running(monkeypatch):
+    """Codex on #3909: a streaming burst (one hint per session per second) must not pile up
+    detached fan-outs; at most one runs per (owner, human, transcript) with one follow-up."""
+    import asyncio
+
+    from core.services import local_session_relay as relay
+
+    calls, gate = [], asyncio.Event()
+
+    async def publish(owner, event):
+        calls.append(event["payload"])
+        await gate.wait()
+
+    monkeypatch.setattr("core.services.live_events.publish_owner_users", publish)
+    for _ in range(5):
+        await relay.publish_resources_changed("org_1", "user_1")
+    await asyncio.sleep(0)
+    assert len(calls) == 1 and len(relay._hint_tasks) == 1  # one in flight, the other four coalesced
+    gate.set()
+    await asyncio.gather(*list(relay._hint_tasks))
+    assert len(calls) == 2  # exactly one follow-up carried the coalesced hints
+    assert "org_1" not in {k[0] for k in relay._hint_running}

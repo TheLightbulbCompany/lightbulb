@@ -314,6 +314,10 @@ async def _sender_label(command: dict, owner: str | None) -> dict | None:
 
 #: In-flight hint fan-outs, referenced so asyncio cannot garbage-collect them before they finish.
 _hint_tasks: set[asyncio.Task[None]] = set()
+#: One fan-out per (owner, human, transcript) at a time: a hint that arrives while one is running
+#: marks it dirty and the running task publishes once more at the end, so a streaming burst
+#: (one call per session per second) collapses to at most one in-flight + one follow-up per key.
+_hint_running: dict[tuple[str, str, bool], bool] = {}
 
 
 async def publish_resources_changed(owner: str, human: str, *, transcript: bool = False) -> None:
@@ -328,16 +332,28 @@ async def publish_resources_changed(owner: str, human: str, *, transcript: bool 
     """
     from core.services.live_events import publish_owner_users
 
+    key = (owner, human, transcript)
+    if key in _hint_running:
+        _hint_running[key] = True  # dirty: the running fan-out sends one more at the end
+        return
+    _hint_running[key] = False
     event = make_live_event(
         "workspace.sessions.changed", {"humanUserId": human, **({"transcript": True} if transcript else {})}
     )
 
     async def fan_out() -> None:
         try:
-            await publish_owner_users(owner, event)
-        except Exception:
-            # Hints are expendable; authorized HTTP polling repairs lost hints.
-            logger.warning("Workspace session hint failed")
+            while True:
+                try:
+                    await publish_owner_users(owner, event)
+                except Exception:
+                    # Hints are expendable; authorized HTTP polling repairs lost hints.
+                    logger.warning("Workspace session hint failed")
+                if not _hint_running.get(key):
+                    break
+                _hint_running[key] = False
+        finally:
+            _hint_running.pop(key, None)
 
     # Off the caller's frame: the fan-out is one publish per workspace member (51 members = 2.4-3.2 s
     # of a register frame on dev, 2026-10-08), and the desktop's ack deadline is 10 s. The task is

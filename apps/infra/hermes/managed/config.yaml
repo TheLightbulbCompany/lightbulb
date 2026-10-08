@@ -63,11 +63,3 @@ compression:
   # roughly 100k tokens). This compacts at a predictable per-call size instead, under that bound
   # with room for the tool schemas and a turn's own tool output.
   threshold_tokens: 60000
-  # Hermes's deterministic, no-LLM tool-result prune (context_compressor.prune_tool_results_only):
-  # after a tool call that did not compact, tool results over 8000 chars outside the last 20
-  # messages become one-line summaries. Upstream default 0 = off (config_defaults.py). 40000 sits
-  # under the bridge's off-path compaction (0.85 x threshold = 51000) and the inline one (60000), so
-  # a tool-heavy room sheds old output before it pays a 67-103 s summary call. Hermes commits a prune
-  # only when it reclaims >= 4096 tokens, so the prompt-cache breaks stay episodic. Spoken turns
-  # never prune: the bridge turns compression_enabled off, and the prune sits behind it.
-  proactive_prune_tokens: 40000

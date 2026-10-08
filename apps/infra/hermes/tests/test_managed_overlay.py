@@ -23,11 +23,7 @@ def test_recorded_sessions_get_no_auto_title_and_no_liveness_watchdog():
 
 def test_a_room_transcript_compacts_under_the_gates_paid_request_bound():
     """Hermes's default (75% of a 200k window) is past the gate's 400 KB paid-mode 413."""
-    compression = yaml.safe_load(OVERLAY.read_text())["compression"]
-    assert compression["threshold_tokens"] == 60000
-    # The no-LLM tool-result prune fires first, under the bridge's off-path compaction share.
-    from bridge import turn
-    assert compression["proactive_prune_tokens"] < turn.OFF_PATH_COMPACT_RATIO * compression["threshold_tokens"]
+    assert yaml.safe_load(OVERLAY.read_text())["compression"]["threshold_tokens"] == 60000
 
 
 def test_compaction_summaries_think_lighter_on_whatever_model_the_profile_pins():

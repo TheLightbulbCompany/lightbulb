@@ -1645,7 +1645,24 @@ struct RegistrationState {
     successor: Option<NativeSession>,
 }
 
+/// Whether a folder this mirror is known to work in (its listing's, its last hook's) is outside
+/// the approved folders.
+fn outside_now(mirror: &Mirror, approved: &[PathBuf]) -> bool {
+    let native = mirror.registration.successor.as_ref().unwrap_or(&mirror.native);
+    [native.cwd.as_deref(), mirror.hook_cwd.as_deref()].into_iter().flatten().any(|cwd| !in_approved_folder(cwd, approved))
+}
+
 impl Mirror {
+    /// The one definition of "this session may be seen and may act right now": it is not
+    /// withheld, and every folder it is known to work in is inside `approved`, the approved
+    /// folders read at this moment. `unshared` alone is a cached answer: a tick, a pass or a
+    /// hook sets it, and a caller can run between a folder leaving the list and any of them.
+    /// Behind every last-moment check: upload, command and approval dispatch, typed input and
+    /// watch, terminal frames, the band, the session's own tools.
+    fn may_act(&self, approved: &[PathBuf]) -> bool {
+        !self.withheld() && !outside_now(self, approved)
+    }
+
     /// Nothing of this session leaves the Mac and nothing from the workspace reaches it: its
     /// folder is not approved (`unshared`), or nobody can name its folder yet (a mirror stored by
     /// a build that did not record it, until the first listing does). The one predicate behind

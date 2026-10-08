@@ -20,8 +20,10 @@ pub(super) struct Caller {
     pub approval_waiting: bool,
 }
 
-/// The one mirrored, live Claude session whose process is `pid`.
-fn resolve(scope: &Path, pid: u32) -> Option<Caller> {
+/// The one mirrored, live Claude session whose process is `pid`, shared right now: `approved` is
+/// the approved folders read at this moment (`Mirror::may_act`), so the band changes when a
+/// folder leaves them, not when the relay has marked the mirror.
+fn resolve(scope: &Path, pid: u32, approved: &[PathBuf]) -> Option<Caller> {
     let me = process(pid).ok()?;
     let mut found = Vec::new();
     for entry in fs::read_dir(scope).ok()?.flatten() {
@@ -32,7 +34,7 @@ fn resolve(scope: &Path, pid: u32) -> Option<Caller> {
         }
         let Ok(mirror) = private_read::<Mirror>(&path) else { continue };
         if mirror.ended_at.is_some()
-            || mirror.withheld()
+            || !mirror.may_act(approved)
             || mirror.native.restriction.is_some()
             || mirror.native.provider != "claude"
             || mirror.native.process != me
@@ -68,7 +70,8 @@ fn unshared_folder(scope: &Path, home: &Path, pid: u32, approved: &[PathBuf]) ->
             continue;
         }
         let Ok(mirror) = private_read::<Mirror>(&path) else { continue };
-        if mirror.native.provider == "claude" && mirror.native.conversation == conversation && mirror.native.process == me && !mirror.unshared {
+        let unshared = mirror.unshared || outside_now(&mirror, approved);
+        if mirror.native.provider == "claude" && mirror.native.conversation == conversation && mirror.native.process == me && !unshared {
             return None;
         }
     }
@@ -178,9 +181,10 @@ async fn reply(socket: &mut UnixStream, status: &str, body: &Value) {
 
 async fn answer(mut socket: UnixStream, scope: PathBuf, enrollment: Enrollment, identity: crate::keychain::DeviceIdentity, client: reqwest::Client) {
     let pid = native_tools::peer_pid(&socket).ok();
-    let Some(caller) = pid.and_then(|pid| resolve(&scope, pid)) else {
+    let approved = crate::session_start::approved_now();
+    let Some(caller) = pid.and_then(|pid| resolve(&scope, pid, &approved)) else {
         let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-        return match pid.and_then(|pid| unshared_folder(&scope, &home, pid, &crate::session_start::approved_now())) {
+        return match pid.and_then(|pid| unshared_folder(&scope, &home, pid, &approved)) {
             Some(folder) => answer_unshared(&mut socket, folder).await,
             None => reply(&mut socket, "404 Not Found", &json!({"error":"not_shared"})).await,
         };
@@ -320,13 +324,22 @@ mod tests {
         mirror.unshared = false;
         mirror.persist(&file).unwrap();
         assert_eq!(unshared_folder(&scope, &home, pid, &roots), None);
-        assert!(resolve(&scope, pid).is_none(), "and no shared state without a session id");
+        assert!(resolve(&scope, pid, &roots).is_none(), "and no shared state without a session id");
+        // Shared and registered, in a folder that left the list a moment ago; the relay has not
+        // marked the mirror yet. The band changes now: no shared state, and the offer.
+        mirror.session_id = Some("session-a".into());
+        mirror.native.cwd = Some(scratch.clone());
+        mirror.persist(&file).unwrap();
+        let before = vec![fs::canonicalize(&scratch).unwrap()];
+        assert!(resolve(&scope, pid, &before).is_some(), "while the folder is approved it is the shared band");
+        assert!(resolve(&scope, pid, &roots).is_none());
+        assert_eq!(unshared_folder(&scope, &home, pid, &roots).as_deref(), Some(scratch.as_path()));
     }
 
     #[test]
     fn mod_socket_resolves_no_session_for_a_pid_that_is_not_mirrored() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(resolve(dir.path(), std::process::id()).is_none());
+        assert!(resolve(dir.path(), std::process::id(), &[PathBuf::from("/")]).is_none());
     }
 
     #[test]
@@ -338,12 +351,12 @@ mod tests {
         mirror.session_id = Some("session-a".into());
         let path = scope.path().join(format!("{}.json", "a".repeat(64)));
         mirror.persist(&path).unwrap();
-        let caller = resolve(scope.path(), std::process::id()).unwrap();
+        let caller = resolve(scope.path(), std::process::id(), &[PathBuf::from("/")]).unwrap();
         assert_eq!((caller.session_id.as_str(), caller.generation.as_str()), ("session-a", "gen-1"));
         assert!(!caller.approval_waiting);
         mirror.native.restriction = Some("restricted".into());
         mirror.persist(&path).unwrap();
-        assert!(resolve(scope.path(), std::process::id()).is_none(), "a restricted session gets no door");
+        assert!(resolve(scope.path(), std::process::id(), &[PathBuf::from("/")]).is_none(), "a restricted session gets no door");
     }
 
     #[test]

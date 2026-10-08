@@ -83,13 +83,6 @@ impl Rpc {
 /// checks the envelope size before validating, so the byte budget bites first.
 const HEARTBEAT_SESSIONS_MAX: usize = 24;
 
-/// Whether a folder this mirror is known to work in (its listing's, its last hook's) is outside
-/// the approved folders.
-fn outside_now(mirror: &Mirror, approved: &[PathBuf]) -> bool {
-    let native = mirror.registration.successor.as_ref().unwrap_or(&mirror.native);
-    [native.cwd.as_deref(), mirror.hook_cwd.as_deref()].into_iter().flatten().any(|cwd| !in_approved_folder(cwd, approved))
-}
-
 /// One discovery pass: the captured sessions, and every conversation the Claude listing named.
 type Discovered = (Vec<NativeSession>, BTreeSet<String>);
 
@@ -728,7 +721,7 @@ impl Host {
     /// Whether this mirror takes anything from the workspace right now: read from the approved
     /// folders as they are at this moment, not as the last tick or pass saw them.
     fn refuses_input(&self, mirror: &Mirror) -> bool {
-        mirror.withheld() || outside_now(mirror, &(self.approved)())
+        !mirror.may_act(&(self.approved)())
     }
 
     /// The last check before something reaches a session's process. `fresh`: the session as it
@@ -742,7 +735,7 @@ impl Host {
             return Ok(true);
         };
         let moved = fresh.cwd.as_deref().is_none_or(|cwd| !in_approved_folder(cwd, &approved));
-        if mirror.withheld() || moved || outside_now(mirror, &approved) {
+        if moved || !mirror.may_act(&approved) {
             self.unshare(key)?;
             return Ok(true);
         }
@@ -2551,7 +2544,7 @@ fn ended_recovery_keys(mirrors: &BTreeMap<String, Mirror>) -> BTreeSet<String> {
 /// flag alone: the flag is set by a tick, a pass or a hook, and this can run between a folder
 /// leaving the list and any of them. A mirror whose folder is outside reads and sends nothing.
 fn capture_batch(mirror: &mut Mirror, approved: &[PathBuf]) -> Result<Option<Value>> {
-    if outside_now(mirror, approved) {
+    if !mirror.may_act(approved) {
         return Ok(None);
     }
     mirror.next_batch().inspect_err(|reason| {

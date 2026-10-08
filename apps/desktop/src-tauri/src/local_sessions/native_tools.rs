@@ -98,7 +98,9 @@ struct Source {
     item_id: Option<String>,
 }
 
-fn resolve_source(scope: &Path, peer: u32, meta: &Value) -> Result<Source> {
+/// `approved`: the approved folders read at this moment. A session whose folder left them is no
+/// source, whether or not the relay has marked it yet (`Mirror::may_act`).
+fn resolve_source(scope: &Path, peer: u32, meta: &Value, approved: &[PathBuf]) -> Result<Source> {
     let parent = parent(peer)?;
     let thread = meta["threadId"]
         .as_str()
@@ -123,7 +125,7 @@ fn resolve_source(scope: &Path, peer: u32, meta: &Value) -> Result<Source> {
             continue;
         };
         if mirror.ended_at.is_some()
-            || mirror.withheld()
+            || !mirror.may_act(approved)
             || mirror.native.restriction.is_some()
             || process(mirror.native.process.pid).ok().as_ref() != Some(&mirror.native.process)
         {
@@ -172,7 +174,7 @@ fn same_source_turn(expected: &Source, current: &Source) -> bool {
 /// reads the rollout's exact turn ID. Wake that existing verified sweep, then
 /// wait for its mirror update rather than sending a tool with a null turn.
 async fn source_with_turn(scope: &Path, peer: u32, meta: &Value) -> Result<(Source, bool)> {
-    let initial = resolve_source(scope, peer, meta)?;
+    let initial = resolve_source(scope, peer, meta, &crate::session_start::approved_now())?;
     if initial.provider != "codex" || initial.active_turn.is_some() {
         return Ok((initial, false));
     }
@@ -183,7 +185,7 @@ async fn source_with_turn(scope: &Path, peer: u32, meta: &Value) -> Result<(Sour
     let deadline = tokio::time::Instant::now() + Duration::from_secs(7);
     while tokio::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(200)).await;
-        let current = resolve_source(scope, peer, meta)?;
+        let current = resolve_source(scope, peer, meta, &crate::session_start::approved_now())?;
         if current.session_id != initial.session_id
             || current.generation != initial.generation
             || current.conversation != initial.conversation
@@ -252,6 +254,9 @@ async fn answer(
         )
         .map_err(|_| "device authentication unavailable")?;
         let tool = request["tool"].as_str().unwrap_or("");
+        // The last moment before anything is asked of the workspace for this session: its
+        // folder may have left the approved folders while the turn was awaited above.
+        resolve_source(&scope, peer, &request["meta"], &crate::session_start::approved_now())?;
         if matches!(tool, "find_rooms" | "find_sessions" | "read_messages") {
             return read(&client, &token, tool, &request["arguments"], &source.session_id).await;
         }
@@ -287,7 +292,7 @@ async fn answer(
                 && tokio::time::Instant::now() < retry_until
             {
                 tokio::time::sleep(Duration::from_millis(250)).await;
-                let current = resolve_source(&scope, peer, &request["meta"])?;
+                let current = resolve_source(&scope, peer, &request["meta"], &crate::session_start::approved_now())?;
                 if !same_source_turn(&source, &current) {
                     return Err("Codex session changed while syncing".into());
                 }
@@ -389,10 +394,14 @@ mod tests {
         assert!(mirror.native.holder.is_none() && mirror.native.restriction.is_none(), "a plain, verified terminal session");
         mirror.persist(&scope.path().join(format!("{}.json", "a".repeat(64)))).unwrap();
         let mut mcp = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
-        let source = resolve_source(scope.path(), mcp.id(), &json!({})).map(|s| s.session_id);
+        let everywhere = [PathBuf::from("/")];
+        let source = resolve_source(scope.path(), mcp.id(), &json!({}), &everywhere).map(|s| s.session_id);
+        // Its folder left the approved folders a moment ago; the relay has not marked it yet.
+        let revoked = resolve_source(scope.path(), mcp.id(), &json!({}), &[]).map(|s| s.session_id);
         mcp.kill().unwrap();
         mcp.wait().unwrap();
         assert_eq!(source.unwrap(), "session-a", "no holder needed to be this session's MCP source");
+        assert!(revoked.is_err(), "a session whose folder is not approved now reads and sends nothing through its tools");
     }
 
     #[test]

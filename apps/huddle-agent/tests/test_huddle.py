@@ -382,6 +382,22 @@ async def summoned(name="Forge", drive=False):
     return h, room, backend, lives, clock, log
 
 
+def spoken(h, live):
+    """A mouth finishes what it has been handed: every unit of every `say` not yet reported is reported said."""
+    done = getattr(live, "reported", 0)
+    live.reported = len(live.calls)
+    for c in live.calls[done:]:
+        for unit in h_mod.units(c[1]) if c[0] == "say" else ():
+            h.on_agent_said(live.agent_id, unit)
+
+
+async def pause(h, clock, seconds=None):
+    """The room stays quiet long enough for an answer to start (the speech gate looks on the tick, too)."""
+    clock.t += h_mod.MEET_QUIET_S if seconds is None else seconds
+    await h.tick()
+    await settle(h)
+
+
 def packet(*events):
     return json.dumps({"events": list(events)}).encode()
 

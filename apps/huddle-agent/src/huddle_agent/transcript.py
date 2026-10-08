@@ -398,6 +398,13 @@ def trails_off(text: str) -> bool:
     return t.endswith(("...", "…")) or (bool(words) and all(w in _TRAIL_WORDS for w in words))
 
 
+def only_name(text: str, agents: list[dict]) -> str | None:
+    """The line is an agent's name and nothing else ("Friday.", "Um, Friday..."): that agent. The speaker has
+    called on it and not yet said what for. "Friday?" is a question put to it, not this."""
+    words = [w for w in re.findall(r"[a-z0-9']+", text.lower()) if w not in _TRAIL_WORDS and w not in _LEADS]
+    return None if text.rstrip().endswith("?") else _agent_named(" ".join(words), agents)
+
+
 def pause(text: str) -> bool:
     """A halt and nothing more ("hold on", "wait, um"): the person wants the floor, not an answer."""
     return halt(text) and not real_speech(_HALT.sub(" ", text.lower()))
@@ -417,7 +424,15 @@ def _norm(text: str) -> str:
     return " ".join(re.sub(r"[^\w\s,']", " ", text).split())
 
 
-def _stop_match(text: str) -> re.Match | None:
+def _stop_match(text: str, agents: list[dict] | None = None) -> re.Match | None:
+    """The stop in a line. The whole line is tried first. A last sentence that is a stop to an agent by name
+    counts too ("Perfect. Friday, stop.", 10-07 rig: "perfect friday" was read as the name and nobody was
+    stopped). A last sentence that names nobody does not: "We tried it. Never mind." is people talking."""
+    last = re.split(r"(?<=[.!?;])\s+", text.strip())[-1]
+    if agents and last != text.strip():
+        m = _STOP.match(_norm(last))
+        if m and _agent_named(m.group(1) or m.group(2), agents):
+            return m
     return _STOP.match(_norm(text))
 
 
@@ -429,7 +444,7 @@ def stop_request(text: str, agents: list[dict] | None = None) -> bool:
     """The whole utterance, after an optional name, is stop / never mind / cancel that|it / forget it, or a
     dismissal ("go away", "get out of here"). A dismissal with a word before it is one only when that word
     names an agent in `agents`: "I leave" and "we go away" are people talking."""
-    m = _stop_match(text)
+    m = _stop_match(text, agents)
     if m is None:
         return False
     said = m.group(1) or m.group(2)
@@ -444,7 +459,7 @@ def stop_bare(text: str) -> bool:
 
 def stop_target(text: str, agents: list[dict]) -> str | None:
     """The agent a stop names, by its exact name: naming is enough for a stop, default names included."""
-    m = _stop_match(text)
+    m = _stop_match(text, agents)
     return _agent_named(m and (m.group(1) or m.group(2)), agents)
 
 

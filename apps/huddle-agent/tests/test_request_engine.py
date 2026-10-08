@@ -6,7 +6,7 @@ import copy
 import pytest
 
 from huddle_agent.backend import BackendError
-from test_huddle import TEAM, answer, make, say, settle, talks
+from test_huddle import TEAM, answer, make, say, settle, spoken, talks
 
 LINE = (
     "Pulse, an update on the go-to-market strategy. Forge, what our PRs look like. "
@@ -204,6 +204,7 @@ async def test_in_a_meeting_a_requested_answer_is_spoken_not_posted_at_once():
     await settle(h)
     answer(h, run_of(backend, "forge"), "forge", "Three PRs are open")
     assert backend.late_answers == []
+    spoken(h, lives[-1])  # Pulse has said who is on what: one agent speaks at a time
     await quiet(h, clock, h_mod.MEET_QUIET_S)  # a real pause, not Live's breath
     assert lives[-1].agent_id == "forge"
 

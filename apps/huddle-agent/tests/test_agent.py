@@ -163,25 +163,18 @@ def _driven():
     from unittest.mock import MagicMock
 
     session, voice = DrivenSession(), DrivenAgent()
-    said, floor = [], {"clear": True}
+    said = []
     live = agent._DrivenLive(
-        "forge", session, voice, MagicMock(), persona="You are Forge.",
-        said=lambda text, interrupted: said.append((text, interrupted)), clear=lambda: floor["clear"],
+        "forge", session, voice, MagicMock(), said=lambda text, interrupted: said.append((text, interrupted))
     )
-    live.written, live.said, live.floor = [], said, floor  # each event a line was written from; its reports
-
-    async def write(event):
-        live.written.append(event)
-        return f"line {len(live.written)}"
-
-    live._write = write
+    live.said = said  # its reports
     return live, session, voice
 
 
 async def test_a_driven_voice_says_a_sentence_an_order_and_reports_each_by_its_own_text():
     live, session, _ = _driven()
     live.say("The Workspace plan costs fifty dollars. It is billed monthly.")
-    live.reply_to("thanks, that is great", "Priya")
+    live.say("Glad to help.")  # small talk written for it (huddle's writer): an order like any other
     await _settle()
     assert session.orders == [
         {"instructions": "Say this line aloud, word for word, and nothing else:\nThe Workspace plan costs fifty dollars."}
@@ -193,13 +186,35 @@ async def test_a_driven_voice_says_a_sentence_an_order_and_reports_each_by_its_o
         assert len(session.orders) == n
     session.handles[-1].set_result(None)
     await _settle()
-    assert [o["instructions"] for o in session.orders[1:]] == [agent.SAY + "It is billed monthly.", agent.SAY + "line 1"]
+    assert [o["instructions"] for o in session.orders[1:]] == [agent.SAY + "It is billed monthly.", agent.SAY + "Glad to help."]
     # each unit is reported when its playback ends, by the text it was ordered with
     assert live.said == [
-        ("The Workspace plan costs fifty dollars.", False), ("It is billed monthly.", False), ("line 1", False)
+        ("The Workspace plan costs fifty dollars.", False), ("It is billed monthly.", False), ("Glad to help.", False)
     ]
-    # the one line a model writes is a reply to small talk, from that line and who said it and nothing else
-    assert live.written == ['Priya just said to you: "thanks, that is great"']
+    assert not hasattr(live, "reply_to"), "it writes nothing itself: the worker has small talk written and orders it"
+
+
+async def test_small_talk_is_written_from_the_line_and_who_said_it_with_one_client_for_the_call(monkeypatch):
+    """10-07 rig: every voice made its own client at its first reply, about 2 s before "Hi"."""
+    from types import SimpleNamespace as NS
+
+    made, asked = [], []
+
+    class Client:
+        def __init__(self):
+            made.append(self)
+            self.chat = NS(completions=NS(create=self.create))
+
+        async def create(self, **kw):
+            asked.append(kw["messages"])
+            return NS(choices=[NS(message=NS(content="NONE" if "bye" in kw["messages"][1]["content"] else "Glad to help."))])
+
+    monkeypatch.setattr(agent, "AsyncOpenAI", Client)
+    monkeypatch.setattr(agent, "_writer", None)
+    assert await agent.write_line("You are Forge.", 'Priya just said to you: "thanks"') == "Glad to help."
+    assert await agent.write_line("You are Ada.", 'Dan just said to you: "bye"') == "", "NONE: silence"
+    assert len(made) == 1, "one client, whichever voice the line is for"
+    assert asked[0][0]["content"].startswith("You are Forge.") and asked[0][1]["content"] == 'Priya just said to you: "thanks"'
 
 
 async def test_what_a_gpt_live_voice_is_told_makes_a_mouth_say_nothing():
@@ -208,20 +223,8 @@ async def test_what_a_gpt_live_voice_is_told_makes_a_mouth_say_nothing():
     live.append_thinking("Priya asked: what shipped", delegation_id="d1")
     live.nudge()
     await _settle()
-    assert session.orders == [] and live.written == [], "no order, and no model writes a line"
+    assert session.orders == [], "no order"
     assert list(voice.ctx.items) == [], "and nothing is kept for one"
-
-
-async def test_small_talk_written_while_someone_started_talking_is_dropped():
-    live, session, _ = _driven()
-    live.floor["clear"] = False  # someone is talking, or the voice lost the floor, when the line comes back
-    live.reply_to("thanks", "Priya")
-    await _settle()
-    assert live.written and session.orders == [] and live.said == []
-    live.floor["clear"] = True
-    live.reply_to("thanks again", "Priya")
-    await _settle()
-    assert [o["instructions"] for o in session.orders] == [agent.SAY + "line 2"]
 
 
 async def test_an_interrupt_cuts_the_unit_being_said_and_drops_what_was_queued():

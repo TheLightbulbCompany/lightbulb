@@ -7,7 +7,7 @@ import json
 from huddle_agent import huddle as h_mod
 from huddle_agent.backend import BackendError
 from huddle_agent.transcript import is_question
-from test_huddle import answer, frame, make, ops, packet, say, settle, talks
+from test_huddle import answer, frame, make, ops, packet, pause, say, settle, spoken, talks
 
 MEET = "meet:room-1"
 
@@ -365,6 +365,7 @@ async def test_a_meeting_voice_ignores_talk_from_someone_else():
 
 async def test_a_meeting_voice_takes_its_speakers_follow_up_for_10_seconds():
     h, room, backend, lives, clock, log = await priya_asks_forge()
+    spoken(h, lives[0])
     clock.t += 9
     await hear(h, "and the closed ones")
     assert backend.route_bodies[-1]["floor"] == {"agent": "forge", "speaker": "Priya", "mine": True}
@@ -375,6 +376,7 @@ async def test_a_meeting_voice_takes_its_speakers_follow_up_for_10_seconds():
 
     # begun at 9 s, final at 12 s: the voice waits while the meeting talks, and the line is a follow-up
     h.on_agent_state("forge", "speaking")
+    spoken(h, lives[0])
     h.on_agent_state("forge", "listening")
     clock.t += 9
     talks(h, MEET)
@@ -485,6 +487,7 @@ async def test_a_bare_name_then_the_request_is_understood_as_that_agents():
     h, room, backend, lives, clock, log = await meeting()
     speaker(h, "p1", "Priya", True)
     await hear(h, "Forge?")
+    spoken(h, lives[0])
     clock.t += 2
     backend.route_extra = ops([("forge", "list the open PRs", "floor")])
     await hear(h, "what PRs are open")
@@ -545,7 +548,11 @@ async def unheard_answer():
     clock.t += h_mod.MEET_FOLLOWUP_S
     await h.tick()
     await settle(h)
+    talks(h, MEET)  # the meeting is talking when it lands: it waits, its hand up
     answer(h, row.run_id, "forge", "Three PRs are open.")
+    await settle(h)
+    h.on_speech(MEET, False)
+    h.on_active_speakers(set())
     assert h._voice is None and row.status == "ready"
     return h, backend
 
@@ -591,22 +598,19 @@ async def test_a_meetings_ready_answer_waits_for_a_real_pause_and_its_hand_shows
     assert h._state()["lightbulb.agent.forge.hand"] == ""
 
 
-async def test_a_meeting_answer_dropped_by_talk_is_tried_again_at_each_pause_and_never_given_up():
+async def test_a_meeting_answer_talked_over_is_tried_again_at_each_pause_and_never_given_up():
     h, backend = await unheard_answer()
     for _ in range(h_mod.DELIVERY_TRIES + 2):
-        h._clock.t += h_mod.MEET_QUIET_S + h_mod.gate.ANNOUNCE_QUIET
-        await h.tick()
-        await settle(h)
-        assert h._voice is not None and h._voice.announce is not None, "its voice opens for it"
-        talks(h, MEET, "Google Meet")  # someone talks before its audio: dropped, the answer kept
-        await settle(h)
+        await pause(h, h._clock)
+        assert h._voice is not None and [u.sent for u in h._voice.utterances] == [True], "its voice opens for it"
+        talks(h, MEET, "Google Meet")  # someone talks over it, and keeps talking: it yields, the answer is kept
+        await pause(h, h._clock, h_mod.TALK_OVER_S)
+        assert h._voice is None and [n[2] for n in h._news["forge"]] == ["Three PRs are open."]
         h.on_speech(MEET, False)
         h.on_active_speakers(set())
-    h._clock.t += h_mod.MEET_QUIET_S + h_mod.gate.ANNOUNCE_QUIET
-    await h.tick()
-    await settle(h)
+    await pause(h, h._clock)
     assert backend.late_answers == [], "a busy meeting does not push the answer off the call"
-    assert h._voice is not None and h._voice.announce is not None
+    assert h._voice is not None and [u.sent for u in h._voice.utterances] == [True]
 
 
 # -- review: a muted voice must still yield to a person; a follow-up must not land on someone else's voice; the
@@ -939,6 +943,7 @@ async def test_an_earlier_answer_handed_to_an_open_meeting_voice_is_not_lost_whe
     assert h._voice is not None and h._voice.agent_id == "forge"
     answer(h, row.run_id, "forge", "Three PRs are open.")  # the earlier run ends: handed to the open voice
     assert row.status == "ready", "ordered, not yet said"
+    await pause(h, clock)  # it starts at the pause after "are you there?"
     h.on_agent_state("forge", "thinking")
     h.on_agent_state("forge", "speaking")
     talks(h, MEET, "Google Meet")
@@ -1146,6 +1151,7 @@ async def test_a_per_person_run_says_nothing_as_it_streams_and_its_answer_word_f
     await quiet_tick_meet(h, clock, h_mod.MEET_FOLLOWUP_S / 2)
     ack = ("Sure, I'm on it now.",)  # a question is not read back inside the line
     assert said() == [ack], "its acknowledgement, and nothing as it streams"
+    spoken(h, lives[0])
     h.on_data(None, "call.frame", packet(frame(row.run_id, "forge", {"type": "run_ended", "seq": 5})))
     assert said() == [ack, ("You merged three pull requests. The largest was the audio bridge.",)]
 
@@ -1164,6 +1170,8 @@ async def test_a_long_meeting_answer_is_handed_to_the_voice_whole():
     await says(h, P1, "Forge, what PRs are open?")
     (row,) = h._requests.items
     long = "Three PRs are open. " * 200
+    spoken(h, lives[0])  # its acknowledgement is said, and the room is quiet
+    clock.t += h_mod.MEET_QUIET_S
     answer(h, row.run_id, "forge", long)
     assert [c for c in lives[0].calls if c[0] in ("commentary", "say")][1:] == [("say", long.strip())]
     assert h._voice.utterances[-1].units == ["Three PRs are open."] * 200

@@ -271,6 +271,35 @@ WRITER = (
 )
 
 
+_writer: AsyncOpenAI | None = None  # one client for the whole call, made at the first line: a test has no key
+
+
+async def write_line(persona: str, event: str) -> str:
+    """The one sentence a mouth says to small talk (huddle's `writer`). "": nothing worth saying, or no line
+    in time. One client for every voice of the call: a new one per voice paid a new connection for each
+    reply (10-07 rig: about 2 s before "Hi")."""
+    global _writer
+    try:
+        _writer = _writer or AsyncOpenAI()
+        r = await asyncio.wait_for(
+            _writer.chat.completions.create(
+                model=WRITER_MODEL,
+                max_tokens=48,
+                temperature=0.8,
+                messages=[
+                    {"role": "system", "content": f"{persona}\n\n{WRITER}"},
+                    {"role": "user", "content": event},
+                ],
+            ),
+            WRITE_TIMEOUT_S,
+        )
+        line = (r.choices[0].message.content or "").strip()
+        return "" if line.strip(" .\"'").upper() == "NONE" else line  # nothing worth saying: silence
+    except Exception:  # noqa: BLE001 -- no line is better than a late or a made-up one
+        logger.warning("huddle driven voice: no line written", exc_info=True)
+        return ""
+
+
 class _DrivenSession(openai.realtime.RealtimeSession):
     """A line to say word for word goes to the model without the conversation (`input: []`), and what it said
     still joins the conversation. With the conversation in view the model answers the last thing a person
@@ -298,7 +327,7 @@ class _DrivenLive:
 
     Orders run one after the other on one chain, so two lines never overlap. What it is handed is said one
     sentence an order, and each is reported back as said or cut (`_speak`). `interrupt` stops the speech and
-    drops the orders not yet started."""
+    drops the orders not yet started. When it is handed something is the worker's to decide (`Huddle._pump`)."""
 
     def __init__(
         self,
@@ -306,20 +335,16 @@ class _DrivenLive:
         session: AgentSession,
         agent: Agent,
         room: rtc.Room,
-        persona: str = "",
         said=lambda text, interrupted: None,  # huddle.on_agent_said for this agent: one unit, said or cut
-        clear=lambda: True,  # huddle.may_speak: its voice still has the floor and nobody is talking
     ) -> None:
         self.agent_id, self.track_name = agent_id, f"agent-{agent_id}"
         self._session, self._agent, self._room = session, agent, room
-        self._said, self._clear = said, clear
+        self._said = said
         self._tail: asyncio.Task | None = None
         self._epoch = 0  # raised by interrupt: a speech order queued under an older one is dropped
         # The Realtime plugin reports tokens, not session seconds (`session_duration` is 0): wall clock, open to
         # close, is what a GPT-Live session bills by too.
         self._opened, self._closed = time.monotonic(), None
-        self._persona = persona  # who it is, for the line written for it
-        self._writer: AsyncOpenAI | None = None  # made at the first line: a test has no key
 
     def _order(self, do, keep: bool = False) -> None:
         """`do()` after every order before it. `keep`: something to know, which an interrupt does not drop."""
@@ -351,29 +376,8 @@ class _DrivenLive:
         for unit in units(text):
             self._order(lambda unit=unit: self._speak(unit))
 
-    async def _write(self, event: str) -> str:
-        try:
-            self._writer = self._writer or AsyncOpenAI()
-            r = await asyncio.wait_for(
-                self._writer.chat.completions.create(
-                    model=WRITER_MODEL,
-                    max_tokens=48,
-                    temperature=0.8,
-                    messages=[
-                        {"role": "system", "content": f"{self._persona}\n\n{WRITER}"},
-                        {"role": "user", "content": event},
-                    ],
-                ),
-                WRITE_TIMEOUT_S,
-            )
-            line = (r.choices[0].message.content or "").strip()
-            return "" if line.strip(" .\"'").upper() == "NONE" else line  # nothing worth saying: silence
-        except Exception:  # noqa: BLE001 -- no line is better than a late or a made-up one
-            logger.warning("huddle driven voice: no line written", exc_info=True)
-            return ""
-
-    # Only an order makes it speak, and every order is a line the worker chose (`say`) or small talk
-    # (`reply_to`). What a GPT-Live voice is told to know or to say in its own words is nothing to a mouth.
+    # Only an order makes it speak, and every order is a line the worker chose or had written (`say`). What a
+    # GPT-Live voice is told to know or to say in its own words is nothing to a mouth.
     def append_commentary(self, text: str, *, delegation_id: str | None = None) -> None:
         pass
 
@@ -388,19 +392,6 @@ class _DrivenLive:
         self._order(lambda: self._agent.update_instructions(f"{self._agent.instructions}\n\n{text}"), keep=True)
 
     meet_rule = append_instructions
-
-    def reply_to(self, text: str, who: str = "") -> None:
-        async def do() -> None:
-            epoch = self._epoch
-            line = await self._write(f'{who or "Someone"} just said to you: "{text}"')
-            # The line took time to write. Stopped, closed or talked over meanwhile: it is dropped, not said late.
-            if self._closed is not None or epoch != self._epoch or not self._clear():
-                return
-            for unit in units(line):
-                if not await self._speak(unit):
-                    return
-
-        self._order(do)
 
     def interrupt(self):
         self._epoch += 1
@@ -516,9 +507,7 @@ async def _start_driven(
         session,
         agent,
         room,
-        persona=persona,
         said=lambda text, interrupted: huddle.on_agent_said(agent_id, text, interrupted),
-        clear=lambda: huddle.may_speak(agent_id),
     )
 
     def closed(_ev) -> None:
@@ -641,6 +630,7 @@ async def entrypoint(ctx: JobContext) -> None:
         ),  # open streams take it in place
         # a Google Meet bridged in by a Recall bot (the meeting dispatch)
         setting="meeting" if meta.get("source") == "meet" else "live",
+        writer=write_line,
     )
     tasks: set[asyncio.Task] = set()
 

@@ -2916,7 +2916,10 @@ _HEAD = re.compile(
 #: A connector left hanging where a part runs straight into a name ("check the deploy and | Friday ...").
 _TAIL = re.compile(r"(?:^|\s)(?:and|then|also|plus|hey|hi|ok|okay)$", re.I)
 #: A sentence ends at . ? ! ; followed by a space or the end: "v2.1" and "3.5 percent" are one sentence.
-_SENTENCE = re.compile(r".+?(?:[.?!;]+(?=\s|$)|$)", re.S)
+#: An ellipsis is a speaker trailing off, not an end: "Can you tell me... What the plan costs?" was cut in
+#: two and became two requests for two agents (Meet run 2026-10-07).
+_ELLIPSIS = r"(?:\.\.|…)"
+_SENTENCE = re.compile(rf".+?(?:(?<![.…])(?!{_ELLIPSIS})[.?!;]+(?=\s|$)|$)", re.S)
 # Conversation understanding §4.2: a new request begins inside a sentence ("... and what PRs are open",
 # ", then tell me ...", "um first whats our burn", "good morning um can you check ..."). Speech-to-text
 # often gives no punctuation, so the cut reads words: after a comma, a joiner, a filler or an ordinal, the
@@ -3032,6 +3035,9 @@ def _cue_spans(seg: str) -> list[tuple[int, int]]:
         before = _clean(seg[cuts[-1] : m.start()])
         # no part of its own: filler and "can you", or only who is asked ("whoever handles billing | can you ...")
         if _OPENER_ONLY.match(before) or _ADDRESSEE_ONLY.match(before):
+            continue
+        # the speaker trailed off and went on ("can you tell me... um what it costs"): still one request
+        if re.search(rf"{_ELLIPSIS}\s*$", seg[cuts[-1] : m.start()]):
             continue
         # the words to pass on to someone are the same request ("tell Priya | I need the board deck")
         if not m.group(0).strip() and _REPORTING.search(before):

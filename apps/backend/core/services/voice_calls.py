@@ -290,7 +290,7 @@ def _fire(coro) -> None:
 # provider caches a byte-identical prefix. Everything per-run rides in the input.
 # The script path is the image's (build-skills.sh maps /app/skills/ -> /opt/hermes-skills/); a
 # run's shell has PAPERCLIP_COMPANY_ID / PAPERCLIP_AGENT_ID from the profile .env.
-TURN_NOTE = """[Note: you are speaking in a Live voice call; your reply is spoken by you and nothing is posted to the room. The request below is what a person asked of you, in their own words from a voice transcript (it may contain mis-hearings, hesitations and later corrections; use the latest intent). It is usually one thing; if it holds more than one, do each and give each result. The bracket before it is what was said on the call since you last spoke, for context only. Other requests from the same breath are with teammates or queued for you: answer only what is asked here.
+TURN_NOTE = """[Note: you are speaking in a Live voice call; your reply is spoken by you and nothing is posted to the room. The request below is what a person asked of you, in their own words from a voice transcript (it may contain mis-hearings, hesitations and later corrections; use the latest intent). It is usually one thing; if it holds more than one, do each and give each result. The bracket before it is what was said on the call since you last spoke, for context only. Other requests from the same breath are with teammates or queued for you: answer only what is asked here. Answer it yourself, in words for speaking aloud; never say a teammate's name or who is handling what. If you cannot answer, say what is missing.
 Anything that can change (email, pull requests, deploys, payments, dates, metrics, what shipped) must be checked with a tool in this turn before you answer. Your memory and earlier messages tell you where to look, never what the answer is. Say in a few words where the answer came from ("from GitHub just now"). If you cannot check it, say so plainly; never give an old value as current.
 Then pick whatever fits the request:
 - Answer: after checking, reply in two or three short spoken sentences, starting with what it is about.
@@ -975,8 +975,9 @@ def _understood(
     conversation, a named agent, a line among people the room judge picked an agent for). Not implied, an
     unnamed part is no request. Owners marked ``None`` here are filled by the caller (the floor agent, the
     judge's agent, the chief of staff).
-    Returns ``{requests: [{agentId|None, task, by}], talk, more, nudge, cancel, steer}``. ``nudge``: a part only
-    calls on an agent or tells it to go on ("Friday, go ahead"); that is never a request."""
+    Returns ``{requests: [{agentId|None, task, by}], talk, more, nudge, stop, cancel, steer}``. ``nudge``: a part
+    only calls on an agent or tells it to go on ("Friday, go ahead"); that is never a request. ``stop``: a part
+    calls something off, whether or not a request was found for it."""
     parts, pieces = addressing["parts"], addressing["pieces"]
     named = [(name, agent) for name, agent, _ in addressing["named"]]
     by_name = dict(named)
@@ -1058,6 +1059,7 @@ def _understood(
         "more": any(kind[p["index"]] == "more" for p in parts),
         # a name and nothing else ("Friday?") calls on the agent too
         "nudge": any(kind[p["index"]] == "nudge" for p in parts) or bool(named and not parts),
+        "stop": any(kind[p["index"]] == "cancel" for p in parts),
         "cancel": [],
         "steer": [],
     }
@@ -1098,6 +1100,20 @@ def _understood(
     return out
 
 
+def _for_the_agents(addressing: dict, open_requests: list[dict]) -> bool:
+    """Evidence, from the one Jev call, that an unnamed meeting line is for the agents: it continues or calls
+    off an earlier request, or Jev (told who holds the floor, and that this is a meeting) is sure a part asks
+    or calls on the team. Who spoke last is no evidence: people in a meeting go on talking to each other."""
+    ids = {r["id"] for r in open_requests}
+    refers = any(
+        choice in ids and p >= AMEND_P
+        for choice, p, _ in (addressing.get(key) or (None, 0.0, 0.0) for key in ("amends", "drops"))
+    )
+    return refers or any(
+        p["kind"][0] in ("request", "nudge") and p["kind"][1] >= jev.CONFIDENT_P for p in addressing["parts"]
+    )
+
+
 async def route_live_line(
     *,
     owner_id: str,
@@ -1124,8 +1140,9 @@ async def route_live_line(
     and no name, chat's room judge (``jev._decide_for_message``: would a good teammate answer this?) says
     whether an agent answers at all, as it did before understanding; when it picks one, the line is
     understood like any other and that agent owns what fits nobody better. ``setting="meeting"`` (a Google
-    Meet): nobody is implied but the named, the wake word, the floor conversation and an ``unclaimed``
-    question to the room (the worker waited 3.5 s).
+    Meet): nobody is implied but the named, the wake word and an ``unclaimed`` question to the room (the worker
+    waited 3.5 s). The floor conversation implies its agent only on evidence (``_for_the_agents``); with none,
+    the floor speaker's line is talk between people.
     Jev down: the whole line is one request for the named agents, else (wake word, unclaimed) one agent;
     a line only the floor or a lone speaker implies is no request.
     Returns ``{agentId, agentIds, requests?, hold?, ops}``: ``ops`` is ``{requests: [{agentId, task, by}],
@@ -1241,6 +1258,10 @@ async def route_live_line(
     named = [agent for _, agent, _ in addressing["named"]]
     to_people = bool(addressing["humans"]) and not named and not addressing["anyone"] and not wake
     implied = bool(named) or wake or mine or unclaimed or (humans <= 1 and not meeting)
+    if meeting and mine and not (named or wake or unclaimed) and not _for_the_agents(addressing, earlier):
+        # A Meet is one mixed voice: the floor stays "mine" while people talk to each other. With no sign
+        # the line is for the agent, it is talk between people.
+        implied, to_people = False, True
     picked = None  # the room judge's agent for a line among people
     if early and named:
         early.cancel()  # a fuzzy name the candidates missed: the name rules decide
@@ -1272,7 +1293,8 @@ async def route_live_line(
             # a question to the room nobody took (the worker waited), or a wake-word line, that Jev heard as
             # people talk: it was said to the agents, so one agent answers it. Small talk stays small talk.
             u["requests"] = [{"agentId": None, "task": utterance, "by": ""}]
-    if picked and not u["requests"] and not u["cancel"] and not u["steer"] and not u.get("nudge"):
+    stop = bool(u.get("stop")) and not u["cancel"]  # called off, and nothing open to call off
+    if picked and not u["requests"] and not u["cancel"] and not u["steer"] and not u.get("nudge") and not stop:
         # the judge heard something to answer where the parts saw talk between people: the line is its request
         u["requests"] = [{"agentId": None, "task": utterance, "by": ""}]
     elif picked and len(u["requests"]) == 1 and u["requests"][0]["by"] == "fit":
@@ -1302,7 +1324,7 @@ async def route_live_line(
                 r |= {"agentId": chief, "by": "chief"}
     requests = [r for r in u["requests"] if r["agentId"]]
     social = None
-    if not requests and not u["cancel"] and not u["steer"] and u["talk"] and not u["people"]:
+    if not requests and not u["cancel"] and not u["steer"] and u["talk"] and not u["people"] and not stop:
         # Nothing was asked: one agent may say a sentence, when the speech can only be for the agents.
         if named:
             social = named[0]
@@ -1330,6 +1352,10 @@ async def route_live_line(
         # A ready answer needs no line (the worker speaks the answer itself); a working one is named.
         if not any(r["status"] == "ready" for r in theirs):
             say = {"agentId": theirs[0]["agentId"], "kind": "status", "task": theirs[0]["task"]}
+    elif stop:
+        # Also with nothing open: "Perfect. Friday, stop." after the answer read as small talk, and the
+        # agent said "Got it; I will stop now."
+        pass
     elif social or (called and who):
         say = {"agentId": social or who, "kind": "social", "task": None}  # small talk; nothing open is nothing new
     ops = {

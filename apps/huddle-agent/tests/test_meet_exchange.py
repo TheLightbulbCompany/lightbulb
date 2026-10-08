@@ -2,16 +2,21 @@
 The worker gives and takes the floor: a name opens it, the person turning to a colleague closes it, anyone
 who keeps talking over it stops it, and what was left unsaid keeps the agent's hand up until a pause or a name."""
 
+import asyncio
+
 from huddle_agent import huddle as h_mod
-from test_huddle import answer, ops, settle, talks
+from test_huddle import answer, ops, pause, settle, spoken, talks
 from test_meeting_mode import P1, P2, per_person, says
 
 
-async def asked():
+async def asked(acked=True):
     h, room, backend, lives, clock, log = await per_person()
     backend.route_extra = ops([("forge", "list the open PRs", "name")])
     await says(h, P1, "Forge, what PRs are open?")
     backend.route_extra = ops([])
+    if acked:
+        spoken(h, lives[0])  # its acknowledgement is said, and the room is quiet: an answer may start
+        clock.t += h_mod.MEET_QUIET_S
     return h, backend, lives, clock
 
 
@@ -91,9 +96,8 @@ async def test_an_announced_answer_talked_over_by_someone_else_goes_back_to_the_
     await settle(h)
     assert h._voice is not None and h._voice.path == "announce"
     h.on_agent_state("forge", "speaking")  # its audio is out: the news is consumed
-    talks(h, P2)  # someone else starts over it
-    await settle(h)
-    assert h._voice is None and ("interrupt",) in lives[-1].calls
+    await talked_over(h, clock, P2)  # someone else talks over it, and keeps talking
+    assert ("interrupt",) in lives[-1].calls
     assert [n[2] for n in h._news.get("forge", [])] == ["Three PRs are open."] and backend.late_answers == []
     h.on_speech(P2, False)
     quiet(h)
@@ -115,9 +119,8 @@ async def test_its_own_person_talking_over_an_announcement_cuts_it_and_the_hand_
     await h.tick()
     await settle(h)
     h.on_agent_state("forge", "speaking")
-    talks(h, P1)  # the person it is pinned to: "Forge, what about the closed ones?"
-    await settle(h)
-    assert h._voice is None and ("interrupt",) in lives[-1].calls
+    await talked_over(h, clock, P1)  # the person it is pinned to: "Forge, what about the closed ones?"
+    assert ("interrupt",) in lives[-1].calls
     assert [n[2] for n in h._news.get("forge", [])] == ["Three PRs are open."] and backend.late_answers == []
 
 
@@ -137,8 +140,7 @@ async def test_a_talked_over_answer_comes_back_from_the_sentence_it_was_cut_on()
     h.on_agent_state("forge", "speaking")
     h.on_agent_said("forge", "Three PRs are open.")  # heard to its end
     h.on_agent_said("forge", "The oldest is two days old.", interrupted=True)  # cut in this one
-    talks(h, P2)
-    await settle(h)
+    await talked_over(h, clock, P2)
     assert [n[2] for n in h._news.get("forge", [])] == ["The oldest is two days old. One of them is a draft."]
 
 
@@ -148,6 +150,7 @@ async def test_a_follow_up_from_its_person_reaches_the_router_and_is_given_to_th
     h, backend, lives, clock = await asked()
     (row,) = h._requests.items
     answer(h, row.run_id, "forge", "Three PRs are open.")
+    spoken(h, lives[0])
     before, routes, turns = len(lives[0].calls), len(backend.routes), len(backend.turns)
     backend.route_extra = ops([("forge", "the closed PRs too", "follow")])
     await says(h, P1, "and the closed ones too")
@@ -157,12 +160,44 @@ async def test_a_follow_up_from_its_person_reaches_the_router_and_is_given_to_th
     assert [c for c in after if c[0] != "thinking"] == [("say", "Sure, let me work on that: the closed PRs too.")], after
 
 
-async def test_small_talk_from_its_person_is_given_to_the_voice_as_a_typed_line():
+async def test_small_talk_from_its_person_is_written_from_the_line_and_who_said_it_and_said_word_for_word():
     h, backend, lives, clock = await asked()
-    before = len(lives[0].calls)
+    before, written = len(lives[0].calls), []
+
+    async def writer(persona, event):
+        written.append((persona, event))
+        return "Glad it helps."
+
+    h._writer = writer
     backend.route_extra = {"ops": {"requests": [], "social": "forge", "more": False, "cancel": [], "steer": []}}
     await says(h, P1, "thanks, that is great")
-    assert lives[0].calls[before:] == [("reply_to", "thanks, that is great", "Priya")], "the line and who said it"
+    assert written == [("You are Forge.", 'Priya just said to you: "thanks, that is great"')], "the line and who said it"
+    assert lives[0].calls[before:] == [("say", "Glad it helps.")], "no model of the voice is asked for it"
+
+
+async def test_small_talk_is_written_while_the_voice_opens_and_said_only_once_nobody_is_talking():
+    """10-07 rig: "Hi Friday." got its reply 5.3 s later, 2 s of it the writer, started after the session opened."""
+    h, room, backend, lives, clock, log = await per_person()
+    order = []
+
+    async def writer(persona, event):
+        order.append("write")
+        return "Hello Priya."
+
+    h._writer, h.gate["live"] = writer, asyncio.Event()
+    backend.route_extra = {"ops": {"requests": [], "social": "forge", "more": False, "cancel": [], "steer": []}}
+    task = asyncio.create_task(says(h, P1, "Hi Forge."))
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert order == ["write"] and lives == [], "written before the session has opened"
+    talks(h, P2)  # someone starts talking while it opens
+    h.gate["live"].set()
+    await task
+    assert says_of(lives[0]) == [], "the line is ready and waits: nothing starts over a person"
+    quiet(h)
+    await pause(h, clock, h_mod.LINE_QUIET_S + 0.1)  # a breath after the talk ended, not a real pause
+    assert says_of(lives[0]) == [("say", "Hello Priya.")]
+    assert backend.turns == [], "small talk is no run"
 
 
 
@@ -208,9 +243,8 @@ async def announced(h, backend, lives, clock, text="Three PRs are open. The olde
 async def test_its_own_person_interrupting_an_announcement_keeps_the_rest_in_the_hand_and_it_is_said_at_the_next_pause():
     h, backend, lives, clock = await asked()
     await announced(h, backend, lives, clock)
-    talks(h, P1)  # its own person: "Forge, what about the closed ones?"
-    await settle(h)
-    assert h._voice is None and ("interrupt",) in lives[-1].calls
+    await talked_over(h, clock, P1)  # its own person: "Forge, what about the closed ones?"
+    assert ("interrupt",) in lives[-1].calls
     assert [n[2] for n in h._news.get("forge", [])] == ["The oldest is two days old."], "the rest, from the cut sentence"
     h.on_speech(P1, False)
     quiet(h)
@@ -241,8 +275,8 @@ async def test_a_hand_raised_after_the_same_words_were_said_is_not_let_go():
     await h.tick()
     await settle(h)
     clock.t += 1
+    talks(h, P2)  # the room is talking when it lands: its hand goes up
     answer(h, row.run_id, "forge", "No PRs are open.")  # the same words, raised later
-    talks(h, P2)
     await h.tick()
     await settle(h)
     assert [n[2] for n in h._news.get("forge", [])] == ["No PRs are open."]
@@ -522,7 +556,7 @@ async def test_a_stop_leaves_nothing_of_the_answer_on_the_hand():
 
 
 async def test_the_acknowledgement_is_a_fixed_line_with_the_task_and_no_model_writes_it():
-    h, backend, lives, clock = await asked()
+    h, backend, lives, clock = await asked(acked=False)
     (row,) = h._requests.items
     assert says_of(lives[0]) == [("say", "Okay, list the open PRs. I'm on it now.")]
     assert not [c for c in lives[0].calls if c[0] in ("nudge", "commentary", "reply_to")], "nothing asks a model"
@@ -574,20 +608,8 @@ async def test_an_answer_that_is_ready_is_said_and_no_status_line_with_it():
                                    "people": False, "say": {"agentId": "forge", "kind": "status",
                                                             "task": "list the open PRs", "text": None}}}
     await says(h, P1, "Forge, go ahead.")
+    await pause(h, clock)  # an answer starts at a real pause, also when its agent was called on
     assert says_of(lives[-1]) == [("say", "Three PRs are open.")]
-
-
-async def test_a_written_reply_may_be_said_only_while_its_voice_has_the_floor_and_nobody_talks():
-    h, backend, lives, clock = await asked()
-    assert h.may_speak("forge") and not h.may_speak("pulse")
-    talks(h, P2)  # someone started talking while the line was written
-    assert not h.may_speak("forge")
-    quiet(h)
-    assert h.may_speak("forge")
-    clock.t += h_mod.MEET_FOLLOWUP_S
-    await h.tick()
-    await settle(h)
-    assert h._voice is None and not h.may_speak("forge")
 
 
 async def test_a_question_is_not_read_back_inside_an_acknowledgement():

@@ -52,6 +52,16 @@ describe("an unanswered request", () => {
     expect(joinRequestView(result.current, "Ada").button).toBe("Requested"); // not offered again straight after it is used
   });
 
+  it("keeps Ask again offered when the reminder could not be sent", async () => {
+    const old = new Date(Date.now() - ASK_AGAIN_AFTER_MS - 1000).toISOString();
+    const join = vi.fn().mockRejectedValue(new Error("offline"));
+    const { result } = renderHook(() => useSessionJoinRequest(client(join), session({ joinRequest: "pending", joinRequestedAt: old })));
+    expect(result.current.again).toBe(true);
+    await act(async () => { await result.current.ask(); });
+    expect(result.current.error).toBe("Could not send your request. Try again.");
+    expect(joinRequestView(result.current, "Ada")).toEqual({ line: "Ada has not answered your request yet.", button: "Ask again", disabled: false });
+  });
+
   it("never offers Ask again against a backend that does not say when the request was made", () => {
     vi.useFakeTimers();
     const { result } = renderHook(() => useSessionJoinRequest(client(), session({ joinRequest: "pending" })));

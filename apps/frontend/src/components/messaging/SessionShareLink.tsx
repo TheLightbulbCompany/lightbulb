@@ -55,8 +55,9 @@ export function SessionShareLink({ session, client }: { session: LocalSession; c
     if (next?.url) setStatus(copied(await wrote, next.audience));
   };
   const setAudience = async (audience: SessionLinkAudience) => { if (await save(audience)) setStatus(who(audience)); };
-  // Two clicks, like End session: the link stops working for everyone who has it, and prod 2026-10-08 saw one
-  // turned off 1.6 s after its audience was changed, then refused to the person it was sent to.
+  // Two clicks, like End session: the link stops working for everyone who has it. Prod 2026-10-08: an owner's own
+  // client sent this DELETE 1.5 s after their audience change, and their signed-out open 5 s later was refused.
+  // When the audience warning appeared, this button moved down onto the place of the Details footer's "Copy link".
   const off = async () => {
     if (!offArmed) { setOffArmed(true); return; }
     setOffArmed(false); setBusy(true);

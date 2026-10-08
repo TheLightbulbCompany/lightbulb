@@ -522,6 +522,12 @@ describe("session screen", () => {
     expect(screen.queryByText(/←|lightbulb codex/)).toBeNull();
   });
 
+  it("says a session has no screen when the Mac gives a reason nobody can act on, or none", async () => {
+    mockSession = { ...base, humanUserId: "user-b", provider: "codex", terminalReason: "unknown" };
+    await render(<SessionScreen />);
+    expect(await screen.findByText("Bob is working in this session, but its screen is not shared. You can still follow its status and what it changed.")).toBeTruthy();
+  });
+
   it("shows someone else's session read-only: no prompt row, only who can send", async () => {
     mockSession = { ...base, humanUserId: "user-b" };
     await render(<SessionScreen />);

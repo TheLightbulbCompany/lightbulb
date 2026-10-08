@@ -1,7 +1,7 @@
 import { useAuth } from "@clerk/clerk-expo";
 import { SymbolView } from "expo-symbols";
 import {
-  ApiError, buildRows, canControlSession, groupRows, mainEvents, pendingApproval, receiptChip, sessionLabel, sessionRingState, sessionStatus, sessionTitle, sessionViewKey, sessionScreenNotice, terminalStateReason, unavailableReason, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionOutbox, useSessionResume, useWorkspaceSessions,
+  ApiError, buildRows, canControlSession, groupRows, mainEvents, pendingApproval, receiptChip, sessionLabel, sessionRingState, sessionStatus, sessionTitle, sessionViewKey, sessionScreenNotice, unavailableReason, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionOutbox, useSessionResume, useWorkspaceSessions,
   type LocalSession, type SessionControlClient, type SessionSource, type TranscriptItem,
 } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
@@ -354,7 +354,8 @@ function SessionBody({
   const insets = useSafeAreaInsets();
   const busy = session.status === "busy";
   const ended = session.status === "ended";
-  const reason = terminalStateReason(session);
+  // Running with no terminal, whatever the reason (or none reported): the web panel's condition.
+  const noScreen = !session.terminal && session.status !== "ended" && session.status !== "offline";
   const source = useHistorySource(client, session, revision);
   const history = useLocalSessionHistory(client, source.sessionId, source.latestEventSeq, revision, onAccessLost, { pollMs });
   const [text, setText] = useState("");
@@ -426,7 +427,7 @@ function SessionBody({
           </Pressable>
         </View>
       )}
-      {reason !== null && (
+      {noScreen && (
         // No terminal here yet: what gets its screen shared (spec 2026-10-07 §4 f, g).
         <Text style={[styles.meta, styles.liveHint, { color: palette.fgMute }]} accessibilityLiveRegion="polite">
           {/* The web panel's words (sessionScreenNotice), on one line. */}

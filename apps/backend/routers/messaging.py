@@ -416,12 +416,31 @@ async def revoke_local_session_resume(session_id: str, user_id: str, auth: AuthC
     return await session_resume.revoke_resume(auth, session_id, user_id)
 
 
+def _log_link_change(request: Request, auth: AuthContext, session_id: str, action: str, audience: str | None) -> None:
+    """Who changed a session's link, and from which client. The audit row has the person; no log had
+    the client, so a link revoked 1.6 s after its audience changed (prod 2026-10-08, ISOA-732) could
+    not be traced to the web, the desktop webview or anything else. Never the token or the URL."""
+    logger.info(
+        "session link %s",
+        action,
+        extra={
+            "session_id": session_id,
+            "actor_user_id": auth.user_id,
+            "audience": audience,
+            "user_agent": request.headers.get("user-agent", "")[:200],
+            "origin": request.headers.get("origin", "")[:100],
+        },
+    )
+
+
 @router.put("/messaging/sessions/{session_id}/link", response_model=local_sessions.SessionLink)
 async def put_local_session_link(
-    session_id: str, body: local_sessions.LinkRequest, auth: AuthContext = Depends(get_current_user)
+    session_id: str, body: local_sessions.LinkRequest, request: Request, auth: AuthContext = Depends(get_current_user)
 ):
     """Owner-only: create the session's one link, or change who it is for."""
-    return await local_sessions.put_link(auth, session_id, body.audience)
+    link = await local_sessions.put_link(auth, session_id, body.audience)
+    _log_link_change(request, auth, session_id, "put", link.audience)
+    return link
 
 
 @router.get("/messaging/sessions/{session_id}/link", response_model=local_sessions.SessionLink)
@@ -430,8 +449,9 @@ async def get_local_session_link(session_id: str, auth: AuthContext = Depends(ge
 
 
 @router.delete("/messaging/sessions/{session_id}/link", status_code=204)
-async def delete_local_session_link(session_id: str, auth: AuthContext = Depends(get_current_user)):
+async def delete_local_session_link(session_id: str, request: Request, auth: AuthContext = Depends(get_current_user)):
     await local_sessions.delete_link(auth, session_id)
+    _log_link_change(request, auth, session_id, "revoked", None)
 
 
 # Public: an "anyone" link opens with no sign-in. POST so the token rides in the body. These sit

@@ -590,7 +590,7 @@ impl Journal {
                         return Err("partial transcript boundary".into());
                     }
                 }
-                Cursor { offset: meta.len(), inode: Some(meta.ino()) }
+                Cursor { offset: meta.len(), inode: Some(meta.ino()), skip_row: false }
             }
         };
         receipt.ingress = Some(Ingress {
@@ -634,6 +634,10 @@ impl Journal {
 struct Cursor {
     offset: u64,
     inode: Option<u64>,
+    /// `offset` is inside a row (`cursor_at_end` found one being written): that row is not
+    /// read. Everything up to and including its newline is skipped first.
+    #[serde(default)]
+    skip_row: bool,
 }
 
 #[derive(Deserialize)]
@@ -668,6 +672,19 @@ impl Cursor {
         let mut reader = BufReader::new(file);
         let mut rows = vec![];
         let mut consumed = 0;
+        // The row that was being written when sharing started: none of it is read, whenever
+        // its end arrives.
+        while self.skip_row {
+            let available = reader.fill_buf().map_err(|e| e.to_string())?;
+            if available.is_empty() {
+                return Ok(rows);
+            }
+            let end = available.iter().position(|byte| *byte == b'\n');
+            let taken = end.map_or(available.len(), |at| at + 1);
+            reader.consume(taken);
+            self.offset += taken as u64;
+            self.skip_row = end.is_none();
+        }
         while consumed < 65536 && rows.len() < 32 {
             let mut bytes = vec![];
             let n = (&mut reader)
@@ -1523,6 +1540,11 @@ struct Mirror {
     /// another folder) between two listings; a hook says so at once. It must be approved too.
     #[serde(default)]
     hook_cwd: Option<PathBuf>,
+    /// For `history_hidden_for`'s terminal: the end of what was above its screen when sharing
+    /// started (`screen::history_marker`). Only what comes after it is served. None: the
+    /// terminal could not be asked then, and none of its history is served.
+    #[serde(default)]
+    history_cut: Option<Vec<u8>>,
     // The relay has acknowledged this session's end. Durable: a Mac that reports an
     // end and restarts must not report it again, and one that does not must.
     #[serde(default)]
@@ -1648,8 +1670,9 @@ struct RegistrationState {
     successor: Option<NativeSession>,
 }
 
-/// A cursor at the end of the last complete row `path` holds now: nothing that is already
-/// there is ever read, and a row being written is read whole once it is complete.
+/// A cursor at `path`'s current end: nothing that is already there is ever read. When the file
+/// ends inside a row (one is being written right now), that whole row is skipped too: part of
+/// it was written before this moment.
 fn cursor_at_end(path: &Path) -> Cursor {
     let Ok(mut file) = secure_file(path) else {
         return Cursor::default();
@@ -1657,24 +1680,23 @@ fn cursor_at_end(path: &Path) -> Cursor {
     let Ok(meta) = file.metadata() else {
         return Cursor::default();
     };
-    let mut end = meta.len();
-    let mut chunk = vec![0u8; 65536];
-    while end > 0 {
-        let start = end.saturating_sub(chunk.len() as u64);
-        let size = (end - start) as usize;
-        if file.seek(SeekFrom::Start(start)).is_err() || file.read_exact(&mut chunk[..size]).is_err() {
-            break;
-        }
-        if let Some(at) = chunk[..size].iter().rposition(|byte| *byte == b'\n') {
-            end = start + at as u64 + 1;
-            break;
-        }
-        end = start;
-    }
-    Cursor { offset: end, inode: Some(meta.ino()) }
+    let len = meta.len();
+    let mut last = [0u8];
+    // Unreadable last byte: taken as inside a row.
+    let whole = len == 0
+        || (file.seek(SeekFrom::Start(len - 1)).is_ok() && file.read_exact(&mut last).is_ok() && last[0] == b'\n');
+    Cursor { offset: len, inode: Some(meta.ino()), skip_row: !whole }
 }
 
 impl Mirror {
+    /// Nothing of this session leaves the Mac and nothing from the workspace reaches it: its
+    /// folder is not approved (`unshared`), or nobody can name its folder yet (a mirror stored by
+    /// a build that did not record it, until the first listing does). The one predicate behind
+    /// every door: upload, register, heartbeat, terminal, final screen, commands, input, band.
+    fn withheld(&self) -> bool {
+        self.unshared || self.registration.successor.as_ref().unwrap_or(&self.native).cwd.is_none()
+    }
+
     /// Sharing starts now: for a session whose folder was just approved (again), or one that
     /// was never shared before. Approving a folder shares what happens from that moment on and
     /// nothing earlier, so everything read but unsent is dropped, the transcript (and every
@@ -1711,6 +1733,8 @@ impl Mirror {
             }
         }
         self.history_hidden_for = Some(current.process.clone());
+        // Its terminal, when it has one now, is asked where its history ends at this moment.
+        self.history_cut = current.holder.as_deref().and_then(screen::history_marker_now);
         self.dirty = true;
     }
 
@@ -1749,7 +1773,7 @@ impl Mirror {
         // read from the transcript or sent while its folder is not approved.
         // Nor while nobody can name its folder (a mirror stored before folders were checked, a
         // listing without one): unknown is not approved.
-        if self.unshared || self.native.cwd.is_none() {
+        if self.withheld() {
             return Ok(None);
         }
         if !self.subagents.relay {
@@ -2083,18 +2107,27 @@ mod tests {
     }
 
     #[test]
-    fn local_sessions_a_cursor_at_the_end_skips_every_complete_row_and_no_half_row() {
+    fn local_sessions_a_cursor_at_the_end_reads_nothing_already_there_nor_the_row_in_progress() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.jsonl");
-        for (text, offset) in [("", 0), ("a\n", 2), ("a\nbb\n", 5), ("a\nbb\nhalf", 5), ("half", 0)] {
+        for (text, skip) in [("", false), ("a\n", false), ("a\nbb\n", false), ("a\nbb\nhalf", true), ("half", true)] {
             fs::write(&path, text).unwrap();
-            assert_eq!(cursor_at_end(&path).offset, offset, "{text:?}");
+            let cursor = cursor_at_end(&path);
+            assert_eq!((cursor.offset, cursor.skip_row), (text.len() as u64, skip), "{text:?}");
+            assert!(cursor.inode.is_some());
         }
-        // A last row longer than one read: still found.
-        let long = format!("first\n{}", "x".repeat(200_000));
-        fs::write(&path, &long).unwrap();
-        assert_eq!(cursor_at_end(&path).offset, 6);
-        assert!(cursor_at_end(&path).inode.is_some());
+        // A row was being written when sharing started: its end arrives later, and none of the
+        // row is read. The rows after it are.
+        fs::write(&path, "{\"n\":1}\n{\"n\":2,\"private\":\"wri").unwrap();
+        let mut cursor = cursor_at_end(&path);
+        assert!(cursor.read(&path, "claude").unwrap().is_empty() && cursor.skip_row, "its newline is not there yet");
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(&"t".repeat(100_000).into_bytes()).unwrap();
+        assert!(cursor.read(&path, "claude").unwrap().is_empty() && cursor.skip_row);
+        file.write_all(b"tten\"}\n{\"n\":3}\n").unwrap();
+        let rows = cursor.read(&path, "claude").unwrap();
+        assert_eq!(rows, vec![json!({"n": 3})]);
+        assert!(!cursor.skip_row && cursor.offset == fs::metadata(&path).unwrap().len());
     }
 
     #[test]
@@ -2875,6 +2908,7 @@ mod tests {
             unshared: false,
             history_hidden_for: None,
             hook_cwd: None,
+            history_cut: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -2965,6 +2999,7 @@ mod tests {
             unshared: false,
             history_hidden_for: None,
             hook_cwd: None,
+            history_cut: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -3054,6 +3089,7 @@ mod tests {
             unshared: false,
             history_hidden_for: None,
             hook_cwd: None,
+            history_cut: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -3158,6 +3194,7 @@ mod tests {
             unshared: false,
             history_hidden_for: None,
             hook_cwd: None,
+            history_cut: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -3227,6 +3264,7 @@ mod tests {
             unshared: false,
             history_hidden_for: None,
             hook_cwd: None,
+            history_cut: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),

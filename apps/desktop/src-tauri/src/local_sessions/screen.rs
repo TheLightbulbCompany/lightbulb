@@ -76,8 +76,49 @@ const BACKLOG: usize = 128 * 1024;
 struct Live {
     generation: String,
     native: NativeSession,
-    /// Its terminal's history predates sharing (`Mirror::share_from_now`): none is served.
-    no_history: bool,
+    /// Its terminal started before sharing did (`Mirror::share_from_now`): see `cut_history`.
+    cut: HistoryCut,
+}
+
+/// What of a terminal's history is served. None: all of it. Some(None): none (the terminal
+/// could not be asked where its history ended when sharing started). Some(Some(marker)): what
+/// comes after `marker`, the end of its history at that moment.
+type HistoryCut = Option<Option<Vec<u8>>>;
+
+/// The end of `history` (a holder's answer) as a marker to find again later: its last lines,
+/// up to 2 KiB, without the line feeds a holder appends after its last line.
+pub(super) fn history_marker(history: &[u8]) -> Vec<u8> {
+    let body = &history[..history.iter().rposition(|byte| *byte != b'\n').map_or(0, |at| at + 1)];
+    let tail = body.len().saturating_sub(2048);
+    let line = (tail..body.len()).find(|at| *at == 0 || body[..*at].ends_with(b"\r\n"));
+    // (One line longer than that: its last bytes, not an empty marker, which would mean "all".)
+    body[line.unwrap_or(tail)..].to_vec()
+}
+
+/// A holder's history right now, as that marker. None when it does not answer.
+pub(super) fn history_marker_now(holder: &str) -> Option<Vec<u8>> {
+    manager::history(&manager::socket_dir().join(format!("{holder}.sock")), 4096).map(|history| history_marker(&history))
+}
+
+/// `history` as `cut` allows it. After a marker: only what follows its last occurrence. A
+/// marker that is not there serves nothing: it has scrolled out of what the holder keeps, or the
+/// holder drew its lines differently (a resize), and what remains cannot be told apart.
+// ponytail: exact, and without that fallback, needs the holder to count the lines that left its
+// screen (a HELLO fact) and to answer HISTORY from a given count.
+fn cut_history<'a>(history: &'a [u8], cut: &HistoryCut) -> &'a [u8] {
+    let marker = match cut {
+        None => return history,
+        Some(None) => return &[],
+        Some(Some(marker)) if marker.is_empty() => return history,
+        Some(Some(marker)) => marker,
+    };
+    let Some(at) = history.windows(marker.len()).rposition(|window| window == marker.as_slice()) else {
+        return &[];
+    };
+    let rest = &history[at + marker.len()..];
+    let rest = rest.strip_prefix(b"\n").unwrap_or(rest);
+    // Only the line feeds that end every answer: no line came after the marker.
+    if rest.contains(&b'\r') { rest } else { &[] }
 }
 
 static LIVE: Mutex<BTreeMap<String, Live>> = Mutex::new(BTreeMap::new());
@@ -110,13 +151,15 @@ pub(super) struct Ctl {
     /// That holder keeps the lines above its screen (HELLO `"history": true`): they are asked for
     /// on the relay's own connection, where their place among the output is known (`pump`).
     lines: AtomicBool,
+    /// What of the holder's history this relay may serve (`run` sets it from the live index).
+    cut: Mutex<HistoryCut>,
 }
 
 impl Ctl {
     pub(super) fn new(since: u64) -> Self {
         Self { since: AtomicU64::new(since), epoch: AtomicU64::new(0), typist: Mutex::new(None), snapshot: AtomicBool::new(false),
             history: AtomicBool::new(false), beat: SNAPSHOT_EVERY, resync: RESYNC, leave_hold: LEAVE_HOLD, stop: AtomicBool::new(false),
-            until: Mutex::new(Instant::now() + LEASE), keep: Mutex::new(Instant::now()), holder: Mutex::new(None), lines: AtomicBool::new(false) }
+            until: Mutex::new(Instant::now() + LEASE), keep: Mutex::new(Instant::now()), holder: Mutex::new(None), lines: AtomicBool::new(false), cut: Mutex::new(None) }
     }
     fn renew(&self) {
         if let Ok(mut until) = self.until.lock() {
@@ -161,14 +204,16 @@ fn send_out(frame: Value) -> bool {
 pub(super) fn index(mirrors: &BTreeMap<String, Mirror>) {
     let live = mirrors
         .values()
-        .filter(|m| m.ended_at.is_none() && !m.unshared)
+        .filter(|m| m.ended_at.is_none() && !m.withheld())
         .filter_map(|m| Some((m.session_id.clone()?, Live {
             generation: m.generation.clone(),
             native: m.native.clone(),
             // (The successor's too: until it is promoted, `native` is the process it replaced.)
-            no_history: m.history_hidden_for.as_ref().is_some_and(|hidden| {
-                *hidden == m.native.process || m.registration.successor.as_ref().is_some_and(|next| next.process == *hidden)
-            }),
+            cut: m
+                .history_hidden_for
+                .as_ref()
+                .filter(|hidden| **hidden == m.native.process || m.registration.successor.as_ref().is_some_and(|next| next.process == **hidden))
+                .map(|_| m.history_cut.clone()),
         })))
         .collect();
     if let Ok(mut slot) = LIVE.lock() {
@@ -502,10 +547,17 @@ fn run(sid: &str, ctl: &Ctl) -> Result<(), String> {
         *reads = Some(holder.id.clone());
     }
     let socket = holder.socket.clone();
-    // Shared from a moment after its terminal started: what scrolled off before is not served
-    // (one empty history frame, as for a terminal with nothing above its screen).
-    let no_history = LIVE.lock().is_ok_and(|live| live.get(sid).is_some_and(|l| l.no_history));
-    let history = move |max: usize| if no_history { Some(vec![]) } else { manager::history(&socket, max) };
+    // Shared from a moment after its terminal started: only the history after that moment is
+    // served (`cut_history`), here and for the lines the holder sends on this connection (`pump`).
+    let cut: HistoryCut = LIVE.lock().ok().and_then(|live| live.get(sid).and_then(|l| l.cut.clone()));
+    if let Ok(mut slot) = ctl.cut.lock() {
+        slot.clone_from(&cut);
+    }
+    let history = move |max: usize| match &cut {
+        None => manager::history(&socket, max),
+        // All the holder keeps, so the marker is found wherever it is; `Out` trims to its room.
+        Some(_) => manager::history(&socket, usize::MAX).map(|all| cut_history(&all, &cut).to_vec()),
+    };
     let result = watch(&mut conn, sid, &generation, ctl, &send_out, &history);
     // Every exit, early ones included: the reader thread's clone is unblocked only by this.
     let _ = conn.shutdown(std::net::Shutdown::Both);
@@ -844,7 +896,10 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
                 ctl.snapshot.store(true, SeqCst);
                 last_snapshot = Instant::now().checked_sub(SNAPSHOT_GAP).unwrap_or_else(Instant::now);
             } else {
-                match to_holder.write_all(&encode(HISTORY, &with_offset(room as u64, b""))) {
+                // With a cut: everything the holder keeps, so the marker is found; `Out::lines`
+                // trims to the room.
+                let ask = if ctl.cut.lock().is_ok_and(|cut| cut.is_some()) { u64::MAX } else { room as u64 };
+                match to_holder.write_all(&encode(HISTORY, &with_offset(ask, b""))) {
                     Err(_) if exited => return Ok(()),
                     sent => sent.map_err(|e| e.to_string())?,
                 }
@@ -895,7 +950,8 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
                 }
                 pending.clear();
                 held_since = None;
-                if out.lines(&lines, size) {
+                let cut = ctl.cut.lock().map(|cut| cut.clone()).unwrap_or(Some(None));
+                if out.lines(cut_history(&lines, &cut), size) {
                     // The holder sends the screen behind its lines itself; one from before that did
                     // not is asked for it.
                     ctl.snapshot.store(true, SeqCst);
@@ -1004,6 +1060,32 @@ fn frames_for(ids: (&str, &str), epoch: u64, seq: &mut u64, size: (u16, u16), ki
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_after_sharing_started_is_served_and_nothing_from_before_it() {
+        let line = |text: &str| format!("{text}\x1b[m\r\n").into_bytes();
+        let feeds = b"\n\n\n".to_vec();
+        // What was above the screen when sharing started (a holder ends its answer with feeds).
+        let before = [line("secret one"), line("secret two"), feeds.clone()].concat();
+        let cut: HistoryCut = Some(Some(history_marker(&before)));
+        // Later: two more lines scrolled off. Only those are served, feeds and all.
+        let later = [line("secret one"), line("secret two"), line("shared one"), line("shared two"), feeds.clone()].concat();
+        assert_eq!(cut_history(&later, &cut), [line("shared one"), line("shared two"), feeds.clone()].concat().as_slice());
+        // Nothing new yet: nothing, not the feeds alone.
+        assert!(cut_history(&before, &cut).is_empty());
+        // A later line that repeats the marker's text hides what is before it, never less.
+        let repeated = [before[..before.len() - feeds.len()].to_vec(), line("shared"), line("secret one"), line("secret two"), line("after"), feeds.clone()].concat();
+        assert_eq!(cut_history(&repeated, &cut), [line("after"), feeds.clone()].concat().as_slice());
+        // The marker is gone (scrolled out, or drawn at another width): nothing is served.
+        assert!(cut_history(&[line("shared 900"), feeds.clone()].concat(), &cut).is_empty());
+        // The terminal could not be asked when sharing started: nothing. Never cut: everything.
+        assert!(cut_history(&later, &Some(None)).is_empty());
+        assert_eq!(cut_history(&later, &None), later.as_slice());
+        // Nothing was above the screen then: everything above it now came after.
+        assert_eq!(cut_history(&later, &Some(Some(history_marker(&[])))), later.as_slice());
+        // One very long line still gives a marker (an empty one would mean "all").
+        assert_eq!(history_marker(&line(&"x".repeat(5000))).len(), 2048);
+    }
     use crate::holder::protocol::with_offset;
 
     #[test]

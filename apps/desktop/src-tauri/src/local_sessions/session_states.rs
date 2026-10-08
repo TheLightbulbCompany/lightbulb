@@ -159,7 +159,7 @@ fn kept<'a>(mirrors: &'a BTreeMap<String, Mirror>, end: &impl Fn(&str) -> Option
     let mut by_holder: BTreeMap<&str, Vec<(&str, &Mirror)>> = BTreeMap::new();
     for (key, m) in mirrors {
         let (Some(at), Some(holder)) = (m.ended_at, m.native.holder.as_deref()) else { continue };
-        if m.unshared {
+        if m.withheld() {
             continue; // not shared: its final screen is not shown either
         }
         if end(holder).is_some_and(|exited| m.ended_at_ms.unwrap_or(at * 1000) + ENDED_WITH_MS >= exited) {

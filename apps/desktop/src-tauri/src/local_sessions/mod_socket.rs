@@ -30,7 +30,7 @@ fn resolve(scope: &Path, pid: u32) -> Option<Caller> {
         }
         let Ok(mirror) = private_read::<Mirror>(&path) else { continue };
         if mirror.ended_at.is_some()
-            || mirror.unshared
+            || mirror.withheld()
             || mirror.native.restriction.is_some()
             || mirror.native.provider != "claude"
             || mirror.native.process != me

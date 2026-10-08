@@ -638,6 +638,7 @@ impl Host {
                         unshared: false,
                         history_hidden_for: None,
                         hook_cwd: None,
+                        history_cut: None,
                         waiting: None,
                         stats: Default::default(),
                         subagents: Default::default(),
@@ -784,9 +785,7 @@ impl Host {
     /// Whether this mirror takes anything from the workspace right now: read from the approved
     /// folders as they are at this moment, not as the last tick or pass saw them.
     fn refuses_input(&self, mirror: &Mirror) -> bool {
-        let native = mirror.registration.successor.as_ref().unwrap_or(&mirror.native);
-        // A folder nobody can name is not approved.
-        mirror.unshared || native.cwd.is_none() || outside_now(mirror, &(self.approved)())
+        mirror.withheld() || outside_now(mirror, &(self.approved)())
     }
 
     /// The same, for a relay frame that names a session (`watch`, typed `input`).
@@ -1082,7 +1081,7 @@ impl Host {
                 return Ok(());
             };
             // An unshared session's queue is never sent, so its end does not wait for it.
-            let unshared = mirror.unshared;
+            let unshared = mirror.withheld();
             if mirror.registration.pending
                 || mirror.resume_registration_pending
                 || (!unshared && (mirror.pending.is_some() || !mirror.queue.is_empty()))
@@ -1654,7 +1653,7 @@ impl Host {
                 let ready = deferred.iter().position(|cmd| {
                     // An unshared session's command is answered too: `command` rejects it.
                     self.mirrors.iter().any(|(key, m)| {
-                        (registered.contains(key) || m.unshared) && m.session_id.as_deref() == Some(&cmd.session_id)
+                        (registered.contains(key) || m.withheld()) && m.session_id.as_deref() == Some(&cmd.session_id)
                     })
                 });
                 if let Some(command) = ready.and_then(|index| deferred.remove(index)) {
@@ -2410,7 +2409,7 @@ impl Host {
         let live = mirror.generation == cmd.expected_generation
             && mirror.registration.successor.is_none()
             && mirror.ended_at.is_none()
-            && !mirror.unshared
+            && !mirror.withheld()
             && !self.stop.load(Ordering::SeqCst)
             && cmd.authorized_at(now)
             && self.verified(&mirror.native).await.is_ok();
@@ -2577,7 +2576,7 @@ fn transcript_path_unread(path: &Path, cursor: &Cursor) -> bool {
 
 fn has_drainable_backlog(mirror: &Mirror) -> bool {
     // What an unshared session wrote stays on this Mac: its end is reported with nothing drained.
-    !mirror.unshared
+    !mirror.withheld()
         && (mirror.pending.is_some() || !mirror.queue.is_empty() || transcript_unread(mirror))
 }
 
@@ -2608,7 +2607,7 @@ fn needs_ended_recovery(mirror: &Mirror) -> bool {
 fn owes_bound_register(dir: &Path, mirror: &Mirror) -> bool {
     mirror.ended_at.is_some()
         && !mirror.ended_sent
-        && !mirror.unshared
+        && !mirror.withheld()
         && mirror.session_id.is_none()
         && start_links::bound(dir, &mirror.native, &mirror.generation).is_some()
 }
@@ -2761,7 +2760,7 @@ fn registration_due_with_recovery(
             (mirror.ended_at.is_none() || recovering_ended.contains(*key))
                 // An unshared session registers nothing new. Only a register its end still waits
                 // on goes out, so the relay has a session for that end to land on.
-                && (!mirror.unshared || mirror.deferred_end_reason.is_some())
+                && (!mirror.withheld() || mirror.deferred_end_reason.is_some())
                 && !registered.contains(*key)
                 && !quarantine_active(quarantined, key)
         })
@@ -2861,7 +2860,7 @@ fn device_heartbeats_with_controls(
     let mut frames = vec![];
     let mut sessions: Vec<Value> = vec![];
     for (key, m) in mirrors.iter().filter(|(key, m)| {
-        registered.contains(*key) && m.ended_at.is_none() && !m.unshared && m.session_id.is_some()
+        registered.contains(*key) && m.ended_at.is_none() && !m.withheld() && m.session_id.is_some()
     }) {
         let entry = json!({"sessionId":m.session_id,"generation":m.generation,
             "status":m.native.status,"activeTurnId":m.native.active_turn,
@@ -3589,6 +3588,14 @@ pub(super) mod tests {
         stored.native.cwd = None;
         let key = native_key(&stored.native);
         let mut host = test_host(dir.path(), vec![(key.as_str(), stored.clone())]);
+        // Until a listing names its folder nothing announces it: the socket can be up before
+        // the first discovery pass has finished.
+        host.mirrors.get_mut(&key).unwrap().session_id = Some(SID.into());
+        let registered = BTreeSet::from([key.clone()]);
+        assert_eq!(registration_due_with_recovery(&host.mirrors, &BTreeSet::new(), &BTreeMap::new(), &BTreeSet::new()), None, "no register");
+        assert!(device_heartbeats(&host.mirrors, &registered, false).unwrap().iter().all(|f| f["sessions"].as_array().is_none_or(|s| s.is_empty())), "no heartbeat");
+        assert!(host.refuses_input(&host.mirrors[&key]) && host.refuses_frame(&json!({"sessionId": SID})), "no command, input, watch or terminal frame");
+        assert!(!has_drainable_backlog(&host.mirrors[&key]) && !owes_bound_register(dir.path(), &host.mirrors[&key]));
         // A pass that does not name it (a failed listing) proves nothing about its folder.
         host.observe(vec![], &BTreeSet::new()).unwrap();
         assert!(host.mirrors[&key].ended_at.is_none());
@@ -3670,6 +3677,7 @@ pub(super) mod tests {
             unshared: false,
             history_hidden_for: None,
             hook_cwd: None,
+            history_cut: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -5506,6 +5514,7 @@ pub(super) mod tests {
             unshared: false,
             history_hidden_for: None,
             hook_cwd: None,
+            history_cut: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -5583,6 +5592,7 @@ pub(super) mod tests {
             unshared: false,
             history_hidden_for: None,
             hook_cwd: None,
+            history_cut: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -5710,6 +5720,7 @@ pub(super) mod tests {
             unshared: false,
             history_hidden_for: None,
             hook_cwd: None,
+            history_cut: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),

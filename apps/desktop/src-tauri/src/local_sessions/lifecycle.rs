@@ -692,14 +692,18 @@ mod tests {
         assert_eq!(parsed.provider, Provider::Claude);
         assert_eq!(parsed.session_id, "abc");
         assert_eq!(parsed.last_assistant_message.as_deref().map(str::len), Some(LAST_MESSAGE_MAX));
-        // 1600 (not 1400): transcriptPath alone must still exceed DATAGRAM_MAX
-        // after cwd is dropped, so the fallback actually reaches its third
-        // drop instead of returning early with transcriptPath retained.
+        // The transcript path goes before the folder: dropping it alone is enough here.
         let long = json!({"session_id":"abc","transcript_path":"/".repeat(1600),"cwd":"/".repeat(200),"hook_event_name":"SessionStart"});
         let bytes = build_datagram("codex", &long);
         assert!(bytes.len() <= DATAGRAM_MAX);
         let parsed = parse_datagram(&bytes).unwrap();
         assert_eq!(parsed.provider, Provider::Codex);
+        assert!(parsed.transcript_path.is_none() && parsed.cwd.as_deref().map(str::len) == Some(200));
+        // A folder that does not fit by itself is the only way a hook loses it.
+        let long = json!({"session_id":"abc","transcript_path":"/".repeat(1600),"cwd":"/".repeat(1600),"hook_event_name":"SessionStart"});
+        let bytes = build_datagram("codex", &long);
+        assert!(bytes.len() <= DATAGRAM_MAX);
+        let parsed = parse_datagram(&bytes).unwrap();
         assert!(parsed.transcript_path.is_none() && parsed.cwd.is_none());
         assert!(parse_datagram(b"1").is_none());
         assert!(parse_datagram(b"{not json").is_none());

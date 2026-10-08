@@ -1,20 +1,9 @@
 ---
 name: lightbulb
 description: >
-  How the Lightbulb platform you run on actually works, and the only way to
-  send email. Read it when the answer depends on Lightbulb's own mechanics
-  rather than on the task's domain: emailing your owner or replying to mail
-  (you share the team address and a helper script here — there is no Gmail or
-  himalaya to find); connecting a service, channel,
-  or webhook trigger; any work in a git repository (where the clone lives,
-  branches, pull requests); hiring, publishing, or importing an agent; plans,
-  providers, credits; where a UI surface lives and what to
-  tell the owner to click; setting up Stripe or a paid account for the company;
-  what you are and are not allowed to do. Also read it before designing
-  anything event-driven, scheduled, or "AI-native company" shaped — the
-  platform already has those primitives and a greenfield design duplicates
-  them. Never answer a Lightbulb capability question from memory: your priors
-  describe other platforms, not this one.
+  Lightbulb how-to: email, connect apps, repos, hire, plans, UI. Read before
+  answering how Lightbulb works or designing anything scheduled or
+  event-driven; never from memory.
 ---
 
 Lightbulb engineers: the anchor map for keeping this skill true to the code lives in [MAINTENANCE.md](MAINTENANCE.md).

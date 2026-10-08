@@ -121,6 +121,8 @@ pub(super) struct Host {
     // ponytail: the oldest of 4096 is forgotten; a conversation forgotten that way and resumed
     // inside an approved folder uploads from its start. Raise the cap if that ever happens.
     outside: BTreeMap<String, u64>,
+    /// The approved folders the last `folder_tick` saw; None before the first.
+    approved_seen: Option<Vec<PathBuf>>,
 }
 
 type Verify = fn(PathBuf, NativeSession) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<NativeSession>> + Send>>;
@@ -630,6 +632,38 @@ impl Host {
             self.end_session(&key, "exited")?;
         }
         Ok(invalidated)
+    }
+
+    /// Every tick of the connection loop: when the approved folders changed (a folder removed
+    /// or added in Settings, at pairing or from `lightbulb claude`; a stored folder that is no
+    /// longer the one approved), every mirror whose folder is now outside them stops being
+    /// shared here and now, by the folder it already stores. No discovery pass is waited for.
+    /// A newly approved folder needs one (its sessions may have no mirror), so it is woken.
+    // The list is read every tick rather than signalled: a few stats per approved folder, and
+    // no writer of the list can be missed.
+    fn folder_tick(&mut self) -> Result<()> {
+        let approved = (self.approved)();
+        if self.approved_seen.as_ref() == Some(&approved) {
+            return Ok(());
+        }
+        let outside: Vec<String> = self
+            .mirrors
+            .iter()
+            .filter(|(_, m)| {
+                let native = m.registration.successor.as_ref().unwrap_or(&m.native);
+                !m.unshared && native.cwd.as_deref().is_some_and(|cwd| !in_approved_folder(cwd, &approved))
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in outside {
+            self.remember_outside(&key)?;
+            self.unshare(&key)?;
+        }
+        self.approved_seen = Some(approved);
+        if let Some(wake) = &self.rediscover {
+            wake.notify_one();
+        }
+        Ok(())
     }
 
     fn remember_outside(&mut self, key: &str) -> Result<()> {
@@ -1149,6 +1183,7 @@ impl Host {
         let outside = private_read(&dir.join(OUTSIDE_FILE)).unwrap_or_default();
         let mut host = Self {
             outside,
+            approved_seen: None,
             workspace_at: Instant::now() - Duration::from_secs(30),
             workspace_key: None,
             dir,
@@ -1411,6 +1446,8 @@ impl Host {
         // An end the relay has not been told about -- because it happened while the
         // socket was down, or in a previous run of this process -- is still owed to it.
         self.liveness_tick();
+        // Before anything is sent on this socket: the list may have changed while it was down.
+        self.folder_tick()?;
         super::session_states::index(&self.mirrors);
         let mut recovering_ended = ended_recovery_keys(&self.mirrors);
         let mut unreported: Vec<String> = self
@@ -1584,6 +1621,7 @@ impl Host {
                 _ = tick.tick() => {
                     arm = laps.woke("tick");
                     self.liveness_tick();
+                    self.folder_tick()?;
                     if last_recovery_scan.elapsed() >= Duration::from_secs(1) {
                         last_recovery_scan = Instant::now();
                         self.refresh_ended_recovery(&mut recovering_ended);
@@ -3106,6 +3144,34 @@ pub(super) mod tests {
         assert!(host.mirrors[&key].ended_at.is_none(), "the reshared session is not ended by the old revocation");
     }
 
+    #[tokio::test]
+    async fn local_sessions_removing_a_folder_stops_sharing_on_the_next_tick_without_a_discovery_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let approved = dir.path().join("approved");
+        fs::create_dir_all(&approved).unwrap();
+        approve(&[&approved]);
+        let mut mirror = test_mirror(SID, "g1");
+        mirror.native.cwd = Some(approved.clone());
+        mirror.session_id = Some("s1".into());
+        mirror.queue.push(json!({"text": "not yet sent"}));
+        let key = native_key(&mirror.native);
+        let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
+        host.folder_tick().unwrap();
+        assert!(!host.mirrors[&key].unshared, "an unchanged list changes nothing");
+
+        // Removed in Settings. No `observe` runs between here and the assertions.
+        approve(&[]);
+        host.folder_tick().unwrap();
+        let mirror = host.mirrors.get_mut(&key).unwrap();
+        assert!(mirror.unshared && mirror.ended_at.is_some());
+        assert_eq!(mirror.next_batch().unwrap(), None, "nothing is uploaded");
+        assert!(host.outside.contains_key(&key), "and a later approval shares it from then on only");
+        let send = json!({"type":"local.session.command","command":{"requestId":"r1","expectedGeneration":"g1","kind":"send","text":"hello",
+            "expectedTurnId":null,"sessionId":"s1","roomId":"","actorUserId":"alice","commandSeq":1,"state":"dispatched","createdAt":100,"deliverBy":130,"held":false,"providerMessageId":null}});
+        let command = parse_command(&send, "alice").unwrap();
+        assert_eq!(host.command(&command, None).await.unwrap().outcome, "rejected");
+    }
+
     #[test]
     fn local_sessions_a_hook_cannot_bring_back_a_session_whose_folder_was_removed() {
         let dir = tempfile::tempdir().unwrap();
@@ -3301,6 +3367,7 @@ pub(super) mod tests {
             verify: verify_native,
             approved: anywhere,
             outside: BTreeMap::new(),
+            approved_seen: None,
         }
     }
 
@@ -5100,6 +5167,7 @@ pub(super) mod tests {
             verify: verify_native,
             approved: anywhere,
             outside: BTreeMap::new(),
+            approved_seen: None,
         };
         let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
@@ -5301,6 +5369,7 @@ pub(super) mod tests {
             verify: verify_native,
             approved: anywhere,
             outside: BTreeMap::new(),
+            approved_seen: None,
         };
         let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
@@ -6004,6 +6073,7 @@ pub(super) mod tests {
             verify: verify_native,
             approved: anywhere,
             outside: BTreeMap::new(),
+            approved_seen: None,
         };
         let enrollment = Enrollment {
             owner_id: "org".into(),

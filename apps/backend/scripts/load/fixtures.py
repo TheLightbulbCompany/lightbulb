@@ -26,6 +26,8 @@ import signal
 import subprocess
 import sys
 import time
+
+import httpx
 from pathlib import Path
 
 from scripts.multiparty_e2e.runner import API, Api, Clerk, dev_only
@@ -139,19 +141,10 @@ def _members(clerk: Clerk, org_id: str) -> list[dict]:
 
 def _ensure_user(clerk: Clerk, n: int) -> str:
     email = user_email(n)
-    user = (
-        clerk.user(email)
-        or clerk.http.post(
-            "/users",
-            json={
-                "email_address": [email],
-                "first_name": first_name(n),
-                "last_name": "Load",
-                "skip_password_requirement": True,
-            },
-        )
-        .raise_for_status()
-        .json()
+    user = clerk.user(email) or _bapi(
+        clerk,
+        "/users",
+        {"email_address": [email], "first_name": first_name(n), "last_name": "Load", "skip_password_requirement": True},
     )
     return user["id"]
 
@@ -161,7 +154,7 @@ ALREADY_MEMBER = "already_a_member_in_organization"
 
 
 def _add_member(clerk: Clerk, org_id: str, user_id: str) -> None:
-    resp = clerk.http.post(f"/organizations/{org_id}/memberships", json={"user_id": user_id, "role": "org:member"})
+    resp = _post(clerk, f"/organizations/{org_id}/memberships", {"user_id": user_id, "role": "org:member"})
     if resp.status_code < 400:
         return
     try:
@@ -177,8 +170,10 @@ def _add_member(clerk: Clerk, org_id: str, user_id: str) -> None:
 _last_call = 0.0
 
 
-def _bapi(clerk: Clerk, path: str, body: dict) -> dict:
-    """One paced Backend API POST (<= 5/s). A 429 waits out Retry-After (else 2 s x attempt)."""
+def _post(clerk: Clerk, path: str, body: dict) -> httpx.Response:
+    """One paced Backend API POST (<= 5/s). A 429 waits out Retry-After (else 2 s x attempt), then the
+    response is the caller's to judge. Every setup/run POST goes through here: user and org creation and
+    membership adds hit the same per-instance limit the session path does (setup 429'd on 2026-10-08)."""
     global _last_call
     for attempt in range(1, BAPI_TRIES + 1):
         wait = _last_call + BAPI_SPACING_S - time.monotonic()
@@ -189,10 +184,16 @@ def _bapi(clerk: Clerk, path: str, body: dict) -> dict:
         if resp.status_code == 429 and attempt < BAPI_TRIES:
             time.sleep(min(float(resp.headers.get("retry-after") or 2 * attempt), 60))
             continue
-        if resp.status_code >= 400:
-            raise SystemExit(f"Clerk POST {path.split('/')[1]} failed: HTTP {resp.status_code} {resp.text[:300]}")
-        return resp.json()
+        return resp
     raise AssertionError("unreachable")
+
+
+def _bapi(clerk: Clerk, path: str, body: dict) -> dict:
+    """A paced POST whose only acceptable answer is success: anything else stops the run with Clerk's words."""
+    resp = _post(clerk, path, body)
+    if resp.status_code >= 400:
+        raise SystemExit(f"Clerk POST {path.split('/')[1]} failed: HTTP {resp.status_code} {resp.text[:300]}")
+    return resp.json()
 
 
 class BapiSession:
@@ -255,11 +256,8 @@ def setup(args) -> int:
     orgs = []
     for k, org in enumerate(layout):
         ids = [_ensure_user(clerk, k * args.users_per_org + i + 1) for i in range(len(org["emails"]))]
-        row = (
-            _find_org(clerk, org["name"])
-            or clerk.http.post("/organizations", json={"name": org["name"], "created_by": ids[0]})
-            .raise_for_status()
-            .json()
+        row = _find_org(clerk, org["name"]) or _bapi(
+            clerk, "/organizations", {"name": org["name"], "created_by": ids[0]}
         )
         for uid in ids[1:]:  # one at a time: each fires the Paperclip JOIN + #general seat
             _add_member(clerk, row["id"], uid)

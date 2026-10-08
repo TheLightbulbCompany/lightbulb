@@ -7,6 +7,7 @@ import os
 import stat
 
 import pytest
+from types import SimpleNamespace
 
 from scripts.load import fixtures as fx
 
@@ -133,6 +134,24 @@ def test_bapi_calls_are_paced_and_wait_out_a_429(monkeypatch):
     assert 3.0 in waits  # Retry-After
     assert any(w == pytest.approx(fx.BAPI_SPACING_S) for w in waits)  # back-to-back calls stay <= 5/s
     assert len(clerk.posts) == 3
+
+
+def test_adding_a_member_waits_out_a_429_and_treats_already_a_member_as_done(monkeypatch):
+    """Setup's membership adds hit the same per-instance limit the session path does (2026-10-08)."""
+    answers = iter([(429, {"retry-after": "3"}, {}), (422, {}, {"errors": [{"code": fx.ALREADY_MEMBER}]})])
+    posted, slept = [], []
+
+    def post(path, json):
+        status, headers, body = next(answers)
+        posted.append((path, json))
+        return SimpleNamespace(status_code=status, headers=headers, json=lambda: body, text=str(body))
+
+    monkeypatch.setattr(fx.time, "sleep", lambda s: slept.append(s))
+    monkeypatch.setattr(fx, "_last_call", 0.0)
+    clerk = SimpleNamespace(http=SimpleNamespace(post=post))
+    fx._add_member(clerk, "org_1", "user_9")  # no SystemExit: the 429 was waited out, then already-a-member is done
+    assert [p for p, _ in posted] == ["/organizations/org_1/memberships"] * 2
+    assert 3.0 in slept
 
 
 def test_a_bapi_error_stops_the_run_with_clerks_status(monkeypatch):

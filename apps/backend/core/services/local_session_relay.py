@@ -312,6 +312,10 @@ async def _sender_label(command: dict, owner: str | None) -> dict | None:
     }
 
 
+#: In-flight hint fan-outs, referenced so asyncio cannot garbage-collect them before they finish.
+_hint_tasks: set[asyncio.Task[None]] = set()
+
+
 async def publish_resources_changed(owner: str, human: str, *, transcript: bool = False) -> None:
     """One ``workspace.sessions.changed`` per change, on each workspace member's own channel.
 
@@ -324,16 +328,23 @@ async def publish_resources_changed(owner: str, human: str, *, transcript: bool 
     """
     from core.services.live_events import publish_owner_users
 
-    try:
-        await publish_owner_users(
-            owner,
-            make_live_event(
-                "workspace.sessions.changed", {"humanUserId": human, **({"transcript": True} if transcript else {})}
-            ),
-        )
-    except Exception:
-        # Hints are expendable; authorized HTTP polling repairs lost hints.
-        logger.warning("Workspace session hint failed")
+    event = make_live_event(
+        "workspace.sessions.changed", {"humanUserId": human, **({"transcript": True} if transcript else {})}
+    )
+
+    async def fan_out() -> None:
+        try:
+            await publish_owner_users(owner, event)
+        except Exception:
+            # Hints are expendable; authorized HTTP polling repairs lost hints.
+            logger.warning("Workspace session hint failed")
+
+    # Off the caller's frame: the fan-out is one publish per workspace member (51 members = 2.4-3.2 s
+    # of a register frame on dev, 2026-10-08), and the desktop's ack deadline is 10 s. The task is
+    # kept until done so the loop never drops it mid-flight.
+    task = asyncio.create_task(fan_out())
+    _hint_tasks.add(task)
+    task.add_done_callback(_hint_tasks.discard)
 
 
 #: Heartbeat fields whose change counts as the user doing something (stamps lastEventAt).

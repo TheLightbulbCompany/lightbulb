@@ -321,7 +321,7 @@ _hint_running: dict[tuple[str, str, bool], bool] = {}
 
 
 async def publish_resources_changed(owner: str, human: str, *, transcript: bool = False) -> None:
-    """One ``workspace.sessions.changed`` per change, on each workspace member's own channel.
+    """One ``workspace.sessions.changed`` per change, on the workspace sessions channel.
 
     Clients refetch their open room's resources (and so its transcript) from it. It used to
     fan out a ``room.resources.changed`` to every room the human is in, one membership read and
@@ -330,7 +330,7 @@ async def publish_resources_changed(owner: str, human: str, *, transcript: bool 
     ``transcript`` marks a streaming batch: open panes refetch, the sidebar list ignores it (it
     lists liveness, not content, and a streaming teammate would refetch it once a second).
     """
-    from core.services.live_events import publish_owner_users
+    from core.services.live_events import get_live_event_publisher
 
     key = (owner, human, transcript)
     if key in _hint_running:
@@ -345,7 +345,7 @@ async def publish_resources_changed(owner: str, human: str, *, transcript: bool 
         try:
             while True:
                 try:
-                    await publish_owner_users(owner, event)
+                    await get_live_event_publisher().publish_sessions(owner, event)
                 except Exception:
                     # Hints are expendable; authorized HTTP polling repairs lost hints.
                     logger.warning("Workspace session hint failed")
@@ -355,9 +355,10 @@ async def publish_resources_changed(owner: str, human: str, *, transcript: bool 
         finally:
             _hint_running.pop(key, None)
 
-    # Off the caller's frame: the fan-out is one publish per workspace member (51 members = 2.4-3.2 s
-    # of a register frame on dev, 2026-10-08), and the desktop's ack deadline is 10 s. The task is
-    # kept until done so the loop never drops it mid-flight.
+    # Off the caller's frame: it was one publish per workspace member (51 members = 2.4-3.2 s of a
+    # register frame on dev, 2026-10-08) and is one publish on the sessions channel now, but a slow
+    # AppSync still must not hold the desktop's 10 s ack. The task is kept until done so the loop
+    # never drops it mid-flight.
     task = asyncio.create_task(fan_out())
     _hint_tasks.add(task)
     task.add_done_callback(_hint_tasks.discard)

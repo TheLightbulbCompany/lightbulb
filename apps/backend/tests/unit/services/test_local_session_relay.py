@@ -492,8 +492,8 @@ async def test_ingestion_is_bounded_ordered_deduplicated_and_emits_only_workspac
     assert transport[4]
     for hint in transport[4]:
         event = json.loads(hint["events"][0])
-        # One workspace hint on each member's own channel; no per-room fan-out (2026-09-24).
-        assert "/users/" in hint["channel"]
+        # One workspace hint on the workspace sessions channel; no per-room fan-out (2026-09-24).
+        assert hint["channel"].endswith("/sessions")
         assert event["type"] == "workspace.sessions.changed"
         assert event["payload"]["humanUserId"] == ALICE.user_id
         assert "private transcript" not in json.dumps(hint)
@@ -1107,13 +1107,13 @@ async def test_event_ingestion_publishes_a_hint_at_most_once_per_second(transpor
     lifecycle = {"kind": "lifecycle", "role": "system", "text": "", "lifecycle": "turn_end"}
     with patch("time.time", return_value=2000000000.0):
         await relay(transport).handle_message("conn-1", body)
-        first = [h for h in transport[4] if "/users/" in h["channel"]]
+        first = [h for h in transport[4] if h["channel"].endswith("/sessions")]
         assert len(first) == 1
         await relay(transport).handle_message("conn-1", {**body, "batchId": "b2", "afterSeq": 1, "events": [lifecycle]})
-        assert len([h for h in transport[4] if "/users/" in h["channel"]]) == 1
+        assert len([h for h in transport[4] if h["channel"].endswith("/sessions")]) == 1
     with patch("time.time", return_value=2000000002.0):
         await relay(transport).handle_message("conn-1", {**body, "batchId": "b3", "afterSeq": 2, "events": [lifecycle]})
-    assert len([h for h in transport[4] if "/users/" in h["channel"]]) == 2
+    assert len([h for h in transport[4] if h["channel"].endswith("/sessions")]) == 2
 
 
 @pytest.mark.asyncio
@@ -1585,7 +1585,7 @@ async def test_session_title_registers_updates_on_heartbeat_and_survives_silent_
     assert transport[4] == []
     await relay(transport).handle_message("conn-1", heartbeat(sid, title="Renamed by the harness"))
     assert (await repo.get_session(OWNER, sid))["title"] == "Renamed by the harness"
-    assert any("/users/" in hint["channel"] for hint in transport[4])
+    assert any(hint["channel"].endswith("/sessions") for hint in transport[4])
     connect(transport, "conn-2", "2000")
     await relay(transport).handle_message("conn-2", registration())
     assert (await repo.get_session(OWNER, sid))["title"] == "Renamed by the harness"
@@ -2102,18 +2102,19 @@ async def test_register_and_events_stamp_last_event_at(transport):
 
 
 @pytest.mark.asyncio
-async def test_register_publishes_a_workspace_hint_to_every_user_stream(transport, db):
-    await messaging_repo.ensure_user_stream(OWNER, ALICE.user_id)
-    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+async def test_register_publishes_one_workspace_hint_whatever_the_member_count(transport, db):
+    """One publish on /ws/<ws>/sessions, not one per member stream (dev 2026-10-08: 51
+    members x 30 registrations was 1,530 publishes)."""
+    for i in range(50):
+        await messaging_repo.ensure_user_stream(OWNER, f"user_{i}")
+    workspace = await messaging_repo.ensure_workspace_id(OWNER)
     await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, enabled=True))
     connect(transport)
     transport[4].clear()
     await relay(transport).handle_message("conn-1", registration())
-    user_hints = [json.loads(h["events"][0]) for h in transport[4] if "/users/" in h["channel"]]
-    assert len(user_hints) == 2
-    assert {e["type"] for e in user_hints} == {"workspace.sessions.changed"}
-    assert all(e["payload"] == {"humanUserId": ALICE.user_id} for e in user_hints)
-    assert not any("/rooms/" in h["channel"] for h in transport[4])
+    hints = [h for h in transport[4] if "workspace.sessions.changed" in h["events"][0]]
+    assert [h["channel"] for h in hints] == [f"/ws/{workspace}/sessions"]
+    assert json.loads(hints[0]["events"][0])["payload"] == {"humanUserId": ALICE.user_id}
 
 
 @pytest.mark.asyncio
@@ -2135,8 +2136,8 @@ async def test_event_batches_send_a_transcript_workspace_hint(transport, db):
             "events": [{"kind": "text", "role": "assistant", "text": "one"}],
         },
     )
-    hints = [json.loads(h["events"][0]) for h in transport[4] if "/users/" in h["channel"]]
-    assert len(hints) == 2
+    hints = [json.loads(h["events"][0]) for h in transport[4] if h["channel"].endswith("/sessions")]
+    assert len(hints) == 1
     assert all(e["payload"] == {"humanUserId": ALICE.user_id, "transcript": True} for e in hints)
     assert not any("/rooms/" in h["channel"] for h in transport[4])
 
@@ -2179,8 +2180,8 @@ async def test_approval_metadata_changes_refresh_the_session_list_without_waitin
             assert public.pending_approval is None
         else:
             assert public.pending_approval.approval_id == event["itemId"]
-        hints = [json.loads(h["events"][0]) for h in transport[4] if "/users/" in h["channel"]]
-        assert len(hints) == 2
+        hints = [json.loads(h["events"][0]) for h in transport[4] if h["channel"].endswith("/sessions")]
+        assert len(hints) == 1
         expected = {"humanUserId": ALICE.user_id}
         if change == "unchanged":
             expected["transcript"] = True
@@ -2529,13 +2530,13 @@ async def test_a_session_hint_fans_out_off_the_callers_frame(monkeypatch):
 
     started, finished = asyncio.Event(), asyncio.Event()
 
-    async def slow_publish(owner, event):
+    async def slow_publish(_self, owner, event):
         started.set()
         await asyncio.sleep(0.05)
         assert event["type"] == "workspace.sessions.changed" and event["payload"]["humanUserId"] == "user_1"
         finished.set()
 
-    monkeypatch.setattr("core.services.live_events.publish_owner_users", slow_publish)
+    monkeypatch.setattr("core.services.live_events.LiveEventPublisher.publish_sessions", slow_publish)
     await asyncio.wait_for(relay.publish_resources_changed("org_1", "user_1"), timeout=0.01)  # returns at once
     assert not finished.is_set()
     await asyncio.wait_for(finished.wait(), timeout=1)  # and the hint still went out
@@ -2553,11 +2554,11 @@ async def test_hints_for_one_person_coalesce_while_a_fan_out_is_running(monkeypa
 
     calls, gate = [], asyncio.Event()
 
-    async def publish(owner, event):
+    async def publish(_self, owner, event):
         calls.append(event["payload"])
         await gate.wait()
 
-    monkeypatch.setattr("core.services.live_events.publish_owner_users", publish)
+    monkeypatch.setattr("core.services.live_events.LiveEventPublisher.publish_sessions", publish)
     for _ in range(5):
         await relay.publish_resources_changed("org_1", "user_1")
     await asyncio.sleep(0)

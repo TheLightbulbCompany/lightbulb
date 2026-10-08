@@ -59,7 +59,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
   const runtimeClient = useMemo(() => createRuntimeClient(api, () => crypto.randomUUID()), [api]);
   const ownerScope = orgId ?? userId ?? null;
   const httpReady = !!isLoaded && !!userId;
-  const { data: config } = useSWR(
+  const { data: config, mutate: refreshConfig } = useSWR(
     httpReady ? ["messaging-live-config", userId, ownerScope] : null,
     () => messaging.getLiveConfig(),
     // The refresh is the backend TeamsEventBroker's keep-alive: it releases a user's
@@ -105,6 +105,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     uuid: () => crypto.randomUUID(),
     onEvent: dispatchEvent,
     onChatMessage: dispatchChat,
+    onConfigStale: () => void refreshConfig(),
   });
 
   const onEvent = useCallback((handler: (event: LiveEvent) => void) => {

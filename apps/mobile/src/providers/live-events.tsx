@@ -110,9 +110,21 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     setActiveRoom(null);
   }, [userId, ownerScope]);
 
+  // Swap in a fresh live-config without dropping the socket (the loader above nulls it first):
+  // membership may have changed while the app was backgrounded or the socket was down.
+  const refreshConfig = useCallback(() => {
+    if (!httpReady) return;
+    void messaging.getLiveConfig().then(setConfig).catch(() => {});
+  }, [httpReady, messaging]);
+
+  const refreshConfigRef = useRef(refreshConfig);
+  refreshConfigRef.current = refreshConfig;
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
-      if (state === "active") setForeground(true);
+      if (state === "active") {
+        setForeground(true);
+        refreshConfigRef.current();
+      }
       else if (state === "background") setForeground(false);
     });
     return () => subscription.remove();
@@ -148,6 +160,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     uuid: () => randomUUID(),
     onEvent: dispatchEvent,
     onChatMessage: dispatchChat,
+    onConfigStale: refreshConfig,
     enabled: foreground && httpReady,
   });
 

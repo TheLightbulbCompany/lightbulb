@@ -60,6 +60,7 @@ const config: LiveConfig = {
   workspaceId: WS,
 };
 const userChannel = `/ws/${WS}/users/${config.userChannelKey}`;
+const sessionsChannel = `/ws/${WS}/sessions`;
 const roomA = `/ws/${WS}/rooms/22222222-2222-4222-8222-222222222222/33333333-3333-4333-8333-333333333333`;
 const roomB = `/ws/${WS}/rooms/44444444-4444-4444-8444-444444444444/55555555-5555-4555-8555-555555555555`;
 
@@ -111,7 +112,7 @@ describe("useLiveEvents", () => {
       first.ack();
     });
     await flush();
-    expect(first.subscriptions().map((subscription) => subscription.channel)).toEqual([userChannel, roomA]);
+    expect(first.subscriptions().map((subscription) => subscription.channel)).toEqual([userChannel, sessionsChannel, roomA]);
     // Nothing acked yet: not connected, and the room is pending.
     expect(result.current.liveConnected).toBe(false);
     expect(result.current.roomSubscriptionPending).toBe(true);
@@ -162,5 +163,92 @@ describe("useLiveEvents", () => {
     rerender({ ...options, config: null, userChannel: null, roomChannel: null });
     expect(result.current.liveConnected).toBe(false);
     expect(first.readyState).toBe(FakeSocket.CLOSED);
+  });
+
+  it("closes everything on workspace.access.removed for this workspace and asks for a fresh live-config", async () => {
+    const onEvent = vi.fn();
+    const onConfigStale = vi.fn();
+    let uuid = 0;
+    const { result } = renderHook(() => useLiveEvents({
+      config,
+      getToken: vi.fn(async () => "template-token"),
+      userChannel,
+      roomChannel: roomA,
+      uuid: () => `00000000-0000-4000-8000-${String(++uuid).padStart(12, "0")}`,
+      onEvent,
+      onConfigStale,
+    }));
+    await flush();
+    const socket = FakeSocket.instances[0];
+    act(() => {
+      socket.open();
+      socket.ack();
+    });
+    await flush();
+    act(() => acknowledgeSubscriptions(socket));
+    expect(result.current.liveConnected).toBe(true);
+
+    const user = socket.subscriptions().find((s) => s.channel === userChannel)!;
+    const notice = (eventId: string, workspaceId: string) => ({
+      schemaVersion: 1,
+      eventId,
+      type: "workspace.access.removed",
+      occurredAt: "2026-10-08T00:00:00Z",
+      payload: { workspaceId },
+    });
+    // Another workspace's notice (a multi-org account) changes nothing here.
+    act(() => socket.receive({ type: "data", id: user.id, event: [JSON.stringify(notice("e-1", "ffffffff-ffff-4fff-8fff-ffffffffffff"))] }));
+    expect(socket.readyState).toBe(FakeSocket.OPEN);
+
+    act(() => socket.receive({ type: "data", id: user.id, event: [JSON.stringify(notice("e-2", WS))] }));
+    await flush();
+    expect(socket.readyState).toBe(FakeSocket.CLOSED);
+    expect(result.current.liveConnected).toBe(false);
+    expect(onConfigStale).toHaveBeenCalledTimes(1);
+    expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ type: "workspace.access.removed" }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(FakeSocket.instances).toHaveLength(1); // no reconnect into the workspace it left
+  });
+
+  it("asks for a fresh live-config when the sessions channel is refused or the socket reconnects", async () => {
+    const onConfigStale = vi.fn();
+    let uuid = 0;
+    renderHook(() => useLiveEvents({
+      config,
+      getToken: vi.fn(async () => "template-token"),
+      userChannel,
+      roomChannel: null,
+      uuid: () => `00000000-0000-4000-8000-${String(++uuid).padStart(12, "0")}`,
+      onEvent: vi.fn(),
+      onConfigStale,
+    }));
+    await flush();
+    const socket = FakeSocket.instances[0];
+    act(() => {
+      socket.open();
+      socket.ack();
+    });
+    await flush();
+    expect(onConfigStale).not.toHaveBeenCalled(); // the first connect is not stale
+
+    // No longer a member: AppSync refuses the sessions subscription.
+    const sessions = socket.subscriptions().find((s) => s.channel === sessionsChannel)!;
+    act(() => socket.receive({ type: "subscribe_error", id: sessions.id }));
+    expect(onConfigStale).toHaveBeenCalledTimes(1);
+
+    // The client reconnects after the refusal; that second ack is stale too.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    const next = FakeSocket.instances[FakeSocket.instances.length - 1];
+    expect(next).not.toBe(socket);
+    act(() => {
+      next.open();
+      next.ack();
+    });
+    await flush();
+    expect(onConfigStale).toHaveBeenCalledTimes(2);
   });
 });

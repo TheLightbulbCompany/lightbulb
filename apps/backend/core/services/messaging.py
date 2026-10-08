@@ -192,14 +192,16 @@ USER_LIVE_EVENT_TYPES = frozenset(
         "runtime.resource.invalidated",
         "paperclip.event",
         "room.member.updated",
-        "workspace.sessions.changed",
+        "workspace.access.removed",
         "workspace.session.attention",
         "workspace.session.screen",
         "workspace.session.typing",
         "digest.ready",
     }
 )
-LIVE_EVENT_TYPES = ROOM_LIVE_EVENT_TYPES | USER_LIVE_EVENT_TYPES
+#: The one workspace-wide sessions channel, ``/ws/<ws>/sessions``.
+SESSIONS_LIVE_EVENT_TYPES = frozenset({"workspace.sessions.changed"})
+LIVE_EVENT_TYPES = ROOM_LIVE_EVENT_TYPES | USER_LIVE_EVENT_TYPES | SESSIONS_LIVE_EVENT_TYPES
 
 
 class ContractModel(BaseModel):
@@ -2476,6 +2478,18 @@ async def revoke_human_membership(owner_id: str, user_id: str) -> None:
         await _remove_member_with_notices(meta, "human", user_id)
         if is_session_room(meta) and meta["session"].get("ownerId") == user_id:
             own_session_chats.append(meta["session"]["sessionId"])
+    # Cooperative revocation of /ws/<ws>/sessions: an open AppSync subscription cannot be closed
+    # server-side, so the leaver's own client is told to drop it, while its channel still works.
+    # Their stream (and sessions member row) then go off, so no new subscribe is admitted.
+    try:
+        from core.services.live_events import get_live_event_publisher  # imports this module
+
+        workspace_id = await messaging_repo.ensure_workspace_id(owner_id)
+        await get_live_event_publisher().publish_user(
+            owner_id, user_id, make_live_event("workspace.access.removed", {"workspaceId": workspace_id})
+        )
+    except Exception:
+        logger.warning("workspace.access.removed notice failed")
     await messaging_repo.deactivate_user_stream(owner_id, user_id)
     if own_session_chats:
         # Their sessions' chats go silent for everyone: the person they were about is gone. After

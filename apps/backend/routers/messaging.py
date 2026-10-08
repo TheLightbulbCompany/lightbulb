@@ -636,7 +636,9 @@ async def live_config(auth: AuthContext = Depends(get_current_user)):
     key = await messaging_repo.ensure_user_stream(owner_id, auth.user_id)
     if key is None:  # removed from the workspace: a stale JWT never revives the stream
         raise ApiProblem("WORKSPACE_MEMBERSHIP_REQUIRED", "You are no longer a member of this workspace.")
-    workspace_id = await messaging_repo.ensure_workspace_id(owner_id)
+    workspace_id = await messaging_repo.enroll_sessions_member(owner_id, auth.user_id, key)
+    if workspace_id is None:  # removed while this request ran
+        raise ApiProblem("WORKSPACE_MEMBERSHIP_REQUIRED", "You are no longer a member of this workspace.")
     try:
         from core.services.teams_event_broker import get_broker
 

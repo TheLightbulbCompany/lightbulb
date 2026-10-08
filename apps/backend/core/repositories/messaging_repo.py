@@ -23,6 +23,10 @@ every protected operation rechecks the base ``MEMBER#`` row strongly):
     OWNER#<owner>   OPERATION#<id>                     async runtime op status/result
     OWNER#<owner>   WORK#OPERATION#<id>                one-shot outbox for runtime work
     OWNER#<owner>   WORKSPACE                          opaque AppSync channel-path segment
+    WORKSPACE#<ws>  META                               owner of the path segment (AppSync onPublish reads it)
+    WORKSPACE#<ws>  MEMBER#<user>                      the user may subscribe /ws/<ws>/sessions (onSubscribe
+                                                       reads it); written by live-config while their stream
+                                                       is active, deleted with it by deactivate_user_stream
     OWNER#<owner>   MCPSEND#<user>#<requestId>          hosted MCP send: its destination (+ roomId once a
                                                        person send's DM is known); no TTL, the receipt index
     OWNER#<owner>   RUN#<runId>                         async turn ledger (Task 9)
@@ -234,6 +238,10 @@ def work_followup_sk(agent_id: str, follow_up_id: str) -> str:
 
 def workspace_sk() -> str:
     return "WORKSPACE"
+
+
+def workspace_pk(workspace_id: str) -> str:
+    return f"WORKSPACE#{workspace_id}"
 
 
 def run_sk(run_id: str) -> str:
@@ -2122,16 +2130,83 @@ async def ensure_user_stream(owner_id: str, user_id: str, *, rejoin: bool = Fals
     return winner["channelKey"]
 
 
-async def deactivate_user_stream(owner_id: str, user_id: str) -> bool:
-    """Mark BOTH mappings inactive (idempotent). Returns whether anything changed."""
-    current = await get_user_stream(owner_id, user_id)
-    if current is None or not current.get("active"):
-        return False
+async def enroll_sessions_member(owner_id: str, user_id: str, channel_key: str) -> str | None:
+    """Let an ACTIVE member subscribe the workspace sessions channel, ``/ws/<ws>/sessions``:
+    the ``WORKSPACE#<ws>`` lookup and member rows the AppSync handler reads, conditioned on the
+    user's stream still being on with ``channel_key``. Returns the workspace id, or None when
+    the stream went off meanwhile (a concurrent removal: that transaction deletes the row)."""
+    workspace_id = await ensure_workspace_id(owner_id)
     table_name = _table().name
     now = utc_now_iso()
     try:
         await _transact(
             [
+                {
+                    "Put": {
+                        "TableName": table_name,
+                        "Item": {
+                            "pk": workspace_pk(workspace_id),
+                            "sk": "META",
+                            "ownerId": owner_id,
+                            "workspaceId": workspace_id,
+                        },
+                    }
+                },
+                {
+                    "Put": {
+                        "TableName": table_name,
+                        "Item": {
+                            "pk": workspace_pk(workspace_id),
+                            "sk": f"MEMBER#{user_id}",
+                            "ownerId": owner_id,
+                            "userId": user_id,
+                            "active": True,
+                            "updatedAt": now,
+                        },
+                    }
+                },
+                {
+                    "ConditionCheck": {
+                        "TableName": table_name,
+                        "Key": {"pk": owner_pk(owner_id), "sk": userstream_sk(user_id)},
+                        "ConditionExpression": "active = :t AND channelKey = :key",
+                        "ExpressionAttributeValues": {":t": True, ":key": channel_key},
+                    }
+                },
+            ]
+        )
+        return workspace_id
+    except ClientError as exc:
+        if _is_cancelled(exc):
+            return None
+        raise
+
+
+async def deactivate_user_stream(owner_id: str, user_id: str) -> bool:
+    """Mark BOTH mappings inactive and drop the sessions-channel member row, in one write
+    (idempotent). Returns whether anything changed."""
+    current = await get_user_stream(owner_id, user_id)
+    if current is None or not current.get("active"):
+        return False
+    table_name = _table().name
+    now = utc_now_iso()
+    workspace = await _get(owner_pk(owner_id), workspace_sk())
+    member_row = (
+        [
+            {
+                "Delete": {
+                    "TableName": table_name,
+                    "Key": {"pk": workspace_pk(workspace["workspaceId"]), "sk": f"MEMBER#{user_id}"},
+                }
+            }
+        ]
+        if workspace
+        else []
+    )
+    try:
+        await _transact(
+            member_row
+            + [
                 {
                     "Update": {
                         "TableName": table_name,
@@ -2821,6 +2896,9 @@ async def delete_owner_partition(owner_id: str) -> int:
     count = 0
     for s in streams:
         count += await _delete_partition(stream_pk(s["channelKey"]))
+    workspace = await _get(owner_pk(owner_id), workspace_sk())
+    if workspace:
+        count += await _delete_partition(workspace_pk(workspace["workspaceId"]))
     count += await _delete_partition(owner_pk(owner_id))
     from core.repositories import local_sessions_repo
 

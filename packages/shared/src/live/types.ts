@@ -129,6 +129,7 @@ export type LiveEventType =
   | "room.browser.frame"
   | "room.metadata.changed"
   | "workspace.sessions.changed"
+  | "workspace.access.removed"
   | "workspace.session.attention"
   | "workspace.session.screen"
   | "workspace.session.typing"
@@ -155,6 +156,7 @@ export const LIVE_EVENT_TYPES: ReadonlySet<string> = new Set<LiveEventType>([
   "room.browser.frame",
   "room.metadata.changed",
   "workspace.sessions.changed",
+  "workspace.access.removed",
   "workspace.session.attention",
   "workspace.session.screen",
   "workspace.session.typing",
@@ -303,6 +305,8 @@ export type LiveEvent =
   | LiveEventEnvelope<"room.browser.frame", RoomBrowserFrame>
   | LiveEventEnvelope<"room.metadata.changed", RoomMetadataChanged>
   | LiveEventEnvelope<"workspace.sessions.changed", { humanUserId: string; transcript?: true }>
+  /** You were removed from this workspace: drop its live subscriptions (user channel only). */
+  | LiveEventEnvelope<"workspace.access.removed", { workspaceId: string }>
   | LiveEventEnvelope<"workspace.session.attention", SessionAttention>
   | LiveEventEnvelope<"workspace.session.screen", SessionScreen>
   | LiveEventEnvelope<"workspace.session.typing", SessionTyping>
@@ -405,6 +409,8 @@ function canonicalMessageValid(value: unknown): value is CanonicalRoomMessage {
 function payloadValid(type: LiveEventType, payload: unknown): boolean {
   if (!isObj(payload)) return false;
   switch (type) {
+    case "workspace.access.removed":
+      return str(payload.workspaceId) && Object.keys(payload).length === 1;
     case "workspace.sessions.changed":
       // `transcript: true` marks a streaming batch: open panes refetch, the sidebar list does not.
       return str(payload.humanUserId) && (payload.transcript === undefined || payload.transcript === true)

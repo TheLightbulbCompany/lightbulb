@@ -72,6 +72,10 @@ function LinkTerminal({ token, onTrouble }: { token: string; onTrouble: () => vo
   const [round, setRound] = useState(0);
   const lease = useRef<string | null>(null);
   const handlers = useRef(new Set<(event: LiveEvent) => void>());
+  // Whether this seat has drawn a snapshot. Until it has, every renewal asks for one: the server
+  // grants an ask once per 15 s per link, so a viewer who joined just after someone else's would
+  // otherwise look at a blank terminal until an idle Mac's own 30 s resync.
+  const pictured = useRef(false);
   const viewing = useCallback(async (fresh?: boolean) => {
     const next = await publicPost<SessionLinkViewing>("/public/session-links/viewing",
       { token, ...(lease.current ? { lease: lease.current } : {}), ...(fresh ? { fresh: true } : {}) }, null);
@@ -83,12 +87,16 @@ function LinkTerminal({ token, onTrouble }: { token: string; onTrouble: () => vo
     let client: AppSyncEventsClient | undefined;
     let retry: ReturnType<typeof setTimeout> | undefined;
     lease.current = null;
+    pictured.current = false;
     viewing().then((view) => {
       if (!alive) return;
       client = new AppSyncEventsClient({
         httpEndpoint: view.httpEndpoint, realtimeEndpoint: view.realtimeEndpoint,
         getToken: async () => lease.current,
-        onEvent: (event) => handlers.current.forEach((handler) => handler(event)),
+        onEvent: (event) => {
+          if (event.type === "workspace.session.screen" && event.payload.kind === "snapshot") pictured.current = true;
+          handlers.current.forEach((handler) => handler(event));
+        },
         onStatus: (status) => { if (alive) setLiveChannels(status.liveChannels); },
         uuid: () => crypto.randomUUID(),
       });
@@ -103,7 +111,7 @@ function LinkTerminal({ token, onTrouble }: { token: string; onTrouble: () => vo
   }, [viewing, round]);
   const channel = seat?.view.channel;
   const watch = useCallback(async (_id: string, fresh?: boolean) => {
-    try { if ((await viewing(fresh)).channel !== channel) setRound((n) => n + 1); }
+    try { if ((await viewing(fresh || !pictured.current)).channel !== channel) setRound((n) => n + 1); }
     // The seat was refused (narrowed, ended, offline): the page re-opens the link now and says which.
     catch (e) { if (e instanceof ApiError) onTrouble(); throw e; }
   }, [viewing, channel, onTrouble]);

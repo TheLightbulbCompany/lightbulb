@@ -258,7 +258,10 @@ MAX_LINK_VIEWERS = 20
 # A link's viewers together get the Mac asked for history and a snapshot at most this often: each
 # ask is a burst out of the session's frame budget, which workspace viewers share, and `fresh` is
 # only a stranger's word. Per link, not per lease: taking new seats buys no more asks. A viewer
-# who joins inside the window draws from the next snapshot (at most 10 s) with no scrollback.
+# who joins inside the window has no picture yet: its page asks again with each 15 s renewal until
+# it draws a snapshot, and the first of those is past the window, so it waits at most one renewal
+# (15 s, plus delivery) on an idle session. Sooner when the Mac sends a snapshot of its own (every
+# 10 s while the screen prints) or another viewer's ask is granted: every viewer hears that picture.
 ASK_EVERY_S = 15
 
 

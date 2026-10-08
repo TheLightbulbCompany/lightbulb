@@ -283,6 +283,29 @@ describe("session link page", () => {
     expect(screen.queryByTestId("terminal")).toBeNull();
   });
 
+  // Joined inside another viewer's 15 s ask window on an idle session: the server refused the ask
+  // and nothing was coming. The page keeps asking until it has a picture.
+  it("asks for a picture on every renewal until a snapshot arrives, then stops", async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => ({ ok: true, status: 200, json: async () => url.endsWith("/viewing") ? seat : model({}) }) as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const renew = terminal.props!.watch as (id: string, fresh?: boolean) => Promise<void>;
+    const last = () => JSON.parse(String(fetchMock.mock.calls.filter(c => String(c[0]).endsWith("/viewing")).at(-1)![1]?.body));
+    await act(async () => { await renew("pub-1", false); });
+    expect(last().fresh).toBe(true); // a plain renewal, but still no picture
+    const frame = (kind: string) => ({ eventId: kind, type: "workspace.session.screen", payload: { sessionId: "pub-1", generation: "pub-1", epoch: 1, seq: 0, cols: 80, rows: 24, kind, data: "" } });
+    const deliver = (sockets.made[0].opts as unknown as { onEvent: (e: unknown) => void }).onEvent;
+    deliver(frame("output"));
+    await act(async () => { await renew("pub-1", false); });
+    expect(last().fresh).toBe(true); // output alone draws nothing on an empty terminal
+    deliver(frame("snapshot"));
+    await act(async () => { await renew("pub-1", false); });
+    expect(last().fresh).toBeUndefined();
+  });
+
   it("shows the Continue instructions only when the owner turned Continue on", async () => {
     vi.useFakeTimers();
     auth.isSignedIn = true;

@@ -18,8 +18,10 @@ from tests import factories as f
 
 PAPERCLIP = {"agentId": "ceo", "runId": "run-pc", "sessionId": "paperclip:c:agent:ceo:issue:i",
              "paperclipApiUrl": "url", "companyId": "c"}
-CALL = {"agentId": "ceo", "runId": "run-call", "roomId": f.ROOM, "family": "voice",
+CALL_ID, NEXT_CALL_ID = "ca11ca11-1111-4111-8111-111111111111", "ca11ca11-2222-4222-8222-222222222222"
+CALL = {"agentId": "ceo", "runId": "run-call", "roomId": f.ROOM, "family": "voice", "callId": CALL_ID,
         "sessionId": turn.lightbulb_session_key("ceo", f.ROOM)}
+CALL_KEY, NEXT_CALL_KEY = turn.call_session_key("ceo", CALL_ID), turn.call_session_key("ceo", NEXT_CALL_ID)
 
 
 class FakeDB:
@@ -52,6 +54,9 @@ class FakeDB:
     def append_message(self, session_id, role, content, platform_message_id=None, observed=False):
         row = {"role": role, "content": content, **({"message_id": platform_message_id} if platform_message_id else {})}
         self.transcripts.setdefault(session_id, []).append({**row, **({"observed": True} if observed else {})})
+
+    def ensure_session(self, sid, source="unknown"):
+        self.transcripts.setdefault(sid, [])
 
     def get_session(self, sid):
         return {"id": sid, "model_config": json.dumps(self.meta[sid])} if sid in self.meta else None
@@ -146,15 +151,17 @@ def _run_room():
 
 
 def _voice_request(text="Aden (voice): hi", history=()):
-    return {"input": text, "instructions": "x", "voice": {"roomId": f.ROOM, "roomKind": "channel"},
+    voice = {"roomId": f.ROOM, "roomKind": "channel", "speaker": {"id": "user_9", "name": "Aden"},
+             "utterance": text.split(": ", 1)[-1]}
+    return {"input": text, "instructions": "x", "voice": voice,
             "recentHistory": list(history), "participants": f.ingress()["participants"]}
 
 
-def _run_call(text="Aden (voice): hi", history=(), run_id="run-call"):
-    identity = {**CALL, "runId": run_id}
+def _run_call(text="Aden (voice): hi", history=(), run_id="run-call", call_id=CALL_ID, outcome="completed"):
+    identity = {**CALL, "runId": run_id, "callId": call_id}
     turn.register_call_run(identity)
     frames = turn.VoiceFramePublisher("", f.ROOM, "ceo", run_id)
-    assert turn._run_call(identity, _voice_request(text, history), frames)[0] == "completed"
+    assert turn._run_call(identity, _voice_request(text, history), frames)[0] == outcome
 
 
 def _run_paperclip():
@@ -163,7 +170,7 @@ def _run_paperclip():
 
 @pytest.mark.parametrize("run, key", [
     (_run_room, turn.lightbulb_session_key("ceo", f.ROOM)),
-    (_run_call, CALL["sessionId"]),
+    (_run_call, CALL_KEY),
     (_run_paperclip, PAPERCLIP["sessionId"]),
 ])
 def test_every_turn_kind_gets_the_profiles_session_db_under_its_own_key(hermes, home, run, key):
@@ -387,8 +394,8 @@ def test_an_interrupted_turn_is_an_error_never_a_reply(hermes, home):
     assert turn._run_hermes("ceo", f.ingress(), None)[:3] == ("error", turn.INTERRUPTED, "")
 
 
-# ---- voice and chat share the room session -------------------------------------------------------
-def _persisting(reply):
+# ---- a call has its own transcript; the room keeps one record per spoken exchange -----------------
+def _persisting(reply, **result):
     """A run_conversation that records its turn the way Hermes does (persist_user_message wins)."""
     def run(agent):
         kw = agent.calls[-1][0]
@@ -397,41 +404,121 @@ def _persisting(reply):
         rows.append({"role": "user", "content": kw.get("persist_user_message") or kw["user_message"],
                      **({"message_id": pid} if pid else {})})
         rows.append({"role": "assistant", "content": reply})
-        return {"api_calls": 1, "final_response": reply}
+        return {"api_calls": 1, "final_response": reply, **result}
     return run
 
 
-def test_what_is_said_by_voice_is_in_the_next_room_turn(hermes, home):
+def _records(db, sid=None):
+    return [r for r in db.transcripts.get(sid or ROOM_KEY, []) if str(r.get("message_id", "")).startswith(turn.CALL_RECORD_ID)]
+
+
+def test_a_call_turn_runs_on_the_calls_transcript_not_the_rooms(hermes, home):
+    _acquired, built, dbs = hermes
+    db = _room_db(dbs)
+    SCRIPT.extend([_persisting("Shipped."), _persisting("Payouts landed.")])
+    _room_turn()
+    _run_call("Aden (voice): check payouts")
+    assert built[-1].kw["session_id"] == built[-1].kw["gateway_session_key"] == CALL_KEY
+    assert _said(built)["conversation_history"] is None  # nothing of the room's transcript is replayed
+    assert db.transcripts[CALL_KEY] == [{"role": "user", "content": "Aden (voice): check payouts"},
+                                        {"role": "assistant", "content": "Payouts landed."}]
+    # The room session got the record and no transcript rows.
+    assert [r["role"] for r in db.transcripts[ROOM_KEY]] == ["user", "assistant", "user"]
+
+
+def test_two_turns_of_one_call_share_a_transcript_and_the_next_call_does_not(hermes, home):
+    _acquired, built, dbs = hermes
+    db = _room_db(dbs)
+    SCRIPT.extend([_persisting("Six agents."), _persisting("CEO, Engineering and four more."), _persisting("Fifty dollars.")])
+    _run_call("Aden (voice): how many agents?", run_id="r1")
+    _run_call("Aden (voice): and what are they called?", run_id="r2")
+    assert _said(built)["conversation_history"] == [{"role": "user", "content": "Aden (voice): how many agents?"},
+                                                     {"role": "assistant", "content": "Six agents."}]
+    _run_call("Aden (voice): what does the plan cost?", run_id="r3", call_id=NEXT_CALL_ID)
+    said = _said(built)
+    assert built[-1].kw["session_id"] == NEXT_CALL_KEY and said["conversation_history"] is None
+    # A new call starts with the room's records of the earlier one, as observed context only.
+    assert said["user_message"].startswith(turn.OBSERVED_HEADER) and "I answered: Six agents." in said["user_message"]
+    assert [r["message_id"] for r in _records(db, NEXT_CALL_KEY)] == ["call:r1", "call:r2"]
+    assert [r["message_id"] for r in _records(db)] == ["call:r1", "call:r2", "call:r3"]
+
+
+def test_the_room_gets_one_compact_record_per_answered_turn_under_its_turn_lock(hermes, home):
+    _acquired, built, dbs = hermes
+    db = _room_db(dbs)
+    held, append = [], db.append_message
+
+    def locked_append(session_id, **kw):
+        if session_id == ROOM_KEY:
+            held.append(turn._turn_lock("ceo", ROOM_KEY).locked())
+        return append(session_id=session_id, **kw)
+
+    db.append_message = locked_append
+    tool_round = [{"role": "user", "content": "q"},
+                  {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "terminal"}}]},
+                  {"role": "tool", "content": "{}"}, {"role": "assistant", "content": "Payouts  landed\ntoday."}]
+    SCRIPT.extend([_persisting("Payouts  landed\ntoday.", messages=tool_round), _persisting("again")])
+    _run_call("Aden (voice): check payouts")
+    assert _records(db) == [{"role": "user", "observed": True, "message_id": "call:run-call", "content": (
+        "[CEO|ceo]\n(On a Live voice call; spoken, not posted to this room.) Aden asked: check payouts\n"
+        "I answered: Payouts landed today.\nTools I used: terminal")}]
+    assert held == [True] and len(built) == 1 and len(built[0].calls) == 1  # no model call of its own
+    turn.RUNS.clear()
+    _run_call("Aden (voice): check payouts")  # the same run, run again after a lost registry
+    assert len(_records(db)) == 1
+
+
+def test_the_next_room_turn_reads_the_call_record_as_observed_context(hermes, home):
     _acquired, built, dbs = hermes
     _room_db(dbs)
     SCRIPT.extend([_persisting("Payouts landed."), _persisting("ok")])
     _run_call("Aden (voice): check payouts")
     _room_turn()
-    history = _said(built)["conversation_history"]
-    assert {"role": "user", "content": "Aden (voice): check payouts"} in history
-    assert {"role": "assistant", "content": "Payouts landed."} in history
+    said = _said(built)
+    assert said["conversation_history"] is None  # the call's turns are not the room's history
+    assert said["user_message"].startswith(turn.OBSERVED_HEADER)
+    assert "Aden asked: check payouts\nI answered: Payouts landed." in said["user_message"]
 
 
-def test_a_voice_run_sees_the_room_turn_before_it(hermes, home):
+@pytest.mark.parametrize("result, outcome", [
+    ({"api_calls": 1, "failed": True, "final_response": ""}, "error"),
+    ({"api_calls": 1, "final_response": "", "interrupted": True}, "error"),
+    ({"api_calls": 1, "final_response": ""}, "error"),
+    ("stop", "aborted"),
+], ids=["failed", "interrupted", "empty", "stopped"])
+def test_a_turn_that_gave_no_answer_leaves_no_room_record(hermes, home, result, outcome):
+    _acquired, _built, dbs = hermes
+    db = _room_db(dbs)
+    stop = lambda _agent: turn.abort_run("run-call") and {"api_calls": 1, "final_response": "Half an answer."}  # noqa: E731
+    SCRIPT.append(stop if result == "stop" else result)
+    _run_call(outcome=outcome)
+    assert _records(db) == []
+    assert not turn._turn_lock("ceo", ROOM_KEY).locked()
+
+
+def test_a_late_steer_in_a_call_is_answered_in_the_same_run_and_record(hermes, home):
     _acquired, built, dbs = hermes
-    _room_db(dbs)
-    SCRIPT.extend([_persisting("Shipped."), _persisting("Yes.")])
-    _room_turn()
-    _run_call("Aden (voice): did it ship?")
-    history = _said(built)["conversation_history"]
-    assert {"role": "assistant", "content": "Shipped."} in history
-    assert f.split_turn_input(history[0]["content"])[1] == "Prez: now"
+    db = _room_db(dbs)
+    SCRIPT.extend([{"api_calls": 1, "final_response": "First.", "pending_steer": "Aden (voice): and Y",
+                    "messages": [{"role": "user", "content": "x"}]},
+                   {"api_calls": 1, "final_response": "Second."}])
+    _run_call()
+    assert [c[0]["user_message"] for c in built[-1].calls] == ["Aden (voice): hi", "Aden (voice): and Y"]
+    assert len(built) == 1 and built[0].kw["session_id"] == CALL_KEY  # one agent, one run, the call's transcript
+    (record,) = _records(db)
+    assert record["content"].endswith("I answered: First. Second.")
 
 
-def test_room_messages_a_voice_run_observed_are_not_repeated_in_the_next_room_turn(hermes, home):
+def test_the_rooms_recent_messages_still_reach_a_call_turn(hermes, home):
     _acquired, built, dbs = hermes
     db = _room_db(dbs)
     SCRIPT.extend([_persisting("Noted."), _persisting("ok")])
     earlier = f.message(messageId="m1", messageSeq=1, author=ANA, text="the deploy is red")
     _run_call("Aden (voice): what's up?", history=[earlier])
-    assert _said(built)["user_message"].startswith(turn.OBSERVED_HEADER)  # the voice run saw it
+    assert _said(built)["user_message"] == _observed("[Ana|user_2]\nthe deploy is red") + "Aden (voice): what's up?"
+    assert [r.get("message_id") for r in db.transcripts[CALL_KEY] if r.get("observed")] == ["m1"]
     _room_turn(earlier)
-    # Held since the voice run: recorded once, shown once (the session's observed context).
+    # The room observes it for itself, once: the call's rows are not the room's.
     assert sum(1 for r in db.transcripts[ROOM_KEY] if r.get("message_id") == "m1") == 1
     assert _said(built)["user_message"].count("the deploy is red") == 1
 
@@ -444,7 +531,8 @@ def test_every_session_but_a_rooms_is_ended_after_its_turn(hermes, home):
     _run_call()
     _run_room()
     db = dbs[sync._profile_dir("ceo") / "state.db"]
-    assert db.ended == [(PAPERCLIP["sessionId"], "agent_close")]  # a voice run is on its room key
+    # A call's own session is ended too, so Hermes's retention ages it out; the room's never is.
+    assert db.ended == [(PAPERCLIP["sessionId"], "agent_close"), (CALL_KEY, "agent_close")]
 
 
 def test_retention_runs_once_per_process_when_state_db_is_first_opened(hermes, home):

@@ -266,8 +266,10 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  core/services/{voice_routing,voice_persona}.py (room-call routing; each agent speaks as itself in its own voice)
                                  routers/huddles.py, core/services/livekit_huddles.py, apps/huddle-agent/ (Live in every room kind; agents join only where one listens; addressed by name, "Lightbulb" or a tile)
   - Voice requests .......... references/voice.md + SKILL.md routing row
-                              <- apps/infra/hermes/bridge/server.py + turn.py (voice runs on the room session key,
-                                 lightbulb_session_key; frames relayed to the backend, never posted);
+                              <- apps/infra/hermes/bridge/server.py + turn.py (a voice run is locked and scoped on the room
+                                 session key, lightbulb_session_key, and recorded in the call's own transcript,
+                                 call_session_key; the room session gets one call record per answered turn; frames
+                                 relayed to the backend, never posted);
                                  plugins/lightbulb/__init__.py (VOICE_ROOM_REFUSAL in _send_room_message; the
                                  `lightbulb_voice_profile` tool: rename|add_note|replace_notes|clear_notes, VOICE_ONLY
                                  outside a voice run); scripts/lightbulb-post.sh (voice.md forbids it in a voice run;

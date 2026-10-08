@@ -348,7 +348,8 @@ def test_the_compaction_agent_is_hermes_hygiene_shaped(monkeypatch):
     assert agent._cached_system_prompt == "STORED PROMPT" and agent.platform == "gateway_hygiene"
 
 
-def test_a_spoken_turn_compacts_after_its_answer_is_delivered_and_saved(monkeypatch, posted):
+def test_a_spoken_turn_schedules_no_compaction_of_the_room_session(monkeypatch, posted):
+    """A call runs on its own transcript and adds one row to the room's, so it owes the room none."""
     order = []
     _closing(monkeypatch)
     monkeypatch.setattr(turn, "save_profile", lambda a: order.append("save"))
@@ -357,7 +358,7 @@ def test_a_spoken_turn_compacts_after_its_answer_is_delivered_and_saved(monkeypa
     monkeypatch.setattr(turn, "compact_session", lambda a, key: order.append(("compact", a, key)))
     turn.register_call_run(IDENTITY)
     turn.run_call_turn(IDENTITY, REQUEST)
-    assert order == ["finished", "save", ("compact", "agent-1", SESSION)]
+    assert order == ["finished", "save"]
 
 
 def test_going_live_compacts_the_rooms_session_off_the_request_thread(home, monkeypatch):

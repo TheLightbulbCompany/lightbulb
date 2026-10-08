@@ -157,14 +157,17 @@ MAX_VOICE_HISTORY = 50
 
 
 def _call_envelope(body, *, path_run_id: str | None = None, require_request: bool = False):
-    """A voice run: an ordinary run on the agent's room session key (the only call envelope)."""
+    """A voice run (the only call envelope): identified by the agent's room session key, which
+    serialises it with the room's turns, plus the call it belongs to, which names its transcript."""
     if not isinstance(body, dict) or not isinstance(body.get("identity"), dict):
         return None
     identity = body["identity"]
-    if any(not isinstance(identity.get(k), str) or not identity[k] for k in ("runId", "companyId", "agentId", "roomId", "sessionId")):
+    if any(not isinstance(identity.get(k), str) or not identity[k] for k in ("runId", "companyId", "agentId", "roomId", "sessionId", "callId")):
         return None
     room_id = identity["roomId"]
     if identity.get("family") != "voice" or room_id != room_id.lower() or not turn._is_uuid(room_id):
+        return None
+    if not turn._is_uuid(identity["callId"]):
         return None
     if path_run_id is not None and identity["runId"] != path_run_id:
         return None

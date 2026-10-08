@@ -13,6 +13,7 @@ import {
 import { useAuth, useUser } from "@clerk/nextjs";
 import useSWR, { mutate } from "swr";
 import {
+  ApiError,
   createMessagingClient,
   createRuntimeClient,
   framesChannelFor,
@@ -59,14 +60,18 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
   const runtimeClient = useMemo(() => createRuntimeClient(api, () => crypto.randomUUID()), [api]);
   const ownerScope = orgId ?? userId ?? null;
   const httpReady = !!isLoaded && !!userId;
-  const { data: config, mutate: refreshConfig } = useSWR(
+  const { data: liveConfig, error: configError, mutate: refreshConfig } = useSWR(
     httpReady ? ["messaging-live-config", userId, ownerScope] : null,
     () => messaging.getLiveConfig(),
     // The refresh is the backend TeamsEventBroker's keep-alive: it releases a user's
     // Paperclip socket after 10 min without a live-config fetch. SWR keeps the same
     // object when the response is unchanged, so this does not resubscribe AppSync.
-    { revalidateOnFocus: false, refreshInterval: 5 * 60_000, refreshWhenHidden: true },
+    // On focus too: it is how a removed member's open tab learns it (the 403 below).
+    { revalidateOnFocus: true, refreshInterval: 5 * 60_000, refreshWhenHidden: true },
   );
+  // No longer a member (403): SWR would keep the last config, and with it the socket and every
+  // subscription. Dropping it closes them all.
+  const config = configError instanceof ApiError && configError.status === 403 ? undefined : liveConfig;
   const [activeRoomState, setActiveRoomState] = useState<{
     ownerScope: string | null;
     room: ActiveRoomSubscription | null;

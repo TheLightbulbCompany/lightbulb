@@ -2,6 +2,9 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-
 import { type RoomDetail, type RoomMember } from "@lightbulb/shared";
 import { Alert } from "react-native";
 
+const mockPush = jest.fn();
+jest.mock("expo-router", () => ({ router: { push: (href: string) => mockPush(href) } }));
+
 import { RoomDetails } from "../RoomDetails";
 
 const member = (over: Partial<RoomMember>): RoomMember => ({
@@ -156,5 +159,12 @@ describe("RoomDetails", () => {
     await waitFor(() => expect(props.upsertMember).toHaveBeenCalledWith({
       kind: "agent", id: "agent-2", role: "member", listenMode: "active",
     }));
+  });
+
+  it("offers an email invite under Add people for someone not in the workspace yet", async () => {
+    await setup(room({ kind: "group-dm", name: null }));
+    await fireEvent.press(screen.getByText("Add people"));
+    await fireEvent.press(screen.getByText("Not in the workspace yet? Invite them by email"));
+    expect(mockPush).toHaveBeenCalledWith("/invite");
   });
 });

@@ -44,6 +44,8 @@ export interface PickerSheetProps {
   searchPlaceholder?: string;
   onSelect: (key: string) => void;
   onClose: () => void;
+  /** Below the list, e.g. a way out when the right option isn't there. */
+  footer?: ReactNode;
 }
 
 export function PickerSheet({
@@ -55,6 +57,7 @@ export function PickerSheet({
   searchPlaceholder,
   onSelect,
   onClose,
+  footer,
 }: PickerSheetProps) {
   const p = useChatPalette();
   const [query, setQuery] = useState("");
@@ -152,6 +155,7 @@ export function PickerSheet({
             );
           })}
         </ScrollView>
+        {footer}
       </View>
     </BottomSheet>
   );

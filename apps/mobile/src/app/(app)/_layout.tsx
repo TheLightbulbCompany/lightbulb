@@ -186,6 +186,7 @@ export default function AppLayout() {
                   <Stack.Screen name="control/marketplace" options={{ title: "Marketplace" }} />
                   <Stack.Screen name="control/listing/[id]" options={{ title: "Listing" }} />
                   <Stack.Screen name="workspaces" options={{ title: "Switch workspace" }} />
+                  <Stack.Screen name="invite" options={{ title: "Invite people" }} />
                   {/* Legacy agent route — resolves that agent's DM and replaces
                       itself with the room route. */}
                   <Stack.Screen name="agent/[agentId]" options={{ title: "Chat" }} />

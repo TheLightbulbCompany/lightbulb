@@ -203,7 +203,7 @@ function CreateWorkspace({ onCheckAgain }: { onCheckAgain: () => void }) {
         </Text>
         <Text style={styles.body}>
           Joining a team that already uses Lightbulb? Open the join link they sent you in Safari,
-          then tap Check again.
+          then tap Check again. Invited by email? Open that email on this phone and tap its link.
         </Text>
         <Pressable
           style={({ pressed }) => [styles.primary, pressed && styles.pressed]}

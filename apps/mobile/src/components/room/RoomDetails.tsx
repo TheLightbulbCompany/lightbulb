@@ -11,10 +11,11 @@ import {
   type RoomMember,
   type UpsertRoomMemberRequest,
 } from "@lightbulb/shared";
+import { router } from "expo-router";
 import { useState } from "react";
-import { Alert, useColorScheme, View } from "react-native";
+import { Alert, Pressable, Text as RNText, useColorScheme, View } from "react-native";
 
-import { chatPalette } from "../../config/theme";
+import { chatPalette, fonts, spacing } from "../../config/theme";
 import { PickerSheet } from "../teams/PickerSheet";
 import { GroupedList } from "../ui/GroupedList";
 
@@ -190,6 +191,21 @@ export function RoomDetails({
           );
         }}
         onClose={() => setSheet(null)}
+        // A session's chat takes no people by hand, so no invite there either.
+        footer={managed ? null : (
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => {
+              setSheet(null);
+              router.push("/invite");
+            }}
+            style={{ minHeight: 44, justifyContent: "center", paddingHorizontal: spacing.sm }}
+          >
+            <RNText style={{ color: palette.link, fontFamily: fonts.sans, fontSize: 14 }}>
+              Not in the workspace yet? Invite them by email
+            </RNText>
+          </Pressable>
+        )}
       />
       <PickerSheet
         visible={sheet === "remove"}

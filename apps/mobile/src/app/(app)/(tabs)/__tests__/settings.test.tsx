@@ -363,6 +363,17 @@ describe("Settings Switch workspace", () => {
   });
 });
 
+// Email invitations: the row is for everyone; a member learns there to ask an admin.
+describe("Settings Invite people", () => {
+  it("opens the invite screen", async () => {
+    mockAccountFixture = new Error("offline");
+    mockPush.mockClear();
+    await render(<Settings />);
+    await fireEvent.press(screen.getByText("Invite people"));
+    expect(mockPush).toHaveBeenCalledWith("/invite");
+  });
+});
+
 // Deleting as the SOLE member ends the workspace and its paid subscription
 // immediately (no refund); say so only when that is actually what happens.
 describe("delete-account confirmation copy", () => {

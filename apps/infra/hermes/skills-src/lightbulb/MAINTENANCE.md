@@ -356,3 +356,4 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  apps/infra/hermes/plugins/lightbulb/__init__.py (send_room_message's threadRootMessageId);
                                  paperclip skill references/monitors.md;
                                  spec docs/superpowers/specs/2026-09-16-proactive-agents-design.md (delete when shipped).
+- Roster + connected integrations routing row ("Who is on the team?" / "What's connected?") — `SKILL.md`; source: `core/services/owner_facts.py` (`teammates`, `connected_integrations`, #3851). Added 2026-10-08 after a dev check where the CEO answered a roster question from the room's member list.

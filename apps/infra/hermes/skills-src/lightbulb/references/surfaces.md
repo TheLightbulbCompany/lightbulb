@@ -91,11 +91,15 @@ board yourself. Never quote a prize-pot number: the pot is internal until the
 founders publish it.
 # Shared local-session workspace notices
 
-**Which sessions are shared**: every Claude Code and Codex session on a Mac where its owner
-turned session sharing on, whether it was started in Lightbulb (**New session**, a remote
-start, a pick-up, a resume, `lightbulb claude` / `lightbulb codex`) or as a plain `claude` or
-`codex` in any terminal. The owner can pause one session or turn sharing off for the Mac. When a
-person pairs a Mac, **Share every session live** starts on (they can turn it off there or later
+**Which sessions are shared**: on a Mac where its owner turned session sharing on, a Claude
+Code or Codex session is shared when it was started in Lightbulb (**New session**, a remote
+start, a pick-up, a resume, `lightbulb claude` / `lightbulb codex` in any folder), when **Share
+every new session** was on as it started, or when its person chose **Share to Lightbulb** in it
+(a line above the Claude Code prompt, or the `lightbulb` plugin's share skill in Claude Code and
+Codex). Every other session is only its person's: nothing of it leaves the Mac, and you cannot
+see or message it. A shared session is shared whole, from its start. Its person can stop
+sharing one session or turn sharing off for the Mac. When a
+person pairs a Mac, **Share every new session** starts on (they can turn it off there or later
 in Settings), so a plain `claude` or `codex` typed in a new terminal tab runs through Lightbulb.
 A running session shows its live terminal when Lightbulb started it, when it is a Claude Code
 background session, or when it is a plain Codex session (Codex's own background service runs

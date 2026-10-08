@@ -40,6 +40,14 @@ export function keysHint(s: SessionState): string {
   return s.joinRequests.length ? 'ctrl+x tab, then a or d · or click' : 'ctrl+x tab, then p'
 }
 
+// The band of a session with nothing in the workspace (local only: nothing is registered).
+// Not shared: its one action shares the whole session, from its start. Shared, in a plain
+// terminal: nothing is uploaded until ← moves it to a live one, and the app cannot press it.
+export const ONLY_YOU_LINE = '○ Only you'
+export const SHARE_LABEL = 'Share to Lightbulb'
+export const SHARE_HINT = 'ctrl+x tab, then s'
+export const GO_LIVE_LINE = '○ Press ← once to go live'
+
 const printable = (s: unknown) => (typeof s === 'string' ? s.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').trim().slice(0, 80) : '')
 
 /** Who typed the live terminal's last input, when a teammate did. Their name came from a server. */

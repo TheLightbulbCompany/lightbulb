@@ -14,8 +14,12 @@ export type SessionState = {
   typedBy?: TypedBy
 }
 
+/** A session on a Mac that shares sessions, with nothing in the workspace to show: not shared
+ *  (only its person's), or shared and waiting for a live terminal (a plain `claude`). */
+export type Local = { shared: boolean }
+
 declare module 'claude-code' {
   interface PluginState {
-    'lightbulb': { state: SessionState | null; error: string | null; continued: Continued | null }
+    'lightbulb': { state: SessionState | null; error: string | null; continued: Continued | null; local: Local | null; shareError: string | null }
   }
 }

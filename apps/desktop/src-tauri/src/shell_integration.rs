@@ -1,4 +1,4 @@
-//! Settings → "Share every session live": one guarded block in ~/.zshrc and ~/.bashrc that
+//! Settings → "Share every new session": one guarded block in ~/.zshrc and ~/.bashrc that
 //! defines `claude` and `codex` shell functions calling `lightbulb claude|codex`, which shares
 //! the session live or runs the real tool (`cli.rs`). Off removes exactly that block.
 
@@ -36,7 +36,7 @@ pub fn block() -> String {
         )
     };
     format!(
-        "{BEGIN}\n# Added by the Lightbulb app (Settings → Share every session live). Turning it off removes this block.\ncase $- in\n  *i*)\n{}{}    ;;\nesac\n{END}\n",
+        "{BEGIN}\n# Added by the Lightbulb app (Settings → Share every new session). Turning it off removes this block.\ncase $- in\n  *i*)\n{}{}    ;;\nesac\n{END}\n",
         function("claude"),
         function("codex")
     )

@@ -44,12 +44,12 @@ const bridge = (sharing: boolean, liveOn: boolean | Error) => invoke.mockImpleme
   return null;
 });
 
-it("offers Share every session live once to a paired Mac that shares sessions, and turns it on from the offer", async () => {
+it("offers Share every new session once to a paired Mac that shares sessions, and turns it on from the offer", async () => {
   bridge(true, false);
   const first = render(<LiveSharingOffer />);
   await waitFor(() => expect(toast).toHaveBeenCalledTimes(1));
   const [title, options] = toast.mock.calls[0];
-  expect(title).toBe("Share every session live");
+  expect(title).toBe("Share every new session");
   expect(options.duration).toBe(Infinity);
   expect(options.cancel.label).toBe("Not now");
   expect(localStorage.getItem(LIVE_SHARING_OFFER_KEY)).toBe("1");

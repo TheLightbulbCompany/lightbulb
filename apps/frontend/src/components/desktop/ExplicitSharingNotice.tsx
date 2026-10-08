@@ -44,7 +44,7 @@ export function LiveSharingOffer() {
       if (!live || !status.enrollment?.enabled || on !== false) return;
       try { localStorage.setItem(LIVE_SHARING_OFFER_KEY, "1"); } catch { /* storage off: offered again next launch */ }
       // The switch's label (LocalSessions.tsx `SHARE_LIVE_LABEL`), repeated: this file loads on every page.
-      toast("Share every session live", {
+      toast("Share every new session", {
         description: <span>Typing <code>claude</code> or <code>codex</code> in a terminal then starts it through Lightbulb, so you and your teammates see its live terminal. It adds a marked block to ~/.zshrc, ~/.bashrc and your bash login file. You can change it in Settings.</span>,
         duration: Infinity,
         action: {

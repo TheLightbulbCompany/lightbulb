@@ -144,46 +144,24 @@ fn cli_runs_non_interactive_forms_as_the_real_tool_without_a_note() {
     assert!(!cli.text().contains("not shared"));
 }
 
-/// A fake app that refuses the folder until the request carries the person's yes.
-fn app_asking_for_the_folder(holder: PathBuf, seen: Arc<Mutex<Vec<serde_json::Value>>>) -> PathBuf {
+#[test]
+fn cli_starts_in_any_folder_without_a_question_and_with_the_terminal_s_environment() {
+    let (_, holder) = app_with_holder(&["/bin/cat"]);
+    let seen = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
     let app = temp_dir().join("app.sock");
+    let requests = seen.clone();
     serve_at(&app, move |request| {
-        seen.lock().unwrap().push(request.clone());
-        if request["approveFolder"] == true {
-            Ok(Started { socket: holder.clone(), workspace: Some("Acme".into()) })
-        } else {
-            Err(lightbulb_desktop::cli::FOLDER_NOT_APPROVED.into())
-        }
+        requests.lock().unwrap().push(request.clone());
+        Ok(Started { socket: holder.clone(), workspace: Some("Acme".into()) })
     })
     .unwrap();
-    app
-}
-
-#[test]
-fn cli_asks_to_share_an_unapproved_folder_and_starts_on_yes() {
-    let (_, holder) = app_with_holder(&["/bin/cat"]);
-    let seen = Arc::new(Mutex::new(vec![]));
-    let app = app_asking_for_the_folder(holder, seen.clone());
-    let mut cli = Cli::start(&app);
-    cli.wait_for("Share sessions from /private/tmp with your workspace?");
-    cli.keys.write_all(b"y\r").unwrap();
+    let cli = Cli::start(&app);
     cli.wait_for("● Shared with Acme.");
     let requests = seen.lock().unwrap().clone();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(requests[1]["env"]["LIGHTBULB_TEST_MARKER"], "from-the-terminal", "the terminal's environment");
-    assert!(requests[1]["env"].get("PWD").is_none());
-}
-
-#[test]
-fn cli_runs_the_real_tool_when_the_folder_is_declined() {
-    let seen = Arc::new(Mutex::new(vec![]));
-    let app = app_asking_for_the_folder(temp_dir().join("never.sock"), seen.clone());
-    let mut cli = Cli::start(&app);
-    cli.wait_for("[y/N]");
-    cli.keys.write_all(b"\r").unwrap();
-    assert_eq!(cli.exit_code(), 7);
-    cli.wait_for("no live terminal (you did not share this folder)");
-    assert_eq!(seen.lock().unwrap().len(), 1, "no second request without a yes");
+    assert_eq!(requests.len(), 1, "one request: starting with Lightbulb is what shares it");
+    assert!(requests[0].get("approveFolder").is_none() && !cli.text().contains("[y/N]"));
+    assert_eq!(requests[0]["env"]["LIGHTBULB_TEST_MARKER"], "from-the-terminal", "the terminal's environment");
+    assert!(requests[0]["env"].get("PWD").is_none());
 }
 
 #[test]

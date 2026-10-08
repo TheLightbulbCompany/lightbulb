@@ -122,7 +122,9 @@ fn resolve_source(scope: &Path, peer: u32, meta: &Value) -> Result<Source> {
         let Ok(mirror) = private_read::<Mirror>(&path) else {
             continue;
         };
+        // (A withheld session is no source: it reads and sends nothing through its tools.)
         if mirror.ended_at.is_some()
+            || mirror.withheld()
             || mirror.native.restriction.is_some()
             || process(mirror.native.process.pid).ok().as_ref() != Some(&mirror.native.process)
         {
@@ -385,13 +387,18 @@ mod tests {
         let mut mirror = super::super::transport::tests::test_mirror("11111111-1111-4111-8111-111111111111", "gen-1");
         mirror.native.provider = "claude".into();
         mirror.session_id = Some("session-a".into());
-        assert!(mirror.native.holder.is_none() && mirror.native.restriction.is_none(), "a plain, verified terminal session");
-        mirror.persist(&scope.path().join(format!("{}.json", "a".repeat(64)))).unwrap();
+        assert!(mirror.native.holder.is_none() && mirror.native.restriction.is_none(), "a verified session with no holder");
+        let path = scope.path().join(format!("{}.json", "a".repeat(64)));
+        mirror.persist(&path).unwrap();
         let mut mcp = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
         let source = resolve_source(scope.path(), mcp.id(), &json!({})).map(|s| s.session_id);
+        mirror.shared = false;
+        mirror.persist(&path).unwrap();
+        let stopped = resolve_source(scope.path(), mcp.id(), &json!({})).map(|s| s.session_id);
         mcp.kill().unwrap();
         mcp.wait().unwrap();
         assert_eq!(source.unwrap(), "session-a", "no holder needed to be this session's MCP source");
+        assert!(stopped.is_err(), "a session that is not shared reads and sends nothing through its tools");
     }
 
     #[test]

@@ -2,8 +2,8 @@
 //! the running app to start a held, shared session in this folder, says who it is shared with,
 //! then is that session's terminal.
 //!
-//! The app does the start (`session_start::cli_start`): the installed tool, the approved
-//! folders (this folder or one it is inside), and sharing must be on. The provider's arguments
+//! The app does the start (`session_start::cli_start`): the installed tool, and sharing must be
+//! on. Any folder: starting a session with Lightbulb is what shares it. The provider's arguments
 //! pass through unchanged (owner ruling 2026-10-03). It never blocks a person (owner ruling
 //! 2026-10-04): a form with no terminal to share, or a start the app cannot share, runs the real
 //! tool instead. This process only turns words into that request and moves bytes.
@@ -126,8 +126,6 @@ type Reply = Result<Started, String>;
 const NOT_RUNNING: &str = "Lightbulb is not running. Open the Lightbulb app, then run this again.";
 /// The app may have started a session: never start the tool a second time after this one.
 const NO_ANSWER: &str = "Lightbulb did not answer. If a session started, it is in the Lightbulb app.";
-/// The app's refusal that the command answers with a question in the terminal.
-pub const FOLDER_NOT_APPROVED: &str = "This folder is not inside a folder you approved for Lightbulb. Add it in the Lightbulb app under Settings → Desktop → Approved folders, then run this again.";
 /// The calling terminal's environment, raw bytes: well over any real one, far under the line limit.
 const MAX_ENV: usize = 256 << 10;
 
@@ -199,8 +197,7 @@ pub fn serve(app: tauri::AppHandle) -> Result<(), String> {
         let side = |key: &str, default: u16| request[key].as_u64().and_then(|v| u16::try_from(v).ok()).unwrap_or(default);
         let size = (side("cols", 80), side("rows", 24));
         let env = environment(&request["env"])?;
-        let approve = request["approveFolder"] == true;
-        let info = crate::session_start::cli_start(&app, request["start"].clone(), size, env, approve)?;
+        let info = crate::session_start::cli_start(&app, request["start"].clone(), size, env)?;
         let owner = crate::local_sessions::enrollment::enrolled_owner(&app);
         let workspace = shared_workspace(WORKSPACE.lock().unwrap().as_ref(), owner.as_deref());
         Ok(Started { socket: info.socket, workspace })
@@ -307,17 +304,6 @@ pub fn request(ask: &Ask, folder: &Path, (cols, rows): (u16, u16), env: serde_js
 /// The app's refusal as the short reason in "no live terminal (…)": its first sentence.
 pub fn short_reason(message: &str) -> String {
     message.split(". ").next().unwrap_or(message).trim_end_matches('.').to_string()
-}
-
-/// Ask a yes/no question on this terminal. Ctrl-C answers it the usual way (ends the command).
-fn confirm(question: &str, signals: &libc::sigset_t) -> bool {
-    eprint!("{question}");
-    let _ = std::io::stderr().flush();
-    unsafe { libc::pthread_sigmask(libc::SIG_UNBLOCK, signals, std::ptr::null_mut()) };
-    let mut line = String::new();
-    let read = std::io::stdin().read_line(&mut line);
-    unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, signals, std::ptr::null_mut()) };
-    read.is_ok() && matches!(line.trim(), "y" | "Y" | "yes" | "Yes" | "YES")
 }
 
 /// Run the real tool in place of this process, with the same arguments, by absolute path (so
@@ -573,20 +559,7 @@ pub fn main(args: &[String]) -> i32 {
     };
     let size = window_size();
     let socket = app_socket();
-    let mut request = request(&ask, &folder, size, terminal_environment());
-    let mut reply = ask_app(&socket, &request);
-    if matches!(&reply, Err(m) if m == FOLDER_NOT_APPROVED) {
-        let question = format!(
-            "Share sessions from {} with your workspace? This adds it to Lightbulb's approved folders (Settings → Desktop → Approved folders). [y/N] ",
-            folder.display()
-        );
-        if confirm(&question, &signals) {
-            request["approveFolder"] = json!(true);
-            reply = ask_app(&socket, &request);
-        } else {
-            reply = Err("you did not share this folder".into());
-        }
-    }
+    let reply = ask_app(&socket, &request(&ask, &folder, size, terminal_environment()));
     match reply {
         Ok(started) => {
             println!("{}", shared_line(started.workspace.as_deref()));
@@ -839,7 +812,6 @@ mod tests {
     #[test]
     fn cli_short_reason_is_the_app_s_first_sentence() {
         assert_eq!(short_reason(NOT_RUNNING), "Lightbulb is not running");
-        assert_eq!(short_reason(FOLDER_NOT_APPROVED), "This folder is not inside a folder you approved for Lightbulb");
         assert_eq!(short_reason("claude is not installed on this Mac."), "claude is not installed on this Mac");
     }
 

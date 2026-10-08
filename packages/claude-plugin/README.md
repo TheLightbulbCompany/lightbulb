@@ -4,6 +4,7 @@ The `lightbulb` plugin connects Claude Code and Codex to your Lightbulb workspac
 
 - **The Lightbulb MCP server** (`https://api.thelightbulb.company/mcp`): find rooms and shared sessions, read messages, and send messages to a room, a person or a session.
 - **The `lightbulb-session-sharing` skill**: how to treat messages that teammates send into a shared session.
+- **The `share` skill** (`/lightbulb:share` in Claude Code; in Codex, ask to share the session): it shares the session you are in with your workspace. It needs the Lightbulb desktop app on the same Mac.
 - **The session-sharing band** (Claude Code only): it shows who is watching a shared session and its join requests. It shows only when the Lightbulb desktop app shares the session. Without the app it shows nothing.
 
 ## Install

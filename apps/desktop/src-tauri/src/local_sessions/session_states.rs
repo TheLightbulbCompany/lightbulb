@@ -181,6 +181,9 @@ fn kept<'a>(mirrors: &'a BTreeMap<String, Mirror>, end: &impl Fn(&str) -> Option
     let mut by_holder: BTreeMap<&str, Vec<(&str, &Mirror)>> = BTreeMap::new();
     for (key, m) in mirrors {
         let (Some(at), Some(holder)) = (m.ended_at, m.native.holder.as_deref()) else { continue };
+        if m.withheld() {
+            continue; // not shared: its final screen is not shown either
+        }
         if end(holder).is_some_and(|exited| m.ended_at_ms.unwrap_or(at * 1000) + ENDED_WITH_MS >= exited) {
             by_holder.entry(holder).or_default().push((key, m));
         }
@@ -604,14 +607,23 @@ mod tests {
     #[test]
     fn a_running_session_without_a_terminal_says_why() {
         let mut m = test_mirror("thread-1", "gen-1"); // Codex, no holder, no job
+        assert_eq!(m.native.terminal_reason(), Some("unknown"), "in an app: no terminal at all");
+        assert!(!m.native.awaits_terminal() && !m.withheld(), "so a shared one is shared as its conversation");
+        m.native.app = false;
         m.native.process.executable = "/opt/homebrew/bin/codex".into();
         assert_eq!(m.native.terminal_reason(), Some("no-daemon"));
+        assert!(m.withheld(), "shared, in a terminal this Mac cannot show: nothing is uploaded");
         m.native.process.executable = "/Applications/ChatGPT.app/Contents/Resources/codex".into();
         assert_eq!(m.native.terminal_reason(), Some("unknown"), "the Codex app is S7's `app`");
         m.native.provider = "claude".into();
         assert_eq!(m.native.terminal_reason(), Some("plain"));
+        assert!(m.withheld(), "a plain `claude` is never a transcript");
         m.native.job = Some("8ed71738".into());
         assert_eq!(m.native.terminal_reason(), None, "attach");
+        assert!(!m.withheld(), "← made it live");
+        m.shared = false;
+        assert!(m.withheld(), "live, and only its person's");
+        m.shared = true;
         m.native.job = None;
         m.native.holder = Some("ab12cd34".into());
         assert_eq!(m.native.terminal_reason(), None, "held");
@@ -625,6 +637,7 @@ mod tests {
         assert_eq!(features(&Value::Null), (false, false));
         let mut m = test_mirror("thread-1", "gen-1");
         m.native.provider = "claude".into();
+        m.native.app = false;
         let mirrors = BTreeMap::from([("a".to_string(), ended("ab12cd34", 5, SID))]);
         let end = |_: &str| Some(5_000);
         let mut entry = json!({});

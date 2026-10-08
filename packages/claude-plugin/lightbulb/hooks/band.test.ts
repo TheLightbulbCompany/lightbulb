@@ -1,6 +1,6 @@
 import { test, expect, mock } from 'claude-code/testing'
 import type { On } from 'claude-code'
-import { bandLine, bandRuns, continuedLine, keysHint, parseContinued, rememberTyped, typist } from './state'
+import { bandLine, bandRuns, continuedLine, GO_LIVE_LINE, keysHint, ONLY_YOU_LINE, parseContinued, rememberTyped, typist } from './state'
 import { colorFor, type Sender } from './rules'
 import type { SessionState } from '../types'
 
@@ -278,6 +278,82 @@ test('a not-shared answer hides the band at once', async ($, on) => {
   await clock.advance(2000)
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
   expect(await ui.drawn()).toEqual({ type: 'Text', children: [ENGINE] })
+})
+
+const ONLY_YOU: Reply = { status: 200, body: { shared: false } }
+
+test('a session that is not shared says Only you and offers Share to Lightbulb', async ($, on) => {
+  const { calls, clock } = world(on, () => ONLY_YOU)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: new RegExp(`^${ONLY_YOU_LINE}`) })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: / ctrl\+x tab, then s$/ })).toBeDefined()
+  const buttons = await ui.findAll({ type: 'Button' })
+  expect(buttons.map(b => [b.key, b.props.hotkey, b.props.label])).toEqual([['share', 's', 'Share to Lightbulb']])
+  expect(calls.every(c => c.method === 'GET')).toBe(true) // nothing is asked of the app until the person chooses
+  await ui.unmount()
+  const desktop = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await desktop.find({ text: /ctrl\+x tab/ })).toBeUndefined() // a desktop draws a native button
+  await desktop.unmount()
+})
+
+test('Share to Lightbulb names this session to the app and shows the shared band at once', async ($, on) => {
+  let state: Reply = ONLY_YOU
+  const { calls, clock } = world(on, path => (path === '/v1/share' ? ((state = { status: 200, body: base }), { status: 200, body: { shared: true, waiting: false } }) : state))
+  on('session.id', () => ({ value: 'conversation-1' }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await ui.press({ key: 'share' })
+  const asked = calls.find(c => c.url === 'http://lightbulb/v1/share')!
+  expect(asked).toMatchObject({ method: 'POST', socketPath: SOCKET })
+  expect(asked.body).toEqual({ sessionId: 'conversation-1' })
+  expect(await ui.find({ type: 'Text', text: '● Live in Lightbulb' })).toBeDefined() // no wait for the next poll
+  expect(await ui.find({ key: 'pause' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a shared session in a plain terminal says how to go live and offers nothing', async ($, on) => {
+  const { clock } = world(on, () => ({ status: 200, body: { shared: true } }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(GO_LIVE_LINE).toBe('○ Press ← once to go live')
+  expect(await ui.find({ type: 'Text', text: GO_LIVE_LINE })).toBeDefined()
+  expect(await ui.findAll({ type: 'Button' })).toHaveLength(0)
+  await ui.unmount()
+})
+
+test('Pause stops sharing: the band says Only you and offers Share again', async ($, on) => {
+  let state: Reply = { status: 200, body: base }
+  const { clock } = world(on, path => (path === '/v1/decide' ? (state = ONLY_YOU) : state))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await ui.press({ key: 'pause' })
+  expect(await ui.find({ type: 'Text', text: new RegExp(`^${ONLY_YOU_LINE}`) })).toBeDefined()
+  expect(await ui.find({ key: 'share' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /did not take that/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a refused Share says why and keeps the offer', async ($, on) => {
+  let share: Reply | 'refuse' = { status: 404, body: { error: 'unknown_session', message: 'Lightbulb does not see this session yet. Wait a few seconds, then try again.' } }
+  const { clock, socket } = world(on, path => (path === '/v1/share' ? share : ONLY_YOU))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await ui.press({ key: 'share' })
+  expect(await ui.find({ type: 'Text', text: 'Lightbulb does not see this session yet. Wait a few seconds, then try again.' })).toBeDefined()
+  expect(await ui.find({ key: 'share' })).toBeDefined()
+  share = 'refuse'
+  await ui.press({ key: 'share' })
+  expect(await ui.find({ type: 'Text', text: 'Lightbulb did not answer. Open the Lightbulb app, then try again.' })).toBeDefined()
+  socket.live = false // sharing was switched off for this Mac: the app's socket is gone
+  await ui.press({ key: 'share' })
+  expect(await ui.find({ type: 'Text', text: /^Lightbulb is not sharing on this Mac\./ })).toBeDefined()
+  await ui.unmount()
 })
 
 test('every band Button has its own hotkey', async ($, on) => {

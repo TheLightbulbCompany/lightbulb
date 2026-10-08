@@ -73,11 +73,11 @@ export function DesktopPermissions() {
   </section>;
 }
 
-export const SHARE_LIVE_LABEL = "Share every session live";
+export const SHARE_LIVE_LABEL = "Share every new session";
 export const SHARE_LIVE_FILES = "~/.zshrc, ~/.bashrc and your bash login file (~/.bash_profile, ~/.bash_login or ~/.profile, whichever you have)";
 export const SHARE_LIVE_DESCRIPTION = `Plain claude and codex in a new terminal tab start through Lightbulb, so their live terminal shows here too. Adds a marked block to ${SHARE_LIVE_FILES}; turning it off removes it.`;
 
-/** Settings row: "Share every session live" — the `claude`/`codex` shell functions (the desktop's
+/** Settings row: "Share every new session" — the `claude`/`codex` shell functions (the desktop's
  *  shell_integration module). Hidden in a browser and on a desktop build without the command. */
 export function ShareEverySessionLive() {
   const [on, setOn] = useState<boolean | null>(null);
@@ -100,7 +100,7 @@ export function ShareEverySessionLive() {
   return <SettingRow
     id="share-every-session-live"
     title={SHARE_LIVE_LABEL}
-    description={<>Typing <code>claude</code> or <code>codex</code> in a terminal starts it through Lightbulb, so its live terminal shows here too.</>}
+    description={<>Typing <code>claude</code> or <code>codex</code> in a terminal starts it through Lightbulb, shared and live. Off: a session is shared only when you start it with Lightbulb or choose Share to Lightbulb.</>}
     toggle={{ checked: on, disabled: busy, onChange: () => void toggle() }}
   >
     <p className="settings-row-note">Adds a marked block to {SHARE_LIVE_FILES}, and removes it when you turn this off. Open a new terminal tab after you change it.</p>
@@ -230,8 +230,8 @@ export function useLocalSessions(waitForRemoteDisable = false) {
 }
 
 
-/** Settings card: "Session sharing" — every Claude Code and Codex session on this Mac,
- *  plus the "Share every session live" row and the details of what sharing changes. */
+/** Settings card: "Session sharing" — the Claude Code and Codex sessions this Mac shares,
+ *  plus the "Share every new session" row and the details of what sharing changes. */
 export function LocalSessions() {
   const {state,desktop,consent,setConsent,busy,error,setError,enabled,recoveryPending,canRecover,sameWorkspace,userId,setEnabled,refresh,operation} = useLocalSessions();
   const { organization } = useOrganization();
@@ -282,9 +282,9 @@ export function LocalSessions() {
       <summary>What is shared, and what this changes on your Mac</summary>
       <div className="settings-details-body">
         <p><strong>Who sees it.</strong> The current human members of every conversation you belong to in the workspace where sharing is on. What you add in one conversation can be visible in another, and someone added to a conversation also gets its eligible earlier history. Personal memory files and unrelated old sessions are not synced.</p>
-        <p><strong>What is shared.</strong> Every Claude Code and Codex session on this Mac, including plain <code>claude</code> and <code>codex</code>: prompts, tool calls, output previews, file changes and answers, block by block as the tool shows them. Sessions started in Lightbulb (New session, <code>lightbulb claude</code>, <code>lightbulb codex</code>), Claude Code background sessions and plain Codex sessions also show a live terminal. A credential filter runs on this Mac, but it is not a guarantee.</p>
-        <p><strong>Where it works.</strong> Claude Code and Codex in ordinary local macOS terminals with default profiles, not over SSH, in containers, in IDE runtimes or with custom data folders. A Codex session appears after its first prompt. For a session shown as a transcript, approvals stay in your terminal.</p>
-        <p><strong>What it changes on this Mac.</strong> Sharing installs a <code>lightbulb-session-sharing</code> skill and a Claude wake hook, and this Mac serves the <code>lightbulb</code> MCP server to Claude Code and Codex in place of a hosted <code>lightbulb</code> entry. Setup keeps a recoverable backup of your Claude settings and changes no Codex launch configuration. Turning sharing off removes them and restores nothing. To use Lightbulb without the app, install the Lightbulb plugin from the <code>TheLightbulbCompany/lightbulb-plugin</code> marketplace in its place: <code>claude plugin marketplace remove lightbulb --scope user</code>, then <code>claude plugin marketplace add TheLightbulbCompany/lightbulb-plugin</code> and <code>claude plugin install lightbulb@lightbulb</code>. Keep Lightbulb running (the menu bar counts). Changing the selected workspace does not move sharing. A folder you have not approved asks first in the terminal, and anything Lightbulb cannot share (sharing off, the app closed, <code>claude -p</code>, scripts) runs as usual.</p>
+        <p><strong>What is shared.</strong> A session you start with Lightbulb (New session, <code>lightbulb claude</code>, <code>lightbulb codex</code>), every new session while Share every new session is on, and any other session once you choose Share to Lightbulb in it. Nothing of any other session leaves this Mac. A shared session is its live terminal, whole, from its start; one that runs inside the Claude or Codex app has no terminal and is shared as its conversation. A credential filter runs on this Mac, but it is not a guarantee.</p>
+        <p><strong>Where it works.</strong> Claude Code and Codex in ordinary local macOS terminals with default profiles, not over SSH, in containers, in IDE runtimes or with custom data folders. A Codex session appears after its first prompt. For a session shared as its conversation, approvals stay on your Mac.</p>
+        <p><strong>What it changes on this Mac.</strong> Sharing installs a <code>lightbulb-session-sharing</code> skill and a Claude wake hook, and this Mac serves the <code>lightbulb</code> MCP server to Claude Code and Codex in place of a hosted <code>lightbulb</code> entry. Setup keeps a recoverable backup of your Claude settings and changes no Codex launch configuration. Turning sharing off removes them and restores nothing. To use Lightbulb without the app, install the Lightbulb plugin from the <code>TheLightbulbCompany/lightbulb-plugin</code> marketplace in its place: <code>claude plugin marketplace remove lightbulb --scope user</code>, then <code>claude plugin marketplace add TheLightbulbCompany/lightbulb-plugin</code> and <code>claude plugin install lightbulb@lightbulb</code>. Keep Lightbulb running (the menu bar counts). Changing the selected workspace does not move sharing. Anything Lightbulb cannot share (sharing off, the app closed, <code>claude -p</code>, scripts) runs as usual.</p>
       </div>
     </details>
   </section>;

@@ -70,6 +70,10 @@ fn tag(pickup: &Value, mirrors: &BTreeMap<String, Mirror>) -> Vec<Wanted> {
             let mirror = mirrors
                 .values()
                 .find(|m| m.session_id.as_deref() == Some(sid));
+            // A session that is not shared hands over nothing: no conversation, no changes.
+            if mirror.is_some_and(Mirror::withheld) {
+                return None;
+            }
             Some(Wanted {
                 session_id: sid.into(),
                 conversation_id: conversation.into(),

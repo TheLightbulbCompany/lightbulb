@@ -139,6 +139,9 @@ async def test_a_publish_that_cannot_get_a_slot_in_time_is_dropped_not_stalled(m
     monkeypatch.setattr(publisher, "_signed_request", _fake_signed_request)
     with pytest.raises(live_events.LivePublishQueueFull):
         await publisher._send("/ws/w/users/k", '{"type":"x"}')
-    assert [m["status_class"] for m in metrics if m and m.get("status_class")] == ["queue_full", "queue_full"]
+    with pytest.raises(live_events.LivePublishQueueFull):
+        await publisher._send("/ws/w/users/k", '{"type":"x"}', source="write_path")
+    assert [m["status_class"] for m in metrics if m and m.get("status_class")] == ["queue_full"] * 3
+    assert metrics[-1]["source"] == "write_path"  # saturation stays visible on the write-path series
     release.set()
     await first

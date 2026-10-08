@@ -278,7 +278,7 @@ class LiveEventPublisher:
         for attempt in range(2):
             request = await self._signed_request(endpoint, body)
             try:
-                response = await self._post(endpoint, body, dict(request.headers))
+                response = await self._post(endpoint, body, dict(request.headers), tag)
             except LivePublishQueueFull:
                 raise  # saturation is terminal and already metered once: no retry, no transport sample
             except Exception as exc:
@@ -339,7 +339,7 @@ class LiveEventPublisher:
             return await asyncio.to_thread(_sign, credentials, endpoint, body)
         return _sign(credentials, endpoint, body)
 
-    async def _post(self, endpoint: str, body: bytes, headers: dict[str, str]):
+    async def _post(self, endpoint: str, body: bytes, headers: dict[str, str], tag: dict[str, str] | None = None):
         global _http_client, _inflight
         if _inflight is None:
             # Bound to the first event loop that posts, like the client below. Without it a
@@ -349,7 +349,9 @@ class LiveEventPublisher:
         try:
             await asyncio.wait_for(_inflight.acquire(), timeout=_INFLIGHT_WAIT_S)
         except TimeoutError as exc:
-            put_metric("messaging.live.publish", dimensions={"outcome": "error", "status_class": "queue_full"})
+            put_metric(
+                "messaging.live.publish", dimensions={"outcome": "error", "status_class": "queue_full", **(tag or {})}
+            )
             raise LivePublishQueueFull("AppSync live publish queue full") from exc
         try:
             if self._http is not None:

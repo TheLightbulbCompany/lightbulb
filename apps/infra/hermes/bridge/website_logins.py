@@ -269,21 +269,21 @@ def _page_heading() -> str:
 
 def _code_field_present() -> bool | None:
     """Whether any of the run's tabs still shows a one-time-code field (Hermes's own OTP probe).
-    The code page is in exactly one of them, so the step has moved on only when none shows a
-    field. None = no tab answered."""
+    The code page is in exactly one of them, so the step has moved on only when EVERY tab answered
+    and none shows a field; a tab that did not answer may be the one with the field, so that is
+    None (keep waiting), never False."""
     try:
         from tools.browser_vault_tool import _TAB_PROBES
     except ImportError:  # bridge-only unit tests
         return None
-    answered = False
+    unknown = False
     for task_id in _browser_task_ids():
         result = _page_eval(task_id, _TAB_PROBES["otp"])
         if result is None:
-            continue
-        answered = True
-        if result is True or str(result).strip().lower() == "true":
+            unknown = True
+        elif result is True or str(result).strip().lower() == "true":
             return True
-    return False if answered else None
+    return None if unknown else False
 
 
 def _code_prompt(site: str, _hint: str) -> str:

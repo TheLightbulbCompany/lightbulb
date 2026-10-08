@@ -119,7 +119,9 @@ def test_the_page_watch_covers_every_tab_the_run_browsed_on(monkeypatch):
     pages = {"t-agent": {"success": True, "result": False}, "t-sub": {"success": True, "result": True}}
     assert wl._code_field_present() is True  # the subagent's tab still shows the field
     pages["t-sub"] = {"success": True, "result": "false"}
-    assert wl._code_field_present() is False  # no tab shows it: the person typed it
+    assert wl._code_field_present() is False  # every tab answered, none shows it: the person typed it
+    pages["t-sub"] = {"success": False}
+    assert wl._code_field_present() is None  # the tab that may hold the field did not answer: keep waiting
     pages = {"t-agent": {"success": False}, "t-sub": None}
     assert wl._code_field_present() is None  # nobody answered: keep waiting
 

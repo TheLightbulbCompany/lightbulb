@@ -2245,12 +2245,14 @@ async def test_paused_sharing_hides_the_session_and_drops_its_transcript_until_r
     assert await service.live_sessions_for_room(OWNER, ROOM, [{"kind": "human", "id": ALICE.user_id}]) == []
 
     first = await relay(transport).handle_message("conn-1", batch(1, 0))
+    # The ack says the batch was dropped, so the Mac keeps its events for when sharing resumes.
+    assert (first["afterSeq"], first["paused"]) == (2, True)
     # A lost ack replays idempotently: the notice row carries the batch hash.
     assert await relay(transport).handle_message("conn-1", batch(1, 0)) == first
     assert (await relay(transport).handle_message("conn-1", batch(2, 2)))["afterSeq"] == 4
     resumed = await service.set_sharing(ALICE, sid, True)
     assert resumed.shared is True and resumed.latest_event_seq == 4
-    await relay(transport).handle_message("conn-1", batch(3, 4))
+    assert "paused" not in await relay(transport).handle_message("conn-1", batch(3, 4))
     texts = [e.text for e in (await service.list_events(BOB, None, sid)).events]
     from core.services.local_session_relay import PAUSED_NOTICE
 

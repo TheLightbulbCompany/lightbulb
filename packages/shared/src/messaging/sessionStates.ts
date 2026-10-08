@@ -26,6 +26,6 @@ export function sessionScreenNotice(session: LocalSession, own: boolean, ownerNa
     how: reason === "plain"
       ? "To share it, go to the terminal window where it runs and press the left arrow key (←) once. Teammates can then watch it live."
       : "To share it, close it and start it again by typing lightbulb codex in your terminal. Teammates can then watch it live.",
-    ...(reason === "plain" ? { settings: "To share every new session without this step, turn on Share every session live in Settings." } : {}),
+    ...(reason === "plain" ? { settings: "To share every new session without this step, turn on Share every new session in Settings." } : {}),
   };
 }

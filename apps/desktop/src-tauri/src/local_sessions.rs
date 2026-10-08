@@ -1005,6 +1005,10 @@ struct NativeSession {
     /// The conversation this background session was forked from (← in an interactive session).
     #[serde(default)]
     forked_from: Option<String>,
+    /// It runs inside an app, an IDE or an SDK, not in a terminal: there is never a live
+    /// terminal to show, so a shared one is shared as its conversation.
+    #[serde(default)]
+    app: bool,
 }
 
 impl NativeSession {
@@ -1019,19 +1023,27 @@ impl NativeSession {
     }
 
     /// Why a running session has no live terminal (spec 2026-10-07 §4 f, g); None when it has one.
-    /// `plain`: Claude in a shell without "Share every session live" (← moves it to a background
-    /// job). `no-daemon`: a Codex TUI off Codex's shared daemon (`codex --no-daemon`).
+    /// `plain`: Claude in a shell, not started with Lightbulb (← moves it to a background job).
+    /// `no-daemon`: a Codex TUI off Codex's shared daemon (`codex --no-daemon`). `unknown`: it
+    /// runs in an app, where there is no terminal at all.
     fn terminal_reason(&self) -> Option<&'static str> {
         if self.terminal() != "none" {
             return None;
         }
         Some(match self.provider.as_str() {
+            _ if self.app => "unknown",
             "claude" => "plain",
             // ponytail: codex::DESKTOP_RESOURCES's app, repeated; S7 replaces this arm with `app`.
             "codex" if self.process.executable.starts_with("/Applications/ChatGPT.app/") => "unknown",
             "codex" => "no-daemon",
             _ => "unknown",
         })
+    }
+
+    /// It runs in a terminal that this Mac cannot show live yet. Nothing of it is uploaded
+    /// meanwhile (no transcripts, owner ruling 2026-10-08): it is shared once it is live.
+    fn awaits_terminal(&self) -> bool {
+        matches!(self.terminal_reason(), Some("plain" | "no-daemon"))
     }
 }
 
@@ -1490,6 +1502,18 @@ struct Mirror {
     deferred_end_reason: Option<String>,
     #[serde(default)]
     pub ended_reason: Option<String>,
+    /// The one sharing fact of a session (owner ruling 2026-10-08): shared with the workspace,
+    /// or only its person's. True from the start for a session started with Lightbulb, and for
+    /// every new session while Settings → "Share every new session" is on; otherwise its person
+    /// shares it (the band's Share to Lightbulb, the share skill) or stops (the band). A mirror
+    /// stored before this field was shared.
+    #[serde(default = "yes")]
+    shared: bool,
+    /// Its person stopped sharing it on this Mac and the workspace has not been told yet (the
+    /// server pause failed or is on its way). Nothing is sent meanwhile; the pause is retried
+    /// until it is taken, and until then the band does not say the session is only theirs.
+    #[serde(default)]
+    stop_owed: bool,
     // The relay has acknowledged this session's end. Durable: a Mac that reports an
     // end and restarts must not report it again, and one that does not must.
     #[serde(default)]
@@ -1509,6 +1533,10 @@ struct Mirror {
     // RAM changes remain dirty across failed writes; this is never restored from disk.
     #[serde(skip)]
     dirty: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -1646,7 +1674,21 @@ impl Mirror {
         self.native = native;
         true
     }
+    /// Nothing of this session leaves the Mac and nothing from the workspace reaches it: it is
+    /// not shared, or it is and has no live terminal to show yet. The one predicate behind every
+    /// door: register, upload, heartbeat, terminal frames, final screen, commands, approvals,
+    /// typed input, the session's own tools. The mirror keeps reading nothing meanwhile, so a
+    /// session shared later is shared whole, from its start.
+    // The terminal wait is the promoted process's alone: while a new process waits in
+    // `successor`, the generation before it still drains what it had already shared.
+    fn withheld(&self) -> bool {
+        !self.shared || self.native.awaits_terminal()
+    }
     fn next_batch(&mut self) -> Result<Option<Value>> {
+        // The upload point itself: nothing is read from the transcript or sent while withheld.
+        if self.withheld() {
+            return Ok(None);
+        }
         if !self.subagents.relay {
             self.queue.retain(|e| e.get("subagent").is_none());
             if self.pending.as_ref().is_some_and(|batch| {
@@ -1889,6 +1931,19 @@ impl Mirror {
         self.pending = None;
         Ok(true)
     }
+    /// The relay's answer to a batch it dropped because sharing is paused in the workspace: it
+    /// moved its cursor past the batch and stored none of it. The events stay queued here, so
+    /// sharing again uploads them, and nothing more is sent until then (the workspace's pause
+    /// is this Mac's too, as in `Host::follow_presence`).
+    fn dropped_paused(&mut self, batch_id: &str, after_seq: u64) -> Result<bool> {
+        let queue = self.queue.clone();
+        let taken = self.acknowledge(batch_id, after_seq)?;
+        if taken {
+            self.queue = queue;
+            self.shared = false;
+        }
+        Ok(taken)
+    }
     /// Adopt the relay's cursor when neither "nothing applied" nor "the pending batch was
     /// applied" explains it. The local backlog is dropped; one system marker tells viewers.
     fn resync(&mut self, after: u64) {
@@ -1957,6 +2012,7 @@ mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            app: true,
         }
     }
 
@@ -2124,6 +2180,7 @@ mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            app: true,
         };
         let mut workspace = workspace::State::default();
         workspace.observe(Ok((dir.path().into(), "before".into())), false);
@@ -2189,6 +2246,7 @@ mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            app: true,
         };
         journal.anchor(&cmd, &native, "unique".into(), None).unwrap();
         let ingress = journal.reconcile("s1", "r1", "g1").unwrap().ingress.unwrap();
@@ -2569,6 +2627,7 @@ mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            app: true,
         };
         let mut sessions = vec![];
         reconcile_sessions(&mut sessions, vec![native.clone(), native.clone()]);
@@ -2672,6 +2731,7 @@ mod tests {
                 holder: None,
                 job: None,
                 forked_from: None,
+                app: true,
             },
             generation: "g".into(),
             previous_generation: None,
@@ -2687,6 +2747,8 @@ mod tests {
             deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
+            shared: true,
+            stop_owed: false,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -2758,6 +2820,7 @@ mod tests {
                 holder: None,
                 job: None,
                 forked_from: None,
+                app: true,
             },
             generation: "g".into(),
             previous_generation: None,
@@ -2773,6 +2836,8 @@ mod tests {
             deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
+            shared: true,
+            stop_owed: false,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -2843,6 +2908,7 @@ mod tests {
                 holder: None,
                 job: None,
                 forked_from: None,
+                app: true,
             },
             generation: "g".into(),
             previous_generation: None,
@@ -2858,6 +2924,8 @@ mod tests {
             deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
+            shared: true,
+            stop_owed: false,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -2943,6 +3011,7 @@ mod tests {
                 holder: None,
                 job: None,
                 forked_from: None,
+                app: true,
             },
             generation: "g".into(),
             previous_generation: None,
@@ -2958,6 +3027,8 @@ mod tests {
             deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
+            shared: true,
+            stop_owed: false,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -3008,6 +3079,7 @@ mod tests {
                 holder: None,
                 job: None,
                 forked_from: None,
+                app: true,
             },
             generation: "g".into(),
             previous_generation: None,
@@ -3023,6 +3095,8 @@ mod tests {
             deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
+            shared: true,
+            stop_owed: false,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -3039,6 +3113,19 @@ mod tests {
         assert_eq!(mirror.after_seq, 7);
         assert!(mirror.pending.is_none());
         assert!(mirror.acknowledge("b1", 8).is_err(), "a cursor we never reached is still a conflict");
+    }
+    #[test]
+    fn local_sessions_a_batch_the_relay_dropped_while_paused_stays_queued_for_the_next_share() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(dir.path().join("transcript.jsonl"));
+        mirror.after_seq = 5;
+        let events = vec![json!({"kind":"text","role":"assistant","text":"sent just before the pause","truncated":false})];
+        mirror.queue = events.clone();
+        mirror.pending = Some(json!({"batchId":"b1","events":events}));
+        // The relay moved its cursor and stored nothing: the cursor follows, the events wait.
+        assert_eq!(mirror.dropped_paused("b1", 6), Ok(true));
+        assert_eq!((mirror.after_seq, &mirror.queue, mirror.pending.is_none()), (6, &events, true));
+        assert!(!mirror.shared && mirror.next_batch().unwrap().is_none(), "paused here too: nothing more is sent");
     }
     #[test]
     fn local_sessions_acknowledge_ignores_stale_duplicate_batch_acks_but_conflicts_on_real_mismatches(

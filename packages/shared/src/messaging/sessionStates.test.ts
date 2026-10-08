@@ -35,7 +35,7 @@ it("gives the owner the meaning first, and a step only where one exists", () => 
   const plain = sessionScreenNotice(base, true, "Ada");
   expect(plain.title).toBe("This session's screen is not shared yet.");
   expect(plain.how).toBe("To share it, go to the terminal window where it runs and press the left arrow key (←) once. Teammates can then watch it live.");
-  expect(plain.settings).toBe("To share every new session without this step, turn on Share every session live in Settings.");
+  expect(plain.settings).toBe("To share every new session without this step, turn on Share every new session in Settings.");
   const codex = sessionScreenNotice({ ...base, provider: "codex", terminalReason: "no-daemon" }, true, "Ada");
   expect(codex.how).toBe("To share it, close it and start it again by typing lightbulb codex in your terminal. Teammates can then watch it live.");
   expect(codex.settings).toBeUndefined();

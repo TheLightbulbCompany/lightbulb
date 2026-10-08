@@ -178,6 +178,10 @@ fn admit(body: &Value, relay_of: impl Fn(&Value) -> Option<(String, Arc<Ctl>)>) 
 
 /// The relay's writer: one `type` client, reattached after an error, closed when the relay stops.
 fn write(sid: &str, generation: &str, ctl: &Ctl, inputs: &Receiver<Typed>) {
+    write_with(sid, generation, ctl, inputs, attach)
+}
+
+fn write_with(sid: &str, generation: &str, ctl: &Ctl, inputs: &Receiver<Typed>, attach: impl Fn(&str, &str) -> Option<(UnixStream, bool)>) {
     // The `type` client, and whether its holder takes OWNER_INPUT.
     let mut conn: Option<(UnixStream, bool)> = None;
     let mut tried: Option<Instant> = None;
@@ -197,6 +201,11 @@ fn write(sid: &str, generation: &str, ctl: &Ctl, inputs: &Receiver<Typed>) {
                 conn = attach(sid, generation);
             }
             let Some((c, origin)) = conn.as_mut() else { break };
+            // Sharing may have stopped since these keys were taken off the queue (the attach
+            // above can wait two seconds): the last moment before they are recorded and written.
+            if ctl.stopped() {
+                break;
+            }
             // Recorded first: a decide that reads it between the write and the record is refused.
             wrote(sid, from_owner, Instant::now());
             typed(sid, from_owner, typist.clone(), &keys, Instant::now());
@@ -417,6 +426,25 @@ fn string_reply(kind: u8, rest: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keys_already_taken_off_the_queue_are_not_written_once_the_relay_is_stopped() {
+        use std::io::Read;
+        let (holder, mut peer) = UnixStream::pair().unwrap();
+        peer.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+        let ctl = Ctl::new(0);
+        let (tx, rx) = sync_channel(QUEUE);
+        tx.send((b"rm -rf".to_vec(), true, None)).unwrap();
+        drop(tx); // nothing more comes: the writer ends even if it never attaches
+        // Sharing is stopped while the writer attaches to the holder.
+        let holder = std::cell::RefCell::new(Some(holder));
+        write_with("sid", "gen", &ctl, &rx, |_, _| {
+            ctl.stop.store(true, SeqCst);
+            holder.borrow_mut().take().map(|conn| (conn, true))
+        });
+        let mut read = [0u8; 16];
+        assert!(!matches!(peer.read(&mut read), Ok(n) if n > 0), "nothing reached the holder");
+    }
     use serde_json::json;
     use std::collections::BTreeMap;
 

@@ -13,6 +13,7 @@ def main() -> int:
     ap.add_argument("--seeds", type=int, default=SEEDS, help=f"replays of each scenario (default {SEEDS})")
     ap.add_argument("--first", type=int, default=0, help="the first seed (default 0): another range tells a change from noise")
     ap.add_argument("--profile", choices=PROFILES, default="current", help="the transcriber's timing (sim.Model)")
+    ap.add_argument("--noise", type=float, default=0.0, metavar="RATE", help="non-speech sound bursts a second on each silent person's track (sim.Model; default none)")
     ap.add_argument("--json", metavar="PATH", help="write {scenario | check: [seeds failing, seeds skipped]} there, to compare two runs")
     ap.add_argument("--seed", type=int, help="one replay, with its timeline")
     ap.add_argument("--trace", action="store_true", help="with --seed: the controller's own log too")
@@ -33,7 +34,7 @@ def main() -> int:
             ev = Sim(scenario, ROUTING[names[0]], f"{names[0]}:{a.seed or 0}", recording=rec, trace=a.trace, profile=a.profile).run()
             results = judge(scenario, ev, a.keep)
         else:
-            results, ev = replay(names[0], a.seed, trace=a.trace, keep=a.keep, profile=a.profile)
+            results, ev = replay(names[0], a.seed, trace=a.trace, keep=a.keep, profile=a.profile, noise=a.noise)
         rows = [(t, "rig", f"{kind} {detail}") for t, kind, detail in ev.rig]
         rows += [(t, "worker", f"{n}={v} {d or ''}") for t, n, v, d in ev.emf if n.startswith("live.request")]
         rows += [(x.at, "said", f"{x.name}{' → ' + x.to if x.to else ''}: {x.text}") for x in ev.lines]
@@ -47,7 +48,7 @@ def main() -> int:
         return int(any(s == "FAIL" for s, _, _ in results))
     began, failed, new, table = time.perf_counter(), 0, 0, {}
     for name in names:
-        runs = {seed: replay(name, seed, profile=a.profile)[0] for seed in range(a.first, a.first + a.seeds)}
+        runs = {seed: replay(name, seed, profile=a.profile, noise=a.noise)[0] for seed in range(a.first, a.first + a.seeds)}
         bad = sorted(s for s, r in runs.items() if any(x[0] == "FAIL" for x in r))
         failed += bool(bad)
         print(f"{name:<20} {a.seeds - len(bad):>3}/{a.seeds} seeds pass" + (f"   failing seeds: {' '.join(map(str, bad))}" if bad else ""))

@@ -70,10 +70,16 @@ class Model:
     35 lines, 55 spoken units; worker.log `speech`/`turn`/`permit`/`receipt` lines against rig.txt), each
     with its rarer tail. `fixed`: values read from a recording, used first and in order."""
 
-    def __init__(self, seed: int | str, fixed: dict[str, list] | None = None, silent: float = 0.04, profile: str = "current") -> None:
+    def __init__(
+        self, seed: int | str, fixed: dict[str, list] | None = None, silent: float = 0.04, profile: str = "current",
+        noise: float = 0.0,
+    ) -> None:  # fmt: skip
         """`profile`: the transcriber's timing. `current`: today's (onset 0.4-0.6 s, final 1.2-1.9 s after the
         line). `fast-eot`: a what-if, not a measurement: one that hears the onset in 0.2-0.3 s, sends interims
-        early, and gives the words with an end-of-turn event about 0.3 s after speech stops."""
+        early, and gives the words with an end-of-turn event about 0.3 s after speech stops.
+        `noise`: sound that is not speech (a cough, a key, a chair) on a silent person's track, in bursts a
+        second per person: the SFU's level for them goes up for 0.15-0.8 s and the detector hears nothing.
+        An assumption, not a measurement, and off by default: the rig's people are `say` and make none."""
         if profile not in PROFILES:
             raise ValueError(f"no timing profile {profile!r}; there are: {', '.join(PROFILES)}")
         self.fast = profile == "fast-eot"
@@ -81,6 +87,7 @@ class Model:
         # the writer's delays are dealt from their own deck: a controller that writes more often (a reply
         # begun beside /route and thrown away) must not re-deal every other delay of the replay
         self.writes = random.Random(f"{seed}:write")
+        self.noise, self.noises = noise, random.Random(f"{seed}:noise")  # (its own deck too)
         self.fixed = fixed or {}
         self.p_silent = silent  # 4 of 55 units played no audible audio
 
@@ -427,10 +434,11 @@ class Sim:
     def __init__(
         self, scenario: dict, routing: dict[int, dict] | None = None, seed: int | str = 0,
         recording: Recording | None = None, trace: bool = False, tape: str | None = None, profile: str = "current",
+        noise: float = 0.0,
     ) -> None:  # fmt: skip
         """`tape`: write this call's inputs there with the worker's own recorder (`huddle_agent.record`)."""
         self.s, self.routing, self.rec, self.trace, self.tape = scenario, routing or {}, recording, trace, tape
-        self.model = Model(seed, recording.fixed if recording else None, profile=profile)
+        self.model = Model(seed, recording.fixed if recording else None, profile=profile, noise=noise)
         people = scenario["people"]
         self.ident = {pid: f"meet:replay:rig{pid}" for pid in people}
         self.people = {self.ident[pid]: p["name"] for pid, p in people.items()}
@@ -568,9 +576,24 @@ class Sim:
         async with self._mics[line["who"]]:  # one microphone each: a person's lines play one after the other
             await self._say(i, line)
 
+    async def _noise(self, who: str, name: str) -> None:
+        """Sound that is not speech on a person's track while they say nothing (`Model.noise`)."""
+        rng = self.model.noises
+        while True:
+            await asyncio.sleep(rng.expovariate(self.model.noise))
+            if name in self.talking or who in self.level:
+                continue
+            self._level(who, True)
+            await asyncio.sleep(rng.uniform(0.15, 0.8))
+            if name not in self.talking:  # (they began to speak inside it: their own line ends the level)
+                self._level(who, False)
+
     async def _script(self) -> None:
         """The scenario's lines, as rig.py plays them."""
         self._mics = {pid: asyncio.Lock() for pid in self.s["people"]}
+        if self.model.noise:
+            for who, name in self.people.items():
+                self.spawn(self._noise(who, name))
         prev, pending = None, []
         for i, line in enumerate(self.s["lines"]):
             prev = self.spawn(self._line(i, line, None if "at" in line else prev))

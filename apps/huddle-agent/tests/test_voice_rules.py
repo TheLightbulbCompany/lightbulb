@@ -450,6 +450,19 @@ async def test_speech_only_the_detector_hears_does_not_stop_a_sentence_being_sai
     assert ("interrupt",) in lives[0].calls
 
 
+async def test_sound_only_the_sfu_hears_holds_nothing():
+    """Tried the other way round (10-08, replay, 200 seeds x 15 scenarios, `--noise 0.1`): the SFU's level
+    alone holding a new unit for PREROLL_S. Without noise nothing improved (1587 -> 1589 failing check-seeds,
+    749 -> 751 with the fast transcriber). With a burst every 10 s on each silent track it held 4,096 starts
+    and acknowledgements past 4 s went 720 -> 848 (75 -> 107). Not done."""
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    h.on_active_speakers({P2})  # a cough, a key: the detector hears no speech
+    answer(h, row.run_id, "forge", FIRST)
+    await pause(h, clock, BREATH)
+    assert says_of(lives[0])[1:] == [("say", FIRST)] and h._turn_open(clock.t) is None
+
+
 async def test_a_detector_that_never_says_stop_holds_speech_for_detector_lost_s_at_most():
     h, backend, lives, clock = await asked()
     (row,) = h._requests.items

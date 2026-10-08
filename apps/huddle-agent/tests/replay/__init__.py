@@ -27,9 +27,11 @@ def load(name: str) -> dict:
         return json.load(f)
 
 
-def replay(name: str, seed: int, trace: bool = False, keep: str | None = None, profile: str = "current") -> tuple[list[tuple[str, str, str]], Evidence]:
+def replay(
+    name: str, seed: int, trace: bool = False, keep: str | None = None, profile: str = "current", noise: float = 0.0
+) -> tuple[list[tuple[str, str, str]], Evidence]:
     """One synthetic replay of a scenario: its checks, [(PASS|FAIL|SKIP, check, evidence)], and what it left."""
     scenario = load(name)
     # seeded by name too: seed 3 of one scenario is not seed 3 of another, with the same first delays
-    ev = Sim(scenario, ROUTING[name], f"{name}:{seed}", trace=trace, profile=profile).run()
+    ev = Sim(scenario, ROUTING[name], f"{name}:{seed}", trace=trace, profile=profile, noise=noise).run()
     return judge(scenario, ev, keep), ev

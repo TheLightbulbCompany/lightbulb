@@ -2012,6 +2012,11 @@ class Huddle:
                     # or has not come yet (it runs up to 2.5 s late). The detector alone holds what has not
                     # begun: holding costs a moment. It never stops a sentence being said (`_yield_check`):
                     # that takes the SFU's sound too, because a false stop costs the sentence.
+                    # The other way round was tried and is not done: the SFU's sound alone, held for as long
+                    # as the detector might still be about to hear them (PREROLL_S), bought nothing (the
+                    # detector is rarely the later of the two) and, with a cough or a key every 10 s on each
+                    # silent track, held 4,000 starts in 3,000 replays and put 18% more acknowledgements
+                    # past 4 s (test_voice_rules).
                     heard = max(self._level_at.get(ep.who, -math.inf), ep.began)
                     if (lost := DETECTOR_LOST_S - (now - heard)) > 0:
                         return "person", lost

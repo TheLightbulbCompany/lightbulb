@@ -29,7 +29,7 @@ describe("useWorkspaceSessions", () => {
     expect(listWorkspaceSessions).toHaveBeenCalledTimes(2);
   });
 
-  it("forgets removed rows at once, before the next refresh", async () => {
+  it("drops removed rows at once, before the next refresh", async () => {
     listWorkspaceSessions.mockResolvedValueOnce({ sessions: [{ sessionId: "a" }, { sessionId: "b" }] } as never);
     const { result } = renderHook(() => useWorkspaceSessions(source));
     await waitFor(() => expect(result.current.sessions).toHaveLength(2));

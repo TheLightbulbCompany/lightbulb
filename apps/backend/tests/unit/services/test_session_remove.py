@@ -151,3 +151,59 @@ async def test_remove_all_ended_takes_only_the_callers_own_ended_sessions(transp
     assert (await http(ALICE, "DELETE", "?ended=true")).json() == {"removed": 1}
     assert await listed(BOB) == [live]
     assert (await http(ALICE, "DELETE", "?ended=true")).json() == {"removed": 0}
+
+
+@pytest.mark.asyncio
+async def test_a_resume_that_lands_first_keeps_its_link_and_the_remove_answers_409(transport, s3, monkeypatch):
+    """The stamp is the commit point: nothing is revoked before it, so a session that started
+    again while the DELETE was in flight is live with its link and pick-up intact."""
+    sid = await claude_session(transport)
+    link = await service.put_link(ALICE, sid, "anyone")
+    token = link.url.split("#", 1)[1]
+    await end(transport, sid)
+    transact, resumed = messaging_repo._transact, []
+
+    async def resume_first(items, *args, **kwargs):
+        if not resumed and "removedAt" in str(items[0].get("Update", {}).get("UpdateExpression", "")):
+            resumed.append(True)
+            connect(transport, cid="conn-2", stamp="1001")
+            frame = registration(
+                provider="claude", nativeConversationId=pickup_tests.CONVERSATION, providerVersion="2.1.283"
+            )
+            frame["session"]["generation"] = "generation-2"
+            await relay(transport).handle_message("conn-2", frame)
+        return await transact(items, *args, **kwargs)
+
+    monkeypatch.setattr(messaging_repo, "_transact", resume_first)
+    with pytest.raises(ApiProblem) as refused:
+        await service.remove_session(ALICE, sid)
+    assert resumed and refused.value.error.code == "LOCAL_SESSION_CONFLICT"
+    row = await repo.get_session(OWNER, sid)
+    assert "removedAt" not in row and row.get("endedAt") is None
+    assert row["shareLink"]["tokenHash"] == service._token_hash(token) and row["pickupAllowed"] is True
+    assert (await session_links.resolve(None, token))[0]["sessionId"] == sid
+    # The cleanup itself never touches a row that is not removed.
+    await service.delete_link(ALICE, sid, removed_only=True)
+    assert "shareLink" in await repo.get_session(OWNER, sid)
+
+
+@pytest.mark.asyncio
+async def test_a_cleanup_that_failed_leaves_the_link_dead_and_a_repeat_finishes_it(transport, s3, monkeypatch):
+    sid = await claude_session(transport)
+    link = await service.put_link(ALICE, sid, "anyone")
+    token = link.url.split("#", 1)[1]
+    await end(transport, sid)
+    cleanup = service.delete_link
+    monkeypatch.setattr(service, "delete_link", AsyncMock(side_effect=RuntimeError("dynamo down")))
+    with pytest.raises(RuntimeError):
+        await service.remove_session(ALICE, sid)
+    row = await repo.get_session(OWNER, sid)
+    assert row["removedAt"] and "shareLink" in row
+    # Already unreachable: the public door refuses a removed row on its own.
+    with pytest.raises(ApiProblem):
+        await session_links.resolve(None, token)
+    assert await listed(BOB) == []
+    monkeypatch.setattr(service, "delete_link", cleanup)
+    await service.remove_session(ALICE, sid)
+    row = await repo.get_session(OWNER, sid)
+    assert row["removedAt"] and "shareLink" not in row and not row.get("pickupAllowed")

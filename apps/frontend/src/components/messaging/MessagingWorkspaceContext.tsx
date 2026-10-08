@@ -784,15 +784,13 @@ export function MessagingWorkspaceProvider({
       await rooms.resourceSource.client.setLocalSessionDisplayTitle!(sessionId, title);
       await workspaceSessions.refresh();
     } : undefined,
-    // The rows leave at once (and the panel open on one closes); a failure puts back what the server still lists.
+    // Nothing leaves the list until the server has removed it: a refusal (it resumed meanwhile, the network)
+    // rejects here, and the button that asked says so. The panel showing the session closes itself (SessionFocus).
     onRemoveSession: async (sessionId) => {
-      if (sessionFocus?.sessionId === sessionId) closeSession();
+      await rooms.resourceSource.client.removeLocalSession(sessionId);
       workspaceSessions.forget((session) => session.sessionId === sessionId);
-      try { await rooms.resourceSource.client.removeLocalSession(sessionId); }
-      catch (error) { await workspaceSessions.refresh(); throw error; }
     },
     onRemoveEndedSessions: async () => {
-      workspaceSessions.forget((session) => session.status === "ended" && session.humanUserId === userId);
       try { await rooms.resourceSource.client.removeEndedLocalSessions(); }
       finally { await workspaceSessions.refresh(); }
     },

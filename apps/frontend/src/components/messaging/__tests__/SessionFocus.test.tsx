@@ -409,3 +409,25 @@ it("lets the owner remove an ended session from the list, after a confirmation",
   await userEvent.click(within(screen.getByRole("dialog", { name: "Remove this session from the list?" })).getByRole("button", { name: "Remove" }));
   expect(onRemove).toHaveBeenCalledWith("s1");
 });
+
+it("closes after a removal succeeded, never before, and for a displayed fork too", async () => {
+  // The focus names the ended origin; the list shows its continuation (`forkedFrom`) in its place, under another id.
+  const origin = { ...session, status: "ended" as const, terminal: undefined, latestEventSeq: 3 };
+  const fork = { ...origin, sessionId: "s2", forkedFrom: "s1", title: "Load test" };
+  const onRemove = vi.fn().mockRejectedValueOnce(new Error("409")).mockResolvedValue(undefined);
+  const onClose = vi.fn();
+  const client = { listWorkspaceSessions: vi.fn(), getLocalSession: vi.fn(), listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })),
+    submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), requestLocalSessionPickup: vi.fn() } as unknown as SessionSource["client"];
+  render(<SessionFocus focus={{ sessionId: "s1" }} entries={[{ session: origin, ownerName: "You", own: true }, { session: fork, ownerName: "You", own: true }]}
+    loading={false} hintRevision={0} client={client} resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={onClose} onRemove={onRemove} />);
+  await userEvent.click(screen.getByRole("button", { name: "Remove Load test from the list" }));
+  const confirm = screen.getByRole("dialog", { name: "Remove this session from the list?" });
+  await userEvent.click(within(confirm).getByRole("button", { name: "Remove" }));
+  // Refused: the panel and its confirmation stay, and say so.
+  expect(onRemove).toHaveBeenCalledWith("s2");
+  expect(await within(confirm).findByRole("alert")).toHaveTextContent("Could not remove it. Try again.");
+  expect(onClose).not.toHaveBeenCalled();
+  await userEvent.click(within(confirm).getByRole("button", { name: "Remove" }));
+  expect(onRemove).toHaveBeenCalledTimes(2);
+  expect(onClose).toHaveBeenCalledTimes(1);
+});

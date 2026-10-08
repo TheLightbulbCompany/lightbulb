@@ -2972,25 +2972,29 @@ async def get_link(auth: AuthContext, session_id: str) -> SessionLink:
     return _link_public(row["shareLink"])
 
 
-async def delete_link(auth: AuthContext, session_id: str) -> None:
+async def delete_link(auth: AuthContext, session_id: str, *, removed_only: bool = False) -> None:
     """Turn the link off: every page reads "turned off" and no new copy can be made. On a Claude
-    session this retires the snapshot too, in retire's own transaction. Idempotent."""
+    session this retires the snapshot too, in retire's own transaction. Idempotent.
+    ``removed_only`` is `remove_session`'s cleanup: it acts only on a row that still carries
+    `removedAt`, and every write below is fenced on that row's revision, so a session that started
+    again meanwhile keeps its link and snapshot."""
     from core.services import session_pickup
     from core.services.local_session_relay import publish_resources_changed
 
     table = messaging_repo._table().name
     for _ in range(6):
         row = await _owned_session(auth, session_id)
+        if removed_only and row.get("removedAt") is None:
+            return
         link = row.get("shareLink")
-        if not link:
-            # Pick-up switched on by the removed switch has no link: turning off still turns it off.
-            if row.get("pickupAllowed"):
-                await session_pickup.set_pickup(auth, session_id, False)
+        if not link and not row.get("pickupAllowed"):
             return
         owner, sid = row["ownerId"], row["sessionId"]
         try:
             if row.get("pickupAllowed"):
-                await session_pickup.retire(owner, sid, row, auth=auth, action="share_link_revoked")
+                # Pick-up switched on by the removed switch has no link: turning off still turns it off.
+                action = "share_link_revoked" if link else "pickup_off"
+                await session_pickup.retire(owner, sid, row, auth=auth, action=action)
                 return
             await messaging_repo._transact(
                 [
@@ -3019,10 +3023,12 @@ async def delete_link(auth: AuthContext, session_id: str) -> None:
 async def remove_session(auth: AuthContext, session_id: str, *, hint: bool = True) -> None:
     """The owner takes one of their ENDED sessions off every list. A stamp (`removedAt`), not a
     delete: events, receipts, audit rows, the chat and the Mac's own mirror all hang off this row,
-    and the stamp makes `authorize_session` answer "not found" on every door at once. The link and
-    the pick-up snapshot are turned off first, so the public page stops too; nobody can resume it;
-    its chat loses everyone but the owner and stays archived. Starting the conversation again on
-    the Mac registers a new run and lists it again. Idempotent."""
+    and the stamp makes `authorize_session` (and the public link door) answer "not found" at once.
+    The stamp is the commit point, fenced on the row still being ended: a resume that lands first
+    wins, this answers 409, and the live session keeps its link and snapshot. Only then are the
+    link and the pick-up snapshot turned off, and the chat emptied of everyone but the owner; a
+    repeat call finishes a cleanup that failed part-way. Starting the conversation again on the
+    Mac registers a new run and lists it again. Idempotent."""
     from core.services import session_chat  # lazy: it imports this module
     from core.services.local_session_relay import publish_resources_changed
 
@@ -3032,9 +3038,6 @@ async def remove_session(auth: AuthContext, session_id: str, *, hint: bool = Tru
             break
         if row.get("endedAt") is None:
             raise ApiProblem("LOCAL_SESSION_CONFLICT", "End this session before you remove it.")
-        if row.get("shareLink") or row.get("pickupAllowed"):
-            await delete_link(auth, session_id)  # its own transaction; then read the row again
-            continue
         try:
             await messaging_repo._transact(
                 [
@@ -3063,7 +3066,8 @@ async def remove_session(auth: AuthContext, session_id: str, *, hint: bool = Tru
         break
     else:
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
-    # On every call, not only the one that stamped: a retry after a failed silence finishes it.
+    # On every call, not only the one that stamped: a retry after a failed cleanup finishes it.
+    await delete_link(auth, session_id, removed_only=True)
     await session_chat.silence(row["ownerId"], row["sessionId"], keep=row["humanUserId"])
     await session_chat.follow_session(row["ownerId"], row["sessionId"])
     if hint:

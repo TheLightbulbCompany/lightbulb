@@ -54,7 +54,7 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
   chatOpen?: boolean;
   onChatOpenChange?: (open: boolean) => void;
   onChatRoom?: (roomId: string | null) => void;
-  /** The owner takes this session off the list once it has ended (the caller closes the panel). */
+  /** The owner takes the session shown here off the list once it has ended; the panel closes when that succeeded. */
   onRemove?: (sessionId: string) => Promise<unknown>;
 }) {
   // A Claude session moved to the background continues as a fork (`forkedFrom`): show that one,
@@ -186,7 +186,9 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
       <header className="room-context-header">
         <h3 className="font-semibold room-wrap flex items-center gap-2">{session ? <><SessionToolIcon provider={session.provider} /><span className="min-w-0">{sessionTitle(session)}</span></> : "Shared session"}</h3>
         {session && owner?.own && client.setLocalSessionDisplayTitle && <SessionRenameButton session={session} onRename={client.setLocalSessionDisplayTitle} icon />}
-        {session && owner?.own && onRemove && session.status === "ended" && <SessionRemoveButton name={sessionTitle(session)} onRemove={() => onRemove(session.sessionId)} icon />}
+        {session && owner?.own && onRemove && session.status === "ended" && <SessionRemoveButton name={sessionTitle(session)} icon
+          // The session shown may be the focused one's continuation (`forkedFrom`), under another id: close here, not by id.
+          onRemove={async () => { await onRemove(session.sessionId); onClose(); }} />}
         {showChat && <Button className="ml-auto" variant="ghost" size="sm" aria-pressed={chatOpen}
           aria-label={unread ? `Chat, ${unread} unread` : "Chat"} onClick={toggleChat}>
           <MessageSquare aria-hidden="true" />Chat{unread > 0 && <span className="session-chat-unread" aria-hidden="true">{unread > 99 ? "99+" : unread}</span>}

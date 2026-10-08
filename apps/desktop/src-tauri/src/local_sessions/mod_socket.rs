@@ -60,7 +60,8 @@ pub(super) fn decision_body(sid: &str, generation: &str, body: &Value) -> Result
     let decision = body["decision"].as_str().filter(|d| ["allow", "decline", "pause", "unpause"].contains(d)).ok_or("invalid decision")?;
     let answers = matches!(decision, "allow" | "decline");
     let user = body["userId"].as_str().filter(|v| !v.is_empty() && v.len() <= 128);
-    let request = body["requestId"].as_str().filter(|v| !v.is_empty() && v.len() <= 64);
+    // An agent's ask id is an `OpaqueId`, up to 256 characters (spec 2026-10-07-agent-session-approval).
+    let request = body["requestId"].as_str().filter(|v| !v.is_empty() && v.len() <= 256);
     if answers != (user.is_some() && request.is_some()) {
         return Err("invalid decision".into());
     }
@@ -270,5 +271,12 @@ mod tests {
         let restarted = decision_body(sid, "g2", &json!({"decision":"allow","userId":"u2","requestId":"r2"})).unwrap();
         assert!(stale(sid, &restarted), "a request of the old generation cannot be answered by the new one");
         assert!(!stale(sid, &decision_body(sid, "g1", &json!({"decision":"pause"})).unwrap()));
+    }
+
+    #[test]
+    fn mod_socket_takes_a_256_character_ask_id_and_refuses_a_longer_one() {
+        let allow = decision_body("s", "g1", &json!({"decision":"allow","userId":"agent-friday","requestId":"a".repeat(256)})).unwrap();
+        assert_eq!(allow["requestId"].as_str().map(str::len), Some(256));
+        assert!(decision_body("s", "g1", &json!({"decision":"allow","userId":"agent-friday","requestId":"a".repeat(257)})).is_err());
     }
 }

@@ -372,6 +372,19 @@ test('a pick-up request names itself and Allow posts its request id', async ($, 
   await ui.unmount()
 })
 
+test("an agent's ask names its message and Allow posts the agent id and the ask", async ($, on) => {
+  const ask: SessionState = { ...base, joinRequests: [{ userId: 'agent-friday', name: 'Friday', requestId: 'ask-1', kind: 'agent_message', action: 'send', text: 'Run the tests' }] }
+  const { calls, clock } = world(on, path => ({ status: 200, body: path === '/v1/decide' ? base : ask }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...BAND, surface: SURFACES[0] })
+  expect(await ui.find({ type: 'Text', text: 'Friday wants to message this session: Run the tests' })).toBeDefined()
+  await ui.press({ key: 'allow' })
+  const post = calls.filter(c => c.method === 'POST')
+  expect(post[post.length - 1].body).toEqual({ decision: 'allow', userId: 'agent-friday', requestId: 'ask-1' })
+  await ui.unmount()
+})
+
 test('a continued marker becomes one line; junk becomes nothing', () => {
   const c = parseContinued('{"from":"Prasiddha","title":"Fix login"}')!
   expect(continuedLine(c)).toBe("Continued from Prasiddha's session · Share yours (thelightbulb.company)")

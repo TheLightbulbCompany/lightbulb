@@ -86,52 +86,75 @@ ROUTING: dict[str, dict[int, dict]] = {
 
 # Checks a replay fails today, and why: (scenario or "*", a regex on the check, the cause). Recorded so the
 # suite can gate on everything else (tests/test_voice_replay.py): a failing check that is not here is new.
-# An entry is no licence: each names the rule to change. Shares are of 100 seeds on 2026-10-08.
+# An entry is no licence: each names the rule to change. Shares are of 200 seeds on 2026-10-08, as
+# `current` / `fast-eot` (`sim.Model`: the second is a what-if transcriber, not a measurement). Each cause
+# ends with where it lies: [controller] a rule of huddle.py, [timing] the transcriber's or the voice's
+# delays, [policy] a rule and the scenario disagree and a person has to choose, [check] check.py itself.
 ACK = (
-    "acknowledgement latency sits at the 4 s limit (15-25% of seeds; live 12 of 38): the final transcript comes "
-    "1.2-1.9 s after the line, then /route, the voice, its first audio. A silent first unit or a person "
-    "talking again adds seconds (`_turn_open` holds every line on an open turn)."
+    "acknowledgement latency sits at the 4 s limit (9-25% / 0-4%): the final transcript comes 1.2-1.9 s "
+    "after the line, then /route, the voice, its first audio. A silent first unit or a person talking again "
+    "adds seconds (`_turn_open` holds every line on an open turn). [timing]"
 )
 TALK_OVER = (
-    "a mouth yields TALK_OVER_S (0.5 s) after the detector hears the person, itself 0.4-0.6 s after they start "
-    "(`_yield_check`): 1.0-1.5 s of agent audio is over any line that starts on agent speech."
+    "a mouth yields TALK_OVER_S (0.5 s) after the room hears the person, itself 0.4-0.6 s after they start "
+    "(`_yield_check`): 1.0-1.5 s of agent audio is over a line that starts on a sentence well under way "
+    "(status_check 77-88% / 14-15%). A sentence only just begun yields at once (PREROLL_S). [timing]"
 )
-BLIND = (
-    "a sentence that starts in the 0.4-0.6 s before the detector hears a person who just began is audible over "
-    "them until it yields; and the owed answer cut by the next line has no transcript line (a cut unit is "
-    "not on the record, `on_agent_said`), so check.py cannot tell it was the owed answer."
+NO_LINE = (
+    "three causes. (1) The owed answer starts at a pause and the next line cuts it with under HEARD_SHARE "
+    "of the sentence audible: by rule it is not said and leaves no line, and check.py needs a line to call "
+    "the audio the owed answer (gap 100%; most of sidetalk). Recording every audible piece clears it (gap "
+    "100 -> 14%, sidetalk 84 -> 35%) and fails said_once and no_text instead, on the same sentence said "
+    "again whole. [policy] (2) An acknowledgement at the 4 s limit meets a person who starts within the "
+    "detector's lag of its first audio. [timing] (3) check.py gives a line recorded under 0.5 s before the "
+    "next burst to that burst, and calls the first one audio with no line. [check]"
 )
 LEVEL_LATE = (
-    "the SFU's level for the talker came late (up to 2.5 s): until then the detector alone is not talk "
-    "(`_talking_changed`, `Epoch.credible`), so the mouth speaks on and may start its next sentence."
+    "the SFU's level for the talker came late (up to 2.5 s). Until then the detector alone holds what has "
+    "not begun but stops no sentence being said (`_yield_check`): a false stop costs the sentence. 2-3% / 0-2%. "
+    "[policy]"
 )
 QUIET = (
-    "an answer nobody is plainly waiting for needs MEET_QUIET_S (3 s) counted from the last final transcript "
-    "(`_hold`, `_heard_final` sets `_last_heard`), then its voice reopened: about 5.5 s of a pause are gone "
-    "before its first word."
+    "an answer nobody is plainly waiting for needs MEET_QUIET_S (3 s) of quiet, then its voice reopened and "
+    "its first audio: its first sentence (5.8 s) cannot end inside the 6.8 s pause unless it starts within "
+    "2 s of the speech before. Counting the quiet from the end of speech instead of the final transcript "
+    "starts it about 1 s sooner, fits no more of it in, and has it cut more often (tried, reverted). [policy]"
 )
-LINES = "an acknowledgement cut after its first sentence is finished later as a line of its own, beside two-sentence answers."
+LINES = (
+    "sidetalk: two acknowledgements and three answer sentences are five lines against a limit of four; it "
+    "passed only when an audible acknowledgement was cut and left no line (fails 69-72% / 94-97%). [check] The others "
+    "(0-5%): the voice's own tail put more than 3 s between an acknowledgement's two sentences (a quiet "
+    "lead-in, a long trailing silence), which check.py then counts as two lines. [timing]"
+)
 CUT_SEEN = (
-    "a sentence cut with most of it audible (HEARD_SHARE) is on the record as what was heard, with no end "
-    "punctuation: a listening sound still makes the mouth yield, and the check now sees the cut."
+    "a listening sound whose first interim words come after TALK_OVER_S still makes the mouth yield "
+    "(`_only_listening`), and a sentence cut with HEARD_SHARE of it audible is on the record as what was "
+    "heard, with no end punctuation (9-11% / 6-11%). Before, a cut sentence left no line and the check "
+    "could not see it. [timing]"
 )
 KNOWN_FAILING: list[tuple[str, str, str]] = [
-    ("backchannel", r"no_text \{\"pattern\": \"\[\^", CUT_SEEN),
-    ("one_to_one", r'ack_within \{"line": 0', "small talk is written only after /route answers (`_opened`), on top of: " + ACK),
     (
         "unnamed_followup", r'ack_within \{"line": 1',
-        "the exchange is forgotten after ENGAGE_GAP_S (30 s) of silence, before the follow-up at 55 s, so the "
-        "nameless question waits out UNCLAIMED_QUESTION_S (3.5 s) before /route (`_dispatch`).",
+        "52-55% / 6-8%. The exchange is still its person's (`_engagements`), so the nameless question goes to "
+        "/route at once. But its voice closed MEET_FOLLOWUP_S after the answer and opens again only once /route "
+        "has named the agent (0.5-1.6 s), on top of: " + ACK,
     ),  # fmt: skip
+    ("one_to_one", r'ack_within \{"line": 0', "31% / 3%. The reply is written beside /route now (`_prewrite`). What is left: " + ACK),
     ("*", r"ack_within", ACK),
     ("*", r"no_talk_over", TALK_OVER),
-    ("backchannel", r"keeps_speaking", "a listening sound makes the mouth yield like any talk, and it resumes only after that sound's final transcript, from the start of the cut sentence: " + TALK_OVER),
+    (
+        "backchannel", r"keeps_speaking",
+        "10-24% / 8-10%. A listening sound known from its interim words no longer stops a sentence, and a mouth "
+        "it paused goes on at the detector's stop. Left: one whose words come after TALK_OVER_S (the replay "
+        "assumes 0.5 s, unmeasured: at 0.7 s this is 65%), and the pause before the next sentence while the "
+        "detector still hears them. [timing]",
+    ),  # fmt: skip
+    ("backchannel", r"no_text \{\"pattern\": \"\[\^", CUT_SEEN),
     ("sidetalk", r'answer_contains \{"after": 0', QUIET),
-    ("long_answer_cut", r"resumes_after", QUIET),
-    ("gap|sidetalk|sales_call|unnamed_sidetalk", r"silent_between", BLIND),
+    ("long_answer_cut", r"resumes_after", "1 seed in 200. " + QUIET),
+    ("gap|sidetalk|sales_call|unnamed_sidetalk", r"silent_between", NO_LINE),
     ("gap|long_answer_cut|stop_mid_answer", r"stops_within", LEVEL_LATE),
-    ("sidetalk|two_asks_one_agent|one_to_one", r"max_agent_lines", LINES),
-    ("gap", r'answer_contains \{"after": 1', "1 seed in 100, not explained: the answer was ready and never said before the rig left."),
+    ("sidetalk|two_asks_one_agent|one_to_one|trailing|two_agents|unnamed_sidetalk", r"max_agent_lines", LINES),
 ]
 
 

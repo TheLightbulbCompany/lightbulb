@@ -866,13 +866,12 @@ impl Host {
         let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
         if withheld {
             mirror.resume_generation = None;
-            if std::mem::take(&mut mirror.resume_registration_pending) {
-                // Revived under a generation that never registered: its end is told, if the
-                // relay ever had the session, under the one the relay knows, and a later
-                // share continues that chain.
-                if let Some(known) = mirror.previous_generation.take() {
-                    mirror.generation = known;
-                }
+            mirror.resume_registration_pending = false;
+            // Its current generation never registered (a resume, or a new process, while
+            // withheld), whichever path revived it: its end is told under the generation the
+            // relay last acknowledged, if it has one, and a later share continues that chain.
+            if let Some(known) = mirror.registration.acknowledged.clone().filter(|known| *known != mirror.generation) {
+                mirror.generation = known;
             }
             mirror.deferred_end_reason = None;
         } else if mirror.resume_generation.is_some()
@@ -3171,6 +3170,38 @@ pub(super) mod tests {
         host.end_session(&key, "exited").unwrap();
         let (_, frame) = host.ended_frame(&mut BTreeSet::new()).unwrap().expect("its end is told");
         assert_eq!((frame["type"].as_str(), frame["generation"].as_str()), (Some("local.session.ended"), Some(known.as_str())));
+    }
+
+    #[test]
+    fn local_sessions_a_registered_session_resumed_in_a_plain_terminal_ends_under_the_generation_the_relay_knows() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = test_host(dir.path(), vec![]);
+        let mut native = test_native("5eed0009-0000-4000-8000-000000000009");
+        native.app = false;
+        native.holder = Some("ab12cd34".into());
+        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
+        let key = native_key(&native);
+        // Shared and registered at G1; its end is never told (the Mac was offline).
+        let known = host.mirrors[&key].generation.clone();
+        let mirror = host.mirrors.get_mut(&key).unwrap();
+        mirror.session_id = Some("5eed0009-5e55-4000-8000-000000000009".into());
+        mirror.registration.acknowledged = Some(known.clone());
+        host.end_session(&key, "exited").unwrap();
+        // Resumed with plain `codex`: a new process, no holder, so withheld. Then it exits.
+        let mut child = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let mut resumed = native.clone();
+        resumed.process = process(child.id()).unwrap();
+        resumed.holder = None;
+        resumed.status = "busy".into();
+        let observed = host.observe(vec![resumed], &BTreeSet::new());
+        child.kill().unwrap();
+        child.wait().unwrap();
+        observed.unwrap();
+        let mirror = &host.mirrors[&key];
+        assert!(mirror.ended_at.is_none() && mirror.withheld() && mirror.generation != known && !mirror.resume_registration_pending, "the successor path");
+        host.end_session(&key, "exited").unwrap();
+        let (_, frame) = host.ended_frame(&mut BTreeSet::new()).unwrap().expect("its end is told");
+        assert_eq!(frame["generation"].as_str(), Some(known.as_str()));
     }
 
     #[test]

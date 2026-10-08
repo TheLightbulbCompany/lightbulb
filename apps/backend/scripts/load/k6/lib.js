@@ -22,6 +22,8 @@ export const fixtures = raw;
 http.setResponseCallback(http.expectedStatuses({ min: 200, max: 399 }, 429));
 export const http429 = new Counter('http_429');
 export const appsyncErrors = new Counter('appsync_errors');
+export const dupes = new Counter('dupes'); // AppSync redeliveries, dropped before any metric sees them
+const SEEN_EVENT_CAP = 1_000; // as AppSyncEventsClient.deliver
 
 // ---- DLT partitioning: every task runs the whole script; each keeps its own slice.
 const TASK_INDEX = Number(__ENV.TASK_INDEX || 0);
@@ -116,6 +118,7 @@ export function subscribe(user, cfg, channels, holdMs, on, tickMs) {
   const header = JSON.stringify({ Authorization: appsyncToken(user), host: cfg.httpEndpoint.replace(/^https?:\/\//, '').split('/')[0] });
   const protocols = `header-${encoding.b64encode(header, 'rawurl')}, aws-appsync-event-ws`;
   const byId = {};
+  const seen = new Set(); // eventIds, bounded: a redelivered reply or frame must not offset a lost one
   ws.connect(cfg.realtimeEndpoint, { headers: { 'Sec-WebSocket-Protocol': protocols } }, (socket) => {
     socket.on('open', () => socket.send(JSON.stringify({ type: 'connection_init' })));
     socket.on('message', (data) => {
@@ -134,7 +137,13 @@ export function subscribe(user, cfg, channels, holdMs, on, tickMs) {
         for (const item of items) {
           let ev;
           try { ev = typeof item === 'string' ? JSON.parse(item) : item; } catch (_) { continue; }
-          if (ev && on.event) on.event(ev, byId[msg.id]);
+          if (!ev) continue;
+          if (ev.eventId) {
+            if (seen.has(ev.eventId)) { dupes.add(1); continue; }
+            seen.add(ev.eventId);
+            if (seen.size > SEEN_EVENT_CAP) seen.delete(seen.values().next().value);
+          }
+          if (on.event) on.event(ev, byId[msg.id]);
         }
       } else if (msg.type === 'subscribe_error' || msg.type === 'connection_error' || msg.type === 'error') {
         appsyncErrors.add(1, { type: msg.type });

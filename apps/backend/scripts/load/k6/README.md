@@ -5,6 +5,8 @@ under `fixtures.py run`, which signs the fixture users in, sets `FIXTURES`, and 
 `F` below is short for `uv run python -m scripts.load.fixtures`. **Never run any of these without the
 owner's go for that run** (see `../README.md`).
 
+AppSync redeliveries are dropped by `eventId` before any metric (counted in `dupes`).
+
 Common env: `SEND_S` = seconds of sending (senders start at 30 s; receivers hold `SEND_S + 90` s: the 30 s head start plus a 60 s drain),
 `STAGES` = k6 `ramping-arrival-rate` stages (JSON), `TIME_UNIT` (default `1s`), `PRE_VUS`/`MAX_VUS`
 (override the spec's sizing), `RUN_ID` (names the load rooms; set the same value on every DLT task),
@@ -66,6 +68,8 @@ Macs are the first `--macs` fixture users; viewers are the other users of the sa
 | 3b relay breadth | `--users-per-org 50` | `mac_sim --macs M --sessions 3 --events-per-s 1 --fps 0 --duration 600` for M in 10, 25, 50 (no viewers) |
 | 3c reconnect storm | `--users-per-org 50` | 3b at M = 50 with `--storm-at 300` |
 | 3d viewer churn | `--users-per-org 51` | 3a with `-e VIEWERS=50 -e CHURN_S=30` |
+
+Viewers hold `SEND_S + 15` s (no head start: `mac_sim` streams before k6 starts and stops when it exits).
 
 `frame_delivered` counts against what the Mac sent while each view was live: `mac_sim` sends output
 frames on a fixed `fps` schedule (written to `mac_sessions.json`) and stamps each with its send time,

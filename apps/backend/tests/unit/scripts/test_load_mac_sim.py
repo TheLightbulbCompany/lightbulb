@@ -150,3 +150,22 @@ async def test_a_child_that_ignores_sigterm_is_killed_after_the_grace(monkeypatc
     proc = FakeProc(obeys=False)
     assert (await _child(monkeypatch, proc, stop_later=True))[0] == 130
     assert proc.calls == ["terminate", "kill"]
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        ["--fps", "-1"],
+        ["--fps", "nan"],
+        ["--events-per-s", "-0.5"],
+        ["--frame-bytes", "0"],
+        ["--sessions", "0"],
+        ["--sessions", "25"],
+        ["--macs", "two"],
+        ["--duration", "0"],
+        ["--storm-at", "-3"],
+    ],
+)
+def test_bad_numbers_are_refused_before_anything_runs(bad):
+    with pytest.raises(SystemExit):
+        sim.main(["--dry-run", *bad])

@@ -416,20 +416,39 @@ async def simulate(args, users: list[dict]) -> int:
     return code
 
 
+def at_least(low: float, kind=float):
+    """argparse type: a finite number >= ``low`` (0 means "off" where the help says so)."""
+
+    def parse(text: str):
+        try:
+            value = kind(text)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"{text!r} is not a number") from None
+        if value != value or value in (float("inf"), float("-inf")) or value < low:
+            raise argparse.ArgumentTypeError(f"{text!r} must be >= {low}")
+        return value
+
+    return parse
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--macs", type=int, default=1, help="one per fixture user, from the first")
-    ap.add_argument("--sessions", type=int, default=1, help="held sessions per Mac")
-    ap.add_argument("--fps", type=float, default=4.0, help="output frames per second per session (0 = none)")
-    ap.add_argument("--frame-bytes", type=int, default=8192, help=f"raw bytes per frame (max {MAX_RAW})")
-    ap.add_argument("--events-per-s", type=float, default=0.0, help="local.session.events batches per second")
-    ap.add_argument("--storm-at", type=float, default=0.0, help="3c: reconnect every socket at this second")
-    ap.add_argument("--duration", type=float, default=900.0, help="seconds, when no command is given")
+    ap.add_argument("--macs", type=at_least(1, int), default=1, help="one per fixture user, from the first")
+    ap.add_argument("--sessions", type=at_least(1, int), default=1, help="held sessions per Mac (<= 24 per heartbeat)")
+    ap.add_argument("--fps", type=at_least(0, float), default=4.0, help="output frames/s per session (0 = none)")
+    ap.add_argument("--frame-bytes", type=at_least(1, int), default=8192, help=f"raw bytes per frame (max {MAX_RAW})")
+    ap.add_argument("--events-per-s", type=at_least(0, float), default=0.0, help="events batches per second")
+    ap.add_argument(
+        "--storm-at", type=at_least(0, float), default=0.0, help="3c: reconnect every socket at this second"
+    )
+    ap.add_argument("--duration", type=at_least(1, float), default=900.0, help="seconds, when no command is given")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("command", nargs=argparse.REMAINDER, help="run after registration, e.g. -- k6 run viewers.js")
     args = ap.parse_args(argv)
     if args.command and args.command[0] == "--":
         args.command = args.command[1:]
+    if args.sessions > 24:
+        raise SystemExit("--sessions over 24: one heartbeat frame lists at most 24")
     if args.frame_bytes > MAX_RAW:
         raise SystemExit(f"--frame-bytes over {MAX_RAW}: the relay drops it")
     per_min = args.fps * args.frame_bytes * 60 / 2**20

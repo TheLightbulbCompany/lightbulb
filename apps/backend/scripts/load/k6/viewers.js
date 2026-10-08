@@ -11,6 +11,8 @@ import * as L from './lib.js';
 const SEND_S = Number(__ENV.SEND_S);
 const PER_SESSION = Number(__ENV.VIEWERS || 1);
 const CHURN_S = Number(__ENV.CHURN_S || 0);
+// mac_sim streams before this starts and stops when it exits: no head start, a 15 s drain.
+const WATCH_S = Number(__ENV.SEND_S) + 15;
 if (!(SEND_S > 0)) throw new Error('SEND_S (seconds of watching) is required');
 
 const macs = JSON.parse(open(__ENV.MAC_SESSIONS));
@@ -28,7 +30,7 @@ const frameLatency = new Trend('frame_latency_ms', true);
 const frameDelivered = new Rate('frame_delivered'); // 3a: >= 99%; 3a' records the drop rate
 
 export const options = {
-  scenarios: { recv: L.listen(viewers.length) },
+  scenarios: { recv: { ...L.listen(viewers.length), duration: WATCH_S + 's' } },
   thresholds: {
     http_req_failed: ['rate<0.005'],
     'http_req_duration{name:POST /messaging/sessions/:id/viewing}': ['p(95)<500'],
@@ -51,7 +53,7 @@ export function listen() {
     if (!me) throw new Error('more VUs than viewers');
     cfg = L.liveConfig(me.user); // also creates the user stream /viewing checks
   }
-  const left = L.remainingMs(L.LISTEN_S, 2_000);
+  const left = L.remainingMs(WATCH_S, 2_000);
   if (left <= 0) return;
   // Delivery is counted against what the Mac sent while this view was live: its output frames
   // carry their send time, so a frame belongs to the window by that time, and frames never

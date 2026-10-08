@@ -7,6 +7,7 @@ import os
 import stat
 
 import pytest
+from types import SimpleNamespace
 
 from scripts.load import fixtures as fx
 
@@ -123,16 +124,40 @@ def test_a_bapi_session_is_created_with_the_fixture_org_and_mints_long_tokens(mo
     ]
 
 
-def test_bapi_calls_are_paced_and_wait_out_a_429(monkeypatch):
+def test_every_clerk_call_is_paced_and_waits_out_a_429(monkeypatch):
+    """Pacing lives in the client, so user lookups (GET) and membership adds (POST) get it, not only the
+    session path: a 16-user setup 429'd on both on 2026-10-08."""
+    import httpx
+
+    from scripts.multiparty_e2e import runner
+
     waits, now = [], [100.0]
-    monkeypatch.setattr(fx.time, "sleep", lambda s: (waits.append(s), now.__setitem__(0, now[0] + s)))
-    monkeypatch.setattr(fx.time, "monotonic", lambda: now[0])
-    monkeypatch.setattr(fx, "_last_call", 0.0)
-    clerk = FakeBapi(first=[429])
-    fx.BapiSession(clerk, "user_1", "org_1", 60).token()
-    assert 3.0 in waits  # Retry-After
-    assert any(w == pytest.approx(fx.BAPI_SPACING_S) for w in waits)  # back-to-back calls stay <= 5/s
-    assert len(clerk.posts) == 3
+    monkeypatch.setattr(runner.time, "sleep", lambda s: (waits.append(s), now.__setitem__(0, now[0] + s)))
+    monkeypatch.setattr(runner.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(runner.PacedClient, "_last_call", 0.0)
+    answers = iter([429, 200, 429, 422])
+    seen = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        status = next(answers)
+        seen.append((request.method, request.url.path, status))
+        body = [{"id": "user_9"}] if request.method == "GET" else {"errors": [{"code": fx.ALREADY_MEMBER}]}
+        return httpx.Response(status, headers={"retry-after": "3"}, json=body if status != 429 else {})
+
+    clerk = SimpleNamespace(
+        http=runner.PacedClient(base_url="https://clerk.test/v1", transport=httpx.MockTransport(handle))
+    )
+    clerk.user = lambda email: runner.Clerk.user(clerk, email)
+    assert clerk.user("load-0009@example.com") == {"id": "user_9"}  # the GET's 429 was waited out
+    fx._add_member(clerk, "org_1", "user_9")  # the POST's 429 too; then already-a-member is done, not fatal
+    assert [(m, p, st) for m, p, st in seen] == [
+        ("GET", "/v1/users", 429),
+        ("GET", "/v1/users", 200),
+        ("POST", "/v1/organizations/org_1/memberships", 429),
+        ("POST", "/v1/organizations/org_1/memberships", 422),
+    ]
+    assert waits.count(3.0) == 2  # Retry-After, once per 429
+    assert any(w == pytest.approx(runner.BAPI_SPACING_S) for w in waits)  # back-to-back calls stay <= 5/s
 
 
 def test_a_bapi_error_stops_the_run_with_clerks_status(monkeypatch):

@@ -75,7 +75,9 @@ export class OpenRouterGateStack extends cdk.Stack {
           ? (process.env.OPENROUTER_MODEL_POLICY_JSON_DEV ?? "{}")
           : (process.env.OPENROUTER_MODEL_POLICY_JSON_PROD ?? "{}"),
         // The hard cap for zero-price requests (no byte-for-token bound applies to them).
-        MAX_BODY_BYTES: "1048576",
+        // 5 MiB: a turn that carries a photo (an inline image part is base64) is >1 MiB, and the
+        // function URL takes up to 6 MB. 413 here read as "The AI model is having problems".
+        MAX_BODY_BYTES: "5242880",
         MAX_OUTPUT_TOKENS: "4096",
         OPENROUTER_MARKUP,
       },

@@ -71,9 +71,13 @@ export function prepareBody(input, policy, ownerId, env) {
   if (input.tools !== undefined && (!Array.isArray(input.tools) || !input.tools.every(tool => tool?.type === 'function' && typeof tool.function?.name === 'string' && Object.keys(tool).every(key => key === 'type' || key === 'function')))) fail(400, 'Server tools unavailable');
   const rejected = Object.keys(input).filter(field => routeFields.includes(field) || !allowedFields.has(field));
   if (rejected.length) fail(400, `Request option not allowed: ${rejected.join(',')}`);
+  // An output ceiling above ours is clamped, not refused: Hermes picks max_tokens from the model's
+  // own context, and a 400 here turned into "The AI model is having problems" for the person (24
+  // turns across 11 workspaces, 2026-10-01..08). The reservation below prices the clamped value.
   for (const name of ['max_tokens', 'max_completion_tokens']) {
     const value = input[name];
-    if (value !== undefined && (!Number.isSafeInteger(value) || value < 1 || value > Number(env.MAX_OUTPUT_TOKENS))) fail(400, 'Output limit exceeded');
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) fail(400, 'Output limit exceeded');
+    if (value !== undefined && value > Number(env.MAX_OUTPUT_TOKENS)) input = { ...input, [name]: Number(env.MAX_OUTPUT_TOKENS) };
   }
   if (!Number.isFinite(policy?.max_price?.prompt) || !Number.isFinite(policy?.max_price?.completion) || policy.max_price.prompt < 0 || policy.max_price.completion < 0) fail(503, 'Model policy unavailable');
   const { session_id: _ignoredSession, ...safeInput } = input;

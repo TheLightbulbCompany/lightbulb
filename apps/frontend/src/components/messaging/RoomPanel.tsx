@@ -21,7 +21,7 @@ import { handleShellLinkClick, shellUrlFromPaperclipPath } from "@/lib/shellNav"
 import { ApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { roomUrlTransform } from "./markdown";
-import { copyText, messagePermalink, parseSessionPermalink } from "./messageLinks";
+import { copyText, JoinLinkCopyError, messagePermalink, parseSessionPermalink } from "./messageLinks";
 import { openSessionPanel, useBrowserThreadHost } from "@/components/workspace/workspaceController";
 import { RunBrowserPreview } from "./BrowserRunPreview";
 import { RoomComposer, type RoomComposerProps } from "./RoomComposer";
@@ -348,7 +348,10 @@ function RoomContent({
   const [focusToken, setFocusToken] = useState(0);
   const [memberPickerOpen, setMemberPickerOpen] = useState(false);
   const [inviteNote, setInviteNote] = useState<string | null>(null);
+  const [inviteBusy, setInviteBusy] = useState(false); // one mint at a time: a second POST replaces the first link
   const copyJoinLink = async () => {
+    if (inviteBusy) return;
+    setInviteBusy(true);
     setInviteNote(null);
     try {
       await onCopyJoinLink?.();
@@ -356,7 +359,13 @@ function RoomContent({
     } catch (error) {
       setInviteNote(error instanceof ApiError && error.status === 403
         ? "Only a workspace admin can copy it. Ask them, or find it under Settings → Members."
-        : "Couldn't get the join link. Try again, or copy it from Settings → Members.");
+        : error instanceof JoinLinkCopyError && error.reason === "unavailable"
+          ? "This workspace's link can't be shown here. Regenerate it under Settings → Members (that turns the old link off)."
+          : error instanceof JoinLinkCopyError && error.reason === "clipboard"
+            ? "Couldn't copy automatically. Copy it from Settings → Members."
+            : "Couldn't get the join link. Try again, or copy it from Settings → Members.");
+    } finally {
+      setInviteBusy(false);
     }
   };
   const [addingMembers, setAddingMembers] = useState(false);
@@ -822,7 +831,7 @@ function RoomContent({
             }}>Add members</Button>}
           </div>
           {onCopyJoinLink && <p className="text-sm text-muted-foreground">Someone not in the workspace yet?{" "}
-            <button type="button" className="underline" onClick={() => void copyJoinLink()}>Copy the workspace join link</button> and send it to them.
+            <button type="button" className="underline" disabled={inviteBusy} onClick={() => void copyJoinLink()}>Copy the workspace join link</button> and send it to them.
             {inviteNote && <span role="status"> {inviteNote}</span>}</p>}
           <ul>{participants.map((participant) => <li key={`${participant.kind}:${participant.id}`} className="room-member flex-wrap">
             <ParticipantAvatar participant={participant} size="sm" />

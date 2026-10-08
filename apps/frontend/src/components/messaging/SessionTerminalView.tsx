@@ -153,8 +153,9 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     };
     let pending = "";
     let frameId = 0;
-    // One call at a time keeps keystrokes in order; a refusal drops what is queued behind it, at once.
-    const queue = createInputQueue(() => typing.current.refuse(`${session.sessionId}:${session.generation}`));
+    // One call at a time keeps keystrokes in order; a refusal drops what is queued behind it, at once,
+    // and for as long as the session is the one refused: a restarted one (a new generation) gets a new queue.
+    let queue: { key: string; send: ReturnType<typeof createInputQueue> } | null = null;
     const flush = () => {
       frameId = 0;
       const data = pending; pending = "";
@@ -162,7 +163,9 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
       if (!data || !now.canType || !now.input) return;
       const { input, session: sent } = now;
       const epoch = order.epoch;
-      queue(new TextEncoder().encode(data), (part) => typing.current.session.sessionId === sent.sessionId && typing.current.canType ? input(part, epoch) : undefined);
+      const key = `${sent.sessionId}:${sent.generation}`;
+      if (queue?.key !== key) queue = { key, send: createInputQueue(() => typing.current.refuse(key)) };
+      queue.send(new TextEncoder().encode(data), (part) => typing.current.session.sessionId === sent.sessionId && typing.current.canType ? input(part, epoch) : undefined);
     };
     const fit = () => {
       const shown = host.current?.querySelector<HTMLElement>(".xterm-screen");

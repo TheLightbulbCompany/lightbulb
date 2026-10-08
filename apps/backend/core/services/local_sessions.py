@@ -284,6 +284,10 @@ class LocalSession(ContractModel):
     join_request: Literal["pending", "declined"] | None = None
     # Which request that is, so a client can tell a newer answer from its own older reply.
     join_request_id: str | None = None
+    # When the reader last asked (the ask, or their latest "Ask again"): the client offers Ask again
+    # ASK_AGAIN_AFTER_S after it.
+    join_requested_at: str | None = None
+    pickup_requested_at: str | None = None
     # The owner's own view only: who is waiting for an answer, so the session itself can offer Allow/Decline.
     pending_joins: list[str] | None = None
     # Request id per waiting person, so an answer from the session names the request it saw.
@@ -345,6 +349,8 @@ class LocalSession(ContractModel):
                 "resume",
                 "join_request",
                 "join_request_id",
+                "join_requested_at",
+                "pickup_requested_at",
                 "pending_joins",
                 "pending_join_ids",
                 "pickup_request",
@@ -755,6 +761,7 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     if request and row.get("endedAt") is None:
         public["joinRequest"] = request["state"]
         public["joinRequestId"] = request["requestId"]
+        public["joinRequestedAt"] = _asked_at(request)
     if viewer and viewer == row["humanUserId"] and row.get("endedAt") is None:
         waiting = {
             who: r["requestId"] for who, r in (row.get("joinRequests") or {}).items() if r.get("state") == "pending"
@@ -768,6 +775,7 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     pick = (row.get("pickupRequests") or {}).get(viewer) if viewer else None
     if pick and not row.get("pickupAllowed") and not lapsed:
         public["pickupRequest"] = pick["state"]
+        public["pickupRequestedAt"] = _asked_at(pick)
     if viewer and viewer == row["humanUserId"] and not lapsed:
         waiting = pending_pickups(row)
         if waiting:
@@ -2465,6 +2473,28 @@ async def set_team_control(auth: AuthContext, session_id: str, enabled: bool) ->
 
 JOIN_FIELDS = ("allowedSenders", "joinRequests")
 
+#: A request never expires by the clock: it stays until the owner answers, or the session ends or
+#: restarts. So the person who asked may remind the owner, at most once per this window (ISOA-729).
+ASK_AGAIN_AFTER_S = 10 * 60
+
+
+def _asked_at(request: dict) -> str | None:
+    """When this person last asked. A request from before ``askedAt`` has only its ``createdAt``."""
+    return iso(int(request["askedAt"])) if request.get("askedAt") else request.get("createdAt")
+
+
+def _new_request() -> dict:
+    return {"state": "pending", "requestId": str(uuid.uuid4()), "createdAt": utc_now_iso(), "askedAt": int(time.time())}
+
+
+def _ask_again(request: dict | None) -> dict | None:
+    """The same pending request, stamped as asked again, once it has waited ASK_AGAIN_AFTER_S;
+    None otherwise. The request id stays, so the owner's open Activity item still answers it."""
+    now = int(time.time())
+    if (request or {}).get("state") != "pending" or now - int(request.get("askedAt") or 0) < ASK_AGAIN_AFTER_S:
+        return None
+    return {**request, "askedAt": now, "reminded": True}
+
 
 class JoinDecisionRequest(ContractModel):
     decision: Literal["allow", "decline"]
@@ -2511,17 +2541,22 @@ async def _change_session(
 
 
 async def request_join(auth: AuthContext, session_id: str) -> LocalSession:
-    """A teammate asks the owner to let them send. Asking again while pending changes nothing;
-    a declined person may ask again."""
+    """A teammate asks the owner to let them send. Asking again while pending reminds the owner at
+    most once per ASK_AGAIN_AFTER_S and otherwise changes nothing; a declined person may ask again."""
     me = auth.user_id
 
     def change(row: dict) -> dict | None:
         if me == row["humanUserId"]:
             raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "This is your own session.")
         requests = dict(row.get("joinRequests") or {})
-        if may_control(row, me) or (requests.get(me) or {}).get("state") == "pending":
+        if may_control(row, me):
             return None
-        requests[me] = {"state": "pending", "requestId": str(uuid.uuid4()), "createdAt": utc_now_iso()}
+        if (requests.get(me) or {}).get("state") == "pending":
+            if (again := _ask_again(requests[me])) is None:
+                return None
+            requests[me] = again
+        else:
+            requests[me] = _new_request()
         return {**row, "joinRequests": requests}
 
     row, audit = await _change_session(auth, session_id, change, "join_requested", None)
@@ -2594,7 +2629,8 @@ def pending_pickups(row: dict) -> dict[str, str]:
 async def request_pickup_access(auth: AuthContext, session_id: str) -> LocalSession:
     """A teammate asks the owner to allow pick-up (spec 2026-10-05-ask-to-pick-up). Claude only;
     an ended session may be asked for (its snapshot outlives it). Asking while pending or while
-    pick-up is on changes nothing; a declined person may ask again."""
+    pick-up is on changes nothing, except that a pending ask reminds the owner at most once per
+    ASK_AGAIN_AFTER_S; a declined person may ask again."""
     from core.services import session_pickup  # lazy: it imports this module
 
     me = auth.user_id
@@ -2607,9 +2643,14 @@ async def request_pickup_access(auth: AuthContext, session_id: str) -> LocalSess
         if session_pickup._expired(row):
             raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "This session's snapshot has expired.")
         requests = dict(row.get("pickupRequests") or {})
-        if row.get("pickupAllowed") or (requests.get(me) or {}).get("state") == "pending":
+        if row.get("pickupAllowed"):
             return None
-        requests[me] = {"state": "pending", "requestId": str(uuid.uuid4()), "createdAt": utc_now_iso()}
+        if (requests.get(me) or {}).get("state") == "pending":
+            if (again := _ask_again(requests[me])) is None:
+                return None
+            requests[me] = again
+        else:
+            requests[me] = _new_request()
         return {**row, "pickupRequests": requests}
 
     row, audit = await _change_session(auth, session_id, change, "pickup_requested", None, allow_ended=True)
@@ -2675,18 +2716,19 @@ PICKUP_ALLOW_COPY = (
 )
 
 
-def pickup_request_title(name: str, row: dict) -> str:
+def _request_title(name: str, row: dict, verb: str, again: bool) -> str:
     from core.services import notification_copy as copy
 
-    return (
-        f"{name} wants to pick up {copy.line(row.get('displayTitle') or row.get('title'), 40) or row['sessionId'][:8]}"
-    )
+    session = copy.line(row.get("displayTitle") or row.get("title"), 40) or row["sessionId"][:8]
+    return f"{name} {'is still waiting' if again else 'wants'} to {verb} {session}"
 
 
-def join_request_title(name: str, row: dict) -> str:
-    from core.services import notification_copy as copy
+def pickup_request_title(name: str, row: dict, *, again: bool = False) -> str:
+    return _request_title(name, row, "pick up", again)
 
-    return f"{name} wants to join {copy.line(row.get('displayTitle') or row.get('title'), 40) or row['sessionId'][:8]}"
+
+def join_request_title(name: str, row: dict, *, again: bool = False) -> str:
+    return _request_title(name, row, "join", again)
 
 
 async def _notify_join_request(row: dict, requester: str, *, kind: str = "join") -> None:
@@ -2699,15 +2741,16 @@ async def _notify_join_request(row: dict, requester: str, *, kind: str = "join")
     pickup = kind == "pickup"
     request = row["pickupRequests" if pickup else "joinRequests"][requester]
     request_id, created = request["requestId"], request["createdAt"]
+    again = bool(request.get("reminded"))
     try:
         name = await human_display_name(requester)
     except Exception:
         name = "A teammate"
     if pickup:
-        title = pickup_request_title(name, row)
+        title = pickup_request_title(name, row, again=again)
         body = PICKUP_ALLOW_COPY
     else:
-        title = join_request_title(name, row)
+        title = join_request_title(name, row, again=again)
         body = "Allow them to send follow-ups and answer prompts in this session."
     event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-session-{kind}|{sid}|{request_id}"))
     try:
@@ -2728,6 +2771,8 @@ async def _notify_join_request(row: dict, requester: str, *, kind: str = "join")
         )
     except Exception:
         logger.warning("Session join request activity row failed", exc_info=True)
+    if again:  # its own live event: clients drop one they have already seen
+        event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-session-{kind}|{sid}|{request_id}|{request['askedAt']}"))
     await _session_notice(owner, human, sid, "join_request", title, body, event_id)
 
 

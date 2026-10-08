@@ -40,9 +40,15 @@ export function canControlSession(session: LocalSession, own: boolean, userId?: 
 export const pickupRequestLine = (name: string) =>
   `${name} wants to pick up this session. Allow lets everyone in the workspace pick it up, and uploads the whole conversation and your uncommitted changes as they are. Nothing is redacted.`;
 
+/** How long a request waits before its sender may remind the owner; the backend's ASK_AGAIN_AFTER_S. */
+export const ASK_AGAIN_AFTER_MS = 10 * 60_000;
+
 /**
  * A teammate's "Ask to join": `state` is the server's answer (none, pending, declined),
- * held as pending the moment they tap. Asking again while pending is a no-op server-side.
+ * held as pending the moment they tap. A request never times out: `again` turns true once it has
+ * waited ASK_AGAIN_AFTER_MS, and asking then reminds the owner. `lapsed`: a pending request went
+ * away unanswered (the session restarted), so the person is told instead of the button silently
+ * resetting. ponytail: `lapsed` lives in this mounted view only; a reload forgets it.
  */
 export function useSessionJoinRequest(client: SessionControlClient, session: LocalSession, kind: "join" | "pickup" = "join") {
   const [saving, setSaving] = useState(false);
@@ -56,10 +62,31 @@ export function useSessionJoinRequest(client: SessionControlClient, session: Loc
   const field = kind === "pickup" ? "pickupRequest" : "joinRequest";
   const send = kind === "pickup" ? client.requestLocalSessionPickupAccess : client.requestLocalSessionJoin;
   const state = (mine ? override.state : session[field]) ?? null;
+  const askedAt = session[kind === "pickup" ? "pickupRequestedAt" : "joinRequestedAt"];
+  // This tap, until the session says when it landed: Ask again does not stay offered after it is used.
+  const [sentAt, setSentAt] = useState(0);
+  const dueAt = state === "pending" && askedAt ? Math.max(Date.parse(askedAt), sentAt) + ASK_AGAIN_AFTER_MS : 0;
+  const [, redraw] = useState(0);
+  useEffect(() => {
+    const left = dueAt - Date.now();
+    if (!(left > 0)) return;
+    const timer = setTimeout(() => redraw(n => n + 1), left);
+    return () => clearTimeout(timer);
+  }, [dueAt]);
+  const again = dueAt > 0 && Date.now() >= dueAt;
+  // The server's own word, not this view's optimistic one: a failed or overtaken tap is not a lapse.
+  const server = session[field] ?? null;
+  const was = useRef({ id: session.sessionId, server });
+  const [lapsed, setLapsed] = useState(false);
+  useEffect(() => {
+    if (was.current.id !== session.sessionId || state !== null) setLapsed(false);
+    else if (was.current.server === "pending" && server === null) setLapsed(true);
+    was.current = { id: session.sessionId, server };
+  }, [session.sessionId, state, server]);
   const ask = useCallback(async () => {
     if (!send) return;
     const started = latest.current;
-    setSaving(true); setError(null); setOverride({ state: "pending", sent: true });
+    setSaving(true); setError(null); setOverride({ state: "pending", sent: true }); setSentAt(Date.now());
     try {
       const reply = await send(session.sessionId);
       // The session moved while this was in flight: whatever it says now is newer than the reply.
@@ -68,7 +95,18 @@ export function useSessionJoinRequest(client: SessionControlClient, session: Loc
     catch { setOverride(undefined); setError("Could not send your request. Try again."); }
     finally { setSaving(false); }
   }, [send, field, session.sessionId]);
-  return { state, saving, error, ask, supported: !!send };
+  return { state, saving, error, ask, supported: !!send, again, lapsed };
+}
+
+/** The asker's line and button under a session they cannot send to, the same on the web and the
+ *  phone (ISOA-729): waiting, not answered yet (remind), closed unanswered, declined, or not asked. */
+export function joinRequestView(join: Pick<ReturnType<typeof useSessionJoinRequest>, "state" | "again" | "lapsed" | "saving">, ownerName: string): { line: string; button: string; disabled: boolean } {
+  if (join.state === "pending") return join.again
+    ? { line: `${ownerName} has not answered your request yet.`, button: "Ask again", disabled: join.saving }
+    : { line: `Waiting for ${ownerName} to answer. Your request stays open until they do or the session ends.`, button: "Requested", disabled: true };
+  if (join.state === "declined") return { line: `${ownerName} declined your request.`, button: "Ask to join", disabled: join.saving };
+  if (join.lapsed) return { line: `Your request closed before ${ownerName} answered, because the session restarted.`, button: "Ask again", disabled: join.saving };
+  return { line: `Only ${ownerName} can send to this session.`, button: "Ask to join", disabled: join.saving };
 }
 
 /** The one follow-up "Commit & open PR" sends. Plain instructions: the harness, not

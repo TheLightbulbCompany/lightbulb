@@ -142,19 +142,19 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- apps/frontend/src/components/messaging/LocalSessionPanel.tsx (status line, Details + Pick up
                                  buttons); SessionDetails.tsx (About/Changes/Access/Linked work tabs, the Access switches,
                                  footer Copy link / Message owner / Pick up); SessionShareLink.tsx (Share, Who can open it,
-                                 Turn off link); LocalSessionWork.tsx (Link existing work).
+                                 the audience named on every copy, two-click Turn off link); LocalSessionWork.tsx (Link existing work).
   - Session chat ............ references/surfaces.md ("Session chat" paragraph: hidden room, CEO on mentions,
                               answer in the chat, never into the session)
                               <- apps/backend/core/services/session_chat.py; apps/backend/routers/messaging.py (POST .../chat);
                                  apps/frontend/src/components/messaging/{SessionChat,SessionFocus}.tsx;
                                  apps/mobile/src/app/(app)/session/[sessionId].tsx (Chat button)
   - Session links + Continue  references/surfaces.md ("Session links" paragraph)
-                              <- apps/frontend/src/app/s/page.tsx (the /s page: sign in, Continue, the
+                              <- apps/frontend/src/app/s/page.tsx (the /s page: the one signed-out refusal that leads with sign in, Continue, the
                                  `lightbulb continue '<link>'` command); apps/backend/core/services/session_links.py
                                  (open, copies, redaction); core/services/local_sessions.py (put_link / delete_link:
                                  one link, audience, the pick-up permission); apps/desktop/src-tauri/src/session_continue.rs
                                  (`lightbulb continue`).
-  - Session live vs transcript  references/surfaces.md (running = live terminal or a "not started through Lightbulb" notice with ← (plain Claude) or `lightbulb codex` (Codex --no-daemon); ended = final screen + "Ended · <time>" + Resume while the owner's app runs, then "screen is gone"; offline = "Mac offline" + Resume greyed + Pick up; Share every session live on at pairing; no transcript on web and desktop (the phone still lists history); sidebar lists live, All sessions lists every session; no message box under a live terminal)
+  - Session live vs transcript  references/surfaces.md (running = live terminal or a "screen is not shared" notice from packages/shared/src/messaging/sessionStates.ts sessionScreenNotice: a teammate gets Message <Owner> and no terminal words, the owner gets ← (plain Claude) or `lightbulb codex` (Codex --no-daemon); ended = final screen + "Ended · <time>" + Resume while the owner's app runs, then "screen is gone"; offline = "Mac offline" + Resume greyed + Pick up; Share every session live on at pairing; no transcript on web and desktop (the phone still lists history); sidebar lists live, All sessions lists every session; no message box under a live terminal)
                               <- apps/desktop/src-tauri/src/holder/run.rs (ended mode), local_sessions/session_states.rs,
                                  apps/backend/core/services/{local_sessions,session_screen}.py (screenAvailable, terminalReason),
                                  apps/frontend/src/components/desktop/DesktopPermissionsGate.tsx (live default).
@@ -162,7 +162,9 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- apps/frontend/src/components/messaging/{LocalSessionPanel,RoomDirectory,SessionTerminalView}.tsx.
   - Session ask to join ..... references/surfaces.md ("Ask to join" paragraph)
                               <- apps/backend/core/services/local_sessions.py (request_join / decide_join / remove_sender,
-                                 allowedSenders + joinRequests, may_control); core/services/activity.py (join_request item,
+                                 allowedSenders + joinRequests, may_control; ASK_AGAIN_AFTER_S = the ten-minute Ask again
+                                 window, mirrored by ASK_AGAIN_AFTER_MS + joinRequestView in
+                                 packages/shared/src/messaging/sessionControls.ts: no time-out, reminder, "closed before"); core/services/activity.py (join_request item,
                                  Allow / Decline); core/services/local_session_relay.py (cleared on Ended and on a new
                                  generation); apps/frontend/src/components/messaging/LocalSessionPanel.tsx (Ask to join /
                                  Requested / declined line); SessionDetails.tsx (People you let in, Remove).

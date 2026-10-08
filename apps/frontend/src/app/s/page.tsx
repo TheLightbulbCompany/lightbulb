@@ -77,6 +77,8 @@ export default function SessionLinkPageRoute() {
   const stash = useMemo<Stash | null>(() => { try { return raw ? JSON.parse(raw) as Stash : null; } catch { return null; } }, [raw]);
   const [page, setPage] = useState<SessionLinkPage | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The server refused the link (403, 404, 410), as opposed to a network or server failure.
+  const [refused, setRefused] = useState(false);
   const [continueError, setContinueError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // A ref, not an effect dependency: a getToken that changes identity would reopen the page each render.
@@ -103,7 +105,7 @@ export default function SessionLinkPageRoute() {
       try {
         const opened = await publicPost<SessionLinkPage>("/public/session-links/open", { token: stash.token }, await bearerNow());
         if (!alive) return;
-        setError(null); // a sign-in reopens a link that was refused while signed out
+        setError(null); setRefused(false); // a sign-in reopens a link that was refused while signed out
         setPage(opened);
         // The page shows facts only, never a transcript. Each tick re-opens the link, so the header follows the session (live, ended, offline) and
         // a turned-off link shows its refusal; the poll stops once the session is not live or the
@@ -118,12 +120,15 @@ export default function SessionLinkPageRoute() {
             } catch (e) {
               if (!alive || !(e as { refused?: boolean }).refused) return;
               if (timer) clearInterval(timer);
+              setRefused(true);
               setError(e instanceof Error ? e.message : "Could not open this link. Try again.");
             }
           })();
         }, POLL_MS);
       } catch (e) {
-        if (alive) setError(e instanceof Error ? e.message : "Could not open this link. Try again.");
+        if (!alive) return;
+        setRefused(!!(e as { refused?: boolean }).refused);
+        setError(e instanceof Error ? e.message : "Could not open this link. Try again.");
       }
     })();
     return () => { alive = false; if (timer) clearInterval(timer); };
@@ -144,13 +149,19 @@ export default function SessionLinkPageRoute() {
   };
 
   if (raw === "") return <Unopened><p role="alert" className="session-state-title">This link is incomplete. Ask for it again.</p></Unopened>;
-  // A workspace link refuses a signed-out visitor exactly like a turned-off one: offer sign-in.
+  // A workspace link refuses a signed-out visitor exactly like a turned-off one, and the page must not
+  // tell them apart. So a signed-out refusal leads with the one step that can work, in words true in
+  // both cases (ISOA-732). The link stays in this tab's sessionStorage across the sign-in, and the
+  // open above runs again once isSignedIn changes.
+  if (error && refused && isLoaded && !isSignedIn && stash) return <Unopened>
+    <p role="alert" className="session-state-title">Sign in to open this session.</p>
+    <p>If it was shared with your workspace, it opens after you sign in. Otherwise this link was turned off.</p>
+    <SignInButton mode="modal" forceRedirectUrl="/s"><Button type="button" className="mt-2">Sign in</Button></SignInButton>
+  </Unopened>;
+  // Signed in and still refused: a dead end, said plainly, with the one thing left to do.
   if (error) return <Unopened>
     <p role="alert" className="session-state-title">{error}</p>
-    {isLoaded && !isSignedIn && stash && <>
-      <p>If this session is in your workspace, sign in to open it.</p>
-      <SignInButton mode="modal" forceRedirectUrl="/s"><Button type="button" className="mt-2">Sign in to open this session</Button></SignInButton>
-    </>}
+    {refused && isSignedIn && <p>You are signed in, so this link was turned off or was shared with a workspace you are not in. Ask the person who sent it for a new link.</p>}
   </Unopened>;
   if (!page || !stash) return <main className="mx-auto max-w-3xl p-4"><p role="status">Opening…</p></main>;
   const command = `lightbulb continue '${window.location.origin}/s#${stash.token}'`;

@@ -173,6 +173,23 @@ it("lets a teammate ask to join, then reads Requested until the owner answers", 
   expect(await screen.findByRole("button", { name: "Requested" })).toBeDisabled();
 });
 
+// ISOA-729: a request never times out, so the person who asked sees where it stands and can nudge.
+it("says a request is waiting, and offers Ask again once it has waited ten minutes", async () => {
+  const join = vi.fn(async () => ({ ...session, joinRequest: "pending" as const }));
+  const askPickup = vi.fn(async () => ({ ...session, pickupRequest: "pending" as const }));
+  const fresh = new Date().toISOString(), old = new Date(Date.now() - 11 * 60_000).toISOString();
+  const first = focus({ session: { ...session, joinRequest: "pending", joinRequestedAt: fresh }, ownerName: "Alice", own: false }, { join });
+  expect(await screen.findByText("Waiting for Alice to answer. Your request stays open until they do or the session ends.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Requested" })).toBeDisabled();
+  first.unmount();
+  focus({ session: { ...session, joinRequest: "pending", joinRequestedAt: old, pickupRequest: "pending", pickupRequestedAt: old }, ownerName: "Alice", own: false }, { join, askPickup });
+  expect(await screen.findByText("Alice has not answered your request yet.")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Ask again" }));
+  expect(join).toHaveBeenCalledWith("s1");
+  await userEvent.click(screen.getByRole("button", { name: "No answer yet. Ask again" }));
+  expect(askPickup).toHaveBeenCalledWith("s1");
+});
+
 it("lets the owner answer a request to join in the session itself", async () => {
   const decide = vi.fn(async () => session);
   // This file's name lookup answers "Alice" for everyone.

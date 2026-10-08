@@ -1,4 +1,4 @@
-import { pickupRequestLine, useSessionJoinRequest, type LocalSession, type SessionControlClient } from "@lightbulb/shared";
+import { joinRequestView, pickupRequestLine, useSessionJoinRequest, type LocalSession, type SessionControlClient } from "@lightbulb/shared";
 import { useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -10,7 +10,7 @@ type JoinDecider = { decideLocalSessionJoin?: Decide; decideLocalSessionPickup?:
 
 /**
  * What a teammate sees under a session they cannot send to: who can, and a way
- * to ask. The ask reads "Requested" until the owner answers.
+ * to ask. The ask reads "Requested" until the owner answers; after ten minutes it offers "Ask again".
  */
 export function AskToJoin({ session, client, ownerName }: {
   session: LocalSession;
@@ -24,12 +24,11 @@ export function AskToJoin({ session, client, ownerName }: {
   // against a backend with no join routes yet. One that has them always
   // sends `allowedSenders`; without it the button would only ever fail.
   const canAsk = join.supported && session.allowedSenders !== undefined;
-  const waiting = join.state === "pending";
-  const disabled = join.saving || waiting;
+  const { line, button, disabled } = joinRequestView(join, ownerName);
   return (
     <View style={[styles.ask, { paddingBottom: Math.max(insets.bottom, spacing.md) }]}>
       <Text style={[styles.line, { color: palette.fgMute }]}>
-        {join.state === "declined" ? `${ownerName} declined your request.` : `Only ${ownerName} can send to this session.`}
+        {line}
       </Text>
       {canAsk && (
         <Pressable
@@ -39,7 +38,7 @@ export function AskToJoin({ session, client, ownerName }: {
           accessibilityState={{ disabled }}
           style={[styles.button, { borderColor: palette.edge, backgroundColor: palette.surface }, disabled && styles.dimmed]}
         >
-          <Text style={[styles.buttonText, { color: palette.fg }]}>{waiting ? "Requested" : "Ask to join"}</Text>
+          <Text style={[styles.buttonText, { color: palette.fg }]}>{button}</Text>
         </Pressable>
       )}
       {join.error && <Text accessibilityRole="alert" style={[styles.line, { color: palette.alert }]}>{join.error}</Text>}

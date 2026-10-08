@@ -9,8 +9,9 @@ vi.mock("@/lib/api", async (importOriginal) => {
   return { ...actual, useApi: () => ({}), BACKEND_URL: "http://api.test" };
 });
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
+const auth = vi.hoisted(() => ({ isSignedIn: false }));
 vi.mock("@clerk/nextjs", () => ({
-  useAuth: () => ({ isLoaded: true, isSignedIn: false, orgId: null, getToken: vi.fn() }),
+  useAuth: () => ({ isLoaded: true, isSignedIn: auth.isSignedIn, orgId: null, getToken: async () => "jwt" }),
   SignInButton: ({ children }: { children: React.ReactNode }) => children,
   SignUpButton: ({ children }: { children: React.ReactNode }) => children,
 }));
@@ -22,7 +23,7 @@ const model = (over: object) => ({
   continuable: false, me: { signedIn: false, member: false }, ...over,
 });
 
-afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); window.sessionStorage.clear(); });
+afterEach(() => { auth.isSignedIn = false; vi.useRealTimers(); vi.unstubAllGlobals(); window.sessionStorage.clear(); });
 
 describe("session link page", () => {
   // The acceptance finding: an incomplete link was one unstyled line in the top-left corner.
@@ -43,13 +44,56 @@ describe("session link page", () => {
     expect(inCard().textContent).toBe("This link is incomplete. Ask for it again.");
   });
 
-  it("shows a refused link (off, expired, not found) in the same card, with the sign-in offer", async () => {
+  // ISOA-732: a signed-out person who opens a workspace link gets the same refusal as a turned-off one.
+  // The page leads with the step that can work, in words that are true in both cases.
+  const refuse = () => vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 404, json: async () => ({ message: "This link was turned off or is not for you." }) }) as Response));
+  it("leads a signed-out refusal (workspace link, off, expired, not found) with sign-in, in the same card", async () => {
     window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 410, json: async () => ({ message: "This link has expired." }) }) as Response));
+    refuse();
     render(<SessionLinkPageRoute />);
     await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
-    expect(inCard().textContent).toBe("This link has expired.");
-    expect(screen.getByRole("button", { name: "Sign in to open this session" }).closest(".session-state-panel")).not.toBeNull();
+    expect(inCard().textContent).toBe("Sign in to open this session.");
+    expect(screen.getByText("If it was shared with your workspace, it opens after you sign in. Otherwise this link was turned off.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Sign in" }).closest(".session-state-panel")).not.toBeNull();
+    // The link is still in this tab for the round trip back to /s.
+    expect(window.sessionStorage.getItem("lightbulb:session-link")).toContain("tok");
+  });
+
+  it("opens the same link after sign-in, with the person's token, and shows the session", async () => {
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
+    refuse();
+    const view = render(<SessionLinkPageRoute />);
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    const fetchMock = vi.fn(async (..._: unknown[]) => ({ ok: true, status: 200, json: async () => model({ state: "ended", title: "Fix login", me: { signedIn: true, member: true }, sessionId: "s1" }) }) as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    auth.isSignedIn = true;
+    view.rerender(<SessionLinkPageRoute />);
+    expect(await screen.findByRole("heading", { name: "Fix login" })).toBeTruthy();
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({ token: "tok" });
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer jwt");
+    expect(screen.getByRole("link", { name: "Open in Lightbulb" })).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("tells a signed-in person who is still refused that it is a dead end, with no sign-in offer", async () => {
+    auth.isSignedIn = true;
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
+    refuse();
+    render(<SessionLinkPageRoute />);
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(inCard().textContent).toBe("This link was turned off or is not for you.");
+    expect(screen.getByText("You are signed in, so this link was turned off or was shared with a workspace you are not in. Ask the person who sent it for a new link.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
+  });
+
+  it("does not offer sign-in for a failure that is not a refusal", async () => {
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 500, json: async () => null }) as Response));
+    render(<SessionLinkPageRoute />);
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(inCard().textContent).toBe("Could not open this link. Try again.");
+    expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
   });
 
   it("re-opens on every tick while the session is live", async () => {
@@ -109,7 +153,8 @@ describe("session link page", () => {
     render(<SessionLinkPageRoute />);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
-    expect(screen.getByRole("alert").textContent).toBe("This link is off.");
+    // Signed out, so the same words as any other refusal: sign in, or it was turned off.
+    expect(screen.getByRole("alert").textContent).toBe("Sign in to open this session.");
     const openCalls = () => fetchMock.mock.calls.filter(c => String(c[0]).endsWith("/open")).length;
     await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
     expect(openCalls()).toBe(2);

@@ -175,7 +175,7 @@ describe("Messages room/controller boundary", () => {
   it("opens the roomless panel=session permalink grammar into the Messages panel and shows the session", async () => {
     const { api } = renderWorkspace("agent-a", "?panel=session&session=native-one");
     await waitFor(() => expect(api.getPanel(MESSAGES_PANEL_ID)?.params).toMatchObject({ sessionId: "native-one" }));
-    expect(await screen.findByText("This session was not started through Lightbulb, so its screen is not here.")).toBeInTheDocument();
+    expect(await screen.findByText(/screen is not shared\.$/)).toBeInTheDocument();
     expect(document.querySelector(".session-status-line")).toHaveTextContent("Idle");
     expect(screen.queryByText("Synthetic native investigation history")).not.toBeInTheDocument();
     expect(api.panels.filter(panel => panel.id === MESSAGES_PANEL_ID)).toHaveLength(1);
@@ -186,9 +186,9 @@ describe("Messages room/controller boundary", () => {
     const { api } = renderWorkspace();
     act(() => openSessionPanel("native-one"));
     await waitFor(() => expect(api.getPanel(MESSAGES_PANEL_ID)?.params).toMatchObject({ sessionId: "native-one" }));
-    expect(await screen.findByText("This session was not started through Lightbulb, so its screen is not here.")).toBeInTheDocument();
+    expect(await screen.findByText(/screen is not shared\.$/)).toBeInTheDocument();
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
-    expect(screen.getByText("This session was not started through Lightbulb, so its screen is not here.")).toBeInTheDocument();
+    expect(screen.getByText(/screen is not shared\.$/)).toBeInTheDocument();
     expect(screen.queryByText("Synthetic native investigation history")).not.toBeInTheDocument();
   });
   it("keeps the exact clicked DM, while an explicit same-agent shortcut can retarget it", async () => {

@@ -2,10 +2,10 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { useSessionJoinRequest } from "./sessionControls";
+import { ASK_AGAIN_AFTER_MS, joinRequestView, useSessionJoinRequest } from "./sessionControls";
 import type { LocalSession } from "./types";
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.useRealTimers(); });
 const session = (c: Partial<LocalSession> = {}) => ({ sessionId: "s1", status: "busy", ...c }) as LocalSession;
 
 const declined = session({ pickupRequest: "declined" });
@@ -31,5 +31,49 @@ describe("useSessionJoinRequest kind", () => {
     await act(async () => { await result.current.ask(); });
     expect(join).toHaveBeenCalledWith("s1");
     expect(result.current.state).toBe("pending");
+  });
+});
+
+// ISOA-729: a request never times out, so its lifecycle is said out loud.
+describe("an unanswered request", () => {
+  const client = (join = vi.fn()) => ({ submitLocalSessionCommand: vi.fn(), requestLocalSessionJoin: join });
+
+  it("reads as waiting, then offers Ask again after the window, and asking again sends and waits anew", async () => {
+    vi.useFakeTimers();
+    const asked = new Date().toISOString();
+    const pending = session({ joinRequest: "pending", joinRequestedAt: asked });
+    const join = vi.fn().mockResolvedValue(pending);
+    const { result } = renderHook(() => useSessionJoinRequest(client(join), pending));
+    expect(joinRequestView(result.current, "Ada")).toEqual({ line: "Waiting for Ada to answer. Your request stays open until they do or the session ends.", button: "Requested", disabled: true });
+    act(() => { vi.advanceTimersByTime(ASK_AGAIN_AFTER_MS + 1); });
+    expect(joinRequestView(result.current, "Ada")).toEqual({ line: "Ada has not answered your request yet.", button: "Ask again", disabled: false });
+    await act(async () => { await result.current.ask(); });
+    expect(join).toHaveBeenCalledWith("s1");
+    expect(joinRequestView(result.current, "Ada").button).toBe("Requested"); // not offered again straight after it is used
+  });
+
+  it("never offers Ask again against a backend that does not say when the request was made", () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useSessionJoinRequest(client(), session({ joinRequest: "pending" })));
+    act(() => { vi.advanceTimersByTime(ASK_AGAIN_AFTER_MS * 2); });
+    expect(result.current.again).toBe(false);
+  });
+
+  it("says so when a pending request went away unanswered, until the person asks again", async () => {
+    const join = vi.fn().mockResolvedValue(session({ joinRequest: "pending" }));
+    const { result, rerender } = renderHook(({ s }) => useSessionJoinRequest(client(join), s), { initialProps: { s: session({ joinRequest: "pending" }) } });
+    rerender({ s: session() }); // the session restarted: the request is gone, nobody answered
+    expect(joinRequestView(result.current, "Ada")).toEqual({ line: "Your request closed before Ada answered, because the session restarted.", button: "Ask again", disabled: false });
+    await act(async () => { await result.current.ask(); });
+    expect(result.current.lapsed).toBe(false);
+  });
+
+  it("does not call a failed first ask a lapse, and keeps the declined and not-asked lines", async () => {
+    const join = vi.fn().mockRejectedValue(new Error("offline"));
+    const { result } = renderHook(() => useSessionJoinRequest(client(join), plain));
+    await act(async () => { await result.current.ask(); });
+    expect(result.current.lapsed).toBe(false);
+    expect(joinRequestView(result.current, "Ada")).toEqual({ line: "Only Ada can send to this session.", button: "Ask to join", disabled: false });
+    expect(joinRequestView({ state: "declined", again: false, lapsed: false, saving: false }, "Ada").line).toBe("Ada declined your request.");
   });
 });

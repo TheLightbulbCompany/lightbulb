@@ -111,7 +111,12 @@ QUIET = (
     "before its first word."
 )
 LINES = "an acknowledgement cut after its first sentence is finished later as a line of its own, beside two-sentence answers."
+CUT_SEEN = (
+    "a sentence cut with most of it audible (HEARD_SHARE) is on the record as what was heard, with no end "
+    "punctuation: a listening sound still makes the mouth yield, and the check now sees the cut."
+)
 KNOWN_FAILING: list[tuple[str, str, str]] = [
+    ("backchannel", r"no_text \{\"pattern\": \"\[\^", CUT_SEEN),
     ("one_to_one", r'ack_within \{"line": 0', "small talk is written only after /route answers (`_opened`), on top of: " + ACK),
     (
         "unnamed_followup", r'ack_within \{"line": 1',

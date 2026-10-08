@@ -174,6 +174,16 @@ SETTLE_S = 0.3
 # How long a line stays worth saying, by what it is. An answer has no time limit while its asker is here.
 EXPIRES_S = {"ack": 10.0, "status": 6.0, "social": 6.0}
 ENGAGE_GAP_S = 30.0  # a person and an agent with nothing said between them this long are no longer talking
+# A sentence that was cut counts as said once this share of it was audible: the room has it, the record
+# shows what was audible of it, and it is not said again. Under that it is not said: nothing of it is on
+# the record, and it is said whole when its utterance goes on (`Huddle.on_unit`). High, because a sentence
+# keeps what it is about for its end ("...costs fifty dollars per month"): half of one is not its answer.
+HEARD_SHARE = 0.8
+# A paused utterance is not said on before the receipt of what was cut: it says where its cursor is. This
+# long at most, for a voice that died with the receipt.
+RECEIPT_WAIT_S = 1.0
+# Characters a second a mouth speaks at, until this call's own units have measured it (`Huddle._audible`).
+SPEECH_CPS = 15.0
 PLAYBACK_TRIES = 3  # an utterance whose playback ended early this often in a row is not tried aloud again
 LATE_RETRY_MAX_S = 30  # a written answer whose post failed is tried again after 1 s, 2 s, 4 s ... up to this
 # A person stopped speaking and no transcript of it came this long: none is coming (`Huddle._final_timeout`).
@@ -404,6 +414,7 @@ class Utterance:
     order: int = 0
     via: Any = None
     tries: int = 0
+    cut_at: float = 0.0  # when it was paused, until the receipt of the playback that was cut is in (`_hold`)
 
 
 @dataclass(eq=False)
@@ -610,6 +621,7 @@ class Huddle:
         # The per-person turn state: identity -> their speech not yet acted on, oldest first (`Epoch`).
         self._turns: dict[str, list[Epoch]] = {}
         self._eid = 0
+        self._spoken = [0, 0.0]  # characters and audible seconds of the units said to their end (`_audible`)
         self._unknown_at = -math.inf  # when speech that never got a transcript last ended (`_final_timeout`)
         self._turn_at: dict[tuple[str, str], float] = {}  # (identity, label) -> their last line with real words
         self._level_at: dict[str, float] = {}  # identity -> when the SFU last heard sound from them
@@ -1900,6 +1912,8 @@ class Huddle:
         understood (`_final_timeout`) a line is not plainly wanted either: it waits for that pause too."""
         if u.write is not None:
             return "writing", None
+        if u.cut_at and (left := RECEIPT_WAIT_S - (now - u.cut_at)) > 0:
+            return "receipt", left  # how much of the cut sentence was audible decides where it goes on from
         if (open_turn := self._turn_open(now)) is not None:
             return open_turn
         if u.audience is not None and u.audience not in self._people:
@@ -2004,7 +2018,7 @@ class Huddle:
             return
         self._gate(u, "", now)
         self._order += 1
-        u.state, u.over, u.resume, u.order, u.via = "speaking", set(), False, self._order, v
+        u.state, u.over, u.resume, u.order, u.via, u.cut_at = "speaking", set(), False, self._order, v, 0.0
         if self._selected == u.agent:
             self._selected = None
         if e := self._engagement((u.audience, u.label), u.agent) if u.audience else None:
@@ -2041,13 +2055,47 @@ class Huddle:
         playback: the unit is not said, and its order's end returns the utterance to be tried again
         (`on_playback_ended`)."""
         u = next((u for u in self._ledger if u.agent == agent_id and u.order == order), None)
+        heard, share = (None, 1.0) if outcome == "said" else self._audible(text, evidence) if outcome == "cut" else (None, 0.0)
         self._log(
             "receipt", outcome=outcome, agent=agent_id, order=order, unit=index, utterance=u.id if u else None,
-            **evidence,
+            share=round(share, 2), **evidence,
         )  # fmt: skip
         if outcome == "silent":
             emit_metric("live.speech.silent_unit", 1, "Count")
-        self.on_agent_said(agent_id, text, outcome != "said", order=order, index=index)
+        if outcome == "said":
+            self._spoken[0] += len(text)
+            self._spoken[1] += evidence.get("loudMs", 0) / 1000
+        # A cut sentence: said, if enough of it was audible (HEARD_SHARE). Its record is what was audible.
+        said = outcome == "said" or share >= HEARD_SHARE
+        if heard is not None and not said:
+            heard = ""  # not said: nothing of it is on the record, and it is said whole later
+        self.on_agent_said(agent_id, text, not said, order=order, index=index, heard=heard)
+        if outcome == "cut" and share > 0 and u is not None and u.kind != "answer":
+            self._stale(u)
+
+    def _audible(self, text: str, evidence: dict) -> tuple[str, float]:
+        """What the room heard of a unit that was cut: its words, and their share of the unit. The mouth
+        reports audible seconds, not words: the share is those seconds at the rate this call's units were
+        said at, and the words are that share of the text, to a whole word."""
+        # ponytail: a rate estimate, right to a word or two. The voice SDK's own played-out transcript
+        # would be exact, if a record ever has to be.
+        chars, seconds = self._spoken
+        rate = chars / seconds if seconds >= 3.0 else SPEECH_CPS
+        audible = evidence.get("heardMs", evidence.get("loudMs", 0)) / 1000
+        share = min(1.0, audible * rate / max(len(text), 1))
+        if share >= 1.0:
+            return text, 1.0
+        n = int(len(text) * share)
+        cut = text[:n] if text[n].isspace() else text[:n].rpartition(" ")[0]  # no half word
+        return cut.rstrip(" ,;:-"), share
+
+    def _stale(self, u: Utterance) -> None:
+        """A line (an acknowledgement, a status, small talk) that stopped after the room heard some of it is
+        over, whether talk stopped it or its playback failed: it was owed to a moment, and its rest said
+        later is a new line about nothing. An answer is owed until it is said, and goes on."""
+        if u in self._ledger:
+            self._gate_log("expired", u.agent, u.kind, "cut", 0, u)
+            self._strike([u])
 
     def _unsaid(self, us, failed: bool = False) -> None:
         """No playback is behind these utterances any more: each one that was being said is pending again at
@@ -2061,6 +2109,8 @@ class Huddle:
             u.state, u.via = "pending", None
             u.tries += failed
             self._gate_log("unsaid", u.agent, u.kind, "failed" if failed else "voice", 0, u)
+            if u.kind != "answer" and u.cursor > 0:
+                self._stale(u)  # some of the line was said, then its playback stopped
 
     def on_playback_ended(self, agent_id: str, order: int | None, failed: bool = False) -> None:
         """A mouth's receipt for one order (`_start`): nothing more of it will be said. `failed`: it raised.
@@ -2072,6 +2122,10 @@ class Huddle:
             emit_metric("live.speech.playback_ended", 1, "Count", {"outcome": "failed" if failed else "early"})
             self._unsaid(us, failed=True)
             self._pump()
+        for u in self._ledger:
+            if u.order == order and u.agent == agent_id and u.cut_at:
+                u.cut_at = 0.0  # every receipt of the playback that was cut is in
+                self._pump()
 
     async def _open_for(self, u: Utterance) -> None:
         """Its own agent's voice opens to say `u`, with whoever it is for (else the last speaker, else anyone
@@ -2148,7 +2202,7 @@ class Huddle:
         they are known (`_talked_over`), and `_hold` resumes it by them."""
         emit_metric("live.meet.talked_over", 1, "Count")
         now = self._clock()
-        u.state = "paused"
+        u.state, u.cut_at = "paused", now
         # Who it paused for: whoever talks now, and whoever spoke and has not been understood yet. Their
         # words, once known, say what the talk was (`_talked_over`).
         unheard = ("speaking", "awaiting-final")
@@ -2162,6 +2216,8 @@ class Huddle:
         onset = min((self._turn_from(w) for w in self._speaking), default=now)
         # `waitedMs`: first sign of their speech -> the interrupt. The unit's receipt adds interrupt -> silence.
         self._gate_log("revoke", u.agent, u.kind, ",".join(sorted(u.over)), round((now - onset) * 1000), u)
+        if u.kind != "answer" and u.cursor > 0:
+            self._stale(u)  # some of the line was said, then talk stopped it
 
     def _talked_over(self, identity: str, text: str, who: tuple[str, str] | None = None) -> None:
         """The words of someone who talked over a mouth are known. The yield already paused it: this decides
@@ -2932,13 +2988,15 @@ class Huddle:
         )
 
     def on_agent_said(
-        self, agent_id: str, text: str, interrupted: bool = False, order: int | None = None, index: int | None = None
-    ) -> None:
+        self, agent_id: str, text: str, interrupted: bool = False, order: int | None = None, index: int | None = None,
+        heard: str | None = None,
+    ) -> None:  # fmt: skip
         """What a voice said: every later seed and since_agent hears it, tagged with the person it was talking
         to ("Forge → Leo: ...", routing v2 §5). A Live voice: as GPT-Live heard itself say it, `interrupted`
         when its speaker's sound stopped it before the end (the SDK's mark on the message). A mouth: one unit
         it was ordered to say, by its exact text, said to its end or not (`on_unit`). `order`, `index`: the
-        playback and unit its receipt is for."""
+        playback and unit its receipt is for. `heard`: a mouth's unit was cut, and this much of it was audible
+        (`_audible`): that goes on the record, and `interrupted` says whether it was too little to count as said."""
         v = self._floor_voice(agent_id)
         own = self._voice if self._voice and self._voice.agent_id == agent_id else None  # also while it closes
         if own and mouth(own.speaker):
@@ -2946,8 +3004,12 @@ class Huddle:
                 self._unit_said(agent_id, text, order, index)
         elif v:
             self._answer_message(v, text, interrupted)
-        if interrupted and (mouth(own.speaker) if own else self.setting == "meeting"):
-            return  # a mouth's cut unit is its whole text, not what was heard: on the record once it is said
+        if heard is not None:
+            if not heard:
+                return  # cut before a word of it was audible: nothing was said
+            text = heard
+        elif interrupted and (mouth(own.speaker) if own else self.setting == "meeting"):
+            return  # a mouth's unit that never played (revoked, silent): nothing was said
         to = self._with(v) if v else ""
         self._transcript.add_agent(
             agent_id, self._agent_name(agent_id), text, at=self._clock(), to=to

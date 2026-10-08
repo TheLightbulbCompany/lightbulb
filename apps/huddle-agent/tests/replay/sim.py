@@ -333,7 +333,8 @@ class Mouth:
             h.on_agent_state(self.agent_id, "listening")
             outcome = "cut" if cut else "said"
         evidence = {
-            "audioMs": round(sound * 1000), "loudMs": round(loud * 1000), "leadMs": round(lead * 1000),
+            "audioMs": round(sound * 1000), "loudMs": round(loud * 1000), "heardMs": round(loud * 1000),
+            "leadMs": round(lead * 1000),
             "tookMs": round((sim.now() - began) * 1000),
         }  # fmt: skip
         h.on_unit(self.agent_id, order, index, unit, outcome, evidence)

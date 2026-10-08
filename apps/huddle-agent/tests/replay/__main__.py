@@ -13,7 +13,7 @@ def main() -> int:
     ap.add_argument("--seeds", type=int, default=SEEDS, help=f"replays of each scenario (default {SEEDS})")
     ap.add_argument("--first", type=int, default=0, help="the first seed (default 0): another range tells a change from noise")
     ap.add_argument("--profile", choices=PROFILES, default="current", help="the transcriber's timing (sim.Model)")
-    ap.add_argument("--json", metavar="PATH", help="write {scenario | check: failing seeds} there, to compare two runs")
+    ap.add_argument("--json", metavar="PATH", help="write {scenario | check: [seeds failing, seeds skipped]} there, to compare two runs")
     ap.add_argument("--seed", type=int, help="one replay, with its timeline")
     ap.add_argument("--trace", action="store_true", help="with --seed: the controller's own log too")
     ap.add_argument("--keep", help="with --seed: write rig.txt, worker.log and transcript.json here")
@@ -56,7 +56,7 @@ def main() -> int:
             for status, what, why in results:
                 checks.setdefault(what, {}).setdefault(status, []).append((seed, why))
         for what, by in checks.items():
-            table[f"{name} | {what.split('  #')[0]}"] = len(by.get("FAIL", []))
+            table[f"{name} | {what.split('  #')[0]}"] = [len(by.get("FAIL", [])), len(by.get("SKIP", []))]
             if fails := by.get("FAIL"):
                 skips = f", {len(by['SKIP'])} skipped" if by.get("SKIP") else ""
                 why = known(name, what)

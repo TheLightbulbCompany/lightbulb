@@ -342,6 +342,7 @@ class _Unit:
     seconds: float = 0.0
     loud: float = 0.0  # seconds of frames with sound in them
     lead: float = 0.0  # seconds of quiet frames before the first one with sound: when the room began to hear it
+    sounded: float = 0.0  # when the first frame with sound passed (monotonic)
     revoked: bool = False
     dead: bool = False  # no sound came in FIRST_SOUND_S and it was stopped
 
@@ -362,6 +363,8 @@ class _Mouth(Agent):
                 m.seconds += frame.duration
                 data = frame.data
                 if max(max(data), -min(data)) >= LOUD:
+                    if not m.loud:
+                        m.sounded = time.monotonic()
                     m.loud += frame.duration
                 elif not m.loud:
                     m.lead += frame.duration
@@ -448,6 +451,8 @@ class _DrivenLive:
             "frames": m.frames,
             "audioMs": round(m.seconds * 1000),
             "loudMs": round(m.loud * 1000),
+            # what the room can have heard: frames may pass here ahead of their playout, and a cut drops those
+            "heardMs": round(min(m.loud, time.monotonic() - m.sounded) * 1000) if m.loud else 0,
             "leadMs": round(m.lead * 1000),
             "tookMs": round((time.monotonic() - began) * 1000),
         }

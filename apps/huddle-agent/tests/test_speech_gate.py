@@ -628,6 +628,7 @@ async def test_talk_that_turns_out_to_be_only_a_backchannel_resumes_it_at_once_f
         answer(h, row.run_id, "forge", "Three PRs are open. The oldest is two days old.")
         h.on_agent_said("forge", "Three PRs are open.")
         await talked_over(h, clock, P2)
+        h.on_playback_ended("forge", lives[0].order)  # the cut playback is over, as a mouth reports every order
         quiet(h)
         await pause(h, clock, BREATH)
         assert len(says_of(lives[0])) == 2, "paused until the talker's words are known"

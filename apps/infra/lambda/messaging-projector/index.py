@@ -8,6 +8,7 @@ import os
 import re
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
@@ -168,6 +169,8 @@ def _emit_metric(name: str, value: float, unit: str, dimensions: dict[str, str])
     """
     try:
         dims = {"env": _env_dimension(), "service": "messaging-projector", **dimensions}
+        # One write per line (end=""): member fan-out runs on threads, and a
+        # separate newline write could interleave two EMF lines.
         print(json.dumps({
             "_aws": {
                 "Timestamp": int(time.time() * 1000),
@@ -179,7 +182,7 @@ def _emit_metric(name: str, value: float, unit: str, dimensions: dict[str, str])
             },
             **dims,
             name: value,
-        }))
+        }) + "\n", end="")
     except Exception as exc:  # noqa: BLE001 - metrics are best-effort
         logger.warning("projector metric emit failed name=%s error_type=%s", name, type(exc).__name__)
 
@@ -615,20 +618,29 @@ def _send_push(
         _emit_metric("messaging.projector.push", 1, "Count", {"outcome": "send_error"})
 
 
+def _current_member(room_id: str, owner_id: str, user_id: str, after_seq: int | None = None) -> dict[str, Any] | None:
+    """The strong-read membership row, or None if this person is not a CURRENT member (removed,
+    other owner, or joined at/after ``after_seq``). Read at publish time, never from a cached list:
+    a member removed before this read gets nothing."""
+    member = _get_item(f"ROOM#{room_id}", f"MEMBER#human#{user_id}")
+    if not member or member.get("ownerId") != owner_id:
+        return None
+    if after_seq is not None and after_seq <= member.get("joinedSeq", 0):
+        return None
+    return member
+
+
+def _member_candidates(room_id: str) -> list[str]:
+    """User ids from the membership query: discovery only, rechecked by _current_member."""
+    return [candidate["id"] for candidate in _query_rows(f"ROOM#{room_id}", "MEMBER#human#")]
+
+
 def _current_members(room_id: str, owner_id: str, after_seq: int | None = None):
-    """``(user_id, member)`` for every CURRENT human member. Membership is
-    strong-read here, at write/publish time, never taken from a cached list: a
-    member removed before this read gets nothing. ``after_seq`` also skips
-    members who joined at or after that message."""
-    for candidate in _query_rows(f"ROOM#{room_id}", "MEMBER#human#"):
-        user_id = candidate["id"]
-        # Recheck membership after discovery, including remove/rejoin history floor.
-        member = _get_item(f"ROOM#{room_id}", f"MEMBER#human#{user_id}")
-        if not member or member.get("ownerId") != owner_id:
-            continue
-        if after_seq is not None and after_seq <= member.get("joinedSeq", 0):
-            continue
-        yield user_id, member
+    """``(user_id, member)`` for every CURRENT human member, each rechecked right after discovery."""
+    for user_id in _member_candidates(room_id):
+        member = _current_member(room_id, owner_id, user_id, after_seq)
+        if member is not None:
+            yield user_id, member
 
 
 def _stream_channel(user_id: str, member: dict[str, Any], owner_id: str) -> str | None:
@@ -657,6 +669,7 @@ def _member_streams(room_id: str, owner_id: str, after_seq: int | None = None):
 
 
 ACTIVITY_TTL_S = 90 * 24 * 3600
+MAX_FANOUT_WORKERS = 16
 
 
 def _thread_participants(room_id: str, root_id: str, root_seq: Any) -> set[str]:
@@ -756,9 +769,14 @@ def _notify_members(
         mentioned.discard(accountable_human)
     last_message = _last_message(message)
     mentioned_ids = sorted(mentioned)[:MAX_MENTIONED_USERS]
-    # (token, was this token's owner @mentioned) — the push title is per reader.
-    recipients: list[tuple[str, bool]] = []
-    for user_id, member in _current_members(room_id, owner_id, after_seq=seq):
+
+    def notify_one(user_id: str) -> list[tuple[str, bool]]:
+        tokens: list[tuple[str, bool]] = []
+        # Membership is strong-read HERE, right before delivery, not when the candidates were
+        # listed: a member removed while another worker was busy still gets nothing.
+        member = _current_member(room_id, owner_id, user_id, after_seq=seq)
+        if member is None:
+            return tokens
         own = accountable_human == user_id
         # Your own message is never Activity (nor a notify); you still get the hint's preview.
         # Neither is a silent (advisory) line, e.g. "paused after N replies" under a reply
@@ -769,7 +787,7 @@ def _notify_members(
             _write_activity(user_id, member, owner_id, kind, message, user_id in mentioned)
         channel = _stream_channel(user_id, member, owner_id)
         if channel is None:
-            continue
+            return tokens
         read = _get_item(f"ROOM#{room_id}", f"READ#human#{user_id}") or {}
         notify = seq > read.get("lastReadSeq", 0) and kind is not None
         # Mute is client-side everywhere else; push is server-side by nature,
@@ -784,12 +802,12 @@ def _notify_members(
                 _emit_metric("messaging.projector.push", 1, "Count", {"outcome": "muted"})
             else:
                 at_me = user_id in mentioned
-                recipients.extend((token, at_me) for token in _push_tokens(user_id))
+                tokens.extend((token, at_me) for token in _push_tokens(user_id))
                 # The same banner the phone gets, for desktop/web to show verbatim.
                 payload["push"] = _render_push(message, meta, at_me)
         # A <=140-char plain preview (and, when it notifies, the phone's banner) may
         # ride the private user channel, to members current at publish time only
-        # (_current_members strong-reads each one). The full message stays behind the
+        # (_current_member strong-reads each one). The full message stays behind the
         # authenticated HTTP read and the room channel, whose deliveryKey rotation
         # remains the revocation boundary.
         _publish(channel, {
@@ -798,7 +816,17 @@ def _notify_members(
             "roomId": room_id, "messageSeq": seq,
             "payload": payload,
         })
-    return recipients
+        return tokens
+
+    # Members fan out in parallel: one HTTPS publish each was the whole cost of a
+    # record. pool.map re-raises the first failure only after every member ran
+    # (the with-block drains), so the record still fails and replays.
+    # ponytail: one room is one partition key, so one stream lane; a busy room's
+    # ceiling is now one parallel fan-out per message, not one publish per member.
+    with ThreadPoolExecutor(max_workers=MAX_FANOUT_WORKERS) as pool:
+        results = list(pool.map(notify_one, _member_candidates(room_id)))
+    # (token, was this token's owner @mentioned) — the push title is per reader.
+    return [recipient for tokens in results for recipient in tokens]
 
 
 def _publish_preview_change(item: dict[str, Any], meta: dict[str, Any], revision: int) -> None:

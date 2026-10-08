@@ -470,12 +470,14 @@ class ProjectorTests(unittest.TestCase):
                 "active": True, "ownerId": OWNER_ID, "userId": user, "workspaceId": WORKSPACE_ID,
             }
         index._ddb_client = FakeDdb(items)
-        index.process_record(stream_record(message_item()))
+        # A member removed after discovery but before delivery: listed by the query, no row at recheck.
+        with patch("index._member_candidates", return_value=users + ["user_removed"]):
+            index.process_record(stream_record(message_item()))
         calls = [c.args for c in publish.call_args_list]
         room = f"/ws/{WORKSPACE_ID}/rooms/{ROOM_ID}/{DELIVERY_KEY}"
         self.assertEqual(calls[-1][0], room)  # the room event still goes after every member
         hints = {channel: event for channel, event in calls[:-1]}
-        self.assertEqual(set(hints), {f"/ws/{WORKSPACE_ID}/users/{keys[u]}" for u in users})
+        self.assertEqual(set(hints), {f"/ws/{WORKSPACE_ID}/users/{keys[u]}" for u in users})  # nothing for user_removed
         for user in users:
             event = hints[f"/ws/{WORKSPACE_ID}/users/{keys[user]}"]
             self.assertEqual(event["eventId"], str(uuid.uuid5(uuid.UUID(MESSAGE_ID), f"notify:{user}")))

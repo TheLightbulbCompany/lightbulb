@@ -229,7 +229,7 @@ function ActivityRow({ item, pinned, tabIndex, highlighted, onFocusRow, onRunAct
         : decision && item.actions.length > 0 && <div className="activity-row__decide">{buttons}</div>}
       {/* The input rides as both fields: the server reads `note` for a decision and `value`
           for a reply, status or person, so the client keeps no per-action table. */}
-      {open && !resolved && (open.input?.kind === "login" || open.input?.kind === "code"
+      {open && !resolved && (open.input?.kind === "login"
         ? <SecretForm action={open} busy={busy} onCancel={() => setOpen(null)} onSubmit={(value) => void run(open, { value })} />
         : <ActionForm action={open} busy={busy} people={people} onCancel={() => setOpen(null)}
           onSubmit={(value) => void run(open, value === undefined ? {} : { note: value, value })} />)}
@@ -261,38 +261,30 @@ function Detail({ preview }: { preview: NonNullable<ActivityItem["summary"]["pre
 }
 
 /**
- * An agent's ask for a website login or a sign-in code. The answer goes to the server as
- * `value` only (never a note) and straight into the workspace's website sign-ins; nothing here
- * keeps it after the post, and it is never shown back.
+ * An agent's ask for a website login. The answer goes to the server as `value` only (never a
+ * note) and straight into the workspace's website sign-ins; nothing here keeps it after the post,
+ * and it is never shown back. (A sign-in code is typed into the shared browser, never asked for here.)
  */
 function SecretForm({ action, busy, onCancel, onSubmit }: {
   action: ActivityAction; busy: boolean; onCancel: () => void; onSubmit: (value: string) => void;
 }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [code, setCode] = useState("");
-  const login = action.input?.kind === "login";
-  const ready = login ? Boolean(username.trim() && password) : Boolean(code.trim());
+  const ready = Boolean(username.trim() && password);
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!ready) return;
-    onSubmit(login ? JSON.stringify({ username: username.trim(), password }) : code.trim());
+    onSubmit(JSON.stringify({ username: username.trim(), password }));
     setPassword("");
-    setCode("");
   };
   const field = "w-full rounded-md border px-2 py-1.5 text-sm";
   const tone = { borderColor: "var(--edge)", background: "var(--cream)", color: "var(--midnight)" };
   return <form className="activity-form" onSubmit={submit} autoComplete="off">
-    {login && action.input?.hint && <p className="text-sm" style={{ color: "var(--fg-soft)" }}>{action.input.hint}</p>}
-    {login
-      ? <>
-        <input aria-label="Username or email" placeholder="Username or email" value={username} autoFocus
-          autoComplete="username" className={field} style={tone} onChange={(e) => setUsername(e.target.value)} />
-        <input aria-label="Password" placeholder="Password" type="password" value={password}
-          autoComplete="current-password" className={field} style={tone} onChange={(e) => setPassword(e.target.value)} />
-      </>
-      : <input aria-label="Code" placeholder="Code" value={code} autoFocus inputMode="numeric"
-        autoComplete="one-time-code" className={field} style={tone} onChange={(e) => setCode(e.target.value)} />}
+    {action.input?.hint && <p className="text-sm" style={{ color: "var(--fg-soft)" }}>{action.input.hint}</p>}
+    <input aria-label="Username or email" placeholder="Username or email" value={username} autoFocus
+      autoComplete="username" className={field} style={tone} onChange={(e) => setUsername(e.target.value)} />
+    <input aria-label="Password" placeholder="Password" type="password" value={password}
+      autoComplete="current-password" className={field} style={tone} onChange={(e) => setPassword(e.target.value)} />
     <div className="flex gap-2">
       <Button type="submit" size="sm" disabled={busy || !ready}>{action.label}</Button>
       <Button type="button" size="sm" variant="ghost" onClick={onCancel} disabled={busy}>Cancel</Button>

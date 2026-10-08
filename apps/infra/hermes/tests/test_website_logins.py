@@ -28,8 +28,10 @@ def backend(monkeypatch):
     return state
 
 
-def _in_turn(fn, aborted=lambda: False):
-    token = wl._ASK.set({"agentId": "agent-1", "roomId": "room-1", "threadRootMessageId": None, "aborted": aborted})
+def _in_turn(fn, aborted=lambda: False, ctx=None):
+    ask = ctx if ctx is not None else {}
+    ask.update({"agentId": "agent-1", "roomId": "room-1", "threadRootMessageId": None, "aborted": aborted})
+    token = wl._ASK.set(ask)
     try:
         return fn()
     finally:
@@ -47,10 +49,69 @@ def test_login_ask_files_the_request_then_resolves_the_saved_login(backend):
     assert backend["calls"][-1][1] == "/logins/vault_0123456789ab/resolve"
 
 
-def test_code_ask_returns_the_code(backend):
-    backend["polls"] = [{"status": "answered", "kind": "code", "code": "123456"}]
-    assert _in_turn(lambda: wl._code_prompt("accounts.google.com", "")) == "123456"
-    assert backend["calls"][0][2]["origin"] == "https://accounts.google.com"
+def test_a_code_is_typed_into_the_browser_by_the_person_never_handed_to_the_agent(backend, monkeypatch):
+    """The ask is one line in the room; the wait watches the page, not a form. Nobody is polled
+    for the code and nothing is cancelled: there is no request to cancel."""
+    looks = iter([True, True, False])  # the code field is gone on the third look: they typed it
+    monkeypatch.setattr(wl, "_code_field_present", lambda: next(looks))
+    monkeypatch.setattr(wl, "_page_heading", lambda: "Check your text messages")
+    ctx = {}
+    assert _in_turn(lambda: wl._code_prompt("accounts.intuit.com", ""), ctx=ctx) == ""
+    assert ctx["code"] == "page_moved"
+    assert backend["calls"] == [("POST", "/requests", {
+        "kind": "code", "origin": "https://accounts.intuit.com", "agentId": "agent-1", "roomId": "room-1",
+        "threadRootMessageId": None, "hint": "Check your text messages", "surface": "cloud"})]
+
+
+def test_a_run_browsing_on_a_mac_sends_the_person_to_that_mac(backend, monkeypatch):
+    monkeypatch.setattr(wl, "_code_field_present", lambda: False)
+    monkeypatch.setattr(wl, "_page_heading", lambda: "")
+    token = wl.browser_control._TURN.set({"runId": "run-1", "mac": True})
+    try:
+        _in_turn(lambda: wl._code_prompt("x.com", ""), ctx={})
+    finally:
+        wl.browser_control._TURN.reset(token)
+    assert backend["calls"][0][2]["surface"] == "mac"
+
+
+def test_a_run_with_no_room_does_not_wait_for_a_person_nobody_told(backend, monkeypatch):
+    monkeypatch.setattr(wl, "_code_field_present", lambda: True)
+    ctx = {}
+    token = wl._ASK.set({"agentId": "agent-1", "roomId": None, "threadRootMessageId": None, "aborted": lambda: False})
+    try:
+        assert wl._code_prompt("x.com", "") == ""
+        ctx = wl._ASK.get()
+        assert ctx["code"] == "no_room" and backend["calls"] == []
+        declined = json.dumps({"success": False, "error_type": "code_declined", "error": "x"})
+        assert json.loads(wl.transform_tool_result("browser_vault_enter_code", declined))["error_type"] == "no_room"
+    finally:
+        wl._ASK.reset(token)
+
+
+def test_nobody_typing_the_code_in_time_is_reported_as_such(backend, monkeypatch):
+    clock = iter(range(0, 10_000, 10))
+    monkeypatch.setattr(wl.time, "monotonic", lambda: next(clock))
+    renewed = []
+    monkeypatch.setattr(wl.browser_control, "renew", lambda: renewed.append(1))
+    monkeypatch.setattr(wl, "_code_field_present", lambda: None)  # the page never answers
+    monkeypatch.setattr(wl, "_page_heading", lambda: "")
+    ctx = {}
+    assert _in_turn(lambda: wl._code_prompt("x.com", ""), ctx=ctx) == ""
+    assert ctx["code"] == "nobody_came"
+    assert len(renewed) >= 2  # the browser lease was kept through the wait
+    assert not any(path.endswith("/cancel") for _m, path, _b in backend["calls"])
+
+
+def test_hermes_code_declined_becomes_what_happened(backend):
+    declined = json.dumps({"success": False, "error_type": "code_declined",
+                           "error": "The user did not enter a code. Do not ask again this turn."})
+    moved = json.loads(_in_turn(lambda: wl.transform_tool_result("browser_vault_enter_code", declined),
+                                ctx={"code": "page_moved"}))
+    assert moved["success"] is True and moved["source"] == "person" and "browser_snapshot" in moved["next"]
+    nobody = json.loads(_in_turn(lambda: wl.transform_tool_result("browser_vault_enter_code", declined),
+                                 ctx={"code": "nobody_came"}))
+    assert nobody["error_type"] == "nobody_came" and "Never ask for the code in chat" in nobody["error"]
+    assert wl.transform_tool_result("browser_vault_enter_code", declined) is None  # no turn: Hermes's own text
 
 
 def test_declined_ask_is_none_and_not_cancelled(backend):
@@ -59,8 +120,13 @@ def test_declined_ask_is_none_and_not_cancelled(backend):
     assert not any(path.endswith("/cancel") for _m, path, _b in backend["calls"])
 
 
-def test_an_aborted_turn_stops_waiting_and_closes_the_ask(backend):
-    assert _in_turn(lambda: wl._code_prompt("x.com", ""), aborted=lambda: True) == ""
+def test_an_aborted_turn_stops_waiting_and_closes_the_ask(backend, monkeypatch):
+    monkeypatch.setattr(wl, "_code_field_present", lambda: True)
+    monkeypatch.setattr(wl, "_page_heading", lambda: "")
+    ctx = {}
+    assert _in_turn(lambda: wl._code_prompt("x.com", ""), aborted=lambda: True, ctx=ctx) == ""
+    assert ctx["code"] == "nobody_came"
+    assert _in_turn(lambda: wl._save_login_prompt("https://x.com", "x.com"), aborted=lambda: True) is None
     assert backend["calls"][-1][:2] == ("POST", f"/requests/{'a' * 32}/cancel")
 
 
@@ -69,8 +135,8 @@ def test_a_long_wait_keeps_the_browser_lease(backend, monkeypatch):
     monkeypatch.setattr(wl.time, "monotonic", lambda: next(clock))
     renewed = []
     monkeypatch.setattr(wl.browser_control, "renew", lambda: renewed.append(1))
-    backend["polls"] = [{"status": "pending"}] * 8 + [{"status": "answered", "code": "9"}]
-    assert _in_turn(lambda: wl._code_prompt("x.com", "")) == "9"
+    backend["polls"] = [{"status": "pending"}] * 8 + [{"status": "answered", "loginId": "vault_0123456789ab"}]
+    assert _in_turn(lambda: wl._save_login_prompt("https://x.com", "x.com"))["identifier"] == "me@example.com"
     assert len(renewed) >= 2
 
 

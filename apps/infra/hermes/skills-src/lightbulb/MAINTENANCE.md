@@ -59,6 +59,8 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   - Website sign-ins .......... SKILL.md ("Type a website password" row; names the web AND iPhone doors) + references/surfaces.md (Browser row)
                               <- apps/infra/hermes/bridge/website_logins.py (vault store + ask callbacks);
                                  core/services/website_logins.py; frontend WebsiteLoginsSection (Connections).
+                                 Codes/CAPTCHA are browser-only (owner ruling 2026-10-07): the bridge's
+                                 _code_prompt posts the line and watches the page; there is no code form.
   - Browser live view ....... references/surfaces.md
                               <- Mac viewer input: apps/frontend/src/components/workspace/panels/BrowserFrameView.tsx
                                  (event producer); apps/backend/routers/container.py and

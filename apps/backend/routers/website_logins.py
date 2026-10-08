@@ -137,6 +137,10 @@ class RequestBody(BaseModel):
     agentId: str = Field(max_length=128)
     roomId: str | None = Field(default=None, max_length=64)
     threadRootMessageId: str | None = Field(default=None, max_length=64)
+    # ``code`` only: the sign-in page's heading ("Check your text messages"), quoted in the line
+    # that sends the person to the browser, and which browser the run is in.
+    hint: str | None = Field(default=None, max_length=160)
+    surface: str = Field(default="cloud", pattern="^(cloud|mac)$")
 
 
 @internal_router.get("/{owner_id}")
@@ -169,6 +173,8 @@ async def runtime_request(owner_id: str, body: RequestBody, request: Request):
             agent_id=body.agentId,
             room_id=body.roomId,
             thread_root_message_id=body.threadRootMessageId,
+            hint=body.hint,
+            surface=body.surface,
         )
     except (store.LoginError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)[:200]) from exc

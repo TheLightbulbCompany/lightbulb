@@ -44,12 +44,13 @@ describe("workspace onboarding", () => {
     expect(clerk.replace).not.toHaveBeenCalled();
     expect(screen.getByRole("status")).toHaveTextContent("Loading");
   });
-  it("offers joining a team first, then workspace creation, without requiring a signup intent", () => {
+  it("puts the create form first and the join option under it, without requiring a signup intent", () => {
     render(<OnboardingPage />);
     expect(screen.getByRole("heading", { level: 1, name: "Create your workspace" })).toBeInTheDocument();
-    expect(screen.getAllByRole("heading").map((h) => h.textContent)).toEqual(["Create your workspace", "Joining a team?", "Or start a new workspace"]);
+    expect(screen.getAllByRole("heading").map((h) => h.textContent)).toEqual(["Create your workspace", "Joining a team instead?"]);
     expect(screen.getByText("Invited by email? Open that email on this device and tap its link.")).toBeInTheDocument();
-    expect(screen.getByLabelText("Workspace name")).toBeInTheDocument();
+    const name = screen.getByLabelText("Workspace name");
+    expect(name.compareDocumentPosition(screen.getByLabelText("Paste a join link")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByRole("button", { name: "Create workspace" })).toBeDisabled();
     expect(clerk.replace).not.toHaveBeenCalled();
   });

@@ -123,6 +123,21 @@ it("a read that lands after the owner's choice does not put the old audience bac
   expect(screen.getByRole("note")).toHaveTextContent("Anyone with the link can watch this terminal live");
 });
 
+// Codex on #3946: the failed change had cancelled the read in flight, and nothing read again.
+it("a change that fails while the link is still being read reads it again, never Loading for good", async () => {
+  const reads = [new Promise<never>(() => {}), Promise.resolve({ url, audience: "workspace" as const })];
+  const client = {
+    ...make("workspace"),
+    getLocalSessionLink: vi.fn(() => reads.shift()!),
+    putLocalSessionLink: vi.fn(async () => { throw new ApiError(500, null, "boom"); }),
+  };
+  render(<SessionShareLink session={{ ...session, shared: false }} client={client} />);
+  await userEvent.selectOptions(await who(), "anyone"); // resumes sharing, then the link change fails
+  expect(await who()).toHaveValue("workspace"); // what the server holds
+  expect(client.getLocalSessionLink).toHaveBeenCalledTimes(2);
+  expect(screen.getByRole("status")).toHaveTextContent("Could not change who can see this. Try again.");
+});
+
 it("a paused session reads Only me even when the link cannot be read", async () => {
   const client = { ...make("anyone"), getLocalSessionLink: vi.fn(async () => { throw new ApiError(500, null, "boom"); }) };
   render(<SessionShareLink session={{ ...session, shared: false }} client={client} />);

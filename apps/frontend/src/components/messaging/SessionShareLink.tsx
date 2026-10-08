@@ -59,7 +59,9 @@ export function SessionShareLink({ session, client }: { session: LocalSession; c
   const save = async (audience?: SessionLinkAudience) => {
     writes.current += 1;
     try { const next = await client.putLocalSessionLink!(session.sessionId, audience); setLink(next); setKnown(true); setReadFailed(false); return next; }
-    catch { setStatus("Could not change who can see this. Try again."); return null; }
+    // The change may have cancelled a read still in flight (`writes`): read again, so the control
+    // names what the server holds and never waits on a read nobody will answer.
+    catch { setStatus("Could not change who can see this. Try again."); setReadRound(n => n + 1); return null; }
   };
   const choose = async (next: Who) => {
     setStatus(null);

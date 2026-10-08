@@ -455,7 +455,7 @@ async def test_decision_refuses_anything_but_this_macs_current_session(monkeypat
         await tools.decide(_decision_device(), body)
 
 
-async def test_an_ended_run_takes_its_owners_owed_stop_and_nothing_else(monkeypatch):
+async def test_an_ended_run_takes_its_owners_sharing_switch_and_nothing_else(monkeypatch):
     monkeypatch.setattr(tools.sessions_repo, "get_session", AsyncMock(return_value=_decision_row(endedAt=1)))
     _connected(monkeypatch, device_id="mac_other")  # the run's own connection is gone
     set_sharing = AsyncMock(return_value="paused")
@@ -466,10 +466,15 @@ async def test_an_ended_run_takes_its_owners_owed_stop_and_nothing_else(monkeypa
     pause = tools.NativeDecisionRequest(session_id=_SID, generation="g1", decision="pause")
     assert await tools.decide(_decision_device(), pause) == "paused"
     assert set_sharing.await_args.args[1:] == (str(_SID), False)
+    # Shared again before its conversation is resumed: the resume's register keeps what the row says.
+    unpause = tools.NativeDecisionRequest(session_id=_SID, generation="g1", decision="unpause")
+    await tools.decide(_decision_device(), unpause)
+    assert set_sharing.await_args.args[1:] == (str(_SID), True)
+    allow = tools.NativeDecisionRequest(
+        session_id=_SID, generation="g1", decision="allow", user_id="user_z", request_id="r1"
+    )
     with pytest.raises(ApiProblem):
-        await tools.decide(
-            _decision_device(), tools.NativeDecisionRequest(session_id=_SID, generation="g1", decision="unpause")
-        )
+        await tools.decide(_decision_device(), allow)
 
 
 async def test_decision_refuses_a_stale_connection(monkeypatch):

@@ -80,10 +80,12 @@ async def decide(device: MachineIdentity, body: NativeDecisionRequest) -> local_
     ):
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Not this Mac's current session.")
     if row.get("endedAt") is not None:
-        # A stop its owner pressed that had not reached us when the run ended is still owed
-        # (the Mac retries it): it hides the ended run. The run's connection is gone, so none
-        # is asked for. Nothing else reaches an ended run.
-        if body.decision != "pause":
+        # The sharing switch still reaches an ended run, and nothing else does. A stop its owner
+        # pressed that had not reached us when the run ended is still owed (the Mac retries it):
+        # it hides the run. A paused run whose conversation is resumed on the Mac is shared
+        # again here first: the resume's register carries `unshared` over from this row.
+        # The run's connection is gone, so none is asked for.
+        if body.decision not in ("pause", "unpause"):
             raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Not this Mac's current session.")
     else:
         from core.services.local_session_relay import get_local_session_relay

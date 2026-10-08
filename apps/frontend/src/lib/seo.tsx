@@ -5,6 +5,9 @@ import { SITE_URL } from "./domain";
 export { SITE_URL };
 export const SITE_NAME = "Lightbulb";
 export const OG_IMAGE = "/og-lightbulb.png";
+export const HOME_TITLE = "Lightbulb AI — Shared Workspace for Humans and AI Agents";
+export const HOME_DESCRIPTION =
+  "Lightbulb is a shared workspace where people and AI agents work together in channels, with persistent context, tasks, approvals, and connected tools.";
 
 export function absoluteUrl(path = "/") {
   return new URL(path, SITE_URL).toString();
@@ -53,17 +56,26 @@ export function JsonLd({ data }: { data: unknown }) {
 export const organizationJsonLd = {
   "@context": "https://schema.org",
   "@type": "Organization",
-  name: "Lightbulb",
+  "@id": `${SITE_URL}/#organization`,
+  name: "Lightbulb AI",
+  legalName: "Isol8 Inc.",
+  alternateName: ["Lightbulb", "The Lightbulb Company"],
   url: SITE_URL,
   logo: absoluteUrl("/icon.png"),
-  sameAs: ["https://www.linkedin.com/company/isol8ai/"],
+  sameAs: [
+    "https://x.com/lightbulbai",
+    "https://www.linkedin.com/company/isol8ai/",
+  ],
 };
 
 export const websiteJsonLd = {
   "@context": "https://schema.org",
   "@type": "WebSite",
+  "@id": `${SITE_URL}/#website`,
   name: SITE_NAME,
+  alternateName: "Lightbulb AI",
   url: SITE_URL,
+  publisher: { "@id": `${SITE_URL}/#organization` },
   description:
     "Lightbulb gives companies persistent AI agents, an agent workspace, and an agent marketplace for autonomous operations.",
 };
@@ -71,10 +83,13 @@ export const websiteJsonLd = {
 export const softwareApplicationJsonLd = {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
+  "@id": `${SITE_URL}/#software`,
   name: "Lightbulb",
   applicationCategory: "BusinessApplication",
   operatingSystem: "Web",
   url: SITE_URL,
+  brand: { "@id": `${SITE_URL}/#organization` },
+  provider: { "@id": `${SITE_URL}/#organization` },
   description:
     "An AI agent workspace for running company operations with persistent, cloud-isolated agents.",
   offers: {

@@ -223,6 +223,20 @@ describe("SessionTerminal", () => {
     expect((told()[2].steps as { fresh: boolean }[])[0].fresh).toBe(true);
   });
 
+  it("keeps a held Ctrl through a page restart: what the bar shows is what the next key gets", async () => {
+    await render(view({ input, admitted: true }));
+    await fromPage({ t: "ready" });
+    await emit(frame("snapshot", 0));
+    await fireEvent.press(screen.getByLabelText("Control, applies to the next key"));
+    await act(async () => { mockEnded?.(); });
+    await fromPage({ t: "ready" });
+    await emit(frame("snapshot", 1));
+    expect(screen.getByLabelText("Control, applies to the next key").props.accessibilityState).toMatchObject({ selected: true });
+    await fromPage({ t: "data", d: "c" });
+    expect(input.mock.calls.map(([data]) => atob(data))).toEqual(["\x03"]);
+    expect(screen.getByLabelText("Control, applies to the next key").props.accessibilityState).toMatchObject({ selected: false });
+  });
+
   it("goes read-only when the page restarts, until its first picture", async () => {
     await render(view({ input, admitted: true }));
     await fromPage({ t: "ready" });

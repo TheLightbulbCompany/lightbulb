@@ -126,6 +126,8 @@ export function SessionTerminal({ session, onEvent, watch, onLive, onCanType, in
     send: (data, epoch) => typing.current.input?.(data, epoch) ?? Promise.resolve(),
     epoch: feed.epoch, canType: () => typing.current.canType, onRefused: () => setRefusedFor(key),
   }), [feed, key]);
+  // The bar's Ctrl is the one truth: a typist made anew (the page restarted) holds what the bar shows.
+  useEffect(() => { typist.setCtrl(ctrl); }, [typist, ctrl]);
   const onMessage = useCallback((event: WebViewMessageEvent) => {
     let message: { t?: string; d?: string };
     try { message = JSON.parse(event.nativeEvent.data); } catch { return; }
@@ -179,7 +181,7 @@ export function SessionTerminal({ session, onEvent, watch, onLive, onCanType, in
         <ScrollView horizontal keyboardShouldPersistTaps="always" showsHorizontalScrollIndicator={false}
           style={styles.bar} contentContainerStyle={styles.barKeys} accessibilityRole="toolbar" accessibilityLabel="Terminal keys">
           {KEYS.slice(0, 2).map((k) => <BarKey key={k.key} label={k.label} name={k.name} onPress={() => tell({ t: "key", key: k.key })} />)}
-          <BarKey label="Ctrl" name="Control, applies to the next key" selected={ctrl} onPress={() => { typist.setCtrl(!ctrl); setCtrl(!ctrl); }} />
+          <BarKey label="Ctrl" name="Control, applies to the next key" selected={ctrl} onPress={() => setCtrl(!ctrl)} />
           {KEYS.slice(2).map((k) => <BarKey key={k.key} label={k.label} name={k.name} onPress={() => tell({ t: "key", key: k.key })} />)}
           <BarKey label="Paste" name="Paste" onPress={paste} />
           <BarKey label="⌨" name="Show or hide the keyboard" onPress={() => tell({ t: "keyboard" })} />

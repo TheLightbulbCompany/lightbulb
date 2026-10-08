@@ -190,6 +190,29 @@ describe("session screen", () => {
     expect(screen.getByText("Alice · Idle · lightbulb")).toBeTruthy();
   });
 
+  it("reads back for Details again when a moved session's history becomes its own", async () => {
+    // A Claude session moved to the background reads its origin's history until its first turn.
+    mockSession = { ...base, latestEventSeq: 0, forkedFrom: "origin-1" };
+    let ownSeq = 0;
+    mockLive.messaging.getLocalSession.mockImplementation(async (id: string) =>
+      id === "origin-1" ? { ...base, sessionId: "origin-1", latestEventSeq: 2000 } : { ...mockSession, latestEventSeq: ownSeq });
+    // Fifty events a page, so every page but the first has an older one.
+    (mockListEvents as jest.Mock).mockImplementation(async (_id: string, after: number, limit: number) => ({
+      events: Array.from({ length: limit }, (_, i) => ev(after + 1 + i, { kind: "text", role: "assistant", text: "x" })), nextAfterSeq: null,
+    }));
+    const pages = (id: string) => (mockListEvents.mock.calls as unknown as [string][]).filter(([called]) => called === id).length;
+    await render(<SessionScreen />);
+    // The newest page and the whole 20-page budget, on the origin.
+    await waitFor(() => expect(pages("origin-1")).toBeGreaterThanOrEqual(21));
+    expect(pages("sess-1")).toBeLessThan(5);
+    ownSeq = 2000;
+    await act(async () => { mockEventHandlers.forEach((h) => h({ type: "workspace.sessions.changed", payload: { transcript: true } } as LiveEvent)); });
+    await act(async () => { mockEventHandlers.forEach((h) => h({ type: "workspace.sessions.changed", payload: {} } as LiveEvent)); });
+    // Its own history gets its own budget.
+    await waitFor(() => expect(pages("sess-1")).toBeGreaterThanOrEqual(21));
+    (mockListEvents as jest.Mock).mockImplementation(async () => ({ events: mockEvents, nextAfterSeq: null }));
+  });
+
   it("shows a held session's real terminal, and the keyboard types into it: no row under it", async () => {
     mockSession = { ...base, terminal: "held" };
     await render(<SessionScreen />);

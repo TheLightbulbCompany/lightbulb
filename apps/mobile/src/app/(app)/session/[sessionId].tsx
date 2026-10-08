@@ -364,12 +364,14 @@ function SessionBody({
   const source = useHistorySource(client, session, revision);
   const history = useLocalSessionHistory(client, source.sessionId, source.latestEventSeq, revision, onAccessLost, { pollMs });
   // Nothing scrolls the history any more, so read back for Details: bounded, as on the web.
-  const olderPages = useRef(0);
+  // Per history source: a forked session reads its origin's history first, then its own, in this same body.
+  const olderPages = useRef({ id: source.sessionId, n: 0 });
   useEffect(() => {
-    if (!history.hasOlder || history.loading || history.error || olderPages.current >= MAX_OLDER_PAGES) return;
-    olderPages.current += 1;
+    if (olderPages.current.id !== source.sessionId) olderPages.current = { id: source.sessionId, n: 0 };
+    if (!history.hasOlder || history.loading || history.error || olderPages.current.n >= MAX_OLDER_PAGES) return;
+    olderPages.current.n += 1;
     void history.load("older");
-  }, [history]);
+  }, [history, source.sessionId]);
   const [text, setText] = useState("");
   const command = useSessionCommand(client, session, { uuid: randomUUID, onAccessLost, onSent: () => setText(""), agentName: name, allowInterrupt: own || !!session.teamControl, allowOffline: true });
   const { userId } = useAuth();

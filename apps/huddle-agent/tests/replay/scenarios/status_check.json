@@ -1,0 +1,27 @@
+{
+ "about": "A request; while Friday works the asker says 'Friday?' and later 'Friday, go ahead.': no new run from either, any reply to them is short, the answer is said exactly once.",
+ "people": {
+  "a": {"name": "Prasiddha", "voice": "Daniel"},
+  "b": {"name": "Leonardo", "voice": "Fred"}
+ },
+ "lines": [
+  {"at": 3, "who": "a", "say": "Friday, what does the Workspace plan cost per month?"},
+  {"at": 16.5, "who": "a", "say": "Friday?"},
+  {"at": 30, "who": "a", "say": "Friday, go ahead."}
+ ],
+ "notes": "'Friday?' is 10 s after the question ends (6.4 s). If the answer is already said by then, the two lines are a bare name and a hand-back after the fact: still no new run, still at most a short reply.",
+ "tail": 50,
+ "timeout": 60,
+ "expect": [
+  {"one_run": {"line": 0}},
+  {"ack_within": {"line": 0, "seconds": 4}},
+  {"no_new_run": {"lines": [1, 2]}, "why": "'Friday?' and 'go ahead' ask how it is going or hand her the floor; they are not new requests"},
+  {"max_runs": {"max": 1}},
+  {"answer_contains": {"after": 0, "contains": ["fifty dollars|\\$50|50 dollars"]}},
+  {"said_once": {"text": "fifty dollars|\\$50|50 dollars"}, "why": "not once as the answer and again on 'go ahead'"},
+  {"max_words": {"max": 30, "from": 1, "allow": ["fifty dollars|\\$50|50 dollars"]}, "why": "apart from the answer, what she says to the two lines is a short status each (about 12 words)"},
+  {"max_agent_lines": {"max": 5}, "why": "acknowledgement + 2 short statuses + the answer, with room for an answer in two sentences"},
+  {"no_talk_over": {"max": 1.0}},
+  {"no_text": {"pattern": "\\b(Vera|Atlas|Pulse|Tally|Gauge|Forge|Jev|Hermes|Paperclip)\\b"}, "why": "internal names"}
+ ]
+}

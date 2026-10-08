@@ -43,6 +43,7 @@ from livekit.plugins.openai.realtime.gpt_live_model import _render_item
 from openai import AsyncOpenAI
 from openai.types.realtime import ResponseCreateEvent
 
+from huddle_agent import record
 from huddle_agent.backend import Backend
 from huddle_agent.huddle import Huddle, emit_metric, in_meet, units
 from huddle_agent.transcript import trim_items
@@ -340,6 +341,7 @@ class _Unit:
     frames: int = 0
     seconds: float = 0.0
     loud: float = 0.0  # seconds of frames with sound in them
+    lead: float = 0.0  # seconds of quiet frames before the first one with sound: when the room began to hear it
     revoked: bool = False
     dead: bool = False  # no sound came in FIRST_SOUND_S and it was stopped
 
@@ -361,6 +363,8 @@ class _Mouth(Agent):
                 data = frame.data
                 if max(max(data), -min(data)) >= LOUD:
                     m.loud += frame.duration
+                elif not m.loud:
+                    m.lead += frame.duration
             yield frame
 
 
@@ -444,6 +448,7 @@ class _DrivenLive:
             "frames": m.frames,
             "audioMs": round(m.seconds * 1000),
             "loudMs": round(m.loud * 1000),
+            "leadMs": round(m.lead * 1000),
             "tookMs": round((time.monotonic() - began) * 1000),
         }
         if self._cut_at is not None and outcome != "said":
@@ -691,7 +696,8 @@ async def entrypoint(ctx: JobContext) -> None:
     started = time.monotonic()
     usage = {"stt": 0.0}
     emitted = {"stt": 0.0, "agent": 0.0, "gptlive": 0.0}
-    backend = Backend(meta["roomId"], meta["ownerId"], meta["roomToken"])
+    recorder = record.start(meta["roomId"])  # HUDDLE_RECORD_DIR: this call's inputs, for an offline replay
+    backend = recorder.backend(Backend(meta["roomId"], meta["ownerId"], meta["roomToken"]))
     vad = silero.VAD.load()
     # streaming; interims still drive barge-in, semantic_vad only decides when a final lands
     meeting = meta.get("source") == "meet"
@@ -729,14 +735,15 @@ async def entrypoint(ctx: JobContext) -> None:
     huddle = Huddle(
         room=room,
         backend=backend,
-        live_factory=live_factory,
+        live_factory=recorder.factory(live_factory),
         on_vocabulary=lambda prompt: stt_engine.update_options(
             prompt=prompt
         ),  # open streams take it in place
         # a Google Meet bridged in by a Recall bot (the meeting dispatch)
         setting="meeting" if meta.get("source") == "meet" else "live",
-        writer=write_line,
+        writer=recorder.writer(write_line),
     )
+    recorder.inputs(huddle)
     tasks: set[asyncio.Task] = set()
 
     def _done(t: asyncio.Task) -> None:

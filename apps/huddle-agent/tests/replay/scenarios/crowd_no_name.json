@@ -1,0 +1,33 @@
+{
+ "about": "Three people talk for a minute and never name an agent; the last line is a question to the room that nobody answers: silence throughout, then at most one agent may answer, once, after a wait.",
+ "people": {
+  "a": {"name": "Prasiddha", "voice": "Daniel"},
+  "b": {"name": "Maya", "voice": "Samantha"},
+  "c": {"name": "Leonardo", "voice": "Fred"}
+ },
+ "agents": ["Friday", "Forge", "Tally", "Pulse", "Gauge", "Vera", "Atlas"],
+ "lines": [
+  {"at": 3, "who": "a", "say": "Okay, let us start. How did the customer call go yesterday?"},
+  {"at": 9, "who": "b", "say": "Pretty well, they want a pilot with their support team first."},
+  {"at": 15, "who": "c", "say": "Did anyone hear back from the vendor about the contract?"},
+  {"at": 20.5, "who": "a", "say": "Yes, they replied this morning, legal is reading it now."},
+  {"at": 27, "who": "b", "say": "Good. I can send the pilot plan to the customer by Thursday."},
+  {"at": 33.5, "who": "c", "say": "Can you give me a hand with the pricing page after this?"},
+  {"at": 39, "who": "b", "say": "Sure, I am free at three."},
+  {"at": 44, "who": "a", "say": "Does anyone know when the deploy finished last night?"}
+ ],
+ "notes": "No line holds an agent's name, also not as a common word (no 'Friday' the day, no 'pulse', 'gauge', 'tally', 'forge', 'atlas'). Line 2 is a question to the room that a person answers. Line 7 is one nobody answers: 40 s of silence follow. `max 1 agent line` is the brief's rule; if the design is acknowledgement + answer for an unclaimed question, that is 2 lines and this fails by design.",
+ "tail": 40,
+ "timeout": 70,
+ "expect": [
+  {"silent_between": {"to": 7, "to_edge": "end", "to_plus": 3.5}, "why": "talk between people, a room question a person answers, and the first 3.5 s after the unclaimed question: no agent speaks"},
+  {"no_new_run": {"lines": [0, 1, 2, 3, 4, 5, 6]}, "why": "none of this is for an agent"},
+  {"max_runs": {"max": 1}, "why": "the unclaimed question may be picked up by ONE agent, once"},
+  {"max_agent_lines": {"max": 3}, "why": "silence, or ONE agent: an acknowledgement plus an answer (up to 3 lines)"},
+  {"max_agents": {"max": 1}, "why": "never two agents"},
+  {"no_agent_overlap": {}},
+  {"no_talk_over": {"max": 0.3}, "why": "no agent audio on top of a person"},
+  {"max_words": {"max": 40}, "why": "an answer nobody asked an agent for is short"},
+  {"no_text": {"pattern": "\\b(Jev|Hermes|Paperclip)\\b"}, "why": "internal names"}
+ ]
+}

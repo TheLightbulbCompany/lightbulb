@@ -1,0 +1,115 @@
+{
+ "people": {
+  "a": {
+   "name": "Prasiddha",
+   "voice": "Daniel"
+  },
+  "b": {
+   "name": "Leonardo",
+   "voice": "Fred"
+  }
+ },
+ "lines": [
+  {
+   "at": 3.0,
+   "who": "a",
+   "say": "Friday, what is on my calendar tomorrow?"
+  },
+  {
+   "at": 9.5,
+   "who": "a",
+   "say": "Leonardo, did you push that fix last night?"
+  },
+  {
+   "at": 15.0,
+   "who": "b",
+   "say": "Yeah, I did, late last night."
+  },
+  {
+   "at": 20.0,
+   "who": "a",
+   "say": "Yeah, I think we should move the standup to eight."
+  },
+  {
+   "at": 30.0,
+   "who": "a",
+   "say": "Friday, what about Thursday?"
+  }
+ ],
+ "tail": 35,
+ "timeout": 80,
+ "expect": [
+  {
+   "one_run": {
+    "line": 0
+   }
+  },
+  {
+   "ack_within": {
+    "line": 0,
+    "seconds": 4
+   }
+  },
+  {
+   "silent_between": {
+    "from": 1,
+    "to": 4,
+    "allow": [
+     "calendar"
+    ]
+   },
+   "why": "talk between people; only the ready calendar answer, at a pause"
+  },
+  {
+   "no_new_run": {
+    "lines": [
+     1,
+     2,
+     3
+    ]
+   }
+  },
+  {
+   "answer_contains": {
+    "after": 0,
+    "contains": [
+     "calendar",
+     "connected|tomorrow|schedule|meeting|event|nothing"
+    ],
+    "before": 4
+   },
+   "why": "there is a 7 s pause before line 4 to deliver it; a whole answer, not a cut 'Your calendar isn't'"
+  },
+  {
+   "one_run": {
+    "line": 4
+   },
+   "why": "the follow-up about Thursday"
+  },
+  {
+   "ack_within": {
+    "line": 4,
+    "seconds": 4
+   }
+  },
+  {
+   "answer_contains": {
+    "after": 4,
+    "contains": [
+     "Thursday",
+     "calendar|schedule|meeting|event|free|nothing"
+    ]
+   },
+   "why": "an answer about Thursday, not 'Thursday is being reviewed'"
+  },
+  {
+   "said_once": {}
+  },
+  {
+   "max_agent_lines": {
+    "max": 4
+   },
+   "why": "2 acknowledgements + 2 answers; more is filler"
+  }
+ ]
+}

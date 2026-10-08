@@ -1,0 +1,27 @@
+{
+ "about": "A request said in three pieces with pauses ('Friday...' / 'can you tell me...' / 'what the Workspace plan costs per month?'): exactly one run, one acknowledgement, the answer.",
+ "people": {
+  "a": {"name": "Prasiddha", "voice": "Daniel"},
+  "b": {"name": "Leonardo", "voice": "Fred"}
+ },
+ "lines": [
+  {"at": 3, "who": "a", "say": "Friday..."},
+  {"at": 6, "who": "a", "say": "can you tell me..."},
+  {"at": 9.5, "who": "a", "say": "what the Workspace plan costs per month?"}
+ ],
+ "notes": "The pieces are about 0.7 s, 1 s and 2.5 s of audio with about 2 s of silence between them. Leonardo is in the meeting and says nothing.",
+ "tail": 55,
+ "timeout": 60,
+ "expect": [
+  {"no_new_run": {"lines": [0, 1]}, "why": "a line that trails off is joined with what follows before anything is decided"},
+  {"one_run": {"line": 2}, "why": "the whole request"},
+  {"max_runs": {"max": 1}, "why": "three pieces, one request"},
+  {"silent_between": {"from": 0, "to": 2, "to_edge": "end"}, "why": "no 'Yes?' and no acknowledgement until the request is whole"},
+  {"ack_within": {"line": 2, "seconds": 4}},
+  {"answer_contains": {"after": 2, "contains": ["fifty dollars|\\$50|50 dollars"]}, "why": "she understood the joined request"},
+  {"said_once": {"text": "fifty dollars|\\$50|50 dollars"}},
+  {"said_once": {}, "why": "this also catches a second acknowledgement"},
+  {"max_agent_lines": {"max": 3}, "why": "one acknowledgement + the answer, with room for an answer in two sentences"},
+  {"no_text": {"pattern": "\\b(Vera|Atlas|Pulse|Tally|Gauge|Forge|Jev|Hermes|Paperclip)\\b"}, "why": "internal names"}
+ ]
+}

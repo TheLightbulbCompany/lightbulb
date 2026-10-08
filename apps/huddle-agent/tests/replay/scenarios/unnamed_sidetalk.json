@@ -1,0 +1,28 @@
+{
+ "about": "A request to Friday; after her answer the same person says a line with no name that is clearly for a colleague: she stays silent and starts no run.",
+ "people": {
+  "a": {"name": "Prasiddha", "voice": "Daniel"},
+  "b": {"name": "Leonardo", "voice": "Fred"}
+ },
+ "lines": [
+  {"at": 3, "who": "a", "say": "Friday, how many agents come with a new workspace?"},
+  {"at": 50, "who": "a", "say": "Yeah, I think we should move the stand-up to eight."},
+  {"at": 57, "who": "b", "say": "Eight works for me."}
+ ],
+ "notes": "The pair of unnamed_followup.json: same shape, but the unnamed line is not for her. If her first answer is late (after 50 s) it may still be said once, at a pause: that is the `allow`.",
+ "tail": 30,
+ "timeout": 80,
+ "expect": [
+  {"one_run": {"line": 0}},
+  {"ack_within": {"line": 0, "seconds": 4}},
+  {"answer_contains": {"after": 0, "contains": ["six (starter )?agents|6 agents"]}},
+  {"no_new_run": {"lines": [1, 2]}, "why": "the stand-up is between Prasiddha and Leonardo"},
+  {"max_runs": {"max": 1}},
+  {"silent_between": {"from": 1, "allow": ["six (starter )?agents|6 agents"]}, "why": "nothing from Friday from the stand-up line to the end; only her owed answer if it was late, at a pause"},
+  {"no_talk_over": {"max": 0.5}},
+  {"said_once": {"text": "six (starter )?agents|6 agents"}},
+  {"said_once": {}},
+  {"max_agent_lines": {"max": 3}, "why": "acknowledgement + answer, with room for an answer in two sentences"},
+  {"no_text": {"pattern": "\\b(Vera|Atlas|Pulse|Tally|Gauge|Forge|Jev|Hermes|Paperclip)\\b"}, "why": "internal names"}
+ ]
+}

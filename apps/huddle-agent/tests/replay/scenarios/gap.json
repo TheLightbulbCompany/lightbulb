@@ -1,0 +1,95 @@
+{
+ "people": {
+  "a": {
+   "name": "Prasiddha",
+   "voice": "Daniel"
+  },
+  "b": {
+   "name": "Leonardo",
+   "voice": "Fred"
+  }
+ },
+ "lines": [
+  {
+   "at": 3.0,
+   "who": "b",
+   "say": "Yeah, I can hear you. This is where we test."
+  },
+  {
+   "at": 8.0,
+   "who": "a",
+   "say": "Now let us think about how I want to test this. All right, hey Friday, what is on my calendar tomorrow?"
+  },
+  {
+   "at": 17.0,
+   "who": "b",
+   "say": "That was what I was just doing, it is absolutely insane, I have never seen anything like it."
+  },
+  {
+   "at": 25.0,
+   "who": "a",
+   "say": "Yeah, we are going to need to test this a lot."
+  },
+  {
+   "over_agent": 1.0,
+   "who": "b",
+   "say": "Oh wait, sorry, one more thing before that, I wanted to mention the deploy from last night."
+  }
+ ],
+ "tail": 25,
+ "timeout": 90,
+ "expect": [
+  {
+   "one_run": {
+    "line": 1
+   },
+   "why": "the calendar question, with the name in the middle of the sentence"
+  },
+  {
+   "no_new_run": {
+    "lines": [
+     0,
+     2,
+     3,
+     4
+    ]
+   }
+  },
+  {
+   "silent_between": {
+    "from": 2,
+    "to": 4,
+    "allow": [
+     "calendar"
+    ]
+   },
+   "why": "Leonardo starts 2.3 s after the question: no acknowledgement over him; only the ready answer, at the pause after line 3"
+  },
+  {
+   "stops_within": {
+    "line": 4,
+    "seconds": 2
+   },
+   "why": "Leonardo talks over the answer"
+  },
+  {
+   "answer_contains": {
+    "after": 1,
+    "contains": [
+     "calendar",
+     "connected|tomorrow|schedule|meeting|event|nothing"
+    ]
+   },
+   "why": "a whole answer, not a cut 'Your calendar isn't'"
+  },
+  {
+   "said_once": {},
+   "why": "the cut answer may resume, not start again from far back"
+  },
+  {
+   "max_agent_lines": {
+    "max": 4
+   }
+  }
+ ]
+}

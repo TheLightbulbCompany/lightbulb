@@ -10,6 +10,7 @@ room session key. Scaffolded from
 
     uv sync
     uv run pytest tests -q
+    uv run python -m tests.replay all     # the live rig's scenarios against the controller, offline, in seconds
     uv run python -m huddle_agent.agent dev
 
 ## Deploy
@@ -59,6 +60,10 @@ The worker reads (LiveKit Cloud agent secrets, set per project):
 
 LiveKit itself injects `LIVEKIT_URL`, `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET`.
 Nothing a huddle says is stored.
+
+- `HUDDLE_RECORD_DIR` -- test rigs only; never set on a deployed worker. With it the worker writes each
+  call's inputs (what was said, what the backend answered, when) to that directory, so the call can be
+  replayed offline (`tests/replay`).
 
 ## First deploy (once per LiveKit project)
 

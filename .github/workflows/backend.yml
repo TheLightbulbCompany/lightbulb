@@ -56,6 +56,9 @@ jobs:
 
       - name: Setup uv
         uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/backend/uv.lock
 
       - name: Install dependencies
         run: uv sync --frozen
@@ -76,7 +79,11 @@ jobs:
           AWS_ACCESS_KEY_ID: testing
           AWS_SECRET_ACCESS_KEY: testing
           DEBUG: "false"
-        run: uv run pytest tests/ -v --cov=. --cov-report=xml --cov-report=term-missing
+        # xdist parallelizes across workers: -n 4 (not auto) because 5 jobs
+        # share one 16-core/30GB box — auto would oversubscribe RAM (~1GB per
+        # worker × 16 workers × 5 jobs). --dist loadfile keeps each test file
+        # on one worker (moto/dynamodb state isn't cross-process safe).
+        run: uv run pytest tests/ -n 4 --dist loadfile --tb=short -q --cov=. --cov-report=xml --cov-report=term-missing
         working-directory: apps/backend
 
       # This Lambda has its own tests and they used to run in NO job at all. It

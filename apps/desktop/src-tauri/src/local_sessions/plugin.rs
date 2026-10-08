@@ -22,7 +22,7 @@ use super::*;
 pub(crate) const FILES: &[(&str, &str)] = &[
     (".claude-plugin/marketplace.json", include_str!("../../../../../packages/claude-plugin/.claude-plugin/marketplace.json")),
     ("lightbulb/.claude-plugin/plugin.json", include_str!("../../../../../packages/claude-plugin/lightbulb/.claude-plugin/plugin.json")),
-    ("lightbulb/hooks/hooks.json", include_str!("../../../../../packages/claude-plugin/lightbulb/hooks/hooks.json")),
+    ("lightbulb/mod/hooks.json", include_str!("../../../../../packages/claude-plugin/lightbulb/mod/hooks.json")),
     ("lightbulb/hooks/register.tsx", include_str!("../../../../../packages/claude-plugin/lightbulb/hooks/register.tsx")),
     ("lightbulb/hooks/state.ts", include_str!("../../../../../packages/claude-plugin/lightbulb/hooks/state.ts")),
     ("lightbulb/hooks/rules.ts", include_str!("../../../../../packages/claude-plugin/lightbulb/hooks/rules.ts")),
@@ -164,6 +164,7 @@ mod tests {
         let root = write_files(dir.path()).unwrap();
         assert!(root.join(".claude-plugin/marketplace.json").is_file());
         assert!(root.join("lightbulb/hooks/register.tsx").is_file());
+        assert!(root.join("lightbulb/mod/hooks.json").is_file());
         let socket = std::fs::read_to_string(root.join("lightbulb/socket")).unwrap();
         assert!(socket.trim().ends_with("/mod.sock"));
     }

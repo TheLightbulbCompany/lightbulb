@@ -1,1 +1,1 @@
-{ "name": "lightbulb", "description": "Lightbulb in Claude Code: the lightbulb MCP server, the session-sharing skill, and the session-sharing band.", "types": "./types/index.d.ts" }
+{ "name": "lightbulb", "description": "Lightbulb in Claude Code: the lightbulb MCP server, the session-sharing skill, and the session-sharing band.", "types": "./types/index.d.ts", "hooks": "./mod/hooks.json" }

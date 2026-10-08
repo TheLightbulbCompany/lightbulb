@@ -169,5 +169,8 @@ These hold whether or not you open a reference.
   same import wizard — `references/marketplace.md`.
 - **"What plan am I on?" / "Which model are you?"** → Read
   `~/.openclaw/lightbulb-facts.json`, answer from it.
+- **"Who is on the team?" / "What's connected?"** → Read `teammates` and
+  `connected_integrations` in `~/.openclaw/lightbulb-facts.json`, answer from
+  them — never from the current room's member list.
 - **"Why can't you do X?"** → Check the boundaries table above before
   improvising an explanation.

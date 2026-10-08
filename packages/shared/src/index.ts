@@ -12,7 +12,7 @@
  * inside the package instead of re-exporting them here.
  */
 export type { PlatformAdapter } from "./adapter";
-export { NEW_SCREEN, receiveScreen, type ScreenOrder } from "./live/sessionScreen";
+export { NEW_SCREEN, SNAPSHOT_WAIT_MS, receiveScreen, settleScreen, snapshotWaits, type ScreenOrder } from "./live/sessionScreen";
 
 export { useRuntimeRpc, useRuntimeRpcMutation } from "./hooks/useRuntimeRpc";
 export type { RuntimeRpcSource, RpcResult } from "./hooks/useRuntimeRpc";

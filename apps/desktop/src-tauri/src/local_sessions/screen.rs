@@ -683,10 +683,16 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
         match frames.recv_timeout(TICK) {
             Ok((SNAPSHOT, payload)) => {
                 let (_, screen) = split_offset(&payload).ok_or("bad snapshot")?;
-                // It already shows whatever output was waiting.
+                // The snapshot shows the output that was waiting, but only as a screen: a viewer draws
+                // it over its own, and the lines that output scrolled off the top never reach its
+                // scrollback. So the output goes first (prod 2026-10-08: each beat that fell inside
+                // FLUSH of a Codex block cost a viewer that block's 19 rows). What follows a leave of
+                // the alternate screen stays dropped: the provider's way out, never a viewer's lines.
+                if leaving.take().is_none() && !pending.is_empty() {
+                    out.emit("output", &pending, size);
+                }
                 pending.clear();
                 held_since = None;
-                leaving = None;
                 out.emit("snapshot", screen, size);
             }
             Ok((OUTPUT, payload)) => {
@@ -879,6 +885,31 @@ mod tests {
         assert_eq!(data(&sent[1].1), b"saved", "a leave split across two reads is still found");
         assert_eq!(data(&sent[2].1), b"\x1b[?1049l$ back at the prompt");
         assert!(sent[1].0 < Duration::from_millis(500) && sent[2].0 >= Duration::from_millis(550), "held for the hold, then sent: {:?}", sent[2].0);
+    }
+
+    /// Prod 2026-10-08, a held Codex session, 101 `/status` blocks: twice a viewer lost one block's
+    /// 19 rows, each time where the 10 s beat's snapshot reached the relay inside FLUSH of the block's
+    /// output. Codex writes finished lines above its prompt through a scroll region, so a terminal
+    /// keeps them only when it is fed the bytes: the snapshot is the screen after them.
+    #[test]
+    fn output_waiting_when_a_snapshot_comes_is_sent_before_it() {
+        // Codex's `insert_history`: region above the prompt, to its last row, lines, region off, prompt.
+        let block = b"\x1b[1;25r\x1b[25;1H\r\n/status\r\n  Session: 01a1\r\n  Context window: 97% left\x1b[r\x1b[27;1H> ";
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send((SNAPSHOT, with_offset(0, b"screen"))).unwrap();
+        tx.send((OUTPUT, with_offset(6, block))).unwrap();
+        // The beat's snapshot, in the same tick as the output: nothing was flushed yet.
+        tx.send((SNAPSHOT, with_offset(6 + block.len() as u64, b"screen after the block"))).unwrap();
+        tx.send((OUTPUT, with_offset(6 + block.len() as u64, b"next"))).unwrap();
+        tx.send((EXIT, b"{}".to_vec())).unwrap();
+        drop(tx);
+        let sent = std::cell::RefCell::new(vec![]);
+        pump(&rx, &mut Vec::<u8>::new(), ("sid", "gen"), (100, 30), &Ctl::new(0), &|f| { sent.borrow_mut().push(f); true }, Budget::new(), &|_| None).unwrap();
+        let sent = sent.into_inner();
+        let data = |f: &Value| base64::engine::general_purpose::STANDARD.decode(f["data"].as_str().unwrap()).unwrap();
+        assert_eq!(kinds(&sent)[..4], [("snapshot".into(), 0), ("output".into(), 1), ("snapshot".into(), 2), ("output".into(), 3)]);
+        assert_eq!(data(&sent[1]), block, "every byte the holder sent before the snapshot, in order");
+        assert_eq!((data(&sent[2]), data(&sent[3])), (b"screen after the block".to_vec(), b"next".to_vec()));
     }
 
     /// A holder that answers every snapshot request with `answer` and notes when it was asked.

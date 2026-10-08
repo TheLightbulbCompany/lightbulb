@@ -6,6 +6,7 @@ import json
 import os
 import stat
 
+import httpx
 import pytest
 
 from scripts.load import fixtures as fx
@@ -83,6 +84,37 @@ def test_teardown_refuses_an_org_with_a_real_member_or_a_foreign_name():
         fx.teardown_steps(org, [creator, {"userId": "u9", "email": "p@acme.com"}])
     with pytest.raises(SystemExit):
         fx.teardown_steps({**org, "name": "Jev Listening Test"}, [creator])
+
+
+def test_sign_in_waits_out_a_429_then_spaces_the_next(monkeypatch):
+    waits: list[float] = []
+    monkeypatch.setattr(fx.time, "sleep", lambda s: waits.append(s))
+    monkeypatch.setattr(fx, "Api", lambda s: ("api", s))
+    calls = {"n": 0}
+
+    class C:
+        def session(self, uid, org):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                req = httpx.Request("POST", "https://fapi/v1/client/sign_ins")
+                resp = httpx.Response(429, headers={"retry-after": "7"}, request=req)
+                raise httpx.HTTPStatusError("429", request=req, response=resp)
+            return "sess"
+
+    assert fx._api(C(), "user_1", "org_1") == ("api", "sess")
+    assert waits == [7.0, fx.SIGNIN_SPACING_S]
+
+
+def test_a_sign_in_error_that_is_not_429_is_raised_at_once(monkeypatch):
+    monkeypatch.setattr(fx.time, "sleep", lambda s: pytest.fail("must not wait"))
+
+    class C:
+        def session(self, uid, org):
+            req = httpx.Request("POST", "https://fapi/v1/client/sign_ins")
+            raise httpx.HTTPStatusError("500", request=req, response=httpx.Response(500, request=req))
+
+    with pytest.raises(httpx.HTTPStatusError):
+        fx._api(C(), "user_1", "org_1")
 
 
 def test_self_delete_retries_409_then_gives_up_on_anything_else(monkeypatch):

@@ -437,3 +437,38 @@ async def test_the_owners_plain_end_is_not_a_removal(transport, s3):
     await repo.replace_command(sent, {**sent, "state": "dispatched", "revision": "r2"})
     await end(transport, sid)
     assert "removedAt" not in await repo.get_session(OWNER, sid)
+
+
+@pytest.mark.asyncio
+async def test_a_session_posts_into_its_own_chat_while_live_and_not_once_removed(transport, s3):
+    """The session's own post already checks its row, and a transaction names an item once: the
+    removed fence rides that check instead of adding a second one (a 500 from DynamoDB)."""
+    sid = await claude_session(transport)
+    room = str((await session_chat.open_chat(ALICE, sid)).room_id)
+
+    async def post(key: str):
+        return await messaging_repo.create_message(
+            room_id=room,
+            owner_id=OWNER,
+            idemp_pk=messaging_repo.room_pk(room),
+            idemp_sk=f"IDEMP#{key}",
+            req_hash=key,
+            author={"kind": "system", "id": "claude", "displayName": "Claude"},
+            text="from the session",
+            mentions=[],
+            reply_to_message_id=None,
+            thread_root_message_id=None,
+            run_id=None,
+            dispatch_targets=[],
+            source_agent_id=None,
+            client_message_id=None,
+            acting_human_id=ALICE.user_id,
+            extra_conditions=[repo.native_source_condition(await repo.get_session(OWNER, sid))],
+        )
+
+    assert (await post("live"))[1] is False
+    row = await repo.get_session(OWNER, sid)
+    enrollment = await repo.get_enrollment(OWNER, ALICE.user_id, MAC)
+    await repo.put_session({**row, "removedAt": 1}, row, enrollment)
+    with pytest.raises(messaging_repo.RoomNotFound):
+        await post("removed")

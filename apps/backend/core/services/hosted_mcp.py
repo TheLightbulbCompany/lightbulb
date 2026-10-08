@@ -283,16 +283,26 @@ async def _pin_destination(auth: AuthContext, request_id: uuid.UUID, destination
         return prior
 
 
-async def _record_refusal(auth: AuthContext, request_id: uuid.UUID, code: str | None) -> None:
-    """Keep why a session send was refused on its pin row, so a lost response can still be reconciled;
-    None clears it, so a retry that got through after a transient refusal does not read rejected."""
+async def _record_outcome(
+    auth: AuthContext, request_id: uuid.UUID, *, accepted: str | None = None, refusal: str | None = None
+) -> None:
+    """Keep a session send's outcome on its pin row, so a lost response can still be reconciled. An
+    accepted outcome is final: it clears a transient refusal an earlier attempt recorded, and a later
+    retry's refusal (sharing switched off since) never overwrites it."""
     pk, sk = _sent_key(auth, request_id)
-    kwargs = (
-        {"UpdateExpression": "SET refusal = :code", "ExpressionAttributeValues": {":code": code}}
-        if code
-        else {"UpdateExpression": "REMOVE refusal"}
-    )
-    await run_in_thread(messaging_repo._table().update_item, Key={"pk": pk, "sk": sk}, **kwargs)
+    if accepted:
+        kwargs = {"UpdateExpression": "SET accepted = :s REMOVE refusal", "ExpressionAttributeValues": {":s": accepted}}
+    else:
+        kwargs = {
+            "UpdateExpression": "SET refusal = :c",
+            "ConditionExpression": "attribute_not_exists(accepted)",
+            "ExpressionAttributeValues": {":c": refusal},
+        }
+    try:
+        await run_in_thread(messaging_repo._table().update_item, Key={"pk": pk, "sk": sk}, **kwargs)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            raise
 
 
 async def _person_room(auth: AuthContext, request_id: uuid.UUID, person_id: str, *, create: bool) -> str:
@@ -353,11 +363,13 @@ async def send_message(
             # follow-up from the session page; the label tells the session a client wrote it.
             result = await native_session_tools.session_send(auth, target, text, str(request_id), via_client=client)
         except messaging.ApiProblem as exc:
+            if pinned.get("accepted"):
+                # An earlier attempt admitted it and lost the response; a refusal now does not undo that.
+                return {"sessionId": session_id, "requestId": str(request_id), "state": pinned["accepted"]}
             # FastMCP hides any other exception's text, so the client would never learn why.
-            await _record_refusal(auth, request_id, exc.error.code)
+            await _record_outcome(auth, request_id, refusal=exc.error.code)
             raise ToolError(f"{exc.error.code}: {exc.error.message}") from exc
-        if pinned.get("refusal"):
-            await _record_refusal(auth, request_id, None)
+        await _record_outcome(auth, request_id, accepted=result["state"])
         return {"sessionId": session_id, "requestId": str(request_id), "state": result["state"]}
     try:
         # Checked before any room is opened, so a refused send leaves no empty DM behind.
@@ -434,8 +446,11 @@ async def message_receipt(request_id: uuid.UUID) -> dict:
     try:
         command = await local_sessions.get_command(auth, None, target, str(request_id))
     except messaging.ApiProblem as exc:
+        # The recorded outcome answers even when get_command re-fails the same check (e.g. enrollment off):
+        # an accepted send reads the state it was admitted with, a refused one reads rejected.
+        if pinned.get("accepted"):
+            return {"sessionId": target, "requestId": str(request_id), "state": pinned["accepted"]}
         if pinned.get("refusal"):
-            # The recorded refusal answers even when get_command re-fails the same check (e.g. enrollment off).
             return {"sessionId": target, "requestId": str(request_id), "state": "rejected", "reason": pinned["refusal"]}
         if exc.error.code != "LOCAL_SESSION_NOT_FOUND":
             raise

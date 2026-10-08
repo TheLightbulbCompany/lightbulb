@@ -126,7 +126,6 @@ FEATURES = [
     "bandOwnerOnly",
     "endedScreens",
     "terminalReason",
-    "terminalReasonFolder",
     "endedStartId",
     "agentMessageAsks",
 ]

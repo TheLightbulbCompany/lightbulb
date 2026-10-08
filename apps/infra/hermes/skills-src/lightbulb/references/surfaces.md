@@ -98,12 +98,11 @@ or as a plain `claude` or `codex` in any terminal. A session in any other folder
 at all: nothing about it leaves the Mac, it is in no session list, `find_sessions` does not
 return it and nobody can message it. If a person asks why a session of theirs is missing, the
 likely cause is its folder: they add the folder under Approved folders (or answer yes when
-`lightbulb claude` / `lightbulb codex` asks in that folder) and it is shared from then on.
-A session that was already running when its folder was approved is shared from that moment on
-(nothing it did earlier is uploaded) and has no live terminal: its panel says it started before
-its folder was approved. Its next run (a resume, a new session) has its terminal as usual.
-Removing a folder from the list ends sharing for the sessions in it within a minute; they show
-as ended. The owner can pause one session or turn sharing off for the Mac. When a
+`lightbulb claude` / `lightbulb codex` asks in that folder) and the session is shared in full:
+approving a folder shares its sessions whole, including what a running one did before, and its
+live terminal.
+Removing a folder from the list ends sharing for the sessions in it at once; they show as
+ended, and come back whole if the folder is approved again. The owner can pause one session or turn sharing off for the Mac. When a
 person pairs a Mac, **Share every session live** starts on (they can turn it off there or later
 in Settings), so a plain `claude` or `codex` typed in a new terminal tab runs through Lightbulb.
 A running session shows its live terminal when Lightbulb started it, when it is a Claude Code

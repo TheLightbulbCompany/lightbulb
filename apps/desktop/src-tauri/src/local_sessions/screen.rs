@@ -78,14 +78,6 @@ struct Live {
     native: NativeSession,
 }
 
-/// Whether a mirror's terminal is shown to the workspace at all: a session that is shared, and
-/// a process that did not start before it was (`Mirror::terminal_withheld`). The one test behind
-/// the live index, so nothing else (a relay, a snapshot, history, typed input, the panel) finds
-/// a terminal that is not.
-pub(super) fn shows_terminal(mirror: &Mirror) -> bool {
-    !mirror.withheld() && !mirror.terminal_withheld()
-}
-
 static LIVE: Mutex<BTreeMap<String, Live>> = Mutex::new(BTreeMap::new());
 static OUT: Mutex<Option<mpsc::Sender<Value>>> = Mutex::new(None);
 static RELAYS: Mutex<BTreeMap<String, Arc<Ctl>>> = Mutex::new(BTreeMap::new());
@@ -167,7 +159,7 @@ fn send_out(frame: Value) -> bool {
 pub(super) fn index(mirrors: &BTreeMap<String, Mirror>) {
     let live = mirrors
         .values()
-        .filter(|m| m.ended_at.is_none() && shows_terminal(m))
+        .filter(|m| m.ended_at.is_none() && !m.withheld())
         .filter_map(|m| Some((m.session_id.clone()?, Live { generation: m.generation.clone(), native: m.native.clone() })))
         .collect();
     if let Ok(mut slot) = LIVE.lock() {
@@ -177,7 +169,8 @@ pub(super) fn index(mirrors: &BTreeMap<String, Mirror>) {
 }
 
 /// Sharing stopped for this session (its folder is not approved): its relay stops sending now,
-/// and no watch, typed input or panel finds it live. `index` keeps it out from then on.
+/// and no watch, typed input or panel finds it live. `index` keeps it out until it is shared
+/// again, and then it is found as before, with its whole history.
 pub(super) fn revoke(session_id: &str) {
     if let Ok(mut live) = LIVE.lock() {
         live.remove(session_id);

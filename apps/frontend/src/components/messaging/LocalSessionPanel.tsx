@@ -218,12 +218,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     <p>{`Resume works once ${own ? "your" : `${ownerName}'s`} Mac is back.`}{!own && canPickUp(session) ? " Pick up continues it on your Mac now." : ""}</p>
   </div>;
   const reason = terminalStateReason(session);
-  // The process was already running when its folder was approved: its terminal is never shown.
-  const beforeFolder = session.terminalReason === "started-before-folder-approved";
-  const noticePanel = beforeFolder ? <div className="session-state-panel" role="status">
-    <p className="session-state-title">This session started before its folder was approved.</p>
-    <p>Its terminal is shared from its next run.</p>
-  </div> : <div className="session-state-panel" role="status">
+  const noticePanel = <div className="session-state-panel" role="status">
     <p className="session-state-title">This session was not started through Lightbulb, so its screen is not here.</p>
     {reason === "plain" && (own
       ? <p>Press ← in its terminal to share this one live, or turn on Share every session live in {isDesktopApp()

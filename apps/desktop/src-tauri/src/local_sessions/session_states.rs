@@ -21,14 +21,6 @@ use std::time::{Duration, Instant};
 static READS_ENDED_SCREENS: AtomicBool = AtomicBool::new(false);
 /// The relay lists `terminalReason`.
 static READS_TERMINAL_REASON: AtomicBool = AtomicBool::new(false);
-/// The relay lists `terminalReasonFolder`: it takes the reason `FOLDER_REASON`.
-static READS_FOLDER_REASON: AtomicBool = AtomicBool::new(false);
-/// Why a process that was running when its session became shared has no terminal.
-const FOLDER_REASON: &str = "started-before-folder-approved";
-
-fn lists_folder_reason(features: &Value) -> bool {
-    features.as_array().is_some_and(|f| f.iter().any(|x| x == "terminalReasonFolder"))
-}
 /// `DeviceHeartbeat.screens`' cap on the relay.
 const SCREENS_MAX: usize = 24;
 /// How often holders no mirror names are looked for.
@@ -116,7 +108,6 @@ pub(super) fn read_features(listed: &Value) {
     let (screens, reason) = features(listed);
     READS_ENDED_SCREENS.store(screens, SeqCst);
     READS_TERMINAL_REASON.store(reason, SeqCst);
-    READS_FOLDER_REASON.store(lists_folder_reason(listed), SeqCst);
 }
 
 #[cfg(test)]
@@ -168,8 +159,8 @@ fn kept<'a>(mirrors: &'a BTreeMap<String, Mirror>, end: &impl Fn(&str) -> Option
     let mut by_holder: BTreeMap<&str, Vec<(&str, &Mirror)>> = BTreeMap::new();
     for (key, m) in mirrors {
         let (Some(at), Some(holder)) = (m.ended_at, m.native.holder.as_deref()) else { continue };
-        if !super::screen::shows_terminal(m) {
-            continue; // not shared, or its terminal is not: its final screen is not shown either
+        if m.withheld() {
+            continue; // not shared: its final screen is not shown either
         }
         if end(holder).is_some_and(|exited| m.ended_at_ms.unwrap_or(at * 1000) + ENDED_WITH_MS >= exited) {
             by_holder.entry(holder).or_default().push((key, m));
@@ -194,7 +185,6 @@ pub(super) fn read_ack(ack: &Value) {
     if let Some((screens, reason)) = ack_features(ack) {
         READS_ENDED_SCREENS.store(screens, SeqCst);
         READS_TERMINAL_REASON.store(reason, SeqCst);
-        READS_FOLDER_REASON.store(lists_folder_reason(&ack["features"]), SeqCst);
     }
 }
 
@@ -244,20 +234,8 @@ fn add_screen_if(reads: bool, frame: &mut Value, mirrors: &BTreeMap<String, Mirr
 }
 
 /// A heartbeat entry's `terminalReason`, for a relay that reads it.
-pub(super) fn add_reason(entry: &mut Value, mirror: &Mirror) {
-    let reads = READS_TERMINAL_REASON.load(SeqCst);
-    match folder_reason(mirror, READS_FOLDER_REASON.load(SeqCst)) {
-        Some(reason) if reads => entry["terminalReason"] = json!(reason),
-        Some(_) => {}
-        None => add_reason_if(reads, entry, &mirror.native),
-    }
-}
-
-/// The reason a process that was running when its session became shared has no terminal; None
-/// for every other mirror. A relay that does not know the reason refuses the whole heartbeat
-/// over it, so it is told `unknown`.
-fn folder_reason(mirror: &Mirror, relay_reads_it: bool) -> Option<&'static str> {
-    mirror.terminal_withheld().then_some(if relay_reads_it { FOLDER_REASON } else { "unknown" })
+pub(super) fn add_reason(entry: &mut Value, native: &NativeSession) {
+    add_reason_if(READS_TERMINAL_REASON.load(SeqCst), entry, native);
 }
 
 fn add_reason_if(reads: bool, entry: &mut Value, native: &NativeSession) {
@@ -389,20 +367,6 @@ mod tests {
         m.ended_at = Some(at);
         m.ended_at_ms = Some(at * 1000);
         m
-    }
-
-    #[test]
-    fn a_process_that_ran_before_sharing_started_keeps_no_final_screen_and_names_why() {
-        let mut m = ended("aaaa0000", 10, "11111111-1111-4111-8111-111111111111");
-        m.no_terminal_for = Some(m.native.process.clone());
-        assert_eq!(folder_reason(&m, true), Some(FOLDER_REASON));
-        assert_eq!(folder_reason(&m, false), Some("unknown"), "an older relay refuses a reason it does not know");
-        let exited = |_: &str| Some(10_000u64);
-        assert!(kept(&BTreeMap::from([("k".to_owned(), m.clone())]), &exited).is_empty());
-        // Any other process: its final screen is kept and it has the usual reasons.
-        m.no_terminal_for = None;
-        assert_eq!(folder_reason(&m, true), None);
-        assert_eq!(kept(&BTreeMap::from([("k".to_owned(), m)]), &exited).len(), 1);
     }
 
     fn keys(kept: &[(&str, &Mirror)]) -> Vec<String> {
@@ -614,7 +578,6 @@ mod tests {
     #[test]
     fn the_new_fields_go_only_to_a_relay_that_lists_them() {
         // The pure halves: the statics are one connection's and other tests' heartbeats read them.
-        assert!(lists_folder_reason(&json!(["terminalReason", "terminalReasonFolder"])) && !lists_folder_reason(&json!(["terminalReason"])) && !lists_folder_reason(&Value::Null));
         assert_eq!(features(&json!(["sessionTerminal"])), (false, false));
         assert_eq!(features(&json!(["terminalReason", "endedScreens"])), (true, true));
         assert_eq!(features(&Value::Null), (false, false));

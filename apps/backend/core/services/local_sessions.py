@@ -27,10 +27,7 @@ from core.services.local_session_grants import AgentInvocation
 
 STATUSES = Literal["idle", "busy", "waiting-approval", "unknown", "offline", "ended"]
 # Why a running session has no live terminal, as its Mac says (spec 2026-10-07 §5.1).
-# "started-before-folder-approved": the process was already running when its session became
-# shared (its folder was approved mid-run), so its terminal is not shown; its next run's is.
-# A Mac sends it only to a relay that lists `terminalReasonFolder`.
-TerminalReason = Literal["plain", "no-daemon", "app", "sdk", "unknown", "started-before-folder-approved"]
+TerminalReason = Literal["plain", "no-daemon", "app", "sdk", "unknown"]
 # What a device may claim. `offline` is the backend's verdict on a lapsed lease and
 # `ended` is written by the ended frame; neither is ever a status the device reports.
 INPUT_STATUSES = Literal["idle", "busy", "waiting-approval", "unknown"]

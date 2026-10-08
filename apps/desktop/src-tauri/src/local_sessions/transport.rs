@@ -83,44 +83,6 @@ impl Rpc {
 /// checks the envelope size before validating, so the byte budget bites first.
 const HEARTBEAT_SESSIONS_MAX: usize = 24;
 
-/// `Host::outside` on disk, beside the mirrors (whose names are 64 hex characters).
-const OUTSIDE_FILE: &str = "outside.json";
-
-/// A session in `Host::outside`, by what both discovery and a hook can name: its provider and
-/// conversation. (Not the mirror key: that needs the profile, which a hook does not carry.
-/// Sharing covers default profiles only, so the pair names one session.)
-fn outside_key(provider: &str, conversation: &str) -> String {
-    format!("{provider}:{conversation}")
-}
-
-/// In `Host::outside`: when the markers were lost (unix secs). Never removed.
-const MARKERS_LOST: &str = "*";
-
-/// `outside.json` as `restore` takes it. Only a file that is not there is an empty list. One
-/// that cannot be read (malformed, wrong owner or mode, a read error) is unknown state: it is
-/// kept aside under another name, and the new list starts with `MARKERS_LOST`, so every session
-/// that is not mirrored and whose transcript already exists is shared from now on only.
-fn load_outside(dir: &Path) -> Result<BTreeMap<String, u64>> {
-    let path = dir.join(OUTSIDE_FILE);
-    if matches!(fs::symlink_metadata(&path), Err(error) if error.kind() == std::io::ErrorKind::NotFound) {
-        return Ok(BTreeMap::new());
-    }
-    let reason = match private_read(&path) {
-        Ok(outside) => return Ok(outside),
-        Err(reason) => reason,
-    };
-    let aside = dir.join(format!("outside.unreadable-{}.json", epoch_secs()));
-    let lost = BTreeMap::from([(MARKERS_LOST.to_owned(), epoch_secs())]);
-    // Renamed, not deleted, and out of the way of the new list.
-    let kept = fs::rename(&path, &aside).is_ok();
-    private_write(&path, &lost)?;
-    relay_log(&format!(
-        "outside.json unreadable ({reason}); {}. Sessions not yet shared start from now, not from their beginning",
-        if kept { "kept aside as outside.unreadable-*.json" } else { "it could not be moved aside" },
-    ));
-    Ok(lost)
-}
-
 /// Whether a folder this mirror is known to work in (its listing's, its last hook's) is outside
 /// the approved folders.
 fn outside_now(mirror: &Mirror, approved: &[PathBuf]) -> bool {
@@ -157,12 +119,6 @@ pub(super) struct Host {
     verify: Verify,
     /// The approved folders as they are now, canonical. A field so a test can name its own.
     approved: fn() -> Vec<PathBuf>,
-    /// Sessions last seen outside the approved folders (`outside_key` -> first seen, unix secs),
-    /// stored in `outside.json`. One of them found inside an approved folder later is shared
-    /// from that moment on, not from its transcript's start.
-    // ponytail: the oldest of 4096 is forgotten; a conversation forgotten that way and resumed
-    // inside an approved folder uploads from its start. Raise the cap if that ever happens.
-    outside: BTreeMap<String, u64>,
     /// The approved folders the last `folder_tick` saw; None before the first.
     approved_seen: Option<Vec<PathBuf>>,
 }
@@ -473,19 +429,9 @@ impl Host {
             let hook_outside = self.mirrors.get(&key).and_then(|m| m.hook_cwd.as_deref()).is_some_and(|cwd| !in_approved_folder(cwd, &approved));
             let shared = native.cwd.as_deref().map(|cwd| !hook_outside && in_approved_folder(cwd, &approved));
             if shared == Some(false) || (shared.is_none() && !self.mirrors.contains_key(&key)) {
-                // Unshared first: a marker that cannot be written must not leave it shared.
                 self.unshare(&key)?;
-                self.remember_outside(&outside_key(&native.provider, &native.conversation))?;
                 continue;
             }
-            // Approving a folder shares a session from that moment on and nothing earlier. The
-            // marker that says so is removed only once the mirror holding the cut-off is on disk
-            // (below): a failure or an exit in between leaves the marker, and the cut-off is
-            // simply taken again.
-            let marker = outside_key(&native.provider, &native.conversation);
-            let from_now = shared == Some(true)
-                && (self.outside.contains_key(&marker)
-                    || (!self.mirrors.contains_key(&key) && self.markers_lost_before(&native)));
             let before = self
                 .mirrors
                 .get(&key)
@@ -496,10 +442,17 @@ impl Host {
             let mut invalidate = before.is_none();
             let mut revived = false;
             if let Some(mirror) = self.mirrors.get_mut(&key) {
-                if shared == Some(true) && (mirror.unshared || from_now) {
+                if shared == Some(true) && mirror.unshared {
+                    // Its folder is approved (again): the whole session is shared, from where
+                    // its upload stopped. Nothing it wrote meanwhile was read, so nothing is
+                    // skipped and nothing is sent twice.
                     mirror.unshared = false;
-                    mirror.share_from_now(&native);
+                    // The end a removal left waiting on a register no longer applies.
+                    if mirror.deferred_end_reason.as_deref() == Some(FOLDER_NOT_APPROVED) {
+                        mirror.deferred_end_reason = None;
+                    }
                 }
+                let mut approved_again = false;
                 if mirror.ended_at.is_some() {
                     // The session is over: a hook or its own pid said so, and a
                     // listing cannot argue. Only a new process on the same identity
@@ -519,16 +472,21 @@ impl Host {
                         && native.job.is_none()
                         && claude::still_registered(&self.home, native.process.pid, &native.conversation);
                     // Its folder was approved again (this pass got past the folder check): the
-                    // same process is shared from now on, as a new generation.
-                    let approved_again = shared == Some(true) && mirror.ended_reason.as_deref() == Some(FOLDER_NOT_APPROVED);
+                    // session comes back as a new generation, as a resume does.
+                    approved_again = shared == Some(true) && mirror.ended_reason.as_deref() == Some(FOLDER_NOT_APPROVED);
+                    if approved_again {
+                        // Its end was reported without draining, so the relay takes nothing
+                        // more under the old generation. The batch in flight then is rebuilt
+                        // from the queue (which still holds its events) under the new one.
+                        mirror.pending = None;
+                    }
                     if mirror.native.process == native.process {
                         if !resumed_codex_activity && !returned_claude && !approved_again {
                             continue;
                         }
                         let next_generation = uuid::Uuid::new_v4().to_string();
-                        if mirror.registration.pending
-                            || mirror.pending.is_some()
-                            || !mirror.queue.is_empty()
+                        if !approved_again
+                            && (mirror.registration.pending || mirror.pending.is_some() || !mirror.queue.is_empty())
                         {
                             // Finish any old-generation register or event batch before
                             // promoting the resume generation.
@@ -546,7 +504,7 @@ impl Host {
                     mirror.ended_at = None;
                     mirror.ended_at_ms = None;
                     mirror.ended_reason = None;
-                    if native.provider == "codex" && native.status == "idle" {
+                    if !approved_again && native.provider == "codex" && native.status == "idle" {
                         // The turn completed between discovery sweeps: upload it, then
                         // finish the session instead of leaving a closed thread live.
                         mirror.deferred_end_reason = Some("exited".into());
@@ -605,7 +563,15 @@ impl Host {
                     if mirror.native.restriction.as_deref() != Some("history-gap") {
                         mirror.native.restriction = Some("runtime-unverified".into());
                     }
-                    mirror.advance();
+                    if approved_again {
+                        // As above: nothing more goes out under the generation whose end was
+                        // reported, so the successor is promoted now and the queue follows it.
+                        let unsent = std::mem::take(&mut mirror.queue);
+                        mirror.advance();
+                        mirror.queue = unsent;
+                    } else {
+                        mirror.advance();
+                    }
                 } else {
                     mirror.registration.successor = None;
                     mirror.native = native;
@@ -636,7 +602,6 @@ impl Host {
                         ended_reason: None,
                         ended_sent: false,
                         unshared: false,
-                        no_terminal_for: None,
                         hook_cwd: None,
                         waiting: None,
                         stats: Default::default(),
@@ -649,11 +614,6 @@ impl Host {
                 self.ended_pending.retain(|pending| pending != &key);
             }
             let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
-            if from_now && before.is_none() {
-                // Never shared before: what it wrote outside the approved folders stays unread.
-                let current = mirror.native.clone();
-                mirror.share_from_now(&current);
-            }
             if start_links::bind(&scope, &mirror.native, &mirror.generation)? {
                 invalidate = true;
             }
@@ -679,9 +639,6 @@ impl Host {
                 }
                 mirror.persist(&self.dir.join(format!("{key}.json")))?;
             }
-            if from_now {
-                self.forget_outside(&marker)?;
-            }
         }
         self.heartbeat_dirty.extend(heartbeat);
         for key in moved {
@@ -702,15 +659,14 @@ impl Host {
         if self.approved_seen.as_ref() == Some(&approved) {
             return Ok(());
         }
-        let outside: Vec<(String, String)> = self
+        let outside: Vec<String> = self
             .mirrors
             .iter()
             .filter(|(_, m)| !m.unshared && outside_now(m, &approved))
-            .map(|(key, m)| (key.clone(), outside_key(&m.native.provider, &m.native.conversation)))
+            .map(|(key, _)| key.clone())
             .collect();
-        for (key, marker) in outside {
+        for key in outside {
             self.unshare(&key)?;
-            self.remember_outside(&marker)?;
         }
         self.approved_seen = Some(approved);
         if let Some(wake) = &self.rediscover {
@@ -721,14 +677,14 @@ impl Host {
 
     /// A hook, before anything else reads it. It names the folder the conversation works in
     /// right now, which a listing learns up to a minute later.
-    /// - From outside the approved folders: every mirror of the conversation is unshared here
-    ///   and now (a Codex turn can move a shared thread to another folder), and the session is
-    ///   recorded as outside (`outside_key` is all a hook can name), so a folder approved before
-    ///   any discovery pass still shares it from that moment on only. No pass is woken: each
-    ///   such hook would run one for nothing.
+    /// - From outside the approved folders, or unable to say where it ran (its datagram was too
+    ///   large even with everything else dropped) while the conversation is mirrored: every
+    ///   mirror of the conversation is unshared here and now. A Codex turn can move a shared
+    ///   thread to another folder. A hook from inside, or a listing inside, shares it again.
     /// - Otherwise, for a session with no shared mirror, a pass is woken: a turn can start and
     ///   finish before discovery first sees its session (a Codex rollout appears only with the
-    ///   first prompt), and its events would land on nothing until the 60s sweep.
+    ///   first prompt), and its events would land on nothing until the 60s sweep. Not for a hook
+    ///   from outside: each one would run a pass for nothing.
     fn hook_seen(&mut self, event: &lifecycle::HookEvent) -> Result<()> {
         let provider = match event.provider {
             lifecycle::Provider::Claude => "claude",
@@ -744,12 +700,7 @@ impl Host {
             .collect();
         let outside = match cwd.as_deref() {
             Some(cwd) => !in_approved_folder(cwd, &approved),
-            // A hook that could not carry its folder (its datagram was too large even with
-            // everything else dropped) is not a hook from inside: a mirrored session may have
-            // moved, and one not mirrored yet may be running outside. Either is treated as
-            // outside, and the pass woken below shares it, from then on, if its listing names an
-            // approved folder.
-            None => true,
+            None => !keys.is_empty(),
         };
         let mut shared = false;
         for key in &keys {
@@ -765,16 +716,8 @@ impl Host {
                 self.unshare(key)?;
             }
         }
-        if outside {
-            self.remember_outside(&outside_key(provider, &event.session_id))?;
-            if cwd.is_none() {
-                if let Some(wake) = &self.rediscover {
-                    wake.notify_one();
-                }
-            }
-            return Ok(());
-        }
-        if !shared {
+        // (A hook that could not say where it ran: the listing decides, so it is asked now.)
+        if (!outside && !shared) || cwd.is_none() {
             if let Some(wake) = &self.rediscover {
                 wake.notify_one();
             }
@@ -796,58 +739,12 @@ impl Host {
             .is_some_and(|m| self.refuses_input(m))
     }
 
-    /// The markers were lost (`restore` could not read `outside.json`), and this session's
-    /// transcript was already there when they were: whether it was outside is not known, so it
-    /// is shared from now on only, never from its beginning.
-    fn markers_lost_before(&self, native: &NativeSession) -> bool {
-        let Some(lost) = self.outside.get(MARKERS_LOST) else {
-            return false;
-        };
-        native.transcript.as_deref().is_some_and(|path| {
-            fs::metadata(path)
-                .and_then(|meta| meta.created())
-                .ok()
-                .and_then(|born| born.duration_since(SystemTime::UNIX_EPOCH).ok())
-                .is_none_or(|born| born.as_secs() <= *lost)
-        })
-    }
-
-    /// Durable before it counts: the list on disk is written first, and memory follows only
-    /// when that worked, so a failed write is retried by the next pass or hook instead of
-    /// being forgotten at the next restart.
-    fn remember_outside(&mut self, marker: &str) -> Result<()> {
-        if self.outside.contains_key(marker) {
-            return Ok(());
-        }
-        let mut next = self.outside.clone();
-        if next.len() >= 4096 {
-            if let Some(oldest) = next.iter().filter(|(key, _)| *key != MARKERS_LOST).min_by_key(|(_, seen)| **seen).map(|(key, _)| key.clone()) {
-                next.remove(&oldest);
-            }
-        }
-        next.insert(marker.to_owned(), epoch_secs());
-        private_write(&self.dir.join(OUTSIDE_FILE), &next)?;
-        self.outside = next;
-        Ok(())
-    }
-
-    /// Whether this session was last seen outside the approved folders; it is not any more.
-    /// A failed write leaves the marker in place, so the caller does not share the session yet.
-    fn forget_outside(&mut self, marker: &str) -> Result<bool> {
-        if !self.outside.contains_key(marker) {
-            return Ok(false);
-        }
-        let mut next = self.outside.clone();
-        next.remove(marker);
-        private_write(&self.dir.join(OUTSIDE_FILE), &next)?;
-        self.outside = next;
-        Ok(true)
-    }
-
     /// The folder check failed for this session. Sharing stops here, not at the relay's end
     /// acknowledgment: from this call the mirror uploads and registers nothing, takes no command
     /// or typed input, and its terminal relay is stopped. Then it ends on the one end path. Called
     /// again on every pass while the folder stays unapproved, so nothing can undo it for long.
+    /// The mirror keeps its cursor and its queue: when the folder is approved, sharing goes on
+    /// from there and the workspace has the whole session.
     fn unshare(&mut self, key: &str) -> Result<()> {
         let Some(mirror) = self.mirrors.get_mut(key) else {
             return Ok(());
@@ -1336,9 +1233,7 @@ impl Host {
             }
             mirrors.insert(key.into(), mirror);
         }
-        let outside = load_outside(&dir)?;
         let mut host = Self {
-            outside,
             approved_seen: None,
             workspace_at: Instant::now() - Duration::from_secs(30),
             workspace_key: None,
@@ -2881,8 +2776,8 @@ fn device_heartbeats_with_controls(
             entry["capabilities"] = json!({"sendMode":"queue","steer":live,"interrupt":live});
         }
         if terminal {
-            entry["terminal"] = json!(m.terminal());
-            super::session_states::add_reason(&mut entry, m);
+            entry["terminal"] = json!(m.native.terminal());
+            super::session_states::add_reason(&mut entry, &m.native);
         }
         if ascii_wire_len(&envelope(std::slice::from_ref(&entry)))? > 16384 {
             // One session too big to travel even alone would make every frame it
@@ -3167,7 +3062,7 @@ pub(super) mod tests {
         host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
         assert!(host.mirrors[&key].ended_at.is_some());
 
-        // Approved again: the same process is shared from now on, as a new generation.
+        // Approved again: the same process is shared again, as a new generation.
         approve(&[&approved]);
         let old = host.mirrors[&key].generation.clone();
         assert_eq!(host.observe(vec![native], &BTreeSet::new()).unwrap(), vec![key.clone()]);
@@ -3196,87 +3091,6 @@ pub(super) mod tests {
     fn append(path: &Path, text: &str) {
         use std::io::Write as _;
         fs::OpenOptions::new().append(true).open(path).unwrap().write_all(text.as_bytes()).unwrap();
-    }
-
-    #[test]
-    fn local_sessions_a_folder_approved_again_shares_only_what_is_written_from_then_on() {
-        let dir = tempfile::tempdir().unwrap();
-        let approved = dir.path().join("approved");
-        fs::create_dir_all(&approved).unwrap();
-        approve(&[&approved]);
-        let mut native = observed_fixture(dir.path());
-        native.cwd = Some(approved.clone());
-        let transcript = native.transcript.clone().unwrap();
-        let key = native_key(&native);
-        let mut host = test_host(dir.path(), vec![]);
-        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
-        host.mirrors.get_mut(&key).unwrap().session_id = Some(SID.into());
-
-        approve(&[]);
-        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
-        append(&transcript, &assistant_row("PRIVATE written while the folder was not approved"));
-
-        approve(&[&approved]);
-        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
-        let mirror = host.mirrors.get_mut(&key).unwrap();
-        assert!(!mirror.unshared && mirror.ended_at.is_none());
-        assert_eq!(mirror.cursor.offset, fs::metadata(&transcript).unwrap().len(), "everything written so far is taken as read");
-        assert!(mirror.queue.is_empty() && mirror.pending.is_none(), "and nothing read earlier waits to be sent");
-        assert_eq!(mirror.no_terminal_for.as_ref(), Some(&native.process), "the process that was running gets no live terminal");
-        append(&transcript, &assistant_row("written after it was approved again"));
-        let batch = mirror.next_batch().unwrap().expect("the new row is uploaded").to_string();
-        assert!(batch.contains("written after it was approved again"));
-        assert!(!batch.contains("PRIVATE") && !batch.contains("short-lived"), "{batch}");
-    }
-
-    #[test]
-    fn local_sessions_a_session_never_shared_starts_at_the_moment_its_folder_is_approved() {
-        let dir = tempfile::tempdir().unwrap();
-        let folder = dir.path().join("scratch");
-        fs::create_dir_all(&folder).unwrap();
-        approve(&[]);
-        let mut native = observed_fixture(dir.path());
-        native.cwd = Some(folder.clone());
-        let transcript = native.transcript.clone().unwrap();
-        let key = native_key(&native);
-        let mut host = test_host(dir.path(), vec![]);
-        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
-        assert!(host.mirrors.is_empty() && host.outside.contains_key(&outside_key("claude", "s")), "remembered as outside, not mirrored");
-
-        approve(&[&folder]);
-        assert_eq!(host.observe(vec![native], &BTreeSet::new()).unwrap(), vec![key.clone()]);
-        assert!(host.outside.is_empty());
-        let mirror = host.mirrors.get_mut(&key).unwrap();
-        assert_eq!(mirror.cursor.offset, fs::metadata(&transcript).unwrap().len());
-        assert!(mirror.queue.is_empty(), "what it wrote before the approval stays unread");
-        mirror.session_id = Some(SID.into());
-        assert_eq!(mirror.next_batch().unwrap(), None);
-    }
-
-    #[test]
-    fn local_sessions_a_conversation_resumed_while_unshared_is_cut_off_at_its_new_process() {
-        let dir = tempfile::tempdir().unwrap();
-        let approved = dir.path().join("approved");
-        fs::create_dir_all(&approved).unwrap();
-        approve(&[&approved]);
-        let mut native = test_native(SID);
-        native.cwd = Some(approved.clone());
-        let key = native_key(&native);
-        let mut host = test_host(dir.path(), vec![]);
-        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
-        approve(&[]);
-        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
-        // Resumed in another process while its folder is not approved: still not shared.
-        let mut resumed = native.clone();
-        resumed.process.birth_micros += 1;
-        host.observe(vec![resumed.clone()], &BTreeSet::new()).unwrap();
-        assert!(host.mirrors[&key].ended_at.is_some() && host.mirrors[&key].unshared);
-        approve(&[&approved]);
-        host.observe(vec![resumed.clone()], &BTreeSet::new()).unwrap();
-        let mirror = &host.mirrors[&key];
-        assert!(mirror.ended_at.is_none() && !mirror.unshared);
-        assert_eq!(mirror.native.process, resumed.process);
-        assert_eq!(mirror.no_terminal_for.as_ref(), Some(&resumed.process), "the process running at approval is the one without a terminal");
     }
 
     #[test]
@@ -3325,63 +3139,10 @@ pub(super) mod tests {
         let mirror = host.mirrors.get_mut(&key).unwrap();
         assert!(mirror.unshared && mirror.ended_at.is_some());
         assert_eq!(mirror.next_batch().unwrap(), None, "nothing is uploaded");
-        assert!(host.outside.contains_key(&outside_key("codex", SID)), "and a later approval shares it from then on only");
         let send = json!({"type":"local.session.command","command":{"requestId":"r1","expectedGeneration":"g1","kind":"send","text":"hello",
             "expectedTurnId":null,"sessionId":"s1","roomId":"","actorUserId":"alice","commandSeq":1,"state":"dispatched","createdAt":100,"deliverBy":130,"held":false,"providerMessageId":null}});
         let command = parse_command(&send, "alice").unwrap();
         assert_eq!(host.command(&command, None).await.unwrap().outcome, "rejected");
-    }
-
-    #[test]
-    fn local_sessions_a_hook_from_outside_marks_the_session_before_any_discovery_pass() {
-        let dir = tempfile::tempdir().unwrap();
-        let folder = dir.path().join("scratch");
-        fs::create_dir_all(&folder).unwrap();
-        approve(&[]);
-        let mut native = observed_fixture(dir.path());
-        native.cwd = Some(folder.clone());
-        let transcript = native.transcript.clone().unwrap();
-        let key = native_key(&native);
-        let mut host = test_host(dir.path(), vec![]);
-        // Its start hook arrives; no discovery pass has seen the session.
-        let mut started = hook(lifecycle::Provider::Claude, "SessionStart", "s");
-        started.cwd = Some(folder.to_string_lossy().into_owned());
-        host.hook_seen(&started).unwrap();
-        assert!(host.outside.contains_key(&outside_key("claude", "s")));
-        // The folder is approved before the first pass: shared from now, not from its start.
-        approve(&[&folder]);
-        host.observe(vec![native], &BTreeSet::new()).unwrap();
-        let mirror = &host.mirrors[&key];
-        assert_eq!(mirror.cursor.offset, fs::metadata(&transcript).unwrap().len());
-        assert!(mirror.queue.is_empty());
-        // A hook from inside an approved folder marks nothing.
-        let mut inside = hook(lifecycle::Provider::Claude, "SessionStart", "other");
-        inside.cwd = Some(folder.to_string_lossy().into_owned());
-        host.hook_seen(&inside).unwrap();
-        assert!(host.outside.is_empty());
-    }
-
-    #[test]
-    fn local_sessions_an_outside_marker_counts_only_once_it_is_on_disk() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut host = test_host(dir.path(), vec![]);
-        let file = dir.path().join(OUTSIDE_FILE);
-        // The write fails (something else is in the file's place).
-        fs::create_dir(&file).unwrap();
-        assert!(host.remember_outside("codex:a").is_err());
-        assert!(host.outside.is_empty(), "not remembered in memory alone: the next pass tries again");
-        fs::remove_dir(&file).unwrap();
-        host.remember_outside("codex:a").unwrap();
-        let stored: BTreeMap<String, u64> = private_read(&file).unwrap();
-        assert!(stored.contains_key("codex:a"));
-        // Forgetting fails the same way: the marker stays, so the session is not shared yet.
-        fs::remove_file(&file).unwrap();
-        fs::create_dir(&file).unwrap();
-        assert!(host.forget_outside("codex:a").is_err());
-        assert!(host.outside.contains_key("codex:a"));
-        fs::remove_dir(&file).unwrap();
-        assert!(host.forget_outside("codex:a").unwrap());
-        assert!(host.outside.is_empty());
     }
 
     #[test]
@@ -3403,11 +3164,10 @@ pub(super) mod tests {
         host.hook_seen(&turn).unwrap();
         assert!(host.mirrors[&key].unshared && host.mirrors[&key].ended_at.is_some(), "unshared by the hook, no pass needed");
         assert_eq!(host.apply_hook(&turn).unwrap(), None, "and the hook itself moves nothing");
-        assert!(host.outside.contains_key(&outside_key("codex", SID)));
         // A listing that still names the old folder does not bring it back.
         host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
         assert!(host.mirrors[&key].unshared);
-        // Back in the approved folder: shared again, from then on.
+        // Back in the approved folder: shared again.
         turn.cwd = Some(approved.to_string_lossy().into_owned());
         host.hook_seen(&turn).unwrap();
         host.observe(vec![native], &BTreeSet::new()).unwrap();
@@ -3438,69 +3198,6 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn local_sessions_the_outside_marker_outlives_a_cut_off_that_was_not_stored() {
-        let dir = tempfile::tempdir().unwrap();
-        let folder = dir.path().join("scratch");
-        fs::create_dir_all(&folder).unwrap();
-        approve(&[]);
-        let mut native = observed_fixture(dir.path());
-        native.cwd = Some(folder.clone());
-        let transcript = native.transcript.clone().unwrap();
-        let key = native_key(&native);
-        let marker = outside_key("claude", "s");
-        let mut host = test_host(dir.path(), vec![]);
-        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
-        approve(&[&folder]);
-        // The mirror cannot be written (something else is in its file's place).
-        let file = dir.path().join(format!("{key}.json"));
-        fs::create_dir(&file).unwrap();
-        assert!(host.observe(vec![native.clone()], &BTreeSet::new()).is_err());
-        assert!(host.outside.contains_key(&marker), "no cut-off on disk: the marker stays");
-        let stored: BTreeMap<String, u64> = private_read(&dir.path().join(OUTSIDE_FILE)).unwrap();
-        assert!(stored.contains_key(&marker), "on disk too, for a restart before the retry");
-        fs::remove_dir(&file).unwrap();
-        host.observe(vec![native], &BTreeSet::new()).unwrap();
-        assert!(!host.outside.contains_key(&marker));
-        assert_eq!(host.mirrors[&key].cursor.offset, fs::metadata(&transcript).unwrap().len());
-        assert!(host.mirrors[&key].queue.is_empty());
-    }
-
-    #[test]
-    fn local_sessions_unreadable_outside_markers_mean_from_now_never_from_the_beginning() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join(OUTSIDE_FILE);
-        assert!(load_outside(dir.path()).unwrap().is_empty(), "a file that is not there is an empty list");
-        private_write(&file, &BTreeMap::from([("codex:a".to_owned(), 1u64)])).unwrap();
-        assert!(load_outside(dir.path()).unwrap().contains_key("codex:a"));
-        fs::write(&file, "not json").unwrap();
-        let lost = load_outside(dir.path()).unwrap();
-        assert!(lost.contains_key(MARKERS_LOST) && lost.len() == 1);
-        let names: Vec<String> = fs::read_dir(dir.path()).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
-        assert!(names.iter().any(|n| n.starts_with("outside.unreadable-")), "kept aside, not deleted: {names:?}");
-        assert!(load_outside(dir.path()).unwrap().contains_key(MARKERS_LOST), "the new list is readable and still says so");
-
-        // A session not yet mirrored whose transcript was already there: from now.
-        let folder = dir.path().join("approved");
-        fs::create_dir_all(&folder).unwrap();
-        approve(&[&folder]);
-        let mut native = observed_fixture(dir.path());
-        native.cwd = Some(folder);
-        let transcript = native.transcript.clone().unwrap();
-        let key = native_key(&native);
-        let mut host = test_host(dir.path(), vec![]);
-        host.outside = BTreeMap::from([(MARKERS_LOST.to_owned(), u64::MAX)]);
-        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
-        assert_eq!(host.mirrors[&key].cursor.offset, fs::metadata(&transcript).unwrap().len());
-        assert!(host.mirrors[&key].queue.is_empty());
-        assert!(host.outside.contains_key(MARKERS_LOST), "never forgotten");
-        // One whose transcript began after the loss is read from its start as usual.
-        let mut later = test_host(dir.path(), vec![]);
-        later.outside = BTreeMap::from([(MARKERS_LOST.to_owned(), 0)]);
-        later.observe(vec![native], &BTreeSet::new()).unwrap();
-        assert!(!later.mirrors[&key].queue.is_empty());
-    }
-
-    #[test]
     fn local_sessions_a_hook_without_its_folder_is_not_a_hook_from_inside() {
         let dir = tempfile::tempdir().unwrap();
         let approved = dir.path().join("approved");
@@ -3521,73 +3218,102 @@ pub(super) mod tests {
         assert!(host.refuses_input(&host.mirrors[&key]), "nothing reaches it");
         assert!(host.refuses_frame(&json!({"type":"local.session.screen","sessionId":SID})), "no terminal frame of it is sent");
         assert_eq!(host.mirrors.get_mut(&key).unwrap().next_batch().unwrap(), None, "and nothing is uploaded");
-        // The listing names an approved folder: shared again, from then on.
+        // The listing names an approved folder: shared again, with what was waiting to be sent.
         host.observe(vec![native], &BTreeSet::new()).unwrap();
         let mirror = &host.mirrors[&key];
-        assert!(!mirror.unshared && mirror.ended_at.is_none() && mirror.queue.is_empty());
+        assert!(!mirror.unshared && mirror.ended_at.is_none() && mirror.queue.len() == 1);
         assert!(!host.refuses_input(mirror));
     }
 
     #[test]
-    fn local_sessions_a_first_hook_without_its_folder_marks_a_session_not_yet_mirrored() {
+    fn local_sessions_a_session_first_seen_outside_is_shared_from_its_beginning_once_its_folder_is_approved() {
         let dir = tempfile::tempdir().unwrap();
         let folder = dir.path().join("scratch");
         fs::create_dir_all(&folder).unwrap();
         approve(&[]);
         let mut native = observed_fixture(dir.path());
         native.cwd = Some(folder.clone());
-        let transcript = native.transcript.clone().unwrap();
         let key = native_key(&native);
         let mut host = test_host(dir.path(), vec![]);
-        // Its first hook is too large to carry the folder; no pass has seen the session.
-        let mut started = hook(lifecycle::Provider::Claude, "SessionStart", "s");
-        started.cwd = None;
-        host.hook_seen(&started).unwrap();
-        assert!(host.outside.contains_key(&outside_key("claude", "s")), "where it runs is not known: not from its beginning");
-        // The folder is approved before the pass that hook woke has run.
+        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
+        assert!(host.mirrors.is_empty(), "outside: not mirrored, and nothing about it is kept");
+        // Approving the folder is the consent to share that session: all of it.
         approve(&[&folder]);
-        host.observe(vec![native], &BTreeSet::new()).unwrap();
-        assert_eq!(host.mirrors[&key].cursor.offset, fs::metadata(&transcript).unwrap().len());
-        assert!(host.mirrors[&key].queue.is_empty());
+        assert_eq!(host.observe(vec![native], &BTreeSet::new()).unwrap(), vec![key.clone()]);
+        let mirror = host.mirrors.get_mut(&key).unwrap();
+        mirror.session_id = Some(SID.into());
+        let batch = mirror.next_batch().unwrap().expect("its history is uploaded").to_string();
+        assert!(batch.contains("short-lived public output"), "from the transcript's first row: {batch}");
     }
 
     #[test]
-    fn local_sessions_a_process_running_when_its_folder_is_approved_has_no_terminal_and_its_next_run_does() {
+    fn local_sessions_a_folder_removed_and_approved_again_shares_everything_written_meanwhile_exactly_once() {
         let dir = tempfile::tempdir().unwrap();
-        let folder = dir.path().join("scratch");
-        fs::create_dir_all(&folder).unwrap();
-        approve(&[]);
-        // A held session (its terminal is Lightbulb's) seen outside the approved folders.
-        let mut native = test_native(SID);
-        native.cwd = Some(folder.clone());
+        let approved = dir.path().join("approved");
+        fs::create_dir_all(&approved).unwrap();
+        approve(&[&approved]);
+        let mut native = observed_fixture(dir.path());
+        native.cwd = Some(approved.clone());
         native.holder = Some("ab12cd34".into());
+        let transcript = native.transcript.clone().unwrap();
         let key = native_key(&native);
         let mut host = test_host(dir.path(), vec![]);
         host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
-        approve(&[&folder]);
-        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
+        // Its first row is uploaded and acknowledged while the folder is approved.
         let mirror = host.mirrors.get_mut(&key).unwrap();
         mirror.session_id = Some(SID.into());
-        // Shared, and told to the workspace as a session with no terminal.
-        assert!(!mirror.withheld() && mirror.terminal_withheld());
-        assert_eq!((mirror.native.terminal(), mirror.terminal()), ("held", "none"));
-        assert!(!super::super::screen::shows_terminal(mirror), "nothing indexes it: no relay, snapshot, history, typed input or kept screen");
+        let first = mirror.next_batch().unwrap().unwrap();
+        let sent = first["afterSeq"].as_u64().unwrap() + first["events"].as_array().unwrap().len() as u64;
+        assert!(mirror.acknowledge(first["batchId"].as_str().unwrap(), sent).unwrap());
+
+        approve(&[]);
+        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
+        append(&transcript, &assistant_row("written while the folder was not approved"));
+        let mirror = host.mirrors.get_mut(&key).unwrap();
+        assert!(mirror.withheld() && mirror.ended_at.is_some());
+        assert_eq!(mirror.next_batch().unwrap(), None, "nothing is uploaded while it is not approved");
+
+        // Approved again: the session is back, its terminal with it, and the rows written
+        // meanwhile are uploaded; the row the workspace already has is not sent again.
+        approve(&[&approved]);
+        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
         let registered = BTreeSet::from([key.clone()]);
         let frames = device_heartbeats_with_controls(&host.mirrors, &registered, false, false, false, false, true, false, false, false, false).unwrap();
-        assert_eq!(frames[0]["sessions"][0]["terminal"], "none");
-        assert!(!host.refuses_input(&host.mirrors[&key]), "commands still reach it: the session is shared");
+        assert_eq!(frames[0]["sessions"][0]["terminal"], "held", "its live terminal is told to the workspace again");
+        let mirror = host.mirrors.get_mut(&key).unwrap();
+        assert!(!mirror.withheld() && mirror.ended_at.is_none());
+        let batch = mirror.next_batch().unwrap().expect("the rest is uploaded").to_string();
+        assert!(batch.contains("written while the folder was not approved"), "{batch}");
+        assert!(!batch.contains("short-lived public output"), "already acknowledged, not sent twice: {batch}");
+        assert_eq!(mirror.cursor.offset, fs::metadata(&transcript).unwrap().len(), "and nothing is left unread");
+    }
 
-        // An app restart reads the same mirror back: the same process still has no terminal.
-        let stored: Mirror = serde_json::from_value(serde_json::to_value(&host.mirrors[&key]).unwrap()).unwrap();
-        assert!(stored.terminal_withheld() && stored.terminal() == "none");
-
-        // Its next run (a resume: another process on the conversation) has its terminal.
-        let mut next = native;
-        next.process.birth_micros += 1;
-        host.observe(vec![next.clone()], &BTreeSet::new()).unwrap();
+    #[test]
+    fn local_sessions_a_conversation_resumed_while_unshared_comes_back_whole_when_its_folder_is_approved() {
+        let dir = tempfile::tempdir().unwrap();
+        let approved = dir.path().join("approved");
+        fs::create_dir_all(&approved).unwrap();
+        approve(&[&approved]);
+        let mut native = test_native(SID);
+        native.cwd = Some(approved.clone());
+        let key = native_key(&native);
+        let mut host = test_host(dir.path(), vec![]);
+        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
+        // Read, not yet sent, when the folder leaves the list.
+        host.mirrors.get_mut(&key).unwrap().queue.push(json!({"text": "not yet sent"}));
+        approve(&[]);
+        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
+        // Resumed in another process while its folder is not approved: still not shared.
+        let mut resumed = native.clone();
+        resumed.process.birth_micros += 1;
+        host.observe(vec![resumed.clone()], &BTreeSet::new()).unwrap();
+        assert!(host.mirrors[&key].ended_at.is_some() && host.mirrors[&key].unshared);
+        approve(&[&approved]);
+        host.observe(vec![resumed.clone()], &BTreeSet::new()).unwrap();
         let mirror = &host.mirrors[&key];
-        assert_eq!(mirror.native.process, next.process);
-        assert!(!mirror.terminal_withheld() && mirror.terminal() == "held" && super::super::screen::shows_terminal(mirror));
+        assert!(mirror.ended_at.is_none() && !mirror.withheld());
+        assert_eq!(mirror.native.process, resumed.process, "the process that runs it now");
+        assert_eq!(mirror.queue.len(), 1, "what was waiting is still to be sent");
     }
 
     #[test]
@@ -3737,7 +3463,6 @@ pub(super) mod tests {
             ended_reason: None,
             ended_sent: false,
             unshared: false,
-            no_terminal_for: None,
             hook_cwd: None,
             waiting: None,
             stats: Default::default(),
@@ -3793,7 +3518,6 @@ pub(super) mod tests {
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
             approved: anywhere,
-            outside: BTreeMap::new(),
             approved_seen: None,
         }
     }
@@ -5573,7 +5297,6 @@ pub(super) mod tests {
             ended_reason: None,
             ended_sent: false,
             unshared: false,
-            no_terminal_for: None,
             hook_cwd: None,
             waiting: None,
             stats: Default::default(),
@@ -5594,7 +5317,6 @@ pub(super) mod tests {
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
             approved: anywhere,
-            outside: BTreeMap::new(),
             approved_seen: None,
         };
         let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
@@ -5650,7 +5372,6 @@ pub(super) mod tests {
             ended_reason: None,
             ended_sent: false,
             unshared: false,
-            no_terminal_for: None,
             hook_cwd: None,
             waiting: None,
             stats: Default::default(),
@@ -5777,7 +5498,6 @@ pub(super) mod tests {
             ended_reason: None,
             ended_sent: false,
             unshared: false,
-            no_terminal_for: None,
             hook_cwd: None,
             waiting: None,
             stats: Default::default(),
@@ -5798,7 +5518,6 @@ pub(super) mod tests {
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
             approved: anywhere,
-            outside: BTreeMap::new(),
             approved_seen: None,
         };
         let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
@@ -6502,7 +6221,6 @@ pub(super) mod tests {
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
             approved: anywhere,
-            outside: BTreeMap::new(),
             approved_seen: None,
         };
         let enrollment = Enrollment {

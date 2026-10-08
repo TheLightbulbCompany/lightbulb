@@ -590,7 +590,7 @@ impl Journal {
                         return Err("partial transcript boundary".into());
                     }
                 }
-                Cursor { offset: meta.len(), inode: Some(meta.ino()), skip_row: false, from_end: false }
+                Cursor { offset: meta.len(), inode: Some(meta.ino()) }
             }
         };
         receipt.ingress = Some(Ingress {
@@ -634,32 +634,6 @@ impl Journal {
 struct Cursor {
     offset: u64,
     inode: Option<u64>,
-    /// `offset` is inside a row (`cursor_at_end` found one being written): that row is not
-    /// read. Everything up to and including its newline is skipped first.
-    #[serde(default)]
-    skip_row: bool,
-    /// No position was taken yet (the file could not be read when sharing started, or was not
-    /// known): the first read that can takes the file's end then, and returns nothing. So a
-    /// failure can only move the start later, never back to the beginning.
-    #[serde(default)]
-    from_end: bool,
-}
-
-impl Cursor {
-    /// A cursor that will start at whatever is the file's end when it is first read.
-    fn at_first_read() -> Self {
-        Self { from_end: true, ..Self::default() }
-    }
-
-    /// Moves to `file`'s current end: nothing that is there is read, nor the row being written.
-    fn take_end(&mut self, file: &mut fs::File, meta: &fs::Metadata) {
-        let len = meta.len();
-        let mut last = [0u8];
-        // Unreadable last byte: taken as inside a row.
-        let whole = len == 0
-            || (file.seek(SeekFrom::Start(len - 1)).is_ok() && file.read_exact(&mut last).is_ok() && last[0] == b'\n');
-        *self = Self { offset: len, inode: Some(meta.ino()), skip_row: !whole, from_end: false };
-    }
 }
 
 #[derive(Deserialize)]
@@ -685,10 +659,6 @@ impl Cursor {
     fn read(&mut self, path: &Path, provider: &str) -> Result<Vec<Value>> {
         let mut file = secure_file(path)?;
         let meta = file.metadata().map_err(|e| e.to_string())?;
-        if self.from_end {
-            self.take_end(&mut file, &meta);
-            return Ok(vec![]);
-        }
         if self.inode.is_some_and(|i| i != meta.ino()) || meta.len() < self.offset {
             return Err("history-gap".into());
         }
@@ -698,19 +668,6 @@ impl Cursor {
         let mut reader = BufReader::new(file);
         let mut rows = vec![];
         let mut consumed = 0;
-        // The row that was being written when sharing started: none of it is read, whenever
-        // its end arrives.
-        while self.skip_row {
-            let available = reader.fill_buf().map_err(|e| e.to_string())?;
-            if available.is_empty() {
-                return Ok(rows);
-            }
-            let end = available.iter().position(|byte| *byte == b'\n');
-            let taken = end.map_or(available.len(), |at| at + 1);
-            reader.consume(taken);
-            self.offset += taken as u64;
-            self.skip_row = end.is_none();
-        }
         while consumed < 65536 && rows.len() < 32 {
             let mut bytes = vec![];
             let n = (&mut reader)
@@ -1084,7 +1041,7 @@ impl NativeSession {
 }
 
 /// The local end reason of a session whose folder is not approved (any more). The relay is
-/// told a plain `exited`; nothing of the session is uploaded after it.
+/// told a plain `exited`. Approving the folder again brings the session back.
 const FOLDER_NOT_APPROVED: &str = "folder-not-approved";
 
 /// Whether a session working in `cwd` may be shared: the folder, resolved the way file access
@@ -1551,19 +1508,14 @@ struct Mirror {
     deferred_end_reason: Option<String>,
     #[serde(default)]
     pub ended_reason: Option<String>,
-    /// Its folder is not an approved folder (any more). Only the discovery pass that checks the
-    /// folder sets or clears this; no hook, acknowledgment or resume does. While it is set
-    /// nothing of the session is read or uploaded, it registers nothing, and it takes no
-    /// command, no typed input and no viewer.
+    /// Its folder is not an approved folder (any more). Only the folder checks set or clear
+    /// this (a discovery pass, the tick that sees the list change, a hook that names another
+    /// folder); no acknowledgment or resume does. While it is set nothing of the session is read
+    /// or uploaded, it registers nothing, and it takes no command, no typed input and no viewer.
+    /// Nothing is thrown away: when the folder is approved, the whole session is shared, from
+    /// where its upload stopped.
     #[serde(default)]
     unshared: bool,
-    /// The process that was already running when sharing started (again) for this session
-    /// (`share_from_now`). A terminal's screen and scrollback carry no time, so what that
-    /// process's terminal shows cannot be cut at that moment: it has no live terminal at all, for
-    /// as long as it runs (`terminal_withheld`). Its conversation is shared from that moment
-    /// on. The next process on the conversation (a resume) has its terminal as usual.
-    #[serde(default)]
-    no_terminal_for: Option<Process>,
     /// The folder this conversation's last hook ran in. A session can move (a Codex turn in
     /// another folder) between two listings; a hook says so at once. It must be approved too.
     #[serde(default)]
@@ -1693,20 +1645,6 @@ struct RegistrationState {
     successor: Option<NativeSession>,
 }
 
-/// A cursor at `path`'s current end: nothing that is already there is ever read. When the file
-/// ends inside a row (one is being written right now), that whole row is skipped too: part of
-/// it was written before this moment. A file that cannot be read now gets a cursor that takes
-/// its end at the first read that can: later than this moment, never the beginning.
-fn cursor_at_end(path: &Path) -> Cursor {
-    let mut cursor = Cursor::at_first_read();
-    if let Ok(mut file) = secure_file(path) {
-        if let Ok(meta) = file.metadata() {
-            cursor.take_end(&mut file, &meta);
-        }
-    }
-    cursor
-}
-
 impl Mirror {
     /// Nothing of this session leaves the Mac and nothing from the workspace reaches it: its
     /// folder is not approved (`unshared`), or nobody can name its folder yet (a mirror stored by
@@ -1714,66 +1652,6 @@ impl Mirror {
     /// every door: upload, register, heartbeat, terminal, final screen, commands, input, band.
     fn withheld(&self) -> bool {
         self.unshared || self.registration.successor.as_ref().unwrap_or(&self.native).cwd.is_none()
-    }
-
-    /// The process running now was already running when this session became shared: it has no
-    /// live terminal (see `no_terminal_for`). Nothing indexes, relays, snapshots or keeps its
-    /// screen, and no typed input reaches it; commands still do.
-    fn terminal_withheld(&self) -> bool {
-        self.no_terminal_for.as_ref().is_some_and(|before| {
-            *before == self.native.process || self.registration.successor.as_ref().is_some_and(|next| next.process == *before)
-        })
-    }
-
-    /// `NativeSession::terminal`, as the workspace is told it.
-    fn terminal(&self) -> &'static str {
-        if self.terminal_withheld() { "none" } else { self.native.terminal() }
-    }
-
-    /// Sharing starts now: for a session whose folder was just approved (again), or one that
-    /// was never shared before. Approving a folder shares what happens from that moment on and
-    /// nothing earlier, so everything read but unsent is dropped, the transcript (and every
-    /// subagent's that exists already) is taken as read to its current end, and the process
-    /// running now gets no live terminal.
-    /// `current`: the session as discovery sees it now. A conversation resumed by another
-    /// process while it was not shared has that process's terminal to cut off, not the old one's.
-    fn share_from_now(&mut self, current: &NativeSession) {
-        self.queue.clear();
-        self.pending = None;
-        self.waiting = None;
-        // The end of a folder revocation that waited on a register: it no longer applies.
-        if self.deferred_end_reason.as_deref() == Some(FOLDER_NOT_APPROVED) {
-            self.deferred_end_reason = None;
-        }
-        // (No transcript known yet: its end is taken when it is first read.)
-        self.cursor = current.transcript.as_deref().map_or_else(Cursor::at_first_read, cursor_at_end);
-        // Every subagent that exists now, announced or not, is read from here on and stays
-        // open: one still running is shared from this moment like its parent. None gets a start
-        // event: its description was written before now.
-        let known = &mut self.subagents.known;
-        if let Some(transcript) = &current.transcript {
-            if current.provider == "claude" {
-                for (id, path, _) in claude::new_subagents(transcript, &|id| known.contains_key(id)) {
-                    known.insert(id, Subagent { path: Some(path), ..Default::default() });
-                }
-            } else {
-                // A Codex child is otherwise found only through its parent's `started` row, which
-                // lies before the cut-off for one that started earlier.
-                for (id, path) in codex::children(transcript, &current.conversation) {
-                    known.entry(id).or_default().path.get_or_insert(path);
-                }
-            }
-        }
-        for subagent in known.values_mut() {
-            subagent.cursor = match &subagent.path {
-                Some(path) => cursor_at_end(path),
-                // Announced before now and still without a rollout: it stays open, and when its
-                // rollout appears it is read from the end it has then.
-                None => Cursor::at_first_read(),
-            };
-        }
-        self.no_terminal_for = Some(current.process.clone());
-        self.dirty = true;
     }
 
     fn persist(&mut self, path: &Path) -> Result<()> {
@@ -1808,9 +1686,7 @@ impl Mirror {
     }
     fn next_batch(&mut self) -> Result<Option<Value>> {
         // The upload point itself: whatever else revived or registered this mirror, nothing is
-        // read from the transcript or sent while its folder is not approved.
-        // Nor while nobody can name its folder (a mirror stored before folders were checked, a
-        // listing without one): unknown is not approved.
+        // read from the transcript or sent while its folder is not approved or not known.
         if self.withheld() {
             return Ok(None);
         }
@@ -2115,112 +1991,6 @@ mod tests {
         }
         // Approved later, removed later: the list as it is now decides.
         assert!(in_approved_folder(&outside, &[folder, outside.clone()]));
-    }
-
-    #[test]
-    fn local_sessions_sharing_from_now_keeps_running_subagents_open_at_their_current_end() {
-        let dir = tempfile::tempdir().unwrap();
-        let transcript = dir.path().join("native.jsonl");
-        fs::write(&transcript, "{}\n").unwrap();
-        let subagents = dir.path().join("native/subagents");
-        fs::create_dir_all(&subagents).unwrap();
-        let (known, fresh) = (subagents.join("agent-known.jsonl"), subagents.join("agent-fresh.jsonl"));
-        fs::write(&known, "{\"before\":1}\n{\"before\":2}\n").unwrap();
-        fs::write(&fresh, "{\"before\":1}\n").unwrap();
-        let mut mirror = test_mirror(transcript);
-        mirror.subagents.known.insert("known".into(), Subagent { path: Some(known.clone()), ..Default::default() });
-        mirror.subagents.known.insert("unfound".into(), Subagent::default());
-        mirror.deferred_end_reason = Some(FOLDER_NOT_APPROVED.into());
-        let mut resumed = mirror.native.clone();
-        resumed.process.birth_micros += 1;
-        mirror.share_from_now(&resumed);
-        for (id, path) in [("known", &known), ("fresh", &fresh)] {
-            let subagent = &mirror.subagents.known[id];
-            assert!(!subagent.closed, "{id} is still read");
-            assert_eq!(subagent.cursor.offset, fs::metadata(path).unwrap().len(), "{id} from its current end");
-        }
-        let unfound = &mirror.subagents.known["unfound"];
-        assert!(!unfound.closed && unfound.cursor.from_end, "a child with no rollout yet is read from the end it has when one appears");
-        assert_eq!(mirror.no_terminal_for.as_ref(), Some(&resumed.process), "the process that runs it now");
-        assert_eq!(mirror.deferred_end_reason, None, "the revocation's waiting end is cancelled");
-    }
-
-    #[test]
-    fn local_sessions_sharing_from_now_finds_codex_children_that_started_before_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let day = dir.path().join("sessions/2026/10/08");
-        fs::create_dir_all(&day).unwrap();
-        let meta = |id: &str, parent: Option<&str>| {
-            let source = parent.map_or(json!("cli"), |p| json!({"subagent": {"thread_spawn": {"parent_thread_id": p}}}));
-            format!("{}\n{{\"before\":1}}\n", json!({"type": "session_meta", "payload": {"id": id, "source": source}}))
-        };
-        let transcript = day.join("rollout-1-parent.jsonl");
-        fs::write(&transcript, meta("parent", None)).unwrap();
-        let (child, grandchild, other) = (day.join("rollout-2-child.jsonl"), day.join("rollout-3-grandchild.jsonl"), day.join("rollout-4-other.jsonl"));
-        fs::write(&child, meta("child", Some("parent"))).unwrap();
-        fs::write(&grandchild, meta("grandchild", Some("child"))).unwrap();
-        fs::write(&other, meta("other", Some("someone-else"))).unwrap();
-        let mut mirror = test_mirror(transcript);
-        mirror.native.provider = "codex".into();
-        mirror.native.conversation = "parent".into();
-        // Announced before the cut-off, rollout not found until now; and one never found.
-        mirror.subagents.known.insert("child".into(), Subagent::default());
-        mirror.subagents.known.insert("vanished".into(), Subagent::default());
-        let current = mirror.native.clone();
-        mirror.share_from_now(&current);
-        for (id, path) in [("child", &child), ("grandchild", &grandchild)] {
-            let subagent = &mirror.subagents.known[id];
-            assert!(!subagent.closed && subagent.path.is_some(), "{id} is read from now on");
-            assert_eq!(subagent.cursor.offset, fs::metadata(path).unwrap().len(), "{id} from its current end");
-        }
-        assert!(!mirror.subagents.known.contains_key("other"), "another thread's child is not this one's");
-        // Announced before the cut-off, no rollout yet: kept open, and its rollout is read from
-        // the end it has when it first appears, never from its start.
-        let late = day.join("rollout-5-vanished.jsonl");
-        fs::write(&late, meta("vanished", Some("parent"))).unwrap();
-        let vanished = mirror.subagents.known.get_mut("vanished").unwrap();
-        assert!(!vanished.closed && vanished.cursor.from_end);
-        assert!(vanished.cursor.read(&late, "codex").unwrap().is_empty());
-        assert_eq!(vanished.cursor.offset, fs::metadata(&late).unwrap().len());
-        // No transcript known when sharing starts: its end is taken at the first read.
-        let mut unknown = mirror.native.clone();
-        unknown.transcript = None;
-        mirror.share_from_now(&unknown);
-        assert!(mirror.cursor.from_end);
-    }
-
-    #[test]
-    fn local_sessions_a_cursor_at_the_end_reads_nothing_already_there_nor_the_row_in_progress() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("t.jsonl");
-        for (text, skip) in [("", false), ("a\n", false), ("a\nbb\n", false), ("a\nbb\nhalf", true), ("half", true)] {
-            fs::write(&path, text).unwrap();
-            let cursor = cursor_at_end(&path);
-            assert_eq!((cursor.offset, cursor.skip_row), (text.len() as u64, skip), "{text:?}");
-            assert!(cursor.inode.is_some());
-        }
-        // A file that cannot be read when sharing starts: its end is taken at the first read,
-        // so what it holds by then is not read either. Never the beginning.
-        let missing = dir.path().join("later.jsonl");
-        let mut late = cursor_at_end(&missing);
-        assert!(late.from_end && late.offset == 0);
-        fs::write(&missing, "{\"written\":\"before the first read\"}\n{\"half").unwrap();
-        assert!(late.read(&missing, "claude").unwrap().is_empty());
-        assert_eq!((late.from_end, late.skip_row, late.offset), (false, true, fs::metadata(&missing).unwrap().len()));
-        fs::OpenOptions::new().append(true).open(&missing).unwrap().write_all(b"\":1}\n{\"n\":9}\n").unwrap();
-        assert_eq!(late.read(&missing, "claude").unwrap(), vec![json!({"n": 9})]);
-        // A row was being written when sharing started: its end arrives later, and none of the
-        // row is read. The rows after it are.
-        fs::write(&path, "{\"n\":1}\n{\"n\":2,\"private\":\"wri").unwrap();
-        let mut cursor = cursor_at_end(&path);
-        assert!(cursor.read(&path, "claude").unwrap().is_empty() && cursor.skip_row, "its newline is not there yet");
-        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
-        file.write_all(&"t".repeat(100_000).into_bytes()).unwrap();
-        assert!(cursor.read(&path, "claude").unwrap().is_empty() && cursor.skip_row);
-        file.write_all(b"tten\"}\n{\"n\":3}\n").unwrap();
-        let rows = cursor.read(&path, "claude").unwrap();
-        assert_eq!(rows, vec![json!({"n": 3})]);
-        assert!(!cursor.skip_row && cursor.offset == fs::metadata(&path).unwrap().len());
     }
 
     #[test]
@@ -2999,7 +2769,6 @@ mod tests {
             ended_reason: None,
             ended_sent: false,
             unshared: false,
-            no_terminal_for: None,
             hook_cwd: None,
             waiting: None,
             stats: Default::default(),
@@ -3089,7 +2858,6 @@ mod tests {
             ended_reason: None,
             ended_sent: false,
             unshared: false,
-            no_terminal_for: None,
             hook_cwd: None,
             waiting: None,
             stats: Default::default(),
@@ -3178,7 +2946,6 @@ mod tests {
             ended_reason: None,
             ended_sent: false,
             unshared: false,
-            no_terminal_for: None,
             hook_cwd: None,
             waiting: None,
             stats: Default::default(),
@@ -3282,7 +3049,6 @@ mod tests {
             ended_reason: None,
             ended_sent: false,
             unshared: false,
-            no_terminal_for: None,
             hook_cwd: None,
             waiting: None,
             stats: Default::default(),
@@ -3351,7 +3117,6 @@ mod tests {
             ended_reason: None,
             ended_sent: false,
             unshared: false,
-            no_terminal_for: None,
             hook_cwd: None,
             waiting: None,
             stats: Default::default(),

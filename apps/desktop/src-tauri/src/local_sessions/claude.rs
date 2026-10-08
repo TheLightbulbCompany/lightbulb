@@ -1687,8 +1687,6 @@ mod tests {
             cursor: Cursor {
                 offset: meta.len(),
                 inode: Some(meta.ino()),
-                skip_row: false,
-                from_end: false,
             },
             text: "unique".into(),
         };
@@ -1716,8 +1714,6 @@ mod tests {
             cursor: Cursor {
                 offset: 0,
                 inode: Some(fs::metadata(&path).unwrap().ino()),
-                skip_row: false,
-                from_end: false,
             },
             ..ingress
         };

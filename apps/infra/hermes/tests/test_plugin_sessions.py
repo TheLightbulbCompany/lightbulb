@@ -49,9 +49,14 @@ def test_an_interrupt_carries_no_text_and_send_requires_expected_generation(tmp_
     monkeypatch.setattr(lightbulb, "_call_sessions",
                         lambda method, url, token, body=None: seen.update(body=body) or {})
     lightbulb._local_sessions({"action": "send", "sessionId": SID, "requestId": "req-1",
-                               "expectedGeneration": "g1", "text": "hi", "kind": "interrupt"},
-                              session_id=SESSION)
-    assert seen["body"] == {"requestId": "req-1", "expectedGeneration": "g1", "kind": "interrupt"}
+                               "expectedGeneration": "g1", "text": "hi", "kind": "interrupt",
+                               "expectedTurnId": "turn-7"}, session_id=SESSION)
+    assert seen["body"] == {"requestId": "req-1", "expectedGeneration": "g1", "kind": "interrupt",
+                            "expectedTurnId": "turn-7"}
+    seen.clear()
+    out = lightbulb._local_sessions({"action": "send", "sessionId": SID, "requestId": "req-2",
+                                     "expectedGeneration": "g1", "kind": "interrupt"}, session_id=SESSION)
+    assert "expectedTurnId" in out and seen == {}  # refused locally, never sent
     assert "expectedGeneration" in lightbulb._local_sessions(
         {"action": "send", "sessionId": SID, "requestId": "r", "text": "hi"}, session_id=SESSION)
 

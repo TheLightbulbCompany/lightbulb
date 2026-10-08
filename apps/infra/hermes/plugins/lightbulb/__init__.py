@@ -207,7 +207,7 @@ _OPAQUE_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,256}$")
 _ACTION_PARAMS = {
     "resources": {"action"},
     "read": {"action", "sessionId", "afterSeq", "limit"},
-    "send": {"action", "sessionId", "requestId", "expectedGeneration", "text", "kind"},
+    "send": {"action", "sessionId", "requestId", "expectedGeneration", "expectedTurnId", "text", "kind"},
     "receipt": {"action", "sessionId", "requestId"},
 }
 
@@ -218,13 +218,15 @@ SESSIONS_SCHEMA = {
                    "person who woke you, or its owner allows it); \"ask\" returns "
                    "awaiting_approval and its owner chooses Send or Decline -- ask once, say so "
                    "in your reply, never re-ask under a new requestId; declined is final for this "
-                   "run. kind \"interrupt\" stops the session's turn and takes no text.",
+                   "run. kind \"interrupt\" stops the session's turn: no text, and expectedTurnId = "
+                   "the session's activeTurnId (also needed to steer a busy session).",
     "parameters": {
         "type": "object",
         "properties": {
             "action": {"type": "string", "enum": ["resources", "read", "send", "receipt"]},
             "sessionId": {"type": "string"}, "requestId": {"type": "string"},
             "expectedGeneration": {"type": "string"}, "text": {"type": "string", "maxLength": 8192},
+            "expectedTurnId": {"type": "string", "description": "The session's activeTurnId."},
             "afterSeq": {"type": "integer", "minimum": 0},
             "limit": {"type": "integer", "minimum": 1, "maximum": 100},
             "kind": {"type": "string", "enum": ["send", "interrupt"]},
@@ -279,6 +281,13 @@ def _local_sessions(args: dict, *, session_id: str = "", **_kw) -> str:
         if kind not in ("send", "interrupt"):
             return "kind must be send or interrupt."
         body = {"requestId": request_id, "expectedGeneration": generation, "kind": kind}
+        turn_id = str(args.get("expectedTurnId") or "")
+        if turn_id:
+            if not _OPAQUE_RE.match(turn_id):
+                return "expectedTurnId must be the session's activeTurnId."
+            body["expectedTurnId"] = turn_id
+        elif kind == "interrupt":
+            return "An interrupt needs expectedTurnId (the session's activeTurnId from resources or read)."
         if kind == "send":  # the backend refuses text on an interrupt
             text = str(args.get("text") or "").strip()
             if not text:

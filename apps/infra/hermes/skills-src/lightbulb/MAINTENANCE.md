@@ -23,6 +23,10 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   code. This skill is the fleet's knowledge of the platform. It is SPLIT: a
   thin SKILL.md (routing table + non-negotiables) plus references/ read on
   demand. Each anchor below names the file that now carries the claim.
+  Budget: keep SKILL.md near 10k chars and the front-matter `description`'s
+  first 57 chars a trigger — Hermes's skill index shows only those. The
+  "What you cannot do" table and "Quick answers" moved to
+  references/boundaries.md on 2026-10-08.
   - Capability inventory .... references/platform-primitives.md
                               <- routers/teams/issues.py (add_issue_comment wake) + core/services/paperclip_adapter_config.py;
                                  routers/ses_inbound.py (email wake — any authenticated sender while the row's
@@ -57,7 +61,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  namespace for every agent); bridge/sync.py normalize_profile_backends
                                  (on only while AGENTCORE_MEMORY_ID is set); ~2 min = the memory
                                  strategy's async extraction lag, not a code constant.
-  - Website sign-ins .......... SKILL.md ("Type a website password" row; names the web AND iPhone doors) + references/surfaces.md (Browser row)
+  - Website sign-ins .......... references/boundaries.md ("Type a website password" row; names the web AND iPhone doors) + references/surfaces.md (Browser row)
                               <- apps/infra/hermes/bridge/website_logins.py (vault store + ask callbacks);
                                  core/services/website_logins.py; frontend WebsiteLoginsSection (Connections).
                                  Codes/CAPTCHA are browser-only (owner ruling 2026-10-07): the bridge's
@@ -84,7 +88,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- apps/frontend/src/components/messaging/NewSessionButton.tsx;
                                  apps/desktop/src-tauri/src/session_start.rs;
                                  apps/mobile/src/app/(app)/session/new.tsx (still has the first message)
-  - Browser tool choice ..... SKILL.md ("references/surfaces.md § Browser" row) + references/surfaces.md
+  - Browser tool choice ..... SKILL.md ("references/surfaces.md § Browser" row, a pointer only) + references/surfaces.md
                               (Browser row: "Which tool", extensions, recording, downloads) +
                               references/platform-primitives.md (pointer)
                               <- Hermes's own browser_cdp / browser_dialog / computer_use: the bridge points
@@ -327,7 +331,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- apps/backend/routers/connections.py (authorize_from_container — hook-token sibling of authorize;
                                  ISOL8_OWNER_ID + OPENCLAW_HOOK_TOKEN env in hermes_profiles.build_profile_env);
                                  /app/skills/lightbulb/scripts/lightbulb-connect.sh (the mint door — never an inline header, see the redaction note)
-  - Connections door ........ references/integrations.md + references/surfaces.md + SKILL.md boundaries table
+  - Connections door ........ references/integrations.md + references/surfaces.md + references/boundaries.md table
                               <- apps/frontend/src/components/control/panels/ConnectionsPanel.tsx (rail panel); apps/frontend/src/components/workspace/WorkspaceHeader.tsx (rail label)
   - Paperclip org model ..... references/company-and-plans.md
                               <- TheLightbulbCompany/paperclip fork: server/src/services/agent-permissions.ts,
@@ -366,4 +370,4 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  apps/infra/hermes/plugins/lightbulb/__init__.py (send_room_message's threadRootMessageId);
                                  paperclip skill references/monitors.md;
                                  spec docs/superpowers/specs/2026-09-16-proactive-agents-design.md (delete when shipped).
-- Roster + connected integrations routing row ("Who is on the team?" / "What's connected?") — `SKILL.md`; source: `core/services/owner_facts.py` (`teammates`, `connected_integrations`, #3851). Added 2026-10-08 after a dev check where the CEO answered a roster question from the room's member list.
+- Roster + connected integrations routing row ("Who is on the team?" / "What's connected?") — `references/boundaries.md` Quick answers; source: `core/services/owner_facts.py` (`teammates`, `connected_integrations`, #3851). Added 2026-10-08 after a dev check where the CEO answered a roster question from the room's member list.

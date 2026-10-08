@@ -21,6 +21,23 @@ POST /api/companies/{companyId}/approvals
 
 `issueIds` links the approval into the issue thread. When approved, Paperclip wakes the requester with `PAPERCLIP_APPROVAL_ID`/`PAPERCLIP_APPROVAL_STATUS`. Keep the payload concise and decision-ready.
 
+## MCP Tool Approval Gates
+
+Some MCP tools are configured as **ask first**; their `tools/list` description
+says human approval is required. Calling one posts an approval card on your
+checked-out task and returns `approval_required` — do not retry the call while
+it is pending. Finish other useful work, move the task to `in_review`, and end
+the run; Paperclip wakes the assignee after approval or rejection with the
+decision (and, if approved, the execution outcome — approval means **approve
+and run**: the stored, signed call executes exactly once). A rejected call did
+not run; follow the decline reason and change your approach rather than
+retrying the same call. Approval requests expire after 60 minutes — a fresh
+call after expiry opens a new one — and re-calling with identical arguments is
+idempotent: it reuses a pending request, returns a stored outcome, or opens one
+fresh card, but never stacks duplicates. If the gateway returns
+`approval_path_missing`, re-run the action from a run that has the task
+checked out.
+
 ## Issue-Thread Interactions
 
 Issue-thread interactions are first-class cards that render in the issue thread and capture a typed board/user response. Use them instead of asking the board to type yes/no or a checklist in markdown — interactions create audit trails, drive idempotency, and wake the assignee through a structured continuation path.

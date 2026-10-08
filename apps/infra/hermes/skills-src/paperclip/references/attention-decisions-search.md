@@ -132,6 +132,17 @@ After the continuation wake, fetch the outcome directly:
 /app/skills/paperclip/scripts/paperclip-api.sh decision-get "<decision-id>"
 ```
 
+### Standalone Decisions
+
+A single-issue decision (the `decision` helper) is scoped to one issue.
+When effects need to span several issues, or a set of related choices should
+be presented and resolved together, bundle them instead —
+`POST /api/companies/{companyId}/decision-bundles` accepts 1–50 decisions
+(the same `body`/`options`/effect shapes as the single-decision helper) and
+creates them atomically. There is no dedicated bundle subcommand: build the
+array with `jq -n` and send it through the escape hatch, e.g.
+`jq -n '{title: T, summary: S, decisions: [...]}' | /app/skills/paperclip/scripts/paperclip-api.sh raw POST "/api/companies/$PAPERCLIP_COMPANY_ID/decision-bundles"`.
+
 ## Measure autonomy by `ruleKey`
 
 ```bash

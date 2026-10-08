@@ -338,17 +338,19 @@ describe("vendor merge preserves Lightbulb-local edits", () => {
 });
 
 describe("sections vendored in from the fork", () => {
+  // SKILL.md is thin; the vendored sections live in the reference each routing row names.
   it.each([
-    "### Monitors and Watchers",
-    "### Delegating review tasks",
-    "## Managing A User's Inbox",
-    "### Standalone Decisions",
-    "## MCP Tool Approval Gates",
-    "## Cases",
-    "## Proposing Credentials Safely",
-    "## Reading Granted Secrets",
-  ])("has %s", (heading) => {
-    expect(skillMd).toContain(heading);
+    ["references/monitors.md", "## Monitors and Watchers"],
+    ["references/delegation.md", "# Delegating review tasks"],
+    ["references/inbox.md", "# Managing A User's Inbox"],
+    ["references/attention-decisions-search.md", "### Standalone Decisions"],
+    ["references/interactions.md", "## MCP Tool Approval Gates"],
+    ["references/cases.md", "# Cases"],
+    ["references/secrets.md", "## Proposing Credentials Safely"],
+    ["references/secrets.md", "## Reading Granted Secrets"],
+  ])("%s has %s and SKILL.md routes to it", (file, heading) => {
+    expect(readFileSync(resolve(skillRoot, file), "utf8")).toContain(heading);
+    expect(skillMd).toContain(`| \`${file}\` |`);
   });
 
   it("ships the cases reference", () => {
@@ -556,15 +558,17 @@ describe("fix round 4 — agent unblock ownership and secret-access accuracy", (
   // checks only actor.type/agentId/companyId/runId — never actor.source — so
   // a long-lived agent key works. Only proposalAgentContext (secret-proposals)
   // requires source === "agent_jwt", which openclaw_gateway agents never hold.
+  const secretsMd = readFileSync(resolve(skillRoot, "references/secrets.md"), "utf8");
+
   it("does not claim long-lived agent keys are denied for granted-secret reads", () => {
-    expect(skillMd).not.toContain("long-lived agent keys");
-    expect(skillMd).not.toContain("are denied");
-    expect(skillMd).toContain("do **not** check token type");
+    expect(secretsMd).not.toContain("long-lived agent keys");
+    expect(secretsMd).not.toContain("are denied");
+    expect(secretsMd).toContain("do **not** check token type");
   });
 
   it("tells agents secret-proposals 403s here instead of documenting it as callable", () => {
-    expect(skillMd).toContain("403s on this instance for every agent");
-    expect(skillMd).not.toContain(
+    expect(secretsMd).toContain("403s on this instance for every agent");
+    expect(secretsMd).not.toContain(
       "propose it as a Paperclip secret immediately",
     );
   });

@@ -37,6 +37,16 @@ While a monitor is live the issue has a real liveness path, so `in_progress` (or
 
 **Use a monitor instead of a `request_confirmation` card whenever the human would only be confirming a fact you could observe yourself.** Asking someone "did the PR merge yet?" spends their attention on something Paperclip can poll. A confirmation card is for a **decision** or for information only they hold. This distinction has real cost: an unnecessary confirmation card once sat for 38 hours and spawned duplicate blocker issues while everyone waited on everyone else.
 
+## Monitors and Watchers
+
+A "watcher" or "monitor" is not something that lives inside a run — a run
+(heartbeat) is an **ephemeral execution window**, and nothing keeps watching
+after it exits. The only thing that auto-resumes an issue on its own is a
+persisted issue monitor (`nextCheckAt`, polled by a server-side scheduler). So
+only claim a watcher/monitor exists after you have actually scheduled one —
+describing a watcher in a comment does not create it — and never imply a live
+watcher on a task you mark `done`.
+
 ## A monitor is the wait. An approval is the authority.
 
 These are different things and you need both when both apply:

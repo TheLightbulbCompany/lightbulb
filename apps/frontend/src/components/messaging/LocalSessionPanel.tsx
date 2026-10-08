@@ -215,7 +215,8 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   // Not a held session: its first events take up to a minute to reach the server, so zero events is not "nothing was sent".
   const endedEmpty = session.provider === "claude" && session.latestEventSeq === 0 && !session.controlUnavailableReason && !session.wasHeld;
   // An app session that ended with nothing in it: the ended panel alone, not an empty conversation.
-  const convoEmpty = convo && session.status === "ended" && session.latestEventSeq === 0;
+  // (Its first events can reach the server up to a minute after the end: the history read, not the cached row, has the last word.)
+  const convoEmpty = convo && session.status === "ended" && session.latestEventSeq === 0 && history.events.length === 0;
   const endedAt = session.endedAt ? <time dateTime={session.endedAt} title={new Date(session.endedAt).toLocaleString()}>{timeAgo(session.endedAt)}</time> : null;
   const endedPanel = <div className="session-state-panel" role="status">
     <p className="session-state-title">{screenDue && !endedEmpty ? "Ended just now" : endedAt ? <>Ended {endedAt}</> : "Ended"}</p>

@@ -159,6 +159,12 @@ it("shows the conversation of a session that runs inside an app, with one line s
   expect(screen.getByText("This session ended before anything was sent.")).toBeTruthy();
   expect(screen.queryByRole("log")).toBeNull();
   expect(screen.queryByRole("note")).toBeNull();
+  cleanup();
+  // Its events arrived after the end, and the cached row still says none: the conversation shows once they are read.
+  client.listLocalSessionEvents.mockResolvedValue(events as never);
+  render(<LocalSessionPanel {...props} own={false} session={{ ...app, status: "ended", latestEventSeq: 0 }} />);
+  expect(await within(await screen.findByRole("log")).findByText("All good.")).toBeTruthy();
+  expect(screen.queryByText("This session ended before anything was sent.")).toBeNull();
   client.listLocalSessionEvents.mockResolvedValue({ events: [], nextAfterSeq: null } as never);
 });
 

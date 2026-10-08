@@ -6,7 +6,6 @@ import json
 import os
 import stat
 
-import httpx
 import pytest
 
 from scripts.load import fixtures as fx
@@ -86,35 +85,70 @@ def test_teardown_refuses_an_org_with_a_real_member_or_a_foreign_name():
         fx.teardown_steps({**org, "name": "Jev Listening Test"}, [creator])
 
 
-def test_sign_in_waits_out_a_429_then_spaces_the_next(monkeypatch):
-    waits: list[float] = []
-    monkeypatch.setattr(fx.time, "sleep", lambda s: waits.append(s))
-    monkeypatch.setattr(fx, "Api", lambda s: ("api", s))
-    calls = {"n": 0}
+class FakeBapi:
+    """Clerk's Backend API as fixtures.py uses it: sessions, tokens, users, orgs. Records every POST."""
 
-    class C:
-        def session(self, uid, org):
-            calls["n"] += 1
-            if calls["n"] == 1:
-                req = httpx.Request("POST", "https://fapi/v1/client/sign_ins")
-                resp = httpx.Response(429, headers={"retry-after": "7"}, request=req)
-                raise httpx.HTTPStatusError("429", request=req, response=resp)
-            return "sess"
+    def __init__(self, org_in_jwt: str = "org_1", first: list[int] | None = None):
+        self.posts, self.org_in_jwt, self.first = [], org_in_jwt, list(first or [])
+        self.http = self
 
-    assert fx._api(C(), "user_1", "org_1") == ("api", "sess")
-    assert waits == [7.0, fx.SIGNIN_SPACING_S]
+    def user(self, email):
+        return {"id": "user_" + email[5:9]}
+
+    def post(self, path, json):
+        self.posts.append((path, json))
+        status = self.first.pop(0) if self.first else 200
+        if path == "/sessions":
+            body = {"id": f"sess_{json['user_id']}"}
+        elif path.endswith("/tokens"):
+            body = {"jwt": _jwt({"o": {"id": self.org_in_jwt}, "sub": path.split("/")[2]})}
+        else:
+            body = {"jwt": "appsync." + path.split("/")[2]}
+        return type(
+            "R", (), {"status_code": status, "headers": {"retry-after": "3"}, "text": "x", "json": lambda r: body}
+        )()
 
 
-def test_a_sign_in_error_that_is_not_429_is_raised_at_once(monkeypatch):
-    monkeypatch.setattr(fx.time, "sleep", lambda s: pytest.fail("must not wait"))
+def test_a_bapi_session_is_created_with_the_fixture_org_and_mints_long_tokens(monkeypatch):
+    monkeypatch.setattr(fx.time, "sleep", lambda s: None)
+    clerk = FakeBapi()
+    session = fx.BapiSession(clerk, "user_1", "org_1", 5400)
+    assert fx.jwt_org(session.token()) == "org_1"
+    assert session.token() == session.token()  # minted once, never refreshed
+    assert session.mint(fx.APPSYNC_TEMPLATE) == "appsync.sess_user_1"
+    assert clerk.posts == [
+        ("/sessions", {"user_id": "user_1", "active_organization_id": "org_1"}),
+        ("/sessions/sess_user_1/tokens", {"expires_in_seconds": 5400}),
+        ("/sessions/sess_user_1/tokens/lightbulb-appsync", {"expires_in_seconds": 5400}),
+    ]
 
-    class C:
-        def session(self, uid, org):
-            req = httpx.Request("POST", "https://fapi/v1/client/sign_ins")
-            raise httpx.HTTPStatusError("500", request=req, response=httpx.Response(500, request=req))
 
-    with pytest.raises(httpx.HTTPStatusError):
-        fx._api(C(), "user_1", "org_1")
+def test_bapi_calls_are_paced_and_wait_out_a_429(monkeypatch):
+    waits, now = [], [100.0]
+    monkeypatch.setattr(fx.time, "sleep", lambda s: (waits.append(s), now.__setitem__(0, now[0] + s)))
+    monkeypatch.setattr(fx.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(fx, "_last_call", 0.0)
+    clerk = FakeBapi(first=[429])
+    fx.BapiSession(clerk, "user_1", "org_1", 60).token()
+    assert 3.0 in waits  # Retry-After
+    assert any(w == pytest.approx(fx.BAPI_SPACING_S) for w in waits)  # back-to-back calls stay <= 5/s
+    assert len(clerk.posts) == 3
+
+
+def test_a_bapi_error_stops_the_run_with_clerks_status(monkeypatch):
+    monkeypatch.setattr(fx.time, "sleep", lambda s: None)
+    with pytest.raises(SystemExit, match="HTTP 403"):
+        fx.BapiSession(FakeBapi(first=[403]), "user_1", "org_1", 60)
+    with pytest.raises(SystemExit, match="--ttl"):
+        fx.BapiSession(FakeBapi(), "user_1", "org_1", 10)
+
+
+def test_the_fixture_file_holds_jwts_and_nothing_else():
+    users = [{"userId": "u", "email": "e", "orgId": "o", "apiJwt": "a", "appsyncJwt": "s", "secret": "sk_x"}]
+    data = fx.fixture_file([{"orgId": "o"}], users, 1_800_000_000)
+    assert data["api"] == fx.API and data["expiresAt"] == 1_800_000_000
+    assert data["users"] == [{"userId": "u", "email": "e", "orgId": "o", "apiJwt": "a", "appsyncJwt": "s"}]
+    assert "sk_" not in json.dumps(data)
 
 
 def test_self_delete_retries_409_then_gives_up_on_anything_else(monkeypatch):
@@ -172,11 +206,11 @@ def test_fixture_file_is_private_and_removable(tmp_path):
     path = tmp_path / "fixtures.json"
     old = os.umask(0)
     try:
-        fx.write_private(path, {"users": [{"sid": "s", "clientJwt": "j"}]})
+        fx.write_private(path, {"users": [{"apiJwt": "j"}]})
     finally:
         os.umask(old)
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
-    assert json.loads(path.read_text())["users"][0]["sid"] == "s"
+    assert json.loads(path.read_text())["users"][0]["apiJwt"] == "j"
     fx.remove(path)
     fx.remove(path)  # already gone: fine
     assert not path.exists()
@@ -187,9 +221,9 @@ def _offline_run(monkeypatch, tmp_path, org_in_jwt: str):
     monkeypatch.setattr(fx, "FIXTURES", path)
     monkeypatch.setattr(fx, "dev_only", lambda url: None)
     monkeypatch.setattr(fx.signal, "signal", lambda *a: None)
-    monkeypatch.setattr(fx, "Clerk", lambda: type("C", (), {"user": lambda self, e: {"id": "user_" + e[5:9]}})())
+    monkeypatch.setattr(fx.time, "sleep", lambda s: None)
+    monkeypatch.setattr(fx, "Clerk", lambda: FakeBapi(org_in_jwt))
     monkeypatch.setattr(fx, "_find_org", lambda clerk, name: {"id": "org_1", "created_by": "user_0001"})
-    monkeypatch.setattr(fx, "_api", lambda clerk, uid, org: type("A", (), {"s": _session(org_in_jwt)})())
     return path
 
 
@@ -200,13 +234,22 @@ def test_run_deletes_the_file_when_the_command_fails(tmp_path, monkeypatch):
     def boom(cmd, env):
         seen["mode"] = stat.S_IMODE(path.stat().st_mode)
         seen["env"] = env["FIXTURES"]
-        seen["users"] = [u["userId"] for u in json.loads(path.read_text())["users"]]
+        data = json.loads(path.read_text())
+        seen["users"] = [u["userId"] for u in data["users"]]
+        seen["keys"] = sorted(data["users"][0])
+        seen["expires_in"] = data["expiresAt"] - int(fx.time.time())
         raise OSError("k6 not found")
 
     monkeypatch.setattr(fx.subprocess, "Popen", boom)
     with pytest.raises(OSError):
-        fx.main(["run", "--orgs", "1", "--users-per-org", "2", "--", "k6", "run", "x.js"])
-    assert seen == {"mode": 0o600, "env": str(path.resolve()), "users": ["user_0001", "user_0002"]}
+        fx.main(["run", "--orgs", "1", "--users-per-org", "2", "--ttl", "5400", "--", "k6", "run", "x.js"])
+    assert seen.pop("expires_in") in (5399, 5400)
+    assert seen == {
+        "mode": 0o600,
+        "env": str(path.resolve()),
+        "users": ["user_0001", "user_0002"],
+        "keys": ["apiJwt", "appsyncJwt", "email", "orgId", "userId"],
+    }
     assert not path.exists()
 
 

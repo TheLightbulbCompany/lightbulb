@@ -1,7 +1,8 @@
 # k6 scenarios
 
 Facts, blast radius and server-side metrics: `../README.md`. Every command runs from `apps/backend`
-under `fixtures.py run`, which signs the fixture users in, sets `FIXTURES`, and deletes the file after.
+under `fixtures.py run`, which mints each fixture user's API + AppSync JWTs server-side for `--ttl` seconds
+(default 7200: longer than the whole command, nothing refreshes them), sets `FIXTURES`, and deletes the file after.
 `F` below is short for `uv run python -m scripts.load.fixtures`. **Never run any of these without the
 owner's go for that run** (see `../README.md`).
 

@@ -9,13 +9,11 @@ import { sleep } from 'k6';
 import { Counter } from 'k6/metrics';
 
 export const API = 'https://api-dev.thelightbulb.company/api/v1';
-const FAPI = 'https://up-moth-55.clerk.accounts.dev';
-const REFRESH_MS = 40_000; // Clerk session JWTs live 60 s
 
 const raw = JSON.parse(open(__ENV.FIXTURES || './fixtures.json'));
-if (raw.api !== API || raw.fapi !== FAPI) {
-  throw new Error(`refusing: fixtures point at ${raw.api} / ${raw.fapi}, dev only`);
-}
+if (raw.api !== API) throw new Error(`refusing: fixtures point at ${raw.api}, dev only`);
+// fixtures.py mints every JWT once, for the whole run (--ttl): a run longer than that gets 401s.
+if (!(raw.expiresAt * 1000 > Date.now())) throw new Error('fixture JWTs have expired: run fixtures.py run again');
 export const fixtures = raw;
 
 // 429s are the stage throttle answering: counted on their own, not as failures (spec §2 Errors row).
@@ -70,23 +68,9 @@ export function stableUuid(seed) {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
 }
 
-// ---- Clerk tokens, cached per user inside this VU. The client JWT rotates: carry it forward.
-const tokens = {};
-function mint(user, kind) {
-  const t = tokens[user.userId] || (tokens[user.userId] = { clientJwt: user.clientJwt });
-  const fresh = t[kind];
-  if (fresh && Date.now() - fresh.at < REFRESH_MS) return fresh.jwt;
-  const path = kind === 'appsync' ? '/tokens/lightbulb-appsync' : '/tokens';
-  const res = http.post(`${FAPI}/v1/client/sessions/${user.sid}${path}?_is_native=1`, {}, {
-    headers: { Authorization: t.clientJwt }, tags: { name: `clerk ${kind} token` },
-  });
-  if (res.status !== 200) throw new Error(`clerk ${kind} token for ${user.userId}: ${res.status}`);
-  t.clientJwt = res.headers.Authorization || t.clientJwt;
-  t[kind] = { jwt: res.json('jwt'), at: Date.now() };
-  return t[kind].jwt;
-}
-export const apiToken = (user) => mint(user, 'api');
-export const appsyncToken = (user) => mint(user, 'appsync');
+// ---- Clerk tokens: minted server-side by fixtures.py for the whole run, so nothing refreshes them.
+export const apiToken = (user) => user.apiJwt;
+export const appsyncToken = (user) => user.appsyncJwt;
 
 /** One API call as `user`. `name` groups URLs with ids into one metric series. */
 export function api(user, method, path, body, name) {
@@ -165,8 +149,6 @@ export function subscribe(user, cfg, channels, holdMs, on, tickMs) {
       }
     });
     socket.on('error', () => appsyncErrors.add(1, { type: 'socket' }));
-    // Keep this user's 60 s JWTs fresh for the HTTP calls made from inside the socket loop.
-    socket.setInterval(() => { apiToken(user); appsyncToken(user); }, REFRESH_MS);
     if (on.tick) socket.setInterval(on.tick, tickMs);
     socket.setTimeout(() => socket.close(), Math.max(1000, holdMs));
   });

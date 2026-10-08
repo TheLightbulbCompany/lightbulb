@@ -999,6 +999,10 @@ async def authorize_session(
     if row.get("unshared") and (agent or auth.user_id != row["humanUserId"]):
         # A session its owner stopped sharing reads as gone to everyone else, agents included.
         raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
+    if agent and not ((await messaging_repo.get_user_stream(owner, row["humanUserId"])) or {}).get("active"):
+        # Agents reach sessions across the workspace, not through the owner's room seat, so a
+        # removed member's leftover rows must read as gone here (their stream is deactivated).
+        raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
     if agent and not room_id and not await _reachable_from_background(row["humanUserId"]):
         # Spec 2026-10-07-agent-session-approval: background work reaches only the sessions of
         # people who turned that on; for anyone else it reads as gone, like an unshared session.
@@ -1906,6 +1910,10 @@ async def get_agent_receipt(auth: AgentInvocation, session_id: str, request_id: 
     ask = await _get_ask(owner, sid, request_id)
     if ask is None or ask["agentId"] != auth.agent_id:
         raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Command not found.")
+    if ask["status"] == "sent":
+        # Approved, but the worker died before admitting it: the approval stands, so admit it now.
+        await _send_ask(session, ask)
+        return await _receipt_for(owner, sid, await _get_ask(owner, sid, request_id) or ask)
     return _ask_receipt(ask)
 
 

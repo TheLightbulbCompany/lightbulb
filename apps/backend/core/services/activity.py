@@ -416,7 +416,7 @@ async def _render_session_rows(owner_id: str, user_id: str, rows: list[dict], se
             from core.services.local_sessions import _get_ask
 
             if ask := await _get_ask(owner_id, sid, row["requestId"]):
-                items.append(render_agent_ask(ask, session, seen=seen))
+                items.append(render_agent_ask(ask, session, seen=seen, stranded=await _ask_stranded(owner_id, ask)))
             continue
         if state == "join_request":
             items.append(render_join_request(row, session, seen=seen))
@@ -551,13 +551,24 @@ def agent_ask_item_id(session_id: str, request_id: str) -> str:
 _ASK_RESOLVED = {"sent": "Sent", "failed": "Not sent", "declined": "Declined", "expired": "Expired"}
 
 
-def render_agent_ask(ask: dict, session: dict, *, seen: str | None) -> ActivityItem:
+async def _ask_stranded(owner_id: str, ask: dict) -> bool:
+    """Approved (``sent``) but never admitted: the worker died between the two writes."""
+    from core.repositories import local_sessions_repo
+
+    return (
+        ask["status"] == "sent"
+        and await local_sessions_repo.get_command(owner_id, ask["sessionId"], ask["requestId"]) is None
+    )
+
+
+def render_agent_ask(ask: dict, session: dict, *, seen: str | None, stranded: bool = False) -> ActivityItem:
     """An agent's ask to message (or stop) one of the viewer's sessions (spec
-    2026-10-07-agent-session-approval §3.5), open while the ask is pending."""
+    2026-10-07-agent-session-approval §3.5), open while the ask is pending, and while an approved
+    one was never admitted (``stranded``): Send again admits it."""
     from core.services.local_sessions import AGENT_ASK_REASON, agent_ask_title, ask_status
 
     status = ask_status(ask)
-    open_ = status == "pending"
+    open_ = status == "pending" or stranded
     created = datetime.fromtimestamp(ask["createdAt"], tz=timezone.utc)
     actor = ActivityActor(kind="agent", id=ask["agentId"], name=str(ask.get("agentName") or "Your agent"))
     title = agent_ask_title(ask, session)
@@ -581,7 +592,8 @@ def render_agent_ask(ask: dict, session: dict, *, seen: str | None) -> ActivityI
         ),
         actions=[
             ActivityAction(id="send", label="Send", style="primary"),
-            ActivityAction(id="decline", label="Decline"),
+            # A stranded approval was already chosen; only Send (admit it) is left.
+            *([ActivityAction(id="decline", label="Decline")] if status == "pending" else []),
         ]
         if open_
         else [],
@@ -600,7 +612,7 @@ async def _run_agent_ask_action(auth: AuthContext, session_id: str, request_id: 
         ask = await local_sessions._get_ask(owner_id, session_id, request_id) if session else None
         if not ask or session.get("ownerId") != owner_id or session.get("humanUserId") != auth.user_id:
             raise ApiProblem("ACTIVITY_NOT_FOUND", "Activity item not found.")
-        return render_agent_ask(ask, session, seen=None)
+        return render_agent_ask(ask, session, seen=None, stranded=await _ask_stranded(owner_id, ask))
 
     item = await current()
     if item.state != "open":

@@ -212,21 +212,26 @@ async def put_session(row: dict, previous: dict | None, enrollment: dict, *, ext
 def room_conditions(owner: str, human: str, receipt: dict, *, include_meta: bool = True) -> list[dict]:
     """Fence room-originated commands at admission and delivery against both human memberships."""
     room = receipt.get("roomId")
+
+    def active_stream(user: str) -> dict:
+        # Membership removal deactivates this stream; fence the final dispatch on it.
+        return {
+            "ConditionCheck": {
+                "TableName": store._table().name,
+                "Key": {"pk": store.owner_pk(owner), "sk": store.userstream_sk(user)},
+                "ConditionExpression": "active = :active",
+                "ExpressionAttributeValues": {":active": True},
+            }
+        }
+
+    # An agent reaches sessions across the workspace, not through the owner's room seat, so the
+    # session owner must still be a member (spec 2026-10-07-agent-session-approval).
+    owner_check = [active_stream(human)] if (receipt.get("actor") or {}).get("kind") == "agent" else []
     if not room:
         # An offline teammate's old token is not authority at delivery time.
-        # Membership removal deactivates this stream; fence the final dispatch.
         if receipt.get("offlineIdentity") and receipt.get("actorUserId") != human:
-            return [
-                {
-                    "ConditionCheck": {
-                        "TableName": store._table().name,
-                        "Key": {"pk": store.owner_pk(owner), "sk": store.userstream_sk(receipt["actorUserId"])},
-                        "ConditionExpression": "active = :active",
-                        "ExpressionAttributeValues": {":active": True},
-                    }
-                }
-            ]
-        return []
+            return [active_stream(receipt["actorUserId"])]
+        return owner_check
     table = store._table().name
     actor = ("agent", receipt["actor"]["id"]) if "actor" in receipt else ("human", receipt["actorUserId"])
     meta_check = (
@@ -243,18 +248,22 @@ def room_conditions(owner: str, human: str, receipt: dict, *, include_meta: bool
         if include_meta
         else []
     )
-    return meta_check + [
-        {
-            "ConditionCheck": {
-                "TableName": table,
-                "Key": {"pk": store.room_pk(room), "sk": store.member_sk(kind, user)},
-                "ConditionExpression": "attribute_exists(sk)",
+    return (
+        meta_check
+        + owner_check
+        + [
+            {
+                "ConditionCheck": {
+                    "TableName": table,
+                    "Key": {"pk": store.room_pk(room), "sk": store.member_sk(kind, user)},
+                    "ConditionExpression": "attribute_exists(sk)",
+                }
             }
-        }
-        # An agent reaches any shared session in the workspace (spec 2026-10-07-agent-session-approval):
-        # only its own seat in the room it acts from is fenced, not the session owner's.
-        for kind, user in sorted({actor} if actor[0] == "agent" else {("human", human), actor})
-    ]
+            # An agent reaches any shared session in the workspace (spec 2026-10-07-agent-session-approval):
+            # only its own seat in the room it acts from is fenced, not the session owner's.
+            for kind, user in sorted({actor} if actor[0] == "agent" else {("human", human), actor})
+        ]
+    )
 
 
 async def list_commands(owner: str, sid: str) -> list[dict]:

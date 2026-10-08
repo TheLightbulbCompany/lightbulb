@@ -169,9 +169,43 @@ async def test_send_settles_once_and_a_crash_after_the_flip_resumes(asks):
     await service.agent_command(asks.grant(), sid, command(service, requestId="request-3"))
     assert await service._settle_ask(await service._get_ask(OWNER, sid, "request-3"), "sent", ALICE.user_id)
     assert "request-3" not in await _command_ids(sid)
-    assert (await service.get_agent_receipt(asks.grant(), sid, "request-3")).state == "pending"
     assert (await service.decide_agent_ask(ALICE, sid, "request-3", "send")).state == "pending"
     assert (await _command_ids(sid)).count("request-3") == 1
+
+    # Stranded again: Activity keeps it open with Send only, and the agent's own receipt read admits it.
+    from core.services import activity
+
+    await service.agent_command(asks.grant(), sid, command(service, requestId="request-4"))
+    assert await service._settle_ask(await service._get_ask(OWNER, sid, "request-4"), "sent", ALICE.user_id)
+    ask = await service._get_ask(OWNER, sid, "request-4")
+    session = await repo.get_session(OWNER, sid)
+    item = activity.render_agent_ask(ask, session, seen=None, stranded=await activity._ask_stranded(OWNER, ask))
+    assert item.state == "open" and [a.id for a in item.actions] == ["send"]
+    assert (await service.get_agent_receipt(asks.grant(), sid, "request-4")).state == "pending"
+    assert (await _command_ids(sid)).count("request-4") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_removed_members_session_is_gone_to_agents(asks):
+    from core.repositories import messaging_repo
+
+    sid = await registered()
+    caller = asks.grant(ALICE.user_id)
+    receipt = await service.agent_command(caller, sid, command(service))
+    stored = await repo.get_command(OWNER, sid, receipt.request_id)
+    asks.table.update_item(
+        Key={"pk": messaging_repo.owner_pk(OWNER), "sk": messaging_repo.userstream_sk(ALICE.user_id)},
+        UpdateExpression="SET active = :off",
+        ExpressionAttributeValues={":off": False},
+    )
+    with pytest.raises(ApiProblem) as gone:
+        await service.list_events(caller, ROOM, sid)
+    assert gone.value.error.code == "LOCAL_SESSION_NOT_FOUND"
+    # Delivery is fenced in the transaction too, not only at admission.
+    from botocore.exceptions import ClientError
+
+    with pytest.raises(ClientError):
+        await messaging_repo._transact(repo.room_conditions(OWNER, ALICE.user_id, stored))
 
 
 @pytest.mark.asyncio

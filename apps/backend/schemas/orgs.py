@@ -1,14 +1,15 @@
 """Pydantic schemas for the organizations API surface.
 
-The email-invitation schemas that used to live here are gone with the endpoint
-(``POST /orgs/{org_id}/invitations``). Billing is per workspace, not per seat —
-a workspace is one shared container with unlimited members — so an email+role
-invitation was modelling a seat grant that does not exist. What replaced it is a
-single shareable join link per workspace; everyone who redeems it joins as
-``org:member``, which is why no schema here carries a role.
+Two ways in, both as ``org:member`` (which is why no schema here carries a
+role): ONE shareable join link per workspace, and email invitations. Email
+invitations were removed on 2026-09-10 with per-seat billing (an email+role
+invite modelled a seat grant) and came back on 2026-10-08 next to the link:
+billing is per workspace now, so that reason is gone.
 """
 
-from pydantic import BaseModel, Field
+from typing import Literal
+
+from pydantic import BaseModel, EmailStr, Field
 
 
 class JoinLinkStatus(BaseModel):
@@ -50,3 +51,25 @@ class RedeemJoinLinkResponse(BaseModel):
     org_id: str
     org_name: str = ""
     org_slug: str = ""
+
+
+class CreateInvitationRequest(BaseModel):
+    """Body for POST /api/v1/orgs/{org_id}/invitations. Lower-cased by the service."""
+
+    email: EmailStr
+
+
+class Invitation(BaseModel):
+    """A pending Clerk email invitation. Timestamps are ISO 8601 UTC."""
+
+    id: str
+    email: str
+    created_at: str
+    expires_at: str | None = None
+    status: Literal["pending"] = "pending"
+
+
+class InvitationList(BaseModel):
+    """Pending invitations only, newest first."""
+
+    invitations: list[Invitation]

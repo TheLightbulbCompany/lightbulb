@@ -393,6 +393,8 @@ export interface LocalSession {
   screenAvailable?: boolean;
   /** An ended session that was held: its kept screen may still be on its way from the Mac. */
   wasHeld?: boolean;
+  /** Its person ended it on purpose (End, the tool's own exit): no list shows it; a read by id still does. */
+  endedOnPurpose?: boolean;
   /** The session this one continues: a Claude session moved to the background (←) forks a new one. */
   forkedFrom?: string;
   /** Harness-derived: Claude ai-title or listing name, Codex first prompt. */

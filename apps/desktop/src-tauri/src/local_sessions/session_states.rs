@@ -21,6 +21,8 @@ use std::time::{Duration, Instant};
 static READS_ENDED_SCREENS: AtomicBool = AtomicBool::new(false);
 /// The relay lists `terminalReason`.
 static READS_TERMINAL_REASON: AtomicBool = AtomicBool::new(false);
+/// The relay lists `endedOnPurpose`: an end may say `reason: "on-purpose"`.
+static READS_ON_PURPOSE: AtomicBool = AtomicBool::new(false);
 /// `DeviceHeartbeat.screens`' cap on the relay.
 const SCREENS_MAX: usize = 24;
 /// How often holders no mirror names are looked for.
@@ -108,6 +110,26 @@ pub(super) fn read_features(listed: &Value) {
     let (screens, reason) = features(listed);
     READS_ENDED_SCREENS.store(screens, SeqCst);
     READS_TERMINAL_REASON.store(reason, SeqCst);
+    READS_ON_PURPOSE.store(listed.as_array().is_some_and(|f| f.iter().any(|x| x == "endedOnPurpose")), SeqCst);
+}
+
+/// The reason `local.session.ended` gives. "on-purpose" when its person ended it: the provider's
+/// own exit (`lifecycle::ON_PURPOSE`), or End asked of its holder at or before the end. Only for a
+/// relay that reads it; an older one hears "exited" (or "process-exited") as before.
+pub(super) fn end_reason(mirror: &Mirror) -> &str {
+    end_reason_if(READS_ON_PURPOSE.load(SeqCst), mirror, &manager::end_asked)
+}
+
+fn end_reason_if<'a>(reads: bool, mirror: &'a Mirror, asked: &impl Fn(&str) -> Option<u64>) -> &'a str {
+    let on_purpose = super::lifecycle::ON_PURPOSE;
+    let stored = mirror.ended_reason.as_deref().unwrap_or("exited");
+    let purposeful = stored == on_purpose
+        || mirror.native.holder.as_deref().and_then(asked).is_some_and(|at| mirror.ended_at.is_some_and(|ended| ended >= at));
+    match (purposeful && reads, stored == on_purpose) {
+        (true, _) => on_purpose,
+        (false, true) => "exited",
+        (false, false) => stored,
+    }
 }
 
 #[cfg(test)]
@@ -364,6 +386,29 @@ mod tests {
         m.ended_at = Some(at);
         m.ended_at_ms = Some(at * 1000);
         m
+    }
+
+    #[test]
+    fn an_end_is_on_purpose_only_for_the_tools_own_exit_or_an_end_asked_of_its_holder() {
+        let none = |_: &str| None;
+        let asked = |id: &str| (id == "h1").then_some(100);
+        let mut left = ended("h1", 100, SID);
+        left.ended_reason = Some("on-purpose".into());
+        assert_eq!(end_reason_if(true, &left, &none), "on-purpose", "`/exit`");
+        assert_eq!(end_reason_if(false, &left, &none), "exited", "an older relay refuses a reason it does not know");
+        let mut hung_up = ended("h1", 100, SID);
+        hung_up.ended_reason = Some("exited".into());
+        assert_eq!(end_reason_if(true, &hung_up, &none), "exited", "a closed terminal, a kill or a shutdown");
+        assert_eq!(end_reason_if(true, &hung_up, &asked), "on-purpose", "End");
+        let mut killed = ended("h1", 105, SID);
+        killed.ended_reason = Some("process-exited".into());
+        assert_eq!(end_reason_if(true, &killed, &asked), "on-purpose", "End, and the provider had to be killed");
+        assert_eq!(end_reason_if(false, &killed, &asked), "process-exited");
+        assert_eq!(end_reason_if(true, &killed, &none), "process-exited", "a crash");
+        // A conversation that left this holder before End was asked did not end by it.
+        let mut earlier = ended("h1", 99, SID);
+        earlier.ended_reason = Some("exited".into());
+        assert_eq!(end_reason_if(true, &earlier, &asked), "exited");
     }
 
     fn keys(kept: &[(&str, &Mirror)]) -> Vec<String> {

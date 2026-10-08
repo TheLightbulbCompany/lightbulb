@@ -798,9 +798,11 @@ export function MessagingWorkspaceProvider({
     } : undefined,
     // Nothing leaves the list until the server has removed it: a refusal (it resumed meanwhile, the network)
     // rejects here, and the button that asked says so. The panel showing the session closes itself (SessionFocus).
+    // A running session is ended first and removed when its Mac has stopped it: its row stays, as running,
+    // until the list hears of that end.
     onRemoveSession: async (sessionId) => {
       await rooms.resourceSource.client.removeLocalSession(sessionId);
-      workspaceSessions.forget((session) => session.sessionId === sessionId);
+      workspaceSessions.forget((session) => session.sessionId === sessionId && session.status === "ended");
     },
     onRemoveEndedSessions: async () => {
       try { await rooms.resourceSource.client.removeEndedLocalSessions(); }

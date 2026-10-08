@@ -63,10 +63,24 @@ pub fn stop(pid: u32) {
     unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGTERM) };
 }
 
+/// Holder id -> when its person asked it to end (unix s). `end` is the one door for that: the
+/// panel's End, and the owner's End from another device.
+// ponytail: this app run only; an end reported after a relaunch is a plain "exited" (it stays listed).
+static END_ASKED: std::sync::Mutex<std::collections::BTreeMap<String, u64>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// When this holder's person asked it to end (`end`), if they did.
+pub fn end_asked(id: &str) -> Option<u64> {
+    END_ASKED.lock().ok()?.get(id).copied()
+}
+
 /// End the session a holder runs and keep its last picture: the holder ends its provider itself
 /// (END) and then shows the final screen, as after `/exit`. A holder from a build before END is
 /// stopped, as End always did; its screen goes with it (false). Blocks for up to 2 s.
 pub fn end(info: &HolderInfo) -> bool {
+    if let Ok(mut asked) = END_ASKED.lock() {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        asked.entry(info.id.clone()).or_insert(now);
+    }
     let kept = ask_end(&info.socket);
     if !kept {
         stop(info.pid);

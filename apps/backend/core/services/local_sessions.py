@@ -272,6 +272,9 @@ class LocalSession(ContractModel):
     # An ended session that was held: its kept screen may still be reported (the Mac does that on
     # its first heartbeat after the provider exits), so a viewer waits before saying it is gone.
     was_held: bool | None = None
+    # Its person ended it on purpose (End, the provider's own exit): no list shows it, a read by id
+    # still does, for a panel that was open on it. Absent otherwise.
+    ended_on_purpose: bool | None = None
     # The session this one continues: a Claude session moved to the background (<-) is a fork.
     forked_from: OpaqueId | None = None
     # False while the owner has paused sharing this one session: only they can see it.
@@ -342,6 +345,7 @@ class LocalSession(ContractModel):
                 "terminal_reason",
                 "screen_available",
                 "was_held",
+                "ended_on_purpose",
                 "forked_from",
                 "model",
                 "display_title",
@@ -681,6 +685,29 @@ def ended_empty(provider: str, status: str, event_seq: int, control_unavailable_
     return provider == "claude" and status == "ended" and event_seq == 0 and control_unavailable_reason is None
 
 
+#: `endedReason` of a session its person ended on purpose. The relay writes it (`_ended`).
+ENDED_ON_PURPOSE = "on-purpose"
+
+
+async def landed_ends(owner: str, row: dict) -> list[dict]:
+    """The owner's End commands for this run that reached its Mac: sent there, and neither refused
+    nor left unanswered (`unknown`) by it. Any one makes the end on purpose; one that
+    `remove_session` sent (`removesOnEnd`) makes the end a removal too."""
+    return [
+        command
+        for command in await repo.list_commands(owner, row["sessionId"])
+        if command.get("kind") == "end"
+        and command.get("expectedGeneration") == row["generation"]
+        and command.get("state") in {"dispatched", "applied"}
+    ]
+
+
+def owner_auth(row: dict) -> AuthContext:
+    """The session's own human, for work the relay finishes in their name."""
+    owner, user = row["ownerId"], row["humanUserId"]
+    return AuthContext(user_id=user, org_id=owner if owner != user else None)
+
+
 def _without_moved(found: list[LocalSession]) -> list[LocalSession]:
     """A stopped session that a later one of the same person continues (`forkedFrom`) is listed once:
     as that later one. Offline counts as stopped: a Mac still draining an ended origin re-registers it
@@ -695,7 +722,12 @@ def _without_moved(found: list[LocalSession]) -> list[LocalSession]:
     stays readable by id, for a panel that is open on it. Not one that had a live terminal
     (`wasHeld`): a held session's first events take 40-60 s to reach us, so one ended in its first
     minute reads as zero events while people were watching real work in it (prod 2026-10-08). The
-    two cannot be told apart from here, so a held session is always listed; its owner can remove it."""
+    two cannot be told apart from here, so a held session is listed; its owner can remove it.
+
+    A session its person ended on purpose (`endedOnPurpose`: End, the provider's own exit) is not
+    listed at all (owner ruling 2026-10-08), whatever it holds. It still counts as the later one of
+    its origin, so ending a fork on purpose does not put the origin back. One that ended any other
+    way (the process died, a closed terminal, a shutdown) stays, so its owner can resume it."""
     ids = {(s.human_user_id, s.session_id) for s in found}
     empty = {
         (s.human_user_id, s.session_id)
@@ -711,6 +743,7 @@ def _without_moved(found: list[LocalSession]) -> list[LocalSession]:
         s
         for s in found
         if (s.human_user_id, s.session_id) not in empty
+        and not s.ended_on_purpose
         and not (ended_empty(s.provider, s.status, s.latest_event_seq, s.control_unavailable_reason) and not s.was_held)
         and not (s.status in ("ended", "offline") and (s.human_user_id, s.session_id) in moved)
     ]
@@ -737,6 +770,8 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
         public["screenAvailable"] = True
     if public["status"] == "ended" and session_terminal(row) == "held":
         public["wasHeld"] = True
+    if public["status"] == "ended" and row.get("endedReason") == ENDED_ON_PURPOSE:
+        public["endedOnPurpose"] = True
     reason = public.pop("terminalReason", None)
     if public["status"] not in ("ended", "offline") and public["terminal"] is None and reason:
         public["terminalReason"] = reason
@@ -1318,6 +1353,8 @@ async def referenced_sessions(owner: str, members: list[dict], session_ids: list
                 or row.get("ownerId") != owner
                 or row.get("unshared")
                 or row.get("removedAt") is not None
+                # Ended on purpose: no list shows it, so an agent is not told of it either.
+                or (row.get("endedAt") is not None and row.get("endedReason") == ENDED_ON_PURPOSE)
                 or row.get("kind") == "background"
                 or row.get("humanUserId") not in humans
             ):
@@ -1562,6 +1599,7 @@ async def submit_command(
     room_meta_fenced_by_extra: bool = False,
     replaces_request_id: str | None = None,
     via_client: str | None = None,
+    remove_on_end: bool = False,
 ) -> CommandReceipt:
     owner = caller_owner(auth)
     # A roomless command is stored with roomId "": current desktops require the field as a string.
@@ -1728,6 +1766,8 @@ async def submit_command(
                 else {}
             ),
             **({"nativeHop": native_hop} if native_hop is not None else {}),
+            # An "End and remove" (`remove_session`): server-side only, read at the run's end.
+            **({"removesOnEnd": True} if remove_on_end else {}),
             **({"replacesRequestId": replaces_request_id} if replaces_request_id else {}),
             # A hosted MCP client sending on its person's authority: the label names both.
             **({"viaClient": via_client} if via_client else {}),
@@ -3095,23 +3135,50 @@ async def delete_link(auth: AuthContext, session_id: str, *, removed_only: bool 
 
 
 async def remove_session(auth: AuthContext, session_id: str, *, hint: bool = True) -> None:
-    """The owner takes one of their ENDED sessions off every list. A stamp (`removedAt`), not a
+    """The owner takes one of their sessions off every list. A stamp (`removedAt`), not a
     delete: events, receipts, audit rows, the chat and the Mac's own mirror all hang off this row,
     and the stamp makes `authorize_session` (and the public link door) answer "not found" at once.
     The stamp is the commit point, fenced on the row still being ended: a resume that lands first
-    wins, this answers 409, and the live session keeps its link and snapshot. Only then are the
-    link and the pick-up snapshot turned off, and the chat emptied of everyone but the owner; a
-    repeat call finishes a cleanup that failed part-way. Starting the conversation again on the
-    Mac registers a new run and lists it again. Idempotent."""
-    from core.services import session_chat  # lazy: it imports this module
-    from core.services.local_session_relay import publish_resources_changed
+    wins. Only then are the link and the pick-up snapshot turned off, and the chat emptied of
+    everyone but the owner (`finish_removal`); a repeat call finishes a cleanup that failed
+    part-way. Starting the conversation again on the Mac registers a new run and lists it again.
+    Idempotent.
 
+    A LIVE session is ended first (owner ruling 2026-10-08: remove ends it): the owner's End goes
+    to its Mac, marked `removesOnEnd`. The relay stamps `removedAt` when that run's end arrives,
+    and only if such an End reached the Mac and was not refused (`landed_ends`); a refused,
+    expired or unanswered End leaves the session listed and running, and nothing on the row says
+    a removal was asked. Only what End can stop: an offline Mac, a Codex app thread or a Claude
+    background session is refused here (no command waits for a Mac to come back; End has 30 s to
+    arrive)."""
+    was_ended = False
     for _ in range(6):
         row = await _owned_session(auth, session_id, "remove")
         if row.get("removedAt") is not None:
             break
-        if row.get("endedAt") is None:
-            raise ApiProblem("LOCAL_SESSION_CONFLICT", "End this session before you remove it.")
+        live = row.get("endedAt") is None
+        if live and was_ended:
+            # It was ended when the owner asked; a resume landed first. That run is not ended for them.
+            raise ApiProblem("LOCAL_SESSION_CONFLICT", "This session started again. Remove it once more to end it.")
+        was_ended = not live
+        if live:
+            end = LocalSessionCommand(request_id=str(uuid.uuid4()), expected_generation=row["generation"], kind="end")
+            try:
+                _require_control(row, end)
+                await submit_command(auth, None, session_id, end, remove_on_end=True)
+            except ApiProblem as exc:
+                current = await repo.get_session(row["ownerId"], row["sessionId"])
+                if current is not None and current.get("endedAt") is not None:
+                    was_ended = True  # it ended meanwhile: remove the ended row
+                    continue
+                if exc.error.code != "LOCAL_SESSION_OFFLINE":
+                    raise
+                raise ApiProblem(
+                    "LOCAL_SESSION_OFFLINE",
+                    "This session's Mac is offline, so it cannot be stopped from here. "
+                    "Remove it when the Mac is back online, or end it on that Mac.",
+                ) from exc
+            return
         try:
             await messaging_repo._transact(
                 [
@@ -3140,7 +3207,19 @@ async def remove_session(auth: AuthContext, session_id: str, *, hint: bool = Tru
         break
     else:
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
-    # On every call, not only the one that stamped: a retry after a failed cleanup finishes it.
+    await finish_removal(auth, session_id, hint=hint)
+
+
+async def finish_removal(auth: AuthContext, session_id: str, *, hint: bool = True) -> None:
+    """What follows the `removedAt` stamp: the link, the pick-up snapshot, the chat. On every
+    call, not only the one that stamped: a repeat DELETE after a failed cleanup finishes it. The
+    doors do not wait for it: `authorize_session`, the public link door, a session chat's member
+    door (`messaging.require_room_member`) and every post into that chat
+    (`messaging_repo.create_message`) refuse a removed row on their own."""
+    from core.services import session_chat  # lazy: it imports this module
+    from core.services.local_session_relay import publish_resources_changed
+
+    row = await _owned_session(auth, session_id, "remove")
     await delete_link(auth, session_id, removed_only=True)
     # The chat is emptied only while the row is still removed: a new run that registered since
     # the stamp cleared it and reopened the chat, and its readers keep their seats.

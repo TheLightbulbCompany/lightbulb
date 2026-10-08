@@ -78,7 +78,10 @@ export interface MessagingClient {
   listWorkspaceSessions(options?: { includeEnded?: boolean }): Promise<WorkspaceSessions>;
   /** One session, ended included -- the list keeps only live ones. 404s LOCAL_SESSION_NOT_FOUND otherwise. */
   getLocalSession(sessionId: string): Promise<LocalSession>;
-  /** Owner only: take one ENDED session off every list (409 while it is live). Its link stops and nobody can open or resume it. */
+  /**
+   * Owner only: take one session off every list. Its link stops and nobody can open or resume it. A running one is
+   * ended on its Mac first and leaves the list when it has stopped (409 when its Mac is offline or it cannot be ended from here).
+   */
   removeLocalSession(sessionId: string): Promise<void>;
   /** Every ended session of the caller's own, the same way. The server removes 100 per call; this asks again until it is done (at most 10 calls). */
   removeEndedLocalSessions(): Promise<{ removed: number }>;

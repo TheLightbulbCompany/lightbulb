@@ -128,6 +128,7 @@ FEATURES = [
     "terminalReason",
     "endedStartId",
     "agentMessageAsks",
+    "endedOnPurpose",
 ]
 
 
@@ -170,7 +171,9 @@ class Ended(ContractModel):
     type: Literal["local.session.ended"]
     session_id: sessions.OpaqueId
     generation: sessions.OpaqueId
-    reason: Literal["exited", "process-exited"]
+    # "on-purpose": the Mac saw its person end it (the provider's own exit, or End on its holder).
+    # Sent only once FEATURES lists endedOnPurpose; an older desktop says "exited" for those too.
+    reason: Literal["exited", "process-exited", "on-purpose"]
     ended_at: int = Field(ge=0)
     # The holder keeps the final screen (spec §5.4). Sent only once FEATURES lists endedScreens.
     screen: bool = False
@@ -1015,8 +1018,18 @@ class LocalSessionRelay:
         # A device clock ahead of the server cannot park a session in the future,
         # where it would outrank every live row in a lastEventAt ordering.
         ended_at = min(message.ended_at, int(time.time()))
-        updated = _revised(row, status="ended", endedAt=ended_at, lastEventAt=ended_at, endedReason=message.reason)
-        if message.screen and sessions.session_terminal(row) == "held":
+        # On purpose (owner ruling 2026-10-08): the Mac said so, or the owner's End for this run
+        # reached that Mac. Facts only; "exited" alone also covers a closed terminal and a shutdown.
+        ends = await sessions.landed_ends(owner, row)
+        reason = sessions.ENDED_ON_PURPOSE if ends else message.reason
+        updated = _revised(row, status="ended", endedAt=ended_at, lastEventAt=ended_at, endedReason=reason)
+        # "End and remove" (`sessions.remove_session` on a live run): this end is its removal.
+        # Only if an End it sent reached the Mac and was not refused; else the session stays listed.
+        removing = any(command.get("removesOnEnd") for command in ends)
+        if removing:
+            updated["removedAt"] = int(time.time())
+            updated.pop("resume", None)
+        if message.screen and sessions.session_terminal(row) == "held" and not removing:
             # The holder keeps the final screen; the Mac's `screens` heartbeats renew this lease.
             updated["screenUntil"] = int(time.time()) + LIVENESS_SECONDS
             updated["screenConnectionId"] = cid
@@ -1035,7 +1048,7 @@ class LocalSessionRelay:
             extra.append({"Put": {"TableName": store._table().name, "Item": audit}})
         # Who may resume it (spec §5.7): the people who could send when it ended. Team control is a
         # switch on the run, not a person the owner let in, so it lets nobody resume.
-        resumers = sessions.allowed_senders(row)
+        resumers = [] if removing else sessions.allowed_senders(row)
         if resumers:
             updated["resumeAllowed"] = resumers
         # So do the people the owner let in, and every open ask to join.
@@ -1045,11 +1058,16 @@ class LocalSessionRelay:
         for key in sessions.JOIN_FIELDS:
             updated.pop(key, None)
         await repo.put_session(updated, row, enrollment, extra=extra)
-        _capture_lifecycle(updated, "local_session_ended", end_reason=message.reason)
+        _capture_lifecycle(updated, "local_session_ended", end_reason=reason)
         from core.services import session_chat  # lazy: it imports local_sessions
 
         try:
-            await session_chat.follow_session(owner, row["sessionId"])
+            if removing:
+                # The link, the pick-up snapshot and the chat. The doors refuse a removed row on
+                # their own, so a failure here leaves only stored leftovers nobody can reach.
+                await sessions.finish_removal(sessions.owner_auth(row), row["sessionId"], hint=False)
+            else:
+                await session_chat.follow_session(owner, row["sessionId"])
         except Exception:  # the next chat open archives it too (session_chat._follow_lifecycle)
             logger.warning("session chat archive failed for %s", row["sessionId"], exc_info=True)
         await publish_resources_changed(owner, row["humanUserId"])

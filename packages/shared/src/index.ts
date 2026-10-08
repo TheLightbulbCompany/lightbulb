@@ -221,7 +221,7 @@ export type { FileChange, PlanStatus, PlanStep } from "./messaging/localSessionO
 export { accessLost, useHistorySource, useLocalSessionHistory } from "./messaging/useLocalSessionHistory";
 export type { SessionSource } from "./messaging/useLocalSessionHistory";
 export { useWorkspaceSessions } from "./messaging/useWorkspaceSessions";
-export { canSendToSession, markSessionsSeen, sendBlockedReason, SESSION_ARCHIVE_AFTER_MS, SIDEBAR_SESSION_CAP, sessionArchived, sessionHistory, sessionLabel, sessionLive, sessionMatches, sessionStatus, sessionTitle, sessionToolName, sessionUnread, sessionViewKey, unavailableReason, workspaceSections } from "./messaging/localSessionLabels";
+export { canSendToSession, markSessionsSeen, sendBlockedReason, SESSION_ARCHIVE_AFTER_MS, SIDEBAR_SESSION_CAP, sessionArchived, sessionEndable, sessionHistory, sessionLabel, sessionLive, sessionMatches, sessionStatus, sessionTitle, sessionToolName, sessionUnread, sessionViewKey, unavailableReason, workspaceSections } from "./messaging/localSessionLabels";
 export type { SessionDayGroup, SessionSeen, WorkspaceSection } from "./messaging/localSessionLabels";
 export { sessionScreenNotice, terminalStateReason } from "./messaging/sessionStates";
 export { agentRingState, mergeChats, roomActivityAt, roomPreview, sessionActivityAt, sessionPreview, sessionRingState } from "./messaging/chatList";

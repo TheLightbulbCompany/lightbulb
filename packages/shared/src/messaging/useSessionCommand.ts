@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ApiError } from "../api/error";
-import { canSendToSession, sessionLive } from "./localSessionLabels";
+import { canSendToSession, sessionEndable } from "./localSessionLabels";
 import type { LocalSession, LocalSessionCommand, LocalSessionCommandReceipt, LocalSessionEvent } from "./types";
 import type { SessionControlClient } from "./sessionControls";
 import { accessLost, type SessionSource } from "./useLocalSessionHistory";
@@ -147,11 +147,8 @@ export function useSessionCommand(
   const active = session.status === "busy" && !!session.activeTurnId && canSend;
   const canSteer = active && session.capabilities.steer;
   const canInterrupt = active && session.capabilities.interrupt && allowInterrupt;
-  // The owner's alone, and only while the Mac mirrors it: a session Lightbulb holds, or a plain Claude.
-  // A Codex app or daemon process hosts many conversations, so it cannot be ended alone.
-  // A Claude background session belongs to Claude's daemon.
-  const canEnd = allowEnd && sessionLive(session)
-    && (session.terminal === "held" || (session.provider === "claude" && session.kind !== "background"));
+  // The owner's alone, and only while the Mac mirrors it (`sessionEndable`).
+  const canEnd = allowEnd && sessionEndable(session);
   const unknownCurrent = attempt?.receipt?.state === "unknown" && attempt.receipt.expectedGeneration === session.generation;
   const locked = checking || attempt?.state === "sending" || attempt?.state === "uncertain" || unknownCurrent;
 

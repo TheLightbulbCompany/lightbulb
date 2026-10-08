@@ -892,7 +892,7 @@ impl Host {
             };
             let mut frame = json!({"type":"local.session.ended","sessionId":session,
                 "generation":mirror.generation,
-                "reason":mirror.ended_reason.as_deref().unwrap_or("exited"),
+                "reason":super::session_states::end_reason(mirror),
                 "endedAt":ended_at});
             // The draining register of an ended mirror carries no start identity. A relay that
             // has never heard this generation's (the whole run was offline) learns it here.

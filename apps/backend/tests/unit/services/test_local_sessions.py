@@ -1299,7 +1299,7 @@ async def test_list_resources_lists_an_ended_origin_once_as_its_fork(db):
 
 
 def test_a_session_that_ended_before_its_first_message_is_not_listed():
-    def s(sid, status, seq, reason=None, provider="claude", held=None):
+    def s(sid, status, seq, reason=None, provider="claude", held=None, on_purpose=None, forked_from=None):
         return service.LocalSession.model_construct(
             session_id=sid,
             human_user_id="alice",
@@ -1308,6 +1308,8 @@ def test_a_session_that_ended_before_its_first_message_is_not_listed():
             latest_event_seq=seq,
             control_unavailable_reason=reason,
             was_held=held,
+            ended_on_purpose=on_purpose,
+            forked_from=forked_from,
         )
 
     found = [
@@ -1321,6 +1323,13 @@ def test_a_session_that_ended_before_its_first_message_is_not_listed():
         # It had a live terminal: its first events take up to a minute to arrive, so zero events
         # does not mean nothing happened in it.
         s("held", "ended", 0, held=True),
+        # Ended on purpose (owner ruling 2026-10-08): never listed, whatever it holds.
+        s("left", "ended", 3, on_purpose=True),
+        s("left-held", "ended", 0, held=True, on_purpose=True),
+        s("left-codex", "ended", 0, provider="codex", on_purpose=True),
+        # A fork ended on purpose still stands in for its origin: the origin does not come back.
+        s("origin", "ended", 5),
+        s("fork", "ended", 2, on_purpose=True, forked_from="origin"),
     ]
     assert [x.session_id for x in service._without_moved(found)] == ["starting", "used", "unread", "codex", "held"]
 

@@ -1139,6 +1139,38 @@ async def create_message(
                         }
                     }
                 )
+            session = meta.get("session")
+            session_at = None
+            if session:
+                # A session's chat takes no post, from a person or an agent, once its owner removed
+                # the session (`local_sessions.remove_session`), whatever of its cleanup is still owed.
+                session_key = {"pk": f"LOCALSESSION#{meta['ownerId']}#{session['sessionId']}", "sk": "META"}
+                # The session posting into its own chat already checks this row (an extra
+                # condition), and one transaction may name an item once: that check carries it.
+                removed = "attribute_not_exists(removedAt)"
+                session_at = next(
+                    (i for i, item in enumerate(items) if item.get("ConditionCheck", {}).get("Key") == session_key),
+                    None,
+                )
+                if session_at is None:
+                    session_at = len(items)
+                    items.append(
+                        {
+                            "ConditionCheck": {
+                                "TableName": table_name,
+                                "Key": session_key,
+                                "ConditionExpression": removed,
+                            }
+                        }
+                    )
+                else:
+                    check = items[session_at]["ConditionCheck"]
+                    items[session_at] = {
+                        "ConditionCheck": {
+                            **check,
+                            "ConditionExpression": f"({check['ConditionExpression']}) AND {removed}",
+                        }
+                    }
             try:
                 await _transact(items)
                 return _plain(message), False
@@ -1146,6 +1178,13 @@ async def create_message(
                 if not _is_cancelled(exc):
                     raise
                 reasons = exc.response.get("CancellationReasons", [])
+                if (
+                    session_at is not None
+                    and len(reasons) > session_at
+                    and reasons[session_at].get("Code") == "ConditionalCheckFailed"
+                    and ((await _get(session_key["pk"], "META")) or {}).get("removedAt")
+                ):
+                    raise RoomNotFound(room_id) from exc
                 if (
                     (not system or acting_human_id)
                     and len(reasons) > 1

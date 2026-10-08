@@ -40,7 +40,7 @@ LEAD = 10.0  # the worker is in the room this long before scenario second 0
 ROSTER = ("Friday", "Forge", "Tally", "Pulse", "Gauge", "Vera", "Atlas")  # the rig workspace's agents
 PROFILES = ("current", "fast-eot")  # `Model`
 RIG_QUIET_S = 0.6  # rig.py: agent audio below its threshold this long ends a burst
-FIRST_SOUND_S = 3.0  # agent.py: a unit with no audible audio this long is stopped and reported silent
+FIRST_SOUND_S = 1.0  # agent.py: a unit with no audible audio this long is stopped and reported silent
 P_RUN_SLOW, P_RUN_NEVER = 0.12, 0.06  # `Model.run`
 P_WINDOW_SLOW = 0.1  # `Model.window`
 
@@ -323,7 +323,7 @@ class Mouth:
                     break
                 outcome = await self._speak(order, index, unit)
                 if outcome != "said":
-                    failed = outcome == "silent"
+                    failed = outcome in ("silent", "long")
                     break
             h.on_playback_ended(self.agent_id, order, failed)
 
@@ -347,7 +347,7 @@ class Mouth:
             await asyncio.sleep(0.1 + m.stop())
             outcome = "revoked"
         elif m.silent():  # quiet frames and no sound (0.8-1.8 s), or nothing at all until agent.py stops it
-            took = m.u("silent_took", 0.8, 1.8, (0.25, FIRST_SOUND_S, FIRST_SOUND_S))
+            took = min(FIRST_SOUND_S, m.u("silent_took", 0.8, 1.8, (0.25, FIRST_SOUND_S, FIRST_SOUND_S)))
             outcome = "cut" if await self._wait(took - (sim.now() - began)) else "silent"
         else:
             h.on_agent_state(self.agent_id, "speaking")
@@ -516,6 +516,7 @@ class Sim:
         self._steered: dict[int | None, int] = {}  # scenario line -> how often /route steered a run with it
         self._tasks: set[asyncio.Task] = set()
         self._mouths = 0
+        self._kept: dict[str, Mouth] = {}  # agent.py `start_live`: an agent's mouth is opened once in a call
         if recording:
             self._routes = {}
             for c in recording.calls("route"):
@@ -783,9 +784,14 @@ class Sim:
         return ""
 
     async def _live(self, *, agent_id, persona, voice, speaker, seed) -> Mouth:
-        await asyncio.sleep(self.model.open())
+        opening = self.model.open()  # dealt also when it is not waited for: the replay's other delays stay as dealt
+        if (m := self._kept.get(agent_id)) is not None and m._closed is not None:
+            m._opened, m._closed = self.now(), None
+            return m
+        await asyncio.sleep(opening)
         self._mouths += 1
-        return Mouth(self, agent_id, self._mouths)
+        m = self._kept[agent_id] = Mouth(self, agent_id, self._mouths)
+        return m
 
     # -- the call --
 

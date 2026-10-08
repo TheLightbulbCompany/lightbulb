@@ -154,7 +154,8 @@ MEET_SPAN_MAX_S = 30
 # span lasts until someone else's `on`, its own `off` or its `leave`, however long that is (a presentation).
 MEET_SHARE_S = 1.0  # a second speaker is named on a line only when they spoke this long in it
 # a meeting voice closes this long after its last word or its speaker's last line to it (the session is billed
-# by the second). What its agent still has to say is in the room's ledger, not in the voice.
+# by the second). What its agent still has to say is in the room's ledger, not in the voice. A mouth's session
+# outlives its voice: agent.py keeps it open for the call, so the next voice of that agent opens at once.
 MEET_FOLLOWUP_S = 10.0
 # a ready answer waits for a real pause in a meeting, not a breath between two sentences (Live: REQUEST_QUIET_S)
 # No wait reserves the silence a sentence needs: a 5.8 s sentence does not fit a 6.8 s pause once 3 s of it
@@ -2182,9 +2183,10 @@ class Huddle:
     def on_unit(self, agent_id: str, order: int | None, index: int, text: str, outcome: str, evidence: dict) -> None:
         """A mouth's receipt for one unit it began, by the order and unit it was for, with what went to the
         track. `said`: audible audio played to its end, and only that moves the cursor. `cut`, `revoked`:
-        stopped by the worker. `silent`: it ended uncut and nothing audible was sent. That is a failed
-        playback: the unit is not said, and its order's end returns the utterance to be tried again
-        (`on_playback_ended`).
+        stopped by the worker. `silent`: nothing audible was sent. `long`: far more sound than its words
+        need, and the mouth stopped it. Both are a failed playback (the evidence says `why`): the unit is not
+        said, and its order's end returns the utterance to be tried again at once, at the same cursor
+        (`on_playback_ended`), PLAYBACK_TRIES times at most. `attempt` in the log: which try this was.
 
         Delivery is counted from `said` alone. What was audible of a cut unit (`_audible`) is an estimate:
         it goes on the record as a marked piece and in the log, and moves nothing."""
@@ -2192,10 +2194,10 @@ class Huddle:
         heard, share = (None, 1.0) if outcome == "said" else self._audible(text, evidence) if outcome == "cut" else (None, 0.0)
         self._log(
             "receipt", outcome=outcome, agent=agent_id, order=order, unit=index, utterance=u.id if u else None,
-            share=round(share, 2), **evidence,
+            share=round(share, 2), attempt=u.tries + 1 if u else None, **evidence,
         )  # fmt: skip
-        if outcome == "silent":
-            emit_metric("live.speech.silent_unit", 1, "Count")
+        if outcome in ("silent", "long"):
+            emit_metric(f"live.speech.{outcome}_unit", 1, "Count")
         if outcome == "said":
             self._spoken[0] += len(text)
             self._spoken[1] += evidence.get("loudMs", 0) / 1000

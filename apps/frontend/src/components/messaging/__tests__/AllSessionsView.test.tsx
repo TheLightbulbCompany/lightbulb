@@ -29,3 +29,25 @@ it("groups every session by day, newest first, searches, and opens one", async (
   await userEvent.type(within(view).getByRole("searchbox", { name: "Search sessions" }), "zzz");
   expect(within(view).getByText("No sessions match.")).toBeInTheDocument();
 });
+
+it("offers Remove on the viewer's own ended sessions only, one by one or all at once", async () => {
+  const onRemove = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValue(undefined);
+  const onRemoveEnded = vi.fn().mockResolvedValue(undefined);
+  const mine = (id: string, title: string, status: "busy" | "ended") => ({ ...make(id, title, status, 1), own: true, ownerName: "You" });
+  render(<AllSessionsView loading={false} onOpenSession={vi.fn()} onClose={vi.fn()} onRemove={onRemove} onRemoveEnded={onRemoveEnded} entries={[
+    mine("a", "Old test", "ended"), mine("b", "Older test", "ended"), mine("live", "Running", "busy"), make("theirs", "Alice's", "ended", 2),
+  ]} />);
+  expect(screen.getAllByRole("button", { name: /Remove .* from the list/ }).map((b) => b.getAttribute("aria-label"))).toEqual([
+    "Remove Old test from the list", "Remove Older test from the list"]);
+  await userEvent.click(screen.getByRole("button", { name: "Remove Old test from the list" }));
+  const confirm = screen.getByRole("dialog", { name: "Remove this session from the list?" });
+  await userEvent.click(within(confirm).getByRole("button", { name: "Remove" }));
+  expect(onRemove).toHaveBeenCalledWith("a");
+  // A failure keeps the confirmation open and says so; a second try goes through.
+  expect(await within(confirm).findByRole("alert")).toHaveTextContent("Could not remove it. Try again.");
+  await userEvent.click(within(confirm).getByRole("button", { name: "Remove" }));
+  expect(onRemove).toHaveBeenCalledTimes(2);
+  await userEvent.click(screen.getByRole("button", { name: "Remove my ended sessions" }));
+  await userEvent.click(within(screen.getByRole("dialog", { name: "Remove your ended sessions?" })).getByRole("button", { name: "Remove" }));
+  expect(onRemoveEnded).toHaveBeenCalledTimes(1);
+});

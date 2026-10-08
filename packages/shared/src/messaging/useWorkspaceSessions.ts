@@ -65,5 +65,7 @@ export function useWorkspaceSessions(
     if (enabled && previousConnection.current !== connectionRevision) void refresh();
     previousConnection.current = connectionRevision;
   }, [enabled, connectionRevision, refresh]);
-  return { sessions, error, loading, refresh, hintRevision };
+  /** Optimistic removal: the rows leave now, and the next refresh is the truth. */
+  const forget = useCallback((gone: (session: LocalSession) => boolean) => setSessions(list => list.filter(s => !gone(s))), []);
+  return { sessions, error, loading, refresh, hintRevision, forget };
 }

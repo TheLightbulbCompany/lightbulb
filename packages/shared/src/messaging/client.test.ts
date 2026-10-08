@@ -54,6 +54,13 @@ describe("messaging HTTP client", () => {
     ]);
   });
 
+  it("removes one ended session, or all of the caller's, with DELETE", async () => {
+    const { client, methods } = setup();
+    await client.removeLocalSession("session/b");
+    await client.removeEndedLocalSessions();
+    expect(methods.del.mock.calls).toEqual([["/messaging/sessions/session%2Fb"], ["/messaging/sessions?ended=true"]]);
+  });
+
   it("uses workspace-scoped session routes and preserves command identity with escaped path segments", async () => {
     const { client, methods } = setup();
     const command = { requestId: "request-1", expectedGeneration: "generation-1", kind: "send" as const, text: "continue" };

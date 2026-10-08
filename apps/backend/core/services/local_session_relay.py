@@ -665,6 +665,9 @@ class LocalSessionRelay:
                         # The end rewrites who may resume; a new run has nobody to resume it. The
                         # same generation re-registering to drain an ended mirror keeps them.
                         row.pop("resumeAllowed", None)
+                        # Nor is it still removed from the lists (`sessions.remove_session`): the
+                        # owner started it again.
+                        row.pop("removedAt", None)
                         row.pop("terminal", None)
                         row.pop("pendingApproval", None)
                         row.pop("privateSendApproval", None)

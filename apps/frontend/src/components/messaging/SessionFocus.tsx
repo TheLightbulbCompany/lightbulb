@@ -8,6 +8,7 @@ import { LocalSessionPanel } from "./LocalSessionPanel";
 import { SessionChat } from "./SessionChat";
 import { SessionToolIcon } from "./SessionToolIcon";
 import { SessionRenameButton } from "./SessionRenameButton";
+import { SessionRemoveButton } from "./SessionRemoveButton";
 import type { Person } from "./NativeSessionTranscript";
 import type { SidebarSession } from "./roomSections";
 
@@ -40,7 +41,7 @@ const SESSION_BODY = ".session-terminal-scroll, .session-terminal-wait, .local-s
  * list has ever loaded) still opens with its real status. "No longer shared"
  * is reserved for a genuine 404.
  */
-export function SessionFocus({ focus, entries, loading, hintRevision, client, resolveSessionOwner, onAccessLost, onClose, participants, onMessageOwner, onEvent, chatOpen = false, onChatOpenChange, onChatRoom }: {
+export function SessionFocus({ focus, entries, loading, hintRevision, client, resolveSessionOwner, onAccessLost, onClose, participants, onMessageOwner, onEvent, chatOpen = false, onChatOpenChange, onChatRoom, onRemove }: {
   onEvent?: SessionSource["onEvent"];
   focus: { sessionId: string }; entries: readonly SidebarSession[]; loading: boolean; hintRevision: number;
   client: SessionSource["client"]; resolveSessionOwner: (humanUserId: string) => { ownerName: string; own: boolean };
@@ -53,6 +54,8 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
   chatOpen?: boolean;
   onChatOpenChange?: (open: boolean) => void;
   onChatRoom?: (roomId: string | null) => void;
+  /** The owner takes this session off the list once it has ended (the caller closes the panel). */
+  onRemove?: (sessionId: string) => Promise<unknown>;
 }) {
   // A Claude session moved to the background continues as a fork (`forkedFrom`): show that one,
   // but only in place of an ENDED origin -- a live origin can have a fork of its own.
@@ -72,6 +75,14 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
   }, [onEvent]);
   const fallbackHintRevision = onEvent ? metadataRevision : hintRevision;
   const revalidate = useRef<((hint: number, retry: number) => void) | null>(null);
+  // The row this panel last drew from the list. When it leaves the list (ended with no events yet, aged out,
+  // a list refresh that raced the end) the panel keeps drawing it until the read by id answers: a panel left
+  // with no session for that moment unmounted, and its terminal came back as a new one on "Connecting…"
+  // (prod 2026-10-08).
+  const [lastListed, setLastListed] = useState<LocalSession | null>(null);
+  if (entry && entry.session !== lastListed) setLastListed(entry.session);
+  // A read by id from before the session was listed is older than the list's row: never fall back to it.
+  if (hasListedSession && fallback) setFallback(null);
   useEffect(() => {
     if (hasListedSession) return;
     let alive = true;
@@ -124,7 +135,8 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
     setRetryRevision(v => v + 1);
   };
   const resolvedFallback = fallback?.sessionId === focus.sessionId ? fallback : null;
-  const session = entry?.session ?? resolvedFallback?.session ?? null;
+  const kept = lastListed && (lastListed.sessionId === focus.sessionId || lastListed.forkedFrom === focus.sessionId) ? lastListed : null;
+  const session = entry?.session ?? resolvedFallback?.session ?? (resolvedFallback?.notFound ? null : kept);
   const owner = entry ?? (session ? resolveSessionOwner(session.humanUserId) : null);
   const messageOwner = session && owner && !owner.own && onMessageOwner ? () => onMessageOwner(session.humanUserId, owner.ownerName) : undefined;
   // Chat beside the terminal (PR #3807). Unread is the server's count from
@@ -174,6 +186,7 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
       <header className="room-context-header">
         <h3 className="font-semibold room-wrap flex items-center gap-2">{session ? <><SessionToolIcon provider={session.provider} /><span className="min-w-0">{sessionTitle(session)}</span></> : "Shared session"}</h3>
         {session && owner?.own && client.setLocalSessionDisplayTitle && <SessionRenameButton session={session} onRename={client.setLocalSessionDisplayTitle} icon />}
+        {session && owner?.own && onRemove && session.status === "ended" && <SessionRemoveButton name={sessionTitle(session)} onRemove={() => onRemove(session.sessionId)} icon />}
         {showChat && <Button className="ml-auto" variant="ghost" size="sm" aria-pressed={chatOpen}
           aria-label={unread ? `Chat, ${unread} unread` : "Chat"} onClick={toggleChat}>
           <MessageSquare aria-hidden="true" />Chat{unread > 0 && <span className="session-chat-unread" aria-hidden="true">{unread > 99 ? "99+" : unread}</span>}

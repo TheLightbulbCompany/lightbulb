@@ -364,3 +364,48 @@ it("stops a narrow panel's overlay at the session's body, clear of the strips ab
   expect(panel.style.getPropertyValue("--session-chat-top")).toBe("120px");
   expect(panel.style.getPropertyValue("--session-chat-bottom")).toBe("120px");
 });
+
+it("keeps the same panel mounted when its session leaves the list, until the read by id answers", async () => {
+  // Prod 2026-10-08: a held session ended before its first event left the list; the panel had no session for
+  // a moment, unmounted, and the viewer's terminal came back as a new one on "Connecting…".
+  let answer!: (found: LocalSession) => void;
+  const getLocalSession = vi.fn(() => new Promise<LocalSession>((resolve) => { answer = resolve; }));
+  const client = { listWorkspaceSessions: vi.fn(), getLocalSession, listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })),
+    submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), requestLocalSessionPickup: vi.fn() } as unknown as SessionSource["client"];
+  const view = (entries: { session: LocalSession; ownerName: string; own: boolean }[]) =>
+    <SessionFocus focus={{ sessionId: "s1" }} entries={entries} loading={false} hintRevision={0} client={client}
+      resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={vi.fn()} />;
+  const { rerender } = render(view([{ session, ownerName: "Alice", own: false }]));
+  await screen.findByRole("heading", { name: /Load test/ });
+  const mounted = document.querySelector(".session-status");
+  expect(mounted).not.toBeNull();
+  rerender(view([]));
+  expect(screen.queryByText("Opening session…")).toBeNull();
+  expect(document.querySelector(".session-status")).toBe(mounted);
+  await act(async () => { answer({ ...session, status: "ended", terminal: undefined, wasHeld: true, endedAt: new Date().toISOString() }); });
+  expect(getLocalSession).toHaveBeenCalledWith("s1");
+  expect(document.querySelector(".session-status")).toBe(mounted);
+  expect(statusLine()).toHaveTextContent("Ended");
+  // A held session never claims nothing was sent: its first events may not have arrived.
+  expect(screen.queryByText("This session ended before anything was sent.")).toBeNull();
+});
+
+it("lets the owner remove an ended session from the list, after a confirmation", async () => {
+  const onRemove = vi.fn().mockResolvedValue(undefined);
+  const ended = { ...session, status: "ended" as const, terminal: undefined, latestEventSeq: 3 };
+  const client = { listWorkspaceSessions: vi.fn(), getLocalSession: vi.fn(), listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })),
+    submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), requestLocalSessionPickup: vi.fn() } as unknown as SessionSource["client"];
+  const view = (entry: { session: LocalSession; ownerName: string; own: boolean }) =>
+    <SessionFocus focus={{ sessionId: "s1" }} entries={[entry]} loading={false} hintRevision={0} client={client}
+      resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={vi.fn()} onRemove={onRemove} />;
+  // Not on a live session, and not on someone else's.
+  const { rerender } = render(view({ session, ownerName: "You", own: true }));
+  expect(screen.queryByRole("button", { name: /Remove .* from the list/ })).toBeNull();
+  rerender(view({ session: ended, ownerName: "Alice", own: false }));
+  expect(screen.queryByRole("button", { name: /Remove .* from the list/ })).toBeNull();
+  rerender(view({ session: ended, ownerName: "You", own: true }));
+  await userEvent.click(screen.getByRole("button", { name: "Remove Load test from the list" }));
+  expect(onRemove).not.toHaveBeenCalled();
+  await userEvent.click(within(screen.getByRole("dialog", { name: "Remove this session from the list?" })).getByRole("button", { name: "Remove" }));
+  expect(onRemove).toHaveBeenCalledWith("s1");
+});

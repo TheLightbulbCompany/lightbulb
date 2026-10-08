@@ -78,6 +78,10 @@ export interface MessagingClient {
   listWorkspaceSessions(options?: { includeEnded?: boolean }): Promise<WorkspaceSessions>;
   /** One session, ended included -- the list keeps only live ones. 404s LOCAL_SESSION_NOT_FOUND otherwise. */
   getLocalSession(sessionId: string): Promise<LocalSession>;
+  /** Owner only: take one ENDED session off every list (409 while it is live). Its link stops and nobody can open or resume it. */
+  removeLocalSession(sessionId: string): Promise<void>;
+  /** Every ended session of the caller's own, the same way. */
+  removeEndedLocalSessions(): Promise<{ removed: number }>;
   /** The session's chat room: created on the first open, the caller seated (people only). */
   openSessionChat(sessionId: string): Promise<RoomDetail>;
   /** Owner-only display name; null restores the provider title. */
@@ -165,6 +169,8 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     listWorkspaceSessions: (options) =>
       api.get(`/messaging/sessions${options?.includeEnded ? "?includeEnded=true" : ""}`) as Promise<WorkspaceSessions>,
     getLocalSession: (sessionId) => api.get(sessionPath(sessionId)) as Promise<LocalSession>,
+    removeLocalSession: async (sessionId) => { await api.del(sessionPath(sessionId)); },
+    removeEndedLocalSessions: () => api.del("/messaging/sessions?ended=true") as Promise<{ removed: number }>,
     openSessionChat: (sessionId) => api.post(`${sessionPath(sessionId)}/chat`, {}) as Promise<RoomDetail>,
     setLocalSessionDisplayTitle: (sessionId, displayTitle) => api.patch(`${sessionPath(sessionId)}/display-title`, { displayTitle }) as Promise<LocalSession>,
     getPrivateSendApproval: (sessionId) => api.get(`${sessionPath(sessionId)}/private-send-approval`) as Promise<PrivateSendApproval>,

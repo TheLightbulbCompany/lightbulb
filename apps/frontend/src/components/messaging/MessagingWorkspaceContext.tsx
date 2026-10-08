@@ -784,6 +784,18 @@ export function MessagingWorkspaceProvider({
       await rooms.resourceSource.client.setLocalSessionDisplayTitle!(sessionId, title);
       await workspaceSessions.refresh();
     } : undefined,
+    // The rows leave at once (and the panel open on one closes); a failure puts back what the server still lists.
+    onRemoveSession: async (sessionId) => {
+      if (sessionFocus?.sessionId === sessionId) closeSession();
+      workspaceSessions.forget((session) => session.sessionId === sessionId);
+      try { await rooms.resourceSource.client.removeLocalSession(sessionId); }
+      catch (error) { await workspaceSessions.refresh(); throw error; }
+    },
+    onRemoveEndedSessions: async () => {
+      workspaceSessions.forget((session) => session.status === "ended" && session.humanUserId === userId);
+      try { await rooms.resourceSource.client.removeEndedLocalSessions(); }
+      finally { await workspaceSessions.refresh(); }
+    },
     currentSessionId: sessionFocus?.sessionId ?? null,
     onOpenAllSessions: openAllSessions,
     allSessionsOpen: !!sessionFocus?.all,

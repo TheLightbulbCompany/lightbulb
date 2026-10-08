@@ -86,7 +86,7 @@ def transport(db):
     def post(**kwargs):
         sent.append((kwargs["ConnectionId"], json.loads(kwargs["Data"])))
 
-    async def publish_http(_self, endpoint, body, headers):
+    async def publish_http(_self, endpoint, body, headers, tag=None):
         hints.append(json.loads(body))
         return __import__("httpx").Response(200, json={"successful": [{"identifier": "ok"}], "failed": []})
 

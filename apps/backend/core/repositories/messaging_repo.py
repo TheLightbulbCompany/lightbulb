@@ -1139,6 +1139,19 @@ async def create_message(
                         }
                     }
                 )
+            session = meta.get("session")
+            if session:
+                # A session's chat takes no post, from a person or an agent, once its owner removed
+                # the session (`local_sessions.remove_session`), whatever of its cleanup is still owed.
+                items.append(
+                    {
+                        "ConditionCheck": {
+                            "TableName": table_name,
+                            "Key": {"pk": f"LOCALSESSION#{meta['ownerId']}#{session['sessionId']}", "sk": "META"},
+                            "ConditionExpression": "attribute_not_exists(removedAt)",
+                        }
+                    }
+                )
             try:
                 await _transact(items)
                 return _plain(message), False
@@ -1146,6 +1159,8 @@ async def create_message(
                 if not _is_cancelled(exc):
                     raise
                 reasons = exc.response.get("CancellationReasons", [])
+                if session and len(reasons) == len(items) and reasons[-1].get("Code") == "ConditionalCheckFailed":
+                    raise RoomNotFound(room_id) from exc
                 if (
                     (not system or acting_human_id)
                     and len(reasons) > 1

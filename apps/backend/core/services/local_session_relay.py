@@ -672,8 +672,6 @@ class LocalSessionRelay:
                         # Nor is it still removed from the lists (`sessions.remove_session`): the
                         # owner started it again.
                         row.pop("removedAt", None)
-                        row.pop("removeOnEnd", None)
-                        row.pop("removalCleanup", None)
                         row.pop("terminal", None)
                         row.pop("pendingApproval", None)
                         row.pop("privateSendApproval", None)
@@ -1022,18 +1020,14 @@ class LocalSessionRelay:
         ended_at = min(message.ended_at, int(time.time()))
         # On purpose (owner ruling 2026-10-08): the Mac said so, or the owner's End for this run
         # reached that Mac. Facts only; "exited" alone also covers a closed terminal and a shutdown.
-        reason = message.reason
-        if reason != sessions.ENDED_ON_PURPOSE and await sessions.end_was_asked(owner, row):
-            reason = sessions.ENDED_ON_PURPOSE
+        ends = await sessions.landed_ends(owner, row)
+        reason = sessions.ENDED_ON_PURPOSE if ends else message.reason
         updated = _revised(row, status="ended", endedAt=ended_at, lastEventAt=ended_at, endedReason=reason)
         # "End and remove" (`sessions.remove_session` on a live run): this end is its removal.
-        # Only if the End it sent reached the Mac and was not refused; else the session stays listed.
-        removing = await sessions.removal_end_landed(owner, row)
-        updated.pop("removeOnEnd", None)
+        # Only if an End it sent reached the Mac and was not refused; else the session stays listed.
+        removing = any(command.get("removesOnEnd") for command in ends)
         if removing:
             updated["removedAt"] = int(time.time())
-            # Owed until `finish_removal` has run to its end; the owner's next list read retries it.
-            updated["removalCleanup"] = True
             updated.pop("resume", None)
         if message.screen and sessions.session_terminal(row) == "held" and not removing:
             # The holder keeps the final screen; the Mac's `screens` heartbeats renew this lease.
@@ -1055,7 +1049,6 @@ class LocalSessionRelay:
         # Who may resume it (spec §5.7): the people who could send when it ended. Team control is a
         # switch on the run, not a person the owner let in, so it lets nobody resume.
         resumers = [] if removing else sessions.allowed_senders(row)
-        updated.pop("resumeAllowed", None)
         if resumers:
             updated["resumeAllowed"] = resumers
         # So do the people the owner let in, and every open ask to join.
@@ -1070,9 +1063,8 @@ class LocalSessionRelay:
 
         try:
             if removing:
-                # The link, the pick-up snapshot and the chat. A failure leaves `removalCleanup` on
-                # the row: the owner's next session list (or a repeat DELETE) finishes it, and the
-                # doors refuse a removed row on their own meanwhile.
+                # The link, the pick-up snapshot and the chat. The doors refuse a removed row on
+                # their own, so a failure here leaves only stored leftovers nobody can reach.
                 await sessions.finish_removal(sessions.owner_auth(row), row["sessionId"], hint=False)
             else:
                 await session_chat.follow_session(owner, row["sessionId"])

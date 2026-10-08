@@ -4,7 +4,6 @@ import time
 from unittest.mock import AsyncMock
 
 import pytest
-from botocore.exceptions import ClientError
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from httpx import ASGITransport, AsyncClient
@@ -249,8 +248,8 @@ async def test_removing_a_live_session_ends_it_and_its_end_removes_it(transport,
     assert [(c["kind"], c["expectedGeneration"], c["actorUserId"]) for c in commands] == [
         ("end", "generation-1", ALICE.user_id)
     ]
-    # The row names that End, written in the transaction that admitted it.
-    assert row["removeOnEnd"] == commands[0]["requestId"] and "removedAt" not in row and "endedAt" not in row
+    # The End itself says it is a removal; the row carries nothing until the run ends.
+    assert commands[0]["removesOnEnd"] is True and "removedAt" not in row and "endedAt" not in row
     await repo.replace_command(commands[0], {**commands[0], "state": "dispatched", "revision": "r2"})
     # Still running until its Mac has stopped it: listed, and readable.
     assert await listed(BOB) == [sid] and (await http(BOB, "GET", f"/{sid}")).status_code == 200
@@ -258,8 +257,7 @@ async def test_removing_a_live_session_ends_it_and_its_end_removes_it(transport,
     frame = {**fixture("session-ended"), "sessionId": sid, "generation": "generation-1", "endedAt": 10005}
     await relay(transport).handle_message("conn-1", frame)
     row = await repo.get_session(OWNER, sid)
-    assert row["removedAt"] and "removeOnEnd" not in row and "resumeAllowed" not in row
-    assert "shareLink" not in row and "removalCleanup" not in row
+    assert row["removedAt"] and "resumeAllowed" not in row and "shareLink" not in row
     with pytest.raises(ApiProblem):
         await session_links.resolve(None, token)
     assert await messaging_repo.get_member(room, "human", BOB.user_id) is None
@@ -278,7 +276,7 @@ async def test_a_live_session_whose_mac_is_offline_is_not_removed(transport, s3)
     refused = await http(ALICE, "DELETE", f"/{sid}")
     assert refused.status_code >= 400 and "LOCAL_SESSION_OFFLINE" in refused.text and "Mac is offline" in refused.text
     row = await repo.get_session(OWNER, sid)
-    assert "removeOnEnd" not in row and "removedAt" not in row
+    assert "removedAt" not in row
     assert await repo.list_commands(OWNER, sid) == []
     assert await listed(BOB) == [sid]
 
@@ -351,22 +349,6 @@ async def remove_live(transport, sid, state="dispatched"):
 
 
 @pytest.mark.asyncio
-async def test_an_end_that_is_not_admitted_leaves_no_removal_pending(transport, s3, monkeypatch):
-    """Codex on #3927: the mark is written by the transaction that admits the End, so a DELETE
-    that failed can never remove the session when that run ends later."""
-    sid = await claude_session(transport)
-    with monkeypatch.context() as broken:
-        broken.setattr(
-            repo, "admit_command", AsyncMock(side_effect=ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed."))
-        )
-        refused = await http(ALICE, "DELETE", f"/{sid}")
-    assert refused.status_code == 409
-    assert "removeOnEnd" not in await repo.get_session(OWNER, sid)
-    await end(transport, sid)
-    assert "removedAt" not in await repo.get_session(OWNER, sid) and await listed(BOB) == [sid]
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("state", ["pending", "rejected", "unknown"])
 async def test_an_end_the_mac_refused_or_never_got_removes_nothing_later(transport, s3, state):
     """Coordinator ruling on #3927: the removal applies only if its End landed. Otherwise the
@@ -375,8 +357,7 @@ async def test_an_end_the_mac_refused_or_never_got_removes_nothing_later(transpo
     await remove_live(transport, sid, state)
     assert await listed(BOB) == [sid]
     await end(transport, sid)
-    row = await repo.get_session(OWNER, sid)
-    assert "removedAt" not in row and "removeOnEnd" not in row
+    assert "removedAt" not in await repo.get_session(OWNER, sid)
     assert await listed(BOB) == [sid]
 
 
@@ -395,11 +376,9 @@ async def test_a_live_session_that_ends_while_remove_is_asked_is_removed_as_ende
 
 
 @pytest.mark.asyncio
-async def test_a_cleanup_that_failed_at_the_end_is_owed_and_the_owners_next_list_finishes_it(
-    transport, s3, monkeypatch
-):
-    """Codex on #3927: the row is already invisible when the relay's cleanup fails, so nobody can
-    repeat the DELETE from the UI. The doors refuse on their own, and the cleanup stays owed."""
+async def test_a_cleanup_that_failed_at_the_end_leaves_every_door_shut(transport, s3, monkeypatch):
+    """Codex on #3927: the row is already invisible when the relay's cleanup fails. Nothing was
+    cleaned, and every door refuses the removed row on its own, posts into its chat included."""
     sid = await claude_session(transport)
     token = (await service.put_link(ALICE, sid, "anyone")).url.split("#", 1)[1]
     room = str((await session_chat.open_chat(BOB, sid)).room_id)
@@ -410,9 +389,9 @@ async def test_a_cleanup_that_failed_at_the_end_is_owed_and_the_owners_next_list
         await relay(transport).handle_message("conn-1", frame)
 
     row = await repo.get_session(OWNER, sid)
-    assert row["removedAt"] and row["removalCleanup"] is True and row["shareLink"]
-    # Nothing was cleaned, and every door already refuses: Bob still has his seat, and cannot use it.
+    assert row["removedAt"] and row["shareLink"]
     assert await messaging_repo.get_member(room, "human", BOB.user_id) is not None
+    assert not (await messaging_repo.get_room(room)).get("archivedAt")
     with pytest.raises(ApiProblem) as shut:
         await messaging.require_room_member(OWNER, BOB.user_id, room)
     assert shut.value.error.code == "ROOM_NOT_FOUND"
@@ -421,105 +400,30 @@ async def test_a_cleanup_that_failed_at_the_end_is_owed_and_the_owners_next_list
         await session_links.resolve(None, token)
     with pytest.raises(ApiProblem):
         await session_chat.open_chat(BOB, sid)
-    # Someone else's list does not finish it; its owner's does.
-    await listed(BOB)
-    assert (await repo.get_session(OWNER, sid))["removalCleanup"] is True
-    assert await listed(ALICE) == []
-    row = await repo.get_session(OWNER, sid)
-    assert "removalCleanup" not in row and "shareLink" not in row and row["removedAt"]
-    assert await messaging_repo.get_member(room, "human", BOB.user_id) is None
-    assert (await messaging_repo.get_room(room)).get("archivedAt")
-
-
-@pytest.mark.asyncio
-async def test_a_repeat_delete_finishes_an_owed_cleanup(transport, s3, monkeypatch):
-    sid = await claude_session(transport)
-    await service.put_link(ALICE, sid, "anyone")
-    await end(transport, sid)
-    with monkeypatch.context() as broken:
-        broken.setattr(service, "delete_link", AsyncMock(side_effect=RuntimeError("dynamo")))
-        with pytest.raises(RuntimeError):
-            await service.remove_session(ALICE, sid)
-    assert (await repo.get_session(OWNER, sid))["removalCleanup"] is True
+    # The one writer every post goes through, whoever the author is (an agent has no member door).
+    with pytest.raises(messaging_repo.RoomNotFound):
+        await messaging_repo.create_message(
+            room_id=room,
+            owner_id=OWNER,
+            idemp_pk=messaging_repo.room_pk(room),
+            idemp_sk="IDEMP#late",
+            req_hash="h",
+            author={"kind": "system", "id": "system", "displayName": "Lightbulb"},
+            text="late reply",
+            mentions=[],
+            reply_to_message_id=None,
+            thread_root_message_id=None,
+            run_id=None,
+            dispatch_targets=[],
+            source_agent_id=None,
+            client_message_id=None,
+        )
+    assert int((await messaging_repo.get_room(room))["lastSeq"]) == 0
+    # A repeat DELETE by id still finishes it.
     assert (await http(ALICE, "DELETE", f"/{sid}")).status_code == 204
     row = await repo.get_session(OWNER, sid)
-    assert "removalCleanup" not in row and "shareLink" not in row
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("first", ["pending", "dispatched"])
-async def test_a_repeat_remove_while_the_first_end_is_in_flight_sends_no_second_end(transport, s3, first):
-    """Codex on #3927: a second DELETE replaced the mark with a newer End that was still waiting
-    when the first one stopped the session, and the ended session stayed listed."""
-    sid = await claude_session(transport)
-    command = await remove_live(transport, sid, first)
-    await service.remove_session(ALICE, sid)  # the same answer: no error
-    assert [c["requestId"] for c in await repo.list_commands(OWNER, sid)] == [command["requestId"]]
-    assert (await repo.get_session(OWNER, sid))["removeOnEnd"] == command["requestId"]
-    # The first End lands and the session ends: it is removed.
-    sent = await repo.get_command(OWNER, sid, command["requestId"])
-    await repo.replace_command(sent, {**sent, "state": "dispatched", "revision": "r3"})
-    frame = {**fixture("session-ended"), "sessionId": sid, "generation": "generation-1", "endedAt": 10005}
-    await relay(transport).handle_message("conn-1", frame)
-    assert (await repo.get_session(OWNER, sid))["removedAt"] and await listed(BOB) == []
-
-
-@pytest.mark.asyncio
-async def test_a_repeat_remove_after_a_refused_end_sends_a_new_one(transport, s3):
-    sid = await claude_session(transport)
-    first = await remove_live(transport, sid, "rejected")
-    await service.remove_session(ALICE, sid)  # the same answer: no error
-    commands = await repo.list_commands(OWNER, sid)
-    assert len(commands) == 2
-    assert (await repo.get_session(OWNER, sid))["removeOnEnd"] in {c["requestId"] for c in commands} - {
-        first["requestId"]
-    }
-
-
-@pytest.mark.asyncio
-async def test_two_removes_at_once_admit_one_end_and_keep_one_mark(transport, s3, monkeypatch):
-    """Codex on #3927: both DELETEs passed the in-flight precheck, and the second overwrote the
-    first's mark. The mark is claimed in the admitting transaction; the loser admits nothing."""
-    sid = await claude_session(transport)
-    before = await repo.get_session(OWNER, sid)
-    await service.remove_session(ALICE, sid)
-    first = (await repo.list_commands(OWNER, sid))[0]
-    # The second DELETE read the row before the first one's mark landed: it passes the precheck.
-    owned, stale = service._owned_session, [before]
-
-    async def read_before_the_first(auth, session_id, verb="share"):
-        return stale.pop() if stale else await owned(auth, session_id, verb)
-
-    monkeypatch.setattr(service, "_owned_session", read_before_the_first)
-    await service.remove_session(ALICE, sid)  # the same answer: no error
-    assert not stale, "it passed the precheck on the stale row and was stopped at admission"
-    assert [c["requestId"] for c in await repo.list_commands(OWNER, sid)] == [first["requestId"]]
-    assert (await repo.get_session(OWNER, sid))["removeOnEnd"] == first["requestId"]
-    # The transaction fences it on its own: a mark is never overwritten, only a dead one replaced.
-    row, enrollment = await service.authorize_session(ALICE, None, sid, owner_only=True)
-    other = {**first, "requestId": "99999999-9999-4999-8999-999999999999", "commandSeq": row["commandSeq"] + 1}
-    other["sk"] = f"COMMAND#{other['requestId']}"
-    for replaces in (None, "77777777-7777-4777-8777-777777777777"):
-        with pytest.raises(ClientError):
-            await repo.admit_command(row, enrollment, other, remove_on_end=True, replaces_mark=replaces)
-    assert (await repo.get_session(OWNER, sid))["removeOnEnd"] == first["requestId"]
-
-
-@pytest.mark.asyncio
-async def test_the_end_removes_when_an_end_and_remove_the_row_does_not_name_landed(transport, s3):
-    """Whatever the mark says, a landed End-and-remove for this run is its removal, with the cleanup."""
-    sid = await claude_session(transport)
-    await service.put_link(ALICE, sid, "anyone")
-    landed = await remove_live(transport, sid, "dispatched")
-    row = await repo.get_session(OWNER, sid)
-    enrollment = await repo.get_enrollment(OWNER, ALICE.user_id, MAC)
-    await repo.put_session({**row, "removeOnEnd": "77777777-7777-4777-8777-777777777777"}, row, enrollment)
-    frame = {**fixture("session-ended"), "sessionId": sid, "generation": "generation-1", "endedAt": 10005}
-    await relay(transport).handle_message("conn-1", frame)
-    row = await repo.get_session(OWNER, sid)
-    assert landed["removesOnEnd"] is True
-    assert row["removedAt"] and "shareLink" not in row and "removalCleanup" not in row and "removeOnEnd" not in row
-    assert await listed(BOB) == []
+    assert row["removedAt"] and "shareLink" not in row
+    assert await messaging_repo.get_member(room, "human", BOB.user_id) is None
 
 
 @pytest.mark.asyncio

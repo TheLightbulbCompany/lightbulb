@@ -21,6 +21,8 @@ use std::time::{Duration, Instant};
 static READS_ENDED_SCREENS: AtomicBool = AtomicBool::new(false);
 /// The relay lists `terminalReason`.
 static READS_TERMINAL_REASON: AtomicBool = AtomicBool::new(false);
+/// The relay lists `endedOnPurpose`: an end may say `reason: "on-purpose"`.
+static READS_ON_PURPOSE: AtomicBool = AtomicBool::new(false);
 /// `DeviceHeartbeat.screens`' cap on the relay.
 const SCREENS_MAX: usize = 24;
 /// How often holders no mirror names are looked for.
@@ -108,31 +110,22 @@ pub(super) fn read_features(listed: &Value) {
     let (screens, reason) = features(listed);
     READS_ENDED_SCREENS.store(screens, SeqCst);
     READS_TERMINAL_REASON.store(reason, SeqCst);
+    READS_ON_PURPOSE.store(listed.as_array().is_some_and(|f| f.iter().any(|x| x == "endedOnPurpose")), SeqCst);
 }
 
 /// The reason `local.session.ended` gives. "on-purpose" when its person ended it: the provider's
 /// own exit (`lifecycle::ON_PURPOSE`), or End asked of its holder at or before the end. Only for a
-/// relay that reads it (`reads`: `Host::relay_reads_on_purpose`, per connection); an older one
-/// hears "exited" (or "process-exited") as before.
-pub(super) fn end_reason(reads: bool, mirror: &Mirror) -> &str {
-    end_reason_if(reads, mirror, &manager::end_asked)
-}
-
-/// This end is one its person meant: its frame waits until the relay on this socket has said
-/// whether it reads that (`transport::ended_frame`). Any other end is never held.
-pub(super) fn ended_on_purpose(mirror: &Mirror) -> bool {
-    purposeful(mirror, &manager::end_asked)
-}
-
-fn purposeful(mirror: &Mirror, asked: &impl Fn(&str) -> Option<u64>) -> bool {
-    mirror.ended_reason.as_deref() == Some(super::lifecycle::ON_PURPOSE)
-        || mirror.native.holder.as_deref().and_then(asked).is_some_and(|at| mirror.ended_at.is_some_and(|ended| ended >= at))
+/// relay that reads it; an older one hears "exited" (or "process-exited") as before.
+pub(super) fn end_reason(mirror: &Mirror) -> &str {
+    end_reason_if(READS_ON_PURPOSE.load(SeqCst), mirror, &manager::end_asked)
 }
 
 fn end_reason_if<'a>(reads: bool, mirror: &'a Mirror, asked: &impl Fn(&str) -> Option<u64>) -> &'a str {
     let on_purpose = super::lifecycle::ON_PURPOSE;
     let stored = mirror.ended_reason.as_deref().unwrap_or("exited");
-    match (purposeful(mirror, asked) && reads, stored == on_purpose) {
+    let purposeful = stored == on_purpose
+        || mirror.native.holder.as_deref().and_then(asked).is_some_and(|at| mirror.ended_at.is_some_and(|ended| ended >= at));
+    match (purposeful && reads, stored == on_purpose) {
         (true, _) => on_purpose,
         (false, true) => "exited",
         (false, false) => stored,

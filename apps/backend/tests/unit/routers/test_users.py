@@ -332,6 +332,8 @@ class TestPrefs:
         mock_repo.timezone_of = real_user_repo.timezone_of
         mock_repo.daily_summary_on = real_user_repo.daily_summary_on
         mock_repo.chat_theme_of = real_user_repo.chat_theme_of
+        mock_repo.agent_send_without_asking = real_user_repo.agent_send_without_asking
+        mock_repo.sessions_reachable_from_background_work = real_user_repo.sessions_reachable_from_background_work
 
     @pytest.mark.asyncio
     @patch("routers.users.user_repo")
@@ -373,7 +375,12 @@ class TestPrefs:
         assert response.status_code == 200
         assert response.json()["chatTheme"] == "dark"
         mock_repo.set_prefs.assert_awaited_once_with(
-            "user_test_123", timezone=None, daily_summary=None, chat_theme="dark"
+            "user_test_123",
+            timezone=None,
+            daily_summary=None,
+            chat_theme="dark",
+            agent_send_without_asking=None,
+            sessions_reachable_from_background_work=None,
         )
 
     @pytest.mark.asyncio
@@ -399,11 +406,45 @@ class TestPrefs:
 
         assert response.status_code == 200
         mock_repo.set_prefs.assert_awaited_once_with(
-            "user_test_123", timezone="Europe/Paris", daily_summary=None, chat_theme=None
+            "user_test_123",
+            timezone="Europe/Paris",
+            daily_summary=None,
+            chat_theme=None,
+            agent_send_without_asking=None,
+            sessions_reachable_from_background_work=None,
         )
         # The mocked row already carries chat_theme=dark, so the response still
         # reflects it even though this PUT didn't touch it.
         assert response.json()["chatTheme"] == "dark"
+
+    @pytest.mark.asyncio
+    @patch("routers.users.user_repo")
+    async def test_the_agent_session_switches_default_off_and_are_set(self, mock_repo, async_client):
+        """Spec 2026-10-07-agent-session-approval §3.4: agents ask, and background work cannot
+        reach a person's sessions, until that person turns each on."""
+        self._wire_real_helpers(mock_repo)
+        mock_repo.get = AsyncMock(return_value={"user_id": "user_test_123"})
+        mock_repo.set_prefs = AsyncMock(return_value=None)
+
+        body = (await async_client.get("/api/v1/users/me/prefs")).json()
+        assert (body["agentSendWithoutAsking"], body["sessionsReachableFromBackgroundWork"]) == (False, False)
+
+        mock_repo.get = AsyncMock(
+            return_value={
+                "user_id": "user_test_123",
+                "agent_send_without_asking": True,
+                "sessions_reachable_from_background_work": True,
+            }
+        )
+        response = await async_client.put(
+            "/api/v1/users/me/prefs",
+            json={"agentSendWithoutAsking": True, "sessionsReachableFromBackgroundWork": True},
+        )
+        assert response.status_code == 200
+        assert response.json()["agentSendWithoutAsking"] is True
+        assert response.json()["sessionsReachableFromBackgroundWork"] is True
+        kwargs = mock_repo.set_prefs.await_args.kwargs
+        assert kwargs["agent_send_without_asking"] is True and kwargs["sessions_reachable_from_background_work"] is True
 
 
 class TestDeleteMyAccount:

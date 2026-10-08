@@ -85,6 +85,7 @@ def test_create_requires_hook_token_and_native_identity_headers(client):
 
 
 def test_create_preserves_native_body_and_uses_validated_identity_for_routing(client, monkeypatch):
+    monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "hermetic-signing-key")
     monkeypatch.setattr(settings, "PAPERCLIP_INTERNAL_URL", "http://paperclip.internal:3100")
     captured = {}
 
@@ -113,7 +114,12 @@ def test_create_preserves_native_body_and_uses_validated_identity_for_routing(cl
         },
         "request": BODY,
     }
-    assert captured["headers"] == {"Authorization": f"Bearer {GATEWAY_TOKEN}"}
+    from core.services import local_session_grants
+
+    headers = dict(captured["headers"])
+    grant = headers.pop("X-Lightbulb-Local-Session-Token")
+    assert headers == {"Authorization": f"Bearer {GATEWAY_TOKEN}"}
+    assert local_session_grants.verify(grant).origin == {"kind": "paperclip", "runId": RUN, "issueId": ISSUE}
     assert captured["timeout_s"] == 25.0  # under the 30s public-gateway ceiling, see below
     repo.resolve_owner_row.assert_awaited_once_with(OWNER)
     admin.get_agent.assert_awaited_once_with(session_cookie="admin-cookie", agent_id=AGENT)
@@ -167,6 +173,33 @@ def test_create_rejects_body_session_or_owner_agent_issue_mismatches(client):
         with _dependencies(**kwargs):
             response = client.post(BASE, json=BODY, headers=HEADERS)
         assert response.status_code == 403
+
+
+def test_create_mints_the_runs_local_session_grant_only_after_the_identity_checks_out(client, monkeypatch):
+    """Spec 2026-10-07-agent-session-approval §3.1: one mint site, after verification, forwarded
+    in the header room ingress uses; a run that fails its identity check gets nothing."""
+    from core.services import local_session_grants as grants
+
+    monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "hermetic-signing-key")
+    captured = {}
+
+    async def fake_request(container, path, **kwargs):
+        captured.update(kwargs)
+        return _runtime_response(202, {"run_id": RUN, "status": "queued", "session_id": SESSION})
+
+    with _dependencies(), patch("routers.messaging.runtime_transport.request", fake_request):
+        assert client.post(BASE, json=BODY, headers=HEADERS).status_code == 202
+    grant = grants.verify(captured["headers"]["X-Lightbulb-Local-Session-Token"])
+    assert (grant.owner_id, grant.agent_id, grant.room_id, grant.requester_id) == (OWNER, AGENT, None, None)
+    assert grant.origin == {"kind": "paperclip", "runId": RUN, "issueId": ISSUE} and grant.turn_id == RUN
+
+    mint = AsyncMock()
+    with (
+        _dependencies(agent_company="company-other"),
+        patch("routers.messaging.local_session_grants.mint_paperclip", mint),
+    ):
+        assert client.post(BASE, json=BODY, headers=HEADERS).status_code == 403
+    mint.assert_not_called()
 
 
 def test_run_scoped_session_must_match_the_idempotency_key(client):

@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import unittest
+import uuid
 from unittest.mock import MagicMock, patch
 
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
@@ -454,6 +455,42 @@ class ProjectorTests(unittest.TestCase):
         index._notify_members(message_item(), meta)
         self.assertEqual([c.args[0] for c in publish.call_args_list], [f"/ws/{WORKSPACE_ID}/users/{BOB_KEY}"])
         self.assertTrue(publish.call_args_list[0].args[1]["payload"]["notify"])
+
+    @patch("index._publish")
+    def test_parallel_fanout_publishes_one_hint_per_member_and_a_failure_still_fails_the_record(self, publish):
+        users = [f"user_{n:02d}" for n in range(12)]
+        keys = {user: str(uuid.uuid5(uuid.NAMESPACE_OID, user)) for user in users}
+        items = {(f"ROOM#{ROOM_ID}", "META"): {
+            "deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "kind": "channel", "workspaceId": WORKSPACE_ID,
+        }}
+        for user in users:
+            items[(f"ROOM#{ROOM_ID}", f"MEMBER#human#{user}")] = {"id": user, "ownerId": OWNER_ID, "joinedSeq": 0}
+            items[(f"OWNER#{OWNER_ID}", f"USERSTREAM#{user}")] = {"active": True, "channelKey": keys[user]}
+            items[(f"STREAM#{keys[user]}", "META")] = {
+                "active": True, "ownerId": OWNER_ID, "userId": user, "workspaceId": WORKSPACE_ID,
+            }
+        index._ddb_client = FakeDdb(items)
+        # A member removed after discovery but before delivery: listed by the query, no row at recheck.
+        with patch("index._member_candidates", return_value=users + ["user_removed"]):
+            index.process_record(stream_record(message_item()))
+        calls = [c.args for c in publish.call_args_list]
+        room = f"/ws/{WORKSPACE_ID}/rooms/{ROOM_ID}/{DELIVERY_KEY}"
+        self.assertEqual(calls[-1][0], room)  # the room event still goes after every member
+        hints = {channel: event for channel, event in calls[:-1]}
+        self.assertEqual(set(hints), {f"/ws/{WORKSPACE_ID}/users/{keys[u]}" for u in users})  # nothing for user_removed
+        for user in users:
+            event = hints[f"/ws/{WORKSPACE_ID}/users/{keys[user]}"]
+            self.assertEqual(event["eventId"], str(uuid.uuid5(uuid.UUID(MESSAGE_ID), f"notify:{user}")))
+            self.assertEqual(event["payload"]["messageId"], MESSAGE_ID)
+
+        bad = f"/ws/{WORKSPACE_ID}/users/{keys[users[5]]}"
+        publish.reset_mock()
+        publish.side_effect = lambda channel, _event: (_ for _ in ()).throw(RuntimeError("boom")) if channel == bad else None
+        with self.assertRaises(RuntimeError):
+            index.process_record(stream_record(message_item()))
+        self.assertNotIn(room, [c.args[0] for c in publish.call_args_list])  # no room event, no push
+        result = index.handler({"Records": [stream_record(message_item())]}, None)
+        self.assertEqual(result, {"batchItemFailures": [{"itemIdentifier": "100"}]})
 
     def _one_member_room(self, recipient=BOB_ID, **meta):
         items = {

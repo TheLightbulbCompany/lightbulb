@@ -632,8 +632,8 @@ export interface LocalSessionOfflineOutbox {
 export type ActivityKind = "mention" | "dm" | "thread_reply" | "reaction" | "agent_run" | "paperclip" | "session" | "login" | "extension";
 /** `interaction`: an agent paused on a task, waiting for a human to confirm or answer. */
 /** `waiting` / `finished`: one of your shared sessions paused for your input, or ended a long turn. */
-/** `login` / `code`: an agent needs a website login, or the code a site just sent you. */
-export type ActivitySubtype = "approval" | "assigned_issue" | "failed_run" | "interaction" | "waiting" | "finished" | "join_request" | "login" | "code" | "extension";
+/** `login`: an agent needs a website login. (A sign-in code is typed into the shared browser, never asked for here.) */
+export type ActivitySubtype = "approval" | "assigned_issue" | "failed_run" | "interaction" | "waiting" | "finished" | "join_request" | "login" | "extension";
 export type ActivityLinkKind = "issue" | "room" | "thread" | "run" | "approval" | "session";
 
 export interface ActivityActor {
@@ -663,8 +663,8 @@ export interface ActivitySummary {
 }
 
 export interface ActivityActionInput {
-  /** `login` (username + password) and `code` are secret forms: the answer is posted as `value` only. */
-  kind: "text" | "select" | "person" | "login" | "code";
+  /** `login` (username + password) is a secret form: the answer is posted as `value` only. */
+  kind: "text" | "select" | "person" | "login";
   label: string;
   required: boolean;
   /** `select` only. A `person` input lists the workspace roster client-side; the server validates the id. */

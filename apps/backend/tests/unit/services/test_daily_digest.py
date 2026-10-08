@@ -300,13 +300,16 @@ async def test_prefs_default_on_new_york_and_round_trip(users_table, async_clien
         "timezone": "America/New_York",
         "dailySummary": True,
         "chatTheme": None,
+        "agentSendWithoutAsking": False,
+        "sessionsReachableFromBackgroundWork": False,
     }
+    off = {"agentSendWithoutAsking": False, "sessionsReachableFromBackgroundWork": False}
     resp = await async_client.put("/api/v1/users/me/prefs", json={"timezone": "Europe/Paris"})
-    assert resp.json() == {"timezone": "Europe/Paris", "dailySummary": True, "chatTheme": None}
+    assert resp.json() == {"timezone": "Europe/Paris", "dailySummary": True, "chatTheme": None, **off}
     resp = await async_client.put("/api/v1/users/me/prefs", json={"dailySummary": False})
-    assert resp.json() == {"timezone": "Europe/Paris", "dailySummary": False, "chatTheme": None}
+    assert resp.json() == {"timezone": "Europe/Paris", "dailySummary": False, "chatTheme": None, **off}
     resp = await async_client.put("/api/v1/users/me/prefs", json={"chatTheme": "dark"})
-    assert resp.json() == {"timezone": "Europe/Paris", "dailySummary": False, "chatTheme": "dark"}
+    assert resp.json() == {"timezone": "Europe/Paris", "dailySummary": False, "chatTheme": "dark", **off}
     assert (await async_client.put("/api/v1/users/me/prefs", json={"timezone": "Mars/Base"})).status_code == 422
     assert await user_repo.get_timezone("user_test_123") == "Europe/Paris"
     assert await user_repo.get_timezone("nobody") == "America/New_York"

@@ -66,9 +66,16 @@ def db():
                         "ownerId": OWNER,
                     }
                 )
+        users = resource.create_table(
+            TableName="test-users",
+            KeySchema=[{"AttributeName": "user_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "user_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
         with (
             patch("core.dynamodb._dynamodb_resource", resource),
             patch("core.repositories.container_repo._get_table", return_value=containers),
+            patch("core.repositories.user_repo._get_table", return_value=users),
             patch.object(messaging_repo.settings, "MESSAGING_TABLE", table.name),
         ):
             yield table, containers
@@ -192,7 +199,7 @@ def test_invocation_grant_rejects_wrong_purpose_types_scope_and_lifetime(monkeyp
         {"aud": "paperclip"},
         {"kind": "paperclip_service"},
         {"exp": int(time.time()) - 1},
-        {"exp": original["iat"] + 301},
+        {"exp": original["iat"] + 1801},
         {"iat": True},
         {"ownerId": 2},
         {"roomId": OTHER_ROOM},

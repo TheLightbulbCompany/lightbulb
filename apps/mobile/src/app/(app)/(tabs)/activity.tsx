@@ -496,7 +496,7 @@ export default function Activity() {
         }
       />
       <ReasonSheet
-        visible={input?.kind === "text" || input?.kind === "code"}
+        visible={input?.kind === "text"}
         title={pending?.action.confirm ?? input?.label ?? ""}
         placeholder={input?.label}
         submitLabel={pending?.action.label}

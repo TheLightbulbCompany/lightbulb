@@ -123,6 +123,10 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     let drawn = -1; // the relay run on screen; a new one starts the terminal over
     let wrote = ""; // the kind of the frame written last
     let sized = ""; // the size asked for last
+    // The line, from the top, a reader who had scrolled up was on when the picture started over; -1: at the tail.
+    // Kept while a redraw leaves them at its tail: the run's history can come after its snapshot, in parts
+    // (`receiveScreen`), and each part starts the picture over again, so that redraw did not have their line yet.
+    let readingAt = -1;
     const queued: SessionScreen[] = [];
     let alive = true;
     let stale: ReturnType<typeof setTimeout> | undefined;
@@ -181,10 +185,12 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     around?.addEventListener("wheel", onWheel, { capture: true, passive: false });
     const apply = (frames: SessionScreen[]) => {
       if (!term) { queued.push(...frames); return; }
+      let over = false; // the picture started over in this batch: its snapshot puts a reader back
       for (const frame of frames) {
         // History is only ever written as a burst under its snapshot, and the burst is the whole picture:
         // a run this view already draws without it (`receiveScreen`) starts over there as a new run does.
         const fresh = frame.epoch !== drawn || (frame.kind === "history" && wrote !== "history");
+        const again = frame.epoch === drawn; // the same run, drawn again under history that came late
         const size = `${frame.cols}x${frame.rows}`;
         // xterm parses writes later, in order, but resets and resizes at once, and a reset leaves what is
         // queued in place (WriteBuffer, 5.5.0): done here, a reset would come before bytes written just
@@ -192,16 +198,38 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
         // tick: doubled scrollback). So both wait their turn behind an empty write.
         if (fresh || size !== sized) {
           const t = term;
-          t.write("", () => { if (!alive) return; if (fresh) t.reset(); if (t.cols !== frame.cols || t.rows !== frame.rows) t.resize(frame.cols, frame.rows); });
+          t.write("", () => {
+            if (!alive) return;
+            if (fresh) {
+              // A reset goes to the tail. Someone reading further up stays on their line: a session that
+              // ends, or a new relay run, draws the same lines again under them.
+              // Where they are now, unless they still wait at the tail of this run's last redraw for their line.
+              const at = t.buffer.active;
+              if (!(again && readingAt >= 0 && at.viewportY >= at.baseY)) readingAt = at.viewportY < at.baseY ? at.viewportY : -1;
+              t.reset();
+            }
+            if (t.cols !== frame.cols || t.rows !== frame.rows) t.resize(frame.cols, frame.rows);
+          });
         }
-        if (fresh) drawn = frame.epoch;
+        if (fresh) { drawn = frame.epoch; over = true; }
         wrote = frame.kind; sized = size;
         let bytes = decode(frame.data);
         if (frame.kind === "snapshot") {
           const redraw = new Uint8Array(CLEAR.length + bytes.length); redraw.set(CLEAR); redraw.set(bytes, CLEAR.length);
           bytes = redraw; setLive(true); setSeen(true); onLive(true);
         }
-        term.write(bytes, fit);
+        const t = term;
+        // Only the snapshot of a picture that started over: the 30 s resync moves nobody.
+        const back = frame.kind === "snapshot" && over;
+        if (back) over = false;
+        term.write(bytes, !back ? fit : () => {
+          if (alive && readingAt >= 0) {
+            t.scrollToLine(readingAt);
+            // On their line. Still at the tail: the picture is shorter than their line so far.
+            if (t.buffer.active.viewportY < t.buffer.active.baseY) readingAt = -1;
+          }
+          fit();
+        });
       }
     };
     void import("@xterm/xterm").then(({ Terminal }) => {

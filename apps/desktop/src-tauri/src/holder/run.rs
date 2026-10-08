@@ -105,7 +105,7 @@ mod tests {
     }
 
     /// Owner ruling 2026-10-07: every Claude Code session a holder hosts runs in the classic
-    /// renderer, whatever the person's environment asks for. Codex is left alone.
+    /// renderer, whatever the person's environment asks for. Codex is told by its argv (`provider_argv`).
     #[test]
     fn holder_gives_claude_code_the_classic_renderer_and_codex_nothing() {
         let words = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
@@ -132,6 +132,42 @@ mod tests {
         }
         // Not ours to set means not ours to remove.
         assert_eq!(classic(&[(CLASSIC_RENDERER, "1")], &[codex]), ["1"]);
+    }
+
+    /// Owner ruling 2026-10-08: every Codex session a holder hosts runs without the alternate
+    /// screen, as Claude Code runs its classic renderer. The shapes are the ones the test above
+    /// names; `tui.alternate_screen=never` tested on Codex 0.159.3 (no `ESC[?1049h` in a pty).
+    #[test]
+    fn holder_runs_codex_inline_however_it_was_started_and_nothing_else() {
+        let words = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let ran = |argv: &[&str]| provider_argv(&words(argv));
+        const START: &str = "lightbulb-start";
+        const THREAD: &str = "019a1b2c-0000-7000-8000-000000000000";
+        for codex in ["/opt/homebrew/bin/codex", "/Users/a b/Application Support/node modules/bin/codex",
+            "/opt/homebrew/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex"] {
+            // New session and `lightbulb codex`, with and without a start link; a resume; a prompt.
+            assert_eq!(ran(&[codex]), [codex, "-c", CODEX_INLINE]);
+            assert_eq!(ran(&[codex, "--no-daemon", "--sandbox", "read-only", "resume", THREAD]), [codex, "-c", CODEX_INLINE, "--no-daemon", "--sandbox", "read-only", "resume", THREAD]);
+            assert_eq!(ran(&[codex, "-m", "gpt-5", "--no-daemon", "--", "--no-alt-screen is a prompt"]), [codex, "-c", CODEX_INLINE, "-m", "gpt-5", "--no-daemon", "--", "--no-alt-screen is a prompt"]);
+            assert_eq!(ran(&["/bin/sh", "-c", "…", START, "start-1", "/scope", codex, "--no-daemon", "resume", "--last"]),
+                ["/bin/sh", "-c", "…", START, "start-1", "/scope", codex, "-c", CODEX_INLINE, "--no-daemon", "resume", "--last"]);
+            assert_eq!(ran(&["/bin/sh", "-c", "…", START, "start-1", "/scope", codex]), ["/bin/sh", "-c", "…", START, "start-1", "/scope", codex, "-c", CODEX_INLINE]);
+            // A thread on Codex's shared daemon: the script names the arguments, so it carries the setting.
+            let attach = super::super::manager::attach_argv(Path::new(codex), THREAD);
+            let script = format!("{} -c tui.alternate_screen=never", super::super::manager::CODEX_ATTACH_SCRIPT);
+            assert_eq!(provider_argv(&attach), ["/bin/sh", "-c", script.as_str(), "lightbulb-attach", codex, THREAD]);
+            assert!(script.starts_with(r#"exec "$1" resume "$2" "#), "still Codex's arguments at the end, the program and the thread as given");
+        }
+        // Not Codex: Claude Code (its attach script too), a shell, a prompt or a folder that names Codex.
+        let claude = "/Users/a/.local/share/claude/versions/2.1.293";
+        let same: [Vec<String>; 7] = [words(&[claude, "--resume", "abc"]), words(&["/bin/sh", "-c", "…", START, "start-1", "/scope", claude, "codex"]),
+            super::super::manager::attach_argv(Path::new(claude), "8ed71738"), words(&["/bin/sh", "-c", "codex"]), words(&["/codex/bin/claude"]),
+            words(&["/bin/codex-wrapper"]), vec![]];
+        for argv in same {
+            assert_eq!(provider_argv(&argv), argv);
+        }
+        // The environment is not how Codex is told: nothing of Claude Code's is set for it.
+        assert!(provider_environment(vec![], &words(&["/opt/homebrew/bin/codex"])).is_empty());
     }
 
     #[test]
@@ -207,17 +243,50 @@ pub fn is_claude_program(program: &Path) -> bool {
     file == "claude" || release().is_some()
 }
 
-/// Whether a holder's argv runs Claude Code: every way this app starts one (New session, a remote
-/// start and `lightbulb claude` through `session_start::held_argv`; a resume and a pick-up
-/// directly; `manager::attach_argv` for a background session).
+/// Where the provider's program is in a holder's argv, for every way this app starts one (New
+/// session, a remote start and `lightbulb claude|codex` through `session_start::held_argv`; a
+/// resume and a pick-up directly; `manager::attach_argv` for a session the provider's own daemon hosts).
+fn program_at(argv: &[String]) -> Option<usize> {
+    match argv {
+        [sh, _, _, name, _, _, _, ..] if sh == "/bin/sh" && name == "lightbulb-start" => Some(6),
+        [sh, _, _, name, _, _] if sh == "/bin/sh" && name == "lightbulb-attach" => Some(4),
+        [_, ..] => Some(0),
+        [] => None,
+    }
+}
+
+/// Whether a holder's argv runs Claude Code.
 pub fn runs_claude_code(argv: &[String]) -> bool {
-    let program = match argv {
-        [sh, _, _, name, _, _, program, ..] if sh == "/bin/sh" && name == "lightbulb-start" => program,
-        [sh, _, _, name, program, _] if sh == "/bin/sh" && name == "lightbulb-attach" => program,
-        [program, ..] => program,
-        [] => return false,
-    };
-    is_claude_program(Path::new(program))
+    program_at(argv).is_some_and(|at| is_claude_program(Path::new(&argv[at])))
+}
+
+/// Codex's own setting for its inline mode (`codex --help`: "--no-alt-screen … Runs the TUI in
+/// inline mode, preserving terminal scrollback history"; `tui.alternate_screen = "never"` is the
+/// same switch in its config, both since 0.81.0). Every Codex session a holder hosts runs with it,
+/// for the reason Claude Code runs its classic renderer (`CLASSIC_RENDERER`): on the alternate
+/// screen a teammate watching cannot scroll back. Tested on 0.159.3 in a pty: one `ESC[?1049h`
+/// and mouse reporting without it, neither with it. Given as a `-c` override, not as the flag:
+/// it wins over the person's config.toml, every subcommand takes it, and a Codex that does not
+/// know the key ignores it, where an unknown flag stops Codex with a usage error.
+pub const CODEX_INLINE: &str = "tui.alternate_screen=never";
+
+/// The argv the holder runs for `argv`: Codex with `CODEX_INLINE`, anything else as it is. The
+/// holder still names `argv` in its HELLO, so the app knows its own starts by their shape.
+// The holder's model keeps no history for Codex (HELLO `"history"` stays Claude Code's): Codex
+// writes finished lines above its prompt through a scroll region (`ESC[1;<n>r`), which a terminal
+// saves and vt100 0.16 does not. A new viewer gets them from the output log, as before.
+pub fn provider_argv(argv: &[String]) -> Vec<String> {
+    let mut out = argv.to_vec();
+    let Some(at) = program_at(argv).filter(|at| Path::new(&argv[*at]).file_name().is_some_and(|name| name == "codex")) else { return out };
+    if is_attach(argv) {
+        // The program is the script's `$1`; the script ends with Codex's own arguments.
+        out[2] = format!("{} -c {CODEX_INLINE}", out[2]);
+    } else {
+        // Root options go before a subcommand (`resume`) and before `--` and the prompt.
+        out.insert(at + 1, CODEX_INLINE.into());
+        out.insert(at + 1, "-c".into());
+    }
+    out
 }
 
 /// The environment the provider `argv` runs is started with: the captured one, minus another
@@ -236,12 +305,13 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
     // size, so a replay of it fits that terminal.
     let (cols, rows) = size.map_or((COLS, ROWS), |(c, r)| (c.clamp(1, 1000), r.clamp(1, 500)));
     let env = provider_environment(env, argv);
-    let program = argv.first().ok_or_else(|| std::io::Error::other("no program"))?;
+    let run = provider_argv(argv);
+    let program = run.first().ok_or_else(|| std::io::Error::other("no program"))?;
     let pair = native_pty_system()
         .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
         .map_err(std::io::Error::other)?;
     let mut cmd = CommandBuilder::new(program);
-    cmd.args(&argv[1..]);
+    cmd.args(&run[1..]);
     cmd.env_clear();
     for (k, v) in env {
         cmd.env(k, v);
@@ -363,8 +433,10 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
     // When the provider exited (unix ms): HELLO's `endedAt` once `ended`.
     let mut exited_at_ms = 0u64;
     // Once `ended`: the picture the person last saw, when the final screen is not it
-    // (`Model::ended_picture`). Every snapshot is then this picture, and nothing follows it.
+    // (`Model::end`). Every snapshot is then this picture, and nothing follows it.
     let mut ended_picture: Option<Vec<u8>> = None;
+    // The terminal closed before the exit status came: all the output is read.
+    let mut drained = false;
     // An END was taken: the provider is on its way out.
     let mut ending = false;
 
@@ -372,6 +444,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
         let event = match &exited {
             // The provider is gone: finish once its last output is read (or after a moment,
             // when a leftover child still holds the terminal open).
+            Some(_) if drained => Event::Eof,
             Some((_, _, at)) => match rx.recv_timeout(EXIT_DRAIN.saturating_sub(at.elapsed())) {
                 Ok(event) => event,
                 Err(_) => Event::Eof,
@@ -559,9 +632,20 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 exited_at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
             }
             Event::Eof => {
-                // (None: the terminal closed first; the exit status follows from the wait thread.)
-                let Some((status, code, exited_at)) = exited.take() else { continue };
-                let frame = encode(EXIT, serde_json::json!({ "status": status, "code": code }).to_string().as_bytes());
+                // (None: the terminal closed first; the exit status follows from the wait thread. That
+                // is the usual order, a process closes its files before it can be waited for, and
+                // waiting EXIT_DRAIN again for output that cannot come held every end back a second.)
+                let Some((status, code, exited_at)) = exited.take() else {
+                    drained = true;
+                    continue;
+                };
+                // Before anyone hears of the end: whoever asks next gets the kept picture and the lines above it.
+                let kept = if is_attach(argv) { None } else { model.end(exited_at) };
+                // `startOver`: a terminal that watched the way out has lines above its screen that the
+                // kept picture shows again, so the screen relay draws its viewers from the start, when
+                // it can send them all of the lines above that picture (`above`, their size in bytes).
+                let above = model.starts_over();
+                let frame = encode(EXIT, serde_json::json!({ "status": status, "code": code, "startOver": above.is_some(), "above": above }).to_string().as_bytes());
                 if is_attach(argv) {
                     // One more client of the provider's own host (spec §4 k): no screen of ours to
                     // keep, and the next viewer needs a new client, so this holder ends with it.
@@ -583,7 +667,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 // stops this holder (`manager::stop`): nothing is written anywhere.
                 clients.retain(|_, c| c.send(frame.clone()));
                 ended = true;
-                ended_picture = model.ended_picture(exited_at);
+                ended_picture = kept;
                 interactive = None;
                 typists.clear();
                 remote.clear();

@@ -115,9 +115,9 @@ class ActionOption(ContractModel):
 
 
 class ActionInput(ContractModel):
-    # ``login`` (username + password) / ``code``: a secret form whose answer goes straight to
-    # the website-logins store; the client posts it as ``value`` only, never as a note.
-    kind: Literal["text", "select", "person", "login", "code"]
+    # ``login`` (username + password): a secret form whose answer goes straight to the
+    # website-logins store; the client posts it as ``value`` only, never as a note.
+    kind: Literal["text", "select", "person", "login"]
     label: str
     required: bool
     options: list[ActionOption] | None = None
@@ -146,7 +146,8 @@ class ActivityItem(ContractModel):
     kind: ActivityKind
     # ``session`` items: ``waiting`` (on its owner's input), ``finished`` (a turn ended) or
     # ``join_request`` (a teammate asked to send to it; Allow / Decline).
-    # ``login`` items: ``login`` (an agent needs a website login) or ``code`` (a 2FA code).
+    # ``login`` items: ``login`` (an agent needs a website login). A sign-in code is typed into the
+    # shared browser, never asked for here.
     subtype: (
         Literal[
             "approval",
@@ -157,7 +158,6 @@ class ActivityItem(ContractModel):
             "finished",
             "join_request",
             "login",
-            "code",
             "extension",
         ]
         | None
@@ -412,6 +412,12 @@ async def _render_session_rows(owner_id: str, user_id: str, rows: list[dict], se
         if not session or session.get("ownerId") != owner_id or session.get("humanUserId") != user_id:
             continue
         sid, state = session["sessionId"], row.get("subtype")
+        if state == "join_request" and row.get("request") == "agent_message":
+            from core.services.local_sessions import _get_ask
+
+            if ask := await _get_ask(owner_id, sid, row["requestId"]):
+                items.append(render_agent_ask(ask, session, seen=seen, stranded=await _ask_stranded(owner_id, ask)))
+            continue
         if state == "join_request":
             items.append(render_join_request(row, session, seen=seen))
             continue
@@ -538,41 +544,115 @@ async def _run_join_action(
     return await current()
 
 
+def agent_ask_item_id(session_id: str, request_id: str) -> str:
+    return f"agentmsg:{session_id}:{request_id}"
+
+
+_ASK_RESOLVED = {"sent": "Sent", "failed": "Not sent", "declined": "Declined", "expired": "Expired"}
+
+
+async def _ask_stranded(owner_id: str, ask: dict) -> bool:
+    """Approved (``sent``) but never admitted: the worker died between the two writes."""
+    from core.repositories import local_sessions_repo
+
+    return (
+        ask["status"] == "sent"
+        and await local_sessions_repo.get_command(owner_id, ask["sessionId"], ask["requestId"]) is None
+    )
+
+
+def render_agent_ask(ask: dict, session: dict, *, seen: str | None, stranded: bool = False) -> ActivityItem:
+    """An agent's ask to message (or stop) one of the viewer's sessions (spec
+    2026-10-07-agent-session-approval §3.5), open while the ask is pending, and while an approved
+    one was never admitted (``stranded``): Send again admits it."""
+    from core.services.local_sessions import AGENT_ASK_REASON, agent_ask_title, ask_status
+
+    status = ask_status(ask)
+    open_ = status == "pending" or stranded
+    created = datetime.fromtimestamp(ask["createdAt"], tz=timezone.utc)
+    actor = ActivityActor(kind="agent", id=ask["agentId"], name=str(ask.get("agentName") or "Your agent"))
+    title = agent_ask_title(ask, session)
+    links = [ActivityLink(kind="session", id=session["sessionId"], label="Session")]
+    if ask.get("roomId"):
+        links.append(ActivityLink(kind="room", id=ask["roomId"], label="Room"))
+    return ActivityItem(
+        id=agent_ask_item_id(session["sessionId"], ask["requestId"]),
+        kind="session",
+        subtype="join_request",
+        actor=actor,
+        created_at=created,
+        state="open" if open_ else "resolved",
+        read=not _newer_than(created, seen),
+        summary=ActivitySummary(
+            title=_clip(title if open_ else f"{_ASK_RESOLVED.get(status, 'Answered')} · {title}", TITLE_CHARS),
+            requester=actor,
+            reason=AGENT_ASK_REASON,
+            preview=ActivityPreview(text=_clip(ask["text"], PREVIEW_TEXT_CHARS)) if ask.get("text") else None,
+            links=links,
+        ),
+        actions=[
+            ActivityAction(id="send", label="Send", style="primary"),
+            # A stranded approval was already chosen; only Send (admit it) is left.
+            *([ActivityAction(id="decline", label="Decline")] if status == "pending" else []),
+        ]
+        if open_
+        else [],
+    )
+
+
+async def _run_agent_ask_action(auth: AuthContext, session_id: str, request_id: str, action_id: str) -> ActivityItem:
+    """Send / Decline from Activity: the same door as the session's decision route."""
+    from core.repositories import local_sessions_repo
+    from core.services import local_sessions
+
+    owner_id = resolve_owner_id(auth)
+
+    async def current() -> ActivityItem:
+        session = await local_sessions_repo.get_session(owner_id, session_id)
+        ask = await local_sessions._get_ask(owner_id, session_id, request_id) if session else None
+        if not ask or session.get("ownerId") != owner_id or session.get("humanUserId") != auth.user_id:
+            raise ApiProblem("ACTIVITY_NOT_FOUND", "Activity item not found.")
+        return render_agent_ask(ask, session, seen=None, stranded=await _ask_stranded(owner_id, ask))
+
+    item = await current()
+    if item.state != "open":
+        return item
+    _require_action(item, action_id)
+    try:
+        await local_sessions.decide_agent_ask(auth, session_id, request_id, action_id)
+    except ApiProblem as exc:
+        if exc.error.code != "LOCAL_SESSION_ASK_SETTLED":  # a second tap or another approver won
+            raise
+    return await current()
+
+
 LOGIN_ADMIN_ONLY = "Only a workspace admin can add website sign-ins."
 
 
 def render_login_request(row: dict, *, seen: str | None, admin: bool) -> ActivityItem:
-    """An agent's ask for a website login or a 2FA code (``website_logins.create_request``),
-    rendered from the request's current row: open only while the agent is still waiting."""
+    """An agent's ask for a website login (``website_logins.create_request``), rendered from the
+    request's current row: open only while the agent is still waiting. (A sign-in code is typed
+    into the shared browser and never becomes an item.)"""
     from core.services import website_logins
 
     request_id = row["requestId"]
-    code = row.get("kind") == "code"
     status = website_logins.request_status(row)
     open_ = status == "pending"
     created = _when(row.get("createdAt"))
     actor = ActivityActor(kind="agent", id=str(row.get("agentId") or ""), name=str(row.get("agentName") or "Agent"))
     site = website_logins.host_of(str(row.get("origin") or ""))
-    if code:
-        reason = f"{site} asked for a verification code. It goes into the page, never into chat."
-    else:
-        reason = (
-            f"Saved to the workspace's website sign-ins for {site}, so every agent can sign in there. "
-            "The password never enters chat."
-        )
+    reason = (
+        f"Saved to the workspace's website sign-ins for {site}, so every agent can sign in there. "
+        "The password never enters chat."
+    )
     actions: list[ActivityAction] = []
     if open_ and admin:
         actions = [
             ActivityAction(
                 id="provide",
-                label="Enter code" if code else "Add login",
+                label="Add login",
                 style="primary",
-                input=ActionInput(
-                    kind="code" if code else "login",
-                    label="Code" if code else f"Login for {site}",
-                    required=True,
-                    hint=None if code else row.get("hint"),
-                ),
+                input=ActionInput(kind="login", label=f"Login for {site}", required=True, hint=row.get("hint")),
             ),
             ActivityAction(id="decline", label="Not now"),
         ]
@@ -580,7 +660,7 @@ def render_login_request(row: dict, *, seen: str | None, admin: bool) -> Activit
     return ActivityItem(
         id=website_logins.activity_item_id(request_id),
         kind="login",
-        subtype="code" if code else "login",
+        subtype="login",
         room_id=row.get("roomId"),
         thread_root_message_id=row.get("threadRootMessageId"),
         actor=actor,
@@ -1759,6 +1839,12 @@ async def run_action(
 ) -> ActivityItem:
     """Map one Activity action to the real call, re-authorized for this viewer,
     and answer with the updated item. A repeated decision returns the current state."""
+    if item_id.startswith("agentmsg:"):
+        # An agent's request id may itself contain ":", so it is everything after the session.
+        _, sid, request_id = (item_id.split(":", 2) + [""])[:3]
+        if _ID_RE.match(sid) and request_id:
+            return await _run_agent_ask_action(auth, sid, request_id, action_id)
+        raise ApiProblem("ACTIVITY_NOT_FOUND", "Activity item not found.")
     parts = item_id.split(":")
     if parts[0] == "login" and len(parts) == 2:
         return await _run_login_action(auth, parts[1], action_id, body)

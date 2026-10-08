@@ -13,9 +13,14 @@ result, a log or the session DB. We keep all of that. Two things we replace:
   one password per fill, held in memory for that fill only. Nothing is written to the profile.
 * **The asks.** ``browser_vault_save_login`` / ``browser_vault_enter_code`` ask "the user in
   their UI" through per-thread prompt callbacks, which only Hermes's own CLI/desktop install.
-  ``prompt_scope`` installs ours for a turn: each ask becomes a Needs-you request in the room and
-  Activity, and the callback waits for the human's answer (``WAIT_S``), which goes from their
-  form straight to the backend store -- never through chat.
+  ``prompt_scope`` installs ours for a turn. A LOGIN ask becomes a Needs-you request in the room
+  and Activity, and the callback waits for the human's answer (``WAIT_S``), which goes from their
+  form straight to the backend store -- never through chat. A CODE is different (owner ruling
+  2026-10-07): nobody types it into a form for the agent. The callback posts one line sending the
+  person to the shared browser, waits for the page to move on (they typed the code into the live
+  view themselves), and answers Hermes with "" either way; ``transform_tool_result`` then turns
+  Hermes's ``code_declined`` into what actually happened. The code never passes through chat, the
+  model, or our storage.
 """
 from __future__ import annotations
 
@@ -225,9 +230,135 @@ def _save_login_prompt(origin: str, _site: str) -> dict | None:
     return {"identifier": found.get("username", ""), "password": found["password"]}
 
 
+def _browser_task_ids() -> list[str]:
+    """The Hermes browser tasks this run has browsed on (``browser_control`` records them per run):
+    the main agent's, plus one per delegated subagent that browsed. Hermes's code prompt does not
+    say which task is asking, so the page watch covers all of them."""
+    state = browser_control._TURN.get() or {}
+    tasks = browser_control._BROWSING.get(str(state.get("runId") or ""), ())
+    return sorted(tasks) or ["default"]
+
+
+def _browsing_on_mac() -> bool:
+    """A run that selected a paired Mac browses in that Mac's "Lightbulb agent" Chrome, not the
+    cloud browser: the person types the code into that window, and the Browser panel shows nothing."""
+    return bool((browser_control._TURN.get() or {}).get("mac"))
+
+
+def _page_eval(task_id: str, expression: str):
+    """Evaluate page JS on one task's tab through Hermes's own (non-secret) eval path. None = no answer."""
+    try:
+        from tools.browser_vault_tool import _eval_js
+    except ImportError:  # bridge-only unit tests
+        return None
+    try:
+        out = _eval_js(task_id, expression)
+    except Exception:  # noqa: BLE001 -- the page is a stranger; a blip is not an answer
+        return None
+    return out.get("result") if isinstance(out, dict) and out.get("success") else None
+
+
+def _page_heading() -> str:
+    """The first heading among the run's tabs ("Check your text messages"), for the line in the room."""
+    for task_id in _browser_task_ids():
+        text = " ".join(str(_page_eval(task_id, "(document.querySelector('h1,h2')||{}).innerText||''") or "").split())
+        if text:
+            return text[:120]
+    return ""
+
+
+def _code_field_present() -> bool | None:
+    """Whether any of the run's tabs still shows a one-time-code field (Hermes's own OTP probe).
+    The code page is in exactly one of them, so the step has moved on only when EVERY tab answered
+    and none shows a field; a tab that did not answer may be the one with the field, so that is
+    None (keep waiting), never False."""
+    try:
+        from tools.browser_vault_tool import _TAB_PROBES
+    except ImportError:  # bridge-only unit tests
+        return None
+    unknown = False
+    for task_id in _browser_task_ids():
+        result = _page_eval(task_id, _TAB_PROBES["otp"])
+        if result is None:
+            unknown = True
+        elif result is True or str(result).strip().lower() == "true":
+            return True
+    return None if unknown else False
+
+
 def _code_prompt(site: str, _hint: str) -> str:
-    state = _ask("code", site if "://" in site else f"https://{site}")
-    return str((state or {}).get("code") or "")
+    """Hermes asks us for the one-time code. Nobody types it here: post one line sending the person
+    to the shared browser, then wait for the page to move on (they typed it into the live view) or
+    for the deadline. Always "" -- Hermes then reports ``code_declined``, and ``transform_tool_result``
+    tells the agent what happened (``ctx["code"]``: ``page_moved`` or ``nobody_came``)."""
+    ctx = _ASK.get()
+    if not ctx:
+        return ""
+    if not ctx.get("roomId"):
+        # A Paperclip or voice turn has no room to say it in: nobody would be told, so do not wait.
+        ctx["code"] = "no_room"
+        return ""
+    try:
+        posted = _call("POST", "/requests", {
+            "kind": "code", "origin": site if "://" in site else f"https://{site}",
+            "agentId": ctx["agentId"], "roomId": ctx.get("roomId"),
+            "threadRootMessageId": ctx.get("threadRootMessageId"), "hint": _page_heading(),
+            "surface": "mac" if _browsing_on_mac() else "cloud",
+        })
+    except Exception:  # noqa: BLE001
+        posted = None
+    if (posted or {}).get("status") != "posted":
+        # Nobody was told (the room write failed, or the backend is older): waiting would be for
+        # a person who never heard. The agent says the line itself and ends its turn.
+        log.warning("website login code notice was not posted")
+        ctx["code"] = "not_told"
+        return ""
+    ctx["code"] = "nobody_came"
+    deadline = time.monotonic() + WAIT_S
+    renewed = time.monotonic()
+    while time.monotonic() < deadline:
+        if time.monotonic() - renewed > RENEW_S:
+            browser_control.renew()
+            renewed = time.monotonic()
+        if ctx.get("done") or ctx.get("aborted", lambda: False)():
+            break
+        if _code_field_present() is False:
+            ctx["code"] = "page_moved"
+            break
+        time.sleep(POLL_S)
+    return ""
+
+
+# What the agent reads instead of Hermes's "The user did not enter a code" (which assumes a form).
+CODE_RESULTS = {
+    "page_moved": {
+        "success": True, "filled_fields": 0, "source": "person",
+        "next": "The person completed this step in the shared browser. Take a fresh browser_snapshot "
+                "and continue from what the page shows now. Do not ask for the code.",
+    },
+    "nobody_came": {
+        "success": False, "error_type": "nobody_came",
+        "error": "Nobody typed the code into the shared browser in time. Say so in one line and stop: "
+                 "they can type it any time (Browser panel, on a computer) and tell you to continue, "
+                 "and you pick up from a fresh browser_snapshot. Never ask for the code in chat, and "
+                 "never ask again for a login that is already saved.",
+    },
+    "not_told": {
+        "success": False, "error_type": "not_told",
+        "error": "The line asking the person to type the code could not be posted, so nobody has been "
+                 "told. Say it yourself in one line -- the site is asking for a verification code; type "
+                 "it into the shared browser (Browser panel, on a computer) and tell me to continue -- "
+                 "then end your turn and pick up from a fresh browser_snapshot. Never ask for the code "
+                 "in chat.",
+    },
+    "no_room": {
+        "success": False, "error_type": "no_room",
+        "error": "This site wants a verification code and this run has no room to ask a person in. "
+                 "Stop here and say so in your result: someone has to sign in to the site once in the "
+                 "shared browser (Browser panel), after which the saved session carries over. Never ask "
+                 "for the code in chat.",
+    },
+}
 
 
 @contextmanager
@@ -258,8 +389,14 @@ def prompt_scope(agent_id: str, room_id: str | None, thread_root: str | None, ab
 
 
 def transform_tool_result(tool_name: str = "", result=None, **_kw):
-    """Plugin hook: Hermes's vault errors name its desktop app and CLI; ours is Connections."""
-    if str(tool_name).startswith("browser_vault_") and isinstance(result, str):
-        rewritten = rewrite_pointers(result)
-        return rewritten if rewritten != result else None
-    return None
+    """Plugin hook: Hermes's vault errors name its desktop app and CLI; ours is Connections. And
+    its ``code_declined`` ("the user did not enter a code") assumes a form nobody has here: it
+    becomes the outcome ``_code_prompt`` recorded for this turn."""
+    if not (str(tool_name).startswith("browser_vault_") and isinstance(result, str)):
+        return None
+    rewritten = rewrite_pointers(result)
+    if tool_name == "browser_vault_enter_code" and '"code_declined"' in rewritten:
+        outcome = (_ASK.get() or {}).get("code")
+        if outcome in CODE_RESULTS:
+            rewritten = json.dumps(CODE_RESULTS[outcome])
+    return rewritten if rewritten != result else None

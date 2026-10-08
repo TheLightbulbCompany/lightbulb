@@ -59,6 +59,8 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   - Website sign-ins .......... SKILL.md ("Type a website password" row; names the web AND iPhone doors) + references/surfaces.md (Browser row)
                               <- apps/infra/hermes/bridge/website_logins.py (vault store + ask callbacks);
                                  core/services/website_logins.py; frontend WebsiteLoginsSection (Connections).
+                                 Codes/CAPTCHA are browser-only (owner ruling 2026-10-07): the bridge's
+                                 _code_prompt posts the line and watches the page; there is no code form.
   - Browser live view ....... references/surfaces.md
                               <- Mac viewer input: apps/frontend/src/components/workspace/panels/BrowserFrameView.tsx
                                  (event producer); apps/backend/routers/container.py and
@@ -163,7 +165,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  non-admitted); core/services/local_sessions.py (may_control / allowedSenders gate on input);
                                  core/services/session_screen.py (type_into / watch: active-membership fence);
                                  apps/desktop/src-tauri/src/holder/{run,panel}.rs (the panel joins a `lightbulb claude` terminal;
-                                 `run::CLASSIC_RENDERER`: held Claude Code sessions run in the classic renderer, so a watcher scrolls back).
+                                 `run::CLASSIC_RENDERER` / `run::CODEX_INLINE`: held Claude Code sessions run in the classic renderer and held Codex sessions inline, so a watcher scrolls back).
   - Which sessions are shared references/surfaces.md ("Which sessions are shared" paragraph)
                               <- apps/desktop/src-tauri/src/local_sessions.rs (track: every session, named to its holder when it has one);
                                  apps/desktop/src-tauri/src/local_sessions/enrollment.rs (every session's hook reaches the app);

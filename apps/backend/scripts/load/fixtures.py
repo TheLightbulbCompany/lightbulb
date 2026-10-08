@@ -26,6 +26,8 @@ import sys
 import time
 from pathlib import Path
 
+import httpx
+
 from scripts.multiparty_e2e.runner import API, FAPI, Api, Clerk, dev_only
 
 HERE = Path(__file__).parent
@@ -160,8 +162,27 @@ def _add_member(clerk: Clerk, org_id: str, user_id: str) -> None:
     raise SystemExit(f"adding {user_id} to {org_id} failed: HTTP {resp.status_code} {resp.text[:500]}")
 
 
+SIGNIN_TRIES = 6
+SIGNIN_SPACING_S = 1.0
+
+
 def _api(clerk: Clerk, user_id: str, org_id: str) -> Api:
-    return Api(clerk.session(user_id, org_id))
+    """One sign-in. Clerk's frontend API rate-limits sign-ins per IP: 1a's 16 back-to-back sign-ins
+    got a 429 on 2026-10-08. Wait out Retry-After (else 5 s x attempt, at most 60 s), and space
+    successive sign-ins by SIGNIN_SPACING_S."""
+    for attempt in range(1, SIGNIN_TRIES + 1):
+        try:
+            api = Api(clerk.session(user_id, org_id))
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code != 429 or attempt == SIGNIN_TRIES:
+                raise
+            wait = min(float(e.response.headers.get("retry-after") or 5 * attempt), 60)
+            print(f"sign-in rate-limited (429); waiting {wait:.0f}s (try {attempt}/{SIGNIN_TRIES})", flush=True)
+            time.sleep(wait)
+        else:
+            time.sleep(SIGNIN_SPACING_S)
+            return api
+    raise AssertionError("unreachable")
 
 
 def _check_org_claim(api: Api, org_id: str) -> None:

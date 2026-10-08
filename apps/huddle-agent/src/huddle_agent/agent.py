@@ -337,7 +337,7 @@ class _Unit:
 
     order: int | None
     index: int
-    allowed: Callable[[], bool]  # the controller's permission, asked again as its first audio is about to go out
+    allowed: Callable[[], bool]  # the controller's permission, asked again as its first audio, and its first audible audio, is about to go out
     audible: Callable[[], None] = lambda: None  # told once, as its first frame with sound in it goes out
     frames: int = 0
     seconds: float = 0.0
@@ -357,13 +357,16 @@ class _Mouth(Agent):
     async def realtime_audio_output_node(self, audio, model_settings):
         async for frame in audio:
             if (m := self.unit) is not None:
-                if m.revoked or (not m.frames and not m.allowed()):
+                data = frame.data
+                sound = max(max(data), -min(data)) >= LOUD
+                # Asked at its first frame, and again before its first frame with sound in it: the model may
+                # lead with quiet frames, and a person may begin in that time. The quiet ones between are let by.
+                if m.revoked or ((not m.frames or sound) and not m.loud and not m.allowed()):
                     m.revoked = True
                     return
                 m.frames += 1
                 m.seconds += frame.duration
-                data = frame.data
-                if max(max(data), -min(data)) >= LOUD:
+                if sound:
                     if not m.loud:
                         m.sounded = time.monotonic()
                         m.audible()
@@ -425,7 +428,7 @@ class _DrivenLive:
 
     async def _speak(self, order: int | None, index: int, unit: str) -> str:
         """One unit, word for word, then its receipt: `said` (audible audio went to the track and played to its
-        end), `cut` (interrupted), `revoked` (permission went before its first audio, so none was sent) or
+        end), `cut` (interrupted), `revoked` (permission went before its first audible audio, so none was sent) or
         `silent` (it ended uncut and nothing audible was sent: a failure). The receipt carries the order and
         unit it is for and what the track was sent, never the model's transcript of itself."""
         m = self._agent.unit = _Unit(order, index, lambda: self._may(order, index), lambda: self._audible(order, index))

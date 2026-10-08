@@ -354,7 +354,11 @@ class Mouth:
             at = sim.now()
             cut = await self._wait(m.lead())
             lead = sim.now() - at
-            if not cut:
+            # agent.py asks again before the first frame with sound in it: a person may have begun in the lead
+            revoked = not cut and not h.may_say(self.agent_id, order, index)
+            if revoked:
+                await asyncio.sleep(m.stop())
+            elif not cut:
                 h.on_unit_audible(self.agent_id, order, index)  # the first frame with sound in it
                 sim.audio(self, True)
                 heard = sim.now()
@@ -368,7 +372,7 @@ class Mouth:
                 cut = cut or await self._wait(m.trailing())
             sound = sim.now() - at
             h.on_agent_state(self.agent_id, "listening")
-            outcome = "cut" if cut else "said"
+            outcome = "revoked" if revoked else "cut" if cut else "said"
         evidence = {
             "audioMs": round(sound * 1000), "loudMs": round(loud * 1000), "heardMs": round(loud * 1000),
             "leadMs": round(lead * 1000),

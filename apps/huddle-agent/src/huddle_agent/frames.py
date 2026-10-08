@@ -95,7 +95,9 @@ class Run:
     box: int = 0  # which text box `text` is: narration before a tool is one, the answer after it another
     label: str | None = None
     seen: float = 0.0
-    accepted: float = 0.0  # when /turns took it (`Huddle._post_turn`); 0 while a waking workspace is retried
+    # When it began executing: /turns took it (`Huddle._post_turn`), or it left the room lock's queue after
+    # that (`_apply`). 0 while a waking workspace is retried.
+    accepted: float = 0.0
     gave_up: bool = False  # its asker was told it could not be done (`Runs.give_up`): it is waited for no longer
 
 
@@ -203,6 +205,8 @@ class Runs:
         if frame.get("type") == "run_queued":
             run.queued = True
             return
+        if run.queued:
+            run.accepted = self._clock()  # it starts executing now: the wait on the room lock was not its time
         run.queued = False
         _order(run, frame, lambda f: self._handle(run, f))
 

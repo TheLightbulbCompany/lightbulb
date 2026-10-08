@@ -262,6 +262,8 @@ RUN_STATUS_S = 20.0
 # waking is part of it. This one counts from acceptance: it is the time the run is given to do the work, and
 # the up to TURN_RETRY_BUDGET seconds a cold workspace spends before it takes the run are not the run's.
 # A run never accepted is closed by `_post_turn` (CANT_REACH) at that budget, so it needs no deadline here.
+# Nor is the time a run waits on the room lock behind a chat run (`run_queued`): the deadline does not run
+# while it is queued, and starts when its first frame after the queue comes.
 RUN_DEADLINE_S = 120.0
 # The final POST's backoff and its whole budget. The budget stays under the job's shutdown window
 # (agent.py SHUTDOWN_S): the flush usually runs from the shutdown callback.
@@ -3843,7 +3845,9 @@ class Huddle:
     def _overdue(self, r: Request, run: Run, now: float) -> None:
         """A mouth's request still working (`tick`): what its asker is owed while the run says nothing
         (RUN_STATUS_S), and when it has not ended at all (RUN_DEADLINE_S)."""
-        if run.accepted and now - run.accepted >= RUN_DEADLINE_S:
+        # The deadline is execution time. A run queued behind a chat run (run_queued) has not begun: it is
+        # waited for as long as `Runs.running` allows (QUEUED_TURN_SECONDS), and its clock starts as it leaves.
+        if run.accepted and not run.queued and now - run.accepted >= RUN_DEADLINE_S:
             self._runs.give_up(run.run_id)
             self._requests.fail(r)
             emit_metric("live.request.overdue", 1, "Count", {"what": "gave_up"})
@@ -3872,8 +3876,11 @@ class Huddle:
             self._status_said.add(run.run_id)
             emit_metric("live.request.overdue", 1, "Count", {"what": "status"})
             self._utter(
-                r.agent, "status", self._line(STILL_WORKING), obligation=run.run_id, audience=r.asker, label=r.label
-            )
+                # a queued run has not begun: "still working" would be false, and a mouth is told nothing by
+                # `_tell_queued` (append_thinking is nothing to it)
+                r.agent, "status", self._line(QUEUED_LINES if run.queued else STILL_WORKING), obligation=run.run_id,
+                audience=r.asker, label=r.label,
+            )  # fmt: skip
 
     def _request_failed(self, rows: list[Request], run_id: str) -> None:
         """Spec §3.5: the request is failed; in its turn its agent says CANT_REACH (never posted)."""

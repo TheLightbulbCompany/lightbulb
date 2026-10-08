@@ -274,6 +274,33 @@ async def test_permission_is_asked_again_as_the_first_audio_is_about_to_go_out()
     assert mouth.unit.revoked and mouth.unit.frames == 0
 
 
+async def test_permission_that_goes_in_the_quiet_lead_stops_the_first_frame_with_sound():
+    """10-09 review: asked at the first frame only, a unit whose model led with quiet frames was never asked
+    again, and its first word went out over a person who began in that lead."""
+    import struct
+
+    from livekit import rtc
+
+    mouth = agent._Mouth(instructions="x")
+    levels = (0, 0, 4000, 4000)
+
+    async def audio():
+        for v in levels:
+            yield rtc.AudioFrame(struct.pack("<480h", *([v] * 480)), 24000, 1, 480)
+
+    asked, sounded = [], []
+    # allowed as its first (quiet) frame goes out; a person begins before its first frame with sound
+    mouth.unit = agent._Unit(7, 0, lambda: asked.append(mouth.unit.frames) or len(asked) == 1, lambda: sounded.append(1))
+    out = [f async for f in mouth.realtime_audio_output_node(audio(), None)]
+    assert asked == [0, 2], "asked at the first frame, and again before the first one with sound"
+    assert [max(f.data) for f in out] == [0, 0], "only the quiet lead reached the track"
+    assert mouth.unit.revoked and mouth.unit.loud == 0 and sounded == [], "not said, and never reported audible"
+    asked.clear()
+    mouth.unit = agent._Unit(7, 0, lambda: asked.append(mouth.unit.frames) or True)
+    assert len([f async for f in mouth.realtime_audio_output_node(audio(), None)]) == 4
+    assert asked == [0, 2], "permitted: not asked again once it has sounded"
+
+
 # -- receipts --
 
 

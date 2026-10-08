@@ -719,6 +719,27 @@ async def test_the_deadline_counts_from_when_turns_accepted_the_run_not_from_the
     assert [(a[1], a[3]) for a in backend.late_answers] == [(answered_run, FIRST)], "it is written to the room"
 
 
+async def test_the_deadline_does_not_run_while_a_run_is_queued_behind_a_chat_run():
+    """10-09 review: a chat run held the room lock (`run_queued`, waited for up to QUEUED_TURN_SECONDS), and
+    the request was failed and apologised for 120 s after /turns took it, before it had begun."""
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    run_id, said = row.run_id, len(lines(lives))
+    h.on_data(None, "call.frame", packet(frame(run_id, "forge", {"type": "run_queued", "seq": 1})))
+    await wait(h, clock, 3 * h_mod.RUN_DEADLINE_S, lives)
+    assert row.status == "working" and sorry(lives) == [], "queued is not executing: no deadline runs"
+    (line,) = lines(lives)[said:]
+    assert line in h_mod.QUEUED_LINES, "its asker is told once that it is in line, never that it is being worked on"
+    h.on_data(None, "call.frame", packet(frame(run_id, "forge", {"type": "tool_start", "tool": "t", "seq": 2})))
+    left_queue = clock.t
+    await wait(h, clock, h_mod.RUN_DEADLINE_S - 10, lives)
+    assert row.status == "working" and sorry(lives) == [], "its whole time to work, from when it left the queue"
+    assert lines(lives)[said:] == [line], "and no second status line"
+    await wait(h, clock, 15, lives)
+    assert clock.t - left_queue >= h_mod.RUN_DEADLINE_S
+    assert row.status == "failed" and len(sorry(lives)) == 1, "a run that then never ends is still given up"
+
+
 async def test_an_answer_that_comes_after_the_apology_is_written_to_the_room_and_not_said():
     h, backend, lives, clock, first, second = await given_up()
     said = lines(lives)

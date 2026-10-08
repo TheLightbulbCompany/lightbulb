@@ -549,3 +549,11 @@ async def test_through_the_session_silent_frames_are_a_failed_unit_and_a_revoked
     )
     assert asked == [(3, 0), (3, 0)] and receipts[0][3] == "revoked" and receipts[0][4]["frames"] == 0
     assert track.frames == [], "the hook is where the audio stops: nothing reached the track"
+    asked = []
+    # allowed when ordered and at its first (quiet) frame, and not before its first frame with sound in it
+    receipts, ended, track = await _say_through_a_real_session(
+        [0, 0, 4000, 4000], may=lambda order, index: asked.append((order, index)) or len(asked) < 3
+    )
+    assert len(asked) == 3 and receipts[0][3] == "revoked" and receipts[0][4]["loudMs"] == 0
+    assert [max(f.data) for f in track.frames] == [0, 0], "the quiet lead passed, and no sound reached the track"
+    assert ended == [(3, False)], "paused as not said: a refusal is not a failed playback"

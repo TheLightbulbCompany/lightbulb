@@ -13,9 +13,17 @@ export interface UseLiveEventsOptions {
    *  desired only alongside its matching `roomChannel`; anything else is refused
    *  by the client as a `protocol_error`. */
   framesChannel?: string | null;
+  /** Shared sessions' frames channels, one per open terminal view (`/ws/<ws>/session-frames/<sid>`). */
+  sessionFramesChannels?: readonly string[];
+  /** A `/session-frames/` channel the authorizer refused: dropped from the socket, not retried.
+   *  A transient subscribe error is not reported here; it takes the reconnect path. */
+  onSubscribeError?: (channel: string) => void;
   uuid: () => string;
   onEvent: (event: LiveEvent) => void;
   onChatMessage?: (frame: ChatIncomingMessage, event: LiveEventOf<"room.run.frame">) => void;
+  /** Re-fetch live-config: membership may have changed while no notice could arrive (a socket
+   *  reconnect, a refused sessions subscription, or a `workspace.access.removed`). */
+  onConfigStale?: () => void;
   enabled?: boolean;
 }
 
@@ -28,24 +36,42 @@ export interface UseLiveEventsResult {
   lastError: LiveErrorKind | null;
 }
 
+const NO_CHANNELS: readonly string[] = [];
+
 export function useLiveEvents(options: UseLiveEventsOptions): UseLiveEventsResult {
   const {
     config,
     userChannel,
     roomChannel,
     framesChannel = null,
+    sessionFramesChannels = NO_CHANNELS,
     enabled = true,
   } = options;
   const tokenRef = useRef(options.getToken);
   const uuidRef = useRef(options.uuid);
   const eventRef = useRef(options.onEvent);
   const chatRef = useRef(options.onChatMessage);
+  const refusedRef = useRef(options.onSubscribeError);
+  refusedRef.current = options.onSubscribeError;
   tokenRef.current = options.getToken;
   uuidRef.current = options.uuid;
   eventRef.current = options.onEvent;
   chatRef.current = options.onChatMessage;
+  const staleRef = useRef(options.onConfigStale);
+  staleRef.current = options.onConfigStale;
 
-  const desired = [userChannel, roomChannel, framesChannel].filter((channel): channel is string => !!channel);
+  // One sessions channel per workspace; AppSync admits current members only. A removal can't
+  // close an open subscription server-side, so `workspace.access.removed` closes the socket here
+  // and keeps it closed for that workspace (the next live-config is refused).
+  const workspaceRef = useRef(config?.workspaceId);
+  workspaceRef.current = config?.workspaceId;
+  const [removedFrom, setRemovedFrom] = useState<string | null>(null);
+  const live = enabled && !!config && removedFrom !== config.workspaceId;
+  const sessionsChannel = config ? `/ws/${config.workspaceId}/sessions` : null;
+
+  const desired = [userChannel, sessionsChannel, roomChannel, framesChannel, ...sessionFramesChannels]
+    .filter((channel): channel is string => !!channel);
+  const sessionFramesKey = sessionFramesChannels.join(" ");
   const desiredRef = useRef(desired);
   desiredRef.current = desired;
   const clientRef = useRef<AppSyncEventsClient | null>(null);
@@ -53,13 +79,14 @@ export function useLiveEvents(options: UseLiveEventsOptions): UseLiveEventsResul
   const [lastError, setLastError] = useState<LiveErrorKind | null>(null);
 
   useEffect(() => {
-    if (!enabled || !config) {
+    if (!live || !config) {
       clientRef.current?.close();
       clientRef.current = null;
       setStatus({ connected: false, liveChannels: [], ackCount: 0 });
       return;
     }
 
+    let acks = 0;
     const client = new AppSyncEventsClient({
       httpEndpoint: config.httpEndpoint,
       realtimeEndpoint: config.realtimeEndpoint,
@@ -67,10 +94,24 @@ export function useLiveEvents(options: UseLiveEventsOptions): UseLiveEventsResul
       uuid: () => uuidRef.current(),
       onEvent: (event) => {
         eventRef.current(event);
+        if (event.type === "workspace.access.removed" && event.payload.workspaceId === workspaceRef.current) {
+          setRemovedFrom(event.payload.workspaceId);
+          staleRef.current?.();
+          return;
+        }
         if (event.type === "room.run.frame") chatRef.current?.(event.payload.frame, event);
       },
-      onStatus: setStatus,
-      onError: (kind) => setLastError(kind),
+      onStatus: (next) => {
+        // A second ack on one client is a reconnect: a removal notice may have been missed.
+        if (next.ackCount > 1 && next.ackCount !== acks) staleRef.current?.();
+        acks = next.ackCount;
+        setStatus(next);
+      },
+      onError: (kind, channel) => {
+        setLastError(kind);
+        if (kind === "subscribe_error" && channel?.endsWith("/sessions")) staleRef.current?.();
+        if (kind === "subscribe_refused" && channel) refusedRef.current?.(channel);
+      },
     });
     clientRef.current = client;
     client.setChannels(desiredRef.current);
@@ -78,11 +119,11 @@ export function useLiveEvents(options: UseLiveEventsOptions): UseLiveEventsResul
       client.close();
       if (clientRef.current === client) clientRef.current = null;
     };
-  }, [enabled, config?.httpEndpoint, config?.realtimeEndpoint]);
+  }, [live, config?.httpEndpoint, config?.realtimeEndpoint]);
 
   useEffect(() => {
     clientRef.current?.setChannels(desired);
-  }, [userChannel, roomChannel, framesChannel]);
+  }, [userChannel, sessionsChannel, roomChannel, framesChannel, sessionFramesKey]);
 
   // "Connected" is the socket being up with the user's own channel live. It is
   // NOT "every channel I currently want is acked": a freshly claimed room
@@ -90,7 +131,7 @@ export function useLiveEvents(options: UseLiveEventsOptions): UseLiveEventsResul
   // that window as a disconnect made every room open flash "Reconnecting live
   // updates" — the socket had never dropped. That pending window is exposed
   // separately as `roomSubscriptionPending` for callers that care.
-  const socketLive = enabled && !!config && status.connected;
+  const socketLive = live && status.connected;
   const liveConnected = socketLive && (!userChannel || status.liveChannels.includes(userChannel));
   const roomSubscriptionPending = socketLive && !!roomChannel && !status.liveChannels.includes(roomChannel);
   return {

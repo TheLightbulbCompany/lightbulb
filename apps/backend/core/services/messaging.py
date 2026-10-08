@@ -192,14 +192,16 @@ USER_LIVE_EVENT_TYPES = frozenset(
         "runtime.resource.invalidated",
         "paperclip.event",
         "room.member.updated",
-        "workspace.sessions.changed",
+        "workspace.access.removed",
         "workspace.session.attention",
         "workspace.session.screen",
         "workspace.session.typing",
         "digest.ready",
     }
 )
-LIVE_EVENT_TYPES = ROOM_LIVE_EVENT_TYPES | USER_LIVE_EVENT_TYPES
+#: The one workspace-wide sessions channel, ``/ws/<ws>/sessions``.
+SESSIONS_LIVE_EVENT_TYPES = frozenset({"workspace.sessions.changed"})
+LIVE_EVENT_TYPES = ROOM_LIVE_EVENT_TYPES | USER_LIVE_EVENT_TYPES | SESSIONS_LIVE_EVENT_TYPES
 
 
 class ContractModel(BaseModel):
@@ -2476,6 +2478,18 @@ async def revoke_human_membership(owner_id: str, user_id: str) -> None:
         await _remove_member_with_notices(meta, "human", user_id)
         if is_session_room(meta) and meta["session"].get("ownerId") == user_id:
             own_session_chats.append(meta["session"]["sessionId"])
+    # Cooperative revocation of /ws/<ws>/sessions: an open AppSync subscription cannot be closed
+    # server-side, so the leaver's own client is told to drop it, while its channel still works.
+    # Their stream (and sessions member row) then go off, so no new subscribe is admitted.
+    try:
+        from core.services.live_events import get_live_event_publisher  # imports this module
+
+        workspace_id = await messaging_repo.ensure_workspace_id(owner_id)
+        await get_live_event_publisher().publish_user(
+            owner_id, user_id, make_live_event("workspace.access.removed", {"workspaceId": workspace_id})
+        )
+    except Exception:
+        logger.warning("workspace.access.removed notice failed")
     await messaging_repo.deactivate_user_stream(owner_id, user_id)
     if own_session_chats:
         # Their sessions' chats go silent for everyone: the person they were about is gone. After
@@ -3714,6 +3728,7 @@ async def create_human_message(
     # emitting here would inflate every counter by the client's retry rate.
     # This is also why the dispatch metric is not adjacent to its selector.
     if not replayed:
+        _publish_message_created_soon(item)
         agent_mentions = sum(1 for ref in mentions if ref.get("kind") == "agent")
         _emit_dispatch_targets(targets, room_kind, "session" if native_source_id else "human")
         put_metric(
@@ -4431,6 +4446,7 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
     # receipt is the container's confirmation. Counting here would inflate
     # every counter and, worse, report retry delay as reply latency.
     if not replayed:
+        _publish_message_created_soon(item)
         _emit_dispatch_targets(targets, room_kind, "agent")
         put_metric(
             "messaging.message.created",
@@ -4616,6 +4632,27 @@ async def _publish_human_read(room_id: str, user_id: str, value: int) -> None:
             room_id=room_id,
         ),
     )
+
+
+_write_path_tasks: set[asyncio.Task[None]] = set()
+
+
+def _publish_message_created_soon(item: dict) -> None:
+    """Hand the room's live event to AppSync straight from the write path, as Slack and Discord
+    do: the stream gives one room one projector lane, which held a room to ~3-4 live msg/s (dev,
+    2026-10-08). The projector still publishes the same eventId as the durable fallback; the
+    client drops the second copy (appsyncEvents.ts ``seen``). Off the caller's frame, never
+    raises; ``_send`` meters the outcome under ``source=write_path``."""
+
+    async def publish() -> None:
+        try:
+            await get_live_event_publisher().publish_message_created(item)
+        except Exception as exc:
+            logger.warning("write-path room event failed (%s)", type(exc).__name__)
+
+    task = asyncio.create_task(publish())
+    _write_path_tasks.add(task)
+    task.add_done_callback(_write_path_tasks.discard)
 
 
 async def _publish_room_event(room_id: str, event: dict) -> None:

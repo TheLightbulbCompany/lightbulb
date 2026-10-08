@@ -22,7 +22,7 @@
 | Mail | thelightbulb.company/chat (workspace rail — **Mail**, right after Activity; on the phone, the company menu) | The team mailbox, read-only for people: mail that came to the team address and mail you sent from it, plus the meetings you were invited to. Sections: **Live now**, **Upcoming**, then days, newest first; chips filter All / Mail / Meetings. A meeting shows its status ("Couldn't join" with "Nobody let the agents in from the lobby" when no one admitted you), an **Open notes in chat** link when notes went to a room, and the transcript with Find. The rail badge counts new received mail on that device. People cannot write or reply here — when they want a mail sent, they ask you. Link: `?panel=mail` |
 | Marketplace | thelightbulb.company/marketplace | Browse, buy, and deploy agents built by others; sellers publish here |
 | Settings | thelightbulb.company/settings | Account, billing, connections |
-| Members & join link | thelightbulb.company/settings → **Members**; also the "Copy the workspace join link" line in a channel or group chat's Members section (room header **⋯ → Details**; a direct message has no Members section) | The ONE door for a person who is not in the workspace yet. Each workspace has one **join link**; a workspace admin copies it (**Copy join link**, or **Regenerate**, which turns the old one off) and sends it however they like. Whoever opens it in a browser and signs in joins as a member; no email invite exists and no per-person invite exists. A room's **Add people** picker lists people already in the workspace only, so "add my cofounder" starts with the join link, then Add people. Signing up in the iPhone app first creates a separate new workspace, so send the link, not the App Store. |
+| Members & join link | thelightbulb.company/settings → **Members**, or the **Invite** button on the left rail; also the "Copy the workspace join link" line in a channel or group chat's Members section (room header **⋯ → Details**; a direct message has no Members section) | Two doors for a person who is not in the workspace yet, both for workspace admins (everyone else is told to ask an admin). **Invite by email:** type one or more addresses and **Send invites**; each person gets an email whose link signs them up straight into this workspace as a member. **Pending invitations** lists who has not joined yet, with **Revoke**. **Join link:** one per workspace; **Copy join link** copies it (Settings → Members also has **Regenerate**, which turns the old one off, and **Turn off link**), and the admin sends it however they like. Whoever opens it in a browser and signs in joins as a member. The sign-up page carries a quiet **Joining a team?** line under its form (open the invitation email on this device, or paste a join link), and a new sign-up with no workspace sees the same option under the create-workspace form, which stays the primary path. On the iPhone, **Settings → Invite people** (also reachable from a room's Add people sheet) sends email invitations, lists pending ones with Revoke, and copies the join link. A room's **Add people** picker lists people already in the workspace only, so "add my cofounder" starts with an invite or the join link, then Add people. Signing up in the iPhone app first creates a separate new workspace, so send the invite or link, not the App Store. |
 | Desktop app | thelightbulb.company/api/download/desktop (also linked from the landing-page footer, "Download for Mac") | Signed macOS DMG (Apple Silicon); the desktop app embeds the same web workspace |
 | Paired Mac tools | The signed desktop app and its Desktop settings | The agent's ordinary terminal and browser remain in AgentCore. `lightbulb_desktop use_browser` (no arguments) moves this run's own `browser_*` tools onto the requester's Mac — see "Browser on a paired Mac" below. The rest of `lightbulb_desktop` explicitly selects a paired, connected Mac and generation for local shell, approved-folder files, MCP, screenshot and notification. Workspace rollout, reciprocal re-pairing and command-specific native grants must all hold; a connected badge or app version alone proves none of them. What the Mac allows is the pairing person's per-capability switches (Shell, Browser, Files, Screen, Paperclip actions) in its Settings; there is no per-operation prompt, so a refusal means that switch is off. Stop requests cancellation, but a lost result may remain unknown; never retry an uncertain effect automatically. Camera, location, full computer input and canvas are not offered. |
 | Local browser setup | Desktop app → Settings → Desktop → Browser switch | The Browser switch decides whether agents may use a browser on that Mac. Agents get their own **"Lightbulb agent"** window of the Mac's installed Chrome — never the person's everyday Chrome — which gets the workspace's sign-ins automatically. There is nothing else to set up: no extension, no pairing code. It is not the workspace's cloud Browser rail, and a saved setting does not prove the Mac is connected. |
@@ -100,9 +100,12 @@ in Settings), so a plain `claude` or `codex` typed in a new terminal tab runs th
 A running session shows its live terminal when Lightbulb started it, when it is a Claude Code
 background session, or when it is a plain Codex session (Codex's own background service runs
 it, and Lightbulb opens one more Codex terminal on the same conversation). Any other running
-session shows a notice that it was not started through Lightbulb, with the one thing that brings
-its screen here: for a plain Claude session its owner presses ← in its terminal; for a Codex
-session started with `--no-daemon` its owner starts it again with `lightbulb codex`. On the web
+session shows a notice that its screen is not shared. A teammate reads "<Owner> is working in
+this session, but its screen is not shared." with a **Message <Owner>** button and no terminal
+instructions. The owner reads "This session's screen is not shared yet.", then the one step that
+shares it: for a plain Claude session, press the left arrow key (←) once in the terminal window
+where it runs; for a Codex session started with `--no-daemon`, start it again with
+`lightbulb codex`. On the web
 and in the desktop app people never see a transcript; the phone still shows a session's history
 as a list until it gets the live terminal. You still read the structured record with
 `lightbulb_local_sessions`.
@@ -170,9 +173,11 @@ An open session shows a status line (status, owner, folder, files changed,
 plan progress) with a **Details** button; a teammate's pickable session also
 shows **Pick up**. **Details** opens a dialog with four tabs: **About** (owner,
 tool, model, folder, repository, tokens), **Changes** (plan and changed files),
-**Access** and **Linked work**. Its footer has **Copy link**, **Message
-<owner>** on someone else's session, and **Pick up** on your own. A copied link
-selects the existing session when opened; it sends nothing. The normal room
+**Access** and **Linked work**. Its footer has **Copy link for teammates**, **Message
+<owner>** on someone else's session, and **Pick up** on your own. That link is the
+in-app address: it selects the existing session for people already in the workspace
+and sends nothing. It is not the share link under **Access**, the only link a person
+outside the workspace can open. The normal room
 composer remains a room message. A person may `@`-tag a session there: the
 tag is a reference, like a document link, shown as a session card (tool,
 title, status, **Open session**). It never messages the session. When a
@@ -198,12 +203,16 @@ ending the session makes the chat read-only. Session chats do not appear in sear
 sharing), **Let teammates control this session** (follow-ups and permission
 prompts on their Mac), **Show token usage to teammates**, and **Share**: the
 session's one link. **Share** makes it and copies it; **Who can open it** is
-its only setting, **Workspace only** (the default) or **Anyone with the link**;
-**Turn off link** ends it everywhere. Access also lists the copies people took.
+its only setting, **Workspace only** (the default) or **Anyone with the link**,
+and every copy says which ("Link copied. Only people in your workspace can open
+it."); **Turn off link** (two clicks) ends it everywhere. Access also lists the copies people took.
 Teammates see what the owner allows instead of switches.
 
-**Session links** open at `/s`. A workspace link opens for signed-in members
-(a signed-out visitor is asked to sign in); an "anyone" link opens with no
+**Session links** open at `/s`. A workspace link opens for signed-in members.
+A signed-out visitor to a workspace link, and to any link that was turned off,
+reads the same thing: "Sign in to open this session. If it was shared with your
+workspace, it opens after you sign in. Otherwise this link was turned off." So a
+person outside the workspace needs **Anyone with the link**. An "anyone" link opens with no
 sign-in. The page shows the session's title, owner, tool and state (live, ended
 or offline) and the **Continue** option; it shows no conversation and no
 transcript. On a Claude Code session the link is also the pick-up permission.
@@ -216,7 +225,13 @@ private one comes as the conversation only. The original session never changes. 
 a link: tell the owner to use **Share** under **Access**.
 
 **Ask to join**: a teammate who cannot send to someone's session taps **Ask to
-join** (it then reads **Requested**). The owner gets a Needs-you Activity item,
+join** (it then reads **Requested**, with "Waiting for <owner> to answer."). A
+request does not time out: it stays open until the owner answers or the session
+ends or restarts. After ten minutes without an answer the person can tap **Ask
+again**, which notifies the owner again ("<name> is still waiting to join
+<session>"), at most once every ten minutes; **Ask to pick up** works the same
+way. If the session restarts first, the person reads "Your request closed before
+<owner> answered" and can ask again. The owner gets a Needs-you Activity item,
 "<name> wants to join <session>", with **Allow** and **Decline**, plus a
 notification. Allow lets just that person send follow-ups and answer permission
 prompts; the rest of the workspace stays read-only. Decline shows the person

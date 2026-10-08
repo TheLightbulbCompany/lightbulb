@@ -7,6 +7,9 @@ refusal: 503 -> the room queue retries, Paperclip reads it as transient) and ask
 stop the session. The stop SIGTERMs this process, which saves every profile; the retried turn
 cold-starts a fresh microVM. RECYCLE_HARD_S stops it even when busy, still ahead of the kill.
 
+Low disk recycles too: a fresh microVM is the only reclaim (see sync.disk_free_mb). Below
+DISK_SOFT_MB it waits for idle; below DISK_HARD_MB it stops even a busy session.
+
 Prod 2026-09-25 21:00:04: maxLifetime killed the founder's session with a room run and a
 Paperclip run in flight (43a12a76 swept, f686a67e runtime_lost).
 """
@@ -17,12 +20,15 @@ import os
 import threading
 import time
 
-from bridge import OWNER, turn
+from bridge import OWNER, sync, turn
 
 log = logging.getLogger("bridge")
 
 RECYCLE_AFTER_S = float(os.environ.get("LIGHTBULB_RECYCLE_AFTER_S") or 7 * 3600)
 RECYCLE_HARD_S = float(os.environ.get("LIGHTBULB_RECYCLE_HARD_S") or 7 * 3600 + 45 * 60)
+# ponytail: calibration knobs; the outer had ~4.1 GB free at idle on dev (10-08).
+DISK_SOFT_MB = int(os.environ.get("LIGHTBULB_RECYCLE_DISK_SOFT_MB") or 1000)
+DISK_HARD_MB = int(os.environ.get("LIGHTBULB_RECYCLE_DISK_HARD_MB") or 500)
 CHECK_S = 30.0
 #: A stop the backend confirmed but that did not kill THIS process (a split session: it stopped
 #: the other microVM) is not repeated at once -- each repeat would kill a fresh session.
@@ -56,13 +62,21 @@ def _loop() -> None:
 def check_once() -> bool:
     """One pass. True when the backend accepted a stop request."""
     global _next_try
-    age = time.time() - (first_invoke_at or time.time())
-    if age < RECYCLE_AFTER_S or time.monotonic() < _next_try:
+    if time.monotonic() < _next_try:
         return False
-    hard = age >= RECYCLE_HARD_S
+    age = time.time() - (first_invoke_at or time.time())
+    outer, inner = sync.disk_free_mb()
+    disk = "hard" if min(outer, inner) < DISK_HARD_MB else "soft" if min(outer, inner) < DISK_SOFT_MB else ""
+    if age < RECYCLE_AFTER_S and not disk:
+        return False
+    hard = age >= RECYCLE_HARD_S or disk == "hard"
     if not turn.hold_turns(force=hard):
         return False  # busy: the next idle pass takes it
-    log.info("recycle: session age %.0fs%s; asking the backend to stop it", age, " (hard)" if hard else "")
+    if disk:
+        log.warning("recycle owner=%s: disk low (outer %d MB, inner %d MB free; %s floor); asking the "
+                    "backend to stop it", OWNER, outer, inner, disk)
+    else:
+        log.info("recycle: session age %.0fs%s; asking the backend to stop it", age, " (hard)" if hard else "")
     status = turn._post_backend(f"runtime/{OWNER}/recycle", {"ageS": round(age)})
     if not 200 <= status < 300:
         turn.release_hold()  # a failed stop must not wedge the workspace; retry next pass

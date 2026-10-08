@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { OrganizationList, useAuth, useOrganization, useOrganizationList } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { JoinTeamBlock } from "@/components/onboarding/JoinTeamBlock";
 import { ApiError, useApi } from "@/lib/api";
 import { safeReturnTo } from "@/lib/returnTo";
 
@@ -199,10 +200,8 @@ export default function OnboardingPage() {
         <>
           <h1 className="text-2xl font-bold">Create your workspace</h1>
           <p>Your workspace brings your agents, work, and billing together.</p>
-          <p className="max-w-md text-center text-sm text-muted-foreground">
-            Joining a team that already uses Lightbulb? Ask them for their workspace join link and open it in your browser instead. This form makes a new, separate workspace.
-          </p>
           <CreateWorkspaceForm />
+          <JoinTeamBlock />
         </>
       )}
     </main>

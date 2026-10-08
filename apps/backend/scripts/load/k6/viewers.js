@@ -1,8 +1,10 @@
 // Scenario 3: viewers of synthetic-Mac sessions (spec §4). mac_sim.py plays the Macs and runs this
 // script once its sessions are registered, with MAC_SESSIONS pointing at the sessions it wrote.
-//   VIEWERS people watch each session: they hold their user channel, POST /viewing every 15 s, and
-//   time every screen frame (its text carries the Mac's Date.now()). CHURN_S (3d) closes and
-//   reopens each view every CHURN_S seconds.
+//   VIEWERS people watch each session as the web view does: they subscribe its frames channel,
+//   /ws/<ws>/session-frames/<sid> (and their user channel), then POST /viewing every 15 s, and time
+//   every screen frame (its text carries the Mac's Date.now()). Every viewer of a session shares
+//   that one channel: a frame is one publish. CHURN_S (3d) closes and reopens each view every
+//   CHURN_S seconds.
 import exec from 'k6/execution';
 import encoding from 'k6/encoding';
 import { Trend, Rate, Counter } from 'k6/metrics';
@@ -67,8 +69,10 @@ export function listen() {
   // received (leading, trailing, or all of them) count as lost.
   let from = 0;
   const got = [];
-  L.subscribe(me.user, cfg, [L.userChannel(cfg)], CHURN_S ? Math.min(CHURN_S * 1000, left) : left, {
-    subscribed: () => { viewing(true); from = Date.now() + 2_000; }, // 2 s for the lease to reach the relay
+  const frames = `/ws/${cfg.workspaceId}/session-frames/${me.sessionId}`; // a refused subscribe never goes live
+  L.subscribe(me.user, cfg, [L.userChannel(cfg), frames], CHURN_S ? Math.min(CHURN_S * 1000, left) : left, {
+    // The first POST asks the Mac for a picture: only once the frames channel it comes on is live.
+    subscribed: (channel) => { if (channel === frames) { viewing(true); from = Date.now() + 2_000; } }, // 2 s for the lease to reach the relay
     tick: () => viewing(false),
     event: (ev) => {
       const f = ev.payload;

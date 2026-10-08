@@ -820,14 +820,13 @@ it("starts the Archived group collapsed and expands it on request", async () => 
   expect(screen.getByRole("button", { name: /^Old launch/ })).toBeInTheDocument();
 });
 
-it("nudges a lone founder to invite people, and copies the join link from the nudge", async () => {
-  const onInvitePeople = vi.fn(async () => undefined);
+it("nudges a lone founder to invite people, and opens the invite dialog from the nudge", async () => {
+  const onInvitePeople = vi.fn();
   const { rerender } = render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[base]} participants={[atlas]}
     onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onInvitePeople={onInvitePeople} />);
   expect(screen.getByText(/just you and your agents here/)).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Invite people" }));
   expect(onInvitePeople).toHaveBeenCalledTimes(1);
-  expect(await screen.findByText("Copied. Anyone who opens it and signs in joins this workspace.")).toHaveAttribute("role", "status");
   rerender(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[base]} participants={[atlas, alice]}
     onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} />);
   expect(screen.queryByText(/just you and your agents here/)).not.toBeInTheDocument();

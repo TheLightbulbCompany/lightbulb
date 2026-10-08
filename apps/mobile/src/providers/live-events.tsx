@@ -1,5 +1,6 @@
 import { useAuth, useOrganization } from "@clerk/clerk-expo";
 import {
+  ApiError,
   createApiClient,
   createMessagingClient,
   createRuntimeClient,
@@ -110,9 +111,29 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     setActiveRoom(null);
   }, [userId, ownerScope]);
 
+  // Swap in a fresh live-config without dropping the socket (the loader above nulls it first):
+  // membership may have changed while the app was backgrounded or the socket was down.
+  // An answer for the workspace this was asked in only: the user may have switched meanwhile.
+  // A 403 (no longer a member) drops the config, which closes the socket and every subscription.
+  const scopeRef = useRef(ownerScope);
+  scopeRef.current = ownerScope;
+  const refreshConfig = useCallback(() => {
+    if (!httpReady) return;
+    const asked = scopeRef.current;
+    void messaging.getLiveConfig().then(
+      (next) => { if (scopeRef.current === asked) setConfig(next); },
+      (error: unknown) => { if (scopeRef.current === asked && error instanceof ApiError && error.status === 403) setConfig(null); },
+    );
+  }, [httpReady, messaging]);
+
+  const refreshConfigRef = useRef(refreshConfig);
+  refreshConfigRef.current = refreshConfig;
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
-      if (state === "active") setForeground(true);
+      if (state === "active") {
+        setForeground(true);
+        refreshConfigRef.current();
+      }
       else if (state === "background") setForeground(false);
     });
     return () => subscription.remove();
@@ -148,6 +169,7 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     uuid: () => randomUUID(),
     onEvent: dispatchEvent,
     onChatMessage: dispatchChat,
+    onConfigStale: refreshConfig,
     enabled: foreground && httpReady,
   });
 

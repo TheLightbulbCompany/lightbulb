@@ -181,6 +181,7 @@ async def test_send_settles_once_and_a_crash_after_the_flip_resumes(asks):
     session = await repo.get_session(OWNER, sid)
     item = activity.render_agent_ask(ask, session, seen=None, stranded=await activity._ask_stranded(OWNER, ask))
     assert item.state == "open" and [a.id for a in item.actions] == ["send"]
+    assert item.subtype == "agent_ask"
     assert (await service.get_agent_receipt(asks.grant(), sid, "request-4")).state == "pending"
     assert (await _command_ids(sid)).count("request-4") == 1
 

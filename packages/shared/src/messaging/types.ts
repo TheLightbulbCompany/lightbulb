@@ -414,6 +414,11 @@ export interface LocalSession {
   joinRequest?: "pending" | "declined" | null;
   /** The reader's own request's id, so a reply can be told apart from a newer answer. */
   joinRequestId?: string | null;
+  /** When the reader last asked to join / to pick up (the ask, or their latest "Ask again"). */
+  joinRequestedAt?: string | null;
+  pickupRequestedAt?: string | null;
+  /** The reader's own ask to join was dropped unanswered when the session ended or restarted; the server says it until they ask again. */
+  joinRequestClosed?: "restarted" | null;
   /** The owner's own view only: teammates waiting for an answer to "Ask to join". */
   pendingJoins?: string[];
   /** A request is pending and the owner's older Mac (no bandOwnerOnly) has paused remote typing until it is answered. A newer Mac never pauses. */
@@ -633,7 +638,7 @@ export type ActivityKind = "mention" | "dm" | "thread_reply" | "reaction" | "age
 /** `interaction`: an agent paused on a task, waiting for a human to confirm or answer. */
 /** `waiting` / `finished`: one of your shared sessions paused for your input, or ended a long turn. */
 /** `login`: an agent needs a website login. (A sign-in code is typed into the shared browser, never asked for here.) */
-export type ActivitySubtype = "approval" | "assigned_issue" | "failed_run" | "interaction" | "waiting" | "finished" | "join_request" | "login" | "extension";
+export type ActivitySubtype = "approval" | "assigned_issue" | "failed_run" | "interaction" | "waiting" | "finished" | "join_request" | "agent_ask" | "login" | "extension";
 export type ActivityLinkKind = "issue" | "room" | "thread" | "run" | "approval" | "session";
 
 export interface ActivityActor {

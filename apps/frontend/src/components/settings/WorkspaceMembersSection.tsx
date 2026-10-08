@@ -5,20 +5,22 @@ import Link from "next/link";
 import { useClerk, useOrganization } from "@clerk/nextjs";
 
 import { ApiError, useApi } from "@/lib/api";
-import { capture } from "@/lib/analytics";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { Button } from "@/components/ui/button";
+import { InvitePeoplePanel } from "@/components/workspace/InvitePeoplePanel";
 import { Input } from "@/components/ui/input";
 import type { CompanyMember } from "@/components/teams/shared/types";
 
 // =============================================================================
-// Workspace members — who is here, and the link that lets someone else in.
+// Workspace members — who is here, email invitations, and the link that lets
+// someone else in.
 //
-// This REPLACED an email+role invitation form. Billing is per workspace, not
-// per seat — one shared container, unlimited members — so an email-bound
-// invitation with an admin/member role select was modelling a seat grant that
-// does not exist. What is here instead: the existing member roster, plus one
-// shareable join link per workspace.
+// Billing is per workspace, not per seat, so an invitation carries no role:
+// everyone joins as a member (roles are Clerk's, below). Email invitations came
+// back on 2026-10-08 because people expected an email, not a link hidden here;
+// `InvitePeoplePanel` is the same UI the rail's Invite dialog shows, and it owns
+// copying the join link. The join-link card below keeps what only an admin on
+// this page does with the link: show it, regenerate it, turn it off.
 //
 // Roles and removal are NOT ours either: "Manage members" opens Clerk's own
 // organization screen on its Members tab (owner ruling 2026-10-04). That screen
@@ -116,7 +118,9 @@ export function WorkspaceMembersSection() {
   const [linkUrl, setLinkUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  // Bumped when the invite panel copies (and so may have minted) the link: re-read it so the
+  // card below never offers "Create join link" over a link that now exists.
+  const [linkReload, setLinkReload] = useState(0);
 
   useEffect(() => {
     if (!orgId || !isAdmin) {
@@ -142,13 +146,12 @@ export function WorkspaceMembersSection() {
     return () => {
       cancelled = true;
     };
-  }, [api, orgId, isAdmin]);
+  }, [api, orgId, isAdmin, linkReload]);
 
   const handleGenerate = useCallback(async () => {
     if (!orgId) return;
     setBusy(true);
     setError(null);
-    setCopied(false);
     try {
       const created = (await api.post(`/orgs/${orgId}/join-link`, {})) as CreatedJoinLink;
       setLinkUrl(created.join_url);
@@ -164,7 +167,6 @@ export function WorkspaceMembersSection() {
     if (!orgId) return;
     setBusy(true);
     setError(null);
-    setCopied(false);
     try {
       await api.del(`/orgs/${orgId}/join-link`);
       setLinkUrl(null);
@@ -175,20 +177,6 @@ export function WorkspaceMembersSection() {
       setBusy(false);
     }
   }, [api, orgId]);
-
-  const handleCopy = useCallback(async () => {
-    if (!linkUrl) return;
-    try {
-      await navigator.clipboard.writeText(linkUrl);
-      capture("join_link_copied", { source: "members_settings", workspace_id: orgId });
-      setCopied(true);
-    } catch {
-      // Clipboard access can be denied (insecure context, permission). The
-      // link is rendered in a readonly input either way, so the admin can
-      // still select it by hand — say so rather than failing silently.
-      setError("Couldn't copy automatically — select the link and copy it.");
-    }
-  }, [linkUrl]);
 
   if (!isLoaded) {
     return (
@@ -257,7 +245,7 @@ export function WorkspaceMembersSection() {
 
         {!rosterLoading && !rosterError && members.length === 0 && (
           <div className="text-ui text-midnight-muted">
-            Nobody here yet — share the join link below.
+            Nobody here yet — invite people below.
           </div>
         )}
 
@@ -315,6 +303,11 @@ export function WorkspaceMembersSection() {
         </button>
       </div>
 
+      <div className="settings-card" data-testid="members-invite">
+        <div className="settings-card-title">Invite people</div>
+        <InvitePeoplePanel source="members_settings" onJoinLinkCopied={() => setLinkReload((n) => n + 1)} />
+      </div>
+
       <div className="settings-card" data-testid="members-join-link">
         <div className="settings-card-title">Join link</div>
         <div className="settings-card-desc">
@@ -334,20 +327,15 @@ export function WorkspaceMembersSection() {
                 <label htmlFor="join-link-url" className="text-ui font-medium text-midnight">
                   Your join link
                 </label>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Input
-                    id="join-link-url"
-                    readOnly
-                    value={linkUrl}
-                    onFocus={(e) => e.currentTarget.select()}
-                    className="max-w-[420px] font-mono text-sm"
-                  />
-                  <Button type="button" onClick={handleCopy} disabled={busy}>
-                    {copied ? "Copied" : "Copy link"}
-                  </Button>
-                </div>
+                <Input
+                  id="join-link-url"
+                  readOnly
+                  value={linkUrl}
+                  onFocus={(e) => e.currentTarget.select()}
+                  className="max-w-[420px] font-mono text-sm"
+                />
                 <p className="text-sm text-midnight-muted">
-                  Send this to anyone you want in — it stays here to copy again. Regenerating
+                  Send this to anyone you want in — Copy join link above copies it. Regenerating
                   gives you a new link and turns this one off for everyone who hasn&apos;t used it.
                 </p>
               </div>

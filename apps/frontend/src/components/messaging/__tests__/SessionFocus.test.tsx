@@ -110,9 +110,11 @@ it("copies the session link from Details", async () => {
   Object.assign(navigator, { clipboard: { writeText } });
   focus({ session, ownerName: "Alice", own: false });
   const details = await openDetails();
-  await userEvent.click(within(details).getByRole("button", { name: "Copy link" }));
+  // Named apart from the share link's own "Copy link" under Access: this one only works for workspace members.
+  expect(within(details).queryByRole("button", { name: "Copy link" })).not.toBeInTheDocument();
+  await userEvent.click(within(details).getByRole("button", { name: "Copy link for teammates" }));
   expect(writeText).toHaveBeenCalledWith(expect.stringContaining("s1"));
-  expect(await within(details).findByText("Link copied.")).toBeInTheDocument();
+  expect(await within(details).findByText("Link copied. It opens this session for people in your workspace.")).toBeInTheDocument();
 });
 
 it("keeps the follow-up composer compact: hidden label, short placeholder, icon send", async () => {
@@ -171,6 +173,23 @@ it("lets a teammate ask to join, then reads Requested until the owner answers", 
   await userEvent.click(await screen.findByRole("button", { name: "Ask to join" }));
   expect(join).toHaveBeenCalledWith("s1");
   expect(await screen.findByRole("button", { name: "Requested" })).toBeDisabled();
+});
+
+// ISOA-729: a request never times out, so the person who asked sees where it stands and can nudge.
+it("says a request is waiting, and offers Ask again once it has waited ten minutes", async () => {
+  const join = vi.fn(async () => ({ ...session, joinRequest: "pending" as const }));
+  const askPickup = vi.fn(async () => ({ ...session, pickupRequest: "pending" as const }));
+  const fresh = new Date().toISOString(), old = new Date(Date.now() - 11 * 60_000).toISOString();
+  const first = focus({ session: { ...session, joinRequest: "pending", joinRequestedAt: fresh }, ownerName: "Alice", own: false }, { join });
+  expect(await screen.findByText("Waiting for Alice to answer. Your request stays open until they do or the session ends.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Requested" })).toBeDisabled();
+  first.unmount();
+  focus({ session: { ...session, joinRequest: "pending", joinRequestedAt: old, pickupRequest: "pending", pickupRequestedAt: old }, ownerName: "Alice", own: false }, { join, askPickup });
+  expect(await screen.findByText("Alice has not answered your request yet.")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Ask again" }));
+  expect(join).toHaveBeenCalledWith("s1");
+  await userEvent.click(screen.getByRole("button", { name: "No answer yet. Ask again" }));
+  expect(askPickup).toHaveBeenCalledWith("s1");
 });
 
 it("lets the owner answer a request to join in the session itself", async () => {

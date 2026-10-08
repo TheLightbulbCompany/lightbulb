@@ -6,7 +6,7 @@ import { capture } from "@/lib/analytics";
 import { Info, MessageSquare, Send } from "lucide-react";
 import {
   canControlSession, useSessionResume, mainEvents, pendingApproval, receiptChip, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionPlan, sessionStatus, unavailableReason,
-  pickupRequestLine, pickupStatus, terminalStateReason, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionJoinRequest, useSessionOutbox,
+  joinRequestView, pickupRequestLine, pickupStatus, sessionScreenNotice, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionJoinRequest, useSessionOutbox,
   type LocalSession, type SessionControlClient, type SessionSource,
 } from "@lightbulb/shared";
 import Link from "next/link";
@@ -14,7 +14,8 @@ import { Button } from "@/components/ui/button";
 import { isDesktopApp } from "@/lib/desktopNotify";
 import { NativeSessionTranscript, ReceiptChip, type Person } from "./NativeSessionTranscript";
 import { SessionApprovalCard } from "./SessionControls";
-import { SessionTerminalView } from "./SessionTerminalView";
+import { SessionTerminalView, type SessionFrames } from "./SessionTerminalView";
+import { useOptionalLiveEvents } from "@/hooks/useLiveEvents";
 import { useLocalTerminal } from "./localTerminal";
 import { toBase64 } from "./sessionInput";
 import { SessionDetails, type SessionDetailsTab } from "./SessionDetails";
@@ -101,6 +102,11 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     box.scrollTop = 0; box.scrollLeft = 0;
   };
   const canWatch = local === "none" && !!onEvent && !!client.watchLocalSession;
+  const liveEvents = useOptionalLiveEvents();
+  const framesChannel = liveEvents?.sessionFramesChannel(session.sessionId) ?? null;
+  const frames = useMemo<SessionFrames | undefined>(() => liveEvents && framesChannel
+    ? { channel: framesChannel, claim: liveEvents.claimSessionFrames, liveChannels: liveEvents.liveChannels }
+    : undefined, [liveEvents, framesChannel]);
   // A viewer who was watching when the session ended keeps that terminal, with its last picture, until the
   // kept screen is reported or the wait is over: the server sends no `terminal` in between, and a terminal
   // taken away there came back empty, on "Connecting…" (prod 2026-10-07).
@@ -169,6 +175,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const resume = useSessionResume(client, session, { own, userId, ownerName, nameOf: personName, uuid: () => crypto.randomUUID() });
   const join = useSessionJoinRequest(client, session);
   const askPickup = useSessionJoinRequest(client, session, "pickup");
+  const asking = joinRequestView(join, ownerName);
   const glyph = session.provider === "claude" ? "❯" : "›";
   const plan = useMemo(() => sessionPlan(main), [main]);
   const changes = useMemo(() => sessionChanges(main), [main]);
@@ -217,17 +224,19 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     <Button type="button" variant="outline" size="sm" disabled>Resume</Button>
     <p>{`Resume works once ${own ? "your" : `${ownerName}'s`} Mac is back.`}{!own && canPickUp(session) ? " Pick up continues it on your Mac now." : ""}</p>
   </div>;
-  const reason = terminalStateReason(session);
+  // What it means first; the one step only the owner can do, in their own terminal, second and quieter.
+  // A teammate gets no terminal instructions, only what they can do: message the owner (Ask to join is below).
+  const notice = sessionScreenNotice(session, own, ownerName);
+  const [toSettings, afterSettings] = (notice.settings ?? "").split("Settings");
+  const [beforeCommand, afterCommand] = (notice.how ?? "").split("lightbulb codex");
   const noticePanel = <div className="session-state-panel" role="status">
-    <p className="session-state-title">This session was not started through Lightbulb, so its screen is not here.</p>
-    {reason === "plain" && (own
-      ? <p>Press ← in its terminal to share this one live, or turn on Share every session live in {isDesktopApp()
-        ? <Link className="underline underline-offset-4" href="/settings?panel=desktop#share-every-session-live">Settings</Link>
-        : "Settings"} to make every new session live.</p>
-      : <p>Ask {ownerName} to press ← in their terminal.</p>)}
-    {reason === "no-daemon" && (own
-      ? <p>Start it again with <code>lightbulb codex</code> to share its screen.</p>
-      : <p>Ask {ownerName} to start it again with <code>lightbulb codex</code>.</p>)}
+    <p className="session-state-title">{notice.title}</p>
+    <p>{notice.body}</p>
+    {notice.how && <p className="text-sm text-muted-foreground">{beforeCommand}{afterCommand !== undefined && <><code>lightbulb codex</code>{afterCommand}</>}</p>}
+    {notice.settings && <p className="text-sm text-muted-foreground">{toSettings}{isDesktopApp()
+      ? <Link className="underline underline-offset-4" href="/settings?panel=desktop#share-every-session-live">Settings</Link>
+      : "Settings"}{afterSettings}</p>}
+    {waitingOn === null && messageOwner}
   </div>;
 
   return <>
@@ -249,8 +258,8 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
           ? <span role="status" className="text-sm text-muted-foreground">{pickupStatus(session.pickup, timeAgo)}</span>
           : <Button type="button" variant="outline" size="sm" disabled>Preparing…</Button>)}
         {!own && !canPickUp(session) && session.provider === "claude" && !session.pickup?.allowed && askPickup.supported &&
-          <Button type="button" variant="outline" size="sm" disabled={askPickup.saving || askPickup.state === "pending"} onClick={() => void askPickup.ask()}>
-            {askPickup.state === "pending" ? "Requested" : askPickup.state === "declined" ? `${ownerName} declined. Ask again` : "Ask to pick up"}</Button>}
+          <Button type="button" variant="outline" size="sm" disabled={askPickup.saving || (askPickup.state === "pending" && !askPickup.again)} onClick={() => void askPickup.ask()}>
+            {askPickup.again ? "No answer yet. Ask again" : askPickup.state === "pending" ? "Requested" : askPickup.state === "declined" ? `${ownerName} declined. Ask again` : "Ask to pick up"}</Button>}
         {command.attempt?.request.kind === "end" && command.chip && <span role="status" className="text-sm"><ReceiptChip chip={command.chip} /></span>}
         {/* The app's own terminal on this Mac has End in its bar; this is the same control everywhere else. */}
         {command.canEnd && local !== "local" && <Button type="button" variant="outline" size="sm" disabled={command.locked}
@@ -283,7 +292,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       ? <div ref={slot} className="local-session-terminal" role="region" aria-label="Session terminal" />
       : <>
       {session.status === "ended" ? (endedScreen || keptWatching ? endedLine : endedPanel) : session.status === "offline" ? offlinePanel : notStarted ? noticePanel : null}
-      {watchRemote && <div className="session-terminal-slot" onScrollCapture={endedScreen ? openAtTop : undefined}><SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} onLive={setScreenLive} onCanType={setTermCanType} kept={endedScreen}
+      {watchRemote && <div className="session-terminal-slot" onScrollCapture={endedScreen ? openAtTop : undefined}><SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} frames={frames} onLive={setScreenLive} onCanType={setTermCanType} kept={endedScreen}
         admitted={running && control && session.shared !== false && !(session.inputPaused && !own)}
         input={client.sendLocalSessionInput ? (bytes, epoch) => client.sendLocalSessionInput!(session.sessionId, toBase64(bytes), epoch) : undefined} /></div>}
       {terminalLive && control && !own && session.inputPaused && <p className="text-sm text-muted-foreground">Paused while {ownerName} answers a request to join.</p>}
@@ -316,11 +325,11 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       </div>}
     </form> : <div className="room-composer local-session-readonly">
       <div>
-        <p className="text-sm text-muted-foreground">{terminalLive && "Watching · "}{join.state === "declined" ? `${ownerName} declined your request.` : `Only ${ownerName} can send to this session.`}</p>
+        <p className="text-sm text-muted-foreground">{terminalLive && "Watching · "}{asking.line}</p>
         <div className="local-session-actions">
-          {join.supported && <Button type="button" variant="outline" size="sm" disabled={join.saving || join.state === "pending"}
-            onClick={() => void join.ask()}>{join.state === "pending" ? "Requested" : "Ask to join"}</Button>}
-          {waitingOn === null && messageOwner}
+          {join.supported && <Button type="button" variant="outline" size="sm" disabled={asking.disabled}
+            onClick={() => void join.ask()}>{asking.button}</Button>}
+          {waitingOn === null && !notStarted && messageOwner}
         </div>
         {join.error && <p role="alert" className="text-sm text-warn">{join.error}</p>}
       </div>

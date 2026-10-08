@@ -238,3 +238,26 @@ def test_regenerable_caches_never_sync_and_durable_trees_come_down_after_the_pro
     sync.save_profile("a1")
     uploaded = sorted(k[len(prefix):] for k in fake.uploaded)
     assert uploaded == [".curator_backups/blobs/x", "cache/images/new.png", "work/room-1/repo/main.py"]
+
+
+def test_the_save_walk_prunes_unsaved_trees_without_changing_what_is_saved(tmp_path, monkeypatch):
+    # The pnpm store was ~195k files and 15-18 s of walking on every save (10-08).
+    import os
+
+    for tree in ("home/.local/share/pnpm/store/v3", "repo/node_modules/pkg", ".scratch/wt"):
+        (tmp_path / tree).mkdir(parents=True)
+        for i in range(1000):
+            (tmp_path / tree / f"f{i}.js").write_text("x")
+    for kept in ("memories/USER.md", "repo/src/a.py", "home/.local/share/pnpm/rc", "cache/images/x.png"):
+        (tmp_path / kept).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / kept).write_text("x")
+
+    def candidates(paths):
+        rels = (p.relative_to(tmp_path).as_posix() for p in paths if p.is_file())
+        return {r for r in rels if not sync.is_excluded(r) and not sync.is_reproducible(r)}
+
+    visited, walk = [], os.walk
+    monkeypatch.setattr(sync.os, "walk", lambda top: (visited.append(r) or (r, d, f) for r, d, f in walk(top)))
+    assert candidates(sync._save_walk(tmp_path)) == candidates(tmp_path.rglob("*"))
+    assert "repo/src/a.py" in candidates(sync._save_walk(tmp_path))
+    assert not [r for r in visited if any(x in r for x in ("/store", "/node_modules", "/.scratch"))]

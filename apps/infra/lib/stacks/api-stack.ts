@@ -155,7 +155,7 @@ const UUID = '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 // meta row — onSubscribe/onPublish don't need to know it exists.
 function parsePath(ctx) {
   const p = ctx.info.channel.path.split('/');
-  if (p.length < 5 || p[0] !== '' || p[1] !== 'ws' || !util.matches(UUID, p[2])) util.unauthorized();
+  if (p.length < 4 || p[0] !== '' || p[1] !== 'ws' || !util.matches(UUID, p[2])) util.unauthorized();
   if (
     (p[3] === 'rooms' || p[3] === 'frames') &&
     p.length === 6 &&
@@ -167,17 +167,32 @@ function parsePath(ctx) {
   if (p[3] === 'users' && p.length === 5 && util.matches(UUID, p[4])) {
     return { kind: 'users', workspaceId: p[2], userKey: p[4] };
   }
+  // /ws/{workspaceId}/sessions: one channel per workspace, no key. A subscriber must be a current
+  // member (WORKSPACE#<ws>/MEMBER#<sub> active, deleted when they are removed); an open
+  // subscription is dropped by the leaver's own client on workspace.access.removed.
+  if (p[3] === 'sessions' && p.length === 4) {
+    return { kind: 'sessions', workspaceId: p[2] };
+  }
+  // /ws/{workspaceId}/session-frames/{sessionId}: one shared terminal's screen frames, one publish
+  // for every viewer. The same member check, plus the session must be shared now:
+  // WORKSPACE#<ws>/SESSION#<sid> exists exactly while it is (local_sessions_repo.put_session).
+  if (p[3] === 'session-frames' && p.length === 5 && util.matches(UUID, p[4])) {
+    return { kind: 'sessions', workspaceId: p[2], sessionId: p[4] };
+  }
   util.unauthorized();
 }
 function metaKey(path) {
-  return path.kind === 'rooms' ? { pk: 'ROOM#' + path.roomId, sk: 'META' } : { pk: 'STREAM#' + path.userKey, sk: 'META' };
+  if (path.kind === 'rooms') return { pk: 'ROOM#' + path.roomId, sk: 'META' };
+  if (path.kind === 'sessions') return { pk: 'WORKSPACE#' + path.workspaceId, sk: 'META' };
+  return { pk: 'STREAM#' + path.userKey, sk: 'META' };
 }
 function denyOnReadFailure(ctx) {
   if (ctx.error || !ctx.result) util.unauthorized();
 }
 function metaMatchesPath(meta, path) {
   if (!meta || meta.workspaceId !== path.workspaceId) return false;
-  return path.kind === 'rooms' ? meta.deliveryKey === path.deliveryKey : meta.active === true;
+  if (path.kind === 'rooms') return meta.deliveryKey === path.deliveryKey;
+  return path.kind === 'sessions' || meta.active === true;
 }
 // arn:aws:sts::{account}:assumed-role/{roleName}/{session}; null when the caller is not
 // an owner task role (backend service role, projector) — IAM already admitted it.
@@ -199,6 +214,8 @@ export const onSubscribe = {
     if (typeof sub !== 'string' || sub.length === 0) util.unauthorized();
     const keys = [util.dynamodb.toMapValues(metaKey(path))];
     if (path.kind === 'rooms') keys.push(util.dynamodb.toMapValues({ pk: 'ROOM#' + path.roomId, sk: 'MEMBER#human#' + sub }));
+    if (path.kind === 'sessions') keys.push(util.dynamodb.toMapValues({ pk: 'WORKSPACE#' + path.workspaceId, sk: 'MEMBER#' + sub }));
+    if (path.sessionId) keys.push(util.dynamodb.toMapValues({ pk: 'WORKSPACE#' + path.workspaceId, sk: 'SESSION#' + path.sessionId }));
     return { operation: 'BatchGetItem', tables: { [TABLE]: { keys, consistentRead: true } } };
   },
   response(ctx) {
@@ -209,7 +226,10 @@ export const onSubscribe = {
     if (!Array.isArray(rows) || (Array.isArray(pending) && pending.length > 0)) util.unauthorized();
     const meta = rows[0];
     if (!metaMatchesPath(meta, path)) util.unauthorized();
-    if (path.kind === 'rooms' ? !rows[1] : meta.userId !== ctx.identity.sub) util.unauthorized();
+    if (path.kind === 'rooms' && !rows[1]) util.unauthorized();
+    if (path.kind === 'sessions' && (!rows[1] || rows[1].active !== true)) util.unauthorized();
+    if (path.sessionId && !rows[2]) util.unauthorized();
+    if (path.kind === 'users' && meta.userId !== ctx.identity.sub) util.unauthorized();
   },
 };
 export const onPublish = {

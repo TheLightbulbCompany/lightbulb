@@ -18,13 +18,23 @@ it("Share makes the one link and copies it; the audience switch warns; Turn off 
   await userEvent.click(await screen.findByRole("button", { name: "Share" }));
   expect(client.putLocalSessionLink).toHaveBeenCalledWith("s1", undefined); // never narrows a link
   expect(screen.queryByRole("alert")).toBeNull(); // a 404 is "no link yet", not an error
-  expect(await screen.findByText("Link copied.")).toBeInTheDocument();
+  // ISOA-732: the owner is told who can open what they just copied, and sees it next to the link.
+  expect(await screen.findByText("Link copied. Only people in your workspace can open it.")).toBeInTheDocument();
   expect(navigator.clipboard.writeText).toHaveBeenCalledWith(url);
+  expect(screen.getByText("Only people signed in to your workspace can open it. Anyone else is asked to sign in and then cannot open it.")).toBeInTheDocument();
+  expect(screen.getByLabelText("Who can open it")).toHaveValue("workspace");
   await userEvent.selectOptions(screen.getByLabelText("Who can open it"), "anyone");
   expect(client.putLocalSessionLink).toHaveBeenLastCalledWith("s1", "anyone");
   expect(await screen.findByRole("note")).toHaveTextContent("Anyone with the link sees this session's title, who runs it, the tool and its state, and can continue it with a copy of the conversation");
+  expect(screen.getByRole("status")).toHaveTextContent("Anyone with the link can open it.");
+  await userEvent.click(screen.getByRole("button", { name: "Copy link" }));
+  expect(await screen.findByText("Link copied. Anyone with the link can open it.")).toBeInTheDocument();
+  // One click never turns a link off: it stops working for everyone who has it.
   await userEvent.click(screen.getByRole("button", { name: "Turn off link" }));
+  expect(client.deleteLocalSessionLink).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole("button", { name: "Click again to turn off" }));
   expect(client.deleteLocalSessionLink).toHaveBeenCalledWith("s1");
+  expect(await screen.findByText("Link turned off. It no longer opens for anyone.")).toBeInTheDocument();
   expect(await screen.findByRole("button", { name: "Share" })).toBeInTheDocument();
 });
 
@@ -66,4 +76,5 @@ it("a failed read says so, and Share keeps the link's audience", async () => {
   await userEvent.click(screen.getByRole("button", { name: "Share" }));
   expect(client.putLocalSessionLink).toHaveBeenCalledWith("s1", undefined);
   expect(await screen.findByLabelText("Who can open it")).toHaveValue("anyone");
+  expect(await screen.findByText("Link copied. Anyone with the link can open it.")).toBeInTheDocument();
 });

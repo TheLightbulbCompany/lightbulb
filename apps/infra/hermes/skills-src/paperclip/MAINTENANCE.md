@@ -35,9 +35,25 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
   rules, the monitor-vs-approval boundary, the board-only attention feed) plus
   a routing table into references/. Everything else lives in references/*.md
   and is read on demand. Each local edit below names where it now lives.
+  Budget: keep SKILL.md under ~7.5k chars — `skill_view` puts all of it in
+  history on every load, while Hermes's skill index shows only the first 57
+  chars of the front-matter `description` (keep the trigger there).
+  Vendored sections moved out of SKILL.md on 2026-10-08 (upstream keeps them
+  inline; on re-vendor, put upstream's changes in these files, not back in
+  SKILL.md): the helper write table -> references/hot-routes.md "Helper
+  subcommands"; "Delegating review tasks" + the full handoff/escalation/
+  send-it-back/workspace-continuity/unassigned-follow-up rules ->
+  references/delegation.md; "Managing A User's Inbox" -> references/inbox.md;
+  "MCP Tool Approval Gates" -> references/interactions.md; "Standalone
+  Decisions" -> references/attention-decisions-search.md; "Monitors and
+  Watchers" -> references/monitors.md; "Proposing Credentials Safely" +
+  "Reading Granted Secrets" -> references/secrets.md; the comment-wake payload
+  paragraph -> references/heartbeat.md Step 6; manual local CLI mode ->
+  references/workflows.md.
 
-  1. Write-path helper mandate ("Writing to the Paperclip API" section + the
-     write tables): every API write goes through /app/skills/paperclip/scripts/paperclip-api.sh
+  1. Write-path helper mandate ("Writing to the Paperclip API" section in
+     SKILL.md; the full table is references/hot-routes.md "Helper
+     subcommands"): every API write goes through /app/skills/paperclip/scripts/paperclip-api.sh
      (jq-built bodies); the raw-jq / inline-JSON escape hatches were removed,
      because hand-written bodies once produced a malformed payload like
      {body:} that silently failed the write and stalled the run.
@@ -60,8 +76,8 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
      is its workspace, NOT the skill root, so relative `scripts/...` commands
      fail with "not found" and the first-run kickoff silently loses its board
      writes. Keep paths absolute when re-vendoring.
-  6. EXPLICIT create status ("Creating work for someone else" + the create/
-     subtask rows): paperclip-api.sh sends an explicit `backlog` when a create
+  6. EXPLICIT create status (SKILL.md "Creating work for someone else" + the
+     create/subtask rows in references/hot-routes.md): paperclip-api.sh sends an explicit `backlog` when a create
      passes --assignee with no --status, instead of letting the server pick.
      Paperclip's own default promotes that case to `todo`
      (resolveCreateIssueStatusDefault), and assignee + non-backlog is exactly
@@ -201,8 +217,8 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       calls (create --status backlog, raw PUT /api/issues/:id/documents/:key,
       disposition) and the chat wording; the `#document-<key>` link it writes
       is what the web/iOS chat renders as a document card. Re-apply on re-vendor.
-  17. Handoffs through issues (SKILL.md "Handoffs go through issues, not chat",
-      under Delegating review tasks, right after the courier pattern): the
+  17. Handoffs through issues (SKILL.md Critical Rules "Handoffs go through
+      issues, not chat" + its full form in references/delegation.md): the
       room caps agent chains at two agent replies per human message
       (backend core/services/messaging.py AGENT_REPLY_CAP), so a chat handoff
       past it is never answered. Mirrors the lightbulb skill's "Teammates in a
@@ -232,8 +248,8 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       release changes.) Keep the doc's framing that this is Paperclip's own
       boundary, not a Lightbulb/run-attribution limitation.
   19. Task watchdog helper (the `watchdog` helper subcommand +
-      references/monitors.md "Surviving a Dropped Run" + SKILL.md write-table
-      row): upstream documents no agent-facing way to arm a watchdog, and the
+      references/monitors.md "Surviving a Dropped Run" + the watchdog row in
+      references/hot-routes.md "Helper subcommands"): upstream documents no agent-facing way to arm a watchdog, and the
       earlier `raw PUT` snippet was copied as a POST once (404; only
       get/put/delete are registered). The helper pins the verb and defaults
       `agentId` to `$PAPERCLIP_AGENT_ID`. Humans arm the same thing from the

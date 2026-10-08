@@ -10,7 +10,7 @@ import { useAgents } from "@/hooks/useAgents";
 import { useRosterEntries } from "@/components/agents/useRosterEntries";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { CompanyAgent, CompanyMember } from "@/components/teams/shared/types";
-import { activateMessagesPanel, getWorkspaceSnapshot, openPanel } from "@/components/workspace/workspaceController";
+import { activateMessagesPanel, getWorkspaceSnapshot, openInviteDialog, openPanel } from "@/components/workspace/workspaceController";
 import { MessageNotifications } from "@/components/notifications/MessageNotifications";
 import { UnreadTitleBadge } from "@/components/notifications/UnreadTitleBadge";
 import { hasBlockingShortcutDialog } from "@/components/teams/shared/lib/keyboardShortcuts";
@@ -778,7 +778,7 @@ export function MessagingWorkspaceProvider({
     onAddPeople: (roomId: string) => { closeSession(); chooseRoom(roomId); setAddPeopleRoomId(roomId); },
     // Only once the roster has loaded, so a workspace with people never flashes "just you".
     ...(humanRoster?.members && !directoryParticipants.some((participant) => participant.kind === "human")
-      ? { onInvitePeople: () => copyJoinLinkFor("sidebar_nudge") } : {}),
+      ? { onInvitePeople: openInviteDialog } : {}),
     onSelectParticipant: async (participant: DirectoryParticipant) => { closeSession(); await selectParticipant(participant); },
     openingParticipant,
     onMarkUnread: rooms.markUnread,

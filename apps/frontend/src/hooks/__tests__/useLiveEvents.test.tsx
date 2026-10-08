@@ -37,6 +37,8 @@ const shared = vi.hoisted(() => ({
   roomChannel: null as string | null,
   framesChannel: null as string | null,
   onEvent: null as ((event: { type: string; payload: { resource: string } }) => void) | null,
+  config: null as unknown,
+  onConfigStale: null as (() => void) | null,
 }));
 const statusMutate = vi.hoisted(() => vi.fn());
 vi.mock("swr", async (importOriginal) => ({ ...(await importOriginal<typeof import("swr")>()), mutate: statusMutate }));
@@ -44,9 +46,12 @@ vi.mock("@lightbulb/shared", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@lightbulb/shared")>();
   return {
     ...actual,
-    useLiveEvents: ({ roomChannel, framesChannel, onEvent }: {
+    useLiveEvents: ({ roomChannel, framesChannel, onEvent, config, onConfigStale }: {
       roomChannel: string | null; framesChannel?: string | null; onEvent: typeof shared.onEvent;
+      config: unknown; onConfigStale?: () => void;
     }) => {
+      shared.config = config;
+      shared.onConfigStale = onConfigStale ?? null;
       shared.roomChannel = roomChannel;
       shared.framesChannel = framesChannel ?? null;
       shared.onEvent = onEvent;
@@ -123,6 +128,15 @@ describe("LiveEventsProvider", () => {
     render(<LiveEventsProvider><Probe /></LiveEventsProvider>);
     expect(screen.getByText(/http-ready:reconnecting/)).toBeInTheDocument();
     await waitFor(() => expect(get).toHaveBeenCalledWith("/messaging/live-config"));
+  });
+
+  it("drops the live config, and with it the socket, when live-config answers 403 (no longer a member)", async () => {
+    render(<LiveEventsProvider><Probe /></LiveEventsProvider>);
+    await waitFor(() => expect(shared.config).toMatchObject({ workspaceId: WORKSPACE_ID }));
+    const { ApiError } = await import("@lightbulb/shared");
+    get.mockRejectedValueOnce(new ApiError(403, { code: "WORKSPACE_MEMBERSHIP_REQUIRED" }));
+    await act(async () => { shared.onConfigStale?.(); });
+    await waitFor(() => expect(shared.config).toBeNull());
   });
 
   it("ignores a stale room release after a newer panel claims live delivery", async () => {

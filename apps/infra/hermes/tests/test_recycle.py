@@ -1,10 +1,15 @@
 """The 7 h recycle: stop the session at an idle moment before AgentCore's 8 h maxLifetime kills
 it mid-turn (prod 2026-09-25 21:00:04), under a self-expiring hold that refuses new turns."""
+import os
+import shutil
 import time
+from types import SimpleNamespace
 
 import pytest
 
-from bridge import recycle, server, turn
+from bridge import recycle, server, sync, turn
+
+_disk_free_mb = sync.disk_free_mb
 from tests import factories as f
 from tests.test_paperclip_gateway import BODY, CREATE_PATH
 
@@ -17,6 +22,7 @@ def _reset(monkeypatch):
     turn.release_hold()
     monkeypatch.setattr(recycle, "first_invoke_at", None)
     monkeypatch.setattr(recycle, "_next_try", 0.0)
+    monkeypatch.setattr(sync, "disk_free_mb", lambda: (10**6, 10**6))  # a full laptop is not a trigger
     yield
     turn.release_hold()
 
@@ -110,3 +116,22 @@ def test_health_drain_on_a_busy_session_holds_nothing(home):
     turn._busy_add(-1)
     assert turn.reserve_turn() is True
     turn.release_turn()
+
+
+@pytest.mark.parametrize("outer_mb, inner_mb, stopped, forced", [
+    (5000, 900, True, False),   # inner under the soft floor: idle-only
+    (400, 5000, True, True),    # outer under the hard floor: stops even a busy session
+    (5000, 5000, False, False),  # above both floors, young session: untouched
+])
+def test_low_disk_recycles_on_the_lower_of_outer_and_inner(stops, monkeypatch, outer_mb, inner_mb, stopped, forced):
+    monkeypatch.setattr(sync, "disk_free_mb", _disk_free_mb)
+    monkeypatch.setattr(os, "statvfs", lambda path: SimpleNamespace(f_bavail=outer_mb, f_frsize=1_000_000))
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: SimpleNamespace(free=inner_mb * 1_000_000))
+    _aged(monkeypatch, 60)
+    assert sync.disk_free_mb() == (outer_mb, inner_mb)
+    turn._busy_add(1)
+    assert recycle.check_once() is forced  # busy: only the hard floor stops it
+    turn._busy_add(-1)
+    if not forced:
+        assert recycle.check_once() is stopped  # idle
+    assert len(stops[0]) == int(stopped)

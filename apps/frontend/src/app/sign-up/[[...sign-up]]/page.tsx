@@ -2,6 +2,7 @@ import { SignUp } from "@clerk/nextjs";
 import Link from "next/link";
 
 import { Logo } from "@/components/Logo";
+import { JoinTeamBlock } from "@/components/onboarding/JoinTeamBlock";
 import { SignupPlanPill } from "@/components/SignupPlanPill";
 
 export default function Page() {
@@ -167,6 +168,18 @@ export default function Page() {
         }
         .auth-footer-links a:hover { color: var(--midnight-soft); }
 
+        .auth-join {
+          margin-top: 24px;
+          width: 100%;
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          font-family: var(--font-sans), system-ui, sans-serif;
+          font-size: 13px;
+          color: var(--midnight-muted);
+          line-height: 1.5;
+        }
+
         .auth-legal-links {
           margin-top: 16px;
           text-align: center;
@@ -276,6 +289,8 @@ export default function Page() {
             </div>
 
             <SignUp fallbackRedirectUrl="/chat" signInFallbackRedirectUrl="/chat" />
+
+            <JoinTeamBlock compact />
 
             <div className="auth-footer-links">
               Already have an account?{" "}

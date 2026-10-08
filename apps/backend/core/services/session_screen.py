@@ -8,8 +8,10 @@ LOCALSESSION#<owner>#<sid> / TYPED#<user>#<start>   one admitted person's typing
 
 Both expire 45 s after the viewer's last POST (they post every 15 s). `since` is when the
 newest viewer arrived, or mounted again inside its lease: the Mac sends history and a fresh
-snapshot when it moves. Screen frames themselves
-are published to each viewer's own user channel and stored nowhere (see `forward`).
+snapshot when it moves. Screen frames themselves are published ONCE, to the session's frames
+channel `/ws/<ws>/session-frames/<sid>`, and stored nowhere (see `forward`). Who may hear them
+is decided when they subscribe: the AppSync handler requires a current workspace member and a
+shared session. A removed member's client drops its subscriptions (`workspace.access.removed`).
 """
 
 from __future__ import annotations
@@ -131,6 +133,17 @@ async def watch(auth: sessions.Caller, session_id: str, mounted: bool = False) -
         UpdateExpression="SET sessionId = :sid, expiresAt = :exp, since = "
         + (":now" if fresh else "if_not_exists(since, :now)"),
         ExpressionAttributeValues={":sid": row["sessionId"], ":exp": expires, ":now": now},
+    )
+    # The marker the frames channel's authorizer reads, for a session shared before put_session
+    # wrote it (checked shared just above). On every watch, renewals too: a view whose lease is
+    # still live renews instead of starting fresh (Codex on #3916). Idempotent; one write per 15 s.
+    await store.run_in_thread(
+        table.put_item,
+        Item={
+            "pk": store.workspace_pk(await store.ensure_workspace_id(row["ownerId"])),
+            "sk": f"SESSION#{row['sessionId']}",
+            "ownerId": row["ownerId"],
+        },
     )
     if fresh and "liveTerminal" in row.get("deviceFeatures", ()):
         await _nudge(row, now)
@@ -330,7 +343,8 @@ async def forward(relay, cid: str, body: dict) -> None:
     Never answers and never raises: the Mac waits for no reply, and an error frame would end
     its relay connection. A dropped frame costs a viewer the wait for the next snapshot: at most
     10 s while the screen prints, at most 30 s (the Mac's resync) once it is quiet.
-    Checks the row like any session frame; never writes it, nor anything else."""
+    Checks the row like any session frame; never writes it, nor anything else. One AppSync
+    publish per frame, whatever the number of viewers."""
     try:
         frame = Screen.model_validate(body)
         size = len(base64.b64decode(frame.data))
@@ -369,16 +383,15 @@ async def forward(relay, cid: str, body: dict) -> None:
         event = make_live_event(
             "workspace.session.screen", frame.model_dump(mode="json", by_alias=True, exclude={"type"})
         )
-        publisher = live_events.get_live_event_publisher()
-        # publish_users finds no channel for a removed member: they get nothing.
-        results = await publisher.publish_users(owner, viewers, event)
-        delivered = sum(r is True for r in results)
-        if delivered < len(viewers):
-            put_metric("session.screen.publish.failed", len(viewers) - delivered)
-        if delivered:
-            put_metric("session.screen.frame.forwarded")
-            put_metric("session.screen.bytes", size * delivered, "Bytes")
-            put_metric("session.screen.viewers", delivered)
+        workspace = await store.ensure_workspace_id(owner)  # minted long before any session: a read
+        try:
+            await live_events.get_live_event_publisher().publish_session_frames(workspace, event)
+        except Exception:  # noqa: BLE001 -- metered; the Mac is never told
+            put_metric("session.screen.publish.failed")
+            return
+        put_metric("session.screen.frame.forwarded")
+        put_metric("session.screen.bytes", size, "Bytes")
+        put_metric("session.screen.viewers", len(viewers))
     except Exception as exc:  # noqa: BLE001 -- see docstring
         logger.info("session screen frame dropped error=%s", type(exc).__name__)
 

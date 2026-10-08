@@ -705,6 +705,73 @@ describe("ApiStack — ws frames/{roomId}/{deliveryKey} sub-channel (parsePath)"
   });
 });
 
+describe("ApiStack — ws sessions workspace channel", () => {
+  const WORKSPACE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const OTHER = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  const handlers = () => {
+    const code = wsHandlerCode("t", "dev").replace(/^import .*;\n/m, "").replace(/^export /gm, "");
+    const util = {
+      matches: (re: string, s: string) => new RegExp(re).test(s),
+      unauthorized: () => {
+        throw 0;
+      },
+      dynamodb: { toMapValues: (v: unknown) => v },
+    };
+    return new Function("util", `${code}\nreturn { parsePath, onSubscribe, onPublish };`)(util);
+  };
+  const path = `/ws/${WORKSPACE}/sessions`;
+  const ctx = (rows: unknown[], extra: Record<string, unknown> = {}) => ({
+    info: { channel: { path } },
+    identity: { sub: "user_1" },
+    result: { data: { t: rows } },
+    ...extra,
+  });
+  const meta = { workspaceId: WORKSPACE, ownerId: "org_1" };
+
+  test("subscribe needs the subscriber's active WORKSPACE#<ws>/MEMBER#<sub> row", () => {
+    const { onSubscribe, parsePath } = handlers();
+    expect(onSubscribe.request(ctx([])).tables.t.keys).toEqual([
+      { pk: `WORKSPACE#${WORKSPACE}`, sk: "META" },
+      { pk: `WORKSPACE#${WORKSPACE}`, sk: "MEMBER#user_1" },
+    ]);
+    expect(() => onSubscribe.response(ctx([meta, { active: true }]))).not.toThrow();
+    expect(() => onSubscribe.response(ctx([meta, null]))).toThrow(); // not a member / removed
+    expect(() => onSubscribe.response(ctx([meta, { active: false }]))).toThrow();
+    expect(() => onSubscribe.response(ctx([null, { active: true }]))).toThrow();
+    expect(() => onSubscribe.response(ctx([{ ...meta, workspaceId: OTHER }, { active: true }]))).toThrow();
+    for (const bad of [`/ws/${WORKSPACE}/sessions/${OTHER}`, `/ws/${WORKSPACE}/*`, `/ws/${WORKSPACE}`]) {
+      expect(() => parsePath({ info: { channel: { path: bad } } })).toThrow();
+    }
+  });
+
+  test("an owner task role cannot publish to another workspace's sessions channel", () => {
+    const { onPublish } = handlers();
+    const role = (name: string) => ({ userArn: `arn:aws:sts::1:assumed-role/${name}/s` });
+    const publish = (identity: unknown) => onPublish.response({ info: { channel: { path } }, identity, result: meta, events: [1] });
+    expect(publish(role("lightbulb-dev-backend"))).toEqual([1]);
+    expect(publish(role("lightbulb-dev-owner-bedrock-org_1"))).toEqual([1]);
+    expect(() => publish(role("lightbulb-dev-owner-bedrock-org_2"))).toThrow();
+  });
+
+  test("a session frames channel admits a member while the session is shared, and no one else", () => {
+    const { onSubscribe, parsePath } = handlers();
+    const SESSION = "eeeeeeee-eeee-5eee-8eee-eeeeeeeeeeee";
+    const frames = (rows: unknown[]) => ({ ...ctx(rows), info: { channel: { path: `/ws/${WORKSPACE}/session-frames/${SESSION}` } } });
+    expect(onSubscribe.request(frames([])).tables.t.keys).toEqual([
+      { pk: `WORKSPACE#${WORKSPACE}`, sk: "META" },
+      { pk: `WORKSPACE#${WORKSPACE}`, sk: "MEMBER#user_1" },
+      { pk: `WORKSPACE#${WORKSPACE}`, sk: `SESSION#${SESSION}` },
+    ]);
+    const shared = { ownerId: "org_1" };
+    expect(() => onSubscribe.response(frames([meta, { active: true }, shared]))).not.toThrow();
+    expect(() => onSubscribe.response(frames([meta, null, shared]))).toThrow(); // not a member
+    expect(() => onSubscribe.response(frames([meta, { active: true }, null]))).toThrow(); // not shared
+    for (const bad of [`/ws/${WORKSPACE}/session-frames`, `/ws/${WORKSPACE}/session-frames/${SESSION}/x`, `/ws/${WORKSPACE}/session-frames/nope`]) {
+      expect(() => parsePath({ info: { channel: { path: bad } } })).toThrow();
+    }
+  });
+});
+
 describe("ApiStack — messaging projector permissions and alarms", () => {
   test("projector is Python 3.13, bounded, partial-batch configured, and may only send to the search index queue", () => {
     API_TEMPLATE.hasResourceProperties("AWS::Lambda::Function", {

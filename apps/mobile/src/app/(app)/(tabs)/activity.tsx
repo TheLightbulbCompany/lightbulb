@@ -306,7 +306,7 @@ function Skeleton({ palette }: { palette: ChatPalette }) {
 function latestPerSession(items: readonly ActivityItem[]): ActivityItem[] {
   const seen = new Set<string>();
   return items.filter((item) => {
-    if (item.kind !== "session" || item.subtype === "waiting" || item.subtype === "join_request") return true;
+    if (item.kind !== "session" || item.subtype === "waiting" || item.subtype === "join_request" || item.subtype === "agent_ask") return true;
     const id = item.summary.links.find((link) => link.kind === "session")?.id ?? item.id;
     if (seen.has(id)) return false;
     seen.add(id);

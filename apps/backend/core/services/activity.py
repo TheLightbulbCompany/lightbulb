@@ -145,7 +145,8 @@ class ActivityItem(ContractModel):
     id: str
     kind: ActivityKind
     # ``session`` items: ``waiting`` (on its owner's input), ``finished`` (a turn ended) or
-    # ``join_request`` (a teammate asked to send to it; Allow / Decline).
+    # ``join_request`` (a teammate asked to send to it; Allow / Decline) or
+    # ``agent_ask`` (an agent asked to message it; Send / Decline).
     # ``login`` items: ``login`` (an agent needs a website login). A sign-in code is typed into the
     # shared browser, never asked for here.
     subtype: (
@@ -157,6 +158,7 @@ class ActivityItem(ContractModel):
             "waiting",
             "finished",
             "join_request",
+            "agent_ask",
             "login",
             "extension",
         ]
@@ -578,7 +580,7 @@ def render_agent_ask(ask: dict, session: dict, *, seen: str | None, stranded: bo
     return ActivityItem(
         id=agent_ask_item_id(session["sessionId"], ask["requestId"]),
         kind="session",
-        subtype="join_request",
+        subtype="agent_ask",
         actor=actor,
         created_at=created,
         state="open" if open_ else "resolved",
@@ -1265,6 +1267,7 @@ _PINNED_ORDER = {
     "interaction": 1,
     "waiting": 1,
     "join_request": 1,
+    "agent_ask": 1,
     "login": 1,
     "code": 1,
     "extension": 1,
@@ -1277,7 +1280,7 @@ def needs_you(item: ActivityItem) -> bool:
     issue-thread interaction (an agent waiting on a human), a failed run, or one of your
     shared sessions still waiting for your input."""
     if item.kind == "session":
-        return item.state == "open" and item.subtype in ("waiting", "join_request")
+        return item.state == "open" and item.subtype in ("waiting", "join_request", "agent_ask")
     if item.kind in ("login", "extension"):
         return item.state == "open"
     return item.kind == "paperclip" and item.state == "open" and item.subtype in _PINNED_ORDER

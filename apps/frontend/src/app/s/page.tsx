@@ -180,7 +180,8 @@ export default function SessionLinkPageRoute() {
           </>}
     </section>}
     <section aria-label="Session state" className="session-state-panel rounded-lg border">
-      {page.state === "ended" ? <><p className="font-semibold">Ended</p><p>The screen is gone: this session&apos;s terminal closed.</p></>
+      {/* No word on the screen: this page never shows one, and an ended session's Mac may still keep it for teammates. */}
+      {page.state === "ended" ? <p className="font-semibold">Ended</p>
         : page.state === "offline" ? <p className="font-semibold">{page.ownerFirstName}&apos;s Mac is offline</p>
         : page.me.member ? <p>This session is live in Lightbulb. Open it there to watch its terminal.</p>
         : <p>This session is live.</p>}

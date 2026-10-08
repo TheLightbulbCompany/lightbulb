@@ -160,7 +160,8 @@ describe("session link page", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<SessionLinkPageRoute />);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-    expect(screen.getByText(/The screen is gone/)).toBeTruthy();
+    // (Nothing about the screen: nobody sees one here, and the Mac may still keep it for teammates.)
+    expect(screen.getByLabelText("Session state").textContent).toBe("Ended");
     expect(fetchMock.mock.calls.some(c => String(c[0]).endsWith("/events"))).toBe(false);
   });
   it("tells a member to open a live session in Lightbulb, and a nonmember only that it is live", async () => {

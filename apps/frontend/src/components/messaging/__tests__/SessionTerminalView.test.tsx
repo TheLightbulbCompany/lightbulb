@@ -340,6 +340,19 @@ it("writes history under the first snapshot, keeps it when later snapshots redra
   expect(hooks.resets).toBe(2);
 });
 
+it("history that arrives after its snapshot is written: the terminal starts over with it, then the screen again", async () => {
+  // Prod 2026-10-08: the Mac sends the burst, then the snapshot, each as its own request; when the
+  // snapshot came first the view showed 30 rows with no scrollback (about half of all opens).
+  const { emit } = await mountView();
+  emit(screenEvent("s1", "snapshot", 1));
+  expect([writes.length, hooks.resets]).toEqual([1, 1]);
+  emit(screenEvent("s1", "history", 0, 1, btoa("old\r\n")));
+  expect(hooks.resets).toBe(2);
+  expect(writes.slice(1).map((w) => new TextDecoder().decode(w).includes("old"))).toEqual([true, false]);
+  emit(screenEvent("s1", "history", 0, 1, btoa("old\r\n")));
+  expect([writes.length, hooks.resets]).toEqual([3, 2]);
+});
+
 it("a ping keeps a quiet terminal live and draws nothing", async () => {
   vi.useFakeTimers();
   const { emit, onLive } = await mountView();

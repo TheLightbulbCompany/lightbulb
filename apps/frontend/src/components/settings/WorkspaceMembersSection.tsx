@@ -118,6 +118,9 @@ export function WorkspaceMembersSection() {
   const [linkUrl, setLinkUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Bumped when the invite panel copies (and so may have minted) the link: re-read it so the
+  // card below never offers "Create join link" over a link that now exists.
+  const [linkReload, setLinkReload] = useState(0);
 
   useEffect(() => {
     if (!orgId || !isAdmin) {
@@ -143,7 +146,7 @@ export function WorkspaceMembersSection() {
     return () => {
       cancelled = true;
     };
-  }, [api, orgId, isAdmin]);
+  }, [api, orgId, isAdmin, linkReload]);
 
   const handleGenerate = useCallback(async () => {
     if (!orgId) return;
@@ -302,7 +305,7 @@ export function WorkspaceMembersSection() {
 
       <div className="settings-card" data-testid="members-invite">
         <div className="settings-card-title">Invite people</div>
-        <InvitePeoplePanel source="members_settings" />
+        <InvitePeoplePanel source="members_settings" onJoinLinkCopied={() => setLinkReload((n) => n + 1)} />
       </div>
 
       <div className="settings-card" data-testid="members-join-link">

@@ -180,6 +180,29 @@ describe("WorkspaceMembersSection", () => {
     expect(screen.getAllByRole("button", { name: /copy/i })).toHaveLength(1);
   });
 
+  it("reloads the join-link card after the panel copies a link it may have minted", async () => {
+    asAdmin();
+    // First read: no link yet. After the panel's copy (which mints one), the link exists — the card
+    // must stop offering "Create join link", since that POST would rotate the token just copied.
+    let reads = 0;
+    get.mockImplementation(async (path: string) => {
+      if (path === "/orgs/org_1/join-link") {
+        return ++reads === 1 ? { exists: false } : { exists: true, join_url: "https://dev.thelightbulb.company/join/org_1/minted", created_at: "2026-10-08T00:00:00Z" };
+      }
+      if (path === "/orgs/org_1/invitations") return { invitations: [] };
+      return {};
+    });
+    const user = userEvent.setup();
+    render(<WorkspaceMembersSection />);
+    const invite = await screen.findByTestId("members-invite");
+    expect(await screen.findByRole("button", { name: /create join link/i })).toBeInTheDocument();
+
+    await user.click(within(invite).getByRole("button", { name: "Copy join link" }));
+
+    expect(await screen.findByLabelText(/your join link/i)).toHaveValue("https://dev.thelightbulb.company/join/org_1/minted");
+    expect(screen.queryByRole("button", { name: /create join link/i })).not.toBeInTheDocument();
+  });
+
   it("shows the current link from GET so re-sharing never needs a regenerate", async () => {
     asAdmin();
     joinLink({

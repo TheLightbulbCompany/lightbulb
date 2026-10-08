@@ -25,7 +25,10 @@ function sendNote(error: unknown): string {
 
 /** The one invite UI (the rail's Invite dialog and Settings → Members): email invitations, the
  *  pending list, and the join link for people who would rather get a link in a chat. */
-export function InvitePeoplePanel({ source }: { source: string }): React.ReactElement {
+/** `onJoinLinkCopied` fires after a successful copy, which may have MINTED the link: a host that
+ *  shows its own join-link state (Settings → Members) reloads it, so its card never offers
+ *  "Create join link" over a link the admin just copied (that POST would rotate the token). */
+export function InvitePeoplePanel({ source, onJoinLinkCopied }: { source: string; onJoinLinkCopied?: () => void }): React.ReactElement {
   const { orgId } = useAuth();
   const api = useApi();
   const copyJoinLink = useCopyJoinLink();
@@ -86,7 +89,7 @@ export function InvitePeoplePanel({ source }: { source: string }): React.ReactEl
     if (copying) return;
     setCopying(true);
     setLinkNote(null);
-    copyJoinLink(source).then(() => setLinkNote(JOIN_LINK_COPIED), (error: unknown) => setLinkNote(joinLinkNote(error)))
+    copyJoinLink(source).then(() => { setLinkNote(JOIN_LINK_COPIED); onJoinLinkCopied?.(); }, (error: unknown) => setLinkNote(joinLinkNote(error)))
       .finally(() => setCopying(false));
   }
 

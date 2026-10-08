@@ -461,6 +461,22 @@ async def test_what_a_mouth_said_is_deleted_and_an_order_waits_for_a_cut_respons
     assert sent() == [], "its item is deleted: there is nothing to truncate"
 
 
+async def test_first_sound_timeout_excludes_the_wait_for_an_interrupted_response(monkeypatch):
+    import asyncio
+    import time
+
+    monkeypatch.setattr(agent, "FIRST_SOUND_S", 0.02)
+    monkeypatch.setattr(agent, "CANCEL_WAIT_S", 0.08)
+    live, session, _ = _driven()
+    session.silent = True
+    live._cut_at = time.monotonic()
+    live.say("After the interruption.", 2)
+    await asyncio.sleep(0.04)
+    assert not session.handles[0].interrupted, "the response may still be held behind the cancellation"
+    await asyncio.sleep(0.08)
+    assert session.handles[0].interrupted, "the first-sound timeout still applies after the hold"
+
+
 async def test_a_unit_with_no_sound_in_time_is_stopped_and_fails_and_says_why(monkeypatch):
     """10-08 rig: 3 of 83 units were silent, and each cost the room the 3 s the mouth then waited."""
     import asyncio

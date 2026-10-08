@@ -506,7 +506,10 @@ class _DrivenLive:
                 handle.interrupt(force=True)
 
         m.stop = stop
-        watch = asyncio.get_running_loop().call_later(FIRST_SOUND_S, lambda: m.loud or stop("no_sound"))
+        # generate_reply may hold this response behind an interrupted response for CANCEL_WAIT_S. Give the new
+        # response its full first-sound window after that hold rather than counting the cancellation against it.
+        held_for = max(0.0, CANCEL_WAIT_S - (began - self._cut_at)) if self._cut_at is not None else 0.0
+        watch = asyncio.get_running_loop().call_later(FIRST_SOUND_S + held_for, lambda: m.loud or stop("no_sound"))
         try:
             await handle  # done when the unit is said, or cut. It never raises.
         finally:

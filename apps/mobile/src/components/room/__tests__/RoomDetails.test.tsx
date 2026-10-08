@@ -109,6 +109,12 @@ describe("RoomDetails", () => {
     expect(screen.getByText("Leave group chat")).toBeTruthy();
   });
 
+  it("opens the existing searchable picker immediately when requested by the header", async () => {
+    await setup(room({}, "owner"), { initialAddPeopleOpen: true });
+    expect(screen.getByPlaceholderText("Search people")).toBeTruthy();
+    expect(screen.getByLabelText("Atlas")).toBeTruthy();
+  });
+
   it("keeps adding and removing members to channel owners and admins", async () => {
     await setup(room());
     expect(screen.queryByText("Add members")).toBeNull();

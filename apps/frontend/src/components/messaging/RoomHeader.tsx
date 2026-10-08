@@ -1,7 +1,7 @@
 "use client";
 
 import { useId, useRef, useState, type ReactNode } from "react";
-import { Archive, ArchiveRestore, Bell, BellOff, Hash, Link, LogOut, MessageCircle, Mic, MoreHorizontal, Pencil, Pin, Star, Trash2, Users } from "lucide-react";
+import { Archive, ArchiveRestore, Bell, BellOff, Hash, Link, LogOut, MessageCircle, Mic, MoreHorizontal, Pencil, Pin, Star, Trash2, UserPlus, Users } from "lucide-react";
 import { liveMarker, type MemberPrefsRequest, type RoomSummary } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -34,6 +34,8 @@ interface RoomHeaderProps {
   views?: ReactNode; // RoomPanel's conversation / details / tasks switch
   onOpenDetails: (tab?: "members" | "pins" | "files" | "links" | "about") => void;
   onAddPeople?: () => void;
+  /** Direct header action for channel owners/admins; overflow behavior remains broader. */
+  onQuickAddPeople?: () => void;
   onSetPrefs?: (prefs: MemberPrefsRequest) => Promise<void>;
   onRenameRoom?: (name: string) => Promise<void>;
   onSetTopic?: (topic: string | null) => Promise<void>;
@@ -61,6 +63,7 @@ export function RoomHeader({
   views,
   onOpenDetails,
   onAddPeople,
+  onQuickAddPeople,
   onSetPrefs,
   onRenameRoom,
   onSetTopic,
@@ -151,6 +154,9 @@ export function RoomHeader({
           <Mic className="h-4 w-4" aria-hidden="true" /> {huddle.joining === room.roomId ? "Joining…" : "Go live"}
         </Button>
       )}
+      {onQuickAddPeople && <Button type="button" variant="outline" size="sm" disabled={!actionable} onClick={onQuickAddPeople}>
+        <UserPlus size={14} aria-hidden="true" />Add people
+      </Button>}
       {pinnedCount > 0 && <Button type="button" variant="ghost" size="sm"
         aria-label={`${pinnedCount} pinned ${pinnedCount === 1 ? "message" : "messages"}`} onClick={() => onOpenDetails("pins")}>
         <Pin size={14} aria-hidden="true" />{pinnedCount}</Button>}

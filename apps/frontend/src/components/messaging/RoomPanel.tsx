@@ -736,6 +736,13 @@ function RoomContent({
             }
           }} />}
         onOpenDetails={(tab) => { closeDetail(); if (tab) setDetailsTab(tab); setContextCollapsed(false); }}
+        onQuickAddPeople={canManageMembers && !visibleRoom?.shared ? () => {
+          closeDetail();
+          setDetailsTab("members");
+          setMemberError(undefined);
+          setMemberQuery("");
+          setMemberPickerOpen(true);
+        } : undefined}
         onAddPeople={canAddMembers ? () => {
           closeDetail();
           setDetailsTab("members");

@@ -7,7 +7,7 @@ import { AnimatedPressable, usePressScale } from "../../lib/pressScale";
 import { Avatar } from "./Avatar";
 
 /**
- * The conversation header's icon pair (call or star, then mute) — RoomHeader.tsx's own icon
+ * The conversation header actions — RoomHeader.tsx's own icon
  * buttons, same `aria-label` wording as `accessibilityLabel`. Presentational
  * only: a native header has no room below the buttons for an inline error, so
  * the screen that mounts this owns the async call, the pending flag and the
@@ -19,6 +19,7 @@ export function RoomHeaderActions({
   disabled,
   onToggleStar,
   onToggleMute,
+  onAddPeople,
   voice,
   onLayout,
 }: {
@@ -27,6 +28,7 @@ export function RoomHeaderActions({
   disabled?: boolean;
   onToggleStar: () => void;
   onToggleMute: () => void;
+  onAddPeople?: () => void;
   /**
    * Go live / Live (any room); passed only when the binary can do voice. It
    * takes the star's place: three controls left a channel name no room, and
@@ -40,6 +42,7 @@ export function RoomHeaderActions({
   const starScale = usePressScale();
   const muteScale = usePressScale();
   const voiceScale = usePressScale();
+  const addPeopleScale = usePressScale();
   return (
     <View style={styles.row} onLayout={onLayout}>
       {voice ? (
@@ -90,6 +93,21 @@ export function RoomHeaderActions({
           <SymbolView accessibilityElementsHidden name={starred ? "star.fill" : "star"} size={18} tintColor={palette.fgSoft} />
         </AnimatedPressable>
       )}
+      {onAddPeople ? (
+        <AnimatedPressable
+          onPress={() => { hapticSelection(); onAddPeople(); }}
+          onPressIn={addPeopleScale.onPressIn}
+          onPressOut={addPeopleScale.onPressOut}
+          disabled={disabled}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Add people"
+          accessibilityState={{ disabled: !!disabled }}
+          style={[styles.button, addPeopleScale.style]}
+        >
+          <SymbolView accessibilityElementsHidden name="person.badge.plus" size={18} tintColor={palette.fgSoft} />
+        </AnimatedPressable>
+      ) : null}
       <AnimatedPressable
         onPress={() => {
           hapticSelection();

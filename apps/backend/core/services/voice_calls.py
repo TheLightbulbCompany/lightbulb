@@ -980,11 +980,14 @@ def _understood(
     conversation, a named agent, a line among people the room judge picked an agent for). Not implied, an
     unnamed part is no request. Owners marked ``None`` here are filled by the caller (the floor agent, the
     judge's agent, the chief of staff).
-    Returns ``{requests: [{agentId|None, task, by}], talk, more, nudge, stop, cancel, hush, steer}``. ``nudge``:
-    a part only calls on an agent or tells it to go on ("Friday, go ahead"); that is never a request. ``stop``:
-    a part is a stop, whether or not a request was found for it. What a stop does is its scope, read from the
-    part's kind and never from whether it names a request: ``cancel`` lists the request a withdrawal names
-    ("never mind the deck"), ``hush`` the request a speech-only stop names ("stop talking about the deck")."""
+    Returns ``{requests: [{agentId|None, task, by}], talk, more, nudge, stop, cancel, hush, quiet, steer}``.
+    ``nudge``: a part only calls on an agent or tells it to go on ("Friday, go ahead"); that is never a
+    request. ``stop``: a part is a stop, whether or not a request was found for it. What a stop does is its
+    scope, read from the part's kind and never from whether it names a request: ``cancel`` lists the request
+    a withdrawal names ("never mind the deck"), ``hush`` the request a speech-only stop names ("stop talking
+    about the deck"). Each stop keeps its own request, so one line can do both to different requests.
+    ``quiet``: the agents of a stop whose request could not be told (``None``: the caller's floor agent).
+    They are told to stop talking and no more, also when the stop was a withdrawal."""
     parts, pieces = addressing["parts"], addressing["pieces"]
     named = [(name, agent) for name, agent, _ in addressing["named"]]
     by_name = dict(named)
@@ -1075,14 +1078,22 @@ def _understood(
         "stop": any(kind[p["index"]] in ("cancel", "hush") for p in parts),
         "cancel": [],
         "hush": [],
+        "quiet": [],
         "steer": [],
     }
-    dropped = target(addressing.get("drops"))
-    if dropped and dropped["status"] != "delivered":
-        # the request the stop is about. A withdrawal anywhere on the line withdraws it.
-        scope = next((k for k in ("cancel", "hush") if k in kind.values()), None)
-        if scope:
-            out[scope] = [dropped["id"]]
+    stops = [p for p in parts if kind[p["index"]] in ("cancel", "hush")]
+    for p in stops:
+        # The request this stop is about: the one its own part names. A line with one stop has the line's.
+        # 10-07 review: one request was picked for the whole line, and a withdrawal anywhere withdrew it.
+        # "Stop talking about the deck. Cancel the invoice task." aborted the deck.
+        row = target(p.get("drops")) or (target(addressing.get("drops")) if len(stops) == 1 else None)
+        if row and row["status"] != "delivered":
+            out[kind[p["index"]]].append(row["id"])
+        else:
+            # No request can be told: its agent stops talking. A task nobody identified is never aborted.
+            out["quiet"] += [by_name[n] for n in p["asked"] or () if n in by_name] or [a for _, a in named] or [None]
+    out["cancel"] = list(dict.fromkeys(out["cancel"]))
+    out["hush"] = [i for i in dict.fromkeys(out["hush"]) if i not in out["cancel"]]  # withdrawn outright
     amended = target(addressing.get("amends"))
     if amended and not out["cancel"] and (asks or any(k == "context" for k in kind.values())):
         # The message continues an earlier request (Jev answers for the whole message): what it asks,
@@ -1423,13 +1434,13 @@ async def route_live_line(
         "cancel": u["cancel"],
         # A stop that withdrew no request tells its agent to stop talking, no more: the agent of the request
         # it is about, else the named ones, else the one the speaker is talking with. The worker stops that
-        # speech and leaves the work running.
-        "hush": (
-            [{"agentId": r["agentId"], "requestIds": [r["id"]]} for r in earlier if r["id"] in u.get("hush", ())]
-            or [{"agentId": a, "requestIds": []} for a in named or ([floor_agent] if mine and floor_agent else [])]
-        )
-        if stop
-        else [],
+        # speech and leaves the work running. Each stop on the line has its own entry.
+        "hush": [{"agentId": r["agentId"], "requestIds": [r["id"]]} for r in earlier if r["id"] in u.get("hush", ())]
+        + [
+            {"agentId": a, "requestIds": []}
+            for a in dict.fromkeys(a or (floor_agent if mine else None) for a in u.get("quiet", ()))
+            if a
+        ],
         "called": who if called and who and not requests else None,
         "steer": u["steer"],
         # the line is talk between people: a meeting voice pinned to its speaker gives the floor back

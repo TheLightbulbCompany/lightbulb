@@ -449,7 +449,11 @@ async def test_only_a_named_or_spoken_over_stop_stops_a_meeting_agent():
     await dan_starts(h, clock)
     await hear(h, "never mind")  # between two people: not to Forge
     assert row.status == "working" and backend.aborts == []
-    await hear(h, "Forge, never mind")
+    await hear(h, "Forge, never mind")  # its words do not say which request: nothing is aborted on them
+    assert row.status == "working" and backend.aborts == [] and h._hushed(row.id)
+    backend.route_extra = {"ops": {"requests": [], "social": None, "more": False, "cancel": [row.id], "steer": []}}
+    await hear(h, "Forge, never mind")  # /route names the request it takes back
+    await settle(h)
     assert row.status == "cancelled" and backend.aborts == [row.run_id]
 
     h, room, backend, lives, clock, log = await priya_asks_forge(rows=True)

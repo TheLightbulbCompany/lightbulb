@@ -1561,13 +1561,15 @@ class Huddle:
         """Someone other than `who` is talking with an agent: what `who` says next may come between them."""
         return any(e.person != who and e.state == "active" for e in self._engagements())
 
-    def _between(self, who: tuple[str, str] | None) -> None:
+    def _between(self, who: tuple[str, str] | None, said: float | None = None) -> None:
         """`who` said a line to a person, or people are settling something among themselves (/route's
         `ops.people`): another exchange has come between every other person and the agent they were talking
         with. What a line is decides this, never how many lines there were: an endorsement of the request,
-        said twice or ten times, comes between nobody."""
+        said twice or ten times, comes between nobody.
+        `said`: when the line was said. An exchange begun or taken up again after it is left alone. The
+        line came before it, so it did not come between them."""
         for e in self._engagements():
-            if e.person != who and e.state == "active":
+            if e.person != who and e.state == "active" and (said is None or e.at <= said):
                 e.state, e.why = "suspended", "other"
                 self._gate_log("suspend", e.agent, "other", e.person[1], 0)
 
@@ -1575,9 +1577,10 @@ class Huddle:
         """A meeting line of someone who is talking with no agent, said while other people are. /route reads
         it for one thing: whether it was said to people. Nothing on it is started, steered or called off.
         It named no agent, and a request is not this person's to change."""
+        said = self._clock()  # /route can answer late. Its answer is about the room as it was now.
         r = await self._understand(identity, text, len(self._people), quiet=True, path="between", mark=mark)
         if ((r or {}).get("ops") or {}).get("people"):
-            self._between(self._who(identity, mark))
+            self._between(self._who(identity, mark), said)
 
     def _evidence(self, who: tuple[str, str] | None) -> list[dict]:
         """What /route is told about the speaker and each agent they are talking with."""
@@ -1941,7 +1944,7 @@ class Huddle:
             self._gate_log("resume" if listening else "floor_taken", u.agent, u.kind, identity, 0)
         self._pump()
 
-    def _hush(self, agent_id: str, about: list | tuple = ()) -> None:
+    def _hush(self, agent_id: str, about: list | tuple = (), owed: list | None = None) -> None:
         """Speech suppression ("stop", "not now", /route's `ops.hush`): what the agent has to say is struck
         and none of it resumes. `about`: the request rows the stop named ("stop talking about the deck").
         None named: everything the agent has open.
@@ -1949,7 +1952,7 @@ class Huddle:
         what the work produces later: a status line about it is not said, and its answer, like an answer
         already here, goes to the room in writing. It was asked for and not withdrawn ("don't post that" and
         a cancelled request still stop that). The agent speaks about it again when someone turns to it
-        (`_unhush`)."""
+        (`_unhush`). `owed`: the caller posts the struck answers itself, once it knows none was withdrawn."""
         rows = [r for r in map(self._requests.get, map(str, about)) if r is not None and r.agent == agent_id]
         mine = [u for u in self._ledger if u.agent == agent_id]
         if rows:
@@ -1968,7 +1971,10 @@ class Huddle:
                 e.last, e.last_by = "interrupted", "speaker"
             if u.kind == "answer":
                 whole = (*self._news_of(u)[:2], " ".join(u.units), u.at, u.audience)  # it reads on its own
-                self._spawn(self._late_answer(agent_id, whole))
+                if owed is None:
+                    self._spawn(self._late_answer(agent_id, whole))
+                else:
+                    owed.append((agent_id, whole))
         if mine:
             emit_metric("live.speech.hushed", 1, "Count")
         self._sync_state()
@@ -1987,23 +1993,22 @@ class Huddle:
         about what it was told to be quiet about."""
         self._written = {o: a for o, a in self._written.items() if a != agent_id}
 
-    def _withdraw(self, obligation: str) -> None:
-        """Task cancellation of one request ("never mind" said over it): its run is aborted and nothing of
-        it is said or posted. /route's `ops.cancel` ends in the same place (`_cancel`)."""
-        rows = self._rows_of(obligation)
-        for r in rows:
-            if r.status in OPEN:
-                self._cancel(r)
-        if rows:
-            return
-        if any(run.run_id == obligation for run in self._runs.running()):
-            self._runs.abort(obligation)
-            self._stopped.add(obligation)
-            self._spawn(self._abort(obligation))
-        self._requests.suppress(obligation)
-        self._strike(u for u in self._ledger if u.obligation == obligation)
-        self._sync_state()
-        self._pump()
+    async def _withdrawal(self, identity: str, text: str, mark: int, owed: list) -> None:
+        """A whole-line withdrawal ("never mind", "Forge, cancel that") in a room of mouths. The words say a
+        request is taken back and not which one. /route names it (`ops.cancel`), and only then is a run
+        aborted. A request /route cannot name is silenced (`ops.hush`) and its work goes on.
+        `owed`: the answers the stop cut. One that was not withdrawn goes to the room in writing."""
+        try:
+            r = await self._understand(identity, text, len(self._people), quiet=True, path="stop", mark=mark)
+            ops = (r or {}).get("ops") or {}
+            for rid in ops.get("cancel") or []:
+                if (row := self._requests.get(str(rid))) is not None and row.status in OPEN:
+                    self._cancel(row)
+            for x in ops.get("hush") or []:
+                self._hush(str(x.get("agentId") or ""), x.get("requestIds") or ())
+        finally:
+            for agent_id, whole in owed:
+                await self._late_answer(agent_id, whole)  # it posts nothing of a cancelled request
 
     def _stop_said(self, identity: str, text: str, mark: int) -> bool:
         """A line that is nothing but a stop, in a room of mouths (the instant path, no /route). False: it
@@ -2011,10 +2016,11 @@ class Huddle:
 
         Whose it is: the agents it names. Else the agents whose speech this person talked over. Else, for a
         stop with no word before it, the agents speaking to them or talking with them.
-        What it does: a withdrawal ("never mind", "cancel that") cancels the request it was said over, or
-        with nothing being said, the request that person is waiting on. Any other stop silences what the
-        agent has to say, now and when its work ends, and leaves that work running (`_hush`). An agent with nothing to say can only be
-        stopped in its work, and only by its name: "Forge, stop" stops Forge, "stop" stops nobody's work."""
+        What it does: it silences what the agent has to say, now and when its work ends, and leaves that
+        work running (`_hush`). It never aborts a run. An agent that is saying nothing is silenced only by
+        its name: silence does not show that its work is unwanted, so "Forge, stop" has Forge's answer
+        written, and "stop" changes nothing for it. A withdrawal ("never mind", "cancel that") is also read
+        by /route, which alone cancels a request (`_withdrawal`)."""
         agents = self._team["agents"]
         named = stop_target(text, agents)
         names = [named] if named else self._named(text, address(text, agents, self._team["people"]))
@@ -2024,24 +2030,21 @@ class Huddle:
         mine = [u for u in said if (u.audience, u.label) == who]
         waiting = [e for e in self._engagements(who) if e.state == "active"] if stop_bare(text) else []
         targets = names or [u.agent for u in over] or [u.agent for u in mine if stop_bare(text)] + [e.agent for e in waiting]
-        done = False
+        done, withdrawn, owed = False, False, []
         for agent_id in dict.fromkeys(targets):
             theirs = [u.obligation for u in (said if names else over or mine) if u.agent == agent_id]
             if not names:
                 theirs += [e.obligation for e in waiting if e.agent == agent_id and e.expects == "answer"]
-            silent = not any(u.agent == agent_id for u in self._ledger)
             if v := self._floor_voice(agent_id):
                 self._unwanted(v, identity)
-            if withdraws(text) and any(theirs):
-                for obligation in dict.fromkeys(o for o in theirs if o):
-                    self._withdraw(obligation)
-            elif names and (withdraws(text) or silent):
-                self._stop(agent_id, mark)
-            elif not silent and not withdraws(text):
-                self._hush(agent_id)
-            else:
+            takes_back = withdraws(text) and bool(names or any(theirs))
+            if names or any(u.agent == agent_id for u in self._ledger):
+                self._hush(agent_id, owed=owed if takes_back else None)
+            elif not takes_back:
                 continue
-            done = True
+            done, withdrawn = True, withdrawn or takes_back
+        if withdrawn:
+            self._spawn(self._withdrawal(identity, text, mark, owed))
         return done
 
     def _say_failed(self, v: _Voice, run_id: str, request: str) -> None:

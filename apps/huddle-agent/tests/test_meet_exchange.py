@@ -255,7 +255,8 @@ async def test_a_stop_that_trails_off_is_a_stop_not_a_fragment():
     h, backend, lives, clock = await asked()
     (row,) = h._requests.items
     await says(h, P1, "Forge, stop...")
-    assert row.status == "cancelled" and backend.aborts == [row.run_id]
+    # applied: Forge is silenced. It was saying nothing, and that does not withdraw its work.
+    assert h._hushed(row.id) and row.status == "working" and backend.aborts == []
 
 
 
@@ -307,7 +308,7 @@ async def test_a_stop_after_a_trailing_fragment_is_still_a_stop():
     (row,) = h._requests.items
     await says(h, P1, "Oh, and...")
     await says(h, P1, "Forge, stop...")
-    assert row.status == "cancelled" and backend.aborts == [row.run_id]
+    assert h._hushed(row.id) and row.status == "working" and backend.aborts == []
 
 
 

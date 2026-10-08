@@ -2831,6 +2831,13 @@ DROPS_INSTRUCTIONS = (
     "hold off, no longer needed, already handled), or tell a teammate to stop talking about one of them? "
     "Pick that request. Pick none when the message is about none of them."
 )
+#: The same question about one part of a line that has several. Each part's stop keeps its own request:
+#: "Stop talking about the deck. Cancel the invoice task." silences one and withdraws the other.
+PART_DROPS_INSTRUCTIONS = (
+    "Earlier requests on this call are listed. Does this part of the latest message call one of them off "
+    "(forget it, hold off, no longer needed, already handled), or tell a teammate to stop talking about one "
+    "of them? Pick that request. Pick none when this part is about none of them, even if another part is."
+)
 #: More parts than this and nobody is cut: each agent gets the whole line.
 MAX_PARTS = 8
 #: A Live line asks Jev a second time when the first answer is this late, and takes whichever comes first:
@@ -3222,7 +3229,8 @@ async def _label(
 ) -> dict | None:
     """The one Jev call: ``{labels: {name: label}, complete: p, anyone: p}``, or None on any failure.
     ``understand`` (conversation understanding §4.2) adds, per spoken part, what it is and whose job it is,
-    and which earlier request the message continues or calls off: ``kinds``, ``whos``, ``amends``, ``drops``."""
+    and which earlier request the message continues or calls off: ``kinds``, ``whos``, ``amends``, ``drops``.
+    ``dropped``: per part of a line with several, the request that part calls off or silences."""
     from core.services import jev
 
     questions = {
@@ -3248,6 +3256,13 @@ async def _label(
                 "instructions": DROPS_INSTRUCTIONS,
                 "criteria": {**listed, "none": "Nothing is called off or told to stop"},
             }
+            # One part: the line's answer is its answer.
+            for i, part in enumerate(spoken if len(spoken) > 1 else ()):
+                questions[f"d{i}"] = {
+                    "type": "choice",
+                    "instructions": f"{PART_DROPS_INSTRUCTIONS} The part: {json.dumps(part)}.",
+                    "criteria": {**listed, "none": "This part calls nothing off and tells nobody to stop"},
+                }
     for i, c in enumerate(cands):
         kind = (
             "both a person and an AI teammate here"
@@ -3299,6 +3314,7 @@ async def _label(
             out["kinds"] = [_choice(answers.get(f"k{i}")) for i in range(len(spoken))]
             out["whos"] = [_choice(answers.get(f"w{i}")) for i in range(len(spoken))]
             out["amends"], out["drops"] = _choice(answers.get("amends")), _choice(answers.get("drops"))
+            out["dropped"] = [_choice(answers[f"d{i}"]) if f"d{i}" in answers else None for i in range(len(spoken))]
         return out
     except TimeoutError:
         # The stage's own limit cancelled the call, which jev.decide reports as "cancelled" (so a hedged
@@ -3319,7 +3335,7 @@ async def address(
     rows before it, or an async loader called only when the Jev call happens.
     ``understand`` (Live; conversation understanding §4.2): ``{cards, open, floor}``. The line is also cut
     where a new request begins, the same call says what each part is and whose job it is, and the answer
-    gains ``parts`` (``{index, text, kind, who, asked}``), ``pieces``, ``named``, ``amends`` and ``drops``."""
+    gains ``parts`` (``{index, text, kind, who, asked, drops}``), ``pieces``, ``named``, ``amends`` and ``drops``."""
     text = str(latest.get("text") or "")
     out: dict = {"agents": [], "humans": [], "hold": False, "anyone": False, "path": "none"}
     cands = address_candidates(text, members, live=live)
@@ -3411,6 +3427,7 @@ async def address(
         if result["asked"] and hits:
             asked = _with_relayers(pieces, result["asked"], {c["name"]: label for c, _, label in hits})
         kinds, whos = result.get("kinds") or [], result.get("whos") or []
+        dropped = result.get("dropped") or []
         # "Can you get | Forge ..." and "@priya can you and | Analytics look at churn" run into the name;
         # "check the API, and | Ledger, ..." is an ask of its own that ended before it.
         into = [
@@ -3430,6 +3447,7 @@ async def address(
                 "kind": kinds[i] if i < len(kinds) else (None, 0.0, 0.0),
                 "who": whos[i] if i < len(whos) else (None, 0.0, 0.0),
                 "asked": asked[i] if i < len(asked) else None,
+                "drops": dropped[i] if i < len(dropped) else None,  # the request this part calls off or silences
             }
             for i, part in enumerate(parts)
         ]

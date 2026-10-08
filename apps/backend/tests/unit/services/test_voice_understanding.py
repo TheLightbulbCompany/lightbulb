@@ -798,10 +798,46 @@ async def test_a_stop_that_names_a_request_withdraws_it_only_when_it_is_a_withdr
     unsure["drops"] = {"choice": "r1", "probabilities": {"r1": 0.9}}
     weak = await route(decide, "Eh, leave the signups.", unsure, opened=OPEN)
     assert (weak["ops"]["cancel"], hushed(weak)) == ([], [("gauge", ["r1"])])
-    # both on one line: the withdrawal stands
-    both = jev_says(kinds=["hush", "cancel"], names=["not_a_name"], drops="r1")
+    # both on one line: the withdrawal stands for the request its own sentence names
+    both = jev_says(kinds=["hush", "cancel"], names=["not_a_name"], drops="r1", dropped=[None, "r1"])
     got = await route(decide, "Stop. Never mind the signups.", both, opened=OPEN)
     assert (got["ops"]["cancel"], got["ops"]["hush"]) == (["r1"], [])
+
+
+TWO = [
+    {"id": "deck", "agentId": "forge", "task": "draft the investor deck", "status": "working"},
+    {"id": "invoice", "agentId": "gauge", "task": "send the March invoice", "status": "working"},
+]
+MIXED = "Stop talking about the deck. Cancel the invoice task."
+
+
+async def test_each_stop_on_a_line_keeps_its_own_request(decide):
+    """Review 10-07: one request was picked for the whole line and a withdrawal anywhere withdrew it, so
+    this line aborted the deck it only asked to hear no more about."""
+    said = jev_says(kinds=["hush", "cancel"], drops="deck", dropped=["deck", "invoice"])
+    got = await route(decide, MIXED, said, opened=TWO)
+    assert (got["ops"]["cancel"], hushed(got)) == (["invoice"], [("forge", ["deck"])])
+    asked = str(decide.await_args)
+    assert "Stop talking about the deck." in asked and "Cancel the invoice task." in asked, "asked per part"
+    # the other way round, whichever request the whole line was read as being about
+    turned = jev_says(kinds=["cancel", "hush"], drops="deck", dropped=["invoice", "deck"])
+    got = await route(decide, "Cancel the invoice task. Stop talking about the deck.", turned, opened=TWO)
+    assert (got["ops"]["cancel"], hushed(got)) == (["invoice"], [("forge", ["deck"])])
+
+
+async def test_a_withdrawal_whose_request_cannot_be_told_only_hushes_its_agent(decide):
+    # two stops and nothing says which request the withdrawal is about: the line's one request is not it
+    said = jev_says(kinds=["hush", "cancel"], names=["addressed"], drops="deck", dropped=["deck", None])
+    got = await route(decide, "Stop talking about the deck. Gauge, cancel that.", said, opened=TWO)
+    assert got["ops"]["cancel"] == [], "a task nobody identified is never aborted"
+    assert hushed(got) == [("forge", ["deck"]), ("gauge", [])]
+    # no name either: the agent the speaker is talking with
+    said = jev_says(kinds=["hush", "cancel"], drops="deck", dropped=["deck", None])
+    got = await route(decide, "Stop talking about the deck. Cancel that other thing.", said, opened=TWO, floor="gauge")
+    assert (got["ops"]["cancel"], hushed(got)) == ([], [("forge", ["deck"]), ("gauge", [])])
+    # one stop on the line, as before: no request named, so the named agent goes quiet and nothing is aborted
+    alone = await route(decide, "Gauge, cancel that.", jev_says(kinds=["cancel"], names=["addressed"]), opened=TWO)
+    assert (alone["ops"]["cancel"], hushed(alone)) == ([], [("gauge", [])])
 
 
 async def test_turning_to_an_agent_with_nothing_new_asked_names_it_as_called(decide):

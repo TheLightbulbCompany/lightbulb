@@ -304,6 +304,23 @@ async def test_what_a_line_of_someone_else_is_and_not_how_many_there_were_says_a
     assert says_of(lives[0])[1:] == [("say", "Three PRs are open.")]
 
 
+async def test_a_late_evidence_reply_does_not_suspend_an_exchange_taken_up_again_after_the_line():
+    """10-07 review: /route answered late, and the line it read suspended an exchange renewed since."""
+    for renewed in (False, True):
+        h, backend, lives, clock = await asked()
+        backend.route_extra, backend.route_gate = heard(people=True), asyncio.Event()
+        await h.on_final_transcript(P2, "Dan", "Where did we land on the budget for next quarter?")
+        for _ in range(5):
+            await asyncio.sleep(0)  # the line is at /route, which has not answered
+        clock.t += 2
+        if renewed:
+            h._engage(h._who(P1), "forge")  # Priya turned to Forge again, after Dan's line
+        backend.route_gate.set()
+        await settle(h)
+        e = h._engagements(h._who(P1))[0]
+        assert (e.state, e.why) == (("active", "") if renewed else ("suspended", "other"))
+
+
 async def test_a_line_read_as_evidence_never_changes_a_request_of_someone_else():
     h, backend, lives, clock = await asked()
     (row,) = h._requests.items
@@ -707,14 +724,52 @@ async def test_a_withdrawal_cancels_the_task_and_aborts_its_run():
     h, backend, lives, clock = await asked(acked=False)  # its acknowledgement is being said
     (row,) = h._requests.items
     talks(h, P1)
-    await says(h, P1, "Never mind.")  # said over it: that request is withdrawn
+    backend.route_extra = heard(cancel=[row.id])
+    await says(h, P1, "Never mind.")  # said over it, and /route names the request: it is withdrawn
     assert row.status == "cancelled" and backend.aborts == [row.run_id] and h._ledger == []
     assert ("interrupt",) in lives[0].calls
 
     h, backend, lives, clock = await asked()  # it is working, and silent
     (row,) = h._requests.items
+    backend.route_extra = heard(cancel=[row.id])
     await says(h, P2, "Forge, cancel that.")
     assert row.status == "cancelled" and backend.aborts == [row.run_id]
+
+    # /route could not say which request "that" is: the agent is silenced, and no run is aborted
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    backend.route_extra = heard(hush=[{"agentId": "forge", "requestIds": []}])
+    await says(h, P2, "Forge, cancel that.")
+    assert row.status == "working" and backend.aborts == [] and h._hushed(row.id)
+    answer(h, row.run_id, "forge", "Three PRs are open.")
+    await pause(h, clock, 30)
+    assert [a[3] for a in backend.late_answers] == ["Three PRs are open."], "not withdrawn: in writing"
+
+    # an answer cut by a withdrawal /route did not confirm is not lost: it is written
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    answer(h, row.run_id, "forge", "Three PRs are open.")
+    await settle(h)
+    talks(h, P1)
+    backend.route_extra = heard()
+    await says(h, P1, "Never mind.")
+    assert h._ledger == [] and backend.aborts == []
+    assert [a[3] for a in backend.late_answers] == ["Three PRs are open."]
+
+
+async def test_a_named_stop_to_a_silent_agent_leaves_its_run_alive_and_its_answer_is_written():
+    """10-07 review: "Forge, stop" aborted Forge's run when Forge was saying nothing. Silence is not a
+    withdrawal."""
+    h, backend, lives, clock = await asked()  # it is working, and silent
+    (row,) = h._requests.items
+    routes = len(backend.routes)
+    await says(h, P2, "Forge, stop.")
+    assert row.status == "working" and backend.aborts == [] and len(backend.routes) == routes
+    answer(h, row.run_id, "forge", "Three PRs are open.")
+    for _ in range(3):
+        await pause(h, clock, 30)
+    assert h._ledger == [] and len(said(lives)) == 1, "its answer is not said"
+    assert [a[3] for a in backend.late_answers] == ["Three PRs are open."] and row.status == "delivered"
 
     h, backend, lives, clock = await asked()  # /route's `ops.cancel` names the request
     (row,) = h._requests.items
@@ -745,7 +800,7 @@ async def test_a_stop_is_for_the_utterance_its_speaker_talked_over_and_nobody_el
     assert len(says_of(lives[0])) == 2 and len(lives) == 1, "nothing of it is said again"
 
 
-async def test_a_stop_after_another_sentence_cancels_and_opens_no_voice_and_writes_no_reply():
+async def test_a_stop_after_another_sentence_silences_and_opens_no_voice_and_writes_no_reply():
     """10-07 rig: "Perfect. Friday, stop." read "perfect friday" as the name, summoned her, and she said
     "Got it; I will stop now." five seconds later."""
     h, backend, lives, clock = await asked()
@@ -761,7 +816,7 @@ async def test_a_stop_after_another_sentence_cancels_and_opens_no_voice_and_writ
     routes, sessions = len(backend.routes), len(backend.sessions)
     backend.route_extra = heard("forge")
     await says(h, P1, "Perfect. Forge, stop.")
-    assert row.status == "cancelled" and backend.aborts == [row.run_id]
+    assert h._hushed(row.id) and row.status == "working" and backend.aborts == [], "silenced, not aborted"
     assert (len(backend.routes), len(backend.sessions), len(lives), written) == (routes, sessions, 1, [])
     await says(h, P2, "Perfect Forge, stop")  # no comma where the sentence ends: the line still names one agent
     await pause(h, clock, 30)
@@ -801,6 +856,7 @@ async def test_a_bare_stop_with_no_agent_speaking_stops_nobodys_work_and_a_bare_
     h, backend, lives, clock, forge, gauge = await both_working()  # Priya waits on Forge, Dan on Gauge
     await says(h, P1, "Stop.")  # to a colleague: nothing is being said to her
     assert (forge.status, gauge.status) == ("working", "working") and backend.aborts == []
+    backend.route_extra = heard(cancel=[forge.id])  # /route names the request she takes back
     await says(h, P1, "Never mind.")  # she withdraws what she is waiting on, and nothing of Dan's
     assert (forge.status, gauge.status) == ("cancelled", "working") and backend.aborts == [forge.run_id]
     await h.on_participants({**MEET_PEOPLE, P3: "Lee"})

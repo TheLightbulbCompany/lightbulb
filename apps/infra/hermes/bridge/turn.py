@@ -1771,11 +1771,11 @@ def system_prompt(body: dict, agent_id: str, media: list[str] | None = None) -> 
     if event_kind == "agent_mail":
         # Mail (Task 20) carries no room at all -- the old unconditional "room #{room.get
         # ('id')}" line rendered literally as "room #None" for every mail turn.
-        identity = f"You are {name}, replying to an email. Reply as yourself."
+        identity = f"You are {name}, replying to an email. Reply as yourself. {_repo_rule(agent_id)}"
     elif event_kind == "paperclip_run":
         # paperclip_run (Task 21, fix round C3) carries no room either -- same "room #None"
         # bug the agent_mail branch already fixed, now generalised.
-        identity = f"You are {name}, answering a Paperclip run trigger. Reply as yourself."
+        identity = f"You are {name}, answering a Paperclip run trigger. Reply as yourself. {_repo_rule(agent_id)}"
     else:
         room = ctx["room"]
         identity = (
@@ -2487,7 +2487,10 @@ def _repo_rule(agent_id: str) -> str:
     reference it never opened (10-07)."""
     return (
         f"A repository is cloned once, partially, at {_profile_dir(agent_id)}/.run/<repo>; branches get "
-        f"worktrees under {_profile_dir(agent_id)}/.scratch/wt, which is never saved and costs nothing."
+        f"worktrees under {_profile_dir(agent_id)}/.scratch/wt, which is never saved. That disk (~4 GB) is "
+        "shared with every teammate and emptied only when the workspace restarts, so keep one worktree in "
+        "total and never run package installs or test suites for the repository here: push the branch and "
+        "read the CI result."
     )
 
 

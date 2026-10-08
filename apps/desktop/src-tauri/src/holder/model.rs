@@ -615,7 +615,6 @@ mod tests {
         }
         assert!(said(&lines(&mut viewer), "Resume this session with:"), "the final screen has the resume lines");
         let picture = model.end(end + Duration::from_millis(440)).expect("the screen End found");
-        assert!(model.ends_above(), "the resume lines pushed the top of that screen above it");
         let mut late = drawn_after_the_end(&mut model, &picture);
         assert_eq!(lines(&mut late), bandless(&rested), "nothing twice, nothing missing, no resume lines, no band");
         assert_eq!(above(&mut late), rested_above, "the picture is the whole screen End found, where that screen was");

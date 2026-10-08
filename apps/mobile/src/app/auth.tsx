@@ -1,4 +1,4 @@
-import { useSignIn } from "@clerk/clerk-expo";
+import { useAuth, useSignIn } from "@clerk/clerk-expo";
 import { type Href, useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
@@ -23,6 +23,7 @@ export default function AuthHandoff() {
     returnTo?: string | string[];
   }>();
   const { isLoaded, signIn, setActive } = useSignIn();
+  const { signOut } = useAuth();
   const router = useRouter();
   const started = useRef(false);
   const [failed, setFailed] = useState(false);
@@ -31,22 +32,27 @@ export default function AuthHandoff() {
     if (!isLoaded || started.current) return;
     started.current = true;
 
-    if (typeof ticket !== "string" || !ticket) {
-      setFailed(true);
-      return;
-    }
+    const run = async () => {
+      try {
+        // Clerk single-session mode rejects ticket exchange while another session is active.
+        await signOut();
+        if (typeof ticket !== "string" || !ticket) {
+          throw new Error("Missing sign-in ticket");
+        }
 
-    void signIn
-      .create({ strategy: "ticket", ticket })
-      .then(async (attempt) => {
+        const attempt = await signIn.create({ strategy: "ticket", ticket });
         if (attempt.status !== "complete" || !attempt.createdSessionId) {
           throw new Error("Incomplete ticket sign-in");
         }
         await setActive({ session: attempt.createdSessionId });
         router.replace(safeReturnPath(returnTo));
-      })
-      .catch(() => setFailed(true));
-  }, [isLoaded, returnTo, router, setActive, signIn, ticket]);
+      } catch {
+        setFailed(true);
+      }
+    };
+
+    void run();
+  }, [isLoaded, returnTo, router, setActive, signIn, signOut, ticket]);
 
   if (!failed) {
     return (

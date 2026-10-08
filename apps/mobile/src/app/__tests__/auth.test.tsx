@@ -2,10 +2,12 @@ import { act, render, screen, waitFor } from "@testing-library/react-native";
 
 const mockCreate = jest.fn();
 const mockSetActive = jest.fn();
+const mockSignOut = jest.fn();
 const mockReplace = jest.fn();
 let mockParams: { ticket?: string; returnTo?: string } = {};
 
 jest.mock("@clerk/clerk-expo", () => ({
+  useAuth: () => ({ signOut: mockSignOut }),
   useSignIn: () => ({
     isLoaded: true,
     signIn: { create: mockCreate },
@@ -38,6 +40,10 @@ it("activates the browser-authenticated Clerk session before entering the app", 
       ticket: "one-time-ticket",
     });
   });
+  expect(mockSignOut).toHaveBeenCalledTimes(1);
+  expect(mockSignOut.mock.invocationCallOrder[0]).toBeLessThan(
+    mockCreate.mock.invocationCallOrder[0],
+  );
   expect(mockSetActive).toHaveBeenCalledWith({ session: "session_123" });
   expect(mockReplace).toHaveBeenCalledWith("/(app)/(tabs)/chats");
 });
@@ -62,5 +68,6 @@ it("keeps a failed ticket exchange on a recoverable sign-in screen", async () =>
   });
 
   expect(await screen.findByText("Unable to finish signing you in.")).toBeTruthy();
+  expect(mockSignOut).toHaveBeenCalledTimes(1);
   expect(screen.getByText("Sign in in the app")).toBeTruthy();
 });

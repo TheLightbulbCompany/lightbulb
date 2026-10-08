@@ -480,3 +480,25 @@ async def test_a_watched_session_that_registers_again_is_told_on_its_own_ack(tra
     assert ack["watch"] == {"sessionId": sid, "generation": "generation-1", "since": int(now)}
     monkeypatch.setattr(session_screen, "_clock", lambda: now + 61)
     assert "watch" not in await relay(transport).handle_message("conn-2", registration()), "the viewer left"
+
+
+@pytest.mark.asyncio
+async def test_a_session_admits_twenty_live_viewers_and_refuses_a_new_twenty_first(transport, db):
+    sid = await start(transport)
+    for n in range(session_screen.MAX_SESSION_VIEWERS - 1):  # 19 live viewers already
+        db[0].put_item(
+            Item={
+                "pk": repo.session_pk(OWNER, sid),
+                "sk": f"VIEWER#user_{n}",
+                "userId": f"user_{n}",
+                "expiresAt": int(time.time()) + 45,
+            }
+        )
+    await session_screen.watch(BOB, sid)  # the 20th
+    with pytest.raises(ApiProblem) as refused:
+        await session_screen.watch(OUTSIDER, sid)  # the 21st
+    assert refused.value.error.code == "LOCAL_SESSION_VIEWERS_FULL"
+    assert refused.value.error.message == "This session already has 20 live viewers."
+    await session_screen.watch(BOB, sid)  # an existing viewer's heartbeat
+    await session_screen.watch(BOB, sid, mounted=True)  # and its page refresh
+    await session_screen.watch(ALICE, sid)  # the sharer

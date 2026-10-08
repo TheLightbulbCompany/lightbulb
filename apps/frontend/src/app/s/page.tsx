@@ -92,12 +92,16 @@ function LinkTerminal({ token, onTrouble }: { token: string; onTrouble: () => vo
     return next;
   }, [token]);
   // Keeps a seat the socket can connect with while the channel is not live. Never while the tab is hidden.
+  // One at a time: a second ask while the first is still on its way (a slow network, then the
+  // 15 s tick or the tab shown again) would hand in the same used lease twice, and the server
+  // would give a new seat for each.
   const reseat = useCallback((channel: string) => {
-    if (document.visibilityState === "hidden") return;
-    trading.current = viewing(false, true).then(
+    if (document.visibilityState === "hidden" || trading.current) return;
+    const trade: Promise<void> = viewing(false, true).then(
       (next) => { if (next.channel !== channel) setRound((n) => n + 1); },
       (e) => { if (e instanceof ApiError) onTrouble(); },
-    );
+    ).then(() => { if (trading.current === trade) trading.current = null; });
+    trading.current = trade;
   }, [viewing, onTrouble]);
   useEffect(() => {
     let alive = true;
@@ -152,6 +156,7 @@ function LinkTerminal({ token, onTrouble }: { token: string; onTrouble: () => vo
   }, [viewing, reseat, round, token]);
   const channel = seat?.view.channel;
   const watch = useCallback(async (_id: string, fresh?: boolean) => {
+    await trading.current; // renew the seat a trade in flight is about to give, not the one it gives up
     try { if ((await viewing(fresh || !pictured.current)).channel !== channel) setRound((n) => n + 1); }
     // The seat was refused (narrowed, ended, offline): the page re-opens the link now and says which.
     catch (e) { if (e instanceof ApiError) onTrouble(); throw e; }

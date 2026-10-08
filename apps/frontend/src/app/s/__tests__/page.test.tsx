@@ -363,6 +363,38 @@ describe("session link page", () => {
     expect(viewing().at(-1)).toEqual({ token: "tok", lease: "pub-1.key-3", retake: true });
   });
 
+  // Codex on #3946: a trade still pending after 15 s was asked for again by the tick or by the
+  // tab coming back, and the server gave a new seat for each: one browser, several seats.
+  it("asks once while a trade is in flight, however many things ask for it", async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
+    let answer: (() => void) | null = null;
+    let slow = false;
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+      if (url.endsWith("/viewing") && slow) await new Promise<void>((resolve) => { answer = resolve; });
+      return { ok: true, status: 200, json: async () => url.endsWith("/viewing") ? { ...seat, lease: slow ? "pub-1.key-2" : seat.lease } : model({}) } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const socket = sockets.made[0].opts as unknown as { getToken: () => Promise<string | null>; onStatus: (s: { connected: boolean; liveChannels: string[] }) => void; onError: (kind: string, channel?: string) => void };
+    const viewing = () => fetchMock.mock.calls.filter(c => String(c[0]).endsWith("/viewing"));
+    await act(async () => { socket.onStatus({ connected: true, liveChannels: ["/pub/pub-1"] }); });
+    slow = true;
+    await act(async () => { socket.onStatus({ connected: false, liveChannels: [] }); }); // dropped: the trade starts
+    expect(viewing()).toHaveLength(2);
+    // Still pending: two ticks of the 15 s keepalive, the tab shown again, and a refused subscribe.
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
+    await act(async () => { document.dispatchEvent(new Event("visibilitychange")); socket.onError("subscribe_error", "/pub/pub-1"); });
+    expect(viewing()).toHaveLength(2);
+    // It answers: the socket gets the one new lease, and a later ask is a new request.
+    const token = socket.getToken();
+    await act(async () => { answer!(); await vi.advanceTimersByTimeAsync(0); });
+    expect(await token).toBe("pub-1.key-2");
+    await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
+    expect(viewing()).toHaveLength(3);
+  });
+
   // A channel gives out a life total of seats, then the link moves to a new one. A viewer's next
   // renewal answers with a seat there: the page follows with that seat, not a second one.
   it("follows the link to its new channel with the seat the renewal gave it", async () => {

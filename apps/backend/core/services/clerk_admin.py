@@ -474,9 +474,12 @@ async def create_organization_membership(
 
     This is the Clerk call behind a workspace JOIN LINK: the redeemer is
     already signed in, so there is nobody to email and nothing to accept. It
-    replaced ``create_organization_invitation`` (removed with the email-invite
-    endpoint) — billing is per workspace, not per seat, so an email+role
-    invitation was the wrong shape for the product.
+    replaced ``create_organization_invitation`` on 2026-09-14, when the
+    email-invite endpoint was removed with per-seat billing. Email invitations
+    came BACK on 2026-10-08 (``create_organization_invitation`` below), next to
+    the join link rather than instead of it: billing is per workspace now, so
+    an invitation no longer models a seat, and "invite my cofounder by email"
+    is where people look first. Invitees always join as ``org:member``.
 
     Returns ``{"status": "joined" | "already_member", "membership_id": str | None}``.
     Already-a-member is a SUCCESS: Clerk rejects the duplicate with a 4xx, and
@@ -666,3 +669,125 @@ async def create_organization(*, name: str, created_by: str, slug: str | None = 
         return response.json()
     except ValueError:
         return None
+
+
+# --- Organization invitations (email) ----------------------------------------
+#
+# Back since 2026-10-08, next to the join link (see ``workspace_invitations``).
+# Unlike the lenient read helpers above, these RAISE: an admin managing who is
+# invited must see a failure, not an empty list or a fake "sent".
+
+INVITE_ROLE = "org:member"
+ALREADY_MEMBER = "That person is already in this workspace."
+ALREADY_INVITED = "That email already has a pending invitation."
+INVITATIONS_UNAVAILABLE = "Could not update invitations right now. Try again in a moment."
+
+# Fallback mapping only — ``workspace_invitations`` checks members and pending
+# invitations itself before calling Clerk, because Clerk does not document the
+# codes it answers a duplicate with. ``duplicate_record`` / ``form_identifier_exists``
+# are Clerk's generic "this identifier already exists" codes (the slug collision
+# above uses them), which on this endpoint means the email already has an invite.
+_ALREADY_INVITED_CODES = frozenset({"duplicate_record", "form_identifier_exists"})
+_INVITE_ALREADY_MEMBER_CODES = _ALREADY_MEMBER_CODES - _ALREADY_INVITED_CODES
+
+
+async def _invitations_call(method: str, path: str, **kwargs) -> httpx.Response:
+    """One Clerk call for the invitation helpers; a transport error is a 502."""
+    from fastapi import HTTPException
+
+    headers = {
+        "Authorization": f"Bearer {settings.CLERK_SECRET_KEY}",
+        "Content-Type": "application/json",
+        "User-Agent": "lightbulb-backend/1.0",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
+            return await client.request(method, f"{_CLERK_API_BASE}{path}", headers=headers, **kwargs)
+    except httpx.TransportError as e:
+        logger.warning("clerk_admin %s %s transport error: %s", method, path, e)
+        raise HTTPException(status_code=502, detail=INVITATIONS_UNAVAILABLE) from e
+
+
+def _invitations_failed(op: str, org_id: str, response: httpx.Response):
+    """Log Clerk's status (not its body, which echoes the invitee's email) and 502."""
+    from fastapi import HTTPException
+
+    logger.warning("clerk_admin.%s HTTP %s org=%s", op, response.status_code, org_id)
+    return HTTPException(status_code=502, detail=INVITATIONS_UNAVAILABLE)
+
+
+async def create_organization_invitation(*, org_id: str, email: str, inviter_user_id: str, redirect_url: str) -> dict:
+    """Email an invitation to join ``org_id`` as ``org:member``. Returns Clerk's invitation.
+
+    Clerk sends the email; its link lands on ``redirect_url`` (our ``/sign-up``),
+    where the prebuilt ``<SignUp>`` consumes the ``__clerk_ticket`` and creates the
+    membership. ``organizationMembership.created`` does the rest, as for a join link.
+
+    Raises 409 for an existing member / pending invite / full member cap, 502 for
+    anything else. The email is never logged.
+    """
+    if not settings.CLERK_SECRET_KEY:
+        # Local-dev stub, matching this module's posture elsewhere.
+        return {"id": "orginv_stub", "email_address": email, "status": "pending", "created_at": 0, "stubbed": True}
+
+    from fastapi import HTTPException
+
+    response = await _invitations_call(
+        "POST",
+        f"/organizations/{org_id}/invitations",
+        json={
+            "email_address": email,
+            "inviter_user_id": inviter_user_id,
+            "role": INVITE_ROLE,
+            "redirect_url": redirect_url,
+        },
+    )
+    if response.status_code >= 400:
+        if _has_error_code(response, _INVITE_ALREADY_MEMBER_CODES):
+            raise HTTPException(status_code=409, detail=ALREADY_MEMBER)
+        if _has_error_code(response, _ALREADY_INVITED_CODES):
+            raise HTTPException(status_code=409, detail=ALREADY_INVITED)
+        if _has_error_code(response, _MEMBER_CAP_CODE):
+            # Clerk counts outstanding invitations against the cap.
+            raise HTTPException(status_code=409, detail=MEMBER_CAP_REACHED)
+        raise _invitations_failed("create_organization_invitation", org_id, response)
+    return response.json()
+
+
+async def list_pending_organization_invitations(org_id: str) -> list[dict]:
+    """Every pending invitation for ``org_id`` (Clerk invitation dicts). Raises 502 on failure."""
+    if not settings.CLERK_SECRET_KEY:
+        return []
+    response = await _invitations_call(
+        "GET", f"/organizations/{org_id}/invitations", params={"status": "pending", "limit": 100}
+    )
+    if response.status_code >= 400:
+        raise _invitations_failed("list_pending_organization_invitations", org_id, response)
+    payload = response.json()
+    rows = payload.get("data") if isinstance(payload, dict) else payload
+    # ponytail: one page of 100 pending invites; paginate if a workspace ever has more.
+    return [r for r in rows or [] if isinstance(r, dict)]
+
+
+async def revoke_organization_invitation(*, org_id: str, invitation_id: str, requesting_user_id: str) -> None:
+    """Revoke a pending invitation. Idempotent.
+
+    An invitation that is missing, or no longer pending (already revoked,
+    accepted, expired), is a success: the admin wanted it gone and it is.
+    Clerk does not document the 4xx it returns for those, so a 4xx is
+    confirmed with a GET of the invitation rather than guessed from a code;
+    only an invitation that is STILL pending afterwards is a failure.
+    """
+    if not settings.CLERK_SECRET_KEY:
+        return
+    path = f"/organizations/{org_id}/invitations/{invitation_id}"
+    response = await _invitations_call("POST", f"{path}/revoke", json={"requesting_user_id": requesting_user_id})
+    if response.status_code < 400 or response.status_code == 404:
+        return
+    if 400 <= response.status_code < 500:
+        current = await _invitations_call("GET", path)
+        if current.status_code == 404:
+            return
+        if current.status_code < 400 and (current.json() or {}).get("status") != "pending":
+            return
+    raise _invitations_failed("revoke_organization_invitation", org_id, response)

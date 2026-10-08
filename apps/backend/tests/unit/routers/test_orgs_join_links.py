@@ -1,7 +1,6 @@
 """Workspace join links — /api/v1/orgs/{org_id}/join-link and /join.
 
-Replaces test_orgs_invitations.py, which covered the removed email-invitation
-endpoint.
+Email invitations (back since 2026-10-08) are covered in test_orgs_invitations.py.
 
 The DynamoDB layer is swapped for an in-memory dict that stores whatever the
 service hands it, so the assertions that matter — "what reaches storage is a

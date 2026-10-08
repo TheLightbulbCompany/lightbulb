@@ -2489,8 +2489,9 @@ def _repo_rule(agent_id: str) -> str:
         f"A repository is cloned once, partially, at {_profile_dir(agent_id)}/.run/<repo>; branches get "
         f"worktrees under {_profile_dir(agent_id)}/.scratch/wt, which is never saved. That disk (~4 GB) is "
         "shared with every teammate and emptied only when the workspace restarts, so keep one worktree in "
-        "total and never run package installs or test suites for the repository here: push the branch and "
-        "read the CI result."
+        "total. Small projects may install what they need. Do not install dependencies or run test suites "
+        "for a large repository (TheLightbulbCompany/lightbulb's one install is 2.4 GB and stalled the "
+        "workspace twice): push the branch and read the CI result."
     )
 
 

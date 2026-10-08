@@ -65,8 +65,10 @@ These hold whether or not you open a reference.
   `.scratch/`. A repository is cloned once, partially, at `$HERMES_HOME/.run/<repo>`.
   `.scratch/` and `/tmp` are not saved but sit on the one ~4 GB disk all teammates share
   until the microVM is recycled: keep ONE worktree under `$HERMES_HOME/.scratch/wt`,
-  remove it when the task ends, and never install packages or run test suites for a
-  repository here — push and read CI (`references/software-projects.md`).
+  and remove it when the task ends. Small projects may install what they need. Do not
+  install dependencies or run test suites for a large repository
+  (TheLightbulbCompany/lightbulb's one install is 2.4 GB and stalled the workspace twice):
+  push the branch and read the CI result (`references/software-projects.md`).
 - **Talk to people in plain words, never plumbing.** Never mention env vars, run ids,
   heartbeats, webchat sessions, tool or script names, file paths outside the workspace, or
   internal system names (Paperclip, Hermes, AgentCore; say Teams, a task) to people. Say what

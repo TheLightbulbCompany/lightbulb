@@ -71,11 +71,12 @@ removed from the saved copy at your next save.
   at the end, `git -C "$C" worktree remove --force "$HERMES_HOME/.scratch/wt/REPO"`.
   After a cold start it is gone: keep the branch pushed, `git -C "$C" worktree prune`,
   and add it again from `BRANCH`.
-- Never run a package install or a test suite for a repository here (one
-  `pnpm install` of TheLightbulbCompany/lightbulb is 2.4 GB): push the branch and
-  read the CI result.
+- Small projects may install what they need. Do not install dependencies or run
+  test suites for a large repository (TheLightbulbCompany/lightbulb's one install
+  is 2.4 GB and stalled the workspace twice): push the branch and read the CI result.
 - `node_modules`, any `*venv` folder (`.venv`, `.docx-venv`), `.next`, `dist`
-  and `build` are never saved.
+  and `build` are never saved: in a small project, rerun `npm ci` / `uv sync`
+  after a cold start.
   After a cold start only this conversation's `work/` folder is on disk; the
   other conversations' folders are not.
 - Push a work-in-progress branch before any long command: a turn cut short

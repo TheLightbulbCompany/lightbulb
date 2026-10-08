@@ -711,7 +711,7 @@ describe("ApiStack — messaging projector permissions and alarms", () => {
       FunctionName: "lightbulb-dev-messaging-projector",
       Runtime: "python3.13",
       Timeout: 30,
-      MemorySize: 512,
+      MemorySize: 1769, // one full vCPU: signing and fan-out are CPU-bound (#3901)
       Environment: {
         Variables: Match.objectLike({
           MESSAGING_TABLE: Match.anyValue(),

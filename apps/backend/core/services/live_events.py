@@ -33,6 +33,10 @@ _TIMEOUT = httpx.Timeout(5.0, connect=2.0, pool=30.0)
 #: ponytail: one bound for every channel; per-workspace fairness if one workspace's burst ever
 #: starves the others.
 _MAX_INFLIGHT_PUBLISHES = 64
+#: How long a publish waits for a slot. Live events are hints the client reconciles from HTTP,
+#: so past this it is dropped (metric + warning) rather than stalling the request that fanned
+#: it out — the desktop registration ack deadline is 10 s.
+_INFLIGHT_WAIT_S = 5.0
 _inflight: asyncio.Semaphore | None = None
 #: One keep-alive client for every publisher without an injected one: Mac live frames publish
 #: several times a second, and a fresh client per POST paid a TLS handshake each time.
@@ -261,7 +265,12 @@ class LiveEventPublisher:
             # fan-out burst (51 members x 30 session registrations on 2026-10-08) exhausted the
             # connection pool and every publish past it was dropped with PoolTimeout.
             _inflight = asyncio.Semaphore(_MAX_INFLIGHT_PUBLISHES)
-        async with _inflight:
+        try:
+            await asyncio.wait_for(_inflight.acquire(), timeout=_INFLIGHT_WAIT_S)
+        except TimeoutError as exc:
+            put_metric("messaging.live.publish", dimensions={"outcome": "error", "status_class": "queue_full"})
+            raise LivePublishError("AppSync live publish queue full") from exc
+        try:
             if self._http is not None:
                 return await self._http.post(endpoint, content=body, headers=headers)
             if _http_client is None:
@@ -274,6 +283,8 @@ class LiveEventPublisher:
                     ),
                 )
             return await _http_client.post(endpoint, content=body, headers=headers)
+        finally:
+            _inflight.release()
 
 
 def _task_credentials() -> Any:

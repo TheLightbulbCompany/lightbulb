@@ -102,3 +102,30 @@ async def test_publishes_in_flight_are_bounded_so_a_burst_queues_instead_of_exha
     publisher = live_events.LiveEventPublisher(http_client=Fake())
     await asyncio.gather(*(publisher._post("https://x", b"{}", {}) for _ in range(40)))
     assert peak["max"] == 4
+
+
+@pytest.mark.asyncio
+async def test_a_publish_that_cannot_get_a_slot_in_time_is_dropped_not_stalled(monkeypatch):
+    """Codex on #3908: the wait for a slot must be bounded, or a slow AppSync stalls every request
+    path that fans out hints (a desktop registration ack has 10 s)."""
+    import asyncio
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(live_events, "_inflight", None)
+    monkeypatch.setattr(live_events, "_MAX_INFLIGHT_PUBLISHES", 1)
+    monkeypatch.setattr(live_events, "_INFLIGHT_WAIT_S", 0.05)
+    monkeypatch.setattr(live_events, "put_metric", lambda *a, **k: None)
+    release = asyncio.Event()
+
+    class Slow:
+        async def post(self, *_a, **_k):
+            await release.wait()
+            return SimpleNamespace(status_code=200, json=lambda: {"successful": [{}], "failed": []})
+
+    publisher = live_events.LiveEventPublisher(http_client=Slow())
+    first = asyncio.create_task(publisher._post("https://x", b"{}", {}))
+    await asyncio.sleep(0)  # the first holds the only slot
+    with pytest.raises(live_events.LivePublishError, match="queue full"):
+        await publisher._post("https://x", b"{}", {})
+    release.set()
+    await first

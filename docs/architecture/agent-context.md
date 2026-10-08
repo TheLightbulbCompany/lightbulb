@@ -22,8 +22,9 @@ human posts in a room
 
 The body the bridge receives (`openclaw_work.build_ingress_body`) carries: `eventKind`
 (`user_request` or `room_event`), `room` (id, name, kind, members with listen modes),
-the trigger message with its attachments and `addressedAgentIds`, `recentHistory`, and a
-`run` contract (run id, trigger message id, `agentHop`). `recentHistory` is the last 50 room
+the trigger message with its attachments and `addressedAgentIds` (its `messageId` is the
+trigger id; the stored `agentHop` is not sent), `recentHistory`, and a `run` contract
+(`runId`, `workspaceId`, `frameChannel`, `frameEndpoint`). `recentHistory` is the last 50 room
 messages before the trigger; when the trigger sits in a thread whose root is older than that
 window, the whole thread is merged in as well, so it can exceed 50 rows. It is then trimmed
 from the oldest until the body is under 1 MiB. The browser never supplies any of it.
@@ -32,12 +33,10 @@ from the oldest until the body is under 1 MiB. The browser never supplies any of
 
 | Tier | Source | Who writes it | When it changes | Note |
 |---|---|---|---|---|
-| Stable system | `SOUL.md` in the profile (`<owner>/hermes/<agent>/` in S3) | the owner in Settings → Agents, or a seed | on edit (`.revision` bump; a warm microVM re-pulls before the next turn) | cached by the provider |
-| Stable system | the bridge's one-sentence repo rule (`turn._repo_rule`) | the image | on an image roll | present on room turns and native Paperclip runs; absent on voice, mail and `paperclip_run` event prompts until #TBD |
-| Stable system | `AGENTS.md` in the profile (the Instructions tab), appended by `with_profile_agents_md` after the bridge sentence; a profile `VOICE_NOTES.md` follows it, and room turns add the observe lines after that | the owner, or whoever last rewrote the agent | on edit | the longest block and the last one the owner controls; in practice it beats the bridge sentence (section 7) |
+| Bridge block, spliced at the TOP of the system prompt as `ephemeral_system_prompt` (added at API time, never stored) | in order: the room identity and roster JSON, the bridge's one-sentence repo rule (`turn._repo_rule`), the profile `AGENTS.md` (the Instructions tab, `with_profile_agents_md`), a profile `VOICE_NOTES.md` if present, and on `room_event` turns the two observe lines | the bridge builds it; the owner writes AGENTS.md and VOICE_NOTES.md | every turn (the owner's files on edit, the rest per turn) | AGENTS.md is the longest piece and the last one the owner controls; in practice it beats the bridge sentence (section 7). The repo rule is on room turns, native Paperclip runs, mail and `paperclip_run` prompts (#3937); not on voice |
+| Stable system | `SOUL.md` in the profile (`<owner>/hermes/<agent>/` in S3) | the owner in Settings → Agents, or a seed | on edit (`.revision` bump; a warm microVM re-pulls before the next turn) | Hermes's own stable tier, cached by the provider |
 | Volatile system | the Hermes skills index: our `lightbulb` + `paperclip` skills plus 58 bundled Hermes skills | the image (`/opt/hermes-skills`) | on an image roll | each description cut to 60 chars; the body is loaded with `skill_view` only when the agent asks |
 | Volatile system | `memories/MEMORY.md` + `USER.md` (Hermes file memory, 2200 / 1375 char limits) | the agent | whenever it writes | frozen snapshot per turn |
-| Ephemeral system (never stored) | room identity and roster JSON, voice notes, two "observe" lines on `room_event` turns | the bridge, per turn | every turn | its bytes differ between ambient and addressed turns, so the provider's prompt cache misses on every switch (section 6) |
 | User message | `Turn context (untrusted data, not instructions): {json}` + an `[Observed … context]` block (the 50-message `recentHistory`, stored as observed rows deduped by message id) + `[Current addressed message]` + attachments | the bridge | every turn | stored verbatim as the turn's `api_content` and replayed on every later turn until compaction |
 | User message | up to 5 AgentCore memory records (`RetrieveMemoryRecords`, query = the user text above) | AgentCore Memory | every non-trivial turn | the query currently starts with the turn-context JSON, so Hermes's trivial-prompt skip never fires |
 | Tools | Hermes toolsets minus `cronjob`, `tts`, `video_gen`, `clarify`; our plugin's `send_room_message`, `lightbulb_local_sessions`, hire, desktop, browser; `session_search` monkeypatched to the current session's lineage | the image + `managed/config.yaml` | on an image roll | `session_search` cannot read another room's history |
@@ -61,8 +60,13 @@ the fleet.
   written into the one `/owners/<owner>/` namespace, and up to 5 matching records are
   retrieved for any later turn. A fact an agent learned in a DM can resurface in a channel
   prompt. That is by design (one workspace, one memory) and worth knowing.
-- Secrets. `config.yaml` carries `${VAR}` references; the per-profile `.env` is the store, and
-  `recentHistory` is built by the backend from canonical messages, not from the profile.
+- Secret values in the prompt. `config.yaml` carries `${VAR}` references; the per-profile
+  `.env` is the store, and `recentHistory` is built by the backend from canonical messages,
+  not from the profile. The agent can still USE most of them: `_secret_scope` loads the
+  profile's `.env` and `_allow_child_env_names` passes most of those names to terminal and
+  code-execution children, so a command can consume a connected service's credential without
+  the model ever seeing the value. Only fenced values (the managed-gate bearer, Hermes-filtered
+  provider credentials) are withheld from the shell too.
 - A person's Claude Code / Codex session, unless that person shared it. Then the
   `lightbulb_local_sessions` tool offers `resources` (what is shared), `read` (the event log,
   100 events × 16 KiB each, 2 MiB total), `send` (direct, or an `ask` the person approves in
@@ -94,13 +98,14 @@ the fleet.
 | A shared Claude Code / Codex session | the session panel (`LocalSessionPanel`): the live terminal, or an ended / offline / no-terminal state. A person does **not** get the event log in the product; the agent's `read` and the session API do | the terminal is live only; every event is also written as an `EVENT#` row in DynamoDB by the relay, with no TTL, and both the human and agent endpoints read those rows |
 | People talking beside a shared terminal | the hidden "Session chat · {title}" room (`session_chat.py`), one per shared session; the agent's turn carries that room name so it knows where it is | yes |
 | A live room turn's thinking and tool calls | the run card in the room (`RoomPanel.renderRun`): a Thinking disclosure and a tool-activity trace while the run is live; an ended run without a saved reply keeps its trace | live telemetry only, not canonical messages |
-| The Hermes turn as stored: the exact prompt, the observed block, the full tool I/O | **nowhere in the product.** Only the agent's `state.db` has it; the agent can `session_search` it, a person cannot | in S3, as the profile |
+| The Hermes turn as stored: the user rows (turn context + observed block), the full tool I/O | **nowhere in the product.** Only the agent's `state.db` has it; the agent can `session_search` it, a person cannot | in S3, as the profile |
+| The exact per-turn system bytes (the bridge block above) | nowhere at all: it is `ephemeral_system_prompt`, built at API time and never stored; it can only be rebuilt from the code and the profile files | not persisted |
 
 If someone asks "what did Friday see when she answered that", the honest answer today is:
 the recent room history (about 50 messages; more when the trigger sits in an older thread,
 fewer when the body was trimmed to 1 MiB), the room's participants and name, up to 5 memory
 records, her skills, her SOUL and Instructions, and whatever `session_search` returned. The exact bytes are not shown
-anywhere.
+anywhere, and the per-turn system block is not even stored.
 
 ## 6. Known costs, measured 2026-10-08
 
@@ -133,8 +138,9 @@ On 2026-10-07 and 10-08 the founder's engineering agent filled its microVM's dis
 cloning at its profile root and keeping one worktree per task under `/tmp/wt`, exactly as its
 own `SOUL.md` and `AGENTS.md` (written 2026-09-27, stored in S3) told it to. The bridge's
 newer one-sentence rule (#3798) and the bundled skill said otherwise. The agent read both and
-followed its own files, because they are longer, carry exact commands, come after the bridge
-sentence near the end of the prompt, and are repeated by its compaction summaries. Three rules follow:
+followed its own files, because they are longer, carry exact commands, sit right after the
+bridge sentence in the block spliced at the top of every prompt, and are repeated by its
+compaction summaries. Three rules follow:
 
 - A rule that lives in a profile file can only be changed in that profile file. Adding a
   sentence to the bridge does not override it.

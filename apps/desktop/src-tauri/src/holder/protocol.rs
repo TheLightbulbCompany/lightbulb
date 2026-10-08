@@ -43,9 +43,11 @@ pub const OWNER_INPUT: u8 = 11;
 /// an older holder is stopped instead (`manager::stop`), and its screen goes with it.
 pub const END: u8 = 12;
 /// Watch client → holder: `u64 BE max`. Holder → that client: the lines above its screen for a
-/// new viewer's scrollback, at most `max` bytes (`Model::history`). Sent only to a holder whose
-/// HELLO says `"history": true` (one that runs Claude Code's classic renderer); any other is
-/// asked for its output log (REPLAY).
+/// new viewer's scrollback, at most `max` bytes (`Model::history`), and right behind them a
+/// SNAPSHOT of that screen. Both are answered in the stream's order: every OUTPUT sent before
+/// them is of bytes they already show, every one after of bytes they do not. Sent only to a holder whose
+/// HELLO says `"history": true` (one that runs Claude Code's classic renderer or Codex inline:
+/// its model keeps the lines above the screen); any other is asked for its output log (REPLAY).
 pub const HISTORY: u8 = 13;
 
 /// No frame is larger than this; a longer declared length is refused before allocating it.

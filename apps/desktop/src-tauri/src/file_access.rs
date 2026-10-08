@@ -224,16 +224,23 @@ fn read_execution_policy(path: &Path) -> Result<serde_json::Value, FileAccessErr
     policy_from_store(&serde_json::from_slice(&bytes)?)
 }
 
+/// Whether a stored approved folder is still the folder that was approved: an absolute
+/// directory below the root whose canonical path is the stored one. A folder moved or deleted
+/// and replaced by a symlink is not: its new target was never approved. The one check behind
+/// file access (`policy_from_store`) and session sharing (`session_start::approved_now`).
+pub(crate) fn root_unchanged(root: &Path) -> bool {
+    root.is_absolute()
+        && root.parent().is_some()
+        && root.is_dir()
+        && std::fs::canonicalize(root).is_ok_and(|canonical| canonical == root)
+}
+
 fn policy_from_store(store: &FileAccessStore) -> Result<serde_json::Value, FileAccessError> {
     if store.version != STORE_VERSION || store.allowed_paths.is_empty() || store.allowed_paths.len() > 64 {
         return Err(FileAccessError::InvalidPath("no current folder consent".into()));
     }
-    for path in &store.allowed_paths {
-        let root = Path::new(path);
-        if !root.is_absolute() || root.parent().is_none() || !root.is_dir()
-            || std::fs::canonicalize(root)? != root {
-            return Err(FileAccessError::InvalidPath("approved root changed".into()));
-        }
+    if !store.allowed_paths.iter().all(|path| root_unchanged(Path::new(path))) {
+        return Err(FileAccessError::InvalidPath("approved root changed".into()));
     }
     Ok(serde_json::json!({"readRoots": store.allowed_paths, "writeRoots": store.allowed_paths, "denyRoots": []}))
 }
@@ -304,6 +311,7 @@ mod tests {
         let canonical = std::fs::canonicalize(&root).unwrap().to_string_lossy().to_string();
         let store = FileAccessStore { version: 1, allowed_paths: vec![canonical.clone()] };
         let policy = policy_from_store(&store).unwrap();
+        assert!(root_unchanged(&root.canonicalize().unwrap()));
         assert_eq!(policy["readRoots"], serde_json::json!([canonical]));
         assert_eq!(policy["writeRoots"], policy["readRoots"]);
         let policy_file = dir.path().join("policy.json");
@@ -318,6 +326,9 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(dir.path(), &root).unwrap();
         assert!(policy_from_store(&store).is_err());
+        // The same answer for session sharing: the symlink's target was never approved.
+        assert!(!root_unchanged(Path::new(&canonical)));
+        assert!(!root_unchanged(Path::new("relative")) && !root_unchanged(Path::new("/")));
     }
 
     #[test]

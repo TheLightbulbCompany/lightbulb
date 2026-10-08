@@ -996,11 +996,7 @@ pub async fn session_pickup(
         home: std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_default(),
-        approved: crate::file_access::list_paths()
-            .iter()
-            .filter_map(|p| crate::file_access::canonicalize(p).ok())
-            .filter(|p| p.is_dir())
-            .collect(),
+        approved: crate::session_start::approved_now(),
     };
     let result = pick_up(ticket, folder, &env).await;
     match &result {

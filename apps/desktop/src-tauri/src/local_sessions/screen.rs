@@ -150,7 +150,10 @@ pub(super) fn index(mirrors: &BTreeMap<String, Mirror>) {
         .filter_map(|m| Some((m.session_id.clone()?, Live {
             generation: m.generation.clone(),
             native: m.native.clone(),
-            no_history: m.history_hidden_for.as_ref() == Some(&m.native.process),
+            // (The successor's too: until it is promoted, `native` is the process it replaced.)
+            no_history: m.history_hidden_for.as_ref().is_some_and(|hidden| {
+                *hidden == m.native.process || m.registration.successor.as_ref().is_some_and(|next| next.process == *hidden)
+            }),
         })))
         .collect();
     if let Ok(mut slot) = LIVE.lock() {

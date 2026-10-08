@@ -272,12 +272,7 @@ fn validate(params: Value, home: &Path) -> Result<(Start, PathBuf, Vec<String>),
     let folder = crate::file_access::canonicalize(&start.folder)
         .ok()
         .filter(|f| f.is_dir())
-        .filter(|f| {
-            approved_folders()
-                .iter()
-                .filter_map(|a| crate::file_access::canonicalize(a).ok())
-                .any(|a| &a == f)
-        })
+        .filter(|f| approved_now().contains(f))
         .ok_or((
             "FOLDER_NOT_APPROVED",
             "That folder is not one of this Mac's approved folders.".into(),
@@ -396,9 +391,12 @@ pub async fn terminal_start(app: tauri::AppHandle, params: Value) -> Result<Valu
 /// The approved folders as they are now, canonical: what a start from a terminal (and a resume)
 /// must be inside.
 pub(crate) fn approved_now() -> Vec<PathBuf> {
+    // Only a folder that is still the one approved (`root_unchanged`, the file-access check):
+    // a stored path that now resolves elsewhere approves nothing.
     approved_folders()
-        .iter()
-        .filter_map(|a| crate::file_access::canonicalize(a).ok())
+        .into_iter()
+        .map(PathBuf::from)
+        .filter(|root| crate::file_access::root_unchanged(root))
         .collect()
 }
 

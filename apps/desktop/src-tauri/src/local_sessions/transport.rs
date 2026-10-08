@@ -444,7 +444,7 @@ impl Host {
             if let Some(mirror) = self.mirrors.get_mut(&key) {
                 if shared == Some(true) && (mirror.unshared || from_now) {
                     mirror.unshared = false;
-                    mirror.share_from_now();
+                    mirror.share_from_now(&native);
                 }
                 if mirror.ended_at.is_some() {
                     // The session is over: a hook or its own pid said so, and a
@@ -596,7 +596,8 @@ impl Host {
             let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
             if from_now && before.is_none() {
                 // Never shared before: what it wrote outside the approved folders stays unread.
-                mirror.share_from_now();
+                let current = mirror.native.clone();
+                mirror.share_from_now(&current);
             }
             if start_links::bind(&scope, &mirror.native, &mirror.generation)? {
                 invalidate = true;
@@ -3052,6 +3053,57 @@ pub(super) mod tests {
         assert!(mirror.queue.is_empty(), "what it wrote before the approval stays unread");
         mirror.session_id = Some(SID.into());
         assert_eq!(mirror.next_batch().unwrap(), None);
+    }
+
+    #[test]
+    fn local_sessions_a_conversation_resumed_while_unshared_is_cut_off_at_its_new_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let approved = dir.path().join("approved");
+        fs::create_dir_all(&approved).unwrap();
+        approve(&[&approved]);
+        let mut native = test_native(SID);
+        native.cwd = Some(approved.clone());
+        let key = native_key(&native);
+        let mut host = test_host(dir.path(), vec![]);
+        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
+        approve(&[]);
+        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
+        // Resumed in another process while its folder is not approved: still not shared.
+        let mut resumed = native.clone();
+        resumed.process.birth_micros += 1;
+        host.observe(vec![resumed.clone()], &BTreeSet::new()).unwrap();
+        assert!(host.mirrors[&key].ended_at.is_some() && host.mirrors[&key].unshared);
+        approve(&[&approved]);
+        host.observe(vec![resumed.clone()], &BTreeSet::new()).unwrap();
+        let mirror = &host.mirrors[&key];
+        assert!(mirror.ended_at.is_none() && !mirror.unshared);
+        assert_eq!(mirror.native.process, resumed.process);
+        assert_eq!(mirror.history_hidden_for.as_ref(), Some(&resumed.process), "the new terminal's earlier history is the one withheld");
+    }
+
+    #[test]
+    fn local_sessions_approving_the_folder_again_cancels_an_end_that_waited_on_a_register() {
+        let dir = tempfile::tempdir().unwrap();
+        let approved = dir.path().join("approved");
+        fs::create_dir_all(&approved).unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native.cwd = Some(approved.clone());
+        mirror.registration.pending = true;
+        let native = mirror.native.clone();
+        let key = native_key(&native);
+        let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
+        approve(&[]);
+        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
+        assert!(host.mirrors[&key].deferred_end_reason.is_some());
+        approve(&[&approved]);
+        host.observe(vec![native], &BTreeSet::new()).unwrap();
+        // The register is acknowledged after the folder is approved again.
+        let mirror = host.mirrors.get_mut(&key).unwrap();
+        assert!(!mirror.unshared && mirror.deferred_end_reason.is_none());
+        mirror.registration.pending = false;
+        mirror.session_id = Some("session-id".into());
+        host.finish_deferred_end(&key).unwrap();
+        assert!(host.mirrors[&key].ended_at.is_none(), "the reshared session is not ended by the old revocation");
     }
 
     #[test]

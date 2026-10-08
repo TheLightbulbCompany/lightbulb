@@ -1676,23 +1676,37 @@ impl Mirror {
     /// nothing earlier, so everything read but unsent is dropped, the transcript (and every
     /// subagent's that exists already) is taken as read to its current end, and the terminal's
     /// earlier history is not served.
-    fn share_from_now(&mut self) {
+    /// `current`: the session as discovery sees it now. A conversation resumed by another
+    /// process while it was not shared has that process's terminal to cut off, not the old one's.
+    fn share_from_now(&mut self, current: &NativeSession) {
         self.queue.clear();
         self.pending = None;
         self.waiting = None;
-        self.cursor = self.native.transcript.as_deref().map(cursor_at_end).unwrap_or_default();
+        // The end of a folder revocation that waited on a register: it no longer applies.
+        if self.deferred_end_reason.as_deref() == Some(FOLDER_NOT_APPROVED) {
+            self.deferred_end_reason = None;
+        }
+        self.cursor = current.transcript.as_deref().map(cursor_at_end).unwrap_or_default();
+        // A subagent that is still running stays open and is read from here on.
         let known = &mut self.subagents.known;
         for subagent in known.values_mut() {
-            subagent.closed = true;
+            match &subagent.path {
+                Some(path) => subagent.cursor = cursor_at_end(path),
+                // A Codex child announced before now whose rollout is not found yet: when it
+                // is, it would be read from its start, so it is not read at all.
+                None => subagent.closed = true,
+            }
         }
-        if self.native.provider == "claude" {
-            if let Some(transcript) = &self.native.transcript {
+        if current.provider == "claude" {
+            if let Some(transcript) = &current.transcript {
+                // Not announced (no start event): its description was written before now.
                 for (id, path, _) in claude::new_subagents(transcript, &|id| known.contains_key(id)) {
-                    known.insert(id, Subagent { path: Some(path), closed: true, ..Default::default() });
+                    let cursor = cursor_at_end(&path);
+                    known.insert(id, Subagent { path: Some(path), cursor, ..Default::default() });
                 }
             }
         }
-        self.history_hidden_for = Some(self.native.process.clone());
+        self.history_hidden_for = Some(current.process.clone());
         self.dirty = true;
     }
 
@@ -2033,6 +2047,33 @@ mod tests {
         }
         // Approved later, removed later: the list as it is now decides.
         assert!(in_approved_folder(&outside, &[folder, outside.clone()]));
+    }
+
+    #[test]
+    fn local_sessions_sharing_from_now_keeps_running_subagents_open_at_their_current_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("native.jsonl");
+        fs::write(&transcript, "{}\n").unwrap();
+        let subagents = dir.path().join("native/subagents");
+        fs::create_dir_all(&subagents).unwrap();
+        let (known, fresh) = (subagents.join("agent-known.jsonl"), subagents.join("agent-fresh.jsonl"));
+        fs::write(&known, "{\"before\":1}\n{\"before\":2}\n").unwrap();
+        fs::write(&fresh, "{\"before\":1}\n").unwrap();
+        let mut mirror = test_mirror(transcript);
+        mirror.subagents.known.insert("known".into(), Subagent { path: Some(known.clone()), ..Default::default() });
+        mirror.subagents.known.insert("unfound".into(), Subagent::default());
+        mirror.deferred_end_reason = Some(FOLDER_NOT_APPROVED.into());
+        let mut resumed = mirror.native.clone();
+        resumed.process.birth_micros += 1;
+        mirror.share_from_now(&resumed);
+        for (id, path) in [("known", &known), ("fresh", &fresh)] {
+            let subagent = &mirror.subagents.known[id];
+            assert!(!subagent.closed, "{id} is still read");
+            assert_eq!(subagent.cursor.offset, fs::metadata(path).unwrap().len(), "{id} from its current end");
+        }
+        assert!(mirror.subagents.known["unfound"].closed, "a child with no rollout yet would be read from its start");
+        assert_eq!(mirror.history_hidden_for.as_ref(), Some(&resumed.process), "the process that runs it now");
+        assert_eq!(mirror.deferred_end_reason, None, "the revocation's waiting end is cancelled");
     }
 
     #[test]

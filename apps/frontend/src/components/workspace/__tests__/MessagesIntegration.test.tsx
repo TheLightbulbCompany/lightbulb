@@ -63,7 +63,7 @@ const live = {
   httpReady: true, liveConnected: false, liveChannels: [] as string[], connectionRevision: 1, messaging,
   onEvent: () => () => {}, claimActiveRoomSubscription: () => () => {},
 };
-vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live }));
+vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live, useOptionalLiveEvents: () => null }));
 
 // Dockview merges parameter patches and emits them to its mounted React panel.
 function dock() {

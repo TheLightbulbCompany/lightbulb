@@ -154,6 +154,13 @@ pub(super) fn asked(key: &str) -> Option<(bool, bool)> {
     SHARE_ASKS.lock().ok()?.get(key).copied()
 }
 
+/// The one answer to "does this session send or take anything right now", for every exit and
+/// every reader of a mirror, in the relay loop or outside it: withheld as stored, or its person
+/// pressed stop and the loop has not applied that yet.
+pub(super) fn stopped(key: &str, mirror: &Mirror) -> bool {
+    asked(key).is_some_and(|(shared, _)| !shared) || mirror.withheld()
+}
+
 type Verify = fn(PathBuf, NativeSession) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<NativeSession>> + Send>>;
 
 /// A reconciliation the journal alone cannot answer: the native process has to be checked
@@ -741,7 +748,7 @@ impl Host {
     /// upload), after whatever this turn awaited: withheld, or its person pressed stop since
     /// this turn began and the loop has not applied it yet.
     fn stopped_now(&self, key: &str) -> bool {
-        asked(key).is_some_and(|(shared, _)| !shared) || self.mirrors.get(key).is_none_or(Mirror::withheld)
+        self.mirrors.get(key).is_none_or(|mirror| stopped(key, mirror))
     }
 
     /// Whether a relay frame names a session that is stopped (a terminal frame queued before
@@ -847,7 +854,7 @@ impl Host {
                 // a guarantee.
                 let text = text.map(|t| redact(&t));
                 // A session that is not shared waits for nobody but its own terminal.
-                let withheld = self.mirrors.get(&key).is_none_or(Mirror::withheld);
+                let withheld = self.stopped_now(&key);
                 // Identity is the event's own tool and reason, not the rendered
                 // row: the two hooks a question fires word it differently and
                 // still name one prompt.
@@ -2677,7 +2684,7 @@ fn registration_due_with_recovery(
         .find(|(key, mirror)| {
             (mirror.ended_at.is_none() || recovering_ended.contains(*key))
                 // A withheld session registers nothing, whatever it still waits on.
-                && !mirror.withheld()
+                && !stopped(key, mirror)
                 && !registered.contains(*key)
                 && !quarantine_active(quarantined, key)
         })
@@ -2777,7 +2784,7 @@ fn device_heartbeats_with_controls(
     let mut frames = vec![];
     let mut sessions: Vec<Value> = vec![];
     for (key, m) in mirrors.iter().filter(|(key, m)| {
-        registered.contains(*key) && m.ended_at.is_none() && !m.withheld() && m.session_id.is_some()
+        registered.contains(*key) && m.ended_at.is_none() && !stopped(key, m) && m.session_id.is_some()
     }) {
         let entry = json!({"sessionId":m.session_id,"generation":m.generation,
             "status":m.native.status,"activeTurnId":m.native.active_turn,

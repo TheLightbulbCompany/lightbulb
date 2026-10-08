@@ -158,9 +158,9 @@ fn send_out(frame: Value) -> bool {
 /// The relay loop's live mirrors by session id, refreshed every second.
 pub(super) fn index(mirrors: &BTreeMap<String, Mirror>) {
     let live = mirrors
-        .values()
-        .filter(|m| m.ended_at.is_none() && !m.withheld())
-        .filter_map(|m| Some((m.session_id.clone()?, Live { generation: m.generation.clone(), native: m.native.clone() })))
+        .iter()
+        .filter(|(key, m)| m.ended_at.is_none() && !super::transport::stopped(key, m))
+        .filter_map(|(_, m)| Some((m.session_id.clone()?, Live { generation: m.generation.clone(), native: m.native.clone() })))
         .collect();
     if let Ok(mut slot) = LIVE.lock() {
         *slot = live;

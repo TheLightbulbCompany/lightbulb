@@ -24,7 +24,7 @@ export function StartSessionDialog() {
       </DialogHeader>
       <ol className="list-decimal space-y-3 pl-5 text-sm">
         <li>In the Lightbulb desktop app on your Mac, turn on sharing in <Link className="underline underline-offset-4" href="/settings?panel=desktop">Settings → Desktop → Session sharing</Link>. You only do this once.</li>
-        <li>Use New session in the desktop app, run one of these in a terminal inside an approved folder, or just run <code>claude</code> or <code>codex</code>:
+        <li>Use New session in the desktop app, or run one of these in a terminal:
           <ul className="mt-2 space-y-2">{COMMANDS.map(({ tool, command }) => <li key={command} className="flex items-center gap-2">
             <code className="rounded bg-muted px-2 py-1 font-mono">{command}</code>
             <span className="text-muted-foreground">{tool}</span>
@@ -35,6 +35,7 @@ export function StartSessionDialog() {
           </li>)}</ul>
         </li>
         <li>It shows up under Sessions. Everyone in this workspace can watch it; only you can send to it.</li>
+        <li>A plain <code>claude</code> or <code>codex</code> is shared only when Share every new session is on, or after you choose Share to Lightbulb in it (<code>/lightbulb:share</code>).</li>
       </ol>
       <p className="text-xs text-muted-foreground">Codex appears after your first prompt.</p>
     </DialogContent>

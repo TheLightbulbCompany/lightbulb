@@ -67,13 +67,14 @@ fn tag(pickup: &Value, mirrors: &BTreeMap<String, Mirror>) -> Vec<Wanted> {
             let conversation = e["conversationId"]
                 .as_str()
                 .filter(|s| uuid::Uuid::parse_str(s).is_ok())?;
-            let mirror = mirrors
-                .values()
-                .find(|m| m.session_id.as_deref() == Some(sid));
+            let found = mirrors
+                .iter()
+                .find(|(_, m)| m.session_id.as_deref() == Some(sid));
             // A session that is not shared hands over nothing: no conversation, no changes.
-            if mirror.is_some_and(Mirror::withheld) {
+            if found.is_some_and(|(key, m)| super::transport::stopped(key, m)) {
                 return None;
             }
+            let mirror = found.map(|(_, m)| m);
             Some(Wanted {
                 session_id: sid.into(),
                 conversation_id: conversation.into(),

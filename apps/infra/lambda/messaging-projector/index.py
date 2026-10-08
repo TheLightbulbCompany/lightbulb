@@ -11,6 +11,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from decimal import Decimal
+from collections.abc import Callable
 from typing import Any
 from uuid import UUID, uuid5
 
@@ -673,6 +674,7 @@ def _member_streams(room_id: str, owner_id: str, after_seq: int | None = None):
 
 ACTIVITY_TTL_S = 90 * 24 * 3600
 MAX_FANOUT_WORKERS = 16
+MAX_RECORD_WORKERS = 10  # the event source's batchSize: a batch's messages fan out at once
 
 
 def _thread_participants(room_id: str, root_id: str, root_seq: Any) -> set[str]:
@@ -954,12 +956,15 @@ def _project_message_update(item: dict[str, Any]) -> None:
     _enqueue_search_index(item, meta, SEARCH_INDEX_QUEUE_URL)  # after live delivery: an SQS failure must not delay it
 
 
-def _project_message(item: dict[str, Any]) -> None:
+def _fan_out_message(item: dict[str, Any]) -> Callable[[], None]:
+    """The order-insensitive half of a new message -- reads, Activity rows and the
+    per-member user-channel hints -- run now, possibly beside the batch's other
+    messages. Returns the ordered half (room event, search, push), which the handler
+    runs in stream order, i.e. ``seq`` order for one room."""
     # A delayed INSERT replay must not republish content subsequently deleted.
     latest = _get_item(item["pk"], item["sk"])
     if latest and int(latest.get("messageRevision", 0)) > 0:
-        _project_message_update(latest)
-        return
+        return lambda: _project_message_update(latest)
     message = _canonical_message(item)
     meta = _get_item(f"ROOM#{message['roomId']}", "META")
     if not meta:
@@ -967,8 +972,8 @@ def _project_message(item: dict[str, Any]) -> None:
     delivery_key = _require_uuid(meta.get("deliveryKey"), "deliveryKey")
     workspace_id = _workspace_id_for_meta(f"ROOM#{message['roomId']}", "META", meta)
     if workspace_id is None:
-        _enqueue_search_index_on_insert(item, meta)  # an unresolvable workspace still reaches the index
-        return  # unresolvable; skip this record rather than poison the shard
+        # an unresolvable workspace still reaches the index; skip rather than poison the shard
+        return lambda: _enqueue_search_index_on_insert(item, meta)
     event = {
         "schemaVersion": 1,
         "eventId": message["messageId"],
@@ -983,23 +988,31 @@ def _project_message(item: dict[str, Any]) -> None:
         message, meta, item.get("threadRootSeq"), item.get("silent") is True,
         item.get("actorUserId"),
     )
-    _publish(f"/ws/{workspace_id}/rooms/{message['roomId']}/{delivery_key}", event)
-    try:
-        _emit_metric(
-            "messaging.projector.notify.latency",
-            _notify_latency_ms(message["createdAt"]),
-            "Milliseconds",
-            {"room_kind": meta.get("kind", "unknown")},
-        )
-    except Exception as exc:  # noqa: BLE001 - metrics are best-effort, never fail the record
-        logger.warning("projector notify latency failed error_type=%s", type(exc).__name__)
-    # Enqueue after the live publish (indexing never stalls delivery) but before
-    # push, so a failed enqueue replays the record before anyone is notified.
-    _enqueue_search_index_on_insert(item, meta)
-    # Push LAST: a raising publish replays the whole record, and Expo has no
-    # eventId dedupe, so an earlier send would banner every member twice.
-    # ponytail: immediate push; add a delayed READ re-check if double-notify annoys.
-    _send_push(recipients, message, meta)
+
+    def finish() -> None:
+        _publish(f"/ws/{workspace_id}/rooms/{message['roomId']}/{delivery_key}", event)
+        try:
+            _emit_metric(
+                "messaging.projector.notify.latency",
+                _notify_latency_ms(message["createdAt"]),
+                "Milliseconds",
+                {"room_kind": meta.get("kind", "unknown")},
+            )
+        except Exception as exc:  # noqa: BLE001 - metrics are best-effort, never fail the record
+            logger.warning("projector notify latency failed error_type=%s", type(exc).__name__)
+        # Enqueue after the live publish (indexing never stalls delivery) but before
+        # push, so a failed enqueue replays the record before anyone is notified.
+        _enqueue_search_index_on_insert(item, meta)
+        # Push LAST: a raising publish replays the whole record, and Expo has no
+        # eventId dedupe, so an earlier send would banner every member twice.
+        # ponytail: immediate push; add a delayed READ re-check if double-notify annoys.
+        _send_push(recipients, message, meta)
+
+    return finish
+
+
+def _project_message(item: dict[str, Any]) -> None:
+    _fan_out_message(item)()
 
 
 def _project_live(item: dict[str, Any]) -> None:
@@ -1039,11 +1052,16 @@ def _thread_touch_only(item: dict[str, Any]) -> bool:
     return isinstance(item.get("threadTouchedAt"), str)
 
 
-def process_record(record: dict[str, Any]) -> None:
+def _noop() -> None:
+    return None
+
+
+def prepare_record(record: dict[str, Any]) -> Callable[[], None]:
+    """Validate a record and run its order-insensitive work; return the ordered rest."""
     if not isinstance(record, dict):
         raise ValueError("record must be an object")
     if record.get("eventName") not in {"INSERT", "MODIFY"}:
-        return
+        return _noop
     image = (record.get("dynamodb") or {}).get("NewImage")
     if not isinstance(image, dict):
         raise ValueError("INSERT record has no NewImage")
@@ -1052,19 +1070,22 @@ def process_record(record: dict[str, Any]) -> None:
         raise ValueError("INSERT record has no string sort key")
     sk = sk_value["S"]
     if not sk.startswith(("MSG#", "LIVE#")):
-        return
+        return _noop
     item = _deserialize_map(image)
     if record.get("eventName") == "MODIFY":
         # The stream contains NEW_IMAGE only. Later reaction writes replay the
         # same revision's event ID, which clients already deduplicate.
         if sk.startswith("MSG#"):
             if int(item.get("messageRevision", 0)) > 0 and not _thread_touch_only(item):
-                _project_message_update(item)
-        return
+                return lambda: _project_message_update(item)
+        return _noop
     if sk.startswith("MSG#"):
-        _project_message(item)
-    else:
-        _project_live(item)
+        return _fan_out_message(item)
+    return lambda: _project_live(item)
+
+
+def process_record(record: dict[str, Any]) -> None:
+    prepare_record(record)()
 
 
 def record_id(record: dict[str, Any]) -> str:
@@ -1078,18 +1099,32 @@ def handler(event: dict, context: object) -> dict:
     records = event.get("Records", []) if isinstance(event, dict) else []
     if not isinstance(records, list):
         records = []
-    for record in records:
-        identifier = record_id(record) if isinstance(record, dict) else "unknown"
-        try:
-            process_record(record)
-        except Exception as exc:  # noqa: BLE001 - partial-batch contract
-            logger.error(
-                "messaging projector record failed record_id=%s error_type=%s",
-                identifier,
-                type(exc).__name__,
-            )
-            failures.append({"itemIdentifier": identifier})
-            # A stream retries from the lowest failed record, so every record after
-            # it replays anyway: processing them now would push their banners twice.
-            break
+    # One room is one partition key, so one stream lane: a hot room's ceiling is one
+    # batch at a time. Its messages' member fan-outs (Activity rows, user-channel
+    # hints) overlap here; the ordered rest -- room event, search, push -- runs below
+    # in stream order, which is seq order for a room. In-order room events matter:
+    # the client merges by seq but treats a skipped seq as a gap and refetches.
+    # ponytail: still one lane per room; past ~MAX_RECORD_WORKERS x the serial rate,
+    # write-shard a hot room's partition key -- a table change, not this file.
+    pool = ThreadPoolExecutor(max_workers=MAX_RECORD_WORKERS)
+    prepared = [pool.submit(prepare_record, record) for record in records]
+    try:
+        for record, future in zip(records, prepared):
+            identifier = record_id(record) if isinstance(record, dict) else "unknown"
+            try:
+                future.result()()
+            except Exception as exc:  # noqa: BLE001 - partial-batch contract
+                logger.error(
+                    "messaging projector record failed record_id=%s error_type=%s",
+                    identifier,
+                    type(exc).__name__,
+                )
+                failures.append({"itemIdentifier": identifier})
+                # A stream retries from the lowest failed record, so every record after
+                # it replays. Their ordered halves (room event, PUSH) never ran, so the
+                # retry banners nobody twice; their fan-outs may have run, and replay
+                # harmlessly: hints keep their eventId, Activity is a conditional put.
+                break
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
     return {"batchItemFailures": failures}

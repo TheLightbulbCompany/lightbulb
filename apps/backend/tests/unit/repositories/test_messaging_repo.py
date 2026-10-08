@@ -546,7 +546,9 @@ async def test_agent_receipt_is_owner_scoped_by_event_id(table):
 
 
 @pytest.mark.asyncio
-async def test_sequence_conflict_is_retried(table):
+async def test_sequence_conflict_is_retried(table, monkeypatch):
+    # The racer stands for a writer on ANOTHER backend task: no shared in-process lock.
+    monkeypatch.setattr(repo, "_room_append_lock", lambda _rid: asyncio.Lock())
     room_id, _ = await _room()
     real_get_room = repo.get_room
     calls = {"n": 0}
@@ -566,6 +568,7 @@ async def test_sequence_conflict_is_retried(table):
 
 @pytest.mark.asyncio
 async def test_sequence_conflicts_back_off_with_growing_jitter_then_give_up(table, monkeypatch):
+    monkeypatch.setattr(repo, "_room_append_lock", lambda _rid: asyncio.Lock())  # racers on another task
     room_id, _ = await _room()
     real_get_room = repo.get_room
 
@@ -589,6 +592,25 @@ async def test_sequence_conflicts_back_off_with_growing_jitter_then_give_up(tabl
     assert len(sleeps) == repo._SEQ_RETRY_ATTEMPTS - 1
     assert bounds == [min(repo._SEQ_BACKOFF_CAP_S, repo._SEQ_BACKOFF_BASE_S * 2**n) for n in range(len(sleeps))]
     assert bounds == sorted(bounds) and bounds[0] < bounds[-1] and sum(bounds) < 2
+
+
+@pytest.mark.asyncio
+async def test_concurrent_appends_to_one_room_in_one_process_take_turns_without_conflicts(table, monkeypatch):
+    room_id, _ = await _room()
+    real_get_room = repo.get_room
+    reads = []
+
+    async def counted(rid):
+        reads.append(rid)
+        return await real_get_room(rid)
+
+    sleep = AsyncMock()
+    monkeypatch.setattr(repo.asyncio, "sleep", sleep)
+    with patch.object(repo, "get_room", counted):
+        posted = await asyncio.gather(*(_post(room_id, text=f"m{n}", client_id=f"c-{n}") for n in range(16)))
+    assert sorted(m["messageSeq"] for m in posted) == list(range(1, 17))
+    # One META read per append and no backoff: nobody lost a lastSeq race.
+    assert len(reads) == 16 and sleep.await_count == 0
 
 
 @pytest.mark.asyncio

@@ -180,11 +180,8 @@ async def put_enrollment(
         put["ConditionExpression"] = condition
         if values:
             put["ExpressionAttributeValues"] = values
-    await store._transact(
-        [
-            pairing_condition(owner_id, user_id, device_id, cli_device_id),
-            {"Put": put},
-        ]
+    await container_repo.retry_conflict(
+        lambda: store._transact([pairing_condition(owner_id, user_id, device_id, cli_device_id), {"Put": put}])
     )
     return row
 
@@ -198,14 +195,16 @@ async def put_session(row: dict, previous: dict | None, enrollment: dict, *, ext
         )
     projection = {key: row[key] for key in ("ownerId", "humanUserId", "deviceId", "sessionId")}
     projection.update(pk=user_pk(row["ownerId"], row["humanUserId"]), sk=f"SESSION#{row['sessionId']}")
-    await store._transact(
-        [
-            pairing_condition(row["ownerId"], row["humanUserId"], row["deviceId"], None),
-            enrollment_condition(enrollment),
-            {"Put": put},
-            {"Put": {"TableName": store._table().name, "Item": projection}},
-        ]
-        + list(extra)
+    await container_repo.retry_conflict(
+        lambda: store._transact(
+            [
+                pairing_condition(row["ownerId"], row["humanUserId"], row["deviceId"], None),
+                enrollment_condition(enrollment),
+                {"Put": put},
+                {"Put": {"TableName": store._table().name, "Item": projection}},
+            ]
+            + list(extra)
+        )
     )
 
 

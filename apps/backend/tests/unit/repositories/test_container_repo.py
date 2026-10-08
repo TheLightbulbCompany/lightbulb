@@ -2,7 +2,7 @@
 
 import os
 import uuid
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import boto3
 import pytest
@@ -370,6 +370,30 @@ async def test_upsert_paired_devices_merges_and_preserves_row(dynamodb_table):
     )
     row = await container_repo.get_by_owner_id("owner_1")
     assert set(row["paired_devices"]) == {"dev_a", "dev_b"}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_pairing_retries_a_transaction_conflict_instead_of_raising(dynamodb_table):
+    """Load 3b (dev 2026-10-08): 25 Macs of one workspace paired at once and the owner-row
+    UpdateItem raised TransactionConflictException -> 500. It now backs off and lands."""
+    from core.repositories import container_repo
+
+    await _seed("owner_1", {"status": "running"})
+    real = container_repo.run_in_thread
+    conflicts = iter([True, True])
+
+    async def flaky(fn, *args, **kwargs):
+        if "#did" in kwargs.get("ExpressionAttributeNames", {}) and next(conflicts, False):
+            raise ClientError(
+                {"Error": {"Code": "TransactionConflictException", "Message": "Transaction is ongoing"}}, "UpdateItem"
+            )
+        return await real(fn, *args, **kwargs)
+
+    sleep = AsyncMock()
+    with patch.object(container_repo, "run_in_thread", flaky), patch("asyncio.sleep", sleep):
+        await container_repo.upsert_paired_devices("owner_1", {"dev_a": {"publicKey": "ka", "userId": "u1"}})
+    assert sleep.await_count == 2
+    assert (await container_repo.get_by_owner_id("owner_1"))["paired_devices"]["dev_a"]["userId"] == "u1"
 
 
 @pytest.mark.asyncio

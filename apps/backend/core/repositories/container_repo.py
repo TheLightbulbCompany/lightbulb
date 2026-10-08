@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import random
 import time
 import uuid
 from decimal import Decimal
@@ -1123,6 +1124,31 @@ async def swap_gate_token_hash(
     return "written", None
 
 
+async def retry_conflict(call):
+    """Await ``call()`` again while DynamoDB refuses it only because another
+    transaction holds the item: a plain write raises ``TransactionConflictException``,
+    a transaction is cancelled with ``TransactionConflict`` and no failed condition.
+    A failed condition is a real answer and raises at once. Full-jitter backoff,
+    25 ms doubling, 500 ms cap per sleep, 8 tries (~1.8 s worst case)."""
+    # ponytail: every pairing of a workspace writes ONE owner row, so its pairings and
+    # enrollments run in one lane; move paired_devices to per-device rows if a workspace
+    # ever pairs dozens of Macs at the same instant.
+    for attempt in range(8):
+        try:
+            return await call()
+        except ClientError as exc:
+            error = exc.response.get("Error", {}).get("Code")
+            codes = {r.get("Code") for r in exc.response.get("CancellationReasons", [])}
+            conflict = error == "TransactionConflictException" or (
+                error == "TransactionCanceledException"
+                and "TransactionConflict" in codes
+                and "ConditionalCheckFailed" not in codes
+            )
+            if not conflict or attempt == 7:
+                raise
+            await asyncio.sleep(random.uniform(0, min(0.5, 0.025 * 2**attempt)))
+
+
 async def upsert_paired_devices(owner_id: str, entries: dict) -> None:
     """Project desktop device-pubkey entries onto the owner row's ``paired_devices`` map.
 
@@ -1156,13 +1182,15 @@ async def _put_paired_device(table, owner_id: str, device_id: str, entry: dict) 
     # 1. Ensure the paired_devices map exists — a nested-path SET below fails if
     #    its parent map is absent. Idempotent; only touches an existing row.
     try:
-        await run_in_thread(
-            table.update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression="SET #pd = if_not_exists(#pd, :empty)",
-            ConditionExpression="attribute_exists(owner_id)",
-            ExpressionAttributeNames={"#pd": "paired_devices"},
-            ExpressionAttributeValues={":empty": {}},
+        await retry_conflict(
+            lambda: run_in_thread(
+                table.update_item,
+                Key={"owner_id": owner_id},
+                UpdateExpression="SET #pd = if_not_exists(#pd, :empty)",
+                ConditionExpression="attribute_exists(owner_id)",
+                ExpressionAttributeNames={"#pd": "paired_devices"},
+                ExpressionAttributeValues={":empty": {}},
+            )
         )
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
@@ -1174,19 +1202,21 @@ async def _put_paired_device(table, owner_id: str, device_id: str, entry: dict) 
     #    AND (device absent OR already ours -> refuse to relabel another
     #    member's device). Both clauses are evaluated atomically at write time.
     try:
-        await run_in_thread(
-            table.update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression="SET #pd.#did = :entry",
-            ConditionExpression=(
-                "attribute_exists(owner_id) AND (attribute_not_exists(#pd.#did) OR #pd.#did.#uid = :uid)"
-            ),
-            ExpressionAttributeNames={
-                "#pd": "paired_devices",
-                "#did": device_id,
-                "#uid": "userId",
-            },
-            ExpressionAttributeValues={":entry": entry, ":uid": entry.get("userId")},
+        await retry_conflict(
+            lambda: run_in_thread(
+                table.update_item,
+                Key={"owner_id": owner_id},
+                UpdateExpression="SET #pd.#did = :entry",
+                ConditionExpression=(
+                    "attribute_exists(owner_id) AND (attribute_not_exists(#pd.#did) OR #pd.#did.#uid = :uid)"
+                ),
+                ExpressionAttributeNames={
+                    "#pd": "paired_devices",
+                    "#did": device_id,
+                    "#uid": "userId",
+                },
+                ExpressionAttributeValues={":entry": entry, ":uid": entry.get("userId")},
+            )
         )
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
@@ -1204,12 +1234,14 @@ async def remove_paired_device(owner_id: str, device_id: str) -> None:
     """
     table = _get_table()
     try:
-        await run_in_thread(
-            table.update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression="REMOVE #pd.#did",
-            ConditionExpression="attribute_exists(owner_id)",
-            ExpressionAttributeNames={"#pd": "paired_devices", "#did": device_id},
+        await retry_conflict(
+            lambda: run_in_thread(
+                table.update_item,
+                Key={"owner_id": owner_id},
+                UpdateExpression="REMOVE #pd.#did",
+                ConditionExpression="attribute_exists(owner_id)",
+                ExpressionAttributeNames={"#pd": "paired_devices", "#did": device_id},
+            )
         )
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
@@ -1230,13 +1262,15 @@ async def mark_paired_device_revoking(owner_id: str, device_id: str, *, user_id:
         names["#uid"] = "userId"
         values[":uid"] = user_id
     try:
-        await run_in_thread(
-            _get_table().update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression="SET #pd.#did.#rv = :t",
-            ConditionExpression=condition,
-            ExpressionAttributeNames=names,
-            ExpressionAttributeValues=values,
+        await retry_conflict(
+            lambda: run_in_thread(
+                _get_table().update_item,
+                Key={"owner_id": owner_id},
+                UpdateExpression="SET #pd.#did.#rv = :t",
+                ConditionExpression=condition,
+                ExpressionAttributeNames=names,
+                ExpressionAttributeValues=values,
+            )
         )
         return True
     except ClientError as e:
@@ -1249,13 +1283,20 @@ async def remove_revoked_paired_device(owner_id: str, device_id: str, user_id: s
     """Remove a pairing only while it is still that member's REVOKING entry: a fresh re-pair
     (which rewrites the entry without the flag) survives. False when it did not match."""
     try:
-        await run_in_thread(
-            _get_table().update_item,
-            Key={"owner_id": owner_id},
-            UpdateExpression="REMOVE #pd.#did",
-            ConditionExpression="#pd.#did.#rv = :t AND #pd.#did.#uid = :uid",
-            ExpressionAttributeNames={"#pd": "paired_devices", "#did": device_id, "#rv": "revoking", "#uid": "userId"},
-            ExpressionAttributeValues={":t": True, ":uid": user_id},
+        await retry_conflict(
+            lambda: run_in_thread(
+                _get_table().update_item,
+                Key={"owner_id": owner_id},
+                UpdateExpression="REMOVE #pd.#did",
+                ConditionExpression="#pd.#did.#rv = :t AND #pd.#did.#uid = :uid",
+                ExpressionAttributeNames={
+                    "#pd": "paired_devices",
+                    "#did": device_id,
+                    "#rv": "revoking",
+                    "#uid": "userId",
+                },
+                ExpressionAttributeValues={":t": True, ":uid": user_id},
+            )
         )
         return True
     except ClientError as e:

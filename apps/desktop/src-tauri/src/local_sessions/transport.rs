@@ -1414,12 +1414,7 @@ impl Host {
                             last_early = Instant::now();
                         }
                         self.heartbeat_dirty.clear();
-                        let mut frames = device_heartbeats_with_controls(&self.mirrors, &registered, relay_reads_stats, relay_reads_controls, relay_reads_live_terminal, relay_reads_remote_input, relay_reads_terminal, relay_reads_presence, relay_reads_pickups, relay_reads_band_owner_only)?;
-                        // This Mac's band shows an agent's ask to message a session as one (spec
-                        // 2026-10-07-agent-session-approval); only to a relay that lists it.
-                        if relay_reads_agent_asks {
-                            frames.iter_mut().for_each(|f| f["agentMessageAsks"] = json!(true));
-                        }
+                        let frames = device_heartbeats_with_controls(&self.mirrors, &registered, relay_reads_stats, relay_reads_controls, relay_reads_live_terminal, relay_reads_remote_input, relay_reads_terminal, relay_reads_presence, relay_reads_pickups, relay_reads_band_owner_only, relay_reads_agent_asks)?;
                         let frames = super::session_states::with_screens(frames, &self.mirrors);
                         super::presence::retain(&frames.iter().flat_map(super::presence::frame_sids).collect::<Vec<_>>());
                         heartbeat_frames = frames.into();
@@ -2485,7 +2480,7 @@ fn device_heartbeats(
     registered: &BTreeSet<String>,
     with_stats: bool,
 ) -> Result<Vec<Value>> {
-    device_heartbeats_with_controls(mirrors, registered, with_stats, false, false, false, false, false, false, false)
+    device_heartbeats_with_controls(mirrors, registered, with_stats, false, false, false, false, false, false, false, false)
 }
 
 /// The mirrors forked from `origin_key`'s conversation (same provider and profile).
@@ -2525,6 +2520,7 @@ fn device_heartbeats_with_controls(
     presence: bool,
     pickups: bool,
     band_owner_only: bool,
+    agent_asks: bool,
 ) -> Result<Vec<Value>> {
     // `liveTerminal`: this Mac takes `local.session.watch`; `remoteInput`: `local.session.input`.
     // Each only to a relay that lists it.
@@ -2548,6 +2544,11 @@ fn device_heartbeats_with_controls(
         // tells the web its typing is paused.
         if band_owner_only {
             frame["bandOwnerOnly"] = json!(true);
+        }
+        // This Mac's band shows an agent's ask to message a session as one (spec
+        // 2026-10-07-agent-session-approval). Part of the envelope, so the size limit counts it.
+        if agent_asks {
+            frame["agentMessageAsks"] = json!(true);
         }
         frame
     };
@@ -2888,19 +2889,19 @@ pub(super) mod tests {
         assert!(device_heartbeats(&mirrors, &registered, false).unwrap()[0]["sessions"][0].get("capabilities").is_none());
         assert!(device_heartbeats(&mirrors, &registered, false).unwrap()[0].get("liveTerminal").is_none(), "only to a relay that lists it");
         assert!(device_heartbeats(&mirrors, &registered, false).unwrap()[0].get("remoteInput").is_none(), "only to a relay that lists it");
-        let frames = device_heartbeats_with_controls(&mirrors, &registered, false, true, false, false, false, false, false, false).unwrap();
+        let frames = device_heartbeats_with_controls(&mirrors, &registered, false, true, false, false, false, false, false, false, false).unwrap();
         let entry = &frames[0]["sessions"][0];
         assert_eq!(entry["capabilities"], json!({"sendMode":"queue","steer":true,"interrupt":true}));
         mirror.native.socket = None;
         mirror.native.socket_inode = None;
         let key = native_key(&mirror.native);
-        let frames = device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), mirror.clone())]), &BTreeSet::from([key]), false, true, false, false, false, false, false, false).unwrap();
+        let frames = device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), mirror.clone())]), &BTreeSet::from([key]), false, true, false, false, false, false, false, false, false).unwrap();
         assert_eq!(frames[0]["sessions"][0]["capabilities"], json!({"sendMode":"queue","steer":false,"interrupt":false}));
         mirror.native.socket = Some(PathBuf::from("/private/tmp/codex-daemon-501/socket"));
         mirror.native.socket_inode = Some(7);
         mirror.native.provider = "claude".into();
         let key = native_key(&mirror.native);
-        let frames = device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), mirror)]), &BTreeSet::from([key]), false, true, false, false, false, false, false, false).unwrap();
+        let frames = device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), mirror)]), &BTreeSet::from([key]), false, true, false, false, false, false, false, false, false).unwrap();
         let entry = &frames[0]["sessions"][0];
         assert_eq!(entry["capabilities"], json!({"sendMode":"queue","steer":false,"interrupt":false}));
     }
@@ -2930,7 +2931,7 @@ pub(super) mod tests {
         let key = native_key(&mirror.native);
         let registered = BTreeSet::from([key.clone()]);
         let entry = |m: &Mirror, reads: bool| {
-            device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), m.clone())]), &registered, false, false, false, false, reads, false, false, false)
+            device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), m.clone())]), &registered, false, false, false, false, reads, false, false, false, false)
                 .unwrap()[0]["sessions"][0].clone()
         };
         assert!(entry(&mirror, false).get("terminal").is_none(), "an older relay rejects the whole frame over it");
@@ -2947,7 +2948,7 @@ pub(super) mod tests {
         mirror.session_id = Some(SID.into());
         let key = native_key(&mirror.native);
         let frame = |reads: bool| {
-            device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), mirror.clone())]), &BTreeSet::from([key.clone()]), false, false, false, false, false, true, reads, false)
+            device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), mirror.clone())]), &BTreeSet::from([key.clone()]), false, false, false, false, false, true, reads, false, false)
                 .unwrap()[0]
                 .clone()
         };
@@ -2962,7 +2963,7 @@ pub(super) mod tests {
         mirror.session_id = Some(SID.into());
         let key = native_key(&mirror.native);
         let frame = |reads: bool| {
-            device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), mirror.clone())]), &BTreeSet::from([key.clone()]), false, false, false, false, false, true, true, reads)
+            device_heartbeats_with_controls(&BTreeMap::from([(key.clone(), mirror.clone())]), &BTreeSet::from([key.clone()]), false, false, false, false, false, true, true, reads, false)
                 .unwrap()[0]
                 .clone()
         };
@@ -6492,6 +6493,12 @@ pub(super) mod tests {
         }
         let frames = device_heartbeats(&mirrors, &registered, false).unwrap();
         assert_eq!(frames.len(), 1, "the two that fit share one frame");
+        // Every flag on (agentMessageAsks included) is part of the envelope the limit counts.
+        let flagged = device_heartbeats_with_controls(&mirrors, &registered, true, true, true, true, true, true, true, true, true).unwrap();
+        for frame in &flagged {
+            assert_eq!(frame["agentMessageAsks"], true);
+            assert!(ascii_wire_len(frame).unwrap() <= 16384);
+        }
         assert_eq!(
             frames[0]["sessions"].as_array().unwrap().len(),
             2,

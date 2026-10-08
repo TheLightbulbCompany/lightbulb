@@ -44,13 +44,31 @@ describe("workspace onboarding", () => {
     expect(clerk.replace).not.toHaveBeenCalled();
     expect(screen.getByRole("status")).toHaveTextContent("Loading");
   });
-  it("offers workspace creation under one heading, without requiring a signup intent", () => {
+  it("offers joining a team first, then workspace creation, without requiring a signup intent", () => {
     render(<OnboardingPage />);
-    expect(screen.getByRole("heading", { name: "Create your workspace" })).toBeInTheDocument();
-    expect(screen.getAllByRole("heading")).toHaveLength(1);
+    expect(screen.getByRole("heading", { level: 1, name: "Create your workspace" })).toBeInTheDocument();
+    expect(screen.getAllByRole("heading").map((h) => h.textContent)).toEqual(["Create your workspace", "Joining a team?", "Or start a new workspace"]);
+    expect(screen.getByText("Invited by email? Open that email on this device and tap its link.")).toBeInTheDocument();
     expect(screen.getByLabelText("Workspace name")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Create workspace" })).toBeDisabled();
     expect(clerk.replace).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["https://thelightbulb.company/join/org_abc123#t0k3n", "/join/org_abc123#t0k3n"],
+    ["  /join/org_abc123#t0k3n ", "/join/org_abc123#t0k3n"],
+  ])("routes a pasted join link %j to the join page", (pasted, target) => {
+    render(<OnboardingPage />);
+    fireEvent.change(screen.getByLabelText("Paste a join link"), { target: { value: pasted } });
+    fireEvent.click(screen.getByRole("button", { name: "Join" }));
+    expect(clerk.replace).toHaveBeenCalledWith(target);
+  });
+  it.each(["hello", "https://thelightbulb.company/join/org_abc123", "https://example.com/chat#x"])("refuses %j as a join link", (pasted) => {
+    render(<OnboardingPage />);
+    fireEvent.change(screen.getByLabelText("Paste a join link"), { target: { value: pasted } });
+    fireEvent.click(screen.getByRole("button", { name: "Join" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("That doesn't look like a Lightbulb join link.");
+    expect(clerk.replace).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Workspace name")).toBeInTheDocument();
   });
   it("previews the agents' address from the name, then holds the slug BEFORE creating the org", async () => {
     clerk.apiGet.mockImplementation(async (path: string) => ({

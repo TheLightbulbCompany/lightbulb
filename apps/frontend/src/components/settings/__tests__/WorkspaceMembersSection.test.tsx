@@ -4,9 +4,10 @@ import userEvent from "@testing-library/user-event";
 import React from "react";
 
 // The workspace members panel: the roster (GET /teams/members, the endpoint the
-// chat workspace already uses) plus the one shareable join link. Replaces the
-// email-invite form's tests — there is no email field and no role select any
-// more, and the assertions below pin that down as behaviour, not an omission.
+// chat workspace already uses), the shared invite panel (email invitations and
+// Copy join link; its own tests are InvitePeoplePanel.test.tsx), and the join-link
+// card's show/regenerate/turn-off. There is still no role select: billing is per
+// workspace, so an invitation grants membership, not a seat.
 
 const get = vi.hoisted(() => vi.fn());
 const post = vi.hoisted(() => vi.fn());
@@ -42,7 +43,7 @@ const clerk = vi.hoisted(() => ({
 const openOrganizationProfile = vi.hoisted(() => vi.fn());
 
 vi.mock("@clerk/nextjs", () => ({
-  useAuth: () => ({ getToken: () => Promise.resolve("jwt"), isLoaded: true }),
+  useAuth: () => ({ getToken: () => Promise.resolve("jwt"), isLoaded: true, orgId: clerk.organization?.id ?? null }),
   useClerk: () => ({ openOrganizationProfile }),
   useOrganization: () => ({
     organization: clerk.organization,
@@ -60,7 +61,11 @@ vi.mock("next/link", () => ({
 }));
 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
-import { capture } from "@/lib/analytics";
+const copyJoinLink = vi.hoisted(() => vi.fn());
+vi.mock("@/hooks/useCopyJoinLink", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  useCopyJoinLink: () => copyJoinLink,
+}));
 import { ApiError } from "@/lib/api";
 import { WorkspaceMembersSection, joinLinkErrorMessage } from "../WorkspaceMembersSection";
 
@@ -68,6 +73,11 @@ function asAdmin() {
   clerk.isLoaded = true;
   clerk.organization = { id: "org_1", name: "Acme" };
   clerk.membership = { role: "org:admin" };
+}
+
+/** GET answers by path: the invite panel reads invitations, the card reads the join link. */
+function joinLink(status: unknown) {
+  get.mockImplementation(async (path: string) => (path.endsWith("/invitations") ? { invitations: [] } : status));
 }
 
 function withMembers(members: unknown[]) {
@@ -80,7 +90,8 @@ describe("WorkspaceMembersSection", () => {
     post.mockReset();
     del.mockReset();
     teams.read.mockReset();
-    get.mockResolvedValue({ exists: false });
+    copyJoinLink.mockReset().mockResolvedValue(undefined);
+    joinLink({ exists: false });
     post.mockResolvedValue({
       join_url: "https://dev.thelightbulb.company/join/org_1/s3cr3t-token",
       created_at: "2026-09-14T00:00:00+00:00",
@@ -143,12 +154,9 @@ describe("WorkspaceMembersSection", () => {
 
   // --- The join link ------------------------------------------------------
 
-  it("mints the first link and copies it", async () => {
+  it("mints the first link and shows it", async () => {
     asAdmin();
     const user = userEvent.setup();
-    // userEvent.setup() installs its own navigator.clipboard stub, so the spy
-    // has to go on AFTER it or it is silently replaced.
-    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
     render(<WorkspaceMembersSection />);
 
     await user.click(await screen.findByRole("button", { name: /create join link/i }));
@@ -156,42 +164,34 @@ describe("WorkspaceMembersSection", () => {
     await waitFor(() => expect(post).toHaveBeenCalledWith("/orgs/org_1/join-link", {}));
     const field = await screen.findByLabelText(/your join link/i);
     expect(field).toHaveValue("https://dev.thelightbulb.company/join/org_1/s3cr3t-token");
-
-    await user.click(screen.getByRole("button", { name: /copy link/i }));
-    await waitFor(() =>
-      expect(writeText).toHaveBeenCalledWith("https://dev.thelightbulb.company/join/org_1/s3cr3t-token"),
-    );
-    expect(await screen.findByRole("button", { name: /copied/i })).toBeInTheDocument();
   });
 
-  it("reports join_link_copied from settings when the link is copied", async () => {
+  it("puts the invite panel above the join-link card, and copies the link from there", async () => {
     asAdmin();
     const user = userEvent.setup();
-    vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
     render(<WorkspaceMembersSection />);
-    await user.click(await screen.findByRole("button", { name: /create join link/i }));
-    await user.click(await screen.findByRole("button", { name: /copy link/i }));
-    await waitFor(() => expect(capture).toHaveBeenCalledWith("join_link_copied", { source: "members_settings", workspace_id: "org_1" }));
+    const invite = await screen.findByTestId("members-invite");
+    expect(invite.compareDocumentPosition(screen.getByTestId("members-join-link")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(await within(invite).findByLabelText("Email address")).toBeInTheDocument();
+    await waitFor(() => expect(get).toHaveBeenCalledWith("/orgs/org_1/invitations"));
+    await user.click(within(invite).getByRole("button", { name: "Copy join link" }));
+    expect(copyJoinLink).toHaveBeenCalledWith("members_settings");
+    // One copy control on the page: the card no longer carries its own.
+    expect(screen.getAllByRole("button", { name: /copy/i })).toHaveLength(1);
   });
 
   it("shows the current link from GET so re-sharing never needs a regenerate", async () => {
     asAdmin();
-    get.mockResolvedValue({
+    joinLink({
       exists: true,
       join_url: "https://dev.thelightbulb.company/join/org_1#curr3nt",
       created_at: "2026-09-01T00:00:00+00:00",
       created_by: "user_admin",
     });
-    const user = userEvent.setup();
-    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
     render(<WorkspaceMembersSection />);
 
     const field = await screen.findByLabelText(/your join link/i);
     expect(field).toHaveValue("https://dev.thelightbulb.company/join/org_1#curr3nt");
-    await user.click(screen.getByRole("button", { name: /copy link/i }));
-    await waitFor(() =>
-      expect(writeText).toHaveBeenCalledWith("https://dev.thelightbulb.company/join/org_1#curr3nt"),
-    );
     // Nothing was minted: showing the link must not rotate it.
     expect(post).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: /regenerate link/i })).toBeInTheDocument();
@@ -199,7 +199,7 @@ describe("WorkspaceMembersSection", () => {
 
   it("regenerating replaces the shown link with the new one", async () => {
     asAdmin();
-    get.mockResolvedValue({
+    joinLink({
       exists: true,
       join_url: "https://dev.thelightbulb.company/join/org_1#curr3nt",
       created_at: "2026-09-01T00:00:00+00:00",
@@ -218,7 +218,7 @@ describe("WorkspaceMembersSection", () => {
 
   it("offers a one-time regenerate for a link minted before links could be shown", async () => {
     asAdmin();
-    get.mockResolvedValue({
+    joinLink({
       exists: true,
       created_at: "2026-09-01T00:00:00+00:00",
       created_by: "user_admin",
@@ -232,7 +232,7 @@ describe("WorkspaceMembersSection", () => {
 
   it("revokes the link and drops back to the create state", async () => {
     asAdmin();
-    get.mockResolvedValue({ exists: true, created_at: "2026-09-01T00:00:00+00:00" });
+    joinLink({ exists: true, created_at: "2026-09-01T00:00:00+00:00" });
     const user = userEvent.setup();
     render(<WorkspaceMembersSection />);
 
@@ -243,12 +243,11 @@ describe("WorkspaceMembersSection", () => {
     expect(screen.queryByRole("button", { name: /turn off link/i })).not.toBeInTheDocument();
   });
 
-  it("has no email field and no role select — the model the owner rejected", async () => {
+  it("has no role select — an invitation grants membership, not a seat", async () => {
     asAdmin();
     render(<WorkspaceMembersSection />);
     await screen.findByTestId("members-join-link");
 
-    expect(screen.queryByLabelText(/email address/i)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/^role$/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
   });

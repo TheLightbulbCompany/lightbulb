@@ -847,3 +847,82 @@ async def test_turning_to_an_agent_with_nothing_new_asked_names_it_as_called(dec
     assert got["ops"]["called"] == "gauge" and got["ops"]["say"] is None, "the worker says its ready answer next"
     asked = await route(decide, "Gauge, what's our MRR?", jev_says(kinds=["request"], names=["addressed"]))
     assert asked["ops"]["called"] is None
+
+
+# ---- a named request never comes back as nothing (10-08 Meet: "Friday, what does the Workspace plan cost
+# ---- per month?" got no agent and nothing to do) ----
+
+PRICE_LINE = "Friday, what does the Workspace plan cost per month?"
+NAMED_ASK = [("friday", "what does the Workspace plan cost per month", "by name")]
+
+
+def by_name(got):
+    return [(r["agentId"], r["task"], "by " + r["by"]) for r in got["ops"]["requests"]]
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        jev_says(kinds=["people"], names=["addressed"]),  # its words read as talk between people
+        jev_says(kinds=["request"], names=["addressed"], p=vc.REQUEST_P - 0.2),  # a request, read weakly
+        {k: v for k, v in jev_says(kinds=["request"], names=["addressed"]).items() if k != "k0"},  # not read at all
+        jev_says(kinds=["request"], names=["not_a_name"]),  # the name read as the weekday
+        jev_says(kinds=["people"], names=["mentioned"]),  # the name only talked about, and people talk
+    ],
+)
+async def test_a_request_said_to_an_agent_by_name_is_its_request_whatever_the_classifier_doubts(decide, said):
+    got = await route(decide, PRICE_LINE, said, humans=2, setting="meeting")
+    assert by_name(got) == NAMED_ASK and got["agentIds"] == ["friday"]
+    assert got["ops"]["say"] == {"agentId": "friday", "kind": "ack", "task": NAMED_ASK[0][1], "text": None}
+
+
+async def test_the_name_mid_line_after_talk_to_people_still_asks_its_agent(decide):
+    line = "Now let us think about how I want to test this. All right, hey Friday, what is on my calendar tomorrow?"
+    said = jev_says(kinds=["people", "people", "social", "request"], names=["not_a_name"])
+    got = await route(decide, line, said, humans=2, setting="meeting")
+    assert by_name(got) == [("friday", "what is on my calendar tomorrow", "by name")]
+
+
+@pytest.mark.parametrize(
+    "line,said",
+    [
+        # what a line clearly is stays what it is: thanks, a greeting, "go ahead", a stop are reads of their own
+        ("Thanks, Friday.", jev_says(kinds=["social"], names=["addressed"])),
+        ("Friday, thanks for that.", jev_says(kinds=["social"], names=["addressed"])),
+        ("Friday, go ahead.", jev_says(kinds=["nudge"], names=["addressed"])),
+        ("Friday, stop.", jev_says(kinds=["hush"], names=["addressed"])),
+        ("Friday, never mind.", jev_says(kinds=["cancel"], names=["addressed"])),
+        # the day, and talk about her: no name stands where a clause opens with a request after it
+        ("Friday, we ship the beta.", jev_says(kinds=["people"], names=["not_a_name"])),
+        ("We ship the beta by Friday, what do you think?", jev_says(kinds=["people"], names=["not_a_name"])),
+        ("I think Friday said it was fine.", jev_says(kinds=["people"], names=["mentioned"])),
+        ("Friday's notes are in the doc, can you read them?", jev_says(kinds=["people"], names=["mentioned"])),
+        # two names: whose it is, is not for the words to say
+        (
+            "Not you Friday, Forge, can you check?",
+            jev_says(kinds=["people", "people"], names=["mentioned", "mentioned"]),
+        ),
+        # said to a person: a statement to people after an agent's name is not an ask
+        ("Friday, Leo, did you push that fix?", jev_says(kinds=["people"], names=["mentioned", "addressed"])),
+    ],
+)
+async def test_a_line_that_is_clearly_no_ask_of_the_named_agent_starts_nothing(decide, line, said):
+    got = await route(decide, line, said, humans=2, setting="meeting")
+    assert tasks(got) == []
+
+
+async def test_every_routed_line_logs_what_the_classifier_said(decide, caplog):
+    """The 10-08 miss could not be explained: the router logged no labels. One compact line each."""
+    with caplog.at_level("INFO", logger=vc.logger.name):
+        await route(
+            decide,
+            PRICE_LINE,
+            jev_says(kinds=["people"], whos=["friday"], names=["not_a_name"], p=0.71),
+            humans=2,
+            setting="meeting",
+        )
+    labels = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("voice route labels"))
+    assert "path=jev" in labels and "kind=people:0.71" in labels and "who=friday:0.80" in labels and " cue" in labels
+    assert "named=-" in labels and "amends=none:0.90" in labels  # the name as the classifier labelled it: nobody
+    decision = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("voice route decision"))
+    assert "outcome=routed" in decision and "('friday', 'name')" in decision and "'ack'" in decision

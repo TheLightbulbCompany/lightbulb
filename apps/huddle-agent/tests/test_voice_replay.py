@@ -86,16 +86,25 @@ def test_the_replay_decides_with_the_backends_own_router():
 
 
 def test_the_replay_gets_a_classifier_that_is_sometimes_wrong_and_runs_that_are_sometimes_late():
-    """The mistakes the live run showed are in the model at their rates, seeded: a named ask the
-    classifier misses, people talk it reads as a request while the speaker is engaged, a run that takes
-    most of a minute and one that never ends."""
+    """The mistakes the live run showed are in the model at their rates, seeded: a named ask the classifier
+    misses (its words read as people talk, or its name as no name), a run that takes most of a minute and
+    one that never ends. And the router's rule for the first holds on every one of them."""
     scenario, line = load("never_mind"), load("never_mind")["lines"][0]["say"]
+    state = {"latest": {"text": line, "author": "Prasiddha"}, "room": {}}
+    questions = {
+        "k0": {"instructions": 'What is it? The part: "what does the Workspace plan cost per month".', "criteria": {"request": "", "people": ""}},
+        "n0": {"instructions": "How is it used? The name: 'friday' (an AI teammate).", "criteria": {"addressed": "", "not_a_name": ""}},
+    }
     body = {"setting": "meeting", "open": [], "engagements": []}
-    taken = [
-        bool(asyncio.run(Sim(scenario, ROUTING["never_mind"], f"s{i}").router.route("Prasiddha", line, "", 2, body))["ops"]["requests"])
-        for i in range(300)
-    ]
-    assert 0.03 < taken.count(False) / 300 < 0.2, "a named ask is missed now and then, not never and not often"
+    wrong = 0
+    for i in range(300):
+        sim = Sim(scenario, ROUTING["never_mind"], f"s{i}")
+        said = sim.router.jev.decide(state, questions)
+        missed = said["k0"]["choice"] != "request" or said["n0"]["choice"] != "addressed" or said["k0"]["probabilities"]["request"] < 0.5
+        wrong += missed
+        if missed:  # (the rule: a request said to an agent by name is that agent's, whatever the classifier doubts)
+            assert asyncio.run(sim.router.route("Prasiddha", line, "", 2, body))["ops"]["requests"], i
+    assert 0.03 < wrong / 300 < 0.2, "a named ask is misread now and then, not never and not often"
     took = [Model(f"m{i}").run() for i in range(2000)]
     never, slow = sum(t is None for t in took) / 2000, sum(t is not None and t >= 45 for t in took) / 2000
     assert abs(never - P_RUN_NEVER) < 0.02 and abs(slow - P_RUN_SLOW) < 0.03

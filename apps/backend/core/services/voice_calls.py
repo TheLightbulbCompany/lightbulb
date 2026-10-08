@@ -999,9 +999,21 @@ def _understood(
         choice, p, _ = answer or (None, 0.0, 0.0)
         return rows.get(choice) if p >= AMEND_P else None
 
+    where = {ref: start for k, start, _, ref, _ in pieces if k == "part"}
+    name_at = next((start for k, start, _, ref, _ in pieces if k == "name" and named and ref == named[0][0]), -1)
+
     def kind_of(part: dict) -> str:
         # a weak or missing read is no request (REQUEST_P): an unsure classifier never starts a run
         choice, p, _ = part["kind"]
+        if len(named) == 1 and where[part["index"]] > name_at:
+            # ...but not of words said to one agent by name. The name says whom they are for, so the
+            # classifier's doubt is about nothing else: no read at all, a request read weakly, or words
+            # that open the way a request does read as talk between people, is that agent's request.
+            # 10-08 Meet: "Friday, what does the Workspace plan cost per month?" came back with no agent
+            # and nothing to do, and nobody answered. A stop, thanks, a greeting, "go ahead" are reads of
+            # their own and stay what they are.
+            if not choice or choice == "request" or (choice == "people" and part["cue"]):
+                return "request"
         if not choice or (choice == "request" and p < REQUEST_P):
             return "social"
         if choice == "context" and p < CONTEXT_P:
@@ -1043,8 +1055,6 @@ def _understood(
             parts[i]["text"] for i in sorted(indexes)
         )
 
-    where = {ref: start for k, start, _, ref, _ in pieces if k == "part"}
-    name_at = next((start for k, start, _, ref, _ in pieces if k == "name" and named and ref == named[0][0]), -1)
     after_name = not any(where[p["index"]] > name_at for p in asks)  # nothing is asked after the name
     requests: list[dict] = []
     for p in asks:
@@ -1128,6 +1138,39 @@ def _understood(
             for r in theirs:
                 r |= {"agentId": amended["agentId"], "by": "follow"}
     return out
+
+
+def _asked_by_name(addressing: dict, utterance: str, members: list[dict]) -> tuple[str, str] | None:
+    """The one agent a line asks by name when the classifier said the name addresses nobody: (name, agent),
+    or None. The words decide, and only when they leave no doubt: one name on the whole line, an agent's
+    alone; it stands as a name where a clause opens ("Friday, ...", "Great. Friday, ...", "hey Friday"; never "by
+    Friday", "Friday's notes", "thanks Friday"); and the words right after it open the way a request does
+    (a question word, "can you", an instruction). "Friday, we ship the beta" asks nothing and stays the day."""
+    cands = messaging.address_candidates(utterance, members, live=True)
+    if len(cands) != 1 or len(cands[0]["agents"]) != 1 or cands[0]["humans"]:
+        return None
+    cand, pieces = cands[0], addressing["pieces"]
+    if not any(messaging._CLAUSE_START.search(utterance[:start]) for start, _ in messaging._named_at(utterance, cand)):
+        return None
+    cue = {p["index"]: p["cue"] for p in addressing["parts"]}
+    for (kind, _, _, ref, _), after in zip(pieces, pieces[1:]):
+        if kind == "name" and ref == cand["name"] and after[0] == "part" and cue.get(after[3]):
+            return cand["name"], cand["agents"][0]
+    return None
+
+
+def _labels(addressing: dict) -> str:
+    """What the classifier said about a line, in one log line: enough to explain a route after the call."""
+    read = lambda a: f"{a[0]}:{a[1]:.2f}" if a and a[0] else "-"  # noqa: E731
+    parts = " | ".join(
+        f"{p['text'][:40]!r} kind={read(p['kind'])} who={read(p['who'])}{' cue' if p['cue'] else ''}"
+        for p in addressing.get("parts") or []
+    )
+    named = ",".join(f"{name}={label}" for name, _, label in addressing.get("named") or []) or "-"
+    return (
+        f"path={addressing['path']} named={named} people={len(addressing['humans'])} hold={addressing['hold']} "
+        f"amends={read(addressing.get('amends'))} drops={read(addressing.get('drops'))} parts=[{parts}]"
+    )
 
 
 def _engaged(addressing: dict, engagements: list[dict], open_requests: list[dict]) -> str | None:
@@ -1318,6 +1361,13 @@ async def route_live_line(
     hold = {"hold": True} if addressing["hold"] else {}
     if hold:
         put_metric("voice.routing.jev", dimensions={"outcome": "hold", "setting": setting})
+    logger.info("voice route labels room=%s setting=%s %s", room_id, setting, _labels(addressing))
+    if addressing["path"] == "jev" and not addressing["named"] and not addressing["humans"]:
+        # A named request never comes back as nothing: the classifier called the name no name (ours are
+        # weekdays) or only talked about, and the line asks that agent something in so many words.
+        if (asked := _asked_by_name(addressing, utterance, members)) is not None:
+            addressing = {**addressing, "named": [(*asked, "addressed")]}
+            put_metric("voice.routing.named_by_words", dimensions={"setting": setting})
     named = [agent for _, agent, _ in addressing["named"]]
     to_people = bool(addressing["humans"]) and not named and not addressing["anyone"] and not wake
     if meeting:
@@ -1455,6 +1505,17 @@ async def route_live_line(
     order = by_name or ([r["agentId"] for r in requests] or steered or ([social] if social else []))[:1]
     outcome = "routed" if requests else "social" if social else "none"
     put_metric("voice.routing.jev", dimensions={"outcome": outcome, "setting": setting})
+    logger.info(
+        "voice route decision room=%s outcome=%s requests=%s steer=%s cancel=%s hush=%s say=%s people=%s",
+        room_id,
+        outcome,
+        [(r["agentId"], r["by"]) for r in requests],
+        [x["requestId"] for x in u["steer"]],
+        u["cancel"],
+        [x["agentId"] for x in ops["hush"]],
+        say and (say["agentId"], say["kind"]),
+        ops["people"],
+    )
     routed = {**_routed(*order), **hold, "ops": ops}
     if len(by_name) >= 2:
         routed["requests"] = [

@@ -223,6 +223,7 @@ async def test_the_second_sentence_does_not_start_over_a_person():
     assert not h.may_say("forge", order + 1, 0) and not h.may_say("forge", order, 1), "another order or unit: no"
     h.on_unit("forge", order, 0, ANSWER, "said", {})
     assert u.cursor == 1 and h.may_say("forge", order, 1)
+    clock.t += h_mod.PREROLL_S  # (a sentence only just begun yields to him at once: test_voice_rules)
     talks(h, P2)  # he begins as the first sentence ends: too short yet to pause anything
     assert u.state == "speaking"
     assert not h.may_say("forge", order, 1), "asked before every unit, and refused while a person talks"
@@ -431,6 +432,7 @@ async def test_a_short_interruption_nobody_has_understood_yet_refuses_the_next_s
     (u,) = h._ledger
     order, orders = lives[0].order, len(says_of(lives[0]))
     assert h.may_say("forge", order, 0)
+    clock.t += h_mod.PREROLL_S  # the sentence is under way (one only just begun yields at once: test_voice_rules)
     talks(h, P2)
     clock.t += h_mod.TALK_OVER_S / 2  # too short to make it yield
     quiet(h)

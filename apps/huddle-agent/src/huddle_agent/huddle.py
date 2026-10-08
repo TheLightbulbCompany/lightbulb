@@ -166,6 +166,10 @@ TALK_OVER_S = 0.5
 # The SFU's level for a person drops between their words and comes back late. While the transcriber's speech
 # detector still hears them, they are talking for this long after the SFU last did.
 LEVEL_FRESH_S = 1.5
+# The transcriber's detector hears a person this long after they begin, at most. A sentence whose first
+# audio went out less than this before a person was heard began over them, or with them: it yields at once,
+# with no TALK_OVER_S of waiting, and too little of it was audible to count as said (HEARD_SHARE).
+PREROLL_S = 0.6
 TRAIL_S = 8.0  # an unfinished turn ("Can one of you tell me...", "Friday.") is joined to a rest that comes this soon
 CALL_ON_S = 3.0  # a name said alone, then this much silence from its speaker: the agent was called on
 # The room has been without talk this long: sound has settled and speech may start. An answer whose asker is
@@ -414,6 +418,7 @@ class Utterance:
     order: int = 0
     via: Any = None
     tries: int = 0
+    unit_at: float = 0.0  # when the unit being said was last given permission: its first audio (`may_say`)
     cut_at: float = 0.0  # when it was paused, until the receipt of the playback that was cut is in (`_hold`)
 
 
@@ -2064,6 +2069,8 @@ class Huddle:
         if why and why != "stale":
             self._yield(u)
             self._pump()  # the scheduler takes it from here: it notes what holds it and sets its timer
+        elif not why:
+            u.unit_at = self._clock()
         self._log(
             "permit", ok=not why, why=why, agent=agent_id, order=order, unit=index, utterance=u.id if u else None,
             speaking=sorted(self._speaking),
@@ -3209,6 +3216,8 @@ class Huddle:
             for u in self._ledger:
                 if u.state == "speaking":
                     u.over |= started  # who talked over it: a stop of theirs is for it, whether or not it yields
+                    if now - u.unit_at < PREROLL_S:
+                        self._yield(u)  # its sentence began as they did: they were speaking first, unheard
             # a mouth yields once their turn has lasted TALK_OVER_S, by the clock and not by the next tick
             self._later(min(self._turn_from(w) for w in started) + TALK_OVER_S - now, self._yield_check)
         self._pump()  # talk began: the scheduler notes what waits. It ended: the room starts to settle.

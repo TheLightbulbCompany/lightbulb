@@ -187,3 +187,27 @@ async def test_a_paused_answer_waits_for_the_final_of_talk_whose_first_words_wer
     quiet(h)
     await pause(h, clock, BREATH)
     assert len(says_of(lives[0])) == 2 and [u.state for u in h._ledger] == ["paused"]
+
+
+# -- a sentence that began as a person did: they were speaking first, and the detector had not heard them --
+
+
+async def test_a_sentence_whose_first_audio_just_went_out_yields_at_once_to_a_person_who_is_then_heard():
+    h, backend, lives, clock, row = await answering()
+    assert h.may_say("forge", lives[0].order, 0), "its first audio goes out"
+    clock.t += h_mod.PREROLL_S - 0.1
+    talks(h, P2)  # heard now: they began before it did
+    assert ("interrupt",) in lives[0].calls and [u.state for u in h._ledger] == ["paused"], "no TALK_OVER_S of waiting"
+    cut(h, lives[0], 0, FIRST, 0.2)
+    assert hand(h, "forge") == [f"{FIRST} {SECOND}"] and len(agent_lines(h)) == 1, "not said, and no line of it"
+
+
+async def test_a_sentence_well_under_way_still_yields_only_to_talk_that_lasts():
+    h, backend, lives, clock, row = await answering()
+    assert h.may_say("forge", lives[0].order, 0)
+    clock.t += h_mod.PREROLL_S + 0.1
+    talks(h, P2)
+    assert ("interrupt",) not in lives[0].calls and [u.state for u in h._ledger] == ["speaking"]
+    clock.t += h_mod.TALK_OVER_S
+    await h.tick()
+    assert ("interrupt",) in lives[0].calls

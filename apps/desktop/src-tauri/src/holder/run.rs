@@ -572,8 +572,10 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 // Before anyone hears of the end: whoever asks next gets the kept picture and the lines above it.
                 let kept = if is_attach(argv) { None } else { model.end(exited_at) };
                 // `startOver`: a terminal that watched the way out has lines above its screen that the
-                // kept picture shows again, so the screen relay draws its viewers from the start.
-                let frame = encode(EXIT, serde_json::json!({ "status": status, "code": code, "startOver": model.ends_above() }).to_string().as_bytes());
+                // kept picture shows again, so the screen relay draws its viewers from the start, when
+                // it can send them all of the lines above that picture (`above`, their size in bytes).
+                let above = model.starts_over();
+                let frame = encode(EXIT, serde_json::json!({ "status": status, "code": code, "startOver": above.is_some(), "above": above }).to_string().as_bytes());
                 if is_attach(argv) {
                     // One more client of the provider's own host (spec §4 k): no screen of ours to
                     // keep, and the next viewer needs a new client, so this holder ends with it.

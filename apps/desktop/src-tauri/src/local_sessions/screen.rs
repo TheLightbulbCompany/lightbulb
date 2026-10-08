@@ -574,9 +574,16 @@ impl Out<'_> {
     /// The session ended on a picture that shows again lines its viewers have above their screens
     /// (the holder's EXIT says `startOver`, `Model::end`): a new run, so every viewer's terminal
     /// starts over from the lines above that picture, as one that opens the session later does.
-    /// Only with those lines in hand: a new run without them would cost a viewer its scrollback.
-    fn start_over(&mut self, fetch: &dyn Fn(usize) -> Option<Vec<u8>>, size: (u16, u16)) {
-        let Some(bytes) = self.fetched(fetch) else { return };
+    /// Only with all of those lines in hand (`whole` bytes, as the holder counted them): a viewer
+    /// who watched for long has more above its screen than a burst the budget trimmed, or none,
+    /// would give back, and the reset behind a new run would cost it the rest. Without them the
+    /// run goes on: the picture is drawn over the screen and those viewers keep their own lines,
+    /// with the ones the picture shows again there twice.
+    fn start_over(&mut self, fetch: &dyn Fn(usize) -> Option<Vec<u8>>, size: (u16, u16), whole: usize) {
+        if whole > self.budget.room() {
+            return;
+        }
+        let Some(bytes) = fetch(whole).filter(|bytes| bytes.len() == whole) else { return };
         self.epoch = next_epoch(&LAST_EPOCH, SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64));
         self.ctl.epoch.store(self.epoch, SeqCst);
         self.seq = 0;
@@ -726,8 +733,9 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
                 if let Some(holder) = ctl.holder.lock().ok().and_then(|holder| holder.clone()) {
                     super::session_states::holder_ended(&holder);
                 }
-                if serde_json::from_slice::<Value>(&payload).is_ok_and(|exit| exit["startOver"] == true) {
-                    out.start_over(history, size);
+                let exit: Value = serde_json::from_slice(&payload).unwrap_or_default();
+                if let Some(whole) = exit["above"].as_u64().filter(|_| exit["startOver"] == true) {
+                    out.start_over(history, size, whole as usize);
                 }
                 ctl.snapshot.store(true, SeqCst);
                 last_snapshot = Instant::now().checked_sub(SNAPSHOT_GAP).unwrap_or_else(Instant::now);
@@ -1197,29 +1205,37 @@ mod tests {
     /// drawn from the start, the lines above that picture first.
     #[test]
     fn a_session_that_ends_on_a_picture_of_lines_its_viewers_have_starts_them_over() {
-        let run = |above: Option<Vec<u8>>| {
+        let run = |whole: usize, above: Option<Vec<u8>>| {
             let (tx, rx) = std::sync::mpsc::channel();
             tx.send((SNAPSHOT, with_offset(0, b"live"))).unwrap();
-            tx.send((EXIT, br#"{"code":0,"startOver":true}"#.to_vec())).unwrap();
+            tx.send((EXIT, format!(r#"{{"code":0,"startOver":true,"above":{whole}}}"#).into_bytes())).unwrap();
             let ctl = leased(Duration::from_millis(300));
             let mut holder = Answering { tx, answer: vec![(SNAPSHOT, with_offset(4, b"kept"))], asked: vec![] };
             let sent = std::cell::RefCell::new(vec![]);
-            let asked = std::cell::Cell::new(0);
+            let asked = std::cell::RefCell::new(vec![]);
             // The run's own first history (nothing above the screen yet), then the one asked for at the end.
             pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|f| { sent.borrow_mut().push(f); true }, Budget::new(),
-                &|_| { asked.set(asked.get() + 1); if asked.get() == 1 { Some(vec![]) } else { above.clone() } }).unwrap();
+                &|max| { asked.borrow_mut().push(max); if asked.borrow().len() == 1 { Some(vec![]) } else { above.clone() } }).unwrap();
             let sent = sent.into_inner();
             let epochs: Vec<u64> = sent.iter().map(|f| f["epoch"].as_u64().unwrap()).collect();
-            (kinds(&sent), epochs, ctl.epoch.load(SeqCst))
+            (kinds(&sent), epochs, ctl.epoch.load(SeqCst), asked.into_inner())
         };
-        let (sent, epochs, typed_against) = run(Some(b"above".to_vec()));
+        let (sent, epochs, typed_against, asked) = run(5, Some(b"above".to_vec()));
         assert_eq!(sent, [("history".into(), 0), ("snapshot".into(), 1), ("history".into(), 0), ("snapshot".into(), 1)]);
         assert!(epochs[0] == epochs[1] && epochs[2] > epochs[1] && epochs[3] == epochs[2], "{epochs:?}");
         assert_eq!(typed_against, epochs[3]);
-        // The holder did not answer: the run goes on, and the viewer keeps the scrollback it has.
-        let (sent, epochs, _) = run(None);
-        assert_eq!(sent, [("history".into(), 0), ("snapshot".into(), 1), ("snapshot".into(), 2)]);
-        assert!(epochs.iter().all(|epoch| *epoch == epochs[0]));
+        assert_eq!(asked[1], 5, "asked for all of it");
+        // Nothing is above the picture: that is whole too.
+        assert_eq!(run(0, Some(vec![])).0, [("history".into(), 0), ("snapshot".into(), 1), ("history".into(), 0), ("snapshot".into(), 1)]);
+        // Review of #3878: a viewer who watched for long has more lines than a trimmed burst gives
+        // back. Only part of them came, the holder did not answer, or they are more than the budget
+        // has room for (never asked for): the run goes on, and the viewer keeps the scrollback it has.
+        for (whole, above) in [(5, Some(b"ove".to_vec())), (5, None), (BURST, Some(vec![b'h'; BURST]))] {
+            let (sent, epochs, _, asked) = run(whole, above);
+            assert_eq!(sent, [("history".into(), 0), ("snapshot".into(), 1), ("snapshot".into(), 2)], "{whole}");
+            assert!(epochs.iter().all(|epoch| *epoch == epochs[0]));
+            assert_eq!(asked.len(), if whole == BURST { 1 } else { 2 });
+        }
     }
 
     #[test]

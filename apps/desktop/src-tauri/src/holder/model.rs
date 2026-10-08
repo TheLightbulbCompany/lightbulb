@@ -99,19 +99,88 @@ pub const RESTING_FOR: Duration = Duration::from_secs(30);
 /// A provider that leaves the alternate screen this soon after an Enter left because of that line
 /// (`/exit`: Claude Code 2.1.292 leaves within 10 ms).
 pub const SENT_LEAVE: Duration = Duration::from_secs(3);
-/// `picture`, a `rows` x `cols` screen, without Lightbulb's band: the row the Claude Code mod draws
-/// above the prompt ("● Live · Ada watching [ Pause ] ctrl+x tab, then p",
-/// `packages/claude-plugin/lightbulb/hooks/register.tsx`) and a join request's row under it. On a
-/// kept picture it says an ended session is live and offers buttons that do nothing. The rows
-/// under it move up. A picture with no band is returned as it is.
+/// Lightbulb's band as the Claude Code mod draws it above the prompt
+/// (`packages/claude-plugin/lightbulb/hooks/register.tsx` and `state.ts`; keep these with them):
+/// one line that opens with one of BAND_LEADS (then, live, the viewers' names), has one of
+/// BAND_BUTTONS, and ends with BAND_HINT unless someone asks to join. Then, in this order and
+/// each only when it applies: the first request's line (a name, one of ASK_VERBS, "(+N more)" when
+/// others wait, ASK_TAIL) and WAITING. A terminal narrower than a line wraps it over rows (the
+/// shortest band is 44 columns); the engine's "[-]" ends the band's first row.
+const BAND_LEADS: [&str; 4] = ["○ Sharing paused", "● Shared as a transcript", "● Live in Lightbulb", "● Live · "];
+const BAND_BUTTONS: [&str; 2] = ["[ Pause ]", "[ Resume sharing ]"];
+const BAND_HINT: &str = "ctrl+x tab, then p";
+const ASK_VERBS: [&str; 2] = [" asked to join", " wants to pick this up · conversation + uncommitted changes"];
+const ASK_TAIL: &str = "[ Allow ] [ Decline ] ctrl+x tab, then a or d · or click";
+const WAITING: &str = "Waiting on you here or in Lightbulb";
+/// The most rows one of the band's lines is looked for on.
+const BAND_WRAP: usize = 6;
+
+/// Text without its spaces: a wrapped line reads the same whatever rows its words fell on.
+fn squash(text: &str) -> String {
+    text.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// How many rows from `at` hold one whole line of the band. `fits` reads the rows so far, joined:
+/// Some(true) a whole line, Some(false) the start of one, None not one. The longest whole one
+/// counts (a hint wrapped under its button belongs to the line); a blank row ends the search. 0: none.
+fn band_line(rows: &[String], at: usize, fits: impl Fn(&str) -> Option<bool>) -> usize {
+    let (mut joined, mut whole) = (String::new(), 0);
+    for (n, row) in rows.iter().skip(at).take(BAND_WRAP).enumerate() {
+        let row = squash(row);
+        let row = row.strip_suffix("[-]").unwrap_or(&row);
+        if row.is_empty() {
+            break;
+        }
+        joined.push_str(row);
+        match fits(&joined) {
+            Some(true) => whole = n + 1,
+            Some(false) => {}
+            None => break,
+        }
+    }
+    whole
+}
+
+/// `joined` so far is `line`, or starts it.
+fn so_far(joined: &str, line: &str) -> Option<bool> {
+    let line = squash(line);
+    line.starts_with(joined).then_some(line == joined)
+}
+
+fn fits_band(joined: &str) -> Option<bool> {
+    let lead = BAND_LEADS.iter().map(|lead| squash(lead)).find(|lead| joined.starts_with(lead.as_str()) || lead.starts_with(joined))?;
+    if joined.len() < lead.len() {
+        return Some(false);
+    }
+    // The names may still be going: no button yet.
+    let Some(after) = BAND_BUTTONS.iter().find_map(|button| joined.split_once(squash(button).as_str())).map(|(_, after)| after) else { return Some(false) };
+    // (With a request under it the band has no hint.)
+    if after.is_empty() { Some(true) } else { so_far(after, BAND_HINT) }
+}
+
+fn fits_ask(joined: &str) -> Option<bool> {
+    // Until its last word a request's line is only told from other text by where it stands.
+    let Some(said) = joined.strip_suffix(squash(ASK_TAIL).as_str()) else { return Some(false) };
+    let said = match said.strip_suffix("more)").and_then(|rest| rest.rsplit_once("(+")) {
+        Some((before, count)) if !count.is_empty() && count.chars().all(|c| c.is_ascii_digit()) => before,
+        _ => said,
+    };
+    ASK_VERBS.iter().any(|verb| said.strip_suffix(squash(verb).as_str()).is_some_and(|name| !name.is_empty())).then_some(true)
+}
+
+/// `picture`, a `rows` x `cols` screen, without Lightbulb's band. On a kept picture it says an
+/// ended session is live and offers buttons that do nothing. The rows under it move up. A picture
+/// with no band is returned as it is.
+// ponytail: known by its text, since the mod has no channel to the holder; a refused decision's
+// red line under it (any text) stays.
 fn without_band(picture: Vec<u8>, (rows, cols): (u16, u16)) -> Vec<u8> {
     let mut screen = vt100::Parser::new(rows, cols, 0);
     screen.process(&picture);
     let text: Vec<String> = screen.screen().rows(0, cols).collect();
-    let band = |row: &String| (row.starts_with('●') || row.starts_with('○')) && (row.contains("[ Pause ]") || row.contains("[ Resume sharing ]"));
     // The last one: the band is under the conversation, and the conversation may quote one.
-    let Some(first) = text.iter().rposition(band) else { return picture };
-    let count = 1 + text[first + 1..].iter().take_while(|row| row.contains("[ Allow ]") || row.starts_with("Waiting on you here")).count();
+    let Some((first, band)) = (0..text.len()).rev().map(|at| (at, band_line(&text, at, fits_band))).find(|(_, band)| *band > 0) else { return picture };
+    let ask = band_line(&text, first + band, fits_ask);
+    let count = band + ask + band_line(&text, first + band + ask, |joined| so_far(joined, WAITING));
     let (row, col) = screen.screen().cursor_position();
     let row = match usize::from(row) {
         at if at >= first + count => at - count,
@@ -391,16 +460,18 @@ impl Model {
     /// lines above that picture: a terminal drawn from both shows the session as it rested, each
     /// line once, with the picture where the screen was. A terminal that watched the way out has
     /// the picture's top lines above its screen already, so it starts over from both
-    /// (`ends_above`, `screen::pump`).
+    /// (`starts_over`, `screen::pump`).
     pub fn end(&mut self, exited: Instant) -> Option<Vec<u8>> {
         let (picture, again) = self.kept(exited)?;
         self.shown_again = again;
         Some(picture)
     }
 
-    /// After `end`: the kept picture shows again lines a terminal that watched the way out has above its screen.
-    pub fn ends_above(&self) -> bool {
-        self.shown_again > 0
+    /// After `end`, when the kept picture shows again lines a terminal that watched the way out has
+    /// above its screen: how many bytes all of `history` is. That terminal may hold more lines than
+    /// one burst carries, so it starts over only from a history that is whole.
+    pub fn starts_over(&mut self) -> Option<usize> {
+        (self.shown_again > 0).then(|| self.history(usize::MAX).len())
     }
 
     #[cfg(test)]
@@ -560,7 +631,7 @@ mod tests {
         assert!(above(&mut viewer) > rested_above, "the way out pushed lines of the screen at rest above it");
         let picture = model.end(exited).expect("the screen at rest before /exit");
         assert!(!picture.windows(8).any(|w| w == b"\x1b[?1049h"));
-        assert!(model.ends_above(), "whoever watched the way out starts over");
+        assert_eq!(model.starts_over(), Some(model.history(1 << 20).len()), "whoever watched the way out starts over, from every line above the picture");
         // Prod 2026-10-08: the picture came without the lines the way out had pushed up, so 18 of a
         // viewer's 30 rows were blank under it, and it still showed the band ("● Live · … [ Pause ]").
         let mut late = drawn_after_the_end(&mut model, &picture);
@@ -581,7 +652,7 @@ mod tests {
         // Any other program on the normal screen (Codex with `--no-alt-screen`, a shell): as before.
         let (mut other, _, _, exited) = run(false);
         assert_eq!(other.end(exited), None);
-        assert!(!other.ends_above());
+        assert_eq!(other.starts_over(), None);
     }
 
     /// Prod 2026-10-07 (desktop 0.4.666): after End session the kept picture of a classic session
@@ -715,9 +786,9 @@ mod tests {
         model.feed_at(MENU, t0 + secs(10.0));
         model.feed_at(b"\r\n  /more\r\n  /more\r\n  /more", t0 + secs(10.0));
         model.feed_at(RESUME, t0 + secs(10.01));
-        assert!(!model.history(1 << 20).is_empty() && !model.ends_above());
+        assert!(!model.history(1 << 20).is_empty() && model.starts_over().is_none());
         assert_eq!(shown(model.end(t0 + secs(10.4))), Some(rest.clone()));
-        assert!(model.history(1 << 20).is_empty() && model.ends_above(), "the two lines are in the picture, not above it too");
+        assert!(model.history(1 << 20).is_empty() && model.starts_over() == Some(0), "the two lines are in the picture, not above it too");
 
         // The whole screen left the top: the final screen is the picture.
         let mut model = drawn();
@@ -771,8 +842,8 @@ mod tests {
     #[test]
     fn holder_model_kept_picture_has_no_lightbulb_band() {
         let t0 = Instant::now();
-        let kept = |screen: &str, alternate: bool| {
-            let mut model = Model::new(10, 70);
+        let kept_at = |cols: u16, screen: &str, alternate: bool| {
+            let mut model = Model::new(12, cols);
             if alternate {
                 model.feed_at(b"\x1b[?1049h\x1b[2J\x1b[H", t0);
             } else {
@@ -780,21 +851,44 @@ mod tests {
             }
             model.feed_at(screen.as_bytes(), t0);
             model.ending();
-            let mut term = vt100::Parser::new(10, 70, 0);
+            let mut term = vt100::Parser::new(12, cols, 0);
             term.process(&model.end(t0 + QUIET).expect("a kept picture"));
             (lines(&mut term), term.screen().cursor_position())
         };
+        let kept = |screen: &str, alternate: bool| kept_at(90, screen, alternate);
+        let rows = |rows: &[&str]| rows.iter().map(|row| row.to_string()).collect::<Vec<_>>();
         const BAND: &str = "● Live · Ada watching [ Pause ] ctrl+x tab, then p            [-]";
+        const ASKED: &str = "● Live · Ada watching [ Pause ]                               [-]";
+        const ASK: &str = "Bo Li asked to join (+2 more) [ Allow ] [ Decline ] ctrl+x tab, then a or d · or click";
         for alternate in [false, true] {
             // The rows under the band move up, and the cursor with them.
             let screen = format!("the answer\r\n\r\n{BAND}\r\n\r\n> ");
-            assert_eq!(kept(screen.as_str(), alternate), (["the answer", "", "", ">"].map(String::from).to_vec(), (3, 2)), "alternate screen: {alternate}");
-            // A join request's row goes with it; a band the conversation quotes stays.
-            let screen = format!("{BAND}\r\nsaid the docs\r\n○ Sharing paused [ Resume sharing ]\r\nBo asked to join [ Allow ] [ Decline ]\r\n> ");
-            assert_eq!(kept(screen.as_str(), alternate).0, [BAND, "said the docs", ">"].map(String::from).to_vec());
+            assert_eq!(kept(screen.as_str(), alternate), (rows(&["the answer", "", "", ">"]), (3, 2)), "alternate screen: {alternate}");
+            // A join request's row and the approval line go with it; a band the conversation quotes stays.
+            let screen = format!("{BAND}\r\nsaid the docs\r\n○ Sharing paused [ Resume sharing ]\r\n{ASK}\r\nWaiting on you here or in Lightbulb\r\n\r\n> ");
+            assert_eq!(kept(screen.as_str(), alternate).0, rows(&[BAND, "said the docs", "", ">"]));
+            let screen = format!("{ASKED}\r\nAda wants to pick this up · conversation + uncommitted changes [ Allow ] [ Decline ] ctrl+x tab, then a or d · or click\r\n> ");
+            assert_eq!(kept(screen.as_str(), alternate).0, rows(&[">"]));
             // No band: the picture as it is.
-            assert_eq!(kept("the answer\r\n\r\n> ", alternate), (["the answer", "", ">"].map(String::from).to_vec(), (2, 2)));
+            assert_eq!(kept("the answer\r\n\r\n> ", alternate), (rows(&["the answer", "", ">"]), (2, 2)));
         }
+        // Review of #3878: with no request, what stands under the band is the person's own, whatever it says.
+        for under in ["> press [ Allow ] to go on", "> Bo asked to join [ Allow ] [ Decline ]", "Waiting on you here", "> ctrl+x tab, then p"] {
+            let screen = format!("{BAND}\r\n{under}\r\nmore");
+            assert_eq!(kept(screen.as_str(), false).0, rows(&[under, "more"]), "{under}");
+        }
+        // The same words with no band over them, or a band's opening with no button after it: not a band.
+        for screen in [format!("the answer\r\n{ASK}\r\nWaiting on you here or in Lightbulb"), "● Live · said the docs\r\n\r\n> [ Pause ]".to_owned(), "● Lively [ Pause ]".to_owned()] {
+            let shown: Vec<String> = screen.split("\r\n").map(String::from).collect();
+            assert_eq!(kept(screen.as_str(), false).0, shown);
+        }
+        // Review of #3878: at 40 columns every band wraps (the shortest is 44), and long names wrap any.
+        let wrapped = "● Live in Lightbulb [ Pause ]        [-]\r\nctrl+x tab, then p\r\n\r\n> ";
+        assert_eq!(kept_at(40, wrapped, false), (rows(&["", ">"]), (1, 2)));
+        let names = "the answer\r\n● Live · Bartholomew Featherstonehaugh,\r\nMaximiliana Wolfeschlegelsteinhausen\r\nwatching · Bartholomew Featherstonehaugh\r\ntyping [ Pause ] ctrl+x tab,\r\nthen p\r\n\r\n> ";
+        assert_eq!(kept_at(40, names, false).0, rows(&["the answer", "", ">"]));
+        let asked = "● Sharing is not a lead\r\n○ Sharing paused [ Resume\r\nsharing ]\r\nBartholomew Featherstonehaugh asked to\r\njoin [ Allow ] [ Decline ] ctrl+x tab,\r\nthen a or d · or click\r\n> ";
+        assert_eq!(kept_at(40, asked, false).0, rows(&["● Sharing is not a lead", ">"]));
     }
 
     #[test]

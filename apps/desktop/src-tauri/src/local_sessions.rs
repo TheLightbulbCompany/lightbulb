@@ -590,7 +590,7 @@ impl Journal {
                         return Err("partial transcript boundary".into());
                     }
                 }
-                Cursor { offset: meta.len(), inode: Some(meta.ino()), skip_row: false }
+                Cursor { offset: meta.len(), inode: Some(meta.ino()), skip_row: false, from_end: false }
             }
         };
         receipt.ingress = Some(Ingress {
@@ -638,6 +638,28 @@ struct Cursor {
     /// read. Everything up to and including its newline is skipped first.
     #[serde(default)]
     skip_row: bool,
+    /// No position was taken yet (the file could not be read when sharing started, or was not
+    /// known): the first read that can takes the file's end then, and returns nothing. So a
+    /// failure can only move the start later, never back to the beginning.
+    #[serde(default)]
+    from_end: bool,
+}
+
+impl Cursor {
+    /// A cursor that will start at whatever is the file's end when it is first read.
+    fn at_first_read() -> Self {
+        Self { from_end: true, ..Self::default() }
+    }
+
+    /// Moves to `file`'s current end: nothing that is there is read, nor the row being written.
+    fn take_end(&mut self, file: &mut fs::File, meta: &fs::Metadata) {
+        let len = meta.len();
+        let mut last = [0u8];
+        // Unreadable last byte: taken as inside a row.
+        let whole = len == 0
+            || (file.seek(SeekFrom::Start(len - 1)).is_ok() && file.read_exact(&mut last).is_ok() && last[0] == b'\n');
+        *self = Self { offset: len, inode: Some(meta.ino()), skip_row: !whole, from_end: false };
+    }
 }
 
 #[derive(Deserialize)]
@@ -663,6 +685,10 @@ impl Cursor {
     fn read(&mut self, path: &Path, provider: &str) -> Result<Vec<Value>> {
         let mut file = secure_file(path)?;
         let meta = file.metadata().map_err(|e| e.to_string())?;
+        if self.from_end {
+            self.take_end(&mut file, &meta);
+            return Ok(vec![]);
+        }
         if self.inode.is_some_and(|i| i != meta.ino()) || meta.len() < self.offset {
             return Err("history-gap".into());
         }
@@ -1672,20 +1698,16 @@ struct RegistrationState {
 
 /// A cursor at `path`'s current end: nothing that is already there is ever read. When the file
 /// ends inside a row (one is being written right now), that whole row is skipped too: part of
-/// it was written before this moment.
+/// it was written before this moment. A file that cannot be read now gets a cursor that takes
+/// its end at the first read that can: later than this moment, never the beginning.
 fn cursor_at_end(path: &Path) -> Cursor {
-    let Ok(mut file) = secure_file(path) else {
-        return Cursor::default();
-    };
-    let Ok(meta) = file.metadata() else {
-        return Cursor::default();
-    };
-    let len = meta.len();
-    let mut last = [0u8];
-    // Unreadable last byte: taken as inside a row.
-    let whole = len == 0
-        || (file.seek(SeekFrom::Start(len - 1)).is_ok() && file.read_exact(&mut last).is_ok() && last[0] == b'\n');
-    Cursor { offset: len, inode: Some(meta.ino()), skip_row: !whole }
+    let mut cursor = Cursor::at_first_read();
+    if let Ok(mut file) = secure_file(path) {
+        if let Ok(meta) = file.metadata() {
+            cursor.take_end(&mut file, &meta);
+        }
+    }
+    cursor
 }
 
 impl Mirror {
@@ -1712,24 +1734,31 @@ impl Mirror {
         if self.deferred_end_reason.as_deref() == Some(FOLDER_NOT_APPROVED) {
             self.deferred_end_reason = None;
         }
-        self.cursor = current.transcript.as_deref().map(cursor_at_end).unwrap_or_default();
-        // A subagent that is still running stays open and is read from here on.
+        // (No transcript known yet: its end is taken when it is first read.)
+        self.cursor = current.transcript.as_deref().map_or_else(Cursor::at_first_read, cursor_at_end);
+        // Every subagent that exists now, announced or not, is read from here on and stays
+        // open: one still running is shared from this moment like its parent. None gets a start
+        // event: its description was written before now.
         let known = &mut self.subagents.known;
+        if let Some(transcript) = &current.transcript {
+            if current.provider == "claude" {
+                for (id, path, _) in claude::new_subagents(transcript, &|id| known.contains_key(id)) {
+                    known.insert(id, Subagent { path: Some(path), ..Default::default() });
+                }
+            } else {
+                // A Codex child is otherwise found only through its parent's `started` row, which
+                // lies before the cut-off for one that started earlier.
+                for (id, path) in codex::children(transcript, &current.conversation) {
+                    known.entry(id).or_default().path.get_or_insert(path);
+                }
+            }
+        }
         for subagent in known.values_mut() {
             match &subagent.path {
                 Some(path) => subagent.cursor = cursor_at_end(path),
-                // A Codex child announced before now whose rollout is not found yet: when it
-                // is, it would be read from its start, so it is not read at all.
+                // Announced before now and still without a rollout: when one appears it would
+                // be read from its start, so it is not read at all.
                 None => subagent.closed = true,
-            }
-        }
-        if current.provider == "claude" {
-            if let Some(transcript) = &current.transcript {
-                // Not announced (no start event): its description was written before now.
-                for (id, path, _) in claude::new_subagents(transcript, &|id| known.contains_key(id)) {
-                    let cursor = cursor_at_end(&path);
-                    known.insert(id, Subagent { path: Some(path), cursor, ..Default::default() });
-                }
             }
         }
         self.history_hidden_for = Some(current.process.clone());
@@ -2107,6 +2136,43 @@ mod tests {
     }
 
     #[test]
+    fn local_sessions_sharing_from_now_finds_codex_children_that_started_before_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let day = dir.path().join("sessions/2026/10/08");
+        fs::create_dir_all(&day).unwrap();
+        let meta = |id: &str, parent: Option<&str>| {
+            let source = parent.map_or(json!("cli"), |p| json!({"subagent": {"thread_spawn": {"parent_thread_id": p}}}));
+            format!("{}\n{{\"before\":1}}\n", json!({"type": "session_meta", "payload": {"id": id, "source": source}}))
+        };
+        let transcript = day.join("rollout-1-parent.jsonl");
+        fs::write(&transcript, meta("parent", None)).unwrap();
+        let (child, grandchild, other) = (day.join("rollout-2-child.jsonl"), day.join("rollout-3-grandchild.jsonl"), day.join("rollout-4-other.jsonl"));
+        fs::write(&child, meta("child", Some("parent"))).unwrap();
+        fs::write(&grandchild, meta("grandchild", Some("child"))).unwrap();
+        fs::write(&other, meta("other", Some("someone-else"))).unwrap();
+        let mut mirror = test_mirror(transcript);
+        mirror.native.provider = "codex".into();
+        mirror.native.conversation = "parent".into();
+        // Announced before the cut-off, rollout not found until now; and one never found.
+        mirror.subagents.known.insert("child".into(), Subagent::default());
+        mirror.subagents.known.insert("vanished".into(), Subagent::default());
+        let current = mirror.native.clone();
+        mirror.share_from_now(&current);
+        for (id, path) in [("child", &child), ("grandchild", &grandchild)] {
+            let subagent = &mirror.subagents.known[id];
+            assert!(!subagent.closed && subagent.path.is_some(), "{id} is read from now on");
+            assert_eq!(subagent.cursor.offset, fs::metadata(path).unwrap().len(), "{id} from its current end");
+        }
+        assert!(!mirror.subagents.known.contains_key("other"), "another thread's child is not this one's");
+        assert!(mirror.subagents.known["vanished"].closed);
+        // No transcript known when sharing starts: its end is taken at the first read.
+        let mut unknown = mirror.native.clone();
+        unknown.transcript = None;
+        mirror.share_from_now(&unknown);
+        assert!(mirror.cursor.from_end);
+    }
+
+    #[test]
     fn local_sessions_a_cursor_at_the_end_reads_nothing_already_there_nor_the_row_in_progress() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.jsonl");
@@ -2116,6 +2182,16 @@ mod tests {
             assert_eq!((cursor.offset, cursor.skip_row), (text.len() as u64, skip), "{text:?}");
             assert!(cursor.inode.is_some());
         }
+        // A file that cannot be read when sharing starts: its end is taken at the first read,
+        // so what it holds by then is not read either. Never the beginning.
+        let missing = dir.path().join("later.jsonl");
+        let mut late = cursor_at_end(&missing);
+        assert!(late.from_end && late.offset == 0);
+        fs::write(&missing, "{\"written\":\"before the first read\"}\n{\"half").unwrap();
+        assert!(late.read(&missing, "claude").unwrap().is_empty());
+        assert_eq!((late.from_end, late.skip_row, late.offset), (false, true, fs::metadata(&missing).unwrap().len()));
+        fs::OpenOptions::new().append(true).open(&missing).unwrap().write_all(b"\":1}\n{\"n\":9}\n").unwrap();
+        assert_eq!(late.read(&missing, "claude").unwrap(), vec![json!({"n": 9})]);
         // A row was being written when sharing started: its end arrives later, and none of the
         // row is read. The rows after it are.
         fs::write(&path, "{\"n\":1}\n{\"n\":2,\"private\":\"wri").unwrap();

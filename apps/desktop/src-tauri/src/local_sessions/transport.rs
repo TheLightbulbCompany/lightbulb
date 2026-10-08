@@ -747,9 +747,10 @@ impl Host {
             Some(cwd) => !in_approved_folder(cwd, &approved),
             // A hook that could not carry its folder (its datagram was too large even with
             // everything else dropped) is not a hook from inside: a mirrored session may have
-            // moved. It is unshared like one that did, and the pass woken below shares it
-            // again, from then on, if its listing names an approved folder.
-            None => !keys.is_empty(),
+            // moved, and one not mirrored yet may be running outside. Either is treated as
+            // outside, and the pass woken below shares it, from then on, if its listing names an
+            // approved folder.
+            None => true,
         };
         let mut shared = false;
         for key in &keys {
@@ -3526,6 +3527,29 @@ pub(super) mod tests {
         let mirror = &host.mirrors[&key];
         assert!(!mirror.unshared && mirror.ended_at.is_none() && mirror.queue.is_empty());
         assert!(!host.refuses_input(mirror));
+    }
+
+    #[test]
+    fn local_sessions_a_first_hook_without_its_folder_marks_a_session_not_yet_mirrored() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("scratch");
+        fs::create_dir_all(&folder).unwrap();
+        approve(&[]);
+        let mut native = observed_fixture(dir.path());
+        native.cwd = Some(folder.clone());
+        let transcript = native.transcript.clone().unwrap();
+        let key = native_key(&native);
+        let mut host = test_host(dir.path(), vec![]);
+        // Its first hook is too large to carry the folder; no pass has seen the session.
+        let mut started = hook(lifecycle::Provider::Claude, "SessionStart", "s");
+        started.cwd = None;
+        host.hook_seen(&started).unwrap();
+        assert!(host.outside.contains_key(&outside_key("claude", "s")), "where it runs is not known: not from its beginning");
+        // The folder is approved before the pass that hook woke has run.
+        approve(&[&folder]);
+        host.observe(vec![native], &BTreeSet::new()).unwrap();
+        assert_eq!(host.mirrors[&key].cursor.offset, fs::metadata(&transcript).unwrap().len());
+        assert!(host.mirrors[&key].queue.is_empty());
     }
 
     #[test]

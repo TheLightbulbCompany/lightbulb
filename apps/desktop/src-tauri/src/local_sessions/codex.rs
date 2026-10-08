@@ -841,14 +841,8 @@ fn subagent_activity(item: &Value, ts: Option<&str>) -> Option<Value> {
     Some(e)
 }
 
-/// A Codex subagent's rollout, found by the thread id its parent's `SubAgentActivity`
-/// names and admitted only when its own `session_meta` names `parent` as the thread that
-/// spawned it. Codex files a rollout under the local date it started, so a subagent spawned
-/// just now sits in one of the two newest day directories.
-/// ponytail: an id never found (an ephemeral thread) is looked for on every read; cap it if
-/// that ever shows up in a profile.
-pub(super) fn child_rollout(transcript: &Path, parent: &str, child: &str) -> Option<(PathBuf, Value)> {
-    let root = transcript.ancestors().nth(4)?;
+/// The two newest day directories under a Codex sessions root (`<root>/<year>/<month>/<day>`).
+fn newest_days(root: &Path) -> Vec<PathBuf> {
     let newest = |dir: &Path| -> Vec<PathBuf> {
         let mut names: Vec<PathBuf> = fs::read_dir(dir)
             .into_iter()
@@ -860,12 +854,63 @@ pub(super) fn child_rollout(transcript: &Path, parent: &str, child: &str) -> Opt
         names.reverse();
         names
     };
-    let days = newest(root)
+    newest(root)
         .iter()
         .flat_map(|year| newest(year))
         .flat_map(|month| newest(&month))
         .take(2)
-        .collect::<Vec<_>>();
+        .collect()
+}
+
+/// Every subagent rollout below `parent` (its children, theirs, and so on) that exists now, by
+/// thread id: the ones `child_rollout` would admit, found without the `started` row that names
+/// them. For the moment sharing starts on a thread whose children started earlier.
+/// ponytail: the same two newest day directories as `child_rollout`; a child older than that
+/// is not found, there or here.
+pub(super) fn children(transcript: &Path, parent: &str) -> Vec<(String, PathBuf)> {
+    let Some(root) = transcript.ancestors().nth(4) else {
+        return vec![];
+    };
+    // (thread, the thread that spawned it, its rollout)
+    let spawned: Vec<(String, String, PathBuf)> = newest_days(root)
+        .iter()
+        .flat_map(|day| fs::read_dir(day).into_iter().flatten().flatten())
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            if !name.starts_with("rollout-") || !name.ends_with(".jsonl") {
+                return None;
+            }
+            let path = confined_path(root, &entry.path()).ok()?;
+            let mut line = String::new();
+            BufReader::new(secure_file(&path).ok()?.take(65536)).read_line(&mut line).ok()?;
+            let meta: Value = serde_json::from_str(&line).ok()?;
+            let payload = &meta["payload"];
+            let by = payload["source"]["subagent"]["thread_spawn"]["parent_thread_id"].as_str()?;
+            (meta["type"] == "session_meta").then_some(())?;
+            Some((payload["id"].as_str()?.to_owned(), by.to_owned(), path))
+        })
+        .collect();
+    let (mut found, mut below) = (vec![], vec![parent.to_owned()]);
+    while let Some(thread) = below.pop() {
+        for (id, by, path) in &spawned {
+            if *by == thread && !found.iter().any(|(known, _)| known == id) {
+                found.push((id.clone(), path.clone()));
+                below.push(id.clone());
+            }
+        }
+    }
+    found
+}
+
+/// A Codex subagent's rollout, found by the thread id its parent's `SubAgentActivity`
+/// names and admitted only when its own `session_meta` names `parent` as the thread that
+/// spawned it. Codex files a rollout under the local date it started, so a subagent spawned
+/// just now sits in one of the two newest day directories.
+/// ponytail: an id never found (an ephemeral thread) is looked for on every read; cap it if
+/// that ever shows up in a profile.
+pub(super) fn child_rollout(transcript: &Path, parent: &str, child: &str) -> Option<(PathBuf, Value)> {
+    let root = transcript.ancestors().nth(4)?;
+    let days = newest_days(root);
     let suffix = format!("-{child}.jsonl");
     let path = days.iter().find_map(|day| {
         fs::read_dir(day).ok()?.filter_map(|e| e.ok()).find_map(|e| {

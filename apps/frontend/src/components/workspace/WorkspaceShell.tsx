@@ -41,6 +41,7 @@ import { useChatReady } from "@/components/chat/shell/useChatReady";
 import { PANEL_COMPONENTS } from "./panelComponents";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
 import { WorkspaceHeader } from "./WorkspaceHeader";
+import { InvitePeopleDialog } from "./InvitePeopleDialog";
 import { TasksHeaderActions } from "./TasksHeaderActions";
 import { buildMissionControlLayout } from "./buildDefaultLayout";
 import { readLayout, writeLayout } from "./layoutStorage";
@@ -476,6 +477,7 @@ function AuthenticatedWorkspace({ scopeId, workspaceName }: { scopeId: string; w
           <CommandPaletteProvider>
             <DesktopPermissionsGate />
             <ChatHistorySync />
+            <InvitePeopleDialog />
             <div className="workspace-shell" ref={shellRef} data-nav-open={navOpen}
               onKeyDown={navOpen ? (e) => { if (e.key === "Escape") closeNav(); } : undefined}
               data-messages-active={

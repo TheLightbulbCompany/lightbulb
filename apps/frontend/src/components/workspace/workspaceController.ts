@@ -570,6 +570,27 @@ export function useBrowserMacRun(): string | null {
   );
 }
 
+// The Invite people dialog (InvitePeopleDialog, mounted once by WorkspaceShell).
+let _inviteOpen = false;
+const _inviteListeners = new Set<() => void>();
+
+function setInviteDialog(open: boolean): void {
+  if (_inviteOpen === open) return;
+  _inviteOpen = open;
+  _inviteListeners.forEach((l) => l());
+}
+
+export function openInviteDialog(): void { setInviteDialog(true); }
+export function closeInviteDialog(): void { setInviteDialog(false); }
+
+export function useInviteDialogOpen(): boolean {
+  return useSyncExternalStore(
+    (l) => { _inviteListeners.add(l); return () => { _inviteListeners.delete(l); }; },
+    () => _inviteOpen,
+    () => false,
+  );
+}
+
 // Synchronous read of the live snapshot for non-React callers (the shell's
 // URL reconciler checks panel newness for analytics at execute time, before
 // any re-render would refresh a useWorkspaceState value).
@@ -591,5 +612,7 @@ export function _resetControllerForTests(): void {
   _hostListeners.clear();
   _macRun = null;
   _macListeners.clear();
+  _inviteOpen = false;
+  _inviteListeners.clear();
   _sessionTasksPlacement = null;
 }

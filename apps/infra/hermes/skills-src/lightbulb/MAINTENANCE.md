@@ -65,7 +65,9 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   - Members / join link ..... references/surfaces.md ("Members & join link" row)
                               <- routers/orgs.py (one link per workspace; admin-only mint/copy/revoke;
                                  open join as org:member); frontend WorkspaceMembersSection (Settings →
-                                 Members) and MessagingWorkspaceContext.copyJoinLink (channel/group-chat Members section, not DMs).
+                                 Members), workspace/InvitePeoplePanel + InvitePeopleDialog (email invites, pending/revoke,
+                                 rail Invite), app/onboarding JoinTeamBlock (paste a join link), and
+                                 MessagingWorkspaceContext.copyJoinLink (channel/group-chat Members section, not DMs).
   - Browser live view ....... references/surfaces.md
                               <- Mac viewer input: apps/frontend/src/components/workspace/panels/BrowserFrameView.tsx
                                  (event producer); apps/backend/routers/container.py and

@@ -47,6 +47,7 @@ vi.mock("../WorkspaceSidebar", () => ({
   ),
 }));
 vi.mock("../ChatHistorySync", () => ({ ChatHistorySync: () => null }));
+vi.mock("../InvitePeopleDialog", () => ({ InvitePeopleDialog: () => null }));
 vi.mock("../WorkspaceHeader", () => ({ WorkspaceHeader: () => <nav className="workspace-rail"><button disabled>Back</button><button>Search</button></nav> }));
 vi.mock("dockview-react", () => ({
   themeLight: { name: "light", className: "dockview-theme-light" },

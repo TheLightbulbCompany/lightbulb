@@ -104,6 +104,42 @@ function CreateWorkspaceForm() {
   );
 }
 
+/** A pasted join link → `/join/<orgId>#<token>`, or null. Accepts the full URL from any host
+ *  (dev, prod, a copy from a chat app) or the bare path; the token rides in the fragment. */
+function joinLinkTarget(value: string): string | null {
+  let url: URL;
+  try { url = new URL(value.trim(), "https://placeholder.invalid"); } catch { return null; }
+  return /^\/join\/org_[A-Za-z0-9]+\/?$/.test(url.pathname) && url.hash.length > 1 ? `${url.pathname.replace(/\/$/, "")}${url.hash}` : null;
+}
+
+/** For someone who signed up to join a team, not to start one: the email link, or a pasted join link. */
+function JoinTeamBlock() {
+  const router = useRouter();
+  const [link, setLink] = useState("");
+  const [problem, setProblem] = useState<string | null>(null);
+  function join(event: FormEvent) {
+    event.preventDefault();
+    const target = joinLinkTarget(link);
+    if (!target) { setProblem("That doesn't look like a Lightbulb join link."); return; }
+    router.push(target);
+  }
+  return (
+    <section aria-labelledby="join-team" className="flex w-full max-w-md flex-col gap-3 rounded-xl border border-border bg-card p-6 shadow-sm">
+      <h2 id="join-team" className="text-lg font-semibold">Joining a team?</h2>
+      <p className="text-sm text-muted-foreground">Invited by email? Open that email on this device and tap its link.</p>
+      <form onSubmit={join} className="flex flex-col gap-1.5">
+        <label htmlFor="join-link" className="text-sm font-medium">Paste a join link</label>
+        <div className="flex gap-2">
+          <Input id="join-link" value={link} onChange={(e) => { setLink(e.target.value); setProblem(null); }} placeholder="https://…/join/…"
+            spellCheck={false} autoCapitalize="none" autoComplete="off" aria-describedby={problem ? "join-link-problem" : undefined} className="min-w-0 flex-1" />
+          <Button type="submit" variant="outline" disabled={!link.trim()}>Join</Button>
+        </div>
+        {problem && <p id="join-link-problem" role="alert" className="text-sm text-destructive">{problem}</p>}
+      </form>
+    </section>
+  );
+}
+
 export default function OnboardingPage() {
   const router = useRouter();
   const { isLoaded, isSignedIn, orgId } = useAuth();
@@ -199,9 +235,11 @@ export default function OnboardingPage() {
         <>
           <h1 className="text-2xl font-bold">Create your workspace</h1>
           <p>Your workspace brings your agents, work, and billing together.</p>
-          <p className="max-w-md text-center text-sm text-muted-foreground">
-            Joining a team that already uses Lightbulb? Ask them for their workspace join link and open it in your browser instead. This form makes a new, separate workspace.
-          </p>
+          <JoinTeamBlock />
+          <div className="flex w-full max-w-md items-center gap-3 text-sm text-muted-foreground" aria-hidden="true">
+            <span className="h-px flex-1 bg-border" />or<span className="h-px flex-1 bg-border" />
+          </div>
+          <h2 className="text-lg font-semibold">Or start a new workspace</h2>
           <CreateWorkspaceForm />
         </>
       )}

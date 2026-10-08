@@ -49,20 +49,12 @@ const activityState = { attentionCount: 0 };
 vi.mock("@/hooks/useActivity", () => ({ useActivity: () => activityState }));
 const mailState = { newCount: 0 };
 vi.mock("@/components/mail/useTeamMail", () => ({ useNewMailCount: () => mailState.newCount }));
-vi.mock("../workspaceController", () => ({ openPanel: (...args: unknown[]) => openPanel(...args), activateMessagesPanel: () => activateMessagesPanel(), useWorkspaceState: () => ({ activePanelId }) }));
+const openInviteDialog = vi.fn();
+vi.mock("../workspaceController", () => ({ openPanel: (...args: unknown[]) => openPanel(...args), activateMessagesPanel: () => activateMessagesPanel(), openInviteDialog: () => openInviteDialog(), useWorkspaceState: () => ({ activePanelId }) }));
 
 const recordMessagesNavigation = vi.fn();
 vi.mock("../chatHistory", () => ({ recordMessagesNavigation: () => recordMessagesNavigation() }));
 
-const copyJoinLink = vi.fn();
-vi.mock("@/hooks/useCopyJoinLink", async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  useCopyJoinLink: () => copyJoinLink,
-}));
-const notify = vi.fn();
-const notifySuccess = vi.fn();
-vi.mock("@/lib/notify", () => ({ notify: (...args: unknown[]) => notify(...args), notifySuccess: (...args: unknown[]) => notifySuccess(...args) }));
-import { ApiError } from "@/lib/api";
 import { trackTeamRunActivity } from "@/components/notifications/teamRunActivity";
 import { WorkspaceHeader } from "../WorkspaceHeader";
 
@@ -195,16 +187,13 @@ describe("WorkspaceHeader", () => {
     expect(screen.queryByRole("button", { name: "Reset workspace layout" })).not.toBeInTheDocument();
   });
 
-  it("offers Invite people to everyone: an admin copies the link, anyone else is told to ask an admin", async () => {
-    copyJoinLink.mockResolvedValueOnce(undefined);
-    render(<WorkspaceHeader chatReady={false} />);
+  it("offers Invite people to everyone, even before chat is ready, and opens the invite dialog", () => {
+    const onNavigate = vi.fn();
+    render(<WorkspaceHeader chatReady={false} onNavigate={onNavigate} />);
     const invite = screen.getByRole("button", { name: "Invite people" });
     expect(invite).not.toBeDisabled();
-    await act(async () => { fireEvent.click(invite); });
-    expect(copyJoinLink).toHaveBeenCalledWith("workspace_header");
-    expect(notifySuccess).toHaveBeenCalledWith("Copied. Anyone who opens it and signs in joins this workspace.", expect.anything());
-    copyJoinLink.mockRejectedValueOnce(new ApiError(403, { detail: "admin only" }));
-    await act(async () => { fireEvent.click(invite); });
-    expect(notify).toHaveBeenCalledWith("Only a workspace admin can copy it. Ask an admin to copy it from Settings → Members.", expect.anything());
+    fireEvent.click(invite);
+    expect(openInviteDialog).toHaveBeenCalledTimes(1);
+    expect(onNavigate).toHaveBeenCalled();
   });
 });

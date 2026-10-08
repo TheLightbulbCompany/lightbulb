@@ -127,6 +127,7 @@ FEATURES = [
     "endedScreens",
     "terminalReason",
     "endedStartId",
+    "agentMessageAsks",
 ]
 
 
@@ -155,6 +156,9 @@ class DeviceHeartbeat(ContractModel):
     # This Mac strips ctrl+x and mouse reports from remote input (only the owner operates the
     # band), so it never freezes remote input for a pending request; without it the web says "Paused".
     band_owner_only: bool = False
+    # This Mac's band shows an agent's ask to message the session as one (spec
+    # 2026-10-07-agent-session-approval), so presence lists those asks for it.
+    agent_message_asks: bool = False
 
     def device_features(self) -> list[str]:
         return sorted(
@@ -250,10 +254,32 @@ def _conflict(reason: str, **fields: object) -> ApiProblem:
     return ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed; reconcile before retrying.")
 
 
-async def _actor_label(command: dict) -> dict | None:
+async def _actor_label(command: dict, owner_human: str | None = None, owner: str | None = None) -> dict | None:
     """Handle and name of the sender; the desktop shows it in the owner's terminal. The room's
     member row when there is one; a person with no room (a follow-up sent from the session's own
-    page stores roomId "") or no row in it still gets the name presence shows."""
+    page stores roomId "") or no row in it still gets the name presence shows. An agent's send
+    that a person approved says so: "Friday, approved by you" to the session's owner
+    (``owner_human``), "Friday, approved by Sam" when a teammate under team control approved."""
+    label = await _sender_label(command, owner)
+    if label is None or not command.get("approvedBy"):
+        return label
+    from core.services.session_presence import _name
+
+    approver = command["approvedBy"]
+    by = "you" if approver == owner_human else await _name(approver)
+    return {**label, "displayName": f"{label.get('displayName') or 'An agent'}, approved by {by}"}
+
+
+async def _agent_roster_name(owner: str, agent_id: str) -> str | None:
+    from core.services.messaging import load_agent_roster
+
+    try:
+        return next((a.get("name") for a in await load_agent_roster(owner) if a.get("id") == agent_id), None)
+    except Exception:  # noqa: BLE001 -- a label never blocks delivery
+        return None
+
+
+async def _sender_label(command: dict, owner: str | None) -> dict | None:
     from core.services.messaging import human_emails, with_human_handles
 
     if (command.get("actor") or {}).get("kind") == "session":
@@ -271,7 +297,9 @@ async def _actor_label(command: dict) -> dict | None:
         member = next((m for m in members if m.get("kind") == kind and str(m.get("id")) == member_id), None)
     if member is None:
         if kind != "human":
-            return None
+            # An agent with no room (a Paperclip run) or no longer in it: the roster names it.
+            name = await _agent_roster_name(owner, member_id) if owner else None
+            return {"kind": "agent", "handle": None, "displayName": name} if name else None
         from core.services.session_presence import _name  # imports this module's siblings
 
         name = await _name(member_id)
@@ -1330,7 +1358,7 @@ class LocalSessionRelay:
                     continue
                 # Resolved before the claim: a membership read inside the claim window
                 # can spend the lease and turn a dispatchable command into a rejection.
-                actor = await _actor_label(command)
+                actor = await _actor_label(command, row.get("humanUserId"), owner)
                 claim = _revised(command, claimUntil=min(int(time.time()) + CLAIM_SECONDS, command["deliverBy"]))
                 await repo.replace_command(command, claim, checks=checks)
                 row = await repo.get_session(owner, sid)

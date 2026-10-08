@@ -5,6 +5,7 @@ everything else (a viewer leaving, typing) rides the heartbeat ack."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 FEATURE = "sessionPresence"
 PICKUP_FEATURE = "pickupRequests"
+AGENT_ASK_FEATURE = "agentMessageAsks"
 # This Mac strips ctrl+x and mouse reports from remote input, so only the owner can operate the
 # band and nothing freezes while a request waits. An older presence Mac freezes remote input
 # instead, so the web says so (inputPaused).
@@ -63,6 +65,13 @@ async def entry(row: dict, at: int) -> dict:
     ]
     viewers = sorted(r["userId"] for r in live)
     typing = {r["userId"] for r in live if int(r.get("typedAt", 0)) > now - TYPING_WINDOW_S}
+    # An agent's ask to message this session (spec 2026-10-07-agent-session-approval), only for a Mac
+    # that says it can show one: an older band would call it a join request. Allow answers Send.
+    asks = (
+        await sessions.pending_agent_asks(row["ownerId"], row["sessionId"])
+        if AGENT_ASK_FEATURE in row.get("deviceFeatures", ())
+        else []
+    )
     return {
         "sessionId": row["sessionId"],
         "generation": row["generation"],
@@ -77,6 +86,17 @@ async def entry(row: dict, at: int) -> dict:
                 {"userId": u, "name": await _name(u), "requestId": rid, "kind": kind}
                 for kind, pending in (("join", pending_joins(row)), ("pickup", shown_pickups(row)))
                 for u, rid in pending.items()
+            ]
+            + [
+                {
+                    "userId": ask["agentId"],
+                    "name": ask.get("agentName") or "Your agent",
+                    "requestId": ask["requestId"],
+                    "kind": "agent_message",
+                    "action": ask["kind"],
+                    "text": (ask.get("text") or "")[: sessions.ASK_PRESENCE_TEXT_CHARS],
+                }
+                for ask in asks
             ],
             key=lambda r: (r["userId"], r["kind"]),
         ),
@@ -88,10 +108,9 @@ async def ack_with_presence(ack: dict, owner: str, session_ids: list[str]) -> di
     read_at = _ms()
     try:
         out = []
-        for row in await repo.get_sessions(owner, session_ids):  # one read for the frame
-            if row is None or row.get("endedAt") is not None:
-                continue
-            e = await entry(row, read_at)
+        rows = [r for r in await repo.get_sessions(owner, session_ids) if r and r.get("endedAt") is None]
+        # One frame's sessions concurrently: each entry is a bounded read or two (viewers, ask slots).
+        for e in await asyncio.gather(*(entry(row, read_at) for row in rows)):
             if e["viewers"] or e["joinRequests"] or e["paused"]:
                 out.append(e)
     except Exception:  # noqa: BLE001

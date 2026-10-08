@@ -55,7 +55,8 @@ class NativeDecisionRequest(ContractModel):
     generation: str = Field(min_length=1, max_length=128)
     decision: Literal["allow", "decline", "pause", "unpause"]
     user_id: str | None = Field(default=None, max_length=128)
-    request_id: str | None = Field(default=None, max_length=64)
+    # An agent ask is named by the agent's own request id (an OpaqueId, up to 256).
+    request_id: str | None = Field(default=None, max_length=256)
 
     @model_validator(mode="after")
     def names_one_request(self):
@@ -92,7 +93,14 @@ async def decide(device: MachineIdentity, body: NativeDecisionRequest) -> local_
         # Same notice the web sharing route sends, so other clients' session views refresh.
         await publish_resources_changed(device.owner_id, device.user_id)
         return session
-    # Join and pick-up requests share one presence list; the request id says which one this answers.
+    # Join, pick-up and agent asks share one presence list; the request id says which one this answers.
+    ask = await local_sessions._get_ask(device.owner_id, sid, body.request_id)
+    if ask is not None and ask["agentId"] == body.user_id:
+        # An agent's ask (spec 2026-10-07-agent-session-approval): the band's Allow is Send.
+        await local_sessions.decide_agent_ask(
+            auth, sid, body.request_id, "send" if body.decision == "allow" else "decline"
+        )
+        return await local_sessions.get_session(auth, sid)
     if local_sessions.pending_pickups(row).get(body.user_id) == body.request_id:
         return await local_sessions.decide_pickup_request(
             auth, sid, body.user_id, body.decision, request_id=body.request_id
@@ -135,12 +143,8 @@ async def _source(device: MachineIdentity, request: NativeToolRequest) -> dict:
 
 def sendable(session: local_sessions.LocalSession, user_id: str) -> bool:
     """A live, verified session this person may send a follow-up into (both MCP servers list this)."""
-    return (
-        session.status in local_sessions.LIVE_STATUSES
-        and session.capabilities_verified
-        and session.control_unavailable_reason is None
-        and session.capabilities.send_mode != "none"
-        and (session.human_user_id == user_id or session.team_control or user_id in session.allowed_senders)
+    return local_sessions.live_for_input(session) and (
+        session.human_user_id == user_id or session.team_control or user_id in session.allowed_senders
     )
 
 

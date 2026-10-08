@@ -134,13 +134,16 @@ def _prefs(row: dict | None) -> UserPrefs:
         timezone=user_repo.timezone_of(row),
         dailySummary=user_repo.daily_summary_on(row),
         chatTheme=user_repo.chat_theme_of(row),
+        agentSendWithoutAsking=user_repo.agent_send_without_asking(row),
+        sessionsReachableFromBackgroundWork=user_repo.sessions_reachable_from_background_work(row),
     )
 
 
 @router.get("/me/prefs", response_model=UserPrefs, operation_id="get_my_prefs")
 async def get_my_prefs(auth: AuthContext = Depends(get_current_user)) -> UserPrefs:
     """The caller's per-human prefs: IANA ``timezone``, the ``dailySummary`` digest
-    toggle, and the account's ``chatTheme`` (null when never set)."""
+    toggle, the account's ``chatTheme`` (null when never set), and the two agent-session
+    switches (``agentSendWithoutAsking``, ``sessionsReachableFromBackgroundWork``; both off by default)."""
     return _prefs(await user_repo.get(auth.user_id))
 
 
@@ -155,6 +158,8 @@ async def update_my_prefs(body: UserPrefsUpdate, auth: AuthContext = Depends(get
         timezone=body.timezone,
         daily_summary=body.dailySummary,
         chat_theme=body.chatTheme,
+        agent_send_without_asking=body.agentSendWithoutAsking,
+        sessions_reachable_from_background_work=body.sessionsReachableFromBackgroundWork,
     )
     return _prefs(await user_repo.get(auth.user_id))
 

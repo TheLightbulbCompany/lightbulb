@@ -467,6 +467,7 @@ async def test_decision_refuses_a_stale_connection(monkeypatch):
 async def test_allow_and_pause_run_as_the_owner(monkeypatch):
     monkeypatch.setattr(tools.sessions_repo, "get_session", AsyncMock(return_value=_decision_row()))
     _connected(monkeypatch)
+    monkeypatch.setattr(tools.local_sessions, "_get_ask", AsyncMock(return_value=None))
     decide_join = AsyncMock(return_value="joined")
     set_sharing = AsyncMock(return_value="paused")
     monkeypatch.setattr(tools.local_sessions, "decide_join", decide_join)
@@ -529,6 +530,7 @@ async def test_the_mac_answers_each_request_by_its_own_id(monkeypatch, request_i
     )
     monkeypatch.setattr(tools.sessions_repo, "get_session", AsyncMock(return_value=row))
     _connected(monkeypatch)
+    monkeypatch.setattr(tools.local_sessions, "_get_ask", AsyncMock(return_value=None))
     doors = {"join": AsyncMock(return_value="join"), "pickup": AsyncMock(return_value="pickup")}
     monkeypatch.setattr(tools.local_sessions, "decide_join", doors["join"])
     monkeypatch.setattr(tools.local_sessions, "decide_pickup_request", doors["pickup"])

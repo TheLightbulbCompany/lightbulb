@@ -18,7 +18,7 @@ from botocore.exceptions import ClientError
 from pydantic import Field, field_validator, model_serializer, model_validator
 
 from core.auth import AuthContext, resolve_owner_id
-from core.dynamodb import utc_now_iso
+from core.dynamodb import run_in_thread, utc_now_iso
 from core.observability.product_analytics import capture_product_event
 from core.observability.session_analytics import capture_session_event
 from core.repositories import container_repo, local_sessions_repo as repo, messaging_repo
@@ -318,6 +318,9 @@ class LocalSession(ContractModel):
     # The viewer's seat in this session's chat, once they are in it (PR #3807).
     chat_room_id: str | None = None
     chat_unread: int | None = None
+    # Agent listings only (spec 2026-10-07-agent-session-approval §3.2): whether this agent turn may send
+    # straight in, must ask the owner first, or cannot send at all (not live, unverified, no input).
+    agent_send: Literal["direct", "ask", "unavailable"] | None = None
 
     @model_serializer(mode="wrap")
     def wire(self, handler, info):
@@ -349,6 +352,7 @@ class LocalSession(ContractModel):
                 "pending_pickup_ids",
                 "chat_room_id",
                 "chat_unread",
+                "agent_send",
             ),
         )
 
@@ -545,6 +549,40 @@ class CommandReceipt(LocalSessionCommand):
         )
 
 
+class AgentCommandReceipt(CommandReceipt):
+    """The agent routes' receipt (spec 2026-10-07-agent-session-approval §3.2): the command's, or,
+    while none exists, its ask's. ``awaiting_approval`` is agent-only; desktops never see it."""
+
+    state: Literal["awaiting_approval", "pending", "dispatched", "applied", "rejected", "unknown"]
+    command_seq: int | None = None
+    deliver_by: int | None = None
+    # A rejected ask: "declined", "expired", or the check that failed when it was sent.
+    reason: str | None = None
+    expires_at: int | None = None
+    approved_by: str | None = None
+
+    @model_serializer(mode="wrap")
+    def wire(self, handler, info):
+        return _drop_none(
+            self,
+            handler(self),
+            info,
+            (
+                "actor_user_id",
+                "actor",
+                "invocation_expires_at",
+                "cancelled_at",
+                "native_hop",
+                "command_seq",
+                "deliver_by",
+                "reason",
+                "expires_at",
+                "approved_by",
+                *_APPROVAL_FIELDS,
+            ),
+        )
+
+
 class OfflineOutbox(ContractModel):
     commands: list[CommandReceipt]
 
@@ -589,6 +627,7 @@ def command_caller(owner: str, command: dict) -> Caller:
             int(command["invocationExpiresAt"]),
             command["invocationId"],
             command.get("invocationRequesterId"),
+            approved_by=command.get("approvedBy"),
         )
     user = command["actorUserId"]
     return AuthContext(user_id=user, org_id=owner if owner != user else None)
@@ -946,42 +985,91 @@ async def authorize_session(
     still applies on top.
     """
     owner = caller_owner(auth)
+    agent = isinstance(auth, AgentInvocation)
     if room_id:
         room_id = validate_uuid(room_id, label="room ID")
         await require_caller(auth, room_id)
-    elif isinstance(auth, AgentInvocation):
-        # An agent's authority is its room grant; it has no roomless path.
+    elif agent and (auth.room_id or auth.expires_at <= int(time.time())):
+        # A room grant always names its room; only a Paperclip run's grant is roomless.
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Local session invocation is unavailable.")
     session_id = validate_uuid(session_id, label="local session ID")
     row = await repo.get_session(owner, session_id)
     if row is None or row.get("ownerId") != owner:
         raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
-    agent = isinstance(auth, AgentInvocation)
     if row.get("unshared") and (agent or auth.user_id != row["humanUserId"]):
         # A session its owner stopped sharing reads as gone to everyone else, agents included.
         raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
-    if room_id and await messaging_repo.get_member(room_id, "human", row["humanUserId"]) is None:
+    if agent and not ((await messaging_repo.get_user_stream(owner, row["humanUserId"])) or {}).get("active"):
+        # Agents reach sessions across the workspace, not through the owner's room seat, so a
+        # removed member's leftover rows must read as gone here (their stream is deactivated).
+        raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
+    if agent and not room_id and not await _reachable_from_background(row["humanUserId"]):
+        # Spec 2026-10-07-agent-session-approval: background work reaches only the sessions of
+        # people who turned that on; for anyone else it reads as gone, like an unshared session.
+        raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
+    if room_id and not agent and await messaging_repo.get_member(room_id, "human", row["humanUserId"]) is None:
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Session owner is no longer in this room.")
     if owner_only and (agent or not room_id):
-        # Ruling 2026-09-24: an agent commands a session only on behalf of that session's own
-        # human, i.e. when the message that woke it was theirs. Routines have no requester.
         # Owner ruling 2026-09-25: a workspace member may control it while its owner has turned
         # on "Let teammates control this session". Agents never ride that opt-in.
         # Owner ruling 2026-09-28: or a person the owner allowed after they asked to join.
-        caller = auth.requester_id if agent else auth.user_id
-        allowed = caller == row["humanUserId"] if agent else may_control(row, caller)
+        allowed = await agent_may_command(auth, row) if agent else may_control(row, auth.user_id)
         if not allowed:
             raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can do that.")
     return row, await _enrolled(owner, row["humanUserId"], row["deviceId"])
 
 
-async def list_resources(auth: Caller, room_id: str, *, include_ended: bool = False) -> RoomResources:
+async def _reachable_from_background(human: str) -> bool:
+    from core.repositories import user_repo
+
+    return user_repo.sessions_reachable_from_background_work(await user_repo.get(human))
+
+
+async def may_approve_agent(row: dict, user_id: str) -> bool:
+    """Who may answer an agent's ask (owner review 2026-10-07): the session's owner, or anyone
+    while its owner has team control on. People let in one by one are not approvers. Only a
+    current member: removal deactivates the user stream, and a Clerk token can outlive it."""
+    if not (user_id == row["humanUserId"] or team_control_on(row)):
+        return False
+    stream = await messaging_repo.get_user_stream(row["ownerId"], user_id)
+    return bool(stream and stream.get("active"))
+
+
+async def agent_may_command(auth: AgentInvocation, row: dict) -> bool:
+    """An agent drives a session when the message that woke it was the session owner's (ruling
+    2026-09-24), when a person who may approve chose Send on its ask, or when the owner lets agents
+    message their sessions without asking. Re-checked at delivery."""
+    from core.repositories import user_repo
+
+    if auth.requester_id == row["humanUserId"]:
+        return True
+    if auth.approved_by is not None:
+        return await may_approve_agent(row, auth.approved_by)
+    return user_repo.agent_send_without_asking(await user_repo.get(row["humanUserId"]))
+
+
+def live_for_input(session: LocalSession) -> bool:
+    """A live, verified session that takes input at all; who may send is a separate question."""
+    return (
+        session.status in LIVE_STATUSES
+        and session.capabilities_verified
+        and session.control_unavailable_reason is None
+        and session.capabilities.send_mode != "none"
+    )
+
+
+async def list_resources(auth: Caller, room_id: str | None, *, include_ended: bool = False) -> RoomResources:
     owner = caller_owner(auth)
-    room_id = validate_uuid(room_id, label="room ID")
-    await require_caller(auth, room_id)
+    agent = isinstance(auth, AgentInvocation)
+    if room_id or not agent:
+        room_id = validate_uuid(room_id, label="room ID")
+        await require_caller(auth, room_id)
+    elif auth.room_id or auth.expires_at <= int(time.time()):
+        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Local session invocation is unavailable.")
     devices, sessions, paired_nodes = [], [], []
     # ponytail: bounded room membership, per-human directory reads; batch only if measured slow.
-    for member in await messaging_repo.list_members(room_id):
+    # Devices and pairings stay the room's; a Paperclip run has no room and sees none.
+    for member in await messaging_repo.list_members(room_id) if room_id else []:
         if member.get("kind") != "human":
             continue
         human = member["id"]
@@ -1028,15 +1116,17 @@ async def list_resources(auth: Caller, room_id: str, *, include_ended: bool = Fa
             except ApiProblem as exc:
                 if exc.error.code != "LOCAL_SESSION_FORBIDDEN":
                     raise
-        for projection in await repo.list_user_sessions(owner, human):
+        for projection in [] if agent else await repo.list_user_sessions(owner, human):
             try:
                 row, _ = await authorize_session(auth, room_id, projection["sessionId"])
                 public = _session_public(row, _viewer(auth))
-                if public.kind == "interactive" or isinstance(auth, AgentInvocation):
+                if public.kind == "interactive":
                     sessions.append(public)
             except ApiProblem as exc:
                 if exc.error.code not in {"LOCAL_SESSION_FORBIDDEN", "LOCAL_SESSION_NOT_FOUND"}:
                     raise
+    if agent:
+        sessions = await _agent_sessions(auth, include_ended=include_ended)
     sessions = _without_moved(sessions)
     live = sorted((s for s in sessions if s.status != "ended"), key=lambda s: s.last_event_at or "", reverse=True)
     if include_ended:
@@ -1046,8 +1136,35 @@ async def list_resources(auth: Caller, room_id: str, *, include_ended: bool = Fa
         sessions = live + recent
     else:
         sessions = live
-    await require_caller(auth, room_id)
+    if room_id:
+        await require_caller(auth, room_id)
     return RoomResources(devices=devices, sessions=sessions, paired_nodes=paired_nodes)
+
+
+async def _agent_sessions(auth: AgentInvocation, *, include_ended: bool) -> list[LocalSession]:
+    """Every shared session in the workspace (spec 2026-10-07-agent-session-approval §2.2), background
+    jobs included, each marked with whether this turn may send straight in. A Paperclip run sees only
+    the sessions of people who let background work reach them."""
+    from core.repositories import user_repo
+
+    owner = auth.owner_id
+    humans = [row["userId"] for row in await messaging_repo.list_active_user_streams(owner)]
+    # ponytail: one users-table read per workspace member per listing; batch if workspaces grow large.
+    prefs = dict(zip(humans, await asyncio.gather(*(user_repo.get(human) for human in humans))))
+    if not auth.room_id:
+        humans = [human for human in humans if user_repo.sessions_reachable_from_background_work(prefs[human])]
+    since = int(time.time()) - RECENT_ENDED_SECONDS if include_ended else None
+    found = await _live_public_sessions(owner, humans, include_offline=True, ended_since=since)
+    for session in found:
+        session.agent_send = (
+            "unavailable"
+            if not live_for_input(session)
+            else "direct"
+            if auth.requester_id == session.human_user_id
+            or user_repo.agent_send_without_asking(prefs[session.human_user_id])
+            else "ask"
+        )
+    return [session for session in found if session.shared]
 
 
 async def _live_public_sessions(
@@ -1459,6 +1576,8 @@ async def submit_command(
                 "invocationExpiresAt": auth.expires_at,
                 "invocationId": auth.invocation_id,
                 "invocationRequesterId": auth.requester_id,
+                # Who chose Send on this agent's ask (spec 2026-10-07-agent-session-approval §3.3).
+                **({"approvedBy": auth.approved_by} if auth.approved_by else {}),
             }
             if isinstance(auth, AgentInvocation)
             else {"actorUserId": auth.user_id}
@@ -1603,6 +1722,8 @@ async def submit_command(
         audit = audit_row(owner, session_id, auth, _audit_action(request), request_id=request.request_id)
         if source_session_id:
             audit["sourceSessionId"] = source_session_id
+        if author.get("approvedBy"):
+            audit["approvedBy"] = author["approvedBy"]
         try:
             await repo.admit_command(
                 row,
@@ -1698,6 +1819,358 @@ async def get_command(auth: Caller, room_id: str | None, session_id: str, reques
     if room_id:
         await require_caller(auth, room_id)
     return _public(CommandReceipt, await _expire_pending_command(session["ownerId"], session["sessionId"], row))
+
+
+# --- Agents ask before messaging a person's session (spec 2026-10-07-agent-session-approval) -----
+
+ASK_TTL_S = 24 * 3600
+ASK_RETENTION_S = 7 * 24 * 3600
+ASK_PRESENCE_TEXT_CHARS = 200
+
+
+def _opaque(request_id: str) -> str:
+    from pydantic import TypeAdapter, ValidationError
+
+    try:
+        return TypeAdapter(OpaqueId).validate_python(request_id)
+    except ValidationError as exc:
+        raise ApiProblem("INVALID_REQUEST", "Invalid request ID.") from exc
+
+
+async def _get_ask(owner: str, sid: str, request_id: str) -> dict | None:
+    return await messaging_repo._get(repo.session_pk(owner, sid), f"AGENTASK#{request_id}")
+
+
+def ask_status(ask: dict, now: int | None = None) -> str:
+    """``pending``/``sent``/``declined``/``failed``, or ``expired``: a pending ask past its 24 h,
+    read lazily (nothing sweeps)."""
+    if ask["status"] == "pending" and ask["expiresAt"] <= (now or int(time.time())):
+        return "expired"
+    return ask["status"]
+
+
+async def pending_agent_asks(owner: str, sid: str) -> list[dict]:
+    """The asks still waiting, read through the agents' slots: one bounded query (a slot per agent,
+    held only while its ask is pending) and one read per live slot, never the settled asks kept
+    for receipts. The terminal band's heartbeat path calls this."""
+    now = int(time.time())
+    slots = await messaging_repo._query(repo.session_pk(owner, sid), begins_with="AGENTASKSLOT#")
+    live = [slot["requestId"] for slot in slots if slot["expiresAt"] > now]
+    asks = await asyncio.gather(*(_get_ask(owner, sid, request_id) for request_id in live))
+    return [ask for ask in asks if ask is not None and ask_status(ask, now) == "pending"]
+
+
+def _ask_receipt(ask: dict) -> AgentCommandReceipt:
+    status = ask_status(ask)
+    state = {"pending": "awaiting_approval", "sent": "pending"}.get(status, "rejected")
+    return AgentCommandReceipt(
+        request_id=ask["requestId"],
+        expected_generation=ask["expectedGeneration"],
+        kind=ask["kind"],
+        text=ask.get("text"),
+        expected_turn_id=ask.get("expectedTurnId"),
+        session_id=ask["sessionId"],
+        room_id=ask.get("roomId", ""),
+        actor=AgentActor(kind="agent", id=ask["agentId"]),
+        invocation_expires_at=ask["invocationExpiresAt"],
+        state=state,
+        created_at=ask["createdAt"],
+        expires_at=ask["expiresAt"],
+        approved_by=ask.get("approvedBy"),
+        reason=(ask.get("reason") or status) if state == "rejected" else None,
+    )
+
+
+async def _receipt_for(owner: str, sid: str, ask: dict) -> AgentCommandReceipt:
+    """The command's receipt once Send admitted it, else the ask's."""
+    command = await repo.get_command(owner, sid, ask["requestId"])
+    if command and command.get("actor") == {"kind": "agent", "id": ask["agentId"]}:
+        return _public(AgentCommandReceipt, await _expire_pending_command(owner, sid, command))
+    return _ask_receipt(ask)
+
+
+async def agent_command(auth: AgentInvocation, session_id: str, request: LocalSessionCommand) -> CommandReceipt:
+    """An agent's ``send``/``interrupt`` goes straight in when ``agent_may_command`` says so;
+    otherwise it files ONE ask and answers ``awaiting_approval`` (an ``AgentCommandReceipt``).
+    ``approve`` and ``end`` stay refused by ``submit_command``. The caller dispatches a command."""
+    if request.kind in ("send", "interrupt"):
+        row, _ = await authorize_session(auth, auth.room_id, session_id)
+        owner, sid = row["ownerId"], row["sessionId"]
+        fields = request.model_dump(by_alias=True, exclude={"request_id"}).items()
+        existing = await _get_ask(owner, sid, request.request_id)
+        if existing is not None:
+            if existing["agentId"] != auth.agent_id or any(existing.get(key) != value for key, value in fields):
+                raise ApiProblem("IDEMPOTENCY_CONFLICT", "requestId was already used for a different request.")
+            return await _receipt_for(owner, sid, existing)
+        if not await agent_may_command(auth, row):
+            # Admitted under an earlier grant (the waking person's own turn): a retry under this one
+            # returns that receipt instead of asking the owner about a message already sent.
+            command = await repo.get_command(owner, sid, request.request_id)
+            if command is not None:
+                if command.get("actor") != {"kind": "agent", "id": auth.agent_id} or any(
+                    command.get(key) != value for key, value in fields
+                ):
+                    raise ApiProblem("IDEMPOTENCY_CONFLICT", "requestId was already used for a different request.")
+                return _public(AgentCommandReceipt, await _expire_pending_command(owner, sid, command))
+            return await _file_ask(auth, row, request)
+    return await submit_command(auth, auth.room_id, session_id, request)
+
+
+async def get_agent_receipt(auth: AgentInvocation, session_id: str, request_id: str) -> AgentCommandReceipt:
+    """This agent's command receipt, or its ask's while no command exists."""
+    session, _ = await authorize_session(auth, auth.room_id, session_id)
+    request_id = _opaque(request_id)
+    owner, sid = session["ownerId"], session["sessionId"]
+    command = await repo.get_command(owner, sid, request_id)
+    if command is not None and command.get("actor") == {"kind": "agent", "id": auth.agent_id}:
+        return _public(AgentCommandReceipt, await _expire_pending_command(owner, sid, command))
+    ask = await _get_ask(owner, sid, request_id)
+    if ask is None or ask["agentId"] != auth.agent_id:
+        raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Command not found.")
+    if ask["status"] == "sent":
+        # Approved, but the worker died before admitting it: the approval stands, so admit it now.
+        await _send_ask(session, ask)
+        return await _receipt_for(owner, sid, await _get_ask(owner, sid, request_id) or ask)
+    return _ask_receipt(ask)
+
+
+async def _file_ask(auth: AgentInvocation, row: dict, request: LocalSessionCommand) -> AgentCommandReceipt:
+    from core.services.website_logins import _agent_name
+
+    # A command that cannot run now fails now, not after a person chose Send.
+    _require_control(row, request)
+    owner, sid, now = row["ownerId"], row["sessionId"], int(time.time())
+    pk = repo.session_pk(owner, sid)
+    if auth.turn_id is not None and any(
+        ask.get("agentId") == auth.agent_id and ask.get("turnId") == auth.turn_id and ask["status"] == "declined"
+        for ask in await messaging_repo._query(pk, begins_with="AGENTASK#")
+    ):
+        raise ApiProblem("LOCAL_SESSION_ASK_DECLINED", "The session's owner declined this agent's message in this run.")
+    expires = now + ASK_TTL_S
+    ask = {
+        "pk": pk,
+        "sk": f"AGENTASK#{request.request_id}",
+        **{key: value for key, value in request.model_dump(by_alias=True).items() if value is not None},
+        "sessionId": sid,
+        "agentId": auth.agent_id,
+        "agentName": await _agent_name(owner, auth.agent_id),
+        "roomId": auth.room_id or "",
+        "origin": auth.origin or {"kind": "room", "roomId": auth.room_id},
+        **({"turnId": auth.turn_id} if auth.turn_id else {}),
+        "invocationExpiresAt": auth.expires_at,
+        "status": "pending",
+        "createdAt": now,
+        "expiresAt": expires,
+        "ttl": expires + ASK_RETENTION_S,
+    }
+    table = messaging_repo._table().name
+    try:
+        await messaging_repo._transact(
+            [
+                {"Put": {"TableName": table, "Item": ask, "ConditionExpression": "attribute_not_exists(sk)"}},
+                # One pending ask per (agent, session): the slot frees on a settle or when its ask expires.
+                {
+                    "Put": {
+                        "TableName": table,
+                        "Item": {
+                            "pk": pk,
+                            "sk": f"AGENTASKSLOT#{auth.agent_id}",
+                            "requestId": request.request_id,
+                            "expiresAt": expires,
+                            "ttl": expires,
+                        },
+                        "ConditionExpression": "attribute_not_exists(sk) OR expiresAt <= :now",
+                        "ExpressionAttributeValues": {":now": now},
+                    }
+                },
+            ]
+        )
+    except ClientError as exc:
+        if not messaging_repo._is_cancelled(exc):
+            raise
+        if await _get_ask(owner, sid, request.request_id) is not None:
+            return await agent_command(auth, sid, request)  # the same requestId, filed concurrently
+        raise ApiProblem(
+            "LOCAL_SESSION_ASK_PENDING", "This agent already has an ask waiting on this session."
+        ) from None
+    await _notify_agent_ask(row, ask)
+    return _ask_receipt(ask)
+
+
+async def _settle_ask(ask: dict, status: str, user: str) -> bool:
+    """pending -> ``status`` exactly once, freeing the agent's slot (``browser_extensions.settle_request``)."""
+    now = int(time.time())
+    table = messaging_repo._table().name
+    try:
+        await messaging_repo._transact(
+            [
+                {
+                    "Update": {
+                        "TableName": table,
+                        "Key": {"pk": ask["pk"], "sk": ask["sk"]},
+                        "UpdateExpression": "SET #s = :s, resolvedAt = :now, resolvedBy = :u"
+                        + (", approvedBy = :u" if status == "sent" else ""),
+                        "ConditionExpression": "#s = :p AND expiresAt > :now",
+                        "ExpressionAttributeNames": {"#s": "status"},
+                        "ExpressionAttributeValues": {":s": status, ":p": "pending", ":now": now, ":u": user},
+                    }
+                },
+                # Safe unconditionally: while this ask is pending and unexpired, the slot is its own.
+                {"Delete": {"TableName": table, "Key": {"pk": ask["pk"], "sk": f"AGENTASKSLOT#{ask['agentId']}"}}},
+            ]
+        )
+    except ClientError as exc:
+        if messaging_repo._is_cancelled(exc):
+            return False
+        raise
+    return True
+
+
+async def _send_ask(row: dict, ask: dict) -> None:
+    """Admit the stored command under the approver's authority, attributed to the agent. A check
+    that fails now (a stale generation, the agent left its room) fails the ask; nothing retries."""
+    from core.services.local_session_relay import get_local_session_relay
+
+    owner, sid, approver = row["ownerId"], row["sessionId"], ask["approvedBy"]
+    room = ask.get("roomId") or None
+    invocation = AgentInvocation(
+        owner,
+        room,
+        ask["agentId"],
+        int(time.time()) + 30,
+        ask["requestId"],
+        approver,
+        ask.get("origin"),
+        ask.get("turnId"),
+        approved_by=approver,
+    )
+    command = LocalSessionCommand.model_validate(
+        {key: ask[key] for key in ("requestId", "expectedGeneration", "kind", "text", "expectedTurnId") if key in ask}
+    )
+    try:
+        await submit_command(invocation, room, sid, command)
+    except ApiProblem as exc:
+        try:
+            await run_in_thread(
+                messaging_repo._table().update_item,
+                Key={"pk": ask["pk"], "sk": ask["sk"]},
+                UpdateExpression="SET #s = :failed, reason = :reason",
+                ConditionExpression="#s = :sent",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={":failed": "failed", ":sent": "sent", ":reason": exc.error.code},
+            )
+        except ClientError as write:
+            if write.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+        return
+    try:
+        await get_local_session_relay().dispatch_session(owner, sid)
+    except Exception:
+        # Durable admission stays queued; the device heartbeat retries delivery.
+        logger.warning("Approved agent send dispatch deferred session=%s", sid)
+
+
+async def decide_agent_ask(
+    auth: AuthContext, session_id: str, request_id: str, decision: Literal["send", "decline"]
+) -> AgentCommandReceipt:
+    """An approver answers an agent's ask (decision 5). Send flips pending -> sent on its own
+    conditional write, and only that winner admits the command; a loser gets 409 with the current
+    receipt. A ``sent`` ask with no command (a crash between the two) is admitted by the next Send."""
+    row, _ = await authorize_session(auth, None, session_id)
+    if not await may_approve_agent(row, auth.user_id):
+        raise ApiProblem(
+            "LOCAL_SESSION_FORBIDDEN",
+            "Only the session's owner, or a teammate while team control is on, can answer this.",
+        )
+    owner, sid = row["ownerId"], row["sessionId"]
+    ask = await _get_ask(owner, sid, _opaque(request_id))
+    if ask is None:
+        raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Ask not found.")
+    resume = (
+        decision == "send" and ask["status"] == "sent" and await repo.get_command(owner, sid, ask["requestId"]) is None
+    )
+    if not resume and not await _settle_ask(ask, "sent" if decision == "send" else "declined", auth.user_id):
+        current = await _receipt_for(owner, sid, await _get_ask(owner, sid, ask["requestId"]) or ask)
+        raise ApiProblem(
+            "LOCAL_SESSION_ASK_SETTLED",
+            "This ask was already answered.",
+            details={"receipt": current.model_dump(mode="json", by_alias=True)},
+        )
+    ask = await _get_ask(owner, sid, ask["requestId"]) or ask
+    if decision == "send":
+        await _send_ask(row, ask)
+    await _push_presence(row)
+    return await _receipt_for(owner, sid, await _get_ask(owner, sid, ask["requestId"]) or ask)
+
+
+async def list_agent_asks(auth: AuthContext, session_id: str) -> list[AgentCommandReceipt]:
+    """The asks waiting on a session, for the people who may answer them."""
+    row, _ = await authorize_session(auth, None, session_id)
+    if not await may_approve_agent(row, auth.user_id):
+        return []
+    return [_ask_receipt(ask) for ask in await pending_agent_asks(row["ownerId"], row["sessionId"])]
+
+
+def agent_ask_title(ask: dict, row: dict) -> str:
+    from core.services import notification_copy as copy
+
+    session = copy.line(row.get("displayTitle") or row.get("title"), 40) or row["sessionId"][:8]
+    verb = "stop" if ask["kind"] == "interrupt" else "message"
+    return f"{ask.get('agentName') or 'Your agent'} wants to {verb} {session}"
+
+
+AGENT_ASK_REASON = "Nothing is sent until you choose. Change this in Settings → Desktop."
+
+
+async def _notify_agent_ask(row: dict, ask: dict) -> None:
+    """The owner's Needs-you item, a live event and a push; their terminal band; and, for a room
+    turn, one line from the agent in that room. Best effort, each on its own."""
+    from core.services import notification_copy as copy
+    from core.services.local_session_relay import ACTIVITY_TTL_S
+    from core.services.messaging import AgentMessageRequest, create_agent_message, human_display_name
+
+    owner, human, sid, request_id = row["ownerId"], row["humanUserId"], row["sessionId"], ask["requestId"]
+    event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"local-session-agent-ask|{sid}|{request_id}"))
+    created = utc_now_iso()
+    try:
+        await messaging_repo.put_activity_row(
+            {
+                "pk": messaging_repo.activity_pk(owner, human),
+                "sk": messaging_repo.activity_sk(created, f"session:{event_id}"),
+                "kind": "session",
+                "subtype": "join_request",
+                "request": "agent_message",
+                "sessionId": sid,
+                "requestId": request_id,
+                "agentId": ask["agentId"],
+                "agentName": ask["agentName"],
+                "createdAt": created,
+                "expiresAt": int(time.time()) + ACTIVITY_TTL_S,
+            }
+        )
+    except Exception:
+        logger.warning("Agent ask activity row failed", exc_info=True)
+    body = copy.line(ask.get("text"), 140) or "Stop the current run."
+    await _session_notice(owner, human, sid, "join_request", agent_ask_title(ask, row), body, event_id)
+    await _push_presence(row)
+    if ask["roomId"]:
+        try:
+            name = await human_display_name(human)
+            await create_agent_message(
+                owner,
+                AgentMessageRequest(
+                    event_id=f"agent-ask:{event_id}",
+                    room_id=ask["roomId"],
+                    agent_id=ask["agentId"],
+                    text=f"I've asked {name} before sending that to their session.",
+                    reply_to_message_id=None,
+                    thread_root_message_id=None,
+                    # A progress line wakes nobody and notifies nobody: the ask itself does that.
+                    progress=True,
+                ),
+            )
+        except Exception:
+            logger.warning("Agent ask room line failed", exc_info=True)
 
 
 async def list_offline_outbox(auth: AuthContext, session_id: str) -> OfflineOutbox:

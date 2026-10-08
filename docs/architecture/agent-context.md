@@ -91,9 +91,10 @@ the fleet.
 | A run's state (started / ended / aborted / forced) and usage | the run card in the room; `GET /messaging/runs/{runId}` | yes, the `RUN#` ledger row |
 | A Paperclip run (heartbeat, routine, issue) | Teams → the agent → run detail (log from Paperclip; record in S3 under the agent's run-records prefix) | yes |
 | An agent's ask to send into someone's session | Activity (Needs you), plus one room line | yes, until answered |
-| A shared Claude Code / Codex session | the session panel (`LocalSessionPanel`): the live terminal, or an ended / offline / no-terminal state. A person does **not** get the event log; only the agent's `read` sees that | the terminal is live only; the event log stays on the Mac side while shared |
+| A shared Claude Code / Codex session | the session panel (`LocalSessionPanel`): the live terminal, or an ended / offline / no-terminal state. A person does **not** get the event log in the product; the agent's `read` and the session API do | the terminal is live only; every event is also written as an `EVENT#` row in DynamoDB by the relay, with no TTL, and both the human and agent endpoints read those rows |
 | People talking beside a shared terminal | the hidden "Session chat · {title}" room (`session_chat.py`), one per shared session; the agent's turn carries that room name so it knows where it is | yes |
-| The Hermes turn itself: tool calls, reasoning, the observed block | **nowhere in the product.** Only the agent's `state.db` has it; the agent can `session_search` it, a person cannot | in S3, as the profile |
+| A live room turn's thinking and tool calls | the run card in the room (`RoomPanel.renderRun`): a Thinking disclosure and a tool-activity trace while the run is live; an ended run without a saved reply keeps its trace | live telemetry only, not canonical messages |
+| The Hermes turn as stored: the exact prompt, the observed block, the full tool I/O | **nowhere in the product.** Only the agent's `state.db` has it; the agent can `session_search` it, a person cannot | in S3, as the profile |
 
 If someone asks "what did Friday see when she answered that", the honest answer today is:
 the recent room history (about 50 messages; more when the trigger sits in an older thread,

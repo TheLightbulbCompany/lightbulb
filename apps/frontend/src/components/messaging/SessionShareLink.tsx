@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Link2 } from "lucide-react";
 import { ApiError, type createMessagingClient, type LocalSession, type SessionLink, type SessionLinkAudience } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
@@ -29,6 +29,10 @@ export function SessionShareLink({ session, client }: { session: LocalSession; c
   const [known, setKnown] = useState(false);
   const [readFailed, setReadFailed] = useState(false);
   const [readRound, setReadRound] = useState(0);
+  // Bumped by every change the owner makes here: a read that started before one is stale, and
+  // must not put the old audience back over what the owner just chose (a paused session's control
+  // is usable while its link is still being read).
+  const writes = useRef(0);
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [armed, setArmed] = useState(false);
@@ -40,18 +44,21 @@ export function SessionShareLink({ session, client }: { session: LocalSession; c
   const continueId = useId();
   useEffect(() => {
     let alive = true;
+    const started = writes.current;
+    const current = () => alive && writes.current === started;
     setKnown(false); setReadFailed(false);
     // A 404 is "no link yet": Copy link makes one.
     client.getLocalSessionLink?.(session.sessionId).then(
-      l => { if (alive) { setLink(l); setKnown(true); } },
-      e => { if (!alive) return; if (e instanceof ApiError && e.status === 404) setKnown(true); else setReadFailed(true); },
+      l => { if (current()) { setLink(l); setKnown(true); } },
+      e => { if (!current()) return; if (e instanceof ApiError && e.status === 404) setKnown(true); else setReadFailed(true); },
     );
     return () => { alive = false; };
   }, [client, session.sessionId, readRound]);
   if (!client.putLocalSessionLink) return null;
   const who: Who = !shared ? "me" : link?.audience === "anyone" ? "anyone" : "workspace";
   const save = async (audience?: SessionLinkAudience) => {
-    try { const next = await client.putLocalSessionLink!(session.sessionId, audience); setLink(next); return next; }
+    writes.current += 1;
+    try { const next = await client.putLocalSessionLink!(session.sessionId, audience); setLink(next); setKnown(true); setReadFailed(false); return next; }
     catch { setStatus("Could not change who can see this. Try again."); return null; }
   };
   const choose = async (next: Who) => {
@@ -71,6 +78,7 @@ export function SessionShareLink({ session, client }: { session: LocalSession; c
   // The second click (the select was the first): everyone watching is cut off at once.
   const onlyMe = async () => {
     setArmed(false); setBusy(true);
+    writes.current += 1;
     try {
       await client.setLocalSessionSharing!(session.sessionId, false);
       setShared(false);

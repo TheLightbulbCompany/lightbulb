@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 import { ApiError, type LocalSession } from "@lightbulb/shared";
@@ -108,6 +108,19 @@ it("names no audience until the link is read, and a failed read offers a retry",
   expect(await who()).toHaveValue("anyone");
   expect(screen.queryByRole("alert")).toBeNull();
   expect(client.putLocalSessionLink).not.toHaveBeenCalled();
+});
+
+// Codex on #3946: a paused session's control is usable while its link is still being read.
+it("a read that lands after the owner's choice does not put the old audience back", async () => {
+  let land!: (link: { url: string; audience: "workspace" }) => void;
+  const client = { ...make("workspace"), getLocalSessionLink: vi.fn(() => new Promise<{ url: string; audience: "workspace" }>(resolve => { land = resolve; })) };
+  render(<SessionShareLink session={{ ...session, shared: false }} client={client} />);
+  await userEvent.selectOptions(await who(), "anyone");
+  expect(client.putLocalSessionLink).toHaveBeenLastCalledWith("s1", "anyone");
+  expect(await who()).toHaveValue("anyone");
+  await act(async () => { land({ url, audience: "workspace" }); });
+  expect(await who()).toHaveValue("anyone");
+  expect(screen.getByRole("note")).toHaveTextContent("Anyone with the link can watch this terminal live");
 });
 
 it("a paused session reads Only me even when the link cannot be read", async () => {

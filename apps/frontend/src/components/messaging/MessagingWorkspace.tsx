@@ -31,6 +31,11 @@ export function MessagingDirectory({ onOpenRoom }: { onOpenRoom?: (room?: Direct
       onOpenRoom?.();
       directoryProps.onOpenAllSessions?.();
     }}
+    onAddPeople={directoryProps.onAddPeople && ((roomId) => {
+      directoryProps.onAddPeople!(roomId);
+      const room = directoryProps.rooms.find((candidate) => candidate.roomId === roomId);
+      if (room) onOpenRoom?.(room);
+    })}
     onCreate={(creation) => {
       onOpenRoom?.();
       return directoryProps.onCreate?.(creation);

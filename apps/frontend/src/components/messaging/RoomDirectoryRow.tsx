@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef } from "react";
-import { Bell, BellOff, Hash, Link, LogOut, MailOpen, MessageCircle, MoreHorizontal, Pencil, Star, Users } from "lucide-react";
+import { Bell, BellOff, Hash, Link, LogOut, MailOpen, MessageCircle, MoreHorizontal, Pencil, Star, UserPlus, Users } from "lucide-react";
 import type { RoomSection } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -21,6 +21,7 @@ interface RoomDirectoryRowProps {
   onToggleMute?: () => void;
   onMarkUnread?: () => void;
   onCopyLink: () => void;
+  onAddPeople?: () => void;
   onMoveToSection?: (sectionId: string | null) => void;
   sections: readonly RoomSection[];
   /** Handed this row's overflow trigger so the confirm dialog can return focus to it. */
@@ -29,7 +30,7 @@ interface RoomDirectoryRowProps {
 
 const SHARED_ROOM_HINT = "Your direct line to the Lightbulb team";
 
-export function RoomDirectoryRow({ room, label, active, busy, draft, onSelect, onToggleStar, onToggleMute, onMarkUnread, onCopyLink, onMoveToSection, sections, onLeave }: RoomDirectoryRowProps) {
+export function RoomDirectoryRow({ room, label, active, busy, draft, onSelect, onToggleStar, onToggleMute, onMarkUnread, onCopyLink, onAddPeople, onMoveToSection, sections, onLeave }: RoomDirectoryRowProps) {
   const actionsTrigger = useRef<HTMLButtonElement>(null);
   const Icon = room.kind === "channel" ? Hash : room.kind === "group-dm" ? Users : MessageCircle;
   // A muted room never carries a badge (spec: muted rows are muted-coloured,
@@ -69,6 +70,7 @@ export function RoomDirectoryRow({ room, label, active, busy, draft, onSelect, o
         {onToggleMute && <DropdownMenuItem disabled={busy} onSelect={onToggleMute}>{room.muted ? <Bell aria-hidden="true" /> : <BellOff aria-hidden="true" />}{room.muted ? "Unmute conversation" : "Mute conversation"}</DropdownMenuItem>}
         {onMarkUnread && <DropdownMenuItem disabled={busy} onSelect={onMarkUnread}><MailOpen aria-hidden="true" />Mark unread</DropdownMenuItem>}
         <DropdownMenuItem onSelect={onCopyLink}><Link aria-hidden="true" />Copy link</DropdownMenuItem>
+        {onAddPeople && <DropdownMenuItem onSelect={onAddPeople}><UserPlus aria-hidden="true" />Add people</DropdownMenuItem>}
         {onMoveToSection && <>
           <DropdownMenuSeparator />
           {sections.map((section) => <DropdownMenuItem key={section.id} disabled={busy || room.sectionId === section.id} onSelect={() => onMoveToSection(section.id)}>Move to {section.name}</DropdownMenuItem>)}

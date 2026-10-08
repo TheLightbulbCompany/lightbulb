@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ParticipantAvatar } from "./ParticipantAvatar";
 import { Identity } from "@/components/teams/shared/components/Identity";
+import { JOIN_LINK_COPIED, joinLinkNote } from "@/hooks/useCopyJoinLink";
 import { copyText, roomPermalink } from "./messageLinks";
 import { isUnreadTarget, nextUnreadRoomId } from "./roomNavigation";
 import { RoomDirectoryRow } from "./RoomDirectoryRow";
@@ -61,6 +62,12 @@ export interface RoomDirectoryProps {
   /** Opens the All sessions list in the main pane. */
   onOpenAllSessions?: () => void;
   allSessionsOpen?: boolean;
+  /** The signed-in person: their role in a room decides whether its menu offers Add people. */
+  currentUserId?: string;
+  /** Opens the room with its member picker open. */
+  onAddPeople?: (roomId: string) => void;
+  /** Present only when nobody else is in the workspace: copies the join link (throws like `useCopyJoinLink`). */
+  onInvitePeople?: () => Promise<void>;
   /** Extra header buttons (e.g. "New session"), rendered before "New conversation". */
   headerActions?: ReactNode;
 }
@@ -120,6 +127,9 @@ function DirectoryContent({
   onOpenAllSessions,
   allSessionsOpen = false,
   headerActions,
+  currentUserId,
+  onAddPeople,
+  onInvitePeople,
 }: RoomDirectoryProps) {
   const id = useId();
   const [creating, setCreating] = useState(false);
@@ -178,6 +188,12 @@ function DirectoryContent({
   // every other row's trigger. Only read while `savePrefs.pending`, so a
   // stale value after the action settles is inert.
   const [actingRoomId, setActingRoomId] = useState<string | null>(null);
+  const [inviteNote, setInviteNote] = useState<string | null>(null);
+  const [inviting, setInviting] = useState(false); // one mint at a time: a second POST replaces the first link
+  // Same rule as the room panel: a shared room is never added to; a channel takes its owner or an admin; a
+  // direct message or group chat, anyone (adding to a DM turns it into a group chat in place).
+  const canAddPeople = (room: DirectoryRoom) => !room.shared && (room.kind === "dm" || room.kind === "group-dm" || (room.kind === "channel"
+    && room.members.some((member) => member.kind === "human" && member.id === currentUserId && (member.role === "owner" || member.role === "admin"))));
   const validName = kind === "channel"
     ? name.trim().length >= 1 && name.trim().length <= 80
     : kind === "group-dm" ? name.trim().length <= 80 : true;
@@ -468,7 +484,8 @@ function DirectoryContent({
             onMoveToSection={onSetPrefs && sections.length > 0
               ? (sectionId) => setRoomPrefs(room.roomId, { sectionId }, `Could not move ${label}.`) : undefined}
             onLeave={onLeaveRoom && (room.kind === "channel" || room.kind === "group-dm") && !room.shared ? (trigger) => { leave.reset(); leaveTrigger.current = trigger; setLeaving(room); } : undefined}
-            onCopyLink={() => void copyText(roomPermalink(room.roomId))} />;
+            onCopyLink={() => void copyText(roomPermalink(room.roomId))}
+            onAddPeople={onAddPeople && canAddPeople(room) ? () => onAddPeople(room.roomId) : undefined} />;
         })}</ul>
       </>;
       };
@@ -494,6 +511,13 @@ function DirectoryContent({
         </li>;
       })}</ul>
     </section>}
+    {onInvitePeople && <p className="px-2 text-sm text-muted-foreground">It&apos;s just you and your agents here.{" "}
+      <button type="button" className="underline" disabled={inviting} onClick={() => {
+        setInviting(true);
+        void onInvitePeople().then(() => setInviteNote(JOIN_LINK_COPIED), (error: unknown) => setInviteNote(joinLinkNote(error)))
+          .finally(() => setInviting(false));
+      }}>Invite people</button>
+      {inviteNote && <span role="status"> {inviteNote}</span>}</p>}
     <DialogContent className="room-creation-dialog" showCloseButton={!creationBusy}>
     <form aria-label="Create conversation" className="room-creation" aria-busy={creationBusy}
       onSubmit={async (event) => {

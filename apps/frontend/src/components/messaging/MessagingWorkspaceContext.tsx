@@ -4,8 +4,7 @@ import { createContext, useContext, useCallback, useEffect, useMemo, useRef, use
 import { useAuth } from "@clerk/nextjs";
 import { canChangeListenMode, markSessionsSeen, resolveTypedMentions, runView, sessionArchived, sessionMentionCandidates, sessionUnread, useWorkspaceSessions, workspaceSections, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
-import { useApi } from "@/lib/api";
-import { copyTextWhenReady, JoinLinkCopyError } from "./messageLinks";
+import { useCopyJoinLink } from "@/hooks/useCopyJoinLink";
 import { useBilling } from "@/hooks/useBilling";
 import { useAgents } from "@/hooks/useAgents";
 import { useRosterEntries } from "@/components/agents/useRosterEntries";
@@ -170,29 +169,12 @@ export function MessagingWorkspaceProvider({
 }) {
   const { userId, orgId } = useAuth();
   const scope = orgId ?? userId ?? "signed-out";
-  const api = useApi();
-  // The ONE door into the workspace for someone who is not in it yet (Settings → Members has the
-  // same link). A room's Add people lists workspace members only, which is where people looked
-  // for "invite my cofounder" and found nothing (Second Catch, 2026-10-08). Admin-only: the
-  // backend 403s everyone else, and the room panel says so.
-  const copyJoinLink = useCallback(async () => {
-    if (!orgId) throw new Error("no workspace");
-    const url = (async () => {
-      const status = (await api.get(`/orgs/${orgId}/join-link`)) as { exists: boolean; join_url?: string | null };
-      if (status.exists) {
-        // A row whose plaintext cannot be shown is still a working link for everyone who has it;
-        // minting here would revoke it under a control labelled Copy. Settings → Members regenerates.
-        if (!status.join_url) throw new JoinLinkCopyError("unavailable");
-        return status.join_url;
-      }
-      return ((await api.post(`/orgs/${orgId}/join-link`, {})) as { join_url: string }).join_url;
-    })();
-    // Started inside the click so Safari and the desktop webview still honour the gesture.
-    const copied = await copyTextWhenReady(url);
-    await url; // rethrows the fetch's own error (403 for a non-admin) ahead of a clipboard verdict
-    if (!copied) throw new JoinLinkCopyError("clipboard");
-    capture("join_link_copied", { source: "room_members", workspace_id: orgId });
-  }, [api, orgId]);
+  // A room's Add people lists workspace members only, which is where people looked for "invite my
+  // cofounder" and found nothing (Second Catch, 2026-10-08); the room panel offers the join link too.
+  const copyJoinLinkFor = useCopyJoinLink();
+  const copyJoinLink = useCallback(() => copyJoinLinkFor("room_members"), [copyJoinLinkFor]);
+  // ⋯ → Add people on a sidebar row: open that room, then its member picker (one-shot).
+  const [addPeopleRoomId, setAddPeopleRoomId] = useState<string | null>(null);
   // Focus placement: a session opened from the sidebar or a link takes the
   // middle of the panel; sessions live in the workspace, not in a room.
   const [sessionFocus, setSessionFocus] = useState<SessionFocusTarget | null>(null);
@@ -792,6 +774,11 @@ export function MessagingWorkspaceProvider({
     // Picking any conversation leaves focus placement — the session goes back
     // to being something you open, not the thing you are looking at.
     onSelectRoom: (roomId: string) => { closeSession(); chooseRoom(roomId); },
+    currentUserId: userId ?? undefined,
+    onAddPeople: (roomId: string) => { closeSession(); chooseRoom(roomId); setAddPeopleRoomId(roomId); },
+    // Only once the roster has loaded, so a workspace with people never flashes "just you".
+    ...(humanRoster?.members && !directoryParticipants.some((participant) => participant.kind === "human")
+      ? { onInvitePeople: () => copyJoinLinkFor("sidebar_nudge") } : {}),
     onSelectParticipant: async (participant: DirectoryParticipant) => { closeSession(); await selectParticipant(participant); },
     openingParticipant,
     onMarkUnread: rooms.markUnread,
@@ -901,6 +888,8 @@ export function MessagingWorkspaceProvider({
     ...(rooms.activeRoom?.kind === "channel" && ["owner", "admin"].includes(viewerRole)
       ? { onRemoveMember: rooms.removeMember } : {}),
     ...(rooms.activeRoom && rooms.activeRoom.kind !== "dm" ? { onCopyJoinLink: copyJoinLink } : {}),
+    openAddPeople: addPeopleRoomId !== null && addPeopleRoomId === rooms.activeRoomId,
+    onAddPeopleOpened: () => setAddPeopleRoomId(null),
     onAbortRun: (runId) => rooms.abortRun(runId),
     onLinkToWork: () => openPanel("teams-issues", {}, { pushUrl: true }),
     onDownloadAttachment: rooms.downloadAttachment,

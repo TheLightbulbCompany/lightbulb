@@ -53,7 +53,7 @@ directory (`/app/skills/lightbulb/`).
 | `references/skills.md` | Where your skills live and which of the three directories you can write to. **Read it before using Paperclip's company-skills library** — that path does not reach a Lightbulb agent and answers `supported: false`. |
 | `references/marketplace.md` | Hiring an agent, recommending one, publishing (seller side), whole pre-built companies, the `skills` toolset, and importing an existing Claude Code setup. |
 | `references/software-projects.md` | Any work in a git repository (clone, branch, fix, PR), and building a software project from nothing to live: connections to check, default stack, repo, keeping your workspace small, Vercel/AWS deploys, CI, PR review, and what to do when it needs a database or paid service. |
-| `references/voice.md` | Live voice requests, renames, how you talk: a voice request is a normal turn in this room whose reply is spoken and never posted; when to call `lightbulb_voice_profile` (only when asked; confirm renames, replacements and clears first). |
+| `references/voice.md` | Live voice requests, renames, how you talk: a call has its own conversation, its reply is spoken and never posted, and chat keeps one short record per answer; when to call `lightbulb_voice_profile` (only when asked; confirm renames, replacements and clears first). |
 | `references/company-and-plans.md` | The six-role starter roster, rename-safe identity and `chainOfCommand`, **naming the company** (load-bearing, hard to undo), plans and prices, the three provider paths, and voice calls (free minutes, credits). |
 
 ## Non-negotiables

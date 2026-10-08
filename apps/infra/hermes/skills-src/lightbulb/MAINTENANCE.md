@@ -268,7 +268,8 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   - Voice requests .......... references/voice.md + SKILL.md routing row
                               <- apps/infra/hermes/bridge/server.py + turn.py (a voice run is locked and scoped on the room
                                  session key, lightbulb_session_key, and recorded in the call's own transcript,
-                                 call_session_key; the room session gets one call record per answered turn; frames
+                                 call_session_key; the room session gets one call record per answered turn, question cut to
+                                 300 characters and answer to 500, and a new call starts with the room's newest 10; frames
                                  relayed to the backend, never posted);
                                  plugins/lightbulb/__init__.py (VOICE_ROOM_REFUSAL in _send_room_message; the
                                  `lightbulb_voice_profile` tool: rename|add_note|replace_notes|clear_notes, VOICE_ONLY

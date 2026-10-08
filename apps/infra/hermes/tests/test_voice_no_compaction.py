@@ -11,6 +11,7 @@ import pytest
 from bridge import server, sync, turn
 from tests.test_voice_call_run import IDENTITY, REQUEST, ROOM, SESSION, _Agent, _closing, _fake_hermes, _frames, env  # noqa: F401
 
+RECORD_CALL_EXCHANGE = turn._record_call_exchange  # conftest stubs the attribute for these tests
 
 # ---- 1. no compaction inside the turn ------------------------------------------------------------
 def test_a_spoken_turn_over_the_threshold_does_not_compact_inline(env, home):  # noqa: F811 -- the imported fixture
@@ -162,6 +163,15 @@ class _DB:
 
     def patch_session_model_config(self, sid, patch):
         self.meta[sid] = {**self.meta.get(sid, {}), **patch}
+
+    def ensure_session(self, sid, source="unknown"):
+        self.rows = getattr(self, "rows", {})
+
+    def has_platform_message_id(self, sid, pid):
+        return pid in self.rows
+
+    def append_message(self, session_id, content, platform_message_id, **_kw):
+        self.rows[platform_message_id] = content
 
 
 @pytest.fixture
@@ -528,3 +538,32 @@ def test_no_compaction_starts_while_a_spoken_turn_arrives_anywhere(compaction, h
     with turn._voice_turn_arriving("agent-2", OTHER):
         assert turn.compact_session("agent-1", SESSION) == "yielded"
     assert compaction.runs == [] and turn.compact_session("agent-1", SESSION) == "compacted"
+
+
+# ---- 3. call records count toward the room's pressure ---------------------------------------------
+def test_call_records_raise_the_rooms_pressure_until_the_next_call_start_compacts_it(compaction, home):
+    """A room only ever spoken to is measured by no run: each record adds its own size to the
+    stored reading, and nothing is compacted until the records really reach the threshold."""
+    db = compaction.db = _DB(0.0)
+    agent = SimpleNamespace(_session_db=db, context_compressor=SimpleNamespace(threshold_tokens=1_000))
+    content = "[CEO|ceo]\n" + "x" * 390
+    each = _rough([{"role": "user", "content": content}]) / 1_000
+    for i in range(5):
+        RECORD_CALL_EXCHANGE(agent, SESSION, f"r{i}", content)
+    RECORD_CALL_EXCHANGE(agent, SESSION, "r4", content)  # the same run again adds no row and no pressure
+    assert db.meta[SESSION][turn.PRESSURE] == pytest.approx(5 * each, abs=1e-4) and 5 * each < turn.OFF_PATH_COMPACT_RATIO
+    assert turn.compact_session("agent-1", SESSION) == "below" and compaction.runs == []
+    for i in range(5, 9):
+        RECORD_CALL_EXCHANGE(agent, SESSION, f"r{i}", content)
+    assert db.meta[SESSION][turn.PRESSURE] >= turn.OFF_PATH_COMPACT_RATIO
+    assert turn.compact_session("agent-1", SESSION) == "compacted" and db.meta[SESSION][turn.PRESSURE] == 0.0
+
+
+def test_a_call_record_is_bounded_whatever_was_said(tmp_path):
+    request = {"input": "x", "voice": {"utterance": "q " * 5_000, "speaker": {"id": "user_1", "name": "Aden"}}}
+    tools = [{"role": "assistant", "tool_calls": [{"function": {"name": f"tool{i}"}} for i in range(20)]}]
+    record = turn._call_record("ceo", {"participants": []}, request, "a " * 5_000, {"messages": tools}, tmp_path)
+    asked, answered, used = record.split("asked: ")[1].split("\n")
+    assert len(asked) <= turn.CALL_RECORD_ASKED_CHARS == 300
+    assert len(answered) - len("I answered: ") <= turn.CALL_RECORD_ANSWER_CHARS == 500
+    assert len(used.split(", ")) == 6 and len(record) < 1_100

@@ -386,6 +386,9 @@ def call_session_key(agent_id: str, call_id: str) -> str:
 CALL_RECORD_ID = "call:"
 #: How many of the room's newest call records a new call's transcript starts with.
 CALL_RECORDS_CARRIED = 10
+#: A record's bound: the question and the answer are each cut to this many characters (and at most
+#: six tool names follow), so one record is about 100-250 tokens whatever was said.
+CALL_RECORD_ASKED_CHARS, CALL_RECORD_ANSWER_CHARS = 300, 500
 
 
 def _one_line(text, limit: int) -> str:
@@ -412,7 +415,7 @@ def _call_record(agent_id: str, body: dict, request: dict, reply: str, result: d
     voice = request["voice"]
     asked = voice.get("utterance") or request["input"].rsplit("\n", 1)[-1]
     text = (f"(On a Live voice call; spoken, not posted to this room.) {_display_name(voice.get('speaker') or {})} asked: "
-            f"{_one_line(asked, 300)}\nI answered: {_one_line(reply, 500)}")
+            f"{_one_line(asked, CALL_RECORD_ASKED_CHARS)}\nI answered: {_one_line(reply, CALL_RECORD_ANSWER_CHARS)}")
     tools = _tools_used(result.get("messages"))
     if tools:
         text += f"\nTools I used: {', '.join(tools[:6])}"
@@ -424,13 +427,24 @@ def _record_call_exchange(agent, room_key: str, run_id: str, content: str) -> No
     """Append one observed row to the ROOM session for an answered spoken turn, so chat remembers
     the call without holding its transcript. The caller holds the room's turn lock. Once per run:
     the row is keyed by the run id, so a run that is run again (a retry after this process lost its
-    registry) adds nothing. No model call."""
+    registry) adds nothing. No model call.
+    The record's rough size is added to the room session's stored PRESSURE: no run measures a
+    room that is only ever spoken to, so without this its records pile up unseen and the first
+    chat turn replays them all. With it, the next call's start compacts the room once they have
+    really reached the threshold (compact_session, from profile.warm); nothing is triggered here."""
     try:
         db = agent._session_db
         sid, message_id = _session_tip(db, room_key), f"{CALL_RECORD_ID}{run_id}"
         db.ensure_session(sid, "lightbulb")  # a room only ever spoken to has no row yet
-        if not db.has_platform_message_id(sid, message_id):
-            db.append_message(session_id=sid, role="user", content=content, platform_message_id=message_id, observed=True)
+        if db.has_platform_message_id(sid, message_id):
+            return
+        db.append_message(session_id=sid, role="user", content=content, platform_message_id=message_id, observed=True)
+        # The call agent's threshold is the room's: same profile, same model.
+        threshold = int(getattr(getattr(agent, "context_compressor", None), "threshold_tokens", 0) or 0)
+        if threshold > 0:
+            room = types.SimpleNamespace(_session_db=db, session_id=sid)
+            added = _rough_tokens([{"role": "user", "content": content}]) / threshold
+            _save_session_meta(room, {PRESSURE: round(float(_session_meta(room).get(PRESSURE) or 0) + added, 5)})
     except Exception:  # noqa: BLE001 -- as _observe_room: a missed record must not cost a delivered answer
         log.warning("could not record the call exchange in %s", room_key, exc_info=True)
 

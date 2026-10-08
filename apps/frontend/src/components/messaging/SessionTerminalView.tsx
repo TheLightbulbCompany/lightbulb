@@ -122,6 +122,7 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     let order = NEW_SCREEN;
     let drawn = -1; // the relay run on screen; a new one starts the terminal over
     let wrote = ""; // the kind of the frame written last
+    let sized = ""; // the size asked for last
     const queued: SessionScreen[] = [];
     let alive = true;
     let stale: ReturnType<typeof setTimeout> | undefined;
@@ -183,9 +184,18 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
       for (const frame of frames) {
         // History is only ever written as a burst under its snapshot, and the burst is the whole picture:
         // a run this view already draws without it (`receiveScreen`) starts over there as a new run does.
-        if (frame.epoch !== drawn || (frame.kind === "history" && wrote !== "history")) { term.reset(); drawn = frame.epoch; }
-        wrote = frame.kind;
-        if (term.cols !== frame.cols || term.rows !== frame.rows) term.resize(frame.cols, frame.rows);
+        const fresh = frame.epoch !== drawn || (frame.kind === "history" && wrote !== "history");
+        const size = `${frame.cols}x${frame.rows}`;
+        // xterm parses writes later, in order, but resets and resizes at once, and a reset leaves what is
+        // queued in place (WriteBuffer, 5.5.0): done here, a reset would come before bytes written just
+        // before it, and those bytes would then draw into the new picture (two late history chunks in one
+        // tick: doubled scrollback). So both wait their turn behind an empty write.
+        if (fresh || size !== sized) {
+          const t = term;
+          t.write("", () => { if (!alive) return; if (fresh) t.reset(); if (t.cols !== frame.cols || t.rows !== frame.rows) t.resize(frame.cols, frame.rows); });
+        }
+        if (fresh) drawn = frame.epoch;
+        wrote = frame.kind; sized = size;
         let bytes = decode(frame.data);
         if (frame.kind === "snapshot") {
           const redraw = new Uint8Array(CLEAR.length + bytes.length); redraw.set(CLEAR); redraw.set(bytes, CLEAR.length);

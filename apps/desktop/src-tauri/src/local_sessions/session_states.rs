@@ -93,6 +93,7 @@ impl Ends {
 }
 /// The mirrors whose screen the last `index` kept.
 static SHOWN: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+static ENDED_NOW: AtomicBool = AtomicBool::new(false);
 
 /// (`endedScreens`, `terminalReason`) as a registration ack's `features` lists them.
 fn features(features: &Value) -> (bool, bool) {
@@ -127,6 +128,13 @@ pub(super) fn holder_ended(id: &str) {
     if let Ok(mut at) = ENDS.at.lock() {
         at.entry(id.to_owned()).or_insert_with(now_ms);
     }
+    ENDED_NOW.store(true, SeqCst);
+}
+
+/// A relay read a holder's EXIT since the last call: the relay loop indexes now, not at its next
+/// one-second pass.
+pub(super) fn ended_now() -> bool {
+    ENDED_NOW.swap(false, SeqCst)
 }
 
 /// One holder, asked on `Ends::refresh`'s thread. An end never changes, so a known one is only
@@ -186,6 +194,14 @@ pub(super) fn with_screens(frames: Vec<Value>, mirrors: &BTreeMap<String, Mirror
     with_screens_if(READS_ENDED_SCREENS.load(SeqCst), frames, mirrors, &holder_end)
 }
 
+/// The frame that names the kept ended screens, by itself: a screen is newly kept, and its viewers
+/// wait for this report (the backend forwards none of an ended session's frames before it, and
+/// then asks for the picture). None for a relay that does not read it. Prod 2026-10-08: the report
+/// went behind the device heartbeat's other frames, one ack each, 1.2 s that time.
+pub(super) fn screens_now(mirrors: &BTreeMap<String, Mirror>) -> Option<Value> {
+    with_screens_if(READS_ENDED_SCREENS.load(SeqCst), Vec::new(), mirrors, &holder_end).pop().filter(|frame| frame.get("screens").is_some())
+}
+
 fn with_screens_if(reads: bool, mut frames: Vec<Value>, mirrors: &BTreeMap<String, Mirror>, end: &impl Fn(&str) -> Option<u64>) -> Vec<Value> {
     let sids: Vec<String> = kept(mirrors, end).into_iter().filter_map(|(_, m)| m.session_id.clone()).collect();
     if sids.is_empty() {
@@ -226,8 +242,8 @@ fn add_reason_if(reads: bool, entry: &mut Value, native: &NativeSession) {
 }
 
 /// `screen::index` with every kept ended screen indexed as live; then ended holders that show no
-/// session's screen are closed. Returns the mirrors whose screen is newly kept: the caller brings
-/// the heartbeat forward so the relay hears of it now.
+/// session's screen are closed. Returns the mirrors whose screen is newly kept: the caller reports
+/// them now (`screens_now`), or brings the heartbeat forward for a relay that reads no such frame.
 pub(super) fn index(mirrors: &BTreeMap<String, Mirror>) -> Vec<String> {
     let soon = SETTLING.lock().is_ok_and(|settling| !settling.is_empty());
     ENDS.refresh(ended_holders(mirrors), if soon { PROBE_SOON } else { PROBE_EVERY }, ask_holder);

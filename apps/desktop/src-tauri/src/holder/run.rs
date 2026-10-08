@@ -363,8 +363,10 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
     // When the provider exited (unix ms): HELLO's `endedAt` once `ended`.
     let mut exited_at_ms = 0u64;
     // Once `ended`: the picture the person last saw, when the final screen is not it
-    // (`Model::ended_picture`). Every snapshot is then this picture, and nothing follows it.
+    // (`Model::end`). Every snapshot is then this picture, and nothing follows it.
     let mut ended_picture: Option<Vec<u8>> = None;
+    // The terminal closed before the exit status came: all the output is read.
+    let mut drained = false;
     // An END was taken: the provider is on its way out.
     let mut ending = false;
 
@@ -372,6 +374,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
         let event = match &exited {
             // The provider is gone: finish once its last output is read (or after a moment,
             // when a leftover child still holds the terminal open).
+            Some(_) if drained => Event::Eof,
             Some((_, _, at)) => match rx.recv_timeout(EXIT_DRAIN.saturating_sub(at.elapsed())) {
                 Ok(event) => event,
                 Err(_) => Event::Eof,
@@ -559,9 +562,20 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 exited_at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
             }
             Event::Eof => {
-                // (None: the terminal closed first; the exit status follows from the wait thread.)
-                let Some((status, code, exited_at)) = exited.take() else { continue };
-                let frame = encode(EXIT, serde_json::json!({ "status": status, "code": code }).to_string().as_bytes());
+                // (None: the terminal closed first; the exit status follows from the wait thread. That
+                // is the usual order, a process closes its files before it can be waited for, and
+                // waiting EXIT_DRAIN again for output that cannot come held every end back a second.)
+                let Some((status, code, exited_at)) = exited.take() else {
+                    drained = true;
+                    continue;
+                };
+                // Before anyone hears of the end: whoever asks next gets the kept picture and the lines above it.
+                let kept = if is_attach(argv) { None } else { model.end(exited_at) };
+                // `startOver`: a terminal that watched the way out has lines above its screen that the
+                // kept picture shows again, so the screen relay draws its viewers from the start, when
+                // it can send them all of the lines above that picture (`above`, their size in bytes).
+                let above = model.starts_over();
+                let frame = encode(EXIT, serde_json::json!({ "status": status, "code": code, "startOver": above.is_some(), "above": above }).to_string().as_bytes());
                 if is_attach(argv) {
                     // One more client of the provider's own host (spec §4 k): no screen of ours to
                     // keep, and the next viewer needs a new client, so this holder ends with it.
@@ -583,7 +597,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 // stops this holder (`manager::stop`): nothing is written anywhere.
                 clients.retain(|_, c| c.send(frame.clone()));
                 ended = true;
-                ended_picture = model.ended_picture(exited_at);
+                ended_picture = kept;
                 interactive = None;
                 typists.clear();
                 remote.clear();

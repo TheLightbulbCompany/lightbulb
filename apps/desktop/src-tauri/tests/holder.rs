@@ -152,6 +152,18 @@ fn holder_keeps_the_final_screen_after_its_provider_exits_and_refuses_input() {
     // ponytail: the holder thread outlives this test (in-process); `manager::stop` would signal the test runner.
 }
 
+/// Prod 2026-10-08: a process closes its terminal before it can be waited for, and the holder then
+/// waited a whole second more for output that could not come. Every viewer read the provider's
+/// way out (Claude Code's slash menu and resume lines) that much longer before the kept picture.
+#[test]
+fn holder_says_exit_once_the_terminal_closed_and_the_provider_is_reaped() {
+    let socket = start(&temp_dir(), &["/bin/sh", "-c", "read x; printf last-words; exit 0"]);
+    let mut c = attach(&socket, "interactive");
+    let sent = Instant::now();
+    run_to_exit(&mut c);
+    assert!(sent.elapsed() < Duration::from_millis(700), "EXIT came {:?} after the provider was told to go", sent.elapsed());
+}
+
 /// Send `go` to a provider that waits on `read`, then follow the holder to its EXIT.
 fn run_to_exit(c: &mut UnixStream) {
     c.write_all(&encode(INPUT, b"go\r")).unwrap();

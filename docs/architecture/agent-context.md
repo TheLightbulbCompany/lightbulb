@@ -34,7 +34,7 @@ from the oldest until the body is under 1 MiB. The browser never supplies any of
 |---|---|---|---|---|
 | Stable system | `SOUL.md` in the profile (`<owner>/hermes/<agent>/` in S3) | the owner in Settings → Agents, or a seed | on edit (`.revision` bump; a warm microVM re-pulls before the next turn) | cached by the provider |
 | Stable system | the bridge's one-sentence repo rule (`turn._repo_rule`) | the image | on an image roll | present on room turns and native Paperclip runs; absent on voice, mail and `paperclip_run` event prompts until #TBD |
-| Stable system | `AGENTS.md` in the profile (the Instructions tab), appended LAST (`with_profile_agents_md`) | the owner, or whoever last rewrote the agent | on edit | the last and longest block; in practice it beats the bridge sentence (section 7) |
+| Stable system | `AGENTS.md` in the profile (the Instructions tab), appended by `with_profile_agents_md` after the bridge sentence; a profile `VOICE_NOTES.md` follows it, and room turns add the observe lines after that | the owner, or whoever last rewrote the agent | on edit | the longest block and the last one the owner controls; in practice it beats the bridge sentence (section 7) |
 | Volatile system | the Hermes skills index: our `lightbulb` + `paperclip` skills plus 58 bundled Hermes skills | the image (`/opt/hermes-skills`) | on an image roll | each description cut to 60 chars; the body is loaded with `skill_view` only when the agent asks |
 | Volatile system | `memories/MEMORY.md` + `USER.md` (Hermes file memory, 2200 / 1375 char limits) | the agent | whenever it writes | frozen snapshot per turn |
 | Ephemeral system (never stored) | room identity and roster JSON, voice notes, two "observe" lines on `room_event` turns | the bridge, per turn | every turn | its bytes differ between ambient and addressed turns, so the provider's prompt cache misses on every switch (section 6) |
@@ -46,7 +46,9 @@ Not in the prompt, read on demand: `$HERMES_HOME/lightbulb-facts.json`
 (`core/services/owner_facts.py`: plan, subscription status, provider, company Stripe state,
 app URL, agent email, provisioning workflows, owner timezone, **teammates**,
 **connected_integrations**, `generated_at`). The `lightbulb` skill routes "who is on the team"
-and "what is connected" to this file, never to the room's member list. It is rewritten by
+and "what is connected" to this file, never to the room's member list. The room's own
+participants (identities and agent listen modes) ARE in every room prompt; it is the
+workspace-wide roster and the integrations that come only from the facts file. It is rewritten by
 `refresh_owner_facts` and on every reconcile; `scripts/refresh_owner_facts.py --all` refreshes
 the fleet.
 
@@ -71,8 +73,9 @@ the fleet.
 
 ## 4. Sessions and compaction
 
-- The room session is never ended, so its history is the room's history as the agent saw it.
-  Non-room sessions (Paperclip runs, mail, voice) end after their turn so Hermes can prune them.
+- The room session is never ended, so its history is the room's history as the agent saw it,
+  voice turns included (`_run_call` runs them on the room session key). Standalone sessions
+  (Paperclip runs, mail) end after their turn so Hermes can prune them.
 - `compression.threshold_tokens: 60000` (managed overlay). A chat turn that crosses it pays an
   inline LLM summary at turn start (measured 67–103 s on the founder workspace). Voice turns
   replay at most a 40k tail and are compacted off the call path at 85 % (#3889).
@@ -93,8 +96,9 @@ the fleet.
 | The Hermes turn itself: tool calls, reasoning, the observed block | **nowhere in the product.** Only the agent's `state.db` has it; the agent can `session_search` it, a person cannot | in S3, as the profile |
 
 If someone asks "what did Friday see when she answered that", the honest answer today is:
-the 50 messages before it, the roster and room name, up to 5 memory records, her skills, her
-SOUL and Instructions, and whatever `session_search` returned. The exact bytes are not shown
+the recent room history (about 50 messages; more when the trigger sits in an older thread,
+fewer when the body was trimmed to 1 MiB), the room's participants and name, up to 5 memory
+records, her skills, her SOUL and Instructions, and whatever `session_search` returned. The exact bytes are not shown
 anywhere.
 
 ## 6. Known costs, measured 2026-10-08
@@ -123,8 +127,8 @@ On 2026-10-07 and 10-08 the founder's engineering agent filled its microVM's dis
 cloning at its profile root and keeping one worktree per task under `/tmp/wt`, exactly as its
 own `SOUL.md` and `AGENTS.md` (written 2026-09-27, stored in S3) told it to. The bridge's
 newer one-sentence rule (#3798) and the bundled skill said otherwise. The agent read both and
-followed its own files, because they are longer, carry exact commands, come LAST in the
-prompt, and are repeated by its compaction summaries. Three rules follow:
+followed its own files, because they are longer, carry exact commands, come after the bridge
+sentence near the end of the prompt, and are repeated by its compaction summaries. Three rules follow:
 
 - A rule that lives in a profile file can only be changed in that profile file. Adding a
   sentence to the bridge does not override it.

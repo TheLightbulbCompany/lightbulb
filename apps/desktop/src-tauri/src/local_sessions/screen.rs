@@ -6,8 +6,10 @@
 //! grown viewer set; a fresh snapshot after a resize and after a lost frame (at most one a second);
 //! and every 10 s a snapshot when output went out since the last one or none was asked for in
 //! 30 s (a viewer that lost its first screen is never left without one), else a `ping` (spec §5.2).
-//! Nothing is queued for later; nothing is sent while nobody watches. Output past the backend's budget (2 MiB raw a minute) is dropped here, not
-//! sent to be dropped there, and a snapshot follows once the budget is back.
+//! Nothing is sent while nobody watches. Output the relay queue has no room for, or that is past
+//! the backend's budget (2 MiB raw a minute), waits here and goes out in order when there is room
+//! (`Out::flush`): a snapshot is only the screen, so output replaced by one never reaches a viewer's
+//! scrollback. Only more than BACKLOG of it waiting is dropped, and a snapshot follows.
 //! A `local.session.watch` nudge from the backend starts a relay at once (a new viewer sees the
 //! screen in about a second, not at the next ack); the acks still keep it going and stop it.
 //! A Claude background session's terminal comes from an attach holder this module starts on demand
@@ -59,6 +61,13 @@ const BURST: usize = 256 * 1024;
 const HISTORY_RESERVE: usize = 64 * 1024;
 /// How long a history burst may wait for room in the shallow relay queue before it counts as lost.
 const PACE: Duration = Duration::from_secs(3);
+/// Output that may wait here for room in the relay queue or the budget (`Out::flush`). At the
+/// budget's rate this much is under 4 s late; past it the viewers are too far behind a live
+/// screen, so it is dropped and they get the screen as it is (their scrollback loses those lines
+/// until they open the session again). Prod 2026-10-08: the connection loop stalled 6.1 s on an
+/// upload while Codex wrote 4 blocks (about 9 KiB), which the full queue lost; 82 rows never
+/// reached a viewer's scrollback.
+const BACKLOG: usize = 128 * 1024;
 
 #[derive(Clone)]
 struct Live {
@@ -535,6 +544,8 @@ struct Out<'a> {
     ctl: &'a Ctl,
     send: &'a dyn Fn(Value) -> bool,
     budget: Budget,
+    /// Output not sent yet, oldest first, each run with the terminal size it was written at.
+    backlog: std::collections::VecDeque<((u16, u16), Vec<u8>)>,
     /// A frame was lost since the last snapshot: viewers wait for the next one, so output is waste.
     stale: bool,
     /// Output went out since the last snapshot: the beat redraws (it heals frames lost past this Mac) instead of pinging.
@@ -542,23 +553,75 @@ struct Out<'a> {
 }
 
 impl Out<'_> {
+    /// Output waits for its turn (`flush`), so no viewer misses any of it: a missing frame is
+    /// repaired with a snapshot, which is the screen only, and the lines that output scrolled off
+    /// the top would never reach a viewer's scrollback. A snapshot goes when no output waits (it is
+    /// the screen after that output) and may overdraw the budget: it ends a gap, and the next
+    /// request waits for the budget to be back above zero. One that cannot go is asked for again.
     fn emit(&mut self, kind: &str, bytes: &[u8], size: (u16, u16)) {
-        let snapshot = kind == "snapshot";
-        if self.stale && !snapshot {
-            return;
-        }
-        if !self.budget.take(bytes.len(), snapshot) {
-            // Skip the seqs it would have used: the gap tells viewers to wait for a snapshot.
-            self.seq += bytes.len().div_ceil(CHUNK).max(1) as u64;
-            self.lost();
-            return;
-        }
-        self.stale = false;
-        self.dirty = !snapshot;
-        for frame in frames_for(self.ids, self.epoch, &mut self.seq, size, kind, bytes) {
-            if !(self.send)(frame) {
-                self.lost();
+        if kind != "snapshot" {
+            // (After a loss viewers wait for the snapshot: output until then is in it.)
+            if !self.stale && !bytes.is_empty() {
+                match self.backlog.back_mut() {
+                    Some((at, held)) if *at == size => held.extend_from_slice(bytes),
+                    _ => self.backlog.push_back((size, bytes.to_vec())),
+                }
+                self.flush();
             }
+            return;
+        }
+        self.flush();
+        if !self.backlog.is_empty() {
+            self.ctl.snapshot.store(true, SeqCst);
+            return;
+        }
+        let mut seq = self.seq;
+        for (i, frame) in frames_for(self.ids, self.epoch, &mut seq, size, kind, bytes).into_iter().enumerate() {
+            if (self.send)(frame) {
+                self.seq += 1;
+                continue;
+            }
+            if i == 0 {
+                // None of it went: no place in the order is taken, and viewers miss nothing.
+                self.ctl.snapshot.store(true, SeqCst);
+                return;
+            }
+            // The rest of a snapshot is output after its first frame: it waits like any other.
+            self.backlog.push_back((size, bytes[i * CHUNK..].to_vec()));
+            break;
+        }
+        let waits = self.backlog.front().map_or(0, |(_, held)| held.len());
+        self.budget.take(bytes.len() - waits, true);
+        self.stale = false;
+        self.dirty = false;
+    }
+    /// Sends the waiting output in order, as far as the budget and the relay queue take it now. A
+    /// chunk that does not go keeps its place and takes no seq, so viewers see no gap: the output is
+    /// late, never missing. More than BACKLOG waiting is given up: one skipped seq tells viewers a
+    /// frame is lost, and a snapshot follows.
+    fn flush(&mut self) {
+        while let Some((size, held)) = self.backlog.front_mut() {
+            let len = held.len().min(CHUNK);
+            if self.budget.left() < len as f64 {
+                break;
+            }
+            let mut seq = self.seq;
+            let frame = frames_for(self.ids, self.epoch, &mut seq, *size, "output", &held[..len]).remove(0);
+            if !(self.send)(frame) {
+                break;
+            }
+            self.budget.take(len, true);
+            self.seq = seq;
+            self.dirty = true;
+            held.drain(..len);
+            if held.is_empty() {
+                self.backlog.pop_front();
+            }
+        }
+        if self.backlog.iter().map(|(_, held)| held.len()).sum::<usize>() > BACKLOG {
+            self.backlog.clear();
+            self.seq += 1;
+            self.lost();
         }
     }
     /// What is above the holder's screen, for viewers with none of it yet (spec §5.2), sized to
@@ -588,6 +651,8 @@ impl Out<'_> {
         self.ctl.epoch.store(self.epoch, SeqCst);
         self.seq = 0;
         self.stale = false;
+        // (Output still waiting is the old run's: the new one draws everything.)
+        self.backlog.clear();
         self.burst(&bytes, size);
     }
     fn fetched(&mut self, fetch: &dyn Fn(usize) -> Option<Vec<u8>>) -> Option<Vec<u8>> {
@@ -639,7 +704,7 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
         ctl: &Ctl, send: &dyn Fn(Value) -> bool, budget: Budget, history: &dyn Fn(usize) -> Option<Vec<u8>>) -> Result<(), String> {
     let epoch = next_epoch(&LAST_EPOCH, SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64));
     ctl.epoch.store(epoch, SeqCst);
-    let mut out = Out { ids, epoch, seq: 0, ctl, send, budget, stale: false, dirty: false };
+    let mut out = Out { ids, epoch, seq: 0, ctl, send, budget, backlog: Default::default(), stale: false, dirty: false };
     // A new run's viewers get history first; the holder's own first snapshot is queued behind it.
     ctl.history.store(false, SeqCst);
     out.history(history, size);
@@ -661,6 +726,7 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
         if ctl.stopped() {
             return Ok(());
         }
+        out.flush();
         if ctl.history.swap(false, SeqCst) {
             out.history(history, size);
             ctl.snapshot.store(true, SeqCst);
@@ -956,25 +1022,93 @@ mod tests {
     }
 
     #[test]
-    fn output_over_the_budget_is_dropped_and_a_snapshot_follows_once_the_budget_is_back() {
+    fn output_over_the_budget_waits_for_it_and_no_frame_is_skipped() {
         let (tx, rx) = std::sync::mpsc::channel();
         tx.send((SNAPSHOT, with_offset(0, &vec![b's'; 4096]))).unwrap();
         tx.send((OUTPUT, with_offset(4096, &vec![b'a'; 100]))).unwrap();
         tx.send((OUTPUT, with_offset(4196, b"more"))).unwrap();
         let ctl = leased(Duration::from_millis(3000));
-        let mut holder = Answering { tx, answer: vec![(SNAPSHOT, with_offset(4200, b"fresh")), (OUTPUT, with_offset(4200, b"after"))],
-            asked: vec![] };
-        // Empty, refilling 2000 bytes a second: the snapshot overdraws it to -4096 for about 2 s.
+        let mut holder = Answering { tx, answer: vec![(SNAPSHOT, with_offset(4200, b"fresh"))], asked: vec![] };
+        // Empty, refilling 2000 bytes a second: the snapshot overdraws it to -4096, so the 104
+        // bytes of output fit after about 2.1 s.
         let budget = Budget { tokens: 0.0, cap: 64.0 * 1024.0, per_s: 2000.0, at: Instant::now() };
         let sent = std::cell::RefCell::new(vec![]);
         let started = Instant::now();
-        pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|f| { sent.borrow_mut().push(f); true }, budget, &|_| None).unwrap();
+        pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|f| { sent.borrow_mut().push((started.elapsed(), f)); true }, budget, &|_| None).unwrap();
         let sent = sent.into_inner();
-        let shape: Vec<(String, u64)> = sent.iter().map(|f| (f["kind"].as_str().unwrap().into(), f["seq"].as_u64().unwrap())).collect();
-        // seq 1 is the dropped output's: the gap sends viewers to the next snapshot; "more" never went.
-        assert_eq!(shape, [("snapshot".into(), 0), ("snapshot".into(), 2), ("output".into(), 3)]);
-        assert_eq!(holder.asked.len(), 1, "one request, not one a tick");
-        assert!(holder.asked[0] - started >= Duration::from_millis(1800), "asked only once the budget was back");
+        let shape: Vec<(String, u64)> = sent.iter().map(|(_, f)| (f["kind"].as_str().unwrap().into(), f["seq"].as_u64().unwrap())).collect();
+        // Before: seq 1 was skipped, "more" never went, and a snapshot repaired the gap, so the
+        // lines that output scrolled off the top were in no viewer's scrollback.
+        assert_eq!(shape, [("snapshot".into(), 0), ("output".into(), 1)]);
+        let data = base64::engine::general_purpose::STANDARD.decode(sent[1].1["data"].as_str().unwrap()).unwrap();
+        assert_eq!(data, [vec![b'a'; 100], b"more".to_vec()].concat(), "every byte, in order");
+        assert!(sent[1].0 >= Duration::from_millis(1800), "sent once the budget was back: {:?}", sent[1].0);
+        assert!(holder.asked.is_empty(), "nothing was lost, so nothing is repaired");
+    }
+
+    /// Prod 2026-10-08 08:50:07Z: "connection loop iteration took 6.1s; slowest step: uploads". The
+    /// relay queue (8 frames) was full meanwhile; the beat's snapshot and 4 Codex blocks were lost
+    /// there, two snapshots repaired the viewer's screen, and its scrollback never got the 82 rows.
+    #[test]
+    fn output_the_relay_queue_has_no_room_for_waits_and_goes_out_in_order_without_a_gap() {
+        let ctl = Ctl::new(0);
+        let room = std::cell::Cell::new(false);
+        let sent = std::cell::RefCell::new(vec![]);
+        let send = |f: Value| room.get() && { sent.borrow_mut().push(f); true };
+        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget: Budget::new(), backlog: Default::default(), stale: false, dirty: false };
+        let data = |f: &Value| base64::engine::general_purpose::STANDARD.decode(f["data"].as_str().unwrap()).unwrap();
+        // The connection loop is stalled: nothing finds room.
+        out.emit("output", b"block 1, ", (100, 30));
+        out.emit("snapshot", b"the screen after block 1", (100, 30));
+        assert!(ctl.snapshot.swap(false, SeqCst), "a snapshot that cannot go is asked for again");
+        out.emit("output", b"block 2, ", (100, 30));
+        out.emit("output", b"block 3", (100, 30));
+        assert!(sent.borrow().is_empty() && out.seq == 0 && !out.stale, "nothing went, no seq is taken, nobody waits for a repair");
+        // It runs again: the pump's next tick.
+        room.set(true);
+        out.flush();
+        out.emit("snapshot", b"the screen after block 3", (100, 30));
+        assert_eq!(kinds(&sent.borrow()), [("output".into(), 0), ("snapshot".into(), 1)]);
+        assert_eq!(data(&sent.borrow()[0]), b"block 1, block 2, block 3", "all of it, in order, once");
+        assert_eq!(data(&sent.borrow()[1]), b"the screen after block 3");
+        // Output written at another size keeps its own.
+        room.set(false);
+        out.emit("output", b"wide", (100, 30));
+        out.emit("output", b"narrow", (80, 24));
+        room.set(true);
+        out.flush();
+        let shape: Vec<(Vec<u8>, u64)> = sent.borrow()[2..].iter().map(|f| (data(f), f["cols"].as_u64().unwrap())).collect();
+        assert_eq!(shape, [(b"wide".to_vec(), 100), (b"narrow".to_vec(), 80)]);
+    }
+
+    #[test]
+    fn a_snapshot_cut_short_by_a_full_queue_is_finished_as_the_output_it_is() {
+        let ctl = Ctl::new(0);
+        let calls = std::cell::Cell::new(0);
+        let sent = std::cell::RefCell::new(vec![]);
+        // Room for the first frame, none for the second, then room again.
+        let send = |f: Value| { calls.set(calls.get() + 1); calls.get() != 2 && { sent.borrow_mut().push(f); true } };
+        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget: Budget::new(), backlog: Default::default(), stale: false, dirty: false };
+        let screen: Vec<u8> = (0..2 * CHUNK + 5).map(|i| (i % 251) as u8).collect();
+        out.emit("snapshot", &screen, (120, 40));
+        out.emit("output", b"after", (120, 40));
+        assert_eq!(kinds(&sent.borrow())[..3], [("snapshot".into(), 0), ("output".into(), 1), ("output".into(), 2)]);
+        let all: Vec<u8> = sent.borrow().iter().flat_map(|f| base64::engine::general_purpose::STANDARD.decode(f["data"].as_str().unwrap()).unwrap()).collect();
+        assert_eq!(all, [screen, b"after".to_vec()].concat(), "the whole screen, then the output after it");
+        assert!(!out.stale && !ctl.snapshot.load(SeqCst));
+    }
+
+    #[test]
+    fn more_output_than_may_wait_is_given_up_with_a_gap_and_a_snapshot_follows() {
+        let ctl = Ctl::new(0);
+        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 4, ctl: &ctl, send: &|_| false, budget: Budget::new(), backlog: Default::default(), stale: false, dirty: false };
+        out.emit("output", &vec![b'x'; BACKLOG], (80, 24));
+        assert!(!out.stale && out.seq == 4 && !ctl.snapshot.load(SeqCst), "this much still waits");
+        out.emit("output", b"y", (80, 24));
+        assert!(out.stale && out.backlog.is_empty() && ctl.snapshot.load(SeqCst), "past it the viewers get the screen as it is");
+        assert_eq!(out.seq, 5, "the skipped seq tells viewers a frame is lost");
+        out.emit("output", b"z", (80, 24));
+        assert!(out.backlog.is_empty(), "output until that snapshot is in it");
     }
 
     #[test]
@@ -1338,7 +1472,7 @@ mod tests {
         let calls = std::cell::Cell::new(0);
         let sent = std::cell::RefCell::new(vec![]);
         let send = |f: Value| { calls.set(calls.get() + 1); calls.get() % 2 == 0 && { sent.borrow_mut().push(f); true } };
-        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget: Budget::new(), stale: false, dirty: false };
+        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget: Budget::new(), backlog: Default::default(), stale: false, dirty: false };
         out.history(&|_| Some(vec![b'h'; 3 * CHUNK]), (80, 24));
         assert_eq!(kinds(&sent.borrow()), [("history".into(), 0), ("history".into(), 1), ("history".into(), 2)]);
         assert!(!out.stale, "a full queue for a moment is not a lost frame");
@@ -1349,7 +1483,7 @@ mod tests {
         let ctl = Ctl::new(0);
         let sent = std::cell::RefCell::new(vec![]);
         let send = |f: Value| { sent.borrow_mut().push(f); true };
-        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget: Budget::new(), stale: false, dirty: false };
+        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget: Budget::new(), backlog: Default::default(), stale: false, dirty: false };
         out.history(&|_| Some(vec![]), (80, 24));
         out.history(&|_| None, (80, 24));
         assert_eq!(kinds(&sent.borrow()), [("history".into(), 0)], "the viewer hears it has all there is; no answer says nothing");
@@ -1359,7 +1493,7 @@ mod tests {
     #[test]
     fn a_history_burst_that_never_finds_room_is_lost_within_its_pace() {
         let ctl = Ctl::new(0);
-        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &|_| false, budget: Budget::new(), stale: false, dirty: false };
+        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &|_| false, budget: Budget::new(), backlog: Default::default(), stale: false, dirty: false };
         let started = Instant::now();
         out.history(&|_| Some(vec![b'h'; 3 * CHUNK]), (80, 24));
         assert!(started.elapsed() < PACE + Duration::from_millis(500));

@@ -272,12 +272,12 @@ pub const CODEX_INLINE: &str = "tui.alternate_screen=never";
 
 /// The argv the holder runs for `argv`: Codex with `CODEX_INLINE`, anything else as it is. The
 /// holder still names `argv` in its HELLO, so the app knows its own starts by their shape.
-// The holder's model keeps no history for Codex (HELLO `"history"` stays Claude Code's): Codex
-// writes finished lines above its prompt through a scroll region (`ESC[1;<n>r`), which a terminal
-// saves and vt100 0.16 does not. A new viewer gets them from the output log, as before.
+// Codex writes finished lines above its prompt through a scroll region (`ESC[1;<n>r`), which a
+// terminal saves and vt100 0.16 does not: the holder's model keeps them itself (`Model::process`),
+// so a Codex holder answers HISTORY as a Claude Code one does.
 pub fn provider_argv(argv: &[String]) -> Vec<String> {
     let mut out = argv.to_vec();
-    let Some(at) = program_at(argv).filter(|at| Path::new(&argv[*at]).file_name().is_some_and(|name| name == "codex")) else { return out };
+    let Some(at) = codex_at(argv) else { return out };
     if is_attach(argv) {
         // The program is the script's `$1`; the script ends with Codex's own arguments.
         out[2] = format!("{} -c {CODEX_INLINE}", out[2]);
@@ -287,6 +287,16 @@ pub fn provider_argv(argv: &[String]) -> Vec<String> {
         out.insert(at + 1, "-c".into());
     }
     out
+}
+
+/// Where Codex's program is in a holder's argv, when that is what it runs.
+fn codex_at(argv: &[String]) -> Option<usize> {
+    program_at(argv).filter(|at| Path::new(&argv[*at]).file_name().is_some_and(|name| name == "codex"))
+}
+
+/// Whether a holder's argv runs Codex (always inline, `provider_argv`).
+pub fn runs_codex(argv: &[String]) -> bool {
+    codex_at(argv).is_some()
 }
 
 /// The environment the provider `argv` runs is started with: the captured one, minus another
@@ -413,6 +423,11 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
     if classic {
         model.classic_claude_code();
     }
+    // Inline Codex leaves its lines above the screen too, and the model keeps them.
+    let inline = runs_codex(argv);
+    if inline {
+        model.inline_codex();
+    }
     let mut log: VecDeque<u8> = VecDeque::new();
     let mut total: u64 = 0;
     // Connected but not yet introduced: they get nothing until their HELLO is answered.
@@ -485,7 +500,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 let (rows, cols) = model.size();
                 let facts = serde_json::json!({"protocol": 1, "pid": std::process::id(),
                     "providerPid": provider_pid, "argv": argv, "cwd": cwd, "rows": rows, "cols": cols,
-                    "watch": true, "type": true, "joined": joining, "origin": true, "lastInput": last_input, "end": true, "history": classic,
+                    "watch": true, "type": true, "joined": joining, "origin": true, "lastInput": last_input, "end": true, "history": classic || inline,
                     "ended": ended, "endedAt": ended.then_some(exited_at_ms)});
                 if !client.send(encode(HELLO, facts.to_string().as_bytes())) {
                     continue;

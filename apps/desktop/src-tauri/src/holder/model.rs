@@ -65,6 +65,28 @@ pub struct Model {
     /// Once ended (`end`): how many of the newest lines above the screen the kept picture shows
     /// again. `history` leaves them out.
     shown_again: usize,
+    /// The provider is Codex in its inline mode (`run::CODEX_INLINE`): it erases the saved lines too.
+    codex: bool,
+    /// Where the output read so far stands (`process`).
+    at: At,
+    /// The parameters so far of the control sequence the output stands in.
+    csi: Vec<u8>,
+    /// The last row of the scroll region, while that region starts at the first row and ends above
+    /// the last one: lines that leave its top are lines a terminal keeps (`process`).
+    region: Option<u16>,
+}
+/// Where a byte stream stands between its control sequences, as far as `Model::process` reads it.
+#[derive(Clone, Copy, PartialEq)]
+enum At {
+    Ground,
+    /// After ESC, and its intermediates.
+    Esc,
+    /// Inside `ESC[`.
+    Csi,
+    /// Inside an OSC string: BEL ends it.
+    Osc,
+    /// Inside a DCS, SOS, PM or APC string: only ST (`ESC\`) ends it.
+    Str,
 }
 struct Resting {
     picture: Vec<u8>,
@@ -315,6 +337,27 @@ fn completed(hay: &[u8], needle: &[u8], skip: usize) -> usize {
     ends(hay, needle, skip).count()
 }
 
+/// Whether the character `bytes` starts with goes to the next row when written at column `col`
+/// of `cols`: vt100's own rule (`Screen::text`), with its own width for that character.
+fn wraps(bytes: &[u8], col: u16, cols: u16) -> bool {
+    let len = match bytes[0] {
+        0..=0x7f => 1,
+        0xc0..=0xdf => 2,
+        0xe0..=0xef => 3,
+        _ => 4,
+    };
+    // (Split across two reads: taken as one column wide.)
+    let width = match bytes.get(..len) {
+        Some(ch) if len > 1 => {
+            let mut probe = vt100::Parser::new(1, 4, 0);
+            probe.process(ch);
+            probe.screen().cursor_position().1
+        }
+        _ => 1,
+    };
+    width > 0 && col > cols.saturating_sub(width)
+}
+
 /// Lines the model keeps above its screen: what `Model::history` can give a new viewer.
 const SCROLLBACK: usize = 5000;
 /// Erase the saved lines: a terminal drops everything above its screen. vt100 does not act on it.
@@ -323,7 +366,123 @@ const ERASE_SAVED: &[u8] = b"\x1b[3J";
 impl Model {
     pub fn new(rows: u16, cols: u16) -> Self {
         Self { parser: vt100::Parser::new(rows, cols, SCROLLBACK), tail: Vec::new(), left_alternate: None, partial_csi: Vec::new(),
-            last_output: None, typed: None, resting: None, ending: false, classic: false, shown_again: 0 }
+            last_output: None, typed: None, resting: None, ending: false, classic: false, shown_again: 0,
+            codex: false, at: At::Ground, csi: Vec::new(), region: None }
+    }
+
+    /// The provider is Codex in its inline mode.
+    pub fn inline_codex(&mut self) {
+        self.codex = true;
+    }
+
+    /// Feed the screen. A terminal keeps a line that scrolls off the top of the scroll region
+    /// whenever that region starts at the first row (xterm.js `BufferService.scroll`: "scrollTop is
+    /// non-zero which means no line will be going to the scrollback"); vt100 0.16 keeps it only
+    /// while no region is set (`Grid::scroll_up`), and has no hook to see one go. Codex's inline
+    /// mode writes every finished line that way: region from the first row to the row above its
+    /// prompt, cursor on the region's last row, `CR LF`, the line (h14b, prod 2026-10-08: all 2127
+    /// lines above the screen came through 209 such regions; a late joiner's 28 wrong first rows
+    /// were those lines missing from the model). So this follows the output just far enough to know
+    /// that region (`ESC[1;<n>r`), and each scroll of it is fed as what a terminal does with it
+    /// (`scroll_region`). The two things that scroll in vt100 are a line feed on the region's last
+    /// row and a character that wraps there; `ESC[<n>S` moves the region without saving in a
+    /// terminal too.
+    // ponytail: a line feed inside a control sequence (C0 executes there) is fed as it is, and
+    // that line is not kept; no program writes one.
+    fn process(&mut self, bytes: &[u8]) {
+        let mut done = 0;
+        for (i, &b) in bytes.iter().enumerate() {
+            match self.at {
+                At::Ground if b == 0x1b => self.at = At::Esc,
+                At::Ground => {
+                    let Some(bottom) = self.region else { continue };
+                    let feed = matches!(b, 0x0a..=0x0c);
+                    // (Else only the first byte of a character: no control, no UTF-8 continuation.)
+                    if !feed && (b < 0x20 || b == 0x7f || (0x80..0xc0).contains(&b)) {
+                        continue;
+                    }
+                    self.parser.process(&bytes[done..i]);
+                    done = i;
+                    let screen = self.parser.screen();
+                    let (cols, (row, col)) = (screen.size().1, screen.cursor_position());
+                    if screen.alternate_screen() || row != bottom {
+                        continue;
+                    }
+                    if feed {
+                        // The line feed is this scroll: the cursor stays where it is.
+                        self.scroll_region(bottom, col);
+                        done = i + 1;
+                    } else if wraps(&bytes[i..], col, cols) {
+                        // The character then starts the region's new last row.
+                        self.scroll_region(bottom, 0);
+                    }
+                }
+                At::Esc => {
+                    self.at = match b {
+                        b'[' => At::Csi,
+                        b']' => At::Osc,
+                        b'P' | b'X' | b'^' | b'_' => At::Str,
+                        0x18 | 0x1a => At::Ground,
+                        // (Another ESC, an intermediate, or a C0 control, which runs and leaves the sequence open.)
+                        0x00..=0x2f | 0x7f => At::Esc,
+                        _ => At::Ground,
+                    };
+                    self.csi.clear();
+                    // RIS: a new terminal.
+                    if b == b'c' {
+                        self.region = None;
+                    }
+                }
+                At::Csi => match b {
+                    0x1b => self.at = At::Esc,
+                    0x18 | 0x1a => self.at = At::Ground,
+                    0x40..=0x7e => {
+                        self.at = At::Ground;
+                        let params = std::mem::take(&mut self.csi);
+                        if b == b'r' {
+                            // DECSTBM as vt100 reads it (`canonicalize_params_decstbm`, `Grid::set_scroll_region`),
+                            // once vt100 has it. Anything else that ends in `r` leaves the region unknown.
+                            self.parser.process(&bytes[done..=i]);
+                            done = i + 1;
+                            let rows = u32::from(self.size().0);
+                            let plain = params.iter().all(|p| p.is_ascii_digit() || *p == b';');
+                            // (Empty is 0, the default; too large for vt100's u16 is past every row.)
+                            let number = |p: &[u8]| if p.is_empty() { 0 } else { std::str::from_utf8(p).ok().and_then(|p| p.parse::<u32>().ok()).unwrap_or(u32::MAX) };
+                            let mut given = params.split(|p| *p == b';').map(number);
+                            let top = given.next().filter(|top| *top != 0).unwrap_or(1);
+                            let bottom = given.next().filter(|bottom| *bottom != 0).unwrap_or(rows);
+                            let kept = plain && !self.parser.screen().alternate_screen() && top == 1 && bottom > 1 && bottom < rows;
+                            self.region = kept.then(|| (bottom - 1) as u16);
+                        } else if matches!(b, b'h' | b'l') && params.first() == Some(&b'?') && params[1..].split(|p| *p == b';').any(|p| p == b"47" || p == b"1047" || p == b"1049") {
+                            // The other screen has its own region.
+                            self.region = None;
+                        }
+                    }
+                    0x20..=0x3f if self.csi.len() < PARTIAL_CSI_MAX => self.csi.push(b),
+                    _ => {}
+                },
+                At::Osc | At::Str => match b {
+                    0x1b => self.at = At::Esc,
+                    0x18 | 0x1a => self.at = At::Ground,
+                    0x07 if self.at == At::Osc => self.at = At::Ground,
+                    _ => {}
+                },
+            }
+        }
+        self.parser.process(&bytes[done..]);
+    }
+
+    /// The top line of the region that ends on row `bottom` leaves it for the saved lines, the rows
+    /// under it move up and the region's last row is blank, as in a terminal. Made of what vt100
+    /// does save: with no region, a line feed on the last row keeps the top line and moves every
+    /// row up; a line inserted where the region ended puts the rows under the region back and
+    /// leaves that row blank. Then the region again, and the cursor on its last row at `col`.
+    // ponytail: a cursor waiting past the last column (a full row, then a bare line feed) comes
+    // back on the last column; Codex sends CR LF.
+    fn scroll_region(&mut self, bottom: u16, col: u16) {
+        let (rows, cols) = self.size();
+        let (last, col) = (bottom + 1, col.min(cols.saturating_sub(1)) + 1);
+        self.parser.process(format!("\x1b[r\x1b[{rows};1H\n\x1b[{last};1H\x1b[L\x1b[1;{last}r\x1b[{last};{col}H").as_bytes());
     }
 
     /// The provider is Claude Code in its classic renderer.
@@ -393,7 +552,8 @@ impl Model {
     /// Code's classic renderer clears the terminal and prints the conversation again). The model
     /// starts over from its own screen, which is all a terminal has left.
     // ponytail: the scroll region and the saved cursor do not survive this; classic Claude Code
-    // sets neither while it runs. Keep them if a provider that does ever needs this.
+    // sets neither while it runs, and Codex drops its region (`ESC[r`) before it erases. Keep
+    // them if a provider that does not ever needs this.
     fn erase_saved(&mut self) {
         if self.parser.screen().alternate_screen() {
             return;
@@ -402,6 +562,7 @@ impl Model {
         let mut parser = vt100::Parser::new(rows, cols, SCROLLBACK);
         parser.process(&self.snapshot());
         self.parser = parser;
+        self.region = None;
     }
 
     /// The lines above the screen, oldest first, as bytes for an empty terminal: they end up in
@@ -460,19 +621,19 @@ impl Model {
             }
         }
         // Stop just before each leave of the alternate screen, to keep the picture it ends, and
-        // (classic Claude Code) just after each erase of the saved lines.
+        // (classic Claude Code, inline Codex) just after each erase of the saved lines.
         let mut done = 0;
         let mut csi = std::mem::take(&mut self.partial_csi);
         let carried = csi.len();
         csi.extend_from_slice(bytes);
         self.partial_csi = partial_csi(&csi).to_vec();
         let mut cuts: Vec<(usize, bool)> = alternate_leaves(&csi, carried).into_iter().map(|cut| (cut, true)).collect();
-        if self.classic {
+        if self.classic || self.codex {
             cuts.extend(ends(&seen, ERASE_SAVED, skip).map(|cut| (cut, false)));
             cuts.sort_unstable();
         }
         for (cut, leave) in cuts {
-            self.parser.process(&bytes[done..cut]);
+            self.process(&bytes[done..cut]);
             done = cut;
             if !leave {
                 self.erase_saved();
@@ -484,7 +645,7 @@ impl Model {
                 self.left_alternate = Some((rested.map_or_else(|| self.picture(), |r| r.picture), now));
             }
         }
-        self.parser.process(&bytes[done..]);
+        self.process(&bytes[done..]);
         for _ in 0..completed(&seen, CPR, skip) {
             let (row, col) = self.parser.screen().cursor_position();
             answers.extend_from_slice(format!("\x1b[{};{}R", row + 1, col + 1).as_bytes());
@@ -495,6 +656,8 @@ impl Model {
 
     pub fn resize(&mut self, rows: u16, cols: u16) {
         self.parser.screen_mut().set_size(rows, cols);
+        // (vt100 keeps or drops the region by its own rule: unknown until the provider sets it again.)
+        self.region = None;
         // A picture of the normal screen is its lines at that size: it does not survive a resize.
         if self.resting.as_ref().is_some_and(|r| r.since.is_some()) {
             self.resting = None;
@@ -1211,5 +1374,119 @@ mod tests {
         for typed in [&b"\x1b[A"[..], b"hello", b"\x1b[200~x\x1b[201~", b"\x1b\r", b"\x1b["] {
             assert!(!is_probe_reply(typed), "{typed:?}");
         }
+    }
+
+    /// The screen rows and the cursor: what a terminal shows, whatever is above it.
+    fn shown(screen: &vt100::Screen) -> (Vec<String>, (u16, u16)) {
+        (screen.rows(0, screen.size().1).collect(), screen.cursor_position())
+    }
+
+    /// A new viewer's terminal: the model's history, then its snapshot as the web view draws it.
+    fn late_joiner(model: &mut Model, max: usize) -> vt100::Parser {
+        let (rows, cols) = model.size();
+        let mut term = vt100::Parser::new(rows, cols, SCROLLBACK);
+        term.process(&model.history(max));
+        term.process(WEB_CLEAR);
+        term.process(&model.snapshot());
+        term
+    }
+
+    /// Codex's inline mode (`run::CODEX_INLINE`) writes each finished line through a scroll region
+    /// from the first row to the row above its prompt. A terminal keeps the lines that leave that
+    /// region's top; vt100 0.16 alone keeps none of them, so the model had no history for Codex.
+    #[test]
+    fn holder_model_keeps_the_lines_that_leave_the_top_of_a_scroll_region_from_the_first_row() {
+        // Codex's `insert_history`: the region, its last row, CR LF and the line, the region off, the prompt.
+        let insert = |line: &str| format!("\x1b[1;4r\x1b[4;1H\r\n\x1b[1m{line}\x1b[m\x1b[r\x1b[5;9H").into_bytes();
+        let mut output = b"\x1b[5;1H> prompt\x1b[6;1Hstatus".to_vec();
+        for i in 1..=9 {
+            output.extend(insert(&format!("line {i}")));
+        }
+        let expected: Vec<String> = ["", "", "", ""].into_iter().map(str::to_owned)
+            .chain((1..=9).map(|i| format!("line {i}"))).chain(["> prompt".to_owned(), "status".to_owned()]).collect();
+        // Whole, and a byte a read: a sequence split anywhere is still followed.
+        for split in [false, true] {
+            let mut model = Model::new(6, 20);
+            let mut plain = vt100::Parser::new(6, 20, SCROLLBACK);
+            plain.process(&output);
+            if split {
+                output.iter().for_each(|b| { model.feed(&[*b]); });
+            } else {
+                model.feed(&output);
+            }
+            assert_eq!(above(&mut plain), 0, "vt100 keeps no line while a region is set");
+            assert_eq!(shown(model.parser.screen()), shown(plain.screen()), "the screen and the cursor are the ones vt100 draws");
+            // The four blank rows above the first line left the region first, as in a terminal.
+            assert_eq!(lines(&mut late_joiner(&mut model, 1 << 20)), expected, "split: {split}");
+            assert_eq!(above(&mut late_joiner(&mut model, 1 << 20)), 9);
+            // The region is still the provider's: one more line scrolls it again.
+            model.feed(&insert("line 10"));
+            assert_eq!(lines(&mut late_joiner(&mut model, 1 << 20)).last_chunk::<3>().unwrap(), &["line 10".to_owned(), "> prompt".to_owned(), "status".to_owned()]);
+        }
+    }
+
+    #[test]
+    fn holder_model_keeps_the_line_a_wrapping_character_pushes_off_a_scroll_region_and_no_line_of_other_regions() {
+        let mut model = Model::new(4, 10);
+        let mut plain = vt100::Parser::new(4, 10, SCROLLBACK);
+        let feed = |model: &mut Model, plain: &mut vt100::Parser, bytes: &[u8]| {
+            model.feed(bytes);
+            plain.process(bytes);
+        };
+        // Region rows 1-3, a prompt under it. A line longer than the terminal is wide wraps on the
+        // region's last row, twice; a wide character with one column left wraps too.
+        feed(&mut model, &mut plain, b"\x1b[4;1Hprompt\x1b[1;3r\x1b[3;1H\r\naaaaaaaaaabbbbbbbbbbcc\r\nddddddddd\xe4\xb8\xad\x1b[r");
+        assert_eq!(shown(model.parser.screen()), shown(plain.screen()));
+        let all = lines(&mut late_joiner(&mut model, 1 << 20));
+        assert_eq!(all, ["", "", "", "aaaaaaaaaa", "bbbbbbbbbb", "cc", "ddddddddd", "中", "prompt"]);
+        let kept = above(&mut late_joiner(&mut model, 1 << 20));
+        assert_eq!(kept, 5);
+        // A region that does not start at the first row keeps nothing in a terminal either, nor does
+        // the alternate screen, nor `ESC[<n>S`.
+        feed(&mut model, &mut plain, b"\x1b[2;3r\x1b[3;1H\r\nlower\r\nregion\x1b[r");
+        feed(&mut model, &mut plain, b"\x1b[1;3r\x1b[2S\x1b[r");
+        feed(&mut model, &mut plain, b"\x1b[?1049h\x1b[1;3r\x1b[3;1H\r\nfull\r\nscreen\x1b[r\x1b[?1049l");
+        assert_eq!(shown(model.parser.screen()), shown(plain.screen()));
+        assert_eq!(above(&mut late_joiner(&mut model, 1 << 20)), kept);
+        // No region: vt100 keeps the line itself, once.
+        feed(&mut model, &mut plain, b"\x1b[4;1H\r\nplain");
+        assert_eq!(shown(model.parser.screen()), shown(plain.screen()));
+        assert_eq!(above(&mut late_joiner(&mut model, 1 << 20)), kept + 1);
+    }
+
+    /// Prod 2026-10-08 (acceptance round 14, C3): a teammate who opened a long inline Codex session
+    /// got its output log's tail. At 218 KB the first 28 of 1313 rows were wrong (a line out of
+    /// place, then 24 blank rows: the empty rows of a new terminal scrolling off as the tail
+    /// replayed), and the head of the session was missing. This is that session's real output (Codex
+    /// 0.159.3, 100x30, each read as it arrived, bytes as Latin-1): start, one answer, six `/status`
+    /// blocks. `lines` is every line a real terminal (headless xterm 5.5) then holds, `above` how
+    /// many of them are above its screen.
+    #[test]
+    fn holder_model_gives_a_late_joiner_of_real_inline_codex_every_line_a_terminal_kept() {
+        let capture: serde_json::Value = serde_json::from_str(include_str!("../../tests/fixtures/codex_inline_status.json")).unwrap();
+        let number = |key: &str| capture[key].as_u64().unwrap();
+        let (rows, cols) = (number("rows") as u16, number("cols") as u16);
+        let kept: Vec<String> = capture["lines"].as_array().unwrap().iter().map(|l| l.as_str().unwrap().to_owned()).collect();
+        let mut model = Model::new(rows, cols);
+        model.inline_codex();
+        let mut plain = vt100::Parser::new(rows, cols, SCROLLBACK);
+        for read in capture["reads"].as_array().unwrap() {
+            let bytes: Vec<u8> = read.as_str().unwrap().chars().map(|c| c as u8).collect();
+            model.feed(&bytes);
+            plain.process(&bytes);
+        }
+        assert_eq!(shown(model.parser.screen()), shown(plain.screen()), "the screen and the cursor are the ones vt100 draws");
+        let mut late = late_joiner(&mut model, 1 << 20);
+        assert_eq!(lines(&mut late), kept, "every line, each once, none blank or out of place");
+        assert_eq!(above(&mut late) as u64, number("above"));
+        assert!(above(&mut plain) < above(&mut late), "vt100 alone keeps fewer: {}", above(&mut plain));
+        // A short budget: the newest whole lines, and nothing before them.
+        let mut short = late_joiner(&mut model, 4096);
+        let newest = lines(&mut short);
+        assert!(newest.len() > usize::from(rows) && newest.len() < kept.len() && kept.ends_with(&newest), "{newest:#?}");
+        // Ended (Codex leaves its last screen): the same lines, and nobody starts over.
+        assert_eq!(model.end(Instant::now()), None);
+        assert_eq!(model.starts_over(), None);
+        assert_eq!(lines(&mut late_joiner(&mut model, 1 << 20)), kept);
     }
 }

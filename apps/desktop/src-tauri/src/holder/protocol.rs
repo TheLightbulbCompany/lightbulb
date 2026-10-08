@@ -44,8 +44,8 @@ pub const OWNER_INPUT: u8 = 11;
 pub const END: u8 = 12;
 /// Watch client → holder: `u64 BE max`. Holder → that client: the lines above its screen for a
 /// new viewer's scrollback, at most `max` bytes (`Model::history`). Sent only to a holder whose
-/// HELLO says `"history": true` (one that runs Claude Code's classic renderer); any other is
-/// asked for its output log (REPLAY).
+/// HELLO says `"history": true` (one that runs Claude Code's classic renderer or Codex inline:
+/// its model keeps the lines above the screen); any other is asked for its output log (REPLAY).
 pub const HISTORY: u8 = 13;
 
 /// No frame is larger than this; a longer declared length is refused before allocating it.

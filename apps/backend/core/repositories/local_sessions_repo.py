@@ -251,7 +251,9 @@ def room_conditions(owner: str, human: str, receipt: dict, *, include_meta: bool
                 "ConditionExpression": "attribute_exists(sk)",
             }
         }
-        for kind, user in sorted({("human", human), actor})
+        # An agent reaches any shared session in the workspace (spec 2026-10-07-agent-session-approval):
+        # only its own seat in the room it acts from is fenced, not the session owner's.
+        for kind, user in sorted({actor} if actor[0] == "agent" else {("human", human), actor})
     ]
 
 

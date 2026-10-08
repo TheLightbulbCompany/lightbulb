@@ -412,6 +412,12 @@ async def _render_session_rows(owner_id: str, user_id: str, rows: list[dict], se
         if not session or session.get("ownerId") != owner_id or session.get("humanUserId") != user_id:
             continue
         sid, state = session["sessionId"], row.get("subtype")
+        if state == "join_request" and row.get("request") == "agent_message":
+            from core.services.local_sessions import _get_ask
+
+            if ask := await _get_ask(owner_id, sid, row["requestId"]):
+                items.append(render_agent_ask(ask, session, seen=seen))
+            continue
         if state == "join_request":
             items.append(render_join_request(row, session, seen=seen))
             continue
@@ -535,6 +541,76 @@ async def _run_join_action(
     decision = "allow" if action_id == "allow" else "decline"
     decide = local_sessions.decide_pickup_request if pickup else local_sessions.decide_join
     await decide(auth, session_id, requester, decision, request_id=request_id)
+    return await current()
+
+
+def agent_ask_item_id(session_id: str, request_id: str) -> str:
+    return f"agentmsg:{session_id}:{request_id}"
+
+
+_ASK_RESOLVED = {"sent": "Sent", "failed": "Not sent", "declined": "Declined", "expired": "Expired"}
+
+
+def render_agent_ask(ask: dict, session: dict, *, seen: str | None) -> ActivityItem:
+    """An agent's ask to message (or stop) one of the viewer's sessions (spec
+    2026-10-07-agent-session-approval §3.5), open while the ask is pending."""
+    from core.services.local_sessions import AGENT_ASK_REASON, agent_ask_title, ask_status
+
+    status = ask_status(ask)
+    open_ = status == "pending"
+    created = datetime.fromtimestamp(ask["createdAt"], tz=timezone.utc)
+    actor = ActivityActor(kind="agent", id=ask["agentId"], name=str(ask.get("agentName") or "Your agent"))
+    title = agent_ask_title(ask, session)
+    links = [ActivityLink(kind="session", id=session["sessionId"], label="Session")]
+    if ask.get("roomId"):
+        links.append(ActivityLink(kind="room", id=ask["roomId"], label="Room"))
+    return ActivityItem(
+        id=agent_ask_item_id(session["sessionId"], ask["requestId"]),
+        kind="session",
+        subtype="join_request",
+        actor=actor,
+        created_at=created,
+        state="open" if open_ else "resolved",
+        read=not _newer_than(created, seen),
+        summary=ActivitySummary(
+            title=_clip(title if open_ else f"{_ASK_RESOLVED.get(status, 'Answered')} · {title}", TITLE_CHARS),
+            requester=actor,
+            reason=AGENT_ASK_REASON,
+            preview=ActivityPreview(text=_clip(ask["text"], PREVIEW_TEXT_CHARS)) if ask.get("text") else None,
+            links=links,
+        ),
+        actions=[
+            ActivityAction(id="send", label="Send", style="primary"),
+            ActivityAction(id="decline", label="Decline"),
+        ]
+        if open_
+        else [],
+    )
+
+
+async def _run_agent_ask_action(auth: AuthContext, session_id: str, request_id: str, action_id: str) -> ActivityItem:
+    """Send / Decline from Activity: the same door as the session's decision route."""
+    from core.repositories import local_sessions_repo
+    from core.services import local_sessions
+
+    owner_id = resolve_owner_id(auth)
+
+    async def current() -> ActivityItem:
+        session = await local_sessions_repo.get_session(owner_id, session_id)
+        ask = await local_sessions._get_ask(owner_id, session_id, request_id) if session else None
+        if not ask or session.get("ownerId") != owner_id or session.get("humanUserId") != auth.user_id:
+            raise ApiProblem("ACTIVITY_NOT_FOUND", "Activity item not found.")
+        return render_agent_ask(ask, session, seen=None)
+
+    item = await current()
+    if item.state != "open":
+        return item
+    _require_action(item, action_id)
+    try:
+        await local_sessions.decide_agent_ask(auth, session_id, request_id, action_id)
+    except ApiProblem as exc:
+        if exc.error.code != "LOCAL_SESSION_ASK_SETTLED":  # a second tap or another approver won
+            raise
     return await current()
 
 
@@ -1759,6 +1835,12 @@ async def run_action(
 ) -> ActivityItem:
     """Map one Activity action to the real call, re-authorized for this viewer,
     and answer with the updated item. A repeated decision returns the current state."""
+    if item_id.startswith("agentmsg:"):
+        # An agent's request id may itself contain ":", so it is everything after the session.
+        _, sid, request_id = (item_id.split(":", 2) + [""])[:3]
+        if _ID_RE.match(sid) and request_id:
+            return await _run_agent_ask_action(auth, sid, request_id, action_id)
+        raise ApiProblem("ACTIVITY_NOT_FOUND", "Activity item not found.")
     parts = item_id.split(":")
     if parts[0] == "login" and len(parts) == 2:
         return await _run_login_action(auth, parts[1], action_id, body)

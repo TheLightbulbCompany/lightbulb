@@ -179,7 +179,7 @@ async def agent_local_session_events(
 
 @router.post(
     "/messaging/local-session-agent/sessions/{session_id}/commands",
-    response_model=local_sessions.CommandReceipt,
+    response_model=local_sessions.AgentCommandReceipt,
     status_code=202,
 )
 async def agent_local_session_command(
@@ -187,26 +187,30 @@ async def agent_local_session_command(
     body: local_sessions.LocalSessionCommand,
     auth: local_session_grants.AgentInvocation = Depends(local_session_invocation),
 ):
+    """``send``/``interrupt`` go straight in or file one ask for the session's owner (spec
+    2026-10-07-agent-session-approval): the receipt says ``awaiting_approval`` until they answer."""
     from core.services.local_session_relay import get_local_session_relay
 
-    receipt = await local_sessions.submit_command(auth, auth.room_id, session_id, body)
+    receipt = await local_sessions.agent_command(auth, session_id, body)
+    if isinstance(receipt, local_sessions.AgentCommandReceipt):
+        return receipt
     try:
         await get_local_session_relay().dispatch_session(auth.owner_id, receipt.session_id)
     except Exception:
         logger.warning("Local session dispatch deferred")
-    return await local_sessions.get_command(auth, auth.room_id, receipt.session_id, body.request_id)
+    return await local_sessions.get_agent_receipt(auth, receipt.session_id, body.request_id)
 
 
 @router.get(
     "/messaging/local-session-agent/sessions/{session_id}/commands/{request_id}",
-    response_model=local_sessions.CommandReceipt,
+    response_model=local_sessions.AgentCommandReceipt,
 )
 async def agent_local_session_receipt(
     session_id: str,
     request_id: str,
     auth: local_session_grants.AgentInvocation = Depends(local_session_invocation),
 ):
-    return await local_sessions.get_command(auth, auth.room_id, session_id, request_id)
+    return await local_sessions.get_agent_receipt(auth, session_id, request_id)
 
 
 @router.get("/messaging/sessions", response_model=local_sessions.WorkspaceSessions)
@@ -221,6 +225,26 @@ async def list_workspace_sessions(
 @router.get("/messaging/sessions/{session_id}", response_model=local_sessions.LocalSession)
 async def get_local_session(session_id: str, auth: AuthContext = Depends(get_current_user)):
     return await local_sessions.get_session(auth, session_id)
+
+
+class AgentAskDecisionRequest(ContractModel):
+    decision: Literal["send", "decline"]
+
+
+@router.get("/messaging/sessions/{session_id}/agent-asks", response_model=list[local_sessions.AgentCommandReceipt])
+async def list_session_agent_asks(session_id: str, auth: AuthContext = Depends(get_current_user)):
+    """Agents' asks waiting on this session; empty for anyone who may not answer them."""
+    return await local_sessions.list_agent_asks(auth, session_id)
+
+
+@router.post(
+    "/messaging/sessions/{session_id}/agent-asks/{request_id}", response_model=local_sessions.AgentCommandReceipt
+)
+async def decide_session_agent_ask(
+    session_id: str, request_id: str, body: AgentAskDecisionRequest, auth: AuthContext = Depends(get_current_user)
+):
+    """The session's owner, or a teammate while team control is on, answers an agent's ask."""
+    return await local_sessions.decide_agent_ask(auth, session_id, request_id, body.decision)
 
 
 class SessionOpenRequest(ContractModel):
@@ -1128,11 +1152,22 @@ async def create_paperclip_hermes_run(owner_id: str, body: dict, request: Reques
     container = await _require_hook_token(owner_id, request)
     identity = _paperclip_hermes_identity(request, body=body)
     await _verify_paperclip_hermes_identity(owner_id, identity, full=True)
+    # The run's local-session grant, minted only once the identity checked out (spec
+    # 2026-10-07-agent-session-approval §3.1). It reaches only the sessions of people who let
+    # background work in; an image that predates it ignores the header.
+    try:
+        grant = local_session_grants.mint_paperclip(
+            owner_id, identity["agentId"], identity["sessionId"], identity["runId"], identity.get("issueId")
+        )
+    except (RuntimeError, ApiProblem):
+        grant = None
+        logger.warning("Paperclip local session invocation unavailable")
     return await _paperclip_hermes_runtime_response(
         container,
         "/internal/paperclip/v1/runs",
         method="POST",
         json_body={"identity": identity, "request": body},
+        local_session_token=grant,
     )
 
 
@@ -1275,14 +1310,18 @@ async def _paperclip_hermes_runtime_response(
     method: str,
     json_body: dict,
     raw: bool = False,
+    local_session_token: str | None = None,
 ):
+    headers = {"Authorization": f"Bearer {(container or {}).get('gateway_token') or ''}"}
+    if local_session_token is not None:
+        headers["X-Lightbulb-Local-Session-Token"] = local_session_token
     try:
         response = await runtime_transport.request(
             container,
             path,
             method=method,
             json_body=json_body,
-            headers={"Authorization": f"Bearer {(container or {}).get('gateway_token') or ''}"},
+            headers=headers,
             timeout_s=PAPERCLIP_HERMES_TIMEOUT_S,
         )
     # httpx.ReadTimeout is an httpx.HTTPError, so a cold-start timeout already lands here and

@@ -313,12 +313,12 @@ async def test_an_exchange_survives_a_long_answer_and_the_follow_up_routes_at_on
     waited out the unclaimed-question delay."""
     h, backend, lives, clock = await asked()
     (row,) = h._requests.items
-    clock.t += h_mod.ENGAGE_GAP_S + 5  # the work took long
+    clock.t += 35  # the work took long
     answer(h, row.run_id, "forge", "Three PRs are open. The oldest is two days old.")
     await h.tick()
     await settle(h)
     assert says_of(lives[-1])[-1] == ("say", "Three PRs are open. The oldest is two days old.")
-    clock.t += h_mod.ENGAGE_GAP_S  # and it is a long answer
+    clock.t += 30  # and it is a long answer
     (e,) = h._engagements(h._who(P1))
     assert e is not None, "never ended while its agent is speaking to its person"
     spoken(h, lives[-1])

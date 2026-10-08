@@ -379,15 +379,16 @@ async def test_the_askers_next_line_goes_to_the_router_at_once_with_the_exchange
     ]  # fmt: skip
     assert len(backend.turns) == 2 and backend.turns[-1]["agentId"] == "forge" and len(lives) == 2
 
-    # someone else took a turn, then a long gap with nothing owed: they are no longer talking, and it is a
-    # question to the room again (silence alone ends no exchange: test_voice_rules)
+    # someone else took a turn, with nothing owed: they are no longer talking, and it is a question to the
+    # room again (silence alone ends no exchange: test_voice_rules)
     h, backend, lives, clock = await asked()
     (row,) = h._requests.items
     answer(h, row.run_id, "forge", "Three PRs are open.")
     spoken(h, lives[0])
     await closes(h, clock)
+    backend.route_extra = heard(people=True)  # /route: said among people. No clock decides that.
     await says(h, P2, "I will send the plan on Thursday.")
-    clock.t += h_mod.ENGAGE_GAP_S
+    backend.route_extra = ops([])
     routes = len(backend.routes)
     await says(h, P1, "And what are they called?")
     assert len(backend.routes) == routes and h._unclaimed is not None and h._engaged == {}

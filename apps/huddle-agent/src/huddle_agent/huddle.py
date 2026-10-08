@@ -179,9 +179,10 @@ CALL_ON_S = 3.0  # a name said alone, then this much silence from its speaker: t
 SETTLE_S = 0.3
 # How long a line stays worth saying, by what it is. An answer has no time limit while its asker is here.
 EXPIRES_S = {"ack": 10.0, "status": 6.0, "social": 6.0}
-# A person and an agent with nothing said between them this long, and a turn of someone else's since, are no
-# longer talking (`Huddle._engagements`).
-ENGAGE_GAP_S = 30.0
+# A safety net, and no rule of conversation: an exchange ends when someone else takes a turn that is not
+# part of it (`Huddle._engagements`). One that nothing ended, with nothing said between its person and its
+# agent this long, is closed so the room does not keep it for the whole call.
+ENGAGE_SAFETY_S = 300.0
 # A sentence that was cut is not said, however much of it was audible: it is said whole when its utterance
 # goes on (`Huddle.on_unit`). A sentence keeps what it is about for its end ("...costs fifty dollars per
 # month"), and seconds guessed from characters cannot say its last word was heard (10-08 review: "The
@@ -1691,19 +1692,26 @@ class Huddle:
         return None if mixed_meet(identity) and not label else (identity, label)
 
     def _engagements(self, who: tuple[str, str] | None = None) -> list[Engagement]:
-        """The exchanges still open (of `who`), the latest first. An exchange is its person's until someone
-        else takes a turn: silence alone, however long, ends nothing, and the next thing they say may still
-        be for the agent (/route decides, with the exchange as evidence). Once someone else has spoken
-        since, a long gap ends one with nothing owed, and suspends one whose answer is still to come: the
-        person may no longer be waiting for it. One whose agent is speaking to its person right now is
-        never ended: each unit it finishes is the exchange going on (`_unit_said`)."""
+        """The exchanges still open (of `who`), the latest first. The rule: an exchange ends when someone
+        else takes a turn that is not part of it. Silence ends nothing, however long, and the next thing its
+        person says may still be for the agent (/route decides, with the exchange as evidence).
+
+        What a turn of someone else was is /route's to say, never a clock's or a count's. One said among
+        people is not part of it and suspends the exchange (`_between`); an endorsement of the request or a
+        line to an agent comes between nobody. A suspended exchange with nothing owed is over once anyone
+        else has spoken since. One whose answer is still to come stays suspended, so the answer waits for
+        an opening. ENGAGE_SAFETY_S closes one that nothing ended, and is only a safety net. One whose
+        agent is speaking to its person right now is never ended: each unit it finishes is the exchange
+        going on (`_unit_said`)."""
         now = self._clock()
         saying = {((u.audience, u.label), u.agent) for u in self._ledger if u.state == "speaking"}
         for key, e in list(self._engaged.items()):
-            if now - e.at < ENGAGE_GAP_S or key in saying:
+            if key in saying:
                 continue
-            if not any(at > e.at for other, at in self._turn_at.items() if other != e.person):
-                continue  # nobody else has taken a turn since they last spoke with each other
+            old = now - e.at >= ENGAGE_SAFETY_S
+            taken = e.state == "suspended" and any(at > e.at for other, at in self._turn_at.items() if other != e.person)
+            if not (old or taken):
+                continue
             if e.expects == "answer" and self._owes(e):
                 if e.state == "active":
                     e.state, e.why = "suspended", "gap"

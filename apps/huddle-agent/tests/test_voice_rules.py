@@ -292,7 +292,7 @@ async def answered():
 
 async def test_silence_alone_ends_no_exchange_and_the_nameless_follow_up_goes_to_the_router_at_once():
     h, backend, lives, clock = await answered()
-    clock.t += 2 * h_mod.ENGAGE_GAP_S  # nobody said a word
+    clock.t += 60  # nobody said a word for a minute
     routes = len(backend.routes)
     await says(h, P1, "And what are they called?")
     assert len(backend.routes) == routes + 1, "no UNCLAIMED_QUESTION_S of waiting: /route reads it now"
@@ -300,20 +300,67 @@ async def test_silence_alone_ends_no_exchange_and_the_nameless_follow_up_goes_to
     assert (evidence["agentId"], evidence["state"]) == ("forge", "active")
 
 
-async def test_someone_elses_turn_and_then_a_long_gap_end_the_exchange():
+AMONG_PEOPLE = {"ops": {"requests": [], "social": None, "more": False, "cancel": [], "steer": [], "people": True}}
+
+
+async def test_someone_elses_turn_among_people_ends_the_exchange_with_no_gap_to_wait_out():
+    """10-08 review: the rule read "until someone else takes a turn", and the code still wanted 30 s too."""
     h, backend, lives, clock = await answered()
-    await says(h, P2, "I will send the plan on Thursday.")
-    clock.t += h_mod.ENGAGE_GAP_S
+    backend.route_extra = AMONG_PEOPLE
+    await says(h, P2, "Lee, I will send you the plan on Thursday.")
+    backend.route_extra = ops([])
+    assert h._engagements() == [] and h._engaged == {}, "at once: it was not part of her exchange with Forge"
     routes = len(backend.routes)
     await says(h, P1, "And what are they called?")
-    assert len(backend.routes) == routes and h._unclaimed is not None and h._engaged == {}
+    assert len(backend.routes) == routes and h._unclaimed is not None, "a question to the room again"
+
+
+async def test_someone_elses_turn_is_no_end_while_what_it_was_is_not_known():
+    h, backend, lives, clock = await answered()
+    backend.route_extra, backend.route_gate = AMONG_PEOPLE, asyncio.Event()
+    asyncio.ensure_future(h.on_final_transcript(P2, "Dan", "Lee, I will send you the plan on Thursday."))
+    for _ in range(20):
+        await asyncio.sleep(0)
+    clock.t += 60
+    assert [e.agent for e in h._engagements(h._who(P1))] == ["forge"], "/route has not said what it was"
+    backend.route_gate.set()
+    await settle(h)
+    assert h._engagements() == []
+
+
+async def test_someone_elses_turn_that_is_part_of_the_exchange_ends_nothing_however_long_ago():
+    h, backend, lives, clock = await answered()
+    await says(h, P2, "Good question, I wondered too.")  # /route: about the request, said to no person
+    backend.route_extra = ops([("forge", "which PR is the oldest", "name")])
+    await says(h, P2, "Forge, which of them is the oldest?")  # and a line to the same agent
+    backend.route_extra = ops([])
+    clock.t += 60
+    assert {e.person[0] for e in h._engagements()} == {P1, P2}, "hers is still open, and he has one too"
+
+
+async def test_someone_elses_turn_among_people_suspends_an_exchange_whose_answer_is_still_to_come():
+    h, backend, lives, clock = await asked()
+    backend.route_extra = AMONG_PEOPLE
+    await says(h, P2, "Lee, I will send you the plan on Thursday.")
+    clock.t += 60
+    (e,) = h._engagements(h._who(P1))
+    assert (e.state, e.why) == ("suspended", "other"), "the answer is owed: it waits, the exchange is not forgotten"
 
 
 async def test_a_listening_sound_from_someone_else_is_no_turn_and_ends_nothing():
     h, backend, lives, clock = await answered()
     await says(h, P2, "Mm-hm.")
-    clock.t += h_mod.ENGAGE_GAP_S
+    clock.t += 60
     assert [e.agent for e in h._engagements(h._who(P1))] == ["forge"]
+
+
+async def test_the_safety_net_ends_an_exchange_nobody_ended():
+    h, backend, lives, clock = await answered()
+    (e,) = h._engagements(h._who(P1))
+    clock.t = e.at + h_mod.ENGAGE_SAFETY_S - 1
+    assert [e.agent for e in h._engagements(h._who(P1))] == ["forge"]
+    clock.t += 1
+    assert h._engagements() == [], "only so that a record nobody closes is not kept for the whole call"
 
 
 # -- small talk for a line that names the agent is written while /route decides --

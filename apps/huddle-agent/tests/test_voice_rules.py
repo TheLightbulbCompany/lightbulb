@@ -472,3 +472,97 @@ async def test_a_detector_that_never_says_stop_holds_speech_for_detector_lost_s_
     assert len(says_of(lives[0])) == 1
     await pause(h, clock, 1 + h_mod.MEET_QUIET_S)
     assert says_of(lives[0])[1:] == [("say", FIRST)], "its stop was lost, and the SFU never heard him: not speech"
+
+
+# -- a follow-up said while its request is still being worked on goes into that run: it is acknowledged  --
+# -- aloud, it is answered whatever the run can still take, and one line goes into the run once           --
+
+
+def steers(backend):
+    return [(t["steerRunId"], t["utterance"]) for t in backend.late_steers]
+
+
+async def test_a_follow_up_added_to_a_working_request_is_acknowledged_aloud():
+    """10-08 Meet: "Friday, what about Thursday?" went into the calendar run, and the person heard nothing."""
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    backend.steer, said = True, len(says_of(lives[0]))
+    backend.route_extra = ops(steer=[(row.id, "only the ones on main")])
+    await says(h, P1, "Forge, only the ones on main.")
+    assert steers(backend) == [(row.run_id, "only the ones on main")] and len(h._requests.items) == 1
+    (line,) = says_of(lives[0])[said:]
+    assert line[1] in h_mod.STEER_ACKS, "one short fixed line, at once, and no new run"
+    (e,) = h._engagements(h._who(P1))
+    assert (e.state, e.expects, e.obligation) == ("active", "answer", row.id), "they wait for that answer again"
+
+
+async def test_a_follow_up_brings_its_speaker_back_to_the_agent_they_had_turned_away_from():
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    await says(h, P1, "Dan, did you push that fix last night?")
+    assert h._engagements(h._who(P1))[0].state == "suspended"
+    backend.steer, said = True, len(says_of(lives[0]))
+    backend.route_extra = ops(steer=[(row.id, "only the ones on main")])
+    await says(h, P1, "Forge, only the ones on main.")
+    assert [c[1] in h_mod.STEER_ACKS for c in says_of(lives[0])[said:]] == [True]
+    assert h._engagements(h._who(P1))[0].state == "active"
+
+
+async def test_a_follow_up_the_run_can_no_longer_take_becomes_a_request_of_its_own():
+    """The bridge refuses a steer once a run has stopped taking them: the words are never lost."""
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    backend.steer = False  # the run is finishing
+    backend.route_extra = ops(steer=[(row.id, "only the ones on main")])
+    await says(h, P1, "Forge, only the ones on main.")
+    first, second = h._requests.items
+    assert (second.agent, second.task, second.asker) == ("forge", "only the ones on main", P1)
+    assert second.status == "queued", "behind the run it could not join: one run per agent at a time"
+    answer(h, first.run_id, "forge", FIRST)
+    await settle(h)
+    assert second.status == "working" and backend.turns[-1]["utterance"] == "only the ones on main"
+
+
+async def test_a_question_routed_at_once_and_taken_is_not_routed_again_as_unclaimed():
+    """10-08 Meet: "And what are they called?" was steered twice. Its speaker was talking with the agent, so
+    it went to /route at once, and as a question that named nobody it also armed the unclaimed-question
+    timer, which sent it again 3.5 s later."""
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    backend.steer = True
+    backend.route_extra = ops(steer=[(row.id, "which is the oldest")])
+    await closes(h, clock)  # its voice has closed: the nameless line is not a floor line
+    routes = len(backend.routes)
+    await says(h, P1, "And which is the oldest?")
+    assert len(backend.routes) == routes + 1 and steers(backend) == [(row.run_id, "which is the oldest")]
+    assert h._unclaimed is None, "an agent took it: the room is not asked"
+    quiet(h)
+    await pause(h, clock, h_mod.UNCLAIMED_QUESTION_S + 1)
+    assert len(backend.routes) == routes + 1 and len(steers(backend)) == 1
+
+
+async def test_a_question_routed_at_once_that_nobody_took_is_still_put_to_the_room():
+    h, backend, lives, clock = await asked()
+    await closes(h, clock)
+    backend.route_extra = ops([])  # /route gives it to nobody
+    routes = len(backend.routes)
+    await says(h, P1, "And which is the oldest?")
+    assert len(backend.routes) == routes + 1 and h._unclaimed is not None
+    quiet(h)
+    await pause(h, clock, h_mod.UNCLAIMED_QUESTION_S + 1)
+    assert len(backend.routes) == routes + 2 and backend.route_bodies[-1]["unclaimed"] is True
+
+
+async def test_one_line_steers_a_request_once_however_often_its_answer_is_applied():
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    backend.steer = True
+    took = ops(steer=[(row.id, "which is the oldest")])["ops"]
+    mark = h._final_mark[P1]
+    h._apply(P1, mark, took)
+    h._apply(P1, mark, took)  # the same line's answer again (a second /route of it that was already on its way)
+    await settle(h)
+    assert len(steers(backend)) == 1
+    h._apply(P1, mark + 1, took)  # another line that says the same is another steer
+    await settle(h)
+    assert len(steers(backend)) == 2

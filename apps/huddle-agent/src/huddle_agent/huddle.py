@@ -239,6 +239,9 @@ QUEUED_LINES = (
     "That's next for me, once I finish this one.",
     "I have one thing to finish first, then that.",
 )
+# A follow-up that went into the run already working on its request: said at once, so its speaker knows it
+# was heard. The answer to it comes with that run's.
+STEER_ACKS = ("Adding that.", "Got it, that too.", "Okay, that as well.")
 HERE = ("Yes, I'm here.", "I'm here.", "Yes, go ahead.")  # called on by its name alone, with no open work
 COULD_NOT = (
     "Sorry, I could not get that done.",
@@ -612,6 +615,7 @@ class Huddle:
         # is read by the line's mark: `_said_by` is by then the label of whoever spoke last.
         self._said_at: dict[int, str] = {}
         self._meet_roster: list[str] = []  # the humans in the Meet, from the latest packet that had a roster
+        self._steered: set[tuple[int, str]] = set()  # (a line's mark, a request): that line steered it (`_apply`)
         self._unclaimed: tuple | None = (
             None  # (deadline, identity, text, mark): an open question
         )
@@ -2773,6 +2777,13 @@ class Huddle:
             text, r = str(s.get("text") or "").strip(), self._requests.get(str(s.get("requestId") or ""))
             if not text or (r is not None and r.status == "cancelled"):
                 continue
+            if r is not None:
+                # One line steers a request once. 10-08 Meet: a nameless question went to /route at once
+                # (its speaker was talking with the agent) and again as an unclaimed question 3.5 s later,
+                # and the same words went into the run twice.
+                if (mark, r.id) in self._steered:
+                    continue
+                self._steered.add((mark, r.id))
             # a working row whose run is not bound yet will run its task as it is then (review B5-7)
             if r is not None and (r.status == "queued" or r.status == "working" and r.run_id is None):
                 said = f'Added to "{r.task}": {text}'
@@ -2780,7 +2791,9 @@ class Huddle:
                 emit_metric("live.request.steered", 1, "Count", {"how": "queued"})
                 if v is not None and v.live is not None:
                     self._live_call(v, "append_thinking", said)
+                self._steer_ack(r, identity, mark)
             elif r is not None and r.status == "working":
+                self._steer_ack(r, identity, mark)
                 self._spawn(self._steer_row(r, identity, mark, text))
             elif (r is not None or v is not None) and not (later and (r is None or r.by != "name")):
                 # answered already, or unknown: a new ask of its owner (superseded like any unnamed ask, §4.2)
@@ -2814,6 +2827,8 @@ class Huddle:
                 self._between(who)
         kind = next((k for k in ("requests", "steer", "cancel", "social", "more") if heard.get(k)), "none")
         emit_metric("live.understand.ops", 1, "Count", {"kind": kind.rstrip("s")})  # §5.3: once per understood line
+        if (u := self._unclaimed) is not None and u[3] == mark and (kind != "none" or heard.get("called")):
+            self._unclaimed = None  # an agent took the question: it is not put to the room a second time
         self._sync_state()
         return rows
 
@@ -2871,6 +2886,19 @@ class Huddle:
                 self._live_call(v, "nudge")
         self._start_queued()  # the agent's next row
         self._pump()
+
+    def _steer_ack(self, r: Request, identity: str, mark: int) -> None:
+        """A mouth's word for a follow-up that was added to a request still being worked on. Until 10-08 the
+        person heard nothing: the words went into the run, and a mouth says nothing for a steer. They spoke
+        to the agent about its work, so they are talking with it again and waiting for that answer."""
+        if not (self._mouths() and mouth(identity)):
+            return
+        self._unhush(r.agent)
+        self._engage(self._who(identity, mark), r.agent, obligation=r.id, expects="answer")
+        self._utter(
+            r.agent, "ack", self._line(STEER_ACKS), obligation=r.run_id or r.id, audience=identity,
+            label=self._label(identity, mark),
+        )  # fmt: skip
 
     async def _steer_row(self, r: Request, speaker: str, mark: int, text: str) -> None:
         """`ops.steer` of a working row (understanding §4.4): into its run, steer-only. A run that just ended (or a

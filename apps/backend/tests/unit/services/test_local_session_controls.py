@@ -436,6 +436,76 @@ def joins(page):
 
 
 @pytest.mark.asyncio
+async def test_asking_again_reminds_the_owner_once_per_window_under_the_same_request(transport):
+    """ISOA-729: a request never times out, so the person who asked can nudge the owner."""
+    sid = await start(transport)
+    pushes = []
+    first = await ask(BOB, sid, pushes)
+    assert first.join_requested_at  # the client offers Ask again ASK_AGAIN_AFTER_S after this
+    await ask(BOB, sid, pushes)  # inside the window: nothing
+    with patch.object(service, "ASK_AGAIN_AFTER_S", 0):  # the window has passed
+        again = await ask(BOB, sid, pushes)
+    assert again.join_request == "pending" and again.join_request_id == first.join_request_id
+    await ask(BOB, sid, pushes)  # inside the new window: nothing
+    assert [(p[0], p[1]) for p in pushes] == [
+        (ALICE.user_id, f"Bob wants to join {sid[:8]}"),
+        (ALICE.user_id, f"Bob is still waiting to join {sid[:8]}"),
+    ]
+    live = [json.loads(h["events"][0]) for h in transport[4]]
+    asks = [e["eventId"] for e in live if e["type"] == "workspace.session.attention"]
+    assert len(asks) == len(set(asks)) == 2  # the reminder is its own event, not a duplicate to drop
+    # Still one open Needs-you item, and it answers the same request.
+    [item] = joins(await feed(ALICE))
+    assert item.state == "open"
+    assert (await service.get_session(ALICE, sid)).pending_join_ids == {BOB.user_id: first.join_request_id}
+
+
+@pytest.mark.asyncio
+async def test_a_restart_tells_the_person_whose_ask_it_dropped_until_they_ask_again(transport):
+    """ISOA-729: the session view remounts on a new generation, so only the server can say this."""
+    sid = await start(transport)
+    await ask(BOB, sid)
+    # A new generation with no Ended frame for the old one (a crash, a restart).
+    await relay(transport).handle_message(
+        "conn-1", {**registration(generation="generation-2"), "previousGeneration": "generation-1"}
+    )
+    bob = await service.get_session(BOB, sid)
+    assert bob.join_request is None and bob.join_request_closed == "restarted"
+    # Only the person whose ask was dropped reads it.
+    assert (await service.get_session(CAROL, sid)).join_request_closed is None
+    assert (await service.get_session(ALICE, sid)).join_request_closed is None
+    assert "joinRequestClosed" not in (await service.get_session(CAROL, sid)).model_dump(by_alias=True)
+    with patch.object(service, "JOIN_CLOSED_TTL_S", 0):  # bounded: it stops being said
+        assert (await service.get_session(BOB, sid)).join_request_closed is None
+    again = await ask(BOB, sid)
+    assert again.join_request == "pending" and again.join_request_closed is None
+    assert (
+        "joinClosed" not in await repo.get_session(OWNER, sid) or not (await repo.get_session(OWNER, sid))["joinClosed"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_end_then_a_resume_also_tells_the_person_whose_ask_was_dropped(transport):
+    sid = await start(transport)
+    await ask(BOB, sid)
+    await relay(transport).handle_message(
+        "conn-1", {**fixture("session-ended"), "sessionId": sid, "generation": "generation-1"}
+    )
+    assert (await service.get_session(BOB, sid)).join_request_closed is None  # ended: nothing to ask for
+    await relay(transport).handle_message(
+        "conn-1", {**registration(generation="generation-2"), "previousGeneration": "generation-1"}
+    )
+    assert (await service.get_session(BOB, sid)).join_request_closed == "restarted"
+    # Once the owner lets everyone send, there is nothing left to say.
+    await service.set_team_control(ALICE, sid, True)
+    assert (await service.get_session(BOB, sid)).join_request_closed is None
+    # Let in means said: switching team control off again does not bring the notice back.
+    await service.set_team_control(ALICE, sid, False)
+    assert (await service.get_session(BOB, sid)).join_request_closed is None
+    assert "joinClosed" not in await repo.get_session(OWNER, sid)
+
+
+@pytest.mark.asyncio
 async def test_ask_to_join_is_idempotent_and_tells_only_the_owner(transport):
     sid = await start(transport)
     pushes = []
@@ -787,3 +857,39 @@ async def test_a_pick_up_request_shows_and_is_answered_in_activity(transport):
     assert calls == [((sid, BOB.user_id, "allow"), {"request_id": rid})] and not join.called
     assert done.id == item.id and done.state == "resolved" and done.actions == []
     assert (await repo.get_session(OWNER, sid))["pickupAllowed"] is True
+
+
+@pytest.mark.asyncio
+async def test_link_changes_log_who_and_which_client_and_never_the_link(caplog):
+    """ISOA-732: a link revoked seconds after its audience changed could be traced to a person
+    (the audit row) but not to a client. The routes now say which, without the token or URL."""
+    from unittest.mock import AsyncMock
+
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from core.auth import get_current_user
+    from routers import messaging
+
+    app = FastAPI()
+    app.include_router(messaging.router, prefix="/api/v1")
+    app.dependency_overrides[get_current_user] = lambda: ALICE
+    sid, secret = "8ad82a70-e3cd-5d26-b43a-9de9db3dd0c3", "https://x/s#do-not-log-this-token"
+    link = service.SessionLink(url=secret, audience="anyone")
+    headers = {"user-agent": "Mozilla/5.0 TestWebView", "origin": "https://thelightbulb.company"}
+    with (
+        patch.object(service, "put_link", AsyncMock(return_value=link)),
+        patch.object(service, "delete_link", AsyncMock()),
+        caplog.at_level("INFO", logger="routers.messaging"),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            path = f"/api/v1/messaging/sessions/{sid}/link"
+            assert (await client.put(path, json={"audience": "anyone"}, headers=headers)).status_code == 200
+            assert (await client.delete(path, headers=headers)).status_code == 204
+    put, revoked = [r for r in caplog.records if r.getMessage().startswith("session link ")]
+    assert (put.getMessage(), put.audience) == ("session link put", "anyone")
+    assert (revoked.getMessage(), revoked.audience) == ("session link revoked", None)
+    for record in (put, revoked):
+        assert record.actor_user_id == ALICE.user_id and record.session_id == sid
+        assert record.user_agent == "Mozilla/5.0 TestWebView" and record.origin == "https://thelightbulb.company"
+        assert "do-not-log" not in str(record.__dict__)

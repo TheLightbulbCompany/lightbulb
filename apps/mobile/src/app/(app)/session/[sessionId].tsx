@@ -1,7 +1,7 @@
 import { useAuth } from "@clerk/clerk-expo";
 import { SymbolView } from "expo-symbols";
 import {
-  ApiError, buildRows, canControlSession, groupRows, mainEvents, pendingApproval, receiptChip, sessionLabel, sessionRingState, sessionStatus, sessionTitle, sessionViewKey, terminalStateReason, unavailableReason, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionOutbox, useSessionResume, useWorkspaceSessions,
+  ApiError, buildRows, canControlSession, groupRows, mainEvents, pendingApproval, receiptChip, sessionLabel, sessionRingState, sessionStatus, sessionTitle, sessionViewKey, sessionScreenNotice, unavailableReason, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionOutbox, useSessionResume, useWorkspaceSessions,
   type LocalSession, type SessionControlClient, type SessionSource, type TranscriptItem,
 } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
@@ -354,7 +354,8 @@ function SessionBody({
   const insets = useSafeAreaInsets();
   const busy = session.status === "busy";
   const ended = session.status === "ended";
-  const reason = terminalStateReason(session);
+  // Running with no terminal, whatever the reason (or none reported): the web panel's condition.
+  const noScreen = !session.terminal && session.status !== "ended" && session.status !== "offline";
   const source = useHistorySource(client, session, revision);
   const history = useLocalSessionHistory(client, source.sessionId, source.latestEventSeq, revision, onAccessLost, { pollMs });
   const [text, setText] = useState("");
@@ -426,12 +427,11 @@ function SessionBody({
           </Pressable>
         </View>
       )}
-      {reason !== null && (
+      {noScreen && (
         // No terminal here yet: what gets its screen shared (spec 2026-10-07 §4 f, g).
         <Text style={[styles.meta, styles.liveHint, { color: palette.fgMute }]} accessibilityLiveRegion="polite">
-          {reason === "plain"
-            ? own ? "Press ← in its terminal to share this one live, or turn on Share every session live in Settings to make every new session live." : `Ask ${ownerName} to press ← in their terminal.`
-            : own ? "Start it again with lightbulb codex to share its screen." : `Ask ${ownerName} to start it again with lightbulb codex.`}
+          {/* The web panel's words (sessionScreenNotice), on one line. */}
+          {(({ title, body, how, settings }) => [title, body, how, settings].filter(Boolean).join(" "))(sessionScreenNotice(session, own, ownerName))}
         </Text>
       )}
       {remoteApproval && <SessionApprovalCard key={session.pendingApproval?.approvalId} session={session} client={client} allowed={control} own={own} ownerName={ownerName} />}

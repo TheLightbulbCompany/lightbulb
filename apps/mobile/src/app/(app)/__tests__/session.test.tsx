@@ -511,14 +511,21 @@ describe("session screen", () => {
   it("tells a teammate how a plain session gets its screen", async () => {
     mockSession = { ...base, humanUserId: "user-b" };
     await render(<SessionScreen />);
-    expect(await screen.findByText("Ask Bob to press ← in their terminal.")).toBeTruthy();
+    expect(await screen.findByText("Bob is working in this session, but its screen is not shared. Its screen shows in Lightbulb as soon as Bob shares it. Until then you can follow its status and what it changed.")).toBeTruthy();
+    expect(screen.queryByText(/←|terminal/)).toBeNull();
   });
 
   it("tells a teammate how a no-daemon Codex session gets its screen, with no ← line", async () => {
     mockSession = { ...base, humanUserId: "user-b", provider: "codex", terminalReason: "no-daemon" };
     await render(<SessionScreen />);
-    expect(await screen.findByText("Ask Bob to start it again with lightbulb codex.")).toBeTruthy();
-    expect(screen.queryByText(/press ←/)).toBeNull();
+    expect(await screen.findByText(/^Bob is working in this session, but its screen is not shared\./)).toBeTruthy();
+    expect(screen.queryByText(/←|lightbulb codex/)).toBeNull();
+  });
+
+  it("says a session has no screen when the Mac gives a reason nobody can act on, or none", async () => {
+    mockSession = { ...base, humanUserId: "user-b", provider: "codex", terminalReason: "unknown" };
+    await render(<SessionScreen />);
+    expect(await screen.findByText("Bob is working in this session, but its screen is not shared. You can still follow its status and what it changed.")).toBeTruthy();
   });
 
   it("shows someone else's session read-only: no prompt row, only who can send", async () => {

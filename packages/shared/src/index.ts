@@ -223,13 +223,13 @@ export type { SessionSource } from "./messaging/useLocalSessionHistory";
 export { useWorkspaceSessions } from "./messaging/useWorkspaceSessions";
 export { canSendToSession, markSessionsSeen, sendBlockedReason, SESSION_ARCHIVE_AFTER_MS, SIDEBAR_SESSION_CAP, sessionArchived, sessionHistory, sessionLabel, sessionLive, sessionMatches, sessionStatus, sessionTitle, sessionToolName, sessionUnread, sessionViewKey, unavailableReason, workspaceSections } from "./messaging/localSessionLabels";
 export type { SessionDayGroup, SessionSeen, WorkspaceSection } from "./messaging/localSessionLabels";
-export { terminalStateReason } from "./messaging/sessionStates";
+export { sessionScreenNotice, terminalStateReason } from "./messaging/sessionStates";
 export { agentRingState, mergeChats, roomActivityAt, roomPreview, sessionActivityAt, sessionPreview, sessionRingState } from "./messaging/chatList";
 export type { AvatarRing, ChatEntry, MergeChatsOptions } from "./messaging/chatList";
 export { lastOwnMessageId, readState, readStateLabel, UNPROMPTED_LABEL, unpromptedLabel } from "./messaging/readState";
 export type { ReadState } from "./messaging/readState";
 export { AUTO_CHECK_INTERVAL_MS, COMMAND_MAX_BYTES, pendingPrompt, receiptChip, useSessionCommand, usePendingPrompt, useSessionOutbox, type SessionReceiptChip } from "./messaging/useSessionCommand";
-export { APPROVAL_MODE_LABEL, auditLine, COMMIT_AND_PR_INSTRUCTION, canControlSession, canResumeSession, pickupRequestLine, pickupSource, pickupStatus, resumeStatus, sessionFacts, sessionFooter, usageLine, useSessionApproval, useSessionAudit, useSessionJoinRequest, useSessionResume, useSessionSharing, useTeamControl, useUsageSharing, withAuditNotices } from "./messaging/sessionControls";
+export { APPROVAL_MODE_LABEL, ASK_AGAIN_AFTER_MS, joinRequestView, auditLine, COMMIT_AND_PR_INSTRUCTION, canControlSession, canResumeSession, pickupRequestLine, pickupSource, pickupStatus, resumeStatus, sessionFacts, sessionFooter, usageLine, useSessionApproval, useSessionAudit, useSessionJoinRequest, useSessionResume, useSessionSharing, useTeamControl, useUsageSharing, withAuditNotices } from "./messaging/sessionControls";
 export type { ApprovalAnswer, PrivateSendApproval, SessionControlClient, SessionResumeFlow } from "./messaging/sessionControls";
 export type { SessionCommandAttempt } from "./messaging/useSessionCommand";
 export type {

@@ -211,9 +211,15 @@ async def test_a_paused_answer_waits_for_the_final_of_talk_whose_first_words_wer
 # -- a sentence that began as a person did: they were speaking first, and the detector had not heard them --
 
 
-async def test_a_sentence_whose_first_audio_just_went_out_yields_at_once_to_a_person_who_is_then_heard():
+def sounds(h, live, index=0):
+    """The mouth's report: the first frame of that unit with sound in it has gone to the track."""
+    h.on_unit_audible("forge", live.order, index)
+
+
+async def test_a_sentence_whose_first_sound_just_went_out_yields_at_once_to_a_person_who_is_then_heard():
     h, backend, lives, clock, row = await answering()
-    assert h.may_say("forge", lives[0].order, 0), "its first audio goes out"
+    assert h.may_say("forge", lives[0].order, 0), "its first frame goes out"
+    sounds(h, lives[0])
     clock.t += h_mod.PREROLL_S - 0.1
     talks(h, P2)  # heard now: they began before it did
     assert ("interrupt",) in lives[0].calls and [u.state for u in h._ledger] == ["paused"], "no TALK_OVER_S of waiting"
@@ -224,12 +230,50 @@ async def test_a_sentence_whose_first_audio_just_went_out_yields_at_once_to_a_pe
 async def test_a_sentence_well_under_way_still_yields_only_to_talk_that_lasts():
     h, backend, lives, clock, row = await answering()
     assert h.may_say("forge", lives[0].order, 0)
+    sounds(h, lives[0])
     clock.t += h_mod.PREROLL_S + 0.1
     talks(h, P2)
     assert ("interrupt",) not in lives[0].calls and [u.state for u in h._ledger] == ["speaking"]
     clock.t += h_mod.TALK_OVER_S
     await h.tick()
     assert ("interrupt",) in lives[0].calls
+
+
+async def test_the_window_is_counted_from_the_first_sound_not_from_permission_or_a_silent_frame():
+    """10-08 review: the stamp was the permission, and the frames after it may be silent for a second."""
+    h, backend, lives, clock, row = await answering()
+    assert h.may_say("forge", lives[0].order, 0)
+    clock.t += 2 * h_mod.PREROLL_S  # quiet frames: the room has heard nothing of it
+    sounds(h, lives[0])
+    clock.t += h_mod.PREROLL_S - 0.1
+    talks(h, P2)
+    assert ("interrupt",) in lives[0].calls, "its sound began as they did, whenever it was permitted"
+
+
+async def test_a_sentence_permitted_and_not_yet_audible_yields_at_once_too():
+    h, backend, lives, clock, row = await answering()
+    assert h.may_say("forge", lives[0].order, 0)
+    clock.t += 2 * h_mod.PREROLL_S  # still only quiet frames
+    talks(h, P2)
+    assert ("interrupt",) in lives[0].calls and [u.state for u in h._ledger] == ["paused"], "nothing of it was heard"
+
+
+async def test_a_sentence_only_just_begun_does_not_yield_to_a_listening_sound():
+    """10-08 review: the pre-roll yield fired for a person whose words were only "mm-hm"."""
+    h, backend, lives, clock, row = await answering()
+    assert h.may_say("forge", lives[0].order, 0)
+    sounds(h, lives[0])
+    h.on_speech(P2, True)  # the detector hears him, and his first words come before the SFU's sound of him
+    h.on_interim_transcript(P2, "Dan", "Mm-hm")
+    assert h._only_listening(P2)
+    clock.t += h_mod.PREROLL_S - 0.1
+    h.on_active_speakers({P2})  # now he is talking, inside the window
+    assert ("interrupt",) not in lives[0].calls and [u.state for u in h._ledger] == ["speaking"]
+    clock.t += h_mod.TALK_OVER_S
+    await h.tick()
+    assert ("interrupt",) not in lives[0].calls, "nor later, as for any listening sound"
+    h.on_interim_transcript(P2, "Dan", "Mm-hm, but wait")
+    assert ("interrupt",) in lives[0].calls, "words that say more make it yield"
 
 
 # -- an exchange is its person's until someone else takes a turn --
@@ -343,7 +387,6 @@ async def test_speech_only_the_detector_hears_holds_a_new_answer_and_the_next_se
     await says(h, P2, "Mm-hm.")
     await pause(h, clock, BREATH)
     assert says_of(lives[0])[1:] == [("say", f"{FIRST} {SECOND}")]
-    clock.t += h_mod.PREROLL_S
     h.on_unit("forge", lives[0].order, 0, FIRST, "said", {"loudMs": 1200})
     h.on_speech(P2, True)
     assert not h.may_say("forge", lives[0].order, 1), "nor the next sentence of one being said"
@@ -351,7 +394,6 @@ async def test_speech_only_the_detector_hears_holds_a_new_answer_and_the_next_se
 
 async def test_speech_only_the_detector_hears_does_not_stop_a_sentence_being_said():
     h, backend, lives, clock, row = await answering()
-    clock.t += h_mod.PREROLL_S
     h.on_speech(P2, True)
     clock.t += 2 * h_mod.TALK_OVER_S
     await h.tick()

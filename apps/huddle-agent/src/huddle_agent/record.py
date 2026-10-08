@@ -24,7 +24,7 @@ ENV = "HUDDLE_RECORD_DIR"
 # an input and is not written (`_tap`'s depth).
 INPUTS = (
     "on_participants", "on_active_speakers", "on_speech", "on_interim_transcript", "on_final_transcript",
-    "stt_stopped", "on_data", "on_agent_state", "on_agent_said", "on_speaker_activity", "on_unit",
+    "stt_stopped", "on_data", "on_agent_state", "on_agent_said", "on_speaker_activity", "on_unit", "on_unit_audible",
     "on_playback_ended", "may_say", "on_live_closed", "on_delegation", "talk_start", "talk_end", "tick",
 )  # fmt: skip
 CALLS = ("team", "route", "summon", "session", "turn", "abort", "no_post", "late_answer", "end", "leave_meeting")

@@ -223,6 +223,7 @@ async def test_the_second_sentence_does_not_start_over_a_person():
     assert not h.may_say("forge", order + 1, 0) and not h.may_say("forge", order, 1), "another order or unit: no"
     h.on_unit("forge", order, 0, ANSWER, "said", {})
     assert u.cursor == 1 and h.may_say("forge", order, 1)
+    h.on_unit_audible("forge", order, 1)
     clock.t += h_mod.PREROLL_S  # (a sentence only just begun yields to him at once: test_voice_rules)
     talks(h, P2)  # he begins as the first sentence ends: too short yet to pause anything
     assert u.state == "speaking"
@@ -263,9 +264,11 @@ async def test_permission_is_asked_again_as_the_first_audio_is_about_to_go_out()
         for f in frames:
             yield f
 
-    mouth.unit = agent._Unit(7, 0, lambda: True)
+    sounded = []
+    mouth.unit = agent._Unit(7, 0, lambda: True, lambda: sounded.append(mouth.unit.frames))
     assert len([f async for f in mouth.realtime_audio_output_node(audio(), None)]) == 3
     assert (mouth.unit.frames, round(mouth.unit.seconds, 2), round(mouth.unit.loud, 2)) == (3, 0.06, 0.04)
+    assert sounded == [2], "told once, at the first frame with sound in it: the quiet one before it is not the start"
     mouth.unit = agent._Unit(7, 0, lambda: False)
     assert [f async for f in mouth.realtime_audio_output_node(audio(), None)] == [], "nothing reaches the track"
     assert mouth.unit.revoked and mouth.unit.frames == 0
@@ -432,6 +435,7 @@ async def test_a_short_interruption_nobody_has_understood_yet_refuses_the_next_s
     (u,) = h._ledger
     order, orders = lives[0].order, len(says_of(lives[0]))
     assert h.may_say("forge", order, 0)
+    h.on_unit_audible("forge", order, 0)
     clock.t += h_mod.PREROLL_S  # the sentence is under way (one only just begun yields at once: test_voice_rules)
     talks(h, P2)
     clock.t += h_mod.TALK_OVER_S / 2  # too short to make it yield

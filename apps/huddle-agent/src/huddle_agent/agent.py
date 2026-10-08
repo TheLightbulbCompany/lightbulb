@@ -338,6 +338,7 @@ class _Unit:
     order: int | None
     index: int
     allowed: Callable[[], bool]  # the controller's permission, asked again as its first audio is about to go out
+    audible: Callable[[], None] = lambda: None  # told once, as its first frame with sound in it goes out
     frames: int = 0
     seconds: float = 0.0
     loud: float = 0.0  # seconds of frames with sound in them
@@ -365,6 +366,7 @@ class _Mouth(Agent):
                 if max(max(data), -min(data)) >= LOUD:
                     if not m.loud:
                         m.sounded = time.monotonic()
+                        m.audible()
                     m.loud += frame.duration
                 elif not m.loud:
                     m.lead += frame.duration
@@ -393,10 +395,11 @@ class _DrivenLive:
         said=lambda order, index, text, outcome, evidence: None,
         ended=lambda order, failed: None,  # huddle.on_playback_ended: one `say` is over, by its order id
         may=lambda order, index: True,  # huddle.may_say: the worker's permission for one unit
+        audible=lambda order, index: None,  # huddle.on_unit_audible: a unit's first sound went to the track
     ) -> None:
         self.agent_id, self.track_name = agent_id, f"agent-{agent_id}"
         self._session, self._agent, self._room = session, agent, room
-        self._said, self._ended, self._may = said, ended, may
+        self._said, self._ended, self._may, self._audible = said, ended, may, audible
         self._tail: asyncio.Task | None = None
         self._epoch = 0  # raised by interrupt: a speech order queued under an older one is dropped
         self._cut_at: float | None = None  # when the last interrupt was sent, until its audio is known stopped
@@ -425,7 +428,7 @@ class _DrivenLive:
         end), `cut` (interrupted), `revoked` (permission went before its first audio, so none was sent) or
         `silent` (it ended uncut and nothing audible was sent: a failure). The receipt carries the order and
         unit it is for and what the track was sent, never the model's transcript of itself."""
-        m = self._agent.unit = _Unit(order, index, lambda: self._may(order, index))
+        m = self._agent.unit = _Unit(order, index, lambda: self._may(order, index), lambda: self._audible(order, index))
         began = time.monotonic()
         handle = self._session.generate_reply(instructions=SAY + unit)
 
@@ -623,6 +626,7 @@ async def _start_driven(
         ),
         ended=lambda order, failed: huddle.on_playback_ended(agent_id, order, failed),
         may=lambda order, index: huddle.may_say(agent_id, order, index),
+        audible=lambda order, index: huddle.on_unit_audible(agent_id, order, index),
     )
 
     def closed(_ev) -> None:

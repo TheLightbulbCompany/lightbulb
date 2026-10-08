@@ -322,6 +322,7 @@ class Mouth:
             cut = await self._wait(m.lead())
             lead = sim.now() - at
             if not cut:
+                h.on_unit_audible(self.agent_id, order, index)  # the first frame with sound in it
                 sim.audio(self, True)
                 heard = sim.now()
                 cut = await self._wait(m.unit(unit))

@@ -167,8 +167,10 @@ TALK_OVER_S = 0.5
 # detector still hears them, they are talking for this long after the SFU last did.
 LEVEL_FRESH_S = 1.5
 # The transcriber's detector hears a person this long after they begin, at most. A sentence whose first
-# audio went out less than this before a person was heard began over them, or with them: it yields at once,
-# with no TALK_OVER_S of waiting.
+# sound went out less than this before a person was heard (or has not gone out yet) began over them, or
+# with them: it yields at once, with no TALK_OVER_S of waiting. Counted from the first frame with sound in
+# it (`Huddle.on_unit_audible`): a unit is permitted, and may send quiet frames, a second before that.
+# Not for a person whose words so far are only a listening sound (`Huddle._only_listening`).
 PREROLL_S = 0.6
 TRAIL_S = 8.0  # an unfinished turn ("Can one of you tell me...", "Friday.") is joined to a rest that comes this soon
 CALL_ON_S = 3.0  # a name said alone, then this much silence from its speaker: the agent was called on
@@ -421,7 +423,10 @@ class Utterance:
     order: int = 0
     via: Any = None
     tries: int = 0
-    unit_at: float = 0.0  # when the unit being said was last given permission: its first audio (`may_say`)
+    # When the first sound of the unit being said went to the track (`on_unit_audible`). None: the unit has
+    # its permission and nothing of it is audible yet (`may_say`). 0.0: no unit was asked for.
+    sound_at: float | None = 0.0
+    sounding: int = -1  # the unit `sound_at` is about
     cut_at: float = 0.0  # when it was paused, until the receipt of the playback that was cut is in (`_hold`)
 
 
@@ -2070,6 +2075,7 @@ class Huddle:
         self._gate(u, "", now)
         self._order += 1
         u.state, u.over, u.resume, u.order, u.via, u.cut_at = "speaking", set(), False, self._order, v, 0.0
+        u.sound_at, u.sounding = 0.0, -1
         if self._selected == u.agent:
             self._selected = None
         if e := self._engagement((u.audience, u.label), u.agent) if u.audience else None:
@@ -2093,13 +2099,20 @@ class Huddle:
         if why and why != "stale":
             self._yield(u)
             self._pump()  # the scheduler takes it from here: it notes what holds it and sets its timer
-        elif not why:
-            u.unit_at = self._clock()
+        elif not why and u.sounding != index:
+            u.sound_at, u.sounding = None, index  # permitted, and not audible yet (`on_unit_audible`)
         self._log(
             "permit", ok=not why, why=why, agent=agent_id, order=order, unit=index, utterance=u.id if u else None,
             speaking=sorted(self._speaking),
         )  # fmt: skip
         return not why
+
+    def on_unit_audible(self, agent_id: str, order: int | None, index: int) -> None:
+        """A mouth's report that the first frame with sound in it, of that unit, went to the track: the
+        room begins to hear the sentence now (PREROLL_S is counted from here)."""
+        for u in self._ledger:
+            if u.agent == agent_id and u.order == order and u.cursor == index and u.state == "speaking":
+                u.sound_at, u.sounding = self._clock(), index
 
     def on_unit(self, agent_id: str, order: int | None, index: int, text: str, outcome: str, evidence: dict) -> None:
         """A mouth's receipt for one unit it began, by the order and unit it was for, with what went to the
@@ -3255,7 +3268,8 @@ class Huddle:
             for u in self._ledger:
                 if u.state == "speaking":
                     u.over |= started  # who talked over it: a stop of theirs is for it, whether or not it yields
-                    if now - u.unit_at < PREROLL_S:
+                    begun = u.sound_at is None or now - u.sound_at < PREROLL_S
+                    if begun and not all(self._only_listening(w) for w in started):
                         self._yield(u)  # its sentence began as they did: they were speaking first, unheard
             # a mouth yields once their turn has lasted TALK_OVER_S, by the clock and not by the next tick
             self._later(min(self._turn_from(w) for w in started) + TALK_OVER_S - now, self._yield_check)

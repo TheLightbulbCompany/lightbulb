@@ -62,7 +62,7 @@ function add(history: SessionScreen[], frame: SessionScreen) {
 
 /** A history frame from below this viewer's place in the run it draws: its burst came after the
  *  snapshot the Mac sent behind it (prod 2026-10-08: once by 2.6 s; about half of all opens kept
- *  no scrollback). When it makes the run under that snapshot longer, the picture starts over:
+ *  no scrollback). When it makes the run under that snapshot longer or nearer it, the picture starts over:
  *  that run, then all that is written since. A viewer whose history is whole gets none (its burst's
  *  frames are all here), so nobody else's open redraws it. */
 function late(order: ScreenOrder, frame: SessionScreen) {
@@ -73,7 +73,9 @@ function late(order: ScreenOrder, frame: SessionScreen) {
   if (frame.seq > base.seq || order.history.some((f) => f.epoch !== order.epoch)) return { order, write: [] };
   const history = add(order.history, frame);
   const [had, run] = [newestRun(order.history, base), newestRun(history, base)];
-  if (run.length <= had.length) return { order: { ...order, history }, write: [] };
+  // Another run only when it is longer or ends nearer the snapshot: a chunk that joins nothing changes nothing.
+  const newer = run.length > 0 && (run.length > had.length || run[run.length - 1].seq > had[had.length - 1].seq);
+  if (!newer) return { order: { ...order, history }, write: [] };
   return { order: { ...order, history, bare: false }, write: [...run, ...order.shown] };
 }
 

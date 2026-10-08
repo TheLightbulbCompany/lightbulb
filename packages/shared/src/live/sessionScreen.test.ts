@@ -79,6 +79,9 @@ it("history that arrives late never redraws a viewer whose history is whole, and
   expect(feed([f(4, "snapshot"), f(3, "history"), f(5)], whole.order).written).toEqual(["s4", "o5"]);
   // The same frame again, and one from an older run.
   expect(feed([f(1, "snapshot"), f(0, "history"), f(0, "history"), f(0, "history", 0)]).written).toEqual(["s1", "h0", "s1"]);
+  // A chunk nearer the snapshot than the run written replaces it, though no longer: a lost chunk costs only the older part.
+  expect(feed([f(0, "history"), f(3, "snapshot"), f(2, "history")]).written).toEqual(["h0", "s3", "h2", "s3"]);
+  expect(feed([f(0, "history"), f(1, "history"), f(4, "snapshot"), f(3, "history"), f(3, "history")]).written).toEqual(["h0", "h1", "s4", "h3", "s4"]);
   // An older chunk that does not join the run written makes it no longer; the chunk between them does.
   expect(feed([f(3, "history"), f(4, "snapshot"), f(1, "history")]).written).toEqual(["h3", "s4"]);
   expect(feed([f(3, "history"), f(4, "snapshot"), f(1, "history"), f(2, "history")]).written).toEqual(["h3", "s4", "h1", "h2", "h3", "s4"]);

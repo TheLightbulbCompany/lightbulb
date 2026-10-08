@@ -310,6 +310,12 @@ describe("typing into the live terminal", () => {
     await type("a"); await type("b");
     expect(input).toHaveBeenCalledTimes(1);
   });
+  it("sends one request for a 10 KB paste whose first call is refused", async () => {
+    const input = vi.fn(async () => { throw new ApiError(403, null); });
+    await mount(true, input);
+    await type("x".repeat(10_240));
+    expect(input).toHaveBeenCalledTimes(1);
+  });
   it("keeps a refusal across a refreshed session object, and clears it for a new generation", async () => {
     const input = vi.fn(async () => { throw new ApiError(409, { code: "LOCAL_SESSION_UNSUPPORTED" }); });
     const { rerender } = await mount(true, input);

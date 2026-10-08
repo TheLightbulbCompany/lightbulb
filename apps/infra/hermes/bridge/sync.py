@@ -363,6 +363,23 @@ _SYNC_WORKERS = 32
 LOW_DISK_MB = 200
 
 
+def _outer_statvfs() -> os.statvfs_result:
+    """``/`` is an ext4 inside a sparse loop image that sits on an OUTER overlay; blocks freed
+    inside never go back to the outer, so the outer fills first and writes fail with EIO while
+    ``/`` still reads free (10-07/10-08 founder stalls). ``/etc/hosts`` is bind-mounted FROM the
+    outer, so its statvfs is the outer's free space."""
+    try:
+        return os.statvfs("/etc/hosts")
+    except OSError:
+        return os.statvfs("/")
+
+
+def disk_free_mb() -> tuple[int, int]:
+    """(outer, inner) free MB. Callers that need one number take ``min``."""
+    st = _outer_statvfs()
+    return st.f_bavail * st.f_frsize // 1_000_000, shutil.disk_usage("/").free // 1_000_000
+
+
 def _fan_out(fn, items) -> None:
     """Run ``fn`` over ``items`` on a bounded pool. The first worker exception cancels every
     transfer not yet started and re-raises here -- a throttle on a 90k-object restore must fail

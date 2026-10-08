@@ -690,6 +690,35 @@ async def test_a_run_with_no_end_by_the_deadline_is_given_up_once_and_its_asker_
     assert backend.late_answers == [], "nothing is posted for it: no answer exists, and none is made up"
 
 
+async def test_the_deadline_counts_from_when_turns_accepted_the_run_not_from_the_first_try():
+    """A cold workspace took the run after 70 s of retries (TURN_RETRY_BUDGET is 75). Counted from the first
+    try the run had 50 s to work in, and a healthy long run was called failed before its answer came."""
+    from huddle_agent.backend import BackendError
+
+    h, room, backend, lives, clock, log = await per_person()
+    backend.turn_results = [BackendError(503, "runtime_unavailable", None)] * 10  # 2+4+8*8 = 70 s of backoff
+    backend.route_extra = ops([("forge", "list the open PRs", "name")])
+    asked_at = clock.t
+    await says(h, P1, "Forge, what PRs are open?")
+    backend.route_extra = ops([])
+    (row,) = h._requests.items
+    run = h._runs.get(row.run_id)
+    assert len(backend.turns) == 11 and row.status == "working"
+    assert run.accepted - asked_at >= 70, "the wake took most of the retry budget"
+    quiet(h)
+    await wait(h, clock, h_mod.RUN_DEADLINE_S - (clock.t - run.accepted) - 2, lives)
+    assert clock.t - asked_at > h_mod.RUN_DEADLINE_S + 60, "well past a deadline counted from the request"
+    assert row.status == "working" and sorry(lives) == [], "the run still has its whole time to work"
+    answered_run = row.run_id
+    await wait(h, clock, 4, lives)
+    assert row.status == "failed" and len(sorry(lives)) == 1, "120 s after acceptance it is given up"
+    said = lines(lives)
+    answer(h, answered_run, "forge", FIRST)
+    await wait(h, clock, 5, lives)
+    assert lines(lives) == said, "an answer after the apology is never said"
+    assert [(a[1], a[3]) for a in backend.late_answers] == [(answered_run, FIRST)], "it is written to the room"
+
+
 async def test_an_answer_that_comes_after_the_apology_is_written_to_the_room_and_not_said():
     h, backend, lives, clock, first, second = await given_up()
     said = lines(lives)
@@ -728,7 +757,7 @@ def test_a_run_given_up_is_waited_for_no_longer_and_its_frames_are_still_read():
     sink, now = Sink(), [100.0]
     runs = Runs(sink, clock=lambda: now[0])
     run = runs.started("r1", "forge", speaker=P1, request="x", delegation_id=None, gen=None)
-    assert run.began == 100.0 and runs.running("forge") == [run]
+    assert run.accepted == 0.0 and runs.running("forge") == [run]  # /turns has not taken it: no deadline runs
     runs.give_up("r1")
     assert runs.running("forge") == []
     for f in ({"type": "chunk", "content": FIRST, "seq": 1}, {"type": "run_ended", "seq": 2}):

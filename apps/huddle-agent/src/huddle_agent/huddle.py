@@ -254,9 +254,14 @@ COULD_NOT = (
 # No frame of the run for this long, its asker still waiting on it and the room at a pause: its agent says
 # once that it is still working (STILL_WORKING). Never over people who have moved on, never a second time.
 RUN_STATUS_S = 20.0
-# No `run_ended` this long after the run started: its agent tells the asker once that it could not get it
-# (COULD_NOT), the request is failed and the agent's next one starts. The slowest run that did answer in
-# that call took 110 s. An answer that still comes is written to the room, never said after the apology.
+# No `run_ended` this long after /turns accepted the run: its agent tells the asker once that it could not
+# get it (COULD_NOT), the request is failed and the agent's next one starts. The slowest run that did answer
+# in that call took 110 s. An answer that still comes is written to the room, never said after the apology.
+# The two bounds count from different moments on purpose. RUN_STATUS_S counts from the request (the run's
+# start here, then its last frame): what a status line answers is the asker's wait, and a workspace that is
+# waking is part of it. This one counts from acceptance: it is the time the run is given to do the work, and
+# the up to TURN_RETRY_BUDGET seconds a cold workspace spends before it takes the run are not the run's.
+# A run never accepted is closed by `_post_turn` (CANT_REACH) at that budget, so it needs no deadline here.
 RUN_DEADLINE_S = 120.0
 # The final POST's backoff and its whole budget. The budget stays under the job's shutdown window
 # (agent.py SHUTDOWN_S): the flush usually runs from the shutdown callback.
@@ -3838,7 +3843,7 @@ class Huddle:
     def _overdue(self, r: Request, run: Run, now: float) -> None:
         """A mouth's request still working (`tick`): what its asker is owed while the run says nothing
         (RUN_STATUS_S), and when it has not ended at all (RUN_DEADLINE_S)."""
-        if now - run.began >= RUN_DEADLINE_S:
+        if run.accepted and now - run.accepted >= RUN_DEADLINE_S:
             self._runs.give_up(run.run_id)
             self._requests.fail(r)
             emit_metric("live.request.overdue", 1, "Count", {"what": "gave_up"})
@@ -4275,6 +4280,8 @@ class Huddle:
                         # "don't post that" said before this /turns landed: a retry rewrites the VOICERUN
                         # row and can lose a mark that landed in its read-then-put window, so mark it again
                         self._spawn_mark(run_id)
+                    if run := self._runs.get(run_id):
+                        run.accepted = self._clock()  # RUN_DEADLINE_S counts from here, not from the first try
                     return r
                 except BackendError as e:
                     delay = min(2 ** (attempt + 1), TURN_RETRY_MAX_DELAY)

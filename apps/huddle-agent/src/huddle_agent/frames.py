@@ -95,7 +95,7 @@ class Run:
     box: int = 0  # which text box `text` is: narration before a tool is one, the answer after it another
     label: str | None = None
     seen: float = 0.0
-    began: float = 0.0  # when it was started here (`Runs.started`)
+    accepted: float = 0.0  # when /turns took it (`Huddle._post_turn`); 0 while a waking workspace is retried
     gave_up: bool = False  # its asker was told it could not be done (`Runs.give_up`): it is waited for no longer
 
 
@@ -110,7 +110,6 @@ class Runs:
         run = self._runs.get(run_id) or Run(run_id=run_id, agent_id=agent_id)
         run.agent_id, run.speaker, run.request = agent_id, speaker, request
         run.delegation_id, run.gen, run.bound, run.seen = delegation_id, gen, True, self._clock()
-        run.began = run.began or run.seen
         self._runs[run_id] = run
         if not run.held:
             self._replay(run)

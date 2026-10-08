@@ -60,6 +60,9 @@ ROUTING: dict[str, dict[int, dict]] = {
     },
     "gap": {0: PEOPLE, 1: {**CALENDAR, "else": PEOPLE}, 2: PEOPLE, 3: PEOPLE, 4: PEOPLE},
     "long_answer_cut": {0: FIVE, 2: PEOPLE},
+    # Friday is talked about, not spoken to: the classifier's label for her name is `mentioned` (`router.Jev`
+    # gives it to every agent's name on a line that is no ask of that agent), and nothing starts
+    "mentioned_not_asked": {0: PEOPLE, 1: PEOPLE, 2: PEOPLE},
     "never_mind": {0: PRICE, 1: {"stop": "cancel", "agent": "friday"}},
     "one_to_one": {
         0: {"social": "friday", "reply": "Hi, Prasiddha."},

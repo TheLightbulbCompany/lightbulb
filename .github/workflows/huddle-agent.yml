@@ -4,7 +4,15 @@ name: Huddle Agent
 # the LiveKit account exists and LIVEKIT_{DEV,PROD}_ENABLED is set to 'true'.
 on:
   pull_request:
-    paths: ["apps/huddle-agent/**", ".github/workflows/huddle-agent.yml"]
+    # The three backend files are the replay's router (tests/replay/router.py loads them by path), so a
+    # change to them runs the replay gate. Pull requests only: on a push they would redeploy a worker
+    # that did not change (deploy-dev runs on every push this workflow takes).
+    paths:
+      - "apps/huddle-agent/**"
+      - ".github/workflows/huddle-agent.yml"
+      - "apps/backend/core/services/messaging.py"
+      - "apps/backend/core/services/jev.py"
+      - "apps/backend/core/services/voice_calls.py"
   push:
     branches: [main]
     paths: ["apps/huddle-agent/**", ".github/workflows/huddle-agent.yml"]

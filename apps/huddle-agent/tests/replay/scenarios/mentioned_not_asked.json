@@ -1,0 +1,21 @@
+{
+ "about": "Two people talk about a question one of them put to Friday earlier. Her name is on the line and nothing is asked of her: she stays silent and starts no run.",
+ "people": {
+  "a": {"name": "Prasiddha", "voice": "Daniel"},
+  "b": {"name": "Leonardo", "voice": "Fred"}
+ },
+ "lines": [
+  {"at": 3, "who": "a", "say": "I asked Friday what the plan costs."},
+  {"at": 8, "who": "b", "say": "And what did she say?"},
+  {"at": 12, "who": "a", "say": "Fifty a month, for the whole team."}
+ ],
+ "notes": "Not one of the live rig's scenarios: added for the review of #3896. The words after her name open the way a request does (\"what the plan costs\"), which is what a rule that gives every part after a sole agent's name to that agent would take as her request. The name is talked about (the classifier's `mentioned`), not spoken to.",
+ "tail": 20,
+ "timeout": 40,
+ "expect": [
+  {"no_new_run": {"lines": [0, 1, 2]}, "why": "a report of a question is not the question"},
+  {"max_runs": {"max": 0}},
+  {"max_agent_lines": {"max": 0}, "why": "nobody spoke to an agent"},
+  {"no_text": {"pattern": "\\b(Vera|Atlas|Pulse|Tally|Gauge|Forge|Jev|Hermes|Paperclip)\\b"}, "why": "internal names"}
+ ]
+}

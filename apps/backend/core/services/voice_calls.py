@@ -1032,10 +1032,17 @@ def _understood(
     where = {ref: start for k, start, _, ref, _ in pieces if k == "part"}
     name_at = next((start for k, start, _, ref, _ in pieces if k == "name" and named and ref == named[0][0]), -1)
 
+    # Said TO one agent: the classifier read its name as addressed (`route_live_line` writes the same label
+    # for a name that passed `_asked_by_name`, the clause-opening rule). A name it read as relayed ("Can you
+    # ask Friday what the plan costs?") is an agent the line talks about to someone else, and one it read as
+    # mentioned never gets here: the part after such a name stays what the classifier said it is. (With no
+    # classifier there are no parts to read: `route_live_line` never calls this on the fallback path.)
+    said_to_one = len(named) == 1 and addressing["named"][0][2] == "addressed"
+
     def kind_of(part: dict) -> str:
         # a weak or missing read is no request (REQUEST_P): an unsure classifier never starts a run
         choice, p, _ = part["kind"]
-        if len(named) == 1 and where[part["index"]] > name_at:
+        if said_to_one and where[part["index"]] > name_at:
             # ...but not of words said to one agent by name. The name says whom they are for, so the
             # classifier's doubt is about nothing else: no read at all, a request read weakly, or words
             # that open the way a request does read as talk between people, is that agent's request.

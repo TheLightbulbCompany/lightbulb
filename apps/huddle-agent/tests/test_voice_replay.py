@@ -1,5 +1,6 @@
-"""The live rig's 15 scenarios, replayed offline against the real controller (tests/replay), and the worker's
-recorder. `pytest -m replay` is the gate: a check that fails and is not a known failure is a regression."""
+"""The live rig's 15 scenarios and one of the router's own (mentioned_not_asked), replayed offline against the
+real controller (tests/replay), and the worker's recorder. `pytest -m replay` is the gate: a check that fails and is
+not a known failure is a regression."""
 
 import asyncio
 import json

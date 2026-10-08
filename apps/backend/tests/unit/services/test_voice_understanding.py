@@ -931,6 +931,16 @@ async def test_the_name_mid_line_after_talk_to_people_still_asks_its_agent(decid
         ("We ship the beta by Friday, what do you think?", jev_says(kinds=["people"], names=["not_a_name"])),
         ("I think Friday said it was fine.", jev_says(kinds=["people"], names=["mentioned"])),
         ("Friday's notes are in the doc, can you read them?", jev_says(kinds=["people"], names=["mentioned"])),
+        # A name the classifier did not read as addressed is not whom the words after it are for (review of
+        # #3896): a meeting line that reports a question put to her, and one that asks a person to ask her.
+        # Both parts after the name open the way a request does, and the classifier called them people talk.
+        ("I asked Friday what the plan costs.", jev_says(kinds=["people", "people"], names=["mentioned"])),
+        ("I asked Friday what the plan costs.", jev_says(kinds=["people", "people"], names=["relayed"])),
+        ("Can you ask Friday what the plan costs?", jev_says(kinds=["people", "people"], names=["relayed"])),
+        (  # ...or did not read them at all
+            "Can you ask Friday what the plan costs?",
+            {k: v for k, v in jev_says(kinds=["people", "people"], names=["relayed"]).items() if k[0] != "k"},
+        ),
         # two names: whose it is, is not for the words to say
         (
             "Not you Friday, Forge, can you check?",

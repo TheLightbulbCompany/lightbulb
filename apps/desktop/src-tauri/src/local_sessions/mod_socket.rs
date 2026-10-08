@@ -321,7 +321,9 @@ mod tests {
         let file = scope.join(format!("{}.json", "a".repeat(64)));
         mirror.persist(&file).unwrap();
         assert_eq!(unshared_folder(&scope, &home, pid, &roots).as_deref(), Some(scratch.as_path()));
+        // (A mirror that is neither marked nor outside the list by the folder it records.)
         mirror.unshared = false;
+        mirror.native.cwd = Some(approved.clone());
         mirror.persist(&file).unwrap();
         assert_eq!(unshared_folder(&scope, &home, pid, &roots), None);
         assert!(resolve(&scope, pid, &roots).is_none(), "and no shared state without a session id");

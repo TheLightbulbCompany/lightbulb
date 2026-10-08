@@ -5,7 +5,8 @@
 //   reopens each view every CHURN_S seconds.
 import exec from 'k6/execution';
 import encoding from 'k6/encoding';
-import { Trend, Rate } from 'k6/metrics';
+import { Trend, Rate, Counter } from 'k6/metrics';
+import { sleep } from 'k6';
 import * as L from './lib.js';
 
 const SEND_S = Number(__ENV.SEND_S);
@@ -28,6 +29,7 @@ const viewers = L.mine(all);
 
 const frameLatency = new Trend('frame_latency_ms', true);
 const frameDelivered = new Rate('frame_delivered'); // 3a: >= 99%; 3a' records the drop rate
+const unsubscribed = new Counter('viewers_unsubscribed'); // a view that never went live: a failure
 
 export const options = {
   scenarios: { recv: { ...L.listen(viewers.length), duration: WATCH_S + 's' } },
@@ -36,6 +38,7 @@ export const options = {
     'http_req_duration{name:POST /messaging/sessions/:id/viewing}': ['p(95)<500'],
     frame_latency_ms: ['p(95)<1000'],
     frame_delivered: ['rate>=0.99'],
+    viewers_unsubscribed: ['count==0'],
   },
 };
 
@@ -54,7 +57,11 @@ export function listen() {
     cfg = L.liveConfig(me.user); // also creates the user stream /viewing checks
   }
   const left = L.remainingMs(WATCH_S, 2_000);
-  if (left <= 0) return;
+  if (left <= 0) { // the last 2 s: wait them out rather than spin constant-vus iterations
+    sleep(Math.max(0, L.remainingMs(WATCH_S, 0)) / 1000);
+    return;
+  }
+  const opened = Date.now();
   // Delivery is counted against what the Mac sent while this view was live: its output frames
   // carry their send time, so a frame belongs to the window by that time, and frames never
   // received (leading, trailing, or all of them) count as lost.
@@ -73,7 +80,12 @@ export function listen() {
     },
   }, 15_000);
   const until = Date.now() - 1_000; // frames still in flight at close are not counted either way
-  if (!from || until <= from) return; // never subscribed: appsync_errors already says so
+  if (!from) {
+    // Never went live: it fails the run, and every frame it was due counts as lost.
+    unsubscribed.add(1);
+    from = opened + 2_000;
+  }
+  if (until <= from) return;
   const received = got.filter((t) => t >= from && t < until).length;
   const expected = Math.max(received, Math.floor((FPS * (until - from)) / 1000));
   for (let i = 0; i < expected; i++) frameDelivered.add(i < received);

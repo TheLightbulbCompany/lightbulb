@@ -142,6 +142,24 @@ def _ensure_user(clerk: Clerk, n: int) -> str:
     return user["id"]
 
 
+#: Clerk's code for a membership that already exists: the only error a re-run may treat as done.
+ALREADY_MEMBER = "already_a_member_in_organization"
+
+
+def _add_member(clerk: Clerk, org_id: str, user_id: str) -> None:
+    resp = clerk.http.post(f"/organizations/{org_id}/memberships", json={"user_id": user_id, "role": "org:member"})
+    if resp.status_code < 400:
+        return
+    try:
+        codes = {e.get("code") for e in resp.json().get("errors", [])}
+    except ValueError:
+        codes = set()
+    if resp.status_code in (400, 422) and codes == {ALREADY_MEMBER}:
+        return
+    # Anything else (organization_membership_quota_exceeded above all) stops setup with Clerk's words.
+    raise SystemExit(f"adding {user_id} to {org_id} failed: HTTP {resp.status_code} {resp.text[:500]}")
+
+
 def _api(clerk: Clerk, user_id: str, org_id: str) -> Api:
     return Api(clerk.session(user_id, org_id))
 
@@ -177,11 +195,7 @@ def setup(args) -> int:
             .json()
         )
         for uid in ids[1:]:  # one at a time: each fires the Paperclip JOIN + #general seat
-            resp = clerk.http.post(
-                f"/organizations/{row['id']}/memberships", json={"user_id": uid, "role": "org:member"}
-            )
-            if resp.status_code not in (200, 400, 422):  # 4xx here = already a member
-                resp.raise_for_status()
+            _add_member(clerk, row["id"], uid)
         orgs.append({"id": row["id"], "name": org["name"], "creator": ids[0]})
         print(f"{org['name']} = {row['id']} ({len(ids)} users)")
     pending = {o["id"]: _api(clerk, o["creator"], o["id"]) for o in orgs}

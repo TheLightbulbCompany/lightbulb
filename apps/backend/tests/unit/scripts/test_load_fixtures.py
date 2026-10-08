@@ -103,6 +103,39 @@ def test_self_delete_retries_409_then_gives_up_on_anything_else(monkeypatch):
         fx._self_delete(api, "x")
 
 
+def _clerk_answering(status: int, body: dict):
+    class Resp:
+        status_code = status
+        text = json.dumps(body)
+
+        def json(self):
+            return body
+
+    return type("C", (), {"http": type("H", (), {"post": lambda self, path, json: Resp()})()})()
+
+
+def test_an_existing_membership_counts_as_added():
+    fx._add_member(_clerk_answering(200, {}), "org_1", "u1")
+    fx._add_member(_clerk_answering(400, {"errors": [{"code": fx.ALREADY_MEMBER}]}), "org_1", "u1")
+
+
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [
+        (403, "organization_membership_quota_exceeded"),
+        (422, "organization_membership_quota_exceeded"),
+        (400, "form_param_missing"),
+        (500, None),
+    ],
+)
+def test_any_other_membership_error_stops_setup_with_clerks_words(status, code):
+    body = {"errors": [{"code": code, "message": "nope"}]} if code else {}
+    with pytest.raises(SystemExit, match=f"HTTP {status}") as err:
+        fx._add_member(_clerk_answering(status, body), "org_1", "u1")
+    if code:
+        assert code in str(err.value)
+
+
 def test_fixture_file_is_private_and_removable(tmp_path):
     path = tmp_path / "fixtures.json"
     old = os.umask(0)

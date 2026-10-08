@@ -84,7 +84,8 @@ so a view expects `fps × seconds watched` frames and every one it never got —
 all of them — is a loss. (k6 reads files only at init, so a sent-seq list written during the run
 could not be read back.)
 
-Thresholds: `frame_latency_ms` p95 < 1 s, `frame_delivered` ≥ 99% (3a), `/viewing`
+Thresholds: `frame_latency_ms` p95 < 1 s, `frame_delivered` ≥ 99% (3a), `viewers_unsubscribed` = 0 (a view
+that never went live fails the run and its due frames count as lost), `/viewing`
 `http_req_duration{name:POST /messaging/sessions/:id/viewing}` p95 < 500 ms, `http_req_failed` < 0.5%.
 `mac_sim` prints heartbeat-ack RTT p50/p95 (pass: p95 < 1 s), `offline_while_connected` (pass: 0),
 frames sent, and every relay error by frame and code.

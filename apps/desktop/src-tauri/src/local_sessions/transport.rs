@@ -736,13 +736,20 @@ impl Host {
         };
         let approved = (self.approved)();
         let cwd = event.cwd.as_deref().map(PathBuf::from);
-        let outside = cwd.as_deref().is_some_and(|cwd| !in_approved_folder(cwd, &approved));
         let keys: Vec<String> = self
             .mirrors
             .iter()
             .filter(|(_, m)| m.native.provider == provider && m.native.conversation == event.session_id)
             .map(|(key, _)| key.clone())
             .collect();
+        let outside = match cwd.as_deref() {
+            Some(cwd) => !in_approved_folder(cwd, &approved),
+            // A hook that could not carry its folder (its datagram was too large even with
+            // everything else dropped) is not a hook from inside: a mirrored session may have
+            // moved. It is unshared like one that did, and the pass woken below shares it
+            // again, from then on, if its listing names an approved folder.
+            None => !keys.is_empty(),
+        };
         let mut shared = false;
         for key in &keys {
             if let Some(mirror) = self.mirrors.get_mut(key) {
@@ -758,7 +765,13 @@ impl Host {
             }
         }
         if outside {
-            return self.remember_outside(&outside_key(provider, &event.session_id));
+            self.remember_outside(&outside_key(provider, &event.session_id))?;
+            if cwd.is_none() {
+                if let Some(wake) = &self.rediscover {
+                    wake.notify_one();
+                }
+            }
+            return Ok(());
         }
         if !shared {
             if let Some(wake) = &self.rediscover {
@@ -771,7 +784,9 @@ impl Host {
     /// Whether this mirror takes anything from the workspace right now: read from the approved
     /// folders as they are at this moment, not as the last tick or pass saw them.
     fn refuses_input(&self, mirror: &Mirror) -> bool {
-        mirror.unshared || outside_now(mirror, &(self.approved)())
+        let native = mirror.registration.successor.as_ref().unwrap_or(&mirror.native);
+        // A folder nobody can name is not approved.
+        mirror.unshared || native.cwd.is_none() || outside_now(mirror, &(self.approved)())
     }
 
     /// The same, for a relay frame that names a session (`watch`, typed `input`).
@@ -1826,8 +1841,12 @@ impl Host {
                 },
                 Some(frame) = screens.recv() => {
                     arm = laps.woke("screen frame");
-                    // Fire and forget: the relay never answers a screen frame.
-                    send(socket, &frame).await?;
+                    // Fire and forget: the relay never answers a screen frame. The one place
+                    // every terminal frame passes: one queued before its session stopped
+                    // being shared is dropped here, not sent.
+                    if !self.refuses_frame(&frame) {
+                        send(socket, &frame).await?;
+                    }
                 },
                 Some((ask, answer)) = reconciled.recv() => {
                     arm = laps.woke("reconciliation receipt");
@@ -3480,6 +3499,34 @@ pub(super) mod tests {
         later.outside = BTreeMap::from([(MARKERS_LOST.to_owned(), 0)]);
         later.observe(vec![native], &BTreeSet::new()).unwrap();
         assert!(!later.mirrors[&key].queue.is_empty());
+    }
+
+    #[test]
+    fn local_sessions_a_hook_without_its_folder_is_not_a_hook_from_inside() {
+        let dir = tempfile::tempdir().unwrap();
+        let approved = dir.path().join("approved");
+        fs::create_dir_all(&approved).unwrap();
+        approve(&[&approved]);
+        let mut mirror = test_mirror(SID, "g1");
+        mirror.native.cwd = Some(approved.clone());
+        mirror.session_id = Some(SID.into());
+        mirror.queue.push(json!({"text": "from the turn in flight"}));
+        let native = mirror.native.clone();
+        let key = native_key(&native);
+        let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
+        // Too large a datagram dropped the folder: it may be a turn in a folder not approved.
+        let mut turn = hook(lifecycle::Provider::Codex, "UserPromptSubmit", SID);
+        turn.cwd = None;
+        host.hook_seen(&turn).unwrap();
+        assert!(host.mirrors[&key].unshared, "unshared at once, as if it had moved");
+        assert!(host.refuses_input(&host.mirrors[&key]), "nothing reaches it");
+        assert!(host.refuses_frame(&json!({"type":"local.session.screen","sessionId":SID})), "no terminal frame of it is sent");
+        assert_eq!(host.mirrors.get_mut(&key).unwrap().next_batch().unwrap(), None, "and nothing is uploaded");
+        // The listing names an approved folder: shared again, from then on.
+        host.observe(vec![native], &BTreeSet::new()).unwrap();
+        let mirror = &host.mirrors[&key];
+        assert!(!mirror.unshared && mirror.ended_at.is_none() && mirror.queue.is_empty());
+        assert!(!host.refuses_input(mirror));
     }
 
     #[test]
@@ -6521,7 +6568,8 @@ pub(super) mod tests {
             event: event.into(),
             session_id: session.into(),
             transcript_path: None,
-            cwd: None,
+            // As a real hook carries it; a test host approves every folder by default.
+            cwd: Some("/".into()),
             notification_type: None,
             message: None,
             reason: None,

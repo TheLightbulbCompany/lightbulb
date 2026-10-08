@@ -220,11 +220,13 @@ fn build(provider: &str, stdin_json: &Value, held: Option<&super::approval::Held
         ),
     ];
     let mut bytes = Vec::new();
+    // `cwd` goes last: it decides whether the session is shared at all (a hook without one
+    // suspends the session until a listing names its folder), and nothing reads the path.
     for drop in [
         "lastAssistantMessage",
         "waitingText",
-        "cwd",
         "transcriptPath",
+        "cwd",
         "",
     ] {
         let mut map = Map::new();
@@ -556,6 +558,10 @@ mod tests {
         let parsed = parse_datagram(&bytes).unwrap();
         assert_eq!(parsed.source_process, Some(source));
         assert_eq!(parsed.held, Some(held));
+        // The folder outlives the transcript path when one of them has to go.
+        let long = json!({"session_id":"abc", "hook_event_name":"Stop", "transcript_path":"x".repeat(2000), "cwd":"/w"});
+        let parsed = parse_datagram(&build_datagram("codex", &long)).unwrap();
+        assert_eq!((parsed.cwd.as_deref(), parsed.transcript_path), (Some("/w"), None));
     }
 
     #[test]

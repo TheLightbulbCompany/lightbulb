@@ -695,7 +695,10 @@ export class ApiStack extends cdk.Stack {
         path.join(__dirname, "..", "..", "lambda", "messaging-projector"),
       ),
       timeout: cdk.Duration.seconds(30),
-      memorySize: 512,
+      // One full vCPU: a hot room is one serial stream lane, and the member fan-out's
+      // signing/TLS/JSON work is GIL-bound CPU, so wall time per record scales with
+      // CPU, and Lambda allots CPU by memory (1769 MB = 1 vCPU; 512 MB was ~0.3).
+      memorySize: 1769,
       environment: {
         MESSAGING_TABLE: messagingTable.tableName,
         USERS_TABLE: `${tablePrefix(env)}users`,

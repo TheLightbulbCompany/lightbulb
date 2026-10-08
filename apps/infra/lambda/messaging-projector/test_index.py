@@ -649,6 +649,18 @@ class ProjectorTests(unittest.TestCase):
         self.assertTrue(prepared.headers["Authorization"].startswith("AWS4-HMAC-SHA256"))
         self.assertEqual(prepared.headers["X-Amz-Security-Token"], "TOKEN")
 
+    def test_signing_reuses_one_botocore_session_across_publishes(self):
+        session = MagicMock()
+        session.get_credentials.return_value = Credentials("AKID", "SECRET", "TOKEN")
+        old_session, index._botocore_session = index._botocore_session, None
+        try:
+            with patch("index.botocore.session.get_session", return_value=session) as get_session:
+                for _ in range(20):
+                    index._signed_request(f"/users/{CHANNEL_KEY}", live_event())
+        finally:
+            index._botocore_session = old_session
+        get_session.assert_called_once()
+
     def test_http_200_with_per_event_failure_is_not_success(self):
         response = json.dumps({"successful": [], "failed": [{"index": 0, "errorType": "Denied"}]}).encode()
         with (

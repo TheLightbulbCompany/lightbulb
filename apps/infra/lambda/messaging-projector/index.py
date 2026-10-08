@@ -19,6 +19,7 @@ import botocore.session
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 logger = logging.getLogger()
@@ -150,7 +151,9 @@ _ddb_client = None
 def _ddb():
     global _ddb_client
     if _ddb_client is None:
-        _ddb_client = boto3.client("dynamodb")
+        # A pool as wide as the member fan-out: at the default 10, the extra workers'
+        # connections are discarded after each call and the next one pays a new TLS handshake.
+        _ddb_client = boto3.client("dynamodb", config=Config(max_pool_connections=MAX_FANOUT_WORKERS))
     return _ddb_client
 
 
@@ -850,8 +853,18 @@ def _publish_preview_change(item: dict[str, Any], meta: dict[str, Any], revision
         })
 
 
+_botocore_session = None
+
+
 def _current_credentials():
-    credentials = botocore.session.get_session().get_credentials()
+    # One session per process: building a fresh one per publish resolved the whole
+    # provider chain each time, ~5 ms of GIL-bound CPU per member on a laptop and
+    # several times that on the Lambda. The session caches its Credentials, and
+    # get_frozen_credentials() refreshes a RefreshableCredentials when it nears expiry.
+    global _botocore_session
+    if _botocore_session is None:
+        _botocore_session = botocore.session.get_session()
+    credentials = _botocore_session.get_credentials()
     if credentials is None:
         raise RuntimeError("AWS role credentials are unavailable")
     return credentials.get_frozen_credentials()

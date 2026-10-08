@@ -58,9 +58,10 @@ async def _fallback_ceo_id(owner_id: str) -> str | None:
     """The #general CEO's stable id (same resolution as messaging.ensure_default_room),
     for the deterministic single-responder Jev fallback below."""
     from core.repositories.paperclip_repo import PaperclipRepo
+    from core.services.user_provision import ceo_agent_id
 
     company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id, consistent_read=True)
-    return (getattr(company, "starter_agent_ids", None) or {}).get("ceo") if company else None
+    return ceo_agent_id(company) if company else None
 
 
 def _last_speaker(candidates: list[str], message: dict, history: list[dict]) -> str | None:

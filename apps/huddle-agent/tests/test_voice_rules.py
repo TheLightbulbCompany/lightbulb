@@ -4,7 +4,7 @@ on the 15 replayed scenarios under two transcriber timings; these pin the rule i
 
 from huddle_agent import huddle as h_mod
 from test_huddle import answer, hand, ops, pause, settle, talks
-from test_meet_exchange import asked, quiet, says_of, talked_over
+from test_meet_exchange import asked, closes, quiet, says_of, talked_over
 from test_meeting_mode import P1, P2, per_person, says
 
 FIRST, SECOND = "Three PRs are open.", "The oldest is two days old."
@@ -211,3 +211,43 @@ async def test_a_sentence_well_under_way_still_yields_only_to_talk_that_lasts():
     clock.t += h_mod.TALK_OVER_S
     await h.tick()
     assert ("interrupt",) in lives[0].calls
+
+
+# -- an exchange is its person's until someone else takes a turn --
+
+
+async def answered():
+    """Forge answered Priya, its voice has closed, and nothing is owed."""
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    answer(h, row.run_id, "forge", FIRST)
+    for unit in (FIRST,):
+        h.on_agent_said("forge", unit)
+    await closes(h, clock)
+    return h, backend, lives, clock
+
+
+async def test_silence_alone_ends_no_exchange_and_the_nameless_follow_up_goes_to_the_router_at_once():
+    h, backend, lives, clock = await answered()
+    clock.t += 2 * h_mod.ENGAGE_GAP_S  # nobody said a word
+    routes = len(backend.routes)
+    await says(h, P1, "And what are they called?")
+    assert len(backend.routes) == routes + 1, "no UNCLAIMED_QUESTION_S of waiting: /route reads it now"
+    (evidence,) = backend.route_bodies[-1]["engagements"]
+    assert (evidence["agentId"], evidence["state"]) == ("forge", "active")
+
+
+async def test_someone_elses_turn_and_then_a_long_gap_end_the_exchange():
+    h, backend, lives, clock = await answered()
+    await says(h, P2, "I will send the plan on Thursday.")
+    clock.t += h_mod.ENGAGE_GAP_S
+    routes = len(backend.routes)
+    await says(h, P1, "And what are they called?")
+    assert len(backend.routes) == routes and h._unclaimed is not None and h._engaged == {}
+
+
+async def test_a_listening_sound_from_someone_else_is_no_turn_and_ends_nothing():
+    h, backend, lives, clock = await answered()
+    await says(h, P2, "Mm-hm.")
+    clock.t += h_mod.ENGAGE_GAP_S
+    assert [e.agent for e in h._engagements(h._who(P1))] == ["forge"]

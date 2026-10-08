@@ -177,7 +177,9 @@ CALL_ON_S = 3.0  # a name said alone, then this much silence from its speaker: t
 SETTLE_S = 0.3
 # How long a line stays worth saying, by what it is. An answer has no time limit while its asker is here.
 EXPIRES_S = {"ack": 10.0, "status": 6.0, "social": 6.0}
-ENGAGE_GAP_S = 30.0  # a person and an agent with nothing said between them this long are no longer talking
+# A person and an agent with nothing said between them this long, and a turn of someone else's since, are no
+# longer talking (`Huddle._engagements`).
+ENGAGE_GAP_S = 30.0
 # A sentence that was cut counts as said once this share of it was audible: the room has it, the record
 # shows what was audible of it, and it is not said again. Under that it is not said: nothing of it is on
 # the record, and it is said whole when its utterance goes on (`Huddle.on_unit`). High, because a sentence
@@ -1670,15 +1672,19 @@ class Huddle:
         return None if mixed_meet(identity) and not label else (identity, label)
 
     def _engagements(self, who: tuple[str, str] | None = None) -> list[Engagement]:
-        """The exchanges still open (of `who`), the latest first. A long gap ends one with nothing owed, and
-        suspends one whose answer is still to come: the person may no longer be waiting for it. One whose
-        agent is speaking to its person right now is never ended: each unit it finishes is the exchange
-        going on (`_unit_said`)."""
+        """The exchanges still open (of `who`), the latest first. An exchange is its person's until someone
+        else takes a turn: silence alone, however long, ends nothing, and the next thing they say may still
+        be for the agent (/route decides, with the exchange as evidence). Once someone else has spoken
+        since, a long gap ends one with nothing owed, and suspends one whose answer is still to come: the
+        person may no longer be waiting for it. One whose agent is speaking to its person right now is
+        never ended: each unit it finishes is the exchange going on (`_unit_said`)."""
         now = self._clock()
         saying = {((u.audience, u.label), u.agent) for u in self._ledger if u.state == "speaking"}
         for key, e in list(self._engaged.items()):
             if now - e.at < ENGAGE_GAP_S or key in saying:
                 continue
+            if not any(at > e.at for other, at in self._turn_at.items() if other != e.person):
+                continue  # nobody else has taken a turn since they last spoke with each other
             if e.expects == "answer" and self._owes(e):
                 if e.state == "active":
                     e.state, e.why = "suspended", "gap"

@@ -815,7 +815,7 @@ class LocalSessionRelay:
         # The lease writes go one at a time. Every one is a transaction that condition-checks the
         # same three rows (pairing, enrollment, this connection), and DynamoDB cancels a
         # transaction that touches an item another one in flight holds, a ConditionCheck included.
-        # Four at once cancelled each other: a third of prod frames reran, and one in ninety lost
+        # Four at once cancelled each other: a third of prod frames reran, and about one in a hundred lost
         # six times running and cost the Mac its connection (2026-10-08).
         writes = asyncio.Lock()
         # One strong read for the whole frame. Only a session's first pass may take its row from

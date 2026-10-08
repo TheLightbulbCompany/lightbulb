@@ -1,16 +1,13 @@
 import { useAuth } from "@clerk/clerk-expo";
 import { SymbolView } from "expo-symbols";
 import {
-  ApiError, buildRows, canControlSession, groupRows, mainEvents, pendingApproval, receiptChip, sessionLabel, sessionRingState, sessionStatus, sessionTitle, sessionViewKey, terminalStateReason, unavailableReason, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionOutbox, useSessionResume, useWorkspaceSessions,
-  type LocalSession, type SessionControlClient, type SessionSource, type TranscriptItem,
+  ApiError, canControlSession, mainEvents, pendingApproval, receiptChip, sessionLabel, sessionRingState, sessionStatus, sessionTitle, sessionViewKey, terminalStateReason, unavailableReason, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionOutbox, useSessionResume, useWorkspaceSessions,
+  type LocalSession, type SessionControlClient, type SessionSource,
 } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
 import { router, Stack, useIsFocused, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  ActivityIndicator, AppState, FlatList, Pressable, StyleSheet, Text, View,
-  type NativeScrollEvent, type NativeSyntheticEvent,
-} from "react-native";
+import { AppState, Pressable, StyleSheet, Text, View } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -23,20 +20,23 @@ import { SessionOverview } from "../../../components/session/SessionOverview";
 import { ResumeDelivery, SessionResume } from "../../../components/session/SessionResume";
 import { SessionPromptRow } from "../../../components/session/SessionPromptRow";
 import { SessionRenameSheet } from "../../../components/session/SessionRenameSheet";
-import { PendingPromptRow, TranscriptRowView, WorkingRow } from "../../../components/session/TranscriptRow";
+import { SessionTerminal } from "../../../components/session/SessionTerminal";
+import { PendingPromptRow } from "../../../components/session/TranscriptRow";
 import { BottomSheet } from "../../../components/ui/BottomSheet";
 import { fonts, radii, spacing, useChatPalette } from "../../../config/theme";
 import { markSessionsSeenOnDevice, memberName } from "../../../lib/localSessions";
 import { useDesktopSessionApi } from "../../../lib/desktopSessions";
-import { JumpToLatest } from "../../../components/conversation/JumpToLatest";
 import { usePushedScreenKeyboardOffset } from "../../../lib/keyboardOffset";
-import { useReadBack } from "../../../lib/readBack";
 import { relativeTime } from "../../../lib/relativeTime";
 import { useMobileRooms } from "../../../lib/rooms";
 import { fetchMembers, useTeamsConfig, type CompanyMember } from "../../../lib/teamsData";
 
-/** Distance from the bottom, in px, still counted as "at the bottom" (the room screen's value). */
-const BOTTOM_SLACK = 80;
+/** Older history pages read per session for Details: 20 pages is 1,000 events, under the history
+ *  window's 2,000-row cap (the web panel's value). */
+const MAX_OLDER_PAGES = 20;
+/** How long an ended held session may be without its kept screen before the screen counts as gone:
+ *  the Mac reports it on a later heartbeat (11.5 s in prod; the web panel's value). */
+const SCREEN_DUE_MS = 20_000;
 
 /** The header's status line, as a sentence: "Working on your Mac", "Leo’s Mac is offline". */
 function sessionWhere(session: LocalSession, own: boolean, ownerName: string): string {
@@ -47,7 +47,8 @@ function sessionWhere(session: LocalSession, own: boolean, ownerName: string): s
 }
 
 /**
- * One shared Claude Code / Codex session, drawn in its TUI's grammar. Sessions
+ * One shared Claude Code / Codex session: its real terminal, live, or a plain
+ * panel that says why there is none. Never a transcript. Sessions
  * are workspace-scoped, not a room's: the session row always comes fresh from
  * the workspace session list (status, generation, control availability). The
  * prompt row goes to whoever may send (`canControlSession`): the sharer, the
@@ -177,9 +178,6 @@ export default function SessionScreen() {
     (who: string | null) => (who ? members?.find((m) => m.id === who)?.displayName ?? "Teammate" : ownerName),
     [members, ownerName],
   );
-  // A prompt row with no explicit actor is the session's own owner typing
-  // directly at the terminal; one with an actor is mine exactly when it's me.
-  const isMine = useCallback((who: string | null) => (who === null ? own : who === userId), [own, userId]);
   const messageOwner = useCallback(() => {
     if (!session) return;
     void rooms
@@ -298,6 +296,8 @@ export default function SessionScreen() {
         key={sessionViewKey(session)}
         session={session}
         client={rooms.resourceSource.client}
+        onEvent={onSessionEvent}
+        active={live}
         revision={workspace.hintRevision}
         onAccessLost={workspace.refresh}
         ownerName={ownerName}
@@ -305,7 +305,6 @@ export default function SessionScreen() {
         control={canControlSession(session, own, userId)}
         personName={personName}
         name={name}
-        isMine={isMine}
         onMessageOwner={messageOwner}
         keyboardOffset={keyboardOffset}
         detailsOpen={detailsOpen}
@@ -329,10 +328,17 @@ export default function SessionScreen() {
 }
 
 function SessionBody({
-  session, client, revision, onAccessLost, ownerName, own, control, personName, name, isMine, onMessageOwner, keyboardOffset, detailsOpen, onOpenDetails, onCloseDetails, pollMs, onRename,
+  session, client, onEvent, active, revision, onAccessLost, ownerName, own, control, personName, name, onMessageOwner, keyboardOffset, detailsOpen, onOpenDetails, onCloseDetails, pollMs, onRename,
 }: {
   session: LocalSession;
-  client: SessionSource["client"] & SessionControlClient & Parameters<typeof JoinRequests>[0]["client"];
+  client: SessionSource["client"] & SessionControlClient & Parameters<typeof JoinRequests>[0]["client"] & {
+    watchLocalSession: (sessionId: string, fresh?: boolean) => Promise<unknown>;
+    sendLocalSessionInput: (sessionId: string, data: string, epoch: number) => Promise<unknown>;
+  };
+  /** Live events: the terminal's frames arrive on them. */
+  onEvent: SessionSource["onEvent"];
+  /** The screen is focused and the app is not in the background: only then is the terminal watched. */
+  active: boolean;
   revision: number;
   onAccessLost: () => void;
   ownerName: string;
@@ -341,7 +347,6 @@ function SessionBody({
   control: boolean;
   personName: (userId: string) => string;
   name: (who: string | null) => string;
-  isMine: (who: string | null) => boolean;
   onMessageOwner: () => void;
   keyboardOffset: number;
   detailsOpen: boolean;
@@ -352,11 +357,19 @@ function SessionBody({
 }) {
   const palette = useChatPalette();
   const insets = useSafeAreaInsets();
-  const busy = session.status === "busy";
   const ended = session.status === "ended";
+  const offline = session.status === "offline";
   const reason = terminalStateReason(session);
+  // The history feeds the pending prompt, the approval reason and Details. No rows are drawn from it.
   const source = useHistorySource(client, session, revision);
   const history = useLocalSessionHistory(client, source.sessionId, source.latestEventSeq, revision, onAccessLost, { pollMs });
+  // Nothing scrolls the history any more, so read back for Details: bounded, as on the web.
+  const olderPages = useRef(0);
+  useEffect(() => {
+    if (!history.hasOlder || history.loading || history.error || olderPages.current >= MAX_OLDER_PAGES) return;
+    olderPages.current += 1;
+    void history.load("older");
+  }, [history]);
   const [text, setText] = useState("");
   const command = useSessionCommand(client, session, { uuid: randomUUID, onAccessLost, onSent: () => setText(""), agentName: name, allowInterrupt: own || !!session.teamControl, allowOffline: true });
   const { userId } = useAuth();
@@ -378,35 +391,43 @@ function SessionBody({
   const pendingShown = !!pendingText && !history.hasNewer;
   const waitingOn = session.status === "waiting-approval" ? pendingApproval(events) ?? "" : null;
   const remoteApproval = !!session.pendingApproval && session.provider === "claude" && waitingOn !== null;
-  const last = events.at(-1);
-  const turnOpen = busy && !history.hasNewer && last?.lifecycle !== "turn_end" && last?.lifecycle !== "turn_aborted";
-  // From every event: a subagent is drawn inline where it was launched and opens onto its own rows.
-  const rows = useMemo(() => groupRows(buildRows(history.events), turnOpen, session.provider), [history.events, turnOpen, session.provider]);
 
-  // Newest first: the list is inverted, the way every chat draws a timeline, so
-  // the newest output is at offset 0 and simply appears there. Opening the
-  // screen lands on it, and it stays in view as the session writes -- no
-  // scroll-to-end to race the layout, nothing to tap to catch up.
-  const newestFirst = useMemo(() => [...rows].reverse(), [rows]);
-  const listRef = useRef<FlatList<TranscriptItem>>(null);
-  const [atBottom, setAtBottom] = useState(true);
-  const { loading, error, load } = history;
-  const loadOlder = useCallback(() => void load("older"), [load]);
-  const readBack = useReadBack({
-    scope: session.sessionId,
-    oldest: history.events[0]?.seq ?? 0,
-    canLoad: !loading && !error,
-    load: loadOlder,
-  });
-  const onScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
-    setAtBottom(event.nativeEvent.contentOffset.y <= BOTTOM_SLACK);
-    readBack.onScroll(event);
-  }, [readBack]);
-  const jumpToLatest = useCallback(() => {
-    // Only after paging back so far that the window dropped its newest events.
-    if (history.hasNewer) void history.load("latest");
-    listRef.current?.scrollToOffset({ offset: 0, animated: true });
-  }, [history]);
+  // The same rules as the web panel (LocalSessionPanel.tsx): a live terminal where the Mac has one
+  // (held, or a Claude background session), the kept final screen of an ended held session while
+  // its owner's app runs, and otherwise a plain panel that says why there is none. Never a transcript.
+  const hasTerminal = !!session.terminal;
+  const running = !ended && !offline;
+  const endedScreen = ended && session.screenAvailable === true && hasTerminal;
+  // Claude's SessionEnd hook ends the session before the Mac reports the kept screen: until that is
+  // due the panel does not say the screen is gone, and the timer redraws it when the wait is over.
+  const screenDueAt = ended && (hasTerminal || session.wasHeld === true) && !endedScreen && session.endedAt ? Date.parse(session.endedAt) + SCREEN_DUE_MS : 0;
+  const [, redraw] = useState(0);
+  useEffect(() => {
+    const left = screenDueAt - Date.now();
+    if (!(left > 0)) return;
+    const timer = setTimeout(() => redraw(n => n + 1), left);
+    return () => clearTimeout(timer);
+  }, [screenDueAt]);
+  const screenDue = Date.now() < screenDueAt;
+  // A viewer who was watching when the session ended keeps that terminal, with its last picture,
+  // until the kept screen is reported or the wait is over.
+  const watched = useRef(false);
+  const keptWatching = screenDue && watched.current;
+  const watchRemote = (hasTerminal && (running || endedScreen)) || keptWatching;
+  useEffect(() => { watched.current = watchRemote; }, [watchRemote]);
+  const [screenLive, setScreenLive] = useState(false);
+  // False once the Mac refused input: the follow-up row is the way to send then.
+  const [termCanType, setTermCanType] = useState(true);
+  const liveTerminal = watchRemote && screenLive;
+  const notStarted = running && !hasTerminal;
+  const admitted = running && control && session.shared !== false && !(session.inputPaused && !own);
+  const paused = liveTerminal && control && !own && !!session.inputPaused;
+  // A live terminal a person can type into is the only input: no row under it.
+  const typesInTerminal = liveTerminal && control && (termCanType || paused);
+  const sessionId = session.sessionId;
+  const input = useCallback((data: string, epoch: number) => client.sendLocalSessionInput(sessionId, data, epoch), [client, sessionId]);
+  const endedEmpty = session.provider === "claude" && session.latestEventSeq === 0 && !session.controlUnavailableReason;
+  const mac = own ? "your" : `${ownerName}’s`;
 
   return (
     <KeyboardAvoidingView
@@ -426,102 +447,75 @@ function SessionBody({
           </Pressable>
         </View>
       )}
-      {reason !== null && (
-        // No terminal here yet: what gets its screen shared (spec 2026-10-07 §4 f, g).
-        <Text style={[styles.meta, styles.liveHint, { color: palette.fgMute }]} accessibilityLiveRegion="polite">
-          {reason === "plain"
-            ? own ? "Press ← in its terminal to share this one live, or turn on Share every session live in Settings to make every new session live." : `Ask ${ownerName} to press ← in their terminal.`
-            : own ? "Start it again with lightbulb codex to share its screen." : `Ask ${ownerName} to start it again with lightbulb codex.`}
-        </Text>
-      )}
       {remoteApproval && <SessionApprovalCard key={session.pendingApproval?.approvalId} session={session} client={client} allowed={control} own={own} ownerName={ownerName} />}
       {own && <JoinRequests session={session} client={client} personName={personName} onAnswered={onAccessLost} />}
-      <View style={styles.timeline}>
-        <FlatList
-          ref={listRef}
-          testID="session-transcript"
-          inverted
-          data={newestFirst}
-          keyExtractor={(row) => String(row.seq)}
-          // Holds the reader's place when output arrives while they are scrolled
-          // back, and keeps the newest in view when they are at the bottom.
-          maintainVisibleContentPosition={{ minIndexForVisible: 0, autoscrollToTopThreshold: BOTTOM_SLACK }}
-          contentContainerStyle={[
-            styles.list,
-            rows.length === 0 && styles.listEmpty,
-            // An ended session has nothing under its transcript, so the newest
-            // output is what has to clear the home indicator.
-            ended && { paddingTop: spacing.lg + insets.bottom },
-          ]}
-          keyboardDismissMode="interactive"
-          keyboardShouldPersistTaps="handled"
-          onScroll={onScroll}
-          scrollEventThrottle={16}
-          onLayout={readBack.onLayout}
-          onContentSizeChange={readBack.onContentSizeChange}
-          // Header and footer are swapped against an un-inverted list: the HEADER
-          // draws at the bottom, under the newest output.
-          ListHeaderComponent={
-            <View>
-              {turnOpen && <WorkingRow provider={session.provider} since={last?.ts} />}
-              {pendingShown && <PendingPromptRow provider={session.provider} text={pendingText} ownerName={ownerName} chip={command.chip} />}
-              {queuedOutbox.map(receipt => <View key={receipt.requestId}>
-                <PendingPromptRow provider={session.provider} text={receipt.text ?? ""} ownerName={ownerName}
-                  label="Follow-up delivery"
-                  chip={receiptChip({ request: { requestId: receipt.requestId, expectedGeneration: receipt.expectedGeneration, kind: "send", text: receipt.text ?? "" }, state: "received", receipt }, name)} />
-                {receipt.state === "rejected" && !!receipt.text && <View style={styles.actions}>
-                  <Text accessibilityRole="alert" style={[styles.errorText, { color: palette.alert }]}>
-                    {receipt.cancelledAt ? "Cancelled." : receipt.deliverBy <= Date.now() / 1000 ? "This follow-up expired before your Mac reconnected." : "The session rejected this follow-up."}
-                  </Text>
-                  {!receipt.cancelledAt && <Pressable onPress={() => command.send(receipt.text!, false, receipt.requestId)} disabled={command.locked || !command.canSend} accessibilityRole="button" accessibilityLabel="Retry follow-up" accessibilityState={{ disabled: command.locked || !command.canSend }}>
-                    <Text style={[styles.link, { color: palette.link }]}>Retry</Text>
-                  </Pressable>}
-                </View>}
-                {outbox.canCancel && receipt.state === "pending" && <Pressable onPress={() => void outbox.cancel(receipt.requestId)} accessibilityRole="button" accessibilityLabel={`Cancel queued follow-up: ${(receipt.text ?? "").slice(0, 40)}`}>
-                  <Text style={[styles.link, { color: palette.alert }]}>Cancel</Text>
-                </Pressable>}
-              </View>)}
-              {queuedOutbox.some(receipt => receipt.state === "pending" || receipt.state === "dispatched" || receipt.state === "unknown") && (
-                <Pressable onPress={() => void outbox.refresh()} accessibilityRole="button" accessibilityLabel="Check queued delivery">
-                  <Text style={[styles.link, { color: palette.link }]}>Check queued delivery</Text>
-                </Pressable>
-              )}
-            </View>
-          }
-          ListFooterComponent={
-            <View>
-              {history.loading && history.hasOlder && <ActivityIndicator style={styles.loadingOlder} color={palette.fgMute} />}
-              {history.error && (
-                <View style={styles.errorCard}>
-                  <Text accessibilityRole="alert" style={[styles.errorText, { color: palette.alert }]}>{history.error}</Text>
-                  <Pressable onPress={() => void history.retry()} accessibilityRole="button" accessibilityLabel="Retry history">
-                    <Text style={[styles.link, { color: palette.link }]}>Retry</Text>
-                  </Pressable>
-                </View>
-              )}
-            </View>
-          }
-          // Upright inside the flipped list (see the room screen's identical wrapper).
-          ListEmptyComponent={
-            <View style={styles.emptyUpright}>
-              {history.loading ? <TimelineSkeleton /> : history.error ? null : (
-                <Text style={[styles.meta, { color: palette.fgMute }]}>
-                  {session.provider === "claude" && ended && !session.controlUnavailableReason ? "This session ended before anything was sent." : "No shared output yet."}
-                </Text>
-              )}
-            </View>
-          }
-          renderItem={({ item, index }) => (
-            <TranscriptRowView provider={session.provider} row={item} name={name} isMine={isMine} live={turnOpen && index === 0} events={history.events} status={session.status} />
+      {history.error && (
+        <View style={styles.banner}>
+          <Text accessibilityRole="alert" style={[styles.errorText, { color: palette.alert }]}>{history.error}</Text>
+          <Pressable onPress={() => void history.retry()} accessibilityRole="button" accessibilityLabel="Retry history">
+            <Text style={[styles.link, { color: palette.link }]}>Retry</Text>
+          </Pressable>
+        </View>
+      )}
+      {watchRemote ? (
+        <SessionTerminal session={session} onEvent={onEvent} watch={client.watchLocalSession} active={active} kept={endedScreen}
+          onLive={setScreenLive} onCanType={setTermCanType} admitted={admitted} input={input}
+          // Under a terminal a person types into there is nothing else to clear the home indicator.
+          bottomInset={typesInTerminal && !paused ? insets.bottom : 0} />
+      ) : (
+        <View style={styles.state} accessibilityLiveRegion="polite">
+          {ended ? <>
+            <Text style={[styles.stateTitle, { color: palette.fg }]}>
+              {screenDue && !endedEmpty ? "Ended just now" : session.endedAt ? `Ended ${relativeTime(Date.parse(session.endedAt))}` : "Ended"}
+            </Text>
+            {(endedEmpty || !screenDue) && <Text style={[styles.stateText, { color: palette.fgSoft }]}>
+              {endedEmpty ? "This session ended before anything was sent." : "The screen is gone: this session’s terminal closed."}
+            </Text>}
+          </> : offline ? <>
+            <Text style={[styles.stateTitle, { color: palette.fg }]}>{own ? "Your Mac is offline" : `${ownerName}’s Mac is offline`}</Text>
+            {session.lastEventAt && <Text style={[styles.stateText, { color: palette.fgSoft }]}>Last seen {relativeTime(Date.parse(session.lastEventAt))}</Text>}
+            <Text style={[styles.stateText, { color: palette.fgSoft }]}>{`Resume works once ${mac} Mac is back.`}</Text>
+          </> : notStarted ? <>
+            <Text style={[styles.stateTitle, { color: palette.fg }]}>This session was not started through Lightbulb, so its screen is not here.</Text>
+            {reason !== null && <Text style={[styles.stateText, { color: palette.fgSoft }]}>
+              {reason === "plain"
+                ? own ? "Press ← in its terminal to share this one live, or turn on Share every session live in Settings to make every new session live." : `Ask ${ownerName} to press ← in their terminal.`
+                : own ? "Start it again with lightbulb codex to share its screen." : `Ask ${ownerName} to start it again with lightbulb codex.`}
+            </Text>}
+          </> : null}
+        </View>
+      )}
+      {/* The sent-but-not-echoed prompt and the queued follow-ups: delivery, not history. */}
+      {(pendingShown || queuedOutbox.length > 0) && (
+        <View style={styles.feedback}>
+          {pendingShown && <PendingPromptRow provider={session.provider} text={pendingText} ownerName={ownerName} chip={command.chip} />}
+          {queuedOutbox.map(receipt => <View key={receipt.requestId}>
+            <PendingPromptRow provider={session.provider} text={receipt.text ?? ""} ownerName={ownerName}
+              label="Follow-up delivery"
+              chip={receiptChip({ request: { requestId: receipt.requestId, expectedGeneration: receipt.expectedGeneration, kind: "send", text: receipt.text ?? "" }, state: "received", receipt }, name)} />
+            {receipt.state === "rejected" && !!receipt.text && <View style={styles.actions}>
+              <Text accessibilityRole="alert" style={[styles.errorText, { color: palette.alert }]}>
+                {receipt.cancelledAt ? "Cancelled." : receipt.deliverBy <= Date.now() / 1000 ? "This follow-up expired before your Mac reconnected." : "The session rejected this follow-up."}
+              </Text>
+              {!receipt.cancelledAt && <Pressable onPress={() => command.send(receipt.text!, false, receipt.requestId)} disabled={command.locked || !command.canSend} accessibilityRole="button" accessibilityLabel="Retry follow-up" accessibilityState={{ disabled: command.locked || !command.canSend }}>
+                <Text style={[styles.link, { color: palette.link }]}>Retry</Text>
+              </Pressable>}
+            </View>}
+            {outbox.canCancel && receipt.state === "pending" && <Pressable onPress={() => void outbox.cancel(receipt.requestId)} accessibilityRole="button" accessibilityLabel={`Cancel queued follow-up: ${(receipt.text ?? "").slice(0, 40)}`}>
+              <Text style={[styles.link, { color: palette.alert }]}>Cancel</Text>
+            </Pressable>}
+          </View>)}
+          {queuedOutbox.some(receipt => receipt.state === "pending" || receipt.state === "dispatched" || receipt.state === "unknown") && (
+            <Pressable onPress={() => void outbox.refresh()} accessibilityRole="button" accessibilityLabel="Check queued delivery">
+              <Text style={[styles.link, { color: palette.link }]}>Check queued delivery</Text>
+            </Pressable>
           )}
-        />
-        {/* Also when the window no longer holds the tail (the reader paged back
-            past what it keeps): at the bottom of THAT window this is the only
-            way to the session's newest output. */}
-        {(!atBottom || history.hasNewer) && <JumpToLatest palette={palette} onPress={jumpToLatest} />}
-      </View>
+        </View>
+      )}
+      {paused && <Text style={[styles.meta, styles.liveHint, { color: palette.fgMute, paddingBottom: Math.max(insets.bottom, spacing.md) }]}>Paused while {ownerName} answers a request to join.</Text>}
       {!ended && <ResumeDelivery flow={resume} />}
       {ended ? <SessionResume flow={resume} own={own} ownerName={ownerName} />
+        : typesInTerminal ? null
         : control ? <SessionPromptRow session={session} text={text} onChangeText={setText} command={command} pendingShown={pendingShown} />
         : <AskToJoin session={session} client={client} ownerName={ownerName} />}
       <BottomSheet visible={detailsOpen} onClose={onCloseDetails} large>
@@ -564,11 +558,10 @@ const styles = StyleSheet.create({
   chatButton: { flexDirection: "row", alignItems: "center", gap: 4 },
   chatCount: { fontFamily: fonts.sansSemiBold, fontSize: 13, lineHeight: 18 },
   centered: { flex: 1, padding: spacing.lg, gap: spacing.sm },
-  // Top/bottom are swapped against an un-inverted list: `paddingTop` draws at
-  // the bottom (against the composer), `paddingBottom` at the top.
-  list: { paddingHorizontal: spacing.md, paddingTop: spacing.lg, paddingBottom: spacing.sm },
-  listEmpty: { flexGrow: 1 },
-  emptyUpright: { flexGrow: 1, transform: [{ scaleY: -1 }] },
+  state: { flex: 1, padding: spacing.lg, gap: spacing.sm },
+  stateTitle: { fontFamily: fonts.sansSemiBold, fontSize: 16, lineHeight: 22 },
+  stateText: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 20 },
+  feedback: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
   meta: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 16 },
   // Full horizontal padding -- unlike errorCard below, this sits directly on
   // the screen, not inside the transcript's already-padded list.
@@ -594,8 +587,6 @@ const styles = StyleSheet.create({
   actions: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: spacing.sm },
   link: { fontFamily: fonts.sansSemiBold, fontSize: 13, lineHeight: 18, paddingVertical: spacing.xs },
   bannerLink: { fontFamily: fonts.sansSemiBold, fontSize: 13, lineHeight: 18 },
-  timeline: { flex: 1 },
-  loadingOlder: { paddingVertical: spacing.sm },
   sheetContent: { gap: spacing.md, paddingBottom: spacing.lg },
   sheetTextGroup: { paddingHorizontal: spacing.lg, gap: 4 },
   sheetHeadline: { fontFamily: fonts.sansMedium, fontSize: 15, lineHeight: 20 },

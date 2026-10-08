@@ -1,6 +1,7 @@
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
-import { ApiError, type LiveEvent, type LocalSession, type LocalSessionCommand, type LocalSessionCommandReceipt, type LocalSessionEvent, type RoomDetail } from "@lightbulb/shared";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { ApiError, type LiveEvent, type LocalSession, type LocalSessionCommand, type LocalSessionCommandReceipt, type LocalSessionEvent, type RoomDetail, type SessionScreen as ScreenFrame } from "@lightbulb/shared";
 import type { ReactNode } from "react";
+import { AppState } from "react-native";
 
 jest.setTimeout(20000);
 
@@ -29,6 +30,19 @@ jest.mock("@clerk/clerk-expo", () => ({
   useAuth: () => ({ userId: "user-a", getToken: jest.fn(async () => "token") }),
   useOrganization: () => ({ organization: { id: `org-${mockScope}` } }),
 }));
+// The terminal's WebView: what its page posts back is driven from the tests.
+let mockTerminalMessage: ((event: { nativeEvent: { data: string } }) => void) | undefined;
+jest.mock("react-native-webview", () => {
+  const react = require("react");
+  const { View } = require("react-native");
+  return {
+    WebView: react.forwardRef((props: { onMessage: typeof mockTerminalMessage; testID: string }, ref: unknown) => {
+      mockTerminalMessage = props.onMessage;
+      react.useImperativeHandle(ref, () => ({ injectJavaScript: () => {} }));
+      return react.createElement(View, { testID: props.testID });
+    }),
+  };
+});
 jest.mock("expo-crypto", () => ({ randomUUID: () => "33333333-3333-4333-8333-333333333333" }));
 jest.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
 const mockFetchMembers = jest.fn();
@@ -82,6 +96,11 @@ const mockGetPrivateApproval = jest.fn();
 const mockAskToJoin = jest.fn(async (): Promise<LocalSession> => ({ ...mockSession, joinRequest: "pending" }));
 const mockDecideJoin = jest.fn(async (): Promise<LocalSession> => mockSession);
 const mockDecidePickup = jest.fn(async (): Promise<LocalSession> => mockSession);
+const mockWatch = jest.fn(async (_sessionId: string, _fresh?: boolean) => {});
+const mockInput = jest.fn(async (_sessionId: string, _data: string, _epoch: number) => {});
+const settle = async () => { for (let i = 0; i < 50; i += 1) await Promise.resolve(); };
+const fromTerminal = (message: object) => act(async () => { mockTerminalMessage?.({ nativeEvent: { data: JSON.stringify(message) } }); await settle(); });
+const screenFrame = (payload: ScreenFrame) => act(async () => { mockEventHandlers.forEach((h) => h({ type: "workspace.session.screen", payload } as LiveEvent)); });
 const mockLive = {
   httpReady: true, liveConnected: true, liveError: null, liveChannels: ["/rooms/room-1/k"], connectionRevision: 1,
   messaging: {
@@ -101,6 +120,8 @@ const mockLive = {
     requestLocalSessionJoin: mockAskToJoin,
     decideLocalSessionJoin: mockDecideJoin,
     decideLocalSessionPickup: mockDecidePickup,
+    watchLocalSession: mockWatch,
+    sendLocalSessionInput: mockInput,
     openSessionChat: jest.fn(async () => ({ ...mockRoom, roomId: "chat-1" })),
     sendMessage: jest.fn(), downloadAttachment: jest.fn(), attachmentUrl: jest.fn(), uploadAttachment: jest.fn(), markUnread: jest.fn(),
     setTyping: jest.fn(), abortRun: jest.fn(), steerRun: jest.fn(), createRoom: jest.fn(), updateRoom: jest.fn(),
@@ -141,6 +162,8 @@ describe("session screen", () => {
     mockAskToJoin.mockClear();
     mockDecideJoin.mockClear();
     mockDecidePickup.mockClear();
+    mockWatch.mockClear();
+    mockInput.mockClear();
   });
 
   it("titles the screen with the tool's mark, the session and where it runs", async () => {
@@ -153,37 +176,90 @@ describe("session screen", () => {
     expect(screen.getByTestId("session-tool-claude", { includeHiddenElements: true })).toBeTruthy();
   });
 
-  it("renders the transcript in the Claude grammar with the owner's attribution", async () => {
+  it("never draws the history: a plain session says why its screen is not here", async () => {
     await render(<SessionScreen />);
-    await waitFor(() => expect(screen.getByText("run it")).toBeTruthy());
-    expect(mockListEvents).toHaveBeenCalledWith("sess-1", 0, 50);
-    // The prompt's attribution: the owner viewing their own session sees "You".
-    expect(screen.getByLabelText("You: run it")).toBeTruthy();
-    // Claude Code folds even a lone shell command into one line; opening it shows the call.
-    expect(screen.queryByText("Bash(git status)")).toBeNull();
-    await fireEvent.press(screen.getByText("Ran 1 shell command"));
-    expect(screen.getByText("Bash(git status)")).toBeTruthy();
-    expect(screen.queryByText(/S3/)).toBeNull();
-    // The tool well is collapsed behind the chip; open it before its own "show more".
-    await fireEvent.press(screen.getByText("Bash(git status)"));
-    await fireEvent.press(screen.getByText("… +2 lines"));
-    expect(screen.getByText(/S3/)).toBeTruthy();
-    expect(screen.getByText("All green.")).toBeTruthy();
-    expect(screen.getByText("Worked for 12s")).toBeTruthy();
-    // The two grey summary lines moved into the details sheet the header opens.
+    expect(await screen.findByText("This session was not started through Lightbulb, so its screen is not here.")).toBeTruthy();
+    await waitFor(() => expect(mockListEvents).toHaveBeenCalledWith("sess-1", 0, 50));
+    // The events still feed Details; none is drawn as a row.
+    expect(screen.queryByText("run it")).toBeNull();
+    expect(screen.queryByText("All green.")).toBeNull();
+    expect(screen.queryByTestId("session-transcript")).toBeNull();
+    expect(screen.queryByTestId("session-terminal")).toBeNull();
+    expect(mockWatch).not.toHaveBeenCalled();
     await fireEvent.press(screen.getByLabelText("Claude · Fix relay, Idle on your Mac"));
     expect(screen.getByText("Alice · Idle · lightbulb")).toBeTruthy();
-    expect(screen.queryByLabelText("Working")).toBeNull();
   });
 
-  it("shows the working line while a turn is open", async () => {
-    mockSession = { ...base, status: "busy", activeTurnId: "t2", latestEventSeq: 6 };
-    mockEvents = [...events, ev(6, { kind: "lifecycle", role: "system", text: "", lifecycle: "turn_start", ts: new Date().toISOString() })];
+  it("shows a held session's real terminal, and the keyboard types into it: no row under it", async () => {
+    mockSession = { ...base, terminal: "held" };
     await render(<SessionScreen />);
-    // A busy session also rings the header avatar "Working" -- scope to the
-    // transcript so this asserts the working row specifically.
-    const list = await screen.findByTestId("session-transcript");
-    await waitFor(() => expect(within(list).getByLabelText("Working")).toBeTruthy());
+    expect(await screen.findByTestId("session-terminal")).toBeTruthy();
+    expect(mockWatch.mock.calls).toEqual([["sess-1", true]]);
+    expect(screen.queryByText(/not started through Lightbulb/)).toBeNull();
+    // Until the picture is live the follow-up row is the way to send.
+    expect(screen.getByLabelText("Send a follow-up to Claude")).toBeTruthy();
+    await fromTerminal({ t: "ready" });
+    await screenFrame({ sessionId: "sess-1", generation: "g1", epoch: 3, seq: 0, cols: 80, rows: 24, kind: "snapshot", data: "aGk=" });
+    await waitFor(() => expect(screen.queryByLabelText("Send a follow-up to Claude")).toBeNull());
+    expect(screen.getByLabelText("Terminal keys")).toBeTruthy();
+    await fromTerminal({ t: "data", d: "y" });
+    expect(mockInput.mock.calls).toEqual([["sess-1", "eQ==", 3]]);
+  });
+
+  it("lets a teammate watch the terminal and ask to join, with no keys", async () => {
+    mockSession = { ...base, terminal: "held", humanUserId: "user-b", allowedSenders: [] };
+    await render(<SessionScreen />);
+    expect(await screen.findByTestId("session-terminal")).toBeTruthy();
+    await fromTerminal({ t: "ready" });
+    await screenFrame({ sessionId: "sess-1", generation: "g1", epoch: 3, seq: 0, cols: 80, rows: 24, kind: "snapshot", data: "aGk=" });
+    expect(screen.queryByLabelText("Terminal keys")).toBeNull();
+    await fromTerminal({ t: "data", d: "rm -rf /\r" });
+    expect(mockInput).not.toHaveBeenCalled();
+    await fireEvent.press(screen.getByText("Ask to join"));
+    await waitFor(() => expect(mockAskToJoin).toHaveBeenCalledWith("sess-1"));
+  });
+
+  it("types for a teammate the owner let in, and pauses them while the owner answers a request", async () => {
+    mockSession = { ...base, terminal: "held", humanUserId: "user-b", allowedSenders: ["user-a"] };
+    await render(<SessionScreen />);
+    await screen.findByTestId("session-terminal");
+    await fromTerminal({ t: "ready" });
+    await screenFrame({ sessionId: "sess-1", generation: "g1", epoch: 3, seq: 0, cols: 80, rows: 24, kind: "snapshot", data: "aGk=" });
+    expect(await screen.findByLabelText("Terminal keys")).toBeTruthy();
+    mockSession = { ...mockSession, inputPaused: true };
+    await act(async () => { mockEventHandlers.forEach((h) => h({ type: "workspace.sessions.changed", payload: {} } as LiveEvent)); });
+    expect(await screen.findByText("Paused while Bob answers a request to join.")).toBeTruthy();
+    expect(screen.queryByLabelText("Terminal keys")).toBeNull();
+  });
+
+  it("keeps an ended held session's final screen, with Resume beside it", async () => {
+    mockSession = { ...base, status: "ended", endedAt: new Date(Date.now() - 5 * 60_000).toISOString(), terminal: "held", screenAvailable: true };
+    await render(<SessionScreen />);
+    expect(await screen.findByTestId("session-terminal")).toBeTruthy();
+    expect(mockWatch.mock.calls).toEqual([["sess-1", true]]);
+    expect(screen.queryByText(/screen is gone/)).toBeNull();
+    expect(screen.queryByLabelText("Send a follow-up to Claude")).toBeNull();
+    // Nobody types into an ended screen.
+    await fromTerminal({ t: "ready" });
+    await screenFrame({ sessionId: "sess-1", generation: "g1", epoch: 3, seq: 0, cols: 80, rows: 24, kind: "snapshot", data: "aGk=" });
+    expect(screen.queryByLabelText("Terminal keys")).toBeNull();
+  });
+
+  it("says the screen is gone once an ended session's terminal closed", async () => {
+    mockSession = { ...base, status: "ended", endedAt: new Date(Date.now() - 5 * 60_000).toISOString(), terminal: "held" };
+    await render(<SessionScreen />);
+    expect(await screen.findByText("The screen is gone: this session’s terminal closed.")).toBeTruthy();
+    expect(screen.queryByTestId("session-terminal")).toBeNull();
+  });
+
+  it("says the owner's Mac is offline, with no terminal and no history", async () => {
+    mockSession = { ...base, status: "offline", terminal: "held", humanUserId: "user-b", lastEventAt: new Date(Date.now() - 60_000).toISOString() };
+    await render(<SessionScreen />);
+    expect(await screen.findByText("Resume works once Bob’s Mac is back.")).toBeTruthy();
+    // The header says it too.
+    expect(screen.getAllByText("Bob’s Mac is offline")).toHaveLength(2);
+    expect(screen.queryByTestId("session-terminal")).toBeNull();
+    expect(mockWatch).not.toHaveBeenCalled();
   });
 
   it("sends a follow-up and shows the receipt", async () => {
@@ -324,6 +400,34 @@ describe("session screen", () => {
     expect(screen.queryByLabelText("Send a follow-up to Claude")).toBeNull();
   });
 
+
+  describe("watching the terminal", () => {
+    beforeEach(() => jest.useFakeTimers());
+    afterEach(async () => { await cleanup(); jest.useRealTimers(); });
+    const advance = async (ms: number) => { await act(async () => { await jest.advanceTimersByTimeAsync(ms); }); };
+
+    it("stops in the background and asks for a fresh screen on return", async () => {
+      // React Native's jest setup makes this a jest.fn already.
+      const listen = AppState.addEventListener as jest.MockedFunction<typeof AppState.addEventListener>;
+      const before = listen.mock.calls.length;
+      mockSession = { ...base, terminal: "held" };
+      await render(<SessionScreen />);
+      await advance(0);
+      expect(screen.getByTestId("session-terminal")).toBeTruthy();
+      // Every listener: the screen's own, and the shared hooks'.
+      const listeners = listen.mock.calls.slice(before).filter(([type]) => type === "change").map(([, handler]) => handler);
+      const change = (state: "active" | "background") => act(async () => { listeners.forEach((handler) => handler(state)); });
+      await advance(15_000);
+      expect(mockWatch.mock.calls).toEqual([["sess-1", true], ["sess-1", false]]);
+      await change("background");
+      await advance(60_000);
+      expect(mockWatch).toHaveBeenCalledTimes(2);
+      await change("active");
+      expect(mockWatch.mock.calls.at(-1)).toEqual(["sess-1", true]);
+      await advance(15_000);
+      expect(mockWatch.mock.calls.slice(2)).toEqual([["sess-1", true], ["sess-1", false]]);
+    });
+  });
 
   describe("direct session fallback", () => {
     beforeEach(() => { mockListSessions.mockResolvedValue({ sessions: [] }); jest.useFakeTimers(); });
@@ -524,7 +628,7 @@ describe("session screen", () => {
   it("shows someone else's session read-only: no prompt row, only who can send", async () => {
     mockSession = { ...base, humanUserId: "user-b" };
     await render(<SessionScreen />);
-    await waitFor(() => expect(screen.getByText("run it")).toBeTruthy());
+    await waitFor(() => expect(mockListEvents).toHaveBeenCalled());
     expect(screen.getByText("Only Bob can send to this session.")).toBeTruthy();
     expect(screen.queryByLabelText("Send a follow-up to Claude")).toBeNull();
     // A backend that predates the join routes sends no `allowedSenders`, and
@@ -599,7 +703,7 @@ describe("session screen", () => {
   it("says 'your Mac' and 'your terminal', never \"You's\", for your own waiting session", async () => {
     mockSession = { ...base, status: "waiting-approval" };
     await render(<SessionScreen />);
-    await waitFor(() => expect(screen.getByText("run it")).toBeTruthy());
+    await waitFor(() => expect(mockListEvents).toHaveBeenCalled());
     // The one-line banner stays in the body.
     expect(screen.getByText("Waiting on you in your terminal")).toBeTruthy();
     // The full follow-ups/approvals sentence lives in the details sheet.
@@ -720,7 +824,7 @@ describe("session screen", () => {
     mockSession = { ...base, provider: "codex", status: "waiting-approval", pendingApproval: undefined };
     await render(<SessionScreen />);
     expect(await screen.findByText("Waiting on you in your terminal")).toBeTruthy();
-    await waitFor(() => expect(screen.getByText("run it")).toBeTruthy());
+    await waitFor(() => expect(mockListEvents).toHaveBeenCalled());
     await fireEvent.press(screen.getByLabelText("Codex · Fix relay, Waiting for input on your Mac"));
     expect(await screen.findByText("Codex permissions and first-run folder trust must be answered on your Mac.")).toBeTruthy();
     expect(mockSubmit).not.toHaveBeenCalled();
@@ -728,7 +832,7 @@ describe("session screen", () => {
 
   it("has no DM button on your own session", async () => {
     await render(<SessionScreen />);
-    await waitFor(() => expect(screen.getByText("run it")).toBeTruthy());
+    await waitFor(() => expect(mockListEvents).toHaveBeenCalled());
     expect(screen.queryByLabelText("Message Alice")).toBeNull();
   });
 
@@ -736,88 +840,23 @@ describe("session screen", () => {
     mockSession = { ...base, humanUserId: "user-b" };
     mockLive.messaging.createRoom.mockResolvedValueOnce({ roomId: "dm-1" } as never);
     await render(<SessionScreen />);
-    await waitFor(() => expect(screen.getByText("run it")).toBeTruthy());
+    await waitFor(() => expect(mockListEvents).toHaveBeenCalled());
     await fireEvent.press(screen.getByLabelText("Message Bob"));
     await waitFor(() => expect(router.push).toHaveBeenCalledWith("/(app)/room/dm-1"));
   });
 
-  it("keeps the transcript on screen and shows an alert when the DM open fails", async () => {
+  it("keeps the session on screen and shows an alert when the DM open fails", async () => {
     (router.push as jest.Mock).mockClear();
     mockSession = { ...base, humanUserId: "user-b" };
     mockLive.messaging.createRoom.mockRejectedValueOnce(new Error("could not open"));
     await render(<SessionScreen />);
-    await waitFor(() => expect(screen.getByText("run it")).toBeTruthy());
+    await waitFor(() => expect(mockListEvents).toHaveBeenCalled());
     await fireEvent.press(screen.getByLabelText("Message Bob"));
     await waitFor(() => expect(screen.getByText("could not open")).toBeTruthy());
-    // The transcript is still the same screen underneath the banner -- a
+    // The session is still the same screen underneath the banner -- a
     // failed DM open must not swap in the blocked/unavailable state.
-    expect(screen.getByText("run it")).toBeTruthy();
+    expect(screen.getByText("Only Bob can send to this session.")).toBeTruthy();
     expect(router.push).not.toHaveBeenCalled();
-  });
-
-  // 2000 of content in an 800 window, scrolled 1200 from the newest: at the top.
-  const NEAR_TOP = {
-    nativeEvent: { contentOffset: { x: 0, y: 1200 }, contentSize: { width: 390, height: 2000 }, layoutMeasurement: { width: 390, height: 800 } },
-  };
-
-  it("fills the screen on open when the newest page draws only a few rows", async () => {
-    mockSession = { ...base, latestEventSeq: 120 };
-    mockEvents = [116, 117, 118, 119, 120].map((seq) =>
-      ev(seq, { kind: "text", role: "user", text: `line ${seq}`, actor: { userId: "user-a" }, ts: "2026-09-12T10:00:00.000Z" }),
-    );
-    await render(<SessionScreen />);
-    const list = await screen.findByTestId("session-transcript");
-    // Measured: an 800 window holding 300 of transcript is not full.
-    await act(async () => {
-      list.props.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 800 } } });
-      list.props.onContentSizeChange?.(390, 300);
-    });
-    await waitFor(() => expect(mockListEvents).toHaveBeenCalledWith("sess-1", 65, 50));
-  });
-
-  it("loads older history when the reader scrolls to the top", async () => {
-    mockSession = { ...base, latestEventSeq: 120 };
-    // useLocalSessionHistory marks hasOlder once the first page starts above
-    // seq 1 -- five events seqed 116-120 gives it that first page.
-    mockEvents = [116, 117, 118, 119, 120].map((seq) =>
-      ev(seq, { kind: "text", role: "user", text: `line ${seq}`, actor: { userId: "user-a" }, ts: "2026-09-12T10:00:00.000Z" }),
-    );
-    await render(<SessionScreen />);
-    const list = await screen.findByTestId("session-transcript");
-    // Inverted: the far end of the scroll is the top of the transcript.
-    await act(async () => { list.props.onScroll?.(NEAR_TOP); });
-    // first seq 116 -> the older page asks for after=65 (116-51), limit 50.
-    await waitFor(() => expect(mockListEvents).toHaveBeenCalledWith("sess-1", 65, 50));
-  });
-
-  it("opens on the newest output and follows it: newest first, no catch-up link", async () => {
-    mockSession = { ...base, status: "busy", latestEventSeq: 120 };
-    mockEvents = [116, 117, 118, 119, 120].map((seq) =>
-      ev(seq, { kind: "text", role: "assistant", text: `line ${seq}`, ts: "2026-09-12T10:00:00.000Z" }),
-    );
-    await render(<SessionScreen />);
-    const list = await screen.findByTestId("session-transcript");
-    await waitFor(() => expect(list.props.data.length).toBeGreaterThan(0));
-    expect(list.props.inverted).toBe(true);
-    const seqs = list.props.data.map((row: { seq: number }) => row.seq);
-    expect(seqs).toEqual([...seqs].sort((a: number, b: number) => b - a));
-    // Paging back must not turn the screen into a history view that needs a tap.
-    await act(async () => { list.props.onScroll?.(NEAR_TOP); });
-    await waitFor(() => expect(mockListEvents).toHaveBeenCalledWith("sess-1", 65, 50));
-    expect(screen.queryByText(/More recent activity/)).toBeNull();
-  });
-
-  it("offers a way back to the bottom only once the reader has scrolled up", async () => {
-    await render(<SessionScreen />);
-    const list = await screen.findByTestId("session-transcript");
-    expect(screen.queryByLabelText("Jump to latest")).toBeNull();
-    const scrolledTo = (y: number) => ({
-      nativeEvent: { contentOffset: { x: 0, y }, contentSize: { width: 390, height: 2000 }, layoutMeasurement: { width: 390, height: 800 } },
-    });
-    await act(async () => { list.props.onScroll?.(scrolledTo(600)); });
-    expect(screen.getByLabelText("Jump to latest")).toBeTruthy();
-    await act(async () => { list.props.onScroll?.(scrolledTo(0)); });
-    expect(screen.queryByLabelText("Jump to latest")).toBeNull();
   });
 
   it("opens the session's chat as its own screen, with its unread count", async () => {

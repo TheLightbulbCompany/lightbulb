@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ApiError, NEW_SCREEN, SNAPSHOT_WAIT_MS, receiveScreen, settleScreen, snapshotWaits, type LiveEvent, type LocalSession, type SessionScreen } from "@lightbulb/shared";
+import { ApiError, inputRefused as refuses, NEW_SCREEN, SNAPSHOT_WAIT_MS, receiveScreen, settleScreen, snapshotWaits, type LiveEvent, type LocalSession, type SessionScreen } from "@lightbulb/shared";
 import type { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { chunkInput, dropMouseReports, dropProbeReplies, SHIFT_ENTER } from "./sessionInput";
@@ -9,9 +9,6 @@ import { chunkInput, dropMouseReports, dropProbeReplies, SHIFT_ENTER } from "./s
 const WATCH_EVERY_MS = 15_000;
 /** A snapshot or a ping comes at least every 10 s; this long with no frame, or only pings that do not match the screen it has, and the picture is frozen, so it says Reconnecting. */
 const STALE_AFTER_MS = 30_000;
-/** Stops input: no access (403/404) or a Mac that cannot take typing. OFFLINE is another 409 and passes. */
-const refuses = (e: unknown) => e instanceof ApiError && (e.status === 403 || e.status === 404
-  || (e.status === 409 && (e.body as { code?: string } | null)?.code === "LOCAL_SESSION_UNSUPPORTED"));
 const decode = (data: string) => Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
 /** Clears the visible screen only: xterm's erase never pushes it into scrollback, so history stays.
  *  First it leaves the alternate screen and drops the scroll region, so modes the last screen set

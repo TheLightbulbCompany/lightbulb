@@ -101,10 +101,11 @@ background session, or when it is a plain Codex session (Codex's own background 
 it, and Lightbulb opens one more Codex terminal on the same conversation). Any other running
 session shows a notice that it was not started through Lightbulb, with the one thing that brings
 its screen here: for a plain Claude session its owner presses ← in its terminal; for a Codex
-session started with `--no-daemon` its owner starts it again with `lightbulb codex`. On the web
-and in the desktop app people never see a transcript; the phone still shows a session's history
-as a list until it gets the live terminal. You still read the structured record with
-`lightbulb_local_sessions`.
+session started with `--no-daemon` its owner starts it again with `lightbulb codex`. People
+never see a transcript, on the web, in the desktop app or in the iPhone app: the phone shows the
+same live terminal (Fit or Readable, pinch to zoom) and the same notices, and a person who may
+type uses the iPhone keyboard with a key bar (Esc, Tab, Ctrl, arrows, Paste) straight into the
+terminal. You still read the structured record with `lightbulb_local_sessions`.
 
 **New session** (web and desktop): a small form with no first message. The person picks
 **Claude Code** or **Codex**, an approved folder and, optionally, the model and mode, then presses

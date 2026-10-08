@@ -13,6 +13,7 @@
  */
 export type { PlatformAdapter } from "./adapter";
 export { NEW_SCREEN, SNAPSHOT_WAIT_MS, receiveScreen, settleScreen, snapshotWaits, type ScreenOrder } from "./live/sessionScreen";
+export { chunkInput, dropMouseReports, dropProbeReplies, inputRefused, MAX_INPUT_BYTES, SHIFT_ENTER, toBase64 } from "./live/sessionInput";
 
 export { useRuntimeRpc, useRuntimeRpcMutation } from "./hooks/useRuntimeRpc";
 export type { RuntimeRpcSource, RpcResult } from "./hooks/useRuntimeRpc";

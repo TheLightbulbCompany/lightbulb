@@ -44,9 +44,11 @@ here is ``ConsistentRead=True``; the GSIs are queried by ``list_rooms_for_member
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
+import random
 import re
 import time
 import uuid
@@ -80,7 +82,11 @@ RUN_OUTCOMES = frozenset({"completed", "error", "aborted", "ignored", "gate_erro
 # delivery rows. The 32-member worst case is 66; DynamoDB caps a transaction at 100.
 _FIXED_CREATE_ACTIONS = 3
 _TRANSACT_LIMIT = 100
-_SEQ_RETRY_ATTEMPTS = 6
+_SEQ_RETRY_ATTEMPTS = 8
+# Full-jitter backoff between lastSeq conflicts: attempt n sleeps uniform(0, min(cap, base * 2**n)),
+# so concurrent writers to one room spread out instead of re-colliding (worst case ~1.6 s total).
+_SEQ_BACKOFF_BASE_S = 0.02
+_SEQ_BACKOFF_CAP_S = 0.5
 
 
 class MessagingRepoError(Exception):
@@ -1138,6 +1144,10 @@ async def create_message(
             return await _replay_or_conflict(prior, req_hash), True
         # Sequence race (or a same-instant duplicate seq) — reread and retry.
         logger.info("messaging: sequence conflict on room=%s attempt=%d", room_id, attempt + 1)
+        # ponytail: one hot room is still serialized on one META.lastSeq counter; move to
+        # per-room sequencers if a room ever needs more than ~50 msg/s.
+        if attempt + 1 < _SEQ_RETRY_ATTEMPTS:
+            await asyncio.sleep(random.uniform(0, min(_SEQ_BACKOFF_CAP_S, _SEQ_BACKOFF_BASE_S * 2**attempt)))
     raise MessagingRepoError(f"could not append to room {room_id} after {_SEQ_RETRY_ATTEMPTS} attempts")
 
 

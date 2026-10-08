@@ -107,15 +107,20 @@ Ordered by what it costs the owner. Each has a Hermes-native lever we were not u
 
 1. **Observed context and recall pile up until compaction.** Each turn's observed block and
    recalled records are stored as that turn's `api_content` and replayed on every later turn.
-   This is upstream's own Telegram observe design, inherited. Lever: `compression.proactive_prune_tokens`
-   (deterministic, no LLM call) and `micro_compact`.
+   This is upstream's own Telegram observe design, inherited. **Not a lever in 0.21.3:**
+   `compression.proactive_prune_tokens` commits through `archive_and_compact` with no tail, which
+   soft-archives every active row and re-inserts the whole pruned history, so on a never-ended
+   room session each prune writes a second copy of the room into `state.db` (#3932 tried it and
+   reverted). The structural fix is to keep per-turn observed context out of the stored
+   transcript.
 2. **The room prompt rides the ephemeral system prompt and changes bytes between turn kinds.**
    Every ambient→addressed switch in one room misses the prompt cache for the whole replayed
    history. Lever: per-turn variants in the user message, stable guidance in `platform_hints`.
 3. **The recall query is polluted** by the turn-context JSON (section 2), so trivial prompts
    still pay a synchronous memory retrieval and the search text is routing JSON. `topK=5` is
    our number, not a Hermes default. Lever: strip before `prefetch`, pass `turn_author`.
-4. **Chat compaction is inline.** Lever: the prune above, `idle_compact_after_seconds`.
+4. **Chat compaction is inline.** Lever: `idle_compact_after_seconds`, or the off-path 85 %
+   hygiene the bridge already runs for voice turns.
 5. **Skill routing text is cut at 60 chars**, and `paperclip/SKILL.md` is 31k chars per load.
    Lever: the trigger in the first 57 chars; detail in `references/*.md` via `skill_view`.
 

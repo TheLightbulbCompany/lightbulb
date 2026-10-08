@@ -67,7 +67,7 @@ This calls `POST /api/issues/{issueId}/checkout`. If already checked out by you,
 
 **Step 6 — Understand context.** Prefer `GET /api/issues/{issueId}/heartbeat-context` first. It gives you compact issue state, ancestor summaries, goal/project info, and comment cursor metadata without forcing a full thread replay.
 
-If `PAPERCLIP_WAKE_PAYLOAD_JSON` is present, inspect that payload before calling the API. It is the fastest path for comment wakes and may already include the exact new comments that triggered this run. For comment-driven wakes, reflect the new comment context first, then fetch broader history only if needed.
+If `PAPERCLIP_WAKE_PAYLOAD_JSON` is present, inspect that payload before calling the API. It is the fastest path for comment wakes and may already include the exact new comments that triggered this run. For comment-driven wakes, reflect the new comment context first: in your first task update or response, acknowledge the latest comment and say how it changes your next action, before broad repo exploration. Fetch the thread/comments API only when `fallbackFetchNeeded` is true or you need broader context than the inline batch.
 
 Use comments incrementally:
 

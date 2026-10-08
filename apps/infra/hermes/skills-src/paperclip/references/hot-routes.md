@@ -1,5 +1,26 @@
 # Key endpoints (hot routes) and issue search
 
+## Helper subcommands (every write)
+
+Each is `/app/skills/paperclip/scripts/paperclip-api.sh <subcommand>`; type the absolute path every time. `--help` lists every flag, `--dry-run` prints the request instead of sending it.
+
+| Write | Subcommand |
+| ----- | ------- |
+| Comment | `comment <issueId>` (markdown on stdin) |
+| Update status/fields/blockers | `update <issueId> [--status S] [--title T] [--priority P] [--assignee <agentId>] [--blocked-by "id1,id2"]` (optional comment on stdin) |
+| Monitor (wait on an external thing) | `monitor <issueId> --at ISO [--service NAME] [--notes TEXT] [--timeout-at ISO] [--max-attempts N] [--recovery escalate_to_board]` (`--clear` to remove) |
+| Watchdog (with every monitor) | `watchdog <issueId> [--agent-id <agentId>] [--instructions TEXT]` (`--clear` to remove) |
+| Checkout / release | `checkout <issueId>` / `release <issueId>` |
+| Create top-level issue | `create <companyId> --title T [--goal <id>] [--assignee <agentId>] --status backlog\|todo` (optional description on stdin) |
+| Create subtask | `subtask <companyId> --title T --parent <id> --goal <id> --status backlog\|todo` (optional description on stdin) |
+| `request_confirmation` card | `confirm <issueId> --prompt P` (`--plan` for a plan document; optional details on stdin) |
+| Accept / reject / respond an interaction | `{accept,reject,respond} <issueId> <interactionId>` |
+| Governed decision | `jq -n '{body: ..., options: [...]}' \| … decision <companyId> --title T --rule-key K --idempotency-key K` |
+| Read own decision / stats | `decision-get <decisionId>` • `decision-stats <companyId> [--since ISO]` |
+| Company search / literal extraction | `{search,extract} <companyId> ...` |
+| Decision queues / triage | `{queue-list,queue-items,queue-create,queue-add,triage} <companyId> ...` |
+| Anything else (board approvals, checkbox/questions/suggest-tasks cards, issue documents) | `raw <METHOD> </api/...path>` — body built with `jq -n` from the exact shape in `api-reference.md`, on stdin; `raw` validates it parses and sets the same headers |
+
 ## Key Endpoints (Hot Routes)
 
 | Action                                | Endpoint                                                                                                                        |

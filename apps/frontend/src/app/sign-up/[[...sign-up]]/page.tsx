@@ -275,7 +275,10 @@ export default function Page() {
               <Logo size="md" withMark />
             </div>
 
-            <SignUp fallbackRedirectUrl="/chat" signInFallbackRedirectUrl="/chat" />
+            <SignUp
+              fallbackRedirectUrl="/onboarding?returnTo=%2Fopen-app"
+              signInFallbackRedirectUrl="/chat"
+            />
 
             <div className="auth-footer-links">
               Already have an account?{" "}

@@ -144,6 +144,7 @@ API_ERROR_STATUS = {
     "LOCAL_SESSION_ASK_DECLINED": 409,
     "INVALID_REQUEST": 400,
     "ROOM_FORBIDDEN": 403,
+    "WORKSPACE_MEMBERSHIP_REQUIRED": 403,
     "ROOM_NOT_FOUND": 404,
     "ACTIVITY_NOT_FOUND": 404,
     "ACTION_UNAVAILABLE": 409,
@@ -1835,7 +1836,9 @@ async def join_default_room(owner_id: str, user_id: str) -> bool:
     if not await messaging_repo.claim_autojoin(room_id, user_id):
         return False
     try:
-        await messaging_repo.ensure_user_stream(owner_id, user_id)
+        if await messaging_repo.ensure_user_stream(owner_id, user_id) is None:
+            await messaging_repo.release_autojoin(room_id, user_id)
+            return False  # a removed member: only the membership webhook's rejoin turns them back on
         meta = await messaging_repo.upsert_member(room_id=room_id, owner_id=owner_id, member=member)
     except messaging_repo.MemberLimitExceeded:
         # Keep the marker: a full room must not turn every poll into a retry.
@@ -2029,8 +2032,14 @@ async def ensure_vendor_room(owner_id: str) -> str | None:
         put_metric("messaging.vendor_room.capped")
         logger.warning("vendor room capped at %d members for owner %s", messaging_repo.MAX_ROOM_MEMBERS, owner_id)
         members = members[: messaging_repo.MAX_ROOM_MEMBERS]
-    for human in (m for m in members if m["kind"] == "human"):
-        await messaging_repo.ensure_user_stream(human["homeOwnerId"], human["id"])
+    removed = {
+        m["id"]
+        for m in members
+        if m["kind"] == "human" and await messaging_repo.ensure_user_stream(m["homeOwnerId"], m["id"]) is None
+    }
+    if owner_user_id in removed:
+        return None  # the room's owner is a removed member: no owner, no room yet
+    members = [m for m in members if m["id"] not in removed]  # a removed member is not seated
     try:
         await messaging_repo.create_room(
             owner_id=owner_id,
@@ -2056,7 +2065,8 @@ async def add_vendor_room_member(owner_id: str, user_id: str, *, home_owner_id: 
     transaction): each attempt re-reads room + member fresh, so a concurrent
     add that already landed is a clean no-op rather than a dropped join."""
     room_id = messaging_repo.vendor_room_id(owner_id)
-    await messaging_repo.ensure_user_stream(home_owner_id, user_id)
+    if await messaging_repo.ensure_user_stream(home_owner_id, user_id) is None:
+        return False  # a removed member
     for attempt in range(3):
         meta = await messaging_repo.get_room(room_id)
         if meta is None or await messaging_repo.get_member(room_id, "human", user_id) is not None:
@@ -2155,7 +2165,11 @@ async def create_room(auth: AuthContext, request: CreateRoomRequest) -> RoomDeta
     for member in request.members:
         members.append(await _resolved_member(owner_id, member, roster))
     for human in (member for member in members if member["kind"] == "human"):
-        await messaging_repo.ensure_user_stream(owner_id, human["id"])
+        if await messaging_repo.ensure_user_stream(owner_id, human["id"]) is None:
+            # A removed member: the creator (stale JWT) is refused, a removed invitee is not found.
+            if human["id"] == auth.user_id:
+                raise ApiProblem("WORKSPACE_MEMBERSHIP_REQUIRED", "You are no longer a member of this workspace.")
+            raise ApiProblem("MEMBER_NOT_FOUND", "That human is not in this workspace.")
     normalized = [{key: member.get(key) for key in ("kind", "id", "role", "listenMode")} for member in members[1:]]
     room_id = messaging_repo.deterministic_room_id(owner_id, auth.user_id, str(request.client_room_id))
     req_hash = messaging_repo.request_hash(request.name, request.kind, normalized)
@@ -2292,8 +2306,8 @@ async def upsert_member(auth: AuthContext, room_id: str, request: UpsertRoomMemb
     if request.kind == "agent":
         # A person's choice of mode; a system sweep never overrides it.
         member = {**member, "modeSetBy": "user"}
-    if request.kind == "human":
-        await messaging_repo.ensure_user_stream(owner_id, request.id)
+    if request.kind == "human" and await messaging_repo.ensure_user_stream(owner_id, request.id) is None:
+        raise ApiProblem("MEMBER_NOT_FOUND", "That human is not in this workspace.")  # a removed member
     handles = mention_handles(roster) if roster else {}
     current = await messaging_repo.list_members(room_id)
     room_agents = [row for row in current if row.get("kind") == "agent"]
@@ -2401,6 +2415,8 @@ async def _rotation_notices(meta: dict, new_key: str, *, removed: set[str] | Non
     for human in humans:
         home = messaging_repo.member_home(human, meta["ownerId"])
         key = await messaging_repo.ensure_user_stream(home, human["id"])
+        if key is None:
+            continue  # a removed member's stream is off: nothing to tell them, nothing to revive
         is_removed = removed is None or human["id"] in removed
         event = make_live_event(
             "room.access.removed" if is_removed else "room.subscription.rotated",

@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
-import type { LocalSession, LocalSessionAuditEntry, LocalSessionEvent } from "@lightbulb/shared";
+import { ApiError, type LocalSession, type LocalSessionAuditEntry, type LocalSessionEvent } from "@lightbulb/shared";
 import { SessionDetails, type SessionDetailsTab } from "../SessionDetails";
 
 const usage = { inputTokens: 1200, outputTokens: 340, cacheReadTokens: 0, cacheWriteTokens: 0 };
@@ -19,7 +19,7 @@ const client = () => ({
   setLocalSessionSharing: vi.fn(async (_: string, shared: boolean) => session({ shared })),
   setLocalSessionTeamControl: vi.fn(async (_: string, teamControl: boolean) => session({ teamControl })),
   setLocalSessionUsageSharing: vi.fn(async (_: string, shareUsage: boolean) => session({ shareUsage })),
-  getLocalSessionLink: vi.fn(async () => { throw new Error("404"); }), putLocalSessionLink: vi.fn(),
+  getLocalSessionLink: vi.fn(async () => { throw new ApiError(404, null); }), putLocalSessionLink: vi.fn(),
   listLocalSessionAudit: vi.fn(async () => ({ entries: [] as LocalSessionAuditEntry[] })),
   removeLocalSessionSender: vi.fn(async () => session()),
 });
@@ -37,7 +37,7 @@ it("gives the owner three switches on Access, and who can see the session", asyn
   expect(screen.getAllByRole("switch").map(s => (s as HTMLButtonElement).labels[0]?.textContent)).toEqual([
     "Shared with the workspace", "Let teammates control this session", "Show token usage to teammates",
   ]);
-  expect(await screen.findByLabelText("Who can see this")).toHaveValue("workspace");
+  await waitFor(() => expect(screen.getByLabelText("Who can see this")).toHaveValue("workspace"));
   expect(screen.getByRole("button", { name: "Copy link" })).toBeInTheDocument();
 });
 

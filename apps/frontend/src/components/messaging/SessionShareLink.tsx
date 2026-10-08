@@ -24,9 +24,11 @@ const ABOUT: Record<Who, string> = {
  */
 export function SessionShareLink({ session, client }: { session: LocalSession; client: Client }) {
   const [link, setLink] = useState<SessionLink | null>(null);
-  // Copy link never sends an audience, so a read still in flight or one that failed cannot narrow
-  // an "anyone" link; a failed read still says so.
+  // Whether the link's audience is known: read, or known to be absent (404). Until then the
+  // control names no audience: "My workspace" over a link the backend opens for anyone would be a lie.
+  const [known, setKnown] = useState(false);
   const [readFailed, setReadFailed] = useState(false);
+  const [readRound, setReadRound] = useState(0);
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [armed, setArmed] = useState(false);
@@ -38,17 +40,18 @@ export function SessionShareLink({ session, client }: { session: LocalSession; c
   const continueId = useId();
   useEffect(() => {
     let alive = true;
+    setKnown(false); setReadFailed(false);
     // A 404 is "no link yet": Copy link makes one.
     client.getLocalSessionLink?.(session.sessionId).then(
-      l => { if (alive) setLink(l); },
-      e => { if (alive && !(e instanceof ApiError && e.status === 404)) setReadFailed(true); },
+      l => { if (alive) { setLink(l); setKnown(true); } },
+      e => { if (!alive) return; if (e instanceof ApiError && e.status === 404) setKnown(true); else setReadFailed(true); },
     );
     return () => { alive = false; };
-  }, [client, session.sessionId]);
+  }, [client, session.sessionId, readRound]);
   if (!client.putLocalSessionLink) return null;
   const who: Who = !shared ? "me" : link?.audience === "anyone" ? "anyone" : "workspace";
   const save = async (audience?: SessionLinkAudience) => {
-    try { const next = await client.putLocalSessionLink!(session.sessionId, audience); setLink(next); setReadFailed(false); return next; }
+    try { const next = await client.putLocalSessionLink!(session.sessionId, audience); setLink(next); return next; }
     catch { setStatus("Could not change who can see this. Try again."); return null; }
   };
   const choose = async (next: Who) => {
@@ -94,6 +97,15 @@ export function SessionShareLink({ session, client }: { session: LocalSession; c
     finally { setBusy(false); }
   };
   const shown: Who = armed ? "me" : who;
+  // Only me is the session's own state; the other two are the link's, and that is not read yet.
+  if (!known && shared) return <div className="flex flex-col gap-2 text-sm">
+    <label htmlFor={whoId} className="session-setting-label">Who can see this</label>
+    <select id={whoId} className="room-input w-auto" value="" disabled><option value="">{readFailed ? "Not loaded" : "Loading…"}</option></select>
+    {readFailed && <>
+      <p role="alert">Could not load who can see this session.</p>
+      <Button type="button" variant="outline" size="sm" className="self-start" onClick={() => setReadRound(n => n + 1)}>Try again</Button>
+    </>}
+  </div>;
   return <div className="flex flex-col gap-2 text-sm">
     <label htmlFor={whoId} className="session-setting-label">Who can see this</label>
     <select id={whoId} className="room-input w-auto" value={shown} disabled={busy} onChange={e => void choose(e.target.value as Who)}>
@@ -106,7 +118,6 @@ export function SessionShareLink({ session, client }: { session: LocalSession; c
       : shown === "anyone"
         ? <p role="note" className="session-setting-warning">{ABOUT.anyone} They see everything the terminal prints, secrets included.</p>
         : <p className="session-setting-about">{ABOUT[shown]}</p>}
-    {readFailed && <p role="alert">Could not load this session&apos;s link. Copy link still works.</p>}
     {who !== "me" && !armed && <>
       {/* The audience above, the link and its Copy together: what is copied is always next to who can open it. */}
       <div className="flex items-center gap-2">

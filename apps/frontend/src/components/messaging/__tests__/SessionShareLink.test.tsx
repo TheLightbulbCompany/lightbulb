@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 import { ApiError, type LocalSession } from "@lightbulb/shared";
@@ -6,7 +6,8 @@ import { SessionShareLink } from "../SessionShareLink";
 
 const session = { sessionId: "s1", provider: "claude" } as LocalSession;
 const url = "https://dev.thelightbulb.company/s#" + "t".repeat(43);
-const who = () => screen.findByLabelText("Who can see this");
+/** The control once the link's audience is read: it names none before that. */
+const who = async () => { await waitFor(() => expect(screen.getByLabelText("Who can see this")).toBeEnabled()); return screen.getByLabelText("Who can see this"); };
 
 const make = (link: "workspace" | "anyone" | null) => ({
   getLocalSessionLink: vi.fn(async () => { if (!link) throw new ApiError(404, { code: "LOCAL_SESSION_NOT_FOUND" }); return { url, audience: link }; }),
@@ -92,13 +93,25 @@ it("draws nothing without the link routes", () => {
   expect(container).toBeEmptyDOMElement();
 });
 
-it("a failed read says so, and Copy link keeps the link's audience", async () => {
-  Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } });
-  const client = { ...make("anyone"), getLocalSessionLink: vi.fn(async () => { throw new ApiError(500, null, "boom"); }) };
+// Codex on #3946: a failed read left the control on "My workspace" over a link that is open to anyone.
+it("names no audience until the link is read, and a failed read offers a retry", async () => {
+  let fail = true;
+  const client = { ...make("anyone"), getLocalSessionLink: vi.fn(async () => { if (fail) throw new ApiError(500, null, "boom"); return { url, audience: "anyone" as const }; }) };
   render(<SessionShareLink session={session} client={client} />);
-  expect(await screen.findByRole("alert")).toHaveTextContent("Could not load this session's link.");
-  await userEvent.click(screen.getByRole("button", { name: "Copy link" }));
-  expect(client.putLocalSessionLink).toHaveBeenCalledWith("s1", undefined);
+  expect(await screen.findByRole("alert")).toHaveTextContent("Could not load who can see this session.");
+  const control = screen.getByLabelText("Who can see this");
+  expect(control).toBeDisabled();
+  expect(control).not.toHaveValue("workspace");
+  expect(screen.queryByRole("button", { name: "Copy link" })).toBeNull();
+  fail = false;
+  await userEvent.click(screen.getByRole("button", { name: "Try again" }));
   expect(await who()).toHaveValue("anyone");
-  expect(await screen.findByText("Link copied. Anyone with the link can watch.")).toBeInTheDocument();
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(client.putLocalSessionLink).not.toHaveBeenCalled();
+});
+
+it("a paused session reads Only me even when the link cannot be read", async () => {
+  const client = { ...make("anyone"), getLocalSessionLink: vi.fn(async () => { throw new ApiError(500, null, "boom"); }) };
+  render(<SessionShareLink session={{ ...session, shared: false }} client={client} />);
+  expect(await who()).toHaveValue("me");
 });

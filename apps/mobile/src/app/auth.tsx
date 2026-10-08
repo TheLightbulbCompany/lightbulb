@@ -59,7 +59,7 @@ export default function AuthHandoff() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>We couldn't finish signing you in.</Text>
+      <Text style={styles.title}>Unable to finish signing you in.</Text>
       <Pressable style={styles.button} onPress={() => router.replace("/(auth)/sign-in")}>
         <Text style={styles.buttonText}>Sign in in the app</Text>
       </Pressable>
@@ -76,7 +76,7 @@ const styles = StyleSheet.create({
     padding: spacing.xl,
     backgroundColor: colors.cream,
   },
-  title: { ...type.heading, textAlign: "center" },
+  title: { ...type.title, textAlign: "center" },
   body: { ...type.body, textAlign: "center" },
   button: {
     backgroundColor: colors.forest,

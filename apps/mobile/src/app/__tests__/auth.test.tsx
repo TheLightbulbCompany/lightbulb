@@ -17,6 +17,7 @@ jest.mock("expo-router", () => ({
   useRouter: () => ({ replace: mockReplace }),
 }));
 
+// eslint-disable-next-line import/first
 import AuthHandoff from "../auth";
 
 beforeEach(() => {
@@ -60,6 +61,6 @@ it("keeps a failed ticket exchange on a recoverable sign-in screen", async () =>
     render(<AuthHandoff />);
   });
 
-  expect(await screen.findByText("We couldn't finish signing you in.")).toBeTruthy();
+  expect(await screen.findByText("Unable to finish signing you in.")).toBeTruthy();
   expect(screen.getByText("Sign in in the app")).toBeTruthy();
 });

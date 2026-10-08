@@ -98,6 +98,25 @@ describe("Invite people", () => {
     expect(screen.queryByLabelText("Copy join link")).toBeNull();
   });
 
+  it("takes one copy at a time so a double tap cannot mint two links", async () => {
+    let release!: () => void;
+    const held = new Promise<unknown>((resolve) => { release = () => resolve({ exists: true, join_url: "https://thelightbulb.company/join/abc" }); });
+    mockGet.mockImplementation(async (path: string) => {
+      if (path === `${BASE}/invitations`) return { invitations: mockList };
+      if (path === `${BASE}/join-link`) return held;
+      throw new Error(`unexpected GET ${path}`);
+    });
+    await renderScreen();
+    const button = screen.getByLabelText("Copy join link");
+    await fireEvent.press(button);
+    await fireEvent.press(button);
+    expect(mockGet.mock.calls.filter(([path]) => path === `${BASE}/join-link`)).toHaveLength(1);
+    expect(button).toBeDisabled();
+    await act(async () => { release(); await Promise.resolve(); });
+    expect(screen.getByText("Join link copied.")).toBeTruthy();
+    expect(button).toBeEnabled();
+  });
+
   it("copies the existing join link without minting a new one", async () => {
     await renderScreen();
     await fireEvent.press(screen.getByLabelText("Copy join link"));

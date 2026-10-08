@@ -40,6 +40,7 @@ export default function InviteScreen() {
   const [results, setResults] = useState<Result[]>([]);
   const [revokeError, setRevokeError] = useState<string | null>(null);
   const [linkStatus, setLinkStatus] = useState<string | null>(null);
+  const [copying, setCopying] = useState(false); // one mint at a time: a second POST replaces the first link
 
   const load = useCallback(async () => {
     if (!orgId) return;
@@ -93,11 +94,15 @@ export default function InviteScreen() {
   };
 
   const copyLink = async () => {
+    if (copying) return;
+    setCopying(true);
     setLinkStatus("Getting the link…");
     try {
       setLinkStatus(await copyJoinLink(api, orgId));
     } catch {
       setLinkStatus("Couldn't get the link. Try again.");
+    } finally {
+      setCopying(false);
     }
   };
 
@@ -168,6 +173,8 @@ export default function InviteScreen() {
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Copy join link"
+        accessibilityState={{ disabled: copying }}
+        disabled={copying}
         onPress={() => void copyLink()}
         style={({ pressed }) => [insetRowStyle(palette, 0, 1), { flexDirection: "row", alignItems: "center", gap: spacing.md,
           minHeight: 44, paddingHorizontal: spacing.lg }, pressed && { backgroundColor: palette.selected }]}

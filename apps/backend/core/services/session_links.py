@@ -275,6 +275,10 @@ MINTS_PER_WINDOW = 120
 # link changes channel at most once per window (a channel needs more seats than a window gives).
 # No key exchange, no sweeper: the old channel's rows lapse by TTL.
 MAX_CHANNEL_SEATS = 200
+# How long a channel's seat count is kept after its last viewer: longer than any socket subscribed
+# to it can live (AppSync ends a connection after 24 h). Were the count forgotten sooner, the next
+# seat would start the same channel at one, with its old sockets still listening.
+CHANNEL_MEMORY_S = 25 * 3600
 # A link's viewers together get the Mac asked for history and a snapshot at most this often: each
 # ask is a burst out of the session's frame budget, which workspace viewers share, and `fresh` is
 # only a stranger's word. Per link, not per lease: taking new seats buys no more asks. A viewer
@@ -441,13 +445,13 @@ async def viewing(token: str, lease: str | None, fresh: bool, retake: bool = Fal
         lease = f"{public}.{secret}"
         await run_in_thread(table.put_item, Item={**key_of(secret), "expiresAt": expires})
     # One row says whether anyone watches by link, so `forward` reads one item per frame. It
-    # outlives its viewers by an hour, so the channel's seat total is not forgotten between them.
+    # outlives its viewers by CHANNEL_MEMORY_S, and with it the channel's seat count.
     await run_in_thread(
         table.update_item,
         Key=watched,
         UpdateExpression="SET #u = :exp, expiresAt = :ttl",
         ExpressionAttributeNames={"#u": "until"},
-        ExpressionAttributeValues={":exp": expires, ":ttl": now + 3600},
+        ExpressionAttributeValues={":exp": expires, ":ttl": now + CHANNEL_MEMORY_S},
     )
     if fresh:
         try:

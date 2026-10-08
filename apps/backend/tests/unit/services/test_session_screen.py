@@ -813,3 +813,19 @@ async def test_a_refused_seat_costs_the_channel_nothing_and_the_budget_outlives_
             await session_links.viewing(token, seat.lease, False, retake=True)
         assert busy.value.error.code == "LOCAL_SESSION_VIEWERS_FULL"
     assert await channel() == second and taken(second) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_channels_seat_count_is_kept_for_as_long_as_a_socket_on_it_can_live(transport, db):
+    """Codex on #3946: the count's row lapsed an hour after the last viewer, and the next seat
+    started the same channel at one while sockets from before (AppSync keeps one for 24 h) still
+    listened. The row now outlives them."""
+    from core.services import session_links
+
+    sid = await start(transport)
+    token, public = await _public_link(sid)
+    await session_links.viewing(token, None, False)
+    row = db[0].get_item(Key={"pk": f"PUBWATCH#{public}", "sk": "WATCHED"})["Item"]
+    assert int(row["seats"]) == 1
+    assert int(row["expiresAt"]) - int(time.time()) > 24 * 3600  # `expiresAt` is the table's TTL attribute
+    assert int(row["until"]) - int(time.time()) <= session_screen.VIEWER_TTL_S  # liveness is still 45 s

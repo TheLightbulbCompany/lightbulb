@@ -499,6 +499,10 @@ async def test_an_end_then_a_resume_also_tells_the_person_whose_ask_was_dropped(
     # Once the owner lets everyone send, there is nothing left to say.
     await service.set_team_control(ALICE, sid, True)
     assert (await service.get_session(BOB, sid)).join_request_closed is None
+    # Let in means said: switching team control off again does not bring the notice back.
+    await service.set_team_control(ALICE, sid, False)
+    assert (await service.get_session(BOB, sid)).join_request_closed is None
+    assert "joinClosed" not in await repo.get_session(OWNER, sid)
 
 
 @pytest.mark.asyncio

@@ -2456,6 +2456,9 @@ async def set_team_control(auth: AuthContext, session_id: str, enabled: bool) ->
             updated["joinRequests"] = {
                 who: r for who, r in (row.get("joinRequests") or {}).items() if r.get("state") != "pending"
             }
+            # So is a closure a restart left behind: those people can send now, and must not be told
+            # again that their request closed if the switch goes off later.
+            updated.pop("joinClosed", None)
         audit = audit_row(owner, row["sessionId"], auth, "team_control_on" if enabled else "team_control_off")
         try:
             await repo.put_session(

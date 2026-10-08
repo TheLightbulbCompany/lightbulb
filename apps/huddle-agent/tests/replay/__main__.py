@@ -47,7 +47,7 @@ def main() -> int:
         for n in ev.notes:
             print("NOTE ", n)
         return int(any(s == "FAIL" for s, _, _ in results))
-    began, failed, table = time.perf_counter(), 0, {}
+    began, failed, table, seeds_of = time.perf_counter(), 0, {}, {}
     try:
         base = routing.baseline()
     except FileNotFoundError:
@@ -65,10 +65,11 @@ def main() -> int:
         for what, by in checks.items():
             table[f"{name} | {what.split('  #')[0]}"] = [len(by.get("FAIL", [])), len(by.get("SKIP", []))]
             if fails := by.get("FAIL"):
+                seeds_of[f"{name} | {what.split('  #')[0]}"] = sorted(seed for seed, _ in fails)
                 skips = f", {len(by['SKIP'])} skipped" if by.get("SKIP") else ""
                 why = known(name, what)
                 key = f"{name} | {what.split('  #')[0]}"
-                was, of = base[a.profile]["fails"].get(key, 0), base[a.profile]["seeds"]
+                was, of = len(base[a.profile]["fails"].get(key, [])), base[a.profile]["seeds"]
                 print(f"  FAIL {len(fails):>2}/{a.seeds}{skips}  (baseline {was}/{of})  {what}")
                 print(f"        seed {fails[0][0]}: {fails[0][1][:400]}")
                 print(f"        {'known: ' + why if why else 'no cause recorded in routing.KNOWN_FAILING'}")
@@ -81,13 +82,15 @@ def main() -> int:
     if a.rebase:
         if a.scenario != "all":
             ap.error("--rebase takes every scenario")
-        base[a.profile] = {"seeds": a.seeds, "fails": fails}
+        if a.first:
+            ap.error("--rebase takes seeds from 0")
+        base[a.profile] = {"seeds": a.seeds, "fails": seeds_of}
         with open(routing.BASELINE_PATH, "w") as f:
-            json.dump(base, f, indent=1, sort_keys=True)
+            f.write("{\n" + ",\n".join(f' "{p}": {json.dumps(b, sort_keys=True)}' for p, b in sorted(base.items())) + "\n}\n")
         print(f"baseline for {a.profile} written: {sum(fails.values())} failing check-seeds in {len(fails)} checks, {a.seeds} seeds")
     # a run of some scenarios is held to those scenarios' part of the baseline
     part = {**base[a.profile], "fails": {k: f for k, f in base[a.profile]["fails"].items() if k.split(" | ")[0] in names}}
-    worse = routing.gate(part, fails, a.seeds)
+    worse = routing.gate(part, fails, range(a.first, a.first + a.seeds))
     for line in worse:
         print("REGRESSION  " + line)
     print(

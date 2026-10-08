@@ -5,26 +5,44 @@ import asyncio
 import json
 
 import pytest
+from huddle_agent import huddle as h_mod
 from huddle_agent import record
 from replay import ROUTING, SCENARIOS, Sim, judge, known, live, load, replay, routing
 from replay.sim import EPOCH, LEAD, PROFILES
 
-SEEDS = 10  # the full loop is `python -m tests.replay all --seeds 100`, under both profiles; this is the quick gate
+SEEDS = range(10)  # the full loop is `python -m tests.replay all --seeds 100`, under both profiles; this is the quick gate
+
+
+def failing(profile, seeds=SEEDS, names=SCENARIOS):
+    fails = {}
+    for name in names:
+        for seed in seeds:
+            for status, what, _ in replay(name, seed, profile=profile)[0]:
+                if status == "FAIL":
+                    key = f"{name} | {what.split('  #')[0]}"
+                    fails[key] = fails.get(key, 0) + 1
+    return fails
 
 
 @pytest.mark.replay
 @pytest.mark.parametrize("profile", PROFILES)
 def test_the_replay_shows_no_new_failure_and_no_known_one_grown(profile):
-    """Every scenario, SEEDS seeds: no check fails more often than its baseline rate allows (`routing.gate`).
-    That holds a known failure to the rate it is known at, and a check that passed to passing."""
-    fails = {}
-    for name in SCENARIOS:
-        for seed in range(SEEDS):
-            for status, what, _ in replay(name, seed, profile=profile)[0]:
-                if status == "FAIL":
-                    key = f"{name} | {what.split('  #')[0]}"
-                    fails[key] = fails.get(key, 0) + 1
-    assert not (worse := routing.gate(routing.baseline()[profile], fails, SEEDS)), "\n".join(worse)
+    """Every scenario over SEEDS: no check fails more often than it did on the same seeds when the baseline
+    was taken, beyond a small tolerance (`routing.gate`). That holds a known failure to the rate it is known
+    at, and a check that passed to passing."""
+    assert not (worse := routing.gate(routing.baseline()[profile], failing(profile), SEEDS)), "\n".join(worse)
+
+
+@pytest.mark.replay
+def test_the_gate_sees_a_regression_inside_a_known_failure(monkeypatch):
+    """backchannel's keeps_speaking is a known failure (18% of seeds). A controller that lets a listening
+    sound stop a sentence fails it far more often, and no check that passed starts to fail: the old gate,
+    which only knew that the check may fail, passed that controller."""
+    monkeypatch.setattr(h_mod.Huddle, "_only_listening", lambda self, identity: False)
+    base = routing.baseline()["current"]
+    part = {**base, "fails": {k: v for k, v in base["fails"].items() if k.startswith("backchannel |")}}
+    worse = routing.gate(part, failing("current", names=["backchannel"]), SEEDS)
+    assert any("keeps_speaking" in line and "WORSE" in line for line in worse), worse
 
 
 def test_every_failure_in_the_baseline_has_its_cause_written_down():
@@ -35,17 +53,21 @@ def test_every_failure_in_the_baseline_has_its_cause_written_down():
 
 
 def test_the_gate_fails_a_known_failure_that_got_worse_and_a_check_that_used_to_pass():
-    base = {"seeds": 200, "fails": {"gap | ack_within": 40, "gap | no_talk_over": 2}}
-    assert routing.gate(base, {"gap | ack_within": 4, "gap | no_talk_over": 1}, 20) == [], "at its rate, and inside the noise"
-    assert routing.allowed(base, "gap | ack_within", 20) == 12 and routing.allowed(base, "gap | said_once", 20) == 0
-    worse = routing.gate(base, {"gap | ack_within": 13}, 20)[0]
-    assert "WORSE" in worse and "gap | ack_within" in worse, "known to fail one seed in five, not two in three"
-    (new,) = routing.gate(base, {"gap | said_once": 1}, 20)
+    base = {"seeds": 200, "fails": {"gap | ack_within": list(range(0, 200, 5)), "gap | no_talk_over": [7, 150]}}
+    first = range(20)  # of these the baseline failed ack_within on 0, 5, 10, 15 and no_talk_over on 7
+    assert routing.gate(base, {"gap | ack_within": 4, "gap | no_talk_over": 1}, first) == [], "as it was"
+    assert routing.gate(base, {"gap | ack_within": 5, "gap | no_talk_over": 2}, first) == [], "a replay or two flipped"
+    assert routing.allowed(base, "gap | ack_within", first) == 7 and routing.allowed(base, "gap | said_once", first) == 0
+    worse = routing.gate(base, {"gap | ack_within": 8}, first)[0]
+    assert "WORSE" in worse and "gap | ack_within" in worse, "known to fail one seed in five, not two in five"
+    (new,) = routing.gate(base, {"gap | said_once": 1}, first)
     assert "NEW" in new
-    many = {"seeds": 200, "fails": {f"s{i} | ack_within": 40 for i in range(30)}}
-    spread = {key: 7 for key in many["fails"]}  # each inside its own tolerance, and three in four of them up
-    assert all(7 <= routing.allowed(many, key, 20) for key in spread)
-    assert [line.split(":")[0] for line in routing.gate(many, spread, 20)] == ["all checks together"]
+    many = {"seeds": 200, "fails": {f"s{i} | ack_within": list(range(0, 200, 5)) for i in range(30)}}
+    spread = {key: 6 for key in many["fails"]}  # each inside its own tolerance, and every one of them up
+    assert [line.split(":")[0] for line in routing.gate(many, spread, first)] == ["all checks together"]
+    # seeds the baseline does not hold: by its rates
+    assert routing.gate(base, {"gap | ack_within": 8}, range(200, 220)) == []
+    assert "WORSE" in routing.gate(base, {"gap | ack_within": 13}, range(200, 220))[0]
 
 
 @pytest.mark.replay

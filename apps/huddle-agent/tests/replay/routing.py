@@ -166,13 +166,18 @@ def known(scenario: str, check: str) -> str | None:
     return next((why for names, pattern, why in KNOWN_FAILING if names == "*" or scenario in names.split("|") if re.match(pattern, check)), None)
 
 
-# How often each check failed when the baseline was last taken: {profile: {"seeds": n, "fails": {"scenario |
-# check": seeds failing}}}, written by `python -m tests.replay all --seeds 200 --profile P --rebase`. A known
-# failure is known at a rate: KNOWN_FAILING says why a check may fail, this says how often it did.
+# Which seeds each check failed when the baseline was last taken: {profile: {"seeds": n, "fails": {"scenario |
+# check": [seed, ...]}}}, written by `python -m tests.replay all --seeds 200 --profile P --rebase`. A known
+# failure is known at a rate: KNOWN_FAILING says why a check may fail, this says how often it did, and on
+# which replays.
 BASELINE_PATH = os.path.join(os.path.dirname(__file__), "baseline.json")
-# The tolerance. A check may fail as many of a run's seeds as chance alone gives it at its baseline rate less
-# than once in CHANCE runs: there are about 70 check-profiles, so no run in a hundred is failed by luck. The
-# run as a whole is one comparison more, held to SIGMAS standard deviations over the baseline's total.
+# The tolerance. A replay is the same every time, so a run is compared with the baseline seed for seed, and
+# what differs is the controller. A change that only moves delays about flips a few replays each way
+# (measured: at most 4 of 100 a check, 1% of the total), so a check may fail SLACK seeds more than it did
+# on the same seeds, and one more for every 20 seeds; all checks together 3% more, and 2.
+SLACK = 2
+# Seeds the baseline does not hold cannot be paired: there a check may fail as often as chance gives it at
+# its baseline rate less than once in CHANCE runs, and the total SIGMAS standard deviations over.
 CHANCE = 1e-4
 SIGMAS = 3.0
 
@@ -182,11 +187,15 @@ def baseline() -> dict:
         return json.load(f)
 
 
-def allowed(base: dict, key: str, n: int) -> int:
-    """The most of `n` seeds this check may fail and still be no worse than its baseline. 0 for a check
-    that passed every seed of the baseline: one that used to pass may not start to fail."""
-    p = base["fails"].get(key, 0) / base["seeds"]
-    tail = 1.0  # the chance of more than k failures in n seeds at rate p (binomial)
+def allowed(base: dict, key: str, seeds: range) -> int:
+    """The most of `seeds` this check may fail and still be no worse than its baseline. 0 for a check that
+    passed every seed of the baseline: one that used to pass may not start to fail."""
+    failed, n = base["fails"].get(key, []), len(seeds)
+    if not failed:
+        return 0
+    if seeds.start >= 0 and seeds.stop <= base["seeds"]:
+        return sum(s in seeds for s in failed) + SLACK + n // 20
+    p, tail = len(failed) / base["seeds"], 1.0  # the chance of more than k failures in n seeds at rate p
     for k in range(n + 1):
         tail -= math.comb(n, k) * p**k * (1 - p) ** (n - k)
         if tail < CHANCE:
@@ -194,18 +203,21 @@ def allowed(base: dict, key: str, n: int) -> int:
     return n
 
 
-def gate(base: dict, fails: dict[str, int], n: int) -> list[str]:
-    """What a run of `n` seeds a scenario shows that the baseline did not: each check that failed more
-    often than its rate allows (also one inside KNOWN_FAILING), each that used to pass, and the run as a
-    whole when its failures are up though no one check is. `fails`: "scenario | check" -> seeds failing."""
-    out = []
+def gate(base: dict, fails: dict[str, int], seeds: range) -> list[str]:
+    """What a run over `seeds` of each scenario shows that the baseline did not: each check that failed more
+    often than it may (also one inside KNOWN_FAILING), each that used to pass, and the run as a whole when
+    its failures are up though no one check is. `fails`: "scenario | check" -> how many seeds failed."""
+    out, n = [], len(seeds)
     for key, got in sorted(fails.items()):
-        if got > (most := allowed(base, key, n)):
-            was = base["fails"].get(key, 0)
-            what = f"WORSE (baseline {was}/{base['seeds']}, at most {most}/{n})" if was else "NEW (it passed every seed of the baseline)"
+        if got > (most := allowed(base, key, seeds)):
+            was = len(base["fails"].get(key, []))
+            what = f"WORSE (baseline {was}/{base['seeds']}, at most {most}/{n} here)" if was else "NEW (it passed every seed of the baseline)"
             out.append(f"{key}: fails {got}/{n}: {what}")
-    rates = [f / base["seeds"] for f in base["fails"].values()]
-    most = sum(n * p for p in rates) + SIGMAS * math.sqrt(sum(n * p * (1 - p) for p in rates))
+    if seeds.start >= 0 and seeds.stop <= base["seeds"]:
+        most = 1.03 * sum(s in seeds for failed in base["fails"].values() for s in failed) + 2
+    else:
+        rates = [len(failed) / base["seeds"] for failed in base["fails"].values()]
+        most = sum(n * p for p in rates) + SIGMAS * math.sqrt(sum(n * p * (1 - p) for p in rates))
     if (total := sum(fails.values())) > most:
-        out.append(f"all checks together: {total} failing check-seeds, at most {most:.0f} at the baseline's rates")
+        out.append(f"all checks together: {total} failing check-seeds, at most {most:.0f} for the baseline")
     return out

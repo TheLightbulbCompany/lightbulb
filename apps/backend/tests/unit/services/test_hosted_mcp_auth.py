@@ -196,7 +196,7 @@ def _hosted_sender(monkeypatch):
         "get_access_token",
         lambda: SimpleNamespace(client_id="https://claude.ai/oauth/claude-code-client-metadata"),
     )
-    pin = AsyncMock()
+    pin = AsyncMock(return_value={})
     monkeypatch.setattr(hosted_mcp, "_pin_destination", pin)
     return auth, pin
 
@@ -384,6 +384,23 @@ async def test_refused_session_send_says_why_and_its_receipt_reads_rejected(monk
         "state": "rejected",
         "reason": "LOCAL_SESSION_FORBIDDEN",
     }
+
+
+@pytest.mark.asyncio
+async def test_retry_that_gets_through_clears_the_earlier_refusal(monkeypatch):
+    auth, _ = _hosted_sender(monkeypatch)
+    sid, request_id = str(uuid.uuid4()), uuid.uuid4()
+    key = hosted_mcp._sent_key(auth, request_id)
+    # The first attempt was refused with a transient code and recorded it on the pin row.
+    pins = {key: {"destination": f"session:{sid}", "refusal": "LOCAL_SESSION_OFFLINE"}}
+    monkeypatch.setattr(hosted_mcp.messaging_repo, "_get", AsyncMock(side_effect=lambda pk, sk: pins.get((pk, sk))))
+    monkeypatch.setattr(hosted_mcp, "_pin_destination", AsyncMock(return_value=pins[key]))
+    monkeypatch.setattr(hosted_mcp.local_sessions, "authorize_session", AsyncMock(return_value=(sid, None)))
+    monkeypatch.setattr(hosted_mcp.native_session_tools, "session_send", AsyncMock(return_value={"state": "queued"}))
+    record = AsyncMock()
+    monkeypatch.setattr(hosted_mcp, "_record_refusal", record)
+    assert (await hosted_mcp.send_message("hi", request_id, session_id=sid))["state"] == "queued"
+    record.assert_awaited_once_with(auth, request_id, None)
 
 
 @pytest.mark.asyncio

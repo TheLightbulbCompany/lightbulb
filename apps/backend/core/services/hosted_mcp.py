@@ -283,15 +283,16 @@ async def _pin_destination(auth: AuthContext, request_id: uuid.UUID, destination
         return prior
 
 
-async def _record_refusal(auth: AuthContext, request_id: uuid.UUID, code: str) -> None:
-    """Keep why a session send was refused on its pin row, so a lost response can still be reconciled."""
+async def _record_refusal(auth: AuthContext, request_id: uuid.UUID, code: str | None) -> None:
+    """Keep why a session send was refused on its pin row, so a lost response can still be reconciled;
+    None clears it, so a retry that got through after a transient refusal does not read rejected."""
     pk, sk = _sent_key(auth, request_id)
-    await run_in_thread(
-        messaging_repo._table().update_item,
-        Key={"pk": pk, "sk": sk},
-        UpdateExpression="SET refusal = :code",
-        ExpressionAttributeValues={":code": code},
+    kwargs = (
+        {"UpdateExpression": "SET refusal = :code", "ExpressionAttributeValues": {":code": code}}
+        if code
+        else {"UpdateExpression": "REMOVE refusal"}
     )
+    await run_in_thread(messaging_repo._table().update_item, Key={"pk": pk, "sk": sk}, **kwargs)
 
 
 async def _person_room(auth: AuthContext, request_id: uuid.UUID, person_id: str, *, create: bool) -> str:
@@ -342,7 +343,7 @@ async def send_message(
             raise messaging.ApiProblem("INVALID_REQUEST", "A session follow-up takes no thread or mentions.")
         session_id = messaging.validate_uuid(session_id, label="session ID")
         try:
-            await _pin_destination(auth, request_id, f"session:{session_id}")
+            pinned = await _pin_destination(auth, request_id, f"session:{session_id}")
         except messaging.ApiProblem as exc:
             # The original destination stays authoritative, so there is no refusal to record.
             raise ToolError(f"{exc.error.code}: {exc.error.message}") from exc
@@ -355,6 +356,8 @@ async def send_message(
             # FastMCP hides any other exception's text, so the client would never learn why.
             await _record_refusal(auth, request_id, exc.error.code)
             raise ToolError(f"{exc.error.code}: {exc.error.message}") from exc
+        if pinned.get("refusal"):
+            await _record_refusal(auth, request_id, None)
         return {"sessionId": session_id, "requestId": str(request_id), "state": result["state"]}
     try:
         # Checked before any room is opened, so a refused send leaves no empty DM behind.

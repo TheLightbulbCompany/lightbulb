@@ -565,6 +565,33 @@ async def test_sequence_conflict_is_retried(table):
 
 
 @pytest.mark.asyncio
+async def test_sequence_conflicts_back_off_with_growing_jitter_then_give_up(table, monkeypatch):
+    room_id, _ = await _room()
+    real_get_room = repo.get_room
+
+    racing = {"on": False}
+
+    async def always_stale(rid):
+        meta = await real_get_room(rid)
+        if not racing["on"]:
+            # A racer lands between every read of ours and our transaction.
+            racing["on"] = True
+            await _post(rid, text="racer", client_id=f"racer-{uuid.uuid4()}")
+            racing["on"] = False
+        return meta
+
+    bounds, sleeps = [], []
+    monkeypatch.setattr(repo.random, "uniform", lambda lo, hi: bounds.append(hi) or hi)
+    monkeypatch.setattr(repo.asyncio, "sleep", AsyncMock(side_effect=lambda s: sleeps.append(s)))
+    with patch.object(repo, "get_room", always_stale), pytest.raises(repo.MessagingRepoError, match="after 8 attempts"):
+        await _post(room_id, text="mine", client_id="mine")
+    # One sleep between each pair of attempts, none after the last; bounds double up to the cap.
+    assert len(sleeps) == repo._SEQ_RETRY_ATTEMPTS - 1
+    assert bounds == [min(repo._SEQ_BACKOFF_CAP_S, repo._SEQ_BACKOFF_BASE_S * 2**n) for n in range(len(sleeps))]
+    assert bounds == sorted(bounds) and bounds[0] < bounds[-1] and sum(bounds) < 2
+
+
+@pytest.mark.asyncio
 async def test_gsi_is_discovery_only_and_base_membership_is_strong(table):
     room_id, _ = await _room()
     found = await repo.list_rooms_for_member(OWNER, "human", USER_A)

@@ -680,8 +680,9 @@ export class ApiStack extends cdk.Stack {
     });
     pubAuthorizerFn.addToRolePolicy(
       new iam.PolicyStatement({
-        // UpdateItem: a subscribe consumes its lease, so one lease is one subscription.
-        actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
+        // A connect and a subscribe each consume the lease with one conditional write, so one
+        // lease is one connection and one subscription. The authorizer reads nothing else.
+        actions: ["dynamodb:UpdateItem"],
         resources: [messagingTable.tableArn],
         conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["PUBWATCH#*"] } },
       }),

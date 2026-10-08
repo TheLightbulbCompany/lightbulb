@@ -522,6 +522,21 @@ async def test_a_session_admits_twenty_live_viewers_and_refuses_a_new_twenty_fir
 # --- An "Anyone with the link" link's live terminal (session_links.viewing) ----------------------
 
 
+async def _trade(token, lease):
+    """A viewer about to reconnect with a lease AppSync already took (the authorizer marked it)."""
+    import hashlib
+
+    from core.services import session_links
+
+    public, _, key = lease.partition(".")
+    messaging_repo._table().update_item(
+        Key={"pk": f"PUBWATCH#{public}", "sk": f"VIEWER#{hashlib.sha256(key.encode()).hexdigest()}"},
+        UpdateExpression="SET connectedAt = :t",
+        ExpressionAttributeValues={":t": int(time.time())},
+    )
+    return await session_links.viewing(token, lease, False, retake=True)
+
+
 async def _public_link(sid):
     token = (await service.put_link(ALICE, sid, "anyone")).url.split("#", 1)[1]
     return token, (await repo.get_session(OWNER, sid))["shareLink"]["publicId"]
@@ -717,7 +732,9 @@ async def test_a_reconnecting_viewer_trades_its_used_seat_for_a_new_one(transpor
     sid = await start(transport)
     token, public = await _public_link(sid)
     first = await session_links.viewing(token, None, False)
-    again = await session_links.viewing(token, first.lease, False, retake=True)
+    # About to connect with a lease AppSync never took (the connect did not reach it): renewed, no new seat.
+    assert (await session_links.viewing(token, first.lease, False, retake=True)).lease == first.lease
+    again = await _trade(token, first.lease)
     assert again.lease != first.lease and again.channel == first.channel
     rows = db[0].query(KeyConditionExpression="pk = :p", ExpressionAttributeValues={":p": f"PUBWATCH#{public}"})
     assert len([r for r in rows["Items"] if r["sk"].startswith("VIEWER#")]) == 1
@@ -737,9 +754,9 @@ async def test_a_link_gives_out_a_bounded_number_of_seats_per_ten_minutes(transp
     monkeypatch.setattr(session_links.time, "time", lambda: now)
     seat = await session_links.viewing(token, None, False)
     for _ in range(2):  # every new subscription costs one, a traded seat included
-        seat = await session_links.viewing(token, seat.lease, False, retake=True)
+        seat = await _trade(token, seat.lease)
     with pytest.raises(ApiProblem) as busy:
-        await session_links.viewing(token, seat.lease, False, retake=True)
+        await _trade(token, seat.lease)
     assert busy.value.error.code == "LOCAL_SESSION_VIEWERS_FULL"
     with pytest.raises(ApiProblem):
         await session_links.viewing(token, None, False)
@@ -805,12 +822,12 @@ async def test_a_refused_seat_costs_the_channel_nothing_and_the_budget_outlives_
 
     seat = await session_links.viewing(token, None, False)
     for _ in range(3):  # the third moves the link; the window count goes with it
-        seat = await session_links.viewing(token, seat.lease, False, retake=True)
+        seat = await _trade(token, seat.lease)
     second = await channel()
     assert second != first and taken(first) == 2 and taken(second) == 2
     for _ in range(5):  # at the budget: refused, and nothing moves or is counted
         with pytest.raises(ApiProblem) as busy:
-            await session_links.viewing(token, seat.lease, False, retake=True)
+            await _trade(token, seat.lease)
         assert busy.value.error.code == "LOCAL_SESSION_VIEWERS_FULL"
     assert await channel() == second and taken(second) == 2
 

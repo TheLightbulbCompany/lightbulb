@@ -77,23 +77,24 @@ function LinkTerminal({ token, onTrouble }: { token: string; onTrouble: () => vo
   // grants an ask once per 15 s per link, so a viewer who joined just after someone else's would
   // otherwise look at a blank terminal until an idle Mac's own 30 s resync.
   const pictured = useRef(false);
-  // AppSync lets a lease subscribe once. `spent`: this one has (the channel went live with it) or
-  // was refused, so the socket's next subscribe needs a new seat, traded for the old one (`retake`).
-  const spent = useRef(false);
-  // The trade in flight: the socket's next connect and subscribe wait for it (`getToken`).
+  // AppSync lets a lease connect once and subscribe once (its authorizer marks it). So before the
+  // socket connects again, the page asks for a seat it can connect with (`retake`): the server
+  // renews this one if AppSync never took it, and trades it for a new one if it did.
+  // `trading`: that request in flight; the socket's next connect and subscribe wait for it.
   const trading = useRef<Promise<void> | null>(null);
+  // The lease the socket's last connect went out with: the same one is never offered to a second.
+  const offered = useRef<string | null>(null);
+  const connected = useRef(false);
   const viewing = useCallback(async (fresh?: boolean, retake?: boolean) => {
     const next = await publicPost<SessionLinkViewing>("/public/session-links/viewing",
       { token, ...(lease.current ? { lease: lease.current } : {}), ...(fresh ? { fresh: true } : {}), ...(retake ? { retake: true } : {}) }, null);
-    if (next.lease !== lease.current) spent.current = false;
     lease.current = next.lease;
     return next;
   }, [token]);
-  // Keeps a seat the socket can use while the channel is not live: a renewal while the lease has
-  // not subscribed yet (a new one if it lapsed), a trade once it has. Never while the tab is hidden.
+  // Keeps a seat the socket can connect with while the channel is not live. Never while the tab is hidden.
   const reseat = useCallback((channel: string) => {
     if (document.visibilityState === "hidden") return;
-    trading.current = viewing(false, spent.current).then(
+    trading.current = viewing(false, true).then(
       (next) => { if (next.channel !== channel) setRound((n) => n + 1); },
       (e) => { if (e instanceof ApiError) onTrouble(); },
     );
@@ -106,28 +107,38 @@ function LinkTerminal({ token, onTrouble }: { token: string; onTrouble: () => vo
     // that said so already holds a seat there, and taking another would cost the channel two.
     if (leaseOf.current !== token) { lease.current = null; leaseOf.current = token; }
     pictured.current = false;
-    spent.current = false;
     trading.current = null;
+    offered.current = null;
+    connected.current = false;
     let wasLive = false;
     viewing().then((view) => {
       if (!alive) return;
       client = new AppSyncEventsClient({
         httpEndpoint: view.httpEndpoint, realtimeEndpoint: view.realtimeEndpoint,
-        getToken: async () => { await trading.current; return lease.current; },
+        getToken: async () => {
+          await trading.current;
+          if (!connected.current) {
+            // A connect. One that follows a failed connect would go out with the same lease, and
+            // AppSync may have taken it: ask first (one request per attempt, on the socket's backoff).
+            if (offered.current === lease.current) { reseat(view.channel); await trading.current; }
+            offered.current = lease.current;
+          }
+          return lease.current;
+        },
         onEvent: (event) => {
           if (event.type === "workspace.session.screen" && event.payload.kind === "snapshot") pictured.current = true;
           handlers.current.forEach((handler) => handler(event));
         },
         onStatus: (status) => {
           if (!alive) return;
+          connected.current = status.connected;
           const liveNow = status.liveChannels.includes(view.channel);
-          if (liveNow) spent.current = true;
-          else if (wasLive) reseat(view.channel); // the socket dropped: its reconnect needs a new seat
+          if (wasLive && !liveNow) reseat(view.channel); // dropped: the next connect or subscribe needs a new seat
           wasLive = liveNow;
           setLiveChannels(status.liveChannels);
         },
-        // Refused: by a lapsed or used lease. One trade per refusal, on the socket's own backoff.
-        onError: (kind) => { if (alive && kind === "subscribe_error") { spent.current = true; reseat(view.channel); } },
+        // Refused: by a lapsed or used lease. One request per refusal, on the socket's own backoff.
+        onError: (kind) => { if (alive && kind === "subscribe_error") reseat(view.channel); },
         uuid: () => crypto.randomUUID(),
       });
       setNote(null);

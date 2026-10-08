@@ -2,7 +2,6 @@
 
 import hashlib
 import importlib.util
-import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -20,7 +19,6 @@ def index(monkeypatch):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
     module._table = MagicMock()
-    module._table.get_item.return_value = {"Item": {"expiresAt": int(time.time()) + 30}}
     return module
 
 
@@ -37,21 +35,23 @@ def _refusal():
     return ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
 
 
-def test_a_live_lease_connects_and_subscribes_to_its_own_channel_uncached(index):
+def test_a_live_lease_connects_once_and_subscribes_once_to_its_own_channel_uncached(index):
+    assert index.handler(event("EVENT_CONNECT", None)) == {"isAuthorized": True, "ttlOverride": 0}
     assert index.handler(event()) == {"isAuthorized": True, "ttlOverride": 0}
-    update = index._table.update_item.call_args.kwargs
-    assert update["Key"] == SEAT
-    # The subscribe consumes the lease, in the same write that checks it is live.
-    assert "attribute_not_exists(subscribedAt)" in update["ConditionExpression"]
-    assert "expiresAt > :now" in update["ConditionExpression"]
-    assert index.handler(event("EVENT_CONNECT", None))["isAuthorized"] is True
-    index._table.get_item.assert_called_with(Key=SEAT, ConsistentRead=True)
+    connect, subscribe = (call.kwargs for call in index._table.update_item.call_args_list)
+    # Each consumes the lease, in the same write that checks it is live.
+    for write, mark in ((connect, "connectedAt"), (subscribe, "subscribedAt")):
+        assert write["Key"] == SEAT
+        assert write["UpdateExpression"] == f"SET {mark} = :now"
+        assert f"attribute_not_exists({mark})" in write["ConditionExpression"]
+        assert "expiresAt > :now" in write["ConditionExpression"]
 
 
-def test_a_lease_subscribes_once(index):
+@pytest.mark.parametrize("operation, channel", [("EVENT_CONNECT", None), ("EVENT_SUBSCRIBE", f"/pub/{PUBLIC}")])
+def test_a_lease_is_good_for_one_connection_and_one_subscription(index, operation, channel):
     index._table.update_item.side_effect = [None, _refusal()]
-    assert index.handler(event())["isAuthorized"] is True
-    assert index.handler(event())["isAuthorized"] is False, "a second socket needs its own seat"
+    assert index.handler(event(operation, channel))["isAuthorized"] is True
+    assert index.handler(event(operation, channel))["isAuthorized"] is False, "a second one needs its own seat"
 
 
 def test_a_failed_write_is_an_error_not_an_admission(index):
@@ -73,14 +73,10 @@ def test_a_failed_write_is_an_error_not_an_admission(index):
 )
 def test_anything_else_is_refused_without_a_read(index, refused):
     assert index.handler(refused)["isAuthorized"] is False
-    index._table.get_item.assert_not_called()
     index._table.update_item.assert_not_called()
 
 
 def test_an_expired_or_unknown_lease_is_refused(index):
-    index._table.get_item.return_value = {"Item": {"expiresAt": int(time.time()) - 1}}
+    index._table.update_item.side_effect = _refusal()  # the write's own condition: exists and unexpired
     assert index.handler(event("EVENT_CONNECT", None))["isAuthorized"] is False
-    index._table.get_item.return_value = {}
-    assert index.handler(event("EVENT_CONNECT", None))["isAuthorized"] is False
-    index._table.update_item.side_effect = _refusal()
     assert index.handler(event())["isAuthorized"] is False

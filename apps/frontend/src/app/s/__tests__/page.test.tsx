@@ -320,17 +320,17 @@ describe("session link page", () => {
     expect(viewing()).toHaveLength(1);
     lease = "pub-1.key-2"; // the first lapsed: the server mints another
     await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
-    expect(JSON.parse(String(viewing()[1][1]?.body))).toEqual({ token: "tok", lease: "pub-1.key-1" }); // no `fresh`: nothing can hear a picture yet
+    expect(JSON.parse(String(viewing()[1][1]?.body))).toEqual({ token: "tok", lease: "pub-1.key-1", retake: true }); // no `fresh`: nothing can hear a picture yet
     expect(await sockets.made[0].opts.getToken()).toBe("pub-1.key-2");
     // Live: the terminal's own renewal takes over, and the page sends none.
-    await act(async () => { (sockets.made[0].opts as unknown as { onStatus: (s: { liveChannels: string[] }) => void }).onStatus({ liveChannels: ["/pub/pub-1"] }); });
+    await act(async () => { (sockets.made[0].opts as unknown as { onStatus: (s: { connected: boolean; liveChannels: string[] }) => void }).onStatus({ connected: true, liveChannels: ["/pub/pub-1"] }); });
     await act(async () => { await vi.advanceTimersByTimeAsync(45000); });
     expect(viewing()).toHaveLength(2);
   });
 
-  // Codex on #3946: a lease subscribes once (the authorizer consumes it), so a reconnect trades
-  // the used seat for a new one, and the socket waits for it.
-  it("trades its used seat for a new one when the socket drops, before the socket asks again", async () => {
+  // Codex on #3946: a lease connects once and subscribes once (the authorizer consumes it). Before
+  // the socket connects again the page asks for a seat it can connect with, and the socket waits.
+  it("asks for a usable seat before every further connect, and never offers one lease to two", async () => {
     vi.useFakeTimers();
     window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
     let lease = "pub-1.key-1";
@@ -338,19 +338,28 @@ describe("session link page", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<SessionLinkPageRoute />);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-    const socket = sockets.made[0].opts as unknown as { getToken: () => Promise<string | null>; onStatus: (s: { liveChannels: string[] }) => void; onError: (kind: string, channel?: string) => void };
+    const socket = sockets.made[0].opts as unknown as { getToken: () => Promise<string | null>; onStatus: (s: { connected: boolean; liveChannels: string[] }) => void; onError: (kind: string, channel?: string) => void };
     const viewing = () => fetchMock.mock.calls.filter(c => String(c[0]).endsWith("/viewing")).map(c => JSON.parse(String(c[1]?.body)));
-    await act(async () => { socket.onStatus({ liveChannels: ["/pub/pub-1"] }); }); // subscribed: the lease is used
+    // The first connect, then its subscribe on that connection: the seat just taken, and no request.
+    expect(await socket.getToken()).toBe("pub-1.key-1");
+    await act(async () => { socket.onStatus({ connected: true, liveChannels: [] }); });
+    expect(await socket.getToken()).toBe("pub-1.key-1");
+    expect(viewing()).toHaveLength(1);
+    await act(async () => { socket.onStatus({ connected: true, liveChannels: ["/pub/pub-1"] }); });
+    // The socket drops: the page asks at once, and the reconnect's connect waits for the answer.
     lease = "pub-1.key-2";
     let token!: Promise<string | null>;
-    await act(async () => { socket.onStatus({ liveChannels: [] }); token = socket.getToken(); }); // dropped, and the reconnect asks at once
+    await act(async () => { socket.onStatus({ connected: false, liveChannels: [] }); token = socket.getToken(); });
     expect(viewing().at(-1)).toEqual({ token: "tok", lease: "pub-1.key-1", retake: true });
     expect(await token).toBe("pub-1.key-2"); // never the used lease
-    // A refused subscribe (a lease used elsewhere, or lapsed) trades once more; an unused lease is only renewed.
+    expect(viewing()).toHaveLength(2);
+    // That connect fails too (AppSync may or may not have taken the lease): ask again before the next.
     lease = "pub-1.key-3";
-    await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
-    expect(viewing().at(-1)).toEqual({ token: "tok", lease: "pub-1.key-2" });
-    await act(async () => { socket.onError("subscribe_error", "/pub/pub-1"); });
+    await act(async () => { token = socket.getToken(); await token; });
+    expect(viewing().at(-1)).toEqual({ token: "tok", lease: "pub-1.key-2", retake: true });
+    expect(await token).toBe("pub-1.key-3");
+    // A refused subscribe asks once more.
+    await act(async () => { socket.onStatus({ connected: true, liveChannels: [] }); socket.onError("subscribe_error", "/pub/pub-1"); });
     expect(viewing().at(-1)).toEqual({ token: "tok", lease: "pub-1.key-3", retake: true });
   });
 

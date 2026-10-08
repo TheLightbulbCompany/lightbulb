@@ -240,8 +240,9 @@ async def open_page(auth: AuthContext | None, token: str, *, refresh: bool = Fal
 
 # --- Watching (owner ruling 2026-10-08: an "Anyone" link shows the live terminal, view only) ---
 #
-# PUBWATCH#<publicId> / VIEWER#<sha256(key)>   one link viewer's 45 s lease; `subscribedAt` once it
-#                                              was used to subscribe (the authorizer writes it)
+# PUBWATCH#<publicId> / VIEWER#<sha256(key)>   one link viewer's 45 s lease; `connectedAt` and
+#                                              `subscribedAt` once it opened its one connection and
+#                                              its one subscription (the authorizer writes them)
 # PUBWATCH#<publicId> / WATCHED                when the newest lease lapses (`until`), when the Mac
 #                                              was last asked for a picture (`askedAt`), and the
 #                                              seats taken in the channel's life (`seats`)
@@ -259,8 +260,8 @@ async def open_page(auth: AuthContext | None, token: str, *, refresh: bool = Fal
 # ponytail: counted, not locked: two viewers racing for the last seat both get in, and a viewer
 # who stops renewing keeps an open subscription uncounted until the page closes.
 MAX_LINK_VIEWERS = 20
-# A lease subscribes once (the authorizer consumes it), so every subscription costs a seat taken
-# here, and a link gives out at most this many per ten minutes: what bounds the sockets a link
+# A lease connects once and subscribes once (the authorizer consumes it), so every connection
+# and every subscription costs a seat taken here, and a link gives out at most this many per ten minutes: what bounds the sockets a link
 # holder can pile up on one channel (AppSync never asks the authorizer again once a subscription
 # is open). An honest viewer takes one per page load, reconnect or return to the tab; 20 of them
 # on bad networks fit. Narrowing the link silences every socket at once: the channel is renamed.
@@ -296,7 +297,7 @@ def public_pk(public_id: str) -> str:
 class ViewingRequest(LinkTokenRequest):
     lease: Annotated[str, Field(max_length=128)] | None = None
     fresh: bool = False  # subscribed and has no screen: a request, granted at most once per ASK_EVERY_S per link
-    retake: bool = False  # this lease already subscribed once: give its seat up for a new one
+    retake: bool = False  # about to connect: trade this seat for a new one if its lease was already used
 
 
 class Viewing(ContractModel):
@@ -401,22 +402,26 @@ async def viewing(token: str, lease: str | None, fresh: bool, retake: bool = Fal
     watched = {"pk": public_pk(public), "sk": "WATCHED"}
     renewed = False
     held = lease.partition(".")[2] if lease and lease.startswith(public + ".") else ""
-    if held and retake:
-        # One viewer, one seat: the old row goes before the new one is counted against the cap.
-        await run_in_thread(table.delete_item, Key=key_of(held))
-    elif held:
+    if held:
+        # `retake`: the viewer is about to connect, and a lease connects and subscribes once (the
+        # authorizer marks it). The server decides: an unused lease is only renewed, so a connect
+        # that never reached AppSync costs no seat; a used one is traded.
+        unused = " AND attribute_not_exists(connectedAt) AND attribute_not_exists(subscribedAt)" if retake else ""
         try:
             await run_in_thread(
                 table.update_item,
                 Key=key_of(held),
                 UpdateExpression="SET expiresAt = :exp",
-                ConditionExpression="attribute_exists(pk) AND expiresAt > :now",
+                ConditionExpression="attribute_exists(pk) AND expiresAt > :now" + unused,
                 ExpressionAttributeValues={":exp": expires, ":now": now},
             )
             renewed = True
         except ClientError as exc:
             if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
                 raise
+            if retake:
+                # One viewer, one seat: the old row goes before the new one is counted against the cap.
+                await run_in_thread(table.delete_item, Key=key_of(held))
     if not renewed:
         seats = await store._query(public_pk(public), begins_with="VIEWER#")
         lapsed = [{"pk": r["pk"], "sk": r["sk"]} for r in seats if int(r["expiresAt"]) <= now]

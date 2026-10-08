@@ -17,3 +17,11 @@ export function pendingJoinOrgId(): string | null {
   }
   return null;
 }
+
+/** A pasted join link → `/join/<orgId>#<token>`, or null. Accepts the full URL from any host
+ *  (dev, prod, a copy from a chat app) or the bare path; the token rides in the fragment. */
+export function joinLinkTarget(value: string): string | null {
+  let url: URL;
+  try { url = new URL(value.trim(), "https://placeholder.invalid"); } catch { return null; }
+  return /^\/join\/org_[A-Za-z0-9]+\/?$/.test(url.pathname) && url.hash.length > 1 ? `${url.pathname.replace(/\/$/, "")}${url.hash}` : null;
+}

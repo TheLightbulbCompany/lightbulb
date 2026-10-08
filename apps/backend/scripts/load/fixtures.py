@@ -325,6 +325,8 @@ def run(args) -> int:
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
     try:
+        # Each JWT's lifetime starts at its own mint, so the file's expiry counts from before the first one.
+        started = int(time.time())
         orgs, users = [], []
         for org in layout:
             row = _find_org(clerk, org["name"])
@@ -348,7 +350,7 @@ def run(args) -> int:
                         "appsyncJwt": session.mint(APPSYNC_TEMPLATE),
                     }
                 )
-        expires = int(time.time()) + args.ttl
+        expires = started + args.ttl
         write_private(FIXTURES, fixture_file(orgs, users, expires))
         child.append(subprocess.Popen(args.command, env={**os.environ, "FIXTURES": str(FIXTURES.resolve())}))
         return child[0].wait()

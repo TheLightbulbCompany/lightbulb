@@ -237,13 +237,15 @@ def test_run_deletes_the_file_when_the_command_fails(tmp_path, monkeypatch):
         data = json.loads(path.read_text())
         seen["users"] = [u["userId"] for u in data["users"]]
         seen["keys"] = sorted(data["users"][0])
-        seen["expires_in"] = data["expiresAt"] - int(fx.time.time())
+        seen["expires_at"] = data["expiresAt"]
         raise OSError("k6 not found")
 
     monkeypatch.setattr(fx.subprocess, "Popen", boom)
+    before = int(fx.time.time())
     with pytest.raises(OSError):
         fx.main(["run", "--orgs", "1", "--users-per-org", "2", "--ttl", "5400", "--", "k6", "run", "x.js"])
-    assert seen.pop("expires_in") in (5399, 5400)
+    # The expiry counts from before the first mint, never from after the last one.
+    assert before + 5400 <= seen.pop("expires_at") <= before + 5402
     assert seen == {
         "mode": 0o600,
         "env": str(path.resolve()),

@@ -226,7 +226,7 @@ async def test_a_kept_screen_is_only_for_people_who_can_read_the_session(transpo
     with pytest.raises(ApiProblem) as refused:
         await session_screen.watch(BOB, sid)
     assert refused.value.error.code == "LOCAL_SESSION_FORBIDDEN"
-    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id, rejoin=True)  # Bob is re-added
     # The owner stops sharing it: gone for a teammate, not streamed, and the Mac stops.
     await service.set_sharing(ALICE, sid, False)
     for person, code in ((BOB, "LOCAL_SESSION_NOT_FOUND"), (ALICE, "LOCAL_SESSION_OFFLINE")):

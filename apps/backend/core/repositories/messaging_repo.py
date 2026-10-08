@@ -2050,13 +2050,18 @@ async def list_active_user_streams(owner_id: str) -> list[dict]:
     return [r for r in rows if r.get("active")]
 
 
-async def ensure_user_stream(owner_id: str, user_id: str) -> str:
-    """Return the user's CURRENT active channel key, allocating a fresh UUID when
-    there is none (first call, or after a deactivation — an old key is never
-    reactivated)."""
+async def ensure_user_stream(owner_id: str, user_id: str, *, rejoin: bool = False) -> str | None:
+    """Return the user's CURRENT active channel key, allocating a fresh UUID when no
+    stream exists. An INACTIVE stream is a removed member (``revoke_human_membership``):
+    it answers None, because a removed member's unexpired JWT still resolves the org and
+    reviving the stream here would put them back on live events. Only ``rejoin=True`` —
+    the Clerk ``organizationMembership.created`` webhook, a real (re)join — turns it back
+    on, under a fresh key (an old key is never reactivated)."""
     current = await get_user_stream(owner_id, user_id)
     if current is not None and current.get("active"):
         return current["channelKey"]
+    if current is not None and not rejoin:
+        return None
     table_name = _table().name
     now = utc_now_iso()
     key = str(uuid.uuid4())

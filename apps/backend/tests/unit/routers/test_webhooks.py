@@ -139,3 +139,23 @@ async def test_membership_created_joins_the_default_room_and_survives_its_failur
 
         await _handle_organization_membership_created(payload)
     join.assert_awaited_once_with("org_xyz", "user_member")
+
+
+@pytest.mark.asyncio
+async def test_membership_created_is_the_rejoin_that_reactivates_the_private_stream():
+    payload = {
+        "organization": {"id": "org_xyz", "created_by": "user_admin"},
+        "public_user_data": {"user_id": "user_member", "identifier": "member@example.com"},
+    }
+    with (
+        patch("routers.webhooks._renew_member_lifecycle", new=AsyncMock()),
+        patch("core.services.user_provision._ensure_paperclip_for_member", new=AsyncMock()),
+        patch("core.services.messaging.on_org_member_joined", new=AsyncMock()),
+        patch("core.services.messaging.join_default_room", new=AsyncMock()),
+        patch("core.repositories.messaging_repo.ensure_user_stream", new=AsyncMock(return_value="k")) as stream,
+    ):
+        from routers.webhooks import _handle_organization_membership_created
+
+        await _handle_organization_membership_created(payload)
+
+    stream.assert_awaited_once_with("org_xyz", "user_member", rejoin=True)

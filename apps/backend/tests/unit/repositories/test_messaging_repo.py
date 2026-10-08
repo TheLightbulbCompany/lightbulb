@@ -786,7 +786,10 @@ async def test_user_stream_is_stable_then_fresh_after_deactivation(table):
     assert await repo.deactivate_user_stream(OWNER, USER_A) is False
     assert (await repo.get_stream(first))["active"] is False  # old channel goes permanently silent
     assert await repo.list_active_user_streams(OWNER) == []
-    second = await repo.ensure_user_stream(OWNER, USER_A)
+    # A removed member (stale JWT) never revives the stream; only a real rejoin does.
+    assert await repo.ensure_user_stream(OWNER, USER_A) is None
+    assert (await repo.get_user_stream(OWNER, USER_A))["active"] is False
+    second = await repo.ensure_user_stream(OWNER, USER_A, rejoin=True)
     assert second != first and (await repo.get_stream(second))["active"] is True
     assert (await repo.get_stream(first))["active"] is False
 

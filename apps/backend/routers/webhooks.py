@@ -437,6 +437,16 @@ async def _handle_organization_membership_created(
         )
         put_metric("paperclip.member_add", dimensions={"outcome": "webhook_error"})
 
+    # A real (re)join is the ONE door that turns a removed member's private stream back on
+    # (fresh key); every other ensure_user_stream caller leaves an inactive stream off.
+    from core.repositories import messaging_repo
+
+    try:
+        await messaging_repo.ensure_user_stream(org_id, user_id, rejoin=True)
+    except Exception:
+        logger.exception("membership.created: user stream rejoin failed org=%s user=%s", org_id, user_id)
+        put_metric("messaging.user_stream.rejoin_error")
+
     from core.services.messaging import on_org_member_joined
 
     try:

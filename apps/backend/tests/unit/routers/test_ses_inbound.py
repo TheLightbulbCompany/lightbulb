@@ -46,6 +46,10 @@ from core.services.agent_mail_inbound import stranger_key
 from core.services.webhook_dedup import WebhookDedupResult
 from routers import ses_inbound
 
+# The autouse fixture below replaces ``_ceo`` for every test; the one test of ``_ceo`` itself
+# needs the real function.
+_REAL_CEO = ses_inbound._ceo
+
 SECRET = "ses-test-secret"
 DOMAIN = "agents.isol8.co"
 
@@ -1164,6 +1168,27 @@ def test_team_mail_without_a_ceo_is_dropped(client, monkeypatch):
 
     assert _post(client, _body(to=[TEAM_ADDRESS])).json()["status"] == "dropped_unknown_recipient"
     deliver.assert_not_awaited()
+
+
+async def test_a_legacy_roster_without_a_starter_ceo_delivers_to_its_first_seeded_agent(monkeypatch):
+    """The founder workspace has ``seeded_agent_ids`` and no ``starter_agent_ids``; reading only
+    the starter key dropped its first-contact mail as ``dropped_unknown_recipient`` (prod 2026-10-07)."""
+    from types import SimpleNamespace
+
+    row = SimpleNamespace(starter_agent_ids=None, seeded_agent_ids=["friday", "atlas"])
+
+    class Repo:
+        def __init__(self, table_name):
+            pass
+
+        async def resolve_owner_row(self, owner_id):
+            return row
+
+    monkeypatch.setattr(ses_inbound, "PaperclipRepo", Repo)
+
+    assert await _REAL_CEO("org_founder") == "friday"
+    row.starter_agent_ids = {"ceo": "ceo-1"}
+    assert await _REAL_CEO("org_founder") == "ceo-1"
 
 
 def _sent_by(monkeypatch, sent: dict):

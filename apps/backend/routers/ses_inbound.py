@@ -97,6 +97,7 @@ from core.services.agent_mail_inbound import (
 )
 from core.services.agent_mail_reply import reply_subject
 from core.services.trial_cap import trial_block_reason
+from core.services.user_provision import ceo_agent_id
 from core.services.webhook_dedup import WebhookDedupResult, delete_event, record_event_or_skip
 
 logger = logging.getLogger(__name__)
@@ -136,8 +137,11 @@ async def _thread_writer(address: str, headers: dict[str, str]) -> str | None:
 
 
 async def _ceo(owner_id: str) -> str | None:
+    """The starter CEO, else a legacy roster's first seeded agent — the same resolution every
+    other CEO door uses. Reading only ``starter_agent_ids`` dropped every first-contact mail to
+    the founder workspace (no starter roster) as ``dropped_unknown_recipient`` (prod 2026-10-07)."""
     row = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
-    return (getattr(row, "starter_agent_ids", None) or {}).get("ceo")
+    return ceo_agent_id(row) if row else None
 
 
 async def _rollback_dedup(message_id: str) -> None:

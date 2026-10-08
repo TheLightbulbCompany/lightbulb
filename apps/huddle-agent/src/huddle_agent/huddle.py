@@ -1993,9 +1993,13 @@ class Huddle:
         left: float | None = None
         for eps in list(self._turns.values()):
             for ep in list(eps):
-                if ep.state == "speaking" and ep.credible:
-                    # Not in `_speaking`: the SFU's sound of them went stale. That is no sign they stopped.
-                    if (lost := DETECTOR_LOST_S - (now - self._level_at.get(ep.who, ep.began))) > 0:
+                if ep.state == "speaking":
+                    # Not in `_speaking`: the SFU's sound of them went stale, which is no sign they stopped,
+                    # or has not come yet (it runs up to 2.5 s late). The detector alone holds what has not
+                    # begun: holding costs a moment. It never stops a sentence being said (`_yield_check`):
+                    # that takes the SFU's sound too, because a false stop costs the sentence.
+                    heard = max(self._level_at.get(ep.who, -math.inf), ep.began)
+                    if (lost := DETECTOR_LOST_S - (now - heard)) > 0:
                         return "person", lost
                     self._detector_lost(ep, now)
                 if ep.state == "awaiting-route":

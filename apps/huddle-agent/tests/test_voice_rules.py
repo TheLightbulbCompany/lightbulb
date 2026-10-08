@@ -309,3 +309,47 @@ async def test_a_line_that_names_the_agent_whose_voice_is_open_is_written_for_be
     backend.route_gate.set()
     await settle(h)
     assert len(written) == 1 and says_of(lives[0])[-1] == ("say", "You're welcome.")
+
+
+# -- the detector alone (the SFU has not heard them yet) holds what has not begun, and stops nothing --
+
+
+async def test_speech_only_the_detector_hears_holds_a_new_answer_and_the_next_sentence():
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    h.on_speech(P2, True)  # the SFU's sound of him has not come
+    assert h._speaking == set(), "not talk yet: the SFU has not heard him"
+    answer(h, row.run_id, "forge", f"{FIRST} {SECOND}")
+    await pause(h, clock, BREATH)
+    assert len(says_of(lives[0])) == 1 and h._hold(h._ledger[0], clock.t)[0] == "person", "nothing new starts"
+    h.on_speech(P2, False)
+    await says(h, P2, "Mm-hm.")
+    await pause(h, clock, BREATH)
+    assert says_of(lives[0])[1:] == [("say", f"{FIRST} {SECOND}")]
+    clock.t += h_mod.PREROLL_S
+    h.on_unit("forge", lives[0].order, 0, FIRST, "said", {"loudMs": 1200})
+    h.on_speech(P2, True)
+    assert not h.may_say("forge", lives[0].order, 1), "nor the next sentence of one being said"
+
+
+async def test_speech_only_the_detector_hears_does_not_stop_a_sentence_being_said():
+    h, backend, lives, clock, row = await answering()
+    clock.t += h_mod.PREROLL_S
+    h.on_speech(P2, True)
+    clock.t += 2 * h_mod.TALK_OVER_S
+    await h.tick()
+    assert ("interrupt",) not in lives[0].calls and [u.state for u in h._ledger] == ["speaking"]
+    h.on_active_speakers({P2})  # the SFU hears him too: it is talk, and it has lasted
+    await h.tick()
+    assert ("interrupt",) in lives[0].calls
+
+
+async def test_a_detector_that_never_says_stop_holds_speech_for_detector_lost_s_at_most():
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    h.on_speech(P2, True)
+    answer(h, row.run_id, "forge", FIRST)
+    await pause(h, clock, h_mod.DETECTOR_LOST_S - 1)
+    assert len(says_of(lives[0])) == 1
+    await pause(h, clock, 1 + h_mod.MEET_QUIET_S)
+    assert says_of(lives[0])[1:] == [("say", FIRST)], "its stop was lost, and the SFU never heard him: not speech"

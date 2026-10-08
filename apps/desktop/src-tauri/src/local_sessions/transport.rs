@@ -1494,11 +1494,22 @@ impl Host {
                         last_recovery_scan = Instant::now();
                         self.refresh_ended_recovery(&mut recovering_ended);
                     }
-                    if last_probe.elapsed() >= Duration::from_secs(1) {
+                    // (A session that just ended in a holder is indexed now: its viewers wait for the kept picture.)
+                    let ended_now = super::session_states::ended_now();
+                    let probe = last_probe.elapsed() >= Duration::from_secs(1);
+                    if probe {
                         last_probe = Instant::now();
                         let moved = self.approval_tick();
                         self.heartbeat_dirty.extend(moved);
-                        self.heartbeat_dirty.extend(super::session_states::index(&self.mirrors));
+                    }
+                    if probe || ended_now {
+                        let kept = super::session_states::index(&self.mirrors);
+                        let newly = !kept.is_empty();
+                        match super::session_states::screens_now(&self.mirrors).filter(|_| newly) {
+                            // Ahead of whatever heartbeat frames are still to go.
+                            Some(screens) => heartbeat_frames.push_front(screens),
+                            None => self.heartbeat_dirty.extend(kept),
+                        }
                     }
                     if reaped.elapsed() >= Duration::from_secs(60) {
                         reaped = Instant::now();

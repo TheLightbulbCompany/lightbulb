@@ -62,6 +62,9 @@ pub struct Model {
     /// The provider is Claude Code in its classic renderer (`run::CLASSIC_RENDERER`): it draws
     /// on the normal screen, so that screen at rest is kept too.
     classic: bool,
+    /// Once ended (`end`): how many of the newest lines above the screen the kept picture shows
+    /// again. `history` leaves them out.
+    shown_again: usize,
 }
 struct Resting {
     picture: Vec<u8>,
@@ -96,13 +99,25 @@ pub const RESTING_FOR: Duration = Duration::from_secs(30);
 /// A provider that leaves the alternate screen this soon after an Enter left because of that line
 /// (`/exit`: Claude Code 2.1.292 leaves within 10 ms).
 pub const SENT_LEAVE: Duration = Duration::from_secs(3);
-/// What `picture`, a `rows` x `cols` screen, shows once its top `gone` lines have scrolled away.
-fn scrolled(picture: &[u8], (rows, cols): (u16, u16), gone: u16) -> Vec<u8> {
+/// `picture`, a `rows` x `cols` screen, without Lightbulb's band: the row the Claude Code mod draws
+/// above the prompt ("● Live · Ada watching [ Pause ] ctrl+x tab, then p",
+/// `packages/claude-plugin/lightbulb/hooks/register.tsx`) and a join request's row under it. On a
+/// kept picture it says an ended session is live and offers buttons that do nothing. The rows
+/// under it move up. A picture with no band is returned as it is.
+fn without_band(picture: Vec<u8>, (rows, cols): (u16, u16)) -> Vec<u8> {
     let mut screen = vt100::Parser::new(rows, cols, 0);
-    screen.process(picture);
+    screen.process(&picture);
+    let text: Vec<String> = screen.screen().rows(0, cols).collect();
+    let band = |row: &String| (row.starts_with('●') || row.starts_with('○')) && (row.contains("[ Pause ]") || row.contains("[ Resume sharing ]"));
+    // The last one: the band is under the conversation, and the conversation may quote one.
+    let Some(first) = text.iter().rposition(band) else { return picture };
+    let count = 1 + text[first + 1..].iter().take_while(|row| row.contains("[ Allow ]") || row.starts_with("Waiting on you here")).count();
     let (row, col) = screen.screen().cursor_position();
-    let feeds = "\n".repeat(gone as usize);
-    screen.process(format!("\x1b[{rows};1H{feeds}\x1b[{};{}H", row.saturating_sub(gone) + 1, col + 1).as_bytes());
+    let row = match usize::from(row) {
+        at if at >= first + count => at - count,
+        at => at.min(first),
+    };
+    screen.process(format!("\x1b[{};1H\x1b[{count}M\x1b[{};{}H", first + 1, row + 1, col + 1).as_bytes());
     let mut out = screen.screen().contents_formatted();
     out.extend_from_slice(MOUSE_OFF);
     out
@@ -145,7 +160,7 @@ const ERASE_SAVED: &[u8] = b"\x1b[3J";
 impl Model {
     pub fn new(rows: u16, cols: u16) -> Self {
         Self { parser: vt100::Parser::new(rows, cols, SCROLLBACK), tail: Vec::new(), left_alternate: None, partial_csi: Vec::new(),
-            last_output: None, typed: None, resting: None, ending: false, classic: false }
+            last_output: None, typed: None, resting: None, ending: false, classic: false, shown_again: 0 }
     }
 
     /// The provider is Claude Code in its classic renderer.
@@ -204,8 +219,8 @@ impl Model {
     /// after that line's Enter stays in it.
     ///
     /// The classic renderer has no leave to mark that moment: it prints its resume lines on the
-    /// same screen (`CLAUDE_CLASSIC_SIGNAL_READS`). So its picture is taken here, and
-    /// `ended_picture` takes off its top the lines the way out pushes above the screen.
+    /// same screen (`CLAUDE_CLASSIC_SIGNAL_READS`). So its picture is taken here, and `end`
+    /// counts the lines the way out pushes above the screen.
     pub fn ending(&mut self) {
         self.ending = true;
         self.resting = (self.classic && !self.parser.screen().alternate_screen()).then(|| self.rest(Instant::now()));
@@ -232,14 +247,16 @@ impl Model {
     /// log, it starts clean anywhere: the classic renderer redraws with cursor moves relative to
     /// where it was, so its log read from the middle draws over the wrong rows.
     pub fn history(&mut self, max: usize) -> Vec<u8> {
-        let (rows, cols) = self.size();
+        let ((rows, cols), again) = (self.size(), self.shown_again);
         let screen = self.parser.screen_mut();
         screen.set_scrollback(usize::MAX);
         let above = screen.scrollback();
+        // (After the end: not the lines the kept picture shows again.)
+        let again = again.min(above);
         // Line feeds after the last line: they push it, too, off the empty terminal's screen.
         let feeds = usize::from(rows).saturating_sub(1);
         let (mut lines, mut size) = (Vec::new(), feeds);
-        for back in 1..=above {
+        for back in again + 1..=above {
             screen.set_scrollback(back);
             let Some(mut line) = screen.rows_formatted(0, cols).next() else { break };
             line.extend_from_slice(b"\x1b[m\r\n");
@@ -345,27 +362,50 @@ impl Model {
     /// Claude Code's classic renderer never leaves the normal screen: on `/exit` it leaves the
     /// slash-command menu drawn and prints its resume lines under it (`CLAUDE_CLASSIC_EXIT_READS`).
     /// When the line sent last ended the session (the exit came within `SHUTDOWN_LEAVE` of its
-    /// Enter; 2.1.293 took 0.39 s), the picture is the screen at rest before that line, without
-    /// the lines that have scrolled off its top since: a viewer's terminal has those in its
-    /// scrollback, so its history and this picture are the session as it was at rest. The same
-    /// for the picture taken when the holder ended it (`ending`), however long the way out took.
+    /// Enter; 2.1.293 took 0.39 s), the picture is the whole screen at rest before that line. The
+    /// same for the picture taken when the holder ended it (`ending`), however long the way out took.
+    /// The way out pushed that screen's top lines above it, so the picture shows them again: the
+    /// second value is how many (prod 2026-10-08: a picture drawn without them left that many blank
+    /// rows at the bottom of every viewer's terminal, 18 of 30 after `/exit`).
     ///
-    /// None when the final screen is the last picture.
-    pub fn ended_picture(&self, exited: Instant) -> Option<Vec<u8>> {
+    /// Never with Lightbulb's band (`without_band`). None when the final screen is the last picture.
+    fn kept(&self, exited: Instant) -> Option<(Vec<u8>, usize)> {
         let screen = self.parser.screen();
+        let size = screen.size();
         if screen.alternate_screen() {
-            return Some(self.picture());
+            return Some((without_band(self.picture(), size), 0));
         }
         let within = |at: Instant, limit: Duration| exited.saturating_duration_since(at) < limit;
         if let Some((picture, _)) = self.left_alternate.as_ref().filter(|(_, left)| within(*left, SHUTDOWN_LEAVE)) {
-            return Some(picture.clone());
+            return Some((without_band(picture.clone(), size), 0));
         }
         let rested = self.resting.as_ref().filter(|r| self.ending || (within(r.began, RESTING_FOR) && r.sent.is_some_and(|at| within(at, SHUTDOWN_LEAVE))))?;
         let mut since = rested.since.as_ref()?.screen().clone();
         since.set_scrollback(usize::MAX);
-        let (gone, (rows, cols)) = (since.scrollback() as u16, since.size());
+        let gone = since.scrollback();
         // (A whole screen gone: its lines are a viewer's history already, and the final screen follows them.)
-        (gone < rows).then(|| scrolled(&rested.picture, (rows, cols), gone))
+        (gone < usize::from(size.0)).then(|| (without_band(rested.picture.clone(), size), gone))
+    }
+
+    /// The provider exited at `exited`: the picture to keep (`kept`). From here `history` is the
+    /// lines above that picture: a terminal drawn from both shows the session as it rested, each
+    /// line once, with the picture where the screen was. A terminal that watched the way out has
+    /// the picture's top lines above its screen already, so it starts over from both
+    /// (`ends_above`, `screen::pump`).
+    pub fn end(&mut self, exited: Instant) -> Option<Vec<u8>> {
+        let (picture, again) = self.kept(exited)?;
+        self.shown_again = again;
+        Some(picture)
+    }
+
+    /// After `end`: the kept picture shows again lines a terminal that watched the way out has above its screen.
+    pub fn ends_above(&self) -> bool {
+        self.shown_again > 0
+    }
+
+    #[cfg(test)]
+    fn ended_picture(&self, exited: Instant) -> Option<Vec<u8>> {
+        self.kept(exited).map(|(picture, _)| picture)
     }
 }
 
@@ -446,6 +486,32 @@ mod tests {
     /// How the web viewer draws a snapshot (`SessionTerminalView` CLEAR): the visible screen only.
     const WEB_CLEAR: &[u8] = b"\x1b[?1049l\x1b[r\x1b[2J\x1b[H";
 
+    /// How many lines a viewer's terminal has above its screen.
+    fn above(term: &mut vt100::Parser) -> usize {
+        term.screen_mut().set_scrollback(usize::MAX);
+        let above = term.screen().scrollback();
+        term.screen_mut().set_scrollback(0);
+        above
+    }
+
+    /// `lines` without Lightbulb's band, which a kept picture never has: its last row with the Pause button.
+    fn bandless(lines: &[String]) -> Vec<String> {
+        let band = lines.iter().rposition(|l| l.contains("[ Pause ]")).expect("the band is drawn at rest");
+        lines.iter().enumerate().filter(|(i, _)| *i != band).map(|(_, l)| l.clone()).collect()
+    }
+
+    /// What a viewer's terminal shows of an ended session: one that opens it later, and one that watched
+    /// it end (it starts over, `screen::pump`). The holder's lines above the picture, then the picture
+    /// as the web view draws it.
+    fn drawn_after_the_end(model: &mut Model, picture: &[u8]) -> vt100::Parser {
+        let (rows, cols) = model.size();
+        let mut term = vt100::Parser::new(rows, cols, 1000);
+        term.process(&model.history(1 << 20));
+        term.process(WEB_CLEAR);
+        term.process(picture);
+        term
+    }
+
     /// Owner ruling 2026-10-07: held Claude Code sessions run in the classic renderer. Observed in
     /// prod that day: after `/exit` the kept picture ended with the open slash menu and the resume
     /// lines. This replays a real session (every read and key with its time, `[ms, kind, bytes as
@@ -470,10 +536,10 @@ mod tests {
             }
             // A teammate's terminal that saw all of it.
             let mut viewer = vt100::Parser::new(40, 120, 1000);
-            let (mut rested, mut exited) = (vec![], t0);
+            let (mut rested, mut exited) = ((vec![], 0), t0);
             for (i, (at, kind, data)) in capture.iter().enumerate() {
                 if i == slash {
-                    rested = lines(&mut viewer);
+                    rested = (lines(&mut viewer), above(&mut viewer));
                 }
                 match *kind {
                     "o" => {
@@ -486,22 +552,26 @@ mod tests {
             }
             (model, viewer, rested, exited)
         };
-        let (model, mut viewer, rested, exited) = run(true);
+        let (mut model, mut viewer, (rested, rested_above), exited) = run(true);
         let said = |lines: &[String], text: &str| lines.iter().any(|l| l.contains(text));
         assert!(said(&rested, "Reply with the single word BRAVO.") && !said(&rested, "❯ /exit") && !said(&rested, "Exit the CLI"));
         let last = lines(&mut viewer);
         assert!(said(&last, "❯ /exit") && said(&last, "Exit the CLI") && said(&last, "Resume this session with:") && last.len() > rested.len(), "the final screen has the menu and the resume lines");
-        let picture = model.ended_picture(exited).expect("the screen at rest before /exit");
+        assert!(above(&mut viewer) > rested_above, "the way out pushed lines of the screen at rest above it");
+        let picture = model.end(exited).expect("the screen at rest before /exit");
         assert!(!picture.windows(8).any(|w| w == b"\x1b[?1049h"));
-        viewer.process(WEB_CLEAR);
-        viewer.process(&picture);
-        assert_eq!(lines(&mut viewer), rested, "history and picture are the session as it rested: nothing twice, nothing missing, no menu");
-        // A viewer who opens it after the end gets the same picture on an empty terminal.
-        let mut late = vt100::Parser::new(40, 120, 0);
-        late.process(WEB_CLEAR);
-        late.process(&picture);
-        let shown = lines(&mut late);
-        assert!(said(&shown, "Reply with the single word BRAVO.") && !said(&shown, "❯ /exit") && !said(&shown, "Exit the CLI") && !said(&shown, "Resume this session"));
+        assert!(model.ends_above(), "whoever watched the way out starts over");
+        // Prod 2026-10-08: the picture came without the lines the way out had pushed up, so 18 of a
+        // viewer's 30 rows were blank under it, and it still showed the band ("● Live · … [ Pause ]").
+        let mut late = drawn_after_the_end(&mut model, &picture);
+        assert_eq!(lines(&mut late), bandless(&rested), "history and picture are the session as it rested: nothing twice, nothing missing, no menu, no band");
+        assert_eq!(above(&mut late), rested_above, "the picture is the whole screen at rest, where that screen was");
+        // The picture alone.
+        let mut alone = vt100::Parser::new(40, 120, 0);
+        alone.process(WEB_CLEAR);
+        alone.process(&picture);
+        let shown = lines(&mut alone);
+        assert!(said(&shown, "Reply with the single word BRAVO.") && !said(&shown, "❯ /exit") && !said(&shown, "Exit the CLI") && !said(&shown, "Resume this session") && !said(&shown, "[ Pause ]"));
         // Live, the terminal still shows what the provider drew last.
         let mut live = vt100::Parser::new(40, 120, 0);
         live.process(&model.snapshot());
@@ -509,8 +579,9 @@ mod tests {
         // The exit came long after that Enter: something else ended it, and the final screen stays.
         assert_eq!(model.ended_picture(exited + SHUTDOWN_LEAVE), None);
         // Any other program on the normal screen (Codex with `--no-alt-screen`, a shell): as before.
-        let (other, _, _, exited) = run(false);
-        assert_eq!(other.ended_picture(exited), None);
+        let (mut other, _, _, exited) = run(false);
+        assert_eq!(other.end(exited), None);
+        assert!(!other.ends_above());
     }
 
     /// Prod 2026-10-07 (desktop 0.4.666): after End session the kept picture of a classic session
@@ -533,7 +604,7 @@ mod tests {
                 model.typed(&bytes, at);
             }
         }
-        let rested = lines(&mut viewer);
+        let (rested, rested_above) = (lines(&mut viewer), above(&mut viewer));
         let said = |lines: &[String], text: &str| lines.iter().any(|l| l.contains(text));
         assert!(said(&rested, "Reply with the single word BRAVO.") && !said(&rested, "Resume this session"));
         let end = t0 + Duration::from_millis(events[slash].0);
@@ -543,17 +614,11 @@ mod tests {
             viewer.process(read);
         }
         assert!(said(&lines(&mut viewer), "Resume this session with:"), "the final screen has the resume lines");
-        let picture = model.ended_picture(end + Duration::from_millis(440)).expect("the screen End found");
-        // Someone who watched it end: their terminal's own lines above, the picture in place of the screen.
-        viewer.process(WEB_CLEAR);
-        viewer.process(&picture);
-        assert_eq!(lines(&mut viewer), rested, "nothing twice, nothing missing, no resume lines");
-        // Someone who opens it after the end: the holder's lines above the screen, then the picture.
-        let mut late = vt100::Parser::new(40, 120, 1000);
-        late.process(&model.history(1 << 20));
-        late.process(WEB_CLEAR);
-        late.process(&picture);
-        assert_eq!(lines(&mut late), rested, "the same session as the one who watched");
+        let picture = model.end(end + Duration::from_millis(440)).expect("the screen End found");
+        assert!(model.ends_above(), "the resume lines pushed the top of that screen above it");
+        let mut late = drawn_after_the_end(&mut model, &picture);
+        assert_eq!(lines(&mut late), bandless(&rested), "nothing twice, nothing missing, no resume lines, no band");
+        assert_eq!(above(&mut late), rested_above, "the picture is the whole screen End found, where that screen was");
     }
 
     #[test]
@@ -644,13 +709,16 @@ mod tests {
         model.feed_at(RESUME, t0 + secs(11.01));
         assert_eq!(shown(model.ended_picture(t0 + secs(11.4))), Some(rest.clone()));
 
-        // Two lines left the top on the way out: a viewer has them above, so the picture starts after them.
+        // Two lines left the top on the way out: the picture is still the whole screen at rest, and
+        // the lines above it no longer have those two.
         let mut model = drawn();
         model.typed(b"/exit\r", t0 + secs(10.0));
         model.feed_at(MENU, t0 + secs(10.0));
         model.feed_at(b"\r\n  /more\r\n  /more\r\n  /more", t0 + secs(10.0));
         model.feed_at(RESUME, t0 + secs(10.01));
-        assert_eq!(shown(model.ended_picture(t0 + secs(10.4))), Some(rest[2..].to_vec()));
+        assert!(!model.history(1 << 20).is_empty() && !model.ends_above());
+        assert_eq!(shown(model.end(t0 + secs(10.4))), Some(rest.clone()));
+        assert!(model.history(1 << 20).is_empty() && model.ends_above(), "the two lines are in the picture, not above it too");
 
         // The whole screen left the top: the final screen is the picture.
         let mut model = drawn();
@@ -659,9 +727,9 @@ mod tests {
         assert_eq!(model.ended_picture(t0 + secs(10.4)), None);
 
         // End session at an empty prompt (real reads; prod 2026-10-07: the kept picture ended with the
-        // resume lines). The picture is the screen as End found it, the quick reply included, without
-        // the three lines the way out pushed above it (40 columns: the resume command wraps); however
-        // long the way out took (a kill after 5 s).
+        // resume lines). The picture is the whole screen as End found it, the quick reply included,
+        // though the way out pushed three of its lines above it (40 columns: the resume command wraps);
+        // however long the way out took (a kill after 5 s).
         let mut model = drawn();
         model.typed(b"another question\r", t0 + secs(10.0));
         model.feed_at(b"\r\na quick reply\r\n> ", t0 + secs(10.5));
@@ -670,7 +738,7 @@ mod tests {
         for read in CLAUDE_CLASSIC_SIGNAL_READS {
             model.feed_at(read, t0 + secs(11.0));
         }
-        let ended = [">", "a quick reply", ">"].map(String::from).to_vec();
+        let ended = ["> question", "the last answer", "", ">", "a quick reply", ">"].map(String::from).to_vec();
         assert_eq!(shown(model.ended_picture(t0 + secs(11.44))), Some(ended.clone()));
         assert_eq!(shown(model.ended_picture(t0 + secs(11.0) + SHUTDOWN_LEAVE + RESTING_FOR)), Some(ended));
         let mut live = vt100::Parser::new(10, 40, 0);
@@ -697,6 +765,37 @@ mod tests {
         model.typed(b"a question\r", t0 + secs(10.0));
         model.feed_at(b"a long answer", t0 + secs(10.0) + SHUTDOWN_LEAVE);
         assert!(model.resting.is_none());
+    }
+
+    /// Prod 2026-10-08 (desktop 0.4.680): the kept picture of an ended session still said
+    /// "● Live · Isol8 Admin watching [ Pause ] ctrl+x tab, then p".
+    #[test]
+    fn holder_model_kept_picture_has_no_lightbulb_band() {
+        let t0 = Instant::now();
+        let kept = |screen: &str, alternate: bool| {
+            let mut model = Model::new(10, 70);
+            if alternate {
+                model.feed_at(b"\x1b[?1049h\x1b[2J\x1b[H", t0);
+            } else {
+                model.classic_claude_code();
+            }
+            model.feed_at(screen.as_bytes(), t0);
+            model.ending();
+            let mut term = vt100::Parser::new(10, 70, 0);
+            term.process(&model.end(t0 + QUIET).expect("a kept picture"));
+            (lines(&mut term), term.screen().cursor_position())
+        };
+        const BAND: &str = "● Live · Ada watching [ Pause ] ctrl+x tab, then p            [-]";
+        for alternate in [false, true] {
+            // The rows under the band move up, and the cursor with them.
+            let screen = format!("the answer\r\n\r\n{BAND}\r\n\r\n> ");
+            assert_eq!(kept(screen.as_str(), alternate), (["the answer", "", "", ">"].map(String::from).to_vec(), (3, 2)), "alternate screen: {alternate}");
+            // A join request's row goes with it; a band the conversation quotes stays.
+            let screen = format!("{BAND}\r\nsaid the docs\r\n○ Sharing paused [ Resume sharing ]\r\nBo asked to join [ Allow ] [ Decline ]\r\n> ");
+            assert_eq!(kept(screen.as_str(), alternate).0, [BAND, "said the docs", ">"].map(String::from).to_vec());
+            // No band: the picture as it is.
+            assert_eq!(kept("the answer\r\n\r\n> ", alternate), (["the answer", "", ">"].map(String::from).to_vec(), (2, 2)));
+        }
     }
 
     #[test]

@@ -567,9 +567,28 @@ impl Out<'_> {
     /// that finds no room within PACE is lost like any other. Nothing above the screen is one
     /// empty frame: a viewer then knows it has all there is, and no later burst is for it.
     fn history(&mut self, fetch: &dyn Fn(usize) -> Option<Vec<u8>>, size: (u16, u16)) {
+        if let Some(bytes) = self.fetched(fetch) {
+            self.burst(&bytes, size);
+        }
+    }
+    /// The session ended on a picture that shows again lines its viewers have above their screens
+    /// (the holder's EXIT says `startOver`, `Model::end`): a new run, so every viewer's terminal
+    /// starts over from the lines above that picture, as one that opens the session later does.
+    /// Only with those lines in hand: a new run without them would cost a viewer its scrollback.
+    fn start_over(&mut self, fetch: &dyn Fn(usize) -> Option<Vec<u8>>, size: (u16, u16)) {
+        let Some(bytes) = self.fetched(fetch) else { return };
+        self.epoch = next_epoch(&LAST_EPOCH, SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64));
+        self.ctl.epoch.store(self.epoch, SeqCst);
+        self.seq = 0;
+        self.stale = false;
+        self.burst(&bytes, size);
+    }
+    fn fetched(&mut self, fetch: &dyn Fn(usize) -> Option<Vec<u8>>) -> Option<Vec<u8>> {
         let room = self.budget.room();
-        let Some(bytes) = (room > 0).then(|| fetch(room)).flatten() else { return };
-        let bytes = &bytes[bytes.len().saturating_sub(room)..];
+        let bytes = (room > 0).then(|| fetch(room)).flatten()?;
+        Some(bytes[bytes.len().saturating_sub(room)..].to_vec())
+    }
+    fn burst(&mut self, bytes: &[u8], size: (u16, u16)) {
         self.budget.take(bytes.len(), true);
         let deadline = Instant::now() + PACE;
         for frame in frames_for(self.ids, self.epoch, &mut self.seq, size, "history", bytes) {
@@ -638,6 +657,8 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
         if ctl.history.swap(false, SeqCst) {
             out.history(history, size);
             ctl.snapshot.store(true, SeqCst);
+            // At once: these viewers have no screen, and SNAPSHOT_GAP is for frames lost on a slow uplink.
+            last_snapshot = Instant::now().checked_sub(SNAPSHOT_GAP).unwrap_or_else(Instant::now);
         }
         if last_beat.elapsed() >= ctl.beat {
             last_beat = Instant::now();
@@ -686,7 +707,7 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
                 size = (u16::from_be_bytes([payload[0], payload[1]]), u16::from_be_bytes([payload[2], payload[3]]));
                 ctl.snapshot.store(true, SeqCst);
             }
-            Ok((EXIT, _)) => {
+            Ok((EXIT, payload)) => {
                 if leaving.take().is_some() {
                     // What the provider printed on its way out (Claude Code: the resume lines).
                     pending.clear();
@@ -704,6 +725,9 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
                 ctl.hold();
                 if let Some(holder) = ctl.holder.lock().ok().and_then(|holder| holder.clone()) {
                     super::session_states::holder_ended(&holder);
+                }
+                if serde_json::from_slice::<Value>(&payload).is_ok_and(|exit| exit["startOver"] == true) {
+                    out.start_over(history, size);
                 }
                 ctl.snapshot.store(true, SeqCst);
                 last_snapshot = Instant::now().checked_sub(SNAPSHOT_GAP).unwrap_or_else(Instant::now);
@@ -1165,6 +1189,37 @@ mod tests {
             &|max| { asked.set(max); Some(vec![b'h'; 30 * 1024]) }).unwrap();
         assert_eq!(asked.get(), BURST - HISTORY_RESERVE);
         assert_eq!(kinds(&sent.borrow()), [("history".into(), 0), ("history".into(), 1), ("history".into(), 2), ("snapshot".into(), 3)]);
+    }
+
+    /// Prod 2026-10-08: after `/exit` a viewer's 30-row terminal showed the kept picture in its top 12
+    /// rows and 18 blank rows under it. The picture is now the whole screen at rest, which shows again
+    /// lines the way out pushed into that viewer's scrollback: the holder says so, and the viewer is
+    /// drawn from the start, the lines above that picture first.
+    #[test]
+    fn a_session_that_ends_on_a_picture_of_lines_its_viewers_have_starts_them_over() {
+        let run = |above: Option<Vec<u8>>| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            tx.send((SNAPSHOT, with_offset(0, b"live"))).unwrap();
+            tx.send((EXIT, br#"{"code":0,"startOver":true}"#.to_vec())).unwrap();
+            let ctl = leased(Duration::from_millis(300));
+            let mut holder = Answering { tx, answer: vec![(SNAPSHOT, with_offset(4, b"kept"))], asked: vec![] };
+            let sent = std::cell::RefCell::new(vec![]);
+            let asked = std::cell::Cell::new(0);
+            // The run's own first history (nothing above the screen yet), then the one asked for at the end.
+            pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|f| { sent.borrow_mut().push(f); true }, Budget::new(),
+                &|_| { asked.set(asked.get() + 1); if asked.get() == 1 { Some(vec![]) } else { above.clone() } }).unwrap();
+            let sent = sent.into_inner();
+            let epochs: Vec<u64> = sent.iter().map(|f| f["epoch"].as_u64().unwrap()).collect();
+            (kinds(&sent), epochs, ctl.epoch.load(SeqCst))
+        };
+        let (sent, epochs, typed_against) = run(Some(b"above".to_vec()));
+        assert_eq!(sent, [("history".into(), 0), ("snapshot".into(), 1), ("history".into(), 0), ("snapshot".into(), 1)]);
+        assert!(epochs[0] == epochs[1] && epochs[2] > epochs[1] && epochs[3] == epochs[2], "{epochs:?}");
+        assert_eq!(typed_against, epochs[3]);
+        // The holder did not answer: the run goes on, and the viewer keeps the scrollback it has.
+        let (sent, epochs, _) = run(None);
+        assert_eq!(sent, [("history".into(), 0), ("snapshot".into(), 1), ("snapshot".into(), 2)]);
+        assert!(epochs.iter().all(|epoch| *epoch == epochs[0]));
     }
 
     #[test]

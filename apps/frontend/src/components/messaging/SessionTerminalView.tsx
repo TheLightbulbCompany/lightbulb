@@ -123,6 +123,7 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     let drawn = -1; // the relay run on screen; a new one starts the terminal over
     let wrote = ""; // the kind of the frame written last
     let sized = ""; // the size asked for last
+    let readingAt = -1; // the line a reader who had scrolled up was on when the picture started over; -1: at the tail
     const queued: SessionScreen[] = [];
     let alive = true;
     let stale: ReturnType<typeof setTimeout> | undefined;
@@ -192,7 +193,17 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
         // tick: doubled scrollback). So both wait their turn behind an empty write.
         if (fresh || size !== sized) {
           const t = term;
-          t.write("", () => { if (!alive) return; if (fresh) t.reset(); if (t.cols !== frame.cols || t.rows !== frame.rows) t.resize(frame.cols, frame.rows); });
+          t.write("", () => {
+            if (!alive) return;
+            if (fresh) {
+              // A reset goes to the tail. Someone reading further up stays on their line: a session that
+              // ends, or a new relay run, draws the same lines again under them.
+              const at = t.buffer.active;
+              if (readingAt < 0 && at.viewportY < at.baseY) readingAt = at.viewportY;
+              t.reset();
+            }
+            if (t.cols !== frame.cols || t.rows !== frame.rows) t.resize(frame.cols, frame.rows);
+          });
         }
         if (fresh) drawn = frame.epoch;
         wrote = frame.kind; sized = size;
@@ -201,7 +212,12 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
           const redraw = new Uint8Array(CLEAR.length + bytes.length); redraw.set(CLEAR); redraw.set(bytes, CLEAR.length);
           bytes = redraw; setLive(true); setSeen(true); onLive(true);
         }
-        term.write(bytes, fit);
+        const t = term;
+        term.write(bytes, frame.kind !== "snapshot" ? fit : () => {
+          if (alive && readingAt >= 0) t.scrollToLine(readingAt);
+          readingAt = -1;
+          fit();
+        });
       }
     };
     void import("@xterm/xterm").then(({ Terminal }) => {

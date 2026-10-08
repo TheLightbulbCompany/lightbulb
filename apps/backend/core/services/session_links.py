@@ -244,8 +244,9 @@ async def open_page(auth: AuthContext | None, token: str, *, refresh: bool = Fal
 #                                              was used to subscribe (the authorizer writes it)
 # PUBWATCH#<publicId> / WATCHED                when the newest lease lapses (`until`), when the Mac
 #                                              was last asked for a picture (`askedAt`), and the
-#                                              seats taken in this ten minutes (`mintWindow`, `minted`)
-#                                              and in the channel's life (`seats`)
+#                                              seats taken in the channel's life (`seats`)
+# SHARELINK#<tokenHash> / SEATS                the seats the LINK gave out in this ten minutes
+#                                              (`mintWindow`, `minted`), whatever its channel
 #
 # The lease `<publicId>.<key>` is the viewer's whole credential on AppSync: the `pub` namespace's
 # Lambda authorizer (apps/infra/lambda/pub-authorizer) admits a subscribe to `/pub/<publicId>` and
@@ -269,9 +270,10 @@ MINTS_PER_WINDOW = 120
 # life total: the seat after its last moves the LINK to a new `publicId` (same token, same
 # audience), and `forward` publishes only to the current one, so no channel ever has more
 # subscriptions than this and every socket on the old one goes silent at once. Viewers there follow
-# at their next 15 s renewal: it answers with a seat on the new channel. The window budget is per
-# channel, so a link changes channel at most once per window. No key exchange, no sweeper: the old
-# channel's rows lapse by TTL.
+# at their next 15 s renewal: it answers with a seat on the new channel. The window budget is the
+# link's, counted first and kept across a move, so a refused seat costs the channel nothing and a
+# link changes channel at most once per window (a channel needs more seats than a window gives).
+# No key exchange, no sweeper: the old channel's rows lapse by TTL.
 MAX_CHANNEL_SEATS = 200
 # A link's viewers together get the Mac asked for history and a snapshot at most this often: each
 # ask is a burst out of the session's frame budget, which workspace viewers share, and `fresh` is
@@ -301,17 +303,28 @@ class Viewing(ContractModel):
     realtime_endpoint: str
 
 
-async def _count_mint(table, watched: dict, now: int) -> None:
-    """One more seat out of this link's ten-minute budget, or the same answer as a full session."""
+async def _count_mint(table, link: dict, now: int) -> None:
+    """One more seat out of this link's ten-minute budget, or the same answer as a full session.
+    On the link's own row, so the count outlives a channel."""
     window = now // MINT_WINDOW_S
-    count = ("SET minted = minted + :one", "mintWindow = :w AND minted < :max", {":max": MINTS_PER_WINDOW})
-    start = ("SET mintWindow = :w, minted = :one", "attribute_not_exists(mintWindow) OR mintWindow <> :w", {})
+    budget = {"pk": sessions._share_pk(link["tokenHash"]), "sk": "SEATS"}
+    ttl = {":ttl": now + 3600}
+    count = (
+        "SET minted = minted + :one, expiresAt = :ttl",
+        "mintWindow = :w AND minted < :max",
+        {":max": MINTS_PER_WINDOW, **ttl},
+    )
+    start = (
+        "SET mintWindow = :w, minted = :one, expiresAt = :ttl",
+        "attribute_not_exists(mintWindow) OR mintWindow <> :w",
+        ttl,
+    )
     # Count again after a lost start: two seats racing to open a window both belong in it.
     for expression, condition, values in (count, start, count):
         try:
             await run_in_thread(
                 table.update_item,
-                Key=watched,
+                Key=budget,
                 UpdateExpression=expression,
                 ConditionExpression=condition,
                 ExpressionAttributeValues={":w": window, ":one": 1, **values},
@@ -415,17 +428,20 @@ async def viewing(token: str, lease: str | None, fresh: bool, retake: bool = Fal
             raise ApiProblem(
                 "LOCAL_SESSION_VIEWERS_FULL", f"This session already has {MAX_LINK_VIEWERS} people watching by link."
             )
+        # The link's budget first: a seat it refuses costs the channel nothing. Counted once, so
+        # not again on the way to a new channel.
+        if not moved:
+            await _count_mint(table, link, now)
         if not await _seat_in_channel(table, watched):
             if moved:  # the new channel filled while this call was on its way to it
                 raise ApiProblem("LOCAL_SESSION_VIEWERS_FULL", "Too many people opened this link just now. Try again.")
             await _new_channel(row, public)
             return await viewing(token, None, fresh, moved=True)
-        await _count_mint(table, watched, now)
         secret = secrets.token_urlsafe(32)
         lease = f"{public}.{secret}"
         await run_in_thread(table.put_item, Item={**key_of(secret), "expiresAt": expires})
     # One row says whether anyone watches by link, so `forward` reads one item per frame. It
-    # outlives its viewers by an hour, so the mint budget is not forgotten between them.
+    # outlives its viewers by an hour, so the channel's seat total is not forgotten between them.
     await run_in_thread(
         table.update_item,
         Key=watched,

@@ -781,3 +781,35 @@ async def test_a_channel_gives_out_a_life_total_of_seats_and_then_the_link_moves
     followed = await session_links.viewing(token, old.lease, False)
     assert followed.channel == third.channel and followed.lease != old.lease
     assert (await session_links.viewing(token, followed.lease, False)).lease == followed.lease
+
+
+@pytest.mark.asyncio
+async def test_a_refused_seat_costs_the_channel_nothing_and_the_budget_outlives_a_channel(transport, db, monkeypatch):
+    """Codex on #3946: refused seats still counted against the channel, so a holder at the budget
+    could spam requests, use the channel up and move it every few seconds, each move with a fresh
+    budget. The budget is the link's and is counted first."""
+    from core.services import session_links
+
+    monkeypatch.setattr(session_links, "MAX_CHANNEL_SEATS", 2)
+    monkeypatch.setattr(session_links, "MINTS_PER_WINDOW", 4)
+    sid = await start(transport)
+    token, first = await _public_link(sid)
+    now = time.time()
+    monkeypatch.setattr(session_links.time, "time", lambda: now)
+
+    async def channel():
+        return (await repo.get_session(OWNER, sid))["shareLink"]["publicId"]
+
+    def taken(public):
+        return int(db[0].get_item(Key={"pk": f"PUBWATCH#{public}", "sk": "WATCHED"})["Item"].get("seats", 0))
+
+    seat = await session_links.viewing(token, None, False)
+    for _ in range(3):  # the third moves the link; the window count goes with it
+        seat = await session_links.viewing(token, seat.lease, False, retake=True)
+    second = await channel()
+    assert second != first and taken(first) == 2 and taken(second) == 2
+    for _ in range(5):  # at the budget: refused, and nothing moves or is counted
+        with pytest.raises(ApiProblem) as busy:
+            await session_links.viewing(token, seat.lease, False, retake=True)
+        assert busy.value.error.code == "LOCAL_SESSION_VIEWERS_FULL"
+    assert await channel() == second and taken(second) == 2

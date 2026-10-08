@@ -78,6 +78,13 @@ export const sessionArchived = (session: LocalSession, now = Date.now()): boolea
 /** The desktop is mirroring it right now (working, waiting, idle, or activity unknown): the only sessions the sidebar lists. */
 export const sessionLive = (session: LocalSession): boolean => session.status !== "offline" && session.status !== "ended";
 
+/**
+ * Its owner can end it from Lightbulb: live, and its process is its own (one Lightbulb holds, or a plain
+ * Claude). A Codex app or daemon process hosts many conversations; a Claude background session is Claude's daemon's.
+ */
+export const sessionEndable = (session: LocalSession): boolean => sessionLive(session)
+  && (session.terminal === "held" || (session.provider === "claude" && session.kind !== "background"));
+
 /** How many live sessions the sidebar shows before "+N more". */
 export const SIDEBAR_SESSION_CAP = 5;
 

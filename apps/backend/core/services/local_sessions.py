@@ -272,6 +272,9 @@ class LocalSession(ContractModel):
     # An ended session that was held: its kept screen may still be reported (the Mac does that on
     # its first heartbeat after the provider exits), so a viewer waits before saying it is gone.
     was_held: bool | None = None
+    # Its person ended it on purpose (End, the provider's own exit): no list shows it, a read by id
+    # still does, for a panel that was open on it. Absent otherwise.
+    ended_on_purpose: bool | None = None
     # The session this one continues: a Claude session moved to the background (<-) is a fork.
     forked_from: OpaqueId | None = None
     # False while the owner has paused sharing this one session: only they can see it.
@@ -342,6 +345,7 @@ class LocalSession(ContractModel):
                 "terminal_reason",
                 "screen_available",
                 "was_held",
+                "ended_on_purpose",
                 "forked_from",
                 "model",
                 "display_title",
@@ -681,6 +685,27 @@ def ended_empty(provider: str, status: str, event_seq: int, control_unavailable_
     return provider == "claude" and status == "ended" and event_seq == 0 and control_unavailable_reason is None
 
 
+#: `endedReason` of a session its person ended on purpose. The relay writes it (`_ended`).
+ENDED_ON_PURPOSE = "on-purpose"
+
+
+async def end_was_asked(owner: str, row: dict) -> bool:
+    """The owner's End for this run reached its Mac: sent there, and neither refused nor left
+    unanswered (`unknown`) by it."""
+    return any(
+        command.get("kind") == "end"
+        and command.get("expectedGeneration") == row["generation"]
+        and command.get("state") in {"dispatched", "applied"}
+        for command in await repo.list_commands(owner, row["sessionId"])
+    )
+
+
+def owner_auth(row: dict) -> AuthContext:
+    """The session's own human, for work the relay finishes in their name."""
+    owner, user = row["ownerId"], row["humanUserId"]
+    return AuthContext(user_id=user, org_id=owner if owner != user else None)
+
+
 def _without_moved(found: list[LocalSession]) -> list[LocalSession]:
     """A stopped session that a later one of the same person continues (`forkedFrom`) is listed once:
     as that later one. Offline counts as stopped: a Mac still draining an ended origin re-registers it
@@ -695,7 +720,12 @@ def _without_moved(found: list[LocalSession]) -> list[LocalSession]:
     stays readable by id, for a panel that is open on it. Not one that had a live terminal
     (`wasHeld`): a held session's first events take 40-60 s to reach us, so one ended in its first
     minute reads as zero events while people were watching real work in it (prod 2026-10-08). The
-    two cannot be told apart from here, so a held session is always listed; its owner can remove it."""
+    two cannot be told apart from here, so a held session is listed; its owner can remove it.
+
+    A session its person ended on purpose (`endedOnPurpose`: End, the provider's own exit) is not
+    listed at all (owner ruling 2026-10-08), whatever it holds. It still counts as the later one of
+    its origin, so ending a fork on purpose does not put the origin back. One that ended any other
+    way (the process died, a closed terminal, a shutdown) stays, so its owner can resume it."""
     ids = {(s.human_user_id, s.session_id) for s in found}
     empty = {
         (s.human_user_id, s.session_id)
@@ -711,6 +741,7 @@ def _without_moved(found: list[LocalSession]) -> list[LocalSession]:
         s
         for s in found
         if (s.human_user_id, s.session_id) not in empty
+        and not s.ended_on_purpose
         and not (ended_empty(s.provider, s.status, s.latest_event_seq, s.control_unavailable_reason) and not s.was_held)
         and not (s.status in ("ended", "offline") and (s.human_user_id, s.session_id) in moved)
     ]
@@ -737,6 +768,8 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
         public["screenAvailable"] = True
     if public["status"] == "ended" and session_terminal(row) == "held":
         public["wasHeld"] = True
+    if public["status"] == "ended" and row.get("endedReason") == ENDED_ON_PURPOSE:
+        public["endedOnPurpose"] = True
     reason = public.pop("terminalReason", None)
     if public["status"] not in ("ended", "offline") and public["terminal"] is None and reason:
         public["terminalReason"] = reason
@@ -1194,6 +1227,7 @@ async def _live_public_sessions(
     include_offline: bool = False,
     ended_since: int | None = None,
     viewer: str | None = None,
+    owed: list[str] | None = None,
 ) -> list[LocalSession]:
     """Per-human fetch/filter loop shared by every workspace-wide listing. Skips rows
     whose owner mismatches, whose device is no longer enrolled, or whose projected
@@ -1212,6 +1246,9 @@ async def _live_public_sessions(
             if row is None or row.get("ownerId") != owner or row.get("humanUserId") != human:
                 continue
             if row.get("removedAt") is not None:
+                # The viewer's own removal whose cleanup did not finish: the caller finishes it.
+                if owed is not None and row.get("removalCleanup") and human == viewer:
+                    owed.append(row["sessionId"])
                 continue
             key = (human, row["deviceId"])
             if key not in enrolled:
@@ -1250,10 +1287,16 @@ async def list_workspace_sessions(auth: Caller, *, include_ended: bool = False) 
     since = int(time.time()) - RECENT_ENDED_SECONDS if include_ended else None
     # ponytail: one query per human per call; add an owner-keyed directory row when workspaces pass ~50 humans.
     viewer = _viewer(auth)
+    owed: list[str] = []
+    listed = await _live_public_sessions(
+        owner, humans, include_offline=True, ended_since=since, viewer=viewer, owed=owed
+    )
+    if owed and isinstance(auth, AuthContext):
+        await finish_owed_removals(auth, owed)
     found = _without_moved(
         [
             s
-            for s in await _live_public_sessions(owner, humans, include_offline=True, ended_since=since, viewer=viewer)
+            for s in listed
             # ponytail: legacy rows only; delete once no pre-2026-10-03 row is in the 7-day Recent window
             if s.kind == "interactive" and (s.shared or s.human_user_id == viewer)
         ]
@@ -1318,6 +1361,8 @@ async def referenced_sessions(owner: str, members: list[dict], session_ids: list
                 or row.get("ownerId") != owner
                 or row.get("unshared")
                 or row.get("removedAt") is not None
+                # Ended on purpose: no list shows it, so an agent is not told of it either.
+                or (row.get("endedAt") is not None and row.get("endedReason") == ENDED_ON_PURPOSE)
                 or row.get("kind") == "background"
                 or row.get("humanUserId") not in humans
             ):
@@ -1562,6 +1607,8 @@ async def submit_command(
     room_meta_fenced_by_extra: bool = False,
     replaces_request_id: str | None = None,
     via_client: str | None = None,
+    remove_on_end: bool = False,
+    replaces_mark: str | None = None,
 ) -> CommandReceipt:
     owner = caller_owner(auth)
     # A roomless command is stored with roomId "": current desktops require the field as a string.
@@ -1623,6 +1670,9 @@ async def submit_command(
             if existing["requestHash"] != req_hash:
                 raise ApiProblem("IDEMPOTENCY_CONFLICT", "requestId was already used for a different request.")
             return _public(CommandReceipt, existing)
+        if remove_on_end and row.get("removeOnEnd") not in (None, replaces_mark):
+            # Another End-and-remove claimed this run first (`admit_command` fences the same).
+            raise ApiProblem("LOCAL_SESSION_CONFLICT", "This session is already being removed.")
         retry_update: dict | None = None
         if replaces_request_id:
             original = await repo.get_command(owner, session_id, replaces_request_id)
@@ -1728,6 +1778,8 @@ async def submit_command(
                 else {}
             ),
             **({"nativeHop": native_hop} if native_hop is not None else {}),
+            # An "End and remove" (`remove_session`): server-side only, read at the run's end.
+            **({"removesOnEnd": True} if remove_on_end else {}),
             **({"replacesRequestId": replaces_request_id} if replaces_request_id else {}),
             # A hosted MCP client sending on its person's authority: the label names both.
             **({"viaClient": via_client} if via_client else {}),
@@ -1760,6 +1812,8 @@ async def submit_command(
                 ],
                 source_pairing=source_pairing,
                 room_meta_fenced_by_extra=room_meta_fenced_by_extra,
+                remove_on_end=remove_on_end,
+                replaces_mark=replaces_mark,
             )
             actor = getattr(auth, "user_id", None) or row["humanUserId"]
             origin = "native" if source_session_id else "direct"
@@ -3095,23 +3149,60 @@ async def delete_link(auth: AuthContext, session_id: str, *, removed_only: bool 
 
 
 async def remove_session(auth: AuthContext, session_id: str, *, hint: bool = True) -> None:
-    """The owner takes one of their ENDED sessions off every list. A stamp (`removedAt`), not a
+    """The owner takes one of their sessions off every list. A stamp (`removedAt`), not a
     delete: events, receipts, audit rows, the chat and the Mac's own mirror all hang off this row,
     and the stamp makes `authorize_session` (and the public link door) answer "not found" at once.
     The stamp is the commit point, fenced on the row still being ended: a resume that lands first
-    wins, this answers 409, and the live session keeps its link and snapshot. Only then are the
-    link and the pick-up snapshot turned off, and the chat emptied of everyone but the owner; a
-    repeat call finishes a cleanup that failed part-way. Starting the conversation again on the
-    Mac registers a new run and lists it again. Idempotent."""
-    from core.services import session_chat  # lazy: it imports this module
-    from core.services.local_session_relay import publish_resources_changed
+    wins. Only then are the link and the pick-up snapshot turned off, and the chat emptied of
+    everyone but the owner (`finish_removal`; the row says the cleanup is owed until it is done).
+    Starting the conversation again on the Mac registers a new run and lists it again. Idempotent.
 
+    A LIVE session is ended first (owner ruling 2026-10-08: remove ends it): the owner's End goes
+    to its Mac, and the transaction that admits it names it on the row (`removeOnEnd`). The relay
+    stamps `removedAt` when that run's end arrives, and only if that End reached the Mac and was
+    not refused (`removal_end_landed`); a refused, expired or unanswered End leaves the session
+    listed and running with nothing pending. Only what End can stop: an offline Mac, a Codex app
+    thread or a Claude background session is refused here (no command waits for a Mac to come
+    back; End has 30 s to arrive)."""
+    was_ended = False
     for _ in range(6):
         row = await _owned_session(auth, session_id, "remove")
         if row.get("removedAt") is not None:
             break
-        if row.get("endedAt") is None:
-            raise ApiProblem("LOCAL_SESSION_CONFLICT", "End this session before you remove it.")
+        live = row.get("endedAt") is None
+        if live and was_ended:
+            # It was ended when the owner asked; a resume landed first. That run is not ended for them.
+            raise ApiProblem("LOCAL_SESSION_CONFLICT", "This session started again. Remove it once more to end it.")
+        was_ended = not live
+        if live:
+            if await _removal_end_in_flight(row):
+                # A repeat while the first End is on its way: the same answer, and no second End.
+                # Commands are delivered in order, so a newer mark could name an End that is
+                # still waiting when the first one stops the session.
+                return
+            end = LocalSessionCommand(request_id=str(uuid.uuid4()), expected_generation=row["generation"], kind="end")
+            try:
+                _require_control(row, end)
+                # The mark is claimed in the admitting transaction: over nothing, or over the
+                # dead one this read saw. Whoever loses that race admits no End.
+                await submit_command(
+                    auth, None, session_id, end, remove_on_end=True, replaces_mark=row.get("removeOnEnd")
+                )
+            except ApiProblem as exc:
+                current = await repo.get_session(row["ownerId"], row["sessionId"])
+                if current is not None and current.get("endedAt") is not None:
+                    was_ended = True  # it ended meanwhile: remove the ended row
+                    continue
+                if current is not None and await _removal_end_in_flight(current):
+                    return  # another DELETE claimed it at the same moment: the same answer
+                if exc.error.code != "LOCAL_SESSION_OFFLINE":
+                    raise
+                raise ApiProblem(
+                    "LOCAL_SESSION_OFFLINE",
+                    "This session's Mac is offline, so it cannot be stopped from here. "
+                    "Remove it when the Mac is back online, or end it on that Mac.",
+                ) from exc
+            return
         try:
             await messaging_repo._transact(
                 [
@@ -3119,13 +3210,14 @@ async def remove_session(auth: AuthContext, session_id: str, *, hint: bool = Tru
                         "Update": {
                             "TableName": messaging_repo._table().name,
                             "Key": {"pk": row["pk"], "sk": "META"},
-                            "UpdateExpression": "SET removedAt = :now, revision = :new "
-                            "REMOVE resumeAllowed, #resume, screenUntil",
+                            "UpdateExpression": "SET removedAt = :now, removalCleanup = :owed, revision = :new "
+                            "REMOVE resumeAllowed, #resume, screenUntil, removeOnEnd",
                             # Still ended: a resume that registered meanwhile is a live session.
                             "ConditionExpression": "revision = :old AND attribute_exists(endedAt)",
                             "ExpressionAttributeNames": {"#resume": "resume"},
                             "ExpressionAttributeValues": {
                                 ":now": int(time.time()),
+                                ":owed": True,
                                 ":new": str(uuid.uuid4()),
                                 ":old": row["revision"],
                             },
@@ -3140,7 +3232,45 @@ async def remove_session(auth: AuthContext, session_id: str, *, hint: bool = Tru
         break
     else:
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
-    # On every call, not only the one that stamped: a retry after a failed cleanup finishes it.
+    await finish_removal(auth, session_id, hint=hint)
+
+
+async def _removal_end_in_flight(row: dict) -> bool:
+    """The row already names an End-and-remove for this run that may still land: waiting to be
+    sent (inside its delivery window), sent, or applied. A refused, unanswered or expired one is
+    over, and the next DELETE sends a new End."""
+    request_id = row.get("removeOnEnd")
+    command = await repo.get_command(row["ownerId"], row["sessionId"], request_id) if request_id else None
+    if not command or command.get("kind") != "end" or command.get("expectedGeneration") != row["generation"]:
+        return False
+    state = command.get("state")
+    return state in {"dispatched", "applied"} or (state == "pending" and command["deliverBy"] > int(time.time()))
+
+
+async def removal_end_landed(owner: str, row: dict) -> bool:
+    """This run's end is its removal: an End that `remove_session` sent for it (`removesOnEnd`)
+    reached the Mac and was not refused. Any such End, not only the one the row names: two
+    DELETEs at once cannot leave a landed End unseen. Still `pending` (never sent), `rejected` or
+    `unknown`: the session ended some other way, and it stays."""
+    return any(
+        command.get("kind") == "end"
+        and command.get("removesOnEnd")
+        and command.get("expectedGeneration") == row["generation"]
+        and command.get("state") in {"dispatched", "applied"}
+        for command in await repo.list_commands(owner, row["sessionId"])
+    )
+
+
+async def finish_removal(auth: AuthContext, session_id: str, *, hint: bool = True) -> None:
+    """What follows the `removedAt` stamp: the link, the pick-up snapshot, the chat. The row carries
+    `removalCleanup` until this has run to its end, and whoever next touches it for its owner runs
+    it again: a repeat DELETE, or the owner's next session list (`finish_owed_removals`). The doors
+    do not wait for it: `authorize_session`, the public link door and a session chat's member door
+    (`messaging.require_room_member`) each refuse a removed row on their own."""
+    from core.services import session_chat  # lazy: it imports this module
+    from core.services.local_session_relay import publish_resources_changed
+
+    row = await _owned_session(auth, session_id, "remove")
     await delete_link(auth, session_id, removed_only=True)
     # The chat is emptied only while the row is still removed: a new run that registered since
     # the stamp cleared it and reopened the chat, and its readers keep their seats.
@@ -3150,8 +3280,37 @@ async def remove_session(auth: AuthContext, session_id: str, *, hint: bool = Tru
     if current is not None and current.get("removedAt") is not None:
         await session_chat.silence(row["ownerId"], row["sessionId"], keep=row["humanUserId"])
     await session_chat.follow_session(row["ownerId"], row["sessionId"])
+    try:
+        # Done. No revision bump: nothing fenced on this row may lose to a note that only says so.
+        await messaging_repo._transact(
+            [
+                {
+                    "Update": {
+                        "TableName": messaging_repo._table().name,
+                        "Key": {"pk": row["pk"], "sk": "META"},
+                        "UpdateExpression": "REMOVE removalCleanup",
+                        "ConditionExpression": "attribute_exists(removedAt) AND attribute_exists(removalCleanup)",
+                    }
+                }
+            ]
+        )
+    except ClientError as exc:
+        if not messaging_repo._is_cancelled(exc):
+            raise
     if hint:
         await publish_resources_changed(row["ownerId"], row["humanUserId"])
+
+
+OWED_REMOVALS_PER_READ = 5
+
+
+async def finish_owed_removals(auth: AuthContext, session_ids: list[str]) -> None:
+    """A removal whose cleanup failed is finished on its owner's next list read. Never raises."""
+    for session_id in session_ids[:OWED_REMOVALS_PER_READ]:
+        try:
+            await finish_removal(auth, session_id, hint=False)
+        except Exception:
+            logger.warning("owed removal cleanup failed for %s", session_id, exc_info=True)
 
 
 REMOVE_ENDED_CAP = 100

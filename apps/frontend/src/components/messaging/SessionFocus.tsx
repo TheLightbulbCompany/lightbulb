@@ -2,7 +2,7 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { MessageSquare, X } from "lucide-react";
-import { ApiError, sessionTitle, sessionViewKey, type LocalSession, type SessionSource } from "@lightbulb/shared";
+import { ApiError, sessionEndable, sessionTitle, sessionViewKey, type LocalSession, type SessionSource } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { LocalSessionPanel } from "./LocalSessionPanel";
 import { SessionChat } from "./SessionChat";
@@ -33,6 +33,9 @@ export function sessionChatLayout(panelWidth: number, viewportWidth: number): Se
 const SESSION_BODY = ".session-terminal-scroll, .session-terminal-wait, .local-session-terminal, .session-state-panel";
 
 /**
+ * A session its owner ended on purpose leaves every list (owner ruling 2026-10-08) but stays readable by id:
+ * a panel open on it when it ends keeps the Ended state, the kept picture and Resume until it is closed.
+ *
  * Focus placement: a shared session lives in the workspace, not in a room
  * (owner ruling 2026-09-24), so it fills the middle of the Messages panel on
  * its own. The workspace session list is the one source of what is shared,
@@ -54,7 +57,7 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
   chatOpen?: boolean;
   onChatOpenChange?: (open: boolean) => void;
   onChatRoom?: (roomId: string | null) => void;
-  /** The owner takes the session shown here off the list once it has ended; the panel closes when that succeeded. */
+  /** The owner takes the session shown here off the list (a running one is ended first); the panel closes when that succeeded. */
   onRemove?: (sessionId: string) => Promise<unknown>;
 }) {
   // A Claude session moved to the background continues as a fork (`forkedFrom`): show that one,
@@ -186,7 +189,8 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
       <header className="room-context-header">
         <h3 className="font-semibold room-wrap flex items-center gap-2">{session ? <><SessionToolIcon provider={session.provider} /><span className="min-w-0">{sessionTitle(session)}</span></> : "Shared session"}</h3>
         {session && owner?.own && client.setLocalSessionDisplayTitle && <SessionRenameButton session={session} onRename={client.setLocalSessionDisplayTitle} icon />}
-        {session && owner?.own && onRemove && session.status === "ended" && <SessionRemoveButton name={sessionTitle(session)} icon
+        {session && owner?.own && onRemove && (session.status === "ended" || sessionEndable(session))
+          && <SessionRemoveButton name={sessionTitle(session)} icon live={session.status !== "ended"}
           // The session shown may be the focused one's continuation (`forkedFrom`), under another id: close here, not by id.
           onRemove={async () => { await onRemove(session.sessionId); onClose(); }} />}
         {showChat && <Button className="ml-auto" variant="ghost" size="sm" aria-pressed={chatOpen}

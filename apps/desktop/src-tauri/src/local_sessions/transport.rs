@@ -103,6 +103,9 @@ pub(super) struct Host {
     /// Whether the relay on this socket lists `endedStartId`; None until one of its acks has
     /// said. Per connection, like every feature: a reconnect can reach another relay version.
     relay_reads_ended_start: Option<bool>,
+    /// The same for `endedOnPurpose` (an end may say `reason: "on-purpose"`): None until an ack
+    /// on this socket has said, and an end its person meant waits for that.
+    relay_reads_on_purpose: Option<bool>,
     /// Sessions whose heartbeat fields moved between heartbeats: one goes out
     /// early rather than up to ten seconds late.
     heartbeat_dirty: BTreeSet<String>,
@@ -603,6 +606,7 @@ impl Host {
     fn reset_relay_features(&mut self) {
         super::session_states::read_features(&Value::Null);
         self.relay_reads_ended_start = None;
+        self.relay_reads_on_purpose = None;
         for mirror in self.mirrors.values_mut() {
             mirror.subagents.relay = false;
             mirror.subagents.relay_known = false;
@@ -836,6 +840,7 @@ impl Host {
             mirrors,
             ended_pending,
             relay_reads_ended_start,
+            relay_reads_on_purpose,
             ..
         } = self;
         let mut index = ended_pending.len();
@@ -881,6 +886,11 @@ impl Host {
                 // heartbeat for it at once) says whether this relay reads a start identity.
                 continue;
             }
+            if relay_reads_on_purpose.is_none() && super::session_states::ended_on_purpose(mirror) {
+                // The same wait: sent now, it could only say "exited", and the session its
+                // person ended on purpose would stay listed.
+                continue;
+            }
             // Upload and discovery run on their own cadence. Recovery keys stay
             // held until the throttled scan observes that all parent/child files
             // have drained; a plain missed end takes the direct path above.
@@ -892,7 +902,7 @@ impl Host {
             };
             let mut frame = json!({"type":"local.session.ended","sessionId":session,
                 "generation":mirror.generation,
-                "reason":mirror.ended_reason.as_deref().unwrap_or("exited"),
+                "reason":super::session_states::end_reason(*relay_reads_on_purpose == Some(true), mirror),
                 "endedAt":ended_at});
             // The draining register of an ended mirror carries no start identity. A relay that
             // has never heard this generation's (the whole run was offline) learns it here.
@@ -1071,6 +1081,7 @@ impl Host {
             rediscover: None,
             ended_pending: vec![],
             relay_reads_ended_start: None,
+            relay_reads_on_purpose: None,
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
@@ -1429,13 +1440,15 @@ impl Host {
                     } else if let Some(frame) = heartbeat_frames.pop_front().or_else(|| {
                         // An end is waiting to learn what this relay reads, and nothing
                         // registers here: ask now, not at the idle heartbeat 30 s on.
-                        (self.relay_reads_ended_start.is_none()
-                            && self.ended_pending.iter().any(|key| {
-                                // A recovering key registers on this socket: that ack says it.
-                                !recovering_ended.contains(key) && self.mirrors.get(key).is_some_and(|m| {
-                                    start_links::bound(&self.dir, &m.native, &m.generation).is_some()
-                                })
-                            }))
+                        self.ended_pending.iter().any(|key| {
+                            // A recovering key registers on this socket: that ack says it.
+                            !recovering_ended.contains(key) && self.mirrors.get(key).is_some_and(|m| {
+                                (self.relay_reads_ended_start.is_none()
+                                    && start_links::bound(&self.dir, &m.native, &m.generation).is_some())
+                                    || (self.relay_reads_on_purpose.is_none()
+                                        && super::session_states::ended_on_purpose(m))
+                            })
+                        })
                         .then(idle_heartbeat)
                     }) {
                         let sent = Instant::now();
@@ -1599,6 +1612,7 @@ impl Host {
                             relay_reads_band_owner_only = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "bandOwnerOnly"));
                             relay_reads_agent_asks = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "agentMessageAsks"));
                             self.relay_reads_ended_start = Some(reads_ended_start(&body));
+                            self.relay_reads_on_purpose = Some(reads_on_purpose(&body));
                             let sid = body["sessionId"].as_str().filter(|s|uuid::Uuid::parse_str(s).is_ok()).ok_or("invalid session ID")?;
                             let after = body["afterSeq"].as_u64().ok_or("missing upload cursor")?;
                             let server = body["serverTime"].as_u64().ok_or("missing server time")?;
@@ -1681,6 +1695,7 @@ impl Host {
                             super::screen::offer(&body["watching"]);
                             super::session_states::read_ack(&body);
                             self.relay_reads_ended_start = Some(reads_ended_start(&body));
+                            self.relay_reads_on_purpose = Some(reads_on_purpose(&body));
                             super::presence::offer_ack(&body, &sids);
                             super::resume::offer(&body["resume"], &self.mirrors);
                             let server = body["serverTime"].as_u64().ok_or("missing server time")?;
@@ -2663,6 +2678,11 @@ fn reads_ended_start(ack: &Value) -> bool {
     ack["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "endedStartId"))
 }
 
+/// The same for `endedOnPurpose`.
+fn reads_on_purpose(ack: &Value) -> bool {
+    ack["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "endedOnPurpose"))
+}
+
 fn quarantine_active(quarantined: &BTreeMap<String, Instant>, key: &str) -> bool {
     quarantined
         .get(key)
@@ -2918,6 +2938,7 @@ pub(super) mod tests {
             rediscover: None,
             ended_pending: vec![],
             relay_reads_ended_start: None,
+            relay_reads_on_purpose: None,
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
@@ -4712,6 +4733,7 @@ pub(super) mod tests {
             rediscover: None,
             ended_pending: vec![],
             relay_reads_ended_start: None,
+            relay_reads_on_purpose: None,
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
@@ -4905,6 +4927,7 @@ pub(super) mod tests {
             rediscover: None,
             ended_pending: vec![],
             relay_reads_ended_start: None,
+            relay_reads_on_purpose: None,
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
@@ -5606,6 +5629,7 @@ pub(super) mod tests {
             rediscover: None,
             ended_pending: vec![],
             relay_reads_ended_start: None,
+            relay_reads_on_purpose: None,
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
@@ -6014,6 +6038,90 @@ pub(super) mod tests {
             .await;
             server.await.unwrap();
         }
+    }
+
+    /// Codex on #3927: an end its person meant, pending when the socket comes back, went out
+    /// before any ack as "exited" and the session stayed listed. It waits for the first ack on the
+    /// new socket (asked for at once), in the shape that relay reads.
+    #[tokio::test]
+    async fn local_sessions_an_on_purpose_end_on_a_fresh_socket_follows_the_first_heartbeat_ack() {
+        for (features, expected) in [
+            (Some(json!(["endedOnPurpose"])), "on-purpose"),
+            (Some(json!(["endedStartId"])), "exited"),
+            (None, "exited"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut mirror = test_mirror(SID, "gen-1");
+            mirror.session_id = Some(SID.into());
+            mirror.registration.acknowledged = Some("gen-1".into());
+            mirror.native.status = "ended".into();
+            mirror.ended_at = Some(1_700_000_042);
+            mirror.ended_reason = Some("on-purpose".into());
+            let mut host = test_host(dir.path(), vec![("a-session", mirror)]);
+            // What an earlier socket said is not what this relay reads.
+            host.relay_reads_on_purpose = Some(true);
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (tcp, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+                let asked = next_frame(&mut socket).await;
+                assert_eq!(asked["type"], "local.device.heartbeat", "the end waits for an ack");
+                let mut ack = json!({"type":"local.device.heartbeat.ack","rejected":[],"serverTime":1000,"reconcile":[]});
+                if let Some(features) = features {
+                    ack["features"] = features;
+                }
+                reply(&mut socket, ack).await;
+                let ended = next_frame(&mut socket).await;
+                assert_eq!(ended["type"], "local.session.ended");
+                assert_eq!(ended["reason"], expected);
+                reply(&mut socket, json!({"type":"local.session.ended.ack","sessionId":SID})).await;
+                socket.close(None).await.unwrap();
+            });
+            let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+            let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
+                .await
+                .unwrap();
+            let _ = tokio::time::timeout(
+                Duration::from_secs(5),
+                host.connection(&mut socket, &mut rx, "alice"),
+            )
+            .await;
+            server.await.unwrap();
+        }
+    }
+
+    #[test]
+    fn local_sessions_only_an_on_purpose_end_waits_to_learn_what_the_relay_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let ended = |reason: &str| {
+            let mut mirror = test_mirror(SID, "gen-1");
+            mirror.session_id = Some(SID.into());
+            mirror.native.status = "ended".into();
+            mirror.ended_at = Some(1_700_000_042);
+            mirror.ended_reason = Some(reason.into());
+            mirror
+        };
+        // Nothing acked on this socket: a plain end goes out as it is, at once.
+        for reason in ["exited", "process-exited"] {
+            let mut host = test_host(dir.path(), vec![(SID, ended(reason))]);
+            host.ended_pending = vec![SID.into()];
+            let (_, frame) = host.ended_frame(&mut BTreeSet::new()).unwrap().unwrap();
+            assert_eq!(frame["reason"], reason);
+        }
+        let mut host = test_host(dir.path(), vec![(SID, ended("on-purpose"))]);
+        host.ended_pending = vec![SID.into()];
+        assert!(host.ended_frame(&mut BTreeSet::new()).unwrap().is_none(), "held until an ack says");
+        assert_eq!(host.ended_pending, vec![SID.to_string()]);
+        for (reads, expected) in [(false, "exited"), (true, "on-purpose")] {
+            host.ended_pending = vec![SID.into()];
+            host.relay_reads_on_purpose = Some(reads);
+            let (_, frame) = host.ended_frame(&mut BTreeSet::new()).unwrap().unwrap();
+            assert_eq!(frame["reason"], expected);
+        }
+        // A new socket may reach another relay version: unknown again.
+        host.reset_relay_features();
+        assert_eq!(host.relay_reads_on_purpose, None);
     }
 
     #[tokio::test]

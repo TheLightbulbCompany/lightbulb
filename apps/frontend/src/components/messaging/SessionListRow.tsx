@@ -1,6 +1,6 @@
 "use client";
 
-import { sessionLabel, sessionStatus, sessionTitle } from "@lightbulb/shared";
+import { sessionEndable, sessionLabel, sessionStatus, sessionTitle } from "@lightbulb/shared";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { SessionToolIcon } from "./SessionToolIcon";
 import { SessionRenameButton } from "./SessionRenameButton";
@@ -11,7 +11,7 @@ import type { SidebarSession } from "./roomSections";
 export function SessionListRow({ entry: { session, ownerName, own, unread }, current, onSelect, onRename, onRemove }: {
   entry: SidebarSession; current: boolean; onSelect?: (sessionId: string) => void;
   onRename?: (sessionId: string, title: string | null) => Promise<unknown>;
-  /** The owner takes an ended session of their own off the list. */
+  /** The owner takes a session of their own off the list; a running one is ended first. */
   onRemove?: (sessionId: string) => Promise<unknown>;
 }) {
   const label = sessionLabel(session);
@@ -30,6 +30,7 @@ export function SessionListRow({ entry: { session, ownerName, own, unread }, cur
       {!!session.chatUnread && <span className="session-chat-unread" aria-hidden="true">{session.chatUnread > 99 ? "99+" : session.chatUnread}</span>}
     </button>
     {own && onRename && <SessionRenameButton session={session} onRename={onRename} icon />}
-    {own && onRemove && session.status === "ended" && <SessionRemoveButton name={sessionTitle(session)} onRemove={() => onRemove(session.sessionId)} icon />}
+    {own && onRemove && (session.status === "ended" || sessionEndable(session))
+      && <SessionRemoveButton name={sessionTitle(session)} live={session.status !== "ended"} onRemove={() => onRemove(session.sessionId)} icon />}
   </li>;
 }

@@ -1539,6 +1539,14 @@ async def require_room_member(owner_id: str, user_id: str, room_id: str) -> tupl
     if meta is None or meta.get("deletedAt"):
         raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
     if member is not None and messaging_repo.member_home(member, meta["ownerId"]) == owner_id:
+        if meta.get("session") and meta["session"].get("ownerId") != user_id:
+            # A session's chat: once its owner removed the session, only they are left in it. The
+            # removal unseats everyone else, but this door does not wait for that cleanup.
+            from core.repositories import local_sessions_repo  # lazy: avoids an import cycle
+
+            row = await local_sessions_repo.get_session(meta["ownerId"], meta["session"]["sessionId"])
+            if row is not None and row.get("removedAt") is not None:
+                raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
         return meta, member
     # A human of the room's own workspace who lost access keeps the reconcile hint;
     # everyone else (a stranger, or a foreign member viewing from the wrong org) sees nothing.

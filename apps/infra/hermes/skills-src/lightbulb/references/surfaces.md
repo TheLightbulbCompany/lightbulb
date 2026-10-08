@@ -139,6 +139,17 @@ roots so the harness knows what a teammate contribution is. Sessions whose
 process has exited read **Ended** and are hidden until a member presses Show
 recent; they cannot receive follow-ups.
 
+**Ended on purpose is not listed.** A session its owner ended on purpose —
+**End session** in Lightbulb, or the tool's own exit (`/exit` in Claude Code) —
+leaves every list at once: All sessions, the sidebar, the phone, your own
+session listing, and `find_sessions` (which returns running sessions only).
+A message that references it gives you no session line. Treat it as gone:
+never tell anyone it is still there or offer to message it. Only a person who
+had it open when it ended still sees its last screen, until they close it. A
+session that ended any other way (the process died, the terminal was closed,
+the Mac shut down) stays listed as **Ended** so its owner can resume it.
+Starting the same conversation again on the Mac lists it again.
+
 **Claude Code or Codex without the Mac app** (Linux, Windows, or a Mac with no
 Lightbulb app): the person installs the `lightbulb` plugin from the public
 marketplace `TheLightbulbCompany/lightbulb-plugin`. It gives the hosted
@@ -272,13 +283,18 @@ session that ended before its first message has nothing to resume: it shows
 session that ended that way stays listed and can be resumed. A session that
 had a live terminal also stays listed, with no Resume while it has no events.
 
-**Remove from list**: the owner of an ENDED session can remove it (the bin icon
+**Remove from list**: the owner of a session can remove it (the bin icon
 on its row in All sessions and in its header, or "Remove my ended sessions" for
-all of them). It is then gone for everyone: not listed, not openable, not
+all the ended ones). It is then gone for everyone: not listed, not openable, not
 resumable from Lightbulb, its link stops working, and you can no longer read
 it. Nothing on the person's Mac is deleted; starting that conversation again
-on the Mac lists it again. A live session cannot be removed: end it first. You
-cannot remove a session; tell its owner to.
+on the Mac lists it again. **Removing a running session ends it**: one
+confirmation ("End and remove this session? It stops on your Mac"), the
+session stops on the Mac and leaves the list when it has stopped. That works
+only where End session works: not while its Mac is offline (the owner removes
+it once the Mac is back, or ends it on the Mac), and not for a Codex app
+thread or a Claude background session. You cannot end or remove a session;
+tell its owner to.
 
 **Pick up** continues someone's Claude Code session on your own Mac, as a new
 shared session in your Lightbulb app's panel, with the files it changed on a new branch and folder; the

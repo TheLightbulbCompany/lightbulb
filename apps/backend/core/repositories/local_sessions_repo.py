@@ -326,7 +326,13 @@ async def admit_command(
     extra: Sequence[dict] = (),
     source_pairing: tuple[str, str] | None = None,
     room_meta_fenced_by_extra: bool = False,
+    remove_on_end: bool = False,
+    replaces_mark: str | None = None,
 ) -> None:
+    """``remove_on_end``: this End is an "End and remove" (`local_sessions.remove_session`). The row
+    names the command in the transaction that admits it, so the mark never outlives a refused End.
+    The mark is claimed, never overwritten: the row carries none, or still carries ``replaces_mark``
+    (an End the caller saw was over). A second DELETE that lost that race is not admitted."""
     owner, human, device = row["ownerId"], row["humanUserId"], row["deviceId"]
     table = store._table().name
     await store._transact(
@@ -338,15 +344,25 @@ async def admit_command(
                 "Update": {
                     "TableName": table,
                     "Key": {"pk": row["pk"], "sk": "META"},
-                    "UpdateExpression": "SET commandSeq = :next, revision = :newRevision",
+                    "UpdateExpression": "SET commandSeq = :next, revision = :newRevision"
+                    + (", removeOnEnd = :remove" if remove_on_end else ""),
                     "ConditionExpression": "revision = :revision AND generation = :generation AND attribute_not_exists(endedAt)"
-                    + ("" if allow_offline else " AND onlineUntil > :now"),
+                    + ("" if allow_offline else " AND onlineUntil > :now")
+                    + (
+                        ""
+                        if not remove_on_end
+                        else " AND (attribute_not_exists(removeOnEnd) OR removeOnEnd = :dead)"
+                        if replaces_mark
+                        else " AND attribute_not_exists(removeOnEnd)"
+                    ),
                     "ExpressionAttributeValues": {
                         ":next": receipt["commandSeq"],
                         ":revision": row["revision"],
                         ":newRevision": str(uuid.uuid4()),
                         ":generation": receipt["expectedGeneration"],
                         **({} if allow_offline else {":now": receipt["createdAt"]}),
+                        **({":remove": receipt["requestId"]} if remove_on_end else {}),
+                        **({":dead": replaces_mark} if remove_on_end and replaces_mark else {}),
                     },
                 }
             },

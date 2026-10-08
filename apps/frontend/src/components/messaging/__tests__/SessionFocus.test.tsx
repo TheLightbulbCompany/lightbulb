@@ -417,16 +417,78 @@ it("lets the owner remove an ended session from the list, after a confirmation",
   const view = (entry: { session: LocalSession; ownerName: string; own: boolean }) =>
     <SessionFocus focus={{ sessionId: "s1" }} entries={[entry]} loading={false} hintRevision={0} client={client}
       resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={vi.fn()} onRemove={onRemove} />;
-  // Not on a live session, and not on someone else's.
-  const { rerender } = render(view({ session, ownerName: "You", own: true }));
-  expect(screen.queryByRole("button", { name: /Remove .* from the list/ })).toBeNull();
+  // Not on someone else's, running or ended.
+  const { rerender } = render(view({ session, ownerName: "Alice", own: false }));
+  expect(screen.queryByRole("button", { name: /Remove/i })).toBeNull();
   rerender(view({ session: ended, ownerName: "Alice", own: false }));
-  expect(screen.queryByRole("button", { name: /Remove .* from the list/ })).toBeNull();
+  expect(screen.queryByRole("button", { name: /Remove/i })).toBeNull();
   rerender(view({ session: ended, ownerName: "You", own: true }));
   await userEvent.click(screen.getByRole("button", { name: "Remove Load test from the list" }));
   expect(onRemove).not.toHaveBeenCalled();
   await userEvent.click(within(screen.getByRole("dialog", { name: "Remove this session from the list?" })).getByRole("button", { name: "Remove" }));
   expect(onRemove).toHaveBeenCalledWith("s1");
+});
+
+it("lets the owner end and remove a running session in one confirmed action, and says why when the server refuses", async () => {
+  // Owner ruling 2026-10-08: remove ends it. The confirmation says it stops on the Mac.
+  const onRemove = vi.fn().mockRejectedValueOnce(new ApiError(409, null, "This session's Mac is offline, so it cannot be stopped from here."))
+    .mockResolvedValue(undefined);
+  const onClose = vi.fn();
+  const client = { listWorkspaceSessions: vi.fn(), getLocalSession: vi.fn(), listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })),
+    submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), requestLocalSessionPickup: vi.fn() } as unknown as SessionSource["client"];
+  const view = (shown: LocalSession) =>
+    <SessionFocus focus={{ sessionId: "s1" }} entries={[{ session: shown, ownerName: "You", own: true }]} loading={false} hintRevision={0} client={client}
+      resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={onClose} onRemove={onRemove} />;
+  // Not one End cannot stop: an offline Mac, or a Codex thread its app hosts.
+  const { rerender } = render(view({ ...session, status: "offline" }));
+  expect(screen.queryByRole("button", { name: /Remove/i })).toBeNull();
+  rerender(view({ ...session, provider: "codex", terminal: undefined }));
+  expect(screen.queryByRole("button", { name: /Remove/i })).toBeNull();
+  rerender(view(session));
+  expect(screen.queryByRole("button", { name: /from the list/ })).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: "End and remove Load test" }));
+  const confirm = screen.getByRole("dialog", { name: "End and remove this session?" });
+  expect(confirm).toHaveTextContent("It stops on your Mac, and is removed for everyone in the workspace.");
+  expect(onRemove).not.toHaveBeenCalled();
+  await userEvent.click(within(confirm).getByRole("button", { name: "End and remove" }));
+  expect(await within(confirm).findByRole("alert")).toHaveTextContent("This session's Mac is offline, so it cannot be stopped from here.");
+  expect(onClose).not.toHaveBeenCalled();
+  await userEvent.click(within(confirm).getByRole("button", { name: "End and remove" }));
+  expect(onRemove).toHaveBeenCalledTimes(2);
+  expect(onRemove).toHaveBeenLastCalledWith("s1");
+  expect(onClose).toHaveBeenCalledTimes(1);
+});
+
+it("keeps the panel open on a session its owner ended on purpose, though it left every list", async () => {
+  // Owner ruling 2026-10-08: ended on purpose vanishes from the lists. The open panel reads it by id and keeps
+  // the Ended state (and Resume) until it is closed; nothing closes it or remounts its body.
+  const ended: LocalSession = { ...session, status: "ended", terminal: undefined, wasHeld: true, endedOnPurpose: true, latestEventSeq: 4,
+    resumable: true, endedAt: new Date().toISOString() };
+  const getLocalSession = vi.fn(async () => ended);
+  const onClose = vi.fn();
+  const client = { listWorkspaceSessions: vi.fn(), getLocalSession, listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })),
+    submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), requestLocalSessionPickup: vi.fn(),
+    requestLocalSessionResume: vi.fn() } as unknown as SessionSource["client"];
+  const view = (entries: { session: LocalSession; ownerName: string; own: boolean }[], hint = 0) =>
+    <SessionFocus focus={{ sessionId: "s1" }} entries={entries} loading={false} hintRevision={hint} client={client}
+      resolveSessionOwner={() => ({ ownerName: "You", own: true })} onAccessLost={vi.fn()} onClose={onClose} onRemove={vi.fn()} />;
+  const { rerender } = render(view([{ session, ownerName: "You", own: true }]));
+  await screen.findByRole("heading", { name: /Load test/ });
+  const mounted = document.querySelector(".session-status");
+  // The owner pressed End: the next list no longer has the row.
+  rerender(view([], 1));
+  await act(async () => {});
+  expect(getLocalSession).toHaveBeenCalledWith("s1");
+  expect(document.querySelector(".session-status")).toBe(mounted);
+  expect(statusLine()).toHaveTextContent("Ended");
+  expect(screen.queryByText("This session is no longer shared.")).toBeNull();
+  // Later list refreshes still lack it; the panel stays.
+  rerender(view([], 2));
+  await act(async () => {});
+  expect(statusLine()).toHaveTextContent("Ended");
+  expect(onClose).not.toHaveBeenCalled();
+  // Still its owner's to remove for good.
+  expect(screen.getByRole("button", { name: "Remove Load test from the list" })).toBeInTheDocument();
 });
 
 it("closes after a removal succeeded, never before, and for a displayed fork too", async () => {

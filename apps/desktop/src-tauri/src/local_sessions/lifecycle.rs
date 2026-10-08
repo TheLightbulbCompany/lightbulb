@@ -346,6 +346,10 @@ fn waiting_reason(event: &HookEvent) -> Option<String> {
     (!call.is_empty()).then(|| take_bytes(&format!("Wants to run {call}"), WAITING_TEXT_MAX))
 }
 
+/// A mirror's end reason for a session its person ended on purpose. On the wire only for a relay
+/// that lists `endedOnPurpose` (`session_states::end_reason`).
+pub(crate) const ON_PURPOSE: &str = "on-purpose";
+
 /// Map one hook event to the status/lifecycle transition the transport
 /// applies (Task 11).
 pub(crate) fn transition(event: &HookEvent) -> Transition {
@@ -353,6 +357,9 @@ pub(crate) fn transition(event: &HookEvent) -> Transition {
         "SessionStart" => Transition::Start,
         "UserPromptSubmit" => Transition::Status("busy"),
         "Stop" => Transition::Status("idle"),
+        // Claude names why it ends: the person's own exit (`/exit`, ctrl+d) or `/logout` is an end
+        // on purpose. A hang-up, a kill or a shutdown says "other"; Codex names nothing.
+        "SessionEnd" if matches!(event.reason.as_deref(), Some("prompt_input_exit" | "logout")) => Transition::Ended(ON_PURPOSE),
         "SessionEnd" => Transition::Ended("exited"),
         "PermissionRelease" => match &event.held {
             Some(held) => Transition::Release(held.id.clone()),
@@ -626,6 +633,10 @@ mod tests {
         assert_eq!(transition(&HookEvent { message: Some("Claude needs your permission to run Bash".into()), ..ev("Notification") }), Transition::Status("waiting-approval"));
         assert_eq!(transition(&HookEvent { message: Some("Done".into()), ..ev("Notification") }), Transition::Ignore);
         assert_eq!(transition(&ev("SessionEnd")), Transition::Ended("exited"));
+        // `/exit` and `/logout` are the person's own end; a hang-up or a kill ("other") is not.
+        for (reason, ended) in [("prompt_input_exit", ON_PURPOSE), ("logout", ON_PURPOSE), ("other", "exited"), ("clear", "exited")] {
+            assert_eq!(transition(&HookEvent { reason: Some(reason.into()), ..ev("SessionEnd") }), Transition::Ended(ended), "{reason}");
+        }
     }
 
     #[test]

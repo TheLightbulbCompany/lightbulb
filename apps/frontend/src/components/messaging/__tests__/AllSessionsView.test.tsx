@@ -39,6 +39,12 @@ it("offers Remove on the viewer's own ended sessions only, one by one or all at 
   ]} />);
   expect(screen.getAllByRole("button", { name: /Remove .* from the list/ }).map((b) => b.getAttribute("aria-label"))).toEqual([
     "Remove Old test from the list", "Remove Older test from the list"]);
+  // A running one of the viewer's own: removing it ends it, and the confirmation says so (owner ruling 2026-10-08).
+  await userEvent.click(screen.getByRole("button", { name: "End and remove Running" }));
+  const ending = screen.getByRole("dialog", { name: "End and remove this session?" });
+  expect(ending).toHaveTextContent("It stops on your Mac");
+  await userEvent.click(within(ending).getByRole("button", { name: "Cancel" }));
+  expect(onRemove).not.toHaveBeenCalled();
   await userEvent.click(screen.getByRole("button", { name: "Remove Old test from the list" }));
   const confirm = screen.getByRole("dialog", { name: "Remove this session from the list?" });
   await userEvent.click(within(confirm).getByRole("button", { name: "Remove" }));

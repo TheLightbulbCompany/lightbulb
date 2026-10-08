@@ -237,6 +237,12 @@ def _browser_task_id() -> str:
     return next(iter(tasks), "default")
 
 
+def _browsing_on_mac() -> bool:
+    """A run that selected a paired Mac browses in that Mac's "Lightbulb agent" Chrome, not the
+    cloud browser: the person types the code into that window, and the Browser panel shows nothing."""
+    return bool((browser_control._TURN.get() or {}).get("mac"))
+
+
 def _page_eval(expression: str):
     """Evaluate page JS through Hermes's own (non-secret) eval path. None = no answer."""
     try:
@@ -276,12 +282,17 @@ def _code_prompt(site: str, _hint: str) -> str:
     ctx = _ASK.get()
     if not ctx:
         return ""
+    if not ctx.get("roomId"):
+        # A Paperclip or voice turn has no room to say it in: nobody would be told, so do not wait.
+        ctx["code"] = "no_room"
+        return ""
     ctx["code"] = "nobody_came"
     try:
         _call("POST", "/requests", {
             "kind": "code", "origin": site if "://" in site else f"https://{site}",
             "agentId": ctx["agentId"], "roomId": ctx.get("roomId"),
             "threadRootMessageId": ctx.get("threadRootMessageId"), "hint": _page_heading(),
+            "surface": "mac" if _browsing_on_mac() else "cloud",
         })
     except Exception:  # noqa: BLE001 -- the agent's own line still goes out via the tool result
         log.warning("website login code notice could not be posted")
@@ -313,6 +324,13 @@ CODE_RESULTS = {
                  "they can type it any time (Browser panel, on a computer) and tell you to continue, "
                  "and you pick up from a fresh browser_snapshot. Never ask for the code in chat, and "
                  "never ask again for a login that is already saved.",
+    },
+    "no_room": {
+        "success": False, "error_type": "no_room",
+        "error": "This site wants a verification code and this run has no room to ask a person in. "
+                 "Stop here and say so in your result: someone has to sign in to the site once in the "
+                 "shared browser (Browser panel), after which the saved session carries over. Never ask "
+                 "for the code in chat.",
     },
 }
 

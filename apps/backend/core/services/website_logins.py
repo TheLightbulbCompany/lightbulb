@@ -431,13 +431,15 @@ async def create_request(
     room_id: str | None,
     thread_root_message_id: str | None,
     hint: str | None = None,
+    surface: str = "cloud",
 ) -> dict:
     """A ``login`` ask: the row, a Needs-you Activity row per human, and a notice in the room.
 
     A ``code`` ask is only the notice (owner ruling 2026-10-07): a one-time code is typed by a person
     into the shared browser, never into a form for the agent, so there is no row, no Activity item
     and nothing to answer. The bridge watches the page instead. ``hint`` is the sign-in page's
-    heading, quoted so the person knows which step the site is on."""
+    heading, quoted so the person knows which step the site is on; ``surface`` says which browser
+    the run is in -- the cloud Browser panel, or a selected Mac's own "Lightbulb agent" Chrome."""
     from core.config import settings
     from core.services.live_events import publish_owner_users
     from core.services.messaging import make_live_event
@@ -455,12 +457,18 @@ async def create_request(
         if room_id:
             site = host_of(origin)
             heading = " ".join(str(hint or "").split())[:120]
-            text = (
-                f"{site} is asking for a verification code{f' ({heading})' if heading else ''}. Type it into "
-                f"the shared browser — open the Browser panel on a computer (the phone has no live view): "
-                f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=browser — and I'll carry on as soon as the "
-                f"page moves."
-            )
+            asking = f"{site} is asking for a verification code{f' ({heading})' if heading else ''}."
+            if surface == "mac":
+                text = (
+                    f"{asking} Type it into the Lightbulb agent Chrome window on your Mac — the one I'm "
+                    f"browsing in — and I'll carry on as soon as the page moves."
+                )
+            else:
+                text = (
+                    f"{asking} Type it into the shared browser — open the Browser panel on a computer (the "
+                    f"phone has no live view): {settings.FRONTEND_URL.rstrip('/')}/chat?panel=browser — and "
+                    f"I'll carry on as soon as the page moves."
+                )
             await _post_notice(
                 owner_id,
                 {

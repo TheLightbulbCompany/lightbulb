@@ -175,6 +175,20 @@ async def test_code_ask_is_only_a_line_sending_the_person_to_the_browser(env):
         r for r in await repo.list_activity(OWNER, USER_A, before_sk=None, limit=10) if r.get("kind") == "login"
     ]
 
+    # A run browsing on a selected Mac: the code goes into that Mac's agent Chrome, not the panel.
+    await store.create_request(
+        OWNER,
+        kind="code",
+        origin="https://x.com",
+        agent_id=FRIDAY,
+        room_id=room_id,
+        thread_root_message_id=None,
+        surface="mac",
+    )
+    messages, _ = await repo.list_messages(room_id, 0, 50)
+    assert "Lightbulb agent Chrome window on your Mac" in messages[-1]["text"]
+    assert "panel=browser" not in messages[-1]["text"]
+
 
 async def test_decline_and_cancel_settle_once(env):
     rid = (

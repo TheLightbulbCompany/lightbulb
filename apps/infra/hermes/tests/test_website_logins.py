@@ -60,7 +60,32 @@ def test_a_code_is_typed_into_the_browser_by_the_person_never_handed_to_the_agen
     assert ctx["code"] == "page_moved"
     assert backend["calls"] == [("POST", "/requests", {
         "kind": "code", "origin": "https://accounts.intuit.com", "agentId": "agent-1", "roomId": "room-1",
-        "threadRootMessageId": None, "hint": "Check your text messages"})]
+        "threadRootMessageId": None, "hint": "Check your text messages", "surface": "cloud"})]
+
+
+def test_a_run_browsing_on_a_mac_sends_the_person_to_that_mac(backend, monkeypatch):
+    monkeypatch.setattr(wl, "_code_field_present", lambda: False)
+    monkeypatch.setattr(wl, "_page_heading", lambda: "")
+    token = wl.browser_control._TURN.set({"runId": "run-1", "mac": True})
+    try:
+        _in_turn(lambda: wl._code_prompt("x.com", ""), ctx={})
+    finally:
+        wl.browser_control._TURN.reset(token)
+    assert backend["calls"][0][2]["surface"] == "mac"
+
+
+def test_a_run_with_no_room_does_not_wait_for_a_person_nobody_told(backend, monkeypatch):
+    monkeypatch.setattr(wl, "_code_field_present", lambda: True)
+    ctx = {}
+    token = wl._ASK.set({"agentId": "agent-1", "roomId": None, "threadRootMessageId": None, "aborted": lambda: False})
+    try:
+        assert wl._code_prompt("x.com", "") == ""
+        ctx = wl._ASK.get()
+        assert ctx["code"] == "no_room" and backend["calls"] == []
+        declined = json.dumps({"success": False, "error_type": "code_declined", "error": "x"})
+        assert json.loads(wl.transform_tool_result("browser_vault_enter_code", declined))["error_type"] == "no_room"
+    finally:
+        wl._ASK.reset(token)
 
 
 def test_nobody_typing_the_code_in_time_is_reported_as_such(backend, monkeypatch):

@@ -113,6 +113,7 @@ class DrivenSession:
             def interrupt(self, force=False):  # the mouth stops its own unit (no sound in time, or too long)
                 assert force
                 self.interrupted = True
+                owner._cancel()
                 self.set_result(None)
 
             def set_result(self, result):
@@ -122,7 +123,9 @@ class DrivenSession:
                     unit.frames, unit.seconds, unit.loud = 50, 1.0, 1.0
                 super().set_result(result)
 
-        self.voice, self.silent = None, False
+        # `wire`: a real `_DrivenSession` its orders and cancels go through (it may hold a create). Without
+        # one, an order's `response.create` is sent as it is given.
+        self.voice, self.silent, self.wire = None, False, None
         self.llm, self.orders, self.handles, self.handlers, self.started = llm, [], [], {}, {}
         self.interrupts, self.closed, self._future = 0, False, Handle
 
@@ -133,9 +136,24 @@ class DrivenSession:
         self.started = kw
 
     def generate_reply(self, **kw):
+        from openai.types.realtime import RealtimeResponseCreateParams, ResponseCreateEvent
+
         self.orders.append(kw)
         self.handles.append(self._future())
+        if self.wire is not None:
+            params = RealtimeResponseCreateParams(instructions=kw["instructions"])
+            self.wire._current_generation = None  # (the response before it is over, cut or not)
+            self.wire.send_event(ResponseCreateEvent(type="response.create", response=params))
+            self.wire._current_generation = object()  # response.created
+        elif (sent := getattr(getattr(self.voice, "realtime_llm_session", None), "sent", None)) is not None:
+            sent()
         return self.handles[-1]
+
+    def _cancel(self):
+        from openai.types.realtime import ResponseCancelEvent
+
+        if self.wire is not None:
+            self.wire.send_event(ResponseCancelEvent(type="response.cancel"))
 
     def interrupt(self, force=False):
         assert force
@@ -143,6 +161,7 @@ class DrivenSession:
         for h in self.handles:
             if not h.done():  # the speech in the air ends cut, as LiveKit's does
                 h.interrupted = True
+                self._cancel()
                 h.set_result(None)
 
     async def aclose(self):
@@ -461,20 +480,122 @@ async def test_what_a_mouth_said_is_deleted_and_an_order_waits_for_a_cut_respons
     assert sent() == [], "its item is deleted: there is nothing to truncate"
 
 
-async def test_first_sound_timeout_excludes_the_wait_for_an_interrupted_response(monkeypatch):
+FIRST, HOLD = 0.1, 0.2  # FIRST_SOUND_S and CANCEL_WAIT_S in the tests below
+
+
+def _wired(monkeypatch):
+    """A mouth whose orders and cancels go through a real `_DrivenSession` (no network: its channel is a mock),
+    with a model that never sends a frame and never answers a cancel: every hold lasts CANCEL_WAIT_S."""
+    from unittest.mock import MagicMock
+
+    monkeypatch.setattr(agent, "FIRST_SOUND_S", FIRST)
+    monkeypatch.setattr(agent, "CANCEL_WAIT_S", HOLD)
+    monkeypatch.setattr(agent, "SEND_WAIT_S", 2 * HOLD)
+    live, session, voice = _driven()
+    wire = object.__new__(agent._DrivenSession)
+    wire._msg_ch, wire._current_generation = MagicMock(), None
+    session.wire = voice.realtime_llm_session = wire
+    session.silent = True
+    wire.creates = lambda: sum(c.args[0].type == "response.create" for c in wire._msg_ch.send_nowait.call_args_list)
+    return live, session, wire
+
+
+async def _until(done):
+    import asyncio
+
+    async def poll():
+        while not done():
+            await asyncio.sleep(0.002)
+
+    await asyncio.wait_for(poll(), 2)
+
+
+async def _stopped_for_no_sound(live, session, wire, sent_before):
+    """The newest order's create is held behind a cancelled response for longer than half FIRST_SOUND_S, and
+    the unit is stopped for no sound FIRST_SOUND_S after the create is sent: the hold is no part of it."""
     import asyncio
     import time
 
-    monkeypatch.setattr(agent, "FIRST_SOUND_S", 0.02)
-    monkeypatch.setattr(agent, "CANCEL_WAIT_S", 0.08)
-    live, session, _ = _driven()
-    session.silent = True
-    live._cut_at = time.monotonic()
+    handle, receipts, ordered = session.handles[-1], len(live.receipts), time.monotonic()
+    assert wire.creates() == sent_before and not handle.done(), "held: the cancelled response has not ended"
+    await _until(lambda: wire.creates() == sent_before + 1)
+    assert time.monotonic() - ordered > FIRST / 2, "(the hold is long enough to tell the two clocks apart)"
+    await asyncio.sleep(FIRST / 2)
+    assert not handle.interrupted, "half its first-sound time after the send: the hold was not counted"
+    await asyncio.sleep(FIRST)
+    assert handle.interrupted and live.receipts[receipts][3]["why"] == "no_sound"
+    assert wire.sent is None, "the unit is over: a later create times nothing"
+
+
+async def test_first_sound_is_timed_from_the_send_of_an_order_at_once_and_after_an_interrupt(monkeypatch):
+    """#3917 review (P2): the first-sound time counted the wait for a cancelled response to end."""
+    import asyncio
+
+    live, session, wire = _wired(monkeypatch)
+    live.say("A normal order.", 1)
+    await _settle()
+    assert wire.creates() == 1, "nothing to wait for: sent as it was ordered"
+    await asyncio.sleep(FIRST / 2)
+    assert not session.handles[0].interrupted
+    live.interrupt()  # someone talks: its response is cancelled, and that never ends here
+    await _settle()
+    assert live.receipts[0][2] == "cut"
     live.say("After the interruption.", 2)
-    await asyncio.sleep(0.04)
-    assert not session.handles[0].interrupted, "the response may still be held behind the cancellation"
-    await asyncio.sleep(0.08)
-    assert session.handles[0].interrupted, "the first-sound timeout still applies after the hold"
+    await _settle()
+    await _stopped_for_no_sound(live, session, wire, sent_before=1)
+    assert live.ended == [(1, False), (2, True)]
+    await _until(lambda: wire._cancelling is None)  # (order 2 stopped itself, which is a cancel too)
+    live.say("An order with nothing before it.", 3)  # no hold: sent at once, and timed from then
+    await _settle()
+    assert wire.creates() == 3
+    await asyncio.sleep(FIRST * 1.5)
+    assert live.receipts[2][3]["why"] == "no_sound"
+
+
+async def test_first_sound_is_timed_from_the_send_of_a_retry_after_the_unit_stopped_itself(monkeypatch):
+    """#3920 review (P1): a unit that stops itself (`no_sound`, `long`) cancels its response with no interrupt
+    from the worker, so nothing marked the cut and the retry's time ran through its hold."""
+    live, session, wire = _wired(monkeypatch)
+    live.say("Got it.", 1)
+    await _until(lambda: live.receipts)
+    assert live.receipts[0][3]["why"] == "no_sound" and live._cut_at is None, "no interrupt of the worker's"
+    live.say("Got it.", 2)  # the worker's retry, at once (on_playback_ended)
+    await _settle()
+    await _stopped_for_no_sound(live, session, wire, sent_before=1)
+    await _until(lambda: wire._cancelling is None)
+    live.say("Got it.", 3)
+    await _settle()
+    live._agent.unit.stop("long")  # more sound than its words need: stopped by the meter, the same cancel
+    await _settle()
+    assert live.receipts[2][2] == "long"
+    live.say("Got it.", 4)
+    await _settle()
+    await _stopped_for_no_sound(live, session, wire, sent_before=3)
+
+
+async def test_first_sound_is_timed_from_the_send_of_the_first_order_of_a_parked_mouth(monkeypatch):
+    """#3920 review (P1): parking a kept mouth interrupts it, and opening it again forgot when."""
+    live, session, wire = _wired(monkeypatch)
+    live.kept = {"forge": live}
+    live.say("One.", 1)
+    await _settle()
+    await live.aclose()  # parked: what it was saying is cancelled
+    await _settle()
+    assert live.reopen() is live and live._cut_at is None and not session.closed
+    live.say("Two.", 2)
+    await _settle()
+    await _stopped_for_no_sound(live, session, wire, sent_before=1)
+
+
+async def test_an_order_whose_create_is_never_sent_is_stopped_and_says_so(monkeypatch):
+    from unittest.mock import MagicMock
+
+    live, session, wire = _wired(monkeypatch)
+    wire._cancelling = MagicMock()  # a hold that never ends
+    live.say("Got it.", 1)
+    await _until(lambda: live.receipts)
+    assert wire.creates() == 0 and live.receipts[0][2] == "silent" and live.receipts[0][3]["why"] == "unsent"
+    assert live.ended == [(1, True)] and FIRST < live.receipts[0][3]["tookMs"] / 1000 < 2 * HOLD + FIRST
 
 
 async def test_a_unit_with_no_sound_in_time_is_stopped_and_fails_and_says_why(monkeypatch):
@@ -688,7 +809,7 @@ async def test_the_session_passes_a_units_audio_through_the_mouths_meter():
 
 async def test_through_the_session_a_unit_with_far_more_sound_than_its_words_need_is_stopped_and_fails():
     """10-08 rig: 8 of 83 units were far longer than their text ("I have it." took 4.05 s). "Got it." may
-    have max(1.5 s, 0.112 s a character) of sound: 1.5 s, 75 frames of these."""
+    have max(1.5 s, 0.155 s a spoken character) of sound: 1.5 s, 75 frames of these."""
     receipts, ended, track = await _say_through_a_real_session([4000] * 200)
     order, index, text, outcome, evidence = receipts[0]
     assert (order, index, text, outcome, evidence["why"]) == (3, 0, "Got it.", "long", "long")
@@ -696,6 +817,51 @@ async def test_through_the_session_a_unit_with_far_more_sound_than_its_words_nee
     assert abs(len(track.frames) - 75) <= 1, "and no more of it reached the track"
     receipts, ended, track = await _say_through_a_real_session([4000] * 70)
     assert receipts[0][3] == "said" and "why" not in receipts[0][4] and len(track.frames) == 70, "1.4 s: said"
+
+
+def test_the_sound_limit_is_of_the_line_as_it_is_spoken_not_as_it_is_written():
+    """#3920 review (P2): by written characters, "$1,249.50" had the time of nine letters, was stopped as
+    `long` while it was being said right, and was stopped again on every retry."""
+    from huddle_agent.agent import LONG_MIN_S, LONG_PER_CHAR_S, sound_limit, spoken_chars
+
+    assert (LONG_MIN_S, LONG_PER_CHAR_S) == (1.5, 0.155)
+    assert spoken_chars("got it.") == 7 and spoken_chars("Got it.") == 9, "a capital may be a spelled letter: 3"
+    assert sound_limit("Got it.") == 1.5 and round(sound_limit("I have it."), 2) == 1.86, '4.05 s of "I have it." is caught'
+    money = "It costs $1,249.50 per month, or $14,994 a year."
+    # aloud: "It costs one thousand two hundred forty-nine dollars and fifty cents per month, or fourteen
+    # thousand nine hundred ninety-four dollars a year." 141 characters, 8.7 s at the rig's median 62 ms.
+    assert len(money) == 48 and spoken_chars(money) == 162 and round(sound_limit(money), 1) == 25.1
+    assert 0.112 * len(money) < 0.062 * 141 < sound_limit(money), "the old limit was under its normal length"
+    assert spoken_chars("3 PRs") == 8 + 1 + 3 + 3 + 1 and spoken_chars("see example.com/a") == 4 + 7 + 8 + 3 + 8 + 1
+    assert spoken_chars("I'm on it - well, \"yes\" (now).") == len("I'm on it - well, \"yes\" (now).") + 2
+
+
+async def test_a_unit_stopped_as_long_is_not_limited_on_its_next_try_and_the_receipt_says_how_far_over(caplog):
+    """#3920 review (P2): the retry had the limit that had just cut it, so a unit the estimate was wrong for
+    was cut PLAYBACK_TRIES times and then went out in writing. The limit is for audio that runs away once."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    session, track = _real_session([4000] * 200)  # 4 s of sound for "Got it.", every time
+    mouth, receipts, ended = agent._Mouth(instructions="x"), [], []
+    await session.start(agent=mouth, record=False)
+    try:
+        live = agent._DrivenLive(
+            "forge", session, mouth, MagicMock(),
+            said=lambda *receipt: receipts.append(receipt), ended=lambda *end: ended.append(end),
+        )  # fmt: skip
+        with caplog.at_level("WARNING"):
+            for order, line in enumerate(("Got it.", "Got it.", "Got it.", "Got it.", "Sure, fine.", "Got it."), 1):
+                live.say(line, order)
+                await asyncio.wait_for(live._tail, 5)
+    finally:
+        await session.aclose()
+    assert [r[3] for r in receipts] == ["long", "said", "long", "said", "long", "long"]
+    assert ended == [(1, True), (2, False), (3, True), (4, False), (5, True), (6, True)]
+    # its first try is stopped at 1.5 s. Its second plays out, and says so. Said, it is limited again.
+    assert "overMs" not in receipts[0][4] and receipts[1][4]["loudMs"] == 4000 and receipts[1][4]["overMs"] == 2500
+    assert sum("over its sound limit" in r.getMessage() for r in caplog.records) == 2
+    assert receipts[5][3] == "long", "another unit was tried between: its own next try is limited as a first"
 
 
 async def test_through_the_session_silent_frames_are_a_failed_unit_and_a_revoked_one_sends_nothing():

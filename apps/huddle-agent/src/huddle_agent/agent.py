@@ -328,6 +328,8 @@ class _DrivenSession(openai.realtime.RealtimeSession):
 
     _cancelling: asyncio.TimerHandle | None = None  # a cancel is out and its `response.done` is not in
     _held: tuple = ()  # the orders waiting for it
+    #: Told as each `response.create` is sent (`_create`): the unit's first-sound time counts from then.
+    sent: Callable[[], None] | None = None
 
     # ponytail: private API (the plugin builds response.create itself), re-check on livekit-agents upgrades
     def send_event(self, event) -> None:
@@ -344,14 +346,21 @@ class _DrivenSession(openai.realtime.RealtimeSession):
             if self._cancelling is not None:
                 self._held += (event,)
                 return
+            return self._create(event)
         super().send_event(event)
+
+    def _create(self, event) -> None:
+        """A `response.create` goes to the model, now: at once, or after its hold. The one place it does."""
+        super().send_event(event)
+        if self.sent is not None:
+            self.sent()
 
     def _release(self) -> None:
         if self._cancelling is not None:
             self._cancelling.cancel()
         held, self._cancelling, self._held = self._held, None, ()
         for event in held:
-            super().send_event(event)
+            self._create(event)
 
     def _handle_response_done(self, event) -> None:
         said = list(getattr(self._current_generation, "messages", ()))
@@ -376,14 +385,50 @@ class _DrivenModel(openai.realtime.RealtimeModel):
 # either time). Whether its frames were silent or never came was not recorded then: the receipt says now.
 AUDIBLE_S = 0.1
 LOUD = 500  # of 32768: about -36 dBFS, well under any spoken word and over a silent frame's dither
-# A unit with no audible audio this long after its order is stopped and reported failed, and the worker says it
-# again at once (`Huddle.on_playback_ended`). 10-08 spike, the order as it is now: first sound p50 0.58 s, max
-# 0.80 s of 52. It was 3.0 s: a dead unit cost the room three seconds of nothing (rig: 3 of 83 units silent).
+# A unit with no audible audio this long after its `response.create` went to the model is stopped and reported
+# failed, and the worker says it again at once (`Huddle.on_playback_ended`). Counted from the send itself
+# (`_DrivenSession._create`), so a create held behind a cancelled response (CANCEL_WAIT_S: after an interrupt,
+# after the unit before stopped itself, or the first order of a mouth that was parked) has the whole time.
+# 10-08 spike, the order as it is now: first sound p50 0.58 s, max 0.80 s of 52. It was 3.0 s: a dead unit cost
+# the room three seconds of nothing (rig: 3 of 83 units silent).
 FIRST_SOUND_S = 1.0
-# A unit with more sound than this is stopped and reported failed (`long`). The rig's units took a median 62 ms
-# of sound a character; 8 of 83 took far more ("I have it." was 4.05 s), most of them lines of 11 characters or
-# fewer, hence the floor. 0.112 is 1.8 times the median.
-LONG_MIN_S, LONG_PER_CHAR_S = 1.5, 0.112
+# An order whose create has not gone out this long after it was given is stopped the same way (`unsent`): the
+# longest hold there is, and as much again. Nothing else bounds it short of the plugin's own 5 s.
+SEND_WAIT_S = 2 * CANCEL_WAIT_S
+# A unit with more sound than this is stopped and reported failed (`long`). It is there for audio that runs
+# away, not to time normal speech: the rig's units took a median 62 ms of sound a character, and 8 of 83 took
+# far more ("I have it." was 4.05 s), most of them lines of 11 characters or fewer, hence the floor. 0.155 is
+# 2.5 times the median (it was 1.8 times, of the written characters), per character as spoken (`spoken_chars`).
+LONG_MIN_S, LONG_PER_CHAR_S = 1.5, 0.155
+# What a written character is worth in spoken ones. A digit or a symbol is a word or more aloud ("$1,249.50"
+# is "one thousand two hundred forty-nine dollars and fifty cents": 9 written, 57 said), and a capital may be a
+# letter spelled out ("PR", "API"). Both err long: the limit is a ceiling.
+SPOKEN_SYMBOL, SPOKEN_CAPITAL = 8, 3
+
+
+def spoken_chars(unit: str) -> int:
+    """About how many characters `unit` is when said aloud. A lower-case letter, a space, an apostrophe, a
+    hyphen, a quote or a bracket is 1, and so is punctuation that ends a word. A capital is SPOKEN_CAPITAL.
+    Anything else is SPOKEN_SYMBOL: a digit, a currency or other symbol, and punctuation inside a token (the
+    dot of "1.5" or of "example.com", a slash)."""
+    # ponytail: no number or URL is read out here, a count by character. A text normaliser if a receipt's
+    # `overMs` ever shows the count far off.
+    n = 0
+    for i, c in enumerate(unit):
+        if c.islower() or c.isspace() or c in "'’-\"“”()":
+            n += 1
+        elif c.isupper():
+            n += SPOKEN_CAPITAL
+        elif c in ".,;:!?" and not unit[i + 1 : i + 2].isalnum():
+            n += 1
+        else:
+            n += SPOKEN_SYMBOL
+    return n
+
+
+def sound_limit(unit: str) -> float:
+    """Seconds of sound `unit` may have before it is stopped as `long`."""
+    return max(LONG_MIN_S, LONG_PER_CHAR_S * spoken_chars(unit))
 
 
 @dataclass
@@ -400,8 +445,8 @@ class _Unit:
     lead: float = 0.0  # seconds of quiet frames before the first one with sound: when the room began to hear it
     sounded: float = 0.0  # when the first frame with sound passed (monotonic)
     revoked: bool = False
-    limit: float = float("inf")  # seconds of sound it may have (LONG_MIN_S, LONG_PER_CHAR_S)
-    stop: Callable[[str], None] = lambda why: None  # ends it as failed: "no_sound" in FIRST_SOUND_S, or "long"
+    limit: float = float("inf")  # seconds of sound it may have (`sound_limit`)
+    stop: Callable[[str], None] = lambda why: None  # ends it as failed: "unsent", "no_sound" or "long"
     why: str = ""  # why it was stopped, if it was
 
 
@@ -466,6 +511,7 @@ class _DrivenLive:
         self._tail: asyncio.Task | None = None
         self._epoch = 0  # raised by interrupt: a speech order queued under an older one is dropped
         self._cut_at: float | None = None  # when the last interrupt was sent, until its audio is known stopped
+        self._long: str | None = None  # the unit last stopped as `long`, until it is said or another unit is
         # The Realtime plugin reports tokens, not session seconds (`session_duration` is 0): wall clock, open to
         # close, is what a GPT-Live session bills by too.
         self._opened, self._closed = time.monotonic(), None
@@ -490,31 +536,42 @@ class _DrivenLive:
         """One unit, word for word, then its receipt: `said` (audible audio went to the track and played to its
         end), `cut` (interrupted), `revoked` (permission went before its first audible audio, so none was sent),
         `silent` (nothing audible was sent: a failure) or `long` (far more sound than its words need, and it
-        was stopped: a failure). A failure's evidence says `why`. The receipt carries the order and
+        was stopped: a failure, once for a unit). A failure's evidence says `why`. The receipt carries the order and
         unit it is for and what the track was sent, never the model's transcript of itself."""
+        # A unit stopped as `long` is not limited on its next try: the limit that cut it is an estimate, and
+        # the same one would cut the same unit again, try after try, until it went out in writing.
+        free, limit = unit == self._long, sound_limit(unit)
         m = self._agent.unit = _Unit(
             order, index, lambda: self._may(order, index), lambda: self._audible(order, index),
-            limit=max(LONG_MIN_S, LONG_PER_CHAR_S * len(unit)),
+            limit=float("inf") if free else limit,
         )  # fmt: skip
-        began = time.monotonic()
-        handle = self._session.generate_reply(instructions=SAY + unit)
+        began, loop, handle = time.monotonic(), asyncio.get_running_loop(), None
 
         def stop(why: str) -> None:
             # Stopped here, so a dead order costs the room FIRST_SOUND_S and not however long the model goes on.
-            if not m.why and not handle.done():
+            if not m.why and handle is not None and not handle.done():
                 m.why = why
                 handle.interrupt(force=True)
 
+        def sent() -> None:  # its response.create went to the model: the one moment its first sound is timed from
+            nonlocal watch
+            watch.cancel()
+            watch = loop.call_later(FIRST_SOUND_S, lambda: m.loud or stop("no_sound"))
+
         m.stop = stop
-        # generate_reply may hold this response behind an interrupted response for CANCEL_WAIT_S. Give the new
-        # response its full first-sound window after that hold rather than counting the cancellation against it.
-        held_for = max(0.0, CANCEL_WAIT_S - (began - self._cut_at)) if self._cut_at is not None else 0.0
-        watch = asyncio.get_running_loop().call_later(FIRST_SOUND_S + held_for, lambda: m.loud or stop("no_sound"))
+        watch = loop.call_later(SEND_WAIT_S, lambda: stop("unsent"))
+        realtime = None
+        with contextlib.suppress(RuntimeError):  # (no realtime session: SEND_WAIT_S bounds it)
+            realtime = self._agent.realtime_llm_session
+            realtime.sent = sent
+        handle = self._session.generate_reply(instructions=SAY + unit)
         try:
             await handle  # done when the unit is said, or cut. It never raises.
         finally:
             watch.cancel()
             self._agent.unit = None
+            if realtime is not None:
+                realtime.sent = None
         if m.revoked:
             outcome = "revoked"
         elif m.why == "long":
@@ -535,6 +592,13 @@ class _DrivenLive:
         }
         if m.why:
             evidence["why"] = m.why
+        if free and m.loud > limit:
+            evidence["overMs"] = round((m.loud - limit) * 1000)  # past the limit its last try was stopped at
+            logger.warning("huddle driven voice: a unit ran %d ms over its sound limit on its second try", evidence["overMs"])
+        if outcome == "long":
+            self._long = unit
+        elif outcome == "said" or not free:
+            self._long = None
         if self._cut_at is not None and outcome != "said":
             evidence["stopMs"] = round((time.monotonic() - self._cut_at) * 1000)  # interrupt sent -> audio stopped
         self._cut_at = None

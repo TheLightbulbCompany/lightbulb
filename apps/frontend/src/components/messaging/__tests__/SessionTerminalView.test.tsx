@@ -13,8 +13,10 @@ const hooks: { data?: (d: string) => void; key?: (e: unknown) => boolean; term?:
 const drain = () => { for (const step of hooks.later?.splice(0) ?? []) step(); };
 vi.mock("@xterm/xterm", () => ({ Terminal: class {
   cols = 80; rows = 24; options = { disableStdin: true };
-  buffer = { active: { viewportY: 100 } }; // 100 rows of history above the screen
-  scrollToLine(n: number) { hooks.did.push(`line ${n}`); this.buffer.active.viewportY = n; }
+  // 100 rows of history above the screen. A test that sets `baseY` gets xterm's own moves: a reset empties
+  // the buffer, each line feed adds a row (the view follows at the tail), and a scroll stops at the tail.
+  buffer: { active: { viewportY: number; baseY?: number } } = { active: { viewportY: 100 } };
+  scrollToLine(n: number) { hooks.did.push(`line ${n}`); this.buffer.active.viewportY = Math.min(n, this.buffer.active.baseY ?? n); }
   scrollLines(n: number) { hooks.scrolled.push(n); this.buffer.active.viewportY = Math.max(0, Math.min(100, this.buffer.active.viewportY + n)); }
   onBinary() { hooks.binary = true; }
   constructor(options: { scrollback?: number }) { hooks.term = this; hooks.options = options; }
@@ -24,13 +26,22 @@ vi.mock("@xterm/xterm", () => ({ Terminal: class {
     Object.defineProperty(shown, "offsetWidth", { get: () => hooks.screen?.w ?? 0 });
     Object.defineProperty(shown, "offsetHeight", { get: () => hooks.screen?.h ?? 0 });
   }
-  reset() { hooks.resets += 1; hooks.did.push("reset"); } dispose() {}
+  reset() { hooks.resets += 1; hooks.did.push("reset"); if (this.buffer.active.baseY !== undefined) this.buffer.active.baseY = this.buffer.active.viewportY = 0; }
+  dispose() {}
   onData(cb: (d: string) => void) { hooks.data = cb; }
   attachCustomKeyEventHandler(cb: (e: unknown) => boolean) { hooks.key = cb; }
   resize(c: number, r: number) { this.cols = c; this.rows = r; }
   // An empty write only keeps a reset or a resize in its place in the order.
   write(data: Uint8Array | string, done?: () => void) {
-    const parse = () => { if (typeof data !== "string") { writes.push(data); hooks.did.push(new TextDecoder().decode(data).replace(/\x1b[^a-zA-Z]*[a-zA-Z]/g, "")); } done?.(); };
+    const parse = () => {
+      if (typeof data !== "string") {
+        const text = new TextDecoder().decode(data).replace(/\x1b[^a-zA-Z]*[a-zA-Z]/g, "");
+        writes.push(data); hooks.did.push(text);
+        const at = this.buffer.active;
+        if (at.baseY !== undefined) { const tail = at.viewportY >= at.baseY; at.baseY += text.split("\n").length - 1; if (tail) at.viewportY = at.baseY; }
+      }
+      done?.();
+    };
     if (hooks.later) hooks.later.push(parse); else parse();
   }
 } }));
@@ -381,6 +392,56 @@ it("a picture that starts over leaves a reader who scrolled up on their line", a
   emit(screenEvent("s1", "history", 0, 3, btoa("old,")));
   emit(screenEvent("s1", "snapshot", 1, 3, btoa("kept")));
   expect(hooks.did).toEqual(["reset", "old,", "kept"]);
+});
+
+/** A view that drew run 1 (100 rows of history), with its reader `at` rows from the top. `did` names each history write "history". */
+const reading = async (at: number) => {
+  const view = await mountView();
+  view.emit(screenEvent("s1", "history", 0, 1, btoa("\n".repeat(100))));
+  view.emit(screenEvent("s1", "snapshot", 1, 1, btoa("live")));
+  const buffer = (hooks.term as unknown as { buffer: { active: { viewportY: number; baseY: number } } }).buffer.active;
+  buffer.baseY = 100; buffer.viewportY = at;
+  hooks.did = [];
+  return { ...view, buffer, did: () => hooks.did.map((d) => (d.trim() ? d : "history")) };
+};
+
+it("a reader who scrolled up stays on their line when the new run's snapshot comes before its history", async () => {
+  // Prod 2026-10-08 (web b786ed9): the session ended, the kept picture's snapshot reached the page before its
+  // history, and a reader at row 30 of 80 ended at the tail. The snapshot alone is one screen: the line was
+  // spent there, and the history that then started the picture over found the reader at the tail.
+  const { emit, buffer, did } = await reading(30);
+  emit(screenEvent("s1", "snapshot", 1, 2, btoa("kept")));
+  expect([did(), buffer.viewportY]).toEqual([["reset", "kept", "line 30"], 0]);
+  emit(screenEvent("s1", "history", 0, 2, btoa("\n".repeat(100))));
+  expect([did().slice(3), buffer.viewportY]).toEqual([["reset", "history", "kept", "line 30"], 30]);
+  // Once: the 30 s resync redraws the screen and moves nobody, wherever they went since.
+  buffer.viewportY = 50; hooks.did = [];
+  emit(screenEvent("s1", "snapshot", 2, 2, btoa("kept")));
+  expect([did(), buffer.viewportY]).toEqual([["kept"], 50]);
+});
+
+it("a reader stays on their line through history that comes late in two parts", async () => {
+  // The newer part first: the picture starts over twice, and the first time it is shorter than the reader's line.
+  const { emit, buffer, did } = await reading(70);
+  emit(screenEvent("s1", "snapshot", 2, 2, btoa("kept")));
+  emit(screenEvent("s1", "history", 1, 2, btoa("\n".repeat(50))));
+  expect([did().slice(3), buffer.viewportY]).toEqual([["reset", "history", "kept", "line 70"], 50]);
+  emit(screenEvent("s1", "history", 0, 2, btoa("\n".repeat(50))));
+  expect([did().slice(7), buffer.viewportY]).toEqual([["reset", "history", "history", "kept", "line 70"], 70]);
+});
+
+it("a reader who moved between two late parts of history stays where they went; one at the tail stays at the tail", async () => {
+  const { emit, buffer, did } = await reading(70);
+  emit(screenEvent("s1", "snapshot", 2, 2, btoa("kept")));
+  emit(screenEvent("s1", "history", 1, 2, btoa("\n".repeat(50))));
+  buffer.viewportY = 20; hooks.did = []; // scrolled up in the shorter picture
+  emit(screenEvent("s1", "history", 0, 2, btoa("\n".repeat(50))));
+  expect([did(), buffer.viewportY]).toEqual([["reset", "history", "history", "kept", "line 20"], 20]);
+  // At the tail when the next run starts: nothing puts them back on an old line.
+  buffer.viewportY = buffer.baseY; hooks.did = [];
+  emit(screenEvent("s1", "snapshot", 1, 3, btoa("kept")));
+  emit(screenEvent("s1", "history", 0, 3, btoa("\n".repeat(100))));
+  expect([did(), buffer.viewportY]).toEqual([["reset", "kept", "reset", "history", "kept"], 100]);
 });
 
 it("a redraw starts after the bytes written before it: xterm resets at once but parses writes later", async () => {

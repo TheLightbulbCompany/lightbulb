@@ -92,9 +92,9 @@ short room line ("I've asked <owner> before sending that to their session.") and
 nothing more: no second message, and never "Done." while the ask is awaiting
 approval. Never re-ask under a new `requestId`: `LOCAL_SESSION_ASK_PENDING` means your ask still
 waits, and `LOCAL_SESSION_ASK_DECLINED` (or a `rejected` receipt with
-`reason: "declined"`) is final for this run. Then say "<owner> declined it; only
-<owner> can approve a resend, or <owner> can turn on sending without asking in
-Settings → Desktop." `agentSend` is not a setting anyone can change; never tell
+`reason: "declined"`) is final for this run. Then say "<owner> declined it. Only
+<owner> can send it, by starting a fresh request themselves, or by turning on
+'Agents can message my sessions without asking' in Settings → Desktop." `agentSend` is not a setting anyone can change; never tell
 the requester to make it `direct`. A receipt means admission/queueing,
 not completed work; after an approval it carries `approvedBy`. Unknown delivery
 must not be resent under a new request ID.

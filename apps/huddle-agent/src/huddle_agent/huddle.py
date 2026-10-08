@@ -157,6 +157,16 @@ MEET_SHARE_S = 1.0  # a second speaker is named on a line only when they spoke t
 # by the second). What its agent still has to say is in the room's ledger, not in the voice.
 MEET_FOLLOWUP_S = 10.0
 # a ready answer waits for a real pause in a meeting, not a breath between two sentences (Live: REQUEST_QUIET_S)
+# No wait reserves the silence a sentence needs: a 5.8 s sentence does not fit a 6.8 s pause once 3 s of it
+# are spent waiting. Tried instead and not done (10-08, replay, 200 seeds x 15 scenarios, current / fast-eot
+# transcriber): the floor being free (every turn resolved, no person given the next one), then a bid of a
+# few words ("I have that."), a 1 s opening, and the first sentence. The bid and its opening cost as much of
+# the pause as the wait did, so no answer fitted that had not before (sidetalk: still 100% / 100% late),
+# and the bids fell into the 2-4 s gaps between people's lines: speech between people's lines went from
+# 24-33% to 89-97% of replays (14-22% to 97-100%), failing check-seeds 1587 -> 2355 (749 -> 1497). Without
+# the bid, the first sentence as soon as the floor is free: 1587 -> 1779 (749 -> 821), and the answer in
+# time in a third of replays with the fast transcriber only. What makes the sentence fit is knowing the
+# turn ended sooner (the transcriber) and a shorter first sentence (the answer's writer), not this rule.
 MEET_QUIET_S = 3.0
 # A mouth hears nobody, so the worker pauses it for someone whose turn over it has lasted this long, counted
 # from the first sign of their speech. A shorter sound (a cough, a word) never pauses it. The pause is only

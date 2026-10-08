@@ -417,3 +417,108 @@ async def test_the_controller_logs_each_decision_on_one_line_with_its_ids(caplog
     assert (permit["ok"], permit["order"], permit["unit"], permit["utterance"]) == (True, order, 0, h._uid)
     (receipt,) = [b for w, b in seen if w == "receipt"]
     assert (receipt["outcome"], receipt["order"], receipt["unit"], receipt["loudMs"]) == ("said", order, 0, 900)
+
+
+# -- 10-09 review: one barrier for a start and for every sentence, held by every task, and never by a clock alone --
+
+
+async def test_a_short_interruption_nobody_has_understood_yet_refuses_the_next_sentence():
+    """Dan says a few words inside the first sentence and stops. Nobody is talking when the second is due,
+    and what he said is not known: it may have been "stop". The utterance pauses and goes on once it is."""
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    answer(h, row.run_id, "forge", "Three PRs are open. The oldest is two days old.")
+    (u,) = h._ledger
+    order, orders = lives[0].order, len(says_of(lives[0]))
+    assert h.may_say("forge", order, 0)
+    talks(h, P2)
+    clock.t += h_mod.TALK_OVER_S / 2  # too short to make it yield
+    quiet(h)
+    h.on_unit("forge", order, 0, "Three PRs are open.", "said", {})
+    assert (u.state, u.cursor) == ("speaking", 1) and h._speaking == set() and turns(h) == ["awaiting-final"]
+    assert not h.may_say("forge", order, 1), "nobody is talking, and his turn is not resolved"
+    assert (u.state, u.cursor, u.tries, u.over) == ("paused", 1, 0, {P2}), "paused at its cursor. Not failed"
+    assert ("interrupt",) in lives[0].calls
+    h.on_playback_ended("forge", order)  # the order's end: nothing was left speaking, so nothing is retried
+    assert (u.state, u.tries) == ("paused", 0)
+    await pause(h, clock, BREATH)
+    assert turns(h) == ["awaiting-final"] and u.state == "paused", "the room is quiet, and his words are not here"
+    assert len(says_of(lives[0])) == orders, "so it waits: nothing is said on speech nobody has understood"
+    await says(h, P2, "Mm-hm.")  # they come, and they were only a listening sound
+    assert turns(h) == [] and u in h._ledger, "resolved, and the utterance was never dropped"
+    await pause(h, clock, BREATH)
+    assert says_of(lives[0])[-1] == ("say", "The oldest is two days old.") and lives[0].first == 1
+    assert len(says_of(lives[0])) == orders + 1 and u.tries == 0, "said on from its cursor, once"
+
+
+async def two_names_at_the_router(summon):
+    """Priya names two agents. /route answers one ask, so the line is dispatched after the round trip
+    (`Huddle._dispatch`), by a task that starts another one: `summon` stands in for that one's work."""
+    from test_huddle import make
+
+    h, room, backend, lives, clock, log = make()
+    await h.on_participants({"u1": "Prasiddha", "u2": "Aden"})
+    backend.route_gate, go, real = asyncio.Event(), asyncio.Event(), h.summon
+
+    async def nested(*a, **kw):
+        await go.wait()
+        return await summon(real, *a, **kw)
+
+    h.summon = nested
+    await h.on_final_transcript("u1", "Prasiddha", "Forge and Gauge, what shipped?")
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert turns(h, "u1") == ["awaiting-route"]
+    (ep,) = h._turns["u1"]
+    backend.route_gate.set()
+    for _ in range(50):
+        await asyncio.sleep(0)
+    return h, lives, ep, go
+
+
+async def test_a_line_that_names_two_agents_holds_its_speech_until_every_task_it_started_has_ended():
+    h, lives, ep, go = await two_names_at_the_router(lambda real, *a, **kw: real(*a, **kw))
+    assert (ep.state, ep.held) == ("awaiting-route", 1), "the round trip is over. The summon it started is not"
+    assert lives == [] and h._turn_open(h._clock()) == ("route", None), "so nothing may be said yet"
+    go.set()
+    await settle(h)
+    assert turns(h, "u1") == [] and ep.state == "resolved" and [live.agent_id for live in lives] == ["forge"]
+
+
+async def test_a_nested_task_that_raises_still_resolves_the_speech_it_held():
+    async def fails(real, *a, **kw):
+        raise RuntimeError("no voice")
+
+    h, lives, ep, go = await two_names_at_the_router(fails)
+    assert (ep.state, ep.held) == ("awaiting-route", 1)
+    go.set()
+    for _ in range(50):  # (not `settle`: it would raise the task's error here)
+        await asyncio.sleep(0)
+    assert (ep.state, ep.held) == ("resolved", 0) and turns(h, "u1") == [], "a failure never holds the room"
+
+
+async def test_speech_the_detector_still_hears_holds_the_floor_when_its_sound_goes_stale_then_degrades(capsys):
+    """The detector's stop event can be lost. Stale sound is no proof that Dan stopped, so nothing is said
+    on it. The wait is bounded, and its end is the named degraded path."""
+    h, backend, lives, clock, row = await ready()
+    began = clock.t
+    h.on_active_speakers(set())  # the SFU hears him no more, and the detector never says he stopped
+    clock.t = began + h_mod.LEVEL_FRESH_S + 0.1
+    h._talking_changed()  # (the timer set when his sound stopped)
+    await pause(h, clock, h_mod.MEET_QUIET_S)
+    assert h._speaking == set() and turns(h) == ["speaking"], "nobody is heard, and his speech is still open"
+    assert says_of(lives[0]) == [("say", ACK)] and h._turn_open(clock.t)[0] == "person", "it holds the floor"
+    clock.t = began + h_mod.DETECTOR_LOST_S - 0.1
+    await h.tick()
+    await settle(h)
+    assert turns(h) == ["speaking"] and says_of(lives[0]) == [("say", ACK)]
+    capsys.readouterr()
+    await pause(h, clock, 0.2)
+    assert turns(h) == ["awaiting-final"] and says_of(lives[0]) == [("say", ACK)], "ended, and still not approved"
+    out = capsys.readouterr().out
+    assert '"live.turn.degraded": 1' in out and '"why": "detector_lost"' in out, "named and counted"
+    await pause(h, clock, h_mod.FINAL_WAIT_S - 0.2)  # (its voice has said its piece, and closes meanwhile)
+    assert turns(h) == ["awaiting-final"] and said(lives) == [("forge", ACK)]
+    await pause(h, clock, 0.3)
+    assert turns(h) == [] and h._unknown_at > 0, "no transcript came either: unknown human speech"
+    assert said(lives)[1:] == [("forge", ANSWER)], "the answer its asker is waiting for goes"

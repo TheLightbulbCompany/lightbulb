@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import contextvars
 import json
 import logging
 import math
@@ -178,6 +179,10 @@ LATE_RETRY_MAX_S = 30  # a written answer whose post failed is tried again after
 # A person stopped speaking and no transcript of it came this long: none is coming (`Huddle._final_timeout`).
 # It bounds only that. It never ends speech still going on, and never stands in for a /route answer.
 FINAL_WAIT_S = 3.0
+# The detector says a person still speaks and the SFU has heard no sound from them for this long: its stop
+# event is taken for lost. Their speech then waits for its transcript like any that ended (FINAL_WAIT_S).
+# Long enough for a pause inside a sentence, which the detector may hold through.
+DETECTOR_LOST_S = 5.0
 # What a mouth says that is not an answer: fixed lines the worker picks, no model writes them. A written
 # acknowledgement read out the worker's notes ("Vera's checking...", 10-07 rig) and a model given "like 'On it.'"
 # said "On it." every time (10-05 prod Meet). No line reads the task back: fitting a request into a sentence
@@ -421,6 +426,12 @@ class Epoch:
     held: int = 0
 
 
+# The speech whose line the running task is handling. asyncio copies it into every task made while it is
+# set, so a task that a routing task starts later still knows the speech it works for (`Huddle._routes`).
+# An attribute on the room could not say that: it is cleared when the final's handler returns.
+_ROUTING: contextvars.ContextVar[Epoch | None] = contextvars.ContextVar("huddle_routing", default=None)
+
+
 @dataclass
 class Engagement:
     """A person and an agent talking with each other: what the room knows about whether that person wants to
@@ -599,7 +610,6 @@ class Huddle:
         # The per-person turn state: identity -> their speech not yet acted on, oldest first (`Epoch`).
         self._turns: dict[str, list[Epoch]] = {}
         self._eid = 0
-        self._routing_for: Epoch | None = None  # the speech whose final is being handled right now (`_routes`)
         self._unknown_at = -math.inf  # when speech that never got a transcript last ended (`_final_timeout`)
         self._turn_at: dict[tuple[str, str], float] = {}  # (identity, label) -> their last line with real words
         self._level_at: dict[str, float] = {}  # identity -> when the SFU last heard sound from them
@@ -690,9 +700,14 @@ class Huddle:
     def _routes(self, coro) -> asyncio.Task:
         """A task that works out what a person's line asks and applies it. The speech the line is the
         transcript of stays open until every such task has ended, so nothing is said on a line that is
-        still being understood, and its effects are in place before the scheduler looks again."""
+        still being understood, and its effects are in place before the scheduler looks again.
+
+        The speech is carried by `_ROUTING`, so a routing task that starts another one (a line that named
+        two agents is dispatched after its /route round trip) hands it the same speech. The outer task
+        still holds it then, so it cannot resolve between the two. A task that raises or is cancelled
+        releases it like one that ended."""
         t = self._spawn(coro)
-        if (ep := self._routing_for) is not None:
+        if (ep := _ROUTING.get()) is not None and ep.state == "awaiting-route":
             ep.held += 1
             t.add_done_callback(lambda _t: self._release(ep))
         return t
@@ -1030,11 +1045,11 @@ class Huddle:
         """A person's transcribed line. The speech it covers is registered as being routed before anything
         else runs, and is resolved only when the line has been handled and every task applying it has ended."""
         ep = self._final_epoch(identity)
-        self._routing_for = ep
+        token = _ROUTING.set(ep)
         try:
             self._heard_final(identity, name, text)
         finally:
-            self._routing_for = None
+            _ROUTING.reset(token)
             self._release(ep, 0)
 
     def _final_epoch(self, identity: str) -> Epoch:
@@ -1082,6 +1097,15 @@ class Huddle:
             self._unknown_at = max(self._unknown_at, ep.ended)
             emit_metric("live.turn.degraded", 1, "Count", {"why": "final_timeout"})
         self._turn_log("degraded:final_timeout" if ep.credible else "dropped:not_credible", ep)
+
+    def _detector_lost(self, ep: Epoch, now: float) -> None:
+        """The detector-loss policy, `detector_lost`: the detector still says this person speaks, and the
+        SFU has heard nothing from them for DETECTOR_LOST_S. Speech that may be going on is never approved
+        by a clock alone, so it is not dropped: it ends here and waits for its transcript. One that comes
+        is routed as usual. None in FINAL_WAIT_S closes it as unknown human speech (`_final_timeout`)."""
+        ep.state, ep.ended = "awaiting-final", now
+        emit_metric("live.turn.degraded", 1, "Count", {"why": "detector_lost"})
+        self._turn_log("degraded:detector_lost", ep)
 
     def _turn_log(self, event: str, ep: Epoch) -> None:
         self._log(
@@ -1898,8 +1922,9 @@ class Huddle:
         resolved. Why, and in how many seconds to look again (None: an event will pump). None: no turn is
         open.
 
-        A turn is open while its person is speaking (`person`), while they have stopped and the transcript
-        of it is not here (`final`, at most FINAL_WAIT_S, then `_final_timeout`), while that transcript is
+        A turn is open while its person is speaking (`person`: the room hears them, or their speech began
+        and the detector has not said it ended, at most DETECTOR_LOST_S after the SFU's last sound of them,
+        then `_detector_lost`), while they have stopped and the transcript of it is not here (`final`, at most FINAL_WAIT_S, then `_final_timeout`), while that transcript is
         being routed and its effects applied (`route`, however long: an answer that is not here is never
         taken for a yes), and while the line was left unfinished (`turn`: /route said hold, or it trailed
         off and its rest is waited for CALL_ON_S)."""
@@ -1908,6 +1933,11 @@ class Huddle:
         left: float | None = None
         for eps in list(self._turns.values()):
             for ep in list(eps):
+                if ep.state == "speaking" and ep.credible:
+                    # Not in `_speaking`: the SFU's sound of them went stale. That is no sign they stopped.
+                    if (lost := DETECTOR_LOST_S - (now - self._level_at.get(ep.who, ep.began))) > 0:
+                        return "person", lost
+                    self._detector_lost(ep, now)
                 if ep.state == "awaiting-route":
                     return "route", None
                 if ep.state == "awaiting-final":
@@ -1987,12 +2017,17 @@ class Huddle:
         every unit of an order, and again as that unit's first audio is about to go out.
 
         It is the utterance's `speaking` state: `_start` grants it, and a pause, a strike or a failed
-        playback takes it away. Nobody may be talking when a unit begins: someone who is makes the
-        utterance pause here, before the unit, and what they said decides when it goes on (`_hold`)."""
+        playback takes it away. A unit begins under the rule an utterance starts under, and no other
+        (`_turn_open`): no person may have a turn that is not resolved. Someone talking is one. So is
+        someone who said a few words between two units and stopped: what they said is not known yet, and
+        it may have been "stop". The utterance pauses here, before the unit, at its cursor. It is not
+        dropped and not counted as failed: the scheduler says it on from there once the turn is resolved,
+        as after any yield (`_hold`)."""
         u = next((u for u in self._ledger if u.agent == agent_id and u.order == order and u.state == "speaking"), None)
-        why = "stale" if u is None or u.cursor != index else "person" if self._speaking else ""
-        if why == "person":
+        why = "stale" if u is None or u.cursor != index else (self._turn_open(self._clock()) or ("",))[0]
+        if why and why != "stale":
             self._yield(u)
+            self._pump()  # the scheduler takes it from here: it notes what holds it and sets its timer
         self._log(
             "permit", ok=not why, why=why, agent=agent_id, order=order, unit=index, utterance=u.id if u else None,
             speaking=sorted(self._speaking),
@@ -2114,7 +2149,12 @@ class Huddle:
         emit_metric("live.meet.talked_over", 1, "Count")
         now = self._clock()
         u.state = "paused"
-        u.over |= self._speaking
+        # Who it paused for: whoever talks now, and whoever spoke and has not been understood yet. Their
+        # words, once known, say what the talk was (`_talked_over`).
+        unheard = ("speaking", "awaiting-final")
+        u.over |= self._speaking | {
+            w for w, eps in self._turns.items() if any(e.credible and e.state in unheard for e in eps)
+        }
         if v := self._floor_voice(u.agent):
             self._live_call(v, "interrupt")
         if e := self._engagement((u.audience, u.label), u.agent) if u.audience else None:

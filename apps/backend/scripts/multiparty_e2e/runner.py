@@ -61,17 +61,43 @@ def _secret(name: str) -> str:
 
 
 # ------------------------------------------------------------------ Clerk (dev): admin API + FAPI ticket sign-in
+#: Backend API pacing: at most 5 calls a second, and a 429 is waited out (Retry-After, else 2 s x attempt)
+#: before the caller sees any response. Every Clerk call, every verb: a 16-user fixture setup 429'd on its
+#: user lookups and membership adds on 2026-10-08 when only the session POSTs were paced.
+BAPI_SPACING_S = 0.2
+BAPI_TRIES = 6
+
+
+class PacedClient(httpx.Client):
+    """httpx.Client whose every request is paced and whose 429s are retried; the last answer is returned."""
+
+    _last_call = 0.0
+
+    def send(self, request, **kwargs):
+        for attempt in range(1, BAPI_TRIES + 1):
+            wait = PacedClient._last_call + BAPI_SPACING_S - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            PacedClient._last_call = time.monotonic()
+            resp = super().send(request, **kwargs)
+            if resp.status_code != 429 or attempt == BAPI_TRIES:
+                return resp
+            resp.read()
+            time.sleep(min(float(resp.headers.get("retry-after") or 2 * attempt), 60))
+        raise AssertionError("unreachable")
+
+
 class Clerk:
     def __init__(self):
         self.sk = _secret("lightbulb/dev/clerk_secret_key")
-        self.http = httpx.Client(
+        self.http = PacedClient(
             base_url="https://api.clerk.com/v1", headers={"Authorization": f"Bearer {self.sk}", **UA}
         )
         if self.http.get("/instance").json().get("environment_type") != "development":
             raise SystemExit("refusing: the Clerk secret is not a development instance")
 
     def user(self, email: str) -> dict | None:
-        found = self.http.get("/users", params={"email_address": email}).json()
+        found = self.http.get("/users", params={"email_address": email}).raise_for_status().json()
         return found[0] if found else None
 
     def ensure_member(self, key: str) -> str:

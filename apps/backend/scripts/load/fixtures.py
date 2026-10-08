@@ -27,7 +27,6 @@ import subprocess
 import sys
 import time
 
-import httpx
 from pathlib import Path
 
 from scripts.multiparty_e2e.runner import API, Api, Clerk, dev_only
@@ -43,9 +42,6 @@ DELETE_RETRY_S = 120
 APPSYNC_TEMPLATE = "lightbulb-appsync"
 #: Clerk's documented bounds for ``expires_in_seconds`` on session tokens.
 TOKEN_TTL_MIN, TOKEN_TTL_MAX = 30, 315_360_000
-#: Backend API pacing: at most 5 calls a second from the session path (BAPI has its own limits).
-BAPI_SPACING_S = 0.2
-BAPI_TRIES = 6
 
 
 # ------------------------------------------------------------------ pure helpers (unit-tested)
@@ -154,7 +150,7 @@ ALREADY_MEMBER = "already_a_member_in_organization"
 
 
 def _add_member(clerk: Clerk, org_id: str, user_id: str) -> None:
-    resp = _post(clerk, f"/organizations/{org_id}/memberships", {"user_id": user_id, "role": "org:member"})
+    resp = clerk.http.post(f"/organizations/{org_id}/memberships", json={"user_id": user_id, "role": "org:member"})
     if resp.status_code < 400:
         return
     try:
@@ -167,30 +163,10 @@ def _add_member(clerk: Clerk, org_id: str, user_id: str) -> None:
     raise SystemExit(f"adding {user_id} to {org_id} failed: HTTP {resp.status_code} {resp.text[:500]}")
 
 
-_last_call = 0.0
-
-
-def _post(clerk: Clerk, path: str, body: dict) -> httpx.Response:
-    """One paced Backend API POST (<= 5/s). A 429 waits out Retry-After (else 2 s x attempt), then the
-    response is the caller's to judge. Every setup/run POST goes through here: user and org creation and
-    membership adds hit the same per-instance limit the session path does (setup 429'd on 2026-10-08)."""
-    global _last_call
-    for attempt in range(1, BAPI_TRIES + 1):
-        wait = _last_call + BAPI_SPACING_S - time.monotonic()
-        if wait > 0:
-            time.sleep(wait)
-        _last_call = time.monotonic()
-        resp = clerk.http.post(path, json=body)
-        if resp.status_code == 429 and attempt < BAPI_TRIES:
-            time.sleep(min(float(resp.headers.get("retry-after") or 2 * attempt), 60))
-            continue
-        return resp
-    raise AssertionError("unreachable")
-
-
 def _bapi(clerk: Clerk, path: str, body: dict) -> dict:
-    """A paced POST whose only acceptable answer is success: anything else stops the run with Clerk's words."""
-    resp = _post(clerk, path, body)
+    """A Backend API POST whose only acceptable answer is success: anything else stops the run with Clerk's
+    words. Pacing and 429 retries live in the client (runner.PacedClient), so every verb gets them."""
+    resp = clerk.http.post(path, json=body)
     if resp.status_code >= 400:
         raise SystemExit(f"Clerk POST {path.split('/')[1]} failed: HTTP {resp.status_code} {resp.text[:300]}")
     return resp.json()

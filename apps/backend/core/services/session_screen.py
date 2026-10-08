@@ -127,13 +127,6 @@ async def watch(auth: sessions.Caller, session_id: str, mounted: bool = False) -
             UpdateExpression="SET userId = :u, expiresAt = :exp, since = :now REMOVE typedAt",
             ExpressionAttributeValues=values,
         )
-    await store.run_in_thread(
-        table.update_item,
-        Key=_watch_key(row),
-        UpdateExpression="SET sessionId = :sid, expiresAt = :exp, since = "
-        + (":now" if fresh else "if_not_exists(since, :now)"),
-        ExpressionAttributeValues={":sid": row["sessionId"], ":exp": expires, ":now": now},
-    )
     # The marker the frames channel's authorizer reads, for a session shared before put_session
     # wrote it (checked shared just above). On every watch, renewals too: a view whose lease is
     # still live renews instead of starting fresh (Codex on #3916). Idempotent; one write per 15 s.
@@ -145,12 +138,26 @@ async def watch(auth: sessions.Caller, session_id: str, mounted: bool = False) -
             "ownerId": row["ownerId"],
         },
     )
-    if fresh and "liveTerminal" in row.get("deviceFeatures", ()):
-        await _nudge(row, now)
+    await tell_mac(row, now, fresh)
     # The owner's band names the new viewer now, not at the next heartbeat ack (up to 10 s later).
     # After the nudge: the picture matters more than the name. The owner is never listed.
     if fresh and row.get("endedAt") is None and auth.user_id != row["humanUserId"]:
         await session_presence.push(row)
+
+
+async def tell_mac(row: dict, now: int, fresh: bool) -> None:
+    """Someone watches this session for the next 45 s: its Mac's heartbeat ack lists it, and a
+    viewer with no screen yet (`fresh`) gets history and a snapshot now. Shared by workspace
+    viewers (`watch`) and link viewers (`session_links.viewing`)."""
+    await store.run_in_thread(
+        store._table().update_item,
+        Key=_watch_key(row),
+        UpdateExpression="SET sessionId = :sid, expiresAt = :exp, since = "
+        + (":now" if fresh else "if_not_exists(since, :now)"),
+        ExpressionAttributeValues={":sid": row["sessionId"], ":exp": now + VIEWER_TTL_S, ":now": now},
+    )
+    if fresh and "liveTerminal" in row.get("deviceFeatures", ()):
+        await _nudge(row, now)
 
 
 async def _screen_gone(row: dict) -> None:
@@ -375,17 +382,29 @@ async def forward(relay, cid: str, body: dict) -> None:
             for r in await store._query(repo.session_pk(owner, sid), begins_with="VIEWER#")
             if int(r.get("expiresAt", 0)) > now
         ]
-        if not viewers:
+        # An "Anyone with the link" link's watchers: read on every frame, like the row above, so a
+        # link that stops being public (or loses its last watcher) gets no further frame.
+        public = sessions.public_id(row.get("shareLink"))
+        by_link = bool(public) and any(
+            int(r.get("expiresAt", 0)) > now for r in await store._query(f"PUBWATCH#{public}", begins_with="VIEWER#")
+        )
+        if not viewers and not by_link:
             return
         if not _spend(sid, size, now):
             put_metric("session.screen.frame.dropped")
             return
-        event = make_live_event(
-            "workspace.session.screen", frame.model_dump(mode="json", by_alias=True, exclude={"type"})
-        )
-        workspace = await store.ensure_workspace_id(owner)  # minted long before any session: a read
+        payload = frame.model_dump(mode="json", by_alias=True, exclude={"type"})
+        publisher = live_events.get_live_event_publisher()
         try:
-            await live_events.get_live_event_publisher().publish_session_frames(workspace, event)
+            if viewers:
+                workspace = await store.ensure_workspace_id(owner)  # minted long before any session: a read
+                await publisher.publish_session_frames(workspace, make_live_event("workspace.session.screen", payload))
+            if by_link:
+                # The publicId stands in for the session's id and generation: a link viewer learns neither.
+                await publisher.publish_link_frames(
+                    public,
+                    make_live_event("workspace.session.screen", {**payload, "sessionId": public, "generation": public}),
+                )
         except Exception:  # noqa: BLE001 -- metered; the Mac is never told
             put_metric("session.screen.publish.failed")
             return

@@ -528,7 +528,7 @@ describe("ApiStack — messaging AppSync Events (OIDC subscribe / IAM publish)",
           }),
           { AuthType: "AWS_IAM" },
         ]),
-        ConnectionAuthModes: [{ AuthType: "OPENID_CONNECT" }],
+        ConnectionAuthModes: [{ AuthType: "OPENID_CONNECT" }, { AuthType: "AWS_LAMBDA" }],
         DefaultPublishAuthModes: [{ AuthType: "AWS_IAM" }],
         DefaultSubscribeAuthModes: [{ AuthType: "OPENID_CONNECT" }],
       }),
@@ -597,7 +597,25 @@ describe("ApiStack — messaging AppSync Events (OIDC subscribe / IAM publish)",
     ]) {
       expect(dataSourceActions.has(forbidden)).toBe(false);
     }
-    API_TEMPLATE.resourceCountIs("AWS::AppSync::ChannelNamespace", 1);
+    // `ws` for members, `pub` for an "Anyone with the link" session link's live terminal.
+    API_TEMPLATE.resourceCountIs("AWS::AppSync::ChannelNamespace", 2);
+    API_TEMPLATE.hasResourceProperties("AWS::AppSync::ChannelNamespace", {
+      Name: "pub",
+      PublishAuthModes: [{ AuthType: "AWS_IAM" }],
+      SubscribeAuthModes: [{ AuthType: "AWS_LAMBDA" }],
+    });
+    // The authorizer answers fresh every time and can read only link-viewer leases.
+    API_TEMPLATE.hasResourceProperties("AWS::AppSync::Api", {
+      EventConfig: Match.objectLike({
+        AuthProviders: Match.arrayWith([
+          Match.objectLike({
+            AuthType: "AWS_LAMBDA",
+            LambdaAuthorizerConfig: Match.objectLike({ AuthorizerResultTtlInSeconds: 0 }),
+          }),
+        ]),
+      }),
+    });
+    expect(JSON.stringify(API_TEMPLATE.findResources("AWS::IAM::Policy"))).toContain('"dynamodb:LeadingKeys":["PUBWATCH#*"]');
     API_TEMPLATE.hasResourceProperties("AWS::AppSync::ChannelNamespace", {
       Name: "ws",
       PublishAuthModes: [{ AuthType: "AWS_IAM" }],

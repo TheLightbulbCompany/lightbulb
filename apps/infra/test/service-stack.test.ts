@@ -1298,7 +1298,10 @@ describe("ServiceStack — messaging environment and least privilege", () => {
             Sid: "PublishMessagingEvents",
             Effect: "Allow",
             Action: "appsync:EventPublish",
-            Resource: "arn:aws:appsync:us-east-1:877352799272:apis/events-dev/channelNamespace/ws",
+            Resource: [
+              "arn:aws:appsync:us-east-1:877352799272:apis/events-dev/channelNamespace/ws",
+              "arn:aws:appsync:us-east-1:877352799272:apis/events-dev/channelNamespace/pub",
+            ],
           },
         ]),
       },

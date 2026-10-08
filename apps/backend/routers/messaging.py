@@ -461,6 +461,24 @@ async def open_session_link(body: session_links.LinkOpenRequest, auth: AuthConte
     return await session_links.open_page(auth, body.token, refresh=body.refresh)
 
 
+@router.post("/public/session-links/viewing", response_model=session_links.Viewing)
+async def view_session_link(body: session_links.ViewingRequest):
+    """An "Anyone with the link" holder watches the live terminal, view only. No sign-in."""
+    return await session_links.viewing(body.token, body.lease, body.fresh)
+
+
+class SessionPickupSwitch(ContractModel):
+    enabled: bool
+
+
+@router.put("/messaging/sessions/{session_id}/pickup", response_model=local_sessions.LocalSession)
+async def set_local_session_pickup(
+    session_id: str, body: SessionPickupSwitch, auth: AuthContext = Depends(get_current_user)
+):
+    """Owner-only "Let people continue this session". Off keeps the link; it only shows the session then."""
+    return await session_pickup.set_pickup(auth, session_id, body.enabled)
+
+
 @router.post("/session-links/copies", response_model=session_links.CopyCode, status_code=201)
 async def copy_session_link(body: session_links.CopyRequest, auth: AuthContext = Depends(get_human_session)):
     """Continue: the moment a copy is made (spec §3.5). Needs the taker's own workspace."""

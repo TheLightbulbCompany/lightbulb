@@ -69,6 +69,7 @@ def sidecars_blob() -> bytes:
 async def shared(transport, s3, audience="anyone", repo_info=PUBLIC, chunks=(SECRET_LINE,), **commit):
     sid = await claude_session(transport)
     token = (await service.put_link(ALICE, sid, audience)).url.split("#", 1)[1]
+    await pickup_tests.pickup.set_pickup(ALICE, sid, True)  # "Let people continue this session"
     assert (await upload_and_commit(s3, sid, chunks=chunks, repo=repo_info, **commit)).status_code == 204
     return sid, token
 

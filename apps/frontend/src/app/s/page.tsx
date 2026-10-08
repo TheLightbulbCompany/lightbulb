@@ -1,13 +1,14 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { SignInButton, SignUpButton, useAuth } from "@clerk/nextjs";
-import { createMessagingClient, type SessionLinkCode, type SessionLinkPage } from "@lightbulb/shared";
+import { AppSyncEventsClient, createMessagingClient, type LiveEvent, type SessionLinkCode, type SessionLinkPage, type SessionLinkViewing } from "@lightbulb/shared";
 import { ApiError, BACKEND_URL, useApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { copyText, sessionPermalink } from "@/components/messaging/messageLinks";
+import { SessionTerminalView } from "@/components/messaging/SessionTerminalView";
 // For .session-state-panel: this route is outside /chat, which is where the sheet is otherwise loaded.
 import "@/components/messaging/messaging.css";
 
@@ -45,8 +46,70 @@ async function publicPost<T>(path: string, body: unknown, token: string | null):
     body: JSON.stringify(body),
   });
   const json = await res.json().catch(() => null);
-  if (!res.ok) throw Object.assign(new Error((json as { message?: string } | null)?.message || "Could not open this link. Try again."), { refused: res.status === 403 || res.status === 404 || res.status === 410 }); // a 429 or 5xx is not a refusal
+  if (!res.ok) throw new ApiError(res.status, json, (json as { message?: string } | null)?.message || "Could not open this link. Try again.");
   return json as T;
+}
+/** The server refused the link itself. A 409 (offline, full), a 429 or a 5xx is not a refusal. */
+const refusal = (e: unknown) => e instanceof ApiError && (e.status === 403 || e.status === 404 || e.status === 410);
+
+const VIEWING_RETRY_MS = 15_000;
+const noop = () => {};
+
+/** An "Anyone with the link" session's live terminal, view only, with no sign-in (owner ruling
+ *  2026-10-08). The page holds a 45 s seat it renews with the link's token, and one AppSync
+ *  subscription whose only credential is that seat's lease. It gets screen frames and nothing else:
+ *  no input route, no chat, no events, and no session or workspace id (frames carry `watchId`). */
+function LinkTerminal({ token }: { token: string }) {
+  const [seat, setSeat] = useState<{ view: SessionLinkViewing; client: AppSyncEventsClient } | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [liveChannels, setLiveChannels] = useState<readonly string[]>([]);
+  // Bumped to take a seat again: after a failure, or when the link was made public anew (a new channel).
+  const [round, setRound] = useState(0);
+  const lease = useRef<string | null>(null);
+  const handlers = useRef(new Set<(event: LiveEvent) => void>());
+  const viewing = useCallback(async (fresh?: boolean) => {
+    const next = await publicPost<SessionLinkViewing>("/public/session-links/viewing",
+      { token, ...(lease.current ? { lease: lease.current } : {}), ...(fresh ? { fresh: true } : {}) }, null);
+    lease.current = next.lease;
+    return next;
+  }, [token]);
+  useEffect(() => {
+    let alive = true;
+    let client: AppSyncEventsClient | undefined;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    lease.current = null;
+    viewing().then((view) => {
+      if (!alive) return;
+      client = new AppSyncEventsClient({
+        httpEndpoint: view.httpEndpoint, realtimeEndpoint: view.realtimeEndpoint,
+        getToken: async () => lease.current,
+        onEvent: (event) => handlers.current.forEach((handler) => handler(event)),
+        onStatus: (status) => { if (alive) setLiveChannels(status.liveChannels); },
+        uuid: () => crypto.randomUUID(),
+      });
+      setNote(null);
+      setSeat({ view, client });
+    }, (e) => {
+      if (!alive) return;
+      setNote(e instanceof ApiError ? e.message : "Could not reach this session. Trying again.");
+      if (!refusal(e)) retry = setTimeout(() => setRound((n) => n + 1), VIEWING_RETRY_MS); // a refused link is the page poll's to show
+    });
+    return () => { alive = false; clearTimeout(retry); client?.close(); setSeat(null); setLiveChannels([]); };
+  }, [viewing, round]);
+  const channel = seat?.view.channel;
+  const watch = useCallback(async (_id: string, fresh?: boolean) => {
+    if ((await viewing(fresh)).channel !== channel) setRound((n) => n + 1);
+  }, [viewing, channel]);
+  const onEvent = useCallback((handler: (event: LiveEvent) => void) => { handlers.current.add(handler); return () => { handlers.current.delete(handler); }; }, []);
+  const client = seat?.client;
+  const claim = useCallback((wanted: string) => { client?.setChannels([wanted]); return () => client?.setChannels([]); }, [client]);
+  const watchId = seat?.view.watchId;
+  const session = useMemo(() => (watchId ? { sessionId: watchId, generation: watchId } : null), [watchId]);
+  const frames = useMemo(() => (channel ? { channel, claim, liveChannels } : undefined), [channel, claim, liveChannels]);
+  if (!session) return <section aria-label="Session state" className="session-state-panel rounded-lg border"><p role="status">{note ?? "Connecting…"}</p></section>;
+  return <section aria-label="Live terminal" className="flex h-[70dvh] flex-col overflow-hidden rounded-lg border">
+    <SessionTerminalView session={session} frames={frames} onEvent={onEvent} watch={watch} onLive={noop} admitted={false} />
+  </section>;
 }
 
 function CodeLine({ code }: { code: SessionLinkCode }) {
@@ -118,7 +181,7 @@ export default function SessionLinkPageRoute() {
               setPage(next);
               if (next.state !== "live" && timer) clearInterval(timer);
             } catch (e) {
-              if (!alive || !(e as { refused?: boolean }).refused) return;
+              if (!alive || !refusal(e)) return;
               if (timer) clearInterval(timer);
               setRefused(true);
               setError(e instanceof Error ? e.message : "Could not open this link. Try again.");
@@ -127,12 +190,17 @@ export default function SessionLinkPageRoute() {
         }, POLL_MS);
       } catch (e) {
         if (!alive) return;
-        setRefused(!!(e as { refused?: boolean }).refused);
+        setRefused(refusal(e));
         setError(e instanceof Error ? e.message : "Could not open this link. Try again.");
       }
     })();
     return () => { alive = false; if (timer) clearInterval(timer); };
   }, [stash, isLoaded, isSignedIn]);
+
+  // A workspace member lands in the app's own session view (Watch, Ask to join). Not in the CLI's
+  // confirm mode: that visit is here to press Continue.
+  const memberAt = page?.me.member && !stash?.port ? page.sessionId : undefined;
+  useEffect(() => { if (memberAt) router.replace(sessionPermalink(memberAt, "")); }, [memberAt, router]);
 
   const confirmContinue = async () => {
     if (!stash?.port || !stash.challenge) return;
@@ -163,10 +231,11 @@ export default function SessionLinkPageRoute() {
     <p role="alert" className="session-state-title">{error}</p>
     {refused && isSignedIn && <p>You are signed in, so this link was turned off or was shared with a workspace you are not in. Ask the person who sent it for a new link.</p>}
   </Unopened>;
-  if (!page || !stash) return <main className="mx-auto max-w-3xl p-4"><p role="status">Opening…</p></main>;
+  if (!page || !stash || memberAt) return <main className="mx-auto max-w-3xl p-4"><p role="status">Opening…</p></main>;
   const command = `lightbulb continue '${window.location.origin}/s#${stash.token}'`;
   const canContinue = page.provider === "claude" && page.continuable;
-  return <main className="mx-auto max-w-3xl p-4">
+  const watching = page.state === "live" && !page.me.member;
+  return <main className={`mx-auto p-4 ${watching ? "max-w-5xl" : "max-w-3xl"}`}>
     <header className="mb-4">
       <h1 className="text-lg font-semibold">{page.title?.trim() || "A shared session"}</h1>
       <p className="text-sm text-muted-foreground">{page.ownerFirstName}&apos;s {page.provider === "claude" ? "Claude Code" : "Codex"} session · {page.state === "live" ? "Live" : page.state === "ended" ? "Ended" : "Offline"}</p>
@@ -190,12 +259,11 @@ export default function SessionLinkPageRoute() {
             <Button type="button" variant="outline" size="sm" onClick={() => void copyText(command)}>Copy command</Button>
           </>}
     </section>}
-    <section aria-label="Session state" className="session-state-panel rounded-lg border">
-      {/* No word on the screen: this page never shows one, and an ended session's Mac may still keep it for teammates. */}
+    {watching ? <LinkTerminal token={stash.token} /> : <section aria-label="Session state" className="session-state-panel rounded-lg border">
+      {/* An ended session shows no screen here: its Mac may still keep the final one, for teammates only. */}
       {page.state === "ended" ? <p className="font-semibold">Ended</p>
         : page.state === "offline" ? <p className="font-semibold">{page.ownerFirstName}&apos;s Mac is offline</p>
-        : page.me.member ? <p>This session is live in Lightbulb. Open it there to watch its terminal.</p>
-        : <p>This session is live.</p>}
-    </section>
+        : <p>This session is live in Lightbulb. Open it there to watch its terminal.</p>}
+    </section>}
   </main>;
 }

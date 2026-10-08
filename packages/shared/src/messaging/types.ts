@@ -559,6 +559,9 @@ export interface SessionLinkPage {
   code: SessionLinkCode; continuable: boolean; me: { signedIn: boolean; member: boolean }; sessionId?: string;
 }
 export interface SessionCopyCode { code: string }
+/** A link viewer's seat on an "Anyone with the link" session's live terminal (POST /public/session-links/viewing).
+ *  `lease` is the AppSync token for `channel` alone; `watchId` stands in for the session's id and generation in its frames. */
+export interface SessionLinkViewing { lease: string; channel: string; watchId: string; httpEndpoint: string; realtimeEndpoint: string }
 
 export interface WorkspaceSessions { sessions: LocalSession[] }
 

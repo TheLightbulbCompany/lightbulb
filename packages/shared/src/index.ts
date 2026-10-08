@@ -51,7 +51,7 @@ export { createApiClient, fetchJsonWithStatus } from "./api/client";
 export type { ApiCallOptions, ApiMethods } from "./api/client";
 
 export { accumulateStreamText } from "./live/streamText";
-export { framesChannelFor } from "./live/appsyncEvents";
+export { AppSyncEventsClient, framesChannelFor } from "./live/appsyncEvents";
 export { useLiveEvents } from "./live/useLiveEvents";
 export type { CallTurnFrame, ChatIncomingMessage, LiveEvent, LiveEventOf, MessagePush, RoomActivityChanged, RoomBrowserFrame, SessionAttention, SessionScreen, SessionTyping } from "./live/types";
 export { applyRoomActivity, pruneRoomActivity, roomLiveLine, typingLine } from "./messaging/roomActivity";
@@ -238,6 +238,7 @@ export type {
   LocalSessionAuditEntry,
   LocalSessionPendingApproval,
   SessionCopyCode,
+  SessionLinkViewing,
   SessionLink,
   SessionLinkAudience,
   SessionLinkCode,

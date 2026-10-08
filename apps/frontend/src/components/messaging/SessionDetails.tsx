@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { Link, MessageSquare } from "lucide-react";
+import { MessageSquare } from "lucide-react";
 import {
   auditLine, pickupSource, pickupStatus, sessionChanges, sessionFacts, sessionPlan, sessionStatus, sessionTitle, sessionToolName, usageLine,
   useSessionAudit, useSessionSharing, useTeamControl, useUsageSharing,
@@ -13,7 +13,6 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
-import { copyText, sessionPermalink } from "./messageLinks";
 import { LocalSessionWork } from "./LocalSessionWork";
 import { SessionCommitPr } from "./SessionCommitPr";
 import { SessionOverview } from "./SessionOverview";
@@ -167,8 +166,6 @@ function Access({ session, ownerName, own, client, nameOf, switches: { control, 
     </Setting>}
     <div className="session-setting session-setting-stacked">
       <div className="session-setting-text">
-        <p className="session-setting-label">Link</p>
-        <p className="session-setting-about">One link to this session. You choose who can open it; you can turn it off at any time.</p>
         {session.pickup?.allowed && <p role="status" className="session-setting-state">{pickupStatus(session.pickup, timeAgo) || "Taking the first snapshot."}</p>}
       </div>
       <SessionShareLink session={session} client={client} />
@@ -194,7 +191,6 @@ export function SessionDetails({ open, onOpenChange, onClosed, tab, onTab, sessi
   /** A workspace member's name, for the people the owner let in. */
   nameOf?: (userId: string) => string;
 }) {
-  const [copied, setCopied] = useState("");
   const switches = useAccessSwitches(client, session);
   const hasChanges = useMemo(() => Boolean(sessionPlan(events)?.length) || sessionChanges(events).length > 0, [events]);
   return <Dialog open={open} onOpenChange={onOpenChange}>
@@ -222,14 +218,11 @@ export function SessionDetails({ open, onOpenChange, onClosed, tab, onTab, sessi
         <TabsContent value="access" className="session-details-tab"><Access session={session} ownerName={ownerName} own={own} client={client} switches={switches} nameOf={nameOf ?? (() => "A teammate")} /></TabsContent>
         <TabsContent value="work" className="session-details-tab"><LocalSessionWork sessionId={session.sessionId} /></TabsContent>
       </Tabs>
-      {/* Not the share link under Access: this one is the in-app address, for people already in the workspace.
-          It said "Copy link" / "Link copied." too, 73 px under "Turn off link" (ISOA-732). */}
+      {/* One link to copy, under Access ("Who can see this"): a workspace member who opens it lands in the app. */}
       <div className="session-details-actions">
         {own && client.setLocalSessionDisplayTitle && <SessionRenameButton session={session} onRename={client.setLocalSessionDisplayTitle} />}
-        <Button type="button" variant="outline" size="sm" onClick={async () => setCopied(await copyText(sessionPermalink(session.sessionId)) ? "Link copied. It opens this session for people in your workspace." : "Could not copy the link.")}><Link aria-hidden="true" />Copy link for teammates</Button>
         {!own && onMessageOwner && <Button type="button" variant="outline" size="sm" onClick={onMessageOwner}><MessageSquare aria-hidden="true" />Message {ownerName}</Button>}
         {own && <SessionPickup session={session} ownerName={ownerName} own client={client} variant="quiet" />}
-        {copied && <span role="status" className="text-muted-foreground">{copied}</span>}
       </div>
     </DialogContent>
   </Dialog>;

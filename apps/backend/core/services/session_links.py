@@ -22,6 +22,7 @@ import time
 import uuid
 from typing import Annotated, Literal
 
+from botocore.exceptions import ClientError
 from pydantic import Field, model_serializer
 
 from core import encryption
@@ -101,7 +102,7 @@ async def resolve(auth: AuthContext | None, token: str) -> tuple[dict, dict, boo
     except ApiProblem as exc:
         raise _gone() from exc
     member = await _member(auth, row)
-    if link["audience"] != "anyone" and not member:
+    if not sessions.public_id(link) and not member:
         raise _gone()
     return row, link, member
 
@@ -234,6 +235,96 @@ async def open_page(auth: AuthContext | None, token: str, *, refresh: bool = Fal
         continuable=continuable,
         me=LinkMe(signed_in=auth is not None, member=member),
         session_id=row["sessionId"] if member else None,
+    )
+
+
+# --- Watching (owner ruling 2026-10-08: an "Anyone" link shows the live terminal, view only) ---
+#
+# PUBWATCH#<publicId> / VIEWER#<sha256(key)>   one link viewer's 45 s lease
+#
+# The lease `<publicId>.<key>` is the viewer's whole credential on AppSync: the `pub` namespace's
+# Lambda authorizer (apps/infra/lambda/pub-authorizer) admits a subscribe to `/pub/<publicId>` and
+# nothing else while that row is unexpired. Frames reach the channel only while the link is public
+# and has a live lease (`session_screen.forward` reads the row on every frame), so narrowing the
+# link, Only me, ending or removing the session stops them at once; an open subscription then hears
+# nothing, and the next renewal is refused. A viewer gets screen frames and nothing else: no input,
+# chat, events or lists, and neither the session's nor the workspace's id (frames carry the publicId).
+
+# ponytail: counted, not locked: two viewers racing for the last seat both get in, and a viewer
+# who stops renewing keeps an open subscription uncounted until the page closes.
+MAX_LINK_VIEWERS = 20
+
+
+def public_pk(public_id: str) -> str:
+    return f"PUBWATCH#{public_id}"
+
+
+class ViewingRequest(LinkTokenRequest):
+    lease: Annotated[str, Field(max_length=128)] | None = None
+    fresh: bool = False  # subscribed and has no screen: ask the Mac for history and a snapshot now
+
+
+class Viewing(ContractModel):
+    lease: str
+    channel: str
+    watch_id: str  # the publicId: what this viewer's frames carry in place of the session's ids
+    http_endpoint: str
+    realtime_endpoint: str
+
+
+async def viewing(token: str, lease: str | None, fresh: bool) -> Viewing:
+    """A link holder has the terminal on screen: every 15 s, no sign-in. The token is checked on
+    every call, so a link that stopped being public refuses the next renewal."""
+    from core.config import settings
+    from core.services import session_screen
+
+    row, link, _ = await resolve(None, token)
+    public = sessions.public_id(link)
+    if not public:
+        raise _gone()
+    now = int(time.time())
+    if not sessions.screen_available(row, now) and (
+        row.get("endedAt") is not None or int(row.get("onlineUntil", 0)) <= now
+    ):
+        raise ApiProblem("LOCAL_SESSION_OFFLINE", "This session is not running.")
+    if sessions.session_terminal(row) is None:
+        raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "This session has no live terminal.")
+    table = store._table()
+    expires = now + session_screen.VIEWER_TTL_S
+
+    def key_of(secret: str) -> dict:
+        return {"pk": public_pk(public), "sk": f"VIEWER#{sessions._token_hash(secret)}"}
+
+    renewed = False
+    if lease and lease.startswith(public + "."):
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key=key_of(lease.partition(".")[2]),
+                UpdateExpression="SET expiresAt = :exp",
+                ConditionExpression="attribute_exists(pk) AND expiresAt > :now",
+                ExpressionAttributeValues={":exp": expires, ":now": now},
+            )
+            renewed = True
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+    if not renewed:
+        live = [r for r in await store._query(public_pk(public), begins_with="VIEWER#") if int(r["expiresAt"]) > now]
+        if len(live) >= MAX_LINK_VIEWERS:
+            raise ApiProblem(
+                "LOCAL_SESSION_VIEWERS_FULL", f"This session already has {MAX_LINK_VIEWERS} people watching by link."
+            )
+        secret = secrets.token_urlsafe(32)
+        lease = f"{public}.{secret}"
+        await run_in_thread(table.put_item, Item={**key_of(secret), "expiresAt": expires})
+    await session_screen.tell_mac(row, now, fresh)
+    return Viewing(
+        lease=lease,
+        channel=f"/pub/{public}",
+        watch_id=public,
+        http_endpoint=settings.APPSYNC_EVENTS_HTTP_ENDPOINT,
+        realtime_endpoint=settings.APPSYNC_EVENTS_REALTIME_ENDPOINT,
     )
 
 
@@ -611,7 +702,7 @@ async def redeem(code: str, verifier: str) -> CopyTicket | Preparing:
         # The same door Continue went through: a workspace link opens only for a current member.
         if item["member"]:
             await _still_a_member(row, item["userId"])
-        elif link["audience"] != "anyone":
+        elif not sessions.public_id(link):
             raise _gone()
     except ApiProblem as exc:
         raise _gone() from exc

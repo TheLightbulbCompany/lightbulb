@@ -644,6 +644,7 @@ async def test_owner_wipe_deletes_only_that_owners_snapshots(transport, s3):
 async def test_owner_wipe_removes_link_lookup_and_copies(transport, s3):
     sid = await claude_session(transport)
     await service.put_link(ALICE, sid, "anyone")
+    await pickup.set_pickup(ALICE, sid, True)
     await upload_and_commit(s3, sid)
     row = await repo.get_session(OWNER, sid)
     lookup = service._share_pk(row["shareLink"]["tokenHash"])
@@ -677,7 +678,9 @@ async def test_human_routes_over_http(transport, s3):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         result = await client.put(f"/messaging/sessions/{sid}/link", json={"audience": "workspace"})
         assert result.status_code == 200 and result.json()["audience"] == "workspace"
-        assert (await service.get_session(ALICE, sid)).pickup.state == "preparing"  # the link is the permission
+        assert (await service.get_session(ALICE, sid)).pickup.allowed is False  # a link only shows the session
+        switched = await client.put(f"/messaging/sessions/{sid}/pickup", json={"enabled": True})
+        assert switched.status_code == 200 and switched.json()["pickup"]["state"] == "preparing"
         await upload_and_commit(s3, sid)
         user["who"] = BOB
         request_id = str(uuid.uuid4())

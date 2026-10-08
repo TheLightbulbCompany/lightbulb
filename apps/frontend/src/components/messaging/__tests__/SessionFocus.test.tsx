@@ -105,16 +105,10 @@ it("shows the session title once, in the header, with one compact status line", 
   expect([...statusLine().children].map(span => span.textContent)).toEqual(["", "Working", "Alice", "lightbulb"]);
 });
 
-it("copies the session link from Details", async () => {
-  const writeText = vi.fn().mockResolvedValue(undefined);
-  Object.assign(navigator, { clipboard: { writeText } });
+it("has no second link in Details: the one link is under Access", async () => {
   focus({ session, ownerName: "Alice", own: false });
   const details = await openDetails();
-  // Named apart from the share link's own "Copy link" under Access: this one only works for workspace members.
-  expect(within(details).queryByRole("button", { name: "Copy link" })).not.toBeInTheDocument();
-  await userEvent.click(within(details).getByRole("button", { name: "Copy link for teammates" }));
-  expect(writeText).toHaveBeenCalledWith(expect.stringContaining("s1"));
-  expect(await within(details).findByText("Link copied. It opens this session for people in your workspace.")).toBeInTheDocument();
+  expect(within(details).queryByRole("button", { name: /Copy link/ })).not.toBeInTheDocument();
 });
 
 it("keeps the follow-up composer compact: hidden label, short placeholder, icon send", async () => {

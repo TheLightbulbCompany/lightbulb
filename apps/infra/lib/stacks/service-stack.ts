@@ -364,7 +364,11 @@ export class ServiceStack extends cdk.Stack {
         new iam.PolicyStatement({
           sid: "PublishMessagingEvents",
           actions: ["appsync:EventPublish"],
-          resources: [`${props.appsyncEventsApiArn}/channelNamespace/ws`],
+          // `pub`: a public session link's frames (session_screen.forward). Owner runtime roles get `ws` only.
+          resources: [
+            `${props.appsyncEventsApiArn}/channelNamespace/ws`,
+            `${props.appsyncEventsApiArn}/channelNamespace/pub`,
+          ],
         }),
         ...(props.messageSearchCollectionArn
           ? [

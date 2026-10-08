@@ -12,6 +12,8 @@ VERIFIER = "v" * 20  # too short
     "url, body, secret",
     [
         ("/api/v1/public/session-links/open", {"token": TOKEN}, TOKEN),
+        ("/api/v1/public/session-links/viewing", {"token": TOKEN}, TOKEN),
+        ("/api/v1/public/session-links/viewing", {"token": "t" * 43, "lease": "l" * 200}, "l" * 200),
         ("/api/v1/public/session-copies/redeem", {"code": "c" * 43, "verifier": VERIFIER}, VERIFIER),
         ("/api/v1/session-links/copies", {"token": TOKEN, "challenge": "x"}, TOKEN),
     ],

@@ -32,12 +32,13 @@ function Details({ tab: initial = "access", s = session(), own = true, c = clien
 }
 const switchNamed = (name: string) => screen.getByRole("switch", { name });
 
-it("gives the owner three switches on Access, and the Share link", async () => {
+it("gives the owner three switches on Access, and who can see the session", async () => {
   render(<Details />);
   expect(screen.getAllByRole("switch").map(s => (s as HTMLButtonElement).labels[0]?.textContent)).toEqual([
     "Shared with the workspace", "Let teammates control this session", "Show token usage to teammates",
   ]);
-  expect(await screen.findByRole("button", { name: "Share" })).toBeInTheDocument();
+  expect(await screen.findByLabelText("Who can see this")).toHaveValue("workspace");
+  expect(screen.getByRole("button", { name: "Copy link" })).toBeInTheDocument();
 });
 
 it("writes each switch through its own client method and shows the server's answer", async () => {

@@ -374,7 +374,9 @@ def _health(params: dict, **_kwargs) -> dict:
         # A roll about to stop this session: idle -> hold new turns (TTL'd) and answer busy 0, so
         # no turn can start between this answer and the stop; busy -> no hold, busy >= 1.
         busy = 0 if turn.hold_turns() else max(busy, 1)
+    outer_mb, inner_mb = sync.disk_free_mb()  # outer = what actually runs out (sync.disk_free_mb)
     return {"ok": True, "payload": {
+        "diskFreeMb": outer_mb, "diskFreeInnerMb": inner_mb,
         "ready": True, "runtime": "hermes",
         "uptimeS": round(time.time() - STARTED, 1), "busy": busy,
         "agents": len(_roster()),

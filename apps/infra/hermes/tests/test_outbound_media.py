@@ -276,6 +276,13 @@ def test_a_room_turn_is_told_where_a_sendable_file_goes():
     assert "MEDIA:" not in mail  # no room to attach to
 
 
+@pytest.mark.parametrize("kind", ["agent_mail", "paperclip_run"])
+def test_mail_and_paperclip_event_prompts_carry_the_repo_rule(kind):
+    # Rooms and native Paperclip runs already did; these two shared the ~4 GB disk blind.
+    prompt = turn.system_prompt(f.ingress(eventKind=kind, targetAgentId="ceo"), "ceo")
+    assert turn._repo_rule("ceo") in prompt and "push the branch" in prompt
+
+
 # ---- video (2026-09-26 prod: Friday's Remotion mp4 arrived as a raw `MEDIA:` line) -----------
 _MP4 = b"\x00\x00\x00\x18ftypisom" + b"\x00" * 64
 

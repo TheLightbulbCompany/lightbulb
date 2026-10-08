@@ -14,6 +14,7 @@ def test_health_answers_ready(home):
     # no profiles dir must not claim ok:true here.
     code, obj = server.handle_plugin("/plugins/lightbulb-channel/rpc", "POST", AUTH, {"method": "health"})
     assert code == 200 and obj["ok"] is True and obj["payload"]["runtime"] == "hermes"
+    assert obj["payload"]["diskFreeMb"] > 0 and obj["payload"]["diskFreeInnerMb"] > 0
 
 
 def test_unknown_path_is_404():

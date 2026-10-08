@@ -161,9 +161,8 @@ HOME_EXCLUDE_GLOBS = (
 #: clone's objects being packfiles rather than thousands of loose ones.
 # ponytail: two ceilings left standing. (1) The per-file S3 fanout itself: a big SOURCE tree is
 # still one PUT/GET per file in front of the first reply -- now on a 32-worker pool (_fan_out),
-# which divides the wait but not the object count. (2) save_profile still rglobs INTO
-# these dirs and stamps every file before discarding it -- the PUTs go, the local walk does not.
-# Upgrade path for both: archive the workspace subtree as ONE object and special-case it in
+# which divides the wait but not the object count. (2) Gone: save_profile's walk prunes these
+# dirs (_save_walk). Upgrade path for (1): archive the workspace subtree as ONE object and special-case it in
 # save_profile/restore_profile, the way the SQLite backup API already is below. Not implemented.
 # "*venv" is every venv-shaped name: .venv, venv, and the per-job ones a skill makes (.docx-venv:
 # 65 MB each, 130 MB of the founder's profiles by 10-07).
@@ -330,7 +329,7 @@ WORK_DIR_PREFIX = "work/"
 #: profile itself (_restore_deferred). cache/ reaches here only for Hermes's kept media subdirs
 #: (the rest is regenerable, never restored). work/ is deliberately NOT here: a conversation's own
 #: tree is pulled by its turn (restore_subtree) and every other conversation's stays in S3. A
-#: session's disk is 1 GB, fixed (AgentCore quota), and the founder's agents held 940 MB of old
+#: session's disk is ~4.7 GB inner on ~4.1 GB of outer free space (disk_free_mb); the founder's agents held 940 MB of old
 #: work/ trees (raw demo clips, clones, a venv per docx job); sweeping them all down filled the
 #: disk four hours into a session and every turn after that died in SQLite ("disk I/O error",
 #: 10-07 prod). Pulse's 266 curator rollback blobs and the kept media are small: they still come.
@@ -361,6 +360,48 @@ _SYNC_WORKERS = 32
 #: Below this much free disk the next turn's SQLite write is the one that fails -- with "disk I/O
 #: error" and nothing to say why (10-07 prod). The warning is the clue.
 LOW_DISK_MB = 200
+
+
+def _outer_statvfs() -> os.statvfs_result:
+    """``/`` is an ext4 inside a sparse loop image that sits on an OUTER overlay; blocks freed
+    inside never go back to the outer, so the outer fills first and writes fail with EIO while
+    ``/`` still reads free (10-07/10-08 founder stalls). ``/etc/hosts`` is bind-mounted FROM the
+    outer, so its statvfs is the outer's free space."""
+    try:
+        return os.statvfs("/etc/hosts")
+    except OSError:
+        return os.statvfs("/")
+
+
+def disk_free_mb() -> tuple[int, int]:
+    """(outer, inner) free MB. Callers that need one number take ``min``."""
+    st = _outer_statvfs()
+    return st.f_bavail * st.f_frsize // 1_000_000, shutil.disk_usage("/").free // 1_000_000
+
+
+#: Subtrees save_profile never uploads (every file under them is is_excluded or is_reproducible),
+#: pruned at the directory so the walk never enters them: the pnpm store alone is ~195k files,
+#: 15-18 s of walking on every save (10-08).
+_UNSAVED_DIR_PREFIXES = (
+    *(f"{PROFILE_HOME}/{name}/" for name in _HOME_UNSYNCED), PNPM_STORE_PREFIX, f"{SCRATCH_DIR}/",
+)
+
+
+def _unsaved_dir(rel: str) -> bool:
+    name = rel.rsplit("/", 1)[-1]
+    return f"{rel}/".startswith(_UNSAVED_DIR_PREFIXES) or any(fnmatch.fnmatch(name, d) for d in _REPRODUCIBLE_DIRS)
+
+
+def _save_walk(src: Path) -> list[Path]:
+    """Every file path under ``src`` except the pruned subtrees, sorted. Materialized, not lazy:
+    the .s3snap temp save_profile creates inside src must not come back as a file of its own."""
+    paths: list[Path] = []
+    for root, dirs, files in os.walk(src):
+        base = Path(root)
+        prefix = "" if base == src else f"{base.relative_to(src).as_posix()}/"
+        dirs[:] = [d for d in dirs if not _unsaved_dir(prefix + d)]
+        paths.extend(base / name for name in files)
+    return sorted(paths)
 
 
 def _fan_out(fn, items) -> None:
@@ -668,10 +709,8 @@ def save_profile(agent_id: str) -> float:
         s3 = _s3()
         mtimes = _MTIMES.setdefault(agent_id, {})
         synced = _SYNCED.setdefault(agent_id, {})
-        # Materialized, not lazy: the .s3snap temp below is created inside src and a live
-        # rglob can yield it back as a file of its own.
         changed: list[tuple[Path, str, int]] = []
-        for path in sorted(src.rglob("*")):
+        for path in _save_walk(src):
             rel = path.relative_to(src).as_posix()
             if not path.is_file() or is_excluded(rel) or is_reproducible(rel):
                 continue
@@ -699,7 +738,14 @@ def save_profile(agent_id: str) -> float:
                 snap.unlink(missing_ok=True)  # a leftover from an interrupted save poisons backup
                 with contextlib.closing(sqlite3.connect(path)) as conn:
                     with contextlib.closing(sqlite3.connect(snap)) as out:
-                        conn.backup(out)  # a real failure raises: retried next save, never raw bytes
+                        try:
+                            conn.backup(out)  # a real failure raises: retried next save, never raw bytes
+                        except sqlite3.Error as exc:  # EIO (outer disk full) vs ENOSPC: say which
+                            outer_mb, inner_mb = disk_free_mb()
+                            log.warning("save %s: %s backup failed (%s); outer %d MB / %d inodes free, inner "
+                                        "%d MB / %d inodes free", agent_id, rel, getattr(exc, "sqlite_errorname", "?"),
+                                        outer_mb, _outer_statvfs().f_favail, inner_mb, os.statvfs("/").f_favail)
+                            raise
                 upload = snap
                 log.info("save %s: %s snapshot %d bytes", agent_id, rel, snap.stat().st_size)
             # anything else -- including a .db that is not SQLite (DuckDB, Thumbs.db) -- goes up raw
@@ -727,8 +773,9 @@ def save_profile(agent_id: str) -> float:
             log.warning("delete propagation failed for %s", agent_id, exc_info=True)
         took = time.time() - t0
         log.info("saved profile %s: %d changed objects in %.1fs", agent_id, n, took)
-        if (free_mb := shutil.disk_usage(src).free / 1e6) < LOW_DISK_MB:
-            log.warning("profile disk low: %.0f MB free after saving %s", free_mb, agent_id)
+        outer_mb, inner_mb = disk_free_mb()
+        if min(outer_mb, inner_mb) < LOW_DISK_MB:
+            log.warning("profile disk low: outer %d MB, inner %d MB free after saving %s", outer_mb, inner_mb, agent_id)
     try:
         save_rotated_cli_credentials()
     except Exception:  # a listing blip retries on the next save

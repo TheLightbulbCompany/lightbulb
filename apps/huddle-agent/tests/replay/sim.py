@@ -78,6 +78,9 @@ class Model:
             raise ValueError(f"no timing profile {profile!r}; there are: {', '.join(PROFILES)}")
         self.fast = profile == "fast-eot"
         self.rng = random.Random(seed)
+        # the writer's delays are dealt from their own deck: a controller that writes more often (a reply
+        # begun beside /route and thrown away) must not re-deal every other delay of the replay
+        self.writes = random.Random(f"{seed}:write")
         self.fixed = fixed or {}
         self.p_silent = silent  # 4 of 55 units played no audible audio
 
@@ -160,7 +163,7 @@ class Model:
         return self.u("run", 5.0, 12.0)
 
     def write(self) -> float:  # a line of small talk
-        return self.u("write", 0.5, 1.5)
+        return self.fixed["write"].pop(0) if self.fixed.get("write") else self.writes.uniform(0.5, 1.5)
 
     # -- a mouth --
     def open(self) -> float:  # a voice session opening: session_started 0.57-0.91 s, a third to 1.76, less a round trip

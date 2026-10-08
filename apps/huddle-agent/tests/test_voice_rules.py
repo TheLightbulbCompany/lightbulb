@@ -2,6 +2,8 @@
 sentence counts as, when a pause is counted from, what a listening sound does, and so on. Each was accepted
 on the 15 replayed scenarios under two transcriber timings; these pin the rule itself."""
 
+import asyncio
+
 from huddle_agent import huddle as h_mod
 from test_huddle import answer, hand, ops, pause, settle, talks
 from test_meet_exchange import asked, closes, quiet, says_of, talked_over
@@ -251,3 +253,59 @@ async def test_a_listening_sound_from_someone_else_is_no_turn_and_ends_nothing()
     await says(h, P2, "Mm-hm.")
     clock.t += h_mod.ENGAGE_GAP_S
     assert [e.agent for e in h._engagements(h._who(P1))] == ["forge"]
+
+
+# -- small talk for a line that names the agent is written while /route decides --
+
+
+async def named(text, route):
+    """Priya says `text` to Forge by name; /route is still deciding. (h, backend, lives, the writer's calls)"""
+    h, room, backend, lives, clock, log = await per_person()
+    written = []
+
+    async def writer(persona, event):
+        written.append(event)
+        return "Hi, Priya."
+
+    h._writer = writer
+    backend.route_extra, backend.route_gate = route, asyncio.Event()
+    asyncio.ensure_future(h.on_final_transcript(P1, "Priya", text))
+    for _ in range(20):
+        await asyncio.sleep(0)
+    return h, backend, lives, written
+
+
+async def test_a_reply_to_a_greeting_by_name_is_being_written_before_the_router_has_answered():
+    h, backend, lives, written = await named("Hi Forge.", {"ops": {"requests": [], "social": "forge", "more": False}})
+    assert len(written) == 1 and "Hi Forge." in written[0], "the writer was asked while /route decides"
+    backend.route_gate.set()
+    await settle(h)
+    assert len(written) == 1 and says_of(lives[0]) == [("say", "Hi, Priya.")], "that text is the reply: written once"
+
+
+async def test_the_text_written_for_a_named_line_that_was_a_request_is_thrown_away():
+    h, backend, lives, written = await named("Forge, what PRs are open?", ops([("forge", "list the open PRs", "name")]))
+    assert len(written) == 1
+    backend.route_gate.set()
+    await settle(h)
+    assert [u.kind for u in h._ledger] == ["ack"] and h._voice.writing is None
+    assert len(says_of(lives[0])) == 1 and says_of(lives[0])[0][1] in h_mod.ACKS, "only its acknowledgement is said"
+
+
+async def test_a_line_that_names_the_agent_whose_voice_is_open_is_written_for_beside_the_router_too():
+    h, backend, lives, clock = await asked()
+    written = []
+
+    async def writer(persona, event):
+        written.append(event)
+        return "You're welcome."
+
+    h._writer = writer
+    backend.route_extra, backend.route_gate = {"ops": {"requests": [], "social": "forge", "more": False}}, asyncio.Event()
+    asyncio.ensure_future(h.on_final_transcript(P1, "Priya", "Thanks, Forge."))
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert len(written) == 1, "while /route decides"
+    backend.route_gate.set()
+    await settle(h)
+    assert len(written) == 1 and says_of(lives[0])[-1] == ("say", "You're welcome.")

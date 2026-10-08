@@ -509,6 +509,7 @@ class _Voice:
     announcing: bool = False  # a proactive announcement's audio is playing
     told: list = field(default_factory=list)  # the news its announcement says: posted if a person cuts it (§4.8)
     persona: str = ""  # a mouth: who it is, for the small talk written for it
+    writing: Any = None  # its small-talk reply to the line that opened it, begun while /route decided
     wake_dims: dict[str, str] | None = (
         None  # live.wake.fired's dimensions, for a voice a name woke
     )
@@ -1459,7 +1460,8 @@ class Huddle:
             late = u is not None and self._clock() - u[0] <= HOLD_SECONDS and _words_in(text, u[1], 1)
             if routed is None and not switch and not late and real_speech(text) and not pause(text):
                 # understanding §4.1: the worker's own STT final is the request, not the voice's delegation
-                self._understand_floor(identity, text, mark, humans=len(self._people), floor_line=True)
+                named = v.agent_id in self._named(text, a)
+                self._understand_floor(identity, text, mark, humans=len(self._people), floor_line=True, named=named)
         elif v.handoff and real_speech(
             text
         ):  # someone else spoke first: back to who had the floor
@@ -1582,22 +1584,29 @@ class Huddle:
         heard = self._understand_floor(identity, text, mark, humans=len(self._people), floor_line=True)
         self._routes(self._answer_heard(v, identity, text, heard, f'{name} cut in: "{text}"'))
 
-    async def _answer_heard(self, v: _Voice, identity: str, text: str, heard: asyncio.Future, said: str) -> None:
+    async def _answer_heard(
+        self, v: _Voice, identity: str, text: str, heard: asyncio.Future, said: str, writing: asyncio.Task | None = None
+    ) -> None:
         """A line the voice did not hear itself (a barge, or any line to a muted meeting voice): once understood,
-        it hears what came of it."""
+        it hears what came of it. `writing`: its small-talk reply, begun beside /route (`_prewrite`)."""
         label = v.label
-        rec = await heard
-        if v.label != label:
-            return  # a meeting: someone else named the agent meanwhile; this line's rows run without its voice
-        if rec is not None and rec[1] is not None:
-            self._heard(v, identity, text, rec[0], rec[1])
-        # /route down: D §5, their whole line is the request, started by us like a summon's
-        elif rec is not None and self._floor_voice(v.agent_id) is v:
-            if self._drive_request(v, text, said):
-                if mouth(v.speaker):
-                    self._say_ack(v, None, driven=True)
-                else:
-                    self._live_call(v, "nudge")
+        try:
+            rec = await heard
+            if v.label != label:
+                return  # a meeting: someone else named the agent meanwhile; this line's rows run without its voice
+            if rec is not None and rec[1] is not None:
+                if self._heard(v, identity, text, rec[0], rec[1], writing):
+                    writing = None  # it is the reply
+            # /route down: D §5, their whole line is the request, started by us like a summon's
+            elif rec is not None and self._floor_voice(v.agent_id) is v:
+                if self._drive_request(v, text, said):
+                    if mouth(v.speaker):
+                        self._say_ack(v, None, driven=True)
+                    else:
+                        self._live_call(v, "nudge")
+        finally:
+            if writing is not None:
+                writing.cancel()  # the line was not small talk: its reply is not wanted
 
     async def _lightbulb_over(self, v: _Voice, identity: str, text: str, mark: int) -> None:
         """A meeting's "Lightbulb, ..." from someone the open voice is not with: that voice closes (cut off if it
@@ -1614,21 +1623,25 @@ class Huddle:
         elif rec is not None and (v := self._floor_voice(agent_id)) and v.speaker == identity:
             self._reply(v, text)  # /route down: today's typed user turn
 
-    def _heard(self, v: _Voice | None, identity: str, text: str, rows: list[Request], o: dict) -> None:
+    def _heard(
+        self, v: _Voice | None, identity: str, text: str, rows: list[Request], o: dict, written: asyncio.Task | None = None
+    ) -> bool:
         """The voice was pinned away while `identity` said `text`: it hears what came of it (understanding §4.6).
-        `o`: the line's `ops`."""
+        `o`: the line's `ops`. `written`: a small-talk reply already being written. True: it was used."""
         if v is None or self._voice is not v or v.speaker != identity:
-            return
+            return False
         v.ack_rows = [r for r in v.ack_rows if r not in rows]  # acknowledged here, not again in tick()
         if mouth(v.speaker):
             if rows:
                 self._say_ack(v, rows)
             elif line := self._owed(o, v.agent_id, text):
-                self._say_line(v, line)
+                self._say_line(v, line, written if line[0] == "social" else None)
+                return line[0] == "social" and written is not None
         elif not rows:  # small talk: the voice answers it itself
             self._live_call(v, "reply_to", text)
         elif (line := self._ack(rows, v.agent_id, said=True)) and self._live_call(v, "append_thinking", line):
             self._live_call(v, "nudge")
+        return False
 
     def _reply(self, v: _Voice, text: str, written: asyncio.Task | None = None) -> bool:
         """`text` was said to the voice and it answers it itself. A mouth heard none of it: a small text model
@@ -2476,7 +2489,7 @@ class Huddle:
     def _understand_floor(self, identity: str, text: str, mark: int, **kw) -> asyncio.Future:
         """Understand a floor-speaker line now (understanding §4.6). The future, in flight from this call on,
         is the speech's understanding (`_route`'s result); it replaces the last speech's for any delegation."""
-        fut = self._in_flight(identity)
+        fut, named = self._in_flight(identity), kw.pop("named", False)
 
         async def run() -> None:
             rec = None
@@ -2487,8 +2500,11 @@ class Huddle:
 
         self._routes(run())
         if kw.get("floor_line") and mouth(identity) and (v := self._voice) is not None:
-            # a mouth heard none of it (its follow-up, or a held one applied): told what came of it
-            self._routes(self._answer_heard(v, identity, text, fut, f'{self._talker(identity)} asked: "{text}"'))
+            # a mouth heard none of it (its follow-up, or a held one applied): told what came of it.
+            # `named`: the line names the voice's agent, so a small-talk reply is written beside /route.
+            writing = self._prewrite(v, identity, text) if named else None
+            said = f'{self._talker(identity)} asked: "{text}"'
+            self._routes(self._answer_heard(v, identity, text, fut, said, writing))
         return fut
 
     def _in_flight(self, identity: str) -> asyncio.Future:
@@ -2554,9 +2570,11 @@ class Huddle:
     async def _named_summon(self, identity: str, text: str, mark: int, summon, understood: tuple) -> None:
         """A named line's summon (understanding §4.6). A re-point applies what the line asked once /route answers,
         the floor lock not held while it waits. The speech's future resolves however this ends."""
+        writing = None
         try:
             if (v := await summon) is None:
                 return
+            writing = self._prewrite(v, identity, text)
             r = (await asyncio.gather(understood[0], return_exceptions=True))[0]
             async with self._lock:
                 # ...and, in a meeting, still with this line's speaker: someone else may have named the agent since
@@ -2580,7 +2598,8 @@ class Huddle:
                 if mouth(identity):
                     self._say_ack(v, ack, driven=first is not None)
                     if owed:
-                        self._say_line(v, owed)
+                        self._say_line(v, owed, writing if owed[0] == "social" else None)
+                        writing = None if owed[0] == "social" else writing
                     return
                 if line := self._ack(ack, v.agent_id, said=True):
                     self._live_call(v, "append_thinking", line)
@@ -2589,7 +2608,17 @@ class Huddle:
                 if first is not None or line or said:
                     self._live_call(v, "nudge")
         finally:
+            if writing is not None:
+                writing.cancel()  # the line was not small talk: its reply is not wanted
             self._record(identity, understood[1], None, text)  # nothing understood: resolved all the same
+
+    def _prewrite(self, v: _Voice, identity: str, text: str) -> asyncio.Task | None:
+        """A mouth's small-talk reply to a line that names its agent, written while /route decides what the
+        line was (the writer takes 0.5-1.5 s, /route as long). Whoever asked for it uses it if /route says
+        small talk, and cancels it if not: most named lines are requests, and their text is thrown away."""
+        if not mouth(identity) or v.path == "announce" or not v.persona or not real_speech(text):
+            return None
+        return self._spawn(self._writer(v.persona, self._said_to(v, text)))
 
     def _startable(self) -> list[Request]:
         """The rows that may start now, less the floor agent's while its voice's driven run has no row and still
@@ -3420,12 +3449,17 @@ class Huddle:
             # line it says and never reads its seed, so the transcript so far is all it is given.
             seed = self._transcript.seed(agent_id, before_mark=math.inf if mark is None else mark)
             warm.append(self._spawn(self._prepared(agent_id, session, identity, seed)))
+            v.persona = session["persona"]
+            v.writing = self._prewrite(v, identity, request or "")  # (taken by `_opened` if it was small talk)
         try:
             heard = list(await asyncio.gather(understood[0], return_exceptions=True)) if understood else []
             return await self._opened(v, identity, request, mark, ack, row, said, understood, owed, window, session, heard, warm)
         finally:
             for t in warm:  # prepared and not taken (the open failed or was refused on the way): closed unused
                 t.add_done_callback(self._unused)
+            if v.writing is not None:
+                v.writing.cancel()  # the line was not small talk: its reply is not wanted
+                v.writing = None
 
     async def _prepared(self, agent_id: str, session: dict, identity: str, seed: list) -> Live:
         return await self._live_factory(
@@ -3535,8 +3569,9 @@ class Huddle:
             seed.append(("developer", said))
         v.persona, written = session["persona"], None
         if mouth(identity) and v.path != "announce" and owed and owed[0] == "social":
-            # Small talk is written while the session opens, not after it (10-07 rig: 2 s of every "Hi").
-            written = self._spawn(self._writer(v.persona, self._said_to(v, owed[1])))
+            # Small talk is written while the session opens, not after it (10-07 rig: 2 s of every "Hi"),
+            # and for a line that names the agent, while /route decides (`_prewrite`).
+            written, v.writing = v.writing or self._spawn(self._writer(v.persona, self._said_to(v, owed[1]))), None
         try:
             live = await (warm.pop() if warm else self._prepared(agent_id, session, identity, seed))
         except Exception:  # start_live already retried with the fallback voice

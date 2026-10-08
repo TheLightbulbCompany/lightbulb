@@ -818,6 +818,21 @@ describe("the session's own frames channel", () => {
     expect(held).toEqual([CHANNEL]); // the same channel, subscribed anew
   });
 
+  it("a first subscribe refused (no marker yet) gets the marker from a plain watch, and asks for the picture only once subscribed", async () => {
+    vi.useFakeTimers();
+    const { held, refusals, claim } = claimed();
+    const watch = vi.fn(async () => undefined);
+    const props = { session: { sessionId: "s1", generation: "g1" }, onEvent: () => () => {}, watch, onLive: vi.fn() };
+    const { rerender } = render(<SessionTerminalView {...props} frames={{ channel: CHANNEL, claim, liveChannels: [] }} />);
+    act(() => refusals.at(-1)!());
+    expect(watch.mock.calls).toEqual([["s1", false]]); // makes the marker; no view is ready for a picture yet
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    expect(held).toEqual([CHANNEL]);
+    expect(watch).toHaveBeenCalledTimes(1);
+    rerender(<SessionTerminalView {...props} frames={{ channel: CHANNEL, claim, liveChannels: [CHANNEL] }} />);
+    expect(watch.mock.calls.at(-1)).toEqual(["s1", true]); // now subscribed: the picture is heard
+  });
+
   it.each([
     ["a removed member", new ApiError(403, { code: "LOCAL_SESSION_FORBIDDEN" })],
     ["a session no longer shared", new ApiError(404, { code: "LOCAL_SESSION_NOT_FOUND" })],

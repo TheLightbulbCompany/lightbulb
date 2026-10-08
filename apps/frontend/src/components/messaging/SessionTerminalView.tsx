@@ -127,13 +127,14 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     let timer: ReturnType<typeof setTimeout> | undefined;
     const release = claim(framesChannel, () => {
       release();
-      // Watch anyway: a session shared before its marker existed gets one from the watch.
-      setReady(true);
+      // A session shared before its marker existed gets one from a watch. Its picture goes out
+      // now, unheard; the first real watch, once the retried subscription is live, asks again.
+      void watchNow.current(session.sessionId, false).catch((e) => { if (accessGone(e)) lost.current(); });
       timer = setTimeout(() => setClaimRound((n) => n + 1), retryIn.current);
       retryIn.current = Math.min(retryIn.current * 2, 15_000);
     });
     return () => { clearTimeout(timer); release(); };
-  }, [framesChannel, claim, gone, claimRound]);
+  }, [framesChannel, claim, gone, claimRound, session.sessionId]);
   useEffect(() => { if (subscribed) { setReady(true); retryIn.current = 1_000; } }, [subscribed]);
   useEffect(() => {
     if (!ready) return;

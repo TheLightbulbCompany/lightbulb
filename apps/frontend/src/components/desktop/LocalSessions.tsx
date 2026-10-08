@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Bot, FolderOpen, Globe2, Monitor, Terminal, type LucideIcon } from "lucide-react";
 import { LocalBrowserSetup } from "@/components/desktop/LocalBrowserSetup";
 import { SettingRow } from "@/components/desktop/SettingRow";
+import { useApi } from "@/lib/api";
 import {
   type DesktopPermissionSet,
   desktopErrorMessage,
@@ -105,6 +106,46 @@ export function ShareEverySessionLive() {
     <p className="settings-row-note">Adds a marked block to {SHARE_LIVE_FILES}, and removes it when you turn this off. Open a new terminal tab after you change it.</p>
     {error ? <p className="settings-row-error" role="alert">{error}</p> : null}
   </SettingRow>;
+}
+
+type AgentSessionPrefs = { agentSendWithoutAsking: boolean; sessionsReachableFromBackgroundWork: boolean };
+const AGENT_SESSION_PREFS: Array<{ key: keyof AgentSessionPrefs; title: string; description: string }> = [
+  { key: "agentSendWithoutAsking", title: "Agents can message my sessions without asking", description: "Off: an agent asks you first, and nothing is sent until you choose Send." },
+  { key: "sessionsReachableFromBackgroundWork", title: "Background work (issues, heartbeats, routines) can reach my sessions", description: "Off: only an agent answering in a conversation can see or message your sessions." },
+];
+
+/** Settings rows: who may reach this person's shared sessions (spec 2026-10-07-agent-session-approval §3.4). */
+export function AgentSessionSwitches() {
+  const api = useApi();
+  const [prefs, setPrefs] = useState<AgentSessionPrefs | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    api.get("/users/me/prefs").then(value => { if (!cancelled) setPrefs(value as AgentSessionPrefs); }).catch(() => undefined);
+    return () => { cancelled = true; };
+    // `api` identity churns every render; fetch once per mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  if (prefs === null) return null;
+  const toggle = async (key: keyof AgentSessionPrefs, next: boolean) => {
+    setBusy(true);
+    try { setPrefs((await api.put("/users/me/prefs", { [key]: next })) as AgentSessionPrefs); }
+    catch { /* Unchanged on failure; the switch keeps showing the stored state. */ }
+    finally { setBusy(false); }
+  };
+  // Account-level, so it shows in a browser too (the ask card points here).
+  return <section className="settings-card" aria-label="Agents and your sessions">
+    <div className="settings-card-header settings-card-header--rows">
+      <div>
+        <div className="settings-card-title">Agents and your sessions</div>
+        <div className="settings-card-desc">When an agent may message your shared Claude Code and Codex sessions.</div>
+      </div>
+    </div>
+    {AGENT_SESSION_PREFS.map(({ key, title, description }) => (
+      <SettingRow key={key} title={title} description={description}
+        toggle={{ checked: prefs[key], disabled: busy, onChange: next => void toggle(key, next) }} />
+    ))}
+  </section>;
 }
 
 export function useLocalSessions(waitForRemoteDisable = false) {

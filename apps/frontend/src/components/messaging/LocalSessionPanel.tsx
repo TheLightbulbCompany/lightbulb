@@ -14,7 +14,8 @@ import { Button } from "@/components/ui/button";
 import { isDesktopApp } from "@/lib/desktopNotify";
 import { NativeSessionTranscript, ReceiptChip, type Person } from "./NativeSessionTranscript";
 import { SessionApprovalCard } from "./SessionControls";
-import { SessionTerminalView } from "./SessionTerminalView";
+import { SessionTerminalView, type SessionFrames } from "./SessionTerminalView";
+import { useOptionalLiveEvents } from "@/hooks/useLiveEvents";
 import { useLocalTerminal } from "./localTerminal";
 import { toBase64 } from "./sessionInput";
 import { SessionDetails, type SessionDetailsTab } from "./SessionDetails";
@@ -101,6 +102,11 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     box.scrollTop = 0; box.scrollLeft = 0;
   };
   const canWatch = local === "none" && !!onEvent && !!client.watchLocalSession;
+  const liveEvents = useOptionalLiveEvents();
+  const framesChannel = liveEvents?.sessionFramesChannel(session.sessionId) ?? null;
+  const frames = useMemo<SessionFrames | undefined>(() => liveEvents && framesChannel
+    ? { channel: framesChannel, claim: liveEvents.claimSessionFrames, liveChannels: liveEvents.liveChannels }
+    : undefined, [liveEvents, framesChannel]);
   // A viewer who was watching when the session ended keeps that terminal, with its last picture, until the
   // kept screen is reported or the wait is over: the server sends no `terminal` in between, and a terminal
   // taken away there came back empty, on "Connecting…" (prod 2026-10-07).
@@ -286,7 +292,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       ? <div ref={slot} className="local-session-terminal" role="region" aria-label="Session terminal" />
       : <>
       {session.status === "ended" ? (endedScreen || keptWatching ? endedLine : endedPanel) : session.status === "offline" ? offlinePanel : notStarted ? noticePanel : null}
-      {watchRemote && <div className="session-terminal-slot" onScrollCapture={endedScreen ? openAtTop : undefined}><SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} onLive={setScreenLive} onCanType={setTermCanType} kept={endedScreen}
+      {watchRemote && <div className="session-terminal-slot" onScrollCapture={endedScreen ? openAtTop : undefined}><SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} frames={frames} onLive={setScreenLive} onCanType={setTermCanType} kept={endedScreen}
         admitted={running && control && session.shared !== false && !(session.inputPaused && !own)}
         input={client.sendLocalSessionInput ? (bytes, epoch) => client.sendLocalSessionInput!(session.sessionId, toBase64(bytes), epoch) : undefined} /></div>}
       {terminalLive && control && !own && session.inputPaused && <p className="text-sm text-muted-foreground">Paused while {ownerName} answers a request to join.</p>}

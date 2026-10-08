@@ -10,7 +10,6 @@ import pytest
 from core.auth import AuthContext
 from core.repositories import local_sessions_repo as repo, messaging_repo
 from core.services import (
-    live_events,
     local_session_relay as relay_module,
     local_sessions as service,
     session_screen,
@@ -148,8 +147,8 @@ async def test_a_kept_final_screen_is_watched_streamed_and_never_typed_into(tran
     assert [w["sessionId"] for w in acked["watching"]] == [sid]
     transport[4].clear()
     await session_screen.forward(relay(transport), "conn-1", frame(sid))
-    bob = await live_events.get_live_event_publisher().user_channel(OWNER, BOB.user_id)
-    assert [(c, e["type"]) for c, e in await _published(transport)] == [(bob, "workspace.session.screen")]
+    frames = f"/ws/{await messaging_repo.ensure_workspace_id(OWNER)}/session-frames/{sid}"
+    assert [(c, e["type"]) for c, e in await _published(transport)] == [(frames, "workspace.session.screen")]
     with pytest.raises(ApiProblem) as typed:
         await session_screen.type_into(
             ALICE, sid, session_screen.SessionInput.model_validate({"data": "YQ==", "epoch": 1})

@@ -173,6 +173,12 @@ function parsePath(ctx) {
   if (p[3] === 'sessions' && p.length === 4) {
     return { kind: 'sessions', workspaceId: p[2] };
   }
+  // /ws/{workspaceId}/session-frames/{sessionId}: one shared terminal's screen frames, one publish
+  // for every viewer. The same member check, plus the session must be shared now:
+  // WORKSPACE#<ws>/SESSION#<sid> exists exactly while it is (local_sessions_repo.put_session).
+  if (p[3] === 'session-frames' && p.length === 5 && util.matches(UUID, p[4])) {
+    return { kind: 'sessions', workspaceId: p[2], sessionId: p[4] };
+  }
   util.unauthorized();
 }
 function metaKey(path) {
@@ -209,6 +215,7 @@ export const onSubscribe = {
     const keys = [util.dynamodb.toMapValues(metaKey(path))];
     if (path.kind === 'rooms') keys.push(util.dynamodb.toMapValues({ pk: 'ROOM#' + path.roomId, sk: 'MEMBER#human#' + sub }));
     if (path.kind === 'sessions') keys.push(util.dynamodb.toMapValues({ pk: 'WORKSPACE#' + path.workspaceId, sk: 'MEMBER#' + sub }));
+    if (path.sessionId) keys.push(util.dynamodb.toMapValues({ pk: 'WORKSPACE#' + path.workspaceId, sk: 'SESSION#' + path.sessionId }));
     return { operation: 'BatchGetItem', tables: { [TABLE]: { keys, consistentRead: true } } };
   },
   response(ctx) {
@@ -221,6 +228,7 @@ export const onSubscribe = {
     if (!metaMatchesPath(meta, path)) util.unauthorized();
     if (path.kind === 'rooms' && !rows[1]) util.unauthorized();
     if (path.kind === 'sessions' && (!rows[1] || rows[1].active !== true)) util.unauthorized();
+    if (path.sessionId && !rows[2]) util.unauthorized();
     if (path.kind === 'users' && meta.userId !== ctx.identity.sub) util.unauthorized();
   },
 };

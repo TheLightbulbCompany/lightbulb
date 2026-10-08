@@ -788,3 +788,88 @@ describe("a snapshot that arrives ahead of the output below it", () => {
     expect(hooks.did.slice(-3)).toEqual(["reset", "all the lines", "screen"]);
   });
 });
+
+describe("the session's own frames channel", () => {
+  const CHANNEL = "/ws/w1/session-frames/s1";
+  const claimed = () => {
+    const held: string[] = [];
+    const refusals: (() => void)[] = [];
+    const claim = vi.fn((channel: string, onRefused: () => void) => {
+      held.push(channel); refusals.push(onRefused);
+      return () => { const i = held.indexOf(channel); if (i >= 0) held.splice(i, 1); };
+    });
+    return { held, refusals, claim };
+  };
+
+  it("subscribes before the first watch, and claims again with backoff after a refused subscribe", async () => {
+    vi.useFakeTimers();
+    const { held, refusals, claim } = claimed();
+    const watch = vi.fn(async () => undefined);
+    const props = { session: { sessionId: "s1", generation: "g1" }, onEvent: () => () => {}, watch, onLive: vi.fn() };
+    const { rerender } = render(<SessionTerminalView {...props} frames={{ channel: CHANNEL, claim, liveChannels: [] }} />);
+    expect(held).toEqual([CHANNEL]);
+    expect(watch).not.toHaveBeenCalled(); // the Mac's picture would be published before anyone listens
+    rerender(<SessionTerminalView {...props} frames={{ channel: CHANNEL, claim, liveChannels: [CHANNEL] }} />);
+    expect(watch).toHaveBeenCalledWith("s1", true);
+
+    act(() => refusals.at(-1)!()); // the authorizer's read failed once
+    expect(held).toEqual([]);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    expect(held).toEqual([CHANNEL]); // the same channel, subscribed anew
+  });
+
+  it("a hidden tab releases the frames channel, and shown again claims it before a fresh watch", async () => {
+    vi.useFakeTimers();
+    let state: DocumentVisibilityState = "visible";
+    const spy = vi.spyOn(document, "visibilityState", "get").mockImplementation(() => state);
+    const show = (next: DocumentVisibilityState) => act(() => { state = next; document.dispatchEvent(new Event("visibilitychange")); });
+    const { held, claim } = claimed();
+    const watch = vi.fn(async () => undefined);
+    const props = { session: { sessionId: "s1", generation: "g1" }, onEvent: () => () => {}, watch, onLive: vi.fn() };
+    const { rerender } = render(<SessionTerminalView {...props} frames={{ channel: CHANNEL, claim, liveChannels: [CHANNEL] }} />);
+    expect(held).toEqual([CHANNEL]);
+    expect(watch.mock.calls).toEqual([["s1", true]]);
+    show("hidden");
+    expect(held).toEqual([]); // no frames reach a hidden tab
+    rerender(<SessionTerminalView {...props} frames={{ channel: CHANNEL, claim, liveChannels: [] }} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(watch).toHaveBeenCalledTimes(1);
+    show("visible");
+    expect(held).toEqual([CHANNEL]);
+    expect(watch).toHaveBeenCalledTimes(1); // not before the channel is live again
+    rerender(<SessionTerminalView {...props} frames={{ channel: CHANNEL, claim, liveChannels: [CHANNEL] }} />);
+    expect(watch.mock.calls.at(-1)).toEqual(["s1", true]);
+    spy.mockRestore();
+  });
+
+  it("a first subscribe refused (no marker yet) gets the marker from a plain watch, and asks for the picture only once subscribed", async () => {
+    vi.useFakeTimers();
+    const { held, refusals, claim } = claimed();
+    const watch = vi.fn(async () => undefined);
+    const props = { session: { sessionId: "s1", generation: "g1" }, onEvent: () => () => {}, watch, onLive: vi.fn() };
+    const { rerender } = render(<SessionTerminalView {...props} frames={{ channel: CHANNEL, claim, liveChannels: [] }} />);
+    act(() => refusals.at(-1)!());
+    expect(watch.mock.calls).toEqual([["s1", false]]); // makes the marker; no view is ready for a picture yet
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    expect(held).toEqual([CHANNEL]);
+    expect(watch).toHaveBeenCalledTimes(1);
+    rerender(<SessionTerminalView {...props} frames={{ channel: CHANNEL, claim, liveChannels: [CHANNEL] }} />);
+    expect(watch.mock.calls.at(-1)).toEqual(["s1", true]); // now subscribed: the picture is heard
+  });
+
+  it.each([
+    ["a removed member", new ApiError(403, { code: "LOCAL_SESSION_FORBIDDEN" })],
+    ["a session no longer shared", new ApiError(404, { code: "LOCAL_SESSION_NOT_FOUND" })],
+    ["a full session", new ApiError(409, { code: "LOCAL_SESSION_VIEWERS_FULL" })],
+  ])("drops the channel and goes not-live for %s", async (_, refusal) => {
+    const { held, claim } = claimed();
+    const onLive = vi.fn();
+    const watch = vi.fn(async () => { throw refusal; });
+    render(<SessionTerminalView session={{ sessionId: "s1", generation: "g1" }} onEvent={() => () => {}} watch={watch} onLive={onLive}
+      frames={{ channel: CHANNEL, claim, liveChannels: [CHANNEL] }} />);
+    await act(async () => {});
+    expect(watch).toHaveBeenCalledTimes(1);
+    expect(held).toEqual([]);
+    expect(onLive).toHaveBeenLastCalledWith(false);
+  });
+});

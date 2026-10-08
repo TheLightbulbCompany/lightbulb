@@ -10,7 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from core.repositories import local_sessions_repo as repo, messaging_repo
-from core.services import live_events, local_sessions as service, session_screen
+from core.services import local_sessions as service, session_screen
 from core.services.local_session_grants import AgentInvocation
 from core.services.messaging import ApiProblem
 from tests.unit.services.test_local_session_relay import (  # noqa: F401 -- fixtures
@@ -117,9 +117,8 @@ async def test_a_screen_frame_reaches_current_viewers_only_and_nothing_is_stored
     transport[3].clear()
     transport[4].clear()
     await session_screen.forward(relay(transport), "conn-1", frame(sid))
-    bob = await live_events.get_live_event_publisher().user_channel(OWNER, BOB.user_id)
     published = await _published(transport)
-    assert [(c, e["type"]) for c, e in published] == [(bob, "workspace.session.screen")]
+    assert [(c, e["type"]) for c, e in published] == [(await _frames_channel(sid), "workspace.session.screen")]
     assert published[0][1]["payload"] == {k: v for k, v in frame(sid).items() if k != "type"}
     assert await repo.get_session(OWNER, sid) == before, "screen traffic never writes META"
     assert transport[3] == [], "the Mac is never answered"
@@ -129,31 +128,47 @@ async def test_a_screen_frame_reaches_current_viewers_only_and_nothing_is_stored
     assert {r["sk"] for r in rows} == {"META", f"VIEWER#{BOB.user_id}"}
 
 
+async def _frames_channel(sid):
+    return f"/ws/{await messaging_repo.ensure_workspace_id(OWNER)}/session-frames/{sid}"
+
+
 @pytest.mark.asyncio
-async def test_a_removed_viewer_gets_nothing_from_the_very_next_frame(transport, monkeypatch):
-    """Channels resolve fresh on every frame, two batch reads for all viewers and never one
-    read per viewer: there is no cache for a removal to wait out."""
+async def test_a_frame_is_one_publish_whatever_the_number_of_viewers(transport, monkeypatch):
+    """Who hears it is AppSync's onSubscribe decision; the frame path reads no viewer's stream."""
     sid = await start(transport)
-    for person in (ALICE, BOB):
-        await messaging_repo.ensure_user_stream(OWNER, person.user_id)
+    for person in (ALICE, BOB, OUTSIDER):
         await session_screen.watch(person, sid)
     monkeypatch.setattr(session_screen, "_spent", {})
-    publisher = live_events.get_live_event_publisher()
-    alice = await publisher.user_channel(OWNER, ALICE.user_id)
-    bob = await publisher.user_channel(OWNER, BOB.user_id)
-    batches = []
-    real_batch_get = messaging_repo.batch_get
-    monkeypatch.setattr(messaging_repo, "batch_get", lambda keys: batches.append(keys) or real_batch_get(keys))
-    monkeypatch.setattr(messaging_repo, "get_stream", None)  # a per-viewer read would fail here
+    monkeypatch.setattr(messaging_repo, "batch_get", None)
+    monkeypatch.setattr(messaging_repo, "get_stream", None)
     transport[4].clear()
     await session_screen.forward(relay(transport), "conn-1", frame(sid, seq=0))
-    assert sorted(c for c, _ in await _published(transport)) == sorted([alice, bob])
-    assert len(batches) == 2, "two batch reads per frame, whatever the viewer count"
+    assert [c for c, _ in await _published(transport)] == [await _frames_channel(sid)]
 
-    await messaging_repo.deactivate_user_stream(OWNER, BOB.user_id)
-    transport[4].clear()
-    await session_screen.forward(relay(transport), "conn-1", frame(sid, seq=1))
-    assert [c for c, _ in await _published(transport)] == [alice]
+
+@pytest.mark.asyncio
+async def test_the_frames_authorizer_marker_exists_exactly_while_the_session_is_shared(transport, db):
+    """WORKSPACE#<ws>/SESSION#<sid> is what AppSync reads to admit a subscriber; it follows the row."""
+    sid = await start(transport)
+    key = {"pk": messaging_repo.workspace_pk(await messaging_repo.ensure_workspace_id(OWNER)), "sk": f"SESSION#{sid}"}
+    assert db[0].get_item(Key=key)["Item"]["ownerId"] == OWNER
+    await service.set_sharing(ALICE, sid, False)
+    assert "Item" not in db[0].get_item(Key=key)
+    await service.set_sharing(ALICE, sid, True)
+    assert "Item" in db[0].get_item(Key=key)
+
+
+@pytest.mark.asyncio
+async def test_a_renewal_recreates_a_missing_marker_and_does_not_nudge(transport, db):
+    """A session shared before put_session wrote markers, watched by a view whose lease is live."""
+    sid = await start(transport)
+    await session_screen.watch(BOB, sid)
+    key = {"pk": messaging_repo.workspace_pk(await messaging_repo.ensure_workspace_id(OWNER)), "sk": f"SESSION#{sid}"}
+    db[0].delete_item(Key=key)
+    nudged = len(_nudges(transport))
+    await session_screen.watch(BOB, sid)  # a renewal, not a fresh watch
+    assert "Item" in db[0].get_item(Key=key)
+    assert len(_nudges(transport)) == nudged
 
 
 @pytest.mark.asyncio
@@ -229,14 +244,14 @@ async def test_a_failed_viewer_publish_is_not_counted_as_forwarded(transport, mo
     await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
     await session_screen.watch(BOB, sid)
     monkeypatch.setattr(session_screen, "_spent", {})
-    publisher = MagicMock(publish_users=AsyncMock(return_value=[RuntimeError("appsync down")]))
+    publisher = MagicMock(publish_session_frames=AsyncMock(side_effect=RuntimeError("appsync down")))
     with (
         patch.object(session_screen.live_events, "get_live_event_publisher", return_value=publisher),
         patch.object(session_screen, "put_metric") as metric,
     ):
         await session_screen.forward(relay(transport), "conn-1", frame(sid, seq=0))
-    publisher.publish_users.assert_awaited_once()
-    assert metric.call_args_list == [call("session.screen.publish.failed", 1)]
+    publisher.publish_session_frames.assert_awaited_once()
+    assert metric.call_args_list == [call("session.screen.publish.failed")]
 
 
 @pytest.mark.asyncio

@@ -81,6 +81,10 @@ async def test_the_mac_names_why_a_running_session_has_no_terminal(transport):
     assert (await public(sid)).terminal_reason is None
     with pytest.raises(ApiProblem):
         await relay(transport).handle_message("conn-1", heartbeat(sid, terminal="none", terminalReason="vscode"))
+    # Ended, a terminal session's reason is gone; one inside an app keeps saying it never had a terminal.
+    row = {**await repo.get_session(OWNER, sid), "terminal": "none", "endedAt": 1}
+    assert service._session_public({**row, "terminalReason": "no-daemon"}, BOB.user_id).terminal_reason is None
+    assert service._session_public({**row, "terminalReason": "unknown"}, BOB.user_id).terminal_reason == "unknown"
 
 
 @pytest.mark.asyncio

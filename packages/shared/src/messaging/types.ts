@@ -385,9 +385,10 @@ export interface LocalSession {
   latestEventSeq: number;
   kind?: "interactive" | "background";
   /** Which live terminal a running session has: "held" (Lightbulb runs it) or "attach" (a Claude
-   *  background session). Absent: its transcript is all there is. */
+   *  background session). Absent: it has none (see `terminalReason`). */
   terminal?: "held" | "attach";
-  /** Why a running session has no live terminal, as its Mac reports it (spec 2026-10-07 §5.1). */
+  /** Why a session has no live terminal, as its Mac reports it. `app`, `sdk` and `unknown` never have one
+   *  (`conversationOnly`) and keep the reason after they end; `plain` and `no-daemon` come only from an older Mac app. */
   terminalReason?: "plain" | "no-daemon" | "app" | "sdk" | "unknown";
   /** An ended held session whose final screen its owner's Mac still shows; `terminal` stays set while it is. */
   screenAvailable?: boolean;
@@ -406,7 +407,7 @@ export interface LocalSession {
   lastEventAt?: string | null;
   endedAt?: string | null;
   lastAssistantMessage?: string | null;
-  /** False while its owner has paused sharing it; only they can see it then. Absent means shared. */
+  /** False while its owner has it on Only me; only they can see it then. Absent means shared. */
   shared?: boolean;
   /** The owner's "Let teammates control this session"; off by default, off again at session end. */
   teamControl?: boolean;

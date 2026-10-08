@@ -10,8 +10,10 @@ export type Decision = { decision: 'allow' | 'decline' | 'pause' | 'unpause'; us
 export type Run = { text: string; color?: string }
 
 export function bandRuns(s: SessionState): Run[] {
-  if (s.paused) return [{ text: '○ Sharing paused' }]
-  if (s.terminal === null) return [{ text: '● Shared as a transcript' }]
+  // Its person chose Only me in the workspace: the same line as a session that was never shared.
+  if (s.paused) return [{ text: ONLY_YOU_LINE }]
+  // No terminal: it runs inside an app, and members read its conversation.
+  if (s.terminal === null) return [{ text: '● Shared in Lightbulb' }]
   if (s.viewers.length === 0) return [{ text: '● Live in Lightbulb' }]
   const names = (vs: SessionState['viewers']) =>
     vs.flatMap((v, i): Run[] => [...(i ? [{ text: ', ' }] : []), { text: v.name, color: colorFor(v.userId) }])

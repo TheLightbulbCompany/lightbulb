@@ -250,7 +250,7 @@ export function LocalSessions() {
     <div className="settings-card-header settings-card-header--rows">
       <div>
         <h2 id="session-sharing-heading" className="settings-card-title">Session sharing</h2>
-        <div className="settings-card-desc">People in your conversations can see your Claude Code and Codex sessions from this Mac.</div>
+        <div className="settings-card-desc">People in your conversations can see the Claude Code and Codex sessions you share from this Mac.</div>
       </div>
     </div>
     <SettingRow title="Share sessions from this Mac" description={status}>

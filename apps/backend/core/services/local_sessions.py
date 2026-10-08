@@ -773,7 +773,9 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     if public["status"] == "ended" and row.get("endedReason") == ENDED_ON_PURPOSE:
         public["endedOnPurpose"] = True
     reason = public.pop("terminalReason", None)
-    if public["status"] not in ("ended", "offline") and public["terminal"] is None and reason:
+    # A session inside an app never had a terminal: ended or offline, its panel is still its conversation.
+    live = public["status"] not in ("ended", "offline")
+    if public["terminal"] is None and reason and (live or reason not in ("plain", "no-daemon")):
         public["terminalReason"] = reason
     if not row["capabilitiesVerified"]:
         public["capabilities"] = Capabilities().model_dump(by_alias=True)

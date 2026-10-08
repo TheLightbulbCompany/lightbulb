@@ -36,5 +36,5 @@ Tell your user what the answer says. Do not guess.
   Mac, or session sharing is off there. Tell the user to open Lightbulb and turn on Settings →
   Desktop → Session sharing. If a sandbox blocked the command, ask the user to allow it.
 
-To stop sharing, the user presses Pause in the line above the Claude Code prompt, or turns
-sharing off in the Lightbulb app. You cannot stop it from here.
+To stop sharing, the user presses Stop sharing in the line above the Claude Code prompt, or
+sets the session to Only me in the Lightbulb app. You cannot stop it from here.

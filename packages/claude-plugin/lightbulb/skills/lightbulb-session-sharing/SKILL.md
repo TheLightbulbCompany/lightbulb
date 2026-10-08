@@ -89,7 +89,7 @@ Check whether the timeout also happens at concurrency 50
   because a hosted caller is not a session.
 - If the tools or destination are unavailable, say so rather than claiming a
   message was sent. The `@aden` header alone is not a destination.
-- The transcript is mirrored. Keep answers self-contained, do not paste
+- Members can read what this session prints. Keep answers self-contained, do not paste
   secrets or credentials, and do not ask the teammate to type approvals.
 - A workspace advisory means files changed outside this session. Re-read the
   relevant files before editing.

@@ -646,6 +646,7 @@ button.native-session-panel-row:hover .native-session-panel-activity { color: va
 /* Pending and queued follow-ups stay visible under the live terminal. */
 .local-session-feedback:empty { display: none; }
 .local-session-feedback { flex: none; max-height: 30%; overflow: auto; }
+.local-session-conversation { flex: 1; min-height: 0; max-height: none; display: flex; flex-direction: column-reverse; }
 
 /* The live terminal's own column: a strip for the Fit / Readable switch, then the box that scrolls
    when the Mac's screen, at a readable scale, is larger than the pane. Added beside

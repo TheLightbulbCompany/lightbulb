@@ -273,7 +273,7 @@ export const register: Register = on => {
       try {
         const { state: after, message, local: stopped } = await decide($, body)
         if (after) await update($, sharing, () => after) // never write back the draw-time `s`: the poll may be newer
-        // Pause stops sharing on this Mac: the app answers that the session is only its person's.
+        // Stop sharing stops it on this Mac: the app answers that the session is only its person's.
         if (stopped) {
           await update($, sharing, () => null)
           await update($, local, () => stopped)
@@ -294,8 +294,8 @@ export const register: Register = on => {
         <Box>
           <Text dimColor>{bandRuns(s).map(r => r.color ? <Text color={r.color}>{r.text}</Text> : r.text)} </Text>
           {s.paused
- ? <Button key="resume" hotkey="p" label="Resume sharing" onPress={act({ decision: 'unpause' })} />
-            : <Button key="pause" hotkey="p" label="Pause" onPress={act({ decision: 'pause' })} />}
+ ? <Button key="resume" hotkey="p" label={SHARE_LABEL} onPress={act({ decision: 'unpause' })} />
+            : <Button key="pause" hotkey="p" label="Stop sharing" onPress={act({ decision: 'pause' })} />}
           {!ask && hint}
         </Box>
         {ask && (

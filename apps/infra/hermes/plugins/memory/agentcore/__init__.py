@@ -119,7 +119,9 @@ class AgentCoreMemoryProvider(MemoryProvider):
         # (agent/turn_context.py), but ours carries the turn-context JSON line, so neither works
         # until it is stripped. A room line reads "<name>: <text>"; the skip judges the text.
         line = _user_text(query or "")
-        said = line.partition(": ")[2] if line != query else line
+        # A follow-up notice carries no speaker ("[IMPORTANT: ..."), so only a "<name>: " head is dropped.
+        name, sep, rest = line.partition(": ")
+        said = rest if line != query and sep and "[" not in name and "\n" not in name else line
         if is_trivial_prompt(said) or not self.is_available():
             return ""
         try:

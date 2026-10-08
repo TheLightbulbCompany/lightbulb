@@ -241,6 +241,8 @@ async def open_page(auth: AuthContext | None, token: str, *, refresh: bool = Fal
 # --- Watching (owner ruling 2026-10-08: an "Anyone" link shows the live terminal, view only) ---
 #
 # PUBWATCH#<publicId> / VIEWER#<sha256(key)>   one link viewer's 45 s lease
+# PUBWATCH#<publicId> / WATCHED                when the newest lease lapses (`until`), and when the
+#                                              Mac was last asked for a picture (`askedAt`)
 #
 # The lease `<publicId>.<key>` is the viewer's whole credential on AppSync: the `pub` namespace's
 # Lambda authorizer (apps/infra/lambda/pub-authorizer) admits a subscribe to `/pub/<publicId>` and
@@ -253,6 +255,11 @@ async def open_page(auth: AuthContext | None, token: str, *, refresh: bool = Fal
 # ponytail: counted, not locked: two viewers racing for the last seat both get in, and a viewer
 # who stops renewing keeps an open subscription uncounted until the page closes.
 MAX_LINK_VIEWERS = 20
+# A link's viewers together get the Mac asked for history and a snapshot at most this often: each
+# ask is a burst out of the session's frame budget, which workspace viewers share, and `fresh` is
+# only a stranger's word. Per link, not per lease: taking new seats buys no more asks. A viewer
+# who joins inside the window draws from the next snapshot (at most 10 s) with no scrollback.
+ASK_EVERY_S = 15
 
 
 def public_pk(public_id: str) -> str:
@@ -261,7 +268,7 @@ def public_pk(public_id: str) -> str:
 
 class ViewingRequest(LinkTokenRequest):
     lease: Annotated[str, Field(max_length=128)] | None = None
-    fresh: bool = False  # subscribed and has no screen: ask the Mac for history and a snapshot now
+    fresh: bool = False  # subscribed and has no screen: a request, granted at most once per ASK_EVERY_S per link
 
 
 class Viewing(ContractModel):
@@ -283,9 +290,8 @@ async def viewing(token: str, lease: str | None, fresh: bool) -> Viewing:
     if not public:
         raise _gone()
     now = int(time.time())
-    if not sessions.screen_available(row, now) and (
-        row.get("endedAt") is not None or int(row.get("onlineUntil", 0)) <= now
-    ):
+    # A running session only. An ended one's kept final screen is for the workspace.
+    if row.get("endedAt") is not None or int(row.get("onlineUntil", 0)) <= now:
         raise ApiProblem("LOCAL_SESSION_OFFLINE", "This session is not running.")
     if sessions.session_terminal(row) is None:
         raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "This session has no live terminal.")
@@ -310,14 +316,45 @@ async def viewing(token: str, lease: str | None, fresh: bool) -> Viewing:
             if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
                 raise
     if not renewed:
-        live = [r for r in await store._query(public_pk(public), begins_with="VIEWER#") if int(r["expiresAt"]) > now]
-        if len(live) >= MAX_LINK_VIEWERS:
+        seats = await store._query(public_pk(public), begins_with="VIEWER#")
+        lapsed = [{"pk": r["pk"], "sk": r["sk"]} for r in seats if int(r["expiresAt"]) <= now]
+        if lapsed:
+            # Their TTL delete lags up to 48 h: dropped here, so this read stays as small as the cap.
+            def drop() -> None:
+                with table.batch_writer() as batch:
+                    for key in lapsed:
+                        batch.delete_item(Key=key)
+
+            await run_in_thread(drop)
+        if len(seats) - len(lapsed) >= MAX_LINK_VIEWERS:
             raise ApiProblem(
                 "LOCAL_SESSION_VIEWERS_FULL", f"This session already has {MAX_LINK_VIEWERS} people watching by link."
             )
         secret = secrets.token_urlsafe(32)
         lease = f"{public}.{secret}"
         await run_in_thread(table.put_item, Item={**key_of(secret), "expiresAt": expires})
+    # One row says whether anyone watches by link, so `forward` reads one item per frame.
+    watched = {"pk": public_pk(public), "sk": "WATCHED"}
+    await run_in_thread(
+        table.update_item,
+        Key=watched,
+        UpdateExpression="SET #u = :exp, expiresAt = :exp",
+        ExpressionAttributeNames={"#u": "until"},
+        ExpressionAttributeValues={":exp": expires},
+    )
+    if fresh:
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key=watched,
+                UpdateExpression="SET askedAt = :now",
+                ConditionExpression="attribute_not_exists(askedAt) OR askedAt <= :cut",
+                ExpressionAttributeValues={":now": now, ":cut": now - ASK_EVERY_S},
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+            fresh = False
     await session_screen.tell_mac(row, now, fresh)
     return Viewing(
         lease=lease,

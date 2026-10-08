@@ -543,7 +543,7 @@ async def test_a_link_viewer_gets_frames_on_the_public_channel_with_no_session_o
     assert [w["sessionId"] for w in (await ack(transport, sid))["watching"]] == [sid], "the Mac streams it"
     assert [m["type"] for _, m in transport[3]][0] == "local.session.watch", "a fresh viewer gets history now"
     stored = db[0].query(KeyConditionExpression="pk = :p", ExpressionAttributeValues={":p": f"PUBWATCH#{public}"})
-    assert len(stored["Items"]) == 1 and seat.lease.split(".", 1)[1] not in str(stored["Items"]), "the key is hashed"
+    assert len(stored["Items"]) == 2 and seat.lease.split(".", 1)[1] not in str(stored["Items"]), "the key is hashed"
     transport[4].clear()
     await session_screen.forward(relay(transport), "conn-1", frame(sid))
     ((channel, event),) = await _published(transport)  # one publish: no workspace viewer, so no members' channel
@@ -621,3 +621,88 @@ async def test_a_workspace_link_or_an_ended_session_has_no_public_terminal(trans
     with pytest.raises(ApiProblem) as ended:
         await session_links.viewing(token, None, True)
     assert ended.value.error.code == "LOCAL_SESSION_OFFLINE"
+
+
+@pytest.mark.asyncio
+async def test_ending_stops_public_frames_and_the_next_renewal_though_the_mac_keeps_the_final_screen(transport, db):
+    from core.services import session_links
+
+    sid = await start(transport)
+    token, _ = await _public_link(sid)
+    seat = await session_links.viewing(token, None, True)
+    await session_screen.watch(BOB, sid)
+    db[0].update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+        UpdateExpression="SET endedAt = :t, screenUntil = :u, screenConnectionId = :c, terminal = :h",
+        ExpressionAttributeValues={":t": int(time.time()), ":u": int(time.time()) + 30, ":c": "conn-1", ":h": "held"},
+    )
+    transport[4].clear()
+    await session_screen.forward(relay(transport), "conn-1", frame(sid))
+    # The kept final screen still reaches the workspace, and only the workspace.
+    assert [c for c, _ in await _published(transport)] == [await _frames_channel(sid)]
+    with pytest.raises(ApiProblem) as refused:
+        await session_links.viewing(token, seat.lease, False)
+    assert refused.value.error.code == "LOCAL_SESSION_OFFLINE"
+
+
+@pytest.mark.asyncio
+async def test_a_link_holder_cannot_make_the_mac_resend_its_history_in_a_loop(transport, monkeypatch):
+    from core.services import session_links
+
+    sid = await start(transport)
+    await ack(transport, sid)  # liveTerminal
+    token, _ = await _public_link(sid)
+    now = time.time()
+    monkeypatch.setattr(session_links.time, "time", lambda: now)
+    seat = await session_links.viewing(token, None, False)
+    transport[3].clear()
+    for lease in (seat.lease, seat.lease, None):  # the same seat again, and a new seat: no more asks
+        await session_links.viewing(token, lease, True)
+    assert len(_nudges(transport)) == 1, "`fresh` is a request: one ask per link per window"
+    monkeypatch.setattr(session_links.time, "time", lambda: now + session_links.ASK_EVERY_S)
+    await session_links.viewing(token, seat.lease, True)
+    assert len(_nudges(transport)) == 2
+
+
+@pytest.mark.asyncio
+async def test_lapsed_seats_are_dropped_when_a_new_one_is_taken(transport, db):
+    from core.services import session_links
+
+    sid = await start(transport)
+    token, public = await _public_link(sid)
+    for _ in range(3):
+        await session_links.viewing(token, None, False)
+
+    def seats():
+        rows = db[0].query(KeyConditionExpression="pk = :p", ExpressionAttributeValues={":p": f"PUBWATCH#{public}"})
+        return [r for r in rows["Items"] if r["sk"].startswith("VIEWER#")]
+
+    for row in seats():  # their leases lapsed; DynamoDB's own TTL delete lags up to 48 h
+        db[0].update_item(
+            Key={"pk": row["pk"], "sk": row["sk"]},
+            UpdateExpression="SET expiresAt = :t",
+            ExpressionAttributeValues={":t": 1},
+        )
+    await session_links.viewing(token, None, False)
+    assert len(seats()) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failed_read_of_the_link_watchers_never_costs_the_workspace_its_frame(transport, monkeypatch):
+    from core.services import session_links
+
+    sid = await start(transport)
+    token, public = await _public_link(sid)
+    await session_links.viewing(token, None, False)
+    await session_screen.watch(BOB, sid)
+    get = messaging_repo._get
+
+    async def broken(pk, sk):
+        if pk.startswith("PUBWATCH#"):
+            raise RuntimeError("dynamo down")
+        return await get(pk, sk)
+
+    monkeypatch.setattr(messaging_repo, "_get", broken)
+    transport[4].clear()
+    await session_screen.forward(relay(transport), "conn-1", frame(sid))
+    assert [c for c, _ in await _published(transport)] == [await _frames_channel(sid)]

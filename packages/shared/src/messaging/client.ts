@@ -122,7 +122,6 @@ export interface MessagingClient {
   getLocalSessionLink(sessionId: string): Promise<SessionLink>;
   /** No audience is Share: create a workspace link if there is none, otherwise keep the link's audience. */
   putLocalSessionLink(sessionId: string, audience?: SessionLinkAudience): Promise<SessionLink>;
-  deleteLocalSessionLink(sessionId: string): Promise<void>;
   /** The owner's "Let people continue this session". Off keeps the link. */
   setLocalSessionPickup(sessionId: string, enabled: boolean): Promise<LocalSession>;
   /** Continue: the moment a copy is made. The challenge is the CLI's; the token rides in the body. */
@@ -211,7 +210,6 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
       api.del(`${sessionPath(sessionId)}/resume-allowed/${encodeURIComponent(userId)}`) as Promise<LocalSession>,
     getLocalSessionLink: (sessionId) => api.get(`${sessionPath(sessionId)}/link`) as Promise<SessionLink>,
     putLocalSessionLink: (sessionId, audience) => api.put(`${sessionPath(sessionId)}/link`, { audience }) as Promise<SessionLink>,
-    deleteLocalSessionLink: async (sessionId) => { await api.del(`${sessionPath(sessionId)}/link`); },
     setLocalSessionPickup: (sessionId, enabled) => api.put(`${sessionPath(sessionId)}/pickup`, { enabled }) as Promise<LocalSession>,
     // POST: the token rides in the body, never a URL a log would keep.
     createSessionCopy: (token, challenge) => api.post("/session-links/copies", { token, challenge }) as Promise<SessionCopyCode>,

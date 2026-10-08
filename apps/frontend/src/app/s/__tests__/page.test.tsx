@@ -114,6 +114,7 @@ describe("session link page", () => {
     expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
   });
 
+  // A link viewer has the terminal up: its own renewal hears trouble, so the page re-opens every 30 s, not 5.
   it("re-opens on every tick while the session is live", async () => {
     vi.useFakeTimers();
     window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
@@ -128,10 +129,10 @@ describe("session link page", () => {
     expect(screen.getByText("A shared session")).toBeTruthy();
     const openCalls = () => fetchMock.mock.calls.filter(c => String(c[0]).endsWith("/open")).length;
     expect(openCalls()).toBe(1);
-    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
     expect(screen.getByText("Fix the bug")).toBeTruthy();
     expect(openCalls()).toBe(2);
-    await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(90000); });
     expect(openCalls()).toBe(5); // a live session keeps being re-opened, ready or not
   });
 
@@ -151,10 +152,10 @@ describe("session link page", () => {
     render(<SessionLinkPageRoute />);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(screen.getByText(/· Live/)).toBeTruthy();
-    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
     expect(screen.getByText(/· Ended/)).toBeTruthy();
     const openCalls = () => fetchMock.mock.calls.filter(c => String(c[0]).endsWith("/open")).length;
-    await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(90000); });
     expect(openCalls()).toBe(2); // ended: the poll stopped
   });
 
@@ -170,11 +171,11 @@ describe("session link page", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<SessionLinkPageRoute />);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
     // Signed out, so the same words as any other refusal: sign in, or it was turned off.
     expect(screen.getByRole("alert").textContent).toBe("Sign in to open this session.");
     const openCalls = () => fetchMock.mock.calls.filter(c => String(c[0]).endsWith("/open")).length;
-    await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(90000); });
     expect(openCalls()).toBe(2);
   });
 
@@ -192,7 +193,7 @@ describe("session link page", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<SessionLinkPageRoute />);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-    await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(90000); });
     expect(screen.queryByRole("alert")).toBeNull();
     const opens = fetchMock.mock.calls.filter(c => String(c[0]).endsWith("/open"));
     expect(opens.length).toBe(4);
@@ -262,6 +263,24 @@ describe("session link page", () => {
     // The terminal's own 15 s renewal carries the lease, and `fresh` asks the Mac for a picture.
     await act(async () => { await (props.watch as (id: string, fresh?: boolean) => Promise<void>)("pub-1", true); });
     expect(JSON.parse(String(viewing()[1][1]?.body))).toEqual({ token: "tok", lease: "pub-1.key-1", fresh: true });
+  });
+
+  it("re-opens at once when the terminal's seat is refused, and shows what happened", async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
+    let ended = false;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (!url.endsWith("/viewing")) return { ok: true, status: 200, json: async () => model({ state: ended ? "ended" : "live" }) } as Response;
+      return ended ? { ok: false, status: 409, json: async () => ({ code: "LOCAL_SESSION_OFFLINE", message: "This session is not running." }) } as Response
+        : { ok: true, status: 200, json: async () => seat } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    ended = true;
+    await act(async () => { await (terminal.props!.watch as (id: string) => Promise<void>)("pub-1").catch(() => {}); await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByLabelText("Session state").textContent).toBe("Ended"); // no 30 s wait
+    expect(screen.queryByTestId("terminal")).toBeNull();
   });
 
   it("shows the Continue instructions only when the owner turned Continue on", async () => {

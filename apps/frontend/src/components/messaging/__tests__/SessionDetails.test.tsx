@@ -19,7 +19,7 @@ const client = () => ({
   setLocalSessionSharing: vi.fn(async (_: string, shared: boolean) => session({ shared })),
   setLocalSessionTeamControl: vi.fn(async (_: string, teamControl: boolean) => session({ teamControl })),
   setLocalSessionUsageSharing: vi.fn(async (_: string, shareUsage: boolean) => session({ shareUsage })),
-  getLocalSessionLink: vi.fn(async () => { throw new Error("404"); }), putLocalSessionLink: vi.fn(), deleteLocalSessionLink: vi.fn(),
+  getLocalSessionLink: vi.fn(async () => { throw new Error("404"); }), putLocalSessionLink: vi.fn(),
   listLocalSessionAudit: vi.fn(async () => ({ entries: [] as LocalSessionAuditEntry[] })),
   removeLocalSessionSender: vi.fn(async () => session()),
 });

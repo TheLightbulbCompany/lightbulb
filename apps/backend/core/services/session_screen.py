@@ -383,11 +383,17 @@ async def forward(relay, cid: str, body: dict) -> None:
             if int(r.get("expiresAt", 0)) > now
         ]
         # An "Anyone with the link" link's watchers: read on every frame, like the row above, so a
-        # link that stops being public (or loses its last watcher) gets no further frame.
-        public = sessions.public_id(row.get("shareLink"))
-        by_link = bool(public) and any(
-            int(r.get("expiresAt", 0)) > now for r in await store._query(f"PUBWATCH#{public}", begins_with="VIEWER#")
-        )
+        # link that stops being public, loses its last watcher, or whose session ends gets no
+        # further frame (an ended session's kept final screen is for the workspace). One item,
+        # written by `session_links.viewing`. A failure here never costs the workspace its frame.
+        public = sessions.public_id(row.get("shareLink")) if row.get("endedAt") is None else None
+        by_link = False
+        if public:
+            try:
+                watched = await store._get(f"PUBWATCH#{public}", "WATCHED")
+                by_link = int((watched or {}).get("until", 0)) > now
+            except Exception as exc:  # noqa: BLE001 -- see above
+                logger.info("session link watchers unread error=%s", type(exc).__name__)
         if not viewers and not by_link:
             return
         if not _spend(sid, size, now):
@@ -395,18 +401,26 @@ async def forward(relay, cid: str, body: dict) -> None:
             return
         payload = frame.model_dump(mode="json", by_alias=True, exclude={"type"})
         publisher = live_events.get_live_event_publisher()
-        try:
-            if viewers:
+        sent = False
+        # Each audience on its own: neither publish waits on, or fails with, the other.
+        if viewers:
+            try:
                 workspace = await store.ensure_workspace_id(owner)  # minted long before any session: a read
                 await publisher.publish_session_frames(workspace, make_live_event("workspace.session.screen", payload))
-            if by_link:
+                sent = True
+            except Exception:  # noqa: BLE001 -- metered; the Mac is never told
+                put_metric("session.screen.publish.failed")
+        if by_link:
+            try:
                 # The publicId stands in for the session's id and generation: a link viewer learns neither.
                 await publisher.publish_link_frames(
                     public,
                     make_live_event("workspace.session.screen", {**payload, "sessionId": public, "generation": public}),
                 )
-        except Exception:  # noqa: BLE001 -- metered; the Mac is never told
-            put_metric("session.screen.publish.failed")
+                sent = True
+            except Exception:  # noqa: BLE001 -- metered; the Mac is never told
+                put_metric("session.screen.publish.failed")
+        if not sent:
             return
         put_metric("session.screen.frame.forwarded")
         put_metric("session.screen.bytes", size, "Bytes")

@@ -888,7 +888,7 @@ mod tests {
         let names = "the answer\r\n● Live · Bartholomew Featherstonehaugh,\r\nMaximiliana Wolfeschlegelsteinhausen\r\nwatching · Bartholomew Featherstonehaugh\r\ntyping [ Pause ] ctrl+x tab,\r\nthen p\r\n\r\n> ";
         assert_eq!(kept_at(40, names, false).0, rows(&["the answer", "", ">"]));
         // Review of #3878: nothing caps the viewers the mod names, so the button can be any number of rows down.
-        let many = format!("the answer\r\n● Live · {}Zed watching\r\n[ Pause ] ctrl+x tab, then p\r\n\r\n> ", "Bartholomew Featherstonehaugh,\r\n".repeat(8));
+        let many = format!("the answer\r\n● Live · {}Zed watching\r\n[ Pause ] ctrl+x tab, then p\r\n\r\n> ", "Bartholomew Featherstonehaugh,\r\n".repeat(7));
         assert_eq!(kept_at(40, many.as_str(), false).0, rows(&["the answer", "", ">"]));
         let asked = "● Sharing is not a lead\r\n○ Sharing paused [ Resume\r\nsharing ]\r\nBartholomew Featherstonehaugh asked to\r\njoin [ Allow ] [ Decline ] ctrl+x tab,\r\nthen a or d · or click\r\n> ";
         assert_eq!(kept_at(40, asked, false).0, rows(&["● Sharing is not a lead", ">"]));

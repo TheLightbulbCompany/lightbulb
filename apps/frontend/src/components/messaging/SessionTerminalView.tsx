@@ -4,16 +4,13 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ApiError, NEW_SCREEN, SNAPSHOT_WAIT_MS, receiveScreen, settleScreen, snapshotWaits, type LiveEvent, type LocalSession, type SessionScreen } from "@lightbulb/shared";
 import type { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { chunkInput, dropMouseReports, dropProbeReplies, SHIFT_ENTER } from "./sessionInput";
+import { createInputQueue, dropMouseReports, dropProbeReplies, SHIFT_ENTER } from "./sessionInput";
 
 const WATCH_EVERY_MS = 15_000;
 /** A snapshot or a ping comes at least every 10 s; this long with no frame, or only pings that do not match the screen it has, and the picture is frozen, so it says Reconnecting. */
 const STALE_AFTER_MS = 30_000;
 /** A viewer that lost frames asks the Mac for its lines again at most this often: each ask is a history burst out of the session's budget. */
 const REPAIR_EVERY_MS = 30_000;
-/** Stops input: no access (403/404) or a Mac that cannot take typing. OFFLINE is another 409 and passes. */
-const refuses = (e: unknown) => e instanceof ApiError && (e.status === 403 || e.status === 404
-  || (e.status === 409 && (e.body as { code?: string } | null)?.code === "LOCAL_SESSION_UNSUPPORTED"));
 const decode = (data: string) => Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
 /** Clears the visible screen only: xterm's erase never pushes it into scrollback, so history stays.
  *  First it leaves the alternate screen and drops the scroll region, so modes the last screen set
@@ -36,7 +33,7 @@ const atBottom = (el: HTMLElement) => el.scrollTop + el.clientHeight >= el.scrol
 /** A running session's real terminal, live (rulings 2026-10-03 §4): for teammates, and for its
  *  owner anywhere but at that Mac. Read-only unless `input` is given and the person is `admitted`
  *  (owner, allowed sender or team control, re-derived by the caller each render); then keystrokes
- *  go to the Mac with the screen epoch they were typed against. A refusal (`refuses`) stops input
+ *  go to the Mac with the screen epoch they were typed against. A refusal (`inputRefused`) stops input
  *  until the `session` prop changes; an offline Mac (409 LOCAL_SESSION_OFFLINE, transient)
  *  loses only that batch. The viewer never resizes the Mac's terminal:
  *  the grid is drawn at the Mac's own cols x rows and only scaled here (`terminalScale`), and where
@@ -156,7 +153,9 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     };
     let pending = "";
     let frameId = 0;
-    let sending: Promise<unknown> = Promise.resolve();
+    // One call at a time keeps keystrokes in order; a refusal drops what is queued behind it, at once,
+    // and for as long as the session is the one refused: a restarted one (a new generation) gets a new queue.
+    let queue: { key: string; send: ReturnType<typeof createInputQueue> } | null = null;
     const flush = () => {
       frameId = 0;
       const data = pending; pending = "";
@@ -164,12 +163,9 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
       if (!data || !now.canType || !now.input) return;
       const { input, session: sent } = now;
       const epoch = order.epoch;
-      for (const part of chunkInput(new TextEncoder().encode(data))) {
-        // One call at a time keeps keystrokes in order; a refusal drops what is queued behind it.
-        sending = sending.then(() => typing.current.session.sessionId === sent.sessionId && typing.current.canType ? input(part, epoch) : undefined).catch((e) => {
-          if (refuses(e)) typing.current.refuse(`${sent.sessionId}:${sent.generation}`);
-        });
-      }
+      const key = `${sent.sessionId}:${sent.generation}`;
+      if (queue?.key !== key) queue = { key, send: createInputQueue(() => typing.current.refuse(key)) };
+      queue.send(new TextEncoder().encode(data), (part) => typing.current.session.sessionId === sent.sessionId && typing.current.canType ? input(part, epoch) : undefined);
     };
     const fit = () => {
       const shown = host.current?.querySelector<HTMLElement>(".xterm-screen");

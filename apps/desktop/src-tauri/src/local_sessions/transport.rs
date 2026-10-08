@@ -86,6 +86,13 @@ const HEARTBEAT_SESSIONS_MAX: usize = 24;
 /// `Host::outside` on disk, beside the mirrors (whose names are 64 hex characters).
 const OUTSIDE_FILE: &str = "outside.json";
 
+/// A session in `Host::outside`, by what both discovery and a hook can name: its provider and
+/// conversation. (Not the mirror key: that needs the profile, which a hook does not carry.
+/// Sharing covers default profiles only, so the pair names one session.)
+fn outside_key(provider: &str, conversation: &str) -> String {
+    format!("{provider}:{conversation}")
+}
+
 /// One discovery pass: the captured sessions, and every conversation the Claude listing named.
 type Discovered = (Vec<NativeSession>, BTreeSet<String>);
 
@@ -115,7 +122,7 @@ pub(super) struct Host {
     verify: Verify,
     /// The approved folders as they are now, canonical. A field so a test can name its own.
     approved: fn() -> Vec<PathBuf>,
-    /// Sessions last seen outside the approved folders (mirror key -> first seen, unix secs),
+    /// Sessions last seen outside the approved folders (`outside_key` -> first seen, unix secs),
     /// stored in `outside.json`. One of them found inside an approved folder later is shared
     /// from that moment on, not from its transcript's start.
     // ponytail: the oldest of 4096 is forgotten; a conversation forgotten that way and resumed
@@ -428,12 +435,13 @@ impl Host {
             let key = native_key(&native);
             let shared = native.cwd.as_deref().map(|cwd| in_approved_folder(cwd, &approved));
             if shared == Some(false) || (shared.is_none() && !self.mirrors.contains_key(&key)) {
-                self.remember_outside(&key)?;
+                // Unshared first: a marker that cannot be written must not leave it shared.
                 self.unshare(&key)?;
+                self.remember_outside(&outside_key(&native.provider, &native.conversation))?;
                 continue;
             }
             // Approving a folder shares a session from that moment on and nothing earlier.
-            let from_now = shared == Some(true) && self.forget_outside(&key)?;
+            let from_now = shared == Some(true) && self.forget_outside(&outside_key(&native.provider, &native.conversation))?;
             let before = self
                 .mirrors
                 .get(&key)
@@ -646,18 +654,18 @@ impl Host {
         if self.approved_seen.as_ref() == Some(&approved) {
             return Ok(());
         }
-        let outside: Vec<String> = self
+        let outside: Vec<(String, String)> = self
             .mirrors
             .iter()
             .filter(|(_, m)| {
                 let native = m.registration.successor.as_ref().unwrap_or(&m.native);
                 !m.unshared && native.cwd.as_deref().is_some_and(|cwd| !in_approved_folder(cwd, &approved))
             })
-            .map(|(key, _)| key.clone())
+            .map(|(key, m)| (key.clone(), outside_key(&m.native.provider, &m.native.conversation)))
             .collect();
-        for key in outside {
-            self.remember_outside(&key)?;
+        for (key, marker) in outside {
             self.unshare(&key)?;
+            self.remember_outside(&marker)?;
         }
         self.approved_seen = Some(approved);
         if let Some(wake) = &self.rediscover {
@@ -666,25 +674,60 @@ impl Host {
         Ok(())
     }
 
-    fn remember_outside(&mut self, key: &str) -> Result<()> {
-        if self.outside.contains_key(key) {
+    /// A hook, before anything else reads it. A session that is not mirrored and whose hook
+    /// comes from outside the approved folders is recorded as outside now (`marker` is all a
+    /// hook can name): its folder may be approved before a discovery pass ever sees it, and it
+    /// must then be shared from that moment on. Such a hook wakes no discovery pass: each one
+    /// would run a pass for nothing. Any other unmirrored session's hook does: a turn can start
+    /// and finish before discovery first sees its session (a Codex rollout appears only with
+    /// the first prompt), and its events would land on nothing until the 60s sweep.
+    fn hook_seen(&mut self, event: &lifecycle::HookEvent) -> Result<()> {
+        if self.mirrors.values().any(|m| m.ended_at.is_none() && m.native.conversation == event.session_id) {
             return Ok(());
         }
-        if self.outside.len() >= 4096 {
-            if let Some(oldest) = self.outside.iter().min_by_key(|(_, seen)| **seen).map(|(key, _)| key.clone()) {
-                self.outside.remove(&oldest);
+        let approved = (self.approved)();
+        if event.cwd.as_deref().is_some_and(|cwd| !in_approved_folder(Path::new(cwd), &approved)) {
+            let provider = match event.provider {
+                lifecycle::Provider::Claude => "claude",
+                lifecycle::Provider::Codex => "codex",
+            };
+            return self.remember_outside(&outside_key(provider, &event.session_id));
+        }
+        if let Some(wake) = &self.rediscover {
+            wake.notify_one();
+        }
+        Ok(())
+    }
+
+    /// Durable before it counts: the list on disk is written first, and memory follows only
+    /// when that worked, so a failed write is retried by the next pass or hook instead of
+    /// being forgotten at the next restart.
+    fn remember_outside(&mut self, marker: &str) -> Result<()> {
+        if self.outside.contains_key(marker) {
+            return Ok(());
+        }
+        let mut next = self.outside.clone();
+        if next.len() >= 4096 {
+            if let Some(oldest) = next.iter().min_by_key(|(_, seen)| **seen).map(|(key, _)| key.clone()) {
+                next.remove(&oldest);
             }
         }
-        self.outside.insert(key.to_owned(), epoch_secs());
-        private_write(&self.dir.join(OUTSIDE_FILE), &self.outside)
+        next.insert(marker.to_owned(), epoch_secs());
+        private_write(&self.dir.join(OUTSIDE_FILE), &next)?;
+        self.outside = next;
+        Ok(())
     }
 
     /// Whether this session was last seen outside the approved folders; it is not any more.
-    fn forget_outside(&mut self, key: &str) -> Result<bool> {
-        if self.outside.remove(key).is_none() {
+    /// A failed write leaves the marker in place, so the caller does not share the session yet.
+    fn forget_outside(&mut self, marker: &str) -> Result<bool> {
+        if !self.outside.contains_key(marker) {
             return Ok(false);
         }
-        private_write(&self.dir.join(OUTSIDE_FILE), &self.outside)?;
+        let mut next = self.outside.clone();
+        next.remove(marker);
+        private_write(&self.dir.join(OUTSIDE_FILE), &next)?;
+        self.outside = next;
         Ok(true)
     }
 
@@ -1664,15 +1707,7 @@ impl Host {
                     arm = laps.woke("hook");
                     match event {
                         Some(event) => {
-                            // A turn can start and finish before discovery first sees its
-                            // session (a Codex rollout appears only with the first prompt), so
-                            // its events would land on nothing until the 60s sweep. Look now.
-                            // Not for a session outside the approved folders: it is never mirrored,
-                            // and each of its hooks would run a discovery pass for nothing.
-                            let outside = event.cwd.as_deref().is_some_and(|cwd| !in_approved_folder(Path::new(cwd), &(self.approved)()));
-                            if !outside && !self.mirrors.values().any(|m| m.ended_at.is_none() && m.native.conversation == event.session_id) {
-                                if let Some(wake) = &self.rediscover { wake.notify_one(); }
-                            }
+                            self.hook_seen(&event)?;
                             if let Some(key) = self.apply_hook(&event)? {
                                 if event.event == "SessionStart" { registered.remove(&key); }
                                 else { self.heartbeat_dirty.insert(key); }
@@ -3081,7 +3116,7 @@ pub(super) mod tests {
         let key = native_key(&native);
         let mut host = test_host(dir.path(), vec![]);
         host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
-        assert!(host.mirrors.is_empty() && host.outside.contains_key(&key), "remembered as outside, not mirrored");
+        assert!(host.mirrors.is_empty() && host.outside.contains_key(&outside_key("claude", "s")), "remembered as outside, not mirrored");
 
         approve(&[&folder]);
         assert_eq!(host.observe(vec![native], &BTreeSet::new()).unwrap(), vec![key.clone()]);
@@ -3165,11 +3200,63 @@ pub(super) mod tests {
         let mirror = host.mirrors.get_mut(&key).unwrap();
         assert!(mirror.unshared && mirror.ended_at.is_some());
         assert_eq!(mirror.next_batch().unwrap(), None, "nothing is uploaded");
-        assert!(host.outside.contains_key(&key), "and a later approval shares it from then on only");
+        assert!(host.outside.contains_key(&outside_key("codex", SID)), "and a later approval shares it from then on only");
         let send = json!({"type":"local.session.command","command":{"requestId":"r1","expectedGeneration":"g1","kind":"send","text":"hello",
             "expectedTurnId":null,"sessionId":"s1","roomId":"","actorUserId":"alice","commandSeq":1,"state":"dispatched","createdAt":100,"deliverBy":130,"held":false,"providerMessageId":null}});
         let command = parse_command(&send, "alice").unwrap();
         assert_eq!(host.command(&command, None).await.unwrap().outcome, "rejected");
+    }
+
+    #[test]
+    fn local_sessions_a_hook_from_outside_marks_the_session_before_any_discovery_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("scratch");
+        fs::create_dir_all(&folder).unwrap();
+        approve(&[]);
+        let mut native = observed_fixture(dir.path());
+        native.cwd = Some(folder.clone());
+        let transcript = native.transcript.clone().unwrap();
+        let key = native_key(&native);
+        let mut host = test_host(dir.path(), vec![]);
+        // Its start hook arrives; no discovery pass has seen the session.
+        let mut started = hook(lifecycle::Provider::Claude, "SessionStart", "s");
+        started.cwd = Some(folder.to_string_lossy().into_owned());
+        host.hook_seen(&started).unwrap();
+        assert!(host.outside.contains_key(&outside_key("claude", "s")));
+        // The folder is approved before the first pass: shared from now, not from its start.
+        approve(&[&folder]);
+        host.observe(vec![native], &BTreeSet::new()).unwrap();
+        let mirror = &host.mirrors[&key];
+        assert_eq!(mirror.cursor.offset, fs::metadata(&transcript).unwrap().len());
+        assert!(mirror.queue.is_empty());
+        // A hook from inside an approved folder marks nothing.
+        let mut inside = hook(lifecycle::Provider::Claude, "SessionStart", "other");
+        inside.cwd = Some(folder.to_string_lossy().into_owned());
+        host.hook_seen(&inside).unwrap();
+        assert!(host.outside.is_empty());
+    }
+
+    #[test]
+    fn local_sessions_an_outside_marker_counts_only_once_it_is_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = test_host(dir.path(), vec![]);
+        let file = dir.path().join(OUTSIDE_FILE);
+        // The write fails (something else is in the file's place).
+        fs::create_dir(&file).unwrap();
+        assert!(host.remember_outside("codex:a").is_err());
+        assert!(host.outside.is_empty(), "not remembered in memory alone: the next pass tries again");
+        fs::remove_dir(&file).unwrap();
+        host.remember_outside("codex:a").unwrap();
+        let stored: BTreeMap<String, u64> = private_read(&file).unwrap();
+        assert!(stored.contains_key("codex:a"));
+        // Forgetting fails the same way: the marker stays, so the session is not shared yet.
+        fs::remove_file(&file).unwrap();
+        fs::create_dir(&file).unwrap();
+        assert!(host.forget_outside("codex:a").is_err());
+        assert!(host.outside.contains_key("codex:a"));
+        fs::remove_dir(&file).unwrap();
+        assert!(host.forget_outside("codex:a").unwrap());
+        assert!(host.outside.is_empty());
     }
 
     #[test]

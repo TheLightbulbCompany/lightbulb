@@ -113,8 +113,9 @@ export class AppSyncEventsClient {
     void this.connect();
   }
 
-  /** Replace the desired channel set: at most one user channel, at most one room
-   *  channel, and — only alongside that same room channel — its `/frames` sibling
+  /** Replace the desired channel set: at most one user channel, at most one workspace
+   *  `/sessions` channel, at most one room channel, and — only alongside that same room
+   *  channel — its `/frames` sibling
    *  (see framesChannelFor). Any other extra room-family channel, including a
    *  `/frames` channel that does not match the current room, is a `protocol_error`
    *  and is dropped rather than subscribed. */
@@ -124,17 +125,19 @@ export class AppSyncEventsClient {
     const users = unique.filter((channel) => channel.includes("/users/"));
     const rooms = unique.filter((channel) => channel.includes("/rooms/"));
     const frames = unique.filter((channel) => channel.includes("/frames/"));
+    const sessions = unique.filter((channel) => channel.endsWith("/sessions"));
     const room = rooms[0];
     const validFrames = frames.filter((channel) => !!room && channel === framesChannelFor(room));
     if (
       users.length > 1 ||
+      sessions.length > 1 ||
       rooms.length > 1 ||
       frames.length > validFrames.length ||
-      users.length + rooms.length + frames.length !== unique.length
+      users.length + sessions.length + rooms.length + frames.length !== unique.length
     ) {
       this.opts.onError?.("protocol_error");
     }
-    this.desired = [...users.slice(0, 1), ...rooms.slice(0, 1), ...validFrames.slice(0, 1)];
+    this.desired = [...users.slice(0, 1), ...sessions.slice(0, 1), ...rooms.slice(0, 1), ...validFrames.slice(0, 1)];
     for (const [channel, sub] of [...this.subs]) {
       if (!this.desired.includes(channel)) this.dropSubscription(channel, sub, true);
     }

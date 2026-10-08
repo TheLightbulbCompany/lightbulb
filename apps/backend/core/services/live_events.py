@@ -19,6 +19,7 @@ from core.observability.metrics import put_metric
 from core.repositories import messaging_repo
 from core.services.messaging import (
     ROOM_LIVE_EVENT_TYPES,
+    SESSIONS_LIVE_EVENT_TYPES,
     USER_LIVE_EVENT_TYPES,
     LiveEvent,
     make_live_event,
@@ -189,6 +190,13 @@ class LiveEventPublisher:
             return True
 
         return await asyncio.gather(*(one(user) for user in user_ids), return_exceptions=True)
+
+    async def publish_sessions(self, owner_id: str, event: dict[str, Any]) -> None:
+        """One publish on the workspace sessions channel, whatever the member count (it was one
+        per member stream: 51 members x 30 registrations = 1,530 publishes, dev 2026-10-08)."""
+        validated = _validated_event(event, SESSIONS_LIVE_EVENT_TYPES)
+        workspace = _uuid(await messaging_repo.ensure_workspace_id(owner_id), "workspace id")
+        await self._publish(f"/ws/{workspace}/sessions", validated)
 
     async def _publish(self, channel: str, event: LiveEvent) -> None:
         await self._send(channel, _serialized_event(event))

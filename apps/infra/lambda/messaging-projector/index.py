@@ -136,6 +136,7 @@ LIVE_EVENT_TYPES = frozenset(
         "paperclip.event",
         "runtime.operation.changed",
         "runtime.resource.invalidated",
+        "workspace.access.removed",
         "workspace.sessions.changed",
         "workspace.session.attention",
         "workspace.session.screen",

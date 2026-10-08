@@ -622,6 +622,27 @@ it("tells a non-admin where the join link lives instead of a bare error", async 
   expect(await screen.findByText("Only a workspace admin can copy it. Ask an admin to copy it from Settings → Members.")).toBeInTheDocument();
 });
 
+it("opens the channel member picker directly from the header for an owner", async () => {
+  const user = userEvent.setup();
+  render(<RoomPanel {...props}
+    room={{ ...props.room!, kind: "channel", name: "Launch" }}
+    addMemberCandidates={[{ kind: "agent", id: "atlas", displayName: "Atlas", mentionHandle: null }]}
+    onAddMember={vi.fn()} />);
+
+  await user.click(screen.getByRole("button", { name: "Add people" }));
+  expect(screen.getByRole("searchbox", { name: "Search people" })).toBeInTheDocument();
+  expect(screen.getByRole("checkbox", { name: "Atlas" })).toBeInTheDocument();
+});
+
+it.each([
+  ["an ordinary member", { participants: [{ ...owner, role: "member" as const }, friday] }],
+  ["a shared channel", { room: { ...props.room!, kind: "channel" as const, shared: true } }],
+  ["a group DM", { room: { ...props.room!, kind: "group-dm" as const, name: "Launch" } }],
+])("hides the direct Add people header action for %s", (_label, overrides) => {
+  render(<RoomPanel {...props} {...overrides} addMemberCandidates={[]} onAddMember={vi.fn()} />);
+  expect(screen.queryByRole("button", { name: "Add people" })).not.toBeInTheDocument();
+});
+
 it("shows member-add progress and a useful retryable error", async () => {
   const user = userEvent.setup();
   let reject!: (error: Error) => void;

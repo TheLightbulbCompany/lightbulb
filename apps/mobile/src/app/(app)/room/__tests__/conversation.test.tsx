@@ -274,6 +274,25 @@ describe("conversation screen", () => {
     expect(screen.queryByText("onboarding-band")).toBeNull();
   });
 
+  it("opens the member picker directly from an owned channel header", async () => {
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByLabelText("Add people")).toBeTruthy());
+
+    await fireEvent.press(screen.getByLabelText("Add people"));
+    expect(mockPush).toHaveBeenCalledWith("/(app)/room/room-1/details?addPeople=1");
+  });
+
+  it.each([
+    ["ordinary members", { members: mockRoom.members.map((member) => member.id === "user-a" ? { ...member, role: "member" as const } : member) }],
+    ["shared channels", { shared: true }],
+    ["group DMs", { kind: "group-dm" as const }],
+  ])("hides the direct member picker action for %s", async (_label, roomPatch) => {
+    mockLive.messaging.getRoom.mockImplementation(async (roomId: string) => ({ ...mockRoom, ...roomPatch, roomId }));
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
+    expect(screen.queryByLabelText("Add people")).toBeNull();
+  });
+
   it("mounts the onboarding band when the room is the workspace default", async () => {
     mockRoomId = "room-default";
     mockLive.messaging.getRoom.mockImplementation(async (roomId: string) => ({ ...mockRoom, roomId, isDefault: true }));

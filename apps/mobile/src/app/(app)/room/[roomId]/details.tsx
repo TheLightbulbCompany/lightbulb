@@ -18,7 +18,7 @@ import { useLiveEvents } from "../../../../providers/live-events";
  */
 export default function RoomDetailsScreen() {
   const palette = useChatPalette();
-  const { roomId } = useLocalSearchParams<{ roomId: string }>();
+  const { roomId, addPeople } = useLocalSearchParams<{ roomId: string; addPeople?: string }>();
   const { userId } = useAuth();
   const rooms = useMobileRooms({ subscribeToRoom: false, autoSelect: false, visible: false });
 
@@ -66,6 +66,7 @@ export default function RoomDetailsScreen() {
       candidates={candidates}
       upsertMember={rooms.upsertMember}
       removeMember={rooms.removeMember}
+      initialAddPeopleOpen={addPeople === "1"}
       // Past the conversation too: it is gone for this reader.
       leaveRoom={async () => {
         await rooms.leaveRoom(room.roomId);

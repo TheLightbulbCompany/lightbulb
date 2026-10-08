@@ -23,9 +23,15 @@ pub(super) struct JoinRequest {
     pub user_id: String,
     pub name: String,
     pub request_id: String,
-    /// "join" (a person asking in) or "pickup" (asking to take the session over); an older backend sends none.
+    /// "join" (a person asking in), "pickup" (asking to take the session over) or "agent_message"
+    /// (an agent asking to message the session; `user_id` is the agent's id); an older backend sends none.
     #[serde(default = "join_kind")]
     pub kind: String,
+    /// An agent's ask only: "send" or "interrupt", and the message, clipped by the backend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 fn join_kind() -> String {
@@ -272,6 +278,19 @@ mod tests {
         assert!(asking(SID, "g1"));
         offer_frame(&entry_at("g1", 200, json!([req("u3")])));
         assert_eq!(get(SID, "g1").unwrap().join_requests[0].kind, "join");
+    }
+
+    #[test]
+    fn presence_an_agent_ask_parses_and_allow_answers_it_with_the_agent_id() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+        let ask = json!([{"userId":"agent-friday","name":"Friday","requestId":"ask-1","kind":"agent_message","action":"send","text":"Run the tests"}]);
+        offer_frame(&entry_at("g1", 100, ask));
+        let r = &get(SID, "g1").unwrap().join_requests[0];
+        assert_eq!((r.kind.as_str(), r.action.as_deref(), r.text.as_deref()), ("agent_message", Some("send"), Some("Run the tests")));
+        let allow = super::super::mod_socket::decision_body(SID, "g1", &json!({"decision":"allow","userId":r.user_id,"requestId":r.request_id})).unwrap();
+        assert_eq!((allow["userId"].as_str(), allow["requestId"].as_str()), (Some("agent-friday"), Some("ask-1")));
+        assert!(!super::super::mod_socket::stale(SID, &allow));
     }
 
     #[test]

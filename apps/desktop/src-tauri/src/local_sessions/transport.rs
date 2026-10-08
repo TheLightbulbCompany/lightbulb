@@ -1315,6 +1315,7 @@ impl Host {
         let mut relay_reads_presence = false;
         let mut relay_reads_pickups = false;
         let mut relay_reads_band_owner_only = false;
+        let mut relay_reads_agent_asks = false;
         // An end the relay has not been told about -- because it happened while the
         // socket was down, or in a previous run of this process -- is still owed to it.
         self.liveness_tick();
@@ -1413,7 +1414,12 @@ impl Host {
                             last_early = Instant::now();
                         }
                         self.heartbeat_dirty.clear();
-                        let frames = device_heartbeats_with_controls(&self.mirrors, &registered, relay_reads_stats, relay_reads_controls, relay_reads_live_terminal, relay_reads_remote_input, relay_reads_terminal, relay_reads_presence, relay_reads_pickups, relay_reads_band_owner_only)?;
+                        let mut frames = device_heartbeats_with_controls(&self.mirrors, &registered, relay_reads_stats, relay_reads_controls, relay_reads_live_terminal, relay_reads_remote_input, relay_reads_terminal, relay_reads_presence, relay_reads_pickups, relay_reads_band_owner_only)?;
+                        // This Mac's band shows an agent's ask to message a session as one (spec
+                        // 2026-10-07-agent-session-approval); only to a relay that lists it.
+                        if relay_reads_agent_asks {
+                            frames.iter_mut().for_each(|f| f["agentMessageAsks"] = json!(true));
+                        }
                         let frames = super::session_states::with_screens(frames, &self.mirrors);
                         super::presence::retain(&frames.iter().flat_map(super::presence::frame_sids).collect::<Vec<_>>());
                         heartbeat_frames = frames.into();
@@ -1596,6 +1602,7 @@ impl Host {
                             relay_reads_presence = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "sessionPresence"));
                             relay_reads_pickups = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "pickupRequests"));
                             relay_reads_band_owner_only = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "bandOwnerOnly"));
+                            relay_reads_agent_asks = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "agentMessageAsks"));
                             self.relay_reads_ended_start = Some(reads_ended_start(&body));
                             let sid = body["sessionId"].as_str().filter(|s|uuid::Uuid::parse_str(s).is_ok()).ok_or("invalid session ID")?;
                             let after = body["afterSeq"].as_u64().ok_or("missing upload cursor")?;

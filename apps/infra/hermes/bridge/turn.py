@@ -2937,8 +2937,9 @@ def _run_native_paperclip(identity: dict, request: dict, conversation: str | Non
     """Execute the native adapter's already-rendered prompt without room re-rendering -- in its
     own issue session, or in `conversation`, the room conversation bound to the issue: its
     session, lock, shell and working folder, with the room's transcript as history. Nothing is
-    posted to the room (no turn context file, so the room tools answer NO_TURN): Paperclip gets
-    the answer as the run's result, and the room's next turn sees the exchange in its history."""
+    posted to the room (send_room_message answers NO_TURN for the "paperclip" family): Paperclip
+    gets the answer as the run's result, and the room's next turn sees the exchange in its history.
+    A turn context file exists only when the backend sent a local-session grant, for that tool."""
     agent_id = identity["agentId"]
     run_id = identity["runId"]
     session_id = conversation or identity["sessionId"]
@@ -2967,9 +2968,13 @@ def _run_native_paperclip(identity: dict, request: dict, conversation: str | Non
     browser_lease = browser_control.begin_turn(str(run_id), agent_id, None, "paperclip")
     # Same-session Paperclip retries must not replace another active desktop ledger.
     logins = website_logins.prompt_scope(agent_id, None, None, lambda: paperclip_run_aborted(run_id))
+    token = identity.get("localSessionToken")
+    ctx = token and {"apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "agentId": agent_id,
+                     "runId": run_id, "sessionKey": session_id, "roomId": None,
+                     "localSessionToken": token, "family": "paperclip"}
     # Paperclip runs need the same brokered MCP bearers as room turns. Without
     # this scope, ${MCP_POSTHOG_ACCESS_TOKEN} stays literal and PostHog returns 401.
-    with _waiting_turn_lock(agent_id, session_id, run_id), _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id, env), _terminal_scope(agent_id, session_id), _desktop_active_turn(session_id, run_id), _mcp_session(agent_id), logins:
+    with _waiting_turn_lock(agent_id, session_id, run_id), _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id, env), _terminal_scope(agent_id, session_id), _desktop_active_turn(session_id, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
         try:
             room = {"room": {"id": session_id.rsplit(":", 1)[-1]}} if conversation else {}
             agent = _construct_agent(agent_id, {"sessionKey": session_id, **room}, None, session_id)

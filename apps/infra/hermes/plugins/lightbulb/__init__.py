@@ -61,7 +61,7 @@ def _normalize_room(raw: str) -> str | None:
 
 def _send_room_message(args: dict, *, session_id: str = "", **_kw) -> str:
     ctx = turn_context.read(session_id)
-    if not ctx:
+    if not ctx or ctx.get("family") == "paperclip":  # a Paperclip run's answer is its result
         return NO_TURN
     room = _normalize_room(str(args.get("roomId", "")))
     if not room:
@@ -198,6 +198,10 @@ def _register_redaction_default() -> int:
 # Task 14: lightbulb_local_sessions tool
 SESSIONS_UNAVAILABLE = "Lightbulb local sessions unavailable"
 SESSIONS_MAX_BYTES = 2 * 1024 * 1024
+ASK_REFUSALS = {
+    "LOCAL_SESSION_ASK_PENDING": "your ask on this session still waits for its owner; do not ask again.",
+    "LOCAL_SESSION_ASK_DECLINED": "the session's owner declined your message; do not ask again in this run.",
+}
 _OPAQUE_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,256}$")
 # Strict per-action allowlist: an unexpected param is a bug, not something to ignore.
 _ACTION_PARAMS = {
@@ -209,8 +213,12 @@ _ACTION_PARAMS = {
 
 SESSIONS_SCHEMA = {
     "name": "lightbulb_local_sessions",
-    "description": "Read and steer the shared terminal sessions humans in this room have "
-                   "attached. Available only inside the turn the request arrived on.",
+    "description": "Read and message people's shared Claude Code/Codex sessions. Check a "
+                   "session's agentSend first: \"direct\" goes straight in (the session of the "
+                   "person who woke you, or its owner allows it); \"ask\" returns "
+                   "awaiting_approval and its owner chooses Send or Decline -- ask once, say so "
+                   "in your reply, never re-ask under a new requestId; declined is final for this "
+                   "run. kind \"interrupt\" stops the session's turn and takes no text.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -265,16 +273,27 @@ def _local_sessions(args: dict, *, session_id: str = "", **_kw) -> str:
         if action == "receipt":
             return json.dumps(_call_sessions("GET", f"{base}/sessions/{sid}/commands/{request_id}", token))
         generation = str(args.get("expectedGeneration") or "")
-        text = str(args.get("text") or "").strip()
         if not _OPAQUE_RE.match(generation):
             return "expectedGeneration is required (take it from the resources listing)."
-        if not text:
-            return "text is required."
-        # kind passthrough: the backend has accepted "interrupt" all along; only the baked
-        # plugin's hard-coded "send" kept it from the agent (report 03 §6).
-        body = {"requestId": request_id, "expectedGeneration": generation,
-                "kind": args.get("kind") or "send", "text": text}
+        kind = args.get("kind") or "send"
+        if kind not in ("send", "interrupt"):
+            return "kind must be send or interrupt."
+        body = {"requestId": request_id, "expectedGeneration": generation, "kind": kind}
+        if kind == "send":  # the backend refuses text on an interrupt
+            text = str(args.get("text") or "").strip()
+            if not text:
+                return "text is required."
+            body["text"] = text
         return json.dumps(_call_sessions("POST", f"{base}/sessions/{sid}/commands", token, body))
+    except urllib.error.HTTPError as exc:
+        # The two ask bounds steer the agent's next step, so their code (only) reaches it.
+        try:
+            code = json.loads(exc.read(4096) or b"{}").get("code")
+        except Exception:  # noqa: BLE001
+            code = None
+        if code in ASK_REFUSALS:
+            return f"{code}: {ASK_REFUSALS[code]}"
+        return SESSIONS_UNAVAILABLE
     except Exception:  # noqa: BLE001 — no status, no URL, no detail reaches the agent
         return SESSIONS_UNAVAILABLE
 

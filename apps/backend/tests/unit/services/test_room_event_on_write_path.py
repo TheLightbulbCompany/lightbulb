@@ -49,7 +49,7 @@ async def _backend_bytes(item: dict) -> tuple[str, str]:
     publisher._send = AsyncMock()
     assert await publisher.publish_message_created(item) is True
     channel, body = publisher._send.await_args.args
-    assert publisher._send.await_args.kwargs == {"source": "write_path"}
+    assert publisher._send.await_args.kwargs == {"source": "write_path", "held": True}
     return channel, body
 
 
@@ -149,3 +149,37 @@ async def test_a_failing_publish_does_not_fail_the_write(monkeypatch):
     await _settle()
     assert message.text == "still stored"
     failing.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_key_rotated_while_waiting_for_a_slot_is_the_channel_posted_to(monkeypatch):
+    """Codex on #3930: the channel is read after the slot wait, so a removal that rotates the
+    delivery key meanwhile does not send the message to the channel the removed member holds."""
+    meta = {"deliveryKey": KEY}
+    monkeypatch.setattr(live_events.messaging_repo, "get_room", AsyncMock(side_effect=lambda _r: dict(meta)))
+    monkeypatch.setattr(live_events.messaging_repo, "workspace_id_for_meta", AsyncMock(return_value=WS))
+    monkeypatch.setattr(live_events.messaging_repo, "room_pk", lambda r: f"ROOM#{r}")
+    monkeypatch.setattr(live_events, "_inflight", asyncio.Semaphore(1))
+    monkeypatch.setattr(live_events.settings, "APPSYNC_EVENTS_HTTP_ENDPOINT", "https://events.test/event")
+    posted = []
+
+    async def post(_endpoint, body, *_a):
+        posted.append(body)
+        return type("R", (), {"status_code": 200, "json": lambda self: {"successful": [{}], "failed": []}})()
+
+    publisher = live_events.LiveEventPublisher()
+    monkeypatch.setattr(publisher, "_post_held", post)
+
+    async def sign(*_a):
+        return type("Q", (), {"headers": {}})()
+
+    monkeypatch.setattr(publisher, "_signed_request", sign)
+    await live_events._inflight.acquire()  # a slow publish holds the only slot
+    task = asyncio.create_task(publisher.publish_message_created(_item()))
+    await asyncio.sleep(0.01)
+    new_key = str(uuid.UUID(int=8))
+    meta["deliveryKey"] = new_key  # a human is removed: the room's key rotates
+    live_events._inflight.release()
+    assert await task is True
+    assert f"/rooms/{ROOM}/{new_key}".encode() in posted[0]
+    assert KEY.encode() not in posted[0]

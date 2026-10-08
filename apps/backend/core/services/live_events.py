@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import uuid
@@ -175,10 +176,16 @@ class LiveEventPublisher:
         not a ``LiveEvent`` re-serialization, which would reformat ``occurredAt``: the projector
         sends the same eventId later and the client keeps whichever copy lands first."""
         event = room_message_created_event(item)
-        channel = await self._room_channel(_uuid(event["roomId"], "room id"), "rooms")
-        if channel is None:
-            return False
-        await self._send(channel, json.dumps(event, separators=(",", ":"), ensure_ascii=False), source="write_path")
+        room_id = _uuid(event["roomId"], "room id")
+        # The slot first, the channel last: a member removed while this waits rotates the key,
+        # and a key read before the wait would post to the channel they still hold open.
+        async with self._slot({"source": "write_path"}):
+            channel = await self._room_channel(room_id, "rooms")
+            if channel is None:
+                return False
+            await self._send(
+                channel, json.dumps(event, separators=(",", ":"), ensure_ascii=False), source="write_path", held=True
+            )
         return True
 
     async def _room_channel(self, room_id: str, family: str) -> str | None:
@@ -261,7 +268,9 @@ class LiveEventPublisher:
     async def _publish(self, channel: str, event: LiveEvent) -> None:
         await self._send(channel, _serialized_event(event))
 
-    async def _send(self, channel: str, serialized_event: str, *, source: str | None = None) -> None:
+    async def _send(
+        self, channel: str, serialized_event: str, *, source: str | None = None, held: bool = False
+    ) -> None:
         # ``source`` splits the write path's publishes out of the series; absent, the dimensions
         # are exactly what they were before it existed.
         tag = {"source": source} if source else {}
@@ -282,7 +291,7 @@ class LiveEventPublisher:
                 put_metric("messaging.live.publish", dimensions={"outcome": "error", "status_class": "signing", **tag})
                 raise LivePublishError("AppSync live publish could not be signed") from exc
             try:
-                response = await self._post(endpoint, body, dict(request.headers), tag)
+                response = await (self._post_held if held else self._post)(endpoint, body, dict(request.headers), tag)
             except LivePublishQueueFull:
                 raise  # saturation is terminal and already metered once: no retry, no transport sample
             except Exception as exc:
@@ -345,8 +354,9 @@ class LiveEventPublisher:
             return await asyncio.to_thread(_sign, credentials, endpoint, body)
         return _sign(credentials, endpoint, body)
 
-    async def _post(self, endpoint: str, body: bytes, headers: dict[str, str], tag: dict[str, str] | None = None):
-        global _http_client, _inflight
+    @contextlib.asynccontextmanager
+    async def _slot(self, tag: dict[str, str] | None = None):
+        global _inflight
         if _inflight is None:
             # Bound to the first event loop that posts, like the client below. Without it a
             # fan-out burst (51 members x 30 session registrations on 2026-10-08) exhausted the
@@ -360,20 +370,28 @@ class LiveEventPublisher:
             )
             raise LivePublishQueueFull("AppSync live publish queue full") from exc
         try:
-            if self._http is not None:
-                return await self._http.post(endpoint, content=body, headers=headers)
-            if _http_client is None:
-                # Bound to the first event loop that posts: fine, the backend and the provisioner
-                # Lambda each keep one loop for the process.
-                _http_client = httpx.AsyncClient(
-                    timeout=_TIMEOUT,
-                    limits=httpx.Limits(
-                        max_connections=_MAX_INFLIGHT_PUBLISHES, max_keepalive_connections=_MAX_INFLIGHT_PUBLISHES
-                    ),
-                )
-            return await _http_client.post(endpoint, content=body, headers=headers)
+            yield
         finally:
             _inflight.release()
+
+    async def _post(self, endpoint: str, body: bytes, headers: dict[str, str], tag: dict[str, str] | None = None):
+        async with self._slot(tag):
+            return await self._post_held(endpoint, body, headers)
+
+    async def _post_held(self, endpoint: str, body: bytes, headers: dict[str, str], tag: dict[str, str] | None = None):
+        global _http_client
+        if self._http is not None:
+            return await self._http.post(endpoint, content=body, headers=headers)
+        if _http_client is None:
+            # Bound to the first event loop that posts: fine, the backend and the provisioner
+            # Lambda each keep one loop for the process.
+            _http_client = httpx.AsyncClient(
+                timeout=_TIMEOUT,
+                limits=httpx.Limits(
+                    max_connections=_MAX_INFLIGHT_PUBLISHES, max_keepalive_connections=_MAX_INFLIGHT_PUBLISHES
+                ),
+            )
+        return await _http_client.post(endpoint, content=body, headers=headers)
 
 
 def _task_credentials() -> Any:

@@ -3728,6 +3728,7 @@ async def create_human_message(
     # emitting here would inflate every counter by the client's retry rate.
     # This is also why the dispatch metric is not adjacent to its selector.
     if not replayed:
+        _publish_message_created_soon(item)
         agent_mentions = sum(1 for ref in mentions if ref.get("kind") == "agent")
         _emit_dispatch_targets(targets, room_kind, "session" if native_source_id else "human")
         put_metric(
@@ -4445,6 +4446,7 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
     # receipt is the container's confirmation. Counting here would inflate
     # every counter and, worse, report retry delay as reply latency.
     if not replayed:
+        _publish_message_created_soon(item)
         _emit_dispatch_targets(targets, room_kind, "agent")
         put_metric(
             "messaging.message.created",
@@ -4630,6 +4632,27 @@ async def _publish_human_read(room_id: str, user_id: str, value: int) -> None:
             room_id=room_id,
         ),
     )
+
+
+_write_path_tasks: set[asyncio.Task[None]] = set()
+
+
+def _publish_message_created_soon(item: dict) -> None:
+    """Hand the room's live event to AppSync straight from the write path, as Slack and Discord
+    do: the stream gives one room one projector lane, which held a room to ~3-4 live msg/s (dev,
+    2026-10-08). The projector still publishes the same eventId as the durable fallback; the
+    client drops the second copy (appsyncEvents.ts ``seen``). Off the caller's frame, never
+    raises; ``_send`` meters the outcome under ``source=write_path``."""
+
+    async def publish() -> None:
+        try:
+            await get_live_event_publisher().publish_message_created(item)
+        except Exception as exc:
+            logger.warning("write-path room event failed (%s)", type(exc).__name__)
+
+    task = asyncio.create_task(publish())
+    _write_path_tasks.add(task)
+    task.add_done_callback(_write_path_tasks.discard)
 
 
 async def _publish_room_event(room_id: str, event: dict) -> None:

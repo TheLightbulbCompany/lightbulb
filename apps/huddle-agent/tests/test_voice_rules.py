@@ -734,3 +734,19 @@ def test_a_run_given_up_is_waited_for_no_longer_and_its_frames_are_still_read():
     for f in ({"type": "chunk", "content": FIRST, "seq": 1}, {"type": "run_ended", "seq": 2}):
         runs.on_event(frame("r1", "forge", f))
     assert sink.ended_with == FIRST and run.gave_up
+
+
+# -- where the time of a voice opening went is on one log line --
+
+
+async def test_an_open_logs_how_long_the_window_the_session_the_router_and_the_voice_each_took(caplog):
+    """10-08 Meet: "Hi Friday." was answered 4.7 s after the router had read it, and the logs could not say
+    whether the window, the session or the voice had been the slow one."""
+    import json
+
+    with caplog.at_level("INFO", logger=h_mod.logger.name):
+        h, backend, lives, clock = await asked()
+    (line,) = [r.getMessage() for r in caplog.records if r.getMessage().startswith("huddle open ")]
+    took = json.loads(line.removeprefix("huddle open "))
+    assert {"windowMs", "sessionMs", "routeMs", "voiceMs", "waitedMs", "totalMs"} <= set(took)
+    assert (took["agent"], took["path"]) == ("forge", "name")

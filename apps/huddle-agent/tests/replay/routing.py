@@ -99,7 +99,9 @@ ROUTING: dict[str, dict[int, dict]] = {
 ACK = (
     "acknowledgement latency sits at the 4 s limit (9-23% / 0-3%): the final transcript comes 1.2-1.9 s "
     "after the line, then /route, the voice, its first audio. A silent first unit or a person talking again "
-    "adds seconds (`_turn_open` holds every line on an open turn). [timing]"
+    "adds seconds (`_turn_open` holds every line on an open turn). [timing] A call's first line also waits "
+    "for its window (/summon): `sim.Model.window` makes 10% of them take 2-5 s, after the one the live run "
+    "showed (4.7 s), and nothing is said before a window is open. [backend]"
 )
 TALK_OVER = (
     "a mouth yields TALK_OVER_S (0.5 s) after the room hears the person, itself 0.4-0.6 s after they start "
@@ -207,6 +209,7 @@ CAUSES: list[tuple[str, str, str]] = [
     ("router: people talk taken as a request", "people_taken|other_taken", r"no_new_run|max_runs|silent_between|max_agent_lines|nothing_after|max_words|no_talk_over|said_once|max_agents"),
     ("router: a follow-up steered the open run", "steer", r"one_run|ack_within|answer_contains|max_agent_lines|said_once|in_order"),
     ("a slow run's asker was told it is still working, or that it could not be done", "told_status|told_gave_up", r"min_sentences|resumes_after|keeps_speaking|max_agent_lines|max_words|no_talk_over|silent_between|nothing_after"),
+    ("the call's window opened slowly", "window_slow", r"ack_within|no_talk_over|silent_between|max_agent_lines"),
     ("a run came late or never", "run_never|run_slow", r"answer_contains|min_sentences|in_order|stops_within|resumes_after|keeps_speaking|silent_between|max_agent_lines|said_once|nothing_after|no_talk_over|max_words|no_text|one_run|ack_within"),
 ]
 OWN = "the controller's rules and timing"

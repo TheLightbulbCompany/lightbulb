@@ -3514,24 +3514,39 @@ class Huddle:
         understood: tuple[asyncio.Future, asyncio.Future] | None = None,
         owed: tuple[str, str] | None = None,
     ) -> bool:
-        """Caller holds the lock and has made `v` the floor. False when it could not open."""
-        agent_id = v.agent_id
+        """Caller holds the lock and has made `v` the floor. False when it could not open.
+
+        Three things are waited for, side by side: the call's window (/summon), the agent's session
+        (/session: its voice and persona), and for a named line its /route answer. 10-08 Meet: "Hi Friday."
+        was answered 4.7 s after the router had read it (`live.latency.route` 5252 ms, /route itself 548 ms):
+        all of it was the first two, and which of them cannot be read from the code. Each is one round trip
+        to the backend. So how long each took is logged (`open`), and the backend logs its own steps."""
+        agent_id, began, took = v.agent_id, self._clock(), {}
+
+        async def timed(what: str, work):
+            try:
+                return await work
+            finally:
+                took[what + "Ms"] = round((self._clock() - began) * 1000)
+
         # understanding §4.6: a named line's /route answer is awaited beside the window and session, never before
         window, session = await asyncio.gather(
-            self._ensure_window(identity), self._backend.session(agent_id), return_exceptions=True
-        )
+            timed("window", self._ensure_window(identity)), timed("session", self._backend.session(agent_id)),
+            return_exceptions=True,
+        )  # fmt: skip
         warm: list[asyncio.Task] = []
         if understood and mouth(identity) and not any(isinstance(r, BaseException) for r in (window, session)):
             # A mouth's voice is prepared while /route decides (10-08 rig: it opened only after, 0.5 s of
-            # every acknowledgement). It may not speak before: it is not the room's voice until the line
-            # is applied (`v.live` below), and the scheduler orders only that one. A mouth is handed each
-            # line it says and never reads its seed, so the transcript so far is all it is given.
+            # every acknowledgement). Not before the window is open: a call that is refused opens no voice.
+            # It may not speak before: it is not the room's voice until the line is applied (`v.live`
+            # below), and the scheduler orders only that one. A mouth is handed each line it says and never
+            # reads its seed, so the transcript so far is all it is given.
             seed = self._transcript.seed(agent_id, before_mark=math.inf if mark is None else mark)
-            warm.append(self._spawn(self._prepared(agent_id, session, identity, seed)))
+            warm.append(self._spawn(timed("voice", self._prepared(agent_id, session, identity, seed))))
             v.persona = session["persona"]
             v.writing = self._prewrite(v, identity, request or "")  # (taken by `_opened` if it was small talk)
         try:
-            heard = list(await asyncio.gather(understood[0], return_exceptions=True)) if understood else []
+            heard = list(await asyncio.gather(timed("route", understood[0]), return_exceptions=True)) if understood else []
             return await self._opened(v, identity, request, mark, ack, row, said, understood, owed, window, session, heard, warm)
         finally:
             for t in warm:  # prepared and not taken (the open failed or was refused on the way): closed unused
@@ -3539,6 +3554,10 @@ class Huddle:
             if v.writing is not None:
                 v.writing.cancel()  # the line was not small talk: its reply is not wanted
                 v.writing = None
+            # Where the time went, each counted from the moment the open began: `waitedMs` is what came
+            # before it (the line's hearing to the floor lock).
+            waited = round((began - v.heard_at) * 1000) if v.heard_at is not None else None
+            self._log("open", agent=agent_id, path=v.path, waitedMs=waited, **took, totalMs=round((self._clock() - began) * 1000))
 
     async def _prepared(self, agent_id: str, session: dict, identity: str, seed: list) -> Live:
         return await self._live_factory(

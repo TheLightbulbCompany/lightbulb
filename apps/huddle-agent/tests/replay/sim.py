@@ -42,6 +42,7 @@ PROFILES = ("current", "fast-eot")  # `Model`
 RIG_QUIET_S = 0.6  # rig.py: agent audio below its threshold this long ends a burst
 FIRST_SOUND_S = 3.0  # agent.py: a unit with no audible audio this long is stopped and reported silent
 P_RUN_SLOW, P_RUN_NEVER = 0.12, 0.06  # `Model.run`
+P_WINDOW_SLOW = 0.1  # `Model.window`
 
 
 class VirtualLoop(asyncio.SelectorEventLoop):
@@ -90,7 +91,8 @@ class Model:
         # begun beside /route and thrown away) must not re-deal every other delay of the replay
         self.writes = random.Random(f"{seed}:write")
         self.noise, self.noises = noise, random.Random(f"{seed}:noise")  # (its own deck too)
-        self.runs = random.Random(f"{seed}:run")  # (and how long each run takes)
+        self.runs = random.Random(f"{seed}:run")  # (and how long each run takes,
+        self.windows = random.Random(f"{seed}:window")  # and the call's window)
         self.fixed = fixed or {}
         self.p_silent = silent  # 4 of 55 units played no audible audio
 
@@ -166,8 +168,14 @@ class Model:
             return self.u("route", 1.2, 2.2)
         return self.u("route", 0.45, 0.75, (0.2, 0.75, 1.15))
 
-    def quick(self) -> float:  # /summon, /session, /turns: one round trip
+    def quick(self) -> float:  # /session, /turns: one round trip
         return self.u("quick", 0.1, 0.25)
+
+    def window(self) -> float:
+        """/summon, which opens the call's window. A round trip, but in the 2026-10-08 live run the first
+        line of one call waited 4.7 s on the window and session calls (`live.latency.route` 5252 ms with the
+        router's answer in 548 ms): P_WINDOW_SLOW of them here take 2-5 s. One observation, not a rate."""
+        return self.windows.uniform(2.0, 5.0) if self.windows.random() < P_WINDOW_SLOW else self.quick()
 
     def run(self) -> float | None:
         """Request made -> its answer ready. Most take 5.4-12.3 s. In the 2026-10-08 live run of the 15
@@ -244,7 +252,7 @@ class Evidence:
     notes: list[str] = field(default_factory=list)  # what the simulation could not match
     trace: list[tuple[float, str]] = field(default_factory=list)  # the controller's own log, on request
     # What the simulated backend did that a check may fail on (`Sim.route`, `Backend.turn`), counted:
-    # ask_missed, steer, double_steer, people_taken, other_taken, run_slow, run_never; and the worker's
+    # ask_missed, steer, double_steer, people_taken, other_taken, run_slow, run_never, window_slow; and the worker's
     # own word on a slow run: told_status, told_gave_up.
     facts: dict[str, int] = field(default_factory=dict)
 
@@ -417,7 +425,10 @@ class Backend:
         return reply
 
     async def summon(self, speaker, speaker_name=None) -> dict:
-        await asyncio.sleep(self.sim.model.quick())
+        took = self.sim.model.window()
+        if took >= 2:
+            self.sim.ev.fact("window_slow")
+        await asyncio.sleep(took)
         return {"callId": "call-replay", "deadline": self.sim.now() + 3600, "budgetSeconds": 3600, "joined": False}
 
     async def session(self, agent_id, silent=False) -> dict:

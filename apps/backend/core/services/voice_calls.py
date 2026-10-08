@@ -550,6 +550,21 @@ async def _open_window(owner_id: str, room_id: str, now: int) -> dict | None:
     return next((r for r in await _open_windows(owner_id, now) if r.get("roomId") == room_id), None)
 
 
+class _Steps:
+    """How long each step of one request took, in order, for one log line. 10-08 Meet: the first line of a
+    call waited 4.7 s on /summon and /session, and nothing said on which step."""
+
+    def __init__(self) -> None:
+        self._at, self.ms = time.perf_counter(), {}
+
+    def done(self, step: str) -> None:
+        now = time.perf_counter()
+        self.ms[step], self._at = round((now - self._at) * 1000), now
+
+    def __str__(self) -> str:
+        return " ".join(f"{step}={ms}" for step, ms in self.ms.items()) + f" total={sum(self.ms.values())}"
+
+
 async def open_voice_window(*, owner_id: str, room_id: str, speaker_user_id: str) -> dict:
     """C1 /summon: join the room's open window, or gate once and open one. The window meters
     GPT-Live only; voice runs are ordinary room runs and the window owns none of them."""
@@ -557,13 +572,17 @@ async def open_voice_window(*, owner_id: str, room_id: str, speaker_user_id: str
     if ((await messaging_repo.get_room(room_id)) or {}).get("meeting"):
         speaker_user_id, _ = _meeting_actor(await messaging_repo.list_members(room_id), speaker_user_id, True)
     # Before the join too: _room_team 404s unless owner_id owns the room and the speaker is a member.
+    steps = _Steps()
     meta, _ = await _room_team(owner_id, speaker_user_id, room_id)
+    steps.done("room")
     now = int(time.time())
     # ponytail: a crashed worker's unreported GPT-Live seconds bill 0 (voice.huddle.usage_missing, as today);
     # persist running usage on the row if that metric is non-zero in prod
     existing = await _open_window(owner_id, room_id, now)
+    steps.done("open_windows")
     if existing:
         prewake_owner(owner_id)
+        logger.info("voice window joined room=%s ms: %s", room_id, steps)
         return {
             "callId": existing["callId"],
             "deadline": int(existing["deadline"]),
@@ -571,7 +590,9 @@ async def open_voice_window(*, owner_id: str, room_id: str, speaker_user_id: str
             "joined": True,
         }
     mode, budget = await _gate(owner_id)
+    steps.done("gate")
     row = await _owner_row(owner_id)
+    steps.done("owner_row")
     call_id = str(uuid.uuid4())
     if mode == "free":
         await _claim_free(owner_id, call_id, now, now + budget + 180)
@@ -581,6 +602,7 @@ async def open_voice_window(*, owner_id: str, room_id: str, speaker_user_id: str
             hold, budget = await _hold(owner_id)
             if not hold:
                 raise _problem(402, code="voice_limit", reason="credits_low")
+        steps.done("claim")
         now = int(time.time())
         call = {
             "callId": call_id,
@@ -601,7 +623,9 @@ async def open_voice_window(*, owner_id: str, room_id: str, speaker_user_id: str
     except BaseException:  # incl. CancelledError: no row means nothing would ever release these
         await _undo_start(owner_id, call_id, mode, hold)
         raise
+    steps.done("put_call")
     prewake_owner(owner_id)
+    logger.info("voice window opened room=%s billing=%s ms: %s", room_id, mode, steps)
     return {"callId": call_id, "deadline": call["deadline"], "budgetSeconds": budget, "joined": False}
 
 
@@ -696,18 +720,24 @@ async def agent_meet_voice(*, owner_id: str, room_id: str, agent_id: str) -> dic
 async def agent_session(*, owner_id: str, room_id: str, agent_id: str, ask_name: bool = True) -> dict:
     """One agent's GPT-Live session: its own voice and persona. Falls back to the bare persona
     (no role, SOUL or notes) when the reads fail or overrun."""
+    steps = _Steps()
     meta = await _owned_room(owner_id, room_id)
+    steps.done("room")
     members, starters = await asyncio.gather(messaging_repo.list_members(room_id), _starter_ids(owner_id))
+    steps.done("members")
     me = next((m for m in members if m.get("kind") == "agent" and m["id"] == agent_id), None)
     if not me:
         raise _problem(409, code="agent_not_in_room")
     row, soul, notes_md = await _session_reads(owner_id, agent_id)
+    steps.done("profile_reads")  # the roster, SOUL.md and the voice notes, side by side, _SESSION_READ_BUDGET_S at most
     name = (row or {}).get("name") or me.get("displayName") or "Agent"
     ask_name = (
         ask_name
         and voice_persona.is_default_name(agent_id, name, starters)
         and await _claim_voice_asked(owner_id, agent_id)
     )
+    steps.done("asked_name")
+    logger.info("voice session room=%s agent=%s ms: %s", room_id, agent_id, steps)
     title = (row or {}).get("title") or (row or {}).get("role")
     persona = voice_persona.build_agent_persona(
         name=name,

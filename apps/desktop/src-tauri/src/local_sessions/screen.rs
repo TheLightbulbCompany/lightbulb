@@ -673,14 +673,17 @@ impl Out<'_> {
         true
     }
     /// The same burst from lines the holder sent on the relay's own connection (`pump`): `bytes`,
-    /// trimmed from the old end to what the budget allows now. False as for `history`.
+    /// without its oldest lines when the budget allows less now than when they were asked for
+    /// (`newest_lines`). False as for `history`.
     fn lines(&mut self, bytes: &[u8], size: (u16, u16)) -> bool {
         if self.stale || !self.drained() {
             return false;
         }
-        let room = self.budget.room();
-        if room > 0 {
-            self.burst(&bytes[bytes.len().saturating_sub(room)..], size);
+        // (When not one line fits, nothing is sent: an empty burst says "there are none", and the
+        // line feeds that end the holder's answer alone would be blank rows.)
+        let fits = newest_lines(bytes, self.budget.room());
+        if fits.contains(&b'\r') || bytes.is_empty() {
+            self.burst(fits, size);
         }
         true
     }
@@ -738,6 +741,17 @@ impl Out<'_> {
         self.stale = true;
         self.ctl.snapshot.store(true, SeqCst);
     }
+}
+
+/// The newest whole lines of the holder's `lines` (`Model::history`) that fit `room` bytes. Output
+/// sent between the request and the answer can leave less room than was asked for (review of
+/// #3912): a cut by bytes then began inside a character or an escape sequence, and the viewer's
+/// first line was garbage. Each line there is a row drawn from the default attributes that ends
+/// with a reset and CR LF, so what follows any CR LF starts clean in an empty terminal.
+fn newest_lines(lines: &[u8], room: usize) -> &[u8] {
+    let cut = lines.len().saturating_sub(room);
+    let from = (cut..lines.len()).find(|at| *at == 0 || lines[..*at].ends_with(b"\r\n")).unwrap_or(lines.len());
+    &lines[from..]
 }
 
 static LAST_EPOCH: AtomicU64 = AtomicU64::new(0);
@@ -1382,6 +1396,42 @@ mod tests {
         let sent = sent.into_inner();
         assert_eq!(sent.iter().map(|(_, f)| f["kind"].as_str().unwrap()).collect::<Vec<_>>(), ["snapshot"]);
         assert!(sent[0].0 >= LINES_WAIT && sent[0].0 < LINES_WAIT + Duration::from_millis(500), "{:?}", sent[0].0);
+    }
+
+    /// Review of #3912: output sent while the holder's lines were on their way left the budget
+    /// less room than was asked for, and the answer was cut by bytes: inside a character or a
+    /// colour sequence.
+    #[test]
+    fn lines_that_no_longer_all_fit_lose_whole_lines_from_the_old_end_never_part_of_one() {
+        // As `Model::history` writes them: each row from the default attributes, a reset, CR LF;
+        // then the line feeds that push the last line off an empty screen.
+        let rows = ["\x1b[38;2;99;168;248mérable \u{4e2d}\u{6587} one", "plain two", "\x1b[1m\u{1f600} three\x1b[22m \x1b[48;2;49;49;53m!", "four"];
+        let each: Vec<Vec<u8>> = rows.iter().map(|row| format!("{row}\x1b[m\r\n").into_bytes()).collect();
+        let feeds = b"\n\n\n";
+        let all: Vec<u8> = each.iter().flatten().copied().chain(feeds.iter().copied()).collect();
+        for room in 0..=all.len() + 1 {
+            let kept = newest_lines(&all, room);
+            assert!(kept.len() <= room.min(all.len()), "{room}");
+            // Always some of the newest lines, whole, then the feeds; the most that fit.
+            let lines = (0..=each.len()).find(|skip| each[*skip..].iter().map(Vec::len).sum::<usize>() + feeds.len() <= room);
+            let expected: Vec<u8> = match lines {
+                Some(skip) => each[skip..].iter().flatten().copied().chain(feeds.iter().copied()).collect(),
+                None => vec![],
+            };
+            assert_eq!(kept, expected, "room {room}");
+        }
+        assert_eq!(newest_lines(b"", 10), b"");
+        // In the relay: 20 bytes of room when the answer comes, for lines asked for with more.
+        let ctl = Ctl::new(0);
+        let sent = std::cell::RefCell::new(vec![]);
+        let send = |f: Value| { sent.borrow_mut().push(f); true };
+        let budget = Budget { tokens: (HISTORY_RESERVE + 20) as f64, cap: BURST as f64, per_s: 0.0, at: Instant::now() };
+        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget, backlog: Default::default(), stale: false, dirty: false };
+        assert!(out.lines(&all, (80, 24)));
+        let data = base64::engine::general_purpose::STANDARD.decode(sent.borrow()[0]["data"].as_str().unwrap()).unwrap();
+        assert_eq!(data, b"four\x1b[m\r\n\n\n\n", "the last line whole, not the last 20 bytes");
+        // No room for even one line: nothing is sent, which is not "there are no lines".
+        assert!(out.lines(&all, (80, 24)) && sent.borrow().len() == 1);
     }
 
     #[test]

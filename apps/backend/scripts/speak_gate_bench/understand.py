@@ -185,6 +185,19 @@ async def one(case: dict) -> dict:
     )
     if "open_requests" in inspect.signature(voice_calls.route_live_line).parameters:
         kw["open_requests"] = opened
+    if floor and floor["mine"] and "engagements" in inspect.signature(voice_calls.route_live_line).parameters:
+        # A meeting routes on who the speaker is talking with, not on ``floor.mine``. A scene's floor agent has
+        # just answered its speaker (or is still working for them): that is what the worker would send.
+        heard = any(o["agentId"] == floor["agent"] and o["status"] == "delivered" for o in opened)
+        kw["engagements"] = [
+            {
+                "agentId": floor["agent"],
+                "state": "active",
+                "expects": "nothing" if heard or not opened else "answer",
+                "last": "delivered" if heard or not opened else "none",
+                "lastBy": "",
+            }
+        ]
     started = time.perf_counter()
     try:
         answer = await voice_calls.route_live_line(**kw)

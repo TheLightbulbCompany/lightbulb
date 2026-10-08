@@ -108,8 +108,12 @@ class RouteBody(BaseModel):
     # ``mine``: the speaker is the person the floor agent is talking with (understanding §4.4).
     floor: dict[str, str | bool] | None = None
     voiceRuns: list[dict[str, str]] = Field(default_factory=list, max_length=16)  # a worker before ``open``
-    # The worker's request list (understanding §4.4): open rows and the newest answered ones.
+    # The worker's request list (understanding §4.4): open rows and the newest answered ones, each with its
+    # ``asker`` and how far its answer has been said (``delivery``).
     open: list[dict[str, str]] = Field(default_factory=list, max_length=12)
+    # Who the speaker is talking with, one per agent, newest first: {agentId, obligation, task, state, expects,
+    # why, last, lastBy, seconds}. What a meeting line with no name on it is routed on (voice_calls._engaged).
+    engagements: list[dict[str, str | int]] = Field(default_factory=list, max_length=8)
     # Epoch seconds the transcript's last lines were said, oldest first, aligned to its end (Live reask rule).
     at: list[int] = Field(default_factory=list, max_length=30)
     setting: Literal["live", "meeting"] = "live"  # "meeting": a Google Meet, stricter floor
@@ -330,6 +334,7 @@ async def route(room_id: str, body: RouteBody):
         setting=body.setting,
         unclaimed=body.unclaimed,
         open_requests=body.open,
+        engagements=body.engagements,
     )
 
 

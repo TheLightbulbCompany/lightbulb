@@ -135,6 +135,7 @@ class FakeBackend:
         setting="live",
         unclaimed=False,
         open=(),
+        engagements=(),
     ):
         self.routes.append((speaker, utterance, transcript))
         self.route_floors = getattr(self, "route_floors", []) + [floor]
@@ -147,6 +148,7 @@ class FakeBackend:
                 "setting": setting,
                 "unclaimed": unclaimed,
                 "open": list(open),
+                "engagements": list(engagements),
             }
         )
         if self.route_error:
@@ -389,6 +391,11 @@ def spoken(h, live):
     for c in live.calls[done:]:
         for unit in h_mod.units(c[1]) if c[0] == "say" else ():
             h.on_agent_said(live.agent_id, unit)
+
+
+def hand(h, agent_id):
+    """What the agent still has to say of its answers, each from its cursor (the room's ledger)."""
+    return [" ".join(u.units[u.cursor :]) for u in h._ledger if u.agent == agent_id and u.kind == "answer"]
 
 
 async def pause(h, clock, seconds=None):
@@ -2109,6 +2116,7 @@ async def test_backend_client_option_d_routes(monkeypatch):
                 "setting": "live",
                 "unclaimed": False,
                 "open": [],
+                "engagements": [],
                 **base,
             },
         ),

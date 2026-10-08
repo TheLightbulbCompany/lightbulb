@@ -27,7 +27,7 @@ def env():
         yield lookup
 
 
-async def _meet(text, said, unclaimed=False, floor=None):
+async def _meet(text, said, unclaimed=False, floor=None, engagements=None):
     decide = vc.jev.decide
     decide.return_value = said
     return await vc.route_live_line(
@@ -40,6 +40,7 @@ async def _meet(text, said, unclaimed=False, floor=None):
         setting="meeting",
         unclaimed=unclaimed,
         floor=floor,
+        engagements=engagements,
     )
 
 
@@ -63,13 +64,16 @@ async def test_meeting_setting_disables_the_lone_speaker_fallback(env):
     env.assert_not_awaited()  # a Meet speaker label is a name, never a Clerk lookup
 
 
-async def test_holding_the_floor_in_a_meeting_answers_requests_not_small_talk():
-    """The Meet's one mixed voice keeps ``floor.mine`` true between people: their chatter is not
-    for the floor agent, an unnamed request still is."""
+async def test_holding_the_floor_in_a_meeting_implies_nothing_without_evidence_the_speaker_is_talking_with_the_agent():
+    """The Meet's one mixed voice keeps ``floor.mine`` true between people. An unnamed request is the agent's
+    only when the worker's evidence says its speaker is talking with it. Chatter is never answered."""
     floor = {"agent": "fin-1", "mine": True, "speaker": "Priya + Dan"}
     assert _nobody(await _meet("ha, nice one", jev_says(kinds=["social"]), floor=floor))
-    got = await _meet("what's our burn", jev_says(kinds=["request"]), floor=floor)
+    assert _nobody(await _meet("what's our burn", jev_says(kinds=["request"]), floor=floor))
+    heard = [{"agentId": "fin-1", "state": "active", "expects": "nothing", "last": "delivered", "lastBy": ""}]
+    got = await _meet("what's our burn", jev_says(kinds=["request"]), floor=floor, engagements=heard)
     assert got["agentIds"] == ["fin-1"] and got["ops"]["requests"][0]["by"] == "floor"
+    assert _nobody(await _meet("ha, nice one", jev_says(kinds=["social"]), floor=floor, engagements=heard))
 
 
 async def test_unclaimed_question_in_a_meeting_picks_at_most_one():

@@ -7,6 +7,8 @@ import {
  *  match the screen it has, and the picture is frozen, so the view says Reconnecting (the web's value). */
 export const STALE_AFTER_MS = 30_000;
 export const WATCH_EVERY_MS = 15_000;
+/** A viewer that lost frames asks the Mac for its lines again at most this often: each ask is a history burst out of the session's budget. */
+export const REPAIR_EVERY_MS = 30_000;
 /** Clears the visible screen only, so scrollback stays; first leaves the alternate screen and drops
  *  the scroll region. Written ahead of every snapshot, as on the web. base64 of ESC[?1049l ESC[r ESC[2J ESC[H. */
 export const CLEAR = "G1s/MTA0OWwbW3IbWzJKG1tI";
@@ -20,8 +22,12 @@ export type TerminalStep = { fresh: boolean; again: boolean; resize: boolean; co
 /** The phone's place in a session's frame stream: the web view's event handler and `apply`
  *  (SessionTerminalView.tsx) without xterm. Ordering, the snapshot hold and the history redraw are
  *  the shared `receiveScreen` / `settleScreen`; this turns what they say to write into steps. */
-export function createScreenFeed({ draw, onLive, onSeen }: {
+export function createScreenFeed({ draw, onLive, onSeen, onLost }: {
   draw: (steps: TerminalStep[]) => void; onLive: (live: boolean) => void; onSeen: () => void;
+  /** A snapshot repaired the screen over frames that never came, so lines are missing above it: the
+   *  view asks for one fresh watch, whose history burst starts the picture over with them. Called at
+   *  most once in REPAIR_EVERY_MS. */
+  onLost?: () => void;
 }) {
   let order = NEW_SCREEN;
   let drawn = -1; // the relay run on screen; a new one starts the terminal over
@@ -30,6 +36,12 @@ export function createScreenFeed({ draw, onLive, onSeen }: {
   let stale: ReturnType<typeof setTimeout> | undefined;
   // Runs while a snapshot waits for the frames below it; from the first one that waits.
   let settle: ReturnType<typeof setTimeout> | undefined;
+  let repaired = 0;
+  const repair = (lost?: boolean) => {
+    if (!lost || Date.now() - repaired < REPAIR_EVERY_MS) return;
+    repaired = Date.now();
+    onLost?.();
+  };
   const apply = (frames: SessionScreen[]) => {
     if (!frames.length) return;
     let over = false; // the picture started over in this batch: its snapshot puts a reader back
@@ -63,8 +75,9 @@ export function createScreenFeed({ draw, onLive, onSeen }: {
       const step = receiveScreen(order, frame);
       order = step.order;
       apply(step.write);
+      repair(step.lost);
       if (!snapshotWaits(order)) { clearTimeout(settle); settle = undefined; }
-      else settle ??= setTimeout(() => { settle = undefined; const late = settleScreen(order); order = late.order; apply(late.write); }, SNAPSHOT_WAIT_MS);
+      else settle ??= setTimeout(() => { settle = undefined; const late = settleScreen(order); order = late.order; apply(late.write); repair(late.lost); }, SNAPSHOT_WAIT_MS);
     },
     dispose() { clearTimeout(stale); clearTimeout(settle); },
   };

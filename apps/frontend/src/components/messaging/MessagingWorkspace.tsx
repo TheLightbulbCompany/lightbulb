@@ -42,7 +42,8 @@ export function MessagingConversation() {
   const { roomProps, sessionFocus, openSession, closeSession, setSessionChat, setSessionChatRoomId, sessionSource, resolveSessionOwner, workspaceSessions, scope, directoryProps } = useMessagingWorkspace();
   if (sessionFocus?.all) {
     return <AllSessionsView key={scope} entries={directoryProps.sessions ?? []} loading={workspaceSessions.loading}
-      onOpenSession={openSession} onClose={closeSession} onRename={directoryProps.onRenameSession} />;
+      onOpenSession={openSession} onClose={closeSession} onRename={directoryProps.onRenameSession}
+      onRemove={directoryProps.onRemoveSession} onRemoveEnded={directoryProps.onRemoveEndedSessions} />;
   }
   if (sessionFocus?.sessionId === null) {
     return <NewSessionView key={scope} sessions={workspaceSessions.sessions} onEvent={sessionSource.onEvent}
@@ -51,7 +52,7 @@ export function MessagingConversation() {
   if (sessionFocus) {
     return <SessionFocus key={scope} focus={{ sessionId: sessionFocus.sessionId }} entries={directoryProps.sessions ?? []} loading={workspaceSessions.loading}
       hintRevision={workspaceSessions.hintRevision} client={sessionSource.client} onEvent={sessionSource.onEvent} resolveSessionOwner={resolveSessionOwner}
-      onAccessLost={workspaceSessions.refresh} onClose={closeSession} participants={directoryProps.participants}
+      onAccessLost={workspaceSessions.refresh} onClose={closeSession} participants={directoryProps.participants} onRemove={directoryProps.onRemoveSession}
       chatOpen={!!sessionFocus.chat} onChatOpenChange={setSessionChat} onChatRoom={setSessionChatRoomId}
       onMessageOwner={(id, displayName) => void directoryProps.onSelectParticipant(
         directoryProps.participants.find((p) => p.kind === "human" && p.id === id) ?? { kind: "human", id, displayName, mentionHandle: null })} />;

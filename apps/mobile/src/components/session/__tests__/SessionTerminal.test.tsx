@@ -117,6 +117,20 @@ describe("SessionTerminal", () => {
     expect(told()).toHaveLength(4);
   });
 
+  it("asks the Mac for a fresh screen when frames were lost, and not while away", async () => {
+    const { rerender } = await render(view());
+    await fromPage({ t: "ready" });
+    await emit(frame("snapshot", 0));
+    await emit(frame("snapshot", 2));
+    await act(async () => { jest.advanceTimersByTime(300); });
+    expect(watch.mock.calls).toEqual([["s", true], ["s", true]]);
+    await rerender(view({ active: false }));
+    await act(async () => { jest.advanceTimersByTime(30_000); });
+    await emit(frame("snapshot", 5));
+    await act(async () => { jest.advanceTimersByTime(300); });
+    expect(watch).toHaveBeenCalledTimes(2);
+  });
+
   it("ignores another session's frames and another generation's", async () => {
     await render(view());
     await fromPage({ t: "ready" });

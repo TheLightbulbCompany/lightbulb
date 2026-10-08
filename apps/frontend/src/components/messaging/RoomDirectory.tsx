@@ -54,6 +54,9 @@ export interface RoomDirectoryProps {
   /** Present: the Sessions group always shows, with an empty state when nobody is sharing. */
   onSelectSession?: (sessionId: string) => void;
   onRenameSession?: (sessionId: string, title: string | null) => Promise<unknown>;
+  /** The owner takes one of their ended sessions, or all of them, off the list (All sessions and the open session). */
+  onRemoveSession?: (sessionId: string) => Promise<unknown>;
+  onRemoveEndedSessions?: () => Promise<unknown>;
   currentSessionId?: string | null;
   /** Opens the All sessions list in the main pane. */
   onOpenAllSessions?: () => void;

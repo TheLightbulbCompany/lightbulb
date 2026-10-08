@@ -74,7 +74,9 @@ async def _live(row: dict | None, digest: str) -> dict:
     for redeem (the taker's CLI, past PKCE); resolve turns every one into the same GONE."""
     link = (row or {}).get("shareLink") or {}
     # Plain !=: the lookup row was found by this hash, so the comparison reveals nothing new.
-    if row is None or link.get("tokenHash") != digest:
+    # A removed session (`sessions.remove_session`) is refused here on its own: its link is
+    # turned off after the stamp, and that cleanup may not have run yet.
+    if row is None or row.get("removedAt") is not None or link.get("tokenHash") != digest:
         raise _turned_off()
     if row.get("unshared"):
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "The owner paused this session.")

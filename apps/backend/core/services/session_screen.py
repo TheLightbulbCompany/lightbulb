@@ -195,7 +195,7 @@ async def ack_with_watching(ack: dict, owner: str, human: str, device: str) -> d
         live = [r for r in rows if int(r.get("expiresAt", 0)) > now]
         for r in sorted(live, key=lambda r: int(r.get("since", 0)))[-ACK_CAP:]:
             meta = await repo.get_session(owner, r["sessionId"])
-            if meta is None or meta.get("unshared"):
+            if meta is None or meta.get("unshared") or meta.get("removedAt") is not None:
                 continue
             if meta.get("endedAt") is not None and not sessions.screen_available(meta, now):
                 continue

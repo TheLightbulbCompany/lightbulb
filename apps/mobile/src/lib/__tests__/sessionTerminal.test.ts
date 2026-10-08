@@ -1,6 +1,6 @@
 import { ApiError, SNAPSHOT_WAIT_MS, type SessionScreen } from "@lightbulb/shared";
 
-import { CLEAR, createScreenFeed, createTypist, STALE_AFTER_MS, withCtrl, type TerminalStep } from "../sessionTerminal";
+import { CLEAR, createScreenFeed, createTypist, REPAIR_EVERY_MS, STALE_AFTER_MS, withCtrl, type TerminalStep } from "../sessionTerminal";
 
 const b64 = (text: string) => btoa(text);
 const frame = (kind: SessionScreen["kind"], seq: number, text = `${kind}${seq}`, more: Partial<SessionScreen> = {}): SessionScreen =>
@@ -10,10 +10,11 @@ function feed() {
   const steps: TerminalStep[] = [];
   const onLive = jest.fn();
   const onSeen = jest.fn();
-  const it = createScreenFeed({ draw: (batch) => steps.push(...batch), onLive, onSeen });
+  const onLost = jest.fn();
+  const it = createScreenFeed({ draw: (batch) => steps.push(...batch), onLive, onSeen, onLost });
   /** What the page would write, in order: "!" marks a reset, text is decoded, the CLEAR prefix reads as "<clear>". */
   const written = () => steps.map((s) => `${s.fresh ? "!" : ""}${s.data.map((d) => (d === CLEAR ? "<clear>" : atob(d))).join("")}`);
-  return { it, steps, onLive, onSeen, written };
+  return { it, steps, onLive, onSeen, onLost, written };
 }
 
 beforeEach(() => jest.useFakeTimers());
@@ -76,6 +77,24 @@ describe("createScreenFeed", () => {
     // The late frame is below the picture now: dropped.
     it.receive(frame("output", 1));
     expect(written()).toHaveLength(2);
+  });
+
+  it("asks for its lines again when a snapshot repairs over frames that never came, at most every 30 s", () => {
+    const { it, onLost } = feed();
+    it.receive(frame("snapshot", 0));
+    expect(onLost).not.toHaveBeenCalled();
+    // Frame 1 never comes: the held snapshot is written as a repair.
+    it.receive(frame("snapshot", 2));
+    jest.advanceTimersByTime(SNAPSHOT_WAIT_MS);
+    expect(onLost).toHaveBeenCalledTimes(1);
+    // Another repair, but it asked a moment ago.
+    it.receive(frame("snapshot", 4));
+    jest.advanceTimersByTime(SNAPSHOT_WAIT_MS);
+    expect(onLost).toHaveBeenCalledTimes(1);
+    jest.advanceTimersByTime(REPAIR_EVERY_MS);
+    it.receive(frame("snapshot", 6));
+    jest.advanceTimersByTime(SNAPSHOT_WAIT_MS);
+    expect(onLost).toHaveBeenCalledTimes(2);
   });
 
   it("starts the terminal over for a new relay run and resizes when the Mac's grid changes", () => {

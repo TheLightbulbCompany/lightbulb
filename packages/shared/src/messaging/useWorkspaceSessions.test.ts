@@ -29,6 +29,15 @@ describe("useWorkspaceSessions", () => {
     expect(listWorkspaceSessions).toHaveBeenCalledTimes(2);
   });
 
+  it("drops removed rows at once, before the next refresh", async () => {
+    listWorkspaceSessions.mockResolvedValueOnce({ sessions: [{ sessionId: "a" }, { sessionId: "b" }] } as never);
+    const { result } = renderHook(() => useWorkspaceSessions(source));
+    await waitFor(() => expect(result.current.sessions).toHaveLength(2));
+    act(() => result.current.forget((session) => session.sessionId === "a"));
+    expect(result.current.sessions.map((session) => session.sessionId)).toEqual(["b"]);
+    expect(listWorkspaceSessions).toHaveBeenCalledTimes(1);
+  });
+
   it("refetches on workspace.sessions.changed and ignores other events", async () => {
     renderHook(() => useWorkspaceSessions(source));
     await waitFor(() => expect(listWorkspaceSessions).toHaveBeenCalledTimes(1));

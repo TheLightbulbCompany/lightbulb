@@ -74,7 +74,12 @@ export function SessionTerminal({ session, onEvent, watch, onLive, onCanType, in
   useEffect(() => { tell({ t: "canType", can: canType }); }, [canType, run, tell]);
   useEffect(() => { tell({ t: "mode", mode: size }); }, [size, run, tell]);
 
-  const feed = useMemo(() => createScreenFeed({ draw: (steps) => tell({ t: "draw", steps }), onLive: setLive, onSeen: () => setSeen(true) }),
+  // The newest `watch` and whether the screen is in front, for the feed's repair ask.
+  const watching = useRef({ watch, active });
+  watching.current = { watch, active };
+  const feed = useMemo(() => createScreenFeed({ draw: (steps) => tell({ t: "draw", steps }), onLive: setLive, onSeen: () => setSeen(true),
+    // Not while away: nothing is watched then, and the return asks fresh anyway. The watch effect shows a refusal.
+    onLost: () => { if (watching.current.active) void watching.current.watch(session.sessionId, true).catch(() => {}); } }),
     // A restarted session (a new generation) is a new picture.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [key, run, tell, setLive]);

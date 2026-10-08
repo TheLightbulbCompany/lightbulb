@@ -47,6 +47,8 @@ export const ONLY_YOU_LINE = '○ Only you'
 export const SHARE_LABEL = 'Share to Lightbulb'
 export const SHARE_HINT = 'ctrl+x tab, then s'
 export const GO_LIVE_LINE = '○ Press ← once to go live'
+// Stopped here (nothing more is sent), and the app has not reached the workspace with it yet.
+export const STOPPING_LINE = '○ Stopping… teammates may still see earlier output'
 
 const printable = (s: unknown) => (typeof s === 'string' ? s.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').trim().slice(0, 80) : '')
 

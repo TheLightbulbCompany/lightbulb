@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 import type { Continued, Local, SessionState } from '../types'
-import { bandRuns, continuedLine, GO_LIVE_LINE, keysHint, ONLY_YOU_LINE, parseContinued, rememberTyped, requestLine, SHARE_HINT, SHARE_LABEL, typist, type Decision } from './state'
+import { bandRuns, continuedLine, GO_LIVE_LINE, keysHint, ONLY_YOU_LINE, parseContinued, rememberTyped, requestLine, SHARE_HINT, SHARE_LABEL, STOPPING_LINE, typist, type Decision } from './state'
 import { bashTouchesProtected, classify, colorFor, protectedPath, rowBody, rowLabel, senderColor, type Sender } from './rules'
 
 export const sharing = atom({ plugin: 'lightbulb', key: 'state' } as const, null as SessionState | null)
@@ -74,7 +74,7 @@ async function call($: EngineInterface, path: string, body?: Decision): Promise<
     if (res.status !== 200) return { state: undefined, message: said(res.text) }
     // A shared session's state names it; any other answer is the local one (see `Local`).
     const answer = JSON.parse(res.text) as Partial<SessionState & Local>
-    return typeof answer.sessionId === 'string' ? { state: answer as SessionState } : { state: null, local: { shared: answer.shared === true } }
+    return typeof answer.sessionId === 'string' ? { state: answer as SessionState } : { state: null, local: { shared: answer.shared === true, stopping: answer.stopping === true } }
   } catch {
     return { state: undefined }
   }
@@ -223,9 +223,9 @@ export const register: Register = on => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const s = await read($, sharing)
     const l = s ? null : await read($, local)
-    if (l?.shared) {
+    if (l?.shared || l?.stopping) {
       const { Text } = $.ui.resolve(e)
-      return <Text dimColor>{GO_LIVE_LINE}</Text>
+      return <Text dimColor>{l.shared ? GO_LIVE_LINE : STOPPING_LINE}</Text>
     }
     if (l) {
       // Only its person's: nothing of it leaves this Mac, and this line is local.

@@ -1,6 +1,6 @@
 import { test, expect, mock } from 'claude-code/testing'
 import type { On } from 'claude-code'
-import { bandLine, bandRuns, continuedLine, GO_LIVE_LINE, keysHint, ONLY_YOU_LINE, parseContinued, rememberTyped, typist } from './state'
+import { bandLine, bandRuns, continuedLine, GO_LIVE_LINE, keysHint, ONLY_YOU_LINE, parseContinued, rememberTyped, STOPPING_LINE, typist } from './state'
 import { colorFor, type Sender } from './rules'
 import type { SessionState } from '../types'
 
@@ -335,6 +335,22 @@ test('Pause stops sharing: the band says Only you and offers Share again', async
   expect(await ui.find({ type: 'Text', text: new RegExp(`^${ONLY_YOU_LINE}`) })).toBeDefined()
   expect(await ui.find({ key: 'share' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /did not take that/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a stop the workspace has not taken yet says Stopping, not Only you', async ($, on) => {
+  let state: Reply = { status: 200, body: base }
+  const { clock } = world(on, path => (path === '/v1/decide' ? (state = { status: 200, body: { shared: false, stopping: true } }) : state))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await ui.press({ key: 'pause' })
+  expect(await ui.find({ type: 'Text', text: STOPPING_LINE })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: new RegExp(`^${ONLY_YOU_LINE}`) })).toBeUndefined()
+  expect(await ui.findAll({ type: 'Button' })).toHaveLength(0)
+  state = ONLY_YOU // the app reached the workspace
+  await clock.advance(2000)
+  expect(await ui.find({ key: 'share' })).toBeDefined()
   await ui.unmount()
 })
 

@@ -31,6 +31,9 @@ pub(super) enum Band {
     Waiting,
     /// Only its person's: nothing of it leaves this Mac.
     OnlyYou,
+    /// Its person stopped sharing it and nothing leaves this Mac any more, but the workspace
+    /// has not taken the stop yet: teammates may still see what was shared before.
+    Stopping,
 }
 
 /// Every stored mirror with its key. A share or a stop the relay loop has not applied yet
@@ -47,7 +50,12 @@ fn mirrors(scope: &Path) -> Vec<(String, Mirror)> {
                 return None;
             }
             let mut mirror = private_read::<Mirror>(&path).ok()?;
-            mirror.shared = super::transport::asked(&key).unwrap_or(mirror.shared);
+            if let Some((shared, owed)) = super::transport::asked(&key) {
+                (mirror.shared, mirror.stop_owed) = (shared, owed);
+            }
+            if super::transport::is_settled(&key) {
+                mirror.stop_owed = false;
+            }
             Some((key, mirror))
         })
         .collect()
@@ -61,7 +69,7 @@ fn resolve(scope: &Path, pid: u32) -> Option<Band> {
         .filter(|(_, m)| m.ended_at.is_none() && m.native.restriction.is_none() && m.native.provider == "claude" && m.native.process == me)
         .filter_map(|(key, mirror)| {
             if !mirror.shared {
-                return Some(Band::OnlyYou);
+                return Some(if mirror.stop_owed && mirror.session_id.is_some() { Band::Stopping } else { Band::OnlyYou });
             }
             if mirror.withheld() {
                 return Some(Band::Waiting);
@@ -102,6 +110,21 @@ fn to_share(scope: &Path, pid: u32, named: Option<&str>) -> Option<(String, Mirr
         found.retain(|(_, m)| named == Some(m.native.conversation.as_str()));
     }
     (found.len() == 1).then(|| found.remove(0))
+}
+
+/// The generation of `mirror` the relay knows: a decision names that one (a session revived
+/// while it was not shared runs under one that never registered).
+fn known_generation(mirror: &Mirror) -> &str {
+    mirror.registration.acknowledged.as_deref().unwrap_or(&mirror.generation)
+}
+
+/// The stops this Mac still owes the workspace, as (mirror key, session id, generation).
+fn owed_stops(scope: &Path) -> Vec<(String, String, String)> {
+    mirrors(scope)
+        .into_iter()
+        .filter(|(_, m)| !m.shared && m.stop_owed)
+        .filter_map(|(key, m)| Some((key, m.session_id.clone()?, known_generation(&m).to_owned())))
+        .collect()
 }
 
 pub(super) fn state_json(sid: &str, terminal: Option<&str>, presence: Option<presence::Entry>, approval_waiting: bool) -> Value {
@@ -214,12 +237,17 @@ async fn answer(mut socket: UnixStream, scope: PathBuf, enrollment: Enrollment, 
         let Some((key, mirror)) = pid.and_then(|pid| to_share(&scope, pid, named)) else {
             return reply(&mut socket, "404 Not Found", &json!({"error":"unknown_session","message":"Lightbulb does not see this session yet. Wait a few seconds, then try again."})).await;
         };
+        // One the workspace has had is paused there: it is resumed there FIRST. The server
+        // drops what a paused session uploads, so nothing is released here until it has
+        // taken the resume; a refusal is the caller's answer and the session stays as it was.
+        if let Some(sid) = &mirror.session_id {
+            let resume = json!({"sessionId": sid, "generation": known_generation(&mirror), "decision": "unpause"});
+            if let Err(refusal) = decide(&client, &enrollment, &identity, sid, &resume).await {
+                return reply(&mut socket, "409 Conflict", &refusal).await;
+            }
+        }
         // The whole session, from its start: nothing of it was read while it was not shared.
         super::transport::ask_share(&key, true);
-        // One its person stopped is paused at the workspace too: sharing it again resumes it there.
-        if let Some(sid) = &mirror.session_id {
-            let _ = decide(&client, &enrollment, &identity, sid, &json!({"sessionId": sid, "generation": mirror.generation, "decision": "unpause"})).await;
-        }
         // `waiting`: it runs in a terminal this Mac cannot show; nothing is uploaded until it can.
         return reply(&mut socket, "200 OK", &json!({"shared": true, "waiting": mirror.native.awaits_terminal()})).await;
     }
@@ -227,7 +255,7 @@ async fn answer(mut socket: UnixStream, scope: PathBuf, enrollment: Enrollment, 
         Some(Band::Shared(caller)) => caller,
         // Not shared, or shared and not live yet: the band says which, and there is nothing to decide.
         Some(local) if route == ("GET", "/v1/state") => {
-            return reply(&mut socket, "200 OK", &json!({"shared": matches!(local, Band::Waiting)})).await;
+            return reply(&mut socket, "200 OK", &json!({"shared": matches!(local, Band::Waiting), "stopping": matches!(local, Band::Stopping)})).await;
         }
         _ => return reply(&mut socket, "404 Not Found", &json!({"error":"not_shared"})).await,
     };
@@ -267,11 +295,19 @@ async fn answer(mut socket: UnixStream, scope: PathBuf, enrollment: Enrollment, 
                 super::transport::ask_share(&caller.key, false);
                 super::screen::revoke(&caller.session_id);
             }
-            if let Err(refusal) = decide(&client, &enrollment, &identity, &caller.session_id, &payload).await {
+            let taken = decide(&client, &enrollment, &identity, &caller.session_id, &payload).await;
+            if stop {
+                // The stop stands on this Mac whatever the backend answered. One it did not
+                // take stays owed (`serve` retries it), and the band says so, not "Only you".
+                if taken.is_ok() {
+                    super::transport::stop_settled(&caller.key);
+                }
+                return reply(&mut socket, "200 OK", &json!({"shared": false, "stopping": taken.is_err()})).await;
+            }
+            if let Err(refusal) = taken {
                 return reply(&mut socket, "409 Conflict", &refusal).await;
             }
-            let out = if stop { json!({"shared": false}) } else { state(&caller) };
-            reply(&mut socket, "200 OK", &out).await
+            reply(&mut socket, "200 OK", &state(&caller)).await
         }
         _ => reply(&mut socket, "404 Not Found", &json!({"error":"not_found"})).await,
     }
@@ -288,11 +324,27 @@ pub(super) async fn serve(scope: PathBuf, enrollment: Enrollment, identity: crat
     let Ok(client) = reqwest::Client::builder().timeout(Duration::from_secs(8)).build() else {
         return;
     };
+    // A stop the workspace has not taken (the API was down, the token expired) is owed until it
+    // does: tried again here, also after its session's own process is gone.
+    let mut retry = tokio::time::interval(Duration::from_secs(10));
     loop {
-        let Ok((socket, _)) = listener.accept().await else {
-            break;
-        };
-        tokio::spawn(answer(socket, scope.clone(), enrollment.clone(), identity.clone(), client.clone()));
+        tokio::select! {
+            accepted = listener.accept() => {
+                let Ok((socket, _)) = accepted else { break };
+                tokio::spawn(answer(socket, scope.clone(), enrollment.clone(), identity.clone(), client.clone()));
+            }
+            _ = retry.tick() => {
+                let (owed, enrollment, identity, client) = (owed_stops(&scope), enrollment.clone(), identity.clone(), client.clone());
+                tokio::spawn(async move {
+                    for (key, sid, generation) in owed {
+                        let pause = json!({"sessionId": sid, "generation": generation, "decision": "pause"});
+                        if decide(&client, &enrollment, &identity, &sid, &pause).await.is_ok() {
+                            super::transport::stop_settled(&key);
+                        }
+                    }
+                });
+            }
+        }
     }
 }
 
@@ -355,6 +407,14 @@ mod tests {
         mirror.session_id = None;
         mirror.persist(&path).unwrap();
         assert!(matches!(resolve(scope.path(), std::process::id()), Some(Band::OnlyYou)));
+        // Stopped here, and the workspace has not taken the stop: not yet "Only you". It is
+        // owed under the generation the relay knows.
+        mirror.session_id = Some("session-a".into());
+        mirror.stop_owed = true;
+        mirror.registration.acknowledged = Some("gen-0".into());
+        mirror.persist(&path).unwrap();
+        assert!(matches!(resolve(scope.path(), std::process::id()), Some(Band::Stopping)));
+        assert_eq!(owed_stops(scope.path()), vec![(key.clone(), "session-a".to_string(), "gen-0".to_string())]);
         mirror.native.restriction = Some("restricted".into());
         mirror.persist(&path).unwrap();
         assert!(resolve(scope.path(), std::process::id()).is_none(), "a restricted session gets no door");
@@ -387,13 +447,17 @@ mod tests {
         assert_eq!(started, (Some(key.clone()), Some(key.clone())));
         assert_eq!(stranger, None);
         assert_eq!(of_two, (None, Some(second)));
-        // An ask the relay loop has not applied yet is already the answer.
-        let shared = || mirrors(scope.path()).into_iter().find(|(k, _)| *k == key).map(|(_, m)| m.shared);
-        assert_eq!(shared(), Some(false));
+        // An ask the relay loop has not applied yet is already the answer. A stop is owed to
+        // the workspace until it has taken it: only then is the session "Only you".
+        let state = || mirrors(scope.path()).into_iter().find(|(k, _)| *k == key).map(|(_, m)| (m.shared, m.stop_owed));
+        assert_eq!(state(), Some((false, false)));
         super::super::transport::ask_share(&key, true);
-        assert_eq!(shared(), Some(true));
+        assert_eq!(state(), Some((true, false)));
         super::super::transport::ask_share(&key, false);
-        assert_eq!(shared(), Some(false));
+        assert_eq!(state(), Some((false, true)));
+        assert!(owed_stops(scope.path()).is_empty(), "the relay never had it: nothing to tell");
+        super::super::transport::stop_settled(&key);
+        assert_eq!(state(), Some((false, false)));
     }
 
     #[test]

@@ -114,20 +114,43 @@ pub(super) struct Host {
     share_every: Option<bool>,
 }
 
-/// Share and stop asked on this Mac (the band, the share skill), by mirror key, until the relay
-/// loop applies them (`Host::share_tick`): only that loop writes a mirror.
-static SHARE_ASKS: std::sync::Mutex<BTreeMap<String, bool>> = std::sync::Mutex::new(BTreeMap::new());
+/// What this Mac's own doors (the band, the share skill) decided for a session, by mirror key,
+/// as `(shared, stop_owed)`, until the relay loop applies it (`Host::share_tick`): only that
+/// loop writes a mirror.
+static SHARE_ASKS: std::sync::Mutex<BTreeMap<String, (bool, bool)>> = std::sync::Mutex::new(BTreeMap::new());
 
-/// This Mac's person shares the session of mirror `key`, or stops sharing it.
+/// This Mac's person shares the session of mirror `key`, or stops sharing it. A stop is owed to
+/// the workspace until `stop_settled`.
 pub(super) fn ask_share(key: &str, shared: bool) {
     if let Ok(mut asks) = SHARE_ASKS.lock() {
-        asks.insert(key.to_owned(), shared);
+        asks.insert(key.to_owned(), (shared, !shared));
     }
 }
 
-/// What was asked for mirror `key` and is not applied yet: a reader of the stored mirror
-/// answers with this, not with the moment before.
-pub(super) fn asked(key: &str) -> Option<bool> {
+/// Mirrors whose owed stop the workspace took (the server pause succeeded), until the relay
+/// loop records it. Its own set: it must not replace a stop or a share that waits in `SHARE_ASKS`.
+static STOPS_SETTLED: std::sync::Mutex<BTreeSet<String>> = std::sync::Mutex::new(BTreeSet::new());
+
+pub(super) fn stop_settled(key: &str) {
+    if let Ok(mut settled) = STOPS_SETTLED.lock() {
+        settled.insert(key.to_owned());
+    }
+}
+
+/// When this Mac's person last stopped sharing each mirror. The server's presence can still say
+/// "shared" for a moment after (read before the pause, delivered after it).
+// ponytail: a fixed grace, not an ordering of the two clocks; compare presence `at` with the
+// pause's own server time if a late "shared" ever undoes a stop.
+static STOPPED_AT: std::sync::Mutex<BTreeMap<String, Instant>> = std::sync::Mutex::new(BTreeMap::new());
+const STOP_GRACE: Duration = Duration::from_secs(30);
+
+pub(super) fn is_settled(key: &str) -> bool {
+    STOPS_SETTLED.lock().is_ok_and(|settled| settled.contains(key))
+}
+
+/// What was decided for mirror `key` and is not applied yet, as `(shared, stop_owed)`: a reader
+/// of the stored mirror answers with this, not with the moment before.
+pub(super) fn asked(key: &str) -> Option<(bool, bool)> {
     SHARE_ASKS.lock().ok()?.get(key).copied()
 }
 
@@ -591,6 +614,7 @@ impl Host {
                         ended_reason: None,
                         ended_sent: false,
                         shared,
+                        stop_owed: false,
                         waiting: None,
                         stats: Default::default(),
                         subagents: Default::default(),
@@ -644,22 +668,80 @@ impl Host {
         let mut shared_now = vec![];
         let Ok(mut asks) = SHARE_ASKS.lock() else { return shared_now };
         // (An ask for a mirror this loop does not hold stays: it is not this loop's to drop.)
-        asks.retain(|key, shared| {
+        asks.retain(|key, (shared, owed)| {
             let Some(mirror) = self.mirrors.get_mut(key) else { return true };
-            if mirror.shared != *shared {
+            let changed = mirror.shared != *shared;
+            if changed || mirror.stop_owed != *owed {
                 mirror.shared = *shared;
+                mirror.stop_owed = *owed;
                 // (A failed write leaves it dirty: RAM is the truth and the next persist stores it.)
                 let _ = mirror.persist(&self.dir.join(format!("{key}.json")));
+            }
+            if changed {
                 relay_log(&format!("{} {}", short(key), if *shared { "shared by its person" } else { "no longer shared" }));
                 match (&mirror.session_id, *shared) {
                     (Some(session), false) => super::screen::revoke(session),
                     (_, true) => shared_now.push(key.clone()),
                     _ => {}
                 }
+                if let Ok(mut stopped) = STOPPED_AT.lock() {
+                    if *shared { stopped.remove(key) } else { stopped.insert(key.clone(), Instant::now()) };
+                }
             }
             false
         });
+        drop(asks);
+        // After the asks: a stop and its settlement can arrive in the same turn. One that was
+        // shared again meanwhile owes nothing.
+        if let Ok(mut settled) = STOPS_SETTLED.lock() {
+            settled.retain(|key| {
+                let Some(mirror) = self.mirrors.get_mut(key) else { return true };
+                if mirror.stop_owed {
+                    mirror.stop_owed = false;
+                    let _ = mirror.persist(&self.dir.join(format!("{key}.json")));
+                }
+                false
+            });
+        }
         shared_now
+    }
+
+    /// The workspace's own switch for a session (the web's sharing control) is the same switch as
+    /// the band's: a pause the server reports stops sharing here, and its end shares again.
+    /// `entry`: one session's presence (a frame, or an entry of a heartbeat ack). Not while a
+    /// decision of this Mac's own is still owed to the server or waits to be applied: the
+    /// server has not heard of it yet. Returns the key when the session is shared now.
+    fn follow_presence(&mut self, entry: &Value) -> Option<String> {
+        let paused = entry["paused"].as_bool()?;
+        let (key, mirror) = self.mirrors.iter_mut().find(|(_, m)| {
+            m.ended_at.is_none()
+                && m.session_id.is_some()
+                && m.session_id.as_deref() == entry["sessionId"].as_str()
+                && entry["generation"].as_str() == Some(m.registration.acknowledged.as_deref().unwrap_or(&m.generation))
+        })?;
+        if mirror.shared != paused || mirror.stop_owed || asked(key).is_some() {
+            return None;
+        }
+        if !paused && STOPPED_AT.lock().is_ok_and(|stopped| stopped.get(key).is_some_and(|at| at.elapsed() < STOP_GRACE)) {
+            return None;
+        }
+        mirror.shared = !paused;
+        let _ = mirror.persist(&self.dir.join(format!("{key}.json")));
+        relay_log(&format!("{} {} in the workspace", short(key), if paused { "paused" } else { "shared again" }));
+        if paused {
+            if let Some(session) = &mirror.session_id {
+                super::screen::revoke(session);
+            }
+            return None;
+        }
+        Some(key.clone())
+    }
+
+    /// The last moment before a side effect for mirror `key` (a command, an approval, an
+    /// upload), after whatever this turn awaited: withheld, or its person pressed stop since
+    /// this turn began and the loop has not applied it yet.
+    fn stopped_now(&self, key: &str) -> bool {
+        asked(key).is_some_and(|(shared, _)| !shared) || self.mirrors.get(key).is_none_or(Mirror::withheld)
     }
 
     /// Whether a relay frame names a session that is withheld (a terminal frame queued before
@@ -1565,6 +1647,9 @@ impl Host {
                     {
                         continue;
                     }
+                    if self.stopped_now(key) {
+                        continue;
+                    }
                     last_upload.insert(key.clone(), Instant::now());
                     let mirror = self.mirrors.get_mut(key).ok_or("missing local session")?;
                     let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
@@ -1791,6 +1876,9 @@ impl Host {
                             super::session_states::read_ack(&body);
                             self.relay_reads_ended_start = Some(reads_ended_start(&body));
                             super::presence::offer_ack(&body, &sids);
+                            for entry in body["presence"].as_array().into_iter().flatten().take(64) {
+                                if let Some(key) = self.follow_presence(entry) { registered.remove(&key); }
+                            }
                             super::resume::offer(&body["resume"], &self.mirrors);
                             let server = body["serverTime"].as_u64().ok_or("missing server time")?;
                             if let Some(fresh) = ack_anchor(server, sent, wall) {anchor = Some(fresh);}
@@ -1898,7 +1986,10 @@ impl Host {
                         // A teammate's keystrokes: queued for the holder, never answered.
                         Some("local.session.input") => if !self.refuses_frame(&body) { super::remote_input::offer(&body) },
                         // Who watches, who may type, join requests, pause. Never answered.
-                        Some("local.session.presence") => super::presence::offer_frame(&body),
+                        Some("local.session.presence") => {
+                            super::presence::offer_frame(&body);
+                            if let Some(key) = self.follow_presence(&body) { registered.remove(&key); }
+                        },
                         other => {
                             // Not a frame of this protocol: API Gateway's own `{"message":"Internal
                             // server error"}` when a backend call outlived its Lambda (10 s), or a
@@ -2127,6 +2218,11 @@ impl Host {
         } else {
             None
         };
+        // After the verification and the connect this turn awaited: its person may have pressed stop.
+        if self.stopped_now(&key) {
+            *why = "sharing stopped";
+            return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
+        }
         let now = anchor.and_then(ClockAnchor::now).unwrap_or(u64::MAX);
         if !journal.admit(cmd, &mirror.generation, now)? {
             *why = "not admitted (order, shape or deadline)";
@@ -2227,7 +2323,8 @@ impl Host {
             && !mirror.withheld()
             && !self.stop.load(Ordering::SeqCst)
             && cmd.authorized_at(now)
-            && self.verified(&mirror.native).await.is_ok();
+            && self.verified(&mirror.native).await.is_ok()
+            && !self.stopped_now(&key);
         let mirror = &self.mirrors[&key];
         if !journal.admit(cmd, &mirror.generation, now)? {
             return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
@@ -2986,6 +3083,7 @@ pub(super) mod tests {
             ended_reason: None,
             ended_sent: false,
             shared: true,
+            stop_owed: false,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -3080,7 +3178,7 @@ pub(super) mod tests {
 
         // Its person shares it: the whole session, from its start. It registers again.
         ask_share(&key, true);
-        assert_eq!(asked(&key), Some(true));
+        assert_eq!(asked(&key), Some((true, false)));
         assert_eq!(host.share_tick(), vec![key.clone()]);
         assert_eq!(asked(&key), None);
         assert!(host.mirrors[&key].shared && host.mirrors[&key].cursor.offset == 0);
@@ -3202,6 +3300,61 @@ pub(super) mod tests {
         host.end_session(&key, "exited").unwrap();
         let (_, frame) = host.ended_frame(&mut BTreeSet::new()).unwrap().expect("its end is told");
         assert_eq!(frame["generation"].as_str(), Some(known.as_str()));
+    }
+
+    #[test]
+    fn local_sessions_the_workspace_s_pause_and_the_band_s_stop_are_one_switch() {
+        let dir = tempfile::tempdir().unwrap();
+        let sid = "5eed000a-5e55-4000-8000-00000000000a";
+        let mut mirror = test_mirror("5eed000a-0000-4000-8000-00000000000a", "gen-1");
+        mirror.session_id = Some(sid.into());
+        let key = "5eed000a".repeat(8);
+        let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
+        let presence = |paused: bool, generation: &str| json!({"sessionId": sid, "generation": generation, "paused": paused});
+        // Paused in the workspace (the web's switch): the Mac stops sending. Another run's presence says nothing.
+        assert_eq!(host.follow_presence(&presence(true, "gen-0")), None);
+        assert!(host.mirrors[&key].shared);
+        assert_eq!(host.follow_presence(&presence(true, "gen-1")), None);
+        assert!(host.mirrors[&key].withheld() && !host.mirrors[&key].stop_owed);
+        assert!(!private_read::<Mirror>(&dir.path().join(format!("{key}.json"))).unwrap().shared, "durable");
+        // Shared again there: shared here, and it registers again.
+        assert_eq!(host.follow_presence(&presence(false, "gen-1")), Some(key.clone()));
+        assert!(host.mirrors[&key].shared);
+
+        // Stopped at the band: nothing is sent at once, and the stop is owed to the workspace
+        // until it takes it. Its presence still says "shared" meanwhile: that undoes nothing.
+        ask_share(&key, false);
+        assert!(host.stopped_now(&key), "before the loop applies it");
+        assert!(host.share_tick().is_empty());
+        assert!(host.mirrors[&key].withheld() && host.mirrors[&key].stop_owed);
+        assert_eq!(host.follow_presence(&presence(false, "gen-1")), None);
+        assert!(!host.mirrors[&key].shared);
+        // The workspace took it: nothing is owed, and a "shared" read just before the pause is stale.
+        stop_settled(&key);
+        assert!(host.share_tick().is_empty());
+        assert!(!host.mirrors[&key].stop_owed && !is_settled(&key));
+        assert_eq!(host.follow_presence(&presence(false, "gen-1")), None);
+        assert!(!host.mirrors[&key].shared);
+    }
+
+    #[test]
+    fn local_sessions_a_shared_generation_drains_before_its_plain_successor_is_withheld() {
+        let mut mirror = test_mirror("5eed000b-0000-4000-8000-00000000000b", "gen-1");
+        mirror.native.app = false;
+        mirror.native.holder = Some("ab12cd34".into());
+        mirror.session_id = Some("5eed000b-5e55-4000-8000-00000000000b".into());
+        mirror.queue.push(json!({"kind":"text"}));
+        // The conversation restarts in a plain terminal while the run before still has history to send.
+        let mut plain = mirror.native.clone();
+        plain.holder = None;
+        mirror.registration.successor = Some(plain);
+        assert!(!mirror.advance(), "the run before drains first");
+        assert!(!mirror.withheld());
+        assert!(mirror.next_batch().unwrap().is_some());
+        mirror.queue.clear();
+        mirror.pending = None;
+        assert!(mirror.advance());
+        assert!(mirror.withheld(), "promoted: a plain terminal uploads nothing");
     }
 
     #[test]
@@ -5026,6 +5179,7 @@ pub(super) mod tests {
             ended_reason: None,
             ended_sent: false,
             shared: true,
+            stop_owed: false,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -5099,6 +5253,7 @@ pub(super) mod tests {
             ended_reason: None,
             ended_sent: false,
             shared: true,
+            stop_owed: false,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -5224,6 +5379,7 @@ pub(super) mod tests {
             ended_reason: None,
             ended_sent: false,
             shared: true,
+            stop_owed: false,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),

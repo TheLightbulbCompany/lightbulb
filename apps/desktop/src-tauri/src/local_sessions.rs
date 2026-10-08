@@ -1509,6 +1509,11 @@ struct Mirror {
     /// stored before this field was shared.
     #[serde(default = "yes")]
     shared: bool,
+    /// Its person stopped sharing it on this Mac and the workspace has not been told yet (the
+    /// server pause failed or is on its way). Nothing is sent meanwhile; the pause is retried
+    /// until it is taken, and until then the band does not say the session is only theirs.
+    #[serde(default)]
+    stop_owed: bool,
     // The relay has acknowledged this session's end. Durable: a Mac that reports an
     // end and restarts must not report it again, and one that does not must.
     #[serde(default)]
@@ -1674,8 +1679,10 @@ impl Mirror {
     /// door: register, upload, heartbeat, terminal frames, final screen, commands, approvals,
     /// typed input, the session's own tools. The mirror keeps reading nothing meanwhile, so a
     /// session shared later is shared whole, from its start.
+    // The terminal wait is the promoted process's alone: while a new process waits in
+    // `successor`, the generation before it still drains what it had already shared.
     fn withheld(&self) -> bool {
-        !self.shared || self.registration.successor.as_ref().unwrap_or(&self.native).awaits_terminal()
+        !self.shared || self.native.awaits_terminal()
     }
     fn next_batch(&mut self) -> Result<Option<Value>> {
         // The upload point itself: nothing is read from the transcript or sent while withheld.
@@ -2728,6 +2735,7 @@ mod tests {
             ended_reason: None,
             ended_sent: false,
             shared: true,
+            stop_owed: false,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -2816,6 +2824,7 @@ mod tests {
             ended_reason: None,
             ended_sent: false,
             shared: true,
+            stop_owed: false,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -2903,6 +2912,7 @@ mod tests {
             ended_reason: None,
             ended_sent: false,
             shared: true,
+            stop_owed: false,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -3005,6 +3015,7 @@ mod tests {
             ended_reason: None,
             ended_sent: false,
             shared: true,
+            stop_owed: false,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -3072,6 +3083,7 @@ mod tests {
             ended_reason: None,
             ended_sent: false,
             shared: true,
+            stop_owed: false,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),

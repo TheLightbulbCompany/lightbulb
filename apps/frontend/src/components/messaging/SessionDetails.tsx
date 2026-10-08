@@ -153,7 +153,7 @@ function Access({ session, ownerName, own, client, nameOf, switches: { control, 
   }
   return <div className="session-settings">
     {sharing.supported && <Setting label="Shared with the workspace" checked={sharing.enabled} disabled={sharing.saving} onChange={next => void sharing.set(next)} error={sharing.error}>
-      Off pauses sharing: only you see this session, and nothing it does while paused is shown to anyone later.
+      Off: only you see this session, and nothing more leaves your Mac. Sharing it again shares the whole session, including what it did while it was off.
     </Setting>}
     {!ended && client.setLocalSessionTeamControl && <Setting label="Let teammates control this session" checked={control.enabled} disabled={control.saving} onChange={next => void control.set(next)} error={control.error}>
       Workspace members can send follow-ups and answer permission prompts on your Mac. Every action is logged in the transcript. Turns off when the session ends.

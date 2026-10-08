@@ -103,13 +103,15 @@ person pairs a Mac, **Share every new session** starts on (they can turn it off 
 in Settings), so a plain `claude` or `codex` typed in a new terminal tab runs through Lightbulb.
 A running session shows its live terminal when Lightbulb started it, when it is a Claude Code
 background session, or when it is a plain Codex session (Codex's own background service runs
-it, and Lightbulb opens one more Codex terminal on the same conversation). Any other running
-session shows a notice that its screen is not shared. A teammate reads "<Owner> is working in
-this session, but its screen is not shared." with a **Message <Owner>** button and no terminal
-instructions. The owner reads "This session's screen is not shared yet.", then the one step that
-shares it: for a plain Claude session, press the left arrow key (←) once in the terminal window
-where it runs; for a Codex session started with `--no-daemon`, start it again with
-`lightbulb codex`. On the web
+it, and Lightbulb opens one more Codex terminal on the same conversation). A shared session in
+a plain terminal with no live terminal yet is not in the workspace at all until it has one: its
+own Claude Code terminal tells its person to press the left arrow key (←) once, and a Codex
+session started with `--no-daemon` is started again with `lightbulb codex`. A session that runs
+inside the Claude or Codex app has no terminal and shows a notice that its screen is not shared;
+a teammate reads "<Owner> is working in this session, but its screen is not shared." with a
+**Message <Owner>** button. Its person can also stop sharing from the workspace (the session's
+sharing switch); that and the terminal's Pause are one switch, and sharing again shares the
+whole session, including what it did meanwhile. On the web
 and in the desktop app people never see a transcript; the phone still shows a session's history
 as a list until it gets the live terminal. You still read the structured record with
 `lightbulb_local_sessions`.

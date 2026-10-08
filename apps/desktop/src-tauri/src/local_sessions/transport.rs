@@ -468,9 +468,11 @@ impl Host {
                     let returned_claude = native.provider == "claude"
                         && native.job.is_none()
                         && claude::still_registered(&self.home, native.process.pid, &native.conversation);
-                    // A withheld Codex thread that is idle again stays ended: reviving it only
-                    // defers its end behind an upload and a register it never makes.
-                    if native.provider == "codex" && native.status == "idle" && mirror.withheld() {
+                    // A Codex thread that is idle again and withheld as it is NOW (not shared, or
+                    // still in a terminal this Mac cannot show) stays ended: reviving it only
+                    // defers its end behind an upload and a register it never makes. One resumed
+                    // under a holder is judged by that, not by the run that ended.
+                    if native.provider == "codex" && native.status == "idle" && (!mirror.shared || native.awaits_terminal()) {
                         continue;
                     }
                     if mirror.native.process == native.process {
@@ -864,7 +866,14 @@ impl Host {
         let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
         if withheld {
             mirror.resume_generation = None;
-            mirror.resume_registration_pending = false;
+            if std::mem::take(&mut mirror.resume_registration_pending) {
+                // Revived under a generation that never registered: its end is told, if the
+                // relay ever had the session, under the one the relay knows, and a later
+                // share continues that chain.
+                if let Some(known) = mirror.previous_generation.take() {
+                    mirror.generation = known;
+                }
+            }
             mirror.deferred_end_reason = None;
         } else if mirror.resume_generation.is_some()
             || mirror.resume_registration_pending
@@ -945,10 +954,10 @@ impl Host {
                 recovering_ended.insert(key.clone());
                 continue;
             }
-            // Nothing is told about a run the relay never had: a session never registered, or a
-            // withheld one revived under a generation that never registered.
-            let known = !mirror.withheld() || mirror.registration.acknowledged.as_deref() == Some(mirror.generation.as_str());
-            let Some(session) = mirror.session_id.clone().filter(|_| known) else {
+            // Nothing is told about a session the relay never had (no session id). One it has
+            // had is told its end, also after its person stopped sharing it (`end_session`
+            // keeps it on the generation the relay knows).
+            let Some(session) = mirror.session_id.clone() else {
                 if owes_bound_register(dir, mirror) {
                     // Someone started this run and waits to open it: the relay has to learn
                     // it existed. The draining register gives it a session, then this end.
@@ -3146,11 +3155,46 @@ pub(super) mod tests {
         let mirror = &host.mirrors[&key];
         assert!(mirror.ended_at.is_some() && mirror.deferred_end_reason.is_none(), "its end waits for no register");
         assert_eq!(registration_due_with_recovery(&host.mirrors, &BTreeSet::new(), &BTreeMap::new(), &BTreeSet::new()), None);
-        // Also when the relay knew an earlier run of it (shared, then stopped): the revived
-        // generation never registered, so no end is told for it.
-        host.mirrors.get_mut(&key).unwrap().session_id = Some("5eed0006-5e55-4000-8000-000000000006".into());
+        // The relay never had it: no end is told.
         assert!(host.ended_frame(&mut BTreeSet::new()).unwrap().is_none());
         assert!(host.mirrors[&key].ended_sent && host.ended_pending.is_empty());
+
+        // One the relay has had (shared, registered, then stopped) and whose first end was never
+        // told: it comes back and exits. The end is told, under the generation the relay knows.
+        let known = host.mirrors[&key].generation.clone();
+        let mirror = host.mirrors.get_mut(&key).unwrap();
+        mirror.session_id = Some("5eed0006-5e55-4000-8000-000000000006".into());
+        mirror.registration.acknowledged = Some(known.clone());
+        mirror.ended_sent = false;
+        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
+        assert_ne!(host.mirrors[&key].generation, known, "revived under a generation that never registers");
+        host.end_session(&key, "exited").unwrap();
+        let (_, frame) = host.ended_frame(&mut BTreeSet::new()).unwrap().expect("its end is told");
+        assert_eq!((frame["type"].as_str(), frame["generation"].as_str()), (Some("local.session.ended"), Some(known.as_str())));
+    }
+
+    #[test]
+    fn local_sessions_a_shared_codex_thread_resumed_under_a_holder_while_idle_revives_and_registers() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = test_host(dir.path(), vec![]); // "Share every new session" is on
+        let mut native = test_native("5eed0008-0000-4000-8000-000000000008");
+        native.app = false; // a plain terminal: shared, and withheld until it has a live one
+        native.status = "idle".into();
+        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
+        let key = native_key(&native);
+        assert!(host.mirrors[&key].shared && host.mirrors[&key].withheld());
+        host.end_session(&key, "exited").unwrap();
+        // Resumed (or picked up) with Lightbulb: a new process under a holder, idle when seen.
+        let mut child = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let mut resumed = native.clone();
+        resumed.process = process(child.id()).unwrap();
+        resumed.holder = Some("ab12cd34".into());
+        let observed = host.observe(vec![resumed], &BTreeSet::new());
+        child.kill().unwrap();
+        child.wait().unwrap();
+        observed.unwrap();
+        assert!(host.mirrors[&key].ended_at.is_none() && !host.mirrors[&key].withheld(), "judged by the run that is live now");
+        assert_eq!(registration_due_with_recovery(&host.mirrors, &BTreeSet::new(), &BTreeMap::new(), &BTreeSet::new()), Some(key));
     }
 
     #[test]

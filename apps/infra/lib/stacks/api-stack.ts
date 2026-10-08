@@ -743,6 +743,10 @@ export class ApiStack extends cdk.Stack {
       {
         startingPosition: lambda.StartingPosition.TRIM_HORIZON,
         batchSize: 10,
+        // Ten concurrent batches per shard, hashed by partition key: one room
+        // (pk ROOM#<id>) stays in order on one lane, other rooms stop queuing
+        // behind it. ponytail: a single busy room is still one lane.
+        parallelizationFactor: 10,
         maxBatchingWindow: cdk.Duration.seconds(0),
         reportBatchItemFailures: true,
         bisectBatchOnError: true,

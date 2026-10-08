@@ -8,6 +8,7 @@ import os
 import re
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
@@ -168,6 +169,8 @@ def _emit_metric(name: str, value: float, unit: str, dimensions: dict[str, str])
     """
     try:
         dims = {"env": _env_dimension(), "service": "messaging-projector", **dimensions}
+        # One write per line (end=""): member fan-out runs on threads, and a
+        # separate newline write could interleave two EMF lines.
         print(json.dumps({
             "_aws": {
                 "Timestamp": int(time.time() * 1000),
@@ -179,7 +182,7 @@ def _emit_metric(name: str, value: float, unit: str, dimensions: dict[str, str])
             },
             **dims,
             name: value,
-        }))
+        }) + "\n", end="")
     except Exception as exc:  # noqa: BLE001 - metrics are best-effort
         logger.warning("projector metric emit failed name=%s error_type=%s", name, type(exc).__name__)
 
@@ -657,6 +660,7 @@ def _member_streams(room_id: str, owner_id: str, after_seq: int | None = None):
 
 
 ACTIVITY_TTL_S = 90 * 24 * 3600
+MAX_FANOUT_WORKERS = 16
 
 
 def _thread_participants(room_id: str, root_id: str, root_seq: Any) -> set[str]:
@@ -756,9 +760,9 @@ def _notify_members(
         mentioned.discard(accountable_human)
     last_message = _last_message(message)
     mentioned_ids = sorted(mentioned)[:MAX_MENTIONED_USERS]
-    # (token, was this token's owner @mentioned) — the push title is per reader.
-    recipients: list[tuple[str, bool]] = []
-    for user_id, member in _current_members(room_id, owner_id, after_seq=seq):
+
+    def notify_one(user_id: str, member: dict[str, Any]) -> list[tuple[str, bool]]:
+        tokens: list[tuple[str, bool]] = []
         own = accountable_human == user_id
         # Your own message is never Activity (nor a notify); you still get the hint's preview.
         # Neither is a silent (advisory) line, e.g. "paused after N replies" under a reply
@@ -769,7 +773,7 @@ def _notify_members(
             _write_activity(user_id, member, owner_id, kind, message, user_id in mentioned)
         channel = _stream_channel(user_id, member, owner_id)
         if channel is None:
-            continue
+            return tokens
         read = _get_item(f"ROOM#{room_id}", f"READ#human#{user_id}") or {}
         notify = seq > read.get("lastReadSeq", 0) and kind is not None
         # Mute is client-side everywhere else; push is server-side by nature,
@@ -784,7 +788,7 @@ def _notify_members(
                 _emit_metric("messaging.projector.push", 1, "Count", {"outcome": "muted"})
             else:
                 at_me = user_id in mentioned
-                recipients.extend((token, at_me) for token in _push_tokens(user_id))
+                tokens.extend((token, at_me) for token in _push_tokens(user_id))
                 # The same banner the phone gets, for desktop/web to show verbatim.
                 payload["push"] = _render_push(message, meta, at_me)
         # A <=140-char plain preview (and, when it notifies, the phone's banner) may
@@ -798,7 +802,18 @@ def _notify_members(
             "roomId": room_id, "messageSeq": seq,
             "payload": payload,
         })
-    return recipients
+        return tokens
+
+    # Members fan out in parallel: one HTTPS publish each was the whole cost of a
+    # record. pool.map re-raises the first failure only after every member ran
+    # (the with-block drains), so the record still fails and replays.
+    # ponytail: one room is one partition key, so one stream lane; a busy room's
+    # ceiling is now one parallel fan-out per message, not one publish per member.
+    members = list(_current_members(room_id, owner_id, after_seq=seq))
+    with ThreadPoolExecutor(max_workers=MAX_FANOUT_WORKERS) as pool:
+        results = list(pool.map(lambda pair: notify_one(*pair), members))
+    # (token, was this token's owner @mentioned) — the push title is per reader.
+    return [recipient for tokens in results for recipient in tokens]
 
 
 def _publish_preview_change(item: dict[str, Any], meta: dict[str, Any], revision: int) -> None:

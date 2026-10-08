@@ -37,6 +37,7 @@ from .routing import ANSWERS
 EPOCH = 1_791_460_800.0  # one fixed noon UTC: every check is relative, so any single date will do
 LEAD = 10.0  # the worker is in the room this long before scenario second 0
 ROSTER = ("Friday", "Forge", "Tally", "Pulse", "Gauge", "Vera", "Atlas")  # the rig workspace's agents
+PROFILES = ("current", "fast-eot")  # `Model`
 RIG_QUIET_S = 0.6  # rig.py: agent audio below its threshold this long ends a burst
 FIRST_SOUND_S = 3.0  # agent.py: a unit with no audible audio this long is stopped and reported silent
 
@@ -69,7 +70,13 @@ class Model:
     35 lines, 55 spoken units; worker.log `speech`/`turn`/`permit`/`receipt` lines against rig.txt), each
     with its rarer tail. `fixed`: values read from a recording, used first and in order."""
 
-    def __init__(self, seed: int | str, fixed: dict[str, list] | None = None, silent: float = 0.04) -> None:
+    def __init__(self, seed: int | str, fixed: dict[str, list] | None = None, silent: float = 0.04, profile: str = "current") -> None:
+        """`profile`: the transcriber's timing. `current`: today's (onset 0.4-0.6 s, final 1.2-1.9 s after the
+        line). `fast-eot`: a what-if, not a measurement: one that hears the onset in 0.2-0.3 s, sends interims
+        early, and gives the words with an end-of-turn event about 0.3 s after speech stops."""
+        if profile not in PROFILES:
+            raise ValueError(f"no timing profile {profile!r}; there are: {', '.join(PROFILES)}")
+        self.fast = profile == "fast-eot"
         self.rng = random.Random(seed)
         self.fixed = fixed or {}
         self.p_silent = silent  # 4 of 55 units played no audible audio
@@ -88,10 +95,20 @@ class Model:
         return 0.25 + 0.052 * len(text) + 0.35 * len(re.findall(r"[,.;:!?]\s", text))
 
     def voiced_on(self) -> float:  # speech start -> the transcriber's detector
+        if self.fast:
+            return self.u("voiced_on", 0.2, 0.3)
         return self.u("voiced_on", 0.37, 0.58)
 
     def voiced_off(self) -> float:  # speech end -> its detector's stop
+        if self.fast:
+            return self.u("voiced_off", 0.22, 0.32)
         return self.u("voiced_off", 0.75, 1.1, (0.05, 0.2, 0.75))
+
+    def interim(self) -> float:  # the detector's start -> the first interim words
+        return 0.2 if self.fast else 0.5
+
+    def final_gap(self) -> float:  # the least time from the detector's stop to the final
+        return 0.02 if self.fast else 0.15
 
     def level_on(self) -> float:  # speech start -> the SFU's active-speaker set
         return self.u("level_on", 0.3, 0.8, (0.05, 0.8, 2.5))
@@ -114,6 +131,8 @@ class Model:
         return gaps
 
     def final(self) -> float:  # speech end -> its final transcript: 1.17-1.93 s, 4 of 56 later, one at 3.9
+        if self.fast:  # the words come with the end-of-turn event
+            return self.u("final", 0.26, 0.4)
         if self.rng.random() < 0.02:
             return self.u("final", 2.4, 3.9)
         return self.u("final", 1.2, 1.9, (0.07, 1.9, 2.4))
@@ -402,11 +421,11 @@ class Backend:
 class Sim:
     def __init__(
         self, scenario: dict, routing: dict[int, dict] | None = None, seed: int | str = 0,
-        recording: Recording | None = None, trace: bool = False, tape: str | None = None,
+        recording: Recording | None = None, trace: bool = False, tape: str | None = None, profile: str = "current",
     ) -> None:  # fmt: skip
         """`tape`: write this call's inputs there with the worker's own recorder (`huddle_agent.record`)."""
         self.s, self.routing, self.rec, self.trace, self.tape = scenario, routing or {}, recording, trace, tape
-        self.model = Model(seed, recording.fixed if recording else None)
+        self.model = Model(seed, recording.fixed if recording else None, profile=profile)
         people = scenario["people"]
         self.ident = {pid: f"meet:replay:rig{pid}" for pid in people}
         self.people = {self.ident[pid]: p["name"] for pid, p in people.items()}
@@ -504,11 +523,11 @@ class Sim:
             end = s + (e - s) * share
             # a detector that stopped at a pause hears the rest a moment after, never before its own stop
             on = max(begin + m.voiced_on(), heard + 0.05)
-            heard = end + (m.voiced_off() if share == 1.0 else m.u("split_off", 0.45, 0.8))
+            heard = end + (m.voiced_off() if share == 1.0 or m.fast else m.u("split_off", 0.45, 0.8))
             self.at(on, self.h.on_speech, who, True)
-            self.at(on + 0.5, self.h.on_interim_transcript, who, self.people[who], " ".join(piece.split()[:2]))
+            self.at(on + m.interim(), self.h.on_interim_transcript, who, self.people[who], " ".join(piece.split()[:2]))
             self.at(heard, self.h.on_speech, who, False)
-            self.at(max(heard + 0.15, end + m.final()), self._final, who, piece)
+            self.at(max(heard + m.final_gap(), end + m.final()), self._final, who, piece)
             begin = end
 
     async def _say(self, i: int, line: dict) -> None:

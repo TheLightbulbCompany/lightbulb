@@ -4,6 +4,7 @@ milliseconds and judged by the rig's own checks.
     uv run python -m tests.replay all              every scenario, 20 seeds each
     uv run python -m tests.replay gap --seeds 50   one scenario, more seeds
     uv run python -m tests.replay gap --seed 7 --trace   one replay, with the controller's own log
+    uv run python -m tests.replay all --profile fast-eot   a what-if: a faster transcriber (`sim.Model`)
 
 `sim.py` is the simulation, `routing.py` the router's assumed verdicts, `live.py` a live rig run turned into
 a recording (and the harness checked against it), `check.py` and `scenarios/` the rig's, vendored."""
@@ -26,9 +27,9 @@ def load(name: str) -> dict:
         return json.load(f)
 
 
-def replay(name: str, seed: int, trace: bool = False, keep: str | None = None) -> tuple[list[tuple[str, str, str]], Evidence]:
+def replay(name: str, seed: int, trace: bool = False, keep: str | None = None, profile: str = "current") -> tuple[list[tuple[str, str, str]], Evidence]:
     """One synthetic replay of a scenario: its checks, [(PASS|FAIL|SKIP, check, evidence)], and what it left."""
     scenario = load(name)
     # seeded by name too: seed 3 of one scenario is not seed 3 of another, with the same first delays
-    ev = Sim(scenario, ROUTING[name], f"{name}:{seed}", trace=trace).run()
+    ev = Sim(scenario, ROUTING[name], f"{name}:{seed}", trace=trace, profile=profile).run()
     return judge(scenario, ev, keep), ev

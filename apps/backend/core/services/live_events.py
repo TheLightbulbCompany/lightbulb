@@ -106,6 +106,48 @@ def _serialized_event(event: LiveEvent) -> str:
     )
 
 
+def room_message_created_event(item: dict[str, Any]) -> dict[str, Any]:
+    """The ``room.message.created`` event the messaging projector builds for a stored MSG row,
+    field for field and in its key order (``_canonical_message`` + ``_fan_out_message`` in
+    apps/infra/lambda/messaging-projector/index.py). The projector is a separate bundle, so this
+    is a copy: tests/unit/services/test_room_event_on_write_path.py pins the two byte-equal.
+    No validation: the row is the one this process just wrote; the projector still validates."""
+    fields = (
+        "messageId", "roomId", "messageSeq", "roomRevision", "author", "text", "mentions",
+        "replyToMessageId", "threadRootMessageId", "createdAt", "runId",
+    )  # fmt: skip
+    message: dict[str, Any] = {field: item[field] for field in fields}
+    author = message["author"]
+    message["author"] = {"kind": author["kind"], "id": author["id"], "displayName": author["displayName"]}
+    message["mentions"] = [{"kind": m["kind"], "id": m["id"]} for m in message["mentions"]]
+    message["addressedAgentIds"] = [
+        t["agentId"] for t in item.get("dispatchTargets") or [] if t.get("eventKind") == "user_request"
+    ]
+    attachments = [
+        {"id": a["id"], "fileName": a["fileName"], "contentType": a["contentType"], "size": int(a["size"])}
+        for a in item.get("attachments") or []
+    ]
+    if attachments:
+        message["attachments"] = attachments
+    session_mentions = item.get("sessionMentions") or []
+    if session_mentions:
+        labels = item.get("sessionTargetLabels") or {}
+        message["sessionMentions"] = list(session_mentions)
+        message["sessionTargetLabels"] = {s: labels[s] for s in session_mentions if labels.get(s)}
+    if item.get("progress") is True:
+        message["progress"] = True
+    return {
+        "schemaVersion": 1,
+        "eventId": message["messageId"],
+        "type": "room.message.created",
+        "occurredAt": message["createdAt"],
+        "roomId": message["roomId"],
+        "messageSeq": message["messageSeq"],
+        "roomRevision": message["roomRevision"],
+        "payload": message,
+    }
+
+
 class LiveEventPublisher:
     def __init__(self, *, http_client: Any | None = None, credentials: Any | None = None) -> None:
         self._http = http_client
@@ -120,17 +162,35 @@ class LiveEventPublisher:
         validated = _validated_event(event, ROOM_LIVE_EVENT_TYPES)
         if str(validated.room_id) != room_id:
             raise LivePublishError("room event does not match its channel")
+        channel = await self._room_channel(room_id, "frames" if frames else "rooms")
+        if channel is None:
+            return False
+        await self._publish(channel, validated)
+        return True
+
+    async def publish_message_created(self, item: dict[str, Any]) -> bool:
+        """A just-stored MSG row's ``room.message.created`` event, sent from the write path.
+
+        The bytes are the projector's own (``room_message_created_event`` + its ``_event_json``),
+        not a ``LiveEvent`` re-serialization, which would reformat ``occurredAt``: the projector
+        sends the same eventId later and the client keeps whichever copy lands first."""
+        event = room_message_created_event(item)
+        channel = await self._room_channel(_uuid(event["roomId"], "room id"), "rooms")
+        if channel is None:
+            return False
+        await self._send(channel, json.dumps(event, separators=(",", ":"), ensure_ascii=False), source="write_path")
+        return True
+
+    async def _room_channel(self, room_id: str, family: str) -> str | None:
         meta = await messaging_repo.get_room(room_id)
         if meta is None:
-            return False
+            return None
         key = _uuid(str(meta.get("deliveryKey", "")), "room delivery key")
         workspace = _uuid(
             await messaging_repo.workspace_id_for_meta(messaging_repo.room_pk(room_id), "META", meta),
             "room workspace id",
         )
-        family = "frames" if frames else "rooms"
-        await self._publish(f"/ws/{workspace}/{family}/{room_id}/{key}", validated)
-        return True
+        return f"/ws/{workspace}/{family}/{room_id}/{key}"
 
     async def user_channel(self, owner_id: str, user_id: str) -> str | None:
         mapping = await messaging_repo.get_user_stream(owner_id, user_id)
@@ -201,12 +261,15 @@ class LiveEventPublisher:
     async def _publish(self, channel: str, event: LiveEvent) -> None:
         await self._send(channel, _serialized_event(event))
 
-    async def _send(self, channel: str, serialized_event: str) -> None:
+    async def _send(self, channel: str, serialized_event: str, *, source: str | None = None) -> None:
+        # ``source`` splits the write path's publishes out of the series; absent, the dimensions
+        # are exactly what they were before it existed.
+        tag = {"source": source} if source else {}
         if len(serialized_event.encode("utf-8")) > MAX_EVENT_BYTES:
             raise LivePublishError("live event exceeds 230 KiB")
         endpoint = settings.APPSYNC_EVENTS_HTTP_ENDPOINT.strip()
         if not endpoint:
-            put_metric("messaging.live.publish", dimensions={"outcome": "unconfigured"})
+            put_metric("messaging.live.publish", dimensions={"outcome": "unconfigured", **tag})
             return
         body = json.dumps({"channel": channel, "events": [serialized_event]}, separators=(",", ":")).encode()
 
@@ -235,7 +298,11 @@ class LiveEventPublisher:
                 # failure path that published nothing at all.
                 put_metric(
                     "messaging.live.publish",
-                    dimensions={"outcome": "error", "status_class": _publish_status_class(response.status_code)},
+                    dimensions={
+                        "outcome": "error",
+                        "status_class": _publish_status_class(response.status_code),
+                        **tag,
+                    },
                 )
                 raise LivePublishError(f"AppSync HTTP {response.status_code}")
             try:
@@ -246,11 +313,11 @@ class LiveEventPublisher:
             failed = payload.get("failed") if isinstance(payload, dict) else None
             if not isinstance(successful, list) or not successful or failed != []:
                 raise LivePublishError("AppSync rejected live event")
-            put_metric("messaging.live.publish", dimensions={"outcome": "ok"})
+            put_metric("messaging.live.publish", dimensions={"outcome": "ok", **tag})
             return
         put_metric(
             "messaging.live.publish",
-            dimensions={"outcome": "error", "status_class": last_status_class},
+            dimensions={"outcome": "error", "status_class": last_status_class, **tag},
         )
         # IDs and payloads are intentionally absent: message text, tokens, and
         # Authorization headers must never reach logs.

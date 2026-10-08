@@ -176,7 +176,7 @@ function ActivityRow({ item, pinned, tabIndex, highlighted, onFocusRow, onRunAct
   const resolved = item.state !== "open";
   const parts = activityRowParts(item);
   const target = rowTarget(item);
-  const decision = pinned && (item.subtype === "approval" || item.subtype === "interaction" || item.subtype === "join_request"
+  const decision = pinned && (item.subtype === "approval" || item.subtype === "interaction" || item.subtype === "join_request" || item.subtype === "agent_ask"
     || item.kind === "login" || item.kind === "extension");
 
   const run = async (action: ActivityAction, request: { note?: string; value?: string } = {}) => {

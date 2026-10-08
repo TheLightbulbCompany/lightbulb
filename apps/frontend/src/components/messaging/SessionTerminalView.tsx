@@ -122,8 +122,23 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
   const retryIn = useRef(1_000);
   const lost = useRef(() => {});
   lost.current = () => { setGone(true); setLive(false); onLive(false); };
+  // A hidden tab holds no frames subscription either: its lease lapses (below), and a subscription
+  // kept open would still hear every frame anyone else asks for. Shown again, it subscribes first
+  // and then takes the first-watch path (a fresh ask once the channel is live).
+  const hasFrames = !!frames;
+  const [hidden, setHidden] = useState(() => typeof document !== "undefined" && document.visibilityState === "hidden");
   useEffect(() => {
-    if (!framesChannel || !claim || gone) return;
+    if (!hasFrames) return;
+    const onVisibility = () => {
+      const now = document.visibilityState === "hidden";
+      setHidden(now);
+      if (now) { setReady(false); asked.current = ""; }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [hasFrames]);
+  useEffect(() => {
+    if (!framesChannel || !claim || gone || hidden) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const release = claim(framesChannel, () => {
       release();
@@ -134,8 +149,8 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
       retryIn.current = Math.min(retryIn.current * 2, 15_000);
     });
     return () => { clearTimeout(timer); release(); };
-  }, [framesChannel, claim, gone, claimRound, session.sessionId]);
-  useEffect(() => { if (subscribed) { setReady(true); retryIn.current = 1_000; } }, [subscribed]);
+  }, [framesChannel, claim, gone, claimRound, session.sessionId, hidden]);
+  useEffect(() => { if (subscribed && !hidden) { setReady(true); retryIn.current = 1_000; } }, [subscribed, hidden]);
   useEffect(() => {
     if (!ready) return;
     let refused = false;

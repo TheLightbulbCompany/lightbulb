@@ -818,6 +818,30 @@ describe("the session's own frames channel", () => {
     expect(held).toEqual([CHANNEL]); // the same channel, subscribed anew
   });
 
+  it("a hidden tab releases the frames channel, and shown again claims it before a fresh watch", async () => {
+    vi.useFakeTimers();
+    let state: DocumentVisibilityState = "visible";
+    const spy = vi.spyOn(document, "visibilityState", "get").mockImplementation(() => state);
+    const show = (next: DocumentVisibilityState) => act(() => { state = next; document.dispatchEvent(new Event("visibilitychange")); });
+    const { held, claim } = claimed();
+    const watch = vi.fn(async () => undefined);
+    const props = { session: { sessionId: "s1", generation: "g1" }, onEvent: () => () => {}, watch, onLive: vi.fn() };
+    const { rerender } = render(<SessionTerminalView {...props} frames={{ channel: CHANNEL, claim, liveChannels: [CHANNEL] }} />);
+    expect(held).toEqual([CHANNEL]);
+    expect(watch.mock.calls).toEqual([["s1", true]]);
+    show("hidden");
+    expect(held).toEqual([]); // no frames reach a hidden tab
+    rerender(<SessionTerminalView {...props} frames={{ channel: CHANNEL, claim, liveChannels: [] }} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(watch).toHaveBeenCalledTimes(1);
+    show("visible");
+    expect(held).toEqual([CHANNEL]);
+    expect(watch).toHaveBeenCalledTimes(1); // not before the channel is live again
+    rerender(<SessionTerminalView {...props} frames={{ channel: CHANNEL, claim, liveChannels: [CHANNEL] }} />);
+    expect(watch.mock.calls.at(-1)).toEqual(["s1", true]);
+    spy.mockRestore();
+  });
+
   it("a first subscribe refused (no marker yet) gets the marker from a plain watch, and asks for the picture only once subscribed", async () => {
     vi.useFakeTimers();
     const { held, refusals, claim } = claimed();

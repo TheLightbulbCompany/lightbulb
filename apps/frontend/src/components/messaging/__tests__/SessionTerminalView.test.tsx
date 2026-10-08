@@ -108,6 +108,16 @@ it("a view mounted in a hidden tab asks for nothing until the tab is shown", asy
   spy.mockRestore();
 });
 
+it("a full session says so with the API's message and stops asking", async () => {
+  vi.useFakeTimers();
+  const message = "This session already has 20 live viewers.";
+  const watch = vi.fn(async () => { throw new ApiError(409, { code: "LOCAL_SESSION_VIEWERS_FULL", message }, message); });
+  render(<SessionTerminalView session={{ sessionId: "s1", generation: "g1" }} onEvent={() => () => {}} watch={watch} onLive={vi.fn()} />);
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  expect(watch.mock.calls).toEqual([["s1", true]]); // no retry
+  expect(screen.getByRole("status").textContent).toBe(message); // not the "update the Mac app" text
+});
+
 it("a view that drew frames before it asked starts over with the history its own ask brings, and only then", async () => {
   // Prod 2026-10-07: a view mounted while its tab was hidden drew the frames another tab's watch brought
   // (26 lines, no scrollback). Shown, it asked for a fresh screen, and the history that came was never written.

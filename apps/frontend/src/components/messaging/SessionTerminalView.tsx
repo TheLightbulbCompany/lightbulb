@@ -93,10 +93,19 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
   // The screen this view last asked for (a session's, or its kept one): `watch` may change identity
   // between renders, and each fresh ask costs every viewer a history burst.
   const asked = useRef("");
+  // The backend refused a new viewer: this session is full (LOCAL_SESSION_VIEWERS_FULL), with its message.
+  const [full, setFull] = useState<string | null>(null);
   const screenKey = `${session.sessionId}:${kept}`;
   useEffect(() => {
     let refused = false;
-    const ping = (fresh: boolean) => void watch(session.sessionId, fresh).catch((e) => { if (e instanceof ApiError && (e.status === 403 || e.status === 404)) { refused = true; setLive(false); onLive(false); } });
+    setFull(null);
+    const ping = (fresh: boolean) => void watch(session.sessionId, fresh).catch((e) => {
+      if (!(e instanceof ApiError)) return;
+      // The session already has its most live viewers: say so, and stop asking (no retry loop).
+      const full = e.status === 409 && (e.body as { code?: string } | null)?.code === "LOCAL_SESSION_VIEWERS_FULL";
+      if (full || e.status === 403 || e.status === 404) { refused = true; clearInterval(timer); setLive(false); onLive(false); }
+      if (full) setFull(e.message);
+    });
     // A hidden tab does not watch. Its timers run about once a minute, past the 45 s viewer lease,
     // so each late renewal counted as a new viewer and cost the Mac a history burst. Hidden, the
     // lease just lapses; shown again, this view asks for one fresh screen and renews as before.
@@ -295,6 +304,6 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
         </div>
       </div>
     </div>
-    {!live && <div className="session-terminal-wait" role="status">{seen ? "Reconnecting…" : silent ? "Nothing has arrived from the Mac in 30 seconds. If its Lightbulb app is older than this page, update it to watch this session." : "Connecting…"}</div>}
+    {!live && <div className="session-terminal-wait" role="status">{full ?? (seen ? "Reconnecting…" : silent ? "Nothing has arrived from the Mac in 30 seconds. If its Lightbulb app is older than this page, update it to watch this session." : "Connecting…")}</div>}
   </>;
 }

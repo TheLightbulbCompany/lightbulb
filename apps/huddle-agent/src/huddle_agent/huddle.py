@@ -634,9 +634,8 @@ class Huddle:
         self._meet_roster: list[str] = []  # the humans in the Meet, from the latest packet that had a roster
         self._steered: set[tuple[int, str]] = set()  # (a line's mark, a request): that line steered it (`_apply`)
         self._status_said: set[str] = set()  # runs whose "still working" line was owed once (`_overdue`)
-        self._unclaimed: tuple | None = (
-            None  # (deadline, identity, text, mark): an open question
-        )
+        self._open_question: tuple | None = None  # (deadline, identity, text, mark): `_unclaimed`
+        self._open_question_ep: Epoch | None = None  # the speech that asked it, held while it is open
         self._people: dict[str, str] = {}  # identity -> display name, humans only
         self._team: dict = {"agents": [], "people": [], "ceoId": None}
         self._team_at = -math.inf
@@ -756,6 +755,26 @@ class Huddle:
         # identity -> (when, transcript) of a delegation whose own transcript was understood (no final yet)
         self._unbound: dict[str, tuple[float, str]] = {}
         self._routing: dict[str, list[asyncio.Future]] = {}  # identity -> their lines at /route, in said order
+
+    @property
+    def _unclaimed(self) -> tuple | None:
+        """A meeting's question that named nobody, left to the people for UNCLAIMED_QUESTION_S:
+        (deadline, identity, text, mark). None: there is none, or it was taken.
+
+        While it is open the speech that asked it is not resolved (`_turn_open`): the floor is the
+        people's, and no agent starts on a question put to the room. So every way it ends is here: a
+        person takes it (they talk, or their line comes), an agent takes the floor, or its time is up and
+        the tick has put it to /route, whose task holds the speech from then on (`_routes`)."""
+        return self._open_question
+
+    @_unclaimed.setter
+    def _unclaimed(self, q: tuple | None) -> None:
+        was, self._open_question, self._open_question_ep = self._open_question_ep, q, None
+        if q is not None and (ep := _ROUTING.get()) is not None and ep.state == "awaiting-route":
+            ep.held += 1
+            self._open_question_ep = ep
+        if was is not None:
+            self._release(was)
 
     def _spawn(self, coro) -> asyncio.Task:
         t = asyncio.create_task(coro)
@@ -2032,7 +2051,8 @@ class Huddle:
         and the detector has not said it ended, at most DETECTOR_LOST_S after the SFU's last sound of them,
         then `_detector_lost`), while they have stopped and the transcript of it is not here (`final`, at most FINAL_WAIT_S, then `_final_timeout`), while that transcript is
         being routed and its effects applied (`route`, however long: an answer that is not here is never
-        taken for a yes), and while the line was left unfinished (`turn`: /route said hold, or it trailed
+        taken for a yes; also a meeting's question that named nobody, until a person or /route has taken
+        it: `_unclaimed`), and while the line was left unfinished (`turn`: /route said hold, or it trailed
         off and its rest is waited for CALL_ON_S)."""
         if self._speaking:
             return "person", None
@@ -4607,14 +4627,16 @@ class Huddle:
         ):
             self._spawn(self._flush_transcript())
         if (u := self._unclaimed) is not None and now >= u[0]:
-            self._unclaimed = None  # one route, one summon
             if not (self._voice or self._speaking):  # one chance: an open voice or a talker makes it stale
                 _, identity, text, mark = u
-                self._spawn(
-                    self._route_and_summon(
-                        identity, text, mark, humans=len(self._people), unclaimed=True
-                    )
-                )
+                # Its speech is still open, and the route is a task of it: nothing is said until /route
+                # has answered and what it decided is applied, however the task ends (`_routes`).
+                token = _ROUTING.set(self._open_question_ep)
+                try:
+                    self._routes(self._route_and_summon(identity, text, mark, humans=len(self._people), unclaimed=True))
+                finally:
+                    _ROUTING.reset(token)
+            self._unclaimed = None  # one route, one summon. After the task holds the speech: no gap between them
         v, w = self._voice, self._window
         idle = MEETING_IDLE_SECONDS if meeting else ROOM_IDLE_SECONDS
         if v is None:

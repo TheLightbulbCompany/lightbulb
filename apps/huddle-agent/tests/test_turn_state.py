@@ -555,3 +555,77 @@ async def test_speech_the_detector_still_hears_holds_the_floor_when_its_sound_go
     await pause(h, clock, 0.3)
     assert turns(h) == [] and h._unknown_at > 0, "no transcript came either: unknown human speech"
     assert said(lives)[1:] == [("forge", ANSWER)], "the answer its asker is waiting for goes"
+
+
+# -- a question put to the room --
+
+ROOM_Q = "Does anyone know when the release is?"
+
+
+async def asked_the_room():
+    """Priya asked Forge and its voice has closed. Dan asks the room a question, and Forge's answer lands."""
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    await closes(h, clock)
+    await says(h, P2, ROOM_Q)
+    assert h._unclaimed is not None and turns(h) == ["awaiting-route"], "the people have it: his turn is open"
+    answer(h, row.run_id, "forge", ANSWER)
+    await pause(h, clock, BREATH)  # the room has settled, and Priya is waiting for it
+    assert hand(h, "forge") == [ANSWER] and said(lives) == [("forge", ACK)], "no agent starts on a room's question"
+    return h, backend, lives, clock
+
+
+async def test_an_answer_does_not_start_while_a_question_left_to_the_room_is_decided_or_applied():
+    """Review of #3896: the speech was resolved when its final was handled, so an answer that waited could
+    start while the question's delayed /route was still deciding."""
+    h, backend, lives, clock = await asked_the_room()
+    backend.route_gate = asyncio.Event()
+    clock.t += h_mod.UNCLAIMED_QUESTION_S + h_mod.MEET_QUIET_S
+    await h.tick()
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert h._unclaimed is None and backend.route_bodies[-1]["unclaimed"] is True, "nobody took it: it is at /route"
+    assert turns(h) == ["awaiting-route"] and said(lives) == [("forge", ACK)], "and his turn is that route's now"
+    backend.route_gate.set()
+    await settle(h)
+    await pause(h, clock, 0)
+    assert turns(h) == [] and said(lives)[1:] == [("forge", ANSWER)], "decided and applied: the answer may go"
+
+
+async def test_a_person_answering_the_rooms_question_resolves_it():
+    h, backend, lives, clock = await asked_the_room()
+    routes = len(backend.routes)
+    talks(h, P1)
+    assert h._unclaimed is None and turns(h) == [], "a person took it: his turn is over, hers is open"
+    quiet(h)
+    await says(h, P1, "Thursday, I think.")
+    await pause(h, clock, h_mod.UNCLAIMED_QUESTION_S + h_mod.MEET_QUIET_S)
+    assert not any(b.get("unclaimed") for b in backend.route_bodies[routes:]), "it is not put to an agent"
+    assert turns(h) == turns(h, P1) == [] and said(lives)[1:] == [("forge", ANSWER)]
+
+
+async def test_a_rooms_question_never_holds_the_room_past_its_route():
+    """However it ends: /route fails, /route times out, or its speaker has left the call."""
+
+    async def refused(*a, **kw):
+        raise h_mod.BackendError(503, "runtime_unavailable", None)
+
+    async def timed_out(*a, **kw):
+        raise asyncio.TimeoutError
+
+    for route in (refused, timed_out, None):
+        h, backend, lives, clock = await asked_the_room()
+        if route is None:
+            await h.on_participants({k: v for k, v in h._people.items() if k != P2})
+            assert turns(h) == ["awaiting-route"], "its speaker left: the question is still the room's"
+        else:
+            backend.route = route
+        clock.t += h_mod.UNCLAIMED_QUESTION_S + h_mod.MEET_QUIET_S
+        await h.tick()
+        for _ in range(50):  # (not `settle`: it would raise the task's error here)
+            await asyncio.sleep(0)
+        await h.tick()
+        for _ in range(50):
+            await asyncio.sleep(0)
+        assert h._unclaimed is None and turns(h) == [], route
+        assert said(lives)[1:] == [("forge", ANSWER)], route

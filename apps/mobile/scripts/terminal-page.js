@@ -65,7 +65,9 @@
     });
   };
 
+  let canType = false;
   const setCanType = function (can) {
+    canType = can;
     term.options.disableStdin = !can;
     // No keyboard for a viewer: a tap on the picture focuses xterm's textarea all the same.
     if (term.textarea) term.textarea.setAttribute("inputmode", can ? "text" : "none");
@@ -74,6 +76,8 @@
   if (term.textarea) {
     ["autocorrect", "autocapitalize", "autocomplete"].forEach(function (name) { term.textarea.setAttribute(name, "off"); });
     term.textarea.setAttribute("spellcheck", "false");
+    // A viewer's tap on the picture focuses xterm all the same, and its cursor then reads as live: let go at once.
+    term.textarea.addEventListener("focus", function () { if (!canType) term.blur(); });
   }
   setCanType(false);
 
@@ -140,6 +144,10 @@
     };
     glide = requestAnimationFrame(step);
   }, { capture: true, passive: true });
+
+  // The grid can be much smaller than the pane (a wide session in Fit): a tap anywhere in the pane is
+  // a tap on the terminal, for a person who may type. Focus only: nothing is sent.
+  box.addEventListener("click", function () { if (canType) term.focus(); });
 
   window.addEventListener("resize", fit);
   post({ t: "ready" });

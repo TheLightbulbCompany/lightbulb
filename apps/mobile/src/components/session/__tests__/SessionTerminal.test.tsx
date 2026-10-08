@@ -217,6 +217,31 @@ describe("SessionTerminal", () => {
     expect(told().at(-1)).toEqual({ t: "mode", mode: "readable" });
   });
 
+  it("remembers Readable on this phone", async () => {
+    const first = await render(view());
+    await fireEvent.press(screen.getByText("Readable"));
+    await first.unmount();
+    mockInjected.length = 0;
+    await render(view());
+    await fromPage({ t: "ready" });
+    expect(told()[1]).toEqual({ t: "mode", mode: "readable" });
+    // Back to the default for the tests that follow: the store is the module's own.
+    await fireEvent.press(screen.getByText("Fit"));
+  });
+
+  it("keeps every key on one row: nothing to scroll to", async () => {
+    await render(view({ input, admitted: true }));
+    await fromPage({ t: "ready" });
+    await emit(frame("snapshot", 0));
+    const bar = screen.getByLabelText("Terminal keys");
+    expect(bar.type).toBe("View");
+    for (const name of ["Escape", "Tab", "Control, applies to the next key", "Left arrow", "Down arrow", "Up arrow", "Right arrow", "Paste", "Show or hide the keyboard"]) {
+      expect(screen.getByLabelText(name)).toBeTruthy();
+    }
+    await fireEvent.press(screen.getByLabelText("Show or hide the keyboard"));
+    expect(told().at(-1)).toEqual({ t: "keyboard" });
+  });
+
   it("starts over with a fresh ask when iOS ends the page's process", async () => {
     await render(view());
     await fromPage({ t: "ready" });

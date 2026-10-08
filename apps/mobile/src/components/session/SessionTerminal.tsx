@@ -1,10 +1,12 @@
 import { ApiError, type LiveEvent, type LocalSession } from "@lightbulb/shared";
 import * as Clipboard from "expo-clipboard";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { SymbolView, type SFSymbol } from "expo-symbols";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 
 import { fonts, spacing } from "../../config/theme";
+import { LocalStore } from "../../lib/localStore";
 import { createScreenFeed, createTypist, STALE_AFTER_MS, WATCH_EVERY_MS, type TerminalStep } from "../../lib/sessionTerminal";
 import { TERMINAL_HTML } from "./terminalPage.generated";
 
@@ -13,15 +15,20 @@ const BG = "#16161a";
 const FG = "#e6e6e9";
 const FG_MUTE = "#9a9aa3";
 const EDGE = "#2c2c33";
-/** The bar and the size switch are chrome in a fixed frame: capped, so a large text size cannot push keys off the bar. */
+/** The size switch and the status line are chrome in a fixed frame: capped. */
 const MAX_SCALE = 1.3;
+/** The key bar is a keyboard row: nine keys share the width on every phone, so its labels do not grow
+ *  with the text size (the system keyboard's own do not either). */
+const KEY_SCALE = 1;
+/** Fit or Readable, remembered on this phone as the web remembers it in the browser. */
+const sizeStore = new LocalStore<{ size?: TerminalSize }>("session-terminal");
 
 export type TerminalSize = "fit" | "readable";
 type PageMessage =
   | { t: "draw"; steps: TerminalStep[] } | { t: "mode"; mode: TerminalSize } | { t: "canType"; can: boolean }
   | { t: "key"; key: string } | { t: "paste"; d: string } | { t: "keyboard" };
 const KEYS: { key: string; label: string; name: string }[] = [
-  { key: "esc", label: "Esc", name: "Escape" }, { key: "tab", label: "Tab", name: "Tab" },
+  { key: "esc", label: "esc", name: "Escape" }, { key: "tab", label: "tab", name: "Tab" },
   { key: "left", label: "←", name: "Left arrow" }, { key: "down", label: "↓", name: "Down arrow" },
   { key: "up", label: "↑", name: "Up arrow" }, { key: "right", label: "→", name: "Right arrow" },
 ];
@@ -52,7 +59,8 @@ export function SessionTerminal({ session, onEvent, watch, onLive, onCanType, in
   const [live, setLiveState] = useState(false);
   const [seen, setSeen] = useState(false);
   const [silent, setSilent] = useState(false);
-  const [size, setSize] = useState<TerminalSize>("fit");
+  const [size, setSizeState] = useState<TerminalSize>(() => (sizeStore.read().size === "readable" ? "readable" : "fit"));
+  const setSize = (next: TerminalSize) => { setSizeState(next); sizeStore.write({ size: next }); };
   const [ctrl, setCtrl] = useState(false);
   const [refusedFor, setRefusedFor] = useState<string | null>(null);
   // Counts the page's lives: iOS can end a WebView's process, and the page that replaces it is empty.
@@ -183,24 +191,26 @@ export function SessionTerminal({ session, onEvent, watch, onLive, onCanType, in
         allowsLinkPreview={false}
       />
       {canType && (
-        <ScrollView horizontal keyboardShouldPersistTaps="always" showsHorizontalScrollIndicator={false}
-          style={styles.bar} contentContainerStyle={styles.barKeys} accessibilityRole="toolbar" accessibilityLabel="Terminal keys">
+        // One row, every key always on it: the keys share the width (9 x 36 pt on the narrowest phone), 44 pt tall.
+        <View style={styles.bar} accessibilityRole="toolbar" accessibilityLabel="Terminal keys">
           {KEYS.slice(0, 2).map((k) => <BarKey key={k.key} label={k.label} name={k.name} onPress={() => tell({ t: "key", key: k.key })} />)}
-          <BarKey label="Ctrl" name="Control, applies to the next key" selected={ctrl} onPress={() => setCtrl(!ctrl)} />
+          <BarKey label="ctrl" name="Control, applies to the next key" selected={ctrl} onPress={() => setCtrl(!ctrl)} />
           {KEYS.slice(2).map((k) => <BarKey key={k.key} label={k.label} name={k.name} onPress={() => tell({ t: "key", key: k.key })} />)}
-          <BarKey label="Paste" name="Paste" onPress={paste} />
-          <BarKey label="⌨" name="Show or hide the keyboard" onPress={() => tell({ t: "keyboard" })} />
-        </ScrollView>
+          <BarKey symbol="doc.on.clipboard" name="Paste" onPress={paste} />
+          <BarKey symbol="keyboard" name="Show or hide the keyboard" onPress={() => tell({ t: "keyboard" })} />
+        </View>
       )}
     </View>
   );
 }
 
-function BarKey({ label, name, selected, onPress }: { label: string; name: string; selected?: boolean; onPress: () => void }) {
+function BarKey({ label, symbol, name, selected, onPress }: { label?: string; symbol?: SFSymbol; name: string; selected?: boolean; onPress: () => void }) {
   return (
     <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={name} accessibilityState={selected === undefined ? undefined : { selected }}
       style={({ pressed }) => [styles.key, (pressed || selected) && styles.keyOn]}>
-      <Text maxFontSizeMultiplier={MAX_SCALE} style={styles.keyText}>{label}</Text>
+      {symbol
+        ? <SymbolView accessibilityElementsHidden name={symbol} size={18} tintColor={FG} />
+        : <Text maxFontSizeMultiplier={KEY_SCALE} numberOfLines={1} style={styles.keyText}>{label}</Text>}
     </Pressable>
   );
 }
@@ -213,10 +223,9 @@ const styles = StyleSheet.create({
   wait: { flexShrink: 1, color: FG_MUTE, fontFamily: fonts.sans, fontSize: 12, lineHeight: 16 },
   sizeText: { color: FG_MUTE, fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18 },
   sizeOn: { color: FG },
-  bar: { flexGrow: 0, borderTopWidth: StyleSheet.hairlineWidth, borderColor: EDGE },
-  barKeys: { gap: spacing.xs, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs },
-  // 44pt tall: the tap-target floor.
-  key: { minWidth: 44, height: 44, paddingHorizontal: spacing.sm, alignItems: "center", justifyContent: "center", borderRadius: 8, backgroundColor: EDGE },
+  bar: { flexDirection: "row", gap: 4, paddingHorizontal: 4, paddingVertical: spacing.xs, borderTopWidth: StyleSheet.hairlineWidth, borderColor: EDGE },
+  // 44pt tall: the tap-target floor. The width is a ninth of the row.
+  key: { flex: 1, height: 44, alignItems: "center", justifyContent: "center", borderRadius: 8, backgroundColor: EDGE },
   keyOn: { backgroundColor: "#4a4a55" },
-  keyText: { color: FG, fontFamily: fonts.mono, fontSize: 15, lineHeight: 20 },
+  keyText: { color: FG, fontFamily: fonts.sansMedium, fontSize: 14, lineHeight: 20 },
 });

@@ -30,7 +30,9 @@ function page() {
   const posted: { t: string; d?: string }[] = [];
   const queue: { data: string; done?: () => void }[] = [];
   let onData: (d: string) => void = () => {};
-  const textarea = { attrs: {} as Record<string, string>, setAttribute(name: string, value: string) { this.attrs[name] = value; } };
+  const listeners: Record<string, () => void> = {};
+  const textarea = { attrs: {} as Record<string, string>, setAttribute(name: string, value: string) { this.attrs[name] = value; },
+    addEventListener(type: string, handler: () => void) { listeners[`textarea:${type}`] = handler; } };
   const term = {
     cols: 80, rows: 24, options: { disableStdin: false }, textarea,
     buffer: { active: { viewportY: 0, baseY: 0 } },
@@ -46,7 +48,7 @@ function page() {
     paste(d: string) { if (!this.options.disableStdin) onData(d); },
     focus: () => log.push("focus"), blur: () => log.push("blur"),
   };
-  const element = () => ({ style: {} as Record<string, string>, addEventListener: () => {}, querySelector: () => null, clientWidth: 0, clientHeight: 0, scrollTop: 0, scrollHeight: 0 });
+  const element = (id: string) => ({ style: {} as Record<string, string>, addEventListener: (type: string, handler: () => void) => { listeners[`${id}:${type}`] = handler; }, querySelector: () => null, clientWidth: 0, clientHeight: 0, scrollTop: 0, scrollHeight: 0 });
   const window = {
     Terminal: function Terminal() { return term; },
     ReactNativeWebView: { postMessage: (m: string) => posted.push(JSON.parse(m)) },
@@ -58,7 +60,7 @@ function page() {
   /** xterm's turn: parse what is queued, in order. */
   const parse = () => { for (let w = queue.shift(); w; w = queue.shift()) { if (w.data) log.push(`write ${w.data}`); w.done?.(); } };
   log.length = 0; // starting read-only blurs once
-  return { window, term, document, log, posted, parse };
+  return { window, term, document, log, posted, parse, listeners };
 }
 const b64 = (text: string) => btoa(text);
 const step = (data: string[], more: object = {}) => ({ fresh: false, again: false, resize: false, cols: 80, rows: 24, back: false, data: data.map(b64), ...more });
@@ -108,6 +110,23 @@ describe("the terminal page's script", () => {
     window.lb({ t: "key", key: "left" });
     window.lb({ t: "paste", d: "pasted" });
     expect(posted.slice(1).map((m) => m.d)).toEqual(["\x1b", "\t", "\x1b[A", "\x1bOD", "pasted"]);
+  });
+
+  it("focuses on a tap anywhere in the pane for a person who may type, and sends nothing", () => {
+    const { window, log, posted, listeners } = page();
+    window.lb({ t: "canType", can: true });
+    listeners["box:click"]();
+    expect(log).toEqual(["focus"]);
+    expect(posted).toEqual([{ t: "ready" }]);
+  });
+
+  it("stays unfocused for a viewer: a tap in the pane does nothing, and a tap on the grid lets go at once", () => {
+    const { log, listeners } = page();
+    listeners["box:click"]();
+    expect(log).toEqual([]);
+    // xterm focused its textarea on the tap.
+    listeners["textarea:focus"]();
+    expect(log).toEqual(["blur"]);
   });
 
   it("shows and hides the keyboard", () => {

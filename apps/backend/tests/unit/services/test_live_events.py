@@ -104,6 +104,12 @@ async def test_publishes_in_flight_are_bounded_so_a_burst_queues_instead_of_exha
     assert peak["max"] == 4
 
 
+async def _fake_signed_request(endpoint, body):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(headers={"content-type": "application/json"})
+
+
 @pytest.mark.asyncio
 async def test_a_publish_that_cannot_get_a_slot_in_time_is_dropped_not_stalled(monkeypatch):
     """Codex on #3908: the wait for a slot must be bounded, or a slow AppSync stalls every request
@@ -114,7 +120,8 @@ async def test_a_publish_that_cannot_get_a_slot_in_time_is_dropped_not_stalled(m
     monkeypatch.setattr(live_events, "_inflight", None)
     monkeypatch.setattr(live_events, "_MAX_INFLIGHT_PUBLISHES", 1)
     monkeypatch.setattr(live_events, "_INFLIGHT_WAIT_S", 0.05)
-    monkeypatch.setattr(live_events, "put_metric", lambda *a, **k: None)
+    metrics = []
+    monkeypatch.setattr(live_events, "put_metric", lambda *a, **k: metrics.append(k.get("dimensions")))
     release = asyncio.Event()
 
     class Slow:
@@ -125,7 +132,13 @@ async def test_a_publish_that_cannot_get_a_slot_in_time_is_dropped_not_stalled(m
     publisher = live_events.LiveEventPublisher(http_client=Slow())
     first = asyncio.create_task(publisher._post("https://x", b"{}", {}))
     await asyncio.sleep(0)  # the first holds the only slot
-    with pytest.raises(live_events.LivePublishError, match="queue full"):
+    with pytest.raises(live_events.LivePublishQueueFull):
         await publisher._post("https://x", b"{}", {})
+    # Through _send the drop is terminal: no retry, one queue_full sample, no transport sample.
+    monkeypatch.setattr(live_events.settings, "APPSYNC_EVENTS_HTTP_ENDPOINT", "https://events.test/event")
+    monkeypatch.setattr(publisher, "_signed_request", _fake_signed_request)
+    with pytest.raises(live_events.LivePublishQueueFull):
+        await publisher._send("/ws/w/users/k", '{"type":"x"}')
+    assert [m["status_class"] for m in metrics if m and m.get("status_class")] == ["queue_full", "queue_full"]
     release.set()
     await first

@@ -47,6 +47,10 @@ class LivePublishError(RuntimeError):
     pass
 
 
+class LivePublishQueueFull(LivePublishError):
+    """No publish slot within _INFLIGHT_WAIT_S: terminal, metered once in _post, never retried."""
+
+
 def _publish_status_class(status_code: int) -> str:
     """Failure class for a non-2xx AppSync answer. 429 is split out because it
     is throttling (shed load) rather than an outage."""
@@ -204,6 +208,8 @@ class LiveEventPublisher:
             request = await self._signed_request(endpoint, body)
             try:
                 response = await self._post(endpoint, body, dict(request.headers))
+            except LivePublishQueueFull:
+                raise  # saturation is terminal and already metered once: no retry, no transport sample
             except Exception as exc:
                 last_error = exc
                 last_status_class = "transport"
@@ -269,7 +275,7 @@ class LiveEventPublisher:
             await asyncio.wait_for(_inflight.acquire(), timeout=_INFLIGHT_WAIT_S)
         except TimeoutError as exc:
             put_metric("messaging.live.publish", dimensions={"outcome": "error", "status_class": "queue_full"})
-            raise LivePublishError("AppSync live publish queue full") from exc
+            raise LivePublishQueueFull("AppSync live publish queue full") from exc
         try:
             if self._http is not None:
                 return await self._http.post(endpoint, content=body, headers=headers)

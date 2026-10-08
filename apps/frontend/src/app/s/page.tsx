@@ -76,28 +76,55 @@ function LinkTerminal({ token, onTrouble }: { token: string; onTrouble: () => vo
   // grants an ask once per 15 s per link, so a viewer who joined just after someone else's would
   // otherwise look at a blank terminal until an idle Mac's own 30 s resync.
   const pictured = useRef(false);
-  const viewing = useCallback(async (fresh?: boolean) => {
+  // AppSync lets a lease subscribe once. `spent`: this one has (the channel went live with it) or
+  // was refused, so the socket's next subscribe needs a new seat, traded for the old one (`retake`).
+  const spent = useRef(false);
+  // The trade in flight: the socket's next connect and subscribe wait for it (`getToken`).
+  const trading = useRef<Promise<void> | null>(null);
+  const viewing = useCallback(async (fresh?: boolean, retake?: boolean) => {
     const next = await publicPost<SessionLinkViewing>("/public/session-links/viewing",
-      { token, ...(lease.current ? { lease: lease.current } : {}), ...(fresh ? { fresh: true } : {}) }, null);
+      { token, ...(lease.current ? { lease: lease.current } : {}), ...(fresh ? { fresh: true } : {}), ...(retake ? { retake: true } : {}) }, null);
+    if (next.lease !== lease.current) spent.current = false;
     lease.current = next.lease;
     return next;
   }, [token]);
+  // Keeps a seat the socket can use while the channel is not live: a renewal while the lease has
+  // not subscribed yet (a new one if it lapsed), a trade once it has. Never while the tab is hidden.
+  const reseat = useCallback((channel: string) => {
+    if (document.visibilityState === "hidden") return;
+    trading.current = viewing(false, spent.current).then(
+      (next) => { if (next.channel !== channel) setRound((n) => n + 1); },
+      (e) => { if (e instanceof ApiError) onTrouble(); },
+    );
+  }, [viewing, onTrouble]);
   useEffect(() => {
     let alive = true;
     let client: AppSyncEventsClient | undefined;
     let retry: ReturnType<typeof setTimeout> | undefined;
     lease.current = null;
     pictured.current = false;
+    spent.current = false;
+    trading.current = null;
+    let wasLive = false;
     viewing().then((view) => {
       if (!alive) return;
       client = new AppSyncEventsClient({
         httpEndpoint: view.httpEndpoint, realtimeEndpoint: view.realtimeEndpoint,
-        getToken: async () => lease.current,
+        getToken: async () => { await trading.current; return lease.current; },
         onEvent: (event) => {
           if (event.type === "workspace.session.screen" && event.payload.kind === "snapshot") pictured.current = true;
           handlers.current.forEach((handler) => handler(event));
         },
-        onStatus: (status) => { if (alive) setLiveChannels(status.liveChannels); },
+        onStatus: (status) => {
+          if (!alive) return;
+          const liveNow = status.liveChannels.includes(view.channel);
+          if (liveNow) spent.current = true;
+          else if (wasLive) reseat(view.channel); // the socket dropped: its reconnect needs a new seat
+          wasLive = liveNow;
+          setLiveChannels(status.liveChannels);
+        },
+        // Refused: by a lapsed or used lease. One trade per refusal, on the socket's own backoff.
+        onError: (kind) => { if (alive && kind === "subscribe_error") { spent.current = true; reseat(view.channel); } },
         uuid: () => crypto.randomUUID(),
       });
       setNote(null);
@@ -108,7 +135,7 @@ function LinkTerminal({ token, onTrouble }: { token: string; onTrouble: () => vo
       if (!refusal(e)) retry = setTimeout(() => setRound((n) => n + 1), VIEWING_RETRY_MS); // a refused link is the page poll's to show
     });
     return () => { alive = false; clearTimeout(retry); client?.close(); setSeat(null); setLiveChannels([]); };
-  }, [viewing, round]);
+  }, [viewing, reseat, round]);
   const channel = seat?.view.channel;
   const watch = useCallback(async (_id: string, fresh?: boolean) => {
     try { if ((await viewing(fresh || !pictured.current)).channel !== channel) setRound((n) => n + 1); }
@@ -118,19 +145,15 @@ function LinkTerminal({ token, onTrouble }: { token: string; onTrouble: () => vo
   // Until the channel is live the terminal renews nothing (it asks for a picture only once it can
   // hear one), so the seat is kept here: AppSync refuses a connect or a subscribe made with a lapsed
   // lease, and the socket would retry with it for good (AppSync down past 45 s right after the seat
-  // was taken, or a tab hidden that long). Each renewal hands the socket's next attempt a live lease,
-  // a new one if the old lapsed. One request per 15 s, and none while the tab is hidden.
+  // was taken, or a tab hidden that long). One request per 15 s, and at once when the tab is shown.
   const live = !!channel && liveChannels.includes(channel);
   useEffect(() => {
     if (!channel || live) return;
-    const keep = () => {
-      if (document.visibilityState === "hidden") return;
-      void viewing().then((next) => { if (next.channel !== channel) setRound((n) => n + 1); }, (e) => { if (e instanceof ApiError) onTrouble(); });
-    };
+    const keep = () => reseat(channel);
     const timer = setInterval(keep, VIEWING_RETRY_MS);
     document.addEventListener("visibilitychange", keep);
     return () => { clearInterval(timer); document.removeEventListener("visibilitychange", keep); };
-  }, [channel, live, viewing, onTrouble]);
+  }, [channel, live, reseat]);
   const onEvent = useCallback((handler: (event: LiveEvent) => void) => { handlers.current.add(handler); return () => { handlers.current.delete(handler); }; }, []);
   const client = seat?.client;
   const claim = useCallback((wanted: string) => { client?.setChannels([wanted]); return () => client?.setChannels([]); }, [client]);

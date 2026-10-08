@@ -458,7 +458,7 @@ async def open_session_link(body: session_links.LinkOpenRequest, auth: AuthConte
 @router.post("/public/session-links/viewing", response_model=session_links.Viewing)
 async def view_session_link(body: session_links.ViewingRequest):
     """An "Anyone with the link" holder watches the live terminal, view only. No sign-in."""
-    return await session_links.viewing(body.token, body.lease, body.fresh)
+    return await session_links.viewing(body.token, body.lease, body.fresh, body.retake)
 
 
 class SessionPickupSwitch(ContractModel):

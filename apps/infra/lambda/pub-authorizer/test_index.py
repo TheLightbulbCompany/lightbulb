@@ -28,13 +28,36 @@ def event(operation="EVENT_SUBSCRIBE", channel=f"/pub/{PUBLIC}", token=f"{PUBLIC
     return {"authorizationToken": token, "requestContext": {"operation": operation, "channel": channel}}
 
 
+SEAT = {"pk": f"PUBWATCH#{PUBLIC}", "sk": f"VIEWER#{hashlib.sha256(KEY.encode()).hexdigest()}"}
+
+
+def _refusal():
+    from botocore.exceptions import ClientError
+
+    return ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
+
+
 def test_a_live_lease_connects_and_subscribes_to_its_own_channel_uncached(index):
     assert index.handler(event()) == {"isAuthorized": True, "ttlOverride": 0}
+    update = index._table.update_item.call_args.kwargs
+    assert update["Key"] == SEAT
+    # The subscribe consumes the lease, in the same write that checks it is live.
+    assert "attribute_not_exists(subscribedAt)" in update["ConditionExpression"]
+    assert "expiresAt > :now" in update["ConditionExpression"]
     assert index.handler(event("EVENT_CONNECT", None))["isAuthorized"] is True
-    index._table.get_item.assert_called_with(
-        Key={"pk": f"PUBWATCH#{PUBLIC}", "sk": f"VIEWER#{hashlib.sha256(KEY.encode()).hexdigest()}"},
-        ConsistentRead=True,
-    )
+    index._table.get_item.assert_called_with(Key=SEAT, ConsistentRead=True)
+
+
+def test_a_lease_subscribes_once(index):
+    index._table.update_item.side_effect = [None, _refusal()]
+    assert index.handler(event())["isAuthorized"] is True
+    assert index.handler(event())["isAuthorized"] is False, "a second socket needs its own seat"
+
+
+def test_a_failed_write_is_an_error_not_an_admission(index):
+    index._table.update_item.side_effect = RuntimeError("dynamo down")
+    with pytest.raises(RuntimeError):  # AppSync reads a raised error as unauthorized
+        index.handler(event())
 
 
 @pytest.mark.parametrize(
@@ -51,10 +74,13 @@ def test_a_live_lease_connects_and_subscribes_to_its_own_channel_uncached(index)
 def test_anything_else_is_refused_without_a_read(index, refused):
     assert index.handler(refused)["isAuthorized"] is False
     index._table.get_item.assert_not_called()
+    index._table.update_item.assert_not_called()
 
 
 def test_an_expired_or_unknown_lease_is_refused(index):
     index._table.get_item.return_value = {"Item": {"expiresAt": int(time.time()) - 1}}
-    assert index.handler(event())["isAuthorized"] is False
+    assert index.handler(event("EVENT_CONNECT", None))["isAuthorized"] is False
     index._table.get_item.return_value = {}
+    assert index.handler(event("EVENT_CONNECT", None))["isAuthorized"] is False
+    index._table.update_item.side_effect = _refusal()
     assert index.handler(event())["isAuthorized"] is False

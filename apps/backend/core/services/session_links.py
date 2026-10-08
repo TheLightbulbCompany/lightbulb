@@ -240,9 +240,11 @@ async def open_page(auth: AuthContext | None, token: str, *, refresh: bool = Fal
 
 # --- Watching (owner ruling 2026-10-08: an "Anyone" link shows the live terminal, view only) ---
 #
-# PUBWATCH#<publicId> / VIEWER#<sha256(key)>   one link viewer's 45 s lease
-# PUBWATCH#<publicId> / WATCHED                when the newest lease lapses (`until`), and when the
-#                                              Mac was last asked for a picture (`askedAt`)
+# PUBWATCH#<publicId> / VIEWER#<sha256(key)>   one link viewer's 45 s lease; `subscribedAt` once it
+#                                              was used to subscribe (the authorizer writes it)
+# PUBWATCH#<publicId> / WATCHED                when the newest lease lapses (`until`), when the Mac
+#                                              was last asked for a picture (`askedAt`), and the
+#                                              seats taken in this ten minutes (`mintWindow`, `minted`)
 #
 # The lease `<publicId>.<key>` is the viewer's whole credential on AppSync: the `pub` namespace's
 # Lambda authorizer (apps/infra/lambda/pub-authorizer) admits a subscribe to `/pub/<publicId>` and
@@ -255,6 +257,13 @@ async def open_page(auth: AuthContext | None, token: str, *, refresh: bool = Fal
 # ponytail: counted, not locked: two viewers racing for the last seat both get in, and a viewer
 # who stops renewing keeps an open subscription uncounted until the page closes.
 MAX_LINK_VIEWERS = 20
+# A lease subscribes once (the authorizer consumes it), so every subscription costs a seat taken
+# here, and a link gives out at most this many per ten minutes: what bounds the sockets a link
+# holder can pile up on one channel (AppSync never asks the authorizer again once a subscription
+# is open). An honest viewer takes one per page load, reconnect or return to the tab; 20 of them
+# on bad networks fit. Narrowing the link silences every socket at once: the channel is renamed.
+MINT_WINDOW_S = 600
+MINTS_PER_WINDOW = 120
 # A link's viewers together get the Mac asked for history and a snapshot at most this often: each
 # ask is a burst out of the session's frame budget, which workspace viewers share, and `fresh` is
 # only a stranger's word. Per link, not per lease: taking new seats buys no more asks. A viewer
@@ -272,6 +281,7 @@ def public_pk(public_id: str) -> str:
 class ViewingRequest(LinkTokenRequest):
     lease: Annotated[str, Field(max_length=128)] | None = None
     fresh: bool = False  # subscribed and has no screen: a request, granted at most once per ASK_EVERY_S per link
+    retake: bool = False  # this lease already subscribed once: give its seat up for a new one
 
 
 class Viewing(ContractModel):
@@ -282,7 +292,31 @@ class Viewing(ContractModel):
     realtime_endpoint: str
 
 
-async def viewing(token: str, lease: str | None, fresh: bool) -> Viewing:
+async def _count_mint(table, watched: dict, now: int) -> None:
+    """One more seat out of this link's ten-minute budget, or the same answer as a full session."""
+    window = now // MINT_WINDOW_S
+    for expression, condition, values in (
+        ("SET minted = minted + :one", "mintWindow = :w AND minted < :max", {":max": MINTS_PER_WINDOW}),
+        ("SET mintWindow = :w, minted = :one", "attribute_not_exists(mintWindow) OR mintWindow <> :w", {}),
+    ):
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key=watched,
+                UpdateExpression=expression,
+                ConditionExpression=condition,
+                ExpressionAttributeValues={":w": window, ":one": 1, **values},
+            )
+            return
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+    raise ApiProblem(
+        "LOCAL_SESSION_VIEWERS_FULL", "Too many people opened this link just now. Try again in a few minutes."
+    )
+
+
+async def viewing(token: str, lease: str | None, fresh: bool, retake: bool = False) -> Viewing:
     """A link holder has the terminal on screen: every 15 s, no sign-in. The token is checked on
     every call, so a link that stopped being public refuses the next renewal."""
     from core.config import settings
@@ -304,12 +338,17 @@ async def viewing(token: str, lease: str | None, fresh: bool) -> Viewing:
     def key_of(secret: str) -> dict:
         return {"pk": public_pk(public), "sk": f"VIEWER#{sessions._token_hash(secret)}"}
 
+    watched = {"pk": public_pk(public), "sk": "WATCHED"}
     renewed = False
-    if lease and lease.startswith(public + "."):
+    held = lease.partition(".")[2] if lease and lease.startswith(public + ".") else ""
+    if held and retake:
+        # One viewer, one seat: the old row goes before the new one is counted against the cap.
+        await run_in_thread(table.delete_item, Key=key_of(held))
+    elif held:
         try:
             await run_in_thread(
                 table.update_item,
-                Key=key_of(lease.partition(".")[2]),
+                Key=key_of(held),
                 UpdateExpression="SET expiresAt = :exp",
                 ConditionExpression="attribute_exists(pk) AND expiresAt > :now",
                 ExpressionAttributeValues={":exp": expires, ":now": now},
@@ -333,17 +372,18 @@ async def viewing(token: str, lease: str | None, fresh: bool) -> Viewing:
             raise ApiProblem(
                 "LOCAL_SESSION_VIEWERS_FULL", f"This session already has {MAX_LINK_VIEWERS} people watching by link."
             )
+        await _count_mint(table, watched, now)
         secret = secrets.token_urlsafe(32)
         lease = f"{public}.{secret}"
         await run_in_thread(table.put_item, Item={**key_of(secret), "expiresAt": expires})
-    # One row says whether anyone watches by link, so `forward` reads one item per frame.
-    watched = {"pk": public_pk(public), "sk": "WATCHED"}
+    # One row says whether anyone watches by link, so `forward` reads one item per frame. It
+    # outlives its viewers by an hour, so the mint budget is not forgotten between them.
     await run_in_thread(
         table.update_item,
         Key=watched,
-        UpdateExpression="SET #u = :exp, expiresAt = :exp",
+        UpdateExpression="SET #u = :exp, expiresAt = :ttl",
         ExpressionAttributeNames={"#u": "until"},
-        ExpressionAttributeValues={":exp": expires},
+        ExpressionAttributeValues={":exp": expires, ":ttl": now + 3600},
     )
     if fresh:
         try:

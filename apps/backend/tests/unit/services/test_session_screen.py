@@ -706,3 +706,44 @@ async def test_a_failed_read_of_the_link_watchers_never_costs_the_workspace_its_
     transport[4].clear()
     await session_screen.forward(relay(transport), "conn-1", frame(sid))
     assert [c for c, _ in await _published(transport)] == [await _frames_channel(sid)]
+
+
+@pytest.mark.asyncio
+async def test_a_reconnecting_viewer_trades_its_used_seat_for_a_new_one(transport, db, monkeypatch):
+    """The authorizer lets a lease subscribe once, so a reconnect needs a new one; the old row
+    goes, so one viewer never holds two seats."""
+    from core.services import session_links
+
+    sid = await start(transport)
+    token, public = await _public_link(sid)
+    first = await session_links.viewing(token, None, False)
+    again = await session_links.viewing(token, first.lease, False, retake=True)
+    assert again.lease != first.lease and again.channel == first.channel
+    rows = db[0].query(KeyConditionExpression="pk = :p", ExpressionAttributeValues={":p": f"PUBWATCH#{public}"})
+    assert len([r for r in rows["Items"] if r["sk"].startswith("VIEWER#")]) == 1
+    monkeypatch.setattr(session_links, "MAX_LINK_VIEWERS", 1)
+    with pytest.raises(ApiProblem):  # the seat given up is gone: at a full session it is no way back in
+        await session_links.viewing(token, first.lease, False)
+
+
+@pytest.mark.asyncio
+async def test_a_link_gives_out_a_bounded_number_of_seats_per_ten_minutes(transport, monkeypatch):
+    from core.services import session_links
+
+    monkeypatch.setattr(session_links, "MINTS_PER_WINDOW", 3)
+    sid = await start(transport)
+    token, _ = await _public_link(sid)
+    now = time.time()
+    monkeypatch.setattr(session_links.time, "time", lambda: now)
+    seat = await session_links.viewing(token, None, False)
+    for _ in range(2):  # every new subscription costs one, a traded seat included
+        seat = await session_links.viewing(token, seat.lease, False, retake=True)
+    with pytest.raises(ApiProblem) as busy:
+        await session_links.viewing(token, seat.lease, False, retake=True)
+    assert busy.value.error.code == "LOCAL_SESSION_VIEWERS_FULL"
+    with pytest.raises(ApiProblem):
+        await session_links.viewing(token, None, False)
+    # The next window starts over. (The session's own liveness is read on this clock too.)
+    monkeypatch.setattr(session_links.time, "time", lambda: now + 1)
+    monkeypatch.setattr(session_links, "MINT_WINDOW_S", 1)
+    assert (await session_links.viewing(token, None, False)).lease

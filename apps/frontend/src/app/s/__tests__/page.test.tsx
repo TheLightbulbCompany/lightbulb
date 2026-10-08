@@ -328,6 +328,32 @@ describe("session link page", () => {
     expect(viewing()).toHaveLength(2);
   });
 
+  // Codex on #3946: a lease subscribes once (the authorizer consumes it), so a reconnect trades
+  // the used seat for a new one, and the socket waits for it.
+  it("trades its used seat for a new one when the socket drops, before the socket asks again", async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
+    let lease = "pub-1.key-1";
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => ({ ok: true, status: 200, json: async () => url.endsWith("/viewing") ? { ...seat, lease } : model({}) }) as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const socket = sockets.made[0].opts as unknown as { getToken: () => Promise<string | null>; onStatus: (s: { liveChannels: string[] }) => void; onError: (kind: string, channel?: string) => void };
+    const viewing = () => fetchMock.mock.calls.filter(c => String(c[0]).endsWith("/viewing")).map(c => JSON.parse(String(c[1]?.body)));
+    await act(async () => { socket.onStatus({ liveChannels: ["/pub/pub-1"] }); }); // subscribed: the lease is used
+    lease = "pub-1.key-2";
+    let token!: Promise<string | null>;
+    await act(async () => { socket.onStatus({ liveChannels: [] }); token = socket.getToken(); }); // dropped, and the reconnect asks at once
+    expect(viewing().at(-1)).toEqual({ token: "tok", lease: "pub-1.key-1", retake: true });
+    expect(await token).toBe("pub-1.key-2"); // never the used lease
+    // A refused subscribe (a lease used elsewhere, or lapsed) trades once more; an unused lease is only renewed.
+    lease = "pub-1.key-3";
+    await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
+    expect(viewing().at(-1)).toEqual({ token: "tok", lease: "pub-1.key-2" });
+    await act(async () => { socket.onError("subscribe_error", "/pub/pub-1"); });
+    expect(viewing().at(-1)).toEqual({ token: "tok", lease: "pub-1.key-3", retake: true });
+  });
+
   it("shows the Continue instructions only when the owner turned Continue on", async () => {
     vi.useFakeTimers();
     auth.isSignedIn = true;

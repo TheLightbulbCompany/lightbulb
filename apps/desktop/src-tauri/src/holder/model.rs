@@ -104,13 +104,14 @@ pub const SENT_LEAVE: Duration = Duration::from_secs(3);
 /// one line that opens with one of BAND_LEADS (then, live, the viewers' names), has one of
 /// BAND_BUTTONS, and ends with BAND_HINT unless someone asks to join. Then, in this order and
 /// each only when it applies: the first request's line (a name, one of ASK_VERBS, "(+N more)" when
-/// others wait, ASK_TAIL) and WAITING. A terminal narrower than a line wraps it over rows (the
-/// shortest band is 44 columns); the engine's "[-]" ends the band's first row.
+/// others wait, ASK_PARTS) and WAITING. A terminal narrower than a line wraps it over rows (the
+/// shortest band is 44 columns); the engine's "[-]" ends the band's first row. How it wraps:
+/// `band_columns`.
 const BAND_LEADS: [&str; 4] = ["○ Sharing paused", "● Shared as a transcript", "● Live in Lightbulb", "● Live · "];
 const BAND_BUTTONS: [&str; 2] = ["[ Pause ]", "[ Resume sharing ]"];
 const BAND_HINT: &str = "ctrl+x tab, then p";
 const ASK_VERBS: [&str; 2] = [" asked to join", " wants to pick this up · conversation + uncommitted changes"];
-const ASK_TAIL: &str = "[ Allow ] [ Decline ] ctrl+x tab, then a or d · or click";
+const ASK_PARTS: [&str; 3] = ["[ Allow ]", "[ Decline ]", "ctrl+x tab, then a or d · or click"];
 const WAITING: &str = "Waiting on you here or in Lightbulb";
 
 /// Text without its spaces: a wrapped line reads the same whatever rows its words fell on.
@@ -160,12 +161,100 @@ fn fits_band(joined: &str) -> Option<bool> {
 
 fn fits_ask(joined: &str) -> Option<bool> {
     // Until its last word a request's line is only told from other text by where it stands.
-    let Some(said) = joined.strip_suffix(squash(ASK_TAIL).as_str()) else { return Some(false) };
+    let Some(said) = joined.strip_suffix(squash(&ASK_PARTS.concat()).as_str()) else { return Some(false) };
+    asks(said).then_some(true)
+}
+
+/// `said`, without spaces, is all a request says before its buttons: a name, one of ASK_VERBS,
+/// "(+N more)" when others wait. A name with a verb in it is two lines read as one.
+fn asks(said: &str) -> bool {
     let said = match said.strip_suffix("more)").and_then(|rest| rest.rsplit_once("(+")) {
         Some((before, count)) if !count.is_empty() && count.chars().all(|c| c.is_ascii_digit()) => before,
         _ => said,
     };
-    ASK_VERBS.iter().any(|verb| said.strip_suffix(squash(verb).as_str()).is_some_and(|name| !name.is_empty())).then_some(true)
+    let verbs: Vec<String> = ASK_VERBS.iter().map(|verb| squash(verb)).collect();
+    verbs.iter().any(|verb| said.strip_suffix(verb.as_str()).is_some_and(|name| !name.is_empty() && !verbs.iter().any(|verb| name.contains(verb.as_str()))))
+}
+
+/// `said`, without spaces, is all a band says before its button: one of BAND_LEADS, and live the
+/// viewers' names, "watching" and, when someone types, "·", their names and "typing".
+fn opens_band(said: &str) -> bool {
+    BAND_LEADS.iter().map(|lead| squash(lead)).any(|lead| {
+        if !lead.ends_with('·') {
+            return said == lead;
+        }
+        let Some((names, typing)) = said.strip_prefix(lead.as_str()).and_then(|rest| rest.split_once("watching")) else { return false };
+        !names.is_empty() && !typing.contains("watching") && (typing.is_empty() || typing.strip_prefix('·').and_then(|rest| rest.strip_suffix("typing")).is_some_and(|names| !names.is_empty()))
+    })
+}
+
+/// How many rows from `at` hold one line of the band where the terminal is narrower than the
+/// line. The line is a row of parts side by side (the text, each button, the hint), and each part
+/// wraps inside its own column: prod 2026-10-08 at 60 columns,
+/// "Isol8 Admin    [ Allow ][ Decline ] ctrl+x tab, then a" over
+/// "asked to join                      or d · or click". So a row is the next piece of each part,
+/// left to right, and a part has a piece in every row from the first until it is all there.
+/// `said` knows the first part when it is whole; `fixed` are the parts after it. The longest
+/// such run of rows counts (the text may be the tallest column); it ends at a blank row or at
+/// the end of the screen. 0: none.
+fn band_columns(rows: &[String], at: usize, fixed: &[&str], said: impl Fn(&str) -> bool) -> usize {
+    let fixed: Vec<String> = fixed.iter().map(|part| squash(part)).collect();
+    // Each way the rows so far can be read: the first part's text, whether it has ended, and how much of each fixed part is read.
+    let mut ways = vec![(String::new(), false, vec![0usize; fixed.len()])];
+    let mut whole = 0;
+    for (n, row) in rows.iter().skip(at).enumerate() {
+        let row = squash(row);
+        let row = row.strip_suffix("[-]").unwrap_or(&row);
+        if row.is_empty() {
+            break;
+        }
+        let mut next = Vec::new();
+        for (text, ended, read) in &ways {
+            for cut in (0..=row.len()).filter(|cut| row.is_char_boundary(*cut)) {
+                // The text starts on the first row, and has no row after one it left empty.
+                if (cut == 0 && n == 0) || (cut > 0 && *ended) {
+                    continue;
+                }
+                let mut reads = Vec::new();
+                spread(&row[cut..], &fixed, read.clone(), 0, &mut reads);
+                next.extend(reads.into_iter().map(|read| (format!("{text}{}", &row[..cut]), cut == 0, read)));
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        ways = next;
+        if ways.iter().any(|(text, _, read)| said(text.as_str()) && read.iter().zip(&fixed).all(|(read, part)| *read == part.len())) {
+            whole = n + 1;
+        }
+    }
+    whole
+}
+
+/// Every way `rest` is the next piece of each of `fixed` from `part` on, in order, into `out`
+/// (how much of each is read then). A part not all read has a piece of one character or more.
+fn spread(rest: &str, fixed: &[String], read: Vec<usize>, part: usize, out: &mut Vec<Vec<usize>>) {
+    let Some(text) = fixed.get(part) else {
+        if rest.is_empty() {
+            out.push(read);
+        }
+        return;
+    };
+    let left = &text[read[part]..];
+    if left.is_empty() {
+        spread(rest, fixed, read, part + 1, out);
+        return;
+    }
+    let mut len = 0;
+    for (a, b) in rest.chars().zip(left.chars()) {
+        if a != b {
+            break;
+        }
+        len += a.len_utf8();
+        let mut read = read.clone();
+        read[part] += len;
+        spread(&rest[len..], fixed, read, part + 1, out);
+    }
 }
 
 /// `picture`, a `rows` x `cols` screen, without Lightbulb's band. On a kept picture it says an
@@ -178,8 +267,13 @@ fn without_band(picture: Vec<u8>, (rows, cols): (u16, u16)) -> Vec<u8> {
     screen.process(&picture);
     let text: Vec<String> = screen.screen().rows(0, cols).collect();
     // The last one: the band is under the conversation, and the conversation may quote one.
-    let Some((first, band)) = (0..text.len()).rev().map(|at| (at, band_line(&text, at, fits_band))).find(|(_, band)| *band > 0) else { return picture };
-    let ask = band_line(&text, first + band, fits_ask);
+    // Each line either wrapped as one text or part by part (`band_columns`); a band with a request under it has no hint.
+    let band_at = |at: usize| {
+        let columns = BAND_BUTTONS.iter().flat_map(|button| [vec![*button, BAND_HINT], vec![*button]]).map(|fixed| band_columns(&text, at, &fixed, opens_band));
+        columns.fold(band_line(&text, at, fits_band), usize::max)
+    };
+    let Some((first, band)) = (0..text.len()).rev().map(|at| (at, band_at(at))).find(|(_, band)| *band > 0) else { return picture };
+    let ask = band_line(&text, first + band, fits_ask).max(band_columns(&text, first + band, &ASK_PARTS, asks));
     let count = band + ask + band_line(&text, first + band + ask, |joined| so_far(joined, WAITING));
     let (row, col) = screen.screen().cursor_position();
     let row = match usize::from(row) {
@@ -892,6 +986,30 @@ mod tests {
         assert_eq!(kept_at(40, many.as_str(), false).0, rows(&["the answer", "", ">"]));
         let asked = "● Sharing is not a lead\r\n○ Sharing paused [ Resume\r\nsharing ]\r\nBartholomew Featherstonehaugh asked to\r\njoin [ Allow ] [ Decline ] ctrl+x tab,\r\nthen a or d · or click\r\n> ";
         assert_eq!(kept_at(40, asked, false).0, rows(&["● Sharing is not a lead", ">"]));
+        // Prod 2026-10-08 (desktop 0.4.687, 60 columns): the request's parts wrap each in its own column, and
+        // its two rows stayed in the kept picture. These two rows are the ones captured there.
+        const LIVE: &str = "● Live · Isol8 Admin watching [ Pause ]                 [-]";
+        let seen = format!("the answer\r\n\r\n{LIVE}\r\nIsol8 Admin    [ Allow ][ Decline ] ctrl+x tab, then a\r\nasked to join                      or d · or click\r\n────\r\n> ");
+        assert_eq!(kept_at(60, seen.as_str(), false), (rows(&["the answer", "", "────", ">"]), (3, 2)));
+        // The layouts from here on are worked out from that one (text and hint wrap by words in their columns, the
+        // buttons keep their width), not captured. A pick-up request; the text is the tallest column.
+        let pickup = format!("{LIVE}\r\nAda wants to pick this  [ Allow ][ Decline ] ctrl+x tab,\r\nup · conversation +                          then a or d ·\r\nuncommitted changes                          or click\r\nWaiting on you here or in Lightbulb\r\n> ");
+        assert_eq!(kept_at(60, pickup.as_str(), false).0, rows(&[">"]));
+        let more = format!("{LIVE}\r\nBo Li asked  [ Allow ][ Decline ] ctrl+x tab, then a or d\r\nto join (+2                       · or click\r\nmore)\r\n> ");
+        assert_eq!(kept_at(60, more.as_str(), false).0, rows(&[">"]));
+        // The band itself, its hint wrapped under the hint and its names under the names.
+        let band = "the answer\r\n● Live · Isol8 Admin  [ Pause ] ctrl+x tab,          [-]\r\nwatching · Isol8                then p\r\nAdmin typing\r\n\r\n> ";
+        assert_eq!(kept_at(60, band, false).0, rows(&["the answer", "", ">"]));
+        // The person's own rows under such a block stay, whatever they say; so does a block with a part missing or out of its column.
+        for under in ["> Bo asked to join", "> (+2 more)", "> or d · or click"] {
+            let screen = format!("{LIVE}\r\nIsol8 Admin    [ Allow ][ Decline ] ctrl+x tab, then a\r\nasked to join                      or d · or click\r\n{under}\r\nmore");
+            assert_eq!(kept_at(60, screen.as_str(), false).0, rows(&[under, "more"]), "{under}");
+        }
+        for under in ["Isol8 Admin    [ Allow ][ Decline ] ctrl+x tab, then a\r\nasked to join", "Isol8 Admin    [ Allow ] ctrl+x tab, then a\r\nasked to join  [ Decline ]         or d · or click", "> I was watching"] {
+            let screen = format!("{LIVE}\r\n{under}");
+            let shown: Vec<String> = under.split("\r\n").map(String::from).collect();
+            assert_eq!(kept_at(60, screen.as_str(), false).0, shown, "{under}");
+        }
     }
 
     #[test]

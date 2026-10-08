@@ -638,7 +638,7 @@ export type ActivityKind = "mention" | "dm" | "thread_reply" | "reaction" | "age
 /** `interaction`: an agent paused on a task, waiting for a human to confirm or answer. */
 /** `waiting` / `finished`: one of your shared sessions paused for your input, or ended a long turn. */
 /** `login`: an agent needs a website login. (A sign-in code is typed into the shared browser, never asked for here.) */
-export type ActivitySubtype = "approval" | "assigned_issue" | "failed_run" | "interaction" | "waiting" | "finished" | "join_request" | "login" | "extension";
+export type ActivitySubtype = "approval" | "assigned_issue" | "failed_run" | "interaction" | "waiting" | "finished" | "join_request" | "agent_ask" | "login" | "extension";
 export type ActivityLinkKind = "issue" | "room" | "thread" | "run" | "approval" | "session";
 
 export interface ActivityActor {

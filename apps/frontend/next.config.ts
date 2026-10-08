@@ -123,7 +123,7 @@ const BUILD_ID = process.env.NEXT_DEPLOYMENT_ID
     : undefined);
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  poweredByHeader: false,
   reactCompiler: true,
 
   // The deploy's identity, inlined into the client bundle AND served by

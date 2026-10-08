@@ -32,25 +32,6 @@ def fixture(name: str) -> dict:
 
 
 @pytest.fixture(autouse=True)
-def _hints_drained_inline(request, monkeypatch):
-    """publish_resources_changed fans out in a background task since 2026-10-08; these tests assert
-    the hint right after the frame, so drain it inline for them (the off-the-frame test opts out)."""
-    if "off_the_callers_frame" in request.node.name or "coalesce" in request.node.name:
-        return  # these two test the background behaviour itself
-    import asyncio as _asyncio
-
-    from core.services import local_session_relay as _relay
-
-    real = _relay.publish_resources_changed
-
-    async def drained(*args, **kwargs):
-        await real(*args, **kwargs)
-        await _asyncio.gather(*list(_relay._hint_tasks))
-
-    monkeypatch.setattr(_relay, "publish_resources_changed", drained)
-
-
-@pytest.fixture(autouse=True)
 def _own_spawned_tasks():
     """``_spawn`` keeps tasks in a module-level set. A task an earlier test left pending on its
     own (now closed) loop never fires its discard callback, and ``gather(*_tasks)`` here then

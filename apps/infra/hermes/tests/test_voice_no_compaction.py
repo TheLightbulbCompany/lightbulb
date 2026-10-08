@@ -222,14 +222,112 @@ def test_a_spoken_turn_stops_a_running_compaction_instead_of_waiting_for_it(comp
     worker = threading.Thread(target=lambda: outcome.append(turn.compact_session("agent-1", SESSION)))
     worker.start()
     assert compaction.started.wait(5)
-    turn._yield_compaction("agent-1", SESSION)  # what _run_call does before it takes the lock
-    assert compaction.interrupts == [{"hard_cancel": True, "tool_reason": "explicit stop requested"}]
-    compaction.gate.set()
+    with turn._voice_turn_arriving("agent-1", SESSION):  # what _run_call does before it takes the lock
+        assert compaction.interrupts == [{"hard_cancel": True, "tool_reason": "explicit stop requested"}]
+        compaction.gate.set()
     worker.join(5)
     assert outcome == ["yielded"] and compaction.saved == [] and compaction.settled == [False]
     assert compaction.db.meta[SESSION][turn.PRESSURE] == 0.9  # still owed: the turn's own end compacts
     assert turn._turn_lock("agent-1", SESSION).acquire(blocking=False)
     turn._turn_lock("agent-1", SESSION).release()
+
+
+def _lock_is_free():
+    lock = turn._turn_lock("agent-1", SESSION)
+    free = lock.acquire(blocking=False)
+    if free:
+        lock.release()
+    return free
+
+
+def test_a_compaction_that_starts_while_a_spoken_turn_is_arriving_is_refused(compaction, home):
+    """The gap the first version left open: the turn has looked for a compaction, found none, and
+    does not hold the lock yet. Nothing may take the lock in that gap."""
+    with turn._voice_turn_arriving("agent-1", SESSION):
+        assert turn.compact_session("agent-1", SESSION) == "yielded"
+        assert _lock_is_free()  # the turn takes it without waiting
+    assert compaction.runs == [] and compaction.db.meta[SESSION][turn.PRESSURE] == 0.9
+    assert turn.compact_session("agent-1", SESSION) == "compacted"  # nobody is arriving any more
+
+
+def test_a_turn_that_arrives_as_the_compaction_takes_the_lock_gets_it_back_at_once(compaction, home, monkeypatch):
+    """The turn arrives after compact_session's first look and before its lock: the second look,
+    with the lock held, stands down."""
+    lock, arrivals = turn._turn_lock("agent-1", SESSION), []
+
+    class ArrivesDuringAcquire:
+        def acquire(self, blocking=True):
+            got = lock.acquire(blocking=blocking)
+            arrivals.append(turn._voice_turn_arriving("agent-1", SESSION))
+            arrivals[-1].__enter__()
+            return got
+
+        release = staticmethod(lock.release)
+
+    monkeypatch.setattr(turn, "_turn_lock", lambda *_a: ArrivesDuringAcquire())
+    try:
+        assert turn.compact_session("agent-1", SESSION) == "yielded"
+        assert lock.acquire(blocking=False)
+        lock.release()
+    finally:
+        arrivals[0].__exit__(None, None, None)
+    assert compaction.runs == [] and compaction.interrupts == [] and turn._compacting == {}
+
+
+def test_a_turn_that_arrives_before_the_compaction_has_an_agent_stops_it_between_steps(compaction, home, monkeypatch):
+    """The compaction holds the lock but has nothing to interrupt yet: it stops at its next step."""
+    stack = turn.contextlib.ExitStack()
+
+    def arrive(_agent_id):
+        stack.enter_context(turn._voice_turn_arriving("agent-1", SESSION))
+
+    monkeypatch.setattr(turn.sync, "ensure_profile", arrive)
+    with stack:
+        assert turn.compact_session("agent-1", SESSION) == "yielded"
+        assert _lock_is_free()
+    assert compaction.runs == [] and compaction.saved == [] and compaction.db.meta[SESSION][turn.PRESSURE] == 0.9
+
+
+def test_two_spoken_turns_waiting_are_counted(compaction, home):
+    first, second = turn._voice_turn_arriving("agent-1", SESSION), turn._voice_turn_arriving("agent-1", SESSION)
+    first.__enter__()
+    second.__enter__()
+    first.__exit__(None, None, None)  # one has its lock; the other still waits
+    assert turn.compact_session("agent-1", SESSION) == "yielded" and compaction.runs == []
+    second.__exit__(None, None, None)
+    assert turn._voice_arriving == {}
+    assert turn.compact_session("agent-1", SESSION) == "compacted"
+
+
+def test_a_spoken_turn_holding_its_lock_is_no_longer_arriving(home):
+    with turn._voice_turn_lock("agent-1", SESSION, None):
+        assert turn._voice_arriving == {} and not _lock_is_free()
+    assert _lock_is_free()
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("lock machinery broke"), KeyboardInterrupt()], ids=["error", "cancelled"])
+def test_the_arrival_is_cleared_when_taking_the_lock_fails(home, monkeypatch, failure):
+    def broken(*_a, **_k):
+        raise failure
+
+    monkeypatch.setattr(turn, "_acquire_unless_aborted", broken)
+    with pytest.raises(type(failure)), turn._voice_turn_lock("agent-1", SESSION, "run-1"):
+        raise AssertionError("no lock, no body")
+    assert turn._voice_arriving == {}
+
+
+def test_the_arrival_is_cleared_when_the_turn_fails_or_gives_up_waiting(home):
+    with pytest.raises(RuntimeError), turn._voice_turn_lock("agent-1", SESSION, None):
+        raise RuntimeError("the turn failed")
+    assert turn._voice_arriving == {} and _lock_is_free()
+    turn.RUNS["run-stopped"] = {"aborted": True}
+    try:
+        # Another turn holds the conversation; this one was stopped while queued and gives up.
+        with turn._turn_lock("agent-1", SESSION), turn._voice_turn_lock("agent-1", SESSION, "run-stopped"):
+            assert turn._voice_arriving == {}
+    finally:
+        del turn.RUNS["run-stopped"]
+    assert turn._voice_arriving == {} and _lock_is_free()
 
 
 def test_the_compaction_agent_is_hermes_hygiene_shaped(monkeypatch):

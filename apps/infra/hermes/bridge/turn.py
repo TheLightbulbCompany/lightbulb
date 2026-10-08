@@ -393,9 +393,8 @@ def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> t
     # The room turns' folder path, never filled or removed here: an observed row's "saved at" note
     # names it, and the room's next turn fills it (_observed_text).
     base = sync.turn_media_root() / f"{agent_id}.{room_id}"
-    _yield_compaction(agent_id, session_key)  # it holds this conversation's lock; nobody speaks to a summary
     watch = _CallDeadline(frames)
-    with _waiting_turn_lock(agent_id, session_key, run_id, on_wait=lambda: frames.emit({"type": "run_queued"})):
+    with _voice_turn_lock(agent_id, session_key, run_id, on_wait=lambda: frames.emit({"type": "run_queued"})):
         # A run stopped while queued gets no lock: nothing below may run (the context file is
         # keyed by the session key and belongs to the turn holding the lock).
         if run_aborted(run_id):
@@ -2857,24 +2856,52 @@ def _bounded_history(history: list[dict], budget: int) -> list[dict]:
 
 #: Share of compression.threshold_tokens at which a session is compacted off the call path.
 OFF_PATH_COMPACT_RATIO = 0.85
-#: Conversation -> its running off-path compaction, so a spoken turn can stop it (_yield_compaction).
+#: Conversation -> its running off-path compaction, so a spoken turn can stop it (_voice_turn_arriving).
 _compacting: dict[tuple[str, str], dict] = {}
+#: Conversation -> spoken turns that have arrived and do not hold its turn lock yet. A count:
+#: several can wait at once. Both maps change under _compacting_guard, which is what makes
+#: "a turn arrived" and "a compaction started" one ordered pair instead of a race.
+_voice_arriving: dict[tuple[str, str], int] = {}
 _compacting_guard = threading.Lock()
 
 
-def _yield_compaction(agent_id: str, session_key: str) -> None:
-    """A spoken turn is here: stop this conversation's off-path compaction, which holds its turn
-    lock. Hermes's hard stop cancels a compaction before its commit (interrupt_control.py:126-135,
-    conversation_compression.py:2696-2716), so the session is unchanged and this turn's own end
-    compacts it again."""
+@contextlib.contextmanager
+def _voice_turn_arriving(agent_id: str, session_key: str):
+    """A spoken turn is here and is about to take its conversation's turn lock. For as long as
+    this is open no off-path compaction of the conversation starts (compact_session), and one
+    already running -- it holds that lock -- is stopped. Hermes's hard stop cancels a compaction
+    before its commit (interrupt_control.py:126-135, conversation_compression.py:2696-2716), so
+    the session is unchanged and this turn's own end compacts it again. The caller closes this
+    once it has the lock or has given up; the count drops on every way out."""
+    key, agent = (agent_id, session_key), None
     with _compacting_guard:
-        entry = _compacting.get((agent_id, session_key))
-        if entry is None:
-            return
-        entry["yielded"] = True
-        agent = entry["agent"]
-    if agent is not None:
-        _interrupt("off-path compaction", agent)
+        _voice_arriving[key] = _voice_arriving.get(key, 0) + 1
+        entry = _compacting.get(key)
+        if entry is not None:
+            entry["yielded"] = True
+            agent = entry["agent"]
+    try:
+        if agent is not None:
+            _interrupt("off-path compaction", agent)
+        yield
+    finally:
+        with _compacting_guard:
+            if _voice_arriving[key] > 1:
+                _voice_arriving[key] -= 1
+            else:
+                del _voice_arriving[key]
+
+
+@contextlib.contextmanager
+def _voice_turn_lock(agent_id: str, session_key: str, run_id: str | None, on_wait=None):
+    """_waiting_turn_lock for a spoken turn: it is announced BEFORE the lock is tried and until
+    it has the lock (or gave up), so no compaction can slip into that gap and make a spoken
+    question queue behind it."""
+    with contextlib.ExitStack() as arriving:
+        arriving.enter_context(_voice_turn_arriving(agent_id, session_key))
+        with _waiting_turn_lock(agent_id, session_key, run_id, on_wait):
+            arriving.close()
+            yield
 
 
 def _construct_compaction_agent(agent_id: str, session_key: str, db):
@@ -2895,6 +2922,8 @@ def _compact_locked(agent_id: str, session_key: str, entry: dict) -> str:
     db = _session_db(agent_id)
     if db is None:
         return "skipped"
+    if entry["yielded"]:  # checked between every step: a spoken turn is waiting for this lock
+        return "yielded"
     ref = types.SimpleNamespace(_session_db=db, session_id=_session_tip(db, session_key))
     if float(_session_meta(ref).get(PRESSURE) or 0) < OFF_PATH_COMPACT_RATIO:
         return "below"
@@ -2906,6 +2935,8 @@ def _compact_locked(agent_id: str, session_key: str, entry: dict) -> str:
         return "skipped"
     with sync.profile_lock(agent_id):
         sync.ensure_profile(agent_id)
+    if entry["yielded"]:
+        return "yielded"
     with _hermes_home_scope(agent_id), _secret_scope(agent_id):
         agent = _construct_compaction_agent(agent_id, session_key, db)
         history, _observed = _room_history(agent)  # what a turn replays, so what its compaction rewrites
@@ -2930,17 +2961,27 @@ def _compact_locked(agent_id: str, session_key: str, entry: dict) -> str:
 def compact_session(agent_id: str, session_key: str) -> str:
     """Compact one room session now if its last turn left it near Hermes's threshold. Never
     waits and never raises: a conversation with a turn (or another compaction) in it answers
-    "busy", and that turn's own end is the next chance. The caller holds a busy count and has
-    restored the profile. Returns the outcome word, for the log and the tests."""
+    "busy", and that turn's own end is the next chance. A conversation a spoken turn is arriving
+    in answers "yielded" without starting -- asked again once the lock is held, because the turn
+    may arrive between the two -- and one that arrives later stops it (_voice_turn_arriving). The
+    caller holds a busy count and has restored the profile. Returns the outcome word, for the log
+    and the tests."""
     key = (agent_id, session_key)
+    if not ROOM_SESSION_RE.match(session_key):
+        return "busy"
+    if key in _voice_arriving:
+        return "yielded"
     lock = _turn_lock(agent_id, session_key)
-    if not ROOM_SESSION_RE.match(session_key) or not lock.acquire(blocking=False):
+    if not lock.acquire(blocking=False):
         return "busy"
     entry, started = {"agent": None, "yielded": False}, time.monotonic()
     try:
+        # One step under the guard: either the turn is already counted and this stands down with
+        # the lock released at once, or this is registered and the turn's arrival will stop it.
         with _compacting_guard:
+            entry["yielded"] = key in _voice_arriving
             _compacting[key] = entry
-        outcome = _compact_locked(agent_id, session_key, entry)
+        outcome = "yielded" if entry["yielded"] else _compact_locked(agent_id, session_key, entry)
     except Exception:  # noqa: BLE001 -- housekeeping: the session stays as it was
         log.warning("off-path compaction failed for %s", session_key, exc_info=True)
         outcome = "failed"

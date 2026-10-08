@@ -71,9 +71,12 @@ async def test_holding_the_floor_in_a_meeting_implies_nothing_without_evidence_t
     assert _nobody(await _meet("ha, nice one", jev_says(kinds=["social"]), floor=floor))
     assert _nobody(await _meet("what's our burn", jev_says(kinds=["request"]), floor=floor))
     heard = [{"agentId": "fin-1", "state": "active", "expects": "nothing", "last": "delivered", "lastBy": ""}]
-    got = await _meet("what's our burn", jev_says(kinds=["request"]), floor=floor, engagements=heard)
+    # having just heard its answer is no evidence about the next line (10-08 Meet: side talk became a run)
+    assert _nobody(await _meet("what's our burn", jev_says(kinds=["request"]), floor=floor, engagements=heard))
+    asked = [{**heard[0], "expects": "reply"}]  # the agent asked them something: their next line answers it
+    got = await _meet("what's our burn", jev_says(kinds=["request"]), floor=floor, engagements=asked)
     assert got["agentIds"] == ["fin-1"] and got["ops"]["requests"][0]["by"] == "floor"
-    assert _nobody(await _meet("ha, nice one", jev_says(kinds=["social"]), floor=floor, engagements=heard))
+    assert _nobody(await _meet("ha, nice one", jev_says(kinds=["social"]), floor=floor, engagements=asked))
 
 
 async def test_unclaimed_question_in_a_meeting_picks_at_most_one():

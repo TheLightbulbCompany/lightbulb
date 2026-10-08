@@ -1,0 +1,199 @@
+{
+ "people": {
+  "a": {
+   "name": "Prasiddha",
+   "voice": "Daniel"
+  },
+  "b": {
+   "name": "Maya",
+   "voice": "Samantha"
+  },
+  "c": {
+   "name": "Leonardo",
+   "voice": "Fred"
+  }
+ },
+ "lines": [
+  {
+   "at": 3,
+   "who": "b",
+   "say": "Thanks for making time. So we are looking at this for our support team, about forty people."
+  },
+  {
+   "at": 11,
+   "who": "a",
+   "say": "Great, let me get you the numbers. Friday, what does the workspace plan cost per month?"
+  },
+  {
+   "at": 22,
+   "who": "b",
+   "say": "Sorry, quick one before that, is that billed monthly or annual?"
+  },
+  {
+   "at": 28,
+   "who": "a",
+   "say": "Monthly, with an annual option. Maya, what is your current tool costing you?"
+  },
+  {
+   "at": 36,
+   "who": "b",
+   "say": "About two thousand a month, and honestly nobody on the team likes it."
+  },
+  {
+   "at": 44,
+   "who": "c",
+   "say": "And the migration from that tool is about a day, we did it for two customers last month."
+  },
+  {
+   "at": 75,
+   "who": "a",
+   "say": "Friday, go ahead."
+  },
+  {
+   "at": 95,
+   "who": "b",
+   "say": "Okay, that works for us. Could we do a pilot first?"
+  },
+  {
+   "at": 102,
+   "who": "a",
+   "say": "Yes. Friday, how many agents come with a new workspace?"
+  },
+  {
+   "at": 112,
+   "who": "c",
+   "say": "While that runs, Maya, who else needs to sign off on your side?"
+  },
+  {
+   "at": 119,
+   "who": "b",
+   "say": "Just my VP, I can get him on a call next week."
+  },
+  {
+   "at": 150,
+   "who": "a",
+   "say": "Perfect. Friday, stop."
+  }
+ ],
+ "tail": 30,
+ "timeout": 300,
+ "expect": [
+  {
+   "one_run": {
+    "line": 1
+   },
+   "why": "the pricing question to Friday"
+  },
+  {
+   "ack_within": {
+    "line": 1,
+    "seconds": 4
+   }
+  },
+  {
+   "answer_contains": {
+    "after": 1,
+    "contains": [
+     "fifty dollars|\\$50|50 dollars"
+    ],
+    "before": 11
+   },
+   "why": "the price, before the call ends"
+  },
+  {
+   "silent_between": {
+    "from": 2,
+    "to": 6,
+    "allow": [
+     "fifty dollars|\\$50|50 dollars"
+    ]
+   },
+   "why": "talk between people; only the ready price, at a pause"
+  },
+  {
+   "no_new_run": {
+    "line": 6
+   },
+   "why": "'Friday, go ahead' hands the floor back; it is not a new question"
+  },
+  {
+   "silent_between": {
+    "from": 7,
+    "to": 8
+   },
+   "why": "Maya asks Prasiddha, not Friday"
+  },
+  {
+   "one_run": {
+    "line": 8
+   },
+   "why": "the agents question"
+  },
+  {
+   "answer_contains": {
+    "after": 8,
+    "contains": [
+     "six (starter )?agents|6 agents"
+    ],
+    "before": 11
+   }
+  },
+  {
+   "silent_between": {
+    "from": 9,
+    "to": 11,
+    "allow": [
+     "six (starter )?agents|6 agents"
+    ]
+   },
+   "why": "talk between people; only the ready answer, at a pause"
+  },
+  {
+   "no_new_run": {
+    "lines": [
+     0,
+     2,
+     3,
+     4,
+     5,
+     7,
+     9,
+     10,
+     11
+    ]
+   },
+   "why": "none of these asks Friday for anything"
+  },
+  {
+   "nothing_after": {
+    "line": 11
+   },
+   "why": "'Friday, stop'"
+  },
+  {
+   "said_once": {
+    "text": "fifty dollars|\\$50|50 dollars"
+   }
+  },
+  {
+   "said_once": {
+    "text": "six (starter )?agents|6 agents"
+   }
+  },
+  {
+   "said_once": {}
+  },
+  {
+   "max_agent_lines": {
+    "max": 6
+   },
+   "why": "2 acknowledgements + 2 answers, with room for an answer in two sentences; more is filler"
+  },
+  {
+   "no_text": {
+    "pattern": "\\b(Vera|Atlas|Pulse|Tally|Gauge|Forge|Jev|Hermes|Paperclip)\\b"
+   },
+   "why": "internal names on a customer call"
+  }
+ ]
+}

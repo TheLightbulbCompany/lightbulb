@@ -1,0 +1,28 @@
+{
+ "about": "A long answer; another person talks over it 3 s in for about 8 s, then silence: Friday stops quickly and later finishes without repeating a finished sentence.",
+ "people": {
+  "a": {"name": "Prasiddha", "voice": "Daniel"},
+  "b": {"name": "Maya", "voice": "Samantha"}
+ },
+ "lines": [
+  {"at": 3, "who": "a", "say": "Friday, give me five sentences on what Lightbulb does."},
+  {"at": 11, "who": "a", "say": "Okay, thanks."},
+  {"over_agent": 3.0, "who": "b", "say": "Oh wait, sorry, one more thing before that, I wanted to mention the deploy from last night, it went out around midnight and nothing broke."}
+ ],
+ "notes": "Line 1 is there for the rig, not the test: over_agent fires on the next agent audio after the line before it, and without line 1 that would be the acknowledgement. If the acknowledgement is later than 11 s, or the answer starts before 12 s, line 2 lands in the wrong place: stops_within/resumes_after then print SKIP, and the run says nothing about the cut.",
+ "tail": 50,
+ "timeout": 120,
+ "expect": [
+  {"one_run": {"line": 0}},
+  {"no_new_run": {"lines": [1, 2]}, "why": "'Okay, thanks' and Maya's remark ask Friday for nothing"},
+  {"max_runs": {"max": 1}},
+  {"ack_within": {"line": 0, "seconds": 4}},
+  {"stops_within": {"line": 2, "seconds": 2}, "why": "Maya talks over the answer: Friday stops within a word or two and stays quiet until Maya finishes"},
+  {"resumes_after": {"line": 2, "within": 10}, "why": "the rest stays on her raised hand and is said at the pause after Maya"},
+  {"min_sentences": {"after": 0, "n": 4}, "why": "acknowledgement + at least three whole sentences: the answer was finished, not dropped"},
+  {"said_once": {}, "why": "resumes from the sentence it was cut on; no finished sentence again"},
+  {"no_talk_over": {"max": 1.0, "except": [2]}, "why": "line 2 is the cut itself (stops_within judges it)"},
+  {"max_agent_lines": {"max": 9}, "why": "acknowledgement + five sentences + the cut piece, with room; more is filler"},
+  {"no_text": {"pattern": "\\b(Vera|Atlas|Pulse|Tally|Gauge|Forge|Jev|Hermes|Paperclip)\\b"}, "why": "internal names"}
+ ]
+}

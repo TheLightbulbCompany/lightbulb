@@ -1,0 +1,29 @@
+{
+ "about": "The same person asks Friday two different things back to back (the second before the first is answered): two runs, both answers said, in the order asked.",
+ "people": {
+  "a": {"name": "Prasiddha", "voice": "Daniel"},
+  "b": {"name": "Maya", "voice": "Samantha"}
+ },
+ "lines": [
+  {"at": 3, "who": "a", "say": "Friday, what does the Workspace plan cost per month?"},
+  {"at": 13, "who": "a", "say": "Friday, also, how many agents come with a new workspace?"}
+ ],
+ "tail": 60,
+ "timeout": 60,
+ "expect": [
+  {"one_run": {"line": 0}, "why": "the price question"},
+  {"one_run": {"line": 1}, "why": "the agents question is a second request, not a correction of the first"},
+  {"max_runs": {"max": 2}},
+  {"ack_within": {"line": 0, "seconds": 4}},
+  {"ack_within": {"line": 1, "seconds": 4}},
+  {"answer_contains": {"after": 0, "contains": ["fifty dollars|\\$50|50 dollars"]}, "why": "the first answer is not dropped"},
+  {"answer_contains": {"after": 1, "contains": ["six (starter )?agents|6 agents"]}, "why": "the second answer is not dropped"},
+  {"in_order": {"texts": ["fifty dollars|\\$50|50 dollars", "six (starter )?agents|6 agents"]}, "why": "answers in the order asked"},
+  {"no_talk_over": {"max": 1.0}, "why": "the first acknowledgement must not run over the second question"},
+  {"said_once": {"text": "fifty dollars|\\$50|50 dollars"}},
+  {"said_once": {"text": "six (starter )?agents|6 agents"}},
+  {"said_once": {"min_words": 7}, "why": "no sentence twice; the short fixed acknowledgement is said once per request"},
+  {"max_agent_lines": {"max": 6}, "why": "2 acknowledgements + 2 answers, with room for an answer in two sentences; more is filler"},
+  {"no_text": {"pattern": "\\b(Vera|Atlas|Pulse|Tally|Gauge|Forge|Jev|Hermes|Paperclip)\\b"}, "why": "internal names"}
+ ]
+}

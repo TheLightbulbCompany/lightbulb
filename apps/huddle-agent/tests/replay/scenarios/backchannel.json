@@ -1,0 +1,27 @@
+{
+ "about": "During a long answer the asker says 'mm-hm' and, 5 s later, 'yeah': the answer goes on to its end, uninterrupted, said once.",
+ "people": {
+  "a": {"name": "Prasiddha", "voice": "Daniel"},
+  "b": {"name": "Maya", "voice": "Samantha"}
+ },
+ "lines": [
+  {"at": 3, "who": "a", "say": "Friday, give me five sentences on what Lightbulb does."},
+  {"at": 11, "who": "a", "say": "Okay, thanks."},
+  {"over_agent": 3.0, "who": "a", "say": "Mm-hm. [[slnc 5000]] Yeah."}
+ ],
+ "notes": "Line 2 is ONE rig line holding both backchannels: [[slnc 5000]] is 5 s of silence inside the `say` audio (6.5 s in all, measured). The rig cannot time a second line against an answer that is still going. Line 1 is there for the rig (see long_answer_cut.json). If line 2 does not land on the answer, keeps_speaking prints SKIP.",
+ "tail": 45,
+ "timeout": 120,
+ "expect": [
+  {"one_run": {"line": 0}},
+  {"no_new_run": {"lines": [1, 2]}, "why": "a backchannel is not a request"},
+  {"max_runs": {"max": 1}},
+  {"ack_within": {"line": 0, "seconds": 4}},
+  {"keeps_speaking": {"line": 2, "cover": 0.7, "plus": 2}, "why": "'mm-hm' and 'yeah' must not stop her: she is speaking for most of those 8.5 s (pauses between sentences allowed)"},
+  {"no_text": {"pattern": "[^.!?\"')\\s]\\s*$"}, "why": "no agent line ends without end punctuation: no sentence was cut"},
+  {"min_sentences": {"after": 0, "n": 4}, "why": "acknowledgement + at least three whole sentences"},
+  {"said_once": {}, "why": "nothing is restarted after a backchannel"},
+  {"max_agent_lines": {"max": 8}, "why": "acknowledgement + five sentences, with room; more is filler"},
+  {"no_text": {"pattern": "\\b(Vera|Atlas|Pulse|Tally|Gauge|Forge|Jev|Hermes|Paperclip)\\b"}, "why": "internal names"}
+ ]
+}

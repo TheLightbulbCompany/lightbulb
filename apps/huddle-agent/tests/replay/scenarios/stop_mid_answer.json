@@ -1,0 +1,26 @@
+{
+ "about": "A long answer; 2.5 s in the asker says 'Friday, stop.': she stops within about 2 s and says nothing more.",
+ "people": {
+  "a": {"name": "Prasiddha", "voice": "Daniel"},
+  "b": {"name": "Maya", "voice": "Samantha"}
+ },
+ "lines": [
+  {"at": 3, "who": "a", "say": "Friday, give me five sentences on what Lightbulb does."},
+  {"at": 11, "who": "a", "say": "Okay, thanks."},
+  {"over_agent": 2.5, "who": "a", "say": "Friday, stop."}
+ ],
+ "notes": "Line 1 is there for the rig (see long_answer_cut.json). 'Friday, stop.' is 1.3 s of audio. If it does not land on the answer, stops_within prints SKIP and the run is not a test of stopping mid-answer.",
+ "tail": 40,
+ "timeout": 120,
+ "expect": [
+  {"one_run": {"line": 0}},
+  {"no_new_run": {"lines": [1, 2]}, "why": "'stop' is not a request"},
+  {"max_runs": {"max": 1}},
+  {"ack_within": {"line": 0, "seconds": 4}},
+  {"stops_within": {"line": 2, "seconds": 2}, "why": "also the proof that the line landed on the answer (SKIP if it did not)"},
+  {"nothing_after": {"line": 2, "grace": 2.5}, "why": "silent from 2.5 s after 'stop' ends (about 2 s after it is understood) to the end of the run: the rest is cancelled, not kept for the next pause"},
+  {"said_once": {}},
+  {"max_agent_lines": {"max": 4}, "why": "acknowledgement + what she got out in 4 s; a 'Stopping.' is allowed inside the grace"},
+  {"no_text": {"pattern": "\\b(Vera|Atlas|Pulse|Tally|Gauge|Forge|Jev|Hermes|Paperclip)\\b"}, "why": "internal names"}
+ ]
+}

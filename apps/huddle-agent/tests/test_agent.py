@@ -105,9 +105,19 @@ class DrivenSession:
     def __init__(self, llm=None, vad=None):
         import asyncio
 
+        owner = self
+
         class Handle(asyncio.Future):  # a SpeechHandle: awaited to its end, and it says whether it was cut
             interrupted = False
 
+            def set_result(self, result):
+                # it ends with its audio sent: the unit's meter saw sound (`silent` below ends without it)
+                unit = getattr(owner.voice or owner.started.get("agent"), "unit", None)
+                if unit is not None and not owner.silent:
+                    unit.frames, unit.seconds, unit.loud = 50, 1.0, 1.0
+                super().set_result(result)
+
+        self.voice, self.silent = None, False
         self.llm, self.orders, self.handles, self.handlers, self.started = llm, [], [], {}, {}
         self.interrupts, self.closed, self._future = 0, False, Handle
 
@@ -163,12 +173,18 @@ def _driven():
     from unittest.mock import MagicMock
 
     session, voice = DrivenSession(), DrivenAgent()
-    said, ended = [], []
+    session.voice = voice
+    said, ended, receipts, asked = [], [], [], []
     live = agent._DrivenLive(
-        "forge", session, voice, MagicMock(), said=lambda text, interrupted: said.append((text, interrupted)),
+        "forge", session, voice, MagicMock(),
+        said=lambda order, index, text, outcome, evidence: (
+            said.append((text, outcome != "said")), receipts.append((order, index, outcome, evidence))
+        ),
         ended=lambda order, failed: ended.append((order, failed)),
+        may=lambda order, index: asked.append((order, index)) or live.allowed,
     )  # fmt: skip
-    live.said, live.ended = said, ended  # its reports: each unit, and each order's end
+    # its reports: each unit (said to its end, or not), each order's end, and every permission it asked for
+    live.said, live.ended, live.receipts, live.asked, live.allowed = said, ended, receipts, asked, True
     return live, session, voice
 
 
@@ -353,10 +369,10 @@ async def test_a_meet_speaker_gets_a_driven_voice_and_anyone_else_gpt_live(monke
     await _settle()
     ev["close"](None)
     assert [c[0] for c in huddle.method_calls] == [
-        "on_agent_state", "on_agent_said", "on_agent_said", "on_playback_ended", "on_live_closed"
+        "on_agent_state", "may_say", "on_unit", "may_say", "on_unit", "on_playback_ended", "on_live_closed"
     ]  # fmt: skip
-    assert [c.args for c in huddle.on_agent_said.call_args_list] == [
-        ("forge", "On it.", False), ("forge", "Three PRs are open.", True)
+    assert [c.args[:5] for c in huddle.on_unit.call_args_list] == [
+        ("forge", None, 0, "On it.", "said"), ("forge", None, 1, "Three PRs are open.", "cut")
     ]
     huddle.on_live_closed.assert_called_once_with(live)
     assert live._closed is not None, "a session that closed on its own stops billing"
@@ -392,3 +408,152 @@ def test_a_voice_the_realtime_model_lacks_maps_to_one_it_has_the_same_each_time(
 
     assert realtime_voice("marin") == "marin"
     assert realtime_voice("stone") in REALTIME_VOICES and realtime_voice("stone") == realtime_voice("stone")
+
+
+# -- the meter, through a real session --
+
+
+def _tone(level):
+    import struct
+
+    from livekit import rtc
+
+    return rtc.AudioFrame(struct.pack("<480h", *([level] * 480)), 24000, 1, 480)  # 20 ms
+
+
+def _real_session(levels):
+    """A real AgentSession with a real `_Mouth`, and no network: the model only makes audio frames of the
+    given levels, and the track is a list. Everything between the two is LiveKit's own code."""
+    import asyncio
+
+    from livekit.agents import AgentSession, llm
+    from livekit.agents.voice import io
+
+    class Track(io.AudioOutput):
+        def __init__(self):
+            super().__init__(label="test", capabilities=io.AudioOutputCapabilities(pause=False), sample_rate=24000)
+            self.frames, self.playing = [], False
+
+        async def capture_frame(self, frame):
+            await super().capture_frame(frame)
+            self.frames.append(frame)
+            self.playing = True
+
+        def flush(self):
+            super().flush()
+            if self.playing:
+                self.playing = False
+                self.on_playback_finished(playback_position=0.02 * len(self.frames), interrupted=False)
+
+        def clear_buffer(self):
+            if self.playing:
+                self.playing = False
+                self.on_playback_finished(playback_position=0.0, interrupted=True)
+
+    class Realtime(llm.RealtimeSession):
+        ctx = llm.ChatContext.empty()
+        chat_ctx = property(lambda self: self.ctx)
+        tools = property(lambda self: llm.ToolContext.empty())
+
+        async def update_instructions(self, instructions): ...
+        async def update_chat_ctx(self, chat_ctx): ...
+        async def update_tools(self, tools): ...
+        def update_options(self, **kw): ...
+        def push_audio(self, frame): ...
+        def push_video(self, frame): ...
+        def commit_audio(self): ...
+        def clear_audio(self): ...
+        def interrupt(self): ...
+        def truncate(self, **kw): ...
+        async def aclose(self): ...
+
+        def generate_reply(self, **kw):
+            async def audio():
+                for level in levels:
+                    yield _tone(level)
+
+            async def text():
+                yield "ok"
+
+            async def messages():
+                modalities = asyncio.get_running_loop().create_future()
+                modalities.set_result(["audio"])
+                yield llm.MessageGeneration("m1", text(), audio(), modalities)
+
+            async def no_calls():
+                return
+                yield
+
+            created = asyncio.get_running_loop().create_future()
+            created.set_result(llm.GenerationCreatedEvent(messages(), no_calls(), user_initiated=True))
+            return created
+
+    class Model(llm.RealtimeModel):
+        def __init__(self):
+            super().__init__(
+                capabilities=llm.RealtimeCapabilities(
+                    message_truncation=False, turn_detection=False, user_transcription=False,
+                    auto_tool_reply_generation=False, audio_output=True, manual_function_calls=False,
+                )
+            )  # fmt: skip
+
+        def session(self, *, turn_detection_disabled=False):
+            return Realtime(self)
+
+        async def aclose(self): ...
+
+    session, track = AgentSession(llm=Model()), Track()
+    session.output.audio = track
+    return session, track
+
+
+async def _say_through_a_real_session(levels, may=lambda order, index: True):
+    import asyncio
+    from unittest.mock import MagicMock
+
+    session, track = _real_session(levels)
+    mouth, receipts, ended = agent._Mouth(instructions="x"), [], []
+    await session.start(agent=mouth, record=False)
+    try:
+        live = agent._DrivenLive(
+            "forge", session, mouth, MagicMock(),
+            said=lambda *receipt: receipts.append(receipt), ended=lambda *end: ended.append(end), may=may,
+        )  # fmt: skip
+        live.say("Got it.", 3)
+        await asyncio.wait_for(live._tail, 5)
+    finally:
+        await session.aclose()
+    return receipts, ended, track
+
+
+async def test_the_session_passes_a_units_audio_through_the_mouths_meter():
+    """10-09 review: the driven-voice tests write the meter's fields themselves (`DrivenSession.Handle`), so
+    none of them showed that LiveKit calls the hook at all. Here nothing sets them: a real session takes
+    the model's frames through `_Mouth.realtime_audio_output_node` to the track, and the receipt is what
+    the hook counted. Not covered without a network: the OpenAI plugin's own session, and the room's track."""
+    receipts, ended, track = await _say_through_a_real_session([4000] * 10)
+    order, index, text, outcome, evidence = receipts[0]
+    assert (order, index, text, outcome) == (3, 0, "Got it.", "said") and ended == [(3, False)]
+    assert (evidence["frames"], evidence["audioMs"], evidence["loudMs"]) == (10, 200, 200), "counted by the hook"
+    assert len(track.frames) == 10, "and every frame it counted went on to the track"
+
+
+async def test_through_the_session_silent_frames_are_a_failed_unit_and_a_revoked_one_sends_nothing():
+    receipts, ended, track = await _say_through_a_real_session([0] * 10)
+    assert receipts[0][3] == "silent" and (receipts[0][4]["frames"], receipts[0][4]["loudMs"]) == (10, 0)
+    assert ended == [(3, True)], "frames with no sound in them: the hook saw it, and the order failed"
+    asked = []
+    # allowed before the unit is ordered, and not when its first audio is about to go out
+    receipts, ended, track = await _say_through_a_real_session(
+        [4000] * 10, may=lambda order, index: asked.append((order, index)) or len(asked) == 1
+    )
+    assert asked == [(3, 0), (3, 0)] and receipts[0][3] == "revoked" and receipts[0][4]["frames"] == 0
+    assert track.frames == [], "the hook is where the audio stops: nothing reached the track"
+    asked = []
+    # allowed when ordered and at its first (quiet) frame, and not before its first frame with sound in it
+    receipts, ended, track = await _say_through_a_real_session(
+        [0, 0, 4000, 4000], may=lambda order, index: asked.append((order, index)) or len(asked) < 3
+    )
+    assert len(asked) == 3 and receipts[0][3] == "revoked" and receipts[0][4]["loudMs"] == 0
+    assert [max(f.data) for f in track.frames] == [0, 0], "the quiet lead passed, and no sound reached the track"
+    assert ended == [(3, False)], "paused as not said: a refusal is not a failed playback"

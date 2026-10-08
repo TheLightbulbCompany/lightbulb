@@ -1,0 +1,31 @@
+{
+ "about": "One person alone with Friday: a greeting by name, a request, a thank-you. A short reply to the greeting, an acknowledgement and the answer, at most a short reply to the thanks, nothing else.",
+ "people": {
+  "a": {"name": "Prasiddha", "voice": "Daniel"}
+ },
+ "lines": [
+  {"at": 3, "who": "a", "say": "Hi Friday."},
+  {"at": 10, "who": "a", "say": "Friday, what does the Workspace plan cost per month?"},
+  {"at": 60, "who": "a", "say": "Thanks, Friday."}
+ ],
+ "tail": 15,
+ "timeout": 80,
+ "expect": [
+  {"ack_within": {"line": 0, "seconds": 4}, "why": "a greeting by name gets a reply, not silence"},
+  {"max_words": {"max": 12, "from": 0, "to": 1}, "why": "the reply to the greeting is short"},
+  {"max_agent_lines": {"max": 1, "from": 0, "to": 1}},
+  {"no_new_run": {"line": 0}, "why": "a greeting is not work"},
+  {"one_run": {"line": 1}},
+  {"ack_within": {"line": 1, "seconds": 4}},
+  {"answer_contains": {"after": 1, "contains": ["fifty dollars|\\$50|50 dollars"], "before": 2}, "why": "the price, before the thanks (47 s of room)"},
+  {"no_new_run": {"line": 2}, "why": "thanks is not work"},
+  {"max_runs": {"max": 1}},
+  {"max_words": {"max": 12, "from": 2, "allow": ["fifty dollars|\\$50|50 dollars"]}, "why": "a reply to the thanks is optional and short"},
+  {"max_agent_lines": {"max": 1, "from": 2, "allow": ["fifty"]}, "why": "at most one line after the thanks"},
+  {"no_talk_over": {"max": 1.0}, "why": "the greeting reply must be over before the request starts"},
+  {"said_once": {"text": "fifty dollars|\\$50|50 dollars"}},
+  {"said_once": {}},
+  {"max_agent_lines": {"max": 5}, "why": "greeting reply + acknowledgement + answer (up to two lines) + thanks reply; more is filler"},
+  {"no_text": {"pattern": "\\b(Vera|Atlas|Pulse|Tally|Gauge|Forge|Jev|Hermes|Paperclip)\\b"}, "why": "internal names"}
+ ]
+}

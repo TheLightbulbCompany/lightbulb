@@ -908,3 +908,27 @@ async def test_live_say_names_the_agent_and_the_ask_and_nothing_for_people_or_je
     assert people["ops"]["say"] is None
     down = await _live(live_env, "Finance, what's our burn", None)  # Jev down: the request runs, nobody speaks
     assert _asked(down) == [("fin-1", "name")] and down["ops"]["say"] is None
+
+
+async def test_a_window_logs_how_long_each_of_its_steps_took(start_env, caplog):
+    """10-08 Meet: a call's first line waited 4.7 s on /summon and /session, and nothing said on which step."""
+    with caplog.at_level("INFO", logger=vc.logger.name):
+        await _start()
+    (line,) = [r.getMessage() for r in caplog.records if r.getMessage().startswith("voice window opened")]
+    assert "room=room-1 billing=free ms: room=" in line
+    assert [step.split("=")[0] for step in line.split("ms: ")[1].split()] == [
+        "room", "open_windows", "gate", "owner_row", "claim", "put_call", "total",
+    ]  # fmt: skip
+    vc.container_repo.get_by_status.return_value = [OPEN_WINDOW]
+    with caplog.at_level("INFO", logger=vc.logger.name):
+        await _start()
+    assert any(r.getMessage().startswith("voice window joined room=room-1 ms: room=") for r in caplog.records)
+
+
+def test_steps_are_timed_one_after_the_other(monkeypatch):
+    clock = iter([10.0, 10.25, 12.25])
+    monkeypatch.setattr(vc.time, "perf_counter", lambda: next(clock))
+    steps = vc._Steps()
+    steps.done("room")
+    steps.done("gate")
+    assert steps.ms == {"room": 250, "gate": 2000} and str(steps) == "room=250 gate=2000 total=2250"

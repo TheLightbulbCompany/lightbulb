@@ -1,0 +1,26 @@
+{
+ "about": "A request, then 'Friday, never mind.' before the answer: the answer is never spoken.",
+ "people": {
+  "a": {"name": "Prasiddha", "voice": "Daniel"},
+  "b": {"name": "Maya", "voice": "Samantha"}
+ },
+ "lines": [
+  {"at": 3, "who": "a", "say": "Friday, what does the Workspace plan cost per month?"},
+  {"at": 12.5, "who": "a", "say": "Friday, never mind."}
+ ],
+ "notes": "The cancel comes about 6 s after the question ends. If the answer is ready and said before 12.5 s, no_text fails though nothing is wrong: read the timeline before blaming the cancel.",
+ "tail": 45,
+ "timeout": 60,
+ "expect": [
+  {"one_run": {"line": 0}},
+  {"no_new_run": {"line": 1}, "why": "'never mind' cancels; it starts nothing"},
+  {"max_runs": {"max": 1}},
+  {"ack_within": {"line": 0, "seconds": 4}},
+  {"no_text": {"pattern": "fifty|\\$50|50 dollars"}, "why": "the cancelled answer is never said"},
+  {"nothing_after": {"line": 1, "grace": 3}, "why": "at most a short 'Okay' right away; then silence to the end of the run (45 s, longer than the answer takes)"},
+  {"no_talk_over": {"max": 1.0}},
+  {"max_agent_lines": {"max": 2}, "why": "the acknowledgement, and at most one short reply to 'never mind'"},
+  {"max_words": {"max": 8, "from": 1}, "why": "a reply to 'never mind' is a word or two"},
+  {"no_text": {"pattern": "\\b(Vera|Atlas|Pulse|Tally|Gauge|Forge|Jev|Hermes|Paperclip)\\b"}, "why": "internal names"}
+ ]
+}

@@ -1,0 +1,34 @@
+{
+ "about": "One person asks Friday one thing and, a few seconds later, Forge another: each acknowledges and answers once, never both at the same time.",
+ "people": {
+  "a": {"name": "Prasiddha", "voice": "Daniel"},
+  "b": {"name": "Maya", "voice": "Samantha"}
+ },
+ "agents": ["Friday", "Forge"],
+ "lines": [
+  {"at": 3, "who": "a", "say": "Friday, what does the Workspace plan cost per month?"},
+  {"at": 13, "who": "a", "say": "Forge, how many agents come with a new workspace?"}
+ ],
+ "tail": 60,
+ "timeout": 60,
+ "expect": [
+  {"one_run": {"line": 0}, "why": "the price question, for Friday"},
+  {"one_run": {"line": 1}, "why": "the agents question, for Forge"},
+  {"max_runs": {"max": 2}, "why": "one piece of work per request, no more"},
+  {"ack_within": {"line": 0, "seconds": 4}},
+  {"ack_within": {"line": 1, "seconds": 4}},
+  {"answer_contains": {"after": 0, "contains": ["fifty dollars|\\$50|50 dollars"], "who": "Friday"}, "why": "Friday answers her own question"},
+  {"answer_contains": {"after": 1, "contains": ["six (starter )?agents|6 agents"], "who": "Forge"}, "why": "Forge answers his own question"},
+  {"no_agent_overlap": {}, "why": "two agents never speak at the same time"},
+  {"no_talk_over": {"max": 1.0}, "why": "Friday's acknowledgement must not run over the second question"},
+  {"said_once": {"text": "fifty dollars|\\$50|50 dollars"}},
+  {"said_once": {"text": "six (starter )?agents|6 agents"}},
+  {"said_once": {"min_words": 7}, "why": "no sentence twice; the short fixed acknowledgement may be the same for both agents"},
+  {"max_agent_lines": {"max": 6}, "why": "2 acknowledgements + 2 answers, with room for an answer in two sentences; more is filler"},
+  {"max_agent_lines": {"max": 3, "who": "Friday"}},
+  {"max_agent_lines": {"max": 3, "who": "Forge"}},
+  {"no_text": {"pattern": "\\b(Forge|Vera|Atlas|Pulse|Tally|Gauge)\\b", "who": "Friday"}, "why": "agents do not talk to or about each other aloud"},
+  {"no_text": {"pattern": "\\b(Friday|Vera|Atlas|Pulse|Tally|Gauge)\\b", "who": "Forge"}, "why": "agents do not talk to or about each other aloud"},
+  {"no_text": {"pattern": "\\b(Jev|Hermes|Paperclip)\\b"}, "why": "internal names"}
+ ]
+}

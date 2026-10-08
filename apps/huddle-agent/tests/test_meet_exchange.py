@@ -169,6 +169,7 @@ async def test_small_talk_is_written_while_the_voice_opens_and_said_only_once_no
     await task
     assert says_of(lives[0]) == [], "the line is ready and waits: nothing starts over a person"
     quiet(h)
+    await says(h, P2, "Mm-hm.")  # what they said is known, and it asked nothing: their turn is over
     await pause(h, clock, h_mod.SETTLE_S + 0.1)  # a breath after the talk ended, not a real pause
     assert says_of(lives[0]) == [("say", "Hello Priya.")]
     assert backend.turns == [], "small talk is no run"

@@ -20,6 +20,13 @@ P3 = "meet:room-1:p3"
 BREATH = h_mod.SETTLE_S + 0.1  # the room has settled, and the conversation has not paused
 
 
+async def stops(h, who=P2):
+    """They stop talking, and the transcript of it is here: a listening sound that asks nothing. Speech with
+    no transcript yet is an open turn, and nothing starts on one."""
+    quiet(h)
+    await says(h, who, "Mm-hm.")
+
+
 def said(lives):
     """Every order of the call, in the order it was given: (agent, text)."""
     return [(live.agent_id, c[1]) for live in lives for c in live.calls if c[0] == "say"]
@@ -138,7 +145,7 @@ async def test_a_line_owed_never_takes_the_voice_from_another_agent_but_goes_bef
     answer(h, first.run_id, "forge", "Three PRs are open.")
     assert ledger(h) == [("forge", "ack", "speaking"), ("forge", "ack", "pending"), ("forge", "answer", "pending")]
     spoken(h, lives[0])
-    quiet(h)
+    await stops(h)
     await pause(h, clock, BREATH)
     assert says_of(lives[0])[1:] == [("say", h_mod.QUEUED_LINES[0])], "the line before the answer"
     spoken(h, lives[0])
@@ -155,7 +162,7 @@ async def test_a_ready_answer_takes_the_place_of_its_waiting_status_line():
     assert ledger(h) == [("forge", "status", "pending")], "owed, and held: someone is talking"
     answer(h, row.run_id, "forge", "Three PRs are open.")
     assert ledger(h) == [("forge", "answer", "pending")], "the answer says more than 'still working'"
-    quiet(h)
+    await stops(h)
     await pause(h, clock, BREATH)
     assert says_of(lives[0])[1:] == [("say", "Three PRs are open.")]
 
@@ -169,7 +176,7 @@ async def test_an_acknowledgement_is_skipped_when_its_answer_is_ready_before_it_
     assert ledger(h) == [("forge", "ack", "pending")] and says_of(lives[0]) == []
     answer(h, row.run_id, "forge", "Three PRs are open.")
     assert ledger(h) == [("forge", "answer", "pending")]
-    quiet(h)
+    await stops(h)
     await pause(h, clock, BREATH)
     assert says_of(lives[0]) == [("say", "Three PRs are open.")], "the answer, and no 'I'm on it' before it"
 
@@ -223,11 +230,11 @@ async def test_the_scheduler_logs_what_it_saw_when_it_holds_speech_and_when_it_l
     capsys.readouterr()
     talks(h, P2)
     answer(h, row.run_id, "forge", "Three PRs are open.")
-    quiet(h)
+    await stops(h)
     await pause(h, clock, BREATH)
     lines = [json.loads(x) for x in capsys.readouterr().out.splitlines() if x.startswith("{")]
     held = [x for x in lines if "live.speech.held" in x]
-    assert [(x["kind"], x["why"]) for x in held] == [("answer", "person"), ("answer", "quiet")]
+    assert [(x["kind"], x["why"]) for x in held] == [("answer", "person"), ("answer", "final"), ("answer", "quiet")]
     (waited,) = [x for x in lines if "live.speech.waited" in x]
     assert waited["live.speech.waited"] == round(BREATH * 1000) and waited["kind"] == "answer"
 
@@ -245,7 +252,7 @@ async def test_an_answer_whose_asker_is_waiting_for_it_starts_after_the_room_set
     answer(h, row.run_id, "forge", "Three PRs are open.")
     await pause(h, clock, 0.5)
     assert says_of(lives[0]) == [("say", ACK)] and row.status == "ready", "its voice is open, and it still waits"
-    quiet(h)
+    await stops(h)
     await pause(h, clock, h_mod.SETTLE_S - 0.1)
     assert says_of(lives[0]) == [("say", ACK)], "sound has not settled"
     await pause(h, clock, 0.2)
@@ -372,13 +379,16 @@ async def test_the_askers_next_line_goes_to_the_router_at_once_with_the_exchange
     ]  # fmt: skip
     assert len(backend.turns) == 2 and backend.turns[-1]["agentId"] == "forge" and len(lives) == 2
 
-    # a long gap with nothing owed: they are no longer talking, and it is a question to the room again
+    # someone else took a turn, with nothing owed: they are no longer talking, and it is a question to the
+    # room again (silence alone ends no exchange: test_voice_rules)
     h, backend, lives, clock = await asked()
     (row,) = h._requests.items
     answer(h, row.run_id, "forge", "Three PRs are open.")
     spoken(h, lives[0])
     await closes(h, clock)
-    clock.t += h_mod.ENGAGE_GAP_S
+    backend.route_extra = heard(people=True)  # /route: said among people. No clock decides that.
+    await says(h, P2, "I will send the plan on Thursday.")
+    backend.route_extra = ops([])
     routes = len(backend.routes)
     await says(h, P1, "And what are they called?")
     assert len(backend.routes) == routes and h._unclaimed is not None and h._engaged == {}
@@ -621,6 +631,7 @@ async def test_talk_that_turns_out_to_be_only_a_backchannel_resumes_it_at_once_f
         answer(h, row.run_id, "forge", "Three PRs are open. The oldest is two days old.")
         h.on_agent_said("forge", "Three PRs are open.")
         await talked_over(h, clock, P2)
+        h.on_playback_ended("forge", lives[0].order)  # the cut playback is over, as a mouth reports every order
         quiet(h)
         await pause(h, clock, BREATH)
         assert len(says_of(lives[0])) == 2, "paused until the talker's words are known"
@@ -830,9 +841,9 @@ async def test_talk_that_breaks_for_a_moment_is_one_stretch_of_talk():
     answer(h, row.run_id, "forge", "Three PRs are open.")
     for _ in range(3):
         talks(h, P2)
-        clock.t += 0.4
+        clock.t += 0.2
         h.on_active_speakers(set())
-        clock.t += h_mod.TALK_GAP_S - 0.1
+        clock.t += 0.2
     talks(h, P2)
     await h.tick()
     await settle(h)
@@ -845,7 +856,12 @@ async def test_a_request_its_voice_could_not_start_is_said_as_its_outcome_once_t
     h, room, backend, lives, clock, log = await per_person()
     backend.route_extra = ops([("forge", "list the open PRs", "name")])
     backend.turn_results = [BackendError(409, "agent_not_in_room", None)]
-    await says(h, P1, "Forge, what PRs are open?")
+    backend.turn_gate = asyncio.Event()  # the refusal comes after the line is applied, as a network answer does
+    await h.on_final_transcript(P1, "Priya", "Forge, what PRs are open?")
+    for _ in range(30):
+        await asyncio.sleep(0)
+    backend.turn_gate.set()
+    await settle(h)
     (row,) = h._requests.items
     assert row.status == "failed" and ledger(h) == [("forge", "ack", "speaking"), ("forge", "answer", "pending")]
     spoken(h, lives[0])

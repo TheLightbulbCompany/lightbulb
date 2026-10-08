@@ -555,6 +555,21 @@ async def _open_window(owner_id: str, room_id: str, now: int) -> dict | None:
     return next((r for r in await _open_windows(owner_id, now) if r.get("roomId") == room_id), None)
 
 
+class _Steps:
+    """How long each step of one request took, in order, for one log line. 10-08 Meet: the first line of a
+    call waited 4.7 s on /summon and /session, and nothing said on which step."""
+
+    def __init__(self) -> None:
+        self._at, self.ms = time.perf_counter(), {}
+
+    def done(self, step: str) -> None:
+        now = time.perf_counter()
+        self.ms[step], self._at = round((now - self._at) * 1000), now
+
+    def __str__(self) -> str:
+        return " ".join(f"{step}={ms}" for step, ms in self.ms.items()) + f" total={sum(self.ms.values())}"
+
+
 async def open_voice_window(*, owner_id: str, room_id: str, speaker_user_id: str) -> dict:
     """C1 /summon: join the room's open window, or gate once and open one. The window meters
     GPT-Live only; voice runs are ordinary room runs and the window owns none of them."""
@@ -562,13 +577,17 @@ async def open_voice_window(*, owner_id: str, room_id: str, speaker_user_id: str
     if ((await messaging_repo.get_room(room_id)) or {}).get("meeting"):
         speaker_user_id, _ = _meeting_actor(await messaging_repo.list_members(room_id), speaker_user_id, True)
     # Before the join too: _room_team 404s unless owner_id owns the room and the speaker is a member.
+    steps = _Steps()
     meta, _ = await _room_team(owner_id, speaker_user_id, room_id)
+    steps.done("room")
     now = int(time.time())
     # ponytail: a crashed worker's unreported GPT-Live seconds bill 0 (voice.huddle.usage_missing, as today);
     # persist running usage on the row if that metric is non-zero in prod
     existing = await _open_window(owner_id, room_id, now)
+    steps.done("open_windows")
     if existing:
         prewake_owner(owner_id)
+        logger.info("voice window joined room=%s ms: %s", room_id, steps)
         return {
             "callId": existing["callId"],
             "deadline": int(existing["deadline"]),
@@ -576,7 +595,9 @@ async def open_voice_window(*, owner_id: str, room_id: str, speaker_user_id: str
             "joined": True,
         }
     mode, budget = await _gate(owner_id)
+    steps.done("gate")
     row = await _owner_row(owner_id)
+    steps.done("owner_row")
     call_id = str(uuid.uuid4())
     if mode == "free":
         await _claim_free(owner_id, call_id, now, now + budget + 180)
@@ -586,6 +607,7 @@ async def open_voice_window(*, owner_id: str, room_id: str, speaker_user_id: str
             hold, budget = await _hold(owner_id)
             if not hold:
                 raise _problem(402, code="voice_limit", reason="credits_low")
+        steps.done("claim")
         now = int(time.time())
         call = {
             "callId": call_id,
@@ -606,7 +628,9 @@ async def open_voice_window(*, owner_id: str, room_id: str, speaker_user_id: str
     except BaseException:  # incl. CancelledError: no row means nothing would ever release these
         await _undo_start(owner_id, call_id, mode, hold)
         raise
+    steps.done("put_call")
     prewake_owner(owner_id)
+    logger.info("voice window opened room=%s billing=%s ms: %s", room_id, mode, steps)
     return {"callId": call_id, "deadline": call["deadline"], "budgetSeconds": budget, "joined": False}
 
 
@@ -701,18 +725,24 @@ async def agent_meet_voice(*, owner_id: str, room_id: str, agent_id: str) -> dic
 async def agent_session(*, owner_id: str, room_id: str, agent_id: str, ask_name: bool = True) -> dict:
     """One agent's GPT-Live session: its own voice and persona. Falls back to the bare persona
     (no role, SOUL or notes) when the reads fail or overrun."""
+    steps = _Steps()
     meta = await _owned_room(owner_id, room_id)
+    steps.done("room")
     members, starters = await asyncio.gather(messaging_repo.list_members(room_id), _starter_ids(owner_id))
+    steps.done("members")
     me = next((m for m in members if m.get("kind") == "agent" and m["id"] == agent_id), None)
     if not me:
         raise _problem(409, code="agent_not_in_room")
     row, soul, notes_md = await _session_reads(owner_id, agent_id)
+    steps.done("profile_reads")  # the roster, SOUL.md and the voice notes, side by side, _SESSION_READ_BUDGET_S at most
     name = (row or {}).get("name") or me.get("displayName") or "Agent"
     ask_name = (
         ask_name
         and voice_persona.is_default_name(agent_id, name, starters)
         and await _claim_voice_asked(owner_id, agent_id)
     )
+    steps.done("asked_name")
+    logger.info("voice session room=%s agent=%s ms: %s", room_id, agent_id, steps)
     title = (row or {}).get("title") or (row or {}).get("role")
     persona = voice_persona.build_agent_persona(
         name=name,
@@ -1004,9 +1034,28 @@ def _understood(
         choice, p, _ = answer or (None, 0.0, 0.0)
         return rows.get(choice) if p >= AMEND_P else None
 
+    where = {ref: start for k, start, _, ref, _ in pieces if k == "part"}
+    name_at = next((start for k, start, _, ref, _ in pieces if k == "name" and named and ref == named[0][0]), -1)
+
+    # Said TO one agent: the classifier read its name as addressed (`route_live_line` writes the same label
+    # for a name that passed `_asked_by_name`, the clause-opening rule). A name it read as relayed ("Can you
+    # ask Friday what the plan costs?") is an agent the line talks about to someone else, and one it read as
+    # mentioned never gets here: the part after such a name stays what the classifier said it is. (With no
+    # classifier there are no parts to read: `route_live_line` never calls this on the fallback path.)
+    said_to_one = len(named) == 1 and addressing["named"][0][2] == "addressed"
+
     def kind_of(part: dict) -> str:
         # a weak or missing read is no request (REQUEST_P): an unsure classifier never starts a run
         choice, p, _ = part["kind"]
+        if said_to_one and where[part["index"]] > name_at:
+            # ...but not of words said to one agent by name. The name says whom they are for, so the
+            # classifier's doubt is about nothing else: no read at all, a request read weakly, or words
+            # that open the way a request does read as talk between people, is that agent's request.
+            # 10-08 Meet: "Friday, what does the Workspace plan cost per month?" came back with no agent
+            # and nothing to do, and nobody answered. A stop, thanks, a greeting, "go ahead" are reads of
+            # their own and stay what they are.
+            if not choice or choice == "request" or (choice == "people" and part["cue"]):
+                return "request"
         if not choice or (choice == "request" and p < REQUEST_P):
             return "social"
         if choice == "context" and p < CONTEXT_P:
@@ -1048,8 +1097,6 @@ def _understood(
             parts[i]["text"] for i in sorted(indexes)
         )
 
-    where = {ref: start for k, start, _, ref, _ in pieces if k == "part"}
-    name_at = next((start for k, start, _, ref, _ in pieces if k == "name" and named and ref == named[0][0]), -1)
     after_name = not any(where[p["index"]] > name_at for p in asks)  # nothing is asked after the name
     requests: list[dict] = []
     for p in asks:
@@ -1135,16 +1182,52 @@ def _understood(
     return out
 
 
+def _asked_by_name(addressing: dict, utterance: str, members: list[dict]) -> tuple[str, str] | None:
+    """The one agent a line asks by name when the classifier said the name addresses nobody: (name, agent),
+    or None. The words decide, and only when they leave no doubt: one name on the whole line, an agent's
+    alone; it stands as a name where a clause opens ("Friday, ...", "Great. Friday, ...", "hey Friday"; never "by
+    Friday", "Friday's notes", "thanks Friday"); and the words right after it open the way a request does
+    (a question word, "can you", an instruction). "Friday, we ship the beta" asks nothing and stays the day."""
+    cands = messaging.address_candidates(utterance, members, live=True)
+    if len(cands) != 1 or len(cands[0]["agents"]) != 1 or cands[0]["humans"]:
+        return None
+    cand, pieces = cands[0], addressing["pieces"]
+    if not any(messaging._CLAUSE_START.search(utterance[:start]) for start, _ in messaging._named_at(utterance, cand)):
+        return None
+    cue = {p["index"]: p["cue"] for p in addressing["parts"]}
+    for (kind, _, _, ref, _), after in zip(pieces, pieces[1:]):
+        if kind == "name" and ref == cand["name"] and after[0] == "part" and cue.get(after[3]):
+            return cand["name"], cand["agents"][0]
+    return None
+
+
+def _labels(addressing: dict) -> str:
+    """What the classifier said about a line, in one log line: enough to explain a route after the call."""
+    read = lambda a: f"{a[0]}:{a[1]:.2f}" if a and a[0] else "-"  # noqa: E731
+    parts = " | ".join(
+        f"{p['text'][:40]!r} kind={read(p['kind'])} who={read(p['who'])}{' cue' if p['cue'] else ''}"
+        for p in addressing.get("parts") or []
+    )
+    named = ",".join(f"{name}={label}" for name, _, label in addressing.get("named") or []) or "-"
+    return (
+        f"path={addressing['path']} named={named} people={len(addressing['humans'])} hold={addressing['hold']} "
+        f"amends={read(addressing.get('amends'))} drops={read(addressing.get('drops'))} parts=[{parts}]"
+    )
+
+
 def _engaged(addressing: dict, engagements: list[dict], open_requests: list[dict]) -> str | None:
     """The agent an unnamed meeting line is for, or None: talk between people. Decided from what the worker
     knows of the speaker and each agent (``engagements``) and what the one Jev call said about the line, with
     no probability bar on "is this a request": that a line asks something does not say whom it asks.
 
     A line that addresses a person is for that person. A line that continues or calls off a request is for
-    that request's agent, whoever the speaker has turned to since. Otherwise it is for the agent the speaker
-    is talking with (``state`` active) when something is still open between the two: the agent asked them
-    something (``expects`` reply), they have just heard its answer and may follow up (``last`` delivered), or
-    they talked over what it was saying (``last`` paused, ``lastBy`` speaker). Recency alone is no evidence:
+    that request's agent, whoever the speaker has turned to since: that reference is the evidence a follow-up
+    is one ("And what are they called?" after the answer), and the worker lists the answered requests for it.
+    Otherwise it is for the agent the speaker is talking with (``state`` active) when something is still open
+    between the two: the agent asked them something (``expects`` reply), or they talked over what it was
+    saying (``last`` paused, ``lastBy`` speaker). Having just heard its answer (``last`` delivered) opens
+    nothing by itself: 10-08 Meet, 25 s after the answer its asker said "Yeah, I think we should move the
+    stand-up to eight" to a colleague, and it became the agent's request. Recency alone is no evidence:
     people in a meeting go on talking to each other."""
     parts = addressing["parts"]
     if addressing["humans"] or (parts and all(p["kind"][0] == "people" for p in parts)):
@@ -1155,14 +1238,21 @@ def _engaged(addressing: dict, engagements: list[dict], open_requests: list[dict
         if choice in rows and p >= AMEND_P:
             return rows[choice]
     for e in engagements:
-        open_between = (
-            e.get("expects") == "reply"
-            or e.get("last") == "delivered"
-            or (e.get("last") == "paused" and e.get("lastBy") == "speaker")
-        )
+        open_between = e.get("expects") == "reply" or (e.get("last") == "paused" and e.get("lastBy") == "speaker")
         if e.get("state") == "active" and open_between:
             return e["agentId"]
     return None
+
+
+def _said_to_people(addressing: dict, engagements: list[dict]) -> bool:
+    """A meeting line the worker sent as part of someone's talk with an agent, and that is not the agent's
+    (``_engaged``): is it talk between people, which ends that talk? Yes, unless its speaker has only just
+    heard the agent out (``state`` active, ``last`` delivered) and nothing reads the line as said to a
+    person: "Okay, thanks." after an answer turns to nobody. It starts nothing and ends nothing."""
+    parts = addressing["parts"]
+    if addressing["humans"] or (parts and all(p["kind"][0] == "people" for p in parts)):
+        return True
+    return not any(e.get("state") == "active" and e.get("last") == "delivered" for e in engagements)
 
 
 async def route_live_line(
@@ -1323,6 +1413,13 @@ async def route_live_line(
     hold = {"hold": True} if addressing["hold"] else {}
     if hold:
         put_metric("voice.routing.jev", dimensions={"outcome": "hold", "setting": setting})
+    logger.info("voice route labels room=%s setting=%s %s", room_id, setting, _labels(addressing))
+    if addressing["path"] == "jev" and not addressing["named"] and not addressing["humans"]:
+        # A named request never comes back as nothing: the classifier called the name no name (ours are
+        # weekdays) or only talked about, and the line asks that agent something in so many words.
+        if (asked := _asked_by_name(addressing, utterance, members)) is not None:
+            addressing = {**addressing, "named": [(*asked, "addressed")]}
+            put_metric("voice.routing.named_by_words", dimensions={"setting": setting})
     named = [agent for _, agent, _ in addressing["named"]]
     to_people = bool(addressing["humans"]) and not named and not addressing["anyone"] and not wake
     if meeting:
@@ -1334,7 +1431,7 @@ async def route_live_line(
         claimed = mine or bool(talking)  # the worker sent it as someone's conversation with an agent
         mine, floor_agent = engaged is not None, engaged or floor_agent
         if claimed and not (mine or named or wake or unclaimed):
-            to_people = True
+            to_people = unread or _said_to_people(addressing, talking)
     implied = bool(named) or wake or mine or unclaimed or (humans <= 1 and not meeting)
     picked = None  # the room judge's agent for a line among people
     if early and named:
@@ -1460,6 +1557,17 @@ async def route_live_line(
     order = by_name or ([r["agentId"] for r in requests] or steered or ([social] if social else []))[:1]
     outcome = "routed" if requests else "social" if social else "none"
     put_metric("voice.routing.jev", dimensions={"outcome": outcome, "setting": setting})
+    logger.info(
+        "voice route decision room=%s outcome=%s requests=%s steer=%s cancel=%s hush=%s say=%s people=%s",
+        room_id,
+        outcome,
+        [(r["agentId"], r["by"]) for r in requests],
+        [x["requestId"] for x in u["steer"]],
+        u["cancel"],
+        [x["agentId"] for x in ops["hush"]],
+        say and (say["agentId"], say["kind"]),
+        ops["people"],
+    )
     routed = {**_routed(*order), **hold, "ops": ops}
     if len(by_name) >= 2:
         routed["requests"] = [

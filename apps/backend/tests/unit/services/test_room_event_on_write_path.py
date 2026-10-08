@@ -6,7 +6,7 @@ import asyncio
 import importlib.util
 import uuid
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -47,7 +47,9 @@ async def _backend_bytes(item: dict) -> tuple[str, str]:
     publisher = live_events.LiveEventPublisher()
     publisher._room_channel = AsyncMock(return_value=CHANNEL)
     publisher._send = AsyncMock()
-    assert await publisher.publish_message_created(item) is True
+    rows = {(f"ROOM#{ROOM}", "META"): {"deliveryKey": KEY}, (item["pk"], item["sk"]): item}
+    with patch.object(live_events.messaging_repo, "batch_get", AsyncMock(return_value=rows)):
+        assert await publisher.publish_message_created(item) is True
     channel, body = publisher._send.await_args.args
     assert publisher._send.await_args.kwargs == {"source": "write_path", "held": True}
     return channel, body
@@ -131,6 +133,16 @@ async def test_create_human_message_publishes_the_projectors_event_once(monkeypa
     publisher = live_events.LiveEventPublisher()
     publisher._room_channel = AsyncMock(return_value=CHANNEL)
     publisher._send = AsyncMock()
+    monkeypatch.setattr(
+        live_events.messaging_repo,
+        "batch_get",
+        AsyncMock(
+            side_effect=lambda keys: {
+                (f"ROOM#{ROOM}", "META"): {"deliveryKey": KEY},
+                **{(r["pk"], r["sk"]): r for r in rows},
+            }
+        ),
+    )
     monkeypatch.setattr(messaging, "get_live_event_publisher", lambda: publisher)
     await _send("hi @friday", mentions=[{"kind": "agent", "id": FRIDAY}])
     await _settle()
@@ -151,14 +163,10 @@ async def test_a_failing_publish_does_not_fail_the_write(monkeypatch):
     failing.assert_awaited_once()
 
 
-@pytest.mark.asyncio
-async def test_a_key_rotated_while_waiting_for_a_slot_is_the_channel_posted_to(monkeypatch):
-    """Codex on #3930: the channel is read after the slot wait, so a removal that rotates the
-    delivery key meanwhile does not send the message to the channel the removed member holds."""
-    meta = {"deliveryKey": KEY}
-    monkeypatch.setattr(live_events.messaging_repo, "get_room", AsyncMock(side_effect=lambda _r: dict(meta)))
+def _waiting_publish(monkeypatch, rows):
+    """A write-path publish that will park on the only slot; ``rows()`` is what its one read answers."""
+    monkeypatch.setattr(live_events.messaging_repo, "batch_get", AsyncMock(side_effect=lambda _k: rows()))
     monkeypatch.setattr(live_events.messaging_repo, "workspace_id_for_meta", AsyncMock(return_value=WS))
-    monkeypatch.setattr(live_events.messaging_repo, "room_pk", lambda r: f"ROOM#{r}")
     monkeypatch.setattr(live_events, "_inflight", asyncio.Semaphore(1))
     monkeypatch.setattr(live_events.settings, "APPSYNC_EVENTS_HTTP_ENDPOINT", "https://events.test/event")
     posted = []
@@ -167,15 +175,26 @@ async def test_a_key_rotated_while_waiting_for_a_slot_is_the_channel_posted_to(m
         posted.append(body)
         return type("R", (), {"status_code": 200, "json": lambda self: {"successful": [{}], "failed": []}})()
 
-    publisher = live_events.LiveEventPublisher()
-    monkeypatch.setattr(publisher, "_post_held", post)
-
     async def sign(*_a):
         return type("Q", (), {"headers": {}})()
 
+    publisher = live_events.LiveEventPublisher()
+    monkeypatch.setattr(publisher, "_post_held", post)
     monkeypatch.setattr(publisher, "_signed_request", sign)
+    return publisher, posted
+
+
+@pytest.mark.asyncio
+async def test_a_key_rotated_while_waiting_for_a_slot_is_the_channel_posted_to(monkeypatch):
+    """Codex on #3930: the channel is read after the slot wait, so a removal that rotates the
+    delivery key meanwhile does not send the message to the channel the removed member holds."""
+    item = _item()
+    meta = {"deliveryKey": KEY}
+    publisher, posted = _waiting_publish(
+        monkeypatch, lambda: {(f"ROOM#{ROOM}", "META"): dict(meta), (item["pk"], item["sk"]): item}
+    )
     await live_events._inflight.acquire()  # a slow publish holds the only slot
-    task = asyncio.create_task(publisher.publish_message_created(_item()))
+    task = asyncio.create_task(publisher.publish_message_created(item))
     await asyncio.sleep(0.01)
     new_key = str(uuid.UUID(int=8))
     meta["deliveryKey"] = new_key  # a human is removed: the room's key rotates
@@ -183,3 +202,32 @@ async def test_a_key_rotated_while_waiting_for_a_slot_is_the_channel_posted_to(m
     assert await task is True
     assert f"/rooms/{ROOM}/{new_key}".encode() in posted[0]
     assert KEY.encode() not in posted[0]
+
+
+@pytest.mark.asyncio
+async def test_a_message_deleted_while_waiting_for_a_slot_is_not_broadcast(monkeypatch):
+    """Codex on #3930: the projector re-reads the row for a delete; so does the write path."""
+    item = _item()
+    stored = {"row": item}
+    publisher, posted = _waiting_publish(
+        monkeypatch, lambda: {(f"ROOM#{ROOM}", "META"): {"deliveryKey": KEY}, (item["pk"], item["sk"]): stored["row"]}
+    )
+    await live_events._inflight.acquire()
+    task = asyncio.create_task(publisher.publish_message_created(item))
+    await asyncio.sleep(0.01)
+    stored["row"] = {**item, "messageRevision": 1, "text": ""}  # deleted: the projector sends it
+    live_events._inflight.release()
+    assert await task is False
+    assert posted == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_resolution_records_one_tagged_error_sample(monkeypatch):
+    publisher, posted = _waiting_publish(monkeypatch, dict)
+    monkeypatch.setattr(live_events.messaging_repo, "batch_get", AsyncMock(side_effect=TimeoutError("ddb")))
+    metrics = []
+    monkeypatch.setattr(live_events, "put_metric", lambda *a, **k: metrics.append(k.get("dimensions")))
+    with pytest.raises(TimeoutError):
+        await publisher.publish_message_created(_item())
+    assert metrics == [{"outcome": "error", "status_class": "resolve", "source": "write_path"}]
+    assert posted == []

@@ -175,21 +175,32 @@ class LiveEventPublisher:
         The bytes are the projector's own (``room_message_created_event`` + its ``_event_json``),
         not a ``LiveEvent`` re-serialization, which would reformat ``occurredAt``: the projector
         sends the same eventId later and the client keeps whichever copy lands first."""
-        event = room_message_created_event(item)
-        room_id = _uuid(event["roomId"], "room id")
-        # The slot first, the channel last: a member removed while this waits rotates the key,
-        # and a key read before the wait would post to the channel they still hold open.
+        room_id = _uuid(item["roomId"], "room id")
+        room_key = (messaging_repo.room_pk(room_id), "META")
+        # The slot first, the key and the row last: a member removed while this waits rotates the
+        # key, and an edit or delete lands as a projector event this must not precede with the old
+        # body. One strong read of both rows, applying the projector's own "latest" rule.
         async with self._slot({"source": "write_path"}):
-            channel = await self._room_channel(room_id, "rooms")
-            if channel is None:
-                return False
+            try:
+                rows = await messaging_repo.batch_get([room_key, (item["pk"], item["sk"])])
+                meta, latest = rows.get(room_key), rows.get((item["pk"], item["sk"]))
+                if meta is None or latest is None or int(latest.get("messageRevision", 0)) > 0:
+                    return False  # the projector's copy covers a gone room, an edit and a delete
+                event = room_message_created_event(latest)
+                channel = await self._room_channel(room_id, "rooms", meta)
+            except Exception:
+                put_metric(
+                    "messaging.live.publish",
+                    dimensions={"outcome": "error", "status_class": "resolve", "source": "write_path"},
+                )
+                raise
             await self._send(
                 channel, json.dumps(event, separators=(",", ":"), ensure_ascii=False), source="write_path", held=True
             )
         return True
 
-    async def _room_channel(self, room_id: str, family: str) -> str | None:
-        meta = await messaging_repo.get_room(room_id)
+    async def _room_channel(self, room_id: str, family: str, meta: dict | None = None) -> str | None:
+        meta = meta or await messaging_repo.get_room(room_id)
         if meta is None:
             return None
         key = _uuid(str(meta.get("deliveryKey", "")), "room delivery key")

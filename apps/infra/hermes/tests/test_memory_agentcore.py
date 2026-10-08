@@ -36,6 +36,8 @@ def mod(monkeypatch):
     outside the image, where Hermes is not installed)."""
     fake = types.ModuleType("agent.memory_provider")
     fake.MemoryProvider = type("MemoryProvider", (), {})
+    # Stand-in for upstream's is_trivial_prompt (agent/memory_provider.py): bare acknowledgements.
+    fake.is_trivial_prompt = lambda text: (text or "").strip().lower().rstrip("!.") in ("", "thanks", "ok")
     redact = types.ModuleType("agent.redact")
     # Stand-in for upstream's redact_for_egress: masks anything shaped like an sk- key.
     redact.redact_for_egress = lambda text: re.sub(r"sk-[A-Za-z0-9_-]+", "sk-***", text)
@@ -76,6 +78,29 @@ def test_prefetch_uses_the_exact_owner_namespace_and_never_namespace_path(mod):
     assert "namespacePath" not in kw and kw["searchCriteria"]["topK"] == 5
     assert len(kw["searchCriteria"]["searchQuery"]) == 10000  # botocore max
     assert "- launch codename is PERIWINKLE-42" in out
+
+
+def test_prefetch_searches_the_spoken_line_and_skips_a_trivial_one(mod):
+    """Hermes passes the persisted user text, turn-context JSON line included: recall must search
+    what was said, and a bare "thanks" must not cost a RetrieveMemoryRecords call."""
+    from bridge import turn
+
+    def said(text):
+        return turn._turn_input({"sender": {"id": "u1", "displayName": "Aden"},
+                                 "message": {"messageId": "m1", "text": text},
+                                 "room": {"id": "r1", "kind": "channel"}, "participants": []})
+    client = FakeClient()
+    p = provider(mod, client)
+    p.prefetch(said("what is our launch codename?"))
+    (_, kw), = client.calls
+    assert kw["searchCriteria"]["searchQuery"] == "Aden: what is our launch codename?"
+    assert p.prefetch(said("thanks!")) == "" and len(client.calls) == 1
+    # A delegation follow-up has no speaker label: recall still runs, on the whole notice.
+    notice = "[IMPORTANT: the research task finished: Q3 revenue was up 12%]"
+    p.prefetch(turn._turn_input({"followUp": {"text": notice}, "sender": {"id": "u1", "displayName": "Aden"},
+                                 "message": {"messageId": "m2", "text": ""},
+                                 "room": {"id": "r1", "kind": "channel"}, "participants": []}))
+    assert client.calls[-1][1]["searchCriteria"]["searchQuery"] == notice
 
 
 def test_prefetch_swallows_any_error(mod):

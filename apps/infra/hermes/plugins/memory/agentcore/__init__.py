@@ -27,7 +27,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-from agent.memory_provider import MemoryProvider
+from agent.memory_provider import MemoryProvider, is_trivial_prompt
 from agent.redact import redact_for_egress
 
 logger = logging.getLogger(__name__)
@@ -115,12 +115,19 @@ class AgentCoreMemoryProvider(MemoryProvider):
                 "agent in this workspace and may come from any room.")
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        if not (query and self.is_available()):
+        # Hermes keys recall on the persisted user text and skips it for a trivial prompt
+        # (agent/turn_context.py), but ours carries the turn-context JSON line, so neither works
+        # until it is stripped. A room line reads "<name>: <text>"; the skip judges the text.
+        line = _user_text(query or "")
+        # A follow-up notice carries no speaker ("[IMPORTANT: ..."), so only a "<name>: " head is dropped.
+        name, sep, rest = line.partition(": ")
+        said = rest if line != query and sep and "[" not in name and "\n" not in name else line
+        if is_trivial_prompt(said) or not self.is_available():
             return ""
         try:
             resp = _client().retrieve_memory_records(
                 memoryId=self._memory_id, namespace=f"/owners/{self._owner}/",
-                searchCriteria={"searchQuery": query[:_QUERY_MAX], "topK": _MAX_RESULTS})
+                searchCriteria={"searchQuery": line[:_QUERY_MAX], "topK": _MAX_RESULTS})
             texts = [(r.get("content") or {}).get("text", "") for r in resp.get("memoryRecordSummaries", [])]
             texts = [t.strip() for t in texts if t and t.strip()]
         except Exception as exc:  # recall is best-effort: a slow or denied call is "no memory"

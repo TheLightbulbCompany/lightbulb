@@ -742,6 +742,7 @@ function RoomContent({
           setMemberError(undefined);
           setMemberQuery("");
           setMemberPickerOpen(true);
+          setContextCollapsed(false);
         } : undefined}
         onAddPeople={canAddMembers ? () => {
           closeDetail();

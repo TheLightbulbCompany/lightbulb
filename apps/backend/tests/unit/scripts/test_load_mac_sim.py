@@ -90,6 +90,60 @@ def test_dry_run_calls_nothing(monkeypatch, capsys):
         sim.main(["--dry-run", "--frame-bytes", str(sim.MAX_RAW + 1)])
 
 
+class ClosingSocket:
+    """Accepts a frame, then closes without ever answering it."""
+
+    def __init__(self):
+        self.sent, self._closed = [], asyncio.Event()
+
+    async def send(self, raw):
+        self.sent.append(raw)
+        asyncio.get_running_loop().call_later(0.01, self._closed.set)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        await self._closed.wait()
+        raise StopAsyncIteration
+
+
+def _bare_mac():
+    from collections import Counter
+
+    mac = sim.Mac.__new__(sim.Mac)  # no pairing, no API: just the socket half
+    mac.stats, mac.rtts, mac.sessions = Counter(), [], [dict(SESSION, afterSeq=0)]
+    mac.slot, mac.pending, mac.registered = asyncio.Lock(), None, True
+    mac.args = type("A", (), {"frame_bytes": 100})()
+    mac.epoch, mac.seq = 1, 0
+    return mac
+
+
+async def test_a_socket_closing_mid_request_frees_the_slot_and_stops_sends_at_once():
+    mac = _bare_mac()
+    mac.ws = ClosingSocket()
+    reader = asyncio.create_task(mac.read(mac.ws))
+    started = time.monotonic()
+    assert await mac.request(sim.heartbeat_frame(mac.sessions)) == {}
+    assert time.monotonic() - started < 1  # not the 10 s ack timeout
+    await reader
+    assert mac.stats["closed:local.device.heartbeat"] == 1 and not mac.slot.locked()
+    assert mac.registered is False  # nothing goes out until the reconnect's registers are acked
+    await mac.screen(mac.sessions[0], "output")
+    assert len(mac.ws.sent) == 1 and mac.stats["frames_skipped_unregistered"] == 1
+
+
+async def test_an_old_socket_closing_does_not_touch_the_new_ones_request():
+    mac = _bare_mac()
+    old = ClosingSocket()
+    mac.ws = object()  # the reconnect already replaced it
+    fut = asyncio.get_running_loop().create_future()
+    mac.pending = ("local.session.registered", fut)
+    await old.send("x")
+    await mac.read(old)
+    assert not fut.done() and mac.registered is True
+
+
 class FakeProc:
     """A child that exits on its own (``exits_alone``), on SIGTERM (``obeys``), or only on kill."""
 

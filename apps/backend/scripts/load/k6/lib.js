@@ -29,6 +29,8 @@ const SEEN_EVENT_CAP = 1_000; // as AppSyncEventsClient.deliver
 const TASK_INDEX = Number(__ENV.TASK_INDEX || 0);
 const TASK_COUNT = Number(__ENV.TASK_COUNT || 1);
 export const mine = (items) => items.filter((_, i) => i % TASK_COUNT === TASK_INDEX);
+/** This task's share of a global iteration sequence: task t of n takes t, t+n, t+2n, ... */
+export const taskIteration = (i) => i * TASK_COUNT + TASK_INDEX;
 
 // ---- the spec's scenario shapes (§1 "k6 shape").
 // Defaults stay <= fixture users (spec); PRE_VUS/MAX_VUS override, e.g. 2c's 18-mention burst from one user.

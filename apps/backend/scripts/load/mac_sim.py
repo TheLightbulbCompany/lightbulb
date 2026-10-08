@@ -172,6 +172,10 @@ def pct(values: list[float], q: int) -> float | None:
 
 
 # ------------------------------------------------------------------ one synthetic Mac
+class SocketClosed(Exception):
+    """The relay socket closed while a request waited for its ack."""
+
+
 class Mac:
     def __init__(self, user: dict, args, stats: Counter, rtts: list[float]):
         self.user, self.args, self.stats, self.rtts = user, args, stats, rtts
@@ -185,6 +189,8 @@ class Mac:
         self.pending: tuple[str, asyncio.Future] | None = None
         self.epoch, self.seq = int(time.time()), 0
         self.quiet_until = 0.0  # no offline check right after a (re)connect
+        # Every session on the CURRENT socket is registered: nothing but registers goes out before.
+        self.registered = False
 
     async def pair(self) -> None:
         resp = await asyncio.to_thread(
@@ -205,6 +211,7 @@ class Mac:
         )
 
     async def connect(self) -> None:
+        self.registered = False
         url = relay_url(self.gateway, device_token(self.key, self.devices[0], self.owner, int(time.time())))
         self.ws = await websockets.connect(url, max_size=64 * 1024)
         self.reader = asyncio.create_task(self.read(self.ws))
@@ -220,6 +227,7 @@ class Mac:
                 self.sessions[i] = entry
             else:
                 self.sessions.append(entry)
+        self.registered = True
 
     async def read(self, ws) -> None:
         try:
@@ -236,6 +244,14 @@ class Mac:
                         await self.screen(s, "snapshot")
         except Exception as exc:  # noqa: BLE001 -- a dropped socket is a measurement, not a crash
             self.stats[f"socket_closed:{type(exc).__name__}"] += 1
+        finally:
+            # This socket is gone (closed, dropped or cancelled): no ack can come on it. Fail the
+            # awaited request now so the slot frees for the reconnect's registers, and send
+            # nothing more until they are acked. A newer socket's request is not this one's.
+            if ws is self.ws:
+                self.registered = False
+                if self.pending and not self.pending[1].done():
+                    self.pending[1].set_exception(SocketClosed())
 
     async def request(self, frame: dict) -> dict:
         """One awaited frame at a time, as the desktop holds one request slot."""
@@ -249,7 +265,7 @@ class Mac:
             except asyncio.TimeoutError:
                 self.stats[f"timeout:{frame['type']}"] += 1
                 return {}
-            except websockets.ConnectionClosed:
+            except (websockets.ConnectionClosed, SocketClosed):
                 self.stats[f"closed:{frame['type']}"] += 1  # a storm reconnect in progress
                 return {}
             finally:
@@ -261,6 +277,9 @@ class Mac:
             return msg
 
     async def screen(self, session: dict, kind: str) -> None:
+        if not self.registered:
+            self.stats["frames_skipped_unregistered"] += 1
+            return
         self.seq += 1
         frame = screen_frame(session, self.epoch, self.seq, kind, self.args.frame_bytes, int(time.time() * 1000))
         try:
@@ -271,13 +290,14 @@ class Mac:
 
     async def heartbeats(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
-            await self.request(heartbeat_frame(self.sessions))
+            if self.registered:
+                await self.request(heartbeat_frame(self.sessions))
             await _sleep(stop, HEARTBEAT_S)
 
     async def events(self, stop: asyncio.Event) -> None:
         n = 0
         while self.args.events_per_s and not stop.is_set():
-            for s in list(self.sessions):
+            for s in list(self.sessions) if self.registered else ():
                 n += 1
                 ack = await self.request(events_frame(s, s["afterSeq"], n))
                 if ack.get("type") == "local.session.events.ack":

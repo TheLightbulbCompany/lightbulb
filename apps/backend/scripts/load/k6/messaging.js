@@ -24,6 +24,7 @@ const liveDelivery = new Trend('live_delivery_ms', true);
 const liveCompleteness = new Rate('live_completeness'); // live only, before any reconcile: recorded
 const completeAfterReconcile = new Rate('complete_after_reconcile'); // pass bar: 100%
 const gapReconciles = new Counter('gap_reconciles');
+const unsubscribed = new Counter('receivers_unsubscribed'); // not live before the first send: a failure
 const sent = new Counter('messages_sent');
 
 export const options = {
@@ -36,6 +37,7 @@ export const options = {
     'http_req_duration{name:POST /messaging/rooms/:id/messages}': ['p(95)<500'],
     live_delivery_ms: ['p(95)<2000'],
     complete_after_reconcile: ['rate==1'],
+    receivers_unsubscribed: ['count==0'],
     completeness_read_failed: ['count==0'],
   },
 };
@@ -88,7 +90,9 @@ export function listen(data) {
       lastSeq = Math.max(lastSeq, seq);
     },
   });
-  if (!counted) return; // joined after the first send: its misses say nothing
+  // A receiver not live before the first send cannot vouch for anything: it fails the run, and
+  // every message it was due counts as missed below.
+  if (!counted) unsubscribed.add(1);
   // The authoritative end: never guessed from the live stream, whose tail may be what was lost.
   const detail = L.readWithRetry(me.user, `/messaging/rooms/${room.roomId}`, 'GET /messaging/rooms/:id');
   const history = detail && L.messagesAfter(me.user, room.roomId, room.baseSeq);
@@ -96,7 +100,7 @@ export function listen(data) {
   const last = detail.json('lastMessageSeq');
   for (const m of history) healed.add(m.messageSeq);
   for (let seq = room.baseSeq + 1; seq <= last; seq++) {
-    liveCompleteness.add(live.has(seq));
-    completeAfterReconcile.add(live.has(seq) || healed.has(seq));
+    liveCompleteness.add(counted && live.has(seq));
+    completeAfterReconcile.add(counted && (live.has(seq) || healed.has(seq)));
   }
 }

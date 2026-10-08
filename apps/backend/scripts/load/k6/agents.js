@@ -69,7 +69,7 @@ export function setup() {
 }
 
 export function send(data) {
-  const i = exec.scenario.iterationInTest;
+  const i = L.taskIteration(exec.scenario.iterationInTest); // DLT tasks interleave, never repeat
   const o = i % orgs.length;
   const j = Math.floor(i / orgs.length);
   const org = data.orgs[o];

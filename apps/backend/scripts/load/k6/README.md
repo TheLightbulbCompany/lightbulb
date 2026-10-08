@@ -32,12 +32,16 @@ the 16 sender users, as the spec's shape says.
 
 Thresholds (built in): `http_req_failed` rate < 0.5% (429s are not failures; they count in `http_429`),
 send ack `http_req_duration{name:POST /messaging/rooms/:id/messages}` p95 < 500 ms,
-`live_delivery_ms` p95 < 2 s, `complete_after_reconcile` = 100%, `completeness_read_failed` = 0 (the
+`live_delivery_ms` p95 < 2 s, `complete_after_reconcile` = 100%, `receivers_unsubscribed` = 0 (a receiver not
+subscribed before the first send fails the run and its messages count as missed), `completeness_read_failed` = 0 (the
 end-of-run room read is retried 3 times; if it still fails the run fails, never guesses the last seq). Recorded: `live_completeness` (before
 any `afterSeq` read), `gap_reconciles`, `messages_sent`. Only receivers subscribed before the first
 send count. The hot-room ceiling (first 1a step with 5xx) is read off the run, not a threshold.
 
 ## Scenario 2: agents (`agents.js`)
+
+With `TASK_COUNT > 1`, task `t` sends global iterations `t, t+n, t+2n, …` (`taskIteration`), so tasks
+interleave over the orgs instead of all starting at org 0.
 
 Every org gets `AGENT_ROOMS` (default 1) load rooms with its creator and the six starter agents on
 `mentions`. Iteration `i` messages org `i % O`, then rooms, then agents. Each message is

@@ -62,6 +62,10 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  core/services/website_logins.py; frontend WebsiteLoginsSection (Connections).
                                  Codes/CAPTCHA are browser-only (owner ruling 2026-10-07): the bridge's
                                  _code_prompt posts the line and watches the page; there is no code form.
+  - Members / join link ..... references/surfaces.md ("Members & join link" row)
+                              <- routers/orgs.py (one link per workspace; admin-only mint/copy/revoke;
+                                 open join as org:member); frontend WorkspaceMembersSection (Settings →
+                                 Members) and MessagingWorkspaceContext.copyJoinLink (room Members section).
   - Browser live view ....... references/surfaces.md
                               <- Mac viewer input: apps/frontend/src/components/workspace/panels/BrowserFrameView.tsx
                                  (event producer); apps/backend/routers/container.py and

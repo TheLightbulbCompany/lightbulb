@@ -4,6 +4,8 @@ import { createContext, useContext, useCallback, useEffect, useMemo, useRef, use
 import { useAuth } from "@clerk/nextjs";
 import { canChangeListenMode, markSessionsSeen, resolveTypedMentions, runView, sessionArchived, sessionMentionCandidates, sessionUnread, useWorkspaceSessions, workspaceSections, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
+import { useApi } from "@/lib/api";
+import { copyText } from "./messageLinks";
 import { useBilling } from "@/hooks/useBilling";
 import { useAgents } from "@/hooks/useAgents";
 import { useRosterEntries } from "@/components/agents/useRosterEntries";
@@ -168,6 +170,20 @@ export function MessagingWorkspaceProvider({
 }) {
   const { userId, orgId } = useAuth();
   const scope = orgId ?? userId ?? "signed-out";
+  const api = useApi();
+  // The ONE door into the workspace for someone who is not in it yet (Settings → Members has the
+  // same link). A room's Add people lists workspace members only, which is where people looked
+  // for "invite my cofounder" and found nothing (Second Catch, 2026-10-08). Admin-only: the
+  // backend 403s everyone else, and the room panel says so.
+  const copyJoinLink = useCallback(async () => {
+    if (!orgId) throw new Error("no workspace");
+    const status = (await api.get(`/orgs/${orgId}/join-link`)) as { exists: boolean; join_url?: string | null };
+    const url = status.exists && status.join_url
+      ? status.join_url
+      : ((await api.post(`/orgs/${orgId}/join-link`, {})) as { join_url: string }).join_url;
+    await copyText(url);
+    capture("join_link_copied", { source: "room_members", workspace_id: orgId });
+  }, [api, orgId]);
   // Focus placement: a session opened from the sidebar or a link takes the
   // middle of the panel; sessions live in the workspace, not in a room.
   const [sessionFocus, setSessionFocus] = useState<SessionFocusTarget | null>(null);
@@ -875,6 +891,7 @@ export function MessagingWorkspaceProvider({
     } : {}),
     ...(rooms.activeRoom?.kind === "channel" && ["owner", "admin"].includes(viewerRole)
       ? { onRemoveMember: rooms.removeMember } : {}),
+    ...(rooms.activeRoom && rooms.activeRoom.kind !== "dm" ? { onCopyJoinLink: copyJoinLink } : {}),
     onAbortRun: (runId) => rooms.abortRun(runId),
     onLinkToWork: () => openPanel("teams-issues", {}, { pushUrl: true }),
     onDownloadAttachment: rooms.downloadAttachment,

@@ -18,7 +18,7 @@ it("tells a Mac that shares sessions, once", async () => {
   const first = render(<ExplicitSharingNotice />);
   await waitFor(() => expect(toast).toHaveBeenCalledTimes(1));
   const { container } = render(<>{toast.mock.calls[0][0]}</>);
-  expect(container.textContent).toBe("Every Claude Code and Codex session on this Mac is shared with your workspace again, including plain claude and codex. Pause one, or turn sharing off in Settings.");
+  expect(container.textContent).toBe("Every Claude Code and Codex session in your approved folders on this Mac is shared with your workspace again, including plain claude and codex. Pause one, or turn sharing off in Settings.");
   expect(localStorage.getItem(EXPLICIT_SHARING_SEEN_KEY)).toBe("1");
   first.unmount();
   render(<ExplicitSharingNotice />);

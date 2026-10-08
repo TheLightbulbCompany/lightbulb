@@ -173,7 +173,8 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  apps/desktop/src-tauri/src/holder/{run,panel}.rs (the panel joins a `lightbulb claude` terminal;
                                  `run::CLASSIC_RENDERER` / `run::CODEX_INLINE`: held Claude Code sessions run in the classic renderer and held Codex sessions inline, so a watcher scrolls back).
   - Which sessions are shared references/surfaces.md ("Which sessions are shared" paragraph)
-                              <- apps/desktop/src-tauri/src/local_sessions.rs (track: every session, named to its holder when it has one);
+                              <- apps/desktop/src-tauri/src/local_sessions.rs (track: every session, named to its holder when it has one;
+                                 `in_approved_folder`: only a session inside an approved folder) + local_sessions/transport.rs (`observe`: the one gate);
                                  apps/desktop/src-tauri/src/local_sessions/enrollment.rs (every session's hook reaches the app);
                                  apps/desktop/src-tauri/src/local_sessions/{claude,codex}.rs (`job`: which plain sessions get a live terminal) +
                                  holder/manager.rs (`attach_argv`: `claude attach`, `codex resume --remote unix://`);

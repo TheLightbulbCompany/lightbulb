@@ -110,7 +110,7 @@ export function DesktopFileAccess() {
         <div>
           <h2 className="settings-card-title" id="approved-folders-heading">Approved folders</h2>
           <div className="settings-card-desc">
-            Agents read and write files only inside these folders. Sessions you start from Lightbulb also run in them.
+            Agents read and write files only inside these folders. Sessions you start from Lightbulb also run in them, and a Claude Code or Codex session is shared only when it runs inside one.
           </div>
         </div>
       </div>

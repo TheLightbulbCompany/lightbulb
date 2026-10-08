@@ -5,11 +5,14 @@ description: Use for Lightbulb session messages labelled "[Sent from Lightbulb b
 
 # Lightbulb session sharing
 
-Every Claude Code and Codex session on a Mac where Lightbulb session sharing is on
-is shared with the owner's Lightbulb workspace, whether it was started in Lightbulb
-or as a plain `claude` or `codex`. Members can read its prompts, tool calls, output
-previews and answers, and watch its live terminal when it has one. The owner can
-pause sharing for one session or turn it off for the Mac. Nothing here changes your
+Every Claude Code and Codex session that runs inside one of the owner's approved
+folders (Lightbulb Settings → Desktop → Approved folders), on a Mac where Lightbulb
+session sharing is on, is shared with the owner's Lightbulb workspace, whether it was
+started in Lightbulb or as a plain `claude` or `codex`. A session in any other folder
+is not shared at all: nothing about it leaves the Mac. Members can read a shared
+session's prompts, tool calls, output previews and answers, and watch its live
+terminal when it has one. The owner can pause sharing for one session or turn it off
+for the Mac. Nothing here changes your
 permissions, tools, or files.
 
 ## Your user's own prompt from the Lightbulb app

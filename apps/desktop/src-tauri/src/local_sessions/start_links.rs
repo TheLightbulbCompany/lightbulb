@@ -203,6 +203,7 @@ mod tests {
             status: "idle".into(),
             title: None,
             cwd_name: None,
+            cwd: Some("/".into()),
             active_turn: None,
             last_assistant_message: None,
             holder: None,

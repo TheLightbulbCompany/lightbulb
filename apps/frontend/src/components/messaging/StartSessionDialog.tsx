@@ -10,7 +10,7 @@ import { copyText } from "./messageLinks";
 const COMMANDS = [{ tool: "Claude Code", command: "lightbulb claude" }, { tool: "Codex", command: "lightbulb codex" }];
 
 /**
- * How sessions are shared: every Claude Code and Codex session on a Mac with sharing on. Starting one
+ * How sessions are shared: every Claude Code and Codex session in an approved folder on a Mac with sharing on. Starting one
  * in Lightbulb also opens its live terminal here.
  */
 export function StartSessionDialog() {
@@ -20,7 +20,7 @@ export function StartSessionDialog() {
     <DialogContent>
       <DialogHeader>
         <DialogTitle>Share a session</DialogTitle>
-        <DialogDescription>Every Claude Code and Codex session on a Mac with sharing on is shared with this workspace. Start one in Lightbulb to get its live terminal here too.</DialogDescription>
+        <DialogDescription>Every Claude Code and Codex session in an approved folder on a Mac with sharing on is shared with this workspace. Start one in Lightbulb to get its live terminal here too.</DialogDescription>
       </DialogHeader>
       <ol className="list-decimal space-y-3 pl-5 text-sm">
         <li>In the Lightbulb desktop app on your Mac, turn on sharing in <Link className="underline underline-offset-4" href="/settings?panel=desktop">Settings → Desktop → Session sharing</Link>. You only do this once.</li>

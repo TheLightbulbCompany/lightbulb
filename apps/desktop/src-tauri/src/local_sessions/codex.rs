@@ -196,6 +196,12 @@ fn from_rollout(
         && (reported == version || desktop_upgrade);
     let (status, active_turn, title) = tail_state(&path);
     let title = root.parent().and_then(|codex| thread_name(&codex.join("session_index.jsonl"), conversation)).or(title);
+    // Where the thread works now, as `rollout_cwd` reads it: its latest turn's folder, else the
+    // header's. It decides whether the thread is shared.
+    let cwd = latest_turn(&path)
+        .ok()
+        .and_then(|turn| turn.3)
+        .unwrap_or_else(|| row["payload"]["cwd"].as_str().map(PathBuf::from));
     Ok(NativeSession {
         provider: "codex".into(),
         conversation: conversation.into(),
@@ -213,6 +219,7 @@ fn from_rollout(
             .as_str()
             .and_then(|c| Path::new(c).file_name())
             .map(|n| n.to_string_lossy().chars().take(128).collect()),
+        cwd,
         active_turn,
         last_assistant_message: None,
         holder: None,
@@ -1878,6 +1885,8 @@ mod tests {
         let long = "d".repeat(200);
         fs::write(&path, format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"owned\",\"source\":\"cli\",\"cli_version\":\"0.149.0\",\"cwd\":\"/tmp/{long}\"}}}}\n")).unwrap();
         let bounded_cwd = from_rollout(&root, process.clone(), &path, "0.149.0").unwrap();
+        // Only the name sent to the relay is bounded: the whole folder decides sharing.
+        assert_eq!(bounded_cwd.cwd.as_deref(), Some(Path::new(&format!("/tmp/{long}"))));
         assert_eq!(bounded_cwd.cwd_name.unwrap().chars().count(), 128);
         fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"app\",\"source\":\"vscode\",\"originator\":\"Codex Desktop\",\"history_mode\":\"paginated\",\"cli_version\":\"0.153.4\"}}\n").unwrap();
         let app = from_rollout(&root, process.clone(), &path, "0.153.4").unwrap();

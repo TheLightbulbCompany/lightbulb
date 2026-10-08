@@ -90,10 +90,17 @@ board yourself. Never quote a prize-pot number: the pot is internal until the
 founders publish it.
 # Shared local-session workspace notices
 
-**Which sessions are shared**: every Claude Code and Codex session on a Mac where its owner
-turned session sharing on, whether it was started in Lightbulb (**New session**, a remote
-start, a pick-up, a resume, `lightbulb claude` / `lightbulb codex`) or as a plain `claude` or
-`codex` in any terminal. The owner can pause one session or turn sharing off for the Mac. When a
+**Which sessions are shared**: every Claude Code and Codex session that runs inside one of the
+owner's approved folders (Settings → Desktop → **Approved folders**; any depth inside one
+counts) on a Mac where its owner turned session sharing on, whether it was started in Lightbulb
+(**New session**, a remote start, a pick-up, a resume, `lightbulb claude` / `lightbulb codex`)
+or as a plain `claude` or `codex` in any terminal. A session in any other folder is not shared
+at all: nothing about it leaves the Mac, it is in no session list, `find_sessions` does not
+return it and nobody can message it. If a person asks why a session of theirs is missing, the
+likely cause is its folder: they add the folder under Approved folders (or answer yes when
+`lightbulb claude` / `lightbulb codex` asks in that folder) and it is shared from then on.
+Removing a folder from the list ends sharing for the sessions in it within a minute; they show
+as ended. The owner can pause one session or turn sharing off for the Mac. When a
 person pairs a Mac, **Share every session live** starts on (they can turn it off there or later
 in Settings), so a plain `claude` or `codex` typed in a new terminal tab runs through Lightbulb.
 A running session shows its live terminal when Lightbulb started it, when it is a Claude Code

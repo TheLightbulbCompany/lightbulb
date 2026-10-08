@@ -110,6 +110,8 @@ pub(super) struct Host {
     heartbeat_interval: Duration,
     /// Proves a native session is still the process it was. A field so a test can make it slow.
     verify: Verify,
+    /// The approved folders as they are now, canonical. A field so a test can name its own.
+    approved: fn() -> Vec<PathBuf>,
 }
 
 type Verify = fn(PathBuf, NativeSession) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<NativeSession>> + Send>>;
@@ -405,8 +407,23 @@ impl Host {
             .collect();
         reconcile_sessions(&mut reconciled, update);
         let scope = self.dir.clone();
+        // A session outside the approved folders is not shared at all (owner ruling 2026-10-08):
+        // it gets no mirror, so nothing of it is read, registered or uploaded, and the mod's
+        // band finds no session to show. One already shared ends here, on the pass after its
+        // folder left the list. A folder nobody can name is not approved; only a mirror stored
+        // before `cwd` existed is left as it is until a listing names its session again.
+        let approved = (self.approved)();
+        let mut unshared = vec![];
         for mut native in reconciled {
             let key = native_key(&native);
+            let known = self.mirrors.get(&key);
+            let shared = native.cwd.as_deref().map(|cwd| in_approved_folder(cwd, &approved));
+            if shared == Some(false) || (shared.is_none() && known.is_none()) {
+                if known.is_some_and(|m| m.ended_at.is_none()) {
+                    unshared.push(key);
+                }
+                continue;
+            }
             let before = self
                 .mirrors
                 .get(&key)
@@ -435,8 +452,11 @@ impl Host {
                     let returned_claude = native.provider == "claude"
                         && native.job.is_none()
                         && claude::still_registered(&self.home, native.process.pid, &native.conversation);
+                    // Its folder was approved again (this pass got past the folder check): the
+                    // same process is shared from now on, as a new generation.
+                    let approved_again = mirror.ended_reason.as_deref() == Some(FOLDER_NOT_APPROVED);
                     if mirror.native.process == native.process {
-                        if !resumed_codex_activity && !returned_claude {
+                        if !resumed_codex_activity && !returned_claude && !approved_again {
                             continue;
                         }
                         let next_generation = uuid::Uuid::new_v4().to_string();
@@ -589,6 +609,10 @@ impl Host {
         self.heartbeat_dirty.extend(heartbeat);
         for key in moved {
             self.end_session(&key, "exited")?;
+        }
+        for key in unshared {
+            relay_log(&format!("{} is outside the approved folders: no longer shared", short(&key)));
+            self.end_session(&key, FOLDER_NOT_APPROVED)?;
         }
         Ok(invalidated)
     }
@@ -806,10 +830,11 @@ impl Host {
             let Some(mirror) = self.mirrors.get_mut(key) else {
                 return Ok(());
             };
+            // An unshared session's queue is never sent, so its end does not wait for it.
+            let unshared = mirror.deferred_end_reason.as_deref() == Some(FOLDER_NOT_APPROVED);
             if mirror.registration.pending
                 || mirror.resume_registration_pending
-                || mirror.pending.is_some()
-                || !mirror.queue.is_empty()
+                || (!unshared && (mirror.pending.is_some() || !mirror.queue.is_empty()))
                 || mirror.resume_generation.is_some()
             {
                 return Ok(());
@@ -892,7 +917,8 @@ impl Host {
             };
             let mut frame = json!({"type":"local.session.ended","sessionId":session,
                 "generation":mirror.generation,
-                "reason":mirror.ended_reason.as_deref().unwrap_or("exited"),
+                // The relay knows two reasons; an unshared session is `exited` to it.
+                "reason":mirror.ended_reason.as_deref().filter(|r| *r != FOLDER_NOT_APPROVED).unwrap_or("exited"),
                 "endedAt":ended_at});
             // The draining register of an ended mirror carries no start identity. A relay that
             // has never heard this generation's (the whole run was offline) learns it here.
@@ -1074,6 +1100,10 @@ impl Host {
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
+            #[cfg(not(test))]
+            approved: crate::session_start::approved_now,
+            #[cfg(test)]
+            approved: tests::anywhere,
         };
         // Ended mirrors are loaded so their end can still be reported, and so the
         // day-old ones are cleaned up on exactly one predictable path. No connection
@@ -1536,7 +1566,10 @@ impl Host {
                             // A turn can start and finish before discovery first sees its
                             // session (a Codex rollout appears only with the first prompt), so
                             // its events would land on nothing until the 60s sweep. Look now.
-                            if !self.mirrors.values().any(|m| m.ended_at.is_none() && m.native.conversation == event.session_id) {
+                            // Not for a session outside the approved folders: it is never mirrored,
+                            // and each of its hooks would run a discovery pass for nothing.
+                            let outside = event.cwd.as_deref().is_some_and(|cwd| !in_approved_folder(Path::new(cwd), &(self.approved)()));
+                            if !outside && !self.mirrors.values().any(|m| m.ended_at.is_none() && m.native.conversation == event.session_id) {
                                 if let Some(wake) = &self.rediscover { wake.notify_one(); }
                             }
                             if let Some(key) = self.apply_hook(&event)? {
@@ -2276,7 +2309,9 @@ fn transcript_path_unread(path: &Path, cursor: &Cursor) -> bool {
 }
 
 fn has_drainable_backlog(mirror: &Mirror) -> bool {
-    mirror.pending.is_some() || !mirror.queue.is_empty() || transcript_unread(mirror)
+    // What an unshared session wrote stays on this Mac: its end is reported with nothing drained.
+    mirror.ended_reason.as_deref() != Some(FOLDER_NOT_APPROVED)
+        && (mirror.pending.is_some() || !mirror.queue.is_empty() || transcript_unread(mirror))
 }
 
 /// A Codex Desktop thread can outlive its SessionEnd hook in the same app-server.
@@ -2800,6 +2835,109 @@ async fn send(socket: &mut Socket, body: &Value) -> Result<()> {
 pub(super) mod tests {
     use super::*;
 
+    thread_local! {
+        /// This test's approved folders; None approves every folder.
+        static APPROVED: std::cell::RefCell<Option<Vec<PathBuf>>> = const { std::cell::RefCell::new(None) };
+    }
+    /// A test `Host`'s approved folders: every folder, until the test calls `approve`.
+    pub(super) fn anywhere() -> Vec<PathBuf> {
+        APPROVED.with(|a| a.borrow().clone()).unwrap_or_else(|| vec![PathBuf::from("/")])
+    }
+    /// The approved folders become exactly `folders`, as Settings → Desktop stores them (canonical).
+    fn approve(folders: &[&PathBuf]) {
+        APPROVED.with(|a| *a.borrow_mut() = Some(folders.iter().map(|f| fs::canonicalize(f).unwrap()).collect()));
+    }
+
+    #[test]
+    fn local_sessions_a_session_outside_the_approved_folders_is_never_mirrored() {
+        let dir = tempfile::tempdir().unwrap();
+        let (approved, outside) = (dir.path().join("approved"), dir.path().join("scratch"));
+        let nested = approved.join("repo/.claude/worktrees/w");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        approve(&[&approved]);
+        let mut host = test_host(dir.path(), vec![]);
+        let mut shared = test_native(SID);
+        shared.cwd = Some(nested);
+        let mut private = test_native(SID_B);
+        private.cwd = Some(outside);
+        // A listing that names no folder: nobody can say it is approved.
+        let mut unknown = test_native("ccccdddd-eeee-4fff-8000-111122223333");
+        unknown.cwd = None;
+        let key = native_key(&shared);
+        let registered = host.observe(vec![shared, private.clone(), unknown], &BTreeSet::new()).unwrap();
+        assert_eq!(registered, vec![key.clone()], "only the session inside an approved folder registers");
+        assert_eq!(host.mirrors.keys().collect::<Vec<_>>(), vec![&key]);
+        assert!(!dir.path().join(format!("{}.json", native_key(&private))).exists(), "nothing of it is stored either");
+        assert!(host.ended_pending.is_empty());
+    }
+
+    #[test]
+    fn local_sessions_a_folder_removed_from_the_approved_list_ends_its_session_and_one_added_shares_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let approved = dir.path().join("approved");
+        fs::create_dir_all(&approved).unwrap();
+        approve(&[&approved]);
+        let mut host = test_host(dir.path(), vec![]);
+        let mut native = test_native(SID);
+        native.cwd = Some(approved.clone());
+        let key = native_key(&native);
+        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
+        host.mirrors.get_mut(&key).unwrap().session_id = Some("session-id".into());
+
+        // Removed in Settings → Desktop → Approved folders while the session runs on.
+        approve(&[]);
+        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
+        let mirror = &host.mirrors[&key];
+        assert!(mirror.ended_at.is_some());
+        assert_eq!(mirror.ended_reason.as_deref(), Some(FOLDER_NOT_APPROVED));
+        let (_, frame) = host.ended_frame(&mut BTreeSet::new()).unwrap().unwrap();
+        assert_eq!((frame["type"].as_str(), frame["reason"].as_str()), (Some("local.session.ended"), Some("exited")), "the relay's own reason");
+        // Still running there: a later listing does not bring it back.
+        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
+        assert!(host.mirrors[&key].ended_at.is_some());
+
+        // Approved again: the same process is shared from now on, as a new generation.
+        approve(&[&approved]);
+        let old = host.mirrors[&key].generation.clone();
+        assert_eq!(host.observe(vec![native], &BTreeSet::new()).unwrap(), vec![key.clone()]);
+        let mirror = &host.mirrors[&key];
+        assert!(mirror.ended_at.is_none());
+        assert_ne!(mirror.generation, old);
+        assert_eq!(mirror.previous_generation.as_deref(), Some(old.as_str()));
+    }
+
+    #[test]
+    fn local_sessions_an_unshared_session_uploads_nothing_after_its_end() {
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.ended_at = Some(1);
+        mirror.queue.push(json!({"text": "written outside the approved folders"}));
+        assert!(has_drainable_backlog(&mirror), "an ordinary end still drains its history");
+        mirror.ended_reason = Some(FOLDER_NOT_APPROVED.into());
+        assert!(!has_drainable_backlog(&mirror));
+        assert!(!needs_ended_recovery(&mirror));
+    }
+
+    #[test]
+    fn local_sessions_a_mirror_stored_before_folders_were_checked_ends_once_its_folder_is_known() {
+        let dir = tempfile::tempdir().unwrap();
+        let (approved, outside) = (dir.path().join("approved"), dir.path().join("scratch"));
+        fs::create_dir_all(&approved).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        approve(&[&approved]);
+        let mut stored = test_mirror(SID, "gen-1");
+        stored.native.cwd = None;
+        let key = native_key(&stored.native);
+        let mut host = test_host(dir.path(), vec![(key.as_str(), stored.clone())]);
+        // A pass that does not name it (a failed listing) proves nothing about its folder.
+        host.observe(vec![], &BTreeSet::new()).unwrap();
+        assert!(host.mirrors[&key].ended_at.is_none());
+        let mut listed = stored.native;
+        listed.cwd = Some(outside);
+        host.observe(vec![listed], &BTreeSet::new()).unwrap();
+        assert_eq!(host.mirrors[&key].ended_reason.as_deref(), Some(FOLDER_NOT_APPROVED));
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn transport_a_stuck_workspace_scan_blocks_the_next_one() {
         static FLAG: AtomicBool = AtomicBool::new(false);
@@ -2840,6 +2978,7 @@ pub(super) mod tests {
             status: "unknown".into(),
             title: None,
             cwd_name: None,
+            cwd: Some("/".into()),
             active_turn: None,
             last_assistant_message: None,
             holder: None,
@@ -2921,6 +3060,7 @@ pub(super) mod tests {
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
+            approved: anywhere,
         }
     }
 
@@ -4457,6 +4597,7 @@ pub(super) mod tests {
             status: "unknown".into(),
             title: None,
             cwd_name: None,
+            cwd: Some("/".into()),
             active_turn: None,
             last_assistant_message: None,
             holder: None,
@@ -4715,6 +4856,7 @@ pub(super) mod tests {
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
+            approved: anywhere,
         };
         let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
@@ -4741,6 +4883,7 @@ pub(super) mod tests {
             status: "unknown".into(),
             title: None,
             cwd_name: None,
+            cwd: Some("/".into()),
             active_turn: None,
             last_assistant_message: None,
             holder: None,
@@ -4863,6 +5006,7 @@ pub(super) mod tests {
             status: "unknown".into(),
             title: None,
             cwd_name: None,
+            cwd: Some("/".into()),
             active_turn: None,
             last_assistant_message: None,
             holder: None,
@@ -4908,6 +5052,7 @@ pub(super) mod tests {
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
+            approved: anywhere,
         };
         let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
@@ -5609,6 +5754,7 @@ pub(super) mod tests {
             heartbeat_dirty: BTreeSet::new(),
             heartbeat_interval: Duration::from_secs(10),
             verify: verify_native,
+            approved: anywhere,
         };
         let enrollment = Enrollment {
             owner_id: "org".into(),

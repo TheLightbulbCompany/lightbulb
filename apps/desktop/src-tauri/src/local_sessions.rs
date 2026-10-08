@@ -990,6 +990,11 @@ struct NativeSession {
     title: Option<String>,
     #[serde(default)]
     cwd_name: Option<String>,
+    /// The folder the session works in, as the provider reports it. It decides whether the
+    /// session is shared at all (`in_approved_folder`) and never leaves this Mac. None in a
+    /// mirror stored by a build older than the field, until a listing names the session again.
+    #[serde(default)]
+    cwd: Option<PathBuf>,
     #[serde(default)]
     active_turn: Option<String>,
     #[serde(default)]
@@ -1033,6 +1038,19 @@ impl NativeSession {
             _ => "unknown",
         })
     }
+}
+
+/// The local end reason of a session whose folder is not approved (any more). The relay is
+/// told a plain `exited`; nothing of the session is uploaded after it.
+const FOLDER_NOT_APPROVED: &str = "folder-not-approved";
+
+/// Whether a session working in `cwd` may be shared: the folder, resolved the way file access
+/// resolves a path (symlinks followed, the volume's own letter case), is one of the approved
+/// folders (Settings → Desktop → Approved folders) or anywhere inside one. A folder that cannot
+/// be resolved (deleted, unreadable) is not approved.
+fn in_approved_folder(cwd: &Path, approved: &[PathBuf]) -> bool {
+    cwd.is_absolute()
+        && fs::canonicalize(cwd).is_ok_and(|folder| crate::session_start::inside_approved(&folder, approved))
 }
 
 async fn native_output(program: &Path, args: &[&str]) -> Result<String> {
@@ -1918,6 +1936,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn local_sessions_only_a_folder_inside_an_approved_folder_is_shared() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let (folder, outside, sibling) = (root.join("Approved"), root.join("Elsewhere"), root.join("Approved2"));
+        let nested = folder.join("repo/.claude/worktrees/w");
+        for made in [&nested, &outside, &sibling] {
+            fs::create_dir_all(made).unwrap();
+        }
+        let approved = vec![folder.clone()];
+        assert!(in_approved_folder(&folder, &approved), "the approved folder itself (as ~/Lightbulb is by default)");
+        assert!(in_approved_folder(&nested, &approved), "any depth inside it");
+        assert!(!in_approved_folder(&outside, &approved));
+        assert!(!in_approved_folder(&sibling, &approved), "a name that only starts the same");
+        assert!(!in_approved_folder(&root, &approved), "never the folder above an approved one");
+        assert!(!in_approved_folder(&folder.join("../Elsewhere"), &approved));
+        assert!(!in_approved_folder(Path::new("Approved"), &approved), "a relative folder names nothing");
+        assert!(!in_approved_folder(&folder.join("deleted"), &approved), "a folder that cannot be resolved");
+        assert!(!in_approved_folder(&folder, &[]), "no approved folders: nothing is shared");
+        // Symlinks are followed, as file access follows them: where the session really works decides.
+        std::os::unix::fs::symlink(&nested, root.join("link-in")).unwrap();
+        std::os::unix::fs::symlink(&outside, folder.join("link-out")).unwrap();
+        assert!(in_approved_folder(&root.join("link-in"), &approved));
+        assert!(!in_approved_folder(&folder.join("link-out"), &approved));
+        // macOS volumes ignore letter case by default: the same folder typed in another case.
+        let other_case = root.join("approved");
+        if other_case.exists() {
+            assert!(in_approved_folder(&other_case.join("repo"), &approved));
+        }
+        // Approved later, removed later: the list as it is now decides.
+        assert!(in_approved_folder(&outside, &[folder, outside.clone()]));
+    }
+
+    #[test]
     fn local_sessions_json_reads_are_not_one_syscall_per_byte() {
         // Counts `read` calls the way the kernel would see them on a bare `File`.
         struct Counting<'a>(&'a [u8], usize);
@@ -1952,6 +2003,7 @@ mod tests {
             status: "idle".into(),
             title: None,
             cwd_name: None,
+            cwd: Some("/".into()),
             active_turn: None,
             last_assistant_message: None,
             holder: None,
@@ -2119,6 +2171,7 @@ mod tests {
             status: "unknown".into(),
             title: None,
             cwd_name: None,
+            cwd: Some("/".into()),
             active_turn: None,
             last_assistant_message: None,
             holder: None,
@@ -2184,6 +2237,7 @@ mod tests {
             status: "idle".into(),
             title: None,
             cwd_name: None,
+            cwd: Some("/".into()),
             active_turn: None,
             last_assistant_message: None,
             holder: None,
@@ -2564,6 +2618,7 @@ mod tests {
             status: "unknown".into(),
             title: None,
             cwd_name: None,
+            cwd: Some("/".into()),
             active_turn: None,
             last_assistant_message: None,
             holder: None,
@@ -2667,6 +2722,7 @@ mod tests {
                 status: "unknown".into(),
                 title: None,
                 cwd_name: None,
+                cwd: Some("/".into()),
                 active_turn: None,
                 last_assistant_message: None,
                 holder: None,
@@ -2753,6 +2809,7 @@ mod tests {
                 status: "unknown".into(),
                 title: None,
                 cwd_name: None,
+                cwd: Some("/".into()),
                 active_turn: None,
                 last_assistant_message: None,
                 holder: None,
@@ -2838,6 +2895,7 @@ mod tests {
                 status: "unknown".into(),
                 title: None,
                 cwd_name: None,
+                cwd: Some("/".into()),
                 active_turn: None,
                 last_assistant_message: None,
                 holder: None,
@@ -2938,6 +2996,7 @@ mod tests {
                 status: "unknown".into(),
                 title: None,
                 cwd_name: None,
+                cwd: Some("/".into()),
                 active_turn: None,
                 last_assistant_message: None,
                 holder: None,
@@ -3003,6 +3062,7 @@ mod tests {
                 status: "unknown".into(),
                 title: None,
                 cwd_name: None,
+                cwd: Some("/".into()),
                 active_turn: None,
                 last_assistant_message: None,
                 holder: None,

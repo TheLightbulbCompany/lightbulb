@@ -29,6 +29,8 @@ export interface RoomDetailsProps {
   candidates: readonly (MemberRef & { displayName: string })[];
   upsertMember: (request: UpsertRoomMemberRequest) => Promise<unknown>;
   removeMember: (member: MemberRef) => Promise<unknown>;
+  /** Opens the existing picker immediately when launched from the conversation header. */
+  initialAddPeopleOpen?: boolean;
   /** Leaves and navigates away; rejects on failure. */
   leaveRoom: () => Promise<unknown>;
   setArchived: (archived: boolean) => Promise<unknown>;
@@ -45,6 +47,7 @@ export function RoomDetails({
   candidates,
   upsertMember,
   removeMember,
+  initialAddPeopleOpen = false,
   leaveRoom,
   setArchived,
 }: RoomDetailsProps) {
@@ -55,9 +58,6 @@ export function RoomDetails({
   const CAPTION = [font({ textStyle: "footnote" }), foregroundStyle(palette.fgMute)];
   const ERROR = [foregroundStyle(palette.alert)];
   const DANGER = [foregroundStyle(palette.alert)];
-
-  const [error, setError] = useState<string | null>(null);
-  const [sheet, setSheet] = useState<"add" | "remove" | null>(null);
 
   const viewer = room.members.find((m) => m.kind === "human" && m.id === currentUserId);
   const others = room.members.filter((m) => !(m.kind === "human" && m.id === currentUserId));
@@ -70,6 +70,10 @@ export function RoomDetails({
   // session, so the backend refuses every change by hand except its owner's agents.
   const managed = !!room.session;
   const canAdd = !room.shared && (!isChannel || isAdmin);
+  const [error, setError] = useState<string | null>(null);
+  // Keep URL-driven opening behind the same permission predicate as the
+  // details button; a hand-edited query string must not reveal the picker.
+  const [sheet, setSheet] = useState<"add" | "remove" | null>(initialAddPeopleOpen && canAdd ? "add" : null);
   const removable = canManageMembers
     ? room.members.filter((m) => m.role !== "owner" && !((room.shared || managed) && m.kind === "human"))
     : [];

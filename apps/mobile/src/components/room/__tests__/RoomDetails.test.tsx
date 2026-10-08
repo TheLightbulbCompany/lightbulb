@@ -115,6 +115,11 @@ describe("RoomDetails", () => {
     expect(screen.getByLabelText("Atlas")).toBeTruthy();
   });
 
+  it("does not honor a direct-picker request from a member without permission", async () => {
+    await setup(room({}, "member"), { initialAddPeopleOpen: true });
+    expect(screen.queryByPlaceholderText("Search people")).toBeNull();
+  });
+
   it("keeps adding and removing members to channel owners and admins", async () => {
     await setup(room());
     expect(screen.queryByText("Add members")).toBeNull();

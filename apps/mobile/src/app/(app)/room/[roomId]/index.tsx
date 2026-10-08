@@ -238,6 +238,9 @@ function Conversation() {
   const isChannel = room?.kind === "channel";
   const isDm = room?.kind === "dm";
   const isGroupDm = room?.kind === "group-dm";
+  const canQuickAddPeople = isChannel
+    && !room?.shared
+    && (viewer?.role === "owner" || viewer?.role === "admin");
   const dmWithAgent = isDm && others[0]?.kind === "agent";
   const isHumanDm = isDm && others[0]?.kind === "human";
   // One heartbeat/snapshot loop per screen that shows it (ponytail) — Chats
@@ -434,6 +437,9 @@ function Conversation() {
         disabled={!room}
         onToggleStar={() => void savePrefs({ starred: !room?.starred }, STAR_FAILED)}
         onToggleMute={() => void savePrefs({ muted: !room?.muted }, MUTE_FAILED)}
+        onAddPeople={canQuickAddPeople && roomId
+          ? () => router.push(`/(app)/room/${roomId}/details?addPeople=1`)
+          : undefined}
         voice={headerVoice}
         onLayout={(event) => setHeaderActionsWidth(event.nativeEvent.layout.width)}
       />

@@ -426,7 +426,8 @@ class Epoch:
     speaking: the transcriber hears them. awaiting-final: they stopped and its transcript is not here.
     awaiting-route: the transcript is here and what it asks is being worked out or applied. Then it is
     resolved and forgotten. `credible`: the SFU heard them too, so it is speech and not the detector alone:
-    only a credible one holds the room before it has words. `held`: tasks still applying its line."""
+    only a credible one holds the room before it has words. `held`: tasks still applying its line. `words`:
+    what the transcriber has made of it so far (its interim text), before the final."""
 
     id: int
     who: str
@@ -435,6 +436,12 @@ class Epoch:
     ended: float = 0.0
     credible: bool = False
     held: int = 0
+    words: str = ""
+
+    @property
+    def listening(self) -> bool:
+        """All of it heard so far is a listening sound ("mm-hm", "yeah"): its speaker is following, not asking."""
+        return bool(self.words) and backchannel(self.words)
 
 
 # The speech whose line the running task is handling. asyncio copies it into every task made while it is
@@ -1486,6 +1493,11 @@ class Huddle:
         v, text = self._voice, text.strip()
         if text:
             self._utter_from.setdefault(identity, self._clock())
+            unheard = [e for e in self._turns.get(identity, []) if e.state in ("speaking", "awaiting-final")]
+            if unheard:
+                unheard[-1].words = text
+                self._listened(unheard[-1])
+                self._yield_check()  # more than a listening sound by now: a mouth they talk over yields
         if v and text and identity == v.speaker:
             v.handoff = None  # the person the agent asked is answering
         if (
@@ -1503,6 +1515,14 @@ class Huddle:
         a = address(text, self._team["agents"], self._team["people"])
         if a.agent_ids or a.lightbulb or real_speech(text):  # real_speech covers a halt
             self._cut(v, identity)
+
+    def _listened(self, ep: Epoch) -> None:
+        """A person stopped, and all the transcriber has of it so far is a listening sound: it asked nothing,
+        so nothing waits for its final transcript (1.2-1.9 s). A mouth it paused goes on now (`_talked_over`),
+        and the turn no longer holds the room (`_turn_open`). The final still comes, and is read as any line."""
+        if ep.state == "awaiting-final" and ep.listening:
+            self._talked_over(ep.who, ep.words)
+            self._pump()
 
     def _wake_fired(self, identity: str, agent_id: str, match: str) -> dict[str, str]:
         """live.wake.fired (D Unknown 5): which kind of name woke an agent, and how well it matched."""
@@ -1927,6 +1947,8 @@ class Huddle:
             or self._selected == u.agent
             or (u.kind == "answer" and e is not None and e.state == "active" and e.expects == "answer")
         )
+        if u.resume:
+            return "", None  # only a listening sound paused it: nobody took the floor, and no room has to settle
         quiet, since = (SETTLE_S, self._talk_until) if wanted else (MEET_QUIET_S, self._last_heard)
         left = quiet - (now - since)
         return ("quiet", left) if left > 0 else ("", None)
@@ -1957,7 +1979,7 @@ class Huddle:
                 if ep.state == "awaiting-final":
                     if (wait := FINAL_WAIT_S - (now - ep.ended)) <= 0:
                         self._final_timeout(ep)
-                    elif ep.credible:
+                    elif ep.credible and not ep.listening:  # (a listening sound asks nothing: `_listened`)
                         left = max(left or 0.0, wait)
         if left is not None:
             return "final", left
@@ -2190,10 +2212,19 @@ class Huddle:
         when the talk began (`_talking_changed`), and by the tick. True: it yielded."""
         u = next((u for u in self._ledger if u.state == "speaking"), None)
         now = self._clock()
-        if u is None or not any(now - self._turn_from(w) >= TALK_OVER_S - 0.05 for w in self._speaking):
-            return False  # (the timer may fire a moment early)
+        # (the timer may fire a moment early)
+        over = [w for w in self._speaking if now - self._turn_from(w) >= TALK_OVER_S - 0.05 and not self._only_listening(w)]
+        if u is None or not over:
+            return False
         self._yield(u)
         return True
+
+    def _only_listening(self, identity: str) -> bool:
+        """All the transcriber has of what `identity` is saying is a listening sound ("mm-hm", "yeah"): a
+        sentence being said is not stopped for it. Words that say more make it yield as they come
+        (`on_interim_transcript`); with no words yet it yields as for any talk."""
+        speaking = [e for e in self._turns.get(identity, []) if e.state == "speaking"]
+        return bool(speaking) and all(e.listening for e in speaking)
 
     def _yield(self, u: Utterance) -> None:
         """Yield: the utterance loses its permission to play, is paused at its cursor, and the floor is
@@ -3139,6 +3170,7 @@ class Huddle:
             self._voiced.discard(identity)
             if open_ is not None:
                 open_.state, open_.ended = "awaiting-final", now
+                self._listened(open_)
         self._log("speech", src="voiced", who=identity, on=started)
         self._talking_changed()
 

@@ -145,3 +145,45 @@ async def talked_over_line(h, clock):
     clock.t += h_mod.TALK_OVER_S
     await h.tick()
     await settle(h)
+
+
+# -- a listening sound ("mm-hm", "yeah"): known from the first words, not from the final transcript --
+
+
+async def test_a_sentence_being_said_does_not_yield_to_words_that_are_only_a_listening_sound():
+    h, backend, lives, clock, row = await answering()
+    talks(h, P2)
+    h.on_interim_transcript(P2, "Dan", "Mm-hm")
+    clock.t += h_mod.TALK_OVER_S
+    await h.tick()
+    assert ("interrupt",) not in lives[0].calls and [u.state for u in h._ledger] == ["speaking"]
+    h.on_interim_transcript(P2, "Dan", "Mm-hm, but wait")  # it was the start of a turn after all
+    assert ("interrupt",) in lives[0].calls and [u.state for u in h._ledger] == ["paused"], "it yields as the words come"
+
+
+async def test_talk_with_no_words_yet_makes_it_yield_as_before():
+    h, backend, lives, clock, row = await answering()
+    await talked_over(h, clock, P2)  # (asserts it paused)
+
+
+async def test_a_paused_answer_goes_on_when_the_listening_sound_ends_without_waiting_for_its_final():
+    h, backend, lives, clock, row = await answering()
+    await talked_over(h, clock, P2)
+    cut(h, lives[0], 0, FIRST, 0.0)
+    h.on_interim_transcript(P2, "Dan", "Yeah")  # the words came after the yield
+    assert len(says_of(lives[0])) == 2, "they are still heard speaking: nothing starts"
+    quiet(h)  # the detector's stop. The final is 1.2-1.9 s away, and the room has not had SETTLE_S of quiet.
+    await settle(h)
+    assert says_of(lives[0])[2:] == [("say", f"{FIRST} {SECOND}")], "at once"
+    await says(h, P2, "Yeah.")  # the final, when it comes, changes nothing
+    assert len(says_of(lives[0])) == 3 and h._turns == {}
+
+
+async def test_a_paused_answer_waits_for_the_final_of_talk_whose_first_words_were_real_words():
+    h, backend, lives, clock, row = await answering()
+    await talked_over(h, clock, P2)
+    cut(h, lives[0], 0, FIRST, 0.0)
+    h.on_interim_transcript(P2, "Dan", "Yeah, I think")
+    quiet(h)
+    await pause(h, clock, BREATH)
+    assert len(says_of(lives[0])) == 2 and [u.state for u in h._ledger] == ["paused"]

@@ -475,6 +475,45 @@ async def test_enrollment_ownership_disable_and_no_machine_self_enable(db):
     assert db[0].get_item(Key={"pk": f"LOCALSESSION#{OWNER}#{sid}", "sk": "META"}).get("Item")
 
 
+def _cancelled(reason: str) -> ClientError:
+    return ClientError(
+        {
+            "Error": {"Code": "TransactionCanceledException"},
+            "CancellationReasons": [{"Code": reason}, {"Code": "None"}],
+        },
+        "TransactWriteItems",
+    )
+
+
+@pytest.mark.asyncio
+async def test_enrollment_retries_a_concurrent_pairing_conflict_but_not_a_failed_condition(db, monkeypatch):
+    """Load 3b (dev 2026-10-08): a Mac pairing in the same workspace held the owner row, so the
+    enrollment transaction was cancelled with TransactionConflict and misreported as "Device
+    pairing changed". A conflict now retries; a real ConditionalCheckFailed still 403s at once."""
+    real = messaging_repo._transact
+    failures = [_cancelled("TransactionConflict")]
+
+    async def flaky(items):
+        if failures:
+            raise failures.pop()
+        return await real(items)
+
+    monkeypatch.setattr(messaging_repo, "_transact", flaky)
+    sleep = AsyncMock()
+    with patch("asyncio.sleep", sleep):
+        await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, cliDeviceId=CLI, enabled=True))
+        assert sleep.await_count == 1 and not failures
+
+        failures.append(_cancelled("ConditionalCheckFailed"))
+        with pytest.raises(ApiProblem) as refused:
+            await service.set_enrollment(ALICE, service.EnrollmentRequest(deviceId=MAC, cliDeviceId=CLI, enabled=True))
+    assert (
+        refused.value.error.code == "LOCAL_SESSION_FORBIDDEN"
+        and str(refused.value) == "Device pairing changed. Try again."
+    )
+    assert sleep.await_count == 1
+
+
 @pytest.mark.asyncio
 async def test_paired_directory_is_independent_of_sharing_and_only_groups_explicit_associations(db):
     resources = (await service.list_resources(BOB, ROOM)).model_dump(by_alias=True)

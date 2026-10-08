@@ -19,7 +19,7 @@ db = registry_tests.db
 def published(db):
     sent: list[dict] = []
 
-    async def post(_self, endpoint, body, headers):
+    async def post(_self, endpoint, body, headers, tag=None):
         sent.append(json.loads(body))
         return httpx.Response(200, json={"successful": [{"identifier": "ok"}], "failed": []})
 

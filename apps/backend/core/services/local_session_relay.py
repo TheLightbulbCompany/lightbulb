@@ -754,7 +754,13 @@ class LocalSessionRelay:
             except ClientError as exc:
                 if not store._is_cancelled(exc):
                     raise
+                lost = exc
                 connection, enrollment = await self.connect(cid)
+        if isinstance(message, DeviceHeartbeat):
+            # The relay lost its own races; a heartbeat has nothing to reconcile. A conflict here
+            # names no session, so the Mac cannot quarantine one and ends its whole connection.
+            # Raised as it is, the frame is answered INTERNAL and the Mac sends the next heartbeat.
+            raise lost
         raise _conflict("revision contention", cid=cid)
 
     async def _reconcile_for(self, owner: str, sid: str, generation: str, *, spaced: bool = False) -> dict | None:
@@ -801,11 +807,17 @@ class LocalSessionRelay:
         hint = False
         # Sessions are independent, but one frame still waits for all its writes before ACK.
         # Keep duplicate entries and revision retries serial within each session. Four groups
-        # overlap their network I/O without opening an unbounded DynamoDB request burst.
+        # overlap their reads and delivery without opening an unbounded DynamoDB request burst.
         groups: dict[str, list[HeartbeatSession]] = {}
         for item in message.sessions:
             groups.setdefault(item.session_id, []).append(item)
         slots = asyncio.Semaphore(4)
+        # The lease writes go one at a time. Every one is a transaction that condition-checks the
+        # same three rows (pairing, enrollment, this connection), and DynamoDB cancels a
+        # transaction that touches an item another one in flight holds, a ConditionCheck included.
+        # Four at once cancelled each other: a third of prod frames reran, and about one in a hundred lost
+        # six times running and cost the Mac its connection (2026-10-08).
+        writes = asyncio.Lock()
         # One strong read for the whole frame. Only a session's first pass may take its row from
         # here: a duplicate entry or a revision retry reads again, and the fenced write below
         # catches a row that moved since. A batched row is never grounds to reject: a session
@@ -901,9 +913,10 @@ class LocalSessionRelay:
                     if moved:
                         updated["lastEventAt"] = now
                     try:
-                        await repo.put_session(
-                            updated, row, enrollment, extra=[self._connection_check(cid, connection)]
-                        )
+                        async with writes:
+                            await repo.put_session(
+                                updated, row, enrollment, extra=[self._connection_check(cid, connection)]
+                            )
                     except ClientError as exc:
                         if not store._is_cancelled(exc) or retries.get(item.session_id, 0) >= 2:
                             raise

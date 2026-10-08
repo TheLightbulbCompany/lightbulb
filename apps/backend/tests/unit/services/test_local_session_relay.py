@@ -1317,7 +1317,10 @@ async def test_native_successor_unblocks_new_input_without_replaying_old_unknown
 
 
 @pytest.mark.asyncio
-async def test_device_heartbeat_overlaps_independent_sessions_with_a_bounded_limit(transport):
+async def test_device_heartbeat_overlaps_sessions_up_to_a_limit_but_never_their_lease_writes(transport):
+    """Each lease write is a transaction that condition-checks the same pairing, enrollment and
+    connection rows, and DynamoDB cancels one that overlaps another on any item (Moto does not).
+    Overlapping them reran a third of prod heartbeats and dropped the Mac's connection."""
     first = await start(transport)
     host = relay(transport)
     sids = [first]
@@ -1326,24 +1329,33 @@ async def test_device_heartbeat_overlaps_independent_sessions_with_a_bounded_lim
         sids.append(ack["sessionId"])
     frame = heartbeat(first)
     frame["sessions"] = [heartbeat(sid)["sessions"][0] for sid in sids]
-    real_put = repo.put_session
+    real_put, real_dispatch = repo.put_session, host.dispatch_session
     entered, release = asyncio.Event(), asyncio.Event()
-    seen, active, maximum = set(), 0, 0
+    writing = most_writing = delivering = most_delivering = 0
+    written = []
 
-    async def slow_first_write(updated, *args, **kwargs):
-        nonlocal active, maximum
-        sid = updated["sessionId"]
-        if sid not in seen:
-            seen.add(sid)
-            active += 1
-            maximum = max(maximum, active)
-            if active == 4:
-                entered.set()
-            await release.wait()
-            active -= 1
-        return await real_put(updated, *args, **kwargs)
+    async def counted_write(updated, *args, **kwargs):
+        nonlocal writing, most_writing
+        writing += 1
+        most_writing = max(most_writing, writing)
+        await asyncio.sleep(0)  # let any sibling that could start a write start it
+        try:
+            return await real_put(updated, *args, **kwargs)
+        finally:
+            written.append(updated["sessionId"])
+            writing -= 1
 
-    with patch.object(repo, "put_session", slow_first_write):
+    async def slow_delivery(owner, sid):
+        nonlocal delivering, most_delivering
+        delivering += 1
+        most_delivering = max(most_delivering, delivering)
+        if delivering == 4:
+            entered.set()
+        await release.wait()
+        delivering -= 1
+        return await real_dispatch(owner, sid)
+
+    with patch.object(repo, "put_session", counted_write), patch.object(host, "dispatch_session", slow_delivery):
         task = asyncio.create_task(host.handle_message("conn-1", frame))
         try:
             await asyncio.wait_for(entered.wait(), timeout=1)
@@ -1352,8 +1364,28 @@ async def test_device_heartbeat_overlaps_independent_sessions_with_a_bounded_lim
             response = await task
     assert response["type"] == "local.device.heartbeat.ack"
     assert response["rejected"] == []
-    assert maximum == 4
-    assert seen == set(sids)
+    assert most_delivering == 4
+    assert most_writing == 1
+    assert sorted(written) == sorted(sids)
+
+
+@pytest.mark.asyncio
+async def test_a_heartbeat_that_loses_every_revision_race_is_the_relays_failure_not_a_conflict(transport):
+    """A conflict on a heartbeat names no session: the Mac cannot quarantine one and ended its
+    whole connection (prod 2026-10-08, 13 times). The cancellation leaves as it is, which the
+    route answers INTERNAL, and the Mac sends its next heartbeat."""
+    sid = await start(transport)
+    cancelled = ClientError({"Error": {"Code": "TransactionCanceledException"}}, "TransactWriteItems")
+    with patch.object(repo, "put_session", AsyncMock(side_effect=cancelled)) as put:
+        with pytest.raises(ClientError) as raised:
+            await relay(transport).handle_message("conn-1", heartbeat(sid))
+    assert raised.value is cancelled
+    assert put.await_count == 18  # three tries a session, six runs of the frame
+    # Every other frame names its session, so the Mac quarantines that one alone.
+    with patch.object(repo, "put_session", AsyncMock(side_effect=cancelled)):
+        with pytest.raises(ApiProblem) as conflict:
+            await relay(transport).handle_message("conn-1", registration())
+    assert conflict.value.error.code == "LOCAL_SESSION_CONFLICT"
 
 
 @pytest.mark.asyncio
@@ -1400,7 +1432,6 @@ async def test_device_heartbeat_drains_workers_and_preserves_the_original_error(
 
     async def failing_write(updated, *args, **kwargs):
         if updated["sessionId"] == first:
-            await second_started.wait()
             raise RuntimeError("original write failed")
         second_started.set()
         await release.wait()

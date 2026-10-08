@@ -127,14 +127,17 @@ pub const SENT_LEAVE: Duration = Duration::from_secs(3);
 /// Lightbulb's band as the Claude Code mod draws it above the prompt
 /// (`packages/claude-plugin/lightbulb/hooks/register.tsx` and `state.ts`; keep these with them):
 /// one line that opens with one of BAND_LEADS (then, live, the viewers' names), has one of
-/// BAND_BUTTONS, and ends with BAND_HINT unless someone asks to join. Then, in this order and
+/// BAND_BUTTONS, and ends with one of BAND_HINTS unless someone asks to join. Then, in this order and
 /// each only when it applies: the first request's line (a name, one of ASK_VERBS, "(+N more)" when
 /// others wait, ASK_PARTS) and WAITING. A terminal narrower than a line wraps it over rows (the
 /// shortest band is 44 columns); the engine's "[-]" ends the band's first row. How it wraps:
 /// `band_columns`.
-const BAND_LEADS: [&str; 4] = ["○ Sharing paused", "● Shared as a transcript", "● Live in Lightbulb", "● Live · "];
-const BAND_BUTTONS: [&str; 2] = ["[ Pause ]", "[ Resume sharing ]"];
-const BAND_HINT: &str = "ctrl+x tab, then p";
+// The first two leads and buttons are the mod's before 2026-10-08: a session started then still draws them.
+const BAND_LEADS: [&str; 6] = ["○ Sharing paused", "● Shared as a transcript", "○ Only you", "● Shared in Lightbulb", "● Live in Lightbulb", "● Live · "];
+const BAND_BUTTONS: [&str; 4] = ["[ Pause ]", "[ Resume sharing ]", "[ Stop sharing ]", "[ Share to Lightbulb ]"];
+const BAND_HINTS: [&str; 2] = ["ctrl+x tab, then p", "ctrl+x tab, then s"];
+/// A band that is one line with no button.
+const BAND_ALONE: [&str; 2] = ["○ Press ← once to go live", "○ Stopping… teammates may still see earlier output"];
 const ASK_VERBS: [&str; 2] = [" asked to join", " wants to pick this up · conversation + uncommitted changes"];
 const ASK_PARTS: [&str; 3] = ["[ Allow ]", "[ Decline ]", "ctrl+x tab, then a or d · or click"];
 const WAITING: &str = "Waiting on you here or in Lightbulb";
@@ -173,6 +176,11 @@ fn so_far(joined: &str, line: &str) -> Option<bool> {
     line.starts_with(joined).then_some(line == joined)
 }
 
+/// `joined` so far is one of `lines`, or starts one.
+fn so_far_any(joined: &str, lines: &[&str]) -> Option<bool> {
+    lines.iter().filter_map(|line| so_far(joined, line)).max()
+}
+
 fn fits_band(joined: &str) -> Option<bool> {
     let lead = BAND_LEADS.iter().map(|lead| squash(lead)).find(|lead| joined.starts_with(lead.as_str()) || lead.starts_with(joined))?;
     if joined.len() < lead.len() {
@@ -181,7 +189,7 @@ fn fits_band(joined: &str) -> Option<bool> {
     // The names may still be going: no button yet.
     let Some(after) = BAND_BUTTONS.iter().find_map(|button| joined.split_once(squash(button).as_str())).map(|(_, after)| after) else { return Some(false) };
     // (With a request under it the band has no hint.)
-    if after.is_empty() { Some(true) } else { so_far(after, BAND_HINT) }
+    if after.is_empty() { Some(true) } else { so_far_any(after, &BAND_HINTS) }
 }
 
 fn fits_ask(joined: &str) -> Option<bool> {
@@ -294,8 +302,12 @@ fn without_band(picture: Vec<u8>, (rows, cols): (u16, u16)) -> Vec<u8> {
     // The last one: the band is under the conversation, and the conversation may quote one.
     // Each line either wrapped as one text or part by part (`band_columns`); a band with a request under it has no hint.
     let band_at = |at: usize| {
-        let columns = BAND_BUTTONS.iter().flat_map(|button| [vec![*button, BAND_HINT], vec![*button]]).map(|fixed| band_columns(&text, at, &fixed, opens_band));
-        columns.fold(band_line(&text, at, fits_band), usize::max)
+        let columns = BAND_BUTTONS
+            .iter()
+            .flat_map(|button| BAND_HINTS.map(|hint| vec![*button, hint]).into_iter().chain([vec![*button]]))
+            .map(|fixed| band_columns(&text, at, &fixed, opens_band));
+        let line = band_line(&text, at, fits_band).max(band_line(&text, at, |joined| so_far_any(joined, &BAND_ALONE)));
+        columns.fold(line, usize::max)
     };
     let Some((first, band)) = (0..text.len()).rev().map(|at| (at, band_at(at))).find(|(_, band)| *band > 0) else { return picture };
     let ask = band_line(&text, first + band, fits_ask).max(band_columns(&text, first + band, &ASK_PARTS, asks));
@@ -1148,6 +1160,12 @@ mod tests {
             assert_eq!(kept(screen.as_str(), alternate).0, rows(&[">"]));
             // No band: the picture as it is.
             assert_eq!(kept("the answer\r\n\r\n> ", alternate), (rows(&["the answer", "", ">"]), (2, 2)));
+        }
+        // Every band the mod draws today goes the same way.
+        for band in ["● Live in Lightbulb [ Stop sharing ] ctrl+x tab, then p", "● Live · Ada watching [ Stop sharing ]", "● Shared in Lightbulb [ Stop sharing ]",
+            "○ Only you [ Share to Lightbulb ] ctrl+x tab, then s", "○ Stopping… teammates may still see earlier output", "○ Press ← once to go live"] {
+            let screen = format!("the answer\r\n\r\n{band}\r\n\r\n> ");
+            assert_eq!(kept(screen.as_str(), false).0, rows(&["the answer", "", "", ">"]), "{band}");
         }
         // Review of #3878: with no request, what stands under the band is the person's own, whatever it says.
         for under in ["> press [ Allow ] to go on", "> Bo asked to join [ Allow ] [ Decline ]", "Waiting on you here", "> ctrl+x tab, then p"] {

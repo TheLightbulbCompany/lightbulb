@@ -386,7 +386,7 @@ test('every band Button has its own hotkey', async ($, on) => {
   expect(await hotkeys()).toEqual({ pause: 'p', allow: 'a', decline: 'd' })
   state = { ...base, paused: true }
   await clock.advance(2000)
-  expect(await hotkeys()).toEqual({ resume: 'p' })
+  expect(await hotkeys()).toEqual({ resume: 's' }) // the same key as Share on a session that was never shared
 })
 
 // Prod 2026-10-07, Claude Code 2.1.292: `a` at the prompt typed "a"; only a click reached Allow.
@@ -395,7 +395,7 @@ test('every band Button has its own hotkey', async ($, on) => {
 test('the key hint names the way to the band and the letters that work there', () => {
   expect(keysHint(asking)).toBe('ctrl+x tab, then a or d · or click')
   expect(keysHint(base)).toBe('ctrl+x tab, then p')
-  expect(keysHint({ ...base, paused: true })).toBe('ctrl+x tab, then p')
+  expect(keysHint({ ...base, paused: true })).toBe('ctrl+x tab, then s')
 })
 
 test('the terminal band shows the key hint beside its buttons; a desktop, which has no chord, does not', async ($, on) => {

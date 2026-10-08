@@ -1,7 +1,7 @@
 import type { LocalSession } from "./types";
 
 /** A session that can never have a terminal: it runs inside an app, an IDE or an SDK, and is shared as its
- *  conversation. `unknown` is what the Mac sends for one today (`app` and `sdk` are the relay's own names). */
+ *  conversation. The Mac says `app`; one older than 2026-10-08 said `unknown`. */
 export function conversationOnly(session: LocalSession): boolean {
   return !session.terminal && (session.terminalReason === "app" || session.terminalReason === "sdk" || session.terminalReason === "unknown");
 }

@@ -39,7 +39,7 @@ export function requestLine(r: JoinRequest, count: number): string {
 // ponytail: the default chord, written out. A person who rebound abovePrompt:focus reads the old
 // one; the API hands a mod no way to ask for theirs.
 export function keysHint(s: SessionState): string {
-  return s.joinRequests.length ? 'ctrl+x tab, then a or d · or click' : 'ctrl+x tab, then p'
+  return s.joinRequests.length ? 'ctrl+x tab, then a or d · or click' : s.paused ? SHARE_HINT : 'ctrl+x tab, then p'
 }
 
 // The band of a session with nothing in the workspace (local only: nothing is registered).

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import type { LiveEvent } from "@lightbulb/shared";
 import { type LocalSession } from "@lightbulb/shared";
@@ -148,6 +148,17 @@ it("shows the conversation of a session that runs inside an app, with one line s
   expect(await within(await screen.findByRole("log")).findByText("All good.")).toBeTruthy();
   expect(document.querySelector(".session-ended-line")!.textContent).toBe("Ended");
   expect(screen.queryByText(/screen is gone/)).toBeNull();
+  cleanup();
+  // Offline: the offline panel (last seen, Resume, Pick up) stays above the conversation.
+  render(<LocalSessionPanel {...props} own={false} session={{ ...app, status: "offline" }} />);
+  expect(screen.getByText("Alice's Mac is offline")).toBeTruthy();
+  expect(await within(await screen.findByRole("log")).findByText("All good.")).toBeTruthy();
+  cleanup();
+  // Ended with nothing in it: the ended panel alone.
+  render(<LocalSessionPanel {...props} own={false} session={{ ...app, provider: "codex", status: "ended", latestEventSeq: 0 }} />);
+  expect(screen.getByText("This session ended before anything was sent.")).toBeTruthy();
+  expect(screen.queryByRole("log")).toBeNull();
+  expect(screen.queryByRole("note")).toBeNull();
   client.listLocalSessionEvents.mockResolvedValue({ events: [], nextAfterSeq: null } as never);
 });
 

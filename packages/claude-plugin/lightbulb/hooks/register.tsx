@@ -294,7 +294,7 @@ export const register: Register = on => {
         <Box>
           <Text dimColor>{bandRuns(s).map(r => r.color ? <Text color={r.color}>{r.text}</Text> : r.text)} </Text>
           {s.paused
- ? <Button key="resume" hotkey="p" label={SHARE_LABEL} onPress={act({ decision: 'unpause' })} />
+ ? <Button key="resume" hotkey="s" label={SHARE_LABEL} onPress={act({ decision: 'unpause' })} />
             : <Button key="pause" hotkey="p" label="Stop sharing" onPress={act({ decision: 'pause' })} />}
           {!ask && hint}
         </Box>

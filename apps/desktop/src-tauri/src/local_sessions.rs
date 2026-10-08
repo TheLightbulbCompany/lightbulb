@@ -1024,17 +1024,15 @@ impl NativeSession {
 
     /// Why a running session has no live terminal (spec 2026-10-07 §4 f, g); None when it has one.
     /// `plain`: Claude in a shell, not started with Lightbulb (← moves it to a background job).
-    /// `no-daemon`: a Codex TUI off Codex's shared daemon (`codex --no-daemon`). `unknown`: it
-    /// runs in an app, where there is no terminal at all.
+    /// `no-daemon`: a Codex TUI off Codex's shared daemon (`codex --no-daemon`), the ChatGPT app's
+    /// bundled CLI included. `app`: it runs in an app, where there is no terminal at all.
     fn terminal_reason(&self) -> Option<&'static str> {
         if self.terminal() != "none" {
             return None;
         }
         Some(match self.provider.as_str() {
-            _ if self.app => "unknown",
+            _ if self.app => "app",
             "claude" => "plain",
-            // ponytail: codex::DESKTOP_RESOURCES's app, repeated; S7 replaces this arm with `app`.
-            "codex" if self.process.executable.starts_with("/Applications/ChatGPT.app/") => "unknown",
             "codex" => "no-daemon",
             _ => "unknown",
         })

@@ -214,13 +214,15 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
 
   // Not a held session: its first events take up to a minute to reach the server, so zero events is not "nothing was sent".
   const endedEmpty = session.provider === "claude" && session.latestEventSeq === 0 && !session.controlUnavailableReason && !session.wasHeld;
+  // An app session that ended with nothing in it: the ended panel alone, not an empty conversation.
+  const convoEmpty = convo && session.status === "ended" && session.latestEventSeq === 0;
   const endedAt = session.endedAt ? <time dateTime={session.endedAt} title={new Date(session.endedAt).toLocaleString()}>{timeAgo(session.endedAt)}</time> : null;
   const endedPanel = <div className="session-state-panel" role="status">
     <p className="session-state-title">{screenDue && !endedEmpty ? "Ended just now" : endedAt ? <>Ended {endedAt}</> : "Ended"}</p>
-    {(endedEmpty || !screenDue) && <p>{endedEmpty ? "This session ended before anything was sent." : "The screen is gone: this session's terminal closed."}</p>}
+    {(endedEmpty || !screenDue) && <p>{endedEmpty || convoEmpty ? "This session ended before anything was sent." : "The screen is gone: this session's terminal closed."}</p>}
   </div>;
   const endedLine = <p className="session-ended-line" role="status">{endedAt ? <>Ended · {endedAt}</> : "Ended"}</p>;
-  const offlinePanel = <div className="session-state-panel" role="status">
+  const offlinePanel = <div className="session-state-panel" data-compact={convo || undefined} role="status">
     <p className="session-state-title">{own ? "Your Mac is offline" : `${ownerName}'s Mac is offline`}</p>
     {session.lastEventAt && <p>Last seen {timeAgo(session.lastEventAt)}</p>}
     <Button type="button" variant="outline" size="sm" disabled>Resume</Button>
@@ -286,7 +288,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     {local !== "none"
       ? <div ref={slot} className="local-session-terminal" role="region" aria-label="Session terminal" />
       : <>
-      {convo ? <>{session.status === "ended" && endedLine}<p className="session-ended-line" role="note">{notice.title} {notice.body}</p></>
+      {convoEmpty ? endedPanel : convo ? <>{session.status === "ended" && endedLine}{session.status === "offline" && offlinePanel}<p className="session-ended-line" role="note">{notice.title} {notice.body}</p></>
         : session.status === "ended" ? (endedScreen || keptWatching ? endedLine : endedPanel) : session.status === "offline" ? offlinePanel : notStarted ? noticePanel : null}
       {watchRemote && <div className="session-terminal-slot" onScrollCapture={endedScreen ? openAtTop : undefined}><SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} frames={frames} onLive={setScreenLive} onCanType={setTermCanType} kept={endedScreen}
         admitted={running && control && session.shared !== false && !(session.inputPaused && !own)}
@@ -294,7 +296,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       {terminalLive && control && !own && session.inputPaused && <p className="text-sm text-muted-foreground">Paused while {ownerName} answers a request to join.</p>}
       {liveTerminal && <div className="local-session-feedback">{feedback}</div>}
       {/* One child in a reversed column: the browser keeps the newest row in view as the conversation grows. */}
-      {convo ? <div className="local-session-feedback local-session-conversation" role="log" aria-label="Session conversation"><div>{feedback}</div></div>
+      {convo && !convoEmpty ? <div className="local-session-feedback local-session-conversation" role="log" aria-label="Session conversation"><div>{feedback}</div></div>
         : !liveTerminal && (session.status !== "ended" || !!pendingText || queuedOutbox.length > 0) && <div className="local-session-feedback">{feedback}</div>}
     </>}
     {session.status === "ended" ? <SessionResume flow={resume} own={own} ownerName={ownerName} /> : terminalLive && control && (local === "local" || termCanType || (!own && session.inputPaused)) ? null : control ? <form className="room-composer local-session-composer native-session-composer" onSubmit={event => { event.preventDefault(); command.send(text); }}>

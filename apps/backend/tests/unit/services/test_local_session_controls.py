@@ -63,6 +63,23 @@ async def actions(sid):
 
 
 @pytest.mark.asyncio
+@pytest.fixture(autouse=True)
+def _hints_drained_inline(monkeypatch):
+    """publish_resources_changed fans out in a background task since #3909; these tests assert the
+    hint right after the call, so drain it inline."""
+    import asyncio as _asyncio
+
+    from core.services import local_session_relay as _relay
+
+    real = _relay.publish_resources_changed
+
+    async def drained(*args, **kwargs):
+        await real(*args, **kwargs)
+        await _asyncio.gather(*list(_relay._hint_tasks))
+
+    monkeypatch.setattr(_relay, "publish_resources_changed", drained)
+
+
 async def test_a_teammate_controls_only_while_the_owner_opted_in(transport):
     sid = await start(transport)
     with pytest.raises(ApiProblem, match="owner"):

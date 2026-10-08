@@ -7,6 +7,9 @@ import { DesktopPermissions, LocalSessions, ShareEverySessionLive, providerSetup
 import { DesktopPermissionsGate } from "../DesktopPermissionsGate";
 import { DEFAULT_DESKTOP_PERMISSIONS, writeDesktopPermissionGrant } from "@/lib/desktopPermissions";
 vi.mock("@/lib/analytics", () => ({capture:vi.fn()}));
+// The agent-session switches read /users/me/prefs; a stub keeps that off `auth.getToken`, which these tests script.
+const prefs = {agentSendWithoutAsking:false,sessionsReachableFromBackgroundWork:false};
+vi.mock("@/lib/api", () => ({useApi: () => ({get: async () => prefs, put: async () => prefs})}));
 
 const auth = vi.hoisted(()=>({userId:"alice",orgId:"org",getToken:vi.fn()}));
 const org = vi.hoisted(()=>({organization:{id:"org",name:"Acme"} as {id:string;name:string}|null}));

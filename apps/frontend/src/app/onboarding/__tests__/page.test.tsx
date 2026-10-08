@@ -29,6 +29,7 @@ vi.mock("@clerk/nextjs", () => ({
   OrganizationList: (props: unknown) => { clerk.selectProps(props); return null; },
 }));
 beforeEach(() => {
+  window.history.replaceState({}, "", "/onboarding");
   Object.assign(clerk, { listsPresent: true, loaded: true, orgId: null, organization: null, memberships: [], invitations: [] });
   vi.clearAllMocks();
   clerk.setActive.mockResolvedValue(undefined);
@@ -118,6 +119,15 @@ describe("workspace onboarding", () => {
     expect(screen.getByRole("heading", { name: "Choose your workspace" })).toBeInTheDocument();
     expect(clerk.selectProps).toHaveBeenCalledWith(expect.objectContaining({ hidePersonal: true, afterSelectOrganizationUrl: "/onboarding" }));
     expect(clerk.setActive).not.toHaveBeenCalled();
+  });
+  it("preserves a safe return destination through Clerk workspace selection", async () => {
+    window.history.replaceState({}, "", "/onboarding?returnTo=%2Fopen-app");
+    clerk.memberships = [{ organization: { id: "org_a" } }, { organization: { id: "org_b" } }];
+    render(<OnboardingPage />);
+    await waitFor(() => expect(clerk.selectProps).toHaveBeenLastCalledWith(expect.objectContaining({
+      afterSelectOrganizationUrl: "/onboarding?returnTo=%2Fopen-app",
+      afterCreateOrganizationUrl: "/onboarding?returnTo=%2Fopen-app",
+    })));
   });
   it("activates the only membership, then waits for UI and auth agreement before continuing", async () => {
     clerk.memberships = [{ organization: { id: "org_a" } }];

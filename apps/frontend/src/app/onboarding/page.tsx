@@ -113,6 +113,7 @@ export default function OnboardingPage() {
   const [joiningOrgId, setJoiningOrgId] = useState<string | null>(null);
   const [accepting, setAccepting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [onboardingUrl, setOnboardingUrl] = useState("/onboarding");
   const loaded = isLoaded && isSignedIn && orgLoaded && listLoaded &&
     userMemberships?.data !== undefined && userInvitations?.data !== undefined &&
     !userMemberships?.isLoading && !userInvitations?.isLoading;
@@ -120,6 +121,11 @@ export default function OnboardingPage() {
   const count = userMemberships?.data?.length ?? 0;
   const soleOrgId = loaded && !invitations.length && !organization && !joiningOrgId && count === 1
     ? userMemberships?.data?.[0]?.organization.id : undefined;
+
+  useEffect(() => {
+    const returnTo = safeReturnTo(new URLSearchParams(window.location.search).get("returnTo"));
+    setOnboardingUrl(`/onboarding?returnTo=${encodeURIComponent(returnTo)}`);
+  }, []);
 
   useEffect(() => {
     if (!soleOrgId || !setActive || error) return;
@@ -193,7 +199,7 @@ export default function OnboardingPage() {
       ) : count > 1 ? (
         <>
           <h1 className="text-2xl font-bold">Choose your workspace</h1>
-          <OrganizationList hidePersonal afterSelectOrganizationUrl="/onboarding" afterCreateOrganizationUrl="/onboarding" skipInvitationScreen />
+          <OrganizationList hidePersonal afterSelectOrganizationUrl={onboardingUrl} afterCreateOrganizationUrl={onboardingUrl} skipInvitationScreen />
         </>
       ) : (
         <>

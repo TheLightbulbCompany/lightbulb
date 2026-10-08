@@ -145,3 +145,22 @@ async def test_a_publish_that_cannot_get_a_slot_in_time_is_dropped_not_stalled(m
     assert metrics[-1]["source"] == "write_path"  # saturation stays visible on the write-path series
     release.set()
     await first
+
+
+@pytest.mark.asyncio
+async def test_a_2xx_answer_with_failed_entries_records_a_tagged_error_sample(monkeypatch):
+    from types import SimpleNamespace
+
+    metrics = []
+    monkeypatch.setattr(live_events, "put_metric", lambda *a, **k: metrics.append(k.get("dimensions")))
+    monkeypatch.setattr(live_events.settings, "APPSYNC_EVENTS_HTTP_ENDPOINT", "https://events.test/event")
+    publisher = live_events.LiveEventPublisher(http_client=object())
+    monkeypatch.setattr(publisher, "_signed_request", _fake_signed_request)
+
+    async def post(*_a, **_k):
+        return SimpleNamespace(status_code=200, json=lambda: {"successful": [], "failed": [{}]})
+
+    monkeypatch.setattr(publisher, "_post", post)
+    with pytest.raises(live_events.LivePublishError):
+        await publisher._send("/ws/w/rooms/r/k", '{"type":"x"}', source="write_path")
+    assert metrics == [{"outcome": "error", "status_class": "rejected", "source": "write_path"}]

@@ -308,10 +308,12 @@ class LiveEventPublisher:
             try:
                 payload = response.json()
             except Exception as exc:
+                put_metric("messaging.live.publish", dimensions={"outcome": "error", "status_class": "invalid", **tag})
                 raise LivePublishError("invalid AppSync response") from exc
             successful = payload.get("successful") if isinstance(payload, dict) else None
             failed = payload.get("failed") if isinstance(payload, dict) else None
             if not isinstance(successful, list) or not successful or failed != []:
+                put_metric("messaging.live.publish", dimensions={"outcome": "error", "status_class": "rejected", **tag})
                 raise LivePublishError("AppSync rejected live event")
             put_metric("messaging.live.publish", dimensions={"outcome": "ok", **tag})
             return

@@ -112,8 +112,6 @@ const BAND_HINT: &str = "ctrl+x tab, then p";
 const ASK_VERBS: [&str; 2] = [" asked to join", " wants to pick this up · conversation + uncommitted changes"];
 const ASK_TAIL: &str = "[ Allow ] [ Decline ] ctrl+x tab, then a or d · or click";
 const WAITING: &str = "Waiting on you here or in Lightbulb";
-/// The most rows one of the band's lines is looked for on.
-const BAND_WRAP: usize = 6;
 
 /// Text without its spaces: a wrapped line reads the same whatever rows its words fell on.
 fn squash(text: &str) -> String {
@@ -122,10 +120,12 @@ fn squash(text: &str) -> String {
 
 /// How many rows from `at` hold one whole line of the band. `fits` reads the rows so far, joined:
 /// Some(true) a whole line, Some(false) the start of one, None not one. The longest whole one
-/// counts (a hint wrapped under its button belongs to the line); a blank row ends the search. 0: none.
+/// counts (a hint wrapped under its button belongs to the line). No limit on the rows: the mod
+/// names every viewer, and nothing caps how many watch. The search ends where the line does, at
+/// a blank row or at the end of the screen. 0: none.
 fn band_line(rows: &[String], at: usize, fits: impl Fn(&str) -> Option<bool>) -> usize {
     let (mut joined, mut whole) = (String::new(), 0);
-    for (n, row) in rows.iter().skip(at).take(BAND_WRAP).enumerate() {
+    for (n, row) in rows.iter().skip(at).enumerate() {
         let row = squash(row);
         let row = row.strip_suffix("[-]").unwrap_or(&row);
         if row.is_empty() {
@@ -887,6 +887,9 @@ mod tests {
         assert_eq!(kept_at(40, wrapped, false), (rows(&["", ">"]), (1, 2)));
         let names = "the answer\r\n● Live · Bartholomew Featherstonehaugh,\r\nMaximiliana Wolfeschlegelsteinhausen\r\nwatching · Bartholomew Featherstonehaugh\r\ntyping [ Pause ] ctrl+x tab,\r\nthen p\r\n\r\n> ";
         assert_eq!(kept_at(40, names, false).0, rows(&["the answer", "", ">"]));
+        // Review of #3878: nothing caps the viewers the mod names, so the button can be any number of rows down.
+        let many = format!("the answer\r\n● Live · {}Zed watching\r\n[ Pause ] ctrl+x tab, then p\r\n\r\n> ", "Bartholomew Featherstonehaugh,\r\n".repeat(8));
+        assert_eq!(kept_at(40, many.as_str(), false).0, rows(&["the answer", "", ">"]));
         let asked = "● Sharing is not a lead\r\n○ Sharing paused [ Resume\r\nsharing ]\r\nBartholomew Featherstonehaugh asked to\r\njoin [ Allow ] [ Decline ] ctrl+x tab,\r\nthen a or d · or click\r\n> ";
         assert_eq!(kept_at(40, asked, false).0, rows(&["● Sharing is not a lead", ">"]));
     }

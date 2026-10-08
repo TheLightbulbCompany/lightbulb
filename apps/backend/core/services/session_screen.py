@@ -14,7 +14,6 @@ are published to each viewer's own user channel and stored nowhere (see `forward
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import binascii
 import json
@@ -355,10 +354,8 @@ async def forward(relay, cid: str, body: dict) -> None:
             "workspace.session.screen", frame.model_dump(mode="json", by_alias=True, exclude={"type"})
         )
         publisher = live_events.get_live_event_publisher()
-        # publish_user finds no channel for a removed member: they get nothing.
-        results = await asyncio.gather(
-            *(publisher.publish_user(owner, user, event) for user in viewers), return_exceptions=True
-        )
+        # publish_users finds no channel for a removed member: they get nothing.
+        results = await publisher.publish_users(owner, viewers, event)
         delivered = sum(r is True for r in results)
         if delivered < len(viewers):
             put_metric("session.screen.publish.failed", len(viewers) - delivered)

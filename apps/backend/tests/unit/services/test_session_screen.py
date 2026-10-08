@@ -130,6 +130,33 @@ async def test_a_screen_frame_reaches_current_viewers_only_and_nothing_is_stored
 
 
 @pytest.mark.asyncio
+async def test_a_removed_viewer_gets_nothing_from_the_very_next_frame(transport, monkeypatch):
+    """Channels resolve fresh on every frame, two batch reads for all viewers and never one
+    read per viewer: there is no cache for a removal to wait out."""
+    sid = await start(transport)
+    for person in (ALICE, BOB):
+        await messaging_repo.ensure_user_stream(OWNER, person.user_id)
+        await session_screen.watch(person, sid)
+    monkeypatch.setattr(session_screen, "_spent", {})
+    publisher = live_events.get_live_event_publisher()
+    alice = await publisher.user_channel(OWNER, ALICE.user_id)
+    bob = await publisher.user_channel(OWNER, BOB.user_id)
+    batches = []
+    real_batch_get = messaging_repo.batch_get
+    monkeypatch.setattr(messaging_repo, "batch_get", lambda keys: batches.append(keys) or real_batch_get(keys))
+    monkeypatch.setattr(messaging_repo, "get_stream", None)  # a per-viewer read would fail here
+    transport[4].clear()
+    await session_screen.forward(relay(transport), "conn-1", frame(sid, seq=0))
+    assert sorted(c for c, _ in await _published(transport)) == sorted([alice, bob])
+    assert len(batches) == 2, "two batch reads per frame, whatever the viewer count"
+
+    await messaging_repo.deactivate_user_stream(OWNER, BOB.user_id)
+    transport[4].clear()
+    await session_screen.forward(relay(transport), "conn-1", frame(sid, seq=1))
+    assert [c for c, _ in await _published(transport)] == [alice]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("case", ["unshared", "generation", "connection", "expired", "invalid"])
 async def test_a_screen_frame_is_dropped_silently(transport, monkeypatch, case):
     sid = await start(transport)
@@ -202,13 +229,13 @@ async def test_a_failed_viewer_publish_is_not_counted_as_forwarded(transport, mo
     await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
     await session_screen.watch(BOB, sid)
     monkeypatch.setattr(session_screen, "_spent", {})
-    publisher = MagicMock(publish_user=AsyncMock(side_effect=RuntimeError("appsync down")))
+    publisher = MagicMock(publish_users=AsyncMock(return_value=[RuntimeError("appsync down")]))
     with (
         patch.object(session_screen.live_events, "get_live_event_publisher", return_value=publisher),
         patch.object(session_screen, "put_metric") as metric,
     ):
         await session_screen.forward(relay(transport), "conn-1", frame(sid, seq=0))
-    publisher.publish_user.assert_awaited_once()
+    publisher.publish_users.assert_awaited_once()
     assert metric.call_args_list == [call("session.screen.publish.failed", 1)]
 
 

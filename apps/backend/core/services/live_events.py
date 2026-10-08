@@ -95,7 +95,8 @@ class LiveEventPublisher:
     def __init__(self, *, http_client: Any | None = None, credentials: Any | None = None) -> None:
         self._http = http_client
         self._credentials = credentials
-        self._signing_lock = asyncio.Lock()
+        #: Guards only the first credential lookup, so a cold burst resolves the chain once.
+        self._credentials_lock = asyncio.Lock()
 
     async def publish_room(self, room_id: str, event: dict[str, Any], *, frames: bool = False) -> bool:
         """``frames``: the room's view-frame sibling channel, ``/ws/<ws>/frames/<room>/<key>``
@@ -121,19 +122,33 @@ class LiveEventPublisher:
         if mapping is None or mapping.get("active") is not True:
             return None
         key = _uuid(str(mapping.get("channelKey", "")), "user channel key")
-        reverse = await messaging_repo.get_stream(key)
-        if (
-            reverse is None
-            or reverse.get("active") is not True
-            or reverse.get("ownerId") != owner_id
-            or reverse.get("userId") != user_id
-        ):
-            return None
-        workspace = _uuid(
-            await messaging_repo.workspace_id_for_meta(messaging_repo.stream_pk(key), "META", reverse),
-            "stream workspace id",
-        )
-        return f"/ws/{workspace}/users/{key}"
+        return await _stream_channel(owner_id, user_id, key, await messaging_repo.get_stream(key))
+
+    async def user_channels(self, owner_id: str, user_ids: list[str]) -> dict[str, str]:
+        """``user_channel`` for many users of one owner in two strong batch reads, not 2 per user.
+
+        The same forward and reverse ``active`` checks, read fresh on every call: a removed
+        user is absent from the answer on the very next call."""
+        owner_pk = messaging_repo.owner_pk(owner_id)
+        forward = await messaging_repo.batch_get([(owner_pk, messaging_repo.userstream_sk(u)) for u in user_ids])
+        keys: dict[str, str] = {}
+        for user in user_ids:
+            mapping = forward.get((owner_pk, messaging_repo.userstream_sk(user)))
+            if mapping is not None and mapping.get("active") is True:
+                keys[user] = str(mapping.get("channelKey", ""))
+        reverse = await messaging_repo.batch_get([(messaging_repo.stream_pk(key), "META") for key in keys.values()])
+        channels: dict[str, str] = {}
+        for user, key in keys.items():
+            try:  # one malformed row loses that user only, as it did per publish_user
+                key = _uuid(key, "user channel key")
+                channel = await _stream_channel(
+                    owner_id, user, key, reverse.get((messaging_repo.stream_pk(key), "META"))
+                )
+            except LivePublishError:
+                continue
+            if channel is not None:
+                channels[user] = channel
+        return channels
 
     async def publish_user(self, owner_id: str, user_id: str, event: dict[str, Any]) -> bool:
         validated = _validated_event(event, USER_LIVE_EVENT_TYPES)
@@ -143,8 +158,28 @@ class LiveEventPublisher:
         await self._publish(channel, validated)
         return True
 
+    async def publish_users(
+        self, owner_id: str, user_ids: list[str], event: dict[str, Any]
+    ) -> list[bool | BaseException]:
+        """``publish_user`` to each user, in ``user_ids`` order, with the event validated and
+        encoded once and the channels resolved in one batch (``user_channels``). An entry is
+        False for a user with no live channel, and the exception for a failed publish."""
+        serialized = _serialized_event(_validated_event(event, USER_LIVE_EVENT_TYPES))
+        channels = await self.user_channels(owner_id, user_ids)
+
+        async def one(user: str) -> bool:
+            channel = channels.get(user)
+            if channel is None:
+                return False
+            await self._send(channel, serialized)
+            return True
+
+        return await asyncio.gather(*(one(user) for user in user_ids), return_exceptions=True)
+
     async def _publish(self, channel: str, event: LiveEvent) -> None:
-        serialized_event = _serialized_event(event)
+        await self._send(channel, _serialized_event(event))
+
+    async def _send(self, channel: str, serialized_event: str) -> None:
         if len(serialized_event.encode("utf-8")) > MAX_EVENT_BYTES:
             raise LivePublishError("live event exceeds 230 KiB")
         endpoint = settings.APPSYNC_EVENTS_HTTP_ENDPOINT.strip()
@@ -156,8 +191,7 @@ class LiveEventPublisher:
         last_error: Exception | None = None
         last_status_class = "transport"
         for attempt in range(2):
-            async with self._signing_lock:
-                request = await asyncio.to_thread(self._signed_request, endpoint, body)
+            request = await self._signed_request(endpoint, body)
             try:
                 response = await self._post(endpoint, body, dict(request.headers))
             except Exception as exc:
@@ -199,23 +233,20 @@ class LiveEventPublisher:
         logger.warning("AppSync live publish failed after retry (%s)", type(last_error).__name__)
         raise LivePublishError("AppSync live publish failed") from last_error
 
-    def _signed_request(self, endpoint: str, body: bytes) -> AWSRequest:
+    async def _signed_request(self, endpoint: str, body: bytes) -> AWSRequest:
+        """SigV4 on one small body is well under a millisecond of CPU, so it runs on the loop: a
+        thread hop per publish queued behind every boto3 call in the default executor. Only the
+        blocking parts hop: the first credential lookup, and a refresh (botocore's own lock
+        serialises concurrent refreshes)."""
+        if self._credentials is None:
+            async with self._credentials_lock:
+                if self._credentials is None:
+                    self._credentials = await asyncio.to_thread(_task_credentials)
         credentials = self._credentials
-        if credentials is None:
-            credentials = get_session().get_credentials()
-            if credentials is None:
-                raise LivePublishError("AWS task credentials unavailable")
-            self._credentials = credentials
-        if hasattr(credentials, "get_frozen_credentials"):
-            credentials = credentials.get_frozen_credentials()
-        request = AWSRequest(
-            method="POST",
-            url=endpoint,
-            data=body,
-            headers={"content-type": "application/json"},
-        )
-        SigV4Auth(credentials, "appsync", settings.APPSYNC_EVENTS_REGION or settings.AWS_REGION).add_auth(request)
-        return request
+        refresh_needed = getattr(credentials, "refresh_needed", None)
+        if refresh_needed is not None and refresh_needed():
+            return await asyncio.to_thread(_sign, credentials, endpoint, body)
+        return _sign(credentials, endpoint, body)
 
     async def _post(self, endpoint: str, body: bytes, headers: dict[str, str]):
         global _http_client
@@ -226,6 +257,37 @@ class LiveEventPublisher:
             # Lambda each keep one loop for the process.
             _http_client = httpx.AsyncClient(timeout=_TIMEOUT)
         return await _http_client.post(endpoint, content=body, headers=headers)
+
+
+def _task_credentials() -> Any:
+    credentials = get_session().get_credentials()
+    if credentials is None:
+        raise LivePublishError("AWS task credentials unavailable")
+    return credentials
+
+
+def _sign(credentials: Any, endpoint: str, body: bytes) -> AWSRequest:
+    if hasattr(credentials, "get_frozen_credentials"):
+        credentials = credentials.get_frozen_credentials()
+    request = AWSRequest(method="POST", url=endpoint, data=body, headers={"content-type": "application/json"})
+    SigV4Auth(credentials, "appsync", settings.APPSYNC_EVENTS_REGION or settings.AWS_REGION).add_auth(request)
+    return request
+
+
+async def _stream_channel(owner_id: str, user_id: str, key: str, reverse: dict | None) -> str | None:
+    """The user channel for ``key`` when its reverse row is active and still names this user."""
+    if (
+        reverse is None
+        or reverse.get("active") is not True
+        or reverse.get("ownerId") != owner_id
+        or reverse.get("userId") != user_id
+    ):
+        return None
+    workspace = _uuid(
+        await messaging_repo.workspace_id_for_meta(messaging_repo.stream_pk(key), "META", reverse),
+        "stream workspace id",
+    )
+    return f"/ws/{workspace}/users/{key}"
 
 
 _publisher: LiveEventPublisher | None = None

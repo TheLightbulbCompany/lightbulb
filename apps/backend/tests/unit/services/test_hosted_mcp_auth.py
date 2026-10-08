@@ -357,3 +357,30 @@ async def test_a_person_send_refuses_a_dm_that_became_a_group(monkeypatch):
     post.return_value = SimpleNamespace(room_id=uuid.UUID(room_id), message_id=uuid.uuid4(), message_seq=1)
     await hosted_mcp.send_message("hi", request_id, person_id="user_b")
     post.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_refused_session_send_says_why_and_its_receipt_reads_rejected(monkeypatch):
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    auth, _ = _hosted_sender(monkeypatch)
+    sid, request_id = str(uuid.uuid4()), uuid.uuid4()
+    refusal = hosted_mcp.messaging.ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can do that.")
+    monkeypatch.setattr(hosted_mcp.local_sessions, "authorize_session", AsyncMock(side_effect=refusal))
+    record = AsyncMock()
+    monkeypatch.setattr(hosted_mcp, "_record_refusal", record)
+    with pytest.raises(ToolError, match="LOCAL_SESSION_FORBIDDEN: Only the session's owner"):
+        await hosted_mcp.send_message("hi", request_id, session_id=sid)
+    record.assert_awaited_once_with(auth, request_id, "LOCAL_SESSION_FORBIDDEN")
+
+    key = hosted_mcp._sent_key(auth, request_id)
+    pins = {key: {"destination": f"session:{sid}", "refusal": "LOCAL_SESSION_FORBIDDEN"}}
+    monkeypatch.setattr(hosted_mcp.messaging_repo, "_get", AsyncMock(side_effect=lambda pk, sk: pins.get((pk, sk))))
+    gone = hosted_mcp.messaging.ApiProblem("LOCAL_SESSION_NOT_FOUND", "gone")
+    monkeypatch.setattr(hosted_mcp.local_sessions, "get_command", AsyncMock(side_effect=gone))
+    assert await hosted_mcp.message_receipt(request_id) == {
+        "sessionId": sid,
+        "requestId": str(request_id),
+        "state": "rejected",
+        "reason": "LOCAL_SESSION_FORBIDDEN",
+    }

@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 import httpx
 from botocore.exceptions import ClientError
 from mcp.server import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
@@ -236,7 +237,7 @@ async def find_rooms(query: str = "", limit: int = 30) -> dict:
 
 @mcp.tool()
 async def find_sessions(query: str = "", limit: int = 30) -> dict:
-    """Find shared coding sessions by readable title, provider or folder. Passing a sessionId as send_message session_id types your text into that live session (canSend says whether you may)."""
+    """Find shared coding sessions by readable title, provider or folder. Passing a sessionId as send_message session_id types your text into that live session (canSend says whether you may; a refused send fails with a code such as LOCAL_SESSION_FORBIDDEN, LOCAL_SESSION_NOT_FOUND, LOCAL_SESSION_CONFLICT or IDEMPOTENCY_CONFLICT, and message_receipt then reads rejected with that reason)."""
     return await sessions_for(_caller(), query, limit)
 
 
@@ -280,6 +281,17 @@ async def _pin_destination(auth: AuthContext, request_id: uuid.UUID, destination
         if prior is None or prior.get("destination") != destination:
             raise messaging.ApiProblem("IDEMPOTENCY_CONFLICT", "request_id was used for another destination.") from exc
         return prior
+
+
+async def _record_refusal(auth: AuthContext, request_id: uuid.UUID, code: str) -> None:
+    """Keep why a session send was refused on its pin row, so a lost response can still be reconciled."""
+    pk, sk = _sent_key(auth, request_id)
+    await run_in_thread(
+        messaging_repo._table().update_item,
+        Key={"pk": pk, "sk": sk},
+        UpdateExpression="SET refusal = :code",
+        ExpressionAttributeValues={":code": code},
+    )
 
 
 async def _person_room(auth: AuthContext, request_id: uuid.UUID, person_id: str, *, create: bool) -> str:
@@ -330,10 +342,15 @@ async def send_message(
             raise messaging.ApiProblem("INVALID_REQUEST", "A session follow-up takes no thread or mentions.")
         session_id = messaging.validate_uuid(session_id, label="session ID")
         await _pin_destination(auth, request_id, f"session:{session_id}")
-        target, _ = await local_sessions.authorize_session(auth, None, session_id, owner_only=True)
-        # The person's own authority (actorUserId) admits and dispatches it, exactly like their
-        # follow-up from the session page; the label tells the session a client wrote it.
-        result = await native_session_tools.session_send(auth, target, text, str(request_id), via_client=client)
+        try:
+            target, _ = await local_sessions.authorize_session(auth, None, session_id, owner_only=True)
+            # The person's own authority (actorUserId) admits and dispatches it, exactly like their
+            # follow-up from the session page; the label tells the session a client wrote it.
+            result = await native_session_tools.session_send(auth, target, text, str(request_id), via_client=client)
+        except messaging.ApiProblem as exc:
+            # FastMCP hides any other exception's text, so the client would never learn why.
+            await _record_refusal(auth, request_id, exc.error.code)
+            raise ToolError(f"{exc.error.code}: {exc.error.message}") from exc
         return {"sessionId": session_id, "requestId": str(request_id), "state": result["state"]}
     try:
         # Checked before any room is opened, so a refused send leaves no empty DM behind.
@@ -412,6 +429,8 @@ async def message_receipt(request_id: uuid.UUID) -> dict:
     except messaging.ApiProblem as exc:
         if exc.error.code != "LOCAL_SESSION_NOT_FOUND":
             raise
+        if pinned.get("refusal"):
+            return {"sessionId": target, "requestId": str(request_id), "state": "rejected", "reason": pinned["refusal"]}
         return {"sessionId": target, "requestId": str(request_id), "state": "unknown"}
     return {"sessionId": target, "requestId": str(request_id), "state": command.state}
 

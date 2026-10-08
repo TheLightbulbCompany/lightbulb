@@ -1514,6 +1514,11 @@ struct Mirror {
     /// command, no typed input and no viewer.
     #[serde(default)]
     unshared: bool,
+    /// The process whose terminal held output from before sharing started (again) when it did
+    /// (`share_from_now`): a viewer gets none of that terminal's history. A later process on the
+    /// conversation (a resume) has its whole history shared as usual.
+    #[serde(default)]
+    history_hidden_for: Option<Process>,
     // The relay has acknowledged this session's end. Durable: a Mac that reports an
     // end and restarts must not report it again, and one that does not must.
     #[serde(default)]
@@ -1639,7 +1644,58 @@ struct RegistrationState {
     successor: Option<NativeSession>,
 }
 
+/// A cursor at the end of the last complete row `path` holds now: nothing that is already
+/// there is ever read, and a row being written is read whole once it is complete.
+fn cursor_at_end(path: &Path) -> Cursor {
+    let Ok(mut file) = secure_file(path) else {
+        return Cursor::default();
+    };
+    let Ok(meta) = file.metadata() else {
+        return Cursor::default();
+    };
+    let mut end = meta.len();
+    let mut chunk = vec![0u8; 65536];
+    while end > 0 {
+        let start = end.saturating_sub(chunk.len() as u64);
+        let size = (end - start) as usize;
+        if file.seek(SeekFrom::Start(start)).is_err() || file.read_exact(&mut chunk[..size]).is_err() {
+            break;
+        }
+        if let Some(at) = chunk[..size].iter().rposition(|byte| *byte == b'\n') {
+            end = start + at as u64 + 1;
+            break;
+        }
+        end = start;
+    }
+    Cursor { offset: end, inode: Some(meta.ino()) }
+}
+
 impl Mirror {
+    /// Sharing starts now: for a session whose folder was just approved (again), or one that
+    /// was never shared before. Approving a folder shares what happens from that moment on and
+    /// nothing earlier, so everything read but unsent is dropped, the transcript (and every
+    /// subagent's that exists already) is taken as read to its current end, and the terminal's
+    /// earlier history is not served.
+    fn share_from_now(&mut self) {
+        self.queue.clear();
+        self.pending = None;
+        self.waiting = None;
+        self.cursor = self.native.transcript.as_deref().map(cursor_at_end).unwrap_or_default();
+        let known = &mut self.subagents.known;
+        for subagent in known.values_mut() {
+            subagent.closed = true;
+        }
+        if self.native.provider == "claude" {
+            if let Some(transcript) = &self.native.transcript {
+                for (id, path, _) in claude::new_subagents(transcript, &|id| known.contains_key(id)) {
+                    known.insert(id, Subagent { path: Some(path), closed: true, ..Default::default() });
+                }
+            }
+        }
+        self.history_hidden_for = Some(self.native.process.clone());
+        self.dirty = true;
+    }
+
     fn persist(&mut self, path: &Path) -> Result<()> {
         self.dirty = true;
         private_write(path, self)?;
@@ -1977,6 +2033,21 @@ mod tests {
         }
         // Approved later, removed later: the list as it is now decides.
         assert!(in_approved_folder(&outside, &[folder, outside.clone()]));
+    }
+
+    #[test]
+    fn local_sessions_a_cursor_at_the_end_skips_every_complete_row_and_no_half_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        for (text, offset) in [("", 0), ("a\n", 2), ("a\nbb\n", 5), ("a\nbb\nhalf", 5), ("half", 0)] {
+            fs::write(&path, text).unwrap();
+            assert_eq!(cursor_at_end(&path).offset, offset, "{text:?}");
+        }
+        // A last row longer than one read: still found.
+        let long = format!("first\n{}", "x".repeat(200_000));
+        fs::write(&path, &long).unwrap();
+        assert_eq!(cursor_at_end(&path).offset, 6);
+        assert!(cursor_at_end(&path).inode.is_some());
     }
 
     #[test]
@@ -2755,6 +2826,7 @@ mod tests {
             ended_reason: None,
             ended_sent: false,
             unshared: false,
+            history_hidden_for: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -2843,6 +2915,7 @@ mod tests {
             ended_reason: None,
             ended_sent: false,
             unshared: false,
+            history_hidden_for: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -2930,6 +3003,7 @@ mod tests {
             ended_reason: None,
             ended_sent: false,
             unshared: false,
+            history_hidden_for: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -3032,6 +3106,7 @@ mod tests {
             ended_reason: None,
             ended_sent: false,
             unshared: false,
+            history_hidden_for: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -3099,6 +3174,7 @@ mod tests {
             ended_reason: None,
             ended_sent: false,
             unshared: false,
+            history_hidden_for: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),

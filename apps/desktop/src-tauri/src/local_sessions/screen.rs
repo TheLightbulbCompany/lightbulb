@@ -64,6 +64,8 @@ const PACE: Duration = Duration::from_secs(3);
 struct Live {
     generation: String,
     native: NativeSession,
+    /// Its terminal's history predates sharing (`Mirror::share_from_now`): none is served.
+    no_history: bool,
 }
 
 static LIVE: Mutex<BTreeMap<String, Live>> = Mutex::new(BTreeMap::new());
@@ -145,7 +147,11 @@ pub(super) fn index(mirrors: &BTreeMap<String, Mirror>) {
     let live = mirrors
         .values()
         .filter(|m| m.ended_at.is_none() && !m.unshared)
-        .filter_map(|m| Some((m.session_id.clone()?, Live { generation: m.generation.clone(), native: m.native.clone() })))
+        .filter_map(|m| Some((m.session_id.clone()?, Live {
+            generation: m.generation.clone(),
+            native: m.native.clone(),
+            no_history: m.history_hidden_for.as_ref() == Some(&m.native.process),
+        })))
         .collect();
     if let Ok(mut slot) = LIVE.lock() {
         *slot = live;
@@ -478,7 +484,10 @@ fn run(sid: &str, ctl: &Ctl) -> Result<(), String> {
         *reads = Some(holder.id.clone());
     }
     let socket = holder.socket.clone();
-    let history = move |max: usize| manager::history(&socket, max);
+    // Shared from a moment after its terminal started: what scrolled off before is not served
+    // (one empty history frame, as for a terminal with nothing above its screen).
+    let no_history = LIVE.lock().is_ok_and(|live| live.get(sid).is_some_and(|l| l.no_history));
+    let history = move |max: usize| if no_history { Some(vec![]) } else { manager::history(&socket, max) };
     let result = watch(&mut conn, sid, &generation, ctl, &send_out, &history);
     // Every exit, early ones included: the reader thread's clone is unblocked only by this.
     let _ = conn.shutdown(std::net::Shutdown::Both);

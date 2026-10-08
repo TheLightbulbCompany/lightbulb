@@ -6,21 +6,46 @@ import json
 
 import pytest
 from huddle_agent import record
-from replay import ROUTING, SCENARIOS, Sim, judge, known, live, load, replay
-from replay.sim import EPOCH, LEAD
+from replay import ROUTING, SCENARIOS, Sim, judge, known, live, load, replay, routing
+from replay.sim import EPOCH, LEAD, PROFILES
 
-SEEDS = 5  # the full loop is `python -m tests.replay all` (20 seeds); this is the quick gate
+SEEDS = 10  # the full loop is `python -m tests.replay all --seeds 100`, under both profiles; this is the quick gate
 
 
 @pytest.mark.replay
-@pytest.mark.parametrize("name", SCENARIOS)
-def test_a_scenario_replays_with_no_new_failure(name):
-    new = {}
-    for seed in range(SEEDS):
-        for status, what, why in replay(name, seed)[0]:
-            if status == "FAIL" and known(name, what) is None:
-                new.setdefault(what, f"seed {seed}: {why}")
-    assert not new, "\n".join(f"{what}\n    {why}" for what, why in new.items())
+@pytest.mark.parametrize("profile", PROFILES)
+def test_the_replay_shows_no_new_failure_and_no_known_one_grown(profile):
+    """Every scenario, SEEDS seeds: no check fails more often than its baseline rate allows (`routing.gate`).
+    That holds a known failure to the rate it is known at, and a check that passed to passing."""
+    fails = {}
+    for name in SCENARIOS:
+        for seed in range(SEEDS):
+            for status, what, _ in replay(name, seed, profile=profile)[0]:
+                if status == "FAIL":
+                    key = f"{name} | {what.split('  #')[0]}"
+                    fails[key] = fails.get(key, 0) + 1
+    assert not (worse := routing.gate(routing.baseline()[profile], fails, SEEDS)), "\n".join(worse)
+
+
+def test_every_failure_in_the_baseline_has_its_cause_written_down():
+    for profile in PROFILES:
+        for key in routing.baseline()[profile]["fails"]:
+            name, _, what = key.partition(" | ")
+            assert known(name, what), f"{profile}: {key} fails in the baseline and routing.KNOWN_FAILING does not say why"
+
+
+def test_the_gate_fails_a_known_failure_that_got_worse_and_a_check_that_used_to_pass():
+    base = {"seeds": 200, "fails": {"gap | ack_within": 40, "gap | no_talk_over": 2}}
+    assert routing.gate(base, {"gap | ack_within": 4, "gap | no_talk_over": 1}, 20) == [], "at its rate, and inside the noise"
+    assert routing.allowed(base, "gap | ack_within", 20) == 10 and routing.allowed(base, "gap | said_once", 20) == 0
+    worse = routing.gate(base, {"gap | ack_within": 11}, 20)[0]
+    assert "WORSE" in worse and "gap | ack_within" in worse, "known to fail one seed in five, not one in two"
+    (new,) = routing.gate(base, {"gap | said_once": 1}, 20)
+    assert "NEW" in new
+    many = {"seeds": 200, "fails": {f"s{i} | ack_within": 40 for i in range(30)}}
+    spread = {key: 7 for key in many["fails"]}  # each inside its own tolerance, and three in four of them up
+    assert all(7 <= routing.allowed(many, key, 20) for key in spread)
+    assert [line.split(":")[0] for line in routing.gate(many, spread, 20)] == ["all checks together"]
 
 
 @pytest.mark.replay

@@ -19,6 +19,9 @@ The transcriber may hand a line over in pieces, and only the piece with the requ
 `unclaimed`: the verdict holds only for a question the worker says nobody took.
 """
 
+import json
+import math
+import os
 import re
 
 ANSWERS = {
@@ -84,9 +87,9 @@ ROUTING: dict[str, dict[int, dict]] = {
     "unnamed_sidetalk": {0: AGENTS, 1: PEOPLE, 2: PEOPLE},
 }
 
-# Checks a replay fails today, and why: (scenario or "*", a regex on the check, the cause). Recorded so the
-# suite can gate on everything else (tests/test_voice_replay.py): a failing check that is not here is new.
-# An entry is no licence: each names the rule to change. Shares are of 200 seeds on 2026-10-08, as
+# Checks a replay fails today, and why: (scenario or "*", a regex on the check, the cause). An entry is no
+# licence: each names the rule to change, and how often each check fails is held to its baseline rate
+# (`gate`, below; tests/test_voice_replay.py): a known failure that gets worse fails the gate like a new one. Shares are of 200 seeds on 2026-10-08, as
 # `current` / `fast-eot` (`sim.Model`: the second is a what-if transcriber, not a measurement). Each cause
 # ends with where it lies: [controller] a rule of huddle.py, [timing] the transcriber's or the voice's
 # delays, [policy] a rule and the scenario disagree and a person has to choose, [check] check.py itself.
@@ -161,3 +164,39 @@ KNOWN_FAILING: list[tuple[str, str, str]] = [
 def known(scenario: str, check: str) -> str | None:
     """Why this check of this scenario is known to fail in a replay, or None: a new failure."""
     return next((why for names, pattern, why in KNOWN_FAILING if names == "*" or scenario in names.split("|") if re.match(pattern, check)), None)
+
+
+# How often each check failed when the baseline was last taken: {profile: {"seeds": n, "fails": {"scenario |
+# check": seeds failing}}}, written by `python -m tests.replay all --seeds 200 --profile P --rebase`. A known
+# failure is known at a rate: KNOWN_FAILING says why a check may fail, this says how often it did.
+BASELINE_PATH = os.path.join(os.path.dirname(__file__), "baseline.json")
+SIGMAS = 3.0  # the tolerance: this many standard deviations of a run of n seeds over the baseline rate
+
+
+def baseline() -> dict:
+    with open(BASELINE_PATH) as f:
+        return json.load(f)
+
+
+def allowed(base: dict, key: str, n: int) -> int:
+    """The most of `n` seeds this check may fail and still be no worse than its baseline. 0 for a check
+    that passed every seed of the baseline: one that used to pass may not start to fail."""
+    p = base["fails"].get(key, 0) / base["seeds"]
+    return math.ceil(n * p + SIGMAS * math.sqrt(n * p * (1 - p)) - 1e-9)
+
+
+def gate(base: dict, fails: dict[str, int], n: int) -> list[str]:
+    """What a run of `n` seeds a scenario shows that the baseline did not: each check that failed more
+    often than its rate allows (also one inside KNOWN_FAILING), each that used to pass, and the run as a
+    whole when its failures are up though no one check is. `fails`: "scenario | check" -> seeds failing."""
+    out = []
+    for key, got in sorted(fails.items()):
+        if got > (most := allowed(base, key, n)):
+            was = base["fails"].get(key, 0)
+            what = f"WORSE (baseline {was}/{base['seeds']}, at most {most}/{n})" if was else "NEW (it passed every seed of the baseline)"
+            out.append(f"{key}: fails {got}/{n}: {what}")
+    rates = [f / base["seeds"] for f in base["fails"].values()]
+    most = sum(n * p for p in rates) + SIGMAS * math.sqrt(sum(n * p * (1 - p) for p in rates))
+    if (total := sum(fails.values())) > most:
+        out.append(f"all checks together: {total} failing check-seeds, at most {most:.0f} at the baseline's rates")
+    return out

@@ -3,7 +3,7 @@ import json
 import sys
 import time
 
-from . import ROUTING, SCENARIOS, SEEDS, Sim, judge, known, live, load, replay
+from . import ROUTING, SCENARIOS, SEEDS, Sim, judge, known, live, load, replay, routing
 from .sim import PROFILES
 
 
@@ -14,6 +14,7 @@ def main() -> int:
     ap.add_argument("--first", type=int, default=0, help="the first seed (default 0): another range tells a change from noise")
     ap.add_argument("--profile", choices=PROFILES, default="current", help="the transcriber's timing (sim.Model)")
     ap.add_argument("--noise", type=float, default=0.0, metavar="RATE", help="non-speech sound bursts a second on each silent person's track (sim.Model; default none)")
+    ap.add_argument("--rebase", action="store_true", help="write this run's failure counts as the profile's baseline (routing.BASELINE_PATH)")
     ap.add_argument("--json", metavar="PATH", help="write {scenario | check: [seeds failing, seeds skipped]} there, to compare two runs")
     ap.add_argument("--seed", type=int, help="one replay, with its timeline")
     ap.add_argument("--trace", action="store_true", help="with --seed: the controller's own log too")
@@ -46,7 +47,12 @@ def main() -> int:
         for n in ev.notes:
             print("NOTE ", n)
         return int(any(s == "FAIL" for s, _, _ in results))
-    began, failed, new, table = time.perf_counter(), 0, 0, {}
+    began, failed, table = time.perf_counter(), 0, {}
+    try:
+        base = routing.baseline()
+    except FileNotFoundError:
+        base = {}
+    base.setdefault(a.profile, {"seeds": 1, "fails": {}})
     for name in names:
         runs = {seed: replay(name, seed, profile=a.profile, noise=a.noise)[0] for seed in range(a.first, a.first + a.seeds)}
         bad = sorted(s for s, r in runs.items() if any(x[0] == "FAIL" for x in r))
@@ -61,20 +67,34 @@ def main() -> int:
             if fails := by.get("FAIL"):
                 skips = f", {len(by['SKIP'])} skipped" if by.get("SKIP") else ""
                 why = known(name, what)
-                new += why is None
-                print(f"  FAIL {len(fails):>2}/{a.seeds}{skips}  {what}")
+                key = f"{name} | {what.split('  #')[0]}"
+                was, of = base[a.profile]["fails"].get(key, 0), base[a.profile]["seeds"]
+                print(f"  FAIL {len(fails):>2}/{a.seeds}{skips}  (baseline {was}/{of})  {what}")
                 print(f"        seed {fails[0][0]}: {fails[0][1][:400]}")
-                print(f"        {'known: ' + why if why else 'NEW: not in routing.KNOWN_FAILING'}")
+                print(f"        {'known: ' + why if why else 'no cause recorded in routing.KNOWN_FAILING'}")
             elif len(by.get("SKIP", [])) == a.seeds:
                 print(f"  SKIP {a.seeds:>2}/{a.seeds}  {what}\n        {by['SKIP'][0][1][:200]}")
     if a.json:
         with open(a.json, "w") as f:
             json.dump(table, f, indent=1)
+    fails = {key: f for key, (f, _) in table.items() if f}
+    if a.rebase:
+        if a.scenario != "all":
+            ap.error("--rebase takes every scenario")
+        base[a.profile] = {"seeds": a.seeds, "fails": fails}
+        with open(routing.BASELINE_PATH, "w") as f:
+            json.dump(base, f, indent=1, sort_keys=True)
+        print(f"baseline for {a.profile} written: {sum(fails.values())} failing check-seeds in {len(fails)} checks, {a.seeds} seeds")
+    # a run of some scenarios is held to those scenarios' part of the baseline
+    part = {**base[a.profile], "fails": {k: f for k, f in base[a.profile]["fails"].items() if k.split(" | ")[0] in names}}
+    worse = routing.gate(part, fails, a.seeds)
+    for line in worse:
+        print("REGRESSION  " + line)
     print(
-        f"{len(names) - failed}/{len(names)} scenarios pass every seed; {new} failing check(s) not known before; "
-        f"{len(names) * a.seeds} replays in {time.perf_counter() - began:.1f}s"
+        f"{len(names) - failed}/{len(names)} scenarios pass every seed; {sum(fails.values())} failing check-seeds; "
+        f"{len(worse)} regression(s) against the baseline; {len(names) * a.seeds} replays in {time.perf_counter() - began:.1f}s"
     )
-    return int(bool(new))  # known failures are listed, and only a new one fails the command
+    return int(bool(worse))  # a known failure at its known rate is listed. A new one, or one that got worse, fails.
 
 
 if __name__ == "__main__":

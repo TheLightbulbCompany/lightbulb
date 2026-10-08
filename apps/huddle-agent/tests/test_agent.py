@@ -110,6 +110,11 @@ class DrivenSession:
         class Handle(asyncio.Future):  # a SpeechHandle: awaited to its end, and it says whether it was cut
             interrupted = False
 
+            def interrupt(self, force=False):  # the mouth stops its own unit (no sound in time, or too long)
+                assert force
+                self.interrupted = True
+                self.set_result(None)
+
             def set_result(self, result):
                 # it ends with its audio sent: the unit's meter saw sound (`silent` below ends without it)
                 unit = getattr(owner.voice or owner.started.get("agent"), "unit", None)
@@ -398,9 +403,136 @@ def test_a_word_for_word_line_goes_to_the_model_without_the_conversation():
         session.send_event(ResponseCreateEvent(type="response.create", response=params))
         return session._msg_ch.send_nowait.call_args.args[0].response.model_dump(exclude_unset=True)
 
-    assert sent(f"persona\n{agent.SAY}Fifty dollars.")["input"] == []
+    # 10-08 spike: the line in the instructions alone came out silent on 5 of 52 short lines; as the one user
+    # message of its response too, on none. It is the response's own input: the conversation is still not read.
+    assert sent(f"persona\n{agent.SAY}Fifty dollars.")["input"] == [
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": 'Say exactly: "Fifty dollars."'}]}
+    ]
     # 10-07 rig: with the call in view its own words answered the question ("it's $1,600")
     assert sent("persona\nTell Priya you are on it.")["input"] == []
+
+
+async def test_what_a_mouth_said_is_deleted_and_an_order_waits_for_a_cut_response_to_end(monkeypatch):
+    """10-08 spike: a `response.create` that raced a `response.cancel` failed outright. And nothing reads a
+    mouth's conversation, so what it said is taken out of it: a long call does not pile it up."""
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from openai.types.realtime import RealtimeResponseCreateParams, ResponseCancelEvent, ResponseCreateEvent
+
+    monkeypatch.setattr(agent.openai.realtime.RealtimeSession, "_handle_response_done", lambda self, event: None)
+    monkeypatch.setattr(agent, "CANCEL_WAIT_S", 0.05)
+    session = object.__new__(agent._DrivenSession)
+    session._msg_ch, session._current_generation = MagicMock(), None
+
+    def sent():
+        out = [c.args[0] for c in session._msg_ch.send_nowait.call_args_list]
+        session._msg_ch.send_nowait.reset_mock()
+        return [(e.type, getattr(e, "item_id", None) or getattr(getattr(e, "response", None), "instructions", None)) for e in out]
+
+    def order(line):
+        params = RealtimeResponseCreateParams(instructions=agent.SAY + line)
+        session.send_event(ResponseCreateEvent(type="response.create", response=params))
+
+    cancel = ResponseCancelEvent(type="response.cancel")
+    order("One.")
+    assert sent() == [("response.create", agent.SAY + "One.")], "nothing is being cut: sent at once"
+    session._current_generation = SimpleNamespace(messages={"item_1": object()})  # response.created
+    session.send_event(cancel)
+    order("Two.")
+    assert sent() == [("response.cancel", None)], "held: the cut response has not ended"
+    session._handle_response_done(None)
+    assert sent() == [("conversation.item.delete", "item_1"), ("response.create", agent.SAY + "Two.")]
+    session._current_generation = SimpleNamespace(messages={"item_2": object()})
+    session._handle_response_done(None)  # said to its end
+    assert sent() == [("conversation.item.delete", "item_2")], "every response's item goes, cut or not"
+    session.send_event(cancel)
+    session.send_event(cancel)
+    order("Three.")
+    assert sent() == [("response.cancel", None)] * 2
+    await asyncio.sleep(0.1)
+    assert sent() == [("response.create", agent.SAY + "Three.")], "its end never came: not held for ever"
+    session._current_generation = None
+    session.send_event(cancel)  # nothing to cut (the plugin's cancel for a response not yet created)
+    order("Four.")
+    assert sent() == [("response.cancel", None), ("response.create", agent.SAY + "Four.")]
+    session.truncate(message_id="item_1", modalities=["audio"], audio_end_ms=200)
+    assert sent() == [], "its item is deleted: there is nothing to truncate"
+
+
+async def test_a_unit_with_no_sound_in_time_is_stopped_and_fails_and_says_why(monkeypatch):
+    """10-08 rig: 3 of 83 units were silent, and each cost the room the 3 s the mouth then waited."""
+    import asyncio
+
+    assert agent.FIRST_SOUND_S == 1.0
+    monkeypatch.setattr(agent, "FIRST_SOUND_S", 0.02)
+    live, session, _ = _driven()
+    session.silent = True
+    live.say("Got it. Give me a moment.", 3)
+    await asyncio.sleep(0.1)  # the model sends nothing, and never ends the response
+    order, index, outcome, evidence = live.receipts[0]
+    assert (order, index, outcome, evidence["why"]) == (3, 0, "silent", "no_sound") and session.handles[0].interrupted
+    assert live.ended == [(3, True)] and len(session.orders) == 1, "failed: the worker says it again (on_playback_ended)"
+    session.silent = False
+    live.say("Got it.", 4)  # its next try: the same unit, a new order
+    await _settle()
+    session.handles[-1].set_result(None)
+    await _settle()
+    assert live.receipts[1][:3] == (4, 0, "said") and "why" not in live.receipts[1][3] and live.ended[1:] == [(4, False)]
+    session.silent = True
+    live.say("Got it.", 5)
+    await _settle()
+    session.handles[-1].set_result(None)  # it ended on its own with nothing audible
+    await _settle()
+    assert live.receipts[2][2] == "silent" and live.receipts[2][3]["why"] == "no_frames"
+
+
+async def test_an_agents_mouth_opens_once_in_a_call_and_is_kept_until_the_call_ends(monkeypatch):
+    """10-08 rig: 15 calls opened a voice session 24 times, 0.4-1.0 s each, and every silent unit was the
+    first or second after an open."""
+    from unittest.mock import MagicMock
+
+    made = []
+    monkeypatch.setattr(agent, "AgentSession", lambda **kw: made.append(DrivenSession(**kw)) or made[-1])
+    monkeypatch.setattr(agent, "_DrivenModel", lambda **kw: kw)
+    huddle, room, mouths = MagicMock(), MagicMock(), {}
+
+    async def start(agent_id, mouths=mouths):
+        return await agent.start_live(
+            room, huddle, None, agent_id=agent_id, persona="You are it.", voice="cedar", speaker="meet:room-1:p1",
+            seed=[], mouths=mouths,
+        )  # fmt: skip
+
+    live = await start("forge")
+    live.say("One. Two.", 1)
+    await _settle()
+    await live.aclose()  # the worker closes its voice (the follow-up window, or another agent speaks)
+    await _settle()
+    assert not made[0].closed and made[0].interrupts == 1, "the session stays, and what it was saying stops"
+    billed = live.usage_seconds()
+    assert live._closed is not None and live.usage_seconds() == billed, "the worker's voice is billed to its close"
+    live.say("Never.", 2)
+    await _settle()
+    assert len(made[0].orders) == 1, "closed: it says nothing until the worker opens it again"
+    again = await start("forge")
+    assert again is live and len(made) == 1 and live._closed is None, "the same session, with no open to wait for"
+    live.say("Three.", 3)
+    await _settle()
+    made[0].handles[-1].set_result(None)
+    await _settle()
+    assert huddle.on_unit.call_args.args[:5] == ("forge", 3, 0, "Three.", "said")
+    other = await start("friday")
+    assert other is not live and len(made) == 2 and set(mouths) == {"forge", "friday"}, "one for each agent"
+    await live.aclose()
+    made[0].handlers["close"](None)  # it died while it was kept
+    assert set(mouths) == {"friday"}
+    assert await start("forge") is not live and len(made) == 3, "a dead one is not reused"
+    await other.close()  # the call is over (entrypoint on_shutdown)
+    assert made[1].closed and set(mouths) == {"forge"}
+    alone = await start("forge", mouths=None)
+    await alone.aclose()
+    assert made[-1].closed, "a mouth nobody keeps closes as it always did"
 
 
 def test_a_voice_the_realtime_model_lacks_maps_to_one_it_has_the_same_each_time():
@@ -538,9 +670,22 @@ async def test_the_session_passes_a_units_audio_through_the_mouths_meter():
     assert len(track.frames) == 10, "and every frame it counted went on to the track"
 
 
+async def test_through_the_session_a_unit_with_far_more_sound_than_its_words_need_is_stopped_and_fails():
+    """10-08 rig: 8 of 83 units were far longer than their text ("I have it." took 4.05 s). "Got it." may
+    have max(1.5 s, 0.112 s a character) of sound: 1.5 s, 75 frames of these."""
+    receipts, ended, track = await _say_through_a_real_session([4000] * 200)
+    order, index, text, outcome, evidence = receipts[0]
+    assert (order, index, text, outcome, evidence["why"]) == (3, 0, "Got it.", "long", "long")
+    assert ended == [(3, True)], "a failed playback: the worker tries the unit again"
+    assert abs(len(track.frames) - 75) <= 1, "and no more of it reached the track"
+    receipts, ended, track = await _say_through_a_real_session([4000] * 70)
+    assert receipts[0][3] == "said" and "why" not in receipts[0][4] and len(track.frames) == 70, "1.4 s: said"
+
+
 async def test_through_the_session_silent_frames_are_a_failed_unit_and_a_revoked_one_sends_nothing():
     receipts, ended, track = await _say_through_a_real_session([0] * 10)
     assert receipts[0][3] == "silent" and (receipts[0][4]["frames"], receipts[0][4]["loudMs"]) == (10, 0)
+    assert receipts[0][4]["why"] == "quiet", "frames came, with no sound in them"
     assert ended == [(3, True)], "frames with no sound in them: the hook saw it, and the order failed"
     asked = []
     # allowed before the unit is ordered, and not when its first audio is about to go out

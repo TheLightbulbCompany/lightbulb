@@ -132,6 +132,14 @@ class LiveEventPublisher:
         await self._publish(f"/ws/{workspace}/{family}/{room_id}/{key}", validated)
         return True
 
+    async def publish_session_frames(self, workspace_id: str, event: dict[str, Any]) -> None:
+        """One screen frame to its shared session's frames channel, ``/ws/<ws>/session-frames/<sid>``:
+        one publish for every viewer. Who may subscribe is AppSync's onSubscribe decision."""
+        validated = _validated_event(event, frozenset({"workspace.session.screen"}))
+        workspace = _uuid(workspace_id, "workspace id")
+        session_id = _uuid(str(validated.payload.get("sessionId")), "session id")
+        await self._publish(f"/ws/{workspace}/session-frames/{session_id}", validated)
+
     async def user_channel(self, owner_id: str, user_id: str) -> str | None:
         mapping = await messaging_repo.get_user_stream(owner_id, user_id)
         if mapping is None or mapping.get("active") is not True:

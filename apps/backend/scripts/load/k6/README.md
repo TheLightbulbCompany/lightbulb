@@ -85,6 +85,9 @@ so a view expects `fps × seconds watched` frames and every one it never got —
 all of them — is a loss. (k6 reads files only at init, so a sent-seq list written during the run
 could not be read back.)
 
+Each viewer subscribes to the session's frames channel, `/ws/<ws>/session-frames/<sid>` (shared by
+every viewer: a frame is one AppSync publish), then starts its `POST` renewals.
+
 Thresholds: `frame_latency_ms` p95 < 1 s, `frame_delivered` ≥ 99% (3a), `viewers_unsubscribed` = 0 (a view
 that never went live fails the run and its due frames count as lost), `/viewing`
 `http_req_duration{name:POST /messaging/sessions/:id/viewing}` p95 < 500 ms, `http_req_failed` < 0.5%.

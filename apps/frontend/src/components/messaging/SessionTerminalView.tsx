@@ -40,8 +40,20 @@ const atBottom = (el: HTMLElement) => el.scrollTop + el.clientHeight >= el.scrol
  *  the scaled picture is larger than the box, the box scrolls. The wheel is this view's alone and
  *  never xterm's (`onWheel`): the box moves while it can, and only then the terminal's own
  *  scrollback. No click, drag or wheel is ever sent to the Mac (`dropMouseReports`). */
-export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType, input, admitted = false, kept = false }: {
+/** The session's own frames channel, `/ws/<ws>/session-frames/<sid>`: one AppSync publish per frame
+ *  for every viewer, and AppSync admits only a current member while the session is shared. `claim`
+ *  subscribes it on the one live socket and calls `onRefused` when AppSync refuses the subscribe. */
+export type SessionFrames = {
+  channel: string;
+  claim: (channel: string, onRefused: () => void) => () => void;
+  liveChannels: readonly string[];
+};
+const accessGone = (e: unknown) => e instanceof ApiError && (e.status === 403 || e.status === 404);
+
+export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType, input, admitted = false, kept = false, frames }: {
   session: Pick<LocalSession, "sessionId" | "generation">;
+  /** Absent, frames are read off `onEvent` with no subscription of this view's own (tests). */
+  frames?: SessionFrames;
   /** The session ended and its Mac reports the final screen. A view that watched it through the end asks
    *  for that picture once, as a new viewer does: until the report the backend refuses the watch and drops
    *  the Mac's frames, and a renewal after it is no new viewer, so nothing else sends the picture. */
@@ -97,14 +109,41 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
   // The backend refused a new viewer: this session is full (LOCAL_SESSION_VIEWERS_FULL), with its message.
   const [full, setFull] = useState<string | null>(null);
   const screenKey = `${session.sessionId}:${kept}`;
+  // The frames channel is held until access is lost (403/404 or a full session on a watch). A
+  // refused subscribe is released and claimed again, 1 s doubling to 15 s, so the socket asks
+  // anew; a refusal that lasts is a refused watch too, which ends it.
+  const framesChannel = frames?.channel ?? null;
+  const claim = frames?.claim;
+  // The first watch asks the Mac for a picture: not before the channel it comes on is live.
+  const subscribed = !frames || frames.liveChannels.includes(frames.channel);
+  const [ready, setReady] = useState(subscribed);
+  const [gone, setGone] = useState(false);
+  const [claimRound, setClaimRound] = useState(0);
+  const retryIn = useRef(1_000);
+  const lost = useRef(() => {});
+  lost.current = () => { setGone(true); setLive(false); onLive(false); };
   useEffect(() => {
+    if (!framesChannel || !claim || gone) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const release = claim(framesChannel, () => {
+      release();
+      // Watch anyway: a session shared before its marker existed gets one from the watch.
+      setReady(true);
+      timer = setTimeout(() => setClaimRound((n) => n + 1), retryIn.current);
+      retryIn.current = Math.min(retryIn.current * 2, 15_000);
+    });
+    return () => { clearTimeout(timer); release(); };
+  }, [framesChannel, claim, gone, claimRound]);
+  useEffect(() => { if (subscribed) { setReady(true); retryIn.current = 1_000; } }, [subscribed]);
+  useEffect(() => {
+    if (!ready) return;
     let refused = false;
     setFull(null);
     const ping = (fresh: boolean) => void watch(session.sessionId, fresh).catch((e) => {
       if (!(e instanceof ApiError)) return;
       // The session already has its most live viewers: say so, and stop asking (no retry loop).
       const full = e.status === 409 && (e.body as { code?: string } | null)?.code === "LOCAL_SESSION_VIEWERS_FULL";
-      if (full || e.status === 403 || e.status === 404) { refused = true; clearInterval(timer); setLive(false); onLive(false); }
+      if (full || accessGone(e)) { refused = true; clearInterval(timer); lost.current(); }
       if (full) setFull(e.message);
     });
     // A hidden tab does not watch. Its timers run about once a minute, past the 45 s viewer lease,
@@ -126,7 +165,7 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     if (document.visibilityState !== "hidden") start(asked.current !== screenKey);
     document.addEventListener("visibilitychange", onVisibility);
     return () => { clearInterval(timer); document.removeEventListener("visibilitychange", onVisibility); };
-  }, [session.sessionId, screenKey, watch, onLive]);
+  }, [session.sessionId, screenKey, watch, ready]);
   useEffect(() => {
     let term: Terminal | null = null;
     let order = NEW_SCREEN;

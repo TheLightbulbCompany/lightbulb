@@ -290,6 +290,50 @@ describe("subscriptions", () => {
     client.close();
   });
 
+  it("a refused session frames channel is dropped for good and the socket's other channels stay live", async () => {
+    // The authorizer said no: closing the socket would cost the user channel for nothing.
+    const SESSION = `/ws/${WS}/session-frames/44444444-4444-5444-8444-444444444444`;
+    const { client, errors, statuses } = setup();
+    client.setChannels([USER, SESSION]);
+    await flush();
+    const ws = FakeSocket.instances[0];
+    ws.open();
+    ws.ack();
+    await flush();
+    expect(ws.sentOf("subscribe").map((s) => s.channel)).toEqual([USER, SESSION]);
+    ws.ackSubscribe(USER);
+    ws.receive({ type: "subscribe_error", id: ws.sentOf("subscribe")[1].id, errors: [{ errorType: "UnauthorizedException" }] });
+    expect(errors).toEqual([["subscribe_refused", SESSION]]);
+    expect(ws.closes).toEqual([]);
+    expect(statuses.at(-1)?.liveChannels).toEqual([USER]);
+    client.close();
+  });
+
+  it("a transient error on a session frames channel keeps it and resubscribes it on the reconnect", async () => {
+    const SESSION = `/ws/${WS}/session-frames/44444444-4444-5444-8444-444444444444`;
+    const { client, errors, statuses } = setup();
+    client.setChannels([USER, SESSION]);
+    await flush();
+    const ws = FakeSocket.instances[0];
+    ws.open();
+    ws.ack();
+    await flush();
+    ws.ackSubscribe(USER);
+    ws.receive({ type: "subscribe_error", id: ws.sentOf("subscribe")[1].id, errors: [{ errorType: "ServiceUnavailable" }] });
+    expect(errors).toEqual([["subscribe_error", SESSION]]); // not a refusal: the view is not told to re-ask
+    expect(ws.closes).toEqual([{ code: 4002, reason: "subscribe rejected" }]);
+    await vi.advanceTimersByTimeAsync(500);
+    const second = FakeSocket.instances[1];
+    second.open();
+    second.ack();
+    await flush();
+    expect(second.sentOf("subscribe").map((s) => s.channel)).toEqual([USER, SESSION]);
+    second.ackSubscribe(USER);
+    second.ackSubscribe(SESSION);
+    expect(statuses.at(-1)?.liveChannels).toEqual([USER, SESSION]);
+    client.close();
+  });
+
   it("backs off when the rejection repeats, and resets once the channel goes live", async () => {
     const { client } = setup({ random: () => 1 - Number.EPSILON }); // worst-case delay
     client.setChannels([ROOM]);

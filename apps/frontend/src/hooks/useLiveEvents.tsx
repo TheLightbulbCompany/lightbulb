@@ -47,6 +47,11 @@ export interface LiveEventsContextValue extends RuntimeRpcSource {
   /** Subscribe the active room's frames sibling channel (a Mac tab's view-tier frames) while
    * any claim is held. Ref-counted; the returned function releases this claim once. */
   claimFrames(): () => void;
+  /** A shared session's frames channel in this workspace, `/ws/<ws>/session-frames/<sid>`; null until live config loads. */
+  sessionFramesChannel(sessionId: string): string | null;
+  /** Subscribe a shared session's frames channel while the claim is held. `onRefused`: AppSync's
+   * authorizer refused the subscribe (not a member, or the session is not shared). */
+  claimSessionFrames(channel: string, onRefused: () => void): () => void;
   onChatMessage(handler: (frame: ChatIncomingMessage, event: LiveEventOf<"room.run.frame">) => void): () => void;
 }
 
@@ -81,6 +86,8 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     ? activeRoomState.room
     : null;
   const [frameClaims, setFrameClaims] = useState(0);
+  const sessionFrameClaims = useRef(new Set<{ channel: string; onRefused: () => void }>());
+  const [sessionFramesChannels, setSessionFramesChannels] = useState<string[]>([]);
   const [nodeStatus, setNodeStatus] = useState("disconnected");
   const [nodeStatusReason, setNodeStatusReason] = useState("");
   const [desktopPermissionRevision, setDesktopPermissionRevision] = useState(0);
@@ -107,6 +114,10 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     userChannel,
     roomChannel,
     framesChannel,
+    sessionFramesChannels,
+    onSubscribeError: (channel) => {
+      for (const claim of sessionFrameClaims.current) if (claim.channel === channel) claim.onRefused();
+    },
     uuid: () => crypto.randomUUID(),
     onEvent: dispatchEvent,
     onChatMessage: dispatchChat,
@@ -147,6 +158,20 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
       setFrameClaims((count) => count - 1);
     };
   }, []);
+
+  const claimSessionFrames = useCallback((channel: string, onRefused: () => void) => {
+    const claims = sessionFrameClaims.current;
+    const sync = () => setSessionFramesChannels([...new Set([...claims].map((c) => c.channel))]);
+    const claim = { channel, onRefused };
+    claims.add(claim);
+    sync();
+    return () => { claims.delete(claim); sync(); };
+  }, []);
+  const workspaceId = config?.workspaceId ?? null;
+  const sessionFramesChannel = useCallback(
+    (sessionId: string) => (workspaceId ? `/ws/${workspaceId}/session-frames/${sessionId}` : null),
+    [workspaceId],
+  );
 
   useEffect(() => subscribeDesktopPermissions(() => {
     setDesktopPermissionRevision((revision) => revision + 1);
@@ -217,6 +242,8 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     messaging,
     claimActiveRoomSubscription,
     claimFrames,
+    claimSessionFrames,
+    sessionFramesChannel,
     onChatMessage,
     rpc: runtimeClient.rpc,
     getOperation: runtimeClient.getOperation,
@@ -232,12 +259,19 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     messaging,
     claimActiveRoomSubscription,
     claimFrames,
+    claimSessionFrames,
+    sessionFramesChannel,
     onChatMessage,
     runtimeClient,
     onEvent,
   ]);
 
   return <LiveEventsContext.Provider value={value}>{children}</LiveEventsContext.Provider>;
+}
+
+/** The provider's value, or null outside one (a component rendered on its own, as in tests). */
+export function useOptionalLiveEvents(): LiveEventsContextValue | null {
+  return useContext(LiveEventsContext);
 }
 
 export function useLiveEvents(): LiveEventsContextValue {

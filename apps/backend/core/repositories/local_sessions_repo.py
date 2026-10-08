@@ -195,6 +195,19 @@ async def put_session(row: dict, previous: dict | None, enrollment: dict, *, ext
         )
     projection = {key: row[key] for key in ("ownerId", "humanUserId", "deviceId", "sessionId")}
     projection.update(pk=user_pk(row["ownerId"], row["humanUserId"]), sk=f"SESSION#{row['sessionId']}")
+    # WORKSPACE#<ws>/SESSION#<sid> exists exactly while the session is shared: the AppSync handler
+    # admits a member to /ws/<ws>/session-frames/<sid> only then (it cannot build this row's key,
+    # which needs the owner). In the same transaction as the row, so the two never disagree.
+    marker = {
+        "pk": store.workspace_pk(await store.ensure_workspace_id(row["ownerId"])),
+        "sk": f"SESSION#{row['sessionId']}",
+    }
+    shared = not row.get("unshared") and row.get("removedAt") is None
+    marker_write = (
+        {"Put": {"TableName": store._table().name, "Item": {**marker, "ownerId": row["ownerId"]}}}
+        if shared
+        else {"Delete": {"TableName": store._table().name, "Key": marker}}
+    )
     await container_repo.retry_conflict(
         lambda: store._transact(
             [
@@ -202,6 +215,7 @@ async def put_session(row: dict, previous: dict | None, enrollment: dict, *, ext
                 enrollment_condition(enrollment),
                 {"Put": put},
                 {"Put": {"TableName": store._table().name, "Item": projection}},
+                marker_write,
             ]
             + list(extra)
         )

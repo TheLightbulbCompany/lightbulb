@@ -24,6 +24,8 @@ export type LiveErrorKind =
   | "no_token"
   | "connection_error"
   | "subscribe_error"
+  /** A session frames channel the authorizer refused: dropped, not retried (see subscribe_error). */
+  | "subscribe_refused"
   | "protocol_error";
 
 export interface LiveStatus {
@@ -81,6 +83,12 @@ export function framesChannelFor(roomChannel: string): string {
   return roomChannel.replace("/rooms/", "/frames/");
 }
 
+/** AppSync's answer to a handler's `util.unauthorized()`: an `Unauthorized…` errorType. Anything
+ *  else (throttling, a service fault) is transient and takes the reconnect path. */
+function refusedByAuthorizer(errors: unknown): boolean {
+  return Array.isArray(errors) && errors.some((e) => /unauthori[sz]ed/i.test(String((e as { errorType?: unknown } | null)?.errorType ?? "")));
+}
+
 interface Subscription {
   id: string;
   live: boolean;
@@ -118,7 +126,8 @@ export class AppSyncEventsClient {
    *  channel — its `/frames` sibling
    *  (see framesChannelFor). Any other extra room-family channel, including a
    *  `/frames` channel that does not match the current room, is a `protocol_error`
-   *  and is dropped rather than subscribed. */
+   *  and is dropped rather than subscribed. Any number of shared sessions' `/session-frames/`
+   *  channels ride along: one per open terminal view. */
   setChannels(channels: readonly string[]): void {
     if (this.closed) return;
     const unique = [...new Set(channels)];
@@ -126,6 +135,7 @@ export class AppSyncEventsClient {
     const rooms = unique.filter((channel) => channel.includes("/rooms/"));
     const frames = unique.filter((channel) => channel.includes("/frames/"));
     const sessions = unique.filter((channel) => channel.endsWith("/sessions"));
+    const sessionFrames = unique.filter((channel) => channel.includes("/session-frames/"));
     const room = rooms[0];
     const validFrames = frames.filter((channel) => !!room && channel === framesChannelFor(room));
     if (
@@ -133,11 +143,11 @@ export class AppSyncEventsClient {
       sessions.length > 1 ||
       rooms.length > 1 ||
       frames.length > validFrames.length ||
-      users.length + sessions.length + rooms.length + frames.length !== unique.length
+      users.length + sessions.length + rooms.length + frames.length + sessionFrames.length !== unique.length
     ) {
       this.opts.onError?.("protocol_error");
     }
-    this.desired = [...users.slice(0, 1), ...sessions.slice(0, 1), ...rooms.slice(0, 1), ...validFrames.slice(0, 1)];
+    this.desired = [...users.slice(0, 1), ...sessions.slice(0, 1), ...rooms.slice(0, 1), ...validFrames.slice(0, 1), ...sessionFrames];
     for (const [channel, sub] of [...this.subs]) {
       if (!this.desired.includes(channel)) this.dropSubscription(channel, sub, true);
     }
@@ -293,6 +303,15 @@ export class AppSyncEventsClient {
         const sub = channel ? this.subs.get(channel) : undefined;
         if (!channel || !sub || sub.id !== msg.id) return;
         this.dropSubscription(channel, sub, false);
+        if (channel.includes("/session-frames/") && refusedByAuthorizer(msg.errors)) {
+          // Not a member, not shared (or the authorizer could not read): this socket stops
+          // asking, and its other channels stay up. The view claims it again with backoff, and
+          // its own watch answer (403/404) is what ends it.
+          this.desired = this.desired.filter((c) => c !== channel);
+          this.opts.onError?.("subscribe_refused", channel);
+          this.emitStatus();
+          return;
+        }
         this.opts.onError?.("subscribe_error", channel);
         this.emitStatus();
         // Nothing else would ever retry: the socket stays acked, so the ACK's

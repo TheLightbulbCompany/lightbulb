@@ -1,6 +1,10 @@
 # ruff: noqa: E741
-# Vendored from the live Meet voice rig (.scratch-meet-voice/check.py), unchanged below this line: the same
-# checks judge a live call and a replayed one.
+# Vendored from the live Meet voice rig (.scratch-meet-voice/check.py): the same checks judge a live call and
+# a replayed one. One difference, to carry back to the rig (`PIECE`, four uses): the worker now records what
+# was audible of a cut sentence as a marked piece ("... [cut off]") and says the sentence again whole. A
+# piece is a line (silent_between can name the audio, no_text still sees the cut), and it is not a sentence
+# that was said: it is no answer (answer_contains), no repeat of the whole sentence that follows it
+# (said_once), and no line of its own to count (max_agent_lines).
 #!/usr/bin/env python3
 """Pass/fail check of ONE rig run against the scenario's "expect" block.
 
@@ -67,6 +71,7 @@ import sys
 MARK_LAG = 1.4
 WORDS_PER_S = 2.7  # speech rate, to estimate a start from an end
 RIG_LINE = re.compile(r"^\s*(-?\d+\.\d+)\s+(\d\d):(\d\d):(\d\d)\.(\d{3})\s+([A-Z_]+)\s*(.*)$")
+PIECE = re.compile(r"\[cut off\]\s*$")  # huddle.CUT_MARK
 TR_LINE = re.compile(r"^\[(\d+) @(\d+)\] (.+?)( \(Meet\))?(?: → (.+?))?: ?(.*)$")
 
 
@@ -452,7 +457,7 @@ class Run:
         t1, why2 = self.at(s.get("before"), "start", 1e18)
         if why or why2:
             return "SKIP", why or why2
-        match = [a for a in self.by(s) if a["start"] >= t0 and hit(s["contains"], a["text"])]
+        match = [a for a in self.by(s) if a["start"] >= t0 and hit(s["contains"], a["text"]) and not PIECE.search(a["text"])]
         if match and match[0]["start"] < t1:
             return "PASS", self.A(match[0])
         if match:
@@ -464,7 +469,7 @@ class Run:
         if self.agent is None:
             return "SKIP", self.need_tr
         keep = s.get("max_overlap_words", 6)
-        pieces = [(p, done, a) for a in self.agent for p, done in sentences(a["text"])]
+        pieces = [(p, done, a) for a in self.agent if not PIECE.search(a["text"]) for p, done in sentences(a["text"])]
         if "text" in s:  # a short cut fragment is the start of a sentence the agent may finish later
             hits = [(p, a) for p, done, a in pieces if hit(s["text"], p) and (done or len(words(p)) > keep)]
             ev = " | ".join(f'[{a["n"]} @{a["mark"]} = {self.rel(a["t"])}] "{p}"' for p, a in hits)
@@ -520,7 +525,7 @@ class Run:
         if why:
             return "SKIP", why
         inside = []
-        for a in (a for a in self.by(s) if ws <= a["start"] < we):
+        for a in (a for a in self.by(s) if ws <= a["start"] < we and not PIECE.search(a["text"])):
             p = inside[-1] if inside else None  # "Got it." / "Give me a moment." is one acknowledgement
             if p and p["who"] == a["who"] and len(words(p["text"])) <= 6 and len(words(a["text"])) <= 6 and a["start"] - p["t"] <= 3.0:
                 continue

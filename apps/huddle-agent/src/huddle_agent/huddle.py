@@ -168,7 +168,7 @@ TALK_OVER_S = 0.5
 LEVEL_FRESH_S = 1.5
 # The transcriber's detector hears a person this long after they begin, at most. A sentence whose first
 # audio went out less than this before a person was heard began over them, or with them: it yields at once,
-# with no TALK_OVER_S of waiting, and too little of it was audible to count as said (HEARD_SHARE).
+# with no TALK_OVER_S of waiting.
 PREROLL_S = 0.6
 TRAIL_S = 8.0  # an unfinished turn ("Can one of you tell me...", "Friday.") is joined to a rest that comes this soon
 CALL_ON_S = 3.0  # a name said alone, then this much silence from its speaker: the agent was called on
@@ -180,11 +180,12 @@ EXPIRES_S = {"ack": 10.0, "status": 6.0, "social": 6.0}
 # A person and an agent with nothing said between them this long, and a turn of someone else's since, are no
 # longer talking (`Huddle._engagements`).
 ENGAGE_GAP_S = 30.0
-# A sentence that was cut counts as said once this share of it was audible: the room has it, the record
-# shows what was audible of it, and it is not said again. Under that it is not said: nothing of it is on
-# the record, and it is said whole when its utterance goes on (`Huddle.on_unit`). High, because a sentence
-# keeps what it is about for its end ("...costs fifty dollars per month"): half of one is not its answer.
-HEARD_SHARE = 0.8
+# A sentence that was cut is not said, however much of it was audible: it is said whole when its utterance
+# goes on (`Huddle.on_unit`). A sentence keeps what it is about for its end ("...costs fifty dollars per
+# month"), and seconds guessed from characters cannot say its last word was heard (10-08 review: "The
+# monthly price is fifty" was counted said and "dollars" never was). What was audible goes on the record
+# with this mark, so the record shows a piece and not a sentence that was said.
+CUT_MARK = " [cut off]"
 # A paused utterance is not said on before the receipt of what was cut: it says where its cursor is. This
 # long at most, for a voice that died with the receipt.
 RECEIPT_WAIT_S = 1.0
@@ -2105,7 +2106,10 @@ class Huddle:
         track. `said`: audible audio played to its end, and only that moves the cursor. `cut`, `revoked`:
         stopped by the worker. `silent`: it ended uncut and nothing audible was sent. That is a failed
         playback: the unit is not said, and its order's end returns the utterance to be tried again
-        (`on_playback_ended`)."""
+        (`on_playback_ended`).
+
+        Delivery is counted from `said` alone. What was audible of a cut unit (`_audible`) is an estimate:
+        it goes on the record as a marked piece and in the log, and moves nothing."""
         u = next((u for u in self._ledger if u.agent == agent_id and u.order == order), None)
         heard, share = (None, 1.0) if outcome == "said" else self._audible(text, evidence) if outcome == "cut" else (None, 0.0)
         self._log(
@@ -2117,11 +2121,7 @@ class Huddle:
         if outcome == "said":
             self._spoken[0] += len(text)
             self._spoken[1] += evidence.get("loudMs", 0) / 1000
-        # A cut sentence: said, if enough of it was audible (HEARD_SHARE). Its record is what was audible.
-        said = outcome == "said" or share >= HEARD_SHARE
-        if heard is not None and not said:
-            heard = ""  # not said: nothing of it is on the record, and it is said whole later
-        self.on_agent_said(agent_id, text, not said, order=order, index=index, heard=heard)
+        self.on_agent_said(agent_id, text, outcome != "said", order=order, index=index, heard=heard)
         if outcome == "cut" and share > 0 and u is not None and u.kind != "answer":
             self._stale(u)
 
@@ -3073,7 +3073,7 @@ class Huddle:
         when its speaker's sound stopped it before the end (the SDK's mark on the message). A mouth: one unit
         it was ordered to say, by its exact text, said to its end or not (`on_unit`). `order`, `index`: the
         playback and unit its receipt is for. `heard`: a mouth's unit was cut, and this much of it was audible
-        (`_audible`): that goes on the record, and `interrupted` says whether it was too little to count as said."""
+        (`_audible`): that goes on the record marked as a piece (CUT_MARK). The unit was not said."""
         v = self._floor_voice(agent_id)
         own = self._voice if self._voice and self._voice.agent_id == agent_id else None  # also while it closes
         if own and mouth(own.speaker):
@@ -3084,7 +3084,7 @@ class Huddle:
         if heard is not None:
             if not heard:
                 return  # cut before a word of it was audible: nothing was said
-            text = heard
+            text = heard + CUT_MARK
         elif interrupted and (mouth(own.speaker) if own else self.setting == "meeting"):
             return  # a mouth's unit that never played (revoked, silent): nothing was said
         to = self._with(v) if v else ""

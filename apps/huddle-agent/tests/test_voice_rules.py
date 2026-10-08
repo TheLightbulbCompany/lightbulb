@@ -53,34 +53,50 @@ async def asked_and_acknowledging():
     return h, lives, clock, h_mod.units(says_of(lives[0])[0][1])
 
 
-# -- a sentence that was cut: said or not said, by how much of it was audible --
+# -- a sentence that was cut is not said: it stays owed and is said again whole. What was audible is on the --
+# -- record as a marked piece, and is no part of what was delivered                                        --
 
 
-async def test_a_sentence_cut_after_a_word_is_not_said_leaves_no_line_and_is_said_whole_later():
+def cut_line(piece):
+    return piece + h_mod.CUT_MARK
+
+
+async def test_a_sentence_cut_after_a_word_is_not_said_and_is_said_whole_later():
     h, backend, lives, clock, row = await answering()
     await talked_over(h, clock, P2)
     cut(h, lives[0], 0, FIRST, seconds(FIRST, 0.3))
-    assert FIRST not in agent_lines(h) and len(agent_lines(h)) == 1, "only its acknowledgement is on the record"
+    assert agent_lines(h)[1:] == [cut_line("Three")], "what the room heard of it, marked as cut off"
     assert hand(h, "forge") == [f"{FIRST} {SECOND}"], "the cursor did not move"
     await listening_sound(h, clock)
     assert says_of(lives[0])[2:] == [("say", f"{FIRST} {SECOND}")], "said whole, from the sentence it was cut in"
 
 
-async def test_a_sentence_cut_near_its_end_is_said_and_the_record_shows_what_was_audible():
+async def test_a_sentence_cut_before_a_word_of_it_was_audible_leaves_no_line():
     h, backend, lives, clock, row = await answering()
     await talked_over(h, clock, P2)
-    cut(h, lives[0], 0, FIRST, seconds(FIRST, 0.9))
-    assert agent_lines(h)[-1] == "Three PRs are", "what the room heard of it, to a whole word"
-    assert hand(h, "forge") == [SECOND], "it counts as said: the answer goes on after it"
+    cut(h, lives[0], 0, FIRST, 0.05)
+    assert len(agent_lines(h)) == 1, "only its acknowledgement is on the record"
+
+
+async def test_a_sentence_cut_one_word_short_is_not_delivered_and_its_request_stays_owed():
+    """10-08 review: "The monthly price is fifty" was recorded, "dollars" thrown away, the request delivered."""
+    price = "The monthly price is fifty dollars."
+    h, backend, lives, clock, row = await answering(price)
+    await talked_over(h, clock, P2)
+    cut(h, lives[0], 0, price, seconds(price, 0.85))
+    assert agent_lines(h)[-1] == cut_line("The monthly price is fifty"), "the audible piece, for the record only"
+    assert row.status != "delivered" and hand(h, "forge") == [price], "seconds guessed from characters deliver nothing"
     await listening_sound(h, clock)
-    assert says_of(lives[0])[2:] == [("say", SECOND)], "and it is not said again"
+    assert says_of(lives[0])[2:] == [("say", price)], "the whole sentence, with its last word"
+    h.on_unit("forge", lives[0].order, 0, price, "said", {"loudMs": 2300})
+    assert agent_lines(h)[-1] == price and row.status == "delivered" and h._ledger == []
 
 
-async def test_a_sentence_cut_after_its_last_word_is_on_the_record_whole():
+async def test_a_sentence_cut_in_the_silence_after_its_last_word_is_still_owed():
     h, backend, lives, clock, row = await answering(FIRST)
     await talked_over(h, clock, P2)
-    cut(h, lives[0], 0, FIRST, seconds(FIRST, 1.2))  # the cut came in the silence after it
-    assert agent_lines(h)[-1] == FIRST and h._ledger == [] and row.status == "delivered"
+    cut(h, lives[0], 0, FIRST, seconds(FIRST, 1.2))  # every second of it by the estimate: its playback did not end
+    assert agent_lines(h)[-1] == cut_line(FIRST) and row.status != "delivered" and hand(h, "forge") == [FIRST]
 
 
 async def test_the_share_is_measured_at_the_rate_the_calls_own_units_were_said_at():
@@ -96,9 +112,10 @@ async def test_a_paused_answer_is_not_said_on_before_the_receipt_of_what_was_cut
     await talked_over(h, clock, P2)
     await listening_sound(h, clock)  # it may go on, and the cut sentence's receipt is not in
     assert len(says_of(lives[0])) == 2, "where it goes on from is not known yet"
-    cut(h, lives[0], 0, FIRST, seconds(FIRST, 0.9))
+    h.on_unit("forge", lives[0].order, 0, FIRST, "said", {"loudMs": 1200})  # it had ended as the yield came
+    h.on_playback_ended("forge", lives[0].order)
     await settle(h)
-    assert says_of(lives[0])[2:] == [("say", SECOND)], "the receipt said the sentence was heard"
+    assert says_of(lives[0])[2:] == [("say", SECOND)], "the receipt said the sentence was played to its end"
 
 
 async def test_a_voice_that_never_sends_the_receipt_holds_the_answer_a_second_at_most():
@@ -120,7 +137,7 @@ async def test_an_acknowledgement_cut_after_its_first_sentence_is_not_finished_l
     assert [u for u in h._ledger if u.kind == "ack"] == [], "its moment has passed"
     await listening_sound(h, clock, P1)
     await pause(h, clock)
-    assert len(says_of(lives[0])) == 1 and agent_lines(h) == [ack[0]]
+    assert len(says_of(lives[0])) == 1 and agent_lines(h) == [ack[0]], "(no receipt of the cut sentence came: no piece)"
 
 
 async def test_an_acknowledgement_whose_second_sentence_did_not_play_is_not_finished_later():

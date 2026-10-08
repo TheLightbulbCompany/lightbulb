@@ -176,17 +176,44 @@ fn ensure_default_seed() -> Result<(), FileAccessError> {
     let canonical_seed = std::fs::canonicalize(&seed)?;
     let store_arc = STORE.get().expect("init() before ensure_default_seed");
     let mut store = store_arc.lock().expect("store poisoned");
-    let canonical_str = canonical_seed.to_string_lossy().to_string();
-    if !store
-        .allowed_paths
-        .iter()
-        .any(|p| Path::new(p) == canonical_seed.as_path())
-    {
-        store.allowed_paths.push(canonical_str);
-        store.version = STORE_VERSION;
-        save_to_disk(&store)?;
-    }
+    add_to(&mut store, &canonical_seed, save_to_disk)?;
     Ok(())
+}
+
+/// A removal that is in effect in memory and not yet on disk: `list_paths` retries the save.
+static UNSAVED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Approves `canonical` in `store`. On disk first, then in memory: a folder whose approval
+/// could not be saved is not approved, so no caller that was told "it failed" finds it approved
+/// (session sharing reads the list in memory every 100 ms). False when it was there already.
+fn add_to(
+    store: &mut FileAccessStore,
+    canonical: &Path,
+    save: impl FnOnce(&FileAccessStore) -> Result<(), FileAccessError>,
+) -> Result<bool, FileAccessError> {
+    if store.allowed_paths.iter().any(|p| Path::new(p) == canonical) {
+        return Ok(false);
+    }
+    let mut next = store.clone();
+    next.allowed_paths.push(canonical.to_string_lossy().to_string());
+    next.version = STORE_VERSION;
+    save(&next)?;
+    *store = next;
+    Ok(true)
+}
+
+/// Removes `canonical` from `store`. In memory first, whatever happens to the save: a folder
+/// its owner removed is not approved from this moment. The save's result comes back with
+/// whether anything was removed, for the caller to retry.
+fn remove_from(
+    store: &mut FileAccessStore,
+    canonical: &Path,
+    save: impl FnOnce(&FileAccessStore) -> Result<(), FileAccessError>,
+) -> (bool, Result<(), FileAccessError>) {
+    let before = store.allowed_paths.len();
+    store.allowed_paths.retain(|p| Path::new(p) != canonical);
+    let changed = store.allowed_paths.len() != before;
+    (changed, if changed { save(store) } else { Ok(()) })
 }
 
 /// Public snapshot of the current allowlist. Used by the Tauri command
@@ -195,7 +222,13 @@ pub fn list_paths() -> Vec<String> {
     let Some(arc) = STORE.get() else {
         return Vec::new();
     };
-    arc.lock().expect("store poisoned").allowed_paths.clone()
+    let store = arc.lock().expect("store poisoned");
+    // A removal whose save failed is tried again here (session sharing asks every 100 ms).
+    if UNSAVED.load(std::sync::atomic::Ordering::SeqCst) && save_to_disk(&store).is_ok() {
+        UNSAVED.store(false, std::sync::atomic::Ordering::SeqCst);
+        crate::log("[file-access] the approved folders are saved again");
+    }
+    store.allowed_paths.clone()
 }
 
 /// Current local standing consent; never seed or repair while answering a remote call.
@@ -252,14 +285,9 @@ pub fn add_path(input: &str) -> Result<String, FileAccessError> {
     let canonical_str = canonical.to_string_lossy().to_string();
     let arc = STORE.get().ok_or(FileAccessError::InvalidPath("uninitialized store".into()))?;
     let mut store = arc.lock().expect("store poisoned");
-    if !store
-        .allowed_paths
-        .iter()
-        .any(|p| Path::new(p) == canonical.as_path())
-    {
-        store.allowed_paths.push(canonical_str.clone());
-        store.version = STORE_VERSION;
-        save_to_disk(&store)?;
+    if add_to(&mut store, &canonical, save_to_disk)? {
+        // (That save wrote the whole list: a removal that was waiting is on disk too.)
+        UNSAVED.store(false, std::sync::atomic::Ordering::SeqCst);
         crate::log(&format!("[file-access] added {}", canonical_str));
     }
     Ok(canonical_str)
@@ -271,14 +299,16 @@ pub fn remove_path(input: &str) -> Result<bool, FileAccessError> {
     let canonical = canonicalize(input)?;
     let arc = STORE.get().ok_or(FileAccessError::InvalidPath("uninitialized store".into()))?;
     let mut store = arc.lock().expect("store poisoned");
-    let before = store.allowed_paths.len();
-    store
-        .allowed_paths
-        .retain(|p| Path::new(p) != canonical.as_path());
-    let changed = store.allowed_paths.len() != before;
-    if changed {
-        save_to_disk(&store)?;
-        crate::log(&format!("[file-access] removed {}", canonical.display()));
+    let (changed, saved) = remove_from(&mut store, &canonical, save_to_disk);
+    match saved {
+        Ok(()) if changed => crate::log(&format!("[file-access] removed {}", canonical.display())),
+        Ok(()) => {}
+        // Removed for everything that asks from now on; the file still names it, so until a
+        // save works a restart would approve it again. `list_paths` keeps trying.
+        Err(reason) => {
+            UNSAVED.store(true, std::sync::atomic::Ordering::SeqCst);
+            crate::log(&format!("[file-access] removed {}, not saved yet ({reason}); retrying", canonical.display()));
+        }
     }
     Ok(changed)
 }
@@ -329,6 +359,30 @@ mod tests {
         // The same answer for session sharing: the symlink's target was never approved.
         assert!(!root_unchanged(Path::new(&canonical)));
         assert!(!root_unchanged(Path::new("relative")) && !root_unchanged(Path::new("/")));
+    }
+
+    #[test]
+    fn a_folder_is_approved_only_once_that_is_saved_and_is_removed_at_once() {
+        let failing = |_: &FileAccessStore| Err(FileAccessError::InvalidPath("disk full".into()));
+        let saved = std::cell::RefCell::new(None);
+        let saving = |store: &FileAccessStore| {
+            *saved.borrow_mut() = Some(store.allowed_paths.clone());
+            Ok(())
+        };
+        let mut store = FileAccessStore { version: 1, allowed_paths: vec!["/a".into()] };
+        // The save fails: the caller is told so, and the folder is not approved in memory either.
+        assert!(add_to(&mut store, Path::new("/b"), failing).is_err());
+        assert_eq!(store.allowed_paths, ["/a"]);
+        assert!(add_to(&mut store, Path::new("/b"), saving).unwrap());
+        assert_eq!(store.allowed_paths, ["/a", "/b"]);
+        assert_eq!(saved.borrow().as_deref(), Some(&["/a".to_owned(), "/b".to_owned()][..]), "saved before it counts");
+        assert!(!add_to(&mut store, Path::new("/b"), failing).unwrap(), "already approved: nothing to save");
+        // A removal is in effect whatever the save does; its failure is reported for a retry.
+        let (changed, result) = remove_from(&mut store, Path::new("/a"), failing);
+        assert!(changed && result.is_err());
+        assert_eq!(store.allowed_paths, ["/b"]);
+        let (changed, result) = remove_from(&mut store, Path::new("/a"), failing);
+        assert!(!changed && result.is_ok(), "not there: nothing to save");
     }
 
     #[test]

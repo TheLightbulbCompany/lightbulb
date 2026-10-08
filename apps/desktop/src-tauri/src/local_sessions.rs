@@ -1568,6 +1568,25 @@ struct Mirror {
     /// another folder) between two listings; a hook says so at once. It must be approved too.
     #[serde(default)]
     hook_cwd: Option<PathBuf>,
+    // The relay has acknowledged this session's end. Durable: a Mac that reports an
+    // end and restarts must not report it again, and one that does not must.
+    #[serde(default)]
+    ended_sent: bool,
+    // The prompt a waiting row has already been queued for. `None` means "not
+    // waiting": every other transition clears it, so the same prompt asked again
+    // after an answer is news rather than a repeat.
+    #[serde(default)]
+    waiting: Option<WaitingPrompt>,
+    /// Model, permission mode and reported tokens, read off the same rows.
+    #[serde(default)]
+    stats: stats::Stats,
+    /// This session's subagents, each tailed like the session itself and mirrored into
+    /// the same event stream tagged with its id: they share its sharing, pause and end.
+    #[serde(default, skip_serializing_if = "Subagents::is_empty")]
+    subagents: Subagents,
+    // RAM changes remain dirty across failed writes; this is never restored from disk.
+    #[serde(skip)]
+    dirty: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

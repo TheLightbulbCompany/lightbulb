@@ -71,6 +71,7 @@ function LinkTerminal({ token, onTrouble }: { token: string; onTrouble: () => vo
   // Bumped to take a seat again: after a failure, or when the link was made public anew (a new channel).
   const [round, setRound] = useState(0);
   const lease = useRef<string | null>(null);
+  const leaseOf = useRef(token);
   const handlers = useRef(new Set<(event: LiveEvent) => void>());
   // Whether this seat has drawn a snapshot. Until it has, every renewal asks for one: the server
   // grants an ask once per 15 s per link, so a viewer who joined just after someone else's would
@@ -101,7 +102,9 @@ function LinkTerminal({ token, onTrouble }: { token: string; onTrouble: () => vo
     let alive = true;
     let client: AppSyncEventsClient | undefined;
     let retry: ReturnType<typeof setTimeout> | undefined;
-    lease.current = null;
+    // A round on the same link keeps its lease: when the link moved to a new channel, the renewal
+    // that said so already holds a seat there, and taking another would cost the channel two.
+    if (leaseOf.current !== token) { lease.current = null; leaseOf.current = token; }
     pictured.current = false;
     spent.current = false;
     trading.current = null;
@@ -135,7 +138,7 @@ function LinkTerminal({ token, onTrouble }: { token: string; onTrouble: () => vo
       if (!refusal(e)) retry = setTimeout(() => setRound((n) => n + 1), VIEWING_RETRY_MS); // a refused link is the page poll's to show
     });
     return () => { alive = false; clearTimeout(retry); client?.close(); setSeat(null); setLiveChannels([]); };
-  }, [viewing, reseat, round]);
+  }, [viewing, reseat, round, token]);
   const channel = seat?.view.channel;
   const watch = useCallback(async (_id: string, fresh?: boolean) => {
     try { if ((await viewing(fresh || !pictured.current)).channel !== channel) setRound((n) => n + 1); }

@@ -354,6 +354,25 @@ describe("session link page", () => {
     expect(viewing().at(-1)).toEqual({ token: "tok", lease: "pub-1.key-3", retake: true });
   });
 
+  // A channel gives out a life total of seats, then the link moves to a new one. A viewer's next
+  // renewal answers with a seat there: the page follows with that seat, not a second one.
+  it("follows the link to its new channel with the seat the renewal gave it", async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
+    let now = seat;
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => ({ ok: true, status: 200, json: async () => url.endsWith("/viewing") ? now : model({}) }) as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    now = { ...seat, lease: "pub-2.key-9", channel: "/pub/pub-2", watchId: "pub-2" };
+    await act(async () => { await (terminal.props!.watch as (id: string) => Promise<void>)("pub-1"); await vi.advanceTimersByTimeAsync(0); });
+    const viewing = fetchMock.mock.calls.filter(c => String(c[0]).endsWith("/viewing")).map(c => JSON.parse(String(c[1]?.body)));
+    expect(viewing.at(-1).lease).toBe("pub-2.key-9"); // renewed, so no second seat on the new channel
+    expect(sockets.made[0].closed).toBe(true);
+    expect((terminal.props!.frames as { channel: string }).channel).toBe("/pub/pub-2");
+    expect(terminal.props!.session).toEqual({ sessionId: "pub-2", generation: "pub-2" });
+  });
+
   it("shows the Continue instructions only when the owner turned Continue on", async () => {
     vi.useFakeTimers();
     auth.isSignedIn = true;

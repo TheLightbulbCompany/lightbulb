@@ -747,3 +747,37 @@ async def test_a_link_gives_out_a_bounded_number_of_seats_per_ten_minutes(transp
     monkeypatch.setattr(session_links.time, "time", lambda: now + 1)
     monkeypatch.setattr(session_links, "MINT_WINDOW_S", 1)
     assert (await session_links.viewing(token, None, False)).lease
+
+
+@pytest.mark.asyncio
+async def test_a_channel_gives_out_a_life_total_of_seats_and_then_the_link_moves_to_a_new_one(transport, monkeypatch):
+    """An open subscription never ends by itself, so a channel's subscriptions are bounded by
+    moving the link to a new channel: the old one's sockets all go silent."""
+    from core.services import session_links
+
+    monkeypatch.setattr(session_links, "MAX_CHANNEL_SEATS", 3)
+    sid = await start(transport)
+    token, public = await _public_link(sid)
+    old = await session_links.viewing(token, None, False)
+    for _ in range(2):
+        await session_links.viewing(token, None, False)
+    before = await repo.get_session(OWNER, sid)
+    link = before["shareLink"]
+    third = await session_links.viewing(token, None, False)  # past the total: seated on a new channel
+    # A seat that raced the third past the total read the old row too. Its move is conditional on
+    # the old publicId, so it moves nothing, and it is seated on the same new channel.
+    await session_links._new_channel(before, public)
+    fourth = await session_links.viewing(token, None, False)
+    moved = (await repo.get_session(OWNER, sid))["shareLink"]
+    assert moved["publicId"] != public and third.channel == fourth.channel == f"/pub/{moved['publicId']}"
+    assert {k: v for k, v in moved.items() if k != "publicId"} == {k: v for k, v in link.items() if k != "publicId"}
+    assert (await service.get_link(ALICE, sid)).audience == "anyone", "the same link, still public"
+    # Frames go to the new channel only: every socket on the old one hears nothing more.
+    transport[4].clear()
+    await session_screen.forward(relay(transport), "conn-1", frame(sid))
+    assert [c for c, _ in await _published(transport)] == [third.channel]
+    # A viewer from the old channel follows at its next renewal: its lease renews nothing, and
+    # it is seated on the new channel, for one seat.
+    followed = await session_links.viewing(token, old.lease, False)
+    assert followed.channel == third.channel and followed.lease != old.lease
+    assert (await session_links.viewing(token, followed.lease, False)).lease == followed.lease

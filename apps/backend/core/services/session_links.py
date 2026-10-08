@@ -245,6 +245,7 @@ async def open_page(auth: AuthContext | None, token: str, *, refresh: bool = Fal
 # PUBWATCH#<publicId> / WATCHED                when the newest lease lapses (`until`), when the Mac
 #                                              was last asked for a picture (`askedAt`), and the
 #                                              seats taken in this ten minutes (`mintWindow`, `minted`)
+#                                              and in the channel's life (`seats`)
 #
 # The lease `<publicId>.<key>` is the viewer's whole credential on AppSync: the `pub` namespace's
 # Lambda authorizer (apps/infra/lambda/pub-authorizer) admits a subscribe to `/pub/<publicId>` and
@@ -264,6 +265,14 @@ MAX_LINK_VIEWERS = 20
 # on bad networks fit. Narrowing the link silences every socket at once: the channel is renamed.
 MINT_WINDOW_S = 600
 MINTS_PER_WINDOW = 120
+# That budget is a rate, and an open subscription never ends by itself. So a channel also has a
+# life total: the seat after its last moves the LINK to a new `publicId` (same token, same
+# audience), and `forward` publishes only to the current one, so no channel ever has more
+# subscriptions than this and every socket on the old one goes silent at once. Viewers there follow
+# at their next 15 s renewal: it answers with a seat on the new channel. The window budget is per
+# channel, so a link changes channel at most once per window. No key exchange, no sweeper: the old
+# channel's rows lapse by TTL.
+MAX_CHANNEL_SEATS = 200
 # A link's viewers together get the Mac asked for history and a snapshot at most this often: each
 # ask is a burst out of the session's frame budget, which workspace viewers share, and `fresh` is
 # only a stranger's word. Per link, not per lease: taking new seats buys no more asks. A viewer
@@ -295,10 +304,10 @@ class Viewing(ContractModel):
 async def _count_mint(table, watched: dict, now: int) -> None:
     """One more seat out of this link's ten-minute budget, or the same answer as a full session."""
     window = now // MINT_WINDOW_S
-    for expression, condition, values in (
-        ("SET minted = minted + :one", "mintWindow = :w AND minted < :max", {":max": MINTS_PER_WINDOW}),
-        ("SET mintWindow = :w, minted = :one", "attribute_not_exists(mintWindow) OR mintWindow <> :w", {}),
-    ):
+    count = ("SET minted = minted + :one", "mintWindow = :w AND minted < :max", {":max": MINTS_PER_WINDOW})
+    start = ("SET mintWindow = :w, minted = :one", "attribute_not_exists(mintWindow) OR mintWindow <> :w", {})
+    # Count again after a lost start: two seats racing to open a window both belong in it.
+    for expression, condition, values in (count, start, count):
         try:
             await run_in_thread(
                 table.update_item,
@@ -316,7 +325,41 @@ async def _count_mint(table, watched: dict, now: int) -> None:
     )
 
 
-async def viewing(token: str, lease: str | None, fresh: bool, retake: bool = False) -> Viewing:
+async def _seat_in_channel(table, watched: dict) -> bool:
+    """One more seat out of this channel's life total; False when it has given out its last."""
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key=watched,
+            UpdateExpression="SET seats = if_not_exists(seats, :zero) + :one",
+            ConditionExpression="attribute_not_exists(seats) OR seats < :max",
+            ExpressionAttributeValues={":zero": 0, ":one": 1, ":max": MAX_CHANNEL_SEATS},
+        )
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return False
+
+
+async def _new_channel(row: dict, public: str) -> None:
+    """Move the link to a new publicId. Conditional on the old one, so of two seats racing past the
+    total one moves it and the other finds it moved (or narrowed): both then read the same row.
+    The revision moves too, so a writer holding the row from before this starts over."""
+    try:
+        await run_in_thread(
+            store._table().update_item,
+            Key={"pk": row["pk"], "sk": "META"},
+            UpdateExpression="SET shareLink.publicId = :new, revision = :rev",
+            ConditionExpression="shareLink.publicId = :old",
+            ExpressionAttributeValues={":new": str(uuid.uuid4()), ":rev": str(uuid.uuid4()), ":old": public},
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+
+async def viewing(token: str, lease: str | None, fresh: bool, retake: bool = False, *, moved: bool = False) -> Viewing:
     """A link holder has the terminal on screen: every 15 s, no sign-in. The token is checked on
     every call, so a link that stopped being public refuses the next renewal."""
     from core.config import settings
@@ -372,6 +415,11 @@ async def viewing(token: str, lease: str | None, fresh: bool, retake: bool = Fal
             raise ApiProblem(
                 "LOCAL_SESSION_VIEWERS_FULL", f"This session already has {MAX_LINK_VIEWERS} people watching by link."
             )
+        if not await _seat_in_channel(table, watched):
+            if moved:  # the new channel filled while this call was on its way to it
+                raise ApiProblem("LOCAL_SESSION_VIEWERS_FULL", "Too many people opened this link just now. Try again.")
+            await _new_channel(row, public)
+            return await viewing(token, None, fresh, moved=True)
         await _count_mint(table, watched, now)
         secret = secrets.token_urlsafe(32)
         lease = f"{public}.{secret}"

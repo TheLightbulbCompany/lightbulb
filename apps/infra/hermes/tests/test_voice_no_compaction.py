@@ -391,3 +391,139 @@ def test_context_pressure_is_hermes_last_real_prompt_over_its_threshold():
     compressor.last_prompt_tokens = -1  # Hermes's "awaiting real usage" sentinel
     assert turn._context_pressure(SimpleNamespace(context_compressor=compressor)) == 0.0
     assert turn._context_pressure(SimpleNamespace()) == 0.0
+
+
+# ---- 3. a bounded spoken turn does not hide a session that owes a compaction ----------------------
+def _measured(env, monkeypatch, db, prompt_tokens):  # noqa: F811 -- the imported fixture's value
+    """The env fixture's agent, with a session row and Hermes's reading of the prompt it sent."""
+    construct = turn._construct_agent
+
+    def measured(*a, **k):
+        agent = construct(*a, **k)
+        agent._session_db, agent.session_id = db, SESSION
+        agent.context_compressor = SimpleNamespace(last_prompt_tokens=prompt_tokens, threshold_tokens=100_000)
+        return agent
+
+    monkeypatch.setattr(turn, "_construct_agent", measured)
+    monkeypatch.setattr(turn, "_observe_room", lambda *_a: None)
+
+
+def test_a_bounded_spoken_turn_keeps_the_pressure_it_interrupted(env, home, monkeypatch, compaction):  # noqa: F811
+    """The turn stopped the call-start compaction and replays a bounded tail: its small prompt
+    must not overwrite the over-threshold reading, or the answer's compaction finds nothing owed."""
+    history, db = _history(40), _DB(0.9)
+    monkeypatch.setattr(turn, "_room_history", lambda _agent: (list(history), None))
+    monkeypatch.setattr(turn, "CALL_HISTORY_TOKENS", _rough(history) // 4)
+    _measured(env, monkeypatch, db, prompt_tokens=10_000)  # 0.1 of the threshold on its own
+    turn.register_call_run(IDENTITY)
+    assert turn._run_call(IDENTITY, REQUEST, _frames())[0] == "completed"
+    assert db.meta[SESSION][turn.PRESSURE] >= 0.9
+    compaction.db = db
+    assert turn.compact_session("agent-1", SESSION) == "compacted"  # still owed, and now paid
+    assert db.meta[SESSION][turn.PRESSURE] == 0.0
+
+
+def test_a_bounded_spoken_turn_records_the_whole_session_not_its_tail(env, home, monkeypatch):  # noqa: F811
+    history, db = _history(40), _DB(0.0)
+    monkeypatch.setattr(turn, "_room_history", lambda _agent: (list(history), None))
+    monkeypatch.setattr(turn, "CALL_HISTORY_TOKENS", _rough(history) // 4)
+    _measured(env, monkeypatch, db, prompt_tokens=10_000)
+    turn.register_call_run(IDENTITY)
+    turn._run_call(IDENTITY, REQUEST, _frames())
+    omitted = _rough(history) - _rough(env["convos"][0]["conversation_history"])
+    assert omitted > 0 and db.meta[SESSION][turn.PRESSURE] == round((10_000 + omitted) / 100_000, 3)
+
+
+def test_only_a_run_that_cannot_compact_holds_the_pressure_up():
+    def after(compression_enabled):
+        return turn._recorded_pressure(SimpleNamespace(
+            _session_db=_DB(0.9), session_id=SESSION, compression_enabled=compression_enabled,
+            context_compressor=SimpleNamespace(last_prompt_tokens=10_000, threshold_tokens=100_000)))
+
+    assert after(False) == 0.9  # a spoken turn: the session is no smaller than it was
+    assert after(True) == 0.1   # a chat turn compacted inline: its reading is the session
+
+
+def test_a_compaction_that_commits_nothing_leaves_the_pressure_owed(compaction, home, monkeypatch):
+    manual = sys.modules["agent.conversation_compression_manual"]
+    monkeypatch.setattr(manual, "compress_now", lambda *_a, **_k: SimpleNamespace(status="failed"))
+    assert turn.compact_session("agent-1", SESSION) == "failed"
+    assert compaction.db.meta[SESSION][turn.PRESSURE] == 0.9 and compaction.saved == []
+    assert compaction.settled == [False]
+
+
+# ---- 4. a compaction counts against the turn ceiling ----------------------------------------------
+OTHER = "agent:agent-2:lightbulb:channel:" + ROOM
+
+
+def _slots(monkeypatch, turns, compactions):
+    monkeypatch.setattr(turn, "_turn_slots", threading.BoundedSemaphore(turns))
+    monkeypatch.setattr(turn, "_compaction_slots", threading.BoundedSemaphore(compactions))
+
+
+def _free(semaphore) -> int:
+    held = 0
+    while semaphore.acquire(blocking=False):
+        held += 1
+    for _ in range(held):
+        semaphore.release()
+    return held
+
+
+def test_a_compaction_with_no_turn_slot_is_busy_and_holds_nothing(compaction, home, monkeypatch):
+    _slots(monkeypatch, turns=1, compactions=1)
+    with turn._turn_slots:  # a turn is running in another conversation
+        assert turn.compact_session("agent-1", SESSION) == "busy"
+        assert _lock_is_free() and _free(turn._compaction_slots) == 1
+    assert compaction.runs == [] and compaction.db.meta[SESSION][turn.PRESSURE] == 0.9
+    assert turn.compact_session("agent-1", SESSION) == "compacted"
+    assert _free(turn._turn_slots) == 1 and _free(turn._compaction_slots) == 1 and _lock_is_free()
+
+
+def test_a_failing_compaction_gives_its_slots_back(compaction, home, monkeypatch):
+    _slots(monkeypatch, turns=2, compactions=1)
+    monkeypatch.setattr(turn, "_compact_locked", lambda *_a: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert turn.compact_session("agent-1", SESSION) == "failed"
+    assert _free(turn._turn_slots) == 2 and _free(turn._compaction_slots) == 1 and _lock_is_free()
+
+
+def test_compactions_together_leave_a_turn_slot_free(compaction, home, monkeypatch):
+    """Call start asks for one compaction per team member: they do not take every slot."""
+    _slots(monkeypatch, turns=2, compactions=1)
+    compaction.gate = threading.Event()
+    outcome = []
+    worker = threading.Thread(target=lambda: outcome.append(turn.compact_session("agent-1", SESSION)))
+    worker.start()
+    assert compaction.started.wait(5)
+    try:
+        assert turn.compact_session("agent-2", OTHER) == "busy"
+        assert _free(turn._turn_slots) == 1  # the spoken turn's
+    finally:
+        compaction.gate.set()
+        worker.join(5)
+    assert outcome == ["compacted"] and _free(turn._turn_slots) == 2 and _free(turn._compaction_slots) == 1
+
+
+def test_a_spoken_turn_in_another_conversation_gets_the_compactions_slot(compaction, home, monkeypatch):
+    """One slot, held by a compaction of agent-1's session: agent-2's spoken turn stops it and
+    runs, instead of queueing for the slot."""
+    _slots(monkeypatch, turns=1, compactions=1)
+    compaction.gate = threading.Event()
+    monkeypatch.setattr(turn, "_interrupt", lambda _what, agent: (agent.interrupt(), compaction.gate.set()))
+    outcome = []
+    worker = threading.Thread(target=lambda: outcome.append(turn.compact_session("agent-1", SESSION)))
+    worker.start()
+    assert compaction.started.wait(5)
+    waited = []
+    with turn._voice_turn_lock("agent-2", OTHER, None, on_wait=lambda: waited.append(1)):
+        worker.join(5)
+        assert outcome == ["yielded"] and _free(turn._turn_slots) == 0  # the turn holds the only slot
+    assert compaction.interrupts == [{}] and compaction.settled == [False]
+    assert compaction.db.meta[SESSION][turn.PRESSURE] == 0.9  # still owed
+    assert _free(turn._turn_slots) == 1 and turn._voice_arriving == {}
+
+
+def test_no_compaction_starts_while_a_spoken_turn_arrives_anywhere(compaction, home):
+    with turn._voice_turn_arriving("agent-2", OTHER):
+        assert turn.compact_session("agent-1", SESSION) == "yielded"
+    assert compaction.runs == [] and turn.compact_session("agent-1", SESSION) == "compacted"

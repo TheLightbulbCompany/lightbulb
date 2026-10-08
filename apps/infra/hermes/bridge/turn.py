@@ -2141,8 +2141,9 @@ def _message_content(text: str, image_paths: list[str]) -> str | list[dict]:
 #: Hermes's skill-review counter, carried across turns in the session row's model_config
 #: (_restore_review_counters).
 SKILL_COUNTER = "lightbulb_iters_since_skill"
-#: The session's last real prompt size as a share of Hermes's compaction threshold, written after
-#: every run_conversation and zeroed by an off-path compaction (compact_session).
+#: The session's size as a share of Hermes's compaction threshold, written after every
+#: run_conversation (_recorded_pressure) and zeroed by an off-path compaction that commits
+#: (compact_session).
 PRESSURE = "lightbulb_context_pressure"
 
 #: Hermes's observed group context, as its gateway frames it for a Telegram group turn
@@ -2587,6 +2588,9 @@ _turn_locks_guard = threading.Lock()
 #: A ceiling on turns executing at once in this microVM, whatever their agent or conversation.
 MAX_CONCURRENT_TURNS = max(1, int(os.environ.get("LIGHTBULB_MAX_CONCURRENT_TURNS") or 4))
 _turn_slots = threading.BoundedSemaphore(MAX_CONCURRENT_TURNS)
+#: Off-path compactions (compact_session) take a turn slot too, and at most this many of them at
+#: once, so compactions alone never hold every slot.
+_compaction_slots = threading.BoundedSemaphore(max(1, MAX_CONCURRENT_TURNS - 1))
 
 
 def _turn_lock(agent_id: str, session_key: str) -> threading.Lock:
@@ -2747,7 +2751,7 @@ def _run_conversation(agent, agent_id: str, session_key: str, **kwargs) -> dict:
     try:
         result = agent.run_conversation(**kwargs) or {}
         _save_session_meta(agent, {SKILL_COUNTER: int(getattr(agent, "_iters_since_skill", 0) or 0),
-                                   PRESSURE: _context_pressure(agent)})
+                                   PRESSURE: _recorded_pressure(agent)})
         return result
     finally:  # a raising run must still end its non-room session, or prune never ages it
         _end_unless_room(agent, agent_id, session_key)
@@ -2819,23 +2823,46 @@ def _restore_review_counters(agent) -> None:
 
 def _context_pressure(agent) -> float:
     """Hermes's last real prompt size (context_compressor.last_prompt_tokens, the figure its own
-    in-loop gate reads) over its threshold_tokens; 0.0 when there is no reading."""
+    in-loop gate reads) plus what a bounded replay left out of that prompt (_converse), over its
+    threshold_tokens; 0.0 when there is no reading."""
     compressor = getattr(agent, "context_compressor", None)
     try:
-        return round(max(0, int(compressor.last_prompt_tokens)) / int(compressor.threshold_tokens), 3)
+        tokens = max(0, int(compressor.last_prompt_tokens)) + int(getattr(agent, OMITTED_TOKENS, 0) or 0)
+        return round(tokens / int(compressor.threshold_tokens), 3)
     except Exception:  # noqa: BLE001 -- no compressor (a test double), a plugin engine, a zero threshold
         return 0.0
+
+
+#: Agent attribute: rough tokens of session history a bounded replay did not send this turn.
+OMITTED_TOKENS = "_lightbulb_omitted_tokens"
+
+
+def _recorded_pressure(agent) -> float:
+    """The pressure to store after a run. A run that could not compact (a spoken turn) cannot have
+    shrunk its session, so it never lowers the stored reading: its own prompt may be a bounded
+    tail, and a lower figure would hide a session that still owes a compaction."""
+    pressure = _context_pressure(agent)
+    if getattr(agent, "compression_enabled", True) is False:
+        try:
+            pressure = max(pressure, float(_session_meta(agent).get(PRESSURE) or 0))
+        except (TypeError, ValueError):
+            pass
+    return pressure
+
+
+def _rough_tokens(messages: list[dict]) -> int:
+    try:
+        from agent.model_metadata import estimate_messages_tokens_rough as estimate
+    except ImportError:  # outside the Hermes image
+        return sum(len(json.dumps(m, default=str)) for m in messages) // 4
+    return estimate(messages)
 
 
 def _bounded_history(history: list[dict], budget: int) -> list[dict]:
     """`history` when it fits `budget` rough tokens, else its longest tail that does and starts at a
     user message (no tool result without its call). The rows stay in state.db: Hermes records a
     turn's new messages after whatever history it was handed (session_persistence.py:337-369)."""
-    try:
-        from agent.model_metadata import estimate_messages_tokens_rough as estimate
-    except ImportError:  # outside the Hermes image
-        def estimate(messages):
-            return sum(len(json.dumps(m, default=str)) for m in messages) // 4
+    estimate = _rough_tokens
     if estimate(history) <= budget:
         return history
     starts = [i for i, m in enumerate(history) if m.get("role") == "user"]
@@ -2856,7 +2883,7 @@ def _bounded_history(history: list[dict], budget: int) -> list[dict]:
 
 #: Share of compression.threshold_tokens at which a session is compacted off the call path.
 OFF_PATH_COMPACT_RATIO = 0.85
-#: Conversation -> its running off-path compaction, so a spoken turn can stop it (_voice_turn_arriving).
+#: Conversation -> its running off-path compaction, so a spoken turn can stop them (_voice_turn_arriving).
 _compacting: dict[tuple[str, str], dict] = {}
 #: Conversation -> spoken turns that have arrived and do not hold its turn lock yet. A count:
 #: several can wait at once. Both maps change under _compacting_guard, which is what makes
@@ -2867,21 +2894,25 @@ _compacting_guard = threading.Lock()
 
 @contextlib.contextmanager
 def _voice_turn_arriving(agent_id: str, session_key: str):
-    """A spoken turn is here and is about to take its conversation's turn lock. For as long as
-    this is open no off-path compaction of the conversation starts (compact_session), and one
-    already running -- it holds that lock -- is stopped. Hermes's hard stop cancels a compaction
-    before its commit (interrupt_control.py:126-135, conversation_compression.py:2696-2716), so
-    the session is unchanged and this turn's own end compacts it again. The caller closes this
-    once it has the lock or has given up; the count drops on every way out."""
-    key, agent = (agent_id, session_key), None
+    """A spoken turn is here and is about to take its conversation's turn lock and a turn slot.
+    For as long as this is open no off-path compaction starts (compact_session) and every one
+    already running is stopped -- in ANY conversation: the one in this conversation holds its
+    lock, and each of the others holds a turn slot this turn may need. Hermes's hard stop cancels
+    a compaction before its commit (interrupt_control.py:126-135,
+    conversation_compression.py:2696-2716), so the session and its pressure reading are unchanged
+    and its next chance compacts it. The caller closes this once it has the lock and slot or has
+    given up; the count drops on every way out.
+    ponytail: a call in one room also stops a compaction in an unrelated room, which then waits
+    for that session's next chance. Stop only the others when no slot is free if that waste shows."""
+    key, agents = (agent_id, session_key), []
     with _compacting_guard:
         _voice_arriving[key] = _voice_arriving.get(key, 0) + 1
-        entry = _compacting.get(key)
-        if entry is not None:
+        for entry in _compacting.values():
             entry["yielded"] = True
-            agent = entry["agent"]
+            if entry["agent"] is not None:
+                agents.append(entry["agent"])
     try:
-        if agent is not None:
+        for agent in agents:
             _interrupt("off-path compaction", agent)
         yield
     finally:
@@ -2895,8 +2926,8 @@ def _voice_turn_arriving(agent_id: str, session_key: str):
 @contextlib.contextmanager
 def _voice_turn_lock(agent_id: str, session_key: str, run_id: str | None, on_wait=None):
     """_waiting_turn_lock for a spoken turn: it is announced BEFORE the lock is tried and until
-    it has the lock (or gave up), so no compaction can slip into that gap and make a spoken
-    question queue behind it."""
+    it has the lock and its turn slot (or gave up), so no compaction can slip into that gap and
+    make a spoken question queue behind it."""
     with contextlib.ExitStack() as arriving:
         arriving.enter_context(_voice_turn_arriving(agent_id, session_key))
         with _waiting_turn_lock(agent_id, session_key, run_id, on_wait):
@@ -2951,44 +2982,46 @@ def _compact_locked(agent_id: str, session_key: str, entry: dict) -> str:
         finalize(agent, committed=result.status == "compressed" and not entry["yielded"])
     if entry["yielded"]:
         return "yielded"
-    # One attempt per reading, whatever came of it: the next turn measures the session again.
-    _save_session_meta(ref, {PRESSURE: 0.0})
     if result.status != "compressed":
-        return result.status
+        return result.status  # nothing was committed: the reading stands and the next chance retries
+    _save_session_meta(ref, {PRESSURE: 0.0})  # the next turn measures the compacted session
     return "compacted" if result.after_tokens < result.before_tokens else "unchanged"
 
 
 def compact_session(agent_id: str, session_key: str) -> str:
     """Compact one room session now if its last turn left it near Hermes's threshold. Never
     waits and never raises: a conversation with a turn (or another compaction) in it answers
-    "busy", and that turn's own end is the next chance. A conversation a spoken turn is arriving
-    in answers "yielded" without starting -- asked again once the lock is held, because the turn
-    may arrive between the two -- and one that arrives later stops it (_voice_turn_arriving). The
-    caller holds a busy count and has restored the profile. Returns the outcome word, for the log
-    and the tests."""
+    "busy", as does a microVM with no turn slot to spare -- a compaction counts against
+    MAX_CONCURRENT_TURNS like a turn, and compactions together leave one slot free
+    (_compaction_slots) -- and the next trigger is the next chance. While a spoken turn is
+    arriving anywhere it answers "yielded" without starting -- asked again once the lock and
+    slots are held, because the turn may arrive between the two -- and one that arrives later
+    stops it (_voice_turn_arriving). The caller holds a busy count and has restored the profile.
+    Returns the outcome word, for the log and the tests."""
     key = (agent_id, session_key)
     if not ROOM_SESSION_RE.match(session_key):
         return "busy"
-    if key in _voice_arriving:
+    if _voice_arriving:
         return "yielded"
-    lock = _turn_lock(agent_id, session_key)
-    if not lock.acquire(blocking=False):
-        return "busy"
     entry, started = {"agent": None, "yielded": False}, time.monotonic()
-    try:
-        # One step under the guard: either the turn is already counted and this stands down with
-        # the lock released at once, or this is registered and the turn's arrival will stop it.
-        with _compacting_guard:
-            entry["yielded"] = key in _voice_arriving
-            _compacting[key] = entry
-        outcome = "yielded" if entry["yielded"] else _compact_locked(agent_id, session_key, entry)
-    except Exception:  # noqa: BLE001 -- housekeeping: the session stays as it was
-        log.warning("off-path compaction failed for %s", session_key, exc_info=True)
-        outcome = "failed"
-    finally:
-        with _compacting_guard:
-            _compacting.pop(key, None)
-        lock.release()
+    with contextlib.ExitStack() as held:  # the lock and both slots, released on every way out
+        for lock in (_turn_lock(agent_id, session_key), _compaction_slots, _turn_slots):
+            if not lock.acquire(blocking=False):
+                return "busy"
+            held.callback(lock.release)
+        try:
+            # One step under the guard: either a turn is already counted and this stands down,
+            # releasing everything at once, or this is registered and a turn's arrival will stop it.
+            with _compacting_guard:
+                entry["yielded"] = bool(_voice_arriving)
+                _compacting[key] = entry
+            outcome = "yielded" if entry["yielded"] else _compact_locked(agent_id, session_key, entry)
+        except Exception:  # noqa: BLE001 -- housekeeping: the session stays as it was
+            log.warning("off-path compaction failed for %s", session_key, exc_info=True)
+            outcome = "failed"
+        finally:
+            with _compacting_guard:
+                _compacting.pop(key, None)
     if outcome != "below":
         log.info("off-path compaction %s: %s in %.1fs", session_key, outcome, time.monotonic() - started)
     if outcome == "compacted":
@@ -3103,7 +3136,9 @@ def _converse(agent, agent_id: str, session_key: str, run_id: str | None, body: 
             _observe_room(agent, agent_id, body, base)
             history, observed = _room_history(agent)
             if history_budget:
-                history = _bounded_history(history, history_budget)
+                whole, history = history, _bounded_history(history, history_budget)
+                if history is not whole:  # the session is larger than this turn's prompt will say
+                    setattr(agent, OMITTED_TOKENS, _rough_tokens(whole) - _rough_tokens(history))
             run["conversation_history"] = history or None
             if message_id:
                 run["persist_user_platform_id"] = message_id

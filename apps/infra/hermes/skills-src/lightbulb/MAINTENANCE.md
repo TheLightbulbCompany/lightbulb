@@ -165,7 +165,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  non-admitted); core/services/local_sessions.py (may_control / allowedSenders gate on input);
                                  core/services/session_screen.py (type_into / watch: active-membership fence);
                                  apps/desktop/src-tauri/src/holder/{run,panel}.rs (the panel joins a `lightbulb claude` terminal;
-                                 `run::CLASSIC_RENDERER`: held Claude Code sessions run in the classic renderer, so a watcher scrolls back).
+                                 `run::CLASSIC_RENDERER` / `run::CODEX_INLINE`: held Claude Code sessions run in the classic renderer and held Codex sessions inline, so a watcher scrolls back).
   - Which sessions are shared references/surfaces.md ("Which sessions are shared" paragraph)
                               <- apps/desktop/src-tauri/src/local_sessions.rs (track: every session, named to its holder when it has one);
                                  apps/desktop/src-tauri/src/local_sessions/enrollment.rs (every session's hook reaches the app);

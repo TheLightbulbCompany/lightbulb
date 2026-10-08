@@ -133,10 +133,19 @@ export function AgentSessionSwitches() {
     catch { /* Unchanged on failure; the switch keeps showing the stored state. */ }
     finally { setBusy(false); }
   };
-  return <>{AGENT_SESSION_PREFS.map(({ key, title, description }) => (
-    <SettingRow key={key} title={title} description={description}
-      toggle={{ checked: prefs[key], disabled: busy, onChange: next => void toggle(key, next) }} />
-  ))}</>;
+  // Account-level, so it shows in a browser too (the ask card points here).
+  return <section className="settings-card" aria-label="Agents and your sessions">
+    <div className="settings-card-header settings-card-header--rows">
+      <div>
+        <div className="settings-card-title">Agents and your sessions</div>
+        <div className="settings-card-desc">When an agent may message your shared Claude Code and Codex sessions.</div>
+      </div>
+    </div>
+    {AGENT_SESSION_PREFS.map(({ key, title, description }) => (
+      <SettingRow key={key} title={title} description={description}
+        toggle={{ checked: prefs[key], disabled: busy, onChange: next => void toggle(key, next) }} />
+    ))}
+  </section>;
 }
 
 export function useLocalSessions(waitForRemoteDisable = false) {
@@ -269,7 +278,6 @@ export function LocalSessions() {
       {error ? <p className="settings-row-error" role="alert">{error}</p> : null}
     </SettingRow>
     <ShareEverySessionLive />
-    <AgentSessionSwitches />
     <details className="settings-details">
       <summary>What is shared, and what this changes on your Mac</summary>
       <div className="settings-details-body">

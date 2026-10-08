@@ -4,7 +4,7 @@ import { useSyncExternalStore } from "react";
 
 import { DesktopFileAccess } from "./DesktopFileAccess";
 import { DesktopOpenAtLogin } from "./DesktopOpenAtLogin";
-import { DesktopPermissions, LocalSessions } from "./LocalSessions";
+import { AgentSessionSwitches, DesktopPermissions, LocalSessions } from "./LocalSessions";
 
 // Settings → Desktop. In a browser: one card with the download. In the desktop app:
 // open at login, agent switches, approved folders, session sharing. Each card renders
@@ -45,6 +45,7 @@ export function DesktopSettings() {
           </div>
         </>
       ) : null}
+      {desktop !== null && <AgentSessionSwitches />}
     </div>
   );
 }

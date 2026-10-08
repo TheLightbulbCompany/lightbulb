@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 import { DesktopSettings } from "../DesktopSettings";
 
@@ -9,18 +10,30 @@ vi.mock("@clerk/nextjs", () => ({
   useOrganization: () => ({ organization: { id: "org_3H3vi", name: "Acme" } }),
 }));
 
+const api = vi.hoisted(() => {
+  const prefs = { agentSendWithoutAsking: false, sessionsReachableFromBackgroundWork: false };
+  return { get: vi.fn(async () => prefs), put: vi.fn(async (_path: string, body: object) => ({ ...prefs, ...body })) };
+});
+vi.mock("@/lib/api", () => ({ useApi: () => api }));
+
 afterEach(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   delete (window as any).__TAURI__;
 });
 
-it("in a browser shows only the download card", async () => {
+it("in a browser shows the download card and the account-level session switches", async () => {
   render(<DesktopSettings />);
   expect(await screen.findByText("Lightbulb for Mac")).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Download" })).toHaveAttribute("href", "/api/download/desktop");
   expect(screen.getByText(/Open the Lightbulb desktop app to change them/)).toBeInTheDocument();
-  expect(screen.queryByRole("switch")).toBeNull();
   expect(screen.queryByRole("heading", { level: 2 })).toBeNull();
+  const ask = await screen.findByRole("switch", { name: "Agents can message my sessions without asking" });
+  expect(ask).not.toBeChecked();
+  expect(screen.getByRole("switch", { name: /Background work/ })).not.toBeChecked();
+  expect(screen.getAllByRole("switch")).toHaveLength(2);
+  await userEvent.click(ask);
+  expect(api.put).toHaveBeenCalledWith("/users/me/prefs", { agentSendWithoutAsking: true });
+  await waitFor(() => expect(ask).toBeChecked());
 });
 
 it("in the desktop app shows the four cards in order and no raw org id", async () => {
@@ -41,6 +54,8 @@ it("in the desktop app shows the four cards in order and no raw org id", async (
   expect(await screen.findByText("On · Acme")).toBeInTheDocument();
   expect(await screen.findByText("No folders yet.")).toBeInTheDocument();
   expect(await screen.findByRole("switch", { name: "Share every session live" })).not.toBeChecked();
+  // Shown once, after Session sharing, not inside it.
+  expect(await screen.findAllByRole("switch", { name: "Agents can message my sessions without asking" })).toHaveLength(1);
   const order = ["Open at login", "Agents on this Mac", "Approved folders", "Session sharing"].map((text) => screen.getByText(text));
   for (let i = 1; i < order.length; i++) {
     expect(order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();

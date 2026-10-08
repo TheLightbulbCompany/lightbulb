@@ -1,13 +1,15 @@
-"""What a CORRECT router says about each scenario line, for synthetic replays.
+"""What each scenario line IS, for synthetic replays: the table the simulated classifier reads.
 
-THIS IS AN ASSUMPTION, NOT A RECORDING. A synthetic replay has no /route to ask, so each line's verdict is
-written here from what the scenario means (SCENARIOS.md in the live rig). A replay therefore tests the
-controller given a router that understands every line: it cannot find a router mistake, and a check that
-fails here fails with the router at its best. A recorded call replays the router's real answers instead.
+The router is the backend's own (`router.py` runs `voice_calls.route_live_line` on the worker's /route
+body). What is assumed here is one step earlier: what a reader who understood the line would say it is.
+`router.Jev` turns that into the classifier's labels, question by question, and gets some wrong at seeded
+rates. So a replay can now show a router mistake: a named ask not taken, people talk taken as a request,
+a follow-up merged into a run that is still working. A recorded call replays the router's real answers.
 
 Per scenario: line index -> verdict. One of
-  ask     the line asks this agent for `task`; its run answers with ANSWERS[`answer`] (`by`: how it was
-          addressed, as the backend reports it: name, follow, room)
+  ask     the line asks this agent for something; its run answers with ANSWERS[`answer`]. `task` is a note
+          for the reader: the router writes the task from the line's own words. `follows`, or `by: follow`:
+          it continues what that agent was asked before (the classifier's `amends`)
   social  small talk for this agent, which says `reply` (the writer's line)
   called  it turns to this agent and asks nothing new ("go ahead", "Friday?")
   stop    "cancel": the speaker withdrew what this agent has open; "hush": stop talking, the work stands
@@ -16,7 +18,7 @@ Per scenario: line index -> verdict. One of
 A line with no entry asks nothing of anyone ("Okay, thanks.", a listening sound).
 `when`: a regex the routed words must match for the verdict to hold, and `else` the verdict when they do not.
 The transcriber may hand a line over in pieces, and only the piece with the request in it is the request.
-`unclaimed`: the verdict holds only for a question the worker says nobody took.
+`unclaimed`, `by: room`: notes only. Whether a question to the room is an agent's is the router's to decide.
 """
 
 import json
@@ -70,7 +72,7 @@ ROUTING: dict[str, dict[int, dict]] = {
     },  # fmt: skip
     "sidetalk": {
         0: CALENDAR, 1: PEOPLE, 2: PEOPLE, 3: PEOPLE,
-        4: {"ask": "friday", "task": "what is on their calendar on Thursday", "answer": "thursday"},
+        4: {"ask": "friday", "task": "what is on their calendar on Thursday", "answer": "thursday", "follows": True},
     },  # fmt: skip
     "status_check": {0: PRICE, 1: {"called": "friday"}, 2: GO_AHEAD},
     "stop_mid_answer": {0: FIVE, 2: {"stop": "hush", "agent": "friday"}},
@@ -139,6 +141,26 @@ CUT_SEEN = (
     "piece, so this check sees each of them (47% / 33%; it saw only those cut after 80%, 10% / 9%, before "
     "the delivery rule changed: the cuts are the same ones, keeps_speaking did not move). [timing]"
 )
+# What the simulated backend does to a call (`sim.Evidence.facts`, `CAUSES`). Shares are of 200 seeds.
+RUN_LATE = (
+    "a run that takes 45-110 s or never ends (`sim.Model.run`: 12% and 6% of runs, sized from the "
+    "2026-10-08 live run): its answer is said after the lines that should follow it, or not inside the "
+    "scenario at all, and the answer of a row behind it waits with it. [backend]"
+)
+ASK_MISSED = (
+    "the classifier misses a named ask (`router.P_NAMED_MISS`, `P_WEAK`): no request is made for the line, "
+    "so no run, no acknowledgement and no answer. [router]"
+)
+PEOPLE_TAKEN = (
+    "the classifier reads talk between people as a request while its speaker is still engaged with an "
+    "agent (`router.P_PEOPLE_ASK_ENGAGED`), and /route gives the line to that agent: a run nobody asked "
+    "for, acknowledged and answered aloud. [router]"
+)
+STEERED = (
+    "a follow-up said while the first run is still working is merged into that run (`ops.steer`): no "
+    "request of its own (one_run counts created rows only), and its answer comes with the first one's, "
+    "after the line or after the scenario. [router] [check]"
+)
 KNOWN_FAILING: list[tuple[str, str, str]] = [
     (
         "unnamed_followup", r'ack_within \{"line": 1',
@@ -162,7 +184,28 @@ KNOWN_FAILING: list[tuple[str, str, str]] = [
     ("gap|sidetalk|sales_call", r"silent_between", COLLISION),
     ("gap", r"stops_within", LEVEL_LATE),
     ("sidetalk|two_asks_one_agent|trailing|unnamed_sidetalk", r"max_agent_lines", LINES),
+    # the simulated backend's part (`CAUSES` says which failing replay is whose): after every cause above
+    ("*", r"one_run", ASK_MISSED + " Also: " + STEERED),
+    ("*", r"no_new_run|max_runs|max_agents|nothing_after|max_words", PEOPLE_TAKEN),
+    ("*", r"answer_contains|min_sentences|in_order|resumes_after|stops_within|keeps_speaking", RUN_LATE + " Also: " + ASK_MISSED),
+    ("*", r"silent_between|max_agent_lines|said_once|no_text|no_agent_overlap", PEOPLE_TAKEN + " Also: " + RUN_LATE),
 ]
+
+
+# What a failing check of a replay comes from, read from what the simulated backend did in that replay
+# (`sim.Evidence.facts`): the first cause whose fact is there and whose checks include this one. A replay
+# with none of them failed on the controller's own rules and timing (KNOWN_FAILING says which).
+CAUSES: list[tuple[str, str, str]] = [
+    ("router: a named ask was not taken", "ask_missed", r"one_run|ack_within|answer_contains|min_sentences|in_order|max_words|stops_within|resumes_after|keeps_speaking"),
+    ("router: people talk taken as a request", "people_taken|other_taken", r"no_new_run|max_runs|silent_between|max_agent_lines|nothing_after|max_words|no_talk_over|said_once|max_agents"),
+    ("router: a follow-up steered the open run", "steer", r"one_run|ack_within|answer_contains|max_agent_lines|said_once|in_order"),
+    ("a run came late or never", "run_never|run_slow", r"answer_contains|min_sentences|in_order|stops_within|resumes_after|keeps_speaking|silent_between|max_agent_lines|said_once|nothing_after|no_talk_over|max_words|no_text|one_run|ack_within"),
+]
+OWN = "the controller's rules and timing"
+
+
+def cause(check: str, facts: dict[str, int]) -> str:
+    return next((c for c, fact, checks in CAUSES if any(facts.get(f) for f in fact.split("|")) and re.match(checks, check)), OWN)
 
 
 def known(scenario: str, check: str) -> str | None:

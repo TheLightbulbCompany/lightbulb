@@ -32,6 +32,7 @@ from huddle_agent.backend import BackendError
 from huddle_agent.huddle import Huddle, units
 
 from . import check
+from .router import Router
 from .routing import ANSWERS
 
 EPOCH = 1_791_460_800.0  # one fixed noon UTC: every check is relative, so any single date will do
@@ -40,6 +41,7 @@ ROSTER = ("Friday", "Forge", "Tally", "Pulse", "Gauge", "Vera", "Atlas")  # the 
 PROFILES = ("current", "fast-eot")  # `Model`
 RIG_QUIET_S = 0.6  # rig.py: agent audio below its threshold this long ends a burst
 FIRST_SOUND_S = 3.0  # agent.py: a unit with no audible audio this long is stopped and reported silent
+P_RUN_SLOW, P_RUN_NEVER = 0.12, 0.06  # `Model.run`
 
 
 class VirtualLoop(asyncio.SelectorEventLoop):
@@ -88,6 +90,7 @@ class Model:
         # begun beside /route and thrown away) must not re-deal every other delay of the replay
         self.writes = random.Random(f"{seed}:write")
         self.noise, self.noises = noise, random.Random(f"{seed}:noise")  # (its own deck too)
+        self.runs = random.Random(f"{seed}:run")  # (and how long each run takes)
         self.fixed = fixed or {}
         self.p_silent = silent  # 4 of 55 units played no audible audio
 
@@ -166,8 +169,16 @@ class Model:
     def quick(self) -> float:  # /summon, /session, /turns: one round trip
         return self.u("quick", 0.1, 0.25)
 
-    def run(self) -> float:  # request made -> its answer ready: 5.4-12.3 s
-        return self.u("run", 5.0, 12.0)
+    def run(self) -> float | None:
+        """Request made -> its answer ready. Most take 5.4-12.3 s. In the 2026-10-08 live run of the 15
+        scenarios about 3 of 17 took 45-110 s or never ended: P_RUN_SLOW of them here take that long, and
+        P_RUN_NEVER send nothing at all (None). Sized from that one run, not measured."""
+        if self.fixed.get("run"):
+            return self.fixed["run"].pop(0)
+        x = self.runs.random()
+        if x < P_RUN_NEVER:
+            return None
+        return self.runs.uniform(45.0, 110.0) if x < P_RUN_NEVER + P_RUN_SLOW else self.runs.uniform(5.0, 12.0)
 
     def write(self) -> float:  # a line of small talk
         return self.fixed["write"].pop(0) if self.fixed.get("write") else self.writes.uniform(0.5, 1.5)
@@ -232,6 +243,12 @@ class Evidence:
     errors: list[str] = field(default_factory=list)  # the controller raised
     notes: list[str] = field(default_factory=list)  # what the simulation could not match
     trace: list[tuple[float, str]] = field(default_factory=list)  # the controller's own log, on request
+    # What the simulated backend did that a check may fail on (`Sim.route`, `Backend.turn`), counted:
+    # ask_missed, steer, double_steer, people_taken, run_slow, run_never.
+    facts: dict[str, int] = field(default_factory=dict)
+
+    def fact(self, name: str) -> None:
+        self.facts[name] = self.facts.get(name, 0) + 1
 
     def write(self, d: str) -> tuple[str, str, str]:
         rig, worker, tr = (os.path.join(d, n) for n in ("rig.txt", "worker.log", "transcript.json"))
@@ -385,14 +402,14 @@ class Backend:
 
     def __init__(self, sim: Sim) -> None:
         self.sim = sim
-        self._runs: dict[str, list[asyncio.TimerHandle]] = {}
+        self._runs: dict[str, dict] = {}  # run id -> {agent, text, done, handles}
 
     async def team(self) -> dict:
         await asyncio.sleep(self.sim.model.quick())
         return json.loads(json.dumps(self.sim.team))
 
     async def route(self, speaker, utterance, transcript, humans=None, **body) -> dict:
-        latency, reply = self.sim.route(speaker, utterance, humans, body)
+        latency, reply = await self.sim.route(speaker, utterance, transcript, humans, body)
         await asyncio.sleep(latency)
         if isinstance(reply, Exception):
             raise reply
@@ -408,18 +425,45 @@ class Backend:
         return {"agentId": agent_id, "name": name, "voice": "marin", "persona": f"You are {name}.", "askName": False}
 
     async def turn(self, call_id, speaker, agent_id, run_id, utterance, transcript, steer_run_id=None, steer_only=False, **kw) -> dict:
-        await asyncio.sleep(self.sim.model.quick())
-        if steer_only or steer_run_id:
-            return {"runId": steer_run_id, "agentId": agent_id, "steered": False}  # ponytail: no steer is modelled
+        """routers/huddles.py `turn`: a steer goes into the run when the bridge still has it (turn.py
+        `steer_run`: a running turn takes it and answers it with the rest; one that has ended refuses it).
+        A steer that was not taken is dispatched as a run of its own, unless the worker said steer-only."""
+        sim = self.sim
+        await asyncio.sleep(sim.model.quick())
         loop = asyncio.get_running_loop()
-        self._runs[run_id] = [
-            loop.call_later(delay, self.sim.h.on_data, None, h_mod.FRAME_TOPIC, json.dumps({"events": events}).encode())
-            for delay, events in self.sim.frames(agent_id, run_id, utterance)
-        ]
+        if steer_run_id:
+            run = self._runs.get(steer_run_id)
+            if run is not None and not run["done"] and "text" in run:
+                run["text"] += " " + sim._answer(utterance)
+                if run["handles"]:  # it has more to do before it ends
+                    more = run["handles"][0].when() - loop.time() + sim.model.runs.uniform(2.0, 6.0)
+                    run["handles"][0].cancel()
+                    run["handles"] = [loop.call_later(more, self._end, steer_run_id)]
+                return {"runId": steer_run_id, "agentId": agent_id, "steered": True}
+        if steer_only:
+            return {"runId": steer_run_id, "agentId": agent_id, "steered": False}
+        send = lambda events: sim.h.on_data(None, h_mod.FRAME_TOPIC, json.dumps({"events": events}).encode())  # noqa: E731
+        if sim.rec and sim._turns:
+            self._runs[run_id] = {"done": False, "handles": [loop.call_later(d, send, ev) for d, ev in sim.frames(agent_id, run_id, utterance)]}
+            return {"runId": run_id, "agentId": agent_id, "steered": False}
+        took = sim.model.run()  # None: it never ends, and sends nothing
+        if took is None or took >= 45:
+            sim.ev.fact("run_never" if took is None else "run_slow")
+        run = self._runs[run_id] = {"agent": agent_id, "text": sim._answer(utterance), "done": False, "handles": []}
+        if took is not None:
+            run["handles"] = [loop.call_later(took, self._end, run_id)]
         return {"runId": run_id, "agentId": agent_id, "steered": False}
 
+    def _end(self, run_id: str) -> None:
+        run = self._runs[run_id]
+        run["done"] = True
+        frame = lambda f: {"type": "voice.run.frame", "payload": {"runId": run_id, "agentId": run["agent"], "frame": {**f, "runId": run_id, "agentId": run["agent"]}}}  # noqa: E731
+        events = [frame({"type": "chunk", "content": run["text"], "seq": 1}), frame({"type": "run_ended", "seq": 2})]
+        self.sim.h.on_data(None, h_mod.FRAME_TOPIC, json.dumps({"events": events}).encode())
+
     async def abort(self, run_id) -> dict:
-        for handle in self._runs.pop(run_id, []):  # an aborted run sends no answer
+        run = self._runs.pop(run_id, None) or {"handles": []}
+        for handle in run["handles"]:  # an aborted run sends no answer
             handle.cancel()
         return {"aborted": True}
 
@@ -452,7 +496,8 @@ class Sim:
         self.talking: set[str] = set()  # names whose scripted line is playing (the rig's `human_speaking`)
         self.bursts: dict[str, dict] = {}  # track -> its open audio burst, as the rig hears it
         self.agent_starts, self.ever_loud = 0, False
-        self.answers: dict[str, str] = {}  # a request's task -> what its run answers
+        self.router = Router(self, self.routing, seed)
+        self._steered: dict[int | None, int] = {}  # scenario line -> how often /route steered a run with it
         self._tasks: set[asyncio.Task] = set()
         self._mouths = 0
         if recording:
@@ -653,7 +698,7 @@ class Sim:
                 best = score
         return best and best[2]
 
-    def route(self, speaker: str, utterance: str, humans, body: dict) -> tuple[float, dict | Exception]:
+    async def route(self, speaker: str, utterance: str, transcript: str, humans, body: dict) -> tuple[float, dict | Exception]:
         if self.rec and self._routes:
             # The router's real answers, each used once: the one for these words, else for the nearest words
             # (a changed controller may join or strip a line differently).
@@ -666,47 +711,34 @@ class Sim:
                 err = c.get("error")
                 return c["ms"] / 1000, BackendError(err["status"], err["code"], None) if err else c["reply"]
             self.ev.notes.append(f"no recorded /route answer for {utterance[:80]!r}: answered as asking nothing")
-            return self.model.route(), self._ops({}, body)
-        i = self._line_of(speaker, utterance)
-        v = self.routing.get(i, {}) if i is not None else {}
-        if "when" in v and not re.search(v["when"], utterance, re.I):
-            v = v.get("else", {})  # a piece of the line without its request in it
-        if v.get("unclaimed") and not body.get("unclaimed"):
-            v = {}
-        return self.model.route(), self._ops(v, body)
+        # the backend's own decision on this body, as the room is now; its answer comes a round trip later
+        latency = self.model.route()
+        reply = await self.router.route(speaker, utterance, transcript, humans, body)
+        i, v = self.router.jev.verdict(speaker, utterance)
+        ops = reply["ops"]
+        if "ask" in v and not (ops["requests"] or ops["steer"] or reply.get("hold") or body.get("unclaimed")):
+            self.ev.fact("ask_missed")  # (an unclaimed question's own verdict is `by: room`, decided when nobody took it)
+        if ops["steer"]:
+            self.ev.fact("steer")
+            self._steered[i] = self._steered.get(i, 0) + 1
+            if self._steered[i] == 2:
+                self.ev.fact("double_steer")
+        if "ask" not in v and ops["requests"]:
+            self.ev.fact("people_taken" if v.get("people") else "other_taken")
+        if self.trace:
+            self.ev.trace.append((self.rel(), f"/route {utterance[:60]!r} -> {json.dumps({'agentIds': reply['agentIds'], **{k: v for k, v in reply['ops'].items() if v}})}"))
+        return latency, reply
 
-    def _ops(self, v: dict, body: dict) -> dict:
-        """A verdict (routing.py) as the backend's `/route` answer (voice_calls.understand's `ops`)."""
-        rows = [r for r in body.get("open") or [] if r["agentId"] == v.get("agent", v.get("called"))]
-        open_ = [r for r in rows if r["status"] in ("queued", "working", "ready")]
-        requests, social, called, cancel, hush, say = [], None, None, [], [], None
-        if "ask" in v:
-            requests = [{"agentId": v["ask"], "task": v["task"], "by": v.get("by", "name")}]
-            self.answers[v["task"]] = ANSWERS[v["answer"]]
-            say = {"agentId": v["ask"], "kind": "ack", "task": v["task"]}
-        elif v.get("stop") == "cancel":
-            cancel = [r["id"] for r in open_]
-        elif v.get("stop") == "hush":
-            hush = [{"agentId": v["agent"], "requestIds": []}]
-        elif "called" in v:
-            called = v["called"]
-            if open_ and not any(r["status"] == "ready" for r in open_):
-                say = {"agentId": called, "kind": "status", "task": open_[0]["task"]}
-            elif not open_:
-                say = {"agentId": called, "kind": "social", "task": None}
-        elif "social" in v:
-            social = v["social"]
-            say = {"agentId": social, "kind": "social", "task": None}
-        owner = (requests[0]["agentId"] if requests else social) or None
-        return {
-            "agentId": owner,
-            "agentIds": [owner] if owner else [],
-            **({"hold": True} if v.get("hold") else {}),
-            "ops": {
-                "requests": requests, "social": social, "more": False, "cancel": cancel, "hush": hush,
-                "called": called, "steer": [], "people": bool(v.get("people")), "say": say and {**say, "text": None},
-            },
-        }  # fmt: skip
+    def _answer(self, task: str) -> str:
+        """What a run answers to `task` (the router's own words for the request, a stretch of the line): the
+        answer of the scenario line it was said in, the latest when two fit (a correction joined to its request)."""
+        said, best = _words(task), None
+        for i, line in enumerate(self.s["lines"]):
+            for v in (self.routing.get(i, {}), self.routing.get(i, {}).get("else", {})):
+                w = _words(re.sub(r"\[\[.*?\]\]", " ", line["say"]))
+                if "answer" in v and len(w & said) * 2 >= len(said):
+                    best = v["answer"]
+        return ANSWERS[best] if best else "Done."
 
     def frames(self, agent_id: str, run_id: str, utterance: str) -> list[tuple[float, list[dict]]]:
         """A run's frames, as [(seconds after /turns answered, the packet's events)]."""
@@ -721,9 +753,7 @@ class Sim:
                 for e in self.rec.events
                 if e["k"] == "on_data" and e.get("topic") == h_mod.FRAME_TOPIC and was in json.dumps(e["data"])
             ]
-        text = self.answers.get(utterance, "Done.")
-        frame = lambda f: {"type": "voice.run.frame", "payload": {"runId": run_id, "agentId": agent_id, "frame": {**f, "runId": run_id, "agentId": agent_id}}}  # noqa: E731
-        return [(self.model.run(), [frame({"type": "chunk", "content": text, "seq": 1}), frame({"type": "run_ended", "seq": 2})])]
+        raise AssertionError("a synthetic run is the Backend's (`turn`, `_end`)")
 
     async def _write(self, persona: str, event: str) -> str:
         """A mouth's one sentence of small talk: the scenario line's `reply`, after a writer's delay."""

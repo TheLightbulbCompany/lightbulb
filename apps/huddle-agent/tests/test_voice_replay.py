@@ -3,12 +3,13 @@ recorder. `pytest -m replay` is the gate: a check that fails and is not a known 
 
 import asyncio
 import json
+import os
 
 import pytest
 from huddle_agent import huddle as h_mod
 from huddle_agent import record
-from replay import ROUTING, SCENARIOS, Sim, judge, known, live, load, replay, routing
-from replay.sim import EPOCH, LEAD, PROFILES
+from replay import ROUTING, SCENARIOS, Sim, judge, known, live, load, replay, router, routing
+from replay.sim import EPOCH, LEAD, P_RUN_NEVER, P_RUN_SLOW, PROFILES, Model
 
 SEEDS = range(10)  # the full loop is `python -m tests.replay all --seeds 100`, under both profiles; this is the quick gate
 
@@ -68,6 +69,37 @@ def test_the_gate_fails_a_known_failure_that_got_worse_and_a_check_that_used_to_
     # seeds the baseline does not hold: by its rates
     assert routing.gate(base, {"gap | ack_within": 8}, range(200, 220)) == []
     assert "WORSE" in routing.gate(base, {"gap | ack_within": 13}, range(200, 220))[0]
+
+
+def test_the_replay_decides_with_the_backends_own_router():
+    """/route in a replay is apps/backend's `route_live_line`, not a copy: its file, and its bars."""
+    vc = router.backend()
+    assert vc.__file__.endswith(os.path.join("apps", "backend", "core", "services", "voice_calls.py"))
+    assert vc.route_live_line.__module__ == "core.services.voice_calls" and vc.messaging.address.__code__.co_filename.endswith("messaging.py")
+    # one line through it: the classifier's labels are the table's, the request is the router's own cut of the line
+    scenario = load("never_mind")
+    sim = Sim(scenario, ROUTING["never_mind"], "never_mind:0")
+    body = {"setting": "meeting", "open": [], "engagements": []}
+    reply = asyncio.run(sim.router.route("Prasiddha", scenario["lines"][0]["say"], "", 2, body))
+    assert reply["ops"]["requests"] == [{"agentId": "friday", "task": "what does the Workspace plan cost per month", "by": "name"}]
+    assert reply["ops"]["say"]["kind"] == "ack"
+
+
+def test_the_replay_gets_a_classifier_that_is_sometimes_wrong_and_runs_that_are_sometimes_late():
+    """The mistakes the live run showed are in the model at their rates, seeded: a named ask the
+    classifier misses, people talk it reads as a request while the speaker is engaged, a run that takes
+    most of a minute and one that never ends."""
+    scenario, line = load("never_mind"), load("never_mind")["lines"][0]["say"]
+    body = {"setting": "meeting", "open": [], "engagements": []}
+    taken = [
+        bool(asyncio.run(Sim(scenario, ROUTING["never_mind"], f"s{i}").router.route("Prasiddha", line, "", 2, body))["ops"]["requests"])
+        for i in range(300)
+    ]
+    assert 0.03 < taken.count(False) / 300 < 0.2, "a named ask is missed now and then, not never and not often"
+    took = [Model(f"m{i}").run() for i in range(2000)]
+    never, slow = sum(t is None for t in took) / 2000, sum(t is not None and t >= 45 for t in took) / 2000
+    assert abs(never - P_RUN_NEVER) < 0.02 and abs(slow - P_RUN_SLOW) < 0.03
+    assert all(5 <= t <= 12 or 45 <= t <= 110 for t in took if t is not None)
 
 
 @pytest.mark.replay

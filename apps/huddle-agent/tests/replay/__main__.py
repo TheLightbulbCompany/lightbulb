@@ -47,14 +47,22 @@ def main() -> int:
         for n in ev.notes:
             print("NOTE ", n)
         return int(any(s == "FAIL" for s, _, _ in results))
-    began, failed, table, seeds_of = time.perf_counter(), 0, {}, {}
+    began, failed, table, seeds_of, causes, facts = time.perf_counter(), 0, {}, {}, {}, {}
     try:
         base = routing.baseline()
     except FileNotFoundError:
         base = {}
     base.setdefault(a.profile, {"seeds": 1, "fails": {}})
     for name in names:
-        runs = {seed: replay(name, seed, profile=a.profile, noise=a.noise)[0] for seed in range(a.first, a.first + a.seeds)}
+        runs = {}
+        for seed in range(a.first, a.first + a.seeds):
+            runs[seed], ev = replay(name, seed, profile=a.profile, noise=a.noise)
+            for f in ev.facts:
+                facts[f] = facts.get(f, 0) + 1
+            for status, what, _ in runs[seed]:
+                if status == "FAIL":
+                    c = routing.cause(what, ev.facts)
+                    causes[c] = causes.get(c, 0) + 1
         bad = sorted(s for s, r in runs.items() if any(x[0] == "FAIL" for x in r))
         failed += bool(bad)
         print(f"{name:<20} {a.seeds - len(bad):>3}/{a.seeds} seeds pass" + (f"   failing seeds: {' '.join(map(str, bad))}" if bad else ""))
@@ -75,9 +83,13 @@ def main() -> int:
                 print(f"        {'known: ' + why if why else 'no cause recorded in routing.KNOWN_FAILING'}")
             elif len(by.get("SKIP", [])) == a.seeds:
                 print(f"  SKIP {a.seeds:>2}/{a.seeds}  {what}\n        {by['SKIP'][0][1][:200]}")
+    print("failing check-seeds by cause:")
+    for c, n in sorted(causes.items(), key=lambda x: -x[1]):
+        print(f"  {n:>5}  {c}")
+    print("replays in which the simulated backend: " + ", ".join(f"{f} {n}" for f, n in sorted(facts.items())))
     if a.json:
         with open(a.json, "w") as f:
-            json.dump(table, f, indent=1)
+            json.dump({**table, "causes": causes, "facts": facts}, f, indent=1)
     fails = {key: f for key, (f, _) in table.items() if f}
     if a.rebase:
         if a.scenario != "all":

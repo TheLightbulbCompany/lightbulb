@@ -150,21 +150,30 @@ async def test_login_ask_round_trip_through_activity(env):
     assert PASSWORD not in done.model_dump_json()
 
 
-async def test_code_ask_is_handed_over_once_and_erased(env):
+async def test_code_ask_is_only_a_line_sending_the_person_to_the_browser(env):
+    """Owner ruling 2026-10-07: a sign-in code is typed into the shared browser, never into a form
+    for the agent. So: one line in the room, no request row, no Activity item, nothing to answer."""
+    room_id, _ = await _room()
     created = await store.create_request(
         OWNER,
         kind="code",
-        origin="https://accounts.google.com",
+        origin="https://accounts.intuit.com/app/sign-in",
         agent_id=FRIDAY,
-        room_id=None,
+        room_id=room_id,
         thread_root_message_id=None,
+        hint="  Check your\n text messages ",
     )
-    rid = created["requestId"]
-    row = await store.answer(OWNER, rid, user_id=USER_A, value={"code": "123 456"})
-    assert row["status"] == "answered" and "123456" not in json.dumps(row)
-    assert "123456" not in _dump_everything(env)
-    assert (await store.poll_request(OWNER, rid)) == {"status": "answered", "kind": "code", "code": "123456"}
-    assert (await store.poll_request(OWNER, rid))["status"] == "consumed"
+    assert created == {"requestId": None, "status": "posted"}
+    messages, _ = await repo.list_messages(room_id, 0, 50)
+    notice = messages[-1]
+    assert notice["author"]["id"] == FRIDAY
+    assert "accounts.intuit.com is asking for a verification code (Check your text messages)" in notice["text"]
+    assert "panel=browser" in notice["text"] and "focus=login" not in notice["text"]
+    rows = env.Table("test-messaging").scan()["Items"]
+    assert not [r for r in rows if str(r["sk"]).startswith(("LOGINREQ#", "WORK#"))]
+    assert not [
+        r for r in await repo.list_activity(OWNER, USER_A, before_sk=None, limit=10) if r.get("kind") == "login"
+    ]
 
 
 async def test_decline_and_cancel_settle_once(env):
@@ -386,15 +395,10 @@ async def test_a_login_ask_carries_a_hint_when_the_sites_connector_is_connected(
         created = await store.create_request(
             OWNER, kind="login", origin=origin, agent_id=FRIDAY, room_id=None, thread_root_message_id=None
         )
-        code = await store.create_request(
-            OWNER, kind="code", origin=origin, agent_id=FRIDAY, room_id=None, thread_root_message_id=None
-        )
     row = await store.get_request(OWNER, created["requestId"])
     item = activity.render_login_request(row, seen=None, admin=True)
     assert item.actions[0].input.hint == hint
     assert item.model_dump(by_alias=True)["actions"][0]["input"]["hint"] == hint
-    code_item = activity.render_login_request(await store.get_request(OWNER, code["requestId"]), seen=None, admin=True)
-    assert code_item.actions[0].input.hint is None
 
 
 @pytest.mark.parametrize(

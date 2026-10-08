@@ -250,16 +250,4 @@ describe("ActivityFeed", () => {
     expect(props.onRunAction).toHaveBeenCalledWith(loginAsk.id, "provide",
       { value: JSON.stringify({ username: "me@example.com", password: "s3cret!" }) });
   });
-
-  it("takes a sign-in code in one field", async () => {
-    const codeAsk: ActivityItem = { ...loginAsk, id: "login:c1", subtype: "code",
-      actions: [{ ...loginAsk.actions[0], label: "Enter code", input: { kind: "code", label: "Code", required: true, options: null } }] };
-    const { props } = setup({ items: [codeAsk] });
-    const pinned = row(codeAsk.id);
-    await userEvent.click(within(pinned).getByRole("button", { name: "Enter code" }));
-    await userEvent.type(within(pinned).getByLabelText("Code"), "123456");
-    const submits = within(pinned).getAllByRole("button", { name: "Enter code" });
-    await userEvent.click(submits[submits.length - 1]);
-    expect(props.onRunAction).toHaveBeenCalledWith(codeAsk.id, "provide", { value: "123456" });
-  });
 });

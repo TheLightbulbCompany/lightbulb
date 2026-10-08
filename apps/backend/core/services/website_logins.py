@@ -419,8 +419,6 @@ async def _agent_name(owner_id: str, agent_id: str) -> str:
 
 def request_title(row: dict) -> str:
     site = host_of(row.get("origin") or row.get("site") or "") or "a website"
-    if row.get("kind") == "code":
-        return f"{row.get('agentName')} needs the code {site} just sent you"
     return f"{row.get('agentName')} needs the login for {site}"
 
 
@@ -432,8 +430,14 @@ async def create_request(
     agent_id: str,
     room_id: str | None,
     thread_root_message_id: str | None,
+    hint: str | None = None,
 ) -> dict:
-    """File one ask: the row, a Needs-you Activity row per human, and a notice in the room."""
+    """A ``login`` ask: the row, a Needs-you Activity row per human, and a notice in the room.
+
+    A ``code`` ask is only the notice (owner ruling 2026-10-07): a one-time code is typed by a person
+    into the shared browser, never into a form for the agent, so there is no row, no Activity item
+    and nothing to answer. The bridge watches the page instead. ``hint`` is the sign-in page's
+    heading, quoted so the person knows which step the site is on."""
     from core.config import settings
     from core.services.live_events import publish_owner_users
     from core.services.messaging import make_live_event
@@ -447,6 +451,31 @@ async def create_request(
         if not meta or meta.get("ownerId") != owner_id or meta.get("deletedAt"):
             room_id = None  # not this workspace's room: ask the workspace instead
     request_id = uuid.uuid4().hex
+    if kind == "code":
+        if room_id:
+            site = host_of(origin)
+            heading = " ".join(str(hint or "").split())[:120]
+            text = (
+                f"{site} is asking for a verification code{f' ({heading})' if heading else ''}. Type it into "
+                f"the shared browser — open the Browser panel on a computer (the phone has no live view): "
+                f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=browser — and I'll carry on as soon as the "
+                f"page moves."
+            )
+            await _post_notice(
+                owner_id,
+                {
+                    "requestId": request_id,
+                    "roomId": room_id,
+                    "threadRootMessageId": thread_root_message_id,
+                    "agentId": agent_id,
+                    "agentName": await _agent_name(owner_id, agent_id),
+                },
+                text,
+            )
+        logger.info(
+            "website_login.code_notice owner=%s origin=%s agent=%s room=%s", owner_id, origin, agent_id, room_id
+        )
+        return {"requestId": None, "status": "posted"}
     created = utc_now_iso()
     row = {
         "pk": messaging_repo.owner_pk(owner_id),
@@ -459,7 +488,7 @@ async def create_request(
         "roomId": room_id,
         "threadRootMessageId": thread_root_message_id if room_id else None,
         # Decided once, at the ask (it lives ~7 minutes); Activity renders it from the row.
-        "hint": await connector_hint(owner_id, origin) if kind == "login" else None,
+        "hint": await connector_hint(owner_id, origin),
         "status": "pending",
         "createdAt": created,
         "createdEpoch": int(time.time()),
@@ -485,7 +514,12 @@ async def create_request(
     )
     link = f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=activity&focus={activity_item_id(request_id)}"
     if room_id:
-        await _post_notice(owner_id, row, link)
+        await _post_notice(
+            owner_id,
+            row,
+            f"I need a login for {host_of(origin)} to continue. Add it here — the password goes straight to "
+            f"the workspace's website sign-ins, never into this chat: {link}",
+        )
     try:
         await publish_owner_users(owner_id, make_live_event("runtime.resource.invalidated", {"resource": "activity"}))
     except Exception:  # noqa: BLE001 -- the badge catches up on the next focus
@@ -502,18 +536,10 @@ async def create_request(
     return {"requestId": request_id, "status": "pending"}
 
 
-async def _post_notice(owner_id: str, row: dict, link: str) -> None:
+async def _post_notice(owner_id: str, row: dict, text: str) -> None:
     """The agent's line in the room. Written straight through the canonical writer with no
     dispatch targets, so it wakes nobody (an ``active`` teammate would otherwise take it as a
     room event). No run id: that would retire the asking run's live card."""
-    site = host_of(row["origin"])
-    if row["kind"] == "code":
-        text = f"{site} sent a verification code. Enter it here so I can finish signing in: {link}"
-    else:
-        text = (
-            f"I need a login for {site} to continue. Add it here — the password goes straight to "
-            f"the workspace's website sign-ins, never into this chat: {link}"
-        )
     try:
         await messaging_repo.create_message(
             room_id=row["roomId"],
@@ -567,8 +593,6 @@ async def answer(
 ) -> dict:
     """A human's answer from the secure form (``value`` None = "Not now"). Admin-gating is the
     caller's. Returns the settled row."""
-    from core.encryption import encrypt
-
     row = await get_request(owner_id, request_id)
     if row is None:
         raise LoginError("This request is gone.")
@@ -587,10 +611,7 @@ async def answer(
         )
         await _settle(owner_id, request_id, "answered", resolvedBy=user_id, loginId=saved["id"])
     else:
-        code = re.sub(r"[\s-]", "", value.get("code", ""))
-        if not code or len(code) > 32:
-            raise LoginError("Enter the code.")
-        await _settle(owner_id, request_id, "answered", resolvedBy=user_id, codeEnc=encrypt(code))
+        raise LoginError("A sign-in code is typed into the shared browser, not here.")
     logger.info(
         "website_login.request_%s owner=%s request=%s actor=%s",
         "declined" if value is None else "answered",
@@ -602,9 +623,7 @@ async def answer(
 
 
 async def poll_request(owner_id: str, request_id: str) -> dict | None:
-    """The bridge's wait. An answered code is handed over ONCE and erased from the row."""
-    from core.encryption import decrypt
-
+    """The bridge's wait on a login ask."""
     row = await get_request(owner_id, request_id)
     if row is None:
         return None
@@ -612,20 +631,6 @@ async def poll_request(owner_id: str, request_id: str) -> dict | None:
     out: dict[str, Any] = {"status": status, "kind": row["kind"]}
     if status == "answered" and row["kind"] == "login":
         out["loginId"] = row.get("loginId")
-    elif status == "answered" and row["kind"] == "code":
-        try:
-            response = await run_in_thread(
-                messaging_repo._table().update_item,
-                Key={"pk": messaging_repo.owner_pk(owner_id), "sk": request_sk(request_id)},
-                UpdateExpression="REMOVE codeEnc",
-                ConditionExpression="attribute_exists(codeEnc)",
-                ReturnValues="ALL_OLD",
-            )
-            out["code"] = decrypt(response["Attributes"]["codeEnc"])
-        except ClientError as exc:
-            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-                raise
-            out["status"] = "consumed"
     return out
 
 

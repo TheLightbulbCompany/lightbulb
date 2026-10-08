@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ApiError, NEW_SCREEN, receiveScreen, type LiveEvent, type LocalSession, type SessionScreen } from "@lightbulb/shared";
+import { ApiError, NEW_SCREEN, SNAPSHOT_WAIT_MS, receiveScreen, settleScreen, snapshotWaits, type LiveEvent, type LocalSession, type SessionScreen } from "@lightbulb/shared";
 import type { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { chunkInput, dropMouseReports, dropProbeReplies, SHIFT_ENTER } from "./sessionInput";
@@ -130,6 +130,8 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     const queued: SessionScreen[] = [];
     let alive = true;
     let stale: ReturnType<typeof setTimeout> | undefined;
+    // Runs while a snapshot waits for the frames below it (`receiveScreen`); from the first one that waits.
+    let settle: ReturnType<typeof setTimeout> | undefined;
     let pending = "";
     let frameId = 0;
     let sending: Promise<unknown> = Promise.resolve();
@@ -271,10 +273,12 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
       const step = receiveScreen(order, frame);
       order = step.order;
       apply(step.write);
+      if (!snapshotWaits(order)) { clearTimeout(settle); settle = undefined; }
+      else settle ??= setTimeout(() => { settle = undefined; const late = settleScreen(order); order = late.order; apply(late.write); }, SNAPSHOT_WAIT_MS);
     });
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(fit);
     if (box.current) observer?.observe(box.current);
-    return () => { alive = false; pending = ""; if (frameId) cancelAnimationFrame(frameId); termRef.current = null; clearTimeout(stale); off(); observer?.disconnect(); around?.removeEventListener("wheel", onWheel, { capture: true }); term?.dispose(); onLive(false); };
+    return () => { alive = false; pending = ""; if (frameId) cancelAnimationFrame(frameId); termRef.current = null; clearTimeout(stale); clearTimeout(settle); off(); observer?.disconnect(); around?.removeEventListener("wheel", onWheel, { capture: true }); term?.dispose(); onLive(false); };
   }, [session.sessionId, session.generation, onEvent, onLive]);
   return <>
     <div className="session-terminal-view session-terminal-frame" data-live={live} role="region" aria-label={canType ? "Live terminal" : "Live terminal (view only)"}>

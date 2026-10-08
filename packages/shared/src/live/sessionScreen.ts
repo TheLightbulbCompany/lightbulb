@@ -11,7 +11,14 @@ import type { SessionScreen } from "./types";
  *  Frames can arrive out of order or never: each is its own request from the Mac to here, so a
  *  burst's frames can come after the snapshot the Mac sent behind them. Up to 16 early ones are
  *  held; past that the view waits for the next snapshot. History from below the snapshot it goes
- *  under (`shown`) starts the picture over: the longer run, then everything written since. */
+ *  under (`shown`) starts the picture over: the longer run, then everything written since.
+ *  A snapshot that comes ahead of this viewer's place in a run it draws, with a lower frame not
+ *  here yet, waits in `held`: written at once it would cover the screen and the late output under
+ *  it would be dropped, and lines that output scrolled off the top never reach the scrollback (an
+ *  inline Codex session writes its finished lines that way). It is written in its place when the
+ *  lower frames come, or as it is when the view's timer says they will not (`settleScreen`,
+ *  SNAPSHOT_WAIT_MS): then it is a repair, as before. One rule with output ahead of a gap, which is
+ *  held the same way. Never the first picture of a viewer or a run, nor a viewer out of sync. */
 export type ScreenOrder = { epoch: number; next: number; synced: boolean; held: SessionScreen[]; history: SessionScreen[];
   /** No history is written in this run yet. An empty history frame counts: the Mac has none to give. */
   bare: boolean;
@@ -20,23 +27,71 @@ export type ScreenOrder = { epoch: number; next: number; synced: boolean; held: 
    *  frames: history that late is not written. */
   shown: SessionScreen[] };
 export const NEW_SCREEN: ScreenOrder = { epoch: -1, next: 0, synced: false, held: [], history: [], bare: true, shown: [] };
+/** How long a snapshot waits for the frames below it. Frames of one burst reached the backend up to
+ *  150 ms out of order (prod 2026-10-08, a snapshot ahead of 12 history chunks) and up to 184 ms in
+ *  #3876's record: this is past both with room. A cold relay Lambda (2.7 s, once) is not waited
+ *  for: the snapshot is then the repair it always was. Only a viewer missing a frame ever waits,
+ *  but that includes every viewer of a session that just ended (the backend drops the frames
+ *  before the kept picture), so the wait is kept short: it is added to that picture's delay. */
+export const SNAPSHOT_WAIT_MS = 300;
 const HELD = 16;
 /** A quiet screen fills this in minutes, a printing one in seconds; a late frame is late by less (a cold relay Lambda took 2.7 s, prod 2026-10-08). */
 const SHOWN = 32;
 /** ceil(256 KiB / 11 KiB): one history burst at most (the Mac's BURST over CHUNK). */
 const HISTORY = 24;
 
-export function receiveScreen(order: ScreenOrder, frame: SessionScreen): { order: ScreenOrder; write: SessionScreen[] } {
+type Step = { order: ScreenOrder; write: SessionScreen[] };
+
+export function receiveScreen(order: ScreenOrder, frame: SessionScreen): Step {
+  let step = receive(order, frame);
+  for (;;) {
+    // A held snapshot's turn: everything below it is here now.
+    const ready = heldSnapshots(step.order).find((s) => !missing(step.order, s));
+    if (!ready) return step;
+    const drawn = draw(step.order, ready);
+    step = { order: drawn.order, write: [...step.write, ...drawn.write] };
+  }
+}
+
+/** Whether a snapshot waits for frames below it: the view then calls `settleScreen` in SNAPSHOT_WAIT_MS. */
+export const snapshotWaits = (order: ScreenOrder) => heldSnapshots(order).length > 0;
+
+/** The frames below the waiting snapshot did not come in time: write the newest one as it is. */
+export function settleScreen(order: ScreenOrder): Step {
+  const newest = heldSnapshots(order).pop();
+  return newest ? draw(order, newest) : { order, write: [] };
+}
+
+function heldSnapshots(order: ScreenOrder) {
+  return order.held.filter((f) => f.kind === "snapshot" && f.epoch === order.epoch).sort((a, b) => a.seq - b.seq);
+}
+
+/** Whether a frame below `snapshot` in the run this viewer draws in sync has not arrived. */
+function missing(order: ScreenOrder, snapshot: SessionScreen) {
+  if (!order.synced || snapshot.epoch !== order.epoch) return false;
+  if (snapshot.seq - order.next > HELD + HISTORY) return true;
+  const here = new Set([...order.held, ...order.history].filter((f) => f.epoch === order.epoch).map((f) => f.seq));
+  for (let seq = order.next; seq < snapshot.seq; seq += 1) if (!here.has(seq)) return true;
+  return false;
+}
+
+function draw(order: ScreenOrder, frame: SessionScreen): Step {
+  // History only for a viewer with none of this run's: scrollback it has stays as it is.
+  const wants = order.bare || frame.epoch !== order.epoch;
+  const history = order.history.filter((f) => f.epoch >= frame.epoch);
+  const before = wants ? newestRun(history, frame) : [];
+  return drain({ epoch: frame.epoch, next: frame.seq + 1, synced: true, history, bare: wants && !before.length, shown: order.shown,
+    held: order.held.filter((f) => f.epoch === frame.epoch && f.seq > frame.seq) }, [...before, frame], wants);
+}
+
+function receive(order: ScreenOrder, frame: SessionScreen): Step {
   if (frame.kind === "ping") return { order, write: [] };
   if (frame.kind === "snapshot") {
     const old = frame.epoch < order.epoch || (frame.epoch === order.epoch && order.synced && frame.seq < order.next);
     if (old) return { order, write: [] };
-    // History only for a viewer with none of this run's: scrollback it has stays as it is.
-    const wants = order.bare || frame.epoch !== order.epoch;
-    const history = order.history.filter((f) => f.epoch >= frame.epoch);
-    const before = wants ? newestRun(history, frame) : [];
-    return drain({ epoch: frame.epoch, next: frame.seq + 1, synced: true, history, bare: wants && !before.length, shown: order.shown,
-      held: order.held.filter((f) => f.epoch === frame.epoch && f.seq > frame.seq) }, [...before, frame], wants);
+    const held = order.held.some((f) => f.epoch === frame.epoch && f.seq === frame.seq) ? order.held : [...order.held, frame];
+    // Held like output ahead of a gap; with no room left to hold it, written now.
+    return missing(order, frame) && held.length <= HELD ? { order: { ...order, held }, write: [] } : draw(order, frame);
   }
   if (order.synced && frame.epoch === order.epoch) {
     if (frame.seq < order.next) return frame.kind === "history" ? late(order, frame) : { order, write: [] };
@@ -46,7 +101,10 @@ export function receiveScreen(order: ScreenOrder, frame: SessionScreen): { order
     return { order: { ...order, history: stash(order, frame) }, write: [] };
   }
   const held = [...order.held, frame];
-  return held.length > HELD ? { order: { ...order, synced: false, held: [] }, write: [] } : { order: { ...order, held }, write: [] };
+  if (held.length <= HELD) return { order: { ...order, held }, write: [] };
+  // No room to wait any longer: a snapshot that was waiting is the picture now, with what is held above it.
+  const newest = heldSnapshots({ ...order, held }).pop();
+  return newest ? draw({ ...order, held }, newest) : { order: { ...order, synced: false, held: [] }, write: [] };
 }
 
 /** The history kept for the next snapshot, with `frame` when it is history this viewer may yet write. */
@@ -93,6 +151,8 @@ function drain(order: ScreenOrder, write: SessionScreen[], under = false) {
   for (;;) {
     const i = held.findIndex((f) => f.epoch === order.epoch && f.seq === next);
     if (i < 0) break;
+    // A snapshot keeps its place until it is drawn (`receiveScreen`).
+    if (held[i].kind === "snapshot") break;
     // A history frame in a run this viewer already draws: its place in the order, nothing to write.
     if (held[i].kind !== "history") write.push(held[i]);
     held = held.filter((_, j) => j !== i); next += 1;

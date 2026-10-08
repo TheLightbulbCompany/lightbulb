@@ -156,6 +156,8 @@ it("asks for the kept picture once when the session it was watching ends, and dr
   await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
   expect(watch.mock.calls.slice(3)).toEqual([["s1", false]]);
   act(() => { emit(screenEvent("s1", "snapshot", 5, 1, "a2VwdA==")); });
+  // The frames between were dropped while the watch was refused: the picture waits for them, briefly.
+  await act(async () => { await vi.advanceTimersByTimeAsync(300); });
   expect(hooks.term).toBe(term); // the same terminal,
   expect(hooks.resets).toBe(1); // started over only for its first frame
   expect(Array.from(writes[1])).toEqual([...CLEAR, ...new TextEncoder().encode("kept")]);
@@ -685,5 +687,55 @@ describe("a readable terminal in a narrow pane", () => {
     fireEvent.click(screen.getByRole("button", { name: "Fit" }));
     expect(screen.getByRole("button", { name: "Fit" }).getAttribute("aria-pressed")).toBe("true");
     get.mockRestore(); set.mockRestore();
+  });
+});
+
+describe("a snapshot that arrives ahead of the output below it", () => {
+  // Prod 2026-10-08, review of #3894: the Mac's output and the snapshot behind it are two requests
+  // and can swap. Written at once, the snapshot covered the screen and the late output was dropped:
+  // an inline Codex session's lines, scrolled off the top by that output, never reached scrollback.
+  const mount = async () => {
+    vi.useFakeTimers();
+    let emit: (e: LiveEvent) => void = () => {};
+    const view = render(<SessionTerminalView session={{ sessionId: "s1", generation: "g1" }}
+      onEvent={(h) => { emit = h; return () => {}; }} watch={vi.fn(async () => undefined)} onLive={vi.fn()} />);
+    await act(async () => { await vi.dynamicImportSettled(); });
+    const send = (kind: string, seq: number, text: string) => act(() => emit(screenEvent("s1", kind, seq, 1, btoa(text))));
+    return { ...view, send };
+  };
+
+  it("draws a fresh viewer's first snapshot at once, whatever its seq", async () => {
+    const { send } = await mount();
+    send("snapshot", 7, "first");
+    expect(hooks.did).toEqual(["reset", "first"]);
+  });
+
+  it("writes the output first in either arrival order, with no wait when it is in order", async () => {
+    const { send } = await mount();
+    send("snapshot", 0, "first");
+    send("output", 1, "lines");
+    send("snapshot", 2, "screen");
+    expect(hooks.did).toEqual(["reset", "first", "lines", "screen"]);
+    send("snapshot", 4, "after");
+    expect(hooks.did).toHaveLength(4); // waits for seq 3
+    send("output", 3, "more lines");
+    expect(hooks.did.slice(4)).toEqual(["more lines", "after"]);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(hooks.did).toHaveLength(6); // the wait ended with the output: nothing is drawn again
+  });
+
+  it("draws the snapshot as a repair when the output never comes, and not after an unmount", async () => {
+    const { send, unmount } = await mount();
+    send("snapshot", 0, "first");
+    send("snapshot", 2, "repair");
+    await act(async () => { await vi.advanceTimersByTimeAsync(299); });
+    expect(hooks.did).toEqual(["reset", "first"]);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(hooks.did).toEqual(["reset", "first", "repair"]);
+    send("output", 1, "too late");
+    send("snapshot", 5, "never drawn");
+    unmount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(hooks.did).toEqual(["reset", "first", "repair"]);
   });
 });

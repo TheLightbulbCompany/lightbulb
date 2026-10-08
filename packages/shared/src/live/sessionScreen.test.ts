@@ -1,5 +1,5 @@
 import { expect, it, test } from "vitest";
-import { NEW_SCREEN, receiveScreen, type ScreenOrder } from "./sessionScreen";
+import { NEW_SCREEN, receiveScreen, settleScreen, snapshotWaits, type ScreenOrder } from "./sessionScreen";
 import { LIVE_EVENT_TYPES, parseLiveEvent, type SessionScreen } from "./types";
 
 test("a screen frame carries one session's terminal bytes and nothing else", () => {
@@ -71,7 +71,8 @@ it("history that arrives after its snapshot starts the picture over: the history
   expect(feed([f(0, "history"), f(2, "history"), f(3, "snapshot"), f(4), f(1, "history")]).written)
     .toEqual(["h2", "s3", "o4", "h0", "h1", "h2", "s3", "o4"]);
   // A view that drew the run before its own watch brought the burst, and got that burst's snapshot first.
-  expect(feed([f(3, "snapshot"), f(5, "snapshot"), f(4, "history"), f(6)]).written).toEqual(["s3", "s5", "h4", "s5", "o6"]);
+  // (That snapshot waits for the frame below it, so the picture is drawn once.)
+  expect(feed([f(3, "snapshot"), f(5, "snapshot"), f(4, "history"), f(6)]).written).toEqual(["s3", "h4", "s5", "o6"]);
 });
 it("history that arrives late never redraws a viewer whose history is whole, and never twice", () => {
   const whole = feed([f(0, "history"), f(1, "snapshot"), f(2)]);
@@ -106,4 +107,49 @@ it("a ping has no place in the order", () => {
 });
 it("a snapshot that spans frames is written whole, in sync or not", () => {
   expect(feed([f(0, "snapshot"), f(1), f(2, "snapshot"), f(3)]).written).toEqual(["s0", "o1", "s2", "o3"]);
+});
+
+// Prod 2026-10-08, review of #3894: the Mac sends the output it held and then the snapshot as two
+// frames, each its own request, and the snapshot can come first. Written at once it covered the
+// screen and the output was dropped as old: an inline Codex session's lines, scrolled off the top by
+// that output, never reached the viewer's scrollback.
+const names = (write: SessionScreen[]) => write.map((w) => `${w.kind[0]}${w.seq}`);
+it("a snapshot ahead of an in-sync viewer's place waits for the output below it, in either arrival order", () => {
+  expect(feed([f(0, "snapshot"), f(1), f(2), f(3, "snapshot"), f(4)]).written).toEqual(["s0", "o1", "o2", "s3", "o4"]);
+  const early = feed([f(0, "snapshot"), f(1), f(3, "snapshot")]);
+  expect(early.written).toEqual(["s0", "o1"]);
+  expect(snapshotWaits(early.order)).toBe(true);
+  const filled = feed([f(4), f(2)], early.order);
+  expect(filled.written).toEqual(["o2", "s3", "o4"]);
+  expect(snapshotWaits(filled.order)).toBe(false);
+  // Two frames below it, the nearer one first; and two snapshots that wait, each in its place.
+  expect(feed([f(0, "snapshot"), f(3, "snapshot"), f(2), f(1)]).written).toEqual(["s0", "o1", "o2", "s3"]);
+  expect(feed([f(0, "snapshot"), f(2, "snapshot"), f(4, "snapshot"), f(1), f(3)]).written).toEqual(["s0", "o1", "s2", "o3", "s4"]);
+  // A new viewer's burst, its snapshot ahead of its history: someone already watching writes that snapshot once the burst is here.
+  expect(feed([f(0, "history"), f(1, "snapshot"), f(4, "snapshot"), f(2, "history"), f(3, "history"), f(5)]).written).toEqual(["h0", "s1", "s4", "o5"]);
+});
+it("a waiting snapshot is written as it is when the frames below it never come: a repair, as before", () => {
+  const early = feed([f(0, "snapshot"), f(2, "snapshot"), f(3)]);
+  expect(early.written).toEqual(["s0"]);
+  const settled = settleScreen(early.order);
+  expect(names(settled.write)).toEqual(["s2", "o3"]);
+  expect(snapshotWaits(settled.order)).toBe(false);
+  // The frame it waited for is old now, and there is nothing left to settle.
+  expect(feed([f(1), f(4)], settled.order).written).toEqual(["o4"]);
+  expect(settleScreen(settled.order)).toEqual({ order: settled.order, write: [] });
+});
+it("no snapshot waits for a viewer with no picture, a new run, or a viewer out of sync", () => {
+  expect(snapshotWaits(feed([f(7, "snapshot")]).order)).toBe(false);
+  expect(feed([f(7, "snapshot")]).written).toEqual(["s7"]);
+  const run = feed([f(0, "snapshot"), f(1)]);
+  expect(feed([f(5, "snapshot", 2)], run.order).written).toEqual(["s5"]);
+  const lost = feed(Array.from({ length: 17 }, (_, i) => f(i + 3)), run.order);
+  expect(lost.order.synced).toBe(false);
+  expect(feed([f(30, "snapshot")], lost.order).written).toEqual(["s30"]);
+  // More frames above a waiting snapshot than a view holds: it is written then, with them. And it does not outlive its run.
+  const waiting = feed([f(3, "snapshot")], run.order);
+  expect(feed(Array.from({ length: 17 }, (_, i) => f(i + 4)), waiting.order).written).toEqual(["s3", ...Array.from({ length: 17 }, (_, i) => `o${i + 4}`)]);
+  const next = feed([f(0, "snapshot", 2)], waiting.order);
+  expect(next.written).toEqual(["s0"]);
+  expect(snapshotWaits(next.order)).toBe(false);
 });

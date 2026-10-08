@@ -42,8 +42,8 @@ import websockets
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from scripts.load.fixtures import remove, write_private
-from scripts.multiparty_e2e.runner import API, Api, Session, dev_only
+from scripts.load.fixtures import StaticSession, remove, write_private
+from scripts.multiparty_e2e.runner import API, Api, dev_only
 
 HERE = Path(__file__).parent
 SESSIONS_OUT = HERE / "mac_sessions.json"
@@ -179,7 +179,7 @@ class SocketClosed(Exception):
 class Mac:
     def __init__(self, user: dict, args, stats: Counter, rtts: list[float]):
         self.user, self.args, self.stats, self.rtts = user, args, stats, rtts
-        self.api = Api(Session.resume(user["sid"], user["clientJwt"]))
+        self.api = Api(StaticSession(user["apiJwt"]))
         self.key, mac_pem = keypair()
         _, cli_pem = keypair()
         self.pems = (mac_pem, cli_pem)

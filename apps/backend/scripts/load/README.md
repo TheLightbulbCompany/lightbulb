@@ -23,6 +23,8 @@ All three refuse anything but `api-dev` and a `development` Clerk instance. Ever
 - AWS SSO for the dev Clerk secret: `aws sso login --profile isol8-admin`. `fixtures.py` reads
   `lightbulb/dev/clerk_secret_key` from Secrets Manager at run time. Never copy it into a file or commit it.
 - `cd apps/backend && uv sync` (uses the backend's `httpx`, `PyJWT`, `cryptography`, `websockets`).
+- No Clerk frontend API is used: sessions and JWTs come from the Backend API, which creates
+  sessions only on a development instance (see "How fixture users get their tokens").
 - Clerk's dev instance is documented at 100 users; `setup` refuses past `CLERK_USER_CAP` (default 100).
   Verify the real cap before a run larger than the pilot.
 
@@ -37,9 +39,18 @@ uv run python -m scripts.load.fixtures run --orgs 1 --users-per-org 2 -- \
 uv run python -m scripts.load.fixtures teardown
 ```
 
-The pilot also measures what the spec leaves open: Clerk FAPI per-IP limits, whether one client JWT
-used by several k6 VUs keeps rotating cleanly, and whether AppSync keeps a subscription open past its
-token's 60 s life (the harness refreshes HTTP tokens every 40 s but does not re-subscribe).
+### How fixture users get their tokens
+
+`run` never signs in through Clerk's frontend API (it rate-limits sign-ins per IP: scenario 1a's 16
+back-to-back sign-ins got a 429 on 2026-10-08). It creates each user's session with the Backend API
+(`POST /v1/sessions {user_id, active_organization_id}` — Clerk documents it as for testing only and
+**not available on production instances**; this harness is dev only), then mints ONE API JWT and ONE
+`lightbulb-appsync` JWT per user with `expires_in_seconds = --ttl` (default 7200; Clerk allows
+30–315360000). Backend API calls are paced at ≤ 5/s and wait out a 429's Retry-After. The first JWT
+of every user must carry the fixture org in `o.id`, or `run` refuses. Nothing refreshes a token
+during a run, so `--ttl` must be longer than the whole command; k6 refuses to start on an expired
+file. `fixtures.json` holds only those JWTs (no Clerk secret, no session handle) and is deleted when
+the command ends.
 
 ## Scenarios
 

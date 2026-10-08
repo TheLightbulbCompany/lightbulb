@@ -116,14 +116,6 @@ class Session:
         self._post(f"/v1/client/sessions/{self.sid}/touch", {"active_organization_id": org or ORG})
         self._jwt, self._at = "", 0.0
 
-    @classmethod
-    def resume(cls, sid: str, client_jwt: str) -> "Session":
-        """A session another process signed in (load fixtures hand over ``sid`` + client JWT)."""
-        self = cls.__new__(cls)
-        self.http = httpx.Client(base_url=FAPI, params={"_is_native": "1"}, headers=UA, timeout=20)
-        self.client_jwt, self.sid, self._jwt, self._at = client_jwt, sid, "", 0.0
-        return self
-
     def _post(self, path: str, data: dict | None = None) -> dict:
         resp = self.http.post(path, data=data or {}, headers={"Authorization": self.client_jwt}).raise_for_status()
         self.client_jwt = resp.headers.get("authorization") or self.client_jwt

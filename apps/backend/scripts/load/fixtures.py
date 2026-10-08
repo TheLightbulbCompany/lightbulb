@@ -6,9 +6,11 @@
     uv run python -m scripts.load.fixtures teardown [--dry-run]
 
 ``setup`` creates the users and orgs and waits until every org's workspace is ready (runtime ready,
-``#general`` seeded with the six starter agents). ``run`` signs every fixture user in, writes
-``fixtures.json`` (mode 0600: it holds live Clerk client JWTs), runs the command, and deletes the
-file in a ``finally`` and on SIGINT/SIGTERM. ``teardown`` removes every ``load-*`` fixture in the
+``#general`` seeded with the six starter agents). ``run`` creates one Clerk session per fixture
+user server-side (Backend API ``POST /v1/sessions``, development instances only: no frontend-API
+sign-in, so no per-IP sign-in limit), mints one API JWT and one ``lightbulb-appsync`` JWT per user
+that live ``--ttl`` seconds, writes ``fixtures.json`` (mode 0600: it holds those live JWTs), runs the
+command, and deletes the file in a ``finally`` and on SIGINT/SIGTERM. ``teardown`` removes every ``load-*`` fixture in the
 spec's order. Nothing here runs against anything but dev (``dev_only`` + a development Clerk instance).
 Never run it without the owner's go for that run.
 """
@@ -26,9 +28,7 @@ import sys
 import time
 from pathlib import Path
 
-import httpx
-
-from scripts.multiparty_e2e.runner import API, FAPI, Api, Clerk, dev_only
+from scripts.multiparty_e2e.runner import API, Api, Clerk, dev_only
 
 HERE = Path(__file__).parent
 FIXTURES = HERE / "fixtures.json"
@@ -38,6 +38,12 @@ USER_CAP = int(os.environ.get("CLERK_USER_CAP", "100"))
 EMAIL_RE = re.compile(r"^load-\d{4}\+clerk_test@example\.com$")
 ORG_RE = re.compile(r"^load-org-\d{3}$")
 DELETE_RETRY_S = 120
+APPSYNC_TEMPLATE = "lightbulb-appsync"
+#: Clerk's documented bounds for ``expires_in_seconds`` on session tokens.
+TOKEN_TTL_MIN, TOKEN_TTL_MAX = 30, 315_360_000
+#: Backend API pacing: at most 5 calls a second from the session path (BAPI has its own limits).
+BAPI_SPACING_S = 0.2
+BAPI_TRIES = 6
 
 
 # ------------------------------------------------------------------ pure helpers (unit-tested)
@@ -104,6 +110,12 @@ def write_private(path: Path, data: dict) -> None:
         json.dump(data, f)
 
 
+def fixture_file(orgs: list[dict], users: list[dict], expires_at: int) -> dict:
+    """What k6 and mac_sim read. No Clerk secret, no session handle: only JWTs that expire."""
+    keys = ("userId", "email", "orgId", "apiJwt", "appsyncJwt")
+    return {"api": API, "expiresAt": expires_at, "orgs": orgs, "users": [{k: u[k] for k in keys} for u in users]}
+
+
 def remove(path: Path) -> None:
     try:
         path.unlink()
@@ -162,27 +174,61 @@ def _add_member(clerk: Clerk, org_id: str, user_id: str) -> None:
     raise SystemExit(f"adding {user_id} to {org_id} failed: HTTP {resp.status_code} {resp.text[:500]}")
 
 
-SIGNIN_TRIES = 6
-SIGNIN_SPACING_S = 1.0
+_last_call = 0.0
 
 
-def _api(clerk: Clerk, user_id: str, org_id: str) -> Api:
-    """One sign-in. Clerk's frontend API rate-limits sign-ins per IP: 1a's 16 back-to-back sign-ins
-    got a 429 on 2026-10-08. Wait out Retry-After (else 5 s x attempt, at most 60 s), and space
-    successive sign-ins by SIGNIN_SPACING_S."""
-    for attempt in range(1, SIGNIN_TRIES + 1):
-        try:
-            api = Api(clerk.session(user_id, org_id))
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code != 429 or attempt == SIGNIN_TRIES:
-                raise
-            wait = min(float(e.response.headers.get("retry-after") or 5 * attempt), 60)
-            print(f"sign-in rate-limited (429); waiting {wait:.0f}s (try {attempt}/{SIGNIN_TRIES})", flush=True)
+def _bapi(clerk: Clerk, path: str, body: dict) -> dict:
+    """One paced Backend API POST (<= 5/s). A 429 waits out Retry-After (else 2 s x attempt)."""
+    global _last_call
+    for attempt in range(1, BAPI_TRIES + 1):
+        wait = _last_call + BAPI_SPACING_S - time.monotonic()
+        if wait > 0:
             time.sleep(wait)
-        else:
-            time.sleep(SIGNIN_SPACING_S)
-            return api
+        _last_call = time.monotonic()
+        resp = clerk.http.post(path, json=body)
+        if resp.status_code == 429 and attempt < BAPI_TRIES:
+            time.sleep(min(float(resp.headers.get("retry-after") or 2 * attempt), 60))
+            continue
+        if resp.status_code >= 400:
+            raise SystemExit(f"Clerk POST {path.split('/')[1]} failed: HTTP {resp.status_code} {resp.text[:300]}")
+        return resp.json()
     raise AssertionError("unreachable")
+
+
+class BapiSession:
+    """A Clerk session created by the Backend API with the fixture org active. Clerk documents
+    ``POST /v1/sessions`` as for testing only, unavailable on production instances: we are dev only.
+    Its JWTs are minted once, with the lifetime the run needs, so nothing refreshes them."""
+
+    def __init__(self, clerk: Clerk, user_id: str, org_id: str, ttl: int):
+        if not TOKEN_TTL_MIN <= ttl <= TOKEN_TTL_MAX:
+            raise SystemExit(f"--ttl must be {TOKEN_TTL_MIN}..{TOKEN_TTL_MAX} seconds")
+        self.clerk, self.ttl = clerk, ttl
+        self.sid = _bapi(clerk, "/sessions", {"user_id": user_id, "active_organization_id": org_id})["id"]
+        self._jwt = ""
+
+    def mint(self, template: str | None = None) -> str:
+        path = f"/sessions/{self.sid}/tokens" + (f"/{template}" if template else "")
+        return _bapi(self.clerk, path, {"expires_in_seconds": self.ttl})["jwt"]
+
+    def token(self) -> str:
+        if not self._jwt:
+            self._jwt = self.mint()
+        return self._jwt
+
+
+class StaticSession:
+    """A JWT minted by ``fixtures.py run``, for tools reading fixtures.json (mac_sim)."""
+
+    def __init__(self, jwt: str):
+        self._jwt = jwt
+
+    def token(self) -> str:
+        return self._jwt
+
+
+def _api(clerk: Clerk, user_id: str, org_id: str, ttl: int = 3600) -> Api:
+    return Api(BapiSession(clerk, user_id, org_id, ttl))
 
 
 def _check_org_claim(api: Api, org_id: str) -> None:
@@ -219,7 +265,8 @@ def setup(args) -> int:
             _add_member(clerk, row["id"], uid)
         orgs.append({"id": row["id"], "name": org["name"], "creator": ids[0]})
         print(f"{org['name']} = {row['id']} ({len(ids)} users)")
-    pending = {o["id"]: _api(clerk, o["creator"], o["id"]) for o in orgs}
+    ttl = min(TOKEN_TTL_MAX, args.ready_timeout + 600)  # one JWT outlives the whole readiness wait
+    pending = {o["id"]: _api(clerk, o["creator"], o["id"], ttl) for o in orgs}
     for org_id, api in pending.items():
         _check_org_claim(api, org_id)
     deadline = time.monotonic() + args.ready_timeout
@@ -257,7 +304,8 @@ def run(args) -> int:
         raise SystemExit("run needs a command after --, e.g. -- k6 run scripts/load/k6/messaging.js")
     layout = plan(args.orgs, args.users_per_org)
     if args.dry_run:
-        print(f"[dry-run] would sign in {args.orgs * args.users_per_org} users, write {FIXTURES} (0600),")
+        print(f"[dry-run] would create {args.orgs * args.users_per_org} Clerk sessions (Backend API, <= 5 calls/s),")
+        print(f"  mint an API + {APPSYNC_TEMPLATE} JWT each living {args.ttl}s, write {FIXTURES} (0600),")
         print(f"  run {args.command} with FIXTURES set, then delete the file")
         return 0
     dev_only(API)
@@ -277,6 +325,8 @@ def run(args) -> int:
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
     try:
+        # Each JWT's lifetime starts at its own mint, so the file's expiry counts from before the first one.
+        started = int(time.time())
         orgs, users = [], []
         for org in layout:
             row = _find_org(clerk, org["name"])
@@ -287,18 +337,21 @@ def run(args) -> int:
                 user = clerk.user(email)
                 if not user:
                     raise SystemExit(f"{email} does not exist: run setup first")
-                api = _api(clerk, user["id"], row["id"])
-                _check_org_claim(api, row["id"])
+                session = BapiSession(clerk, user["id"], row["id"], args.ttl)
+                api_jwt = session.token()
+                if jwt_org(api_jwt) != row["id"]:
+                    raise SystemExit(f"refusing: a fixture JWT carries org {jwt_org(api_jwt)!r}, expected {row['id']}")
                 users.append(
                     {
                         "userId": user["id"],
                         "email": email,
                         "orgId": row["id"],
-                        "sid": api.s.sid,
-                        "clientJwt": api.s.client_jwt,
+                        "apiJwt": api_jwt,
+                        "appsyncJwt": session.mint(APPSYNC_TEMPLATE),
                     }
                 )
-        write_private(FIXTURES, {"api": API, "fapi": FAPI, "orgs": orgs, "users": users})
+        expires = started + args.ttl
+        write_private(FIXTURES, fixture_file(orgs, users, expires))
         child.append(subprocess.Popen(args.command, env={**os.environ, "FIXTURES": str(FIXTURES.resolve())}))
         return child[0].wait()
     finally:
@@ -379,6 +432,7 @@ def main(argv=None) -> int:
         if name == "setup":
             p.add_argument("--ready-timeout", type=int, default=1800, help="seconds to wait for every workspace")
         if name == "run":
+            p.add_argument("--ttl", type=int, default=7200, help="JWT lifetime, seconds: longer than the whole command")
             p.add_argument("command", nargs=argparse.REMAINDER)
     args = ap.parse_args(argv)
     if getattr(args, "command", None) and args.command[0] == "--":

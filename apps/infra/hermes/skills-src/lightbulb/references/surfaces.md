@@ -125,7 +125,11 @@ sessions; All sessions lists every session. Desktop sharing is opt-in; disabling
 credentials and approvals remain on the owner's machine. Follow-ups reach the
 owner's terminal labelled with the sender's room handle (`Message from @aden`
 in Claude Code; a header line in Codex), and agent contributions carry an
-agent identity, never a human impersonation. Enabling sharing installs a
+agent identity, never a human impersonation. An agent's ask to message a
+session also shows in that session's terminal band on the owner's Mac ("Friday
+wants to message this session: …" or "Friday wants to stop this session"):
+Allow sends it and Decline declines it, the same as the Activity card or a
+teammate under team control. Enabling sharing installs a
 `lightbulb-session-sharing` skill into the owner's Claude and Codex skill
 roots so the harness knows what a teammate contribution is. Sessions whose
 process has exited read **Ended** and are hidden until a member presses Show

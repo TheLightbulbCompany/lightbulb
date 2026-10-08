@@ -132,6 +132,11 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  packages/shared/src/messaging/mentions.ts (human session tokens);
                                  packages/claude-plugin/lightbulb/skills/lightbulb-session-sharing/SKILL.md; SKILL.md (sessions routing row).
                                  Optional adapter/tool availability requires the promoted Hermes image; docs are not deployment evidence.
+  - Agent ask in the band ... references/surfaces.md (shared-sessions paragraph: "<Agent> wants to message this session: …" /
+                              "… wants to stop this session"; Allow sends, Decline declines)
+                              <- packages/claude-plugin/lightbulb/hooks/state.ts (requestLine);
+                                 apps/desktop/src-tauri/src/local_sessions/{presence,mod_socket,transport}.rs (agentMessageAsks);
+                                 apps/backend/core/services/session_presence.py (agent_message entries)
   - Session Details dialog .. references/surfaces.md (status line, Details tabs, Access switches, footer)
                               <- apps/frontend/src/components/messaging/LocalSessionPanel.tsx (status line, Details + Pick up
                                  buttons); SessionDetails.tsx (About/Changes/Access/Linked work tabs, the Access switches,

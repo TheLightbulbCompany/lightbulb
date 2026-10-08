@@ -105,9 +105,19 @@ class DrivenSession:
     def __init__(self, llm=None, vad=None):
         import asyncio
 
+        owner = self
+
         class Handle(asyncio.Future):  # a SpeechHandle: awaited to its end, and it says whether it was cut
             interrupted = False
 
+            def set_result(self, result):
+                # it ends with its audio sent: the unit's meter saw sound (`silent` below ends without it)
+                unit = getattr(owner.voice or owner.started.get("agent"), "unit", None)
+                if unit is not None and not owner.silent:
+                    unit.frames, unit.seconds, unit.loud = 50, 1.0, 1.0
+                super().set_result(result)
+
+        self.voice, self.silent = None, False
         self.llm, self.orders, self.handles, self.handlers, self.started = llm, [], [], {}, {}
         self.interrupts, self.closed, self._future = 0, False, Handle
 
@@ -163,12 +173,18 @@ def _driven():
     from unittest.mock import MagicMock
 
     session, voice = DrivenSession(), DrivenAgent()
-    said, ended = [], []
+    session.voice = voice
+    said, ended, receipts, asked = [], [], [], []
     live = agent._DrivenLive(
-        "forge", session, voice, MagicMock(), said=lambda text, interrupted: said.append((text, interrupted)),
+        "forge", session, voice, MagicMock(),
+        said=lambda order, index, text, outcome, evidence: (
+            said.append((text, outcome != "said")), receipts.append((order, index, outcome, evidence))
+        ),
         ended=lambda order, failed: ended.append((order, failed)),
+        may=lambda order, index: asked.append((order, index)) or live.allowed,
     )  # fmt: skip
-    live.said, live.ended = said, ended  # its reports: each unit, and each order's end
+    # its reports: each unit (said to its end, or not), each order's end, and every permission it asked for
+    live.said, live.ended, live.receipts, live.asked, live.allowed = said, ended, receipts, asked, True
     return live, session, voice
 
 
@@ -353,10 +369,10 @@ async def test_a_meet_speaker_gets_a_driven_voice_and_anyone_else_gpt_live(monke
     await _settle()
     ev["close"](None)
     assert [c[0] for c in huddle.method_calls] == [
-        "on_agent_state", "on_agent_said", "on_agent_said", "on_playback_ended", "on_live_closed"
+        "on_agent_state", "may_say", "on_unit", "may_say", "on_unit", "on_playback_ended", "on_live_closed"
     ]  # fmt: skip
-    assert [c.args for c in huddle.on_agent_said.call_args_list] == [
-        ("forge", "On it.", False), ("forge", "Three PRs are open.", True)
+    assert [c.args[:5] for c in huddle.on_unit.call_args_list] == [
+        ("forge", None, 0, "On it.", "said"), ("forge", None, 1, "Three PRs are open.", "cut")
     ]
     huddle.on_live_closed.assert_called_once_with(live)
     assert live._closed is not None, "a session that closed on its own stops billing"

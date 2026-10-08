@@ -548,7 +548,9 @@ async def test_a_meeting_request_keeps_its_askers_name_when_someone_else_speaks_
     h.gate["live"].set()
     await settle(h)
     told = str(lives[0].seed) + str(lives[0].calls)
-    assert "Priya asked" in told and "Dan" not in told
+    # A mouth is handed each line it says and never reads its seed, and its voice is prepared while /route
+    # decides: the request is no longer written into it. The asker's name is on the run the request became.
+    assert backend.turns[0]["speakerName"] == "Priya" and "Dan" not in told
     assert h._voice.label == "Priya" and [r.label for r in h._requests.items] == ["Priya"]
 
 

@@ -14,6 +14,8 @@ import json
 import logging
 import os
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 
 from livekit import rtc
 from livekit.agents import (
@@ -218,7 +220,7 @@ class _Live:
     def hear(self, since: float) -> None:
         pass  # it hears its speaker itself
 
-    def say(self, text: str, order: int | None = None) -> None:
+    def say(self, text: str, order: int | None = None, first: int = 0) -> None:
         self.append_commentary(text)  # GPT-Live has no word-for-word speech: its own words for it
 
     def mute(self) -> None:
@@ -320,16 +322,59 @@ class _DrivenModel(openai.realtime.RealtimeModel):
         return sess
 
 
+# A unit's audio counts as heard when this much of it was above the floor below. A speech handle can end
+# uncut with no sound on the track (10-08 rig: "Got it." was reported said twice, and the room heard nothing
+# either time). Whether its frames were silent or never came was not recorded then: the receipt says now.
+AUDIBLE_S = 0.1
+LOUD = 500  # of 32768: about -36 dBFS, well under any spoken word and over a silent frame's dither
+FIRST_SOUND_S = 3.0  # a unit with no audible audio this long after its order is stopped and reported failed
+
+
+@dataclass
+class _Unit:
+    """One sentence on its way to the track: what the audio node saw of it. Its receipt (`_DrivenLive._speak`)."""
+
+    order: int | None
+    index: int
+    allowed: Callable[[], bool]  # the controller's permission, asked again as its first audio is about to go out
+    frames: int = 0
+    seconds: float = 0.0
+    loud: float = 0.0  # seconds of frames with sound in them
+    revoked: bool = False
+    dead: bool = False  # no sound came in FIRST_SOUND_S and it was stopped
+
+
+class _Mouth(Agent):
+    """A driven voice's agent. The model's audio passes here on its way to the track, so each unit's receipt
+    counts what was really sent, and a unit whose permission went while the model was generating sends nothing."""
+
+    unit: _Unit | None = None
+
+    async def realtime_audio_output_node(self, audio, model_settings):
+        async for frame in audio:
+            if (m := self.unit) is not None:
+                if m.revoked or (not m.frames and not m.allowed()):
+                    m.revoked = True
+                    return
+                m.frames += 1
+                m.seconds += frame.duration
+                data = frame.data
+                if max(max(data), -min(data)) >= LOUD:
+                    m.loud += frame.duration
+            yield frame
+
+
 class _DrivenLive:
     """One agent's voice in a meeting, as huddle.Live: a Realtime model with no ears and no turn detection, so
     it is silent until the worker orders it to speak. GPT-Live answers whatever it hears and cannot be told
     to listen without answering (10-07 rig sales call).
 
     Orders run one after the other on one chain, so two lines never overlap. What it is handed is said one
-    sentence at a time, and each is reported back as said or cut (`_speak`). Then the order itself is
-    reported over, also when it failed (`say`): the worker never waits on speech that is not coming.
-    `interrupt` stops the speech and drops what was not yet started. When it is handed something is the
-    worker's to decide (`Huddle._pump`)."""
+    sentence at a time. Before each one it asks the worker (`may`), and each ends in a receipt of what went
+    to the track (`_speak`). Then the order itself is reported over, also when it failed (`say`): the worker
+    never waits on speech that is not coming. `interrupt` stops the speech and drops what was not yet
+    started. Whether and when it speaks is the worker's to decide (`Huddle._pump`, `Huddle.may_say`): there
+    is no floor rule here."""
 
     def __init__(
         self,
@@ -337,14 +382,17 @@ class _DrivenLive:
         session: AgentSession,
         agent: Agent,
         room: rtc.Room,
-        said=lambda text, interrupted: None,  # huddle.on_agent_said for this agent: one unit, said or cut
+        # huddle.on_unit for this agent: (order, index, text, outcome, evidence), one per unit it began
+        said=lambda order, index, text, outcome, evidence: None,
         ended=lambda order, failed: None,  # huddle.on_playback_ended: one `say` is over, by its order id
+        may=lambda order, index: True,  # huddle.may_say: the worker's permission for one unit
     ) -> None:
         self.agent_id, self.track_name = agent_id, f"agent-{agent_id}"
         self._session, self._agent, self._room = session, agent, room
-        self._said, self._ended = said, ended
+        self._said, self._ended, self._may = said, ended, may
         self._tail: asyncio.Task | None = None
         self._epoch = 0  # raised by interrupt: a speech order queued under an older one is dropped
+        self._cut_at: float | None = None  # when the last interrupt was sent, until its audio is known stopped
         # The Realtime plugin reports tokens, not session seconds (`session_duration` is 0): wall clock, open to
         # close, is what a GPT-Live session bills by too.
         self._opened, self._closed = time.monotonic(), None
@@ -365,26 +413,61 @@ class _DrivenLive:
 
         self._tail = asyncio.create_task(run())
 
-    async def _speak(self, unit: str) -> bool:
-        """One unit, word for word, then its report: said to its end, or cut. The report is the order's own text
-        and its speech handle's end, never the model's transcript of itself, so the worker knows which unit it
-        is. True: said to its end."""
+    async def _speak(self, order: int | None, index: int, unit: str) -> str:
+        """One unit, word for word, then its receipt: `said` (audible audio went to the track and played to its
+        end), `cut` (interrupted), `revoked` (permission went before its first audio, so none was sent) or
+        `silent` (it ended uncut and nothing audible was sent: a failure). The receipt carries the order and
+        unit it is for and what the track was sent, never the model's transcript of itself."""
+        m = self._agent.unit = _Unit(order, index, lambda: self._may(order, index))
+        began = time.monotonic()
         handle = self._session.generate_reply(instructions=SAY + unit)
-        await handle  # done when the unit is said, or cut. It never raises.
-        self._said(unit, handle.interrupted)
-        return not handle.interrupted
 
-    def say(self, text: str, order: int | None = None) -> None:
-        # One sentence at a time: a cut is known to the sentence, and what follows a cut or an interrupt is
-        # not said. Every order ends in one receipt, whatever happened to it. It is kept through an
+        def no_sound() -> None:
+            # Stopped here, so a dead order costs the room FIRST_SOUND_S and not however long the model goes on.
+            if not m.loud and not handle.done():
+                m.dead = True
+                handle.interrupt(force=True)
+
+        watch = asyncio.get_running_loop().call_later(FIRST_SOUND_S, no_sound)
+        try:
+            await handle  # done when the unit is said, or cut. It never raises.
+        finally:
+            watch.cancel()
+            self._agent.unit = None
+        if m.revoked:
+            outcome = "revoked"
+        elif m.dead or (not handle.interrupted and m.loud < AUDIBLE_S):
+            outcome = "silent"
+        else:
+            outcome = "cut" if handle.interrupted else "said"
+        evidence = {
+            "frames": m.frames,
+            "audioMs": round(m.seconds * 1000),
+            "loudMs": round(m.loud * 1000),
+            "tookMs": round((time.monotonic() - began) * 1000),
+        }
+        if self._cut_at is not None and outcome != "said":
+            evidence["stopMs"] = round((time.monotonic() - self._cut_at) * 1000)  # interrupt sent -> audio stopped
+        self._cut_at = None
+        self._said(order, index, unit, outcome, evidence)
+        return outcome
+
+    def say(self, text: str, order: int | None = None, first: int = 0) -> None:
+        # One sentence at a time, each with the worker's permission: a cut is known to the sentence, and what
+        # follows a cut, an interrupt or a refusal is not said. `first`: the index of its first unit in the
+        # worker's utterance. Every order ends in one receipt, whatever happened to it. It is kept through an
         # interrupt for that: the receipt of an order that never started is still owed.
         epoch = self._epoch
 
         async def play() -> None:
             failed = False
             try:
-                for unit in units(text):
-                    if epoch != self._epoch or not await self._speak(unit):
+                for index, unit in enumerate(units(text), first):
+                    if epoch != self._epoch or not self._may(order, index):
+                        break
+                    outcome = await self._speak(order, index, unit)
+                    if outcome != "said":
+                        failed = outcome == "silent"
                         break
             except Exception:
                 logger.exception("huddle driven voice could not say its line")
@@ -412,6 +495,7 @@ class _DrivenLive:
 
     def interrupt(self):
         self._epoch += 1
+        self._cut_at = time.monotonic()
         return self._session.interrupt(force=True)
 
     def mute(self) -> None:
@@ -513,7 +597,7 @@ async def _start(
 async def _start_driven(
     room, huddle: Huddle, vad, agent_id, persona, voice, speaker, seed
 ) -> _DrivenLive:
-    agent = Agent(instructions=f"{persona}\n\n{DRIVEN}", chat_ctx=_seeded(seed))
+    agent = _Mouth(instructions=f"{persona}\n\n{DRIVEN}", chat_ctx=_seeded(seed))
     # turn_detection=None and no audio input: nothing but an order makes it speak. No vad: nothing to detect.
     session = AgentSession(
         llm=_DrivenModel(model="gpt-realtime", voice=realtime_voice(voice), turn_detection=None)
@@ -524,8 +608,11 @@ async def _start_driven(
         session,
         agent,
         room,
-        said=lambda text, interrupted: huddle.on_agent_said(agent_id, text, interrupted),
+        said=lambda order, index, text, outcome, evidence: huddle.on_unit(
+            agent_id, order, index, text, outcome, evidence
+        ),
         ended=lambda order, failed: huddle.on_playback_ended(agent_id, order, failed),
+        may=lambda order, index: huddle.may_say(agent_id, order, index),
     )
 
     def closed(_ev) -> None:

@@ -2524,7 +2524,8 @@ async def test_a_meetings_speaker_is_named_or_someone_never_meeting():
         str(s) for s in lives[0].seed
     )
     assert "Meeting is talking" not in said and "Meeting asked" not in said
-    assert "Someone in the meeting" in said
+    # (a mouth's voice is prepared while /route decides, so no note about the asker is written into its seed)
+    assert backend.turns[0]["speakerName"] == "Someone"
 
 
 def held(h):

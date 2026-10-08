@@ -291,8 +291,9 @@ class FakeLive:
     def append_commentary(self, text, delegation_id=None):
         self._rec("commentary", text, delegation_id)
 
-    def say(self, text):
+    def say(self, text, order=None):
         self._rec("say", text)
+        self.order = order  # this playback's id: its receipts name it (`Huddle.on_playback_ended`)
 
     def mute(self):
         self._rec("mute")

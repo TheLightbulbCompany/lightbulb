@@ -2793,7 +2793,16 @@ KINDS = {
         "('Uber is a business, right?' to a colleague beside them), or people settling something among "
         "themselves; not for the AI team"
     ),
-    "cancel": "Calls off or pauses something the team was asked earlier ('forget the deck', 'hold off on that')",
+    # A stop is one of two things, and only the first ends work. Not yet run on
+    # scripts/speak_gate_bench/understand.py: a new choice moves the others' probabilities.
+    "cancel": (
+        "Withdraws something the team was asked earlier: the work is no longer wanted, or not now ('forget "
+        "the deck', 'never mind', 'cancel that', 'don't bother', 'hold off on that')"
+    ),
+    "hush": (
+        "Tells a teammate to stop talking, be quiet or wait its turn, and withdraws nothing it was asked "
+        "('stop', 'that's enough', 'not now', 'okay okay', 'stop talking about the deck')"
+    ),
     # Driven voice: "Friday, go ahead" read as a plain instruction and became a run of its own. Not yet
     # run on scripts/speak_gate_bench/understand.py: a new choice moves the others' probabilities.
     "nudge": (
@@ -2815,9 +2824,12 @@ AMENDS_INSTRUCTIONS = (
     "narrow it, add detail to it, or ask a follow-up about its answer? Pick that request. Pick none when "
     "the message asks for something new or is not about any of them."
 )
+#: Which request a stop is about, whatever kind of stop it is: ``KINDS`` says whether the work is withdrawn
+#: (cancel) or only the talk about it is to stop (hush).
 DROPS_INSTRUCTIONS = (
     "Earlier requests on this call are listed. Does the latest message call one of them off (forget it, "
-    "hold off, no longer needed, already handled)? Pick that request. Pick none when nothing is called off."
+    "hold off, no longer needed, already handled), or tell a teammate to stop talking about one of them? "
+    "Pick that request. Pick none when the message is about none of them."
 )
 #: More parts than this and nobody is cut: each agent gets the whole line.
 MAX_PARTS = 8
@@ -3234,7 +3246,7 @@ async def _label(
             questions["drops"] = {
                 "type": "choice",
                 "instructions": DROPS_INSTRUCTIONS,
-                "criteria": {**listed, "none": "Nothing is called off"},
+                "criteria": {**listed, "none": "Nothing is called off or told to stop"},
             }
     for i, c in enumerate(cands):
         kind = (

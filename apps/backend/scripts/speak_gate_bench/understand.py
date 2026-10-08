@@ -83,7 +83,11 @@ def check(cases: list[dict]) -> list[str]:
             why.append("speaker not in people")
         open_ids = {o["id"]: o for o in c.get("open") or []}
         why += [f"open agent {o['agent']}" for o in open_ids.values() if o["agent"] not in names]
-        why += [f"unknown open id {i}" for i in [*e.get("cancel", []), *e.get("steer", [])] if i not in open_ids]
+        why += [
+            f"unknown open id {i}"
+            for i in [*e.get("cancel", []), *e.get("hush", []), *e.get("steer", [])]
+            if i not in open_ids
+        ]
         if (e.get("social") or e.get("silent")) and e.get("requests"):
             why.append("social/silent with requests")
         if e.get("social") and e.get("silent"):
@@ -102,7 +106,7 @@ def produced(answer: dict, line: str) -> dict:
     if ops is None:  # the router before understanding: each routed agent gets the line, or its phase-1 task
         reqs = answer.get("requests") or [{"agentId": a, "task": line} for a in answer.get("agentIds") or []]
         ops = {"requests": reqs}
-    return {"requests": [], "social": None, "more": False, "cancel": [], "steer": [], **ops}
+    return {"requests": [], "social": None, "more": False, "cancel": [], "hush": [], "steer": [], **ops}
 
 
 def grade(case: dict, ops: dict, names: dict) -> dict:
@@ -145,7 +149,9 @@ def grade(case: dict, ops: dict, names: dict) -> dict:
     if (e.get("more") or not want) and bool(e.get("more")) != bool(ops["more"]):
         why.append(f"more={bool(ops['more'])}")
     steered = [s["requestId"] for s in ops["steer"]]
-    for key, have in (("cancel", ops["cancel"]), ("steer", steered)):
+    # a stop's scope: ``cancel`` withdraws the request, ``hush`` only stops the talk about it
+    hushed = [i for x in ops["hush"] for i in x["requestIds"]]
+    for key, have in (("cancel", ops["cancel"]), ("hush", hushed), ("steer", steered)):
         if sorted(e.get(key, [])) != sorted(have):
             why.append(f"{key}={have}")
     return {

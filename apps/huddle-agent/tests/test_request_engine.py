@@ -434,21 +434,69 @@ async def test_a_no_post_answer_whose_asker_left_closes_its_row_and_the_window_c
     await _window_ends(h, backend)
 
 
-async def test_an_answer_whose_post_fails_closes_its_row_and_the_window_can_end():
+async def test_an_answer_whose_post_fails_stays_owed_and_is_posted_once_the_backend_is_back():
+    """10-07 review: its row closed before the post, so a post that failed lost the answer."""
     h, room, backend, lives, clock, log = await three()
+    posts, up = [], backend.late_answer
+
+    async def down(*a):
+        posts.append(a)
+        raise RuntimeError("backend down")
+
+    backend.late_answer = down
+    await say(h, "u1", LINE)
+    run = run_of(backend, "forge")
+    answer(h, run, "forge", "Three PRs are open")
+    await _asker_gone(h, clock)
+    clock.t += h_mod.ASKER_GONE_S
+    await h.tick()
+    await settle(h)
+    (row,) = h._requests.by_run(run)
+    assert len(posts) == 1 and row.status == "ready" and "forge" not in h._news, "owed: nothing was posted"
+    await h.tick()
+    await settle(h)
+    assert len(posts) == 1, "its wait is not over"
+    for wait in (1, 2):  # tried again, each wait twice the last
+        clock.t += wait
+        await h.tick()
+        await settle(h)
+    assert len(posts) == 3 and row.status == "ready"
+    backend.late_answer = up
+    clock.t += 3
+    await h.tick()
+    await settle(h)
+    assert len(posts) == 3, "4 s this time"
+    clock.t += 1
+    await h.tick()
+    await settle(h)
+    assert backend.late_answers == [("forge", run, TASKS["forge"], "Three PRs are open")] and row.status == "delivered"
+    clock.t += h_mod.LATE_RETRY_MAX_S
+    await h.tick()
+    await settle(h)
+    assert len(backend.late_answers) == 1 and h._unposted == {}, "posted once"
+    await _window_ends(h, backend)
+
+
+async def test_a_post_still_failing_when_the_call_ends_gets_a_last_try_then():
+    h, room, backend, lives, clock, log = await three()
+    up = backend.late_answer
 
     async def down(*a):
         raise RuntimeError("backend down")
 
     backend.late_answer = down
     await say(h, "u1", LINE)
-    answer(h, run_of(backend, "forge"), "forge", "Three PRs are open")
+    run = run_of(backend, "forge")
+    answer(h, run, "forge", "Three PRs are open")
     await _asker_gone(h, clock)
     clock.t += h_mod.ASKER_GONE_S
     await h.tick()
     await settle(h)
-    assert "forge" not in h._news and not [r for r in h._requests.open() if r.agent == "forge"]
-    await _window_ends(h, backend)
+    assert run in h._unposted
+    backend.late_answer = up
+    await h.clear_presence()  # the job shuts down before its wait is over
+    assert ("forge", run, TASKS["forge"], "Three PRs are open") in backend.late_answers
+    assert [a[1] for a in backend.late_answers].count(run) == 1 and run not in h._unposted
 
 
 async def test_a_thinking_floor_voice_is_not_preempted_by_a_ready_answer():

@@ -218,7 +218,7 @@ class _Live:
     def hear(self, since: float) -> None:
         pass  # it hears its speaker itself
 
-    def say(self, text: str) -> None:
+    def say(self, text: str, order: int | None = None) -> None:
         self.append_commentary(text)  # GPT-Live has no word-for-word speech: its own words for it
 
     def mute(self) -> None:
@@ -326,8 +326,10 @@ class _DrivenLive:
     to listen without answering (10-07 rig sales call).
 
     Orders run one after the other on one chain, so two lines never overlap. What it is handed is said one
-    sentence an order, and each is reported back as said or cut (`_speak`). `interrupt` stops the speech and
-    drops the orders not yet started. When it is handed something is the worker's to decide (`Huddle._pump`)."""
+    sentence at a time, and each is reported back as said or cut (`_speak`). Then the order itself is
+    reported over, also when it failed (`say`): the worker never waits on speech that is not coming.
+    `interrupt` stops the speech and drops what was not yet started. When it is handed something is the
+    worker's to decide (`Huddle._pump`)."""
 
     def __init__(
         self,
@@ -336,10 +338,11 @@ class _DrivenLive:
         agent: Agent,
         room: rtc.Room,
         said=lambda text, interrupted: None,  # huddle.on_agent_said for this agent: one unit, said or cut
+        ended=lambda order, failed: None,  # huddle.on_playback_ended: one `say` is over, by its order id
     ) -> None:
         self.agent_id, self.track_name = agent_id, f"agent-{agent_id}"
         self._session, self._agent, self._room = session, agent, room
-        self._said = said
+        self._said, self._ended = said, ended
         self._tail: asyncio.Task | None = None
         self._epoch = 0  # raised by interrupt: a speech order queued under an older one is dropped
         # The Realtime plugin reports tokens, not session seconds (`session_duration` is 0): wall clock, open to
@@ -371,10 +374,24 @@ class _DrivenLive:
         self._said(unit, handle.interrupted)
         return not handle.interrupted
 
-    def say(self, text: str) -> None:
-        # One order per sentence: a cut is known to the sentence. An interrupt drops the ones still queued.
-        for unit in units(text):
-            self._order(lambda unit=unit: self._speak(unit))
+    def say(self, text: str, order: int | None = None) -> None:
+        # One sentence at a time: a cut is known to the sentence, and what follows a cut or an interrupt is
+        # not said. Every order ends in one receipt, whatever happened to it. It is kept through an
+        # interrupt for that: the receipt of an order that never started is still owed.
+        epoch = self._epoch
+
+        async def play() -> None:
+            failed = False
+            try:
+                for unit in units(text):
+                    if epoch != self._epoch or not await self._speak(unit):
+                        break
+            except Exception:
+                logger.exception("huddle driven voice could not say its line")
+                failed = True
+            self._ended(order, failed)
+
+        self._order(play, keep=True)
 
     # Only an order makes it speak, and every order is a line the worker chose or had written (`say`). What a
     # GPT-Live voice is told to know or to say in its own words is nothing to a mouth.
@@ -508,6 +525,7 @@ async def _start_driven(
         agent,
         room,
         said=lambda text, interrupted: huddle.on_agent_said(agent_id, text, interrupted),
+        ended=lambda order, failed: huddle.on_playback_ended(agent_id, order, failed),
     )
 
     def closed(_ev) -> None:

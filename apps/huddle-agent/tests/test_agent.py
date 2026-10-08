@@ -163,11 +163,12 @@ def _driven():
     from unittest.mock import MagicMock
 
     session, voice = DrivenSession(), DrivenAgent()
-    said = []
+    said, ended = [], []
     live = agent._DrivenLive(
-        "forge", session, voice, MagicMock(), said=lambda text, interrupted: said.append((text, interrupted))
-    )
-    live.said = said  # its reports
+        "forge", session, voice, MagicMock(), said=lambda text, interrupted: said.append((text, interrupted)),
+        ended=lambda order, failed: ended.append((order, failed)),
+    )  # fmt: skip
+    live.said, live.ended = said, ended  # its reports: each unit, and each order's end
     return live, session, voice
 
 
@@ -238,6 +239,40 @@ async def test_an_interrupt_cuts_the_unit_being_said_and_drops_what_was_queued()
     live.say("Four.")  # an order after the stop is a new one
     await _settle()
     assert [o["instructions"].splitlines()[-1] for o in session.orders] == ["One.", "Four."]
+
+
+async def test_every_order_ends_in_one_receipt_whether_it_was_said_cut_never_started_or_failed():
+    """10-07 review: a failed order was logged here and the worker went on waiting for its units for ever."""
+    live, session, _ = _driven()
+    live.say("One. Two.", 7)
+    await _settle()
+    session.handles[-1].set_result(None)
+    await _settle()
+    assert live.ended == [], "not over while a unit is still to be said"
+    session.handles[-1].set_result(None)
+    await _settle()
+    assert live.ended == [(7, False)] and live.said == [("One.", False), ("Two.", False)], "after its last unit"
+    live.say("Three. Four.", 8)
+    live.say("Five.", 9)  # behind it on the chain
+    await _settle()
+    live.interrupt()
+    await _settle()
+    assert live.said[2:] == [("Three.", True)] and len(session.orders) == 3, "the cut unit, and nothing after it"
+    assert live.ended[1:] == [(8, False), (9, False)], "the one cut and the one that never started both report"
+
+    def broken(**kw):
+        raise RuntimeError("AgentSession isn't running")
+
+    working, session.generate_reply = session.generate_reply, broken
+    live.say("Six.", 10)
+    await _settle()
+    assert live.ended[3:] == [(10, True)] and live.said[3:] == [], "failed, and said so"
+    session.generate_reply = working
+    live.say("Seven.", 11)  # the chain is not broken by it
+    await _settle()
+    session.handles[-1].set_result(None)
+    await _settle()
+    assert live.ended[4:] == [(11, False)] and live.said[3:] == [("Seven.", False)]
 
 
 async def test_a_standing_rule_is_never_said_and_survives_a_stop():
@@ -317,7 +352,9 @@ async def test_a_meet_speaker_gets_a_driven_voice_and_anyone_else_gpt_live(monke
     live.interrupt()
     await _settle()
     ev["close"](None)
-    assert [c[0] for c in huddle.method_calls] == ["on_agent_state", "on_agent_said", "on_agent_said", "on_live_closed"]
+    assert [c[0] for c in huddle.method_calls] == [
+        "on_agent_state", "on_agent_said", "on_agent_said", "on_playback_ended", "on_live_closed"
+    ]  # fmt: skip
     assert [c.args for c in huddle.on_agent_said.call_args_list] == [
         ("forge", "On it.", False), ("forge", "Three PRs are open.", True)
     ]

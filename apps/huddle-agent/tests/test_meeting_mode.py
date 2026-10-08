@@ -359,7 +359,9 @@ async def test_a_meeting_voice_ignores_talk_from_someone_else():
     await dan_starts(h, clock)
     await hear(h, "let's move on")
     await hear(h, "should we ship Friday?")
-    assert len(backend.routes) == routes and len(backend.turns) == turns
+    # /route reads each for one thing only, whether it came between Priya and Forge (`_line_between`):
+    # nobody is asked, nothing is started, and the voice hears none of it
+    assert len(backend.routes) == routes + 2 and len(backend.turns) == turns and h._requests.items == []
     assert lives[0].calls[calls:] == []
     assert h._unclaimed is not None and h._unclaimed[2] == "should we ship Friday?"
 
@@ -1100,10 +1102,12 @@ async def test_another_persons_talk_reaches_no_agent_while_a_voice_is_open():
     """10-05 prod Meet: Leonardo's talk to Prasiddha got "Mm-hmm", "I hear you", "Go on" from Friday."""
     h, room, backend, lives, clock, log = await per_person()
     await says(h, P1, "Forge, what PRs are open?")
-    routes, calls = len(backend.routes), len(lives[0].calls)
+    routes, turns, calls = len(backend.routes), len(backend.turns), len(lives[0].calls)
+    backend.route_extra = ops([("forge", "test this a lot", "floor")])  # whatever /route makes of it
     await says(h, P2, "I think it's cool that they're even in here")
     await says(h, P2, "we're gonna need to test this a lot")
-    assert len(backend.routes) == routes, "transcript only: nobody was asked"
+    # read for whether it came between P1 and Forge, and for nothing else: nobody was asked
+    assert len(backend.routes) == routes + 2 and len(backend.turns) == turns and h._requests.items == []
     assert not [c for c in lives[0].calls[calls:] if c[0] in ("reply", "nudge")]
     assert h._voice.speaker == P1, "the voice is never handed to whoever talks"
 

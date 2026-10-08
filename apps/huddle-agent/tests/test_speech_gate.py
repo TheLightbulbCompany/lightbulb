@@ -276,13 +276,40 @@ async def test_an_asker_who_turned_to_a_colleague_gets_the_answer_at_a_pause_or_
     assert says_of(lives[0])[1:] == [("say", "Three PRs are open.")]
 
 
-async def test_one_line_from_someone_else_leaves_the_asker_waiting_and_an_exchange_of_others_does_not():
+async def test_what_a_line_of_someone_else_is_and_not_how_many_there_were_says_another_exchange_came_between():
+    """10-07 review: two lines of other people suspended the asker's exchange, whatever they were. Two
+    endorsements and one unrelated exchange mean different things: /route reads each line (`ops.people`)."""
     h, backend, lives, clock = await asked()
-    await says(h, P2, "good question, I wondered too")  # an endorsement
-    assert h._engagements(h._who(P1))[0].state == "active"
-    await says(h, P2, "anyway, about the budget for next quarter")
+    routes, turns = len(backend.routes), len(backend.turns)
+    backend.route_extra = heard()  # about the request: not said to a person
+    for line in ("Good question, I wondered too.", "Yes, I would like to know that as well.", "Same here."):
+        await says(h, P2, line)
+    assert len(backend.routes) == routes + 3 and h._engagements(h._who(P1))[0].state == "active", (
+        "endorsements, however many, come between nobody"
+    )
+    await says(h, P2, "Mm-hm, yeah.")
+    assert len(backend.routes) == routes + 3, "a listening sound is not even read"
+    backend.route_extra = heard(people=True)
+    await says(h, P2, "Lee, where did we land on the budget for next quarter?")
     e = h._engagements(h._who(P1))[0]
-    assert (e.state, e.why) == ("suspended", "other")
+    assert (e.state, e.why) == ("suspended", "other"), "one line said to a person: another exchange"
+    assert len(backend.turns) == turns and len(h._requests.items) == 1, "read as evidence only: it started nothing"
+    await says(h, P2, "I think we cut it by a third.")
+    assert len(backend.routes) == routes + 4, "nobody is talking with an agent now: not read"
+    (row,) = h._requests.items
+    answer(h, row.run_id, "forge", "Three PRs are open.")
+    await pause(h, clock, BREATH)
+    assert says_of(lives[0]) == [("say", ACK)], "its asker is not waiting on it: a breath is not a pause"
+    await pause(h, clock)
+    assert says_of(lives[0])[1:] == [("say", "Three PRs are open.")]
+
+
+async def test_a_line_read_as_evidence_never_changes_a_request_of_someone_else():
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    backend.route_extra = heard(cancel=[row.id], steer=[{"requestId": row.id, "text": "only the stale ones"}])
+    await says(h, P2, "We probably do not need that list anyway.")
+    assert row.status == "working" and backend.aborts == [] and len(backend.turns) == 1
 
 
 async def test_two_askers_with_two_agents_keep_separate_engagements():
@@ -421,6 +448,92 @@ async def test_a_turn_someone_has_not_finished_holds_speech_until_its_speaker_ha
     assert says_of(lives[0])[1:] == [("say", "Three PRs are open.")]
 
 
+# -- no utterance is `speaking` without a live playback behind it --
+
+
+async def test_a_playback_that_fails_returns_the_utterance_and_the_room_goes_on():
+    """10-07 review: the order's exception was logged in the voice, the utterance stayed `speaking`, and
+    `_pump` started nothing more for anyone."""
+    h, backend, lives, clock, forge, gauge = await both_working()
+    answer(h, forge.run_id, "forge", "Three PRs are open. The oldest is two days old.")
+    answer(h, gauge.run_id, "gauge", "The deploy is green.")
+    await pause(h, clock)
+    live = lives[-1]
+    assert live.agent_id == "forge" and ledger(h) == [("forge", "answer", "speaking"), ("gauge", "answer", "pending")]
+    h.on_agent_said("forge", "Three PRs are open.")
+    first = live.order
+    h.on_playback_ended("forge", first, failed=True)  # the second sentence could not be said
+    await settle(h)
+    (u, _) = h._ledger
+    assert (u.state, u.cursor, u.tries) == ("speaking", 1, 1) and live.order != first, "tried again, from its cursor"
+    assert says_of(live)[-1] == ("say", "The oldest is two days old.")
+    h.on_playback_ended("forge", first, failed=True)  # a receipt of the playback before: not this one's
+    h.on_playback_ended("gauge", live.order, failed=True)
+    assert u.state == "speaking" and u.tries == 1
+    orders = len(says_of(live))
+    for _ in range(h_mod.PLAYBACK_TRIES - 1):
+        h.on_playback_ended("forge", live.order)  # over, and its unit was never reported said
+        await settle(h)
+    assert len(says_of(live)) == orders + h_mod.PLAYBACK_TRIES - 2, "tried a bounded number of times"
+    assert [a[3] for a in backend.late_answers] == ["The oldest is two days old."], "then the rest is written"
+    assert forge.status == "delivered"
+    await pause(h, clock)
+    assert said(lives)[-1] == ("gauge", "The deploy is green."), "and the room is not frozen: the next one speaks"
+    spoken(h, lives[-1])
+    assert gauge.status == "delivered" and h._ledger == []
+
+
+async def test_a_receipt_for_an_utterance_that_was_said_paused_or_struck_changes_nothing():
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    answer(h, row.run_id, "forge", "Three PRs are open. The oldest is two days old.")
+    order = lives[0].order
+    await talked_over(h, clock, P2)  # it yields: its order ends cut, and says so
+    h.on_playback_ended("forge", order)
+    (u,) = h._ledger
+    assert (u.state, u.tries) == ("paused", 0), "the yield settled it. Its receipt is no failure"
+    quiet(h)
+    await pause(h, clock, BREATH)
+    await h.on_final_transcript(P2, "Dan", "Mm-hm.")
+    await settle(h)
+    assert u.state == "speaking" and lives[0].order != order
+    h.on_playback_ended("forge", order)  # the cut order's receipt, late: another playback is live now
+    assert u.state == "speaking"
+    spoken(h, lives[0])
+    h.on_playback_ended("forge", lives[0].order)  # said to its end, then over
+    assert row.status == "delivered" and h._ledger == [] and backend.late_answers == []
+
+
+async def test_a_voice_that_dies_while_it_speaks_leaves_its_utterance_pending_and_the_next_voice_says_the_rest():
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    answer(h, row.run_id, "forge", "Three PRs are open. The oldest is two days old.")
+    h.on_agent_said("forge", "Three PRs are open.")
+    h.on_live_closed(lives[0])  # its session closed on its own, and no receipt will come from it
+    assert [(u.state, u.cursor) for u in h._ledger] == [("pending", 1)], "at once: nothing is playing"
+    await settle(h)
+    await pause(h, clock)
+    assert len(lives) == 2 and says_of(lives[1]) == [("say", "The oldest is two days old.")]
+    spoken(h, lives[1])
+    assert row.status == "delivered" and backend.late_answers == []
+
+    # the order itself raises: its session is dead
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+
+    def dead(text, order=None):
+        raise RuntimeError("AgentSession isn't running")
+
+    lives[0].say = dead
+    answer(h, row.run_id, "forge", "Three PRs are open.")
+    assert ledger(h) == [("forge", "answer", "pending")]
+    await settle(h)
+    await pause(h, clock)
+    assert says_of(lives[-1]) == [("say", "Three PRs are open.")] and len(lives) == 2
+    spoken(h, lives[-1])
+    assert row.status == "delivered"
+
+
 # -- yield, hush, withdraw --
 
 
@@ -514,11 +627,16 @@ async def test_a_stop_silences_the_agents_speech_and_leaves_its_work_running():
     assert ("interrupt",) in lives[0].calls and h._ledger == [], "nothing of what it was saying resumes"
     assert second.status == "working" and backend.aborts == [], "speech was stopped, not the task"
     quiet(h)
+    assert h._utter("forge", "status", h_mod.STILL_WORKING[0], obligation=second.run_id) is None, "no word on it"
     answer(h, second.run_id, "forge", "The deploy is green.")
-    await pause(h, clock, BREATH)
-    assert hand(h, "forge") == ["The deploy is green."] and len(says_of(lives[0])) == 3, "its hand is up, after a stop"
-    await pause(h, clock)
-    assert says_of(lives[0])[-1] == ("say", "The deploy is green."), "and what the work produces is said at a pause"
+    for _ in range(3):
+        await pause(h, clock, 30)
+    # 10-07 review: the stop struck what was in the ledger then, and this later answer was said at a pause
+    assert h._ledger == [] and len(said(lives)) == 3, "the stop holds for what the work produces later"
+    assert [a[3] for a in backend.late_answers] == [
+        "Three PRs are open. The oldest is two days old.", "The deploy is green."
+    ], "asked for and not withdrawn: both in writing, each once"  # fmt: skip
+    assert second.status == "delivered" and backend.aborts == []
 
     # the same from /route, for a stop inside a longer turn: `ops.hush` names the agent, `ops.cancel` nothing
     h, backend, lives, clock = await asked()
@@ -529,10 +647,60 @@ async def test_a_stop_silences_the_agents_speech_and_leaves_its_work_running():
     first, second = h._requests.items
     answer(h, first.run_id, "forge", "Three PRs are open.")
     await settle(h)
-    backend.route_extra = heard(hush=["forge"])
+    backend.route_extra = heard(hush=[{"agentId": "forge", "requestIds": []}])
     await says(h, P1, "Okay Forge, that is plenty, not now please.")
     assert ("interrupt",) in lives[0].calls and h._ledger == []
     assert second.status == "working" and backend.aborts == []
+
+
+async def test_a_stop_about_one_request_silences_that_one_and_turning_to_the_agent_again_lets_it_speak():
+    h, backend, lives, clock = await asked()
+    backend.route_extra = ops([("forge", "check the deploy", "name")])
+    await says(h, P1, "Forge, also check the deploy.")
+    spoken(h, lives[0])
+    first, second = h._requests.items
+    answer(h, first.run_id, "forge", "Three PRs are open.")
+    await settle(h)
+    assert second.status == "working" and ledger(h) == [("forge", "answer", "speaking")]
+    # "stop talking about the deploy": /route names the request, and withdraws nothing
+    backend.route_extra = heard(hush=[{"agentId": "forge", "requestIds": [second.id]}])
+    await says(h, P2, "Forge, stop talking about the deploy.")
+    assert ledger(h) == [("forge", "answer", "speaking")], "what it is saying is about something else"
+    assert second.status == "working" and backend.aborts == [], "the run is alive"
+    spoken(h, lives[0])
+    assert first.status == "delivered" and backend.late_answers == []
+    # ..."never mind the deploy" is the other thing: `ops.cancel` aborts it (the withdrawal test below)
+    # they turn to it again before the work ends: it speaks about it after all
+    backend.route_extra = heard(called="forge")
+    await says(h, P1, "Forge, go ahead.")
+    answer(h, second.run_id, "forge", "The deploy is green.")
+    await pause(h, clock)
+    assert says_of(lives[-1])[-1] == ("say", "The deploy is green.") and backend.late_answers == []
+
+    # nobody turns to it: the answer of the silenced request is written, and nothing of it is said
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    backend.route_extra = heard(hush=[{"agentId": "forge", "requestIds": [row.id]}])
+    await says(h, P1, "Okay, enough about the PRs for now.")
+    assert row.status == "working" and backend.aborts == []
+    backend.route_extra = heard()
+    answer(h, row.run_id, "forge", "Three PRs are open.")
+    for _ in range(3):
+        await pause(h, clock, 30)
+    assert [c for live in lives for c in says_of(live)] == [("say", ACK)]
+    assert [a[3] for a in backend.late_answers] == ["Three PRs are open."] and row.status == "delivered"
+
+    # a new request to the agent releases it too, and a stop on the same line does not release itself
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    backend.route_extra = ops([("forge", "check the deploy", "name")])
+    backend.route_extra["ops"]["hush"] = [{"agentId": "forge", "requestIds": []}]
+    await says(h, P1, "Forge, stop, check the deploy instead.")
+    new = h._requests.items[-1]
+    assert h._hushed(row.id) and not h._hushed(new.id), "what was open is silenced, what the line asks is not"
+    backend.route_extra = ops([("forge", "list the branches", "name")])
+    await says(h, P1, "Forge, list the branches too.")
+    assert not h._hushed(row.id), "asked something new: they want to hear it again"
 
 
 async def test_a_withdrawal_cancels_the_task_and_aborts_its_run():

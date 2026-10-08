@@ -946,6 +946,9 @@ REQUEST_P = 0.5
 #: read is not for the agents. "Ubera business, right" read 0.42-0.47 and was added to a working request
 #: as a correction; the weakest true correction reads 0.75 ("only the ones on the main branch").
 CONTEXT_P = 0.6
+#: A stop withdraws a request only when Jev reads it as a withdrawal at least this surely. A weaker read
+#: silences the agent and leaves its work running: silence can be undone, an aborted run cannot.
+WITHDRAW_P = 0.5
 _OPEN_STATUS = ("queued", "working")
 #: How far the worker has said a ready answer when nobody can have heard any of it (absent: an older worker).
 _UNHEARD = (None, "none", "pending")
@@ -977,9 +980,11 @@ def _understood(
     conversation, a named agent, a line among people the room judge picked an agent for). Not implied, an
     unnamed part is no request. Owners marked ``None`` here are filled by the caller (the floor agent, the
     judge's agent, the chief of staff).
-    Returns ``{requests: [{agentId|None, task, by}], talk, more, nudge, stop, cancel, steer}``. ``nudge``: a part
-    only calls on an agent or tells it to go on ("Friday, go ahead"); that is never a request. ``stop``: a part
-    calls something off, whether or not a request was found for it."""
+    Returns ``{requests: [{agentId|None, task, by}], talk, more, nudge, stop, cancel, hush, steer}``. ``nudge``:
+    a part only calls on an agent or tells it to go on ("Friday, go ahead"); that is never a request. ``stop``:
+    a part is a stop, whether or not a request was found for it. What a stop does is its scope, read from the
+    part's kind and never from whether it names a request: ``cancel`` lists the request a withdrawal names
+    ("never mind the deck"), ``hush`` the request a speech-only stop names ("stop talking about the deck")."""
     parts, pieces = addressing["parts"], addressing["pieces"]
     named = [(name, agent) for name, agent, _ in addressing["named"]]
     by_name = dict(named)
@@ -998,6 +1003,8 @@ def _understood(
             return "social"
         if choice == "context" and p < CONTEXT_P:
             return "people"  # an unsure "about the work" read: not for the agents, so it steers nothing
+        if choice == "cancel" and p < WITHDRAW_P:
+            return "hush"  # an unsure withdrawal stops the talk only
         return choice
 
     kind = {p["index"]: kind_of(p) for p in parts}
@@ -1008,7 +1015,11 @@ def _understood(
         # called context: a weak request is social by now, and stays so.
         asks = [p for p in parts if kind[p["index"]] == "context" and p["cue"]]
         kind |= {p["index"]: "request" for p in asks}
-    if not asks and named and not any(kind[p["index"]] in ("social", "people", "more", "cancel") for p in parts):
+    if (
+        not asks
+        and named
+        and not any(kind[p["index"]] in ("social", "people", "more", "cancel", "hush") for p in parts)
+    ):
         asks = [p for p in parts if kind[p["index"]] == "context"]  # "Forge, the deploy looks broken"
         kind |= {p["index"]: "request" for p in asks}
     # Words that run straight into a name and are asked of nobody ("Can you get | Forge, no actually Gauge,
@@ -1061,13 +1072,17 @@ def _understood(
         "more": any(kind[p["index"]] == "more" for p in parts),
         # a name and nothing else ("Friday?") calls on the agent too
         "nudge": any(kind[p["index"]] == "nudge" for p in parts) or bool(named and not parts),
-        "stop": any(kind[p["index"]] == "cancel" for p in parts),
+        "stop": any(kind[p["index"]] in ("cancel", "hush") for p in parts),
         "cancel": [],
+        "hush": [],
         "steer": [],
     }
     dropped = target(addressing.get("drops"))
-    if dropped and dropped["status"] != "delivered" and any(kind[p["index"]] == "cancel" for p in parts):
-        out["cancel"] = [dropped["id"]]
+    if dropped and dropped["status"] != "delivered":
+        # the request the stop is about. A withdrawal anywhere on the line withdraws it.
+        scope = next((k for k in ("cancel", "hush") if k in kind.values()), None)
+        if scope:
+            out[scope] = [dropped["id"]]
     amended = target(addressing.get("amends"))
     if amended and not out["cancel"] and (asks or any(k == "context" for k in kind.values())):
         # The message continues an earlier request (Jev answers for the whole message): what it asks,
@@ -1170,9 +1185,11 @@ async def route_live_line(
     a line only the floor or a lone speaker implies is no request.
     Returns ``{agentId, agentIds, requests?, hold?, ops}``: ``ops`` is ``{requests: [{agentId, task, by}],
     social, more, cancel, hush, called, steer, people, say}``; ``say`` is ``{agentId, kind, task, text}`` or
-    None: the one agent that speaks now (``kind``: ack, steer, status, social). A stop is one of two things:
-    ``cancel`` lists the requests the speaker withdrew (their runs are aborted), ``hush`` the agents told to
-    stop talking with nothing withdrawn (their speech stops, their work goes on). ``called``: the agent the
+    None: the one agent that speaks now (``kind``: ack, steer, status, social). A stop is one of two things,
+    and Jev says which (the part's kind), apart from which request it is about: ``cancel`` lists the requests
+    the speaker withdrew (their runs are aborted). ``hush`` is ``[{agentId, requestIds}]``: the agents told to
+    stop talking with nothing withdrawn (their speech stops, their work goes on), each with the requests the
+    stop was about, or none for everything the agent has to say. ``called``: the agent the
     line turned to and asked nothing new of ("go ahead"). The other fields are what a worker before ``ops`` reads."""
     members = [
         {**m, "listenMode": "active"} if m.get("kind") == "agent" else m
@@ -1404,9 +1421,15 @@ async def route_live_line(
         "social": social,
         "more": u["more"],
         "cancel": u["cancel"],
-        # A stop that withdrew no request tells its agent to stop talking, no more: the named ones, else the
-        # one the speaker is talking with. The worker stops that speech and leaves the work running.
-        "hush": (named or ([floor_agent] if mine and floor_agent else [])) if stop else [],
+        # A stop that withdrew no request tells its agent to stop talking, no more: the agent of the request
+        # it is about, else the named ones, else the one the speaker is talking with. The worker stops that
+        # speech and leaves the work running.
+        "hush": (
+            [{"agentId": r["agentId"], "requestIds": [r["id"]]} for r in earlier if r["id"] in u.get("hush", ())]
+            or [{"agentId": a, "requestIds": []} for a in named or ([floor_agent] if mine and floor_agent else [])]
+        )
+        if stop
+        else [],
         "called": who if called and who and not requests else None,
         "steer": u["steer"],
         # the line is talk between people: a meeting voice pinned to its speaker gives the floor back

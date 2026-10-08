@@ -73,21 +73,33 @@ ids are what Paperclip assignments use.
 
 ## Human-shared local sessions (optional native adapter)
 
-In a canonical Lightbulb room run, `lightbulb_local_sessions` can discover current
-members' shared Claude/Codex sessions, read an explicitly selected session, send
-an attributed follow-up, or check its receipt. Local sessions are resources, not
-agents or employees. Never invent ownership or inject room history automatically.
+`lightbulb_local_sessions` reaches people's shared Claude Code/Codex sessions.
+Any room turn may list (`resources`) and `read` every shared session in the
+workspace; a Paperclip run, heartbeat or routine may do so only for people who
+allow background work. Local sessions are resources, not agents or employees.
+Never invent ownership or inject room history automatically.
 A read can include a session's subagents: their events carry `subagent` (the
 subagent's id), and `subagent_start` / `subagent_end` lifecycle events mark each one.
 Native provider credentials, approvals and ordinary terminal workflows stay on
-the human's machine. A receipt means admission/queueing, not completed work;
-unknown delivery must not be resent under a new request ID.
+the human's machine.
 
-This optional tool is bound to the current trusted room invocation and expires
-after at most 300 seconds. After expiry it needs a new canonical room ingress;
-there is no autonomous refresh or owner-wide hook fallback. Missing support on
-an older container means the tool is unavailable, not a reason to bypass it.
-Agent and resource-owner membership are checked again by the backend.
+`send` (`kind` `send` with `text`, or `interrupt` with no text) goes straight in
+only for the session of the person who woke you, or when the session's owner
+allows agent messages. Otherwise it returns `awaiting_approval` (`requestId`,
+`expiresAt`) and the owner gets a Send/Decline ask. Check each session's
+`agentSend` (`direct` / `ask` / `unavailable`) first. Ask once, say so in your
+reply ("I've asked <owner> before sending that to their session."), and never
+re-ask under a new `requestId`: `LOCAL_SESSION_ASK_PENDING` means your ask still
+waits, and `LOCAL_SESSION_ASK_DECLINED` (or a `rejected` receipt with
+`reason: "declined"`) is final for this run. A receipt means admission/queueing,
+not completed work; after an approval it carries `approvedBy`. Unknown delivery
+must not be resent under a new request ID.
+
+The grant behind this tool is bound to the current room turn or Paperclip run
+and lasts 30 minutes. There is no autonomous refresh or owner-wide hook
+fallback. Missing support on an older container means the tool is unavailable,
+not a reason to bypass it. The backend checks membership and the session's
+sharing again on every call.
 
 `resources.nodePreference` is only an advisory intersection of this room's
 eligible human-paired endpoints and currently connected native nodes with the

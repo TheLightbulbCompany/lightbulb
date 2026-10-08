@@ -110,7 +110,10 @@ def _handle_paperclip_run(path: str, method: str, headers: dict, body) -> tuple[
                 return 200, status
             threading.Thread(
                 target=turn.run_paperclip_turn,
-                args=(dict(identity), dict(request), True),
+                # The backend's local-session grant for this run (absent from an older backend),
+                # as the room ingress takes it: it rides the identity copy into the turn context.
+                args=(dict(identity, localSessionToken=_header(headers, "X-Lightbulb-Local-Session-Token")),
+                      dict(request), True),
                 daemon=True,
                 name=f"paperclip-{identity['runId']}",
             ).start()

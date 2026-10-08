@@ -1,6 +1,9 @@
 """Native Paperclip Hermes run lifecycle inside the AgentCore bridge."""
 
+import json
 from contextlib import contextmanager
+
+import pytest
 
 from bridge import server, turn
 
@@ -267,3 +270,37 @@ def test_stop_interrupts_an_attached_agent_and_a_queued_stop_never_runs(home, mo
     _, final = server.handle_plugin(RUN_PATH, "GET", AUTH, {"identity": IDENTITY})
     assert called == []
     assert final["status"] == "cancelled"
+
+
+@pytest.mark.parametrize("token", ["grant-jwt", None])
+def test_create_threads_the_local_session_grant_into_the_turn_context_only_when_sent(home, monkeypatch, token):
+    (home / "profiles" / "agent-1").mkdir(parents=True)
+    threading, created = _capturing_threading()
+    monkeypatch.setattr(server, "threading", threading)
+    for name in ("restore_profile", "save_profile", "report_usage"):
+        monkeypatch.setattr(turn, name, lambda *a, **k: None)
+    for name in ("restore_root_auth", "save_root_auth", "ensure_profile"):
+        monkeypatch.setattr(turn.sync, name, lambda *a, **k: None)
+    seen = {}
+
+    class Agent:
+        model, session_input_tokens, session_output_tokens = "m", 0, 0
+        session_cache_read_tokens = session_cache_write_tokens = 0
+
+        def run_conversation(self, **_kwargs):
+            path = turn._turn_context_path(turn._profile_dir("agent-1"), SESSION)
+            seen["ctx"] = json.loads(path.read_text()) if path.exists() else None
+            return {"final_response": "ok", "failed": False, "completed": True}
+
+    monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: Agent())
+    headers = {**AUTH, **({"x-lightbulb-local-session-token": token} if token else {})}
+
+    assert server.handle_plugin(CREATE_PATH, "POST", headers, BODY)[0] == 202
+    created[0].run_now()
+
+    if token:
+        assert seen["ctx"]["localSessionToken"] == token
+        assert seen["ctx"]["family"] == "paperclip" and seen["ctx"]["sessionKey"] == SESSION
+    else:
+        assert seen["ctx"] is None  # no grant, no context file: the plugin's tools answer NO_TURN
+    assert not turn._turn_context_path(turn._profile_dir("agent-1"), SESSION).exists()

@@ -96,18 +96,31 @@ export function api(user, method, path, body, name) {
   return res;
 }
 
-/** All messages after `afterSeq`, paged like a client reconciling a gap. */
+/** An end-of-run read that must not be skipped: 3 tries (1 s, 2 s backoff); null if all fail. */
+export function readWithRetry(user, path, name) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt) sleep(attempt);
+    const res = api(user, 'GET', path, undefined, name);
+    if (res.status === 200) return res;
+  }
+  return null;
+}
+
+/** All messages after `afterSeq`, paged like a client reconciling a gap; null if a page cannot be read. */
 export function messagesAfter(user, roomId, afterSeq) {
   const out = [];
   for (let cursor = afterSeq; ;) {
-    const res = api(user, 'GET', `/messaging/rooms/${roomId}/messages?afterSeq=${cursor}&limit=100`, undefined,
+    const res = readWithRetry(user, `/messaging/rooms/${roomId}/messages?afterSeq=${cursor}&limit=100`,
       'GET /messaging/rooms/:id/messages');
-    if (res.status !== 200) return out;
+    if (!res) return null;
     const page = res.json('messages') || [];
     if (!page.length) return out;
     for (const m of page) { out.push(m); cursor = Math.max(cursor, m.messageSeq); }
   }
 }
+
+/** Counted when an authoritative end-of-run read failed: the run cannot pass with data unverified. */
+export const completenessReadFailed = new Counter('completeness_read_failed');
 
 // ---- AppSync Events: a minimal port of packages/shared/src/live/appsyncEvents.ts (subscribe only).
 /**

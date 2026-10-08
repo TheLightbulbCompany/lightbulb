@@ -6,7 +6,7 @@
 //   agent's token is cross-talk and aborts the run.
 import exec from 'k6/execution';
 import { check } from 'k6';
-import { Trend, Counter } from 'k6/metrics';
+import { Trend, Counter, Rate } from 'k6/metrics';
 import * as L from './lib.js';
 
 const SEND_S = Number(__ENV.SEND_S);
@@ -25,6 +25,7 @@ const crossTalk = new Counter('crosstalk');
 const repliesOk = new Counter('replies_ok');
 const repliesWithoutToken = new Counter('replies_without_token');
 const turnsSent = new Counter('turns_sent');
+const replyComplete = new Rate('reply_complete'); // one sample per accepted turn: answered with its token, or not
 const TOKEN = /LT(\d+)x(\d+)x(\d+)x[a-z0-9]+/g;
 
 export const options = {
@@ -36,6 +37,8 @@ export const options = {
     http_req_failed: ['rate<0.005'],
     crosstalk: [{ threshold: 'count==0', abortOnFail: true }],
     reply_seen_ms: [`p(95)<${Number(__ENV.REPLY_P95_MS || 20000)}`], // 90000 for cold sub-tests
+    reply_complete: ['rate>=0.99'],
+    completeness_read_failed: ['count==0'],
   },
 };
 
@@ -109,4 +112,21 @@ export function listen(data) {
       }
     },
   });
+  // Completeness from the canonical history, not the live stream: every turn this org accepted
+  // (a human message carrying a token) must have a reply from its agent, in its room, by now.
+  for (const r of org.rooms) {
+    const room = data.rooms[r];
+    const history = L.messagesAfter(user, room.roomId, 0);
+    if (!history) { L.completenessReadFailed.add(1); continue; }
+    const answered = new Set();
+    const asked = [];
+    for (const m of history) {
+      for (const [token, , roomIdx, agentIdx] of (m.text || '').matchAll(TOKEN)) {
+        const agent = data.orgs[o].agents[Number(agentIdx)];
+        if (m.author.kind === 'human') asked.push(token);
+        else if (m.author.kind === 'agent' && Number(roomIdx) === r && agent && agent.id === m.author.id) answered.add(token);
+      }
+    }
+    for (const token of asked) replyComplete.add(answered.has(token));
+  }
 }

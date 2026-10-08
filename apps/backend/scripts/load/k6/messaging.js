@@ -36,6 +36,7 @@ export const options = {
     'http_req_duration{name:POST /messaging/rooms/:id/messages}': ['p(95)<500'],
     live_delivery_ms: ['p(95)<2000'],
     complete_after_reconcile: ['rate==1'],
+    completeness_read_failed: ['count==0'],
   },
 };
 
@@ -82,15 +83,18 @@ export function listen(data) {
       if (ts && counted) liveDelivery.add(Date.now() - Number(ts[1]));
       if (seq > lastSeq + 1) { // a gap: reconcile like a client does
         gapReconciles.add(1);
-        for (const m of L.messagesAfter(me.user, room.roomId, lastSeq)) healed.add(m.messageSeq);
+        for (const m of L.messagesAfter(me.user, room.roomId, lastSeq) || []) healed.add(m.messageSeq); // the end read re-checks
       }
       lastSeq = Math.max(lastSeq, seq);
     },
   });
   if (!counted) return; // joined after the first send: its misses say nothing
-  const detail = L.api(me.user, 'GET', `/messaging/rooms/${room.roomId}`, undefined, 'GET /messaging/rooms/:id');
-  const last = detail.status === 200 ? detail.json('lastMessageSeq') : lastSeq;
-  for (const m of L.messagesAfter(me.user, room.roomId, room.baseSeq)) healed.add(m.messageSeq);
+  // The authoritative end: never guessed from the live stream, whose tail may be what was lost.
+  const detail = L.readWithRetry(me.user, `/messaging/rooms/${room.roomId}`, 'GET /messaging/rooms/:id');
+  const history = detail && L.messagesAfter(me.user, room.roomId, room.baseSeq);
+  if (!history) { L.completenessReadFailed.add(1); return; }
+  const last = detail.json('lastMessageSeq');
+  for (const m of history) healed.add(m.messageSeq);
   for (let seq = room.baseSeq + 1; seq <= last; seq++) {
     liveCompleteness.add(live.has(seq));
     completeAfterReconcile.add(live.has(seq) || healed.has(seq));

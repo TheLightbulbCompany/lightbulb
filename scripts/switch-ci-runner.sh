@@ -17,19 +17,25 @@
 # desktop/mobile builds need a macOS runner. `hosted` therefore means
 # "everything that can run either way", not "everything".
 #
+# 2026-10-08 deploy split: CI and deploy no longer share a pool. Base
+# runner-1..5 serve CI_RUNNER=isol8-wsl, runner-deploy-1..2 serve
+# DEPLOY_RUNNER=isol8-deploy (same box, disjoint labels so slow backend suites
+# can't starve prod dispatches). `self-hosted` therefore resolves per-scope.
 # Usage:
 #   scripts/switch-ci-runner.sh hosted             # both -> ubuntu-latest
-#   scripts/switch-ci-runner.sh self-hosted        # both -> isol8-wsl
+#   scripts/switch-ci-runner.sh self-hosted        # ci -> isol8-wsl, deploy -> isol8-deploy
 #   scripts/switch-ci-runner.sh hosted ci          # only CI_RUNNER
-#   scripts/switch-ci-runner.sh self-hosted deploy # only DEPLOY_RUNNER
+#   scripts/switch-ci-runner.sh self-hosted deploy # only DEPLOY_RUNNER (-> isol8-deploy)
 #   scripts/switch-ci-runner.sh status
 set -euo pipefail
 REPO="${ISOL8_REPO:-TheLightbulbCompany/lightbulb}"
 
 label_for() {
-  case "$1" in
-    hosted) echo "ubuntu-latest" ;;
-    self-hosted) echo "isol8-wsl" ;;
+  case "$1/$2" in
+    hosted/*) echo "ubuntu-latest" ;;
+    self-hosted/ci) echo "isol8-wsl" ;;
+    self-hosted/deploy) echo "isol8-deploy" ;;
+    self-hosted/both) echo "SPLIT" ;;
     *) echo "error: target must be 'hosted' or 'self-hosted'" >&2; exit 1 ;;
   esac
 }
@@ -40,14 +46,20 @@ case "${1:-}" in
       || echo "no runner variables set on $REPO"
     ;;
   hosted|self-hosted)
-    label="$(label_for "$1")"
     scope="${2:-both}"
+    label="$(label_for "$1/$scope")"
     case "$scope" in
       ci)     gh variable set CI_RUNNER     --repo "$REPO" --body "$label" ;;
       deploy) gh variable set DEPLOY_RUNNER --repo "$REPO" --body "$label" ;;
       both)
-        gh variable set CI_RUNNER     --repo "$REPO" --body "$label"
-        gh variable set DEPLOY_RUNNER --repo "$REPO" --body "$label" ;;
+        if [ "$label" = "SPLIT" ]; then
+          gh variable set CI_RUNNER     --repo "$REPO" --body "isol8-wsl"
+          gh variable set DEPLOY_RUNNER --repo "$REPO" --body "isol8-deploy"
+          label="isol8-wsl (ci) + isol8-deploy (deploy)"
+        else
+          gh variable set CI_RUNNER     --repo "$REPO" --body "$label"
+          gh variable set DEPLOY_RUNNER --repo "$REPO" --body "$label"
+        fi ;;
       *) echo "error: scope must be 'ci', 'deploy', or omitted (both)" >&2; exit 1 ;;
     esac
     echo "set ${scope} runner(s) -> ${label} (${1}) on ${REPO}"

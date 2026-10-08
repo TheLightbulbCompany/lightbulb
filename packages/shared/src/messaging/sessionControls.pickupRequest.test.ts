@@ -69,13 +69,15 @@ describe("an unanswered request", () => {
     expect(result.current.again).toBe(false);
   });
 
-  it("says so when a pending request went away unanswered, until the person asks again", async () => {
+  it("says so when the server reports the request closed by a restart, on a fresh mount, until the person asks again", async () => {
+    // Both session views remount on a new generation: the hook starts with no memory of "pending".
     const join = vi.fn().mockResolvedValue(session({ joinRequest: "pending" }));
-    const { result, rerender } = renderHook(({ s }) => useSessionJoinRequest(client(join), s), { initialProps: { s: session({ joinRequest: "pending" }) } });
-    rerender({ s: session() }); // the session restarted: the request is gone, nobody answered
+    const closed = session({ joinRequestClosed: "restarted" });
+    const { result } = renderHook(() => useSessionJoinRequest(client(join), closed));
     expect(joinRequestView(result.current, "Ada")).toEqual({ line: "Your request closed before Ada answered, because the session restarted.", button: "Ask again", disabled: false });
     await act(async () => { await result.current.ask(); });
     expect(result.current.lapsed).toBe(false);
+    expect(joinRequestView(result.current, "Ada").button).toBe("Requested");
   });
 
   it("does not call a failed first ask a lapse, and keeps the declined and not-asked lines", async () => {

@@ -461,6 +461,47 @@ async def test_asking_again_reminds_the_owner_once_per_window_under_the_same_req
 
 
 @pytest.mark.asyncio
+async def test_a_restart_tells_the_person_whose_ask_it_dropped_until_they_ask_again(transport):
+    """ISOA-729: the session view remounts on a new generation, so only the server can say this."""
+    sid = await start(transport)
+    await ask(BOB, sid)
+    # A new generation with no Ended frame for the old one (a crash, a restart).
+    await relay(transport).handle_message(
+        "conn-1", {**registration(generation="generation-2"), "previousGeneration": "generation-1"}
+    )
+    bob = await service.get_session(BOB, sid)
+    assert bob.join_request is None and bob.join_request_closed == "restarted"
+    # Only the person whose ask was dropped reads it.
+    assert (await service.get_session(CAROL, sid)).join_request_closed is None
+    assert (await service.get_session(ALICE, sid)).join_request_closed is None
+    assert "joinRequestClosed" not in (await service.get_session(CAROL, sid)).model_dump(by_alias=True)
+    with patch.object(service, "JOIN_CLOSED_TTL_S", 0):  # bounded: it stops being said
+        assert (await service.get_session(BOB, sid)).join_request_closed is None
+    again = await ask(BOB, sid)
+    assert again.join_request == "pending" and again.join_request_closed is None
+    assert (
+        "joinClosed" not in await repo.get_session(OWNER, sid) or not (await repo.get_session(OWNER, sid))["joinClosed"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_end_then_a_resume_also_tells_the_person_whose_ask_was_dropped(transport):
+    sid = await start(transport)
+    await ask(BOB, sid)
+    await relay(transport).handle_message(
+        "conn-1", {**fixture("session-ended"), "sessionId": sid, "generation": "generation-1"}
+    )
+    assert (await service.get_session(BOB, sid)).join_request_closed is None  # ended: nothing to ask for
+    await relay(transport).handle_message(
+        "conn-1", {**registration(generation="generation-2"), "previousGeneration": "generation-1"}
+    )
+    assert (await service.get_session(BOB, sid)).join_request_closed == "restarted"
+    # Once the owner lets everyone send, there is nothing left to say.
+    await service.set_team_control(ALICE, sid, True)
+    assert (await service.get_session(BOB, sid)).join_request_closed is None
+
+
+@pytest.mark.asyncio
 async def test_ask_to_join_is_idempotent_and_tells_only_the_owner(transport):
     sid = await start(transport)
     pushes = []

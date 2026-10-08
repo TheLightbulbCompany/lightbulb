@@ -110,9 +110,11 @@ it("copies the session link from Details", async () => {
   Object.assign(navigator, { clipboard: { writeText } });
   focus({ session, ownerName: "Alice", own: false });
   const details = await openDetails();
-  await userEvent.click(within(details).getByRole("button", { name: "Copy link" }));
+  // Named apart from the share link's own "Copy link" under Access: this one only works for workspace members.
+  expect(within(details).queryByRole("button", { name: "Copy link" })).not.toBeInTheDocument();
+  await userEvent.click(within(details).getByRole("button", { name: "Copy link for teammates" }));
   expect(writeText).toHaveBeenCalledWith(expect.stringContaining("s1"));
-  expect(await within(details).findByText("Link copied.")).toBeInTheDocument();
+  expect(await within(details).findByText("Link copied. It opens this session for people in your workspace.")).toBeInTheDocument();
 });
 
 it("keeps the follow-up composer compact: hidden label, short placeholder, icon send", async () => {

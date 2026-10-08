@@ -287,6 +287,9 @@ class LocalSession(ContractModel):
     # When the reader last asked (the ask, or their latest "Ask again"): the client offers Ask again
     # ASK_AGAIN_AFTER_S after it.
     join_requested_at: str | None = None
+    # The READER's own ask was dropped unanswered when the session ended or restarted; absent once
+    # they ask again, are let in, or JOIN_CLOSED_TTL_S passes.
+    join_request_closed: Literal["restarted"] | None = None
     pickup_requested_at: str | None = None
     # The owner's own view only: who is waiting for an answer, so the session itself can offer Allow/Decline.
     pending_joins: list[str] | None = None
@@ -350,6 +353,7 @@ class LocalSession(ContractModel):
                 "join_request",
                 "join_request_id",
                 "join_requested_at",
+                "join_request_closed",
                 "pickup_requested_at",
                 "pending_joins",
                 "pending_join_ids",
@@ -762,6 +766,8 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
         public["joinRequest"] = request["state"]
         public["joinRequestId"] = request["requestId"]
         public["joinRequestedAt"] = _asked_at(request)
+    elif viewer and row.get("endedAt") is None and viewer in closed_joins(row) and not may_control(row, viewer):
+        public["joinRequestClosed"] = "restarted"
     if viewer and viewer == row["humanUserId"] and row.get("endedAt") is None:
         waiting = {
             who: r["requestId"] for who, r in (row.get("joinRequests") or {}).items() if r.get("state") == "pending"
@@ -966,7 +972,9 @@ async def register_session(owner_id: str, user_id: str, device_id: str, registra
             row.pop("startId", None)
         if previous and previous.get("generation") == registration.generation:
             # A reconnect keeps the people the owner let in; a new process (or the end) does not.
-            row.update({key: previous[key] for key in JOIN_FIELDS if key in previous})
+            row.update({key: previous[key] for key in (*JOIN_FIELDS, "joinClosed") if key in previous})
+        elif previous and (closed := closed_joins(previous)):
+            row["joinClosed"] = closed  # the people whose open ask the restart dropped are told so
         try:
             await repo.put_session(row, previous, enrollment)
             # Defense in depth for enrollments that predate the
@@ -2478,6 +2486,21 @@ JOIN_FIELDS = ("allowedSenders", "joinRequests")
 ASK_AGAIN_AFTER_S = 10 * 60
 
 
+#: How long a person is told that their ask was dropped by the session ending or restarting.
+JOIN_CLOSED_TTL_S = 24 * 3600
+
+
+def closed_joins(row: dict) -> dict[str, int]:
+    """Who to tell that their ask to join closed unanswered, and since when: the closures the row
+    already carries (inside JOIN_CLOSED_TTL_S) plus every ask still pending on it. Called where a
+    run's JOIN_FIELDS are dropped (the Ended frame, a new generation), so the next run's row can
+    say it to exactly those people, after any reload (ISOA-729)."""
+    now = int(time.time())
+    closed = {u: int(at) for u, at in (row.get("joinClosed") or {}).items() if now - int(at) < JOIN_CLOSED_TTL_S}
+    closed.update({u: now for u, r in (row.get("joinRequests") or {}).items() if r.get("state") == "pending"})
+    return closed
+
+
 def _asked_at(request: dict) -> str | None:
     """When this person last asked. A request from before ``askedAt`` has only its ``createdAt``."""
     return iso(int(request["askedAt"])) if request.get("askedAt") else request.get("createdAt")
@@ -2557,7 +2580,10 @@ async def request_join(auth: AuthContext, session_id: str) -> LocalSession:
             requests[me] = again
         else:
             requests[me] = _new_request()
-        return {**row, "joinRequests": requests}
+        updated = {**row, "joinRequests": requests}
+        if me in (row.get("joinClosed") or {}):  # asked again: the closure has been said
+            updated["joinClosed"] = {u: at for u, at in row["joinClosed"].items() if u != me}
+        return updated
 
     row, audit = await _change_session(auth, session_id, change, "join_requested", None)
     if audit is not None:

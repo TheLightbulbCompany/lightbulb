@@ -672,6 +672,10 @@ class LocalSessionRelay:
                         row.pop("pendingApproval", None)
                         row.pop("privateSendApproval", None)
                         row.pop("teamControl", None)
+                        # The people whose open ask this restart drops are told so on the new run.
+                        row.pop("joinClosed", None)
+                        if closed := sessions.closed_joins(previous or {}):
+                            row["joinClosed"] = closed
                         for key in sessions.JOIN_FIELDS:
                             row.pop(key, None)
                     # A fork continues its origin's conversation: the name its person gave it there
@@ -1034,6 +1038,9 @@ class LocalSessionRelay:
         if resumers:
             updated["resumeAllowed"] = resumers
         # So do the people the owner let in, and every open ask to join.
+        updated.pop("joinClosed", None)
+        if closed := sessions.closed_joins(row):
+            updated["joinClosed"] = closed  # carried to the run that resumes it
         for key in sessions.JOIN_FIELDS:
             updated.pop(key, None)
         await repo.put_session(updated, row, enrollment, extra=extra)

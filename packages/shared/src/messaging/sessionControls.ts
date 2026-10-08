@@ -46,9 +46,9 @@ export const ASK_AGAIN_AFTER_MS = 10 * 60_000;
 /**
  * A teammate's "Ask to join": `state` is the server's answer (none, pending, declined),
  * held as pending the moment they tap. A request never times out: `again` turns true once it has
- * waited ASK_AGAIN_AFTER_MS, and asking then reminds the owner. `lapsed`: a pending request went
- * away unanswered (the session restarted), so the person is told instead of the button silently
- * resetting. ponytail: `lapsed` lives in this mounted view only; a reload forgets it.
+ * waited ASK_AGAIN_AFTER_MS, and asking then reminds the owner. `lapsed`: the server says this
+ * person's pending request was dropped unanswered when the session ended or restarted
+ * (`joinRequestClosed`), so they are told instead of the button silently resetting.
  */
 export function useSessionJoinRequest(client: SessionControlClient, session: LocalSession, kind: "join" | "pickup" = "join") {
   const [saving, setSaving] = useState(false);
@@ -74,15 +74,8 @@ export function useSessionJoinRequest(client: SessionControlClient, session: Loc
     return () => clearTimeout(timer);
   }, [dueAt]);
   const again = dueAt > 0 && Date.now() >= dueAt;
-  // The server's own word, not this view's optimistic one: a failed or overtaken tap is not a lapse.
-  const server = session[field] ?? null;
-  const was = useRef({ id: session.sessionId, server });
-  const [lapsed, setLapsed] = useState(false);
-  useEffect(() => {
-    if (was.current.id !== session.sessionId || state !== null) setLapsed(false);
-    else if (was.current.server === "pending" && server === null) setLapsed(true);
-    was.current = { id: session.sessionId, server };
-  }, [session.sessionId, state, server]);
+  // The server's word: both session views remount on a new generation, so nothing held here survives the restart.
+  const lapsed = kind === "join" && state === null && session.joinRequestClosed === "restarted";
   const ask = useCallback(async () => {
     if (!send) return;
     const started = latest.current;

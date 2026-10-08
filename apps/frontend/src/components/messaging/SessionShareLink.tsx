@@ -57,7 +57,7 @@ export function SessionShareLink({ session, client }: { session: LocalSession; c
   const setAudience = async (audience: SessionLinkAudience) => { if (await save(audience)) setStatus(who(audience)); };
   // Two clicks, like End session: the link stops working for everyone who has it. Prod 2026-10-08: an owner's own
   // client sent this DELETE 1.5 s after their audience change, and their signed-out open 5 s later was refused.
-  // When the audience warning appeared, this button moved down onto the place of the Details footer's "Copy link".
+  // When the audience warning appeared, this button moved down onto the place of the Details footer's own "Copy link" (now "Copy link for teammates").
   const off = async () => {
     if (!offArmed) { setOffArmed(true); return; }
     setOffArmed(false); setBusy(true);

@@ -141,7 +141,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   - Session Details dialog .. references/surfaces.md (status line, Details tabs, Access switches, footer)
                               <- apps/frontend/src/components/messaging/LocalSessionPanel.tsx (status line, Details + Pick up
                                  buttons); SessionDetails.tsx (About/Changes/Access/Linked work tabs, the Access switches,
-                                 footer Copy link / Message owner / Pick up); SessionShareLink.tsx (Share, Who can open it,
+                                 footer Copy link for teammates / Message owner / Pick up); SessionShareLink.tsx (Share, Who can open it,
                                  the audience named on every copy, two-click Turn off link); LocalSessionWork.tsx (Link existing work).
   - Session chat ............ references/surfaces.md ("Session chat" paragraph: hidden room, CEO on mentions,
                               answer in the chat, never into the session)
@@ -164,7 +164,8 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- apps/backend/core/services/local_sessions.py (request_join / decide_join / remove_sender,
                                  allowedSenders + joinRequests, may_control; ASK_AGAIN_AFTER_S = the ten-minute Ask again
                                  window, mirrored by ASK_AGAIN_AFTER_MS + joinRequestView in
-                                 packages/shared/src/messaging/sessionControls.ts: no time-out, reminder, "closed before"); core/services/activity.py (join_request item,
+                                 packages/shared/src/messaging/sessionControls.ts: no time-out, reminder, "closed before" from
+                                 closed_joins / joinClosed -> joinRequestClosed, said for JOIN_CLOSED_TTL_S); core/services/activity.py (join_request item,
                                  Allow / Decline); core/services/local_session_relay.py (cleared on Ended and on a new
                                  generation); apps/frontend/src/components/messaging/LocalSessionPanel.tsx (Ask to join /
                                  Requested / declined line); SessionDetails.tsx (People you let in, Remove).

@@ -172,9 +172,11 @@ An open session shows a status line (status, owner, folder, files changed,
 plan progress) with a **Details** button; a teammate's pickable session also
 shows **Pick up**. **Details** opens a dialog with four tabs: **About** (owner,
 tool, model, folder, repository, tokens), **Changes** (plan and changed files),
-**Access** and **Linked work**. Its footer has **Copy link**, **Message
-<owner>** on someone else's session, and **Pick up** on your own. A copied link
-selects the existing session when opened; it sends nothing. The normal room
+**Access** and **Linked work**. Its footer has **Copy link for teammates**, **Message
+<owner>** on someone else's session, and **Pick up** on your own. That link is the
+in-app address: it selects the existing session for people already in the workspace
+and sends nothing. It is not the share link under **Access**, the only link a person
+outside the workspace can open. The normal room
 composer remains a room message. A person may `@`-tag a session there: the
 tag is a reference, like a document link, shown as a session card (tool,
 title, status, **Open session**). It never messages the session. When a

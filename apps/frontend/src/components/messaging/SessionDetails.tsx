@@ -222,9 +222,11 @@ export function SessionDetails({ open, onOpenChange, onClosed, tab, onTab, sessi
         <TabsContent value="access" className="session-details-tab"><Access session={session} ownerName={ownerName} own={own} client={client} switches={switches} nameOf={nameOf ?? (() => "A teammate")} /></TabsContent>
         <TabsContent value="work" className="session-details-tab"><LocalSessionWork sessionId={session.sessionId} /></TabsContent>
       </Tabs>
+      {/* Not the share link under Access: this one is the in-app address, for people already in the workspace.
+          It said "Copy link" / "Link copied." too, 73 px under "Turn off link" (ISOA-732). */}
       <div className="session-details-actions">
         {own && client.setLocalSessionDisplayTitle && <SessionRenameButton session={session} onRename={client.setLocalSessionDisplayTitle} />}
-        <Button type="button" variant="outline" size="sm" onClick={async () => setCopied(await copyText(sessionPermalink(session.sessionId)) ? "Link copied." : "Could not copy the link.")}><Link aria-hidden="true" />Copy link</Button>
+        <Button type="button" variant="outline" size="sm" onClick={async () => setCopied(await copyText(sessionPermalink(session.sessionId)) ? "Link copied. It opens this session for people in your workspace." : "Could not copy the link.")}><Link aria-hidden="true" />Copy link for teammates</Button>
         {!own && onMessageOwner && <Button type="button" variant="outline" size="sm" onClick={onMessageOwner}><MessageSquare aria-hidden="true" />Message {ownerName}</Button>}
         {own && <SessionPickup session={session} ownerName={ownerName} own client={client} variant="quiet" />}
         {copied && <span role="status" className="text-muted-foreground">{copied}</span>}

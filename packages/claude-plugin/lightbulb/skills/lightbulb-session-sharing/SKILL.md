@@ -9,7 +9,9 @@ Every Claude Code and Codex session that runs inside one of the owner's approved
 folders (Lightbulb Settings → Desktop → Approved folders), on a Mac where Lightbulb
 session sharing is on, is shared with the owner's Lightbulb workspace, whether it was
 started in Lightbulb or as a plain `claude` or `codex`. A session in any other folder
-is not shared at all: nothing about it leaves the Mac. Members can read a shared
+is not shared at all: nothing about it leaves the Mac. A Claude Code terminal then shows "Not
+shared with your workspace" and a Share to Lightbulb action for its owner, which
+approves the folder and shares every session in it, in full. Members can read a shared
 session's prompts, tool calls, output previews and answers, and watch its live
 terminal when it has one. The owner can pause sharing for one session or turn it off
 for the Mac. Nothing here changes your

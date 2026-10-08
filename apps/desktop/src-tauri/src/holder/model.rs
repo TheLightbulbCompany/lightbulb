@@ -132,9 +132,14 @@ pub const SENT_LEAVE: Duration = Duration::from_secs(3);
 /// others wait, ASK_PARTS) and WAITING. A terminal narrower than a line wraps it over rows (the
 /// shortest band is 44 columns); the engine's "[-]" ends the band's first row. How it wraps:
 /// `band_columns`.
-const BAND_LEADS: [&str; 4] = ["○ Sharing paused", "● Shared as a transcript", "● Live in Lightbulb", "● Live · "];
-const BAND_BUTTONS: [&str; 2] = ["[ Pause ]", "[ Resume sharing ]"];
-const BAND_HINT: &str = "ctrl+x tab, then p";
+/// The last lead, button and hint are the band of a session that is not shared because its
+/// folder is not approved, with SHARE_NOTE (then the folder's name) on the row under it. A held
+/// session is shared when it ends, so that band is on its last picture only when its folder was
+/// approved again within the mod's two-second poll before the end.
+const BAND_LEADS: [&str; 5] = ["○ Sharing paused", "● Shared as a transcript", "● Live in Lightbulb", "● Live · ", "○ Not shared with your workspace"];
+const BAND_BUTTONS: [&str; 3] = ["[ Pause ]", "[ Resume sharing ]", "[ Share to Lightbulb ]"];
+const BAND_HINTS: [&str; 2] = ["ctrl+x tab, then p", "ctrl+x tab, then s"];
+const SHARE_NOTE: &str = "Shares every session in ";
 const ASK_VERBS: [&str; 2] = [" asked to join", " wants to pick this up · conversation + uncommitted changes"];
 const ASK_PARTS: [&str; 3] = ["[ Allow ]", "[ Decline ]", "ctrl+x tab, then a or d · or click"];
 const WAITING: &str = "Waiting on you here or in Lightbulb";
@@ -181,7 +186,12 @@ fn fits_band(joined: &str) -> Option<bool> {
     // The names may still be going: no button yet.
     let Some(after) = BAND_BUTTONS.iter().find_map(|button| joined.split_once(squash(button).as_str())).map(|(_, after)| after) else { return Some(false) };
     // (With a request under it the band has no hint.)
-    if after.is_empty() { Some(true) } else { so_far(after, BAND_HINT) }
+    if after.is_empty() {
+        return Some(true);
+    }
+    // Whole when it is one of the hints, the start of a line when it starts one.
+    let hints: Vec<bool> = BAND_HINTS.iter().filter_map(|hint| so_far(after, hint)).collect();
+    (!hints.is_empty()).then(|| hints.contains(&true))
 }
 
 fn fits_ask(joined: &str) -> Option<bool> {
@@ -294,12 +304,18 @@ fn without_band(picture: Vec<u8>, (rows, cols): (u16, u16)) -> Vec<u8> {
     // The last one: the band is under the conversation, and the conversation may quote one.
     // Each line either wrapped as one text or part by part (`band_columns`); a band with a request under it has no hint.
     let band_at = |at: usize| {
-        let columns = BAND_BUTTONS.iter().flat_map(|button| [vec![*button, BAND_HINT], vec![*button]]).map(|fixed| band_columns(&text, at, &fixed, opens_band));
+        let columns = BAND_BUTTONS
+            .iter()
+            .flat_map(|button| BAND_HINTS.iter().map(move |hint| vec![*button, *hint]).chain([vec![*button]]))
+            .map(|fixed| band_columns(&text, at, &fixed, opens_band));
         columns.fold(band_line(&text, at, fits_band), usize::max)
     };
     let Some((first, band)) = (0..text.len()).rev().map(|at| (at, band_at(at))).find(|(_, band)| *band > 0) else { return picture };
     let ask = band_line(&text, first + band, fits_ask).max(band_columns(&text, first + band, &ASK_PARTS, asks));
     let count = band + ask + band_line(&text, first + band + ask, |joined| so_far(joined, WAITING));
+    // The not-shared band's second line: one row (a folder name too long for it leaves its rest).
+    let note = text.get(first + count).is_some_and(|row| squash(row).starts_with(squash(SHARE_NOTE).as_str()));
+    let count = count + usize::from(note);
     let (row, col) = screen.screen().cursor_position();
     let row = match usize::from(row) {
         at if at >= first + count => at - count,
@@ -1159,6 +1175,10 @@ mod tests {
             let shown: Vec<String> = screen.split("\r\n").map(String::from).collect();
             assert_eq!(kept(screen.as_str(), false).0, shown);
         }
+        // A session shared again a moment before it ended can still show the band it had while
+        // it was not shared (the mod polls every two seconds): both of its lines go.
+        let not_shared = "the answer\r\n○ Not shared with your workspace [ Share to Lightbulb ] ctrl+x tab, then s\r\nShares every session in scratch\r\n\r\n> ";
+        assert_eq!(kept(not_shared, false).0, rows(&["the answer", "", ">"]));
         // Review of #3878: at 40 columns every band wraps (the shortest is 44), and long names wrap any.
         let wrapped = "● Live in Lightbulb [ Pause ]        [-]\r\nctrl+x tab, then p\r\n\r\n> ";
         assert_eq!(kept_at(40, wrapped, false), (rows(&["", ">"]), (1, 2)));

@@ -1,7 +1,9 @@
 //! The Claude Code mod's door to this app (spec 2026-10-04-session-sharing-mod §4.1). The mod
 //! runs inside the `claude` process, so the peer pid IS the mirrored process: no parent step.
 //! It reads the session's sharing state and sends the owner's terminal decisions. Answers only
-//! a pid that is exactly one live, unrestricted, mirrored Claude session; anything else is 404.
+//! a pid that is exactly one live, unrestricted, mirrored Claude session; anything else is 404,
+//! except a Claude session that is not shared because its folder is not approved: the mod is
+//! told so (403, with the folder's name), and may ask for that folder to be approved.
 
 use super::*;
 use serde_json::{json, Value};
@@ -49,6 +51,51 @@ fn resolve(scope: &Path, pid: u32) -> Option<Caller> {
         }
     }
     (found.len() == 1).then(|| found.remove(0))
+}
+
+/// The folder of the Claude session running as `pid`, when that session is not shared because
+/// the folder is not approved: either it has no mirror at all (it started outside the approved
+/// folders) or its mirror is unshared. Found from Claude's own registry, not from a mirror. None
+/// for anything else: no Claude session, a shared one, one ended or restricted for another
+/// reason, or one whose own folder is approved (it is waiting for something else).
+fn unshared_folder(scope: &Path, home: &Path, pid: u32, approved: &[PathBuf]) -> Option<PathBuf> {
+    let me = process(pid).ok()?;
+    let (conversation, folder) = claude::registered(home, pid)?;
+    for entry in fs::read_dir(scope).ok()?.flatten() {
+        let path = entry.path();
+        let key = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        if path.extension().is_none_or(|e| e != "json") || key.len() != 64 || !key.bytes().all(|b| b.is_ascii_hexdigit()) {
+            continue;
+        }
+        let Ok(mirror) = private_read::<Mirror>(&path) else { continue };
+        if mirror.native.provider == "claude" && mirror.native.conversation == conversation && mirror.native.process == me && !mirror.unshared {
+            return None;
+        }
+    }
+    (!in_approved_folder(&folder, approved)).then_some(folder)
+}
+
+/// A folder's name as the band shows it.
+fn folder_name(folder: &Path) -> String {
+    folder.file_name().map_or_else(|| folder.to_string_lossy().into_owned(), |name| name.to_string_lossy().into_owned())
+}
+
+/// The mod of a session that is not shared: told why (403, any request), or, for `POST
+/// /v1/share`, its folder is approved. That is the yes of `lightbulb claude`'s "Share sessions
+/// from <folder> with your workspace?": the same `file_access::add_path`, so every session in
+/// the folder is shared in full, this one included (the relay's next tick sees the list change).
+async fn answer_unshared(socket: &mut UnixStream, folder: PathBuf) {
+    let Ok(Some((method, path, _))) = tokio::time::timeout(Duration::from_secs(2), read_request(socket)).await else {
+        return reply(socket, "400 Bad Request", &json!({"error":"invalid_request"})).await;
+    };
+    let name = folder_name(&folder);
+    if (method.as_str(), path.as_str()) != ("POST", "/v1/share") {
+        return reply(socket, "403 Forbidden", &json!({"error":"folder_not_approved","folder":name})).await;
+    }
+    match crate::file_access::add_path(&folder.to_string_lossy()) {
+        Ok(_) => reply(socket, "200 OK", &json!({"ok":true})).await,
+        Err(reason) => reply(socket, "409 Conflict", &json!({"error":"folder_unavailable","message":format!("Lightbulb could not approve {name}: {reason}")})).await,
+    }
 }
 
 pub(super) fn state_json(sid: &str, terminal: Option<&str>, presence: Option<presence::Entry>, approval_waiting: bool) -> Value {
@@ -130,8 +177,13 @@ async fn reply(socket: &mut UnixStream, status: &str, body: &Value) {
 }
 
 async fn answer(mut socket: UnixStream, scope: PathBuf, enrollment: Enrollment, identity: crate::keychain::DeviceIdentity, client: reqwest::Client) {
-    let Some(caller) = native_tools::peer_pid(&socket).ok().and_then(|pid| resolve(&scope, pid)) else {
-        return reply(&mut socket, "404 Not Found", &json!({"error":"not_shared"})).await;
+    let pid = native_tools::peer_pid(&socket).ok();
+    let Some(caller) = pid.and_then(|pid| resolve(&scope, pid)) else {
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        return match pid.and_then(|pid| unshared_folder(&scope, &home, pid, &crate::session_start::approved_now())) {
+            Some(folder) => answer_unshared(&mut socket, folder).await,
+            None => reply(&mut socket, "404 Not Found", &json!({"error":"not_shared"})).await,
+        };
     };
     let Ok(Some((method, path, body))) = tokio::time::timeout(Duration::from_secs(2), read_request(&mut socket)).await else {
         return reply(&mut socket, "400 Bad Request", &json!({"error":"invalid_request"})).await;
@@ -233,6 +285,42 @@ mod tests {
         assert!(decision_body("sid", "g1", &serde_json::json!({"decision":"reboot"})).is_err());
         let ok = decision_body("sid", "g1", &serde_json::json!({"decision":"allow","userId":"u","requestId":"r"})).unwrap();
         assert_eq!(ok["generation"], "g1");
+    }
+
+    #[test]
+    fn mod_socket_names_the_folder_of_a_session_that_is_not_shared_because_of_it() {
+        let dir = tempfile::tempdir().unwrap();
+        // (The mirrors' folder is the temporary one itself: owner-only, as the real one is.)
+        let (scope, home) = (dir.path().to_path_buf(), dir.path().join("home"));
+        let (approved, scratch) = (dir.path().join("approved"), dir.path().join("scratch"));
+        for made in [home.join(".claude/sessions"), approved.clone(), scratch.clone()] {
+            fs::create_dir_all(made).unwrap();
+        }
+        let roots = vec![fs::canonicalize(&approved).unwrap()];
+        let pid = std::process::id();
+        let conversation = "11111111-1111-4111-8111-111111111111";
+        let register = |folder: &Path| fs::write(home.join(format!(".claude/sessions/{pid}.json")), json!({"pid": pid, "sessionId": conversation, "cwd": folder}).to_string()).unwrap();
+        assert_eq!(unshared_folder(&scope, &home, pid, &roots), None, "not a Claude session: nothing to offer");
+        // Never mirrored (it started outside the approved folders): known from Claude's registry.
+        register(&scratch);
+        assert_eq!(unshared_folder(&scope, &home, pid, &roots).as_deref(), Some(scratch.as_path()));
+        assert_eq!(folder_name(&scratch), "scratch");
+        // In an approved folder and not mirrored yet: it is about to be shared, nothing to offer.
+        register(&approved);
+        assert_eq!(unshared_folder(&scope, &home, pid, &roots), None);
+        // Mirrored and unshared (its folder left the list): offered. Mirrored and not unshared
+        // (ended, restricted, or shared): not this answer.
+        register(&scratch);
+        let mut mirror = super::super::transport::tests::test_mirror(conversation, "gen-1");
+        mirror.native.provider = "claude".into();
+        mirror.unshared = true;
+        let file = scope.join(format!("{}.json", "a".repeat(64)));
+        mirror.persist(&file).unwrap();
+        assert_eq!(unshared_folder(&scope, &home, pid, &roots).as_deref(), Some(scratch.as_path()));
+        mirror.unshared = false;
+        mirror.persist(&file).unwrap();
+        assert_eq!(unshared_folder(&scope, &home, pid, &roots), None);
+        assert!(resolve(&scope, pid).is_none(), "and no shared state without a session id");
     }
 
     #[test]

@@ -1,4 +1,4 @@
-import type { Continued, JoinRequest, SessionState } from '../types'
+import type { Continued, JoinRequest, NotShared, SessionState } from '../types'
 import { colorFor, type Sender } from './rules'
 
 // The pure half of the mod. Everything that touches `$` lives in register.tsx: the engine
@@ -38,6 +38,27 @@ export function requestLine(r: JoinRequest, count: number): string {
 // one; the API hands a mod no way to ask for theirs.
 export function keysHint(s: SessionState): string {
   return s.joinRequests.length ? 'ctrl+x tab, then a or d · or click' : 'ctrl+x tab, then p'
+}
+
+// The band of a session that is not shared because its folder is not approved (local only:
+// nothing is registered until the person chooses to share). Its one action approves the folder,
+// which shares every session in it, so the second line says so before it happens.
+// (`holder/model.rs` knows these texts; keep them with it.)
+export const NOT_SHARED_LINE = '○ Not shared with your workspace'
+export const SHARE_LABEL = 'Share to Lightbulb'
+export const SHARE_HINT = 'ctrl+x tab, then s'
+export const SHARING_LINE = '○ Sharing with your workspace…'
+export const shareNote = (n: NotShared) => `Shares every session in ${n.folder}`
+
+// The app's answer for such a session (403): its folder's name came from this Mac's own disk.
+export function parseNotShared(text: string): NotShared | null {
+  try {
+    const v = JSON.parse(text) as { error?: unknown; folder?: unknown }
+    const folder = printable(v.folder)
+    return v.error === 'folder_not_approved' && folder ? { folder } : null
+  } catch {
+    return null
+  }
 }
 
 const printable = (s: unknown) => (typeof s === 'string' ? s.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').trim().slice(0, 80) : '')

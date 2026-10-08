@@ -97,8 +97,9 @@ counts) on a Mac where its owner turned session sharing on, whether it was start
 or as a plain `claude` or `codex` in any terminal. A session in any other folder is not shared
 at all: nothing about it leaves the Mac, it is in no session list, `find_sessions` does not
 return it and nobody can message it. If a person asks why a session of theirs is missing, the
-likely cause is its folder: they add the folder under Approved folders (or answer yes when
-`lightbulb claude` / `lightbulb codex` asks in that folder) and the session is shared in full:
+likely cause is its folder: a Claude Code session's terminal shows "Not shared with your workspace" with a **Share
+to Lightbulb** action, which approves the folder (so does adding it under Approved folders, or
+answering yes when `lightbulb claude` / `lightbulb codex` asks there), and the session is shared in full:
 approving a folder shares its sessions whole, including what a running one did before, and its
 live terminal.
 Removing a folder from the list ends sharing for the sessions in it at once; they show as

@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
-import type { Continued, SessionState } from '../types'
-import { bandRuns, continuedLine, keysHint, parseContinued, rememberTyped, requestLine, typist, type Decision } from './state'
+import type { Continued, NotShared, SessionState } from '../types'
+import { bandRuns, continuedLine, keysHint, NOT_SHARED_LINE, parseContinued, parseNotShared, rememberTyped, requestLine, SHARE_HINT, SHARE_LABEL, shareNote, SHARING_LINE, typist, type Decision } from './state'
 import { bashTouchesProtected, classify, colorFor, protectedPath, rowBody, rowLabel, senderColor, type Sender } from './rules'
 
 export const sharing = atom({ plugin: 'lightbulb', key: 'state' } as const, null as SessionState | null)
@@ -11,6 +11,12 @@ type Problem = { text: string; about: Decision }
 const problem = atom({ plugin: 'lightbulb', key: 'error' } as const, null as Problem | null)
 // Where this session was continued from, read once from the marker `lightbulb continue` wrote.
 const continued = atom({ plugin: 'lightbulb', key: 'continued' } as const, null as Continued | null)
+// Not shared because its folder is not approved, and what the app said when Share was refused.
+const unshared = atom({ plugin: 'lightbulb', key: 'notShared' } as const, null as NotShared | null)
+const shareError = atom({ plugin: 'lightbulb', key: 'shareError' } as const, null as string | null)
+const SHARE_PENDING_MS = 15_000 // how long "Sharing…" may wait for the shared band
+const NO_APP = 'Lightbulb is not sharing on this Mac. Open the Lightbulb app and turn on session sharing.'
+const NO_ANSWER = 'Lightbulb did not answer. Open the Lightbulb app, then try again.'
 // One decision at a time: a second press while one is out would send the same answer twice.
 // A module variable on purpose: it is set and tested in one synchronous step.
 let deciding = false
@@ -49,7 +55,8 @@ async function continuedMarker($: EngineInterface): Promise<Continued | null> {
 // state null: nothing to show (no socket yet, or the app says this session is not shared).
 // state undefined: no answer (the app is not running, busy, or refused the call); `message` is
 // what the app said when it refused, if it said anything (e.g. "That request is no longer waiting.").
-type Reply = { state: SessionState | null | undefined; message?: string }
+// notShared: the app says this session is running here but its folder is not approved.
+type Reply = { state: SessionState | null | undefined; message?: string; notShared?: NotShared }
 
 // No timeout to set: HttpInit has none, and a hook's budget stops while a `$` call is in flight,
 // so a slow decide stays open.
@@ -65,6 +72,10 @@ async function call($: EngineInterface, path: string, body?: Decision): Promise<
       socketPath: socket,
     })
     if (res.status === 404) return { state: null }
+    if (res.status === 403) {
+      const notShared = parseNotShared(res.text)
+      if (notShared) return { state: null, notShared }
+    }
     if (res.status !== 200) return { state: undefined, message: said(res.text) }
     return { state: JSON.parse(res.text) as SessionState }
   } catch {
@@ -87,6 +98,19 @@ export async function fetchState($: EngineInterface): Promise<SessionState | nul
 
 export async function decide($: EngineInterface, body: Decision): Promise<Reply> {
   return call($, '/v1/decide', body)
+}
+
+// Approves this session's folder in the app (the yes of `lightbulb claude`'s "Share sessions
+// from <folder>?"). Null when the app took it; else the one line to show.
+async function share($: EngineInterface): Promise<string | null> {
+  const socket = await socketPath($)
+  if (!socket || !(await $.fs.exists(socket))) return NO_APP
+  try {
+    const res = await $.http.fetch(`${APP}/v1/share`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}', socketPath: socket })
+    return res.status === 200 ? null : said(res.text) ?? REFUSED
+  } catch {
+    return NO_ANSWER
+  }
 }
 
 function applies(about: Decision, s: SessionState | null): boolean {
@@ -171,11 +195,15 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     let goodAt = -Infinity
     const refresh = async () => {
-      const s = await fetchState($)
+      const answer = await call($, '/v1/state')
+      const s = answer.state
       const now = await $.clock.now()
       if (s) goodAt = now
       else if (s === undefined && now - goodAt < GRACE_MS) return
       await update($, sharing, () => s ?? null)
+      // Not shared (its folder is not approved), or Share was just taken and the band is coming.
+      await update($, unshared, was => (s ? null : answer.notShared ?? (was?.pendingUntil && now < was.pendingUntil ? was : null)))
+      if (s || !answer.notShared) await update($, shareError, () => null)
       // A poll that resolves what a refusal was about clears its line.
       await update($, problem, p => (p && applies(p.about, s ?? null) ? p : null))
     }
@@ -192,6 +220,37 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const s = await read($, sharing)
+    const n = s ? null : await read($, unshared)
+    if (n) {
+      // Running on a Mac that shares sessions, in a folder that is not approved: nothing of it
+      // is shared, and this line is local. Its one action approves the folder.
+      const { Box, Button, Text } = $.ui.resolve(e)
+      if (n.pendingUntil) return <Text dimColor>{SHARING_LINE}</Text>
+      const press = async () => {
+        if (deciding) return
+        deciding = true
+        try {
+          const refused = await share($)
+          await update($, shareError, () => refused)
+          const until = (await $.clock.now()) + SHARE_PENDING_MS
+          if (!refused) await update($, unshared, was => (was ? { ...was, pendingUntil: until } : was))
+        } finally {
+          deciding = false
+        }
+      }
+      const refused = await read($, shareError)
+      return (
+        <Box flexDirection="column">
+          <Box>
+            <Text dimColor>{NOT_SHARED_LINE} </Text>
+            <Button key="share" hotkey="s" label={SHARE_LABEL} onPress={press} />
+            {e.surface === 'terminal' ? <Text dimColor> {SHARE_HINT}</Text> : null}
+          </Box>
+          <Text dimColor>{shareNote(n)}</Text>
+          {refused && <Text color="red">{refused}</Text>}
+        </Box>
+      )
+    }
     if (!s) {
       // Not shared itself: a continued session says where it came from (spec §3.6).
       const c = await read($, continued)

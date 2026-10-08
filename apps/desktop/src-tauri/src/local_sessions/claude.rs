@@ -256,6 +256,17 @@ pub(super) fn still_registered(home: &Path, pid: u32, conversation: &str) -> boo
     row["sessionId"].as_str().is_none_or(|id| id == conversation)
 }
 
+/// The conversation and folder Claude's own `~/.claude/sessions/<pid>.json` records for this
+/// process: what an interactive Claude session is, mirrored here or not. None when the file is
+/// missing, unreadable or names neither.
+pub(super) fn registered(home: &Path, pid: u32) -> Option<(String, PathBuf)> {
+    let path = confined_path(home, &home.join(format!(".claude/sessions/{pid}.json"))).ok()?;
+    let mut text = String::new();
+    secure_file(&path).ok()?.take(64 * 1024).read_to_string(&mut text).ok()?;
+    let row = serde_json::Deserializer::from_str(&text).into_iter::<Value>().next()?.ok()?;
+    Some((row["sessionId"].as_str()?.to_owned(), PathBuf::from(row["cwd"].as_str()?)))
+}
+
 /// `verify_current_generation` found nothing this process wrote -- distinct from a
 /// transcript that is unreadable or contradicts itself, which is a refusal. Internal:
 /// `capture` resolves it and it never travels as a restriction.

@@ -1,6 +1,6 @@
 import { test, expect, mock } from 'claude-code/testing'
 import type { On } from 'claude-code'
-import { bandLine, bandRuns, continuedLine, keysHint, parseContinued, rememberTyped, typist } from './state'
+import { bandLine, bandRuns, continuedLine, keysHint, NOT_SHARED_LINE, parseContinued, parseNotShared, rememberTyped, shareNote, SHARING_LINE, typist } from './state'
 import { colorFor, type Sender } from './rules'
 import type { SessionState } from '../types'
 
@@ -278,6 +278,76 @@ test('a not-shared answer hides the band at once', async ($, on) => {
   await clock.advance(2000)
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
   expect(await ui.drawn()).toEqual({ type: 'Text', children: [ENGINE] })
+})
+
+const NOT_SHARED = { status: 403, body: { error: 'folder_not_approved', folder: 'scratch' } }
+
+test('a session in a folder that is not approved offers Share to Lightbulb and says what it shares', async ($, on) => {
+  expect(parseNotShared(JSON.stringify(NOT_SHARED.body))).toEqual({ folder: 'scratch' })
+  expect(parseNotShared('{"error":"not_shared"}')).toBeNull()
+  expect(shareNote({ folder: 'scratch' })).toBe('Shares every session in scratch')
+  const { calls, clock } = world(on, () => NOT_SHARED)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: new RegExp(`^${NOT_SHARED_LINE}`) })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'Shares every session in scratch' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: / ctrl\+x tab, then s$/ })).toBeDefined()
+  const buttons = await ui.findAll({ type: 'Button' })
+  expect(buttons.map(b => [b.key, b.props.hotkey, b.props.label])).toEqual([['share', 's', 'Share to Lightbulb']])
+  expect(calls.every(c => c.method === 'GET')).toBe(true) // nothing is asked of the app until the person chooses
+  await ui.unmount()
+  const desktop = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await desktop.find({ text: /ctrl\+x tab/ })).toBeUndefined() // a desktop draws a native button
+  await desktop.unmount()
+})
+
+test('Share to Lightbulb asks the app, waits for the shared band, then shows it', async ($, on) => {
+  let state: Reply = NOT_SHARED
+  const { calls, clock } = world(on, path => (path === '/v1/share' ? { status: 200, body: { ok: true } } : state))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await ui.press({ key: 'share' })
+  expect(calls[calls.length - 1]).toMatchObject({ url: 'http://lightbulb/v1/share', method: 'POST', socketPath: SOCKET })
+  // The folder is approved; the session is being registered: no button to press twice.
+  state = { status: 404, body: { error: 'not_shared' } }
+  await clock.advance(2000)
+  expect(await ui.find({ type: 'Text', text: SHARING_LINE })).toBeDefined()
+  expect(await ui.findAll({ type: 'Button' })).toHaveLength(0)
+  state = { status: 200, body: { ...base, terminal: null } }
+  await clock.advance(2000)
+  expect(await ui.find({ type: 'Text', text: /Shared as a transcript/ })).toBeDefined()
+  expect(await ui.find({ key: 'pause' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a refused Share says why and keeps the offer; the wait for the shared band ends', async ($, on) => {
+  let share: Reply | 'refuse' = { status: 409, body: { error: 'folder_unavailable', message: 'Lightbulb could not approve scratch: it is not a folder.' } }
+  let state: Reply = NOT_SHARED
+  const { clock, socket } = world(on, path => (path === '/v1/share' ? share : state))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await ui.press({ key: 'share' })
+  expect(await ui.find({ type: 'Text', text: 'Lightbulb could not approve scratch: it is not a folder.' })).toBeDefined()
+  expect(await ui.find({ key: 'share' })).toBeDefined()
+  share = 'refuse'
+  await ui.press({ key: 'share' })
+  expect(await ui.find({ type: 'Text', text: 'Lightbulb did not answer. Open the Lightbulb app, then try again.' })).toBeDefined()
+  socket.live = false // sharing was switched off for this Mac: the app's socket is gone
+  await ui.press({ key: 'share' })
+  expect(await ui.find({ type: 'Text', text: /^Lightbulb is not sharing on this Mac\./ })).toBeDefined()
+  // Taken, but the session never becomes shared: the offer is not replaced by "Sharing…" for ever.
+  socket.live = true
+  share = { status: 200, body: { ok: true } }
+  await ui.press({ key: 'share' })
+  state = { status: 404, body: { error: 'not_shared' } }
+  await clock.advance(2000)
+  expect(await ui.find({ type: 'Text', text: SHARING_LINE })).toBeDefined()
+  await clock.advance(16000)
+  expect(await ui.find({ type: 'Text', text: SHARING_LINE })).toBeUndefined()
+  await ui.unmount()
 })
 
 test('every band Button has its own hotkey', async ($, on) => {

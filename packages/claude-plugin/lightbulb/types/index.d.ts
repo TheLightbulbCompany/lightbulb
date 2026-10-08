@@ -14,8 +14,13 @@ export type SessionState = {
   typedBy?: TypedBy
 }
 
+/** This session runs on a Mac that shares sessions, but its folder is not an approved folder:
+ *  nothing of it is shared. `folder` is that folder's name. `pendingUntil`: Share was chosen and
+ *  the app took it; the shared band is on its way (clock ms, after which this is dropped). */
+export type NotShared = { folder: string; pendingUntil?: number }
+
 declare module 'claude-code' {
   interface PluginState {
-    'lightbulb': { state: SessionState | null; error: string | null; continued: Continued | null }
+    'lightbulb': { state: SessionState | null; error: string | null; continued: Continued | null; notShared: NotShared | null; shareError: string | null }
   }
 }

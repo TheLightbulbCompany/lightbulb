@@ -31,7 +31,7 @@ export function DesktopSettings() {
         </>
       ) : desktop === false ? (
         <>
-          <p className="settings-page-desc">These settings live on your Mac. Open the Lightbulb desktop app to change them.</p>
+          <p className="settings-page-desc">Pairing, sharing and agent permissions live on your Mac, so open the Lightbulb desktop app to change them.</p>
           <div className="settings-card">
             <div className="settings-card-header">
               <div>

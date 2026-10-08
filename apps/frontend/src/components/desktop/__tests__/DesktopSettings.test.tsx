@@ -25,7 +25,7 @@ it("in a browser shows the download card and the account-level session switches"
   render(<DesktopSettings />);
   expect(await screen.findByText("Lightbulb for Mac")).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Download" })).toHaveAttribute("href", "/api/download/desktop");
-  expect(screen.getByText(/Open the Lightbulb desktop app to change them/)).toBeInTheDocument();
+  expect(screen.getByText(/live on your Mac, so open the Lightbulb desktop app to change them/)).toBeInTheDocument();
   expect(screen.queryByRole("heading", { level: 2 })).toBeNull();
   const ask = await screen.findByRole("switch", { name: "Agents can message my sessions without asking" });
   expect(ask).not.toBeChecked();

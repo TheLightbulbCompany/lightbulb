@@ -11,7 +11,7 @@ type Client = Partial<Pick<ReturnType<typeof createMessagingClient>, "getLocalSe
 type Who = "me" | SessionLinkAudience;
 
 const ABOUT: Record<Who, string> = {
-  me: "Only you see this session. Nothing it does now is shown to anyone later.",
+  me: "Only you see this session. Sharing again shares the whole session.",
   workspace: "People signed in to your workspace can watch it in Lightbulb. Anyone else is asked to sign in and then cannot open it.",
   anyone: "Anyone with the link can watch this terminal live without signing in. They cannot type.",
 };

@@ -5,7 +5,7 @@ import { useAuth } from "@clerk/nextjs";
 import { MessageSquare } from "lucide-react";
 import {
   auditLine, pickupSource, pickupStatus, sessionChanges, sessionFacts, sessionPlan, sessionStatus, sessionTitle, sessionToolName, usageLine,
-  useSessionAudit, useSessionSharing, useTeamControl, useUsageSharing,
+  useSessionAudit, useTeamControl, useUsageSharing,
   type LocalSession, type LocalSessionEvent, type SessionControlClient,
 } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
@@ -83,7 +83,6 @@ function useAccessSwitches(client: Client, session: LocalSession) {
   return {
     control: useTeamControl(client, session),
     usage: useUsageSharing(client, session),
-    sharing: useSessionSharing(client, session),
   };
 }
 
@@ -133,7 +132,7 @@ function Copies({ session, client, nameOf }: { session: LocalSession; client: Cl
   </section>;
 }
 
-function Access({ session, ownerName, own, client, nameOf, switches: { control, usage, sharing } }: {
+function Access({ session, ownerName, own, client, nameOf, switches: { control, usage } }: {
   session: LocalSession; ownerName: string; own: boolean; client: Client; nameOf: (userId: string) => string;
   switches: ReturnType<typeof useAccessSwitches>;
 }) {
@@ -151,9 +150,11 @@ function Access({ session, ownerName, own, client, nameOf, switches: { control, 
     </div>;
   }
   return <div className="session-settings">
-    {sharing.supported && <Setting label="Shared with the workspace" checked={sharing.enabled} disabled={sharing.saving} onChange={next => void sharing.set(next)} error={sharing.error}>
-      Off pauses sharing: only you see this session, and nothing it does while paused is shown to anyone later.
-    </Setting>}
+    {/* The one place that says who can see the session: Only me is what the old sharing switch did. */}
+    <div className="session-setting session-setting-stacked">
+      <SessionShareLink session={session} client={client} />
+      {session.pickup?.allowed && <p role="status" className="session-setting-state">{pickupStatus(session.pickup, timeAgo) || "Taking the first snapshot."}</p>}
+    </div>
     {!ended && client.setLocalSessionTeamControl && <Setting label="Let teammates control this session" checked={control.enabled} disabled={control.saving} onChange={next => void control.set(next)} error={control.error}>
       Workspace members can send follow-ups and answer permission prompts on your Mac. Every action is logged in the transcript. Turns off when the session ends.
     </Setting>}
@@ -164,12 +165,6 @@ function Access({ session, ownerName, own, client, nameOf, switches: { control, 
     {session.usage && client.setLocalSessionUsageSharing && <Setting label="Show token usage to teammates" checked={usage.enabled} disabled={usage.saving} onChange={next => void usage.set(next)}>
       Teammates see the token counts this session reports. They never see a cost.
     </Setting>}
-    <div className="session-setting session-setting-stacked">
-      <div className="session-setting-text">
-        {session.pickup?.allowed && <p role="status" className="session-setting-state">{pickupStatus(session.pickup, timeAgo) || "Taking the first snapshot."}</p>}
-      </div>
-      <SessionShareLink session={session} client={client} />
-    </div>
     <Copies session={session} client={client} nameOf={nameOf} />
   </div>;
 }

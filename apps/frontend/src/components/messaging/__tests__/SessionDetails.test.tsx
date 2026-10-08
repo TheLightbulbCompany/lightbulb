@@ -32,11 +32,12 @@ function Details({ tab: initial = "access", s = session(), own = true, c = clien
 }
 const switchNamed = (name: string) => screen.getByRole("switch", { name });
 
-it("gives the owner three switches on Access, and who can see the session", async () => {
+it("gives the owner one control for who can see the session, and two switches", async () => {
   render(<Details />);
   expect(screen.getAllByRole("switch").map(s => (s as HTMLButtonElement).labels[0]?.textContent)).toEqual([
-    "Shared with the workspace", "Let teammates control this session", "Show token usage to teammates",
+    "Let teammates control this session", "Show token usage to teammates",
   ]);
+  expect(screen.queryByText("Shared with the workspace")).not.toBeInTheDocument(); // Only me is that switch now
   await waitFor(() => expect(screen.getByLabelText("Who can see this")).toHaveValue("workspace"));
   expect(screen.getByRole("button", { name: "Copy link" })).toBeInTheDocument();
 });
@@ -52,17 +53,17 @@ it("writes each switch through its own client method and shows the server's answ
   expect(c.setLocalSessionUsageSharing).toHaveBeenCalledWith("s1", true);
   expect(await screen.findByRole("switch", { name: "Show token usage to teammates", checked: true })).toBeInTheDocument();
 
-  await userEvent.click(switchNamed("Shared with the workspace"));
+  // Sharing is the one control's: Only me, on a second click.
+  await waitFor(() => expect(screen.getByLabelText("Who can see this")).toBeEnabled());
+  await userEvent.selectOptions(screen.getByLabelText("Who can see this"), "me");
+  await userEvent.click(screen.getByRole("button", { name: "Click again to stop sharing" }));
   expect(c.setLocalSessionSharing).toHaveBeenCalledWith("s1", false);
-  expect(switchNamed("Shared with the workspace")).not.toBeChecked();
+  expect(screen.getByLabelText("Who can see this")).toHaveValue("me");
 });
 
 it("shows a failed save's error and puts the switch back", async () => {
-  const c = { ...client(), setLocalSessionSharing: vi.fn(async () => { throw new Error("500"); }), setLocalSessionTeamControl: vi.fn(async () => { throw new Error("500"); }) };
+  const c = { ...client(), setLocalSessionTeamControl: vi.fn(async () => { throw new Error("500"); }) };
   render(<Details c={c} />);
-  await userEvent.click(switchNamed("Shared with the workspace"));
-  expect(await screen.findByText("Could not change sharing. Try again.")).toHaveAttribute("role", "alert");
-  expect(switchNamed("Shared with the workspace")).toBeChecked();
   await userEvent.click(switchNamed("Let teammates control this session"));
   expect(await screen.findByText("Could not change who controls this session.")).toHaveAttribute("role", "alert");
   expect(switchNamed("Let teammates control this session")).not.toBeChecked();
@@ -127,7 +128,7 @@ it("switches tabs from the tab list", async () => {
   render(<Details tab="about" />);
   expect(screen.queryByRole("switch")).not.toBeInTheDocument();
   await userEvent.click(screen.getByRole("tab", { name: "Access" }));
-  expect(switchNamed("Shared with the workspace")).toBeInTheDocument();
+  expect(switchNamed("Let teammates control this session")).toBeInTheDocument();
 });
 
 it("keeps a saved switch when the owner leaves Access before the session refresh arrives", async () => {

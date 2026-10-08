@@ -16,6 +16,7 @@ shared session. A removed member's client drops its subscriptions (`workspace.ac
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import json
@@ -401,26 +402,29 @@ async def forward(relay, cid: str, body: dict) -> None:
             return
         payload = frame.model_dump(mode="json", by_alias=True, exclude={"type"})
         publisher = live_events.get_live_event_publisher()
-        sent = False
-        # Each audience on its own: neither publish waits on, or fails with, the other.
-        if viewers:
-            try:
-                workspace = await store.ensure_workspace_id(owner)  # minted long before any session: a read
-                await publisher.publish_session_frames(workspace, make_live_event("workspace.session.screen", payload))
-                sent = True
-            except Exception:  # noqa: BLE001 -- metered; the Mac is never told
-                put_metric("session.screen.publish.failed")
-        if by_link:
-            try:
-                # The publicId stands in for the session's id and generation: a link viewer learns neither.
-                await publisher.publish_link_frames(
-                    public,
-                    make_live_event("workspace.session.screen", {**payload, "sessionId": public, "generation": public}),
-                )
-                sent = True
-            except Exception:  # noqa: BLE001 -- metered; the Mac is never told
-                put_metric("session.screen.publish.failed")
-        if not sent:
+
+        async def to_workspace() -> None:
+            workspace = await store.ensure_workspace_id(owner)  # minted long before any session: a read
+            await publisher.publish_session_frames(workspace, make_live_event("workspace.session.screen", payload))
+
+        async def to_link() -> None:
+            # The publicId stands in for the session's id and generation: a link viewer learns neither.
+            await publisher.publish_link_frames(
+                public,
+                make_live_event("workspace.session.screen", {**payload, "sessionId": public, "generation": public}),
+            )
+
+        # Each audience on its own, at the same time: neither publish waits on, or fails with, the
+        # other, and the public one goes out as soon after the row was read as it can. Revocation
+        # is cooperative (owner ruling 2026-10-08): the frame already on its way when a link is
+        # narrowed may still be delivered; the next frame reads the row again.
+        results = await asyncio.gather(
+            *([to_workspace()] if viewers else []), *([to_link()] if by_link else []), return_exceptions=True
+        )
+        failed = sum(isinstance(r, BaseException) for r in results)
+        for _ in range(failed):
+            put_metric("session.screen.publish.failed")  # metered; the Mac is never told
+        if failed == len(results):
             return
         put_metric("session.screen.frame.forwarded")
         put_metric("session.screen.bytes", size, "Bytes")

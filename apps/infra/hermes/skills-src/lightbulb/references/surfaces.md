@@ -208,8 +208,7 @@ of a chat message: a person who wants the session to do something types in its t
 admitted) or uses **Ask to join**. Pausing sharing empties the chat of everyone but its owner;
 ending the session makes the chat read-only. Session chats do not appear in search.
 
-**Access** is where the owner sets **Shared with the workspace** (off pauses
-sharing), **Let teammates control this session** (follow-ups and permission
+**Access** is where the owner sets **Let teammates control this session** (follow-ups and permission
 prompts on their Mac), **Show token usage to teammates**, and **Who can see this**: **Only me** (a
 second click; it cuts everyone off at once), **My workspace**, or **Anyone
 with the link**. **Copy link** copies the session's one link and says who can

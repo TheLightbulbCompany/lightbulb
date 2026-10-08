@@ -22,9 +22,11 @@ human posts in a room
 
 The body the bridge receives (`openclaw_work.build_ingress_body`) carries: `eventKind`
 (`user_request` or `room_event`), `room` (id, name, kind, members with listen modes),
-the trigger message with its attachments and `addressedAgentIds`, `recentHistory` (the last 50
-messages before the trigger, trimmed from the oldest until the body is under 1 MiB), and a
-`run` contract (run id, trigger message id, `agentHop`). The browser never supplies any of it.
+the trigger message with its attachments and `addressedAgentIds`, `recentHistory`, and a
+`run` contract (run id, trigger message id, `agentHop`). `recentHistory` is the last 50 room
+messages before the trigger; when the trigger sits in a thread whose root is older than that
+window, the whole thread is merged in as well, so it can exceed 50 rows. It is then trimmed
+from the oldest until the body is under 1 MiB. The browser never supplies any of it.
 
 ## 2. What is in the prompt, in the order Hermes assembles it
 
@@ -50,9 +52,13 @@ the fleet.
 
 ## 3. What the agent does not get
 
-- Another room's history. One Hermes session per room (`agent:<id>:lightbulb:channel:<room>`),
-  never ended; `session_search` is scoped to that lineage. DMs and channels do not leak into
-  each other.
+- Another room's raw history. One Hermes session per room
+  (`agent:<id>:lightbulb:channel:<room>`), never ended; `session_search` is scoped to that
+  lineage, so transcripts do not leak between DMs and channels. **Workspace memory is not
+  isolated that way:** with AgentCore Memory on, every room's and every agent's turns are
+  written into the one `/owners/<owner>/` namespace, and up to 5 matching records are
+  retrieved for any later turn. A fact an agent learned in a DM can resurface in a channel
+  prompt. That is by design (one workspace, one memory) and worth knowing.
 - Secrets. `config.yaml` carries `${VAR}` references; the per-profile `.env` is the store, and
   `recentHistory` is built by the backend from canonical messages, not from the profile.
 - A person's Claude Code / Codex session, unless that person shared it. Then the
@@ -82,7 +88,7 @@ the fleet.
 | A run's state (started / ended / aborted / forced) and usage | the run card in the room; `GET /messaging/runs/{runId}` | yes, the `RUN#` ledger row |
 | A Paperclip run (heartbeat, routine, issue) | Teams → the agent → run detail (log from Paperclip; record in S3 under the agent's run-records prefix) | yes |
 | An agent's ask to send into someone's session | Activity (Needs you), plus one room line | yes, until answered |
-| A shared Claude Code / Codex session | the Sessions panel (`NativeSessionTranscript`), the same event log the agent's `read` sees | yes, while shared |
+| A shared Claude Code / Codex session | the session panel (`LocalSessionPanel`): the live terminal, or an ended / offline / no-terminal state. A person does **not** get the event log; only the agent's `read` sees that | the terminal is live only; the event log stays on the Mac side while shared |
 | People talking beside a shared terminal | the hidden "Session chat · {title}" room (`session_chat.py`), one per shared session; the agent's turn carries that room name so it knows where it is | yes |
 | The Hermes turn itself: tool calls, reasoning, the observed block | **nowhere in the product.** Only the agent's `state.db` has it; the agent can `session_search` it, a person cannot | in S3, as the profile |
 

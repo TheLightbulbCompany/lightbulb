@@ -87,11 +87,15 @@ the human's machine.
 only for the session of the person who woke you, or when the session's owner
 allows agent messages. Otherwise it returns `awaiting_approval` (`requestId`,
 `expiresAt`) and the owner gets a Send/Decline ask. Check each session's
-`agentSend` (`direct` / `ask` / `unavailable`) first. Ask once, say so in your
-reply ("I've asked <owner> before sending that to their session."), and never
-re-ask under a new `requestId`: `LOCAL_SESSION_ASK_PENDING` means your ask still
+`agentSend` (`direct` / `ask` / `unavailable`) first. Ask once, then post ONE
+short room line ("I've asked <owner> before sending that to their session.") and
+nothing more: no second message, and never "Done." while the ask is awaiting
+approval. Never re-ask under a new `requestId`: `LOCAL_SESSION_ASK_PENDING` means your ask still
 waits, and `LOCAL_SESSION_ASK_DECLINED` (or a `rejected` receipt with
-`reason: "declined"`) is final for this run. A receipt means admission/queueing,
+`reason: "declined"`) is final for this run. Then say "<owner> declined it; only
+<owner> can approve a resend, or <owner> can turn on sending without asking in
+Settings → Desktop." `agentSend` is not a setting anyone can change; never tell
+the requester to make it `direct`. A receipt means admission/queueing,
 not completed work; after an approval it carries `approvedBy`. Unknown delivery
 must not be resent under a new request ID.
 

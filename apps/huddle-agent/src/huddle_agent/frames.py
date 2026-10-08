@@ -95,6 +95,8 @@ class Run:
     box: int = 0  # which text box `text` is: narration before a tool is one, the answer after it another
     label: str | None = None
     seen: float = 0.0
+    began: float = 0.0  # when it was started here (`Runs.started`)
+    gave_up: bool = False  # its asker was told it could not be done (`Runs.give_up`): it is waited for no longer
 
 
 class Runs:
@@ -108,6 +110,7 @@ class Runs:
         run = self._runs.get(run_id) or Run(run_id=run_id, agent_id=agent_id)
         run.agent_id, run.speaker, run.request = agent_id, speaker, request
         run.delegation_id, run.gen, run.bound, run.seen = delegation_id, gen, True, self._clock()
+        run.began = run.began or run.seen
         self._runs[run_id] = run
         if not run.held:
             self._replay(run)
@@ -140,6 +143,12 @@ class Runs:
             run.aborted = run.ended = True
             run.buffered.clear()
             run.pending.clear()
+
+    def give_up(self, run_id: str) -> None:
+        """Its answer is waited for no longer. Unlike `abort` its frames are still read: an answer that comes
+        after all is its sink's to place."""
+        if run := self._runs.get(run_id):
+            run.gave_up = True
 
     def on_event(self, event: dict) -> None:
         if event.get("type") != "voice.run.frame":
@@ -176,6 +185,7 @@ class Runs:
         return [
             r for r in self._runs.values()
             if not r.ended
+            and not r.gave_up
             and now - r.seen < (QUEUED_TURN_SECONDS if r.queued else STALE_TURN_SECONDS)
             and agent_id in (None, r.agent_id)
         ]

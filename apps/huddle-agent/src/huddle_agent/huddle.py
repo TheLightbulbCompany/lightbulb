@@ -248,6 +248,16 @@ COULD_NOT = (
     "I could not finish that one, sorry.",
     "That did not work. I could not do it.",
 )
+# A mouth's request whose run is slow or never ends (10-08 Meet: 3 of 17 runs took 45-110 s or sent no end,
+# and their askers heard an acknowledgement and then nothing). Why a run is slow is the runtime's question;
+# these two bounds are what its asker is owed meanwhile.
+# No frame of the run for this long, its asker still waiting on it and the room at a pause: its agent says
+# once that it is still working (STILL_WORKING). Never over people who have moved on, never a second time.
+RUN_STATUS_S = 20.0
+# No `run_ended` this long after the run started: its agent tells the asker once that it could not get it
+# (COULD_NOT), the request is failed and the agent's next one starts. The slowest run that did answer in
+# that call took 110 s. An answer that still comes is written to the room, never said after the apology.
+RUN_DEADLINE_S = 120.0
 # The final POST's backoff and its whole budget. The budget stays under the job's shutdown window
 # (agent.py SHUTDOWN_S): the flush usually runs from the shutdown callback.
 FINAL_TRANSCRIPT_RETRY_S = (1, 2, 4, 8, 16)
@@ -616,6 +626,7 @@ class Huddle:
         self._said_at: dict[int, str] = {}
         self._meet_roster: list[str] = []  # the humans in the Meet, from the latest packet that had a roster
         self._steered: set[tuple[int, str]] = set()  # (a line's mark, a request): that line steered it (`_apply`)
+        self._status_said: set[str] = set()  # runs whose "still working" line was owed once (`_overdue`)
         self._unclaimed: tuple | None = (
             None  # (deadline, identity, text, mark): an open question
         )
@@ -2496,10 +2507,9 @@ class Huddle:
         elif kind == "here":
             self._utter(v.agent_id, "social", self._line(HERE), audience=v.speaker, label=v.label)
         else:
-            self._utter(
-                v.agent_id, "status", self._line(STILL_WORKING), obligation=self._working_on(v.agent_id),
-                audience=v.speaker, label=v.label,
-            )  # fmt: skip
+            about = self._working_on(v.agent_id)
+            self._status_said.add(about or "")  # said because they asked: not said again unasked (`_overdue`)
+            self._utter(v.agent_id, "status", self._line(STILL_WORKING), obligation=about, audience=v.speaker, label=v.label)
 
     def _drive_request(self, v: _Voice, text: str, said: str, row: Request | None = None) -> bool:
         """Start `text` as the floor-holder's driven run; its own delegation of it binds instead of posting.
@@ -3806,6 +3816,41 @@ class Huddle:
         if resp is None and run_id not in self._stopped:
             self._request_failed([r], run_id)
 
+    def _overdue(self, r: Request, run: Run, now: float) -> None:
+        """A mouth's request still working (`tick`): what its asker is owed while the run says nothing
+        (RUN_STATUS_S), and when it has not ended at all (RUN_DEADLINE_S)."""
+        if now - run.began >= RUN_DEADLINE_S:
+            self._runs.give_up(run.run_id)
+            self._requests.fail(r)
+            emit_metric("live.request.overdue", 1, "Count", {"what": "gave_up"})
+            # an answer, like any failure (`_say_failed`): it waits its turn, and replaces what was owed before
+            self._utter(
+                r.agent, "answer", self._line(COULD_NOT), obligation=run.run_id, request=r.task, audience=r.asker,
+                label=r.label,
+            )  # fmt: skip
+            self._start_queued()
+            self._sync_state()
+            return
+        if now - run.seen < RUN_STATUS_S or run.run_id in self._status_said:
+            return
+        # Its asker is still waiting on it, and has had nothing from it for as long: they are talking with
+        # the agent, nobody else has taken a turn since they last spoke, and the room is at a pause.
+        # Anything else is a meeting that has moved on, and the agent says nothing into it.
+        e = self._engagement((r.asker, r.label), r.agent)
+        waiting = (
+            e is not None
+            and e.state == "active"
+            and e.expects == "answer"
+            and now - e.at >= RUN_STATUS_S
+            and not any(at > self._turn_at.get(e.person, 0.0) for other, at in self._turn_at.items() if other != e.person)
+        )
+        if waiting and not self._speaking and now - self._last_heard >= MEET_QUIET_S:
+            self._status_said.add(run.run_id)
+            emit_metric("live.request.overdue", 1, "Count", {"what": "status"})
+            self._utter(
+                r.agent, "status", self._line(STILL_WORKING), obligation=run.run_id, audience=r.asker, label=r.label
+            )
+
     def _request_failed(self, rows: list[Request], run_id: str) -> None:
         """Spec §3.5: the request is failed; in its turn its agent says CANT_REACH (never posted)."""
         rows = [r for r in rows if r.status in ("queued", "working")]
@@ -4286,8 +4331,14 @@ class Huddle:
             news[:] = [n for n in news if n[0] != run.run_id or n[2] != CANT_REACH]
         v = self._floor_voice(run.agent_id)
         if self._mouths() and (mouth(v.speaker) if v else run.speaker is None or mouth(run.speaker)):
+            sorry = [u for u in self._ledger if u.kind == "answer" and u.obligation == run.run_id and u.state == "pending"]
             if not answer:
                 self._requests.delivered({run.run_id})  # finished with nothing to say
+            elif run.gave_up and not sorry:
+                # Its asker has been told it could not be done (RUN_DEADLINE_S), and now it is: the room gets
+                # it in writing. Said aloud it would take back an apology minutes old, in the middle of
+                # whatever the meeting is on by now. (Not yet told: the answer is said in the apology's place.)
+                self._spawn(self._late_answer(run.agent_id, (run.run_id, run.request, answer)))
             elif v is None and not asked and not (run.bound and run.speaker in self._people):
                 # no voice of its agent is open and nobody here asked for it: the room gets it now
                 self._spawn(self._late_answer(run.agent_id, (run.run_id, run.request, answer)))
@@ -4510,6 +4561,8 @@ class Huddle:
             run = self._runs.get(r.run_id) if r.status == "working" and r.run_id else None
             if run is not None and run not in self._runs.running():
                 self._request_failed([r], r.run_id)
+            elif run is not None and run.bound and self._mouths() and mouth(r.asker):
+                self._overdue(r, run, now)
         self._start_queued()
         self._sync_state()
         self._apply_held(now)
@@ -4926,7 +4979,7 @@ class Huddle:
             return
         try:  # a CANT_REACH line nobody heard is posted as one line (understanding §4.8)
             await self._backend.late_answer(
-                agent_id, n[0], n[1][:LATE_REQUEST_CHARS], FAILED_POST if n[2] == CANT_REACH else n[2]
+                agent_id, n[0], n[1][:LATE_REQUEST_CHARS], FAILED_POST if n[2] in (CANT_REACH, *COULD_NOT) else n[2]
             )
         except Exception:
             again = min(2**tries, LATE_RETRY_MAX_S)

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 import os
 import re
 
@@ -41,10 +42,15 @@ def _plain(s: str) -> str:
 
 
 def _line_seed(spoken: list[str]) -> int | None:
-    """Where the call's fixed lines began (`Huddle._line_seed`): the acknowledgement it said first. A replay
-    that starts there says the same fixed lines in the same order."""
-    firsts = [h_mod.units(a)[0] for a in h_mod.ACKS]
-    return next((firsts.index(_plain(t)) for t in spoken if _plain(t) in firsts), None)
+    """Where the call's fixed lines began (`Huddle._line_seed`): each set of them (acknowledgements, "still
+    working", ...) is said in turn from that place, so the first line the call said of each set gives the
+    seed up to the set's length, and all of them together give it. A replay that starts there says the
+    same fixed lines in the same order. None: the call said none of them."""
+    said = [_plain(t) for t in spoken]
+    sets = [[h_mod.units(x)[0] for x in lines] for lines in (h_mod.ACKS, h_mod.STILL_WORKING, h_mod.QUEUED_LINES, h_mod.HERE, h_mod.COULD_NOT, h_mod.STEER_ACKS)]
+    first = [(firsts, next(firsts.index(t) for t in said if t in firsts)) for firsts in sets if any(t in firsts for t in said)]
+    fits = (seed for seed in range(math.lcm(*map(len, sets))) if all(seed % len(firsts) == i for firsts, i in first))
+    return next(fits, None) if first else None
 
 
 def _says(rig: str, scenario: dict) -> tuple[float | None, list[tuple[str, str, float, float]]]:

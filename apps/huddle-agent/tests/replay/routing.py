@@ -161,6 +161,13 @@ STEERED = (
     "request of its own (one_run counts created rows only), and its answer comes with the first one's, "
     "after the line or after the scenario. [router] [check]"
 )
+TOLD = (
+    "the worker tells the asker of a slow run that it is still working (RUN_STATUS_S), and of one with no end "
+    "that it could not be done (RUN_DEADLINE_S). Each is one more agent line than a scenario's limit counts, "
+    "the second is speech where a scenario allows only the owed answer, and a script line timed `over_agent` "
+    "is said into the status line and not the answer, so the answer comes after the replay has ended "
+    "(backchannel, long_answer_cut). The rig would do the same. [check]"
+)
 KNOWN_FAILING: list[tuple[str, str, str]] = [
     (
         "unnamed_followup", r'ack_within \{"line": 1',
@@ -187,8 +194,8 @@ KNOWN_FAILING: list[tuple[str, str, str]] = [
     # the simulated backend's part (`CAUSES` says which failing replay is whose): after every cause above
     ("*", r"one_run", ASK_MISSED + " Also: " + STEERED),
     ("*", r"no_new_run|max_runs|max_agents|nothing_after|max_words", PEOPLE_TAKEN),
-    ("*", r"answer_contains|min_sentences|in_order|resumes_after|stops_within|keeps_speaking", RUN_LATE + " Also: " + ASK_MISSED),
-    ("*", r"silent_between|max_agent_lines|said_once|no_text|no_agent_overlap", PEOPLE_TAKEN + " Also: " + RUN_LATE),
+    ("*", r"answer_contains|min_sentences|in_order|resumes_after|stops_within|keeps_speaking", RUN_LATE + " Also: " + ASK_MISSED + " Also: " + TOLD),
+    ("*", r"silent_between|max_agent_lines|said_once|no_text|no_agent_overlap", PEOPLE_TAKEN + " Also: " + RUN_LATE + " Also: " + TOLD),
 ]
 
 
@@ -199,6 +206,7 @@ CAUSES: list[tuple[str, str, str]] = [
     ("router: a named ask was not taken", "ask_missed", r"one_run|ack_within|answer_contains|min_sentences|in_order|max_words|stops_within|resumes_after|keeps_speaking"),
     ("router: people talk taken as a request", "people_taken|other_taken", r"no_new_run|max_runs|silent_between|max_agent_lines|nothing_after|max_words|no_talk_over|said_once|max_agents"),
     ("router: a follow-up steered the open run", "steer", r"one_run|ack_within|answer_contains|max_agent_lines|said_once|in_order"),
+    ("a slow run's asker was told it is still working, or that it could not be done", "told_status|told_gave_up", r"min_sentences|resumes_after|keeps_speaking|max_agent_lines|max_words|no_talk_over|silent_between|nothing_after"),
     ("a run came late or never", "run_never|run_slow", r"answer_contains|min_sentences|in_order|stops_within|resumes_after|keeps_speaking|silent_between|max_agent_lines|said_once|nothing_after|no_talk_over|max_words|no_text|one_run|ack_within"),
 ]
 OWN = "the controller's rules and timing"

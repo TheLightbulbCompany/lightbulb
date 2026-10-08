@@ -5,7 +5,7 @@ on the 15 replayed scenarios under two transcriber timings; these pin the rule i
 import asyncio
 
 from huddle_agent import huddle as h_mod
-from test_huddle import answer, hand, ops, pause, settle, talks
+from test_huddle import answer, frame, hand, ops, packet, pause, settle, spoken, talks
 from test_meet_exchange import asked, closes, quiet, says_of, talked_over
 from test_meeting_mode import P1, P2, per_person, says
 
@@ -566,3 +566,171 @@ async def test_one_line_steers_a_request_once_however_often_its_answer_is_applie
     h._apply(P1, mark + 1, took)  # another line that says the same is another steer
     await settle(h)
     assert len(steers(backend)) == 2
+
+
+# -- a run that is slow, or never ends: its asker is told once that it is still working, and once that --
+# -- it could not be done. Nothing is said into a meeting that has moved on                             --
+
+
+def lines(lives):
+    """Everything the mouths were given to say, whichever voice was open for it."""
+    return [c[1] for live in lives for c in says_of(live)]
+
+
+async def wait(h, clock, seconds, lives=()):
+    """Time passes a tick at a time, as it does on a call, and whatever a mouth is handed it says."""
+    for _ in range(round(seconds)):
+        clock.t += 1
+        await h.tick()
+        await settle(h)
+        for live in lives:
+            spoken(h, live)
+
+
+async def test_a_request_that_has_run_long_with_nothing_to_show_gets_one_still_working_line():
+    """10-08 Meet: runs that took 45-110 s left their askers with an acknowledgement and then silence."""
+    h, backend, lives, clock = await asked()
+    said = len(lines(lives))
+    await wait(h, clock, h_mod.RUN_STATUS_S - h_mod.MEET_QUIET_S - 2, lives)
+    assert lines(lives)[said:] == [], "not before the bound"
+    await wait(h, clock, 4, lives)
+    (line,) = lines(lives)[said:]
+    assert line in h_mod.STILL_WORKING
+    await wait(h, clock, 4 * h_mod.RUN_STATUS_S, lives)  # ...and never a second time, however long the run takes
+    assert lines(lives)[said:] == [line]
+
+
+async def test_no_still_working_line_is_said_into_a_meeting_that_has_moved_on():
+    h, backend, lives, clock = await asked()
+    said = len(lines(lives))
+    backend.route_extra = AMONG_PEOPLE
+    await says(h, P2, "Did anyone hear back from the vendor?")  # someone else took a turn since the request
+    quiet(h)
+    await wait(h, clock, 3 * h_mod.RUN_STATUS_S, lives)
+    assert lines(lives)[said:] == []
+    # the asker turned to a colleague themselves: the same
+    h, backend, lives, clock = await asked()
+    said = len(lines(lives))
+    await says(h, P1, "Dan, did you push that fix last night?")
+    quiet(h)
+    await wait(h, clock, 3 * h_mod.RUN_STATUS_S, lives)
+    assert lines(lives)[said:] == []
+    # someone else's turn that /route could not place: the asker's exchange still stands, and still the
+    # room is not theirs alone any more
+    h, backend, lives, clock = await asked()
+    said = len(lines(lives))
+    backend.route_extra = ops([])
+    await says(h, P2, "Hm, the vendor thing.")
+    quiet(h)
+    assert h._engagements(h._who(P1))[0].state == "active"
+    await wait(h, clock, 3 * h_mod.RUN_STATUS_S, lives)
+    assert lines(lives)[said:] == []
+
+
+async def test_no_still_working_line_while_someone_is_talking():
+    h, backend, lives, clock = await asked()
+    said = len(lines(lives))
+    talks(h, P1)  # its own asker is saying something
+    await wait(h, clock, h_mod.RUN_STATUS_S + 5, lives)
+    assert lines(lives)[said:] == []
+
+
+async def test_a_run_whose_frames_keep_coming_is_not_called_silent():
+    """The bound is on the run saying nothing: a tool starting is the run at work."""
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    said = len(lines(lives))
+    for i in range(4):
+        await wait(h, clock, h_mod.RUN_STATUS_S - 5, lives)
+        h.on_data(None, "call.frame", packet(frame(row.run_id, "forge", {"type": "tool_start", "tool": f"t{i}", "seq": i + 1})))
+    assert lines(lives)[said:] == []
+
+
+async def test_asked_how_it_stands_the_agent_does_not_say_it_again_unasked():
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    said = len(lines(lives))
+    status = {"agentId": "forge", "kind": "status", "task": row.task, "text": None}
+    backend.route_extra = {"agentId": None, "agentIds": [], "ops": {**ops([])["ops"], "called": "forge", "say": status}}
+    await says(h, P1, "Forge?")
+    quiet(h)
+    await wait(h, clock, h_mod.MEET_QUIET_S, lives)
+    (line,) = lines(lives)[said:]
+    assert line in h_mod.STILL_WORKING
+    await wait(h, clock, 3 * h_mod.RUN_STATUS_S, lives)
+    assert lines(lives)[said:] == [line]
+
+
+def sorry(lives):
+    return [t for t in lines(lives) if t in h_mod.COULD_NOT]
+
+
+async def given_up():
+    """Forge's first request never ended, and a second one of Priya's was in line behind it."""
+    h, backend, lives, clock = await asked()
+    backend.route_extra = ops([("forge", "which is the oldest", "name")])
+    await says(h, P1, "Forge, which is the oldest?")
+    spoken(h, lives[0])
+    first, second = h._requests.items
+    assert (first.status, second.status) == ("working", "queued")
+    quiet(h)
+    await wait(h, clock, h_mod.RUN_DEADLINE_S - 10, lives)
+    assert first.status == "working" and sorry(lives) == [], "not before the deadline"
+    await wait(h, clock, 15, lives)
+    return h, backend, lives, clock, first, second
+
+
+async def test_a_run_with_no_end_by_the_deadline_is_given_up_once_and_its_asker_is_told():
+    h, backend, lives, clock, first, second = await given_up()
+    assert first.status == "failed", "closed as failed"
+    assert second.status == "working", "the agent's next request starts: one that never ends holds nothing up"
+    assert len(sorry(lives)) == 1, "told once"
+    await wait(h, clock, h_mod.RUN_DEADLINE_S - 20, lives)
+    assert len(sorry(lives)) == 1 and second.status == "working"
+    assert backend.late_answers == [], "nothing is posted for it: no answer exists, and none is made up"
+
+
+async def test_an_answer_that_comes_after_the_apology_is_written_to_the_room_and_not_said():
+    h, backend, lives, clock, first, second = await given_up()
+    said = lines(lives)
+    answer(h, first.run_id, "forge", FIRST)
+    await wait(h, clock, 5, lives)
+    assert lines(lives) == said, "not said: it would take back an apology minutes old"
+    assert [(a[1], a[3]) for a in backend.late_answers] == [(first.run_id, FIRST)]
+
+
+async def test_an_answer_that_comes_before_the_apology_was_said_is_said_in_its_place():
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    talks(h, P2)  # people are talking as the deadline passes: the apology waits for them
+    await wait(h, clock, h_mod.RUN_DEADLINE_S + 1, lives)
+    assert row.status == "failed" and sorry(lives) == []
+    assert [" ".join(u.units) for u in h._ledger if u.kind == "answer"][0] in h_mod.COULD_NOT
+    answer(h, row.run_id, "forge", FIRST)
+    assert hand(h, "forge") == [FIRST], "the answer took the apology's place"
+    quiet(h)
+    await wait(h, clock, 2 * h_mod.MEET_QUIET_S, lives)
+    assert FIRST in lines(lives) and sorry(lives) == [] and backend.late_answers == []
+
+
+def test_a_run_given_up_is_waited_for_no_longer_and_its_frames_are_still_read():
+    from huddle_agent.frames import Runs
+
+    class Sink:
+        ended_with = None
+
+        def progress(self, run, text): ...
+        def say(self, run, text, final): ...
+        def failed(self, run): ...
+        def ended(self, run, answer):
+            self.ended_with = answer
+
+    sink, now = Sink(), [100.0]
+    runs = Runs(sink, clock=lambda: now[0])
+    run = runs.started("r1", "forge", speaker=P1, request="x", delegation_id=None, gen=None)
+    assert run.began == 100.0 and runs.running("forge") == [run]
+    runs.give_up("r1")
+    assert runs.running("forge") == []
+    for f in ({"type": "chunk", "content": FIRST, "seq": 1}, {"type": "run_ended", "seq": 2}):
+        runs.on_event(frame("r1", "forge", f))
+    assert sink.ended_with == FIRST and run.gave_up

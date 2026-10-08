@@ -244,7 +244,8 @@ class Evidence:
     notes: list[str] = field(default_factory=list)  # what the simulation could not match
     trace: list[tuple[float, str]] = field(default_factory=list)  # the controller's own log, on request
     # What the simulated backend did that a check may fail on (`Sim.route`, `Backend.turn`), counted:
-    # ask_missed, steer, double_steer, people_taken, run_slow, run_never.
+    # ask_missed, steer, double_steer, people_taken, other_taken, run_slow, run_never; and the worker's
+    # own word on a slow run: told_status, told_gave_up.
     facts: dict[str, int] = field(default_factory=dict)
 
     def fact(self, name: str) -> None:
@@ -810,7 +811,12 @@ class Sim:
         loop.set_exception_handler(lambda _loop, ctx: self.ev.errors.append(f"{ctx.get('message')}: {ctx.get('exception')!r}"))
         emit, level = h_mod.emit_metric, h_mod.logger.level
         tap = _Tap(self)
-        h_mod.emit_metric = lambda name, value, unit="Seconds", dims=None: self.ev.emf.append((self.now(), name, value, dims or {}))
+        def metric(name, value, unit="Seconds", dims=None) -> None:
+            self.ev.emf.append((self.now(), name, value, dims or {}))
+            if name == "live.request.overdue":  # the worker's own word on a slow run: a status line, or giving up
+                self.ev.fact("told_" + dims["what"])
+
+        h_mod.emit_metric = metric
         h_mod.logger.addHandler(tap)
         h_mod.logger.setLevel(logging.INFO if self.trace else logging.ERROR)
         try:

@@ -20,6 +20,7 @@ import { APP_SCHEME } from "../../config/domain";
 import { makeAdapter } from "../../lib/adapter";
 import { isConnectionReturn } from "../../lib/deepLink";
 import { LocalStore } from "../../lib/localStore";
+import { getJoinLink, LEGACY_JOIN_LINK_TEXT } from "../../lib/workspaceInvites";
 
 // =============================================================================
 // The mobile twin of the web onboarding setup band
@@ -37,7 +38,6 @@ const dismissStore = new LocalStore<Record<string, string>>("onboarding-band");
 const NON_ADMIN_HINT = "Ask an admin";
 
 type InviteState = "idle" | "working" | "shared" | "failed" | "legacy";
-type JoinLinkStatus = { exists: boolean; join_url?: string | null };
 
 function inviteStatus(state: InviteState): string | undefined {
   if (state === "working") return "Getting the link…";
@@ -146,14 +146,9 @@ export function OnboardingBand({ participants }: { participants: readonly SetupP
     if (!orgId) return;
     setInvite("working");
     try {
-      const path = `/orgs/${encodeURIComponent(orgId)}/join-link`;
-      const existing = (await api.get(path)) as JoinLinkStatus;
-      // POST is revoke-and-regenerate: only when there is no link to strand.
+      const url = await getJoinLink(api, orgId);
       // A legacy link (exists, no join_url) is never rotated from here.
-      if (existing?.exists && !existing.join_url) return setInvite("legacy");
-      const url = existing?.exists
-        ? existing.join_url!
-        : ((await api.post(path, {})) as { join_url: string }).join_url;
+      if (!url) return setInvite("legacy");
       const result = await Share.share({ message: url });
       setInvite(result.action === Share.dismissedAction ? "idle" : "shared");
     } catch {
@@ -255,9 +250,7 @@ export function OnboardingBand({ participants }: { participants: readonly SetupP
       {actions.map((step) => card(step, step.id === "invite" ? inviteStatus(invite) : undefined, step.id === "invite" && invite === "working"))}
 
       {invite === "legacy" && (
-        <Text style={[styles.detail, { color: palette.fgMute }]}>
-          This workspace’s link can’t be shown here. Reset it in Settings → Members on the web.
-        </Text>
+        <Text style={[styles.detail, { color: palette.fgMute }]}>{LEGACY_JOIN_LINK_TEXT}</Text>
       )}
     </View>
   );

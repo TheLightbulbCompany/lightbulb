@@ -63,6 +63,7 @@ it("with no workspace, offers to create one on the web — and says nothing abou
   expect(screen.queryByText("APP")).toBeNull();
   expect(screen.getByText("Create a workspace")).toBeTruthy();
   expect(screen.getByText(/Joining a team that already uses Lightbulb\?.*join link/s)).toBeTruthy();
+  expect(screen.getByText(/Invited by email\? Open that email on this phone and tap its link\./)).toBeTruthy();
   // App Store 3.1.1: no pricing, plan, trial or billing words on this screen.
   expect(screen.queryByText(/pric|plan|billing|subscri|trial|pay|\$/i)).toBeNull();
 

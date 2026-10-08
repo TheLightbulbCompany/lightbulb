@@ -123,6 +123,7 @@ fn resolve_source(scope: &Path, peer: u32, meta: &Value) -> Result<Source> {
             continue;
         };
         if mirror.ended_at.is_some()
+            || mirror.unshared
             || mirror.native.restriction.is_some()
             || process(mirror.native.process.pid).ok().as_ref() != Some(&mirror.native.process)
         {

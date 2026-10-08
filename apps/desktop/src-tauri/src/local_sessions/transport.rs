@@ -413,15 +413,11 @@ impl Host {
         // folder left the list. A folder nobody can name is not approved; only a mirror stored
         // before `cwd` existed is left as it is until a listing names its session again.
         let approved = (self.approved)();
-        let mut unshared = vec![];
         for mut native in reconciled {
             let key = native_key(&native);
-            let known = self.mirrors.get(&key);
             let shared = native.cwd.as_deref().map(|cwd| in_approved_folder(cwd, &approved));
-            if shared == Some(false) || (shared.is_none() && known.is_none()) {
-                if known.is_some_and(|m| m.ended_at.is_none()) {
-                    unshared.push(key);
-                }
+            if shared == Some(false) || (shared.is_none() && !self.mirrors.contains_key(&key)) {
+                self.unshare(&key)?;
                 continue;
             }
             let before = self
@@ -434,6 +430,9 @@ impl Host {
             let mut invalidate = before.is_none();
             let mut revived = false;
             if let Some(mirror) = self.mirrors.get_mut(&key) {
+                if shared == Some(true) {
+                    mirror.unshared = false;
+                }
                 if mirror.ended_at.is_some() {
                     // The session is over: a hook or its own pid said so, and a
                     // listing cannot argue. Only a new process on the same identity
@@ -454,7 +453,7 @@ impl Host {
                         && claude::still_registered(&self.home, native.process.pid, &native.conversation);
                     // Its folder was approved again (this pass got past the folder check): the
                     // same process is shared from now on, as a new generation.
-                    let approved_again = mirror.ended_reason.as_deref() == Some(FOLDER_NOT_APPROVED);
+                    let approved_again = shared == Some(true) && mirror.ended_reason.as_deref() == Some(FOLDER_NOT_APPROVED);
                     if mirror.native.process == native.process {
                         if !resumed_codex_activity && !returned_claude && !approved_again {
                             continue;
@@ -569,6 +568,7 @@ impl Host {
                         deferred_end_reason: None,
                         ended_reason: None,
                         ended_sent: false,
+                        unshared: false,
                         waiting: None,
                         stats: Default::default(),
                         subagents: Default::default(),
@@ -610,11 +610,27 @@ impl Host {
         for key in moved {
             self.end_session(&key, "exited")?;
         }
-        for key in unshared {
-            relay_log(&format!("{} is outside the approved folders: no longer shared", short(&key)));
-            self.end_session(&key, FOLDER_NOT_APPROVED)?;
-        }
         Ok(invalidated)
+    }
+
+    /// The folder check failed for this session. Sharing stops here, not at the relay's end
+    /// acknowledgment: from this call the mirror uploads and registers nothing, takes no command
+    /// or typed input, and its terminal relay is stopped. Then it ends on the one end path. Called
+    /// again on every pass while the folder stays unapproved, so nothing can undo it for long.
+    fn unshare(&mut self, key: &str) -> Result<()> {
+        let Some(mirror) = self.mirrors.get_mut(key) else {
+            return Ok(());
+        };
+        if !mirror.unshared {
+            let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
+            mirror.unshared = true;
+            persist_changed(&self.dir, key, mirror, &before)?;
+            relay_log(&format!("{} is outside the approved folders: no longer shared", short(key)));
+        }
+        if let Some(session) = &mirror.session_id {
+            super::screen::revoke(session);
+        }
+        self.end_session(key, FOLDER_NOT_APPROVED)
     }
 
     fn live_count(&self) -> usize {
@@ -661,6 +677,9 @@ impl Host {
             .iter()
             .find(|(_, m)| {
                 m.ended_at.is_none()
+                    // Not shared: no hook moves it. Its end is already on its way, and a status
+                    // hook must not cancel that (it clears a deferred end).
+                    && !m.unshared
                     && m.native.provider == provider
                     && m.native.conversation == event.session_id
                     && match &event.source_process {
@@ -831,7 +850,7 @@ impl Host {
                 return Ok(());
             };
             // An unshared session's queue is never sent, so its end does not wait for it.
-            let unshared = mirror.deferred_end_reason.as_deref() == Some(FOLDER_NOT_APPROVED);
+            let unshared = mirror.unshared;
             if mirror.registration.pending
                 || mirror.resume_registration_pending
                 || (!unshared && (mirror.pending.is_some() || !mirror.queue.is_empty()))
@@ -1396,8 +1415,9 @@ impl Host {
             }
             if anchor.is_some() {
                 let ready = deferred.iter().position(|cmd| {
+                    // An unshared session's command is answered too: `command` rejects it.
                     self.mirrors.iter().any(|(key, m)| {
-                        registered.contains(key) && m.session_id.as_deref() == Some(&cmd.session_id)
+                        (registered.contains(key) || m.unshared) && m.session_id.as_deref() == Some(&cmd.session_id)
                     })
                 });
                 if let Some(command) = ready.and_then(|index| deferred.remove(index)) {
@@ -1993,6 +2013,10 @@ impl Host {
         else {
             return Err("unknown command session".into());
         };
+        if self.mirrors[&key].unshared {
+            *why = "its folder is not approved: not shared";
+            return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
+        }
         // Neither carries text into the session, so neither needs the workspace notice.
         let textless = matches!(cmd.kind.as_str(), "interrupt" | "end");
         if !textless { self.observe_workspace(&key).await?; }
@@ -2146,6 +2170,7 @@ impl Host {
         let live = mirror.generation == cmd.expected_generation
             && mirror.registration.successor.is_none()
             && mirror.ended_at.is_none()
+            && !mirror.unshared
             && !self.stop.load(Ordering::SeqCst)
             && cmd.authorized_at(now)
             && self.verified(&mirror.native).await.is_ok();
@@ -2310,7 +2335,7 @@ fn transcript_path_unread(path: &Path, cursor: &Cursor) -> bool {
 
 fn has_drainable_backlog(mirror: &Mirror) -> bool {
     // What an unshared session wrote stays on this Mac: its end is reported with nothing drained.
-    mirror.ended_reason.as_deref() != Some(FOLDER_NOT_APPROVED)
+    !mirror.unshared
         && (mirror.pending.is_some() || !mirror.queue.is_empty() || transcript_unread(mirror))
 }
 
@@ -2341,6 +2366,7 @@ fn needs_ended_recovery(mirror: &Mirror) -> bool {
 fn owes_bound_register(dir: &Path, mirror: &Mirror) -> bool {
     mirror.ended_at.is_some()
         && !mirror.ended_sent
+        && !mirror.unshared
         && mirror.session_id.is_none()
         && start_links::bound(dir, &mirror.native, &mirror.generation).is_some()
 }
@@ -2491,6 +2517,9 @@ fn registration_due_with_recovery(
         .iter()
         .find(|(key, mirror)| {
             (mirror.ended_at.is_none() || recovering_ended.contains(*key))
+                // An unshared session registers nothing new. Only a register its end still waits
+                // on goes out, so the relay has a session for that end to land on.
+                && (!mirror.unshared || mirror.deferred_end_reason.is_some())
                 && !registered.contains(*key)
                 && !quarantine_active(quarantined, key)
         })
@@ -2590,7 +2619,7 @@ fn device_heartbeats_with_controls(
     let mut frames = vec![];
     let mut sessions: Vec<Value> = vec![];
     for (key, m) in mirrors.iter().filter(|(key, m)| {
-        registered.contains(*key) && m.ended_at.is_none() && m.session_id.is_some()
+        registered.contains(*key) && m.ended_at.is_none() && !m.unshared && m.session_id.is_some()
     }) {
         let entry = json!({"sessionId":m.session_id,"generation":m.generation,
             "status":m.native.status,"activeTurnId":m.native.active_turn,
@@ -2913,9 +2942,60 @@ pub(super) mod tests {
         mirror.ended_at = Some(1);
         mirror.queue.push(json!({"text": "written outside the approved folders"}));
         assert!(has_drainable_backlog(&mirror), "an ordinary end still drains its history");
-        mirror.ended_reason = Some(FOLDER_NOT_APPROVED.into());
+        mirror.unshared = true;
         assert!(!has_drainable_backlog(&mirror));
         assert!(!needs_ended_recovery(&mirror));
+        assert_eq!(mirror.next_batch().unwrap(), None, "the upload point sends nothing either");
+        assert_eq!(mirror.queue.len(), 1, "and takes nothing off the queue");
+    }
+
+    #[test]
+    fn local_sessions_a_hook_cannot_bring_back_a_session_whose_folder_was_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let approved = dir.path().join("approved");
+        fs::create_dir_all(&approved).unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native.cwd = Some(approved);
+        // Its first register is still out when the folder leaves the list.
+        mirror.registration.pending = true;
+        mirror.queue.push(json!({"text": "written in the removed folder"}));
+        let native = mirror.native.clone();
+        let key = native_key(&native);
+        let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
+        approve(&[]);
+        host.observe(vec![native], &BTreeSet::new()).unwrap();
+        let waiting = &host.mirrors[&key];
+        assert!(waiting.unshared && waiting.ended_at.is_none() && waiting.deferred_end_reason.is_some(), "its end waits for that register");
+        // A turn starts in it: the hook moves nothing, and cannot cancel the end.
+        assert_eq!(host.apply_hook(&hook(lifecycle::Provider::Codex, "UserPromptSubmit", SID)).unwrap(), None);
+        let mirror = host.mirrors.get_mut(&key).unwrap();
+        assert!(mirror.unshared && mirror.deferred_end_reason.is_some());
+        assert_eq!(mirror.next_batch().unwrap(), None, "nothing is uploaded meanwhile");
+        // The register is acknowledged: the end goes through with the queue unsent.
+        mirror.registration.pending = false;
+        mirror.session_id = Some("session-id".into());
+        host.finish_deferred_end(&key).unwrap();
+        assert!(host.mirrors[&key].ended_at.is_some());
+        assert_eq!(host.mirrors[&key].queue.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn local_sessions_an_unshared_session_takes_no_command_and_is_not_announced() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(SID, "g1");
+        mirror.session_id = Some("s1".into());
+        mirror.unshared = true;
+        let key = native_key(&mirror.native);
+        let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
+        // Still listed as registered: the relay has not acknowledged the end yet.
+        let registered = BTreeSet::from([key.clone()]);
+        let send = json!({"type":"local.session.command","command":{"requestId":"r1","expectedGeneration":"g1","kind":"send","text":"hello",
+            "expectedTurnId":null,"sessionId":"s1","roomId":"","actorUserId":"alice","commandSeq":1,"state":"dispatched","createdAt":100,"deliverBy":130,"held":false,"providerMessageId":null}});
+        let command = parse_command(&send, "alice").unwrap();
+        assert_eq!(host.command(&command, None).await.unwrap().outcome, "rejected", "answered, not left waiting");
+        let frames = device_heartbeats(&host.mirrors, &registered, false).unwrap();
+        assert!(frames.iter().all(|f| f["sessions"].as_array().is_none_or(|s| s.is_empty())), "no heartbeat names it");
+        assert_eq!(registration_due_with_recovery(&host.mirrors, &BTreeSet::new(), &BTreeMap::new(), &BTreeSet::new()), None, "and it registers nothing");
     }
 
     #[test]
@@ -3007,6 +3087,7 @@ pub(super) mod tests {
             deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
+            unshared: false,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -4838,6 +4919,7 @@ pub(super) mod tests {
             deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
+            unshared: false,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -4910,6 +4992,7 @@ pub(super) mod tests {
             deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
+            unshared: false,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -5034,6 +5117,7 @@ pub(super) mod tests {
             deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
+            unshared: false,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),

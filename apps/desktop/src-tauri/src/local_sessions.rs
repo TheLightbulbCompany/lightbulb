@@ -1508,6 +1508,12 @@ struct Mirror {
     deferred_end_reason: Option<String>,
     #[serde(default)]
     pub ended_reason: Option<String>,
+    /// Its folder is not an approved folder (any more). Only the discovery pass that checks the
+    /// folder sets or clears this; no hook, acknowledgment or resume does. While it is set
+    /// nothing of the session is read or uploaded, it registers nothing, and it takes no
+    /// command, no typed input and no viewer.
+    #[serde(default)]
+    unshared: bool,
     // The relay has acknowledged this session's end. Durable: a Mac that reports an
     // end and restarts must not report it again, and one that does not must.
     #[serde(default)]
@@ -1665,6 +1671,11 @@ impl Mirror {
         true
     }
     fn next_batch(&mut self) -> Result<Option<Value>> {
+        // The upload point itself: whatever else revived or registered this mirror, nothing is
+        // read from the transcript or sent while its folder is not approved.
+        if self.unshared {
+            return Ok(None);
+        }
         if !self.subagents.relay {
             self.queue.retain(|e| e.get("subagent").is_none());
             if self.pending.as_ref().is_some_and(|batch| {
@@ -2743,6 +2754,7 @@ mod tests {
             deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
+            unshared: false,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -2830,6 +2842,7 @@ mod tests {
             deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
+            unshared: false,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -2916,6 +2929,7 @@ mod tests {
             deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
+            unshared: false,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -3017,6 +3031,7 @@ mod tests {
             deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
+            unshared: false,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -3083,6 +3098,7 @@ mod tests {
             deferred_end_reason: None,
             ended_reason: None,
             ended_sent: false,
+            unshared: false,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),

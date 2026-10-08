@@ -842,6 +842,7 @@ it("offers Add people in a row's menu only where the viewer may add, and asks fo
       { ...base, roomId: "theirs", name: "Theirs", members: [{ ...me, role: "member" }] },
       { ...base, roomId: "vendor", name: "Vendor", shared: true, members: [{ ...me, role: "owner" }] },
       { ...base, roomId: "crew", kind: "group-dm", name: "Crew", participants: [alice, atlas], members: [{ ...me, role: "member" }] },
+      { ...base, roomId: "pair", kind: "dm", name: null, participants: [alice], members: [{ ...me, role: "member" }] },
     ]} />);
   const menuFor = async (label: string) => {
     await userEvent.click(screen.getByRole("button", { name: `Conversation actions for ${label}` }));
@@ -852,6 +853,9 @@ it("offers Add people in a row's menu only where the viewer may add, and asks fo
   expect(await menuFor("Theirs")).toBeNull();
   expect(await menuFor("Vendor")).toBeNull();
   expect(await menuFor("Crew")).not.toBeNull();
+  await userEvent.keyboard("{Escape}");
+  // A direct message takes anyone too: adding a third person turns it into a group chat in place.
+  expect(await menuFor("Alice")).not.toBeNull();
   await userEvent.keyboard("{Escape}");
   await userEvent.click((await menuFor("Mine"))!);
   expect(onAddPeople).toHaveBeenCalledWith("mine");

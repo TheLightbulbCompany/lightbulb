@@ -190,8 +190,9 @@ function DirectoryContent({
   const [actingRoomId, setActingRoomId] = useState<string | null>(null);
   const [inviteNote, setInviteNote] = useState<string | null>(null);
   const [inviting, setInviting] = useState(false); // one mint at a time: a second POST replaces the first link
-  // Same rule as the room panel: a shared room is never added to; a channel takes its owner or an admin; a group chat, anyone.
-  const canAddPeople = (room: DirectoryRoom) => !room.shared && (room.kind === "group-dm" || (room.kind === "channel"
+  // Same rule as the room panel: a shared room is never added to; a channel takes its owner or an admin; a
+  // direct message or group chat, anyone (adding to a DM turns it into a group chat in place).
+  const canAddPeople = (room: DirectoryRoom) => !room.shared && (room.kind === "dm" || room.kind === "group-dm" || (room.kind === "channel"
     && room.members.some((member) => member.kind === "human" && member.id === currentUserId && (member.role === "owner" || member.role === "admin"))));
   const validName = kind === "channel"
     ? name.trim().length >= 1 && name.trim().length <= 80

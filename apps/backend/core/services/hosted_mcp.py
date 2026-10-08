@@ -431,10 +431,11 @@ async def message_receipt(request_id: uuid.UUID) -> dict:
     try:
         command = await local_sessions.get_command(auth, None, target, str(request_id))
     except messaging.ApiProblem as exc:
+        if pinned.get("refusal"):
+            # The recorded refusal answers even when get_command re-fails the same check (e.g. enrollment off).
+            return {"sessionId": target, "requestId": str(request_id), "state": "rejected", "reason": pinned["refusal"]}
         if exc.error.code != "LOCAL_SESSION_NOT_FOUND":
             raise
-        if pinned.get("refusal"):
-            return {"sessionId": target, "requestId": str(request_id), "state": "rejected", "reason": pinned["refusal"]}
         return {"sessionId": target, "requestId": str(request_id), "state": "unknown"}
     return {"sessionId": target, "requestId": str(request_id), "state": command.state}
 

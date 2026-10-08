@@ -396,3 +396,16 @@ async def test_pin_conflict_on_a_session_send_is_a_readable_tool_error(monkeypat
     )
     with pytest.raises(ToolError, match="IDEMPOTENCY_CONFLICT"):
         await hosted_mcp.send_message("hi", uuid.uuid4(), session_id=str(uuid.uuid4()))
+
+
+@pytest.mark.asyncio
+async def test_receipt_reads_rejected_even_when_get_command_refuses_again(monkeypatch):
+    auth = AuthContext(user_id="user_sender", org_id="org_test")
+    monkeypatch.setattr(hosted_mcp, "_caller", lambda *_scope: auth)
+    sid, request_id = str(uuid.uuid4()), uuid.uuid4()
+    pin = {"destination": f"session:{sid}", "refusal": "LOCAL_SESSION_FORBIDDEN"}
+    monkeypatch.setattr(hosted_mcp.messaging_repo, "_get", AsyncMock(return_value=pin))
+    off = hosted_mcp.messaging.ApiProblem("LOCAL_SESSION_FORBIDDEN", "Local session sharing is disabled.")
+    monkeypatch.setattr(hosted_mcp.local_sessions, "get_command", AsyncMock(side_effect=off))
+    result = await hosted_mcp.message_receipt(request_id)
+    assert result["state"] == "rejected" and result["reason"] == "LOCAL_SESSION_FORBIDDEN"

@@ -617,7 +617,7 @@ impl Host {
             if start_links::bind(&scope, &mirror.native, &mirror.generation)? {
                 invalidate = true;
             }
-            let _ = capture_batch(mirror);
+            let _ = capture_batch(mirror, &approved);
             let after = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
             if before.as_ref().is_some_and(|b| !b["native"]["restriction"].is_null())
                 && mirror.native.restriction.is_none()
@@ -729,6 +729,24 @@ impl Host {
     /// folders as they are at this moment, not as the last tick or pass saw them.
     fn refuses_input(&self, mirror: &Mirror) -> bool {
         mirror.withheld() || outside_now(mirror, &(self.approved)())
+    }
+
+    /// The last check before something reaches a session's process. `fresh`: the session as it
+    /// was verified a moment ago, whose folder may differ from the mirror's (it moved, and no hook
+    /// or listing has said so yet). Refused when the mirror is withheld or any folder it is known
+    /// to work in, that one included, is outside the approved folders as they are now; the mirror
+    /// is then unshared here, not at the next tick.
+    fn dispatch_refused(&mut self, key: &str, fresh: &NativeSession) -> Result<bool> {
+        let approved = (self.approved)();
+        let Some(mirror) = self.mirrors.get(key) else {
+            return Ok(true);
+        };
+        let moved = fresh.cwd.as_deref().is_none_or(|cwd| !in_approved_folder(cwd, &approved));
+        if mirror.withheld() || moved || outside_now(mirror, &approved) {
+            self.unshare(key)?;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     /// The same, for a relay frame that names a session (`watch`, typed `input`).
@@ -1541,6 +1559,9 @@ impl Host {
                 }
             }
             laps.lap("workspace scan");
+            // After each wait that can be long, before anything is built to send: the list
+            // may have changed meanwhile, and the tick below has not run since.
+            self.folder_tick()?;
             if anchor.as_ref().is_some_and(|a| a.now().is_none()) {
                 anchor = None;
             }
@@ -1561,6 +1582,7 @@ impl Host {
                 }
             }
             laps.lap("deferred command");
+            self.folder_tick()?;
             if pending_rpc.is_none() {
                 if let Some(key) = registration_due_with_recovery(
                     &self.mirrors,
@@ -1643,7 +1665,7 @@ impl Host {
                     last_upload.insert(key.clone(), Instant::now());
                     let mirror = self.mirrors.get_mut(key).ok_or("missing local session")?;
                     let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
-                    let batch = match capture_batch(mirror) {
+                    let batch = match capture_batch(mirror, &(self.approved)()) {
                         Ok(batch) => batch,
                         Err(reason) => {
                             relay_log(&format!("{} history unreadable: {reason}", short(key)));
@@ -2203,10 +2225,15 @@ impl Host {
         };
         // The last moment before anything is journaled or reaches the session: the workspace
         // scan and the verification above each waited, and no tick runs while a command does.
-        if self.refuses_input(mirror) {
-            *why = "its folder stopped being approved while this was prepared";
+        // `native` is the session as it was verified just now: it may have moved to another
+        // folder since the mirror last heard of it.
+        if self.dispatch_refused(&key, &native)? {
+            *why = "its folder is not approved now: not shared";
             return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
         }
+        let Some(mirror) = self.mirrors.get(&key) else {
+            return Err("unknown command session".into());
+        };
         let now = anchor.and_then(ClockAnchor::now).unwrap_or(u64::MAX);
         if !journal.admit(cmd, &mirror.generation, now)? {
             *why = "not admitted (order, shape or deadline)";
@@ -2307,10 +2334,13 @@ impl Host {
             && !mirror.withheld()
             && !self.stop.load(Ordering::SeqCst)
             && cmd.authorized_at(now)
-            && self.verified(&mirror.native).await.is_ok();
+            && match self.verified(&mirror.native).await {
+                // Read again after that wait, and by the folder the session is in now: the
+                // last moment before the prompt is answered.
+                Ok(native) => !self.dispatch_refused(&key, &native)?,
+                Err(_) => false,
+            };
         let mirror = &self.mirrors[&key];
-        // Read again after the wait above: the last moment before the prompt is answered.
-        let live = live && !self.refuses_input(mirror);
         if !journal.admit(cmd, &mirror.generation, now)? {
             return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
         }
@@ -2517,7 +2547,13 @@ fn ended_recovery_keys(mirrors: &BTreeMap<String, Mirror>) -> BTreeSet<String> {
 
 /// A read failure is a history problem only. A process that is gone is ended by
 /// `liveness_tick`, which is the single owner of that verdict.
-fn capture_batch(mirror: &mut Mirror) -> Result<Option<Value>> {
+/// The upload point. `approved`: the approved folders read just now, not the mirror's `unshared`
+/// flag alone: the flag is set by a tick, a pass or a hook, and this can run between a folder
+/// leaving the list and any of them. A mirror whose folder is outside reads and sends nothing.
+fn capture_batch(mirror: &mut Mirror, approved: &[PathBuf]) -> Result<Option<Value>> {
+    if outside_now(mirror, approved) {
+        return Ok(None);
+    }
     mirror.next_batch().inspect_err(|reason| {
         mirror.native.restriction = Some(
             if reason == "runtime-unverified" {
@@ -3314,6 +3350,52 @@ pub(super) mod tests {
         assert!(mirror.ended_at.is_none() && !mirror.withheld());
         assert_eq!(mirror.native.process, resumed.process, "the process that runs it now");
         assert_eq!(mirror.queue.len(), 1, "what was waiting is still to be sent");
+    }
+
+    #[test]
+    fn local_sessions_the_upload_point_reads_the_folders_as_they_are_now() {
+        let dir = tempfile::tempdir().unwrap();
+        let approved = dir.path().join("approved");
+        fs::create_dir_all(&approved).unwrap();
+        approve(&[&approved]);
+        let mut mirror = test_mirror(SID, "g1");
+        mirror.native.cwd = Some(approved.clone());
+        mirror.session_id = Some(SID.into());
+        mirror.queue.push(json!({"text": "read while the folder was approved"}));
+        // Removed while the loop was waiting elsewhere: no tick, pass or hook has marked it.
+        approve(&[]);
+        assert!(!mirror.unshared);
+        assert_eq!(capture_batch(&mut mirror, &anywhere()).unwrap(), None, "nothing is read or sent");
+        assert!(mirror.pending.is_none() && mirror.queue.len() == 1, "and nothing is lost for when it is approved again");
+        approve(&[&approved]);
+        assert!(capture_batch(&mut mirror, &anywhere()).unwrap().is_some());
+    }
+
+    #[test]
+    fn local_sessions_a_session_that_moved_is_refused_and_unshared_at_dispatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let (approved, elsewhere) = (dir.path().join("approved"), dir.path().join("elsewhere"));
+        fs::create_dir_all(&approved).unwrap();
+        fs::create_dir_all(&elsewhere).unwrap();
+        approve(&[&approved]);
+        let mut mirror = test_mirror(SID, "g1");
+        mirror.native.cwd = Some(approved.clone());
+        mirror.session_id = Some(SID.into());
+        let verified = mirror.native.clone();
+        let key = native_key(&verified);
+        let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
+        assert!(!host.dispatch_refused(&key, &verified).unwrap(), "where the mirror says it is: dispatched");
+        // Verified just now in another folder; no hook or listing has told the mirror.
+        let mut moved = verified.clone();
+        moved.cwd = Some(elsewhere);
+        assert!(!host.refuses_input(&host.mirrors[&key]), "the mirror alone would still take it");
+        assert!(host.dispatch_refused(&key, &moved).unwrap());
+        assert!(host.mirrors[&key].unshared && host.mirrors[&key].ended_at.is_some(), "and it is unshared here, not at the next tick");
+        // A verification that cannot name the folder is refused too.
+        let mut host = test_host(dir.path(), vec![(key.as_str(), test_mirror(SID, "g1"))]);
+        let mut unknown = verified;
+        unknown.cwd = None;
+        assert!(host.dispatch_refused(&key, &unknown).unwrap());
     }
 
     #[test]
@@ -4933,7 +5015,7 @@ pub(super) mod tests {
         mirror.persist(&path).unwrap();
 
         let before = serde_json::to_value(&*mirror).unwrap();
-        let batch = capture_batch(mirror).unwrap().unwrap();
+        let batch = capture_batch(mirror, &anywhere()).unwrap().unwrap();
         assert!(persist_changed(&unavailable, &key, mirror, &before).is_err());
         let unchanged = serde_json::to_value(&*mirror).unwrap();
         persist_changed(&scope, &key, mirror, &unchanged).unwrap();

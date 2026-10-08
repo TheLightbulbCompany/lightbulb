@@ -74,6 +74,9 @@ pub struct Model {
     /// The last row of the scroll region, while that region starts at the first row and ends above
     /// the last one: lines that leave its top are lines a terminal keeps (`process`).
     region: Option<u16>,
+    /// The first bytes of a character the last read ended inside, on that region's last row: not
+    /// fed yet, since whether it wraps there (and scrolls the region) depends on its width.
+    carry: Vec<u8>,
 }
 /// Where a byte stream stands between its control sequences, as far as `Model::process` reads it.
 #[derive(Clone, Copy, PartialEq)]
@@ -337,23 +340,25 @@ fn completed(hay: &[u8], needle: &[u8], skip: usize) -> usize {
     ends(hay, needle, skip).count()
 }
 
-/// Whether the character `bytes` starts with goes to the next row when written at column `col`
-/// of `cols`: vt100's own rule (`Screen::text`), with its own width for that character.
-fn wraps(bytes: &[u8], col: u16, cols: u16) -> bool {
-    let len = match bytes[0] {
+/// How many bytes the UTF-8 character that starts with `lead` has.
+fn char_len(lead: u8) -> usize {
+    match lead {
         0..=0x7f => 1,
         0xc0..=0xdf => 2,
         0xe0..=0xef => 3,
         _ => 4,
-    };
-    // (Split across two reads: taken as one column wide.)
-    let width = match bytes.get(..len) {
-        Some(ch) if len > 1 => {
-            let mut probe = vt100::Parser::new(1, 4, 0);
-            probe.process(ch);
-            probe.screen().cursor_position().1
-        }
-        _ => 1,
+    }
+}
+
+/// Whether the character `ch` (all its bytes) goes to the next row when written at column `col`
+/// of `cols`: vt100's own rule (`Screen::text`), with its own width for that character.
+fn wraps(ch: &[u8], col: u16, cols: u16) -> bool {
+    let width = if ch.len() == 1 {
+        1
+    } else {
+        let mut probe = vt100::Parser::new(1, 4, 0);
+        probe.process(ch);
+        probe.screen().cursor_position().1
     };
     width > 0 && col > cols.saturating_sub(width)
 }
@@ -367,7 +372,7 @@ impl Model {
     pub fn new(rows: u16, cols: u16) -> Self {
         Self { parser: vt100::Parser::new(rows, cols, SCROLLBACK), tail: Vec::new(), left_alternate: None, partial_csi: Vec::new(),
             last_output: None, typed: None, resting: None, ending: false, classic: false, shown_again: 0,
-            codex: false, at: At::Ground, csi: Vec::new(), region: None }
+            codex: false, at: At::Ground, csi: Vec::new(), region: None, carry: Vec::new() }
     }
 
     /// The provider is Codex in its inline mode.
@@ -390,6 +395,13 @@ impl Model {
     // ponytail: a line feed inside a control sequence (C0 executes there) is fed as it is, and
     // that line is not kept; no program writes one.
     fn process(&mut self, bytes: &[u8]) {
+        let joined;
+        let bytes = if self.carry.is_empty() {
+            bytes
+        } else {
+            joined = [std::mem::take(&mut self.carry).as_slice(), bytes].concat();
+            &joined[..]
+        };
         let mut done = 0;
         for (i, &b) in bytes.iter().enumerate() {
             match self.at {
@@ -412,9 +424,17 @@ impl Model {
                         // The line feed is this scroll: the cursor stays where it is.
                         self.scroll_region(bottom, col);
                         done = i + 1;
-                    } else if wraps(&bytes[i..], col, cols) {
-                        // The character then starts the region's new last row.
-                        self.scroll_region(bottom, 0);
+                    } else {
+                        let Some(ch) = bytes.get(i..i + char_len(b)) else {
+                            // The read ends inside the character (a wide one on the last column
+                            // wraps, a narrow one does not): it waits for its other bytes, 3 at most.
+                            self.carry = bytes[i..].to_vec();
+                            return;
+                        };
+                        if wraps(ch, col, cols) {
+                            // The character then starts the region's new last row.
+                            self.scroll_region(bottom, 0);
+                        }
                     }
                 }
                 At::Esc => {
@@ -1427,31 +1447,43 @@ mod tests {
 
     #[test]
     fn holder_model_keeps_the_line_a_wrapping_character_pushes_off_a_scroll_region_and_no_line_of_other_regions() {
-        let mut model = Model::new(4, 10);
-        let mut plain = vt100::Parser::new(4, 10, SCROLLBACK);
-        let feed = |model: &mut Model, plain: &mut vt100::Parser, bytes: &[u8]| {
-            model.feed(bytes);
-            plain.process(bytes);
-        };
-        // Region rows 1-3, a prompt under it. A line longer than the terminal is wide wraps on the
-        // region's last row, twice; a wide character with one column left wraps too.
-        feed(&mut model, &mut plain, b"\x1b[4;1Hprompt\x1b[1;3r\x1b[3;1H\r\naaaaaaaaaabbbbbbbbbbcc\r\nddddddddd\xe4\xb8\xad\x1b[r");
-        assert_eq!(shown(model.parser.screen()), shown(plain.screen()));
-        let all = lines(&mut late_joiner(&mut model, 1 << 20));
-        assert_eq!(all, ["", "", "", "aaaaaaaaaa", "bbbbbbbbbb", "cc", "ddddddddd", "中", "prompt"]);
-        let kept = above(&mut late_joiner(&mut model, 1 << 20));
-        assert_eq!(kept, 5);
-        // A region that does not start at the first row keeps nothing in a terminal either, nor does
-        // the alternate screen, nor `ESC[<n>S`.
-        feed(&mut model, &mut plain, b"\x1b[2;3r\x1b[3;1H\r\nlower\r\nregion\x1b[r");
-        feed(&mut model, &mut plain, b"\x1b[1;3r\x1b[2S\x1b[r");
-        feed(&mut model, &mut plain, b"\x1b[?1049h\x1b[1;3r\x1b[3;1H\r\nfull\r\nscreen\x1b[r\x1b[?1049l");
-        assert_eq!(shown(model.parser.screen()), shown(plain.screen()));
-        assert_eq!(above(&mut late_joiner(&mut model, 1 << 20)), kept);
-        // No region: vt100 keeps the line itself, once.
-        feed(&mut model, &mut plain, b"\x1b[4;1H\r\nplain");
-        assert_eq!(shown(model.parser.screen()), shown(plain.screen()));
-        assert_eq!(above(&mut late_joiner(&mut model, 1 << 20)), kept + 1);
+        // Whole reads, and a byte a read: a pty read can end inside a character (review of #3912: a
+        // wide character on the region's last column, split across two reads, was taken as one
+        // column wide, vt100 wrapped it on the next read, and the line it pushed off was not kept).
+        for split in [false, true] {
+            let mut model = Model::new(4, 10);
+            let mut plain = vt100::Parser::new(4, 10, SCROLLBACK);
+            let feed = |model: &mut Model, plain: &mut vt100::Parser, bytes: &[u8]| {
+                for read in bytes.chunks(if split { 1 } else { bytes.len() }) {
+                    model.feed(read);
+                    plain.process(read);
+                }
+            };
+            // Region rows 1-3, a prompt under it. A line longer than the terminal is wide wraps on the
+            // region's last row, twice; a wide character with one column left wraps too (3 bytes
+            // of CJK, 4 of an emoji).
+            feed(&mut model, &mut plain, "\x1b[4;1Hprompt\x1b[1;3r\x1b[3;1H\r\naaaaaaaaaabbbbbbbbbbcc\r\nddddddddd中\r\neeeeeeeee😀\x1b[r".as_bytes());
+            assert_eq!(shown(model.parser.screen()), shown(plain.screen()), "split: {split}");
+            let all = lines(&mut late_joiner(&mut model, 1 << 20));
+            assert_eq!(all, ["", "", "", "aaaaaaaaaa", "bbbbbbbbbb", "cc", "ddddddddd", "中", "eeeeeeeee", "😀", "prompt"], "split: {split}");
+            let kept = above(&mut late_joiner(&mut model, 1 << 20));
+            assert_eq!(kept, 7);
+            // A narrow character of 2 bytes on the last column does not wrap, however it is read.
+            feed(&mut model, &mut plain, "\x1b[1;3r\x1b[3;1H\x1b[2Kfffffffffé\x1b[r".as_bytes());
+            assert_eq!(shown(model.parser.screen()), shown(plain.screen()), "split: {split}");
+            assert_eq!(above(&mut late_joiner(&mut model, 1 << 20)), kept);
+            // A region that does not start at the first row keeps nothing in a terminal either, nor does
+            // the alternate screen, nor `ESC[<n>S`.
+            feed(&mut model, &mut plain, b"\x1b[2;3r\x1b[3;1H\r\nlower\r\nregion\x1b[r");
+            feed(&mut model, &mut plain, b"\x1b[1;3r\x1b[2S\x1b[r");
+            feed(&mut model, &mut plain, b"\x1b[?1049h\x1b[1;3r\x1b[3;1H\r\nfull\r\nscreen\x1b[r\x1b[?1049l");
+            assert_eq!(shown(model.parser.screen()), shown(plain.screen()), "split: {split}");
+            assert_eq!(above(&mut late_joiner(&mut model, 1 << 20)), kept);
+            // No region: vt100 keeps the line itself, once.
+            feed(&mut model, &mut plain, b"\x1b[4;1H\r\nplain");
+            assert_eq!(shown(model.parser.screen()), shown(plain.screen()), "split: {split}");
+            assert_eq!(above(&mut late_joiner(&mut model, 1 << 20)), kept + 1);
+        }
     }
 
     /// Prod 2026-10-08 (acceptance round 14, C3): a teammate who opened a long inline Codex session

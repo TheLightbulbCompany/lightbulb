@@ -445,7 +445,6 @@ _SID = uuid.UUID("11111111-1111-4111-8111-111111111111")
         _decision_row(humanUserId="user_b"),
         _decision_row(deviceId="mac_b"),
         _decision_row(generation="g0"),
-        _decision_row(endedAt=1),
     ],
 )
 async def test_decision_refuses_anything_but_this_macs_current_session(monkeypatch, row):
@@ -454,6 +453,23 @@ async def test_decision_refuses_anything_but_this_macs_current_session(monkeypat
     body = tools.NativeDecisionRequest(session_id=_SID, generation="g1", decision="pause")
     with pytest.raises(ApiProblem):
         await tools.decide(_decision_device(), body)
+
+
+async def test_an_ended_run_takes_its_owners_owed_stop_and_nothing_else(monkeypatch):
+    monkeypatch.setattr(tools.sessions_repo, "get_session", AsyncMock(return_value=_decision_row(endedAt=1)))
+    _connected(monkeypatch, device_id="mac_other")  # the run's own connection is gone
+    set_sharing = AsyncMock(return_value="paused")
+    monkeypatch.setattr(tools.local_sessions, "set_sharing", set_sharing)
+    from core.services import local_session_relay
+
+    monkeypatch.setattr(local_session_relay, "publish_resources_changed", AsyncMock())
+    pause = tools.NativeDecisionRequest(session_id=_SID, generation="g1", decision="pause")
+    assert await tools.decide(_decision_device(), pause) == "paused"
+    assert set_sharing.await_args.args[1:] == (str(_SID), False)
+    with pytest.raises(ApiProblem):
+        await tools.decide(
+            _decision_device(), tools.NativeDecisionRequest(session_id=_SID, generation="g1", decision="unpause")
+        )
 
 
 async def test_decision_refuses_a_stale_connection(monkeypatch):

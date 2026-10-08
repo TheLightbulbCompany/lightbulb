@@ -1931,6 +1931,19 @@ impl Mirror {
         self.pending = None;
         Ok(true)
     }
+    /// The relay's answer to a batch it dropped because sharing is paused in the workspace: it
+    /// moved its cursor past the batch and stored none of it. The events stay queued here, so
+    /// sharing again uploads them, and nothing more is sent until then (the workspace's pause
+    /// is this Mac's too, as in `Host::follow_presence`).
+    fn dropped_paused(&mut self, batch_id: &str, after_seq: u64) -> Result<bool> {
+        let queue = self.queue.clone();
+        let taken = self.acknowledge(batch_id, after_seq)?;
+        if taken {
+            self.queue = queue;
+            self.shared = false;
+        }
+        Ok(taken)
+    }
     /// Adopt the relay's cursor when neither "nothing applied" nor "the pending batch was
     /// applied" explains it. The local backlog is dropped; one system marker tells viewers.
     fn resync(&mut self, after: u64) {
@@ -3100,6 +3113,19 @@ mod tests {
         assert_eq!(mirror.after_seq, 7);
         assert!(mirror.pending.is_none());
         assert!(mirror.acknowledge("b1", 8).is_err(), "a cursor we never reached is still a conflict");
+    }
+    #[test]
+    fn local_sessions_a_batch_the_relay_dropped_while_paused_stays_queued_for_the_next_share() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(dir.path().join("transcript.jsonl"));
+        mirror.after_seq = 5;
+        let events = vec![json!({"kind":"text","role":"assistant","text":"sent just before the pause","truncated":false})];
+        mirror.queue = events.clone();
+        mirror.pending = Some(json!({"batchId":"b1","events":events}));
+        // The relay moved its cursor and stored nothing: the cursor follows, the events wait.
+        assert_eq!(mirror.dropped_paused("b1", 6), Ok(true));
+        assert_eq!((mirror.after_seq, &mirror.queue, mirror.pending.is_none()), (6, &events, true));
+        assert!(!mirror.shared && mirror.next_batch().unwrap().is_none(), "paused here too: nothing more is sent");
     }
     #[test]
     fn local_sessions_acknowledge_ignores_stale_duplicate_batch_acks_but_conflicts_on_real_mismatches(

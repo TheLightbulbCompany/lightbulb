@@ -1089,6 +1089,8 @@ class LocalSessionRelay:
                 "sessionId": row["sessionId"],
                 "batchId": message.batch_id,
                 "afterSeq": previous["batchEndSeq"],
+                # The replay of a batch dropped while paused: its row is the notice.
+                **({"paused": True} if previous.get("text") == PAUSED_NOTICE else {}),
             }
         if message.after_seq != row.get("eventSeq", 0):
             raise _conflict("cursor", sid=sid, expected=row.get("eventSeq", 0), got=message.after_seq)
@@ -1179,7 +1181,10 @@ class LocalSessionRelay:
 
         The first dropped batch leaves one notice at its first seq, which also keeps that
         batch replay-idempotent; later ones only advance the cursor, and a lost ack for one
-        resyncs like any other cursor gap. The desktop keeps its cursor either way.
+        resyncs like any other cursor gap. The ack says ``paused``: the Mac follows the
+        cursor but keeps the events, and uploads them when sharing resumes (owner ruling
+        2026-10-08: sharing again shares the whole session). An older desktop ignores the
+        field and discards them.
         """
         first_seq, end = message.after_seq + 1, message.after_seq + len(message.events)
         updates = []
@@ -1212,6 +1217,7 @@ class LocalSessionRelay:
             "sessionId": row["sessionId"],
             "batchId": message.batch_id,
             "afterSeq": end,
+            "paused": True,
         }
 
     def _session_check(self, row: dict) -> dict:

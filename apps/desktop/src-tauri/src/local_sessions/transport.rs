@@ -744,13 +744,14 @@ impl Host {
         asked(key).is_some_and(|(shared, _)| !shared) || self.mirrors.get(key).is_none_or(Mirror::withheld)
     }
 
-    /// Whether a relay frame names a session that is withheld (a terminal frame queued before
-    /// sharing stopped, `watch`, typed `input`): it is dropped.
+    /// Whether a relay frame names a session that is stopped (a terminal frame queued before
+    /// sharing stopped, `watch`, typed `input`): it is dropped. A stop the loop has not applied
+    /// yet counts, as at every other exit.
     fn refuses_frame(&self, body: &Value) -> bool {
         self.mirrors
-            .values()
-            .find(|m| m.session_id.is_some() && m.session_id.as_deref() == body["sessionId"].as_str())
-            .is_some_and(Mirror::withheld)
+            .iter()
+            .find(|(_, m)| m.session_id.is_some() && m.session_id.as_deref() == body["sessionId"].as_str())
+            .is_some_and(|(key, _)| self.stopped_now(key))
     }
 
     fn live_count(&self) -> usize {
@@ -1925,7 +1926,15 @@ impl Host {
                                 let (key,mirror) = self.mirrors.iter_mut().find(|(_,m)|m.session_id.as_deref() == body["sessionId"].as_str()).ok_or("unknown upload acknowledgment")?;
                                 let batch_id = body["batchId"].as_str().ok_or("missing batch ID")?;
                                 let after = body["afterSeq"].as_u64().ok_or("missing cursor")?;
-                                if mirror.acknowledge(batch_id, after)? {
+                                // `paused`: sharing is paused in the workspace and the relay stored
+                                // none of this batch. The pause is this Mac's too from here.
+                                let paused = body["paused"] == true;
+                                let taken = if paused { mirror.dropped_paused(batch_id, after)? } else { mirror.acknowledge(batch_id, after)? };
+                                if taken {
+                                    if paused {
+                                        relay_log(&format!("{} paused in the workspace; its upload waits", short(key)));
+                                        super::screen::revoke(body["sessionId"].as_str().unwrap_or_default());
+                                    }
                                     if mirror.advance() {registered.remove(key);}
                                     mirror.persist(&self.dir.join(format!("{key}.json")))?;
                                     sent_batches.remove(key);
@@ -3325,6 +3334,7 @@ pub(super) mod tests {
         // until it takes it. Its presence still says "shared" meanwhile: that undoes nothing.
         ask_share(&key, false);
         assert!(host.stopped_now(&key), "before the loop applies it");
+        assert!(host.refuses_frame(&json!({"sessionId": sid})), "a terminal frame already queued is not sent");
         assert!(host.share_tick().is_empty());
         assert!(host.mirrors[&key].withheld() && host.mirrors[&key].stop_owed);
         assert_eq!(host.follow_presence(&presence(false, "gen-1")), None);

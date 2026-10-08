@@ -468,6 +468,11 @@ impl Host {
                     let returned_claude = native.provider == "claude"
                         && native.job.is_none()
                         && claude::still_registered(&self.home, native.process.pid, &native.conversation);
+                    // A withheld Codex thread that is idle again stays ended: reviving it only
+                    // defers its end behind an upload and a register it never makes.
+                    if native.provider == "codex" && native.status == "idle" && mirror.withheld() {
+                        continue;
+                    }
                     if mirror.native.process == native.process {
                         if !resumed_codex_activity && !returned_claude {
                             continue;
@@ -850,11 +855,18 @@ impl Host {
         let Some(mirror) = self.mirrors.get_mut(key) else {
             return Ok(());
         };
-        if mirror.ended_at.is_some() || mirror.deferred_end_reason.is_some() {
+        // A withheld session never talks to the relay, so its end waits for no register or
+        // upload: it ends here, also one whose end was deferred while it was still shared.
+        let withheld = mirror.withheld();
+        if mirror.ended_at.is_some() || (mirror.deferred_end_reason.is_some() && !withheld) {
             return Ok(());
         }
         let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
-        if mirror.resume_generation.is_some()
+        if withheld {
+            mirror.resume_generation = None;
+            mirror.resume_registration_pending = false;
+            mirror.deferred_end_reason = None;
+        } else if mirror.resume_generation.is_some()
             || mirror.resume_registration_pending
             || mirror.registration.pending
         {
@@ -933,7 +945,10 @@ impl Host {
                 recovering_ended.insert(key.clone());
                 continue;
             }
-            let Some(session) = mirror.session_id.clone() else {
+            // Nothing is told about a run the relay never had: a session never registered, or a
+            // withheld one revived under a generation that never registered.
+            let known = !mirror.withheld() || mirror.registration.acknowledged.as_deref() == Some(mirror.generation.as_str());
+            let Some(session) = mirror.session_id.clone().filter(|_| known) else {
                 if owes_bound_register(dir, mirror) {
                     // Someone started this run and waits to open it: the relay has to learn
                     // it existed. The draining register gives it a session, then this end.
@@ -2547,9 +2562,8 @@ fn registration_due_with_recovery(
         .iter()
         .find(|(key, mirror)| {
             (mirror.ended_at.is_none() || recovering_ended.contains(*key))
-                // A withheld session registers nothing new. Only a register its end still waits
-                // on goes out (one already begun), so the relay has a session for that end.
-                && (!mirror.withheld() || mirror.deferred_end_reason.is_some())
+                // A withheld session registers nothing, whatever it still waits on.
+                && !mirror.withheld()
                 && !registered.contains(*key)
                 && !quarantine_active(quarantined, key)
         })
@@ -3108,6 +3122,58 @@ pub(super) mod tests {
         host.finish_deferred_end("k").unwrap();
         assert!(host.mirrors["k"].ended_at.is_some());
         assert!(!has_drainable_backlog(&host.mirrors["k"]));
+    }
+
+    #[test]
+    fn local_sessions_a_claude_session_never_shared_registers_nothing_when_it_comes_back_and_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = test_host(dir.path(), vec![]);
+        host.share_every = Some(false);
+        let conversation = "5eed0006-0000-4000-8000-000000000006";
+        let mut native = test_native(conversation);
+        native.provider = "claude".into();
+        // Claude's own registry: this pid runs the conversation (again).
+        fs::create_dir_all(dir.path().join(".claude/sessions")).unwrap();
+        fs::write(dir.path().join(format!(".claude/sessions/{}.json", std::process::id())), format!("{{\"sessionId\":\"{conversation}\"}}")).unwrap();
+        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
+        let key = native_key(&native);
+        assert!(!host.mirrors[&key].shared);
+        // Its person opens the agent view (it ends here), comes back (it is revived), then exits.
+        host.end_session(&key, "exited").unwrap();
+        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
+        assert!(host.mirrors[&key].ended_at.is_none() && host.mirrors[&key].resume_registration_pending, "revived as a resume");
+        host.end_session(&key, "exited").unwrap();
+        let mirror = &host.mirrors[&key];
+        assert!(mirror.ended_at.is_some() && mirror.deferred_end_reason.is_none(), "its end waits for no register");
+        assert_eq!(registration_due_with_recovery(&host.mirrors, &BTreeSet::new(), &BTreeMap::new(), &BTreeSet::new()), None);
+        // Also when the relay knew an earlier run of it (shared, then stopped): the revived
+        // generation never registered, so no end is told for it.
+        host.mirrors.get_mut(&key).unwrap().session_id = Some("5eed0006-5e55-4000-8000-000000000006".into());
+        assert!(host.ended_frame(&mut BTreeSet::new()).unwrap().is_none());
+        assert!(host.mirrors[&key].ended_sent && host.ended_pending.is_empty());
+    }
+
+    #[test]
+    fn local_sessions_a_codex_thread_never_shared_registers_nothing_when_it_is_resumed_idle() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = test_host(dir.path(), vec![]);
+        host.share_every = Some(false);
+        let mut native = test_native("5eed0007-0000-4000-8000-000000000007");
+        native.status = "idle".into();
+        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
+        let key = native_key(&native);
+        host.end_session(&key, "exited").unwrap();
+        // `codex resume`: the same thread in a new process, idle when discovery sees it.
+        let mut child = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let mut resumed = native.clone();
+        resumed.process = process(child.id()).unwrap();
+        let observed = host.observe(vec![resumed], &BTreeSet::new());
+        child.kill().unwrap();
+        child.wait().unwrap();
+        observed.unwrap();
+        let mirror = &host.mirrors[&key];
+        assert!(mirror.ended_at.is_some() && mirror.deferred_end_reason.is_none(), "no end deferred behind a register");
+        assert_eq!(registration_due_with_recovery(&host.mirrors, &BTreeSet::new(), &BTreeMap::new(), &BTreeSet::new()), None);
     }
 
     #[test]

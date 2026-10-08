@@ -270,9 +270,6 @@ async fn answer(mut socket: UnixStream, scope: PathBuf, enrollment: Enrollment, 
             if let Err(refusal) = decide(&client, &enrollment, &identity, &caller.session_id, &payload).await {
                 return reply(&mut socket, "409 Conflict", &refusal).await;
             }
-            if payload["decision"] == "unpause" {
-                super::transport::ask_share(&caller.key, true);
-            }
             let out = if stop { json!({"shared": false}) } else { state(&caller) };
             reply(&mut socket, "200 OK", &out).await
         }

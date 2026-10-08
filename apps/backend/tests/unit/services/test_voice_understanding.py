@@ -32,7 +32,10 @@ def decide():
         yield decide
 
 
-NOBODY = {"requests": [], "social": None, "more": False, "cancel": [], "steer": [], "people": False, "say": None}
+NOBODY = {
+    "requests": [], "social": None, "more": False, "cancel": [], "hush": [], "called": None, "steer": [],
+    "people": False, "say": None,
+}  # fmt: skip
 SMALL_TALK = {"agentId": "friday", "kind": "social", "task": None, "text": None}
 
 
@@ -138,6 +141,8 @@ def test_a_sentence_is_cut_where_a_new_request_begins(line, want):
         "okay can you also rerun the flaky e2e job on the mobile branch",  # "can you" alone is no part
         "export the list of trial users and then send it to Dana",  # "send it" leans on the export: one task
         "check the build and test results",
+        "Can you tell me... What the workspace plan costs per month?",  # an ellipsis is no sentence end
+        "Can you tell me… um what the workspace plan costs",
         "find the customer who emailed us and asked for a refund",
         "what's the open rate on the um the last two newsletters actually just the last one",
         "tell Priya I need the board deck by Thursday",  # the words to pass on are the same request
@@ -354,6 +359,10 @@ async def test_a_correction_to_an_unheard_answer_drops_it_and_asks_again(decide)
     got = await route(decide, line, jev_says(kinds=["request"], whos=["pulse"], amends="r1"), opened=ready)
     assert got["ops"]["cancel"] == ["r1"] and got["ops"]["steer"] == []
     assert tasks(got) == [("gauge", "how many signups came in last week. Actually make that last month", "follow")]
+    # the worker is part way through saying it (talked over): the line is about what was heard, a follow-up
+    heard = [{**ready[0], "asker": "Prasiddha", "delivery": "paused"}]
+    got = await route(decide, line, jev_says(kinds=["request"], whos=["pulse"], amends="r1"), opened=heard)
+    assert got["ops"]["cancel"] == [] and tasks(got) == [("gauge", "Actually make that last month", "follow")]
 
 
 async def test_an_ask_already_being_worked_on_is_not_made_twice(decide):
@@ -471,7 +480,9 @@ async def test_a_meeting_implies_nobody_but_the_named_the_wake_word_and_the_floo
     assert tasks(await route(decide, line, said, humans=0, wake=True, setting="meeting")) == [
         ("gauge", "Can we get the conversion numbers for last quarter", "fit")
     ]
-    assert tasks(await route(decide, line, said, humans=3, setting="meeting", floor="forge"))[0][0] == "gauge"
+    assert tasks(await route(decide, line, said, humans=3, setting="meeting", floor="forge")) == []
+    talking = [engaged("forge")]  # its speaker is talking with Forge: the ask is the team's, and Gauge fits it
+    assert tasks(await route(decide, line, said, humans=3, setting="meeting", engagements=talking))[0][0] == "gauge"
     hello = await route(decide, "morning all", jev_says(kinds=["social"]), humans=1, setting="meeting")
     assert hello["ops"]["social"] is None  # nobody greets a meeting unasked
     asked = await route(
@@ -610,3 +621,229 @@ async def test_a_stop_says_nothing_and_a_correction_is_acknowledged(decide):
         "task": "Actually make that last month",
         "text": None,
     }
+
+
+async def test_a_line_that_trails_off_and_goes_on_is_one_request(decide):
+    """Meet run 2026-10-07: cut at the ellipsis, this was one request by floor and one by fit."""
+    line = "Can you tell me... What the workspace plan costs per month?"
+    got = await route(decide, line, jev_says(kinds=["request"], whos=["gauge"]), floor="friday")
+    assert tasks(got) == [("gauge", "Can you tell me... What the workspace plan costs per month", "fit")]
+    assert [k for k in decide.await_args.args[1] if k.startswith("k")] == ["k0"]  # Jev was asked about one part
+
+
+async def test_calling_off_with_nothing_open_says_nothing(decide):
+    """Meet run 2026-10-07: "Perfect. Friday, stop." after the answer became small talk ("Got it; I will stop
+    now."). Nothing to call off is still a stop: no request, no reply."""
+    said = jev_says(kinds=["social", "cancel"], names=["addressed"])
+    for opened in ((), OPEN[1:]):  # nothing asked yet; the one request already answered
+        said["drops"] = {"choice": "r2", "probabilities": {"r2": 0.9}} if opened else said["drops"]
+        got = await route(decide, "Perfect. Friday, stop.", said, opened=opened)
+        assert got["ops"] == {**NOBODY, "hush": [{"agentId": "friday", "requestIds": []}]} and got["agentIds"] == []
+    alone = await route(decide, "That's great. Never mind, stop.", jev_says(kinds=["social", "cancel"]), floor="pulse")
+    assert alone["ops"] == {**NOBODY, "hush": [{"agentId": "pulse", "requestIds": []}]}
+    # a request on the same line is still made and acknowledged
+    said = jev_says(kinds=["cancel", "request"], names=["addressed"])
+    both = await route(decide, "Never mind that. Friday, what's our MRR?", said)
+    assert tasks(both) == [("friday", "what's our MRR", "name")] and both["ops"]["say"]["kind"] == "ack"
+
+
+# ---- a meeting: a line with no name on it (architecture review, point 4) ----
+
+ASKED = [{"id": "c1", "agentId": "friday", "task": "what's on my calendar Wednesday", "status": "delivered"}]
+STAND_UP = "Yeah, I think we should move the stand-up to eight"
+
+
+def engaged(agent="friday", state="active", expects="nothing", last="delivered", last_by="", why=""):
+    """What the worker says about the speaker and one agent (huddle `Engagement`)."""
+    return {
+        "agentId": agent, "obligation": "c1", "task": ASKED[0]["task"], "state": state, "expects": expects,
+        "why": why, "last": last, "lastBy": last_by, "seconds": 4,
+    }  # fmt: skip
+
+
+async def meet(decide, line, said, *talking, **kw):
+    return await route(decide, line, said, humans=3, setting="meeting", opened=ASKED, engagements=list(talking), **kw)
+
+
+@pytest.mark.parametrize(
+    "kind,p", [("social", 0.9), ("context", 0.9), ("request", 0.6), ("request", 0.95), ("nudge", 0.9)]
+)
+async def test_in_a_meeting_an_unnamed_line_is_people_talk_without_evidence_however_sure_the_read(decide, kind, p):
+    """That a line asks something does not say whom it asks: no probability makes it the agent's."""
+    got = await route(
+        decide, STAND_UP, jev_says(kinds=[kind], p=p), humans=3, setting="meeting", floor="friday", opened=ASKED
+    )
+    assert got["ops"] == {**NOBODY, "people": True} and got["agentIds"] == []
+    # a one-to-one Live call: the lone speaker's line is still for the floor agent, as before
+    live = await route(decide, STAND_UP, jev_says(kinds=[kind], p=p), floor="friday", opened=ASKED)
+    if kind == "request":
+        assert tasks(live) == [("friday", STAND_UP, "floor")]
+    elif kind in ("social", "context"):
+        assert live["ops"]["social"] == "friday" and not live["ops"]["people"]
+    assert live["ops"]["say"]["agentId"] == "friday"
+
+
+@pytest.mark.parametrize(
+    "talking,theirs",
+    [
+        (engaged(last="delivered"), True),  # they have just heard its answer: a follow-up
+        (engaged(expects="reply", last="delivered"), True),  # it asked them something
+        (engaged(expects="answer", last="paused", last_by="speaker"), True),  # they talked over it
+        (engaged(expects="answer", last="paused", last_by="other"), False),  # someone else did
+        (engaged(expects="answer", last="none"), False),  # it is working: they are talking to the others meanwhile
+        (engaged(state="suspended", why="people"), False),  # they turned to a colleague
+        (engaged(state="suspended", why="other"), False),  # another exchange came between
+        (engaged(state="suspended", why="gap"), False),
+    ],
+)
+async def test_in_a_meeting_an_unnamed_line_is_the_agents_when_its_speaker_is_talking_with_it(decide, talking, theirs):
+    got = await meet(decide, "what about Thursday morning", jev_says(kinds=["request"], p=0.55), talking)
+    if theirs:
+        assert tasks(got) == [("friday", "what about Thursday morning", "floor")] and not got["ops"]["people"]
+        assert got["ops"]["say"]["kind"] == "ack"
+    else:
+        assert got["ops"] == {**NOBODY, "people": True}
+    # in-app Live does not read it: its lone speaker's line is the floor agent's either way
+    live = await route(
+        decide, "what about Thursday morning", jev_says(kinds=["request"]), floor="friday", engagements=[talking]
+    )
+    assert tasks(live) == [("friday", "what about Thursday morning", "floor")]
+
+
+async def test_in_a_meeting_a_line_that_addresses_a_person_is_theirs_whoever_the_speaker_was_talking_with(decide):
+    talking = engaged(expects="reply")
+    to_all = await meet(decide, "Monthly, with an annual option", jev_says(kinds=["people"]), talking)
+    assert to_all["ops"] == {**NOBODY, "people": True}
+    said = jev_says(kinds=["request"], names=["addressed"])
+    to_leo = await meet(decide, "Leo, what is your tool costing you?", said, talking)
+    assert to_leo["ops"] == {**NOBODY, "people": True}
+    # two agents, two people: the line goes with its own speaker's exchange, not the floor voice's
+    mine = await meet(
+        decide, "and the week after", jev_says(kinds=["request"]), engaged("gauge"), floor="friday", mine=False
+    )
+    assert tasks(mine) == [("gauge", "the week after", "floor")]
+
+
+async def test_in_a_meeting_a_reference_to_a_request_is_for_its_agent_also_after_the_speaker_turned_away(decide):
+    line = "and what about Thursday?"
+    said = jev_says(kinds=["request"], whos=["gauge"], amends="c1", p=0.55)  # a short follow-up reads weakly
+    for talking in ([], [engaged(state="suspended", why="people")]):
+        got = await route(decide, line, said, humans=3, setting="meeting", opened=ASKED, engagements=talking)
+        assert tasks(got) == [("friday", "what about Thursday", "follow")] and not got["ops"]["people"]
+        assert got["ops"]["say"] == {"agentId": "friday", "kind": "ack", "task": "what about Thursday", "text": None}
+    live = await route(decide, line, said, floor="friday", opened=ASKED)
+    assert tasks(live) == [("friday", "what about Thursday", "follow")]
+    # still working on it: the follow-up steers that run
+    working = [{**ASKED[0], "status": "working"}]
+    steer = await route(decide, line, said, humans=3, setting="meeting", floor="friday", opened=working)
+    assert steer["ops"]["steer"] == [{"requestId": "c1", "text": "what about Thursday"}]
+    # Jev down: nothing was read, so nothing is implied, whatever the worker knows
+    down = await meet(decide, line, None, engaged())
+    assert tasks(down) == [] and down["ops"]["social"] is None and down["ops"]["say"] is None
+
+
+async def test_the_understanding_call_is_told_who_the_speaker_is_talking_with(decide):
+    await meet(decide, STAND_UP, jev_says(kinds=["social"]), engaged())
+    assert "Friday is talking with Prasiddha" in str(decide.await_args)
+    await meet(decide, STAND_UP, jev_says(kinds=["social"]), engaged(state="suspended", why="people"))
+    assert "was talking with Friday and has turned to other people" in str(decide.await_args)
+
+
+# ---- a stop is one of two things: a request withdrawn (cancel), or an agent told to stop talking (hush). ----
+# ---- Jev says which (the part's kind). Which request it is about (``drops``) is a separate answer.       ----
+
+
+def hushed(got):
+    return [(x["agentId"], x["requestIds"]) for x in got["ops"]["hush"]]
+
+
+async def test_a_stop_that_withdraws_a_request_cancels_it_and_one_that_does_not_only_hushes_the_agent(decide):
+    said = jev_says(kinds=["cancel"], names=["not_a_name"], drops="r1")
+    withdrawn = await route(decide, "Forget the signups.", said, opened=OPEN)
+    assert (withdrawn["ops"]["cancel"], withdrawn["ops"]["hush"]) == (["r1"], []), "the task: its run is aborted"
+    quiet = await route(decide, "Gauge, not now.", jev_says(kinds=["hush"], names=["addressed"]), opened=OPEN)
+    assert (quiet["ops"]["cancel"], hushed(quiet)) == ([], [("gauge", [])]), "its speech: the work goes on"
+    assert quiet["ops"]["say"] is None and quiet["ops"]["social"] is None and quiet["ops"]["requests"] == []
+    # a meeting, no name: the agent whose words the speaker talked over
+    over = engaged(expects="answer", last="paused", last_by="speaker")
+    mine = await meet(decide, "okay okay, that is enough", jev_says(kinds=["hush"]), over)
+    assert (mine["ops"]["cancel"], hushed(mine), mine["ops"]["people"]) == ([], [("friday", [])], False)
+    # ...and nobody's when the speaker is talking with no agent: "never mind" between two people
+    other = await meet(decide, "never mind, I found it", jev_says(kinds=["cancel"]))
+    assert other["ops"]["hush"] == [] and other["ops"]["cancel"] == []
+
+
+async def test_a_stop_that_names_a_request_withdraws_it_only_when_it_is_a_withdrawal(decide):
+    """Review 10-07: scope was read from whether the stop named an open request, so "stop talking about the
+    signups" aborted the signups run. The reference is the same in both lines. Only the kind differs."""
+    quiet = await route(
+        decide,
+        "Stop talking about the signups.",
+        jev_says(kinds=["hush"], names=["not_a_name"], drops="r1"),
+        opened=OPEN,
+    )
+    assert (quiet["ops"]["cancel"], hushed(quiet)) == ([], [("gauge", ["r1"])]), "the run stays alive"
+    assert quiet["ops"]["say"] is None and quiet["ops"]["requests"] == []
+    gone = await route(
+        decide, "Never mind the signups.", jev_says(kinds=["cancel"], names=["not_a_name"], drops="r1"), opened=OPEN
+    )
+    assert (gone["ops"]["cancel"], gone["ops"]["hush"]) == (["r1"], []), "withdrawn: aborted"
+    # the request it names is its agent's, whoever else the line names or the speaker is talking with
+    other = await route(
+        decide, "Stop talking about the signups.", jev_says(kinds=["hush"], drops="r1"), opened=OPEN, floor="forge"
+    )
+    assert hushed(other) == [("gauge", ["r1"])]
+    # a withdrawal Jev is not sure of silences and aborts nothing: silence can be undone
+    unsure = jev_says(kinds=["cancel"], names=["not_a_name"], drops="r1", p=vc.WITHDRAW_P - 0.1)
+    unsure["drops"] = {"choice": "r1", "probabilities": {"r1": 0.9}}
+    weak = await route(decide, "Eh, leave the signups.", unsure, opened=OPEN)
+    assert (weak["ops"]["cancel"], hushed(weak)) == ([], [("gauge", ["r1"])])
+    # both on one line: the withdrawal stands for the request its own sentence names
+    both = jev_says(kinds=["hush", "cancel"], names=["not_a_name"], drops="r1", dropped=[None, "r1"])
+    got = await route(decide, "Stop. Never mind the signups.", both, opened=OPEN)
+    assert (got["ops"]["cancel"], got["ops"]["hush"]) == (["r1"], [])
+
+
+TWO = [
+    {"id": "deck", "agentId": "forge", "task": "draft the investor deck", "status": "working"},
+    {"id": "invoice", "agentId": "gauge", "task": "send the March invoice", "status": "working"},
+]
+MIXED = "Stop talking about the deck. Cancel the invoice task."
+
+
+async def test_each_stop_on_a_line_keeps_its_own_request(decide):
+    """Review 10-07: one request was picked for the whole line and a withdrawal anywhere withdrew it, so
+    this line aborted the deck it only asked to hear no more about."""
+    said = jev_says(kinds=["hush", "cancel"], drops="deck", dropped=["deck", "invoice"])
+    got = await route(decide, MIXED, said, opened=TWO)
+    assert (got["ops"]["cancel"], hushed(got)) == (["invoice"], [("forge", ["deck"])])
+    asked = str(decide.await_args)
+    assert "Stop talking about the deck." in asked and "Cancel the invoice task." in asked, "asked per part"
+    # the other way round, whichever request the whole line was read as being about
+    turned = jev_says(kinds=["cancel", "hush"], drops="deck", dropped=["invoice", "deck"])
+    got = await route(decide, "Cancel the invoice task. Stop talking about the deck.", turned, opened=TWO)
+    assert (got["ops"]["cancel"], hushed(got)) == (["invoice"], [("forge", ["deck"])])
+
+
+async def test_a_withdrawal_whose_request_cannot_be_told_only_hushes_its_agent(decide):
+    # two stops and nothing says which request the withdrawal is about: the line's one request is not it
+    said = jev_says(kinds=["hush", "cancel"], names=["addressed"], drops="deck", dropped=["deck", None])
+    got = await route(decide, "Stop talking about the deck. Gauge, cancel that.", said, opened=TWO)
+    assert got["ops"]["cancel"] == [], "a task nobody identified is never aborted"
+    assert hushed(got) == [("forge", ["deck"]), ("gauge", [])]
+    # no name either: the agent the speaker is talking with
+    said = jev_says(kinds=["hush", "cancel"], drops="deck", dropped=["deck", None])
+    got = await route(decide, "Stop talking about the deck. Cancel that other thing.", said, opened=TWO, floor="gauge")
+    assert (got["ops"]["cancel"], hushed(got)) == ([], [("forge", ["deck"]), ("gauge", [])])
+    # one stop on the line, as before: no request named, so the named agent goes quiet and nothing is aborted
+    alone = await route(decide, "Gauge, cancel that.", jev_says(kinds=["cancel"], names=["addressed"]), opened=TWO)
+    assert (alone["ops"]["cancel"], hushed(alone)) == ([], [("gauge", [])])
+
+
+async def test_turning_to_an_agent_with_nothing_new_asked_names_it_as_called(decide):
+    said = jev_says(kinds=["nudge"], names=["addressed"], amends="r1")
+    ready = [{**OPEN[0], "status": "ready"}]
+    got = await route(decide, "Gauge, go ahead.", said, opened=ready)
+    assert got["ops"]["called"] == "gauge" and got["ops"]["say"] is None, "the worker says its ready answer next"
+    asked = await route(decide, "Gauge, what's our MRR?", jev_says(kinds=["request"], names=["addressed"]))
+    assert asked["ops"]["called"] is None

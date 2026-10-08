@@ -135,6 +135,7 @@ class FakeBackend:
         setting="live",
         unclaimed=False,
         open=(),
+        engagements=(),
     ):
         self.routes.append((speaker, utterance, transcript))
         self.route_floors = getattr(self, "route_floors", []) + [floor]
@@ -147,6 +148,7 @@ class FakeBackend:
                 "setting": setting,
                 "unclaimed": unclaimed,
                 "open": list(open),
+                "engagements": list(engagements),
             }
         )
         if self.route_error:
@@ -289,8 +291,9 @@ class FakeLive:
     def append_commentary(self, text, delegation_id=None):
         self._rec("commentary", text, delegation_id)
 
-    def say(self, text):
+    def say(self, text, order=None):
         self._rec("say", text)
+        self.order = order  # this playback's id: its receipts name it (`Huddle.on_playback_ended`)
 
     def mute(self):
         self._rec("mute")
@@ -380,6 +383,27 @@ async def summoned(name="Forge", drive=False):
         h._voice.driven = None
         backend.turns.clear()
     return h, room, backend, lives, clock, log
+
+
+def spoken(h, live):
+    """A mouth finishes what it has been handed: every unit of every `say` not yet reported is reported said."""
+    done = getattr(live, "reported", 0)
+    live.reported = len(live.calls)
+    for c in live.calls[done:]:
+        for unit in h_mod.units(c[1]) if c[0] == "say" else ():
+            h.on_agent_said(live.agent_id, unit)
+
+
+def hand(h, agent_id):
+    """What the agent still has to say of its answers, each from its cursor (the room's ledger)."""
+    return [" ".join(u.units[u.cursor :]) for u in h._ledger if u.agent == agent_id and u.kind == "answer"]
+
+
+async def pause(h, clock, seconds=None):
+    """The room stays quiet long enough for an answer to start (the speech gate looks on the tick, too)."""
+    clock.t += h_mod.MEET_QUIET_S if seconds is None else seconds
+    await h.tick()
+    await settle(h)
 
 
 def packet(*events):
@@ -2093,6 +2117,7 @@ async def test_backend_client_option_d_routes(monkeypatch):
                 "setting": "live",
                 "unclaimed": False,
                 "open": [],
+                "engagements": [],
                 **base,
             },
         ),

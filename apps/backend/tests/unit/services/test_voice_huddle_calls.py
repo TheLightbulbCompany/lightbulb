@@ -555,7 +555,10 @@ def _asked(got):
     return [(r["agentId"], r["by"]) for r in got["ops"]["requests"]]
 
 
-NOBODY = {"requests": [], "social": None, "more": False, "cancel": [], "steer": [], "people": False, "say": None}
+NOBODY = {
+    "requests": [], "social": None, "more": False, "cancel": [], "hush": [], "called": None, "steer": [],
+    "people": False, "say": None,
+}  # fmt: skip
 
 
 def _say(agent, kind, task=None):
@@ -813,7 +816,7 @@ def test_a_bridged_meet_person_acts_as_the_owner_under_their_own_name():
 async def test_live_two_names_with_nothing_asked_get_one_voice_and_no_requests(live_env):
     """ "Finance and Ada?" asks nothing: no run for either, and one voice (the first named) says a line."""
     got = await _live(live_env, "Finance and Ada?", jev_says(names=["addressed", "addressed"]), humans=2)
-    assert got["ops"] == {**NOBODY, "social": "fin-1", "say": _say("fin-1", "social")}
+    assert got["ops"] == {**NOBODY, "social": "fin-1", "called": "fin-1", "say": _say("fin-1", "social")}
     assert got["agentIds"] == ["fin-1"] and "requests" not in got
 
 
@@ -859,6 +862,12 @@ def test_turn_note_checks_now_and_answers_one_request():
     assert "must be checked with a tool in this turn before you answer" in note
     assert "never what the answer is" in note and "never give an old value as current" in note
     assert "answer only what is asked here" in note
+    # Meet run 2026-10-07: "Tally is handling the Workspace pricing question." was spoken as the answer. A
+    # name is not forbidden (an answer can need one): narrating the team's work and passing the question on are.
+    assert "Answer it from your own knowledge and tools" in note and "say what is missing" in note
+    assert "Do not narrate who is handling what, and do not hand the question to a teammate" in note
+    assert "name a person or a teammate only when the answer itself requires it" in note
+    assert "never say a teammate's name" not in note
     assert "if it holds more than one, do each and give each result" in note  # a missed cut is still worked
     assert "speed matters more than completeness" not in note
     assert "from what you already know" not in note

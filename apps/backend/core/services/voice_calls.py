@@ -290,7 +290,7 @@ def _fire(coro) -> None:
 # provider caches a byte-identical prefix. Everything per-run rides in the input.
 # The script path is the image's (build-skills.sh maps /app/skills/ -> /opt/hermes-skills/); a
 # run's shell has PAPERCLIP_COMPANY_ID / PAPERCLIP_AGENT_ID from the profile .env.
-TURN_NOTE = """[Note: you are speaking in a Live voice call; your reply is spoken by you and nothing is posted to the room. The request below is what a person asked of you, in their own words from a voice transcript (it may contain mis-hearings, hesitations and later corrections; use the latest intent). It is usually one thing; if it holds more than one, do each and give each result. The bracket before it is what was said on the call since you last spoke, for context only. Other requests from the same breath are with teammates or queued for you: answer only what is asked here.
+TURN_NOTE = """[Note: you are speaking in a Live voice call; your reply is spoken by you and nothing is posted to the room. The request below is what a person asked of you, in their own words from a voice transcript (it may contain mis-hearings, hesitations and later corrections; use the latest intent). It is usually one thing; if it holds more than one, do each and give each result. The bracket before it is what was said on the call since you last spoke, for context only. Other requests from the same breath are with teammates or queued for you: answer only what is asked here. Answer it from your own knowledge and tools, in words for speaking aloud. Do not narrate who is handling what, and do not hand the question to a teammate; name a person or a teammate only when the answer itself requires it. If you cannot answer, say what is missing.
 Anything that can change (email, pull requests, deploys, payments, dates, metrics, what shipped) must be checked with a tool in this turn before you answer. Your memory and earlier messages tell you where to look, never what the answer is. Say in a few words where the answer came from ("from GitHub just now"). If you cannot check it, say so plainly; never give an old value as current.
 Then pick whatever fits the request:
 - Answer: after checking, reply in two or three short spoken sentences, starting with what it is about.
@@ -946,7 +946,12 @@ REQUEST_P = 0.5
 #: read is not for the agents. "Ubera business, right" read 0.42-0.47 and was added to a working request
 #: as a correction; the weakest true correction reads 0.75 ("only the ones on the main branch").
 CONTEXT_P = 0.6
+#: A stop withdraws a request only when Jev reads it as a withdrawal at least this surely. A weaker read
+#: silences the agent and leaves its work running: silence can be undone, an aborted run cannot.
+WITHDRAW_P = 0.5
 _OPEN_STATUS = ("queued", "working")
+#: How far the worker has said a ready answer when nobody can have heard any of it (absent: an older worker).
+_UNHEARD = (None, "none", "pending")
 
 
 def _same_ask(a: str, b: str) -> bool:
@@ -975,8 +980,14 @@ def _understood(
     conversation, a named agent, a line among people the room judge picked an agent for). Not implied, an
     unnamed part is no request. Owners marked ``None`` here are filled by the caller (the floor agent, the
     judge's agent, the chief of staff).
-    Returns ``{requests: [{agentId|None, task, by}], talk, more, nudge, cancel, steer}``. ``nudge``: a part only
-    calls on an agent or tells it to go on ("Friday, go ahead"); that is never a request."""
+    Returns ``{requests: [{agentId|None, task, by}], talk, more, nudge, stop, cancel, hush, quiet, steer}``.
+    ``nudge``: a part only calls on an agent or tells it to go on ("Friday, go ahead"); that is never a
+    request. ``stop``: a part is a stop, whether or not a request was found for it. What a stop does is its
+    scope, read from the part's kind and never from whether it names a request: ``cancel`` lists the request
+    a withdrawal names ("never mind the deck"), ``hush`` the request a speech-only stop names ("stop talking
+    about the deck"). Each stop keeps its own request, so one line can do both to different requests.
+    ``quiet``: the agents of a stop whose request could not be told (``None``: the caller's floor agent).
+    They are told to stop talking and no more, also when the stop was a withdrawal."""
     parts, pieces = addressing["parts"], addressing["pieces"]
     named = [(name, agent) for name, agent, _ in addressing["named"]]
     by_name = dict(named)
@@ -995,6 +1006,8 @@ def _understood(
             return "social"
         if choice == "context" and p < CONTEXT_P:
             return "people"  # an unsure "about the work" read: not for the agents, so it steers nothing
+        if choice == "cancel" and p < WITHDRAW_P:
+            return "hush"  # an unsure withdrawal stops the talk only
         return choice
 
     kind = {p["index"]: kind_of(p) for p in parts}
@@ -1005,7 +1018,11 @@ def _understood(
         # called context: a weak request is social by now, and stays so.
         asks = [p for p in parts if kind[p["index"]] == "context" and p["cue"]]
         kind |= {p["index"]: "request" for p in asks}
-    if not asks and named and not any(kind[p["index"]] in ("social", "people", "more", "cancel") for p in parts):
+    if (
+        not asks
+        and named
+        and not any(kind[p["index"]] in ("social", "people", "more", "cancel", "hush") for p in parts)
+    ):
         asks = [p for p in parts if kind[p["index"]] == "context"]  # "Forge, the deploy looks broken"
         kind |= {p["index"]: "request" for p in asks}
     # Words that run straight into a name and are asked of nobody ("Can you get | Forge, no actually Gauge,
@@ -1058,12 +1075,25 @@ def _understood(
         "more": any(kind[p["index"]] == "more" for p in parts),
         # a name and nothing else ("Friday?") calls on the agent too
         "nudge": any(kind[p["index"]] == "nudge" for p in parts) or bool(named and not parts),
+        "stop": any(kind[p["index"]] in ("cancel", "hush") for p in parts),
         "cancel": [],
+        "hush": [],
+        "quiet": [],
         "steer": [],
     }
-    dropped = target(addressing.get("drops"))
-    if dropped and dropped["status"] != "delivered" and any(kind[p["index"]] == "cancel" for p in parts):
-        out["cancel"] = [dropped["id"]]
+    stops = [p for p in parts if kind[p["index"]] in ("cancel", "hush")]
+    for p in stops:
+        # The request this stop is about: the one its own part names. A line with one stop has the line's.
+        # 10-07 review: one request was picked for the whole line, and a withdrawal anywhere withdrew it.
+        # "Stop talking about the deck. Cancel the invoice task." aborted the deck.
+        row = target(p.get("drops")) or (target(addressing.get("drops")) if len(stops) == 1 else None)
+        if row and row["status"] != "delivered":
+            out[kind[p["index"]]].append(row["id"])
+        else:
+            # No request can be told: its agent stops talking. A task nobody identified is never aborted.
+            out["quiet"] += [by_name[n] for n in p["asked"] or () if n in by_name] or [a for _, a in named] or [None]
+    out["cancel"] = list(dict.fromkeys(out["cancel"]))
+    out["hush"] = [i for i in dict.fromkeys(out["hush"]) if i not in out["cancel"]]  # withdrawn outright
     amended = target(addressing.get("amends"))
     if amended and not out["cancel"] and (asks or any(k == "context" for k in kind.values())):
         # The message continues an earlier request (Jev answers for the whole message): what it asks,
@@ -1081,11 +1111,13 @@ def _understood(
             said = ". ".join(r["task"] for r in theirs) or task(about)
             out["requests"] = [r for r in requests if r not in theirs]
             out["steer"] = [{"requestId": amended["id"], "text": said}]
-        elif amended["status"] == "ready" and (theirs or not requests):
+        elif amended["status"] == "ready" and amended.get("delivery") in _UNHEARD and (theirs or not requests):
             # Its answer is ready and nobody has heard it: the message cannot be about that answer, so it
             # corrects the request. The stale answer is dropped unsaid and the request is asked again
             # with the correction ("what are signups last week" ... "actually, last month"), also when the
-            # correction asks nothing of its own ("actually last month, not last week").
+            # correction asks nothing of its own ("actually last month, not last week"). An answer the
+            # worker says is being said, or was talked over part way (``delivery``), has been heard in
+            # part: a message about it is a follow-up for its agent, below.
             out["cancel"] = [amended["id"]]
             if not theirs:
                 theirs = [{"task": task(about)}]
@@ -1096,6 +1128,36 @@ def _understood(
             for r in theirs:
                 r |= {"agentId": amended["agentId"], "by": "follow"}
     return out
+
+
+def _engaged(addressing: dict, engagements: list[dict], open_requests: list[dict]) -> str | None:
+    """The agent an unnamed meeting line is for, or None: talk between people. Decided from what the worker
+    knows of the speaker and each agent (``engagements``) and what the one Jev call said about the line, with
+    no probability bar on "is this a request": that a line asks something does not say whom it asks.
+
+    A line that addresses a person is for that person. A line that continues or calls off a request is for
+    that request's agent, whoever the speaker has turned to since. Otherwise it is for the agent the speaker
+    is talking with (``state`` active) when something is still open between the two: the agent asked them
+    something (``expects`` reply), they have just heard its answer and may follow up (``last`` delivered), or
+    they talked over what it was saying (``last`` paused, ``lastBy`` speaker). Recency alone is no evidence:
+    people in a meeting go on talking to each other."""
+    parts = addressing["parts"]
+    if addressing["humans"] or (parts and all(p["kind"][0] == "people" for p in parts)):
+        return None
+    rows = {r["id"]: r["agentId"] for r in open_requests}
+    for key in ("amends", "drops"):
+        choice, p, _ = addressing.get(key) or (None, 0.0, 0.0)
+        if choice in rows and p >= AMEND_P:
+            return rows[choice]
+    for e in engagements:
+        open_between = (
+            e.get("expects") == "reply"
+            or e.get("last") == "delivered"
+            or (e.get("last") == "paused" and e.get("lastBy") == "speaker")
+        )
+        if e.get("state") == "active" and open_between:
+            return e["agentId"]
+    return None
 
 
 async def route_live_line(
@@ -1113,6 +1175,7 @@ async def route_live_line(
     setting: str = "live",
     unclaimed: bool = False,
     open_requests: list[dict] | None = None,
+    engagements: list[dict] | None = None,
 ) -> dict:
     """The one Live router (conversation understanding §4.2-§4.4): every final line the worker hears.
     One Jev call (``messaging.address``) cuts the line into parts and says what each is (a request,
@@ -1124,13 +1187,21 @@ async def route_live_line(
     and no name, chat's room judge (``jev._decide_for_message``: would a good teammate answer this?) says
     whether an agent answers at all, as it did before understanding; when it picks one, the line is
     understood like any other and that agent owns what fits nobody better. ``setting="meeting"`` (a Google
-    Meet): nobody is implied but the named, the wake word, the floor conversation and an ``unclaimed``
-    question to the room (the worker waited 3.5 s).
+    Meet): nobody is implied but the named, the wake word and an ``unclaimed`` question to the room (the worker
+    waited 3.5 s). ``floor.mine`` implies nobody there: the worker sends who the speaker is talking with
+    (``engagements``: per agent its request, ``state``, what is expected next, how the agent's last words to
+    them ended) and the open requests with their askers and delivery, and ``_engaged`` decides from that.
+    With no such evidence, the line is talk between people.
     Jev down: the whole line is one request for the named agents, else (wake word, unclaimed) one agent;
     a line only the floor or a lone speaker implies is no request.
     Returns ``{agentId, agentIds, requests?, hold?, ops}``: ``ops`` is ``{requests: [{agentId, task, by}],
-    social, more, cancel, steer, people, say}``; ``say`` is ``{agentId, kind, task, text}`` or None: the one agent
-    that speaks now (``kind``: ack, steer, status, social). The other fields are what a worker before ``ops`` reads."""
+    social, more, cancel, hush, called, steer, people, say}``; ``say`` is ``{agentId, kind, task, text}`` or
+    None: the one agent that speaks now (``kind``: ack, steer, status, social). A stop is one of two things,
+    and Jev says which (the part's kind), apart from which request it is about: ``cancel`` lists the requests
+    the speaker withdrew (their runs are aborted). ``hush`` is ``[{agentId, requestIds}]``: the agents told to
+    stop talking with nothing withdrawn (their speech stops, their work goes on), each with the requests the
+    stop was about, or none for everything the agent has to say. ``called``: the agent the
+    line turned to and asked nothing new of ("go ahead"). The other fields are what a worker before ``ops`` reads."""
     members = [
         {**m, "listenMode": "active"} if m.get("kind") == "agent" else m
         for m in await messaging_repo.list_members(room_id)
@@ -1168,9 +1239,18 @@ async def route_live_line(
         )
     except Exception:  # noqa: BLE001 -- a card read never stops a line: names alone are thinner, not wrong
         cards = dict(team)
-    floor_line = f"{team[floor_agent]} is talking with {floor.get('speaker')}" if floor_agent else None
-    message = {"author": author, "text": utterance}
     meeting = setting == "meeting"
+    talking = [e for e in engagements or [] if e.get("agentId") in team]
+    floor_line = f"{team[floor_agent]} is talking with {floor.get('speaker')}" if floor_agent else None
+    if meeting and talking:
+        # the understanding call is told the same thing the decision below rests on
+        with_agent = team[talking[0]["agentId"]]
+        floor_line = (
+            f"{with_agent} is talking with {name}"
+            if talking[0].get("state") == "active"
+            else f"{name} was talking with {with_agent} and has turned to other people"
+        )
+    message = {"author": author, "text": utterance}
     candidates = sorted(team)
 
     async def someone() -> str | None:
@@ -1240,6 +1320,16 @@ async def route_live_line(
         put_metric("voice.routing.jev", dimensions={"outcome": "hold", "setting": setting})
     named = [agent for _, agent, _ in addressing["named"]]
     to_people = bool(addressing["humans"]) and not named and not addressing["anyone"] and not wake
+    if meeting:
+        # A meeting is people talking to each other with the agents in the room. A line with no name on it
+        # is an agent's only on evidence that its speaker is talking with that agent (``_engaged``).
+        # (Jev down: the line was not read at all, so nothing says it is not for a person)
+        unread = addressing["path"] == "fallback"
+        engaged = None if named or wake or unclaimed or unread else _engaged(addressing, talking, earlier)
+        claimed = mine or bool(talking)  # the worker sent it as someone's conversation with an agent
+        mine, floor_agent = engaged is not None, engaged or floor_agent
+        if claimed and not (mine or named or wake or unclaimed):
+            to_people = True
     implied = bool(named) or wake or mine or unclaimed or (humans <= 1 and not meeting)
     picked = None  # the room judge's agent for a line among people
     if early and named:
@@ -1272,7 +1362,8 @@ async def route_live_line(
             # a question to the room nobody took (the worker waited), or a wake-word line, that Jev heard as
             # people talk: it was said to the agents, so one agent answers it. Small talk stays small talk.
             u["requests"] = [{"agentId": None, "task": utterance, "by": ""}]
-    if picked and not u["requests"] and not u["cancel"] and not u["steer"] and not u.get("nudge"):
+    stop = bool(u.get("stop")) and not u["cancel"]  # called off, and nothing open to call off
+    if picked and not u["requests"] and not u["cancel"] and not u["steer"] and not u.get("nudge") and not stop:
         # the judge heard something to answer where the parts saw talk between people: the line is its request
         u["requests"] = [{"agentId": None, "task": utterance, "by": ""}]
     elif picked and len(u["requests"]) == 1 and u["requests"][0]["by"] == "fit":
@@ -1302,11 +1393,11 @@ async def route_live_line(
                 r |= {"agentId": chief, "by": "chief"}
     requests = [r for r in u["requests"] if r["agentId"]]
     social = None
-    if not requests and not u["cancel"] and not u["steer"] and u["talk"] and not u["people"]:
+    if not requests and not u["cancel"] and not u["steer"] and u["talk"] and not u["people"] and not stop:
         # Nothing was asked: one agent may say a sentence, when the speech can only be for the agents.
         if named:
             social = named[0]
-        elif mine and not meeting:  # a Meet is one mixed voice: the floor stays "mine" while people chat
+        elif mine and not meeting:  # a meeting: an agent does not answer chatter it was not named in
             social = floor_agent
         elif implied and not meeting:
             social = await someone()
@@ -1330,6 +1421,10 @@ async def route_live_line(
         # A ready answer needs no line (the worker speaks the answer itself); a working one is named.
         if not any(r["status"] == "ready" for r in theirs):
             say = {"agentId": theirs[0]["agentId"], "kind": "status", "task": theirs[0]["task"]}
+    elif stop:
+        # Also with nothing open: "Perfect. Friday, stop." after the answer read as small talk, and the
+        # agent said "Got it; I will stop now."
+        pass
     elif social or (called and who):
         say = {"agentId": social or who, "kind": "social", "task": None}  # small talk; nothing open is nothing new
     ops = {
@@ -1337,6 +1432,16 @@ async def route_live_line(
         "social": social,
         "more": u["more"],
         "cancel": u["cancel"],
+        # A stop that withdrew no request tells its agent to stop talking, no more: the agent of the request
+        # it is about, else the named ones, else the one the speaker is talking with. The worker stops that
+        # speech and leaves the work running. Each stop on the line has its own entry.
+        "hush": [{"agentId": r["agentId"], "requestIds": [r["id"]]} for r in earlier if r["id"] in u.get("hush", ())]
+        + [
+            {"agentId": a, "requestIds": []}
+            for a in dict.fromkeys(a or (floor_agent if mine else None) for a in u.get("quiet", ()))
+            if a
+        ],
+        "called": who if called and who and not requests else None,
         "steer": u["steer"],
         # the line is talk between people: a meeting voice pinned to its speaker gives the floor back
         "people": bool(u["people"]) and not requests,

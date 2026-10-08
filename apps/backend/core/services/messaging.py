@@ -2793,7 +2793,16 @@ KINDS = {
         "('Uber is a business, right?' to a colleague beside them), or people settling something among "
         "themselves; not for the AI team"
     ),
-    "cancel": "Calls off or pauses something the team was asked earlier ('forget the deck', 'hold off on that')",
+    # A stop is one of two things, and only the first ends work. Not yet run on
+    # scripts/speak_gate_bench/understand.py: a new choice moves the others' probabilities.
+    "cancel": (
+        "Withdraws something the team was asked earlier: the work is no longer wanted, or not now ('forget "
+        "the deck', 'never mind', 'cancel that', 'don't bother', 'hold off on that')"
+    ),
+    "hush": (
+        "Tells a teammate to stop talking, be quiet or wait its turn, and withdraws nothing it was asked "
+        "('stop', 'that's enough', 'not now', 'okay okay', 'stop talking about the deck')"
+    ),
     # Driven voice: "Friday, go ahead" read as a plain instruction and became a run of its own. Not yet
     # run on scripts/speak_gate_bench/understand.py: a new choice moves the others' probabilities.
     "nudge": (
@@ -2815,9 +2824,19 @@ AMENDS_INSTRUCTIONS = (
     "narrow it, add detail to it, or ask a follow-up about its answer? Pick that request. Pick none when "
     "the message asks for something new or is not about any of them."
 )
+#: Which request a stop is about, whatever kind of stop it is: ``KINDS`` says whether the work is withdrawn
+#: (cancel) or only the talk about it is to stop (hush).
 DROPS_INSTRUCTIONS = (
     "Earlier requests on this call are listed. Does the latest message call one of them off (forget it, "
-    "hold off, no longer needed, already handled)? Pick that request. Pick none when nothing is called off."
+    "hold off, no longer needed, already handled), or tell a teammate to stop talking about one of them? "
+    "Pick that request. Pick none when the message is about none of them."
+)
+#: The same question about one part of a line that has several. Each part's stop keeps its own request:
+#: "Stop talking about the deck. Cancel the invoice task." silences one and withdraws the other.
+PART_DROPS_INSTRUCTIONS = (
+    "Earlier requests on this call are listed. Does this part of the latest message call one of them off "
+    "(forget it, hold off, no longer needed, already handled), or tell a teammate to stop talking about one "
+    "of them? Pick that request. Pick none when this part is about none of them, even if another part is."
 )
 #: More parts than this and nobody is cut: each agent gets the whole line.
 MAX_PARTS = 8
@@ -2916,7 +2935,10 @@ _HEAD = re.compile(
 #: A connector left hanging where a part runs straight into a name ("check the deploy and | Friday ...").
 _TAIL = re.compile(r"(?:^|\s)(?:and|then|also|plus|hey|hi|ok|okay)$", re.I)
 #: A sentence ends at . ? ! ; followed by a space or the end: "v2.1" and "3.5 percent" are one sentence.
-_SENTENCE = re.compile(r".+?(?:[.?!;]+(?=\s|$)|$)", re.S)
+#: An ellipsis is a speaker trailing off, not an end: "Can you tell me... What the plan costs?" was cut in
+#: two and became two requests for two agents (Meet run 2026-10-07).
+_ELLIPSIS = r"(?:\.\.|…)"
+_SENTENCE = re.compile(rf".+?(?:(?<![.…])(?!{_ELLIPSIS})[.?!;]+(?=\s|$)|$)", re.S)
 # Conversation understanding §4.2: a new request begins inside a sentence ("... and what PRs are open",
 # ", then tell me ...", "um first whats our burn", "good morning um can you check ..."). Speech-to-text
 # often gives no punctuation, so the cut reads words: after a comma, a joiner, a filler or an ordinal, the
@@ -3032,6 +3054,9 @@ def _cue_spans(seg: str) -> list[tuple[int, int]]:
         before = _clean(seg[cuts[-1] : m.start()])
         # no part of its own: filler and "can you", or only who is asked ("whoever handles billing | can you ...")
         if _OPENER_ONLY.match(before) or _ADDRESSEE_ONLY.match(before):
+            continue
+        # the speaker trailed off and went on ("can you tell me... um what it costs"): still one request
+        if re.search(rf"{_ELLIPSIS}\s*$", seg[cuts[-1] : m.start()]):
             continue
         # the words to pass on to someone are the same request ("tell Priya | I need the board deck")
         if not m.group(0).strip() and _REPORTING.search(before):
@@ -3204,7 +3229,8 @@ async def _label(
 ) -> dict | None:
     """The one Jev call: ``{labels: {name: label}, complete: p, anyone: p}``, or None on any failure.
     ``understand`` (conversation understanding §4.2) adds, per spoken part, what it is and whose job it is,
-    and which earlier request the message continues or calls off: ``kinds``, ``whos``, ``amends``, ``drops``."""
+    and which earlier request the message continues or calls off: ``kinds``, ``whos``, ``amends``, ``drops``.
+    ``dropped``: per part of a line with several, the request that part calls off or silences."""
     from core.services import jev
 
     questions = {
@@ -3228,8 +3254,15 @@ async def _label(
             questions["drops"] = {
                 "type": "choice",
                 "instructions": DROPS_INSTRUCTIONS,
-                "criteria": {**listed, "none": "Nothing is called off"},
+                "criteria": {**listed, "none": "Nothing is called off or told to stop"},
             }
+            # One part: the line's answer is its answer.
+            for i, part in enumerate(spoken if len(spoken) > 1 else ()):
+                questions[f"d{i}"] = {
+                    "type": "choice",
+                    "instructions": f"{PART_DROPS_INSTRUCTIONS} The part: {json.dumps(part)}.",
+                    "criteria": {**listed, "none": "This part calls nothing off and tells nobody to stop"},
+                }
     for i, c in enumerate(cands):
         kind = (
             "both a person and an AI teammate here"
@@ -3281,6 +3314,7 @@ async def _label(
             out["kinds"] = [_choice(answers.get(f"k{i}")) for i in range(len(spoken))]
             out["whos"] = [_choice(answers.get(f"w{i}")) for i in range(len(spoken))]
             out["amends"], out["drops"] = _choice(answers.get("amends")), _choice(answers.get("drops"))
+            out["dropped"] = [_choice(answers[f"d{i}"]) if f"d{i}" in answers else None for i in range(len(spoken))]
         return out
     except TimeoutError:
         # The stage's own limit cancelled the call, which jev.decide reports as "cancelled" (so a hedged
@@ -3301,7 +3335,7 @@ async def address(
     rows before it, or an async loader called only when the Jev call happens.
     ``understand`` (Live; conversation understanding §4.2): ``{cards, open, floor}``. The line is also cut
     where a new request begins, the same call says what each part is and whose job it is, and the answer
-    gains ``parts`` (``{index, text, kind, who, asked}``), ``pieces``, ``named``, ``amends`` and ``drops``."""
+    gains ``parts`` (``{index, text, kind, who, asked, drops}``), ``pieces``, ``named``, ``amends`` and ``drops``."""
     text = str(latest.get("text") or "")
     out: dict = {"agents": [], "humans": [], "hold": False, "anyone": False, "path": "none"}
     cands = address_candidates(text, members, live=live)
@@ -3393,6 +3427,7 @@ async def address(
         if result["asked"] and hits:
             asked = _with_relayers(pieces, result["asked"], {c["name"]: label for c, _, label in hits})
         kinds, whos = result.get("kinds") or [], result.get("whos") or []
+        dropped = result.get("dropped") or []
         # "Can you get | Forge ..." and "@priya can you and | Analytics look at churn" run into the name;
         # "check the API, and | Ledger, ..." is an ask of its own that ended before it.
         into = [
@@ -3412,6 +3447,7 @@ async def address(
                 "kind": kinds[i] if i < len(kinds) else (None, 0.0, 0.0),
                 "who": whos[i] if i < len(whos) else (None, 0.0, 0.0),
                 "asked": asked[i] if i < len(asked) else None,
+                "drops": dropped[i] if i < len(dropped) else None,  # the request this part calls off or silences
             }
             for i, part in enumerate(parts)
         ]

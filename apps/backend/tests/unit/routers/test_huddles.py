@@ -448,7 +448,7 @@ def test_route_a_wake_word_line_is_the_one_router_with_wake(client):
     assert route.await_args.kwargs == {
         "owner_id": "org_a", "room_id": ROOM, "speaker_id": "user_a", "utterance": "hi", "transcript": "",
         "humans": 0, "wake": True, "floor": None, "voice_runs": [], "at": [], "setting": "live",
-        "unclaimed": False, "open_requests": [],
+        "unclaimed": False, "open_requests": [], "engagements": [],
     }  # fmt: skip
 
 
@@ -467,6 +467,29 @@ def test_route_with_a_people_count_may_be_nobody_or_hold(client):
     ):
         client.post(INTERNAL[6][0], json=body, headers=W)
     assert live.await_args.kwargs["setting"] == "meeting" and live.await_args.kwargs["unclaimed"] is True
+    # the worker's evidence reaches the router whole: who the speaker is talking with, and how far each
+    # open request's answer has been said
+    talking = [
+        {"agentId": "agent-fin", "obligation": "r1", "task": "our burn", "state": "active", "expects": "reply",
+         "why": "", "last": "paused", "lastBy": "speaker", "seconds": 4}
+    ]  # fmt: skip
+    opened = [
+        {
+            "id": "r1",
+            "agentId": "agent-fin",
+            "task": "our burn",
+            "status": "ready",
+            "asker": "Priya",
+            "delivery": "paused",
+        }
+    ]
+    with (
+        patch.object(mod.messaging_repo, "get_room", AsyncMock(return_value=meeting_room)),
+        patch.object(vc, "route_live_line", AsyncMock(return_value={"agentId": None})) as live,
+    ):
+        client.post(INTERNAL[6][0], json={**body, "engagements": talking, "open": opened}, headers=W)
+    assert live.await_args.kwargs["engagements"] == talking and live.await_args.kwargs["open_requests"] == opened
+    assert client.post(INTERNAL[6][0], json={**body, "engagements": talking * 9}, headers=W).status_code == 400
     assert client.post(INTERNAL[6][0], json={**body, "setting": "zoom"}, headers=W).status_code == 400
 
 

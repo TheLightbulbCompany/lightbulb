@@ -1,9 +1,9 @@
 """Shared stub for the live-routing tests: Jev's answer to the one call per spoken line."""
 
 
-def jev_says(kinds=(), whos=(), names=(), asked=(), complete=1.0, amends=None, drops=None, p=0.9):
+def jev_says(kinds=(), whos=(), names=(), asked=(), complete=1.0, amends=None, drops=None, p=0.9, dropped=()):
     """Jev's answer to the one call: ``kinds``/``whos`` per part, ``names`` per name candidate (in text
-    order), ``asked`` per part when two agents are named."""
+    order), ``asked`` per part when two agents are named, ``dropped`` per part (the request it stops)."""
     out = {"complete": {"probability": complete}, "anyone": {"probability": 0.0}}
     for i, kind in enumerate(kinds):
         out[f"k{i}"] = {"choice": kind, "probabilities": {kind: p, "other": round(1 - p, 2)}}
@@ -13,6 +13,8 @@ def jev_says(kinds=(), whos=(), names=(), asked=(), complete=1.0, amends=None, d
         out[f"n{i}"] = {"choice": label}
     for i, key in enumerate(asked):
         out[f"p{i}"] = {"choice": key}
+    for i, row in enumerate(dropped):
+        out[f"d{i}"] = {"choice": row or "none", "probabilities": {row or "none": 0.9}}
     for key, row in (("amends", amends), ("drops", drops)):
         out[key] = {"choice": row or "none", "probabilities": {row or "none": 0.9}}
     return out

@@ -398,6 +398,25 @@ def trails_off(text: str) -> bool:
     return t.endswith(("...", "…")) or (bool(words) and all(w in _TRAIL_WORDS for w in words))
 
 
+def only_name(text: str, agents: list[dict]) -> str | None:
+    """The line is an agent's name and nothing else ("Friday.", "Um, Friday...", "Friday?"): that agent. The
+    speaker has called on it and not yet said what for. The transcriber's mark at its end decides nothing:
+    what the speaker does next does (more words, or silence)."""
+    words = [w for w in re.findall(r"[a-z0-9']+", text.lower()) if w not in _TRAIL_WORDS and w not in _LEADS]
+    return _agent_named(" ".join(words), agents)
+
+
+_LISTENING = _FILLER | {"hm", "huh", "oh", "ah"}
+
+
+def backchannel(text: str) -> bool:
+    """Nothing but listening sounds ("mm-hm", "yeah, right", "okay"): the speaker is following, not taking
+    the floor. An empty line (noise the transcriber gave no words) is one too."""
+    t = text.lower()
+    words = re.findall(r"[a-z0-9']+", _FILLER_PHRASES.sub(" ", t))
+    return not _HALT.search(t) and all(w in _LISTENING for w in words)
+
+
 def pause(text: str) -> bool:
     """A halt and nothing more ("hold on", "wait, um"): the person wants the floor, not an answer."""
     return halt(text) and not real_speech(_HALT.sub(" ", text.lower()))
@@ -405,7 +424,7 @@ def pause(text: str) -> bool:
 
 _STOP = re.compile(
     r"^(?:(?:hey|ok|okay) )?(?:please )?(?:([a-z0-9]+(?: [a-z0-9]+)?) ?, ?|([a-z0-9]+) )??(?:please )?(?:just )?"
-    r"(?:stop(?: talking)?|never ?mind|cancel (?:that|it)|forget it"
+    r"(?:stop(?: talking)?|(?P<withdraw>never ?mind|cancel (?:that|it)|forget it)"
     # a dismissal is a stop too (10-05 prod Meet: "Friday, get the fuck out of here" got "I'm here")
     r"|(?P<dismiss>get (?:the (?:fuck|hell|heck) )?out(?: of here)?|go away|leave(?: us(?: alone)?)?|be quiet|shut up"
     r"|that(?:'s| is) (?:all|enough)(?: thanks| thank you)?))$"
@@ -418,6 +437,8 @@ def _norm(text: str) -> str:
 
 
 def _stop_match(text: str) -> re.Match | None:
+    """A line that is nothing but a stop: the fast path. A stop inside a longer turn is /route's to
+    understand, with what it was said over (`ops.hush`, `ops.cancel`)."""
     return _STOP.match(_norm(text))
 
 
@@ -446,6 +467,13 @@ def stop_target(text: str, agents: list[dict]) -> str | None:
     """The agent a stop names, by its exact name: naming is enough for a stop, default names included."""
     m = _stop_match(text)
     return _agent_named(m and (m.group(1) or m.group(2)), agents)
+
+
+def withdraws(text: str) -> bool:
+    """A stop that takes the request back ("never mind", "cancel that", "forget it"), not one that only asks
+    for quiet ("stop", "that's enough")."""
+    m = _stop_match(text)
+    return m is not None and m.group("withdraw") is not None
 
 
 _STOP_ALL = re.compile(

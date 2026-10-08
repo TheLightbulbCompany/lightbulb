@@ -37,3 +37,15 @@ describe("checkout return links", () => {
     );
   });
 });
+
+
+describe("browser sign-up handoff", () => {
+  it("routes a custom-scheme auth ticket to the native handoff screen", () => {
+    expect(
+      redirectSystemPath({
+        path: "flickmeon://auth?ticket=one-time%20ticket&returnTo=%2Fchat",
+        initial: true,
+      }),
+    ).toBe("/auth?ticket=one-time%20ticket&returnTo=%2Fchat");
+  });
+});

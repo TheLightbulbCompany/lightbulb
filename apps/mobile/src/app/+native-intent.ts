@@ -27,6 +27,9 @@ export function redirectSystemPath({ path, initial }: { path: string; initial: b
     : path.startsWith(`${APP_SCHEME}://`)
       ? path.slice(APP_SCHEME.length + 3)
       : path;
+  if (/^\/?auth(?:[/?#]|$)/.test(route)) {
+    return `/${route.replace(/^\//, "")}`;
+  }
   // Warm OAuth returns refresh the current room through AppState; navigating
   // to / would unmount its onboarding card before that refresh can settle.
   if (/^\/?checkout_redirect\/(connected|connect_failed)(?:[/?#]|$)/.test(route)) {

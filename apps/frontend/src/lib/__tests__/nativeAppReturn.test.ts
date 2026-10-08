@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { beginNativeAppReturn, isIosDevice } from "../nativeAppReturn";
+import {
+  beginNativeAppReturn,
+  createNativeAppSignInUrl,
+  isIosDevice,
+} from "../nativeAppReturn";
 
 describe("isIosDevice", () => {
   it.each(["iPhone", "iPad", "iPod"])("recognises %s browsers", (device) => {
@@ -52,5 +56,38 @@ describe("beginNativeAppReturn", () => {
     expect(openApp).not.toHaveBeenCalled();
     expect(scheduleFallback).not.toHaveBeenCalled();
     expect(continueWeb).toHaveBeenCalledOnce();
+  });
+});
+
+
+describe("createNativeAppSignInUrl", () => {
+  it("exchanges the browser session for a one-time Clerk ticket", async () => {
+    const getToken = vi.fn().mockResolvedValue("browser-session-token");
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ token: "one-time ticket+/=" }),
+    });
+
+    await expect(
+      createNativeAppSignInUrl("/chat?room=42", getToken, fetchImpl),
+    ).resolves.toBe(
+      "flickmeon://auth?ticket=one-time%20ticket%2B%2F%3D",
+    );
+    expect(getToken).toHaveBeenCalledOnce();
+    expect(fetchImpl).toHaveBeenCalledWith(
+      expect.stringMatching(/\/auth\/desktop\/sign-in-token$/),
+      expect.objectContaining({
+        method: "POST",
+        headers: { Authorization: "Bearer browser-session-token" },
+      }),
+    );
+  });
+
+  it("does not open a signed-out app when the ticket exchange fails", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 503 });
+
+    await expect(
+      createNativeAppSignInUrl("/chat", async () => "browser-session-token", fetchImpl),
+    ).rejects.toThrow("Could not prepare the native sign-in handoff");
   });
 });

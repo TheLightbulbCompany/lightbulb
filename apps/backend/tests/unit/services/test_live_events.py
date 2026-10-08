@@ -164,3 +164,19 @@ async def test_a_2xx_answer_with_failed_entries_records_a_tagged_error_sample(mo
     with pytest.raises(live_events.LivePublishError):
         await publisher._send("/ws/w/rooms/r/k", '{"type":"x"}', source="write_path")
     assert metrics == [{"outcome": "error", "status_class": "rejected", "source": "write_path"}]
+
+
+@pytest.mark.asyncio
+async def test_a_signing_failure_records_one_tagged_error_sample(monkeypatch):
+    metrics = []
+    monkeypatch.setattr(live_events, "put_metric", lambda *a, **k: metrics.append(k.get("dimensions")))
+    monkeypatch.setattr(live_events.settings, "APPSYNC_EVENTS_HTTP_ENDPOINT", "https://events.test/event")
+    publisher = live_events.LiveEventPublisher(http_client=object())
+
+    async def boom(*_a):
+        raise RuntimeError("no credentials")
+
+    monkeypatch.setattr(publisher, "_signed_request", boom)
+    with pytest.raises(live_events.LivePublishError):
+        await publisher._send("/ws/w/rooms/r/k", '{"type":"x"}', source="write_path")
+    assert metrics == [{"outcome": "error", "status_class": "signing", "source": "write_path"}]

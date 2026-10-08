@@ -276,7 +276,11 @@ class LiveEventPublisher:
         last_error: Exception | None = None
         last_status_class = "transport"
         for attempt in range(2):
-            request = await self._signed_request(endpoint, body)
+            try:
+                request = await self._signed_request(endpoint, body)
+            except Exception as exc:  # no credentials, failed refresh or signing: terminal, no retry
+                put_metric("messaging.live.publish", dimensions={"outcome": "error", "status_class": "signing", **tag})
+                raise LivePublishError("AppSync live publish could not be signed") from exc
             try:
                 response = await self._post(endpoint, body, dict(request.headers), tag)
             except LivePublishQueueFull:

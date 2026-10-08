@@ -230,11 +230,13 @@ def _save_login_prompt(origin: str, _site: str) -> dict | None:
     return {"identifier": found.get("username", ""), "password": found["password"]}
 
 
-def _browser_task_id() -> str:
-    """The Hermes browser task this run is browsing on (``browser_control`` records it per run)."""
+def _browser_task_ids() -> list[str]:
+    """The Hermes browser tasks this run has browsed on (``browser_control`` records them per run):
+    the main agent's, plus one per delegated subagent that browsed. Hermes's code prompt does not
+    say which task is asking, so the page watch covers all of them."""
     state = browser_control._TURN.get() or {}
     tasks = browser_control._BROWSING.get(str(state.get("runId") or ""), ())
-    return next(iter(tasks), "default")
+    return sorted(tasks) or ["default"]
 
 
 def _browsing_on_mac() -> bool:
@@ -243,35 +245,45 @@ def _browsing_on_mac() -> bool:
     return bool((browser_control._TURN.get() or {}).get("mac"))
 
 
-def _page_eval(expression: str):
-    """Evaluate page JS through Hermes's own (non-secret) eval path. None = no answer."""
+def _page_eval(task_id: str, expression: str):
+    """Evaluate page JS on one task's tab through Hermes's own (non-secret) eval path. None = no answer."""
     try:
         from tools.browser_vault_tool import _eval_js
     except ImportError:  # bridge-only unit tests
         return None
     try:
-        out = _eval_js(_browser_task_id(), expression)
+        out = _eval_js(task_id, expression)
     except Exception:  # noqa: BLE001 -- the page is a stranger; a blip is not an answer
         return None
     return out.get("result") if isinstance(out, dict) and out.get("success") else None
 
 
 def _page_heading() -> str:
-    """The page's main heading ("Check your text messages"), for the line in the room."""
-    text = _page_eval("(document.querySelector('h1,h2')||{}).innerText||''")
-    return " ".join(str(text or "").split())[:120]
+    """The first heading among the run's tabs ("Check your text messages"), for the line in the room."""
+    for task_id in _browser_task_ids():
+        text = " ".join(str(_page_eval(task_id, "(document.querySelector('h1,h2')||{}).innerText||''") or "").split())
+        if text:
+            return text[:120]
+    return ""
 
 
 def _code_field_present() -> bool | None:
-    """Whether the page still shows a one-time-code field (Hermes's own OTP probe). None = unknown."""
+    """Whether any of the run's tabs still shows a one-time-code field (Hermes's own OTP probe).
+    The code page is in exactly one of them, so the step has moved on only when none shows a
+    field. None = no tab answered."""
     try:
         from tools.browser_vault_tool import _TAB_PROBES
     except ImportError:  # bridge-only unit tests
         return None
-    result = _page_eval(_TAB_PROBES["otp"])
-    if result is None:
-        return None
-    return result is True or str(result).strip().lower() == "true"
+    answered = False
+    for task_id in _browser_task_ids():
+        result = _page_eval(task_id, _TAB_PROBES["otp"])
+        if result is None:
+            continue
+        answered = True
+        if result is True or str(result).strip().lower() == "true":
+            return True
+    return False if answered else None
 
 
 def _code_prompt(site: str, _hint: str) -> str:
@@ -286,16 +298,22 @@ def _code_prompt(site: str, _hint: str) -> str:
         # A Paperclip or voice turn has no room to say it in: nobody would be told, so do not wait.
         ctx["code"] = "no_room"
         return ""
-    ctx["code"] = "nobody_came"
     try:
-        _call("POST", "/requests", {
+        posted = _call("POST", "/requests", {
             "kind": "code", "origin": site if "://" in site else f"https://{site}",
             "agentId": ctx["agentId"], "roomId": ctx.get("roomId"),
             "threadRootMessageId": ctx.get("threadRootMessageId"), "hint": _page_heading(),
             "surface": "mac" if _browsing_on_mac() else "cloud",
         })
-    except Exception:  # noqa: BLE001 -- the agent's own line still goes out via the tool result
-        log.warning("website login code notice could not be posted")
+    except Exception:  # noqa: BLE001
+        posted = None
+    if (posted or {}).get("status") != "posted":
+        # Nobody was told (the room write failed, or the backend is older): waiting would be for
+        # a person who never heard. The agent says the line itself and ends its turn.
+        log.warning("website login code notice was not posted")
+        ctx["code"] = "not_told"
+        return ""
+    ctx["code"] = "nobody_came"
     deadline = time.monotonic() + WAIT_S
     renewed = time.monotonic()
     while time.monotonic() < deadline:
@@ -324,6 +342,14 @@ CODE_RESULTS = {
                  "they can type it any time (Browser panel, on a computer) and tell you to continue, "
                  "and you pick up from a fresh browser_snapshot. Never ask for the code in chat, and "
                  "never ask again for a login that is already saved.",
+    },
+    "not_told": {
+        "success": False, "error_type": "not_told",
+        "error": "The line asking the person to type the code could not be posted, so nobody has been "
+                 "told. Say it yourself in one line -- the site is asking for a verification code; type "
+                 "it into the shared browser (Browser panel, on a computer) and tell me to continue -- "
+                 "then end your turn and pick up from a fresh browser_snapshot. Never ask for the code "
+                 "in chat.",
     },
     "no_room": {
         "success": False, "error_type": "no_room",

@@ -189,6 +189,18 @@ async def test_code_ask_is_only_a_line_sending_the_person_to_the_browser(env):
     assert "Lightbulb agent Chrome window on your Mac" in messages[-1]["text"]
     assert "panel=browser" not in messages[-1]["text"]
 
+    # The room write failed: the answer says so, so the bridge does not wait for a person nobody told.
+    with patch("core.repositories.messaging_repo.create_message", AsyncMock(side_effect=RuntimeError("down"))):
+        unposted = await store.create_request(
+            OWNER, kind="code", origin="https://x.com", agent_id=FRIDAY, room_id=room_id, thread_root_message_id=None
+        )
+    assert unposted == {"requestId": None, "status": "unposted"}
+    # And with no room at all there is nothing to post into.
+    nowhere = await store.create_request(
+        OWNER, kind="code", origin="https://x.com", agent_id=FRIDAY, room_id=None, thread_root_message_id=None
+    )
+    assert nowhere == {"requestId": None, "status": "unposted"}
+
 
 async def test_decline_and_cancel_settle_once(env):
     rid = (

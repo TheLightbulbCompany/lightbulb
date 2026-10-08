@@ -237,7 +237,7 @@ async def find_rooms(query: str = "", limit: int = 30) -> dict:
 
 @mcp.tool()
 async def find_sessions(query: str = "", limit: int = 30) -> dict:
-    """Find shared coding sessions by readable title, provider or folder. Passing a sessionId as send_message session_id types your text into that live session (canSend says whether you may; a refused send fails with a code such as LOCAL_SESSION_FORBIDDEN, LOCAL_SESSION_NOT_FOUND, LOCAL_SESSION_CONFLICT or IDEMPOTENCY_CONFLICT, and message_receipt then reads rejected with that reason)."""
+    """Find shared coding sessions by readable title, provider or folder. Passing a sessionId as send_message session_id types your text into that live session (canSend says whether you may; a refused send fails with a code such as LOCAL_SESSION_FORBIDDEN, LOCAL_SESSION_NOT_FOUND or LOCAL_SESSION_CONFLICT, and message_receipt then reads rejected with that reason)."""
     return await sessions_for(_caller(), query, limit)
 
 
@@ -341,7 +341,11 @@ async def send_message(
         if reply_to_message_id or mention_ids:
             raise messaging.ApiProblem("INVALID_REQUEST", "A session follow-up takes no thread or mentions.")
         session_id = messaging.validate_uuid(session_id, label="session ID")
-        await _pin_destination(auth, request_id, f"session:{session_id}")
+        try:
+            await _pin_destination(auth, request_id, f"session:{session_id}")
+        except messaging.ApiProblem as exc:
+            # The original destination stays authoritative, so there is no refusal to record.
+            raise ToolError(f"{exc.error.code}: {exc.error.message}") from exc
         try:
             target, _ = await local_sessions.authorize_session(auth, None, session_id, owner_only=True)
             # The person's own authority (actorUserId) admits and dispatches it, exactly like their

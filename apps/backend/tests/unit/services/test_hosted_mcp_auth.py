@@ -384,3 +384,15 @@ async def test_refused_session_send_says_why_and_its_receipt_reads_rejected(monk
         "state": "rejected",
         "reason": "LOCAL_SESSION_FORBIDDEN",
     }
+
+
+@pytest.mark.asyncio
+async def test_pin_conflict_on_a_session_send_is_a_readable_tool_error(monkeypatch):
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    _, pin = _hosted_sender(monkeypatch)
+    pin.side_effect = hosted_mcp.messaging.ApiProblem(
+        "IDEMPOTENCY_CONFLICT", "request_id was used for another destination."
+    )
+    with pytest.raises(ToolError, match="IDEMPOTENCY_CONFLICT"):
+        await hosted_mcp.send_message("hi", uuid.uuid4(), session_id=str(uuid.uuid4()))

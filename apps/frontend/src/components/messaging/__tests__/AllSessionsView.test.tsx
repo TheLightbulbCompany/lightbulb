@@ -33,9 +33,9 @@ it("groups every session by day, newest first, searches, and opens one", async (
 it("offers Remove on the viewer's own ended sessions only, one by one or all at once", async () => {
   const onRemove = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValue(undefined);
   const onRemoveEnded = vi.fn().mockResolvedValue(undefined);
-  const mine = (id: string, title: string, status: "busy" | "ended") => ({ ...make(id, title, status, 1), own: true, ownerName: "You" });
+  const mine = (id: string, title: string, status: "busy" | "ended", hoursAgo = 1) => ({ ...make(id, title, status, hoursAgo), own: true, ownerName: "You" });
   render(<AllSessionsView loading={false} onOpenSession={vi.fn()} onClose={vi.fn()} onRemove={onRemove} onRemoveEnded={onRemoveEnded} entries={[
-    mine("a", "Old test", "ended"), mine("b", "Older test", "ended"), mine("live", "Running", "busy"), make("theirs", "Alice's", "ended", 2),
+    mine("a", "Old test", "ended"), mine("b", "Older test", "ended", 3), mine("live", "Running", "busy"), make("theirs", "Alice's", "ended", 2),
   ]} />);
   expect(screen.getAllByRole("button", { name: /Remove .* from the list/ }).map((b) => b.getAttribute("aria-label"))).toEqual([
     "Remove Old test from the list", "Remove Older test from the list"]);

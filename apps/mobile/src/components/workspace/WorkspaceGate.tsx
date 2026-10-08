@@ -201,6 +201,10 @@ function CreateWorkspace({ onCheckAgain }: { onCheckAgain: () => void }) {
           Your agents and conversations live in a workspace. Create one on the web, then come
           back here.
         </Text>
+        <Text style={styles.body}>
+          Joining a team that already uses Lightbulb? Open the join link they sent you in Safari,
+          then tap Check again.
+        </Text>
         <Pressable
           style={({ pressed }) => [styles.primary, pressed && styles.pressed]}
           onPress={() => void Linking.openURL(`${WEB_ORIGIN}/onboarding`)}

@@ -221,11 +221,11 @@ DETECTOR_LOST_S = 5.0
 ACKS = (
     "Sure, I'm on it now.",
     "Okay, let me look into that.",
-    "Got it.",
+    "Got it. Give me a moment.",
     "Yes, I'll have that for you shortly.",
-    "Understood.",
+    "Understood. I'll come back with it.",
     "Alright, I'm working on it now.",
-    "I have it.",
+    "I have it. Back with you shortly.",
     "Right, let me check.",
 )
 STILL_WORKING = (

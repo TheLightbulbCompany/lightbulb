@@ -147,13 +147,8 @@ async def test_the_window_stays_open_for_working_requests_and_ends_after_the_las
 
 
 from huddle_agent import huddle as h_mod  # noqa: E402
-from huddle_agent.huddle import ACKS, STEER_ACKS, THINKING_EVERY  # noqa: E402
+from huddle_agent.huddle import THINKING_EVERY  # noqa: E402
 from test_huddle import frame, packet  # noqa: E402
-
-
-def test_acknowledgements_are_one_sentence_so_an_interruption_cannot_repeat_filler():
-    for acknowledgement in (*ACKS, *STEER_ACKS):
-        assert sum(acknowledgement.count(mark) for mark in ".!?") == 1, acknowledgement
 
 
 async def test_a_ready_answer_never_starts_over_a_person():

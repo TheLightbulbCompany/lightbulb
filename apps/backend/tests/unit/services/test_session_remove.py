@@ -207,3 +207,30 @@ async def test_a_cleanup_that_failed_leaves_the_link_dead_and_a_repeat_finishes_
     await service.remove_session(ALICE, sid)
     row = await repo.get_session(OWNER, sid)
     assert row["removedAt"] and "shareLink" not in row and not row.get("pickupAllowed")
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_registers_after_the_stamp_keeps_its_chat_seats(transport, s3, monkeypatch):
+    """The chat cleanup is fenced like the link cleanup: a new run that cleared `removedAt`
+    before it ran keeps everyone who had its chat open."""
+    sid = await claude_session(transport)
+    room = str((await session_chat.open_chat(BOB, sid)).room_id)
+    await end(transport, sid)
+    cleanup = service.delete_link
+
+    async def resume_then_cleanup(auth, session_id, **kwargs):
+        connect(transport, cid="conn-2", stamp="1001")
+        frame = registration(
+            provider="claude", nativeConversationId=pickup_tests.CONVERSATION, providerVersion="2.1.283"
+        )
+        frame["session"]["generation"] = "generation-2"
+        await relay(transport).handle_message("conn-2", frame)
+        return await cleanup(auth, session_id, **kwargs)
+
+    monkeypatch.setattr(service, "delete_link", resume_then_cleanup)
+    await service.remove_session(ALICE, sid)
+    row = await repo.get_session(OWNER, sid)
+    assert "removedAt" not in row and row.get("endedAt") is None
+    assert await messaging_repo.get_member(room, "human", BOB.user_id) is not None
+    assert not (await messaging_repo.get_room(room)).get("archivedAt")
+    assert await listed(BOB) == [sid]

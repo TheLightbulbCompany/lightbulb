@@ -56,9 +56,24 @@ describe("messaging HTTP client", () => {
 
   it("removes one ended session, or all of the caller's, with DELETE", async () => {
     const { client, methods } = setup();
+    methods.del.mockResolvedValue({ removed: 0 } as never);
     await client.removeLocalSession("session/b");
     await client.removeEndedLocalSessions();
     expect(methods.del.mock.calls).toEqual([["/messaging/sessions/session%2Fb"], ["/messaging/sessions?ended=true"]]);
+  });
+
+  it("asks again while the capped bulk removal reports a full page, and stops on a failure", async () => {
+    const { client, methods } = setup();
+    methods.del.mockResolvedValueOnce({ removed: 100 } as never).mockResolvedValueOnce({ removed: 100 } as never).mockResolvedValueOnce({ removed: 7 } as never);
+    expect(await client.removeEndedLocalSessions()).toEqual({ removed: 207 });
+    expect(methods.del).toHaveBeenCalledTimes(3);
+    // Never more than 10 calls, whatever the server says.
+    methods.del.mockReset().mockResolvedValue({ removed: 100 } as never);
+    expect(await client.removeEndedLocalSessions()).toEqual({ removed: 1000 });
+    expect(methods.del).toHaveBeenCalledTimes(10);
+    methods.del.mockReset().mockResolvedValueOnce({ removed: 100 } as never).mockRejectedValueOnce(new Error("offline"));
+    await expect(client.removeEndedLocalSessions()).rejects.toThrow("offline");
+    expect(methods.del).toHaveBeenCalledTimes(2);
   });
 
   it("uses workspace-scoped session routes and preserves command identity with escaped path segments", async () => {

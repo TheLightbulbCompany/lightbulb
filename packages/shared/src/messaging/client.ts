@@ -80,7 +80,7 @@ export interface MessagingClient {
   getLocalSession(sessionId: string): Promise<LocalSession>;
   /** Owner only: take one ENDED session off every list (409 while it is live). Its link stops and nobody can open or resume it. */
   removeLocalSession(sessionId: string): Promise<void>;
-  /** Every ended session of the caller's own, the same way. */
+  /** Every ended session of the caller's own, the same way. The server removes 100 per call; this asks again until it is done (at most 10 calls). */
   removeEndedLocalSessions(): Promise<{ removed: number }>;
   /** The session's chat room: created on the first open, the caller seated (people only). */
   openSessionChat(sessionId: string): Promise<RoomDetail>;
@@ -170,7 +170,15 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
       api.get(`/messaging/sessions${options?.includeEnded ? "?includeEnded=true" : ""}`) as Promise<WorkspaceSessions>,
     getLocalSession: (sessionId) => api.get(sessionPath(sessionId)) as Promise<LocalSession>,
     removeLocalSession: async (sessionId) => { await api.del(sessionPath(sessionId)); },
-    removeEndedLocalSessions: () => api.del("/messaging/sessions?ended=true") as Promise<{ removed: number }>,
+    removeEndedLocalSessions: async () => {
+      let removed = 0;
+      for (let call = 0; call < 10; call += 1) {
+        const page = await api.del("/messaging/sessions?ended=true") as { removed: number };
+        removed += page.removed;
+        if (page.removed < 100) break; // under the server's cap (REMOVE_ENDED_CAP): nothing is left
+      }
+      return { removed };
+    },
     openSessionChat: (sessionId) => api.post(`${sessionPath(sessionId)}/chat`, {}) as Promise<RoomDetail>,
     setLocalSessionDisplayTitle: (sessionId, displayTitle) => api.patch(`${sessionPath(sessionId)}/display-title`, { displayTitle }) as Promise<LocalSession>,
     getPrivateSendApproval: (sessionId) => api.get(`${sessionPath(sessionId)}/private-send-approval`) as Promise<PrivateSendApproval>,

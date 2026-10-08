@@ -3068,7 +3068,13 @@ async def remove_session(auth: AuthContext, session_id: str, *, hint: bool = Tru
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
     # On every call, not only the one that stamped: a retry after a failed cleanup finishes it.
     await delete_link(auth, session_id, removed_only=True)
-    await session_chat.silence(row["ownerId"], row["sessionId"], keep=row["humanUserId"])
+    # The chat is emptied only while the row is still removed: a new run that registered since
+    # the stamp cleared it and reopened the chat, and its readers keep their seats.
+    # ponytail: a re-read, not a transaction (seats live on the room, not this row); a run that
+    # registers inside this one call's window loses seats that the next chat open gives back.
+    current = await repo.get_session(row["ownerId"], row["sessionId"])
+    if current is not None and current.get("removedAt") is not None:
+        await session_chat.silence(row["ownerId"], row["sessionId"], keep=row["humanUserId"])
     await session_chat.follow_session(row["ownerId"], row["sessionId"])
     if hint:
         await publish_resources_changed(row["ownerId"], row["humanUserId"])

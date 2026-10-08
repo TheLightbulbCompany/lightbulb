@@ -1850,8 +1850,14 @@ def ask_status(ask: dict, now: int | None = None) -> str:
 
 
 async def pending_agent_asks(owner: str, sid: str) -> list[dict]:
-    asks = await messaging_repo._query(repo.session_pk(owner, sid), begins_with="AGENTASK#")
-    return [ask for ask in asks if ask_status(ask) == "pending"]
+    """The asks still waiting, read through the agents' slots: one bounded query (a slot per agent,
+    held only while its ask is pending) and one read per live slot, never the settled asks kept
+    for receipts. The terminal band's heartbeat path calls this."""
+    now = int(time.time())
+    slots = await messaging_repo._query(repo.session_pk(owner, sid), begins_with="AGENTASKSLOT#")
+    live = [slot["requestId"] for slot in slots if slot["expiresAt"] > now]
+    asks = await asyncio.gather(*(_get_ask(owner, sid, request_id) for request_id in live))
+    return [ask for ask in asks if ask is not None and ask_status(ask, now) == "pending"]
 
 
 def _ask_receipt(ask: dict) -> AgentCommandReceipt:
@@ -1890,15 +1896,22 @@ async def agent_command(auth: AgentInvocation, session_id: str, request: LocalSe
     if request.kind in ("send", "interrupt"):
         row, _ = await authorize_session(auth, auth.room_id, session_id)
         owner, sid = row["ownerId"], row["sessionId"]
+        fields = request.model_dump(by_alias=True, exclude={"request_id"}).items()
         existing = await _get_ask(owner, sid, request.request_id)
         if existing is not None:
-            if existing["agentId"] != auth.agent_id or any(
-                existing.get(key) != value
-                for key, value in request.model_dump(by_alias=True, exclude={"request_id"}).items()
-            ):
+            if existing["agentId"] != auth.agent_id or any(existing.get(key) != value for key, value in fields):
                 raise ApiProblem("IDEMPOTENCY_CONFLICT", "requestId was already used for a different request.")
             return await _receipt_for(owner, sid, existing)
         if not await agent_may_command(auth, row):
+            # Admitted under an earlier grant (the waking person's own turn): a retry under this one
+            # returns that receipt instead of asking the owner about a message already sent.
+            command = await repo.get_command(owner, sid, request.request_id)
+            if command is not None:
+                if command.get("actor") != {"kind": "agent", "id": auth.agent_id} or any(
+                    command.get(key) != value for key, value in fields
+                ):
+                    raise ApiProblem("IDEMPOTENCY_CONFLICT", "requestId was already used for a different request.")
+                return _public(AgentCommandReceipt, await _expire_pending_command(owner, sid, command))
             return await _file_ask(auth, row, request)
     return await submit_command(auth, auth.room_id, session_id, request)
 

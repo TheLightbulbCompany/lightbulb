@@ -5,6 +5,7 @@ everything else (a viewer leaving, typing) rides the heartbeat ack."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -107,10 +108,9 @@ async def ack_with_presence(ack: dict, owner: str, session_ids: list[str]) -> di
     read_at = _ms()
     try:
         out = []
-        for row in await repo.get_sessions(owner, session_ids):  # one read for the frame
-            if row is None or row.get("endedAt") is not None:
-                continue
-            e = await entry(row, read_at)
+        rows = [r for r in await repo.get_sessions(owner, session_ids) if r and r.get("endedAt") is None]
+        # One frame's sessions concurrently: each entry is a bounded read or two (viewers, ask slots).
+        for e in await asyncio.gather(*(entry(row, read_at) for row in rows)):
             if e["viewers"] or e["joinRequests"] or e["paused"]:
                 out.append(e)
     except Exception:  # noqa: BLE001

@@ -641,7 +641,9 @@ async def mark_activity_seen(body: activity.ActivitySeenRequest, auth: AuthConte
 
 @router.post("/messaging/activity/{item_id}/actions/{action_id}", response_model=activity.ActivityItem)
 async def run_activity_action(
-    item_id: Annotated[str, Path(max_length=300)],
+    # 320 covers the longest id: an agent ask's `agentmsg:<36-char session>:<request id up to 256>`.
+    # The session stays in it because an agent's request id is unique per session, not per workspace.
+    item_id: Annotated[str, Path(max_length=320)],
     action_id: Annotated[str, Path(pattern=r"^[a-z_]{1,40}$")],
     request: Request,
     response: Response,

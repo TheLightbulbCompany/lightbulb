@@ -315,6 +315,79 @@ async def test_a_removed_teammate_with_a_live_token_cannot_answer_or_deliver(ask
 
 
 @pytest.mark.asyncio
+async def test_a_command_admitted_under_an_earlier_grant_is_not_asked_about_again(asks):
+    """Codex P2 on #3877: a retry of an admitted requestId under a grant that would ask returns
+    the durable receipt; the owner is not asked about a message already sent."""
+    sid = await registered()
+    first = await service.agent_command(asks.grant(ALICE.user_id), sid, command(service))
+    retry = await service.agent_command(asks.grant(), sid, command(service))
+    assert isinstance(retry, service.AgentCommandReceipt) and retry.state == first.state
+    assert retry.command_seq == first.command_seq
+    assert await service.pending_agent_asks(OWNER, sid) == [] and await _command_ids(sid) == ["request-1"]
+    asks.notify.assert_not_awaited()
+    with pytest.raises(ApiProblem) as conflict:
+        await service.agent_command(asks.grant(), sid, command(service, text="different"))
+    assert conflict.value.error.code == "IDEMPOTENCY_CONFLICT"
+
+
+@pytest.mark.asyncio
+async def test_presence_reads_only_the_ask_slots_and_one_ask_per_pending_slot(asks, monkeypatch):
+    """Codex P2 on #3877: the heartbeat path never scans settled asks: one slot query per session,
+    and an ask read only for a live slot."""
+    from core.repositories import messaging_repo
+    from core.services import session_presence
+
+    quiet = await registered(conversation="quiet")
+    busy = await registered(conversation="busy")
+    runs = ("66666666-6666-4666-8666-66666666666%d" % i for i in range(3))
+    for request_id in ("old-1", "old-2"):  # settled asks, kept for receipts
+        await service.agent_command(asks.grant(event=next(runs)), busy, command(service, requestId=request_id))
+        await service.decide_agent_ask(ALICE, busy, request_id, "decline")
+    await service.agent_command(asks.grant(event=next(runs)), busy, command(service, requestId="live"))
+    queries, gets = [], []
+    real_query, real_get = messaging_repo._query, messaging_repo._get
+
+    async def query(pk, **kwargs):
+        queries.append(kwargs.get("begins_with"))
+        return await real_query(pk, **kwargs)
+
+    async def get(pk, sk):
+        gets.append(sk)
+        return await real_get(pk, sk)
+
+    monkeypatch.setattr(messaging_repo, "_query", query)
+    monkeypatch.setattr(messaging_repo, "_get", get)
+    for sid, expected in ((quiet, []), (busy, ["live"])):
+        row = {**await repo.get_session(OWNER, sid), "deviceFeatures": ["agentMessageAsks"]}
+        queries.clear(), gets.clear()
+        found = (await session_presence.entry(row, 1))["joinRequests"]
+        assert [r["requestId"] for r in found] == expected
+        assert "AGENTASK#" not in queries and queries.count("AGENTASKSLOT#") == 1
+        assert gets == [f"AGENTASK#{r}" for r in expected]
+
+
+@pytest.mark.asyncio
+async def test_activity_answers_an_ask_with_the_longest_request_id(asks, db, monkeypatch):  # noqa: F811
+    """Codex P2 on #3877: `agentmsg:<session>:<256-char request id>` fits the action route."""
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from core.auth import get_current_user
+    from routers import messaging as routes
+
+    sid = await registered()
+    request_id = "r" * 256
+    await service.agent_command(asks.grant(), sid, command(service, requestId=request_id))
+    app = FastAPI()
+    app.include_router(routes.router, prefix="/api/v1")
+    app.dependency_overrides[get_current_user] = lambda: ALICE
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(f"/api/v1/messaging/activity/agentmsg:{sid}:{request_id}/actions/send")
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "resolved" and await _command_ids(sid) == [request_id]
+
+
+@pytest.mark.asyncio
 async def test_a_stale_ask_fails_at_send_and_is_never_retried(asks):
     sid = await registered()
     await service.agent_command(asks.grant(), sid, command(service))

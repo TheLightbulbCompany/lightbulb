@@ -106,6 +106,16 @@ it("tells a plain session's owner it was not started through Lightbulb and how t
   expect(screen.getByRole("textbox", { name: /send to/i })).toBeTruthy();
 });
 
+it("says a session that started before its folder was approved gets its terminal from its next run", () => {
+  const before: LocalSession = { ...session, terminal: undefined, status: "busy", terminalReason: "started-before-folder-approved" };
+  render(<LocalSessionPanel session={before} ownerName="Alice" own client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
+  expect(screen.getByText("This session started before its folder was approved.")).toBeTruthy();
+  expect(screen.getByText("Its terminal is shared from its next run.")).toBeTruthy();
+  expect(screen.queryByText(/not started through Lightbulb/)).toBeNull();
+  expect(screen.queryByText(/Press ←/)).toBeNull();
+  expect(screen.getByRole("textbox", { name: /send to/i })).toBeTruthy();
+});
+
 it("links the hint's Settings to the live-sessions switch in the desktop app", () => {
   (window as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke: vi.fn(async () => ({ live: false })) } };
   try {

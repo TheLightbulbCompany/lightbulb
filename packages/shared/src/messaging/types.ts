@@ -388,7 +388,7 @@ export interface LocalSession {
    *  background session). Absent: its transcript is all there is. */
   terminal?: "held" | "attach";
   /** Why a running session has no live terminal, as its Mac reports it (spec 2026-10-07 §5.1). */
-  terminalReason?: "plain" | "no-daemon" | "app" | "sdk" | "unknown";
+  terminalReason?: "plain" | "no-daemon" | "app" | "sdk" | "unknown" | "started-before-folder-approved";
   /** An ended held session whose final screen its owner's Mac still shows; `terminal` stays set while it is. */
   screenAvailable?: boolean;
   /** An ended session that was held: its kept screen may still be on its way from the Mac. */

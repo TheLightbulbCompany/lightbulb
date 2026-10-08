@@ -64,7 +64,7 @@ def set_meta(db, sid, **fields):
 
 
 def test_the_relay_lists_both_features_and_screens_is_no_device_feature():
-    assert {"endedScreens", "terminalReason"} <= set(relay_module.FEATURES)
+    assert {"endedScreens", "terminalReason", "terminalReasonFolder"} <= set(relay_module.FEATURES)
     frame = relay_module.DeviceHeartbeat.model_validate(fixture("device-heartbeat-screens"))
     assert frame.device_features() == []
     assert relay_module.DeviceHeartbeat.model_validate(fixture("device-heartbeat")).screens == []
@@ -80,6 +80,11 @@ async def test_the_mac_names_why_a_running_session_has_no_terminal(transport):
     await relay(transport).handle_message("conn-1", heartbeat(sid, terminal="held"))
     assert "terminalReason" not in await repo.get_session(OWNER, sid)
     assert (await public(sid)).terminal_reason is None
+    # A process that was running when its folder was approved: no terminal, and the reason says so.
+    await relay(transport).handle_message(
+        "conn-1", heartbeat(sid, terminal="none", terminalReason="started-before-folder-approved")
+    )
+    assert (await public(sid)).terminal_reason == "started-before-folder-approved"
     with pytest.raises(ApiProblem):
         await relay(transport).handle_message("conn-1", heartbeat(sid, terminal="none", terminalReason="vscode"))
 

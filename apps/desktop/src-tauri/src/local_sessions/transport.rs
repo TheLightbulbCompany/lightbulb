@@ -636,9 +636,8 @@ impl Host {
                         ended_reason: None,
                         ended_sent: false,
                         unshared: false,
-                        history_hidden_for: None,
+                        no_terminal_for: None,
                         hook_cwd: None,
-                        history_cut: None,
                         waiting: None,
                         stats: Default::default(),
                         subagents: Default::default(),
@@ -2882,8 +2881,8 @@ fn device_heartbeats_with_controls(
             entry["capabilities"] = json!({"sendMode":"queue","steer":live,"interrupt":live});
         }
         if terminal {
-            entry["terminal"] = json!(m.native.terminal());
-            super::session_states::add_reason(&mut entry, &m.native);
+            entry["terminal"] = json!(m.terminal());
+            super::session_states::add_reason(&mut entry, m);
         }
         if ascii_wire_len(&envelope(std::slice::from_ref(&entry)))? > 16384 {
             // One session too big to travel even alone would make every frame it
@@ -3223,7 +3222,7 @@ pub(super) mod tests {
         assert!(!mirror.unshared && mirror.ended_at.is_none());
         assert_eq!(mirror.cursor.offset, fs::metadata(&transcript).unwrap().len(), "everything written so far is taken as read");
         assert!(mirror.queue.is_empty() && mirror.pending.is_none(), "and nothing read earlier waits to be sent");
-        assert_eq!(mirror.history_hidden_for.as_ref(), Some(&native.process), "its terminal's earlier history is not served");
+        assert_eq!(mirror.no_terminal_for.as_ref(), Some(&native.process), "the process that was running gets no live terminal");
         append(&transcript, &assistant_row("written after it was approved again"));
         let batch = mirror.next_batch().unwrap().expect("the new row is uploaded").to_string();
         assert!(batch.contains("written after it was approved again"));
@@ -3277,7 +3276,7 @@ pub(super) mod tests {
         let mirror = &host.mirrors[&key];
         assert!(mirror.ended_at.is_none() && !mirror.unshared);
         assert_eq!(mirror.native.process, resumed.process);
-        assert_eq!(mirror.history_hidden_for.as_ref(), Some(&resumed.process), "the new terminal's earlier history is the one withheld");
+        assert_eq!(mirror.no_terminal_for.as_ref(), Some(&resumed.process), "the process running at approval is the one without a terminal");
     }
 
     #[test]
@@ -3553,6 +3552,45 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn local_sessions_a_process_running_when_its_folder_is_approved_has_no_terminal_and_its_next_run_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("scratch");
+        fs::create_dir_all(&folder).unwrap();
+        approve(&[]);
+        // A held session (its terminal is Lightbulb's) seen outside the approved folders.
+        let mut native = test_native(SID);
+        native.cwd = Some(folder.clone());
+        native.holder = Some("ab12cd34".into());
+        let key = native_key(&native);
+        let mut host = test_host(dir.path(), vec![]);
+        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
+        approve(&[&folder]);
+        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
+        let mirror = host.mirrors.get_mut(&key).unwrap();
+        mirror.session_id = Some(SID.into());
+        // Shared, and told to the workspace as a session with no terminal.
+        assert!(!mirror.withheld() && mirror.terminal_withheld());
+        assert_eq!((mirror.native.terminal(), mirror.terminal()), ("held", "none"));
+        assert!(!super::super::screen::shows_terminal(mirror), "nothing indexes it: no relay, snapshot, history, typed input or kept screen");
+        let registered = BTreeSet::from([key.clone()]);
+        let frames = device_heartbeats_with_controls(&host.mirrors, &registered, false, false, false, false, true, false, false, false, false).unwrap();
+        assert_eq!(frames[0]["sessions"][0]["terminal"], "none");
+        assert!(!host.refuses_input(&host.mirrors[&key]), "commands still reach it: the session is shared");
+
+        // An app restart reads the same mirror back: the same process still has no terminal.
+        let stored: Mirror = serde_json::from_value(serde_json::to_value(&host.mirrors[&key]).unwrap()).unwrap();
+        assert!(stored.terminal_withheld() && stored.terminal() == "none");
+
+        // Its next run (a resume: another process on the conversation) has its terminal.
+        let mut next = native;
+        next.process.birth_micros += 1;
+        host.observe(vec![next.clone()], &BTreeSet::new()).unwrap();
+        let mirror = &host.mirrors[&key];
+        assert_eq!(mirror.native.process, next.process);
+        assert!(!mirror.terminal_withheld() && mirror.terminal() == "held" && super::super::screen::shows_terminal(mirror));
+    }
+
+    #[test]
     fn local_sessions_a_hook_cannot_bring_back_a_session_whose_folder_was_removed() {
         let dir = tempfile::tempdir().unwrap();
         let approved = dir.path().join("approved");
@@ -3699,9 +3737,8 @@ pub(super) mod tests {
             ended_reason: None,
             ended_sent: false,
             unshared: false,
-            history_hidden_for: None,
+            no_terminal_for: None,
             hook_cwd: None,
-            history_cut: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -5536,9 +5573,8 @@ pub(super) mod tests {
             ended_reason: None,
             ended_sent: false,
             unshared: false,
-            history_hidden_for: None,
+            no_terminal_for: None,
             hook_cwd: None,
-            history_cut: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -5614,9 +5650,8 @@ pub(super) mod tests {
             ended_reason: None,
             ended_sent: false,
             unshared: false,
-            history_hidden_for: None,
+            no_terminal_for: None,
             hook_cwd: None,
-            history_cut: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -5742,9 +5777,8 @@ pub(super) mod tests {
             ended_reason: None,
             ended_sent: false,
             unshared: false,
-            history_hidden_for: None,
+            no_terminal_for: None,
             hook_cwd: None,
-            history_cut: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),

@@ -1557,39 +1557,17 @@ struct Mirror {
     /// command, no typed input and no viewer.
     #[serde(default)]
     unshared: bool,
-    /// The process whose terminal held output from before sharing started (again) when it did
-    /// (`share_from_now`): a viewer gets none of that terminal's history. A later process on the
-    /// conversation (a resume) has its whole history shared as usual.
+    /// The process that was already running when sharing started (again) for this session
+    /// (`share_from_now`). A terminal's screen and scrollback carry no time, so what that
+    /// process's terminal shows cannot be cut at that moment: it has no live terminal at all, for
+    /// as long as it runs (`terminal_withheld`). Its conversation is shared from that moment
+    /// on. The next process on the conversation (a resume) has its terminal as usual.
     #[serde(default)]
-    history_hidden_for: Option<Process>,
+    no_terminal_for: Option<Process>,
     /// The folder this conversation's last hook ran in. A session can move (a Codex turn in
     /// another folder) between two listings; a hook says so at once. It must be approved too.
     #[serde(default)]
     hook_cwd: Option<PathBuf>,
-    /// For `history_hidden_for`'s terminal: the end of what was above its screen when sharing
-    /// started (`screen::history_marker`). Only what comes after it is served. None: the
-    /// terminal could not be asked then, and none of its history is served.
-    #[serde(default)]
-    history_cut: Option<Vec<u8>>,
-    // The relay has acknowledged this session's end. Durable: a Mac that reports an
-    // end and restarts must not report it again, and one that does not must.
-    #[serde(default)]
-    ended_sent: bool,
-    // The prompt a waiting row has already been queued for. `None` means "not
-    // waiting": every other transition clears it, so the same prompt asked again
-    // after an answer is news rather than a repeat.
-    #[serde(default)]
-    waiting: Option<WaitingPrompt>,
-    /// Model, permission mode and reported tokens, read off the same rows.
-    #[serde(default)]
-    stats: stats::Stats,
-    /// This session's subagents, each tailed like the session itself and mirrored into
-    /// the same event stream tagged with its id: they share its sharing, pause and end.
-    #[serde(default, skip_serializing_if = "Subagents::is_empty")]
-    subagents: Subagents,
-    // RAM changes remain dirty across failed writes; this is never restored from disk.
-    #[serde(skip)]
-    dirty: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -1719,11 +1697,25 @@ impl Mirror {
         self.unshared || self.registration.successor.as_ref().unwrap_or(&self.native).cwd.is_none()
     }
 
+    /// The process running now was already running when this session became shared: it has no
+    /// live terminal (see `no_terminal_for`). Nothing indexes, relays, snapshots or keeps its
+    /// screen, and no typed input reaches it; commands still do.
+    fn terminal_withheld(&self) -> bool {
+        self.no_terminal_for.as_ref().is_some_and(|before| {
+            *before == self.native.process || self.registration.successor.as_ref().is_some_and(|next| next.process == *before)
+        })
+    }
+
+    /// `NativeSession::terminal`, as the workspace is told it.
+    fn terminal(&self) -> &'static str {
+        if self.terminal_withheld() { "none" } else { self.native.terminal() }
+    }
+
     /// Sharing starts now: for a session whose folder was just approved (again), or one that
     /// was never shared before. Approving a folder shares what happens from that moment on and
     /// nothing earlier, so everything read but unsent is dropped, the transcript (and every
-    /// subagent's that exists already) is taken as read to its current end, and the terminal's
-    /// earlier history is not served.
+    /// subagent's that exists already) is taken as read to its current end, and the process
+    /// running now gets no live terminal.
     /// `current`: the session as discovery sees it now. A conversation resumed by another
     /// process while it was not shared has that process's terminal to cut off, not the old one's.
     fn share_from_now(&mut self, current: &NativeSession) {
@@ -1754,16 +1746,14 @@ impl Mirror {
             }
         }
         for subagent in known.values_mut() {
-            match &subagent.path {
-                Some(path) => subagent.cursor = cursor_at_end(path),
-                // Announced before now and still without a rollout: when one appears it would
-                // be read from its start, so it is not read at all.
-                None => subagent.closed = true,
-            }
+            subagent.cursor = match &subagent.path {
+                Some(path) => cursor_at_end(path),
+                // Announced before now and still without a rollout: it stays open, and when its
+                // rollout appears it is read from the end it has then.
+                None => Cursor::at_first_read(),
+            };
         }
-        self.history_hidden_for = Some(current.process.clone());
-        // Its terminal, when it has one now, is asked where its history ends at this moment.
-        self.history_cut = current.holder.as_deref().and_then(screen::history_marker_now);
+        self.no_terminal_for = Some(current.process.clone());
         self.dirty = true;
     }
 
@@ -2130,8 +2120,9 @@ mod tests {
             assert!(!subagent.closed, "{id} is still read");
             assert_eq!(subagent.cursor.offset, fs::metadata(path).unwrap().len(), "{id} from its current end");
         }
-        assert!(mirror.subagents.known["unfound"].closed, "a child with no rollout yet would be read from its start");
-        assert_eq!(mirror.history_hidden_for.as_ref(), Some(&resumed.process), "the process that runs it now");
+        let unfound = &mirror.subagents.known["unfound"];
+        assert!(!unfound.closed && unfound.cursor.from_end, "a child with no rollout yet is read from the end it has when one appears");
+        assert_eq!(mirror.no_terminal_for.as_ref(), Some(&resumed.process), "the process that runs it now");
         assert_eq!(mirror.deferred_end_reason, None, "the revocation's waiting end is cancelled");
     }
 
@@ -2164,7 +2155,14 @@ mod tests {
             assert_eq!(subagent.cursor.offset, fs::metadata(path).unwrap().len(), "{id} from its current end");
         }
         assert!(!mirror.subagents.known.contains_key("other"), "another thread's child is not this one's");
-        assert!(mirror.subagents.known["vanished"].closed);
+        // Announced before the cut-off, no rollout yet: kept open, and its rollout is read from
+        // the end it has when it first appears, never from its start.
+        let late = day.join("rollout-5-vanished.jsonl");
+        fs::write(&late, meta("vanished", Some("parent"))).unwrap();
+        let vanished = mirror.subagents.known.get_mut("vanished").unwrap();
+        assert!(!vanished.closed && vanished.cursor.from_end);
+        assert!(vanished.cursor.read(&late, "codex").unwrap().is_empty());
+        assert_eq!(vanished.cursor.offset, fs::metadata(&late).unwrap().len());
         // No transcript known when sharing starts: its end is taken at the first read.
         let mut unknown = mirror.native.clone();
         unknown.transcript = None;
@@ -2982,9 +2980,8 @@ mod tests {
             ended_reason: None,
             ended_sent: false,
             unshared: false,
-            history_hidden_for: None,
+            no_terminal_for: None,
             hook_cwd: None,
-            history_cut: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -3073,9 +3070,8 @@ mod tests {
             ended_reason: None,
             ended_sent: false,
             unshared: false,
-            history_hidden_for: None,
+            no_terminal_for: None,
             hook_cwd: None,
-            history_cut: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -3163,9 +3159,8 @@ mod tests {
             ended_reason: None,
             ended_sent: false,
             unshared: false,
-            history_hidden_for: None,
+            no_terminal_for: None,
             hook_cwd: None,
-            history_cut: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -3268,9 +3263,8 @@ mod tests {
             ended_reason: None,
             ended_sent: false,
             unshared: false,
-            history_hidden_for: None,
+            no_terminal_for: None,
             hook_cwd: None,
-            history_cut: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -3338,9 +3332,8 @@ mod tests {
             ended_reason: None,
             ended_sent: false,
             unshared: false,
-            history_hidden_for: None,
+            no_terminal_for: None,
             hook_cwd: None,
-            history_cut: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),

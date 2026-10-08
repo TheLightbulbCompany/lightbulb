@@ -99,6 +99,9 @@ at all: nothing about it leaves the Mac, it is in no session list, `find_session
 return it and nobody can message it. If a person asks why a session of theirs is missing, the
 likely cause is its folder: they add the folder under Approved folders (or answer yes when
 `lightbulb claude` / `lightbulb codex` asks in that folder) and it is shared from then on.
+A session that was already running when its folder was approved is shared from that moment on
+(nothing it did earlier is uploaded) and has no live terminal: its panel says it started before
+its folder was approved. Its next run (a resume, a new session) has its terminal as usual.
 Removing a folder from the list ends sharing for the sessions in it within a minute; they show
 as ended. The owner can pause one session or turn sharing off for the Mac. When a
 person pairs a Mac, **Share every session live** starts on (they can turn it off there or later

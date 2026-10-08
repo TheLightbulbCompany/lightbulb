@@ -42,7 +42,7 @@ fn resolve(scope: &Path, pid: u32) -> Option<Caller> {
                 session_id: sid.clone(),
                 generation: mirror.generation.clone(),
                 // The heartbeat's `terminal`, with its "none" as null.
-                terminal: Some(mirror.native.terminal()).filter(|t| *t != "none"),
+                terminal: Some(mirror.terminal()).filter(|t| *t != "none"),
                 // A prompt the hook holds open for a remote answer.
                 approval_waiting: mirror.waiting.as_ref().is_some_and(|w| w.held.is_some()),
             });

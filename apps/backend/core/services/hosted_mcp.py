@@ -367,8 +367,9 @@ async def send_message(
             # follow-up from the session page; the label tells the session a client wrote it.
             result = await native_session_tools.session_send(auth, target, text, str(request_id), via_client=client)
         except messaging.ApiProblem as exc:
-            if pinned.get("accepted"):
+            if pinned.get("accepted") and exc.error.code != "IDEMPOTENCY_CONFLICT":
                 # An earlier attempt admitted it and lost the response; a refusal now does not undo that.
+                # (A conflict is different text under the same id: the ledger refuses it, and so do we.)
                 return {"sessionId": session_id, "requestId": str(request_id), "state": pinned["accepted"]}
             # FastMCP hides any other exception's text, so the client would never learn why.
             await _record_outcome(auth, request_id, refusal=exc.error.code)

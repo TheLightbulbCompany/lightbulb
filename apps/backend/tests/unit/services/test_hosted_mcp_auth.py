@@ -405,6 +405,8 @@ async def test_an_accepted_send_is_recorded_and_clears_an_earlier_transient_refu
 
 @pytest.mark.asyncio
 async def test_a_refused_retry_never_undoes_an_accepted_send(monkeypatch):
+    from mcp.server.mcpserver.exceptions import ToolError
+
     auth, _ = _hosted_sender(monkeypatch)
     sid, request_id = str(uuid.uuid4()), uuid.uuid4()
     # The first attempt was admitted but its response was lost; sharing was switched off since.
@@ -416,6 +418,12 @@ async def test_a_refused_retry_never_undoes_an_accepted_send(monkeypatch):
     monkeypatch.setattr(hosted_mcp, "_record_outcome", record)
     assert (await hosted_mcp.send_message("hi", request_id, session_id=sid))["state"] == "queued"
     record.assert_not_awaited()
+    # Different text under the same id is a ledger conflict, never a replay of the accepted state.
+    conflict = hosted_mcp.messaging.ApiProblem("IDEMPOTENCY_CONFLICT", "request_id was used with other text.")
+    monkeypatch.setattr(hosted_mcp.local_sessions, "authorize_session", AsyncMock(return_value=(sid, None)))
+    monkeypatch.setattr(hosted_mcp.native_session_tools, "session_send", AsyncMock(side_effect=conflict))
+    with pytest.raises(ToolError, match="IDEMPOTENCY_CONFLICT"):
+        await hosted_mcp.send_message("other text", request_id, session_id=sid)
 
     key = hosted_mcp._sent_key(auth, request_id)
     monkeypatch.setattr(

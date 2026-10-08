@@ -125,7 +125,7 @@ def test_in_call_dispatches_the_worker_once_and_prewakes(env):
         "source": "meet",
         "company": "Acme",
     }
-    env["wake"].assert_called_once_with("org_a", team=TEAM)
+    env["wake"].assert_called_once_with("org_a", team=TEAM, room_id=ROOM)
     assert env["meta"]["meeting"]["status"] == "in_call"
     event = env["publisher"].publish_room.await_args.args[1]
     assert event["type"] == "room.meeting.changed" and event["payload"] == {"roomId": ROOM, "status": "in_call"}

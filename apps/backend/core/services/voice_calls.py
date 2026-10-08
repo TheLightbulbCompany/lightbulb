@@ -476,10 +476,14 @@ async def _runtime(owner_id: str, path: str, body: dict, *, timeout_s: float = _
     )
 
 
-def prewake_owner(owner_id: str, team: list[dict] | None = None) -> None:
+def prewake_owner(owner_id: str, team: list[dict] | None = None, room_id: str | None = None) -> None:
     """Fire-and-forget wake of the workspace runtime (one health RPC), then a profile pull for every
     agent in the room (the bridge's profile.warm, off its request thread), so the first summon finds
-    both warm. Pulse's first voice answer waited 23 s on its cold profile restore alone."""
+    both warm. Pulse's first voice answer waited 23 s on its cold profile restore alone.
+
+    With ``room_id`` the bridge also compacts each agent's session for that room if it is near
+    Hermes's threshold: a spoken turn never compacts (67-103 s inside a turn, prod 10-07), so the
+    start of the call is where it happens. The RPC answers at once either way."""
 
     async def wake():
         try:
@@ -489,7 +493,8 @@ def prewake_owner(owner_id: str, team: list[dict] | None = None) -> None:
             return
         for member in team or ():
             try:
-                await container_rpc.call(owner_id, "profile.warm", {"agentId": member["id"]}, timeout_s=10.0)
+                params = {"agentId": member["id"], **({"roomId": room_id} if room_id else {})}
+                await container_rpc.call(owner_id, "profile.warm", params, timeout_s=10.0)
             except Exception:  # noqa: BLE001 -- an old image answers "unavailable"; the summon restores
                 logger.info("voice profile prewarm failed agent=%s", member["id"], exc_info=True)
 

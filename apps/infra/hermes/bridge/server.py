@@ -655,10 +655,15 @@ RPC_METHODS["skills.status"] = _skills_status
 def _profile_warm(params: dict, **_kwargs) -> dict:
     """Pull one agent's profile from S3 now, off the request thread, so the turn that follows
     (a Live summon, typically) finds it restored. The backend fires this for every agent in the
-    room when someone goes Live; a second call for a restored agent is a no-op."""
+    room when someone goes Live; a second call for a restored agent is a no-op.
+
+    With a ``roomId`` the agent's session for that room is then compacted if it is near Hermes's
+    threshold (turn.compact_session): a spoken turn never compacts, so this is where it happens
+    before the first question. An image that predates the parameter ignores it."""
     agent_id = params.get("agentId")
     if not isinstance(agent_id, str) or agent_id not in _roster():
         return {"ok": False, "error": {"code": "INVALID_REQUEST", "message": "agentId must name an agent"}}
+    room_id = params.get("roomId")
 
     def warm() -> None:
         try:
@@ -666,6 +671,14 @@ def _profile_warm(params: dict, **_kwargs) -> dict:
             sync.ensure_profile(agent_id)
         except Exception:  # noqa: BLE001 -- the next turn restores it the ordinary way
             log.warning("profile.warm failed for %s", agent_id, exc_info=True)
+            return
+        # Counted as a turn: a roll or the recycle waits for it, and none starts under their hold.
+        if isinstance(room_id, str) and turn.reserve_turn():
+            try:
+                turn.RESTORED.add(agent_id)  # the SIGTERM save covers what the compaction wrote
+                turn.compact_session(agent_id, turn.lightbulb_session_key(agent_id, room_id))
+            finally:
+                turn.release_turn()
 
     threading.Thread(target=warm, name=f"profile-warm-{agent_id[:8]}", daemon=True).start()
     return {"ok": True, "payload": {"warming": True}}

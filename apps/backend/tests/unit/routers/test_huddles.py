@@ -87,7 +87,8 @@ def test_the_calls_orb_route_is_gone():
 def test_join_wakes_the_workspace_and_warms_the_cards(client):
     resp, _, _ = _join(client)
     assert resp.status_code == 200
-    _join.wake.assert_called_once_with("org_a", TEAM)  # health, then profile.warm per agent
+    # health, then profile.warm per agent, which also compacts that agent's session for this room
+    _join.wake.assert_called_once_with("org_a", TEAM, ROOM)
     _join.warm.assert_called_once_with("org_a", TEAM)  # F4: the first /route fits its 3 s budget
 
 
@@ -218,7 +219,7 @@ def test_join_works_in_a_dm_and_group_dm(client, kind):
         resp, _, dispatch = _join(client, room_team=AsyncMock(wraps=vc._room_team))
     assert resp.status_code == 200 and resp.json()["lightbulb"] is True
     dispatch.assert_awaited_once()
-    _join.wake.assert_called_once_with("org_a", [{"id": "agent-eng", "name": "Engineering"}])
+    _join.wake.assert_called_once_with("org_a", [{"id": "agent-eng", "name": "Engineering"}], ROOM)
 
 
 def test_people_only_room_joins_without_dispatch_or_wake(client):

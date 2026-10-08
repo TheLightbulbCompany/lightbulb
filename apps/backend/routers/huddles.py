@@ -204,7 +204,7 @@ async def _join(room_id: str, owner_id: str, user_id: str, team: list[dict]) -> 
         return {**out, "lightbulb": False}
     # Going Live is the earliest sign a voice turn is coming: start the workspace's cold start now,
     # and warm Jev's agent cards so the first /route fits its 3 s budget (F4).
-    voice_calls.prewake_owner(owner_id, team)
+    voice_calls.prewake_owner(owner_id, team, room_id)
     voice_calls.prewarm_cards(owner_id, team)
     try:
         # The worker takes ~20 s to join: a second click (or person) in that window must not dispatch

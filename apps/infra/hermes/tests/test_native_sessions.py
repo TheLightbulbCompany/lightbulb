@@ -360,7 +360,7 @@ def test_the_skill_counter_survives_the_per_turn_agent(hermes, home):
 
     SCRIPT.append(work)
     _run_paperclip()
-    assert db.meta[key] == {turn.SKILL_COUNTER: 11}
+    assert db.meta[key] == {turn.SKILL_COUNTER: 11, turn.PRESSURE: 0.0}  # the fake has no compressor
 
 
 # ---- a state.db failure fails the turn, as in Hermes's gateway -----------------------------------

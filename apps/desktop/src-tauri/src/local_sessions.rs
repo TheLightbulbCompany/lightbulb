@@ -1519,6 +1519,10 @@ struct Mirror {
     /// conversation (a resume) has its whole history shared as usual.
     #[serde(default)]
     history_hidden_for: Option<Process>,
+    /// The folder this conversation's last hook ran in. A session can move (a Codex turn in
+    /// another folder) between two listings; a hook says so at once. It must be approved too.
+    #[serde(default)]
+    hook_cwd: Option<PathBuf>,
     // The relay has acknowledged this session's end. Durable: a Mac that reports an
     // end and restarts must not report it again, and one that does not must.
     #[serde(default)]
@@ -1743,7 +1747,9 @@ impl Mirror {
     fn next_batch(&mut self) -> Result<Option<Value>> {
         // The upload point itself: whatever else revived or registered this mirror, nothing is
         // read from the transcript or sent while its folder is not approved.
-        if self.unshared {
+        // Nor while nobody can name its folder (a mirror stored before folders were checked, a
+        // listing without one): unknown is not approved.
+        if self.unshared || self.native.cwd.is_none() {
             return Ok(None);
         }
         if !self.subagents.relay {
@@ -2868,6 +2874,7 @@ mod tests {
             ended_sent: false,
             unshared: false,
             history_hidden_for: None,
+            hook_cwd: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -2957,6 +2964,7 @@ mod tests {
             ended_sent: false,
             unshared: false,
             history_hidden_for: None,
+            hook_cwd: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -3045,6 +3053,7 @@ mod tests {
             ended_sent: false,
             unshared: false,
             history_hidden_for: None,
+            hook_cwd: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -3148,6 +3157,7 @@ mod tests {
             ended_sent: false,
             unshared: false,
             history_hidden_for: None,
+            hook_cwd: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -3216,6 +3226,7 @@ mod tests {
             ended_sent: false,
             unshared: false,
             history_hidden_for: None,
+            hook_cwd: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),

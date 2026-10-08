@@ -93,6 +93,41 @@ fn outside_key(provider: &str, conversation: &str) -> String {
     format!("{provider}:{conversation}")
 }
 
+/// In `Host::outside`: when the markers were lost (unix secs). Never removed.
+const MARKERS_LOST: &str = "*";
+
+/// `outside.json` as `restore` takes it. Only a file that is not there is an empty list. One
+/// that cannot be read (malformed, wrong owner or mode, a read error) is unknown state: it is
+/// kept aside under another name, and the new list starts with `MARKERS_LOST`, so every session
+/// that is not mirrored and whose transcript already exists is shared from now on only.
+fn load_outside(dir: &Path) -> Result<BTreeMap<String, u64>> {
+    let path = dir.join(OUTSIDE_FILE);
+    if matches!(fs::symlink_metadata(&path), Err(error) if error.kind() == std::io::ErrorKind::NotFound) {
+        return Ok(BTreeMap::new());
+    }
+    let reason = match private_read(&path) {
+        Ok(outside) => return Ok(outside),
+        Err(reason) => reason,
+    };
+    let aside = dir.join(format!("outside.unreadable-{}.json", epoch_secs()));
+    let lost = BTreeMap::from([(MARKERS_LOST.to_owned(), epoch_secs())]);
+    // Renamed, not deleted, and out of the way of the new list.
+    let kept = fs::rename(&path, &aside).is_ok();
+    private_write(&path, &lost)?;
+    relay_log(&format!(
+        "outside.json unreadable ({reason}); {}. Sessions not yet shared start from now, not from their beginning",
+        if kept { "kept aside as outside.unreadable-*.json" } else { "it could not be moved aside" },
+    ));
+    Ok(lost)
+}
+
+/// Whether a folder this mirror is known to work in (its listing's, its last hook's) is outside
+/// the approved folders.
+fn outside_now(mirror: &Mirror, approved: &[PathBuf]) -> bool {
+    let native = mirror.registration.successor.as_ref().unwrap_or(&mirror.native);
+    [native.cwd.as_deref(), mirror.hook_cwd.as_deref()].into_iter().flatten().any(|cwd| !in_approved_folder(cwd, approved))
+}
+
 /// One discovery pass: the captured sessions, and every conversation the Claude listing named.
 type Discovered = (Vec<NativeSession>, BTreeSet<String>);
 
@@ -428,20 +463,29 @@ impl Host {
         // A session outside the approved folders is not shared at all (owner ruling 2026-10-08):
         // it gets no mirror, so nothing of it is read, registered or uploaded, and the mod's
         // band finds no session to show. One already shared ends here, on the pass after its
-        // folder left the list. A folder nobody can name is not approved; only a mirror stored
-        // before `cwd` existed is left as it is until a listing names its session again.
+        // folder left the list. A folder nobody can name is not approved; a mirror stored before
+        // `cwd` existed is kept until a listing names its session again, and uploads nothing
+        // until then (`next_batch`).
         let approved = (self.approved)();
         for mut native in reconciled {
             let key = native_key(&native);
-            let shared = native.cwd.as_deref().map(|cwd| in_approved_folder(cwd, &approved));
+            // The folder its last hook ran in counts as well: both must be approved.
+            let hook_outside = self.mirrors.get(&key).and_then(|m| m.hook_cwd.as_deref()).is_some_and(|cwd| !in_approved_folder(cwd, &approved));
+            let shared = native.cwd.as_deref().map(|cwd| !hook_outside && in_approved_folder(cwd, &approved));
             if shared == Some(false) || (shared.is_none() && !self.mirrors.contains_key(&key)) {
                 // Unshared first: a marker that cannot be written must not leave it shared.
                 self.unshare(&key)?;
                 self.remember_outside(&outside_key(&native.provider, &native.conversation))?;
                 continue;
             }
-            // Approving a folder shares a session from that moment on and nothing earlier.
-            let from_now = shared == Some(true) && self.forget_outside(&outside_key(&native.provider, &native.conversation))?;
+            // Approving a folder shares a session from that moment on and nothing earlier. The
+            // marker that says so is removed only once the mirror holding the cut-off is on disk
+            // (below): a failure or an exit in between leaves the marker, and the cut-off is
+            // simply taken again.
+            let marker = outside_key(&native.provider, &native.conversation);
+            let from_now = shared == Some(true)
+                && (self.outside.contains_key(&marker)
+                    || (!self.mirrors.contains_key(&key) && self.markers_lost_before(&native)));
             let before = self
                 .mirrors
                 .get(&key)
@@ -593,6 +637,7 @@ impl Host {
                         ended_sent: false,
                         unshared: false,
                         history_hidden_for: None,
+                        hook_cwd: None,
                         waiting: None,
                         stats: Default::default(),
                         subagents: Default::default(),
@@ -634,6 +679,9 @@ impl Host {
                 }
                 mirror.persist(&self.dir.join(format!("{key}.json")))?;
             }
+            if from_now {
+                self.forget_outside(&marker)?;
+            }
         }
         self.heartbeat_dirty.extend(heartbeat);
         for key in moved {
@@ -657,10 +705,7 @@ impl Host {
         let outside: Vec<(String, String)> = self
             .mirrors
             .iter()
-            .filter(|(_, m)| {
-                let native = m.registration.successor.as_ref().unwrap_or(&m.native);
-                !m.unshared && native.cwd.as_deref().is_some_and(|cwd| !in_approved_folder(cwd, &approved))
-            })
+            .filter(|(_, m)| !m.unshared && outside_now(m, &approved))
             .map(|(key, m)| (key.clone(), outside_key(&m.native.provider, &m.native.conversation)))
             .collect();
         for (key, marker) in outside {
@@ -674,29 +719,83 @@ impl Host {
         Ok(())
     }
 
-    /// A hook, before anything else reads it. A session that is not mirrored and whose hook
-    /// comes from outside the approved folders is recorded as outside now (`marker` is all a
-    /// hook can name): its folder may be approved before a discovery pass ever sees it, and it
-    /// must then be shared from that moment on. Such a hook wakes no discovery pass: each one
-    /// would run a pass for nothing. Any other unmirrored session's hook does: a turn can start
-    /// and finish before discovery first sees its session (a Codex rollout appears only with
-    /// the first prompt), and its events would land on nothing until the 60s sweep.
+    /// A hook, before anything else reads it. It names the folder the conversation works in
+    /// right now, which a listing learns up to a minute later.
+    /// - From outside the approved folders: every mirror of the conversation is unshared here
+    ///   and now (a Codex turn can move a shared thread to another folder), and the session is
+    ///   recorded as outside (`outside_key` is all a hook can name), so a folder approved before
+    ///   any discovery pass still shares it from that moment on only. No pass is woken: each
+    ///   such hook would run one for nothing.
+    /// - Otherwise, for a session with no shared mirror, a pass is woken: a turn can start and
+    ///   finish before discovery first sees its session (a Codex rollout appears only with the
+    ///   first prompt), and its events would land on nothing until the 60s sweep.
     fn hook_seen(&mut self, event: &lifecycle::HookEvent) -> Result<()> {
-        if self.mirrors.values().any(|m| m.ended_at.is_none() && m.native.conversation == event.session_id) {
-            return Ok(());
-        }
+        let provider = match event.provider {
+            lifecycle::Provider::Claude => "claude",
+            lifecycle::Provider::Codex => "codex",
+        };
         let approved = (self.approved)();
-        if event.cwd.as_deref().is_some_and(|cwd| !in_approved_folder(Path::new(cwd), &approved)) {
-            let provider = match event.provider {
-                lifecycle::Provider::Claude => "claude",
-                lifecycle::Provider::Codex => "codex",
-            };
+        let cwd = event.cwd.as_deref().map(PathBuf::from);
+        let outside = cwd.as_deref().is_some_and(|cwd| !in_approved_folder(cwd, &approved));
+        let keys: Vec<String> = self
+            .mirrors
+            .iter()
+            .filter(|(_, m)| m.native.provider == provider && m.native.conversation == event.session_id)
+            .map(|(key, _)| key.clone())
+            .collect();
+        let mut shared = false;
+        for key in &keys {
+            if let Some(mirror) = self.mirrors.get_mut(key) {
+                if cwd.is_some() && mirror.hook_cwd != cwd {
+                    let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
+                    mirror.hook_cwd.clone_from(&cwd);
+                    persist_changed(&self.dir, key, mirror, &before)?;
+                }
+                shared |= mirror.ended_at.is_none() && !mirror.unshared;
+            }
+            if outside {
+                self.unshare(key)?;
+            }
+        }
+        if outside {
             return self.remember_outside(&outside_key(provider, &event.session_id));
         }
-        if let Some(wake) = &self.rediscover {
-            wake.notify_one();
+        if !shared {
+            if let Some(wake) = &self.rediscover {
+                wake.notify_one();
+            }
         }
         Ok(())
+    }
+
+    /// Whether this mirror takes anything from the workspace right now: read from the approved
+    /// folders as they are at this moment, not as the last tick or pass saw them.
+    fn refuses_input(&self, mirror: &Mirror) -> bool {
+        mirror.unshared || outside_now(mirror, &(self.approved)())
+    }
+
+    /// The same, for a relay frame that names a session (`watch`, typed `input`).
+    fn refuses_frame(&self, body: &Value) -> bool {
+        self.mirrors
+            .values()
+            .find(|m| m.session_id.is_some() && m.session_id.as_deref() == body["sessionId"].as_str())
+            .is_some_and(|m| self.refuses_input(m))
+    }
+
+    /// The markers were lost (`restore` could not read `outside.json`), and this session's
+    /// transcript was already there when they were: whether it was outside is not known, so it
+    /// is shared from now on only, never from its beginning.
+    fn markers_lost_before(&self, native: &NativeSession) -> bool {
+        let Some(lost) = self.outside.get(MARKERS_LOST) else {
+            return false;
+        };
+        native.transcript.as_deref().is_some_and(|path| {
+            fs::metadata(path)
+                .and_then(|meta| meta.created())
+                .ok()
+                .and_then(|born| born.duration_since(SystemTime::UNIX_EPOCH).ok())
+                .is_none_or(|born| born.as_secs() <= *lost)
+        })
     }
 
     /// Durable before it counts: the list on disk is written first, and memory follows only
@@ -708,7 +807,7 @@ impl Host {
         }
         let mut next = self.outside.clone();
         if next.len() >= 4096 {
-            if let Some(oldest) = next.iter().min_by_key(|(_, seen)| **seen).map(|(key, _)| key.clone()) {
+            if let Some(oldest) = next.iter().filter(|(key, _)| *key != MARKERS_LOST).min_by_key(|(_, seen)| **seen).map(|(key, _)| key.clone()) {
                 next.remove(&oldest);
             }
         }
@@ -1223,7 +1322,7 @@ impl Host {
             }
             mirrors.insert(key.into(), mirror);
         }
-        let outside = private_read(&dir.join(OUTSIDE_FILE)).unwrap_or_default();
+        let outside = load_outside(&dir)?;
         let mut host = Self {
             outside,
             approved_seen: None,
@@ -1954,9 +2053,9 @@ impl Host {
                         },
                         Some("local.session.receipt.ack") => {},
                         // Someone just started watching: stream now. Never answered.
-                        Some("local.session.watch") => super::screen::nudge(&body),
+                        Some("local.session.watch") => if !self.refuses_frame(&body) { super::screen::nudge(&body) },
                         // A teammate's keystrokes: queued for the holder, never answered.
-                        Some("local.session.input") => super::remote_input::offer(&body),
+                        Some("local.session.input") => if !self.refuses_frame(&body) { super::remote_input::offer(&body) },
                         // Who watches, who may type, join requests, pause. Never answered.
                         Some("local.session.presence") => super::presence::offer_frame(&body),
                         other => {
@@ -2129,7 +2228,7 @@ impl Host {
         else {
             return Err("unknown command session".into());
         };
-        if self.mirrors[&key].unshared {
+        if self.refuses_input(&self.mirrors[&key]) {
             *why = "its folder is not approved: not shared";
             return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
         }
@@ -2189,6 +2288,12 @@ impl Host {
         } else {
             None
         };
+        // The last moment before anything is journaled or reaches the session: the workspace
+        // scan and the verification above each waited, and no tick runs while a command does.
+        if self.refuses_input(mirror) {
+            *why = "its folder stopped being approved while this was prepared";
+            return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
+        }
         let now = anchor.and_then(ClockAnchor::now).unwrap_or(u64::MAX);
         if !journal.admit(cmd, &mirror.generation, now)? {
             *why = "not admitted (order, shape or deadline)";
@@ -2291,6 +2396,8 @@ impl Host {
             && cmd.authorized_at(now)
             && self.verified(&mirror.native).await.is_ok();
         let mirror = &self.mirrors[&key];
+        // Read again after the wait above: the last moment before the prompt is answered.
+        let live = live && !self.refuses_input(mirror);
         if !journal.admit(cmd, &mirror.generation, now)? {
             return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
         }
@@ -3260,6 +3367,122 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn local_sessions_a_hook_from_another_folder_unshares_a_mirrored_session_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let (approved, elsewhere) = (dir.path().join("approved"), dir.path().join("elsewhere"));
+        fs::create_dir_all(&approved).unwrap();
+        fs::create_dir_all(&elsewhere).unwrap();
+        approve(&[&approved]);
+        let mut mirror = test_mirror(SID, "g1");
+        mirror.native.cwd = Some(approved.clone());
+        mirror.session_id = Some("s1".into());
+        let native = mirror.native.clone();
+        let key = native_key(&native);
+        let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
+        // Its next turn runs in a folder that is not approved; the listing has not caught up.
+        let mut turn = hook(lifecycle::Provider::Codex, "UserPromptSubmit", SID);
+        turn.cwd = Some(elsewhere.to_string_lossy().into_owned());
+        host.hook_seen(&turn).unwrap();
+        assert!(host.mirrors[&key].unshared && host.mirrors[&key].ended_at.is_some(), "unshared by the hook, no pass needed");
+        assert_eq!(host.apply_hook(&turn).unwrap(), None, "and the hook itself moves nothing");
+        assert!(host.outside.contains_key(&outside_key("codex", SID)));
+        // A listing that still names the old folder does not bring it back.
+        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
+        assert!(host.mirrors[&key].unshared);
+        // Back in the approved folder: shared again, from then on.
+        turn.cwd = Some(approved.to_string_lossy().into_owned());
+        host.hook_seen(&turn).unwrap();
+        host.observe(vec![native], &BTreeSet::new()).unwrap();
+        assert!(!host.mirrors[&key].unshared && host.mirrors[&key].ended_at.is_none());
+    }
+
+    #[test]
+    fn local_sessions_input_is_refused_by_the_folders_as_they_are_at_that_moment() {
+        let dir = tempfile::tempdir().unwrap();
+        let approved = dir.path().join("approved");
+        fs::create_dir_all(&approved).unwrap();
+        approve(&[&approved]);
+        let mut mirror = test_mirror(SID, "g1");
+        mirror.native.cwd = Some(approved.clone());
+        mirror.session_id = Some(SID.into());
+        let key = native_key(&mirror.native);
+        let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
+        let frame = json!({"sessionId": SID});
+        assert!(!host.refuses_input(&host.mirrors[&key]) && !host.refuses_frame(&frame));
+        // Removed while a command is being prepared: no tick and no pass has run.
+        approve(&[]);
+        assert!(!host.mirrors[&key].unshared, "nothing has marked it yet");
+        assert!(host.refuses_input(&host.mirrors[&key]), "the check before dispatch reads the list itself");
+        assert!(host.refuses_frame(&frame), "so do a watch and typed input");
+        approve(&[&approved]);
+        host.mirrors.get_mut(&key).unwrap().hook_cwd = Some(dir.path().join("elsewhere"));
+        assert!(host.refuses_input(&host.mirrors[&key]), "a hook's folder outside the list refuses too");
+    }
+
+    #[test]
+    fn local_sessions_the_outside_marker_outlives_a_cut_off_that_was_not_stored() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("scratch");
+        fs::create_dir_all(&folder).unwrap();
+        approve(&[]);
+        let mut native = observed_fixture(dir.path());
+        native.cwd = Some(folder.clone());
+        let transcript = native.transcript.clone().unwrap();
+        let key = native_key(&native);
+        let marker = outside_key("claude", "s");
+        let mut host = test_host(dir.path(), vec![]);
+        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
+        approve(&[&folder]);
+        // The mirror cannot be written (something else is in its file's place).
+        let file = dir.path().join(format!("{key}.json"));
+        fs::create_dir(&file).unwrap();
+        assert!(host.observe(vec![native.clone()], &BTreeSet::new()).is_err());
+        assert!(host.outside.contains_key(&marker), "no cut-off on disk: the marker stays");
+        let stored: BTreeMap<String, u64> = private_read(&dir.path().join(OUTSIDE_FILE)).unwrap();
+        assert!(stored.contains_key(&marker), "on disk too, for a restart before the retry");
+        fs::remove_dir(&file).unwrap();
+        host.observe(vec![native], &BTreeSet::new()).unwrap();
+        assert!(!host.outside.contains_key(&marker));
+        assert_eq!(host.mirrors[&key].cursor.offset, fs::metadata(&transcript).unwrap().len());
+        assert!(host.mirrors[&key].queue.is_empty());
+    }
+
+    #[test]
+    fn local_sessions_unreadable_outside_markers_mean_from_now_never_from_the_beginning() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(OUTSIDE_FILE);
+        assert!(load_outside(dir.path()).unwrap().is_empty(), "a file that is not there is an empty list");
+        private_write(&file, &BTreeMap::from([("codex:a".to_owned(), 1u64)])).unwrap();
+        assert!(load_outside(dir.path()).unwrap().contains_key("codex:a"));
+        fs::write(&file, "not json").unwrap();
+        let lost = load_outside(dir.path()).unwrap();
+        assert!(lost.contains_key(MARKERS_LOST) && lost.len() == 1);
+        let names: Vec<String> = fs::read_dir(dir.path()).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert!(names.iter().any(|n| n.starts_with("outside.unreadable-")), "kept aside, not deleted: {names:?}");
+        assert!(load_outside(dir.path()).unwrap().contains_key(MARKERS_LOST), "the new list is readable and still says so");
+
+        // A session not yet mirrored whose transcript was already there: from now.
+        let folder = dir.path().join("approved");
+        fs::create_dir_all(&folder).unwrap();
+        approve(&[&folder]);
+        let mut native = observed_fixture(dir.path());
+        native.cwd = Some(folder);
+        let transcript = native.transcript.clone().unwrap();
+        let key = native_key(&native);
+        let mut host = test_host(dir.path(), vec![]);
+        host.outside = BTreeMap::from([(MARKERS_LOST.to_owned(), u64::MAX)]);
+        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
+        assert_eq!(host.mirrors[&key].cursor.offset, fs::metadata(&transcript).unwrap().len());
+        assert!(host.mirrors[&key].queue.is_empty());
+        assert!(host.outside.contains_key(MARKERS_LOST), "never forgotten");
+        // One whose transcript began after the loss is read from its start as usual.
+        let mut later = test_host(dir.path(), vec![]);
+        later.outside = BTreeMap::from([(MARKERS_LOST.to_owned(), 0)]);
+        later.observe(vec![native], &BTreeSet::new()).unwrap();
+        assert!(!later.mirrors[&key].queue.is_empty());
+    }
+
+    #[test]
     fn local_sessions_a_hook_cannot_bring_back_a_session_whose_folder_was_removed() {
         let dir = tempfile::tempdir().unwrap();
         let approved = dir.path().join("approved");
@@ -3399,6 +3622,7 @@ pub(super) mod tests {
             ended_sent: false,
             unshared: false,
             history_hidden_for: None,
+            hook_cwd: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -5234,6 +5458,7 @@ pub(super) mod tests {
             ended_sent: false,
             unshared: false,
             history_hidden_for: None,
+            hook_cwd: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -5310,6 +5535,7 @@ pub(super) mod tests {
             ended_sent: false,
             unshared: false,
             history_hidden_for: None,
+            hook_cwd: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),
@@ -5436,6 +5662,7 @@ pub(super) mod tests {
             ended_sent: false,
             unshared: false,
             history_hidden_for: None,
+            hook_cwd: None,
             waiting: None,
             stats: Default::default(),
             subagents: Default::default(),

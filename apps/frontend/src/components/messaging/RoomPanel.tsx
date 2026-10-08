@@ -358,7 +358,7 @@ function RoomContent({
       setInviteNote("Copied. Anyone who opens it and signs in joins this workspace.");
     } catch (error) {
       setInviteNote(error instanceof ApiError && error.status === 403
-        ? "Only a workspace admin can copy it. Ask them, or find it under Settings → Members."
+        ? "Only a workspace admin can copy it. Ask an admin to copy it from Settings → Members."
         : error instanceof JoinLinkCopyError && error.reason === "unavailable"
           ? "This workspace's link can't be shown here. Regenerate it under Settings → Members (that turns the old link off)."
           : error instanceof JoinLinkCopyError && error.reason === "clipboard"

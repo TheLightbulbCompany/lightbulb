@@ -619,7 +619,7 @@ it("tells a non-admin where the join link lives instead of a bare error", async 
 
   await user.click(screen.getByRole("button", { name: /^Details/ }));
   await user.click(screen.getByRole("button", { name: "Copy the workspace join link" }));
-  expect(await screen.findByText("Only a workspace admin can copy it. Ask them, or find it under Settings → Members.")).toBeInTheDocument();
+  expect(await screen.findByText("Only a workspace admin can copy it. Ask an admin to copy it from Settings → Members.")).toBeInTheDocument();
 });
 
 it("shows member-add progress and a useful retryable error", async () => {

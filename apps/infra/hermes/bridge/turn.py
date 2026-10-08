@@ -287,14 +287,13 @@ def register_call_run(identity: dict) -> bool:
 # memory/skill review is forked after a spoken turn. That fork compacts a DETACHED copy of an
 # over-threshold conversation and commits nothing (background_review._detach_fork_compression), so it
 # held the run's save for 83 s and the next spoken turn compacted the same session again (prod
-# 10-07). The skill counter still rides the session row, so the room's next chat turn runs the review.
+# 10-07).
 CALL_RUN_LIMITS = {"reasoning_config": {"enabled": True, "effort": "low"}, "skip_background_review": True}
 
-#: A spoken turn's bound on the history it replays, in Hermes's rough tokens. A spoken turn never
-#: compacts (see _run_call), so this is what keeps a session whose off-path compaction fell behind
-#: under the model's window and the openrouter-gate's request bound (~100k tokens with the prompt
-#: and tool schemas, ~33k of that on an agent with a large MCP). The threshold leaves ~27k of
-#: history, so the cut only applies to a session well past it.
+#: A spoken turn's bound on the history it replays, in Hermes's rough tokens. A call's transcript
+#: never compacts (see _run_call), so this sliding window is what keeps a very long call under the
+#: model's window and the openrouter-gate's request bound (~100k tokens with the prompt and tool
+#: schemas, ~33k of that on an agent with a large MCP).
 CALL_HISTORY_TOKENS = 40_000
 #: Seconds a spoken turn's model call may stay silent (no text, reasoning or tool call) before it is
 #: sent again once, and before the run is ended as a stalled agent. Hermes's own stale-stream
@@ -377,26 +376,125 @@ def _voice_body(identity: dict, request: dict) -> dict:
             "participants": request.get("participants") or [], "recentHistory": request.get("recentHistory") or []}
 
 
+def call_session_key(agent_id: str, call_id: str) -> str:
+    """One call's own Hermes transcript for this agent: the spoken turns of that call and nothing else."""
+    return f"agent:{agent_id}:lightbulb:call:{call_id}"
+
+
+#: platform_message_id prefix of a call record: the one observed row a ROOM session gets per
+#: answered spoken turn (_record_call_exchange).
+CALL_RECORD_ID = "call:"
+#: How many of the room's newest call records a new call's transcript starts with.
+CALL_RECORDS_CARRIED = 10
+#: A record's bound: the question and the answer are each cut to this many characters (and at most
+#: six tool names follow), so one record is about 100-250 tokens whatever was said.
+CALL_RECORD_ASKED_CHARS, CALL_RECORD_ANSWER_CHARS = 300, 500
+
+
+def _one_line(text, limit: int) -> str:
+    return " ".join(str(text or "").split())[:limit]
+
+
+def _tools_used(messages) -> list[str]:
+    """Names of the tools called since the last user message, in order, each once."""
+    names: list[str] = []
+    for m in reversed(messages or []):
+        if m.get("role") == "user":
+            break
+        for call in reversed(m.get("tool_calls") or []):
+            name = (call.get("function") or {}).get("name")
+            if name and name not in names:
+                names.append(name)
+    return names[::-1]
+
+
+def _call_record(agent_id: str, body: dict, request: dict, reply: str, result: dict, base: Path) -> str:
+    """What the room session keeps of one spoken exchange (about 100 tokens), tagged with the
+    agent's own id: the observe prompt already reads such a line as "you, from a call".
+    ponytail: a steer merged into the run is not quoted, only its answer. Quote it if chat needs it."""
+    voice = request["voice"]
+    asked = voice.get("utterance") or request["input"].rsplit("\n", 1)[-1]
+    text = (f"(On a Live voice call; spoken, not posted to this room.) {_display_name(voice.get('speaker') or {})} asked: "
+            f"{_one_line(asked, CALL_RECORD_ASKED_CHARS)}\nI answered: {_one_line(reply, CALL_RECORD_ANSWER_CHARS)}")
+    tools = _tools_used(result.get("messages"))
+    if tools:
+        text += f"\nTools I used: {', '.join(tools[:6])}"
+    names = {p["id"]: _display_name(p) for p in body.get("participants", [])}
+    return _observed_text({"author": {"id": agent_id}, "text": text}, names, base)
+
+
+def _record_call_exchange(agent, room_key: str, run_id: str, content: str) -> None:
+    """Append one observed row to the ROOM session for an answered spoken turn, so chat remembers
+    the call without holding its transcript. The caller holds the room's turn lock. Once per run:
+    the row is keyed by the run id, so a run that is run again (a retry after this process lost its
+    registry) adds nothing. No model call.
+    The record's rough size is added to the room session's stored PRESSURE: no run measures a
+    room that is only ever spoken to, so without this its records pile up unseen and the first
+    chat turn replays them all. With it, the next call's start compacts the room once they have
+    really reached the threshold (compact_session, from profile.warm); nothing is triggered here."""
+    try:
+        db = agent._session_db
+        sid, message_id = _session_tip(db, room_key), f"{CALL_RECORD_ID}{run_id}"
+        db.ensure_session(sid, "lightbulb")  # a room only ever spoken to has no row yet
+        if db.has_platform_message_id(sid, message_id):
+            return
+        db.append_message(session_id=sid, role="user", content=content, platform_message_id=message_id, observed=True)
+        # The call agent's threshold is the room's: same profile, same model.
+        threshold = int(getattr(getattr(agent, "context_compressor", None), "threshold_tokens", 0) or 0)
+        if threshold > 0:
+            room = types.SimpleNamespace(_session_db=db, session_id=sid)
+            added = _rough_tokens([{"role": "user", "content": content}]) / threshold
+            _save_session_meta(room, {PRESSURE: round(float(_session_meta(room).get(PRESSURE) or 0) + added, 5)})
+    except Exception:  # noqa: BLE001 -- as _observe_room: a missed record must not cost a delivered answer
+        log.warning("could not record the call exchange in %s", room_key, exc_info=True)
+
+
+def _carry_call_records(agent, room_key: str) -> None:
+    """A new call's transcript starts with the room session's newest call records, so "as I said on
+    the last call" holds. Only while the call's session is empty: later turns have them already.
+    They count as held rows, so a first turn that also observes room messages gets OBSERVED_GAP
+    after them, which is true of a call (it sees the room's recent window only)."""
+    db, sid = agent._session_db, agent.session_id
+    agent._ensure_db_session()
+    try:
+        if db.message_count(sid):
+            return
+        records = [m for m in db.get_messages_as_conversation(_session_tip(db, room_key))
+                   if m.get("observed") and str(m.get("message_id") or "").startswith(CALL_RECORD_ID)]
+        for m in records[-CALL_RECORDS_CARRIED:]:
+            db.append_message(session_id=sid, role="user", content=m["content"], platform_message_id=m["message_id"], observed=True)
+    except Exception:  # noqa: BLE001 -- as _observe_room
+        log.warning("could not carry call records into %s", sid, exc_info=True)
+
+
 def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> tuple[str, str | None, str, dict]:
-    """A voice request: an ordinary run on the agent's ROOM session key, with the environment a
-    DM turn gets (the profile's own secrets, no Paperclip overlay, MCP, terminal, logins, the
-    lightbulb plugin's turn context) and the room turn's own history path, so what is said by
-    voice is in the room session for the next chat or voice run. Nothing is posted to the room."""
+    """A voice request: a run on the CALL's own Hermes transcript (call_session_key), with the
+    environment a DM turn gets (the profile's own secrets, no Paperclip overlay, MCP, terminal,
+    logins, the lightbulb plugin's turn context). The room's recent messages reach it as observed
+    rows (recentHistory), like a room turn's. Everything that serialises or scopes the
+    conversation stays on the ROOM key: the turn lock and slot, the terminal scope, the bound
+    session key for async delegations, steers and usage. The room session gets one observed row
+    per answered turn (_record_call_exchange) and nothing else: a call no longer replays the
+    room's history or grows it by a transcript (prod 10-08: a compaction every second spoken turn).
+    Nothing is posted to the room."""
     agent_id, run_id, session_key, room_id = identity["agentId"], identity["runId"], identity["sessionId"], identity["roomId"]
+    call_key = call_session_key(agent_id, identity["callId"])
     try:
         import run_agent  # noqa: F401
     except ImportError:
         pass
+    # Keyed by the call key, as _desktop_active_turn below: the plugin's tools find both by the
+    # session id Hermes hands them, which is the agent's own (see run_turn's turn_ctx).
     ctx = {"apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "agentId": agent_id, "runId": run_id,
-           "sessionKey": session_key, "roomId": None, "voiceRoomId": room_id, "family": "call"}
+           "sessionKey": call_key, "roomId": None, "voiceRoomId": room_id, "family": "call"}
     body = _voice_body(identity, request)
     # The room turns' folder path, never filled or removed here: an observed row's "saved at" note
     # names it, and the room's next turn fills it (_observed_text).
     base = sync.turn_media_root() / f"{agent_id}.{room_id}"
     watch = _CallDeadline(frames)
     with _voice_turn_lock(agent_id, session_key, run_id, on_wait=lambda: frames.emit({"type": "run_queued"})):
-        # A run stopped while queued gets no lock: nothing below may run (the context file is
-        # keyed by the session key and belongs to the turn holding the lock).
+        # A run stopped while queued gets no lock: nothing below may run (the context file
+        # belongs to the turn holding the lock).
         if run_aborted(run_id):
             return "aborted", None, "", dict(ZERO_USAGE)
         with sync.profile_lock(agent_id):
@@ -404,22 +502,25 @@ def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> t
             sync.normalize_profile_backends(agent_id)
         browser_lease = browser_control.begin_turn(str(run_id), agent_id, None, "call")
         logins = website_logins.prompt_scope(agent_id, None, None, lambda: run_aborted(run_id))
-        with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id, session_key), _desktop_active_turn(session_key, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
+        with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id, session_key), _desktop_active_turn(call_key, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
             try:
-                agent = _construct_agent(agent_id, body, frames, session_key, **CALL_RUN_LIMITS)
+                agent = _construct_agent(agent_id, body, frames, call_key, **CALL_RUN_LIMITS)
                 # No compaction inside a spoken turn (67-103 s each, prod 10-07): Hermes's own
                 # per-agent switch, which every automatic trigger reads (turn_context_compaction.py:239,
                 # turn_preflight.py:89/289) and Hermes sets the same way on its review fork
-                # (background_review.py:843). The session is compacted off the call path instead
-                # (compact_session), and CALL_HISTORY_TOKENS bounds what this turn replays.
+                # (background_review.py:843). A call's transcript is never compacted at all:
+                # CALL_HISTORY_TOKENS bounds what a very long call replays.
                 agent.compression_enabled = False
                 watch.agent = agent
                 queued_steers = attach_agent(run_id, agent)
                 if run_aborted(run_id):
                     return "aborted", None, "", dict(ZERO_USAGE)
                 text = f"{request['input']}\n{queued_steers}" if queued_steers else request["input"]
+                _carry_call_records(agent, session_key)
                 try:
                     with watch:
+                        # The ROOM key: _converse binds it for async delegations and takes the
+                        # room-transcript path (observed rows, bounded history) on the call's agent.
                         result = _converse(agent, agent_id, session_key, run_id, body, base,
                                            with_profile_agents_md(agent_id, request["instructions"]), text, text,
                                            history_budget=CALL_HISTORY_TOKENS)
@@ -430,22 +531,29 @@ def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> t
                     if watch.timed_out:
                         return "error", INTERRUPTED, "", _agent_usage(agent)
                     raise
+                finally:
+                    # _converse was given the room key, which is never ended: end the call's own
+                    # session here, so Hermes's retention can age it out after the call.
+                    _end_unless_room(agent, agent_id, call_key)
             finally:
                 browser_control.release(browser_lease)
-    usage = _agent_usage(agent)
-    if run_aborted(run_id):
-        return "aborted", None, "", usage
-    reply = result.get("final_response") or ""
-    # Not our abort (checked above): the call deadline stopped it, or Hermes stopped it itself.
-    if watch.timed_out or result.get("interrupted") is True:
-        return "error", INTERRUPTED, "", usage
-    if result.get("failed") is True:
-        return "error", _failed_kind(agent, result), "", usage
-    if not result.get("api_calls"):
-        return "error", "model_unavailable", "", usage
-    if not reply:
-        return "error", "empty_response", "", usage
-    return "completed", None, reply, usage
+        usage = _agent_usage(agent)
+        if run_aborted(run_id):
+            return "aborted", None, "", usage
+        reply = result.get("final_response") or ""
+        # Not our abort (checked above): the call deadline stopped it, or Hermes stopped it itself.
+        if watch.timed_out or result.get("interrupted") is True:
+            return "error", INTERRUPTED, "", usage
+        if result.get("failed") is True:
+            return "error", _failed_kind(agent, result), "", usage
+        if not result.get("api_calls"):
+            return "error", "model_unavailable", "", usage
+        if not reply:
+            return "error", "empty_response", "", usage
+        # Still under the room's turn lock. Only an answered turn is recorded: a stopped or failed
+        # one said nothing to the room's people, and its own rows stay in the call's transcript.
+        _record_call_exchange(agent, session_key, run_id, _call_record(agent_id, body, request, reply, result, base))
+        return "completed", None, reply, usage
 
 
 def run_call_turn(identity: dict, request: dict, reserved: bool = False) -> None:
@@ -483,8 +591,6 @@ def run_call_turn(identity: dict, request: dict, reserved: bool = False) -> None
             sync.save_root_auth()
         except Exception:  # noqa: BLE001
             log.warning("save_root_auth failed for call turn", exc_info=True)
-        # The answer is delivered and saved: this turn did not compact, so do it here, where nobody waits.
-        compact_session(agent_id, session_key)
     finally:
         _end_turn()
 
@@ -2879,9 +2985,9 @@ def _bounded_history(history: list[dict], budget: int) -> list[dict]:
 
 
 # ---- compaction off the call path ------------------------------------------------------------
-# A spoken turn never compacts (_run_call). A room session near Hermes's threshold is compacted
-# here instead, where nobody is waiting: when someone goes Live (server profile.warm, from the
-# backend's prewake) and after a spoken turn's answer is delivered and saved (run_call_turn).
+# A room session near Hermes's threshold is compacted here, where nobody is waiting: when someone
+# goes Live (server profile.warm, from the backend's prewake). A spoken turn no longer asks for it:
+# a call runs on its own transcript (_run_call) and adds one row to the room session.
 # The compaction is Hermes's own and is COMMITTED to the session -- unlike the one its post-turn
 # review fork runs on a detached copy, after which the next turn compacted the same session again.
 
@@ -3070,7 +3176,8 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str, **limi
                      "stream_delta_callback": frames.delta, "reasoning_callback": frames.thinking}
     enabled_toolsets, disabled_toolsets = profile_toolsets()
     db = _session_db(agent_id)
-    if db is None and ROOM_SESSION_RE.match(session_key):  # a state.db failure fails the turn
+    # A state.db failure fails a room turn and a call turn: both run on their stored transcript.
+    if db is None and (ROOM_SESSION_RE.match(session_key) or ":lightbulb:call:" in session_key):
         raise RuntimeError(f"state.db unavailable for {agent_id}")
     agent = AIAgent(**{
         "model": model,

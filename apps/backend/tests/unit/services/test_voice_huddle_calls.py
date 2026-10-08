@@ -383,14 +383,14 @@ async def _dispatch(run_id="run-1", agent_id="fin-1", transcript="Ada: numbers?"
     )
 
 
-async def test_voice_run_is_an_ordinary_run_on_the_room_key(run_env):
+async def test_voice_run_is_a_run_on_the_room_key_that_names_its_call(run_env):
     out = await _dispatch()
     assert run_env.await_args.args[1] == "/internal/calls/v1/runs"
     body = run_env.await_args.kwargs["json_body"]
     identity, req = body["identity"], body["request"]
     assert identity == {
         "runId": "run-1", "companyId": "co-1", "agentId": "fin-1", "roomId": "room-1",
-        "sessionId": "agent:fin-1:lightbulb:channel:room-1", "family": "voice",
+        "sessionId": "agent:fin-1:lightbulb:channel:room-1", "callId": "win-1", "family": "voice",
     }  # fmt: skip
     assert req["session_id"] == identity["sessionId"] and req["instructions"] == vc.TURN_NOTE
     assert req["frames"] == {

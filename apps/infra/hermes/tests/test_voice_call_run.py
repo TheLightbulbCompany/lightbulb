@@ -13,8 +13,10 @@ AUTH = {"authorization": "Bearer gw-test"}
 ROOM = "abcdef11-1111-4111-8111-111111111111"
 SESSION = f"agent:agent-1:lightbulb:channel:{ROOM}"
 EP = "https://api.invalid/api/v1/internal/huddles/org_test/rooms/" + ROOM + "/frames"
+CALL = "ca11ca11-1111-4111-8111-111111111111"
+CALL_SESSION = f"agent:agent-1:lightbulb:call:{CALL}"  # the call's own Hermes transcript
 IDENTITY = {"runId": "run-1", "companyId": "company-1", "agentId": "agent-1", "roomId": ROOM,
-            "sessionId": SESSION, "family": "voice"}
+            "sessionId": SESSION, "callId": CALL, "family": "voice"}
 SPEAKER = {"id": "user_1", "name": "Aden"}
 REQUEST = {"input": "Aden (voice): check payouts", "instructions": "speak briefly", "session_id": SESSION,
            "frames": {"sink": "backend", "endpoint": EP},
@@ -28,7 +30,7 @@ def _with(identity=None, **request):
 
 
 # ---- envelope ------------------------------------------------------------------------------------
-def test_a_voice_identity_on_the_room_key_is_accepted(monkeypatch):
+def test_a_voice_identity_on_the_room_key_with_its_call_is_accepted(monkeypatch):
     monkeypatch.setattr(server.threading, "Thread", lambda target, args, **_k: SimpleNamespace(start=lambda: None))
     status, body = server.handle_plugin("/internal/calls/v1/runs", "POST", AUTH, BODY)
     assert (status, body["status"]) == (202, "queued")
@@ -46,7 +48,10 @@ CALL_KEY = "agent:agent-1:lightbulb:call:call-1"
     _with({"roomId": ROOM.upper(), "sessionId": f"agent:agent-1:lightbulb:channel:{ROOM.upper()}"},
           session_id=f"agent:agent-1:lightbulb:channel:{ROOM.upper()}", voice={**REQUEST["voice"], "roomId": ROOM.upper()}),
     _with(recentHistory=[{"messageId": str(i)} for i in range(51)]),
-], ids=["call-key", "room-mismatch", "old-callId-shape", "appsync-channel", "not-voice", "uppercase-room", "history-over-50"])
+    {"identity": {k: v for k, v in IDENTITY.items() if k != "callId"}, "request": REQUEST},
+    _with({"callId": "call-1"}),
+], ids=["call-key", "room-mismatch", "old-callId-shape", "appsync-channel", "not-voice", "uppercase-room", "history-over-50",
+        "no-call", "call-not-a-uuid"])
 def test_anything_else_is_400(body):
     assert server.handle_plugin("/internal/calls/v1/runs", "POST", AUTH, body) == (400, {"error": "invalid_call_run"})
 
@@ -167,7 +172,10 @@ def env(monkeypatch):
 
         def run_conversation(**kw):
             seen["convos"].append(kw)
-            return script.pop(0) if script else {"api_calls": 1, "final_response": "It landed."}
+            nxt = script.pop(0) if script else None
+            if callable(nxt):
+                nxt = nxt()
+            return nxt or {"api_calls": 1, "final_response": "It landed."}
 
         agent = _Agent(run_conversation=run_conversation, _drain_pending_steer=lambda: None)
         seen["agent"] = agent
@@ -191,17 +199,24 @@ def _frames():
     return turn.VoiceFramePublisher("", ROOM, "agent-1", "run-1")
 
 
-def test_a_voice_run_gets_the_dm_environment_on_the_room_key(env, home, monkeypatch):
+def test_a_voice_run_gets_the_dm_environment_on_the_calls_transcript(env, home, monkeypatch):
+    """The Hermes session is the call's; what serialises and scopes the conversation is the room's."""
     monkeypatch.setattr(turn, "with_profile_agents_md", lambda _a, system: f"{system}\n\nAGENTS.md")
+    scopes, real_terminal = [], turn._terminal_scope
+    monkeypatch.setattr(turn, "_terminal_scope", lambda a, key: scopes.append(key) or real_terminal(a, key))
+    locks = []
+    env["script"].append(lambda: locks.append((turn._turn_lock("agent-1", SESSION).locked(),
+                                               turn._turn_lock("agent-1", CALL_SESSION).locked())))
     turn.register_call_run(IDENTITY)
     assert turn._run_call(IDENTITY, REQUEST, _frames())[0::2] == ("completed", "It landed.")
     assert env["overlay"] is None and env["family"] == "call"
-    assert env["session"] == SESSION
+    assert env["session"] == CALL_SESSION
+    assert scopes == [SESSION] and locks == [(True, False)]  # the room's work folder and turn lock
     # No step cap, and no post-turn review fork after a spoken turn.
     assert env["limits"] == {"reasoning_config": {"enabled": True, "effort": "low"}, "skip_background_review": True}
     assert env["body"]["room"] == {"id": ROOM, "kind": "channel"} and env["body"]["sender"] == SPEAKER
     assert env["keys"] == [SESSION, ("reset", "tok")]  # compression keeps async delegations attached
-    assert env["desktop"] == [(SESSION, "run-1")]
+    assert env["desktop"] == [(CALL_SESSION, "run-1")]  # found by the session id Hermes hands the plugin
     (convo,) = env["convos"]
     assert convo["user_message"] == "Aden (voice): check payouts" and convo["system_message"] is None
     assert env["agent"].ephemeral_system_prompt.startswith("speak briefly\n\nAGENTS.md")
@@ -213,7 +228,7 @@ def test_the_turn_context_names_the_voice_room(env, home, monkeypatch):
     turn.register_call_run(IDENTITY)
     turn._run_call(IDENTITY, REQUEST, _frames())
     assert seen[0]["roomId"] is None and seen[0]["voiceRoomId"] == ROOM and seen[0]["family"] == "call"
-    assert seen[0]["sessionKey"] == SESSION
+    assert seen[0]["sessionKey"] == CALL_SESSION  # the plugin reads the file by the agent's session id
 
 
 def test_a_steer_that_lands_before_the_agent_rides_the_user_message(env, home):
@@ -269,7 +284,7 @@ def test_run_call_turn_starts_closes_and_reports_voice_usage(monkeypatch, posted
     monkeypatch.setattr(turn.urllib.request, "urlopen", lambda req, timeout: published.append(req) or _Res())
     turn.register_call_run(IDENTITY)
     base = turn._busy
-    turn.run_call_turn(IDENTITY, REQUEST)  # no callId anywhere
+    turn.run_call_turn(IDENTITY, REQUEST)
     assert started == [ROOM]
     assert turn.RUNS["run-1"]["state"] == "ended" and turn.RUNS["run-1"]["outcome"] == "completed"
     assert turn._busy == base and saved == ["agent-1"]

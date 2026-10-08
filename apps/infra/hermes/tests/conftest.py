@@ -72,3 +72,5 @@ def _room_without_session_db(request, monkeypatch):
         from bridge import turn
         monkeypatch.setattr(turn, "_observe_room", lambda *a: None)
         monkeypatch.setattr(turn, "_room_history", lambda _agent: ([], None))
+        monkeypatch.setattr(turn, "_carry_call_records", lambda *a: None)
+        monkeypatch.setattr(turn, "_record_call_exchange", lambda *a: None)

@@ -788,8 +788,9 @@ async def dispatch_voice_run(
     speaker_name: str | None = None,
     requests: list[str] | None = None,
 ) -> dict:
-    """One voice request = one ordinary run on agent:{agent}:lightbulb:channel:{room}. run_id is the
-    worker's, reused on every retry, so a delivered-but-timed-out invoke is replayed, never re-run."""
+    """One voice request = one run for agent:{agent}:lightbulb:channel:{room}, which the bridge records
+    in the call's own transcript (identity.callId). run_id is the worker's, reused on every retry, so a
+    delivered-but-timed-out invoke is replayed, never re-run."""
     owner_id, room_id = call["ownerId"], call["roomId"]
     meta, members = await asyncio.gather(messaging_repo.get_room(room_id), messaging_repo.list_members(room_id))
     if not meta or not any(m.get("kind") == "agent" and m["id"] == agent_id for m in members):
@@ -810,6 +811,7 @@ async def dispatch_voice_run(
             "agentId": agent_id,
             "roomId": room_id,
             "sessionId": session_id,
+            "callId": call["callId"],  # the bridge keeps one transcript per call, apart from the room's
             "family": "voice",
         },
         "request": {

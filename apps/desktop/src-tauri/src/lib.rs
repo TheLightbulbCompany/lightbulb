@@ -1199,7 +1199,7 @@ fn file_access_add_path(path: String) -> Result<String, String> {
 /// Removes `path` from the allowlist (canonical match). Returns true if
 /// something was removed.
 #[tauri::command]
-fn file_access_remove_path(path: String) -> Result<bool, String> {
+fn file_access_remove_path(path: String) -> Result<file_access::Removed, String> {
     file_access::remove_path(&path).map_err(|e| e.to_string())
 }
 

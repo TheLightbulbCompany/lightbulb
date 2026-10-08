@@ -13,6 +13,10 @@ import { desktopErrorMessage } from "@/lib/desktopPermissions";
 // operation. Renders nothing outside the desktop app: only the Tauri webview can
 // call the file_access_* IPC commands (DesktopSettings shows the download card).
 
+/** The folder is removed now, but the app could not write its list: said plainly. */
+export const removalNotSaved = (reason: string) =>
+  `Removed for now, but Lightbulb could not save this. If the app restarts before it can, the folder is approved again. ${reason}`;
+
 type TauriBridge = {
   core?: {
     invoke: <T = unknown>(
@@ -90,9 +94,12 @@ export function DesktopFileAccess() {
       setBusy(true);
       setError(null);
       try {
-        await tauri.core.invoke<boolean>("file_access_remove_path", { path });
+        // An older app answers true/false. A newer one also says when the removal is in effect
+        // but could not be saved: a warning, neither a success nor "still approved".
+        const result = await tauri.core.invoke<boolean | { removed: boolean; unsaved?: string | null }>("file_access_remove_path", { path });
         capture("desktop_file_access_removed");
         await refresh();
+        if (typeof result === "object" && result?.unsaved) setError(removalNotSaved(result.unsaved));
       } catch (e) {
         setError(desktopErrorMessage(e));
       } finally {

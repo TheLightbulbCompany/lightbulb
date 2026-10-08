@@ -293,13 +293,28 @@ pub fn add_path(input: &str) -> Result<String, FileAccessError> {
     Ok(canonical_str)
 }
 
-/// Removes `path` (matched by canonical equality). Returns true if
-/// something was removed.
-pub fn remove_path(input: &str) -> Result<bool, FileAccessError> {
+/// What a removal did. `unsaved`: the folder is out of the list in memory (not approved from
+/// now on), but the file could not be written, so a restart before a save works approves it
+/// again. Neither a plain success nor a failure: the caller says so.
+#[derive(Debug, Serialize, PartialEq)]
+pub struct Removed {
+    pub removed: bool,
+    pub unsaved: Option<String>,
+}
+
+impl Removed {
+    fn of(changed: bool, saved: &Result<(), FileAccessError>) -> Self {
+        Self { removed: changed, unsaved: saved.as_ref().err().map(ToString::to_string) }
+    }
+}
+
+/// Removes `path` (matched by canonical equality), in memory at once whatever the save does.
+pub fn remove_path(input: &str) -> Result<Removed, FileAccessError> {
     let canonical = canonicalize(input)?;
     let arc = STORE.get().ok_or(FileAccessError::InvalidPath("uninitialized store".into()))?;
     let mut store = arc.lock().expect("store poisoned");
     let (changed, saved) = remove_from(&mut store, &canonical, save_to_disk);
+    let outcome = Removed::of(changed, &saved);
     match saved {
         Ok(()) if changed => crate::log(&format!("[file-access] removed {}", canonical.display())),
         Ok(()) => {}
@@ -310,7 +325,7 @@ pub fn remove_path(input: &str) -> Result<bool, FileAccessError> {
             crate::log(&format!("[file-access] removed {}, not saved yet ({reason}); retrying", canonical.display()));
         }
     }
-    Ok(changed)
+    Ok(outcome)
 }
 
 /// Ensures `target` (already canonicalized) sits inside at least one
@@ -381,6 +396,11 @@ mod tests {
         let (changed, result) = remove_from(&mut store, Path::new("/a"), failing);
         assert!(changed && result.is_err());
         assert_eq!(store.allowed_paths, ["/b"]);
+        // The caller is told both things: it is removed, and it is not saved (with the reason).
+        let outcome = Removed::of(changed, &result);
+        assert_eq!(outcome, Removed { removed: true, unsaved: Some("invalid path: disk full".into()) });
+        assert_eq!(serde_json::to_value(&outcome).unwrap(), serde_json::json!({"removed": true, "unsaved": "invalid path: disk full"}));
+        assert_eq!(Removed::of(true, &Ok(())), Removed { removed: true, unsaved: None });
         let (changed, result) = remove_from(&mut store, Path::new("/a"), failing);
         assert!(!changed && result.is_ok(), "not there: nothing to save");
     }

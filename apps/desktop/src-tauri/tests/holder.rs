@@ -692,3 +692,23 @@ fn holder_end_right_after_a_quick_reply_keeps_the_reply() {
     assert!(has(&screen, b"the-quick-reply") && has(&screen, b"earlier-answer"), "{:?}", String::from_utf8_lossy(&screen));
     assert!(!has(&screen, b"Resume this session"));
 }
+
+/// Review of #3912: the screen relay asks for the lines above the screen on its own connection, and
+/// the holder sends the screen right behind them, in one turn of its loop: no output falls between
+/// the two, so a viewer drawn from both has every line once.
+#[test]
+fn holder_answers_history_with_its_lines_and_the_screen_behind_them() {
+    let dir = temp_dir();
+    let socket = start(&dir, &["/bin/sh", "-c", r#"i=1; while [ $i -le 60 ]; do echo "line $i."; i=$((i+1)); done; exec cat"#]);
+    wait_screen(&socket, b"line 60.");
+    let mut w = attach(&socket, "watch");
+    assert_eq!(read_frame(&mut w).unwrap().0, SNAPSHOT);
+    w.write_all(&encode(HISTORY, &with_offset(1 << 16, b""))).unwrap();
+    let (kind, lines) = read_frame(&mut w).unwrap();
+    assert_eq!(kind, HISTORY);
+    let (kind, screen) = read_frame(&mut w).unwrap();
+    assert_eq!(kind, SNAPSHOT, "the screen comes behind the lines unasked");
+    // 60 lines and the cursor's row on 40 rows: the first 21 are above the screen, the rest on it.
+    assert!(has(&lines, b"line 1.") && has(&lines, b"line 21.") && !has(&lines, b"line 22."), "{:?}", String::from_utf8_lossy(&lines));
+    assert!(has(&screen, b"line 22.") && has(&screen, b"line 60.") && !has(&screen, b"line 21."));
+}

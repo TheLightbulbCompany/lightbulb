@@ -166,14 +166,19 @@ it("a viewer repaired by a snapshot over frames that never came asks for its lin
   const repair = settleScreen(waiting.order);
   expect(repair.write.map((w) => `${w.kind[0]}${w.seq}`)).toEqual(["s5"]);
   expect(repair.lost).toBe(true);
-  // What it was first drawn from is not written again: the next snapshot alone changes nothing.
+  // What it was first drawn from is not written again: the next snapshot alone changes nothing,
+  // and says the lines are still missing (the view may ask again, at its own pace).
   expect(feed([f(6), f(7, "snapshot")], repair.order).written).toEqual(["o6", "s7"]);
-  // A burst with nothing in it ("nothing above the screen", or a budget with no room) costs it no line it has.
+  expect(receiveScreen(repair.order, f(6, "snapshot")).lost).toBe(true);
+  // A burst with nothing in it ("nothing above the screen") costs it no line it has, and is its answer.
   const empty = feed([f(6, "history"), f(7, "snapshot")], repair.order);
   expect(empty.written).toEqual(["s7"]);
+  expect(empty.order.torn).toBeUndefined();
+  expect(receiveScreen(empty.order, f(8, "snapshot")).lost).toBeUndefined();
   // The burst its fresh watch brings: history first, the picture over it. Once.
-  const burst = feed([lines(8), lines(9), f(10, "snapshot"), f(11)], empty.order);
-  expect(burst.written).toEqual(["h8", "h9", "s10", "o11"]);
+  const burst = feed([lines(6), lines(7), lines(8), lines(9), f(10, "snapshot"), f(11)], repair.order);
+  expect(burst.written).toEqual(["h6", "h7", "h8", "h9", "s10", "o11"]);
+  expect(burst.order.torn).toBeUndefined();
   expect(feed([lines(12), f(13, "snapshot")], burst.order).written).toEqual(["s13"]);
   // A viewer that missed nothing says nothing and writes none of that burst.
   const other = feed([f(3), f(4), f(5, "snapshot")], whole.order);
@@ -187,4 +192,41 @@ it("a viewer repaired by a snapshot over frames that never came asks for its lin
   expect(receiveScreen(order, f(21, "snapshot")).lost).toBe(true);
   // A new run is no repair: it draws everything.
   expect(receiveScreen(whole.order, f(0, "snapshot", 2)).lost).toBeUndefined();
+});
+
+it("a torn viewer keeps repair history that comes after its snapshot, however late, and what it has when none comes", () => {
+  // Review of #3912: the burst's snapshot can beat its history by more than the hold (a cold relay
+  // Lambda, 2.7 s in prod). The history frames are then below this viewer's place; with more than
+  // 32 frames written since, there was nothing to write them under, and a torn viewer dropped them.
+  const lines = (seq: number): SessionScreen => ({ ...f(seq, "history"), data: "bGluZXM=" });
+  const whole = feed([lines(0), f(1, "snapshot"), f(2)]);
+  const torn = settleScreen(feed([f(4), f(5, "snapshot")], whole.order).order);
+  expect(torn.lost).toBe(true);
+  // Its fresh watch: history 6-7 and the snapshot 8 behind them. The snapshot comes first and is
+  // written as it is after the hold; it is still torn.
+  const ahead = settleScreen(feed([f(8, "snapshot")], torn.order).order);
+  expect(ahead.write.map((w) => `${w.kind[0]}${w.seq}`)).toEqual(["s8"]);
+  expect(ahead.order.torn).toBe(true);
+  // The history 500 ms later, soon enough: the picture starts over under it, with all written since.
+  const soon = feed([f(9), lines(6), lines(7)], ahead.order);
+  expect(soon.written).toEqual(["o9", "h6", "s8", "o9", "h6", "h7", "s8", "o9"]);
+  expect(soon.order.torn).toBeUndefined();
+  // Or after more than 32 frames: nothing to write it under now, so it is kept, and the next
+  // snapshot starts the picture over from it. Once.
+  let busy = ahead.order;
+  for (let seq = 9; seq <= 45; seq += 1) busy = receiveScreen(busy, f(seq)).order;
+  expect(busy.shown).toEqual([]);
+  const kept = feed([lines(6), lines(7)], busy);
+  expect(kept.written).toEqual([]);
+  expect(kept.order.torn).toBe(true);
+  const next = feed([f(46, "snapshot"), f(47)], kept.order);
+  expect(next.written).toEqual(["h6", "h7", "s46", "o47"]);
+  expect(next.order.torn).toBeUndefined();
+  expect(feed([lines(48), f(49, "snapshot")], next.order).written).toEqual(["s49"]);
+  // The history never comes: the viewer keeps what it has, every snapshot is drawn as it is, and
+  // each says the lines are still missing.
+  const never = feed([f(46, "snapshot"), f(47), f(48, "snapshot")], busy);
+  expect(never.written).toEqual(["s46", "o47", "s48"]);
+  expect(never.order.torn).toBe(true);
+  expect(receiveScreen(never.order, f(49, "snapshot")).lost).toBe(true);
 });

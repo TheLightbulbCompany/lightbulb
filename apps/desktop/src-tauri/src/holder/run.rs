@@ -607,6 +607,9 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
             Event::Frame(id, HISTORY, payload) if watchers.contains(&id) => {
                 let (Some((max, _)), Some(client)) = (split_offset(&payload), clients.get(&id)) else { continue };
                 client.send(encode(HISTORY, &model.history(max.min(LOG_CAP as u64) as usize)));
+                // The screen under those lines, in the same turn: no output falls between the two,
+                // so a viewer drawn from both misses no line and has none twice (`screen::pump`).
+                client.send(encode(SNAPSHOT, &with_offset(total, &ended_picture.clone().unwrap_or_else(|| model.snapshot()))));
             }
             Event::Frame(id, REPLAY, payload) => {
                 let (Some((from, _)), Some(client)) = (split_offset(&payload), clients.get(&id)) else { continue };

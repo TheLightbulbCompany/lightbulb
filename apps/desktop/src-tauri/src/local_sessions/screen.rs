@@ -18,7 +18,7 @@
 use super::transport::relay_log;
 use super::{Mirror, NativeSession};
 use crate::holder::manager::{self, HolderInfo};
-use crate::holder::protocol::{encode, read_frame, split_offset, EXIT, HELLO, OUTPUT, RESIZE, SNAPSHOT};
+use crate::holder::protocol::{encode, read_frame, split_offset, with_offset, EXIT, HELLO, HISTORY, OUTPUT, RESIZE, SNAPSHOT};
 use base64::Engine;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -61,6 +61,9 @@ const BURST: usize = 256 * 1024;
 const HISTORY_RESERVE: usize = 64 * 1024;
 /// How long a history burst may wait for room in the shallow relay queue before it counts as lost.
 const PACE: Duration = Duration::from_secs(3);
+/// How long the holder has to answer a HISTORY asked on the relay's own connection (as long as
+/// `manager::history` waits on its own): past it the viewers get the screen without the lines.
+const LINES_WAIT: Duration = Duration::from_secs(2);
 /// Output that may wait here for room in the relay queue or the budget (`Out::flush`). At the
 /// budget's rate this much is under 4 s late; past it the viewers are too far behind a live
 /// screen, so it is dropped and they get the screen as it is (their scrollback loses those lines
@@ -102,13 +105,16 @@ pub(super) struct Ctl {
     keep: Mutex<Instant>,
     /// The holder this relay reads, once `run` has found it.
     holder: Mutex<Option<String>>,
+    /// That holder keeps the lines above its screen (HELLO `"history": true`): they are asked for
+    /// on the relay's own connection, where their place among the output is known (`pump`).
+    lines: AtomicBool,
 }
 
 impl Ctl {
     pub(super) fn new(since: u64) -> Self {
         Self { since: AtomicU64::new(since), epoch: AtomicU64::new(0), typist: Mutex::new(None), snapshot: AtomicBool::new(false),
             history: AtomicBool::new(false), beat: SNAPSHOT_EVERY, resync: RESYNC, leave_hold: LEAVE_HOLD, stop: AtomicBool::new(false),
-            until: Mutex::new(Instant::now() + LEASE), keep: Mutex::new(Instant::now()), holder: Mutex::new(None) }
+            until: Mutex::new(Instant::now() + LEASE), keep: Mutex::new(Instant::now()), holder: Mutex::new(None), lines: AtomicBool::new(false) }
     }
     fn renew(&self) {
         if let Ok(mut until) = self.until.lock() {
@@ -500,6 +506,7 @@ fn watch(conn: &mut UnixStream, sid: &str, generation: &str, ctl: &Ctl, send: &d
     }
     let facts: Value = serde_json::from_slice(&hello).unwrap_or_default();
     let size = (facts["cols"].as_u64().unwrap_or(120) as u16, facts["rows"].as_u64().unwrap_or(40) as u16);
+    ctl.lines.store(facts["history"] == true, SeqCst);
     pump(&frames, conn, (sid, generation), size, ctl, send, Budget::new(), history)
 }
 
@@ -665,6 +672,18 @@ impl Out<'_> {
         }
         true
     }
+    /// The same burst from lines the holder sent on the relay's own connection (`pump`): `bytes`,
+    /// trimmed from the old end to what the budget allows now. False as for `history`.
+    fn lines(&mut self, bytes: &[u8], size: (u16, u16)) -> bool {
+        if self.stale || !self.drained() {
+            return false;
+        }
+        let room = self.budget.room();
+        if room > 0 {
+            self.burst(&bytes[bytes.len().saturating_sub(room)..], size);
+        }
+        true
+    }
     /// The session ended on a picture that shows again lines its viewers have above their screens
     /// (the holder's EXIT says `startOver`, `Model::end`): a new run, so every viewer's terminal
     /// starts over from the lines above that picture, as one that opens the session later does.
@@ -738,9 +757,22 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
     let epoch = next_epoch(&LAST_EPOCH, SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64));
     ctl.epoch.store(epoch, SeqCst);
     let mut out = Out { ids, epoch, seq: 0, ctl, send, budget, backlog: Default::default(), stale: false, dirty: false };
+    // A holder that keeps its lines is asked for them on this connection (review of #3912). It is one
+    // event loop and answers in order, with the screen right behind the lines: every OUTPUT that
+    // reaches this relay before that answer is of bytes the lines and the screen already show, and
+    // is sent before them; every one after is of bytes they do not show, and is sent after. Asked
+    // on another connection (`manager::history`), the lines could hold output this relay had not
+    // sent yet, or not read yet: a viewer drawn from them then got those bytes again, or missed the
+    // lines that scrolled off between the lines and the snapshot asked for after them.
+    let keeps = ctl.lines.load(SeqCst);
+    // Since when the holder owes those lines. A snapshot that comes before them is older than
+    // they are, and is skipped: the one behind the lines is the picture.
+    let mut asked_lines: Option<Instant> = None;
     // A new run's viewers get history first; the holder's own first snapshot is queued behind it.
-    ctl.history.store(false, SeqCst);
-    out.history(history, size);
+    ctl.history.store(keeps, SeqCst);
+    if !keeps {
+        out.history(history, size);
+    }
     let mut pending: Vec<u8> = Vec::new();
     let mut held_since: Option<Instant> = None;
     // The holder sends a watch client its first snapshot unasked; a request may follow at once
@@ -760,7 +792,38 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
             return Ok(());
         }
         out.flush();
-        if ctl.history.swap(false, SeqCst) {
+        if asked_lines.is_some_and(|at| at.elapsed() >= LINES_WAIT) {
+            asked_lines = None;
+            ctl.snapshot.store(true, SeqCst);
+        }
+        // (Not while output is held, as for a snapshot.)
+        if keeps && leaving.is_none() && ctl.history.swap(false, SeqCst) {
+            let room = out.budget.room();
+            if out.stale {
+                // After the snapshot that repairs the lost output (`Out::history`).
+                ctl.history.store(true, SeqCst);
+            } else if room == 0 {
+                // No budget for lines now: the screen alone, as a short budget always gave.
+                ctl.snapshot.store(true, SeqCst);
+                last_snapshot = Instant::now().checked_sub(SNAPSHOT_GAP).unwrap_or_else(Instant::now);
+            } else {
+                match to_holder.write_all(&encode(HISTORY, &with_offset(room as u64, b""))) {
+                    Err(_) if exited => return Ok(()),
+                    sent => sent.map_err(|e| e.to_string())?,
+                }
+                asked_lines = Some(Instant::now());
+            }
+        }
+        if !keeps && ctl.history.swap(false, SeqCst) {
+            // A holder with no lines of its own: its output log's tail, read on another connection
+            // (`manager::history`). What waits here is older than that tail's end and goes first.
+            // ponytail: output this relay has not read yet may be in that tail and is then drawn
+            // twice by a new viewer; exact only with the log's offsets. No held Claude Code or
+            // Codex session takes this path.
+            if leaving.is_none() && !pending.is_empty() {
+                out.emit("output", &std::mem::take(&mut pending), size);
+                held_since = None;
+            }
             if out.history(history, size) {
                 ctl.snapshot.store(true, SeqCst);
                 // At once: these viewers have no screen, and SNAPSHOT_GAP is for frames lost on a slow uplink.
@@ -784,6 +847,26 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
             last_snapshot = Instant::now();
         }
         match frames.recv_timeout(TICK) {
+            Ok((SNAPSHOT, _)) if asked_lines.is_some() => {}
+            Ok((HISTORY, lines)) if asked_lines.is_some() => {
+                asked_lines = None;
+                // As before a snapshot: the output that was waiting goes first (the lines and the
+                // screen behind them show it already); what follows a leave of the alternate
+                // screen stays dropped.
+                if leaving.take().is_none() && !pending.is_empty() {
+                    out.emit("output", &pending, size);
+                }
+                pending.clear();
+                held_since = None;
+                if out.lines(&lines, size) {
+                    // The holder sends the screen behind its lines itself; one from before that did
+                    // not is asked for it.
+                    ctl.snapshot.store(true, SeqCst);
+                    last_snapshot = Instant::now().checked_sub(SNAPSHOT_GAP).unwrap_or_else(Instant::now);
+                } else {
+                    ctl.history.store(true, SeqCst);
+                }
+            }
             Ok((SNAPSHOT, payload)) => {
                 let (_, screen) = split_offset(&payload).ok_or("bad snapshot")?;
                 // The snapshot shows the output that was waiting, but only as a screen: a viewer draws
@@ -1220,6 +1303,85 @@ mod tests {
         assert_eq!(run(None), [("output".to_owned(), 7, b"last lines".to_vec(), true), ("snapshot".to_owned(), 8, b"kept".to_vec(), true)]);
         // The viewers start over: the old run's waiting output is dropped, never sent into the new run.
         assert_eq!(run(Some(b"above".to_vec())), [("history".to_owned(), 0, b"above".to_vec(), false), ("snapshot".to_owned(), 1, b"kept".to_vec(), false)]);
+    }
+
+    /// A holder that keeps its lines: it answers HISTORY with `lines[n]` for the n-th request (output
+    /// it wrote just before, then its lines, then the screen behind them) and every snapshot request
+    /// with its screen.
+    struct Keeping {
+        tx: std::sync::mpsc::Sender<(u8, Vec<u8>)>,
+        lines: Vec<Vec<(u8, Vec<u8>)>>,
+        asked: Vec<(u8, u64)>,
+    }
+
+    impl Write for Keeping {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let (kind, payload) = read_frame(&mut &buf[..]).unwrap();
+            let answer = if kind == HISTORY {
+                self.lines.get(self.asked.iter().filter(|(kind, _)| *kind == HISTORY).count()).cloned().unwrap_or_default()
+            } else {
+                vec![(SNAPSHOT, with_offset(0, b"asked screen"))]
+            };
+            self.asked.push((kind, split_offset(&payload).map_or(0, |(max, _)| max)));
+            for frame in answer {
+                let _ = self.tx.send(frame);
+            }
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Review of #3912: the lines were read on another connection while output waited in this
+    /// relay's 200 ms buffer, or unread in its channel. The holder's model had that output already,
+    /// so it went out again after the history, and a viewer who joined then drew it twice.
+    #[test]
+    fn output_that_reaches_the_relay_before_the_holders_lines_is_sent_before_them_and_never_twice() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        // The holder's unasked first screen, then output in the same tick as the new viewer.
+        tx.send((SNAPSHOT, with_offset(0, b"first screen"))).unwrap();
+        tx.send((OUTPUT, with_offset(0, b"block one"))).unwrap();
+        let ctl = Arc::new(leased(Duration::from_millis(1500)));
+        ctl.lines.store(true, SeqCst);
+        // A second viewer arrives later; the holder writes more just before it answers.
+        let later = ctl.clone();
+        std::thread::spawn(move || { std::thread::sleep(Duration::from_millis(500)); later.history.store(true, SeqCst); });
+        let screen = |text: &[u8]| (SNAPSHOT, with_offset(0, text));
+        let mut holder = Keeping { tx, asked: vec![], lines: vec![
+            vec![(HISTORY, b"lines with block one".to_vec()), screen(b"screen one")],
+            vec![(OUTPUT, with_offset(9, b"block two")), (HISTORY, b"lines with block two".to_vec()), screen(b"screen two")],
+        ] };
+        let sent = std::cell::RefCell::new(vec![]);
+        pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|f| { sent.borrow_mut().push(f); true }, Budget::new(),
+            &|_| panic!("a holder that keeps its lines is never asked on another connection")).unwrap();
+        let sent = sent.into_inner();
+        let data = |f: &Value| String::from_utf8(base64::engine::general_purpose::STANDARD.decode(f["data"].as_str().unwrap()).unwrap()).unwrap();
+        let drawn: Vec<(String, String)> = sent.iter().filter(|f| f["kind"] != "ping").map(|f| (f["kind"].as_str().unwrap().to_owned(), data(f))).collect();
+        let frame = |kind: &str, text: &str| (kind.to_owned(), text.to_owned());
+        assert_eq!(drawn, [
+            // Not "first screen": it is older than the lines asked for, and the one behind them is the picture.
+            frame("output", "block one"), frame("history", "lines with block one"), frame("snapshot", "screen one"), frame("snapshot", "asked screen"),
+            frame("output", "block two"), frame("history", "lines with block two"), frame("snapshot", "screen two"), frame("snapshot", "asked screen"),
+        ]);
+        assert_eq!(sent.iter().map(|f| f["seq"].as_u64().unwrap()).collect::<Vec<_>>(), (0..8).collect::<Vec<_>>(), "one run, no gap");
+        assert_eq!(holder.asked.iter().map(|(kind, _)| *kind).collect::<Vec<_>>(), [HISTORY, SNAPSHOT, HISTORY, SNAPSHOT]);
+        assert_eq!(holder.asked[0].1, (BURST - HISTORY_RESERVE) as u64, "asked for what the budget has room for");
+    }
+
+    #[test]
+    fn a_holder_that_never_sends_its_lines_still_gives_the_viewers_a_screen() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send((SNAPSHOT, with_offset(0, b"first screen"))).unwrap();
+        let ctl = leased(LINES_WAIT + Duration::from_millis(800));
+        ctl.lines.store(true, SeqCst);
+        let mut holder = Keeping { tx, asked: vec![], lines: vec![] };
+        let sent = std::cell::RefCell::new(vec![]);
+        let started = Instant::now();
+        pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|f| { sent.borrow_mut().push((started.elapsed(), f)); true }, Budget::new(), &|_| None).unwrap();
+        let sent = sent.into_inner();
+        assert_eq!(sent.iter().map(|(_, f)| f["kind"].as_str().unwrap()).collect::<Vec<_>>(), ["snapshot"]);
+        assert!(sent[0].0 >= LINES_WAIT && sent[0].0 < LINES_WAIT + Duration::from_millis(500), "{:?}", sent[0].0);
     }
 
     #[test]

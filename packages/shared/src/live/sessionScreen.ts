@@ -32,7 +32,8 @@ export type ScreenOrder = { epoch: number; next: number; synced: boolean; held: 
    *  frames: history that late is not written. */
   shown: SessionScreen[];
   /** A snapshot repaired this run's picture over frames that never came: lines are missing above
-   *  the screen until a history burst is written again. An empty burst does not count for it. */
+   *  the screen until a history burst is written again, in order or late (`late`). An empty burst
+   *  ends it with nothing written: there are no lines to give. */
   torn?: boolean };
 export const NEW_SCREEN: ScreenOrder = { epoch: -1, next: 0, synced: false, held: [], history: [], bare: true, shown: [] };
 /** How long a snapshot waits for the frames below it. Frames of one burst reached the backend up to
@@ -48,7 +49,8 @@ const SHOWN = 32;
 /** ceil(256 KiB / 11 KiB): one history burst at most (the Mac's BURST over CHUNK). */
 const HISTORY = 24;
 
-/** `lost`: a snapshot was written over frames this viewer never got (`ScreenOrder.torn`). */
+/** `lost`: a snapshot was written and this viewer still misses lines above it (`ScreenOrder.torn`,
+ *  or a bare viewer that lost frames): the view may ask the Mac for them. */
 type Step = { order: ScreenOrder; write: SessionScreen[]; lost?: boolean };
 
 export function receiveScreen(order: ScreenOrder, frame: SessionScreen): Step {
@@ -90,15 +92,23 @@ function draw(order: ScreenOrder, frame: SessionScreen): Step {
   const lost = same && (!order.synced || missing(order, frame));
   // History only for a viewer with none of this run's, or with a hole in it: scrollback that is whole stays as it is.
   const fresh = order.bare || !same;
-  // (The burst a torn viewer was first drawn from is not its history now.)
-  const history = (lost && !order.bare ? [] : order.history).filter((f) => f.epoch >= frame.epoch);
-  let before = fresh || order.torn ? newestRun(history, frame) : [];
-  // "Nothing above the screen" (or a budget with no room) is no reason to drop the lines a torn viewer has.
-  if (!fresh && before.every((f) => !f.data)) before = [];
+  const was = same && !!order.torn;
+  // (The burst a viewer was first drawn from is not its history once it is torn; what came since is.)
+  const history = (lost && !fresh && !was ? [] : order.history).filter((f) => f.epoch >= frame.epoch);
+  let before = fresh || was ? newestRun(history, frame) : [];
+  // Torn until a burst is here: its lines are written, or it is empty (nothing above the screen),
+  // which is no reason to drop the lines this viewer has.
+  let torn = !fresh && (was || lost);
+  if (torn && before.length) {
+    torn = false;
+    if (before.every((f) => !f.data)) before = [];
+  }
+  // (`under`: a torn viewer's history goes under the newest snapshot it has, so one that comes late can.)
   const step = drain({ epoch: frame.epoch, next: frame.seq + 1, synced: true, history, bare: fresh && !before.length, shown: order.shown,
-    torn: (same && (order.torn || lost) && !before.length) || undefined,
-    held: order.held.filter((f) => f.epoch === frame.epoch && f.seq > frame.seq) }, [...before, frame], before.length > 0 || fresh);
-  return lost ? { ...step, lost } : step;
+    torn: torn || undefined,
+    held: order.held.filter((f) => f.epoch === frame.epoch && f.seq > frame.seq) }, [...before, frame], before.length > 0 || fresh || torn);
+  // Said at every snapshot until the lines are here: the view asks again, at its own pace.
+  return torn || (lost && !before.length) ? { ...step, lost: true } : step;
 }
 
 function receive(order: ScreenOrder, frame: SessionScreen): Step {
@@ -142,8 +152,9 @@ function add(history: SessionScreen[], frame: SessionScreen) {
  *  frames are all here), so nobody else's open redraws it. */
 function late(order: ScreenOrder, frame: SessionScreen) {
   const base = order.shown[0];
-  // Nothing to write it under now: a bare viewer keeps it for the next snapshot.
-  if (!base) return { order: order.bare ? { ...order, history: add(order.history, frame) } : order, write: [] };
+  // Nothing to write it under now: a bare viewer keeps it for the next snapshot, and so does a torn
+  // one (its repair burst came after the snapshot behind it, and more than SHOWN frames since).
+  if (!base) return { order: order.bare || order.torn ? { ...order, history: add(order.history, frame) } : order, write: [] };
   // (A newer run's history is already here: this picture is about to be replaced.)
   if (frame.seq > base.seq || order.history.some((f) => f.epoch !== order.epoch)) return { order, write: [] };
   const history = add(order.history, frame);
@@ -151,7 +162,9 @@ function late(order: ScreenOrder, frame: SessionScreen) {
   // Another run only when it is longer or ends nearer the snapshot: a chunk that joins nothing changes nothing.
   const newer = run.length > 0 && (run.length > had.length || run[run.length - 1].seq > had[had.length - 1].seq);
   if (!newer) return { order: { ...order, history }, write: [] };
-  return { order: { ...order, history, bare: false }, write: [...run, ...order.shown] };
+  // (An empty burst gives a torn viewer nothing to start over from: it keeps its lines.)
+  if (order.torn && !order.bare && run.every((f) => !f.data)) return { order: { ...order, history, torn: undefined }, write: [] };
+  return { order: { ...order, history, bare: false, torn: undefined }, write: [...run, ...order.shown] };
 }
 
 /** The snapshot's history frames below it, newest unbroken run only: a lost chunk costs the older part. */

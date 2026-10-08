@@ -1363,8 +1363,8 @@ mod tests {
         std::thread::spawn(move || { std::thread::sleep(Duration::from_millis(500)); later.history.store(true, SeqCst); });
         let screen = |text: &[u8]| (SNAPSHOT, with_offset(0, text));
         let mut holder = Keeping { tx, asked: vec![], lines: vec![
-            vec![(HISTORY, b"lines with block one".to_vec()), screen(b"screen one")],
-            vec![(OUTPUT, with_offset(9, b"block two")), (HISTORY, b"lines with block two".to_vec()), screen(b"screen two")],
+            vec![(HISTORY, b"lines with block one\r\n".to_vec()), screen(b"screen one")],
+            vec![(OUTPUT, with_offset(9, b"block two")), (HISTORY, b"lines with block two\r\n".to_vec()), screen(b"screen two")],
         ] };
         let sent = std::cell::RefCell::new(vec![]);
         pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|f| { sent.borrow_mut().push(f); true }, Budget::new(),
@@ -1375,8 +1375,8 @@ mod tests {
         let frame = |kind: &str, text: &str| (kind.to_owned(), text.to_owned());
         assert_eq!(drawn, [
             // Not "first screen": it is older than the lines asked for, and the one behind them is the picture.
-            frame("output", "block one"), frame("history", "lines with block one"), frame("snapshot", "screen one"), frame("snapshot", "asked screen"),
-            frame("output", "block two"), frame("history", "lines with block two"), frame("snapshot", "screen two"), frame("snapshot", "asked screen"),
+            frame("output", "block one"), frame("history", "lines with block one\r\n"), frame("snapshot", "screen one"), frame("snapshot", "asked screen"),
+            frame("output", "block two"), frame("history", "lines with block two\r\n"), frame("snapshot", "screen two"), frame("snapshot", "asked screen"),
         ]);
         assert_eq!(sent.iter().map(|f| f["seq"].as_u64().unwrap()).collect::<Vec<_>>(), (0..8).collect::<Vec<_>>(), "one run, no gap");
         assert_eq!(holder.asked.iter().map(|(kind, _)| *kind).collect::<Vec<_>>(), [HISTORY, SNAPSHOT, HISTORY, SNAPSHOT]);

@@ -93,7 +93,10 @@ ROUTING: dict[str, dict[int, dict]] = {
 # licence: each names the rule to change, and how often each check fails is held to its baseline
 # (`gate`, below; tests/test_voice_replay.py): a known failure that gets worse fails the gate like a new one.
 # Shares are of 200 seeds on 2026-10-08, as `current` / `fast-eot` (`sim.Model`: the second is a what-if
-# transcriber, not a measurement); baseline.json has the seeds. Each cause ends with where it lies:
+# transcriber, not a measurement); baseline.json has the seeds. The shares quoted in the causes from ACK
+# to CUT_SEEN were measured with a router that understood every line and runs of 5-12 s: with the
+# backend's own router, a classifier that errs and runs that come late, each check fails more often
+# (baseline.json), and `python -m tests.replay all` prints today's count by cause (`CAUSES`). Each cause ends with where it lies:
 # [controller] a rule of huddle.py, [timing] the transcriber's or the voice's delays, [policy] a rule and the
 # scenario disagree and a person has to choose, [check] check.py or the scenario's own limit.
 ACK = (
@@ -159,9 +162,9 @@ PEOPLE_TAKEN = (
     "for, acknowledged and answered aloud. [router]"
 )
 STEERED = (
-    "a follow-up said while the first run is still working is merged into that run (`ops.steer`): no "
-    "request of its own (one_run counts created rows only), and its answer comes with the first one's, "
-    "after the line or after the scenario. [router] [check]"
+    "a follow-up said while the first run is still working is merged into that run (`ops.steer`) and "
+    "acknowledged (STEER_ACKS): no request of its own (one_run counts created rows only), and its answer "
+    "comes with the first one's, after the line or after the scenario. [router] [check]"
 )
 TOLD = (
     "the worker tells the asker of a slow run that it is still working (RUN_STATUS_S), and of one with no end "

@@ -3,6 +3,8 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import threading
+import time
 import unittest
 import uuid
 from unittest.mock import MagicMock, patch
@@ -689,6 +691,30 @@ class ProjectorTests(unittest.TestCase):
         self.assertEqual(publish.call_args.args[1]["eventId"], second_id)
         self.assertEqual(publish.call_count, 2)
 
+    def test_a_batch_fans_out_in_parallel_but_publishes_room_events_in_seq_order(self):
+        index._ddb_client = FakeDdb(
+            {(f"ROOM#{ROOM_ID}", "META"): {"deliveryKey": DELIVERY_KEY, "ownerId": OWNER_ID, "workspaceId": WORKSPACE_ID}}
+        )
+        ids = [str(uuid.UUID(int=n, version=4)) for n in range(1, 5)]
+        records = [stream_record(message_item(mid, seq), str(seq)) for seq, mid in enumerate(ids, 1)]
+        # Every fan-out must be in flight at once to pass the barrier (serial would time out),
+        # and the LAST message's fan-out finishes first.
+        barrier = threading.Barrier(len(ids), timeout=5)
+
+        def fan_out(message, *_args):
+            barrier.wait()
+            time.sleep(0.01 * (len(ids) - message["messageSeq"]))
+            return []
+
+        with (
+            patch.object(index, "_notify_members", side_effect=fan_out),
+            patch.object(index, "_enqueue_search_index_on_insert"),
+            patch.object(index, "_publish") as publish,
+        ):
+            result = index.handler({"Records": records}, object())
+        self.assertEqual(result, {"batchItemFailures": []})
+        self.assertEqual([c.args[1]["messageSeq"] for c in publish.call_args_list], [1, 2, 3, 4])
+
     def test_payload_over_230_kib_is_rejected_before_http(self):
         oversized = live_event()
         oversized["payload"] = {"text": "x" * (index.MAX_EVENT_BYTES + 1)}
@@ -991,16 +1017,22 @@ class PushTests(unittest.TestCase):
     def test_records_after_a_failed_one_are_left_for_the_retry(self):
         # The stream replays from the failed record; pushing the later ones now
         # would banner them again on that replay.
+        # (The later record's member fan-out may already have run beside it; only its
+        # ordered half -- room event and push -- is held back.)
         index._ddb_client = FakeDdb(push_world())
-        with (
-            patch.object(index, "process_record", side_effect=[RuntimeError("throttled"), None]) as process,
-            self.assertLogs(level="ERROR"),
-        ):
+        finish = MagicMock()
+
+        def prepare(record):
+            if record["dynamodb"]["SequenceNumber"] == "600":
+                raise RuntimeError("throttled")
+            return finish
+
+        with patch.object(index, "prepare_record", side_effect=prepare), self.assertLogs(level="ERROR"):
             result = index.handler(
                 {"Records": [stream_record(push_message(), "600"), stream_record(push_message(), "601")]}, object()
             )
         self.assertEqual(result, {"batchItemFailures": [{"itemIdentifier": "600"}]})
-        self.assertEqual(process.call_count, 1)
+        finish.assert_not_called()
 
     def test_failed_room_publish_sends_no_push(self):
         # The record replays on failure and Expo has no eventId dedupe, so a

@@ -784,6 +784,16 @@ export function MessagingWorkspaceProvider({
       await rooms.resourceSource.client.setLocalSessionDisplayTitle!(sessionId, title);
       await workspaceSessions.refresh();
     } : undefined,
+    // Nothing leaves the list until the server has removed it: a refusal (it resumed meanwhile, the network)
+    // rejects here, and the button that asked says so. The panel showing the session closes itself (SessionFocus).
+    onRemoveSession: async (sessionId) => {
+      await rooms.resourceSource.client.removeLocalSession(sessionId);
+      workspaceSessions.forget((session) => session.sessionId === sessionId);
+    },
+    onRemoveEndedSessions: async () => {
+      try { await rooms.resourceSource.client.removeEndedLocalSessions(); }
+      finally { await workspaceSessions.refresh(); }
+    },
     currentSessionId: sessionFocus?.sessionId ?? null,
     onOpenAllSessions: openAllSessions,
     allSessionsOpen: !!sessionFocus?.all,

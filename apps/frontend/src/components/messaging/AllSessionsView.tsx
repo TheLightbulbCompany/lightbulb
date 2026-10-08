@@ -5,6 +5,7 @@ import { X } from "lucide-react";
 import { sessionHistory, sessionMatches } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { SessionListRow } from "./SessionListRow";
+import { SessionRemoveButton } from "./SessionRemoveButton";
 import type { SidebarSession } from "./roomSections";
 
 /**
@@ -12,10 +13,13 @@ import type { SidebarSession } from "./roomSections";
  * main pane: searchable, newest activity first, by day. The sidebar shows only
  * live ones; this is where the rest live.
  */
-export function AllSessionsView({ entries, loading, onOpenSession, onClose, onRename }: {
+export function AllSessionsView({ entries, loading, onOpenSession, onClose, onRename, onRemove, onRemoveEnded }: {
   entries: readonly SidebarSession[]; loading: boolean;
   onOpenSession: (sessionId: string) => void; onClose: () => void;
   onRename?: (sessionId: string, title: string | null) => Promise<unknown>;
+  /** The viewer's own ended sessions can leave the list: one by one, or all at once. */
+  onRemove?: (sessionId: string) => Promise<unknown>;
+  onRemoveEnded?: () => Promise<unknown>;
 }) {
   const [query, setQuery] = useState("");
   const groups = useMemo(() => {
@@ -27,14 +31,16 @@ export function AllSessionsView({ entries, loading, onOpenSession, onClose, onRe
     <div className="room-session-main">
       <header className="room-context-header">
         <h3 className="font-semibold">All sessions</h3>
-        <Button variant="ghost" size="icon-sm" className="ml-auto" aria-label="Close all sessions" onClick={onClose}><X aria-hidden="true" /></Button>
+        <span className="ml-auto" />
+        {onRemoveEnded && entries.filter((entry) => entry.own && entry.session.status === "ended").length > 1 && <SessionRemoveButton onRemove={onRemoveEnded} />}
+        <Button variant="ghost" size="icon-sm" aria-label="Close all sessions" onClick={onClose}><X aria-hidden="true" /></Button>
       </header>
       <div className="all-sessions">
         <input type="search" className="all-sessions-search" placeholder="Search sessions" aria-label="Search sessions"
           value={query} onChange={(event) => setQuery(event.target.value)} />
         {groups.map((group) => <section key={group.key} aria-label={group.title}>
           <h4 className="all-sessions-day">{group.title}</h4>
-          <ul>{group.rows.map((entry) => <SessionListRow key={entry.session.sessionId} entry={entry} current={false} onSelect={onOpenSession} onRename={onRename} />)}</ul>
+          <ul>{group.rows.map((entry) => <SessionListRow key={entry.session.sessionId} entry={entry} current={false} onSelect={onOpenSession} onRename={onRename} onRemove={onRemove} />)}</ul>
         </section>)}
         {groups.length === 0 && <p role="status" className="text-sm text-muted-foreground">
           {loading && entries.length === 0 ? "Loading sessions…" : query.trim() ? "No sessions match." : "No sessions yet."}</p>}

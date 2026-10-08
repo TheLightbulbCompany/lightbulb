@@ -1299,7 +1299,7 @@ async def test_list_resources_lists_an_ended_origin_once_as_its_fork(db):
 
 
 def test_a_session_that_ended_before_its_first_message_is_not_listed():
-    def s(sid, status, seq, reason=None, provider="claude"):
+    def s(sid, status, seq, reason=None, provider="claude", held=None):
         return service.LocalSession.model_construct(
             session_id=sid,
             human_user_id="alice",
@@ -1307,6 +1307,7 @@ def test_a_session_that_ended_before_its_first_message_is_not_listed():
             status=status,
             latest_event_seq=seq,
             control_unavailable_reason=reason,
+            was_held=held,
         )
 
     found = [
@@ -1317,8 +1318,29 @@ def test_a_session_that_ended_before_its_first_message_is_not_listed():
         s("unread", "ended", 0, "history-gap"),
         # Codex keeps the thread in its rollout before any event is public: `codex resume` finds it.
         s("codex", "ended", 0, provider="codex"),
+        # It had a live terminal: its first events take up to a minute to arrive, so zero events
+        # does not mean nothing happened in it.
+        s("held", "ended", 0, held=True),
     ]
-    assert [x.session_id for x in service._without_moved(found)] == ["starting", "used", "unread", "codex"]
+    assert [x.session_id for x in service._without_moved(found)] == ["starting", "used", "unread", "codex", "held"]
+
+
+@pytest.mark.asyncio
+async def test_a_held_session_ended_before_its_first_event_stays_listed(db):
+    """Prod 2026-10-08: a held session ended in its first minute left the list, and the panel
+    open on it lost its row and remounted the terminal. A plain one that never ran is still hidden."""
+    await messaging_repo.ensure_user_stream(OWNER, ALICE.user_id)
+    held = await registered(conversation="held", provider="claude")
+    plain = await registered(conversation="plain", provider="claude")
+    enrollment = await repo.get_enrollment(OWNER, ALICE.user_id, MAC)
+    now = int(time.time())
+    for sid, holder in ((held, {"holderId": "ab12cd34"}), (plain, {})):
+        row = await repo.get_session(OWNER, sid)
+        await repo.put_session({**row, **holder, "endedAt": now, "lastEventAt": now}, row, enrollment)
+    listed = (await service.list_workspace_sessions(BOB, include_ended=True)).sessions
+    assert [(x.session_id, x.status, x.latest_event_seq, x.was_held) for x in listed] == [(held, "ended", 0, True)]
+    # Listed, but still nothing to resume: Claude wrote no transcript we know of.
+    assert listed[0].resumable is False
 
 
 @pytest.mark.asyncio

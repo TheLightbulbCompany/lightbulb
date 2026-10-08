@@ -108,6 +108,16 @@ it("a view mounted in a hidden tab asks for nothing until the tab is shown", asy
   spy.mockRestore();
 });
 
+it("a full session says so with the API's message and stops asking", async () => {
+  vi.useFakeTimers();
+  const message = "This session already has 20 live viewers.";
+  const watch = vi.fn(async () => { throw new ApiError(409, { code: "LOCAL_SESSION_VIEWERS_FULL", message }, message); });
+  render(<SessionTerminalView session={{ sessionId: "s1", generation: "g1" }} onEvent={() => () => {}} watch={watch} onLive={vi.fn()} />);
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  expect(watch.mock.calls).toEqual([["s1", true]]); // no retry
+  expect(screen.getByRole("status").textContent).toBe(message); // not the "update the Mac app" text
+});
+
 it("a view that drew frames before it asked starts over with the history its own ask brings, and only then", async () => {
   // Prod 2026-10-07: a view mounted while its tab was hidden drew the frames another tab's watch brought
   // (26 lines, no scrollback). Shown, it asked for a fresh screen, and the history that came was never written.
@@ -737,5 +747,38 @@ describe("a snapshot that arrives ahead of the output below it", () => {
     unmount();
     await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
     expect(hooks.did).toEqual(["reset", "first", "repair"]);
+  });
+
+  it("a repair asks the Mac for the lines it could not show, once, and starts over from the history that brings", async () => {
+    // Prod 2026-10-08: frames lost while the Mac's connection loop stalled were repaired with two
+    // snapshots; the 82 rows their output scrolled off the top never reached the viewer's scrollback.
+    vi.useFakeTimers();
+    let emit: (e: LiveEvent) => void = () => {};
+    const watch = vi.fn(async () => undefined);
+    render(<SessionTerminalView session={{ sessionId: "s1", generation: "g1" }} onEvent={(h) => { emit = h; return () => {}; }} watch={watch} onLive={vi.fn()} />);
+    await act(async () => { await vi.dynamicImportSettled(); });
+    const send = (kind: string, seq: number, text: string) => act(() => emit(screenEvent("s1", kind, seq, 1, btoa(text))));
+    const fresh = () => watch.mock.calls.filter((call) => (call as unknown[])[1] === true).length;
+    send("history", 0, "old lines");
+    send("snapshot", 1, "first");
+    send("snapshot", 3, "screen");
+    expect(fresh()).toBe(1); // its own mount
+    send("output", 2, "in time");
+    expect(fresh()).toBe(1); // nothing was lost: nothing is asked
+    send("snapshot", 5, "repair");
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    expect(hooks.did.slice(-1)).toEqual(["repair"]);
+    expect(fresh()).toBe(2);
+    expect(watch).toHaveBeenLastCalledWith("s1", true);
+    // A second loss right after costs the session's budget no second burst.
+    send("snapshot", 7, "repair again");
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    expect(fresh()).toBe(2);
+    // The burst: the terminal starts over, history first.
+    const resets = hooks.resets;
+    send("history", 8, "all the lines");
+    send("snapshot", 9, "screen");
+    expect(hooks.resets).toBe(resets + 1);
+    expect(hooks.did.slice(-3)).toEqual(["reset", "all the lines", "screen"]);
   });
 });

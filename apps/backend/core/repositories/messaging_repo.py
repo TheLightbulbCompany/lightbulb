@@ -52,6 +52,7 @@ import random
 import re
 import time
 import uuid
+import weakref
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
@@ -87,6 +88,20 @@ _SEQ_RETRY_ATTEMPTS = 8
 # so concurrent writers to one room spread out instead of re-colliding (worst case ~1.6 s total).
 _SEQ_BACKOFF_BASE_S = 0.02
 _SEQ_BACKOFF_CAP_S = 0.5
+
+
+# One append lane per room per process. Weak values: a room's lock disappears once no
+# writer holds or waits on it, so the map stays as small as the rooms being written.
+# ponytail: per process only -- the 2-4 backend tasks still race each other on lastSeq
+# (the backoff above covers that); a cross-task sequencer if one room outgrows it.
+_room_append_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
+
+
+def _room_append_lock(room_id: str) -> asyncio.Lock:
+    lock = _room_append_locks.get(room_id)
+    if lock is None:
+        lock = _room_append_locks[room_id] = asyncio.Lock()
+    return lock
 
 
 class MessagingRepoError(Exception):
@@ -941,213 +956,216 @@ async def create_message(
     target_ids = [t["agentId"] for t in dispatch_targets]
     # A platform notice (author kind "system") has no MEMBER row to check.
     system = author["kind"] == "system"
-    for attempt in range(_SEQ_RETRY_ATTEMPTS):
-        meta = await get_room(room_id)
-        if meta is None or meta.get("deletedAt"):
-            raise RoomNotFound(room_id)
-        if meta.get("archivedAt"):
-            raise RoomArchived(room_id)
-        if expected_room_revision is not None and int(meta["revision"]) != expected_room_revision:
-            raise MessageConflict("Room membership changed; recheck access.")
-        expected = int(meta["lastSeq"])
-        seq = expected + 1
-        top = thread_root_message_id is None
-        # A reply shares the current ordinal; only a top-level message takes a new one.
-        ordinal = _top_count(meta) + (1 if top else 0)
-        now = utc_now_iso()
-        message_id = str(uuid.uuid4())
-        message = {
-            "pk": room_pk(room_id),
-            "sk": msg_sk(seq),
-            "messageId": message_id,
-            "roomId": room_id,
-            "ownerId": owner_id,
-            "messageSeq": seq,
-            "roomRevision": int(meta["revision"]),
-            "author": author,
-            "text": text,
-            "mentions": mentions,
-            "replyToMessageId": reply_to_message_id,
-            "threadRootMessageId": thread_root_message_id,
-            "createdAt": now,
-            "runId": run_id,
-            "dispatchTargets": dispatch_targets,
-            "sourceAgentId": source_agent_id,
-            "clientMessageId": client_message_id,
-            "requestHash": req_hash,
-            "attachments": attachments or [],
-            "topOrdinal": ordinal,
-        }
-        if via:
-            message["via"] = via
-        if acting_human_id:
-            # The accountable human behind a system-authored post (hosted MCP receipts read it).
-            message["actorUserId"] = acting_human_id
-        if session_mentions:
-            # A reference, like a document link: it never wakes the session (owner ruling 2026-10-02).
-            message["sessionMentions"] = session_mentions
-        if session_target_labels:
-            message["sessionTargetLabels"] = session_target_labels
-        if silent:
-            # An advisory line: the projector files no Activity and sends no push for it.
-            message["silent"] = True
-        if progress:
-            # A mid-run progress line: clients keep the run card running under it.
-            message["progress"] = True
-        if agent_hop is not None:
-            # The agent-reply cap reads the trigger's hop (messaging.create_agent_message).
-            message["agentHop"] = agent_hop
-        if addressing is not None:
-            # Who the text spoke to (messaging.address): Jev's to-people rule reads it at dispatch.
-            message["addressing"] = addressing
-        if in_reply_to:
-            # The human message an agent reply answers: the `to` edge Jev sees on agent lines.
-            message["inReplyTo"] = in_reply_to
-        if thread_root_message_id and thread_root_seq:
-            # The projector reads the root by this key instead of scanning the room.
-            message["threadRootSeq"] = int(thread_root_seq)
-        meta_values: dict[str, Any] = {":seq": seq, ":expected": expected, ":now": now, ":top": ordinal}
-        if expected_room_revision is not None:
-            meta_values[":room_revision"] = expected_room_revision
-        meta_set = "SET lastSeq = :seq, lastMessageAt = :now, updatedAt = :now, topCount = :top"
-        if top:
-            # The room-list preview follows top-level messages only; thread replies
-            # change neither the preview nor the sidebar order.
-            meta_set += ", lastMessage = :preview"
-            meta_values[":preview"] = last_message_preview(message)
-        items: list[dict] = [
-            {
-                "Update": {
-                    "TableName": table_name,
-                    "Key": {"pk": room_pk(room_id), "sk": "META"},
-                    "UpdateExpression": meta_set,
-                    # An archive or delete committing after the read above cancels this; the retry sees it.
-                    "ConditionExpression": (
-                        "lastSeq = :expected AND attribute_not_exists(archivedAt) AND attribute_not_exists(deletedAt)"
-                        + (" AND revision = :room_revision" if expected_room_revision is not None else "")
-                    ),
-                    "ExpressionAttributeValues": meta_values,
-                }
-            },
-            {
-                "ConditionCheck": {
-                    "TableName": table_name,
-                    "Key": {
-                        "pk": room_pk(room_id),
-                        "sk": member_sk("human", acting_human_id)
-                        if acting_human_id
-                        else member_sk(author["kind"], author["id"]),
-                    },
-                    "ConditionExpression": "attribute_exists(sk)",
-                }
-            },
-            {"Put": {"TableName": table_name, "Item": message, "ConditionExpression": "attribute_not_exists(sk)"}},
-            {
-                "Put": {
-                    "TableName": table_name,
-                    "Item": {
-                        "pk": idemp_pk,
-                        "sk": idemp_sk,
-                        "requestHash": req_hash,
-                        "roomId": room_id,
-                        "messageId": message_id,
-                        "messageSeq": seq,
-                        "createdAt": now,
-                    },
-                    "ConditionExpression": "attribute_not_exists(sk)",
-                }
-            },
-        ]
-        if system and not acting_human_id:
-            del items[1]  # the author MEMBER check
-        source_condition_start = len(items)
-        items.extend(extra_conditions or [])
-        items.extend(_work_message_item(table_name, owner_id, room_id, message_id, seq, a) for a in target_ids)
-        # One tiny row per @mentioned human (members only, so <= MAX_ROOM_MEMBERS);
-        # with the agent targets that is <= 32 + 4 fixed + 1 READ + 1 thread root, well under 100.
-        mentioned = {m["id"] for m in mentions if m.get("kind") == "human"}
-        accountable_human_id = author["id"] if author["kind"] == "human" else acting_human_id
-        mentioned.discard(accountable_human_id)
-        items.extend(
-            {"Put": {"TableName": table_name, "Item": {"pk": room_pk(room_id), "sk": mention_sk(uid, seq)}}}
-            for uid in sorted(mentioned)
-        )
-        participants = mentioned | ({accountable_human_id} if accountable_human_id else set())
-        root_index = None
-        if thread_root_message_id and thread_root_seq and participants:
-            # The thread's humans (Activity ``thread_reply`` + notify recipients), kept on
-            # the root: one small ADD instead of the projector scanning the room per reply.
-            # ``threadTouchedAt`` tells the projector this root MODIFY is not an edit.
-            root_index = len(items)
-            items.append(
+    # Writers to one room in this process take turns here instead of racing for the
+    # same lastSeq in DynamoDB; only writers on OTHER backend tasks still conflict.
+    async with _room_append_lock(room_id):
+        for attempt in range(_SEQ_RETRY_ATTEMPTS):
+            meta = await get_room(room_id)
+            if meta is None or meta.get("deletedAt"):
+                raise RoomNotFound(room_id)
+            if meta.get("archivedAt"):
+                raise RoomArchived(room_id)
+            if expected_room_revision is not None and int(meta["revision"]) != expected_room_revision:
+                raise MessageConflict("Room membership changed; recheck access.")
+            expected = int(meta["lastSeq"])
+            seq = expected + 1
+            top = thread_root_message_id is None
+            # A reply shares the current ordinal; only a top-level message takes a new one.
+            ordinal = _top_count(meta) + (1 if top else 0)
+            now = utc_now_iso()
+            message_id = str(uuid.uuid4())
+            message = {
+                "pk": room_pk(room_id),
+                "sk": msg_sk(seq),
+                "messageId": message_id,
+                "roomId": room_id,
+                "ownerId": owner_id,
+                "messageSeq": seq,
+                "roomRevision": int(meta["revision"]),
+                "author": author,
+                "text": text,
+                "mentions": mentions,
+                "replyToMessageId": reply_to_message_id,
+                "threadRootMessageId": thread_root_message_id,
+                "createdAt": now,
+                "runId": run_id,
+                "dispatchTargets": dispatch_targets,
+                "sourceAgentId": source_agent_id,
+                "clientMessageId": client_message_id,
+                "requestHash": req_hash,
+                "attachments": attachments or [],
+                "topOrdinal": ordinal,
+            }
+            if via:
+                message["via"] = via
+            if acting_human_id:
+                # The accountable human behind a system-authored post (hosted MCP receipts read it).
+                message["actorUserId"] = acting_human_id
+            if session_mentions:
+                # A reference, like a document link: it never wakes the session (owner ruling 2026-10-02).
+                message["sessionMentions"] = session_mentions
+            if session_target_labels:
+                message["sessionTargetLabels"] = session_target_labels
+            if silent:
+                # An advisory line: the projector files no Activity and sends no push for it.
+                message["silent"] = True
+            if progress:
+                # A mid-run progress line: clients keep the run card running under it.
+                message["progress"] = True
+            if agent_hop is not None:
+                # The agent-reply cap reads the trigger's hop (messaging.create_agent_message).
+                message["agentHop"] = agent_hop
+            if addressing is not None:
+                # Who the text spoke to (messaging.address): Jev's to-people rule reads it at dispatch.
+                message["addressing"] = addressing
+            if in_reply_to:
+                # The human message an agent reply answers: the `to` edge Jev sees on agent lines.
+                message["inReplyTo"] = in_reply_to
+            if thread_root_message_id and thread_root_seq:
+                # The projector reads the root by this key instead of scanning the room.
+                message["threadRootSeq"] = int(thread_root_seq)
+            meta_values: dict[str, Any] = {":seq": seq, ":expected": expected, ":now": now, ":top": ordinal}
+            if expected_room_revision is not None:
+                meta_values[":room_revision"] = expected_room_revision
+            meta_set = "SET lastSeq = :seq, lastMessageAt = :now, updatedAt = :now, topCount = :top"
+            if top:
+                # The room-list preview follows top-level messages only; thread replies
+                # change neither the preview nor the sidebar order.
+                meta_set += ", lastMessage = :preview"
+                meta_values[":preview"] = last_message_preview(message)
+            items: list[dict] = [
                 {
                     "Update": {
                         "TableName": table_name,
-                        "Key": {"pk": room_pk(room_id), "sk": msg_sk(int(thread_root_seq))},
-                        "UpdateExpression": "ADD threadParticipants :p SET threadTouchedAt = :now",
-                        "ConditionExpression": "messageId = :root",
-                        "ExpressionAttributeValues": {
-                            ":p": participants,
-                            ":root": thread_root_message_id,
-                            ":now": now,
-                        },
+                        "Key": {"pk": room_pk(room_id), "sk": "META"},
+                        "UpdateExpression": meta_set,
+                        # An archive or delete committing after the read above cancels this; the retry sees it.
+                        "ConditionExpression": (
+                            "lastSeq = :expected AND attribute_not_exists(archivedAt) AND attribute_not_exists(deletedAt)"
+                            + (" AND revision = :room_revision" if expected_room_revision is not None else "")
+                        ),
+                        "ExpressionAttributeValues": meta_values,
                     }
-                }
-            )
-        if top and accountable_human_id:
-            # Posting marks the room read for its accountable human (Slack's rule).
-            # This includes authenticated delegated system posts. Unconditional and
-            # still monotonic: nothing can point past the seq this commit creates.
-            items.append(
+                },
                 {
-                    "Update": {
+                    "ConditionCheck": {
                         "TableName": table_name,
-                        "Key": {"pk": room_pk(room_id), "sk": read_sk(accountable_human_id)},
-                        "UpdateExpression": "SET lastReadSeq = :seq, topOrdinal = :top, userId = :u, updatedAt = :now",
-                        "ExpressionAttributeValues": {
-                            ":seq": seq,
-                            ":top": ordinal,
-                            ":u": accountable_human_id,
-                            ":now": now,
+                        "Key": {
+                            "pk": room_pk(room_id),
+                            "sk": member_sk("human", acting_human_id)
+                            if acting_human_id
+                            else member_sk(author["kind"], author["id"]),
                         },
+                        "ConditionExpression": "attribute_exists(sk)",
                     }
-                }
+                },
+                {"Put": {"TableName": table_name, "Item": message, "ConditionExpression": "attribute_not_exists(sk)"}},
+                {
+                    "Put": {
+                        "TableName": table_name,
+                        "Item": {
+                            "pk": idemp_pk,
+                            "sk": idemp_sk,
+                            "requestHash": req_hash,
+                            "roomId": room_id,
+                            "messageId": message_id,
+                            "messageSeq": seq,
+                            "createdAt": now,
+                        },
+                        "ConditionExpression": "attribute_not_exists(sk)",
+                    }
+                },
+            ]
+            if system and not acting_human_id:
+                del items[1]  # the author MEMBER check
+            source_condition_start = len(items)
+            items.extend(extra_conditions or [])
+            items.extend(_work_message_item(table_name, owner_id, room_id, message_id, seq, a) for a in target_ids)
+            # One tiny row per @mentioned human (members only, so <= MAX_ROOM_MEMBERS);
+            # with the agent targets that is <= 32 + 4 fixed + 1 READ + 1 thread root, well under 100.
+            mentioned = {m["id"] for m in mentions if m.get("kind") == "human"}
+            accountable_human_id = author["id"] if author["kind"] == "human" else acting_human_id
+            mentioned.discard(accountable_human_id)
+            items.extend(
+                {"Put": {"TableName": table_name, "Item": {"pk": room_pk(room_id), "sk": mention_sk(uid, seq)}}}
+                for uid in sorted(mentioned)
             )
-        try:
-            await _transact(items)
-            return _plain(message), False
-        except ClientError as exc:
-            if not _is_cancelled(exc):
-                raise
-            reasons = exc.response.get("CancellationReasons", [])
-            if (
-                (not system or acting_human_id)
-                and len(reasons) > 1
-                and reasons[1].get("Code") == "ConditionalCheckFailed"
-            ):
-                # The author's own MEMBER row is gone: not a sequence race, don't retry.
-                raise MessageForbidden("Only a current room member can send this message.") from exc
-            if any(
-                len(reasons) > i and reasons[i].get("Code") == "ConditionalCheckFailed"
-                for i in range(source_condition_start, source_condition_start + len(extra_conditions or []))
-            ):
-                raise ExtraConditionFailed("Native session source is no longer authorized.") from exc
-            if (
-                root_index is not None
-                and len(reasons) > root_index
-                and reasons[root_index].get("Code") == ("ConditionalCheckFailed")
-            ):
-                # The seq the caller validated does not hold that root: a caller bug, not a race.
-                raise ThreadRootMismatch(thread_root_message_id) from exc
-        prior = await _get(idemp_pk, idemp_sk)
-        if prior is not None:
-            return await _replay_or_conflict(prior, req_hash), True
-        # Sequence race (or a same-instant duplicate seq) — reread and retry.
-        logger.info("messaging: sequence conflict on room=%s attempt=%d", room_id, attempt + 1)
-        # ponytail: one hot room is still serialized on one META.lastSeq counter; move to
-        # per-room sequencers if a room ever needs more than ~50 msg/s.
-        if attempt + 1 < _SEQ_RETRY_ATTEMPTS:
-            await asyncio.sleep(random.uniform(0, min(_SEQ_BACKOFF_CAP_S, _SEQ_BACKOFF_BASE_S * 2**attempt)))
+            participants = mentioned | ({accountable_human_id} if accountable_human_id else set())
+            root_index = None
+            if thread_root_message_id and thread_root_seq and participants:
+                # The thread's humans (Activity ``thread_reply`` + notify recipients), kept on
+                # the root: one small ADD instead of the projector scanning the room per reply.
+                # ``threadTouchedAt`` tells the projector this root MODIFY is not an edit.
+                root_index = len(items)
+                items.append(
+                    {
+                        "Update": {
+                            "TableName": table_name,
+                            "Key": {"pk": room_pk(room_id), "sk": msg_sk(int(thread_root_seq))},
+                            "UpdateExpression": "ADD threadParticipants :p SET threadTouchedAt = :now",
+                            "ConditionExpression": "messageId = :root",
+                            "ExpressionAttributeValues": {
+                                ":p": participants,
+                                ":root": thread_root_message_id,
+                                ":now": now,
+                            },
+                        }
+                    }
+                )
+            if top and accountable_human_id:
+                # Posting marks the room read for its accountable human (Slack's rule).
+                # This includes authenticated delegated system posts. Unconditional and
+                # still monotonic: nothing can point past the seq this commit creates.
+                items.append(
+                    {
+                        "Update": {
+                            "TableName": table_name,
+                            "Key": {"pk": room_pk(room_id), "sk": read_sk(accountable_human_id)},
+                            "UpdateExpression": "SET lastReadSeq = :seq, topOrdinal = :top, userId = :u, updatedAt = :now",
+                            "ExpressionAttributeValues": {
+                                ":seq": seq,
+                                ":top": ordinal,
+                                ":u": accountable_human_id,
+                                ":now": now,
+                            },
+                        }
+                    }
+                )
+            try:
+                await _transact(items)
+                return _plain(message), False
+            except ClientError as exc:
+                if not _is_cancelled(exc):
+                    raise
+                reasons = exc.response.get("CancellationReasons", [])
+                if (
+                    (not system or acting_human_id)
+                    and len(reasons) > 1
+                    and reasons[1].get("Code") == "ConditionalCheckFailed"
+                ):
+                    # The author's own MEMBER row is gone: not a sequence race, don't retry.
+                    raise MessageForbidden("Only a current room member can send this message.") from exc
+                if any(
+                    len(reasons) > i and reasons[i].get("Code") == "ConditionalCheckFailed"
+                    for i in range(source_condition_start, source_condition_start + len(extra_conditions or []))
+                ):
+                    raise ExtraConditionFailed("Native session source is no longer authorized.") from exc
+                if (
+                    root_index is not None
+                    and len(reasons) > root_index
+                    and reasons[root_index].get("Code") == ("ConditionalCheckFailed")
+                ):
+                    # The seq the caller validated does not hold that root: a caller bug, not a race.
+                    raise ThreadRootMismatch(thread_root_message_id) from exc
+            prior = await _get(idemp_pk, idemp_sk)
+            if prior is not None:
+                return await _replay_or_conflict(prior, req_hash), True
+            # Sequence race (or a same-instant duplicate seq) — reread and retry.
+            logger.info("messaging: sequence conflict on room=%s attempt=%d", room_id, attempt + 1)
+            # ponytail: one hot room is still serialized on one META.lastSeq counter; move to
+            # per-room sequencers if a room ever needs more than ~50 msg/s.
+            if attempt + 1 < _SEQ_RETRY_ATTEMPTS:
+                await asyncio.sleep(random.uniform(0, min(_SEQ_BACKOFF_CAP_S, _SEQ_BACKOFF_BASE_S * 2**attempt)))
     raise MessagingRepoError(f"could not append to room {room_id} after {_SEQ_RETRY_ATTEMPTS} attempts")
 
 

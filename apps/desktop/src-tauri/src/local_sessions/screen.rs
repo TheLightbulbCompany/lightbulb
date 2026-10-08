@@ -6,8 +6,10 @@
 //! grown viewer set; a fresh snapshot after a resize and after a lost frame (at most one a second);
 //! and every 10 s a snapshot when output went out since the last one or none was asked for in
 //! 30 s (a viewer that lost its first screen is never left without one), else a `ping` (spec §5.2).
-//! Nothing is queued for later; nothing is sent while nobody watches. Output past the backend's budget (2 MiB raw a minute) is dropped here, not
-//! sent to be dropped there, and a snapshot follows once the budget is back.
+//! Nothing is sent while nobody watches. Output the relay queue has no room for, or that is past
+//! the backend's budget (2 MiB raw a minute), waits here and goes out in order when there is room
+//! (`Out::flush`): a snapshot is only the screen, so output replaced by one never reaches a viewer's
+//! scrollback. Only more than BACKLOG of it waiting is dropped, and a snapshot follows.
 //! A `local.session.watch` nudge from the backend starts a relay at once (a new viewer sees the
 //! screen in about a second, not at the next ack); the acks still keep it going and stop it.
 //! A Claude background session's terminal comes from an attach holder this module starts on demand
@@ -16,7 +18,7 @@
 use super::transport::relay_log;
 use super::{Mirror, NativeSession};
 use crate::holder::manager::{self, HolderInfo};
-use crate::holder::protocol::{encode, read_frame, split_offset, EXIT, HELLO, OUTPUT, RESIZE, SNAPSHOT};
+use crate::holder::protocol::{encode, read_frame, split_offset, with_offset, EXIT, HELLO, HISTORY, OUTPUT, RESIZE, SNAPSHOT};
 use base64::Engine;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -59,6 +61,16 @@ const BURST: usize = 256 * 1024;
 const HISTORY_RESERVE: usize = 64 * 1024;
 /// How long a history burst may wait for room in the shallow relay queue before it counts as lost.
 const PACE: Duration = Duration::from_secs(3);
+/// How long the holder has to answer a HISTORY asked on the relay's own connection (as long as
+/// `manager::history` waits on its own): past it the viewers get the screen without the lines.
+const LINES_WAIT: Duration = Duration::from_secs(2);
+/// Output that may wait here for room in the relay queue or the budget (`Out::flush`). At the
+/// budget's rate this much is under 4 s late; past it the viewers are too far behind a live
+/// screen, so it is dropped and they get the screen as it is (their scrollback loses those lines
+/// until they open the session again). Prod 2026-10-08: the connection loop stalled 6.1 s on an
+/// upload while Codex wrote 4 blocks (about 9 KiB), which the full queue lost; 82 rows never
+/// reached a viewer's scrollback.
+const BACKLOG: usize = 128 * 1024;
 
 #[derive(Clone)]
 struct Live {
@@ -95,13 +107,16 @@ pub(super) struct Ctl {
     keep: Mutex<Instant>,
     /// The holder this relay reads, once `run` has found it.
     holder: Mutex<Option<String>>,
+    /// That holder keeps the lines above its screen (HELLO `"history": true`): they are asked for
+    /// on the relay's own connection, where their place among the output is known (`pump`).
+    lines: AtomicBool,
 }
 
 impl Ctl {
     pub(super) fn new(since: u64) -> Self {
         Self { since: AtomicU64::new(since), epoch: AtomicU64::new(0), typist: Mutex::new(None), snapshot: AtomicBool::new(false),
             history: AtomicBool::new(false), beat: SNAPSHOT_EVERY, resync: RESYNC, leave_hold: LEAVE_HOLD, stop: AtomicBool::new(false),
-            until: Mutex::new(Instant::now() + LEASE), keep: Mutex::new(Instant::now()), holder: Mutex::new(None) }
+            until: Mutex::new(Instant::now() + LEASE), keep: Mutex::new(Instant::now()), holder: Mutex::new(None), lines: AtomicBool::new(false) }
     }
     fn renew(&self) {
         if let Ok(mut until) = self.until.lock() {
@@ -514,6 +529,7 @@ fn watch(conn: &mut UnixStream, sid: &str, generation: &str, ctl: &Ctl, send: &d
     }
     let facts: Value = serde_json::from_slice(&hello).unwrap_or_default();
     let size = (facts["cols"].as_u64().unwrap_or(120) as u16, facts["rows"].as_u64().unwrap_or(40) as u16);
+    ctl.lines.store(facts["history"] == true, SeqCst);
     pump(&frames, conn, (sid, generation), size, ctl, send, Budget::new(), history)
 }
 
@@ -558,6 +574,8 @@ struct Out<'a> {
     ctl: &'a Ctl,
     send: &'a dyn Fn(Value) -> bool,
     budget: Budget,
+    /// Output not sent yet, oldest first, each run with the terminal size it was written at.
+    backlog: std::collections::VecDeque<((u16, u16), Vec<u8>)>,
     /// A frame was lost since the last snapshot: viewers wait for the next one, so output is waste.
     stale: bool,
     /// Output went out since the last snapshot: the beat redraws (it heals frames lost past this Mac) instead of pinging.
@@ -565,23 +583,96 @@ struct Out<'a> {
 }
 
 impl Out<'_> {
+    /// Output waits for its turn (`flush`), so no viewer misses any of it: a missing frame is
+    /// repaired with a snapshot, which is the screen only, and the lines that output scrolled off
+    /// the top would never reach a viewer's scrollback. A snapshot goes when no output waits (it is
+    /// the screen after that output) and may overdraw the budget: it ends a gap, and the next
+    /// request waits for the budget to be back above zero. One that cannot go is asked for again.
     fn emit(&mut self, kind: &str, bytes: &[u8], size: (u16, u16)) {
-        let snapshot = kind == "snapshot";
-        if self.stale && !snapshot {
-            return;
-        }
-        if !self.budget.take(bytes.len(), snapshot) {
-            // Skip the seqs it would have used: the gap tells viewers to wait for a snapshot.
-            self.seq += bytes.len().div_ceil(CHUNK).max(1) as u64;
-            self.lost();
-            return;
-        }
-        self.stale = false;
-        self.dirty = !snapshot;
-        for frame in frames_for(self.ids, self.epoch, &mut self.seq, size, kind, bytes) {
-            if !(self.send)(frame) {
-                self.lost();
+        if kind != "snapshot" {
+            // (After a loss viewers wait for the snapshot: output until then is in it.)
+            if !self.stale && !bytes.is_empty() {
+                match self.backlog.back_mut() {
+                    Some((at, held)) if *at == size => held.extend_from_slice(bytes),
+                    _ => self.backlog.push_back((size, bytes.to_vec())),
+                }
+                self.flush();
             }
+            return;
+        }
+        self.flush();
+        if !self.backlog.is_empty() {
+            self.ctl.snapshot.store(true, SeqCst);
+            return;
+        }
+        let mut seq = self.seq;
+        for (i, frame) in frames_for(self.ids, self.epoch, &mut seq, size, kind, bytes).into_iter().enumerate() {
+            if (self.send)(frame) {
+                self.seq += 1;
+                continue;
+            }
+            if i == 0 {
+                // None of it went: no place in the order is taken, and viewers miss nothing.
+                self.ctl.snapshot.store(true, SeqCst);
+                return;
+            }
+            // The rest of a snapshot is output after its first frame: it waits like any other.
+            self.backlog.push_back((size, bytes[i * CHUNK..].to_vec()));
+            break;
+        }
+        let waits = self.backlog.front().map_or(0, |(_, held)| held.len());
+        self.budget.take(bytes.len() - waits, true);
+        self.stale = false;
+        self.dirty = false;
+    }
+    /// Sends the waiting output in order, as far as the budget and the relay queue take it now. A
+    /// chunk that does not go keeps its place and takes no seq, so viewers see no gap: the output is
+    /// late, never missing. More than BACKLOG waiting is given up: one skipped seq tells viewers a
+    /// frame is lost, and a snapshot follows.
+    fn flush(&mut self) {
+        while let Some((size, held)) = self.backlog.front_mut() {
+            let len = held.len().min(CHUNK);
+            if self.budget.left() < len as f64 {
+                break;
+            }
+            let mut seq = self.seq;
+            let frame = frames_for(self.ids, self.epoch, &mut seq, *size, "output", &held[..len]).remove(0);
+            if !(self.send)(frame) {
+                break;
+            }
+            self.budget.take(len, true);
+            self.seq = seq;
+            self.dirty = true;
+            held.drain(..len);
+            if held.is_empty() {
+                self.backlog.pop_front();
+            }
+        }
+        if self.backlog.iter().map(|(_, held)| held.len()).sum::<usize>() > BACKLOG {
+            self.give_up();
+        }
+    }
+    /// The waiting output will not be sent: one skipped seq tells viewers a frame is lost, and a
+    /// snapshot follows.
+    fn give_up(&mut self) {
+        self.backlog.clear();
+        self.seq += 1;
+        self.lost();
+    }
+    /// Waits for the waiting output to go, for PACE at most (the limit a history burst already has
+    /// for the same queue); what has not gone by then is given up. False then.
+    fn drained(&mut self) -> bool {
+        let deadline = Instant::now() + PACE;
+        loop {
+            self.flush();
+            if self.backlog.is_empty() {
+                return !self.stale;
+            }
+            if Instant::now() >= deadline {
+                self.give_up();
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
         }
     }
     /// What is above the holder's screen, for viewers with none of it yet (spec §5.2), sized to
@@ -589,10 +680,35 @@ impl Out<'_> {
     /// from its old end. Paced into the shallow relay queue (a burst is up to 24 frames); a frame
     /// that finds no room within PACE is lost like any other. Nothing above the screen is one
     /// empty frame: a viewer then knows it has all there is, and no later burst is for it.
-    fn history(&mut self, fetch: &dyn Fn(usize) -> Option<Vec<u8>>, size: (u16, u16)) {
+    ///
+    /// Never ahead of output that waits here (review of #3912): the holder's lines and the snapshot
+    /// behind them are the terminal after that output, so sent before it, the output would draw
+    /// over them again, in every viewer. The burst waits for it (`drained`, PACE at most, so a
+    /// stuck queue does not hold a new viewer for long). False when it must be asked for again:
+    /// the output was given up, or was before, and the snapshot that repairs that goes first.
+    fn history(&mut self, fetch: &dyn Fn(usize) -> Option<Vec<u8>>, size: (u16, u16)) -> bool {
+        if self.stale || !self.drained() {
+            return false;
+        }
         if let Some(bytes) = self.fetched(fetch) {
             self.burst(&bytes, size);
         }
+        true
+    }
+    /// The same burst from lines the holder sent on the relay's own connection (`pump`): `bytes`,
+    /// without its oldest lines when the budget allows less now than when they were asked for
+    /// (`newest_lines`). False as for `history`.
+    fn lines(&mut self, bytes: &[u8], size: (u16, u16)) -> bool {
+        if self.stale || !self.drained() {
+            return false;
+        }
+        // (When not one line fits, nothing is sent: an empty burst says "there are none", and the
+        // line feeds that end the holder's answer alone would be blank rows.)
+        let fits = newest_lines(bytes, self.budget.room());
+        if fits.contains(&b'\r') || bytes.is_empty() {
+            self.burst(fits, size);
+        }
+        true
     }
     /// The session ended on a picture that shows again lines its viewers have above their screens
     /// (the holder's EXIT says `startOver`, `Model::end`): a new run, so every viewer's terminal
@@ -611,6 +727,10 @@ impl Out<'_> {
         self.ctl.epoch.store(self.epoch, SeqCst);
         self.seq = 0;
         self.stale = false;
+        // Output still waiting is the old run's, and the lines above the kept picture are the
+        // terminal after it: it is dropped, not sent behind them. The new run draws everything,
+        // and a viewer drops an older run's frames anyway.
+        self.backlog.clear();
         self.burst(&bytes, size);
     }
     fn fetched(&mut self, fetch: &dyn Fn(usize) -> Option<Vec<u8>>) -> Option<Vec<u8>> {
@@ -646,6 +766,17 @@ impl Out<'_> {
     }
 }
 
+/// The newest whole lines of the holder's `lines` (`Model::history`) that fit `room` bytes. Output
+/// sent between the request and the answer can leave less room than was asked for (review of
+/// #3912): a cut by bytes then began inside a character or an escape sequence, and the viewer's
+/// first line was garbage. Each line there is a row drawn from the default attributes that ends
+/// with a reset and CR LF, so what follows any CR LF starts clean in an empty terminal.
+fn newest_lines(lines: &[u8], room: usize) -> &[u8] {
+    let cut = lines.len().saturating_sub(room);
+    let from = (cut..lines.len()).find(|at| *at == 0 || lines[..*at].ends_with(b"\r\n")).unwrap_or(lines.len());
+    &lines[from..]
+}
+
 static LAST_EPOCH: AtomicU64 = AtomicU64::new(0);
 
 /// Wall-clock milliseconds, but never equal to or below an earlier epoch: a viewer drops a lower one as stale,
@@ -662,10 +793,23 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
         ctl: &Ctl, send: &dyn Fn(Value) -> bool, budget: Budget, history: &dyn Fn(usize) -> Option<Vec<u8>>) -> Result<(), String> {
     let epoch = next_epoch(&LAST_EPOCH, SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64));
     ctl.epoch.store(epoch, SeqCst);
-    let mut out = Out { ids, epoch, seq: 0, ctl, send, budget, stale: false, dirty: false };
+    let mut out = Out { ids, epoch, seq: 0, ctl, send, budget, backlog: Default::default(), stale: false, dirty: false };
+    // A holder that keeps its lines is asked for them on this connection (review of #3912). It is one
+    // event loop and answers in order, with the screen right behind the lines: every OUTPUT that
+    // reaches this relay before that answer is of bytes the lines and the screen already show, and
+    // is sent before them; every one after is of bytes they do not show, and is sent after. Asked
+    // on another connection (`manager::history`), the lines could hold output this relay had not
+    // sent yet, or not read yet: a viewer drawn from them then got those bytes again, or missed the
+    // lines that scrolled off between the lines and the snapshot asked for after them.
+    let keeps = ctl.lines.load(SeqCst);
+    // Since when the holder owes those lines. A snapshot that comes before them is older than
+    // they are, and is skipped: the one behind the lines is the picture.
+    let mut asked_lines: Option<Instant> = None;
     // A new run's viewers get history first; the holder's own first snapshot is queued behind it.
-    ctl.history.store(false, SeqCst);
-    out.history(history, size);
+    ctl.history.store(keeps, SeqCst);
+    if !keeps {
+        out.history(history, size);
+    }
     let mut pending: Vec<u8> = Vec::new();
     let mut held_since: Option<Instant> = None;
     // The holder sends a watch client its first snapshot unasked; a request may follow at once
@@ -684,11 +828,47 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
         if ctl.stopped() {
             return Ok(());
         }
-        if ctl.history.swap(false, SeqCst) {
-            out.history(history, size);
+        out.flush();
+        if asked_lines.is_some_and(|at| at.elapsed() >= LINES_WAIT) {
+            asked_lines = None;
             ctl.snapshot.store(true, SeqCst);
-            // At once: these viewers have no screen, and SNAPSHOT_GAP is for frames lost on a slow uplink.
-            last_snapshot = Instant::now().checked_sub(SNAPSHOT_GAP).unwrap_or_else(Instant::now);
+        }
+        // (Not while output is held, as for a snapshot.)
+        if keeps && leaving.is_none() && ctl.history.swap(false, SeqCst) {
+            let room = out.budget.room();
+            if out.stale {
+                // After the snapshot that repairs the lost output (`Out::history`).
+                ctl.history.store(true, SeqCst);
+            } else if room == 0 {
+                // No budget for lines now: the screen alone, as a short budget always gave.
+                ctl.snapshot.store(true, SeqCst);
+                last_snapshot = Instant::now().checked_sub(SNAPSHOT_GAP).unwrap_or_else(Instant::now);
+            } else {
+                match to_holder.write_all(&encode(HISTORY, &with_offset(room as u64, b""))) {
+                    Err(_) if exited => return Ok(()),
+                    sent => sent.map_err(|e| e.to_string())?,
+                }
+                asked_lines = Some(Instant::now());
+            }
+        }
+        if !keeps && ctl.history.swap(false, SeqCst) {
+            // A holder with no lines of its own: its output log's tail, read on another connection
+            // (`manager::history`). What waits here is older than that tail's end and goes first.
+            // ponytail: output this relay has not read yet may be in that tail and is then drawn
+            // twice by a new viewer; exact only with the log's offsets. No held Claude Code or
+            // Codex session takes this path.
+            if leaving.is_none() && !pending.is_empty() {
+                out.emit("output", &std::mem::take(&mut pending), size);
+                held_since = None;
+            }
+            if out.history(history, size) {
+                ctl.snapshot.store(true, SeqCst);
+                // At once: these viewers have no screen, and SNAPSHOT_GAP is for frames lost on a slow uplink.
+                last_snapshot = Instant::now().checked_sub(SNAPSHOT_GAP).unwrap_or_else(Instant::now);
+            } else {
+                // After the snapshot that repairs the lost output (`Out::history`).
+                ctl.history.store(true, SeqCst);
+            }
         }
         if last_beat.elapsed() >= ctl.beat {
             last_beat = Instant::now();
@@ -704,6 +884,26 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
             last_snapshot = Instant::now();
         }
         match frames.recv_timeout(TICK) {
+            Ok((SNAPSHOT, _)) if asked_lines.is_some() => {}
+            Ok((HISTORY, lines)) if asked_lines.is_some() => {
+                asked_lines = None;
+                // As before a snapshot: the output that was waiting goes first (the lines and the
+                // screen behind them show it already); what follows a leave of the alternate
+                // screen stays dropped.
+                if leaving.take().is_none() && !pending.is_empty() {
+                    out.emit("output", &pending, size);
+                }
+                pending.clear();
+                held_since = None;
+                if out.lines(&lines, size) {
+                    // The holder sends the screen behind its lines itself; one from before that did
+                    // not is asked for it.
+                    ctl.snapshot.store(true, SeqCst);
+                    last_snapshot = Instant::now().checked_sub(SNAPSHOT_GAP).unwrap_or_else(Instant::now);
+                } else {
+                    ctl.history.store(true, SeqCst);
+                }
+            }
             Ok((SNAPSHOT, payload)) => {
                 let (_, screen) = split_offset(&payload).ok_or("bad snapshot")?;
                 // The snapshot shows the output that was waiting, but only as a screen: a viewer draws
@@ -979,25 +1179,282 @@ mod tests {
     }
 
     #[test]
-    fn output_over_the_budget_is_dropped_and_a_snapshot_follows_once_the_budget_is_back() {
+    fn output_over_the_budget_waits_for_it_and_no_frame_is_skipped() {
         let (tx, rx) = std::sync::mpsc::channel();
         tx.send((SNAPSHOT, with_offset(0, &vec![b's'; 4096]))).unwrap();
         tx.send((OUTPUT, with_offset(4096, &vec![b'a'; 100]))).unwrap();
         tx.send((OUTPUT, with_offset(4196, b"more"))).unwrap();
         let ctl = leased(Duration::from_millis(3000));
-        let mut holder = Answering { tx, answer: vec![(SNAPSHOT, with_offset(4200, b"fresh")), (OUTPUT, with_offset(4200, b"after"))],
-            asked: vec![] };
-        // Empty, refilling 2000 bytes a second: the snapshot overdraws it to -4096 for about 2 s.
+        let mut holder = Answering { tx, answer: vec![(SNAPSHOT, with_offset(4200, b"fresh"))], asked: vec![] };
+        // Empty, refilling 2000 bytes a second: the snapshot overdraws it to -4096, so the 104
+        // bytes of output fit after about 2.1 s.
         let budget = Budget { tokens: 0.0, cap: 64.0 * 1024.0, per_s: 2000.0, at: Instant::now() };
         let sent = std::cell::RefCell::new(vec![]);
         let started = Instant::now();
-        pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|f| { sent.borrow_mut().push(f); true }, budget, &|_| None).unwrap();
+        pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|f| { sent.borrow_mut().push((started.elapsed(), f)); true }, budget, &|_| None).unwrap();
         let sent = sent.into_inner();
-        let shape: Vec<(String, u64)> = sent.iter().map(|f| (f["kind"].as_str().unwrap().into(), f["seq"].as_u64().unwrap())).collect();
-        // seq 1 is the dropped output's: the gap sends viewers to the next snapshot; "more" never went.
-        assert_eq!(shape, [("snapshot".into(), 0), ("snapshot".into(), 2), ("output".into(), 3)]);
-        assert_eq!(holder.asked.len(), 1, "one request, not one a tick");
-        assert!(holder.asked[0] - started >= Duration::from_millis(1800), "asked only once the budget was back");
+        let shape: Vec<(String, u64)> = sent.iter().map(|(_, f)| (f["kind"].as_str().unwrap().into(), f["seq"].as_u64().unwrap())).collect();
+        // Before: seq 1 was skipped, "more" never went, and a snapshot repaired the gap, so the
+        // lines that output scrolled off the top were in no viewer's scrollback.
+        assert_eq!(shape, [("snapshot".into(), 0), ("output".into(), 1)]);
+        let data = base64::engine::general_purpose::STANDARD.decode(sent[1].1["data"].as_str().unwrap()).unwrap();
+        assert_eq!(data, [vec![b'a'; 100], b"more".to_vec()].concat(), "every byte, in order");
+        assert!(sent[1].0 >= Duration::from_millis(1800), "sent once the budget was back: {:?}", sent[1].0);
+        assert!(holder.asked.is_empty(), "nothing was lost, so nothing is repaired");
+    }
+
+    /// Prod 2026-10-08 08:50:07Z: "connection loop iteration took 6.1s; slowest step: uploads". The
+    /// relay queue (8 frames) was full meanwhile; the beat's snapshot and 4 Codex blocks were lost
+    /// there, two snapshots repaired the viewer's screen, and its scrollback never got the 82 rows.
+    #[test]
+    fn output_the_relay_queue_has_no_room_for_waits_and_goes_out_in_order_without_a_gap() {
+        let ctl = Ctl::new(0);
+        let room = std::cell::Cell::new(false);
+        let sent = std::cell::RefCell::new(vec![]);
+        let send = |f: Value| room.get() && { sent.borrow_mut().push(f); true };
+        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget: Budget::new(), backlog: Default::default(), stale: false, dirty: false };
+        let data = |f: &Value| base64::engine::general_purpose::STANDARD.decode(f["data"].as_str().unwrap()).unwrap();
+        // The connection loop is stalled: nothing finds room.
+        out.emit("output", b"block 1, ", (100, 30));
+        out.emit("snapshot", b"the screen after block 1", (100, 30));
+        assert!(ctl.snapshot.swap(false, SeqCst), "a snapshot that cannot go is asked for again");
+        out.emit("output", b"block 2, ", (100, 30));
+        out.emit("output", b"block 3", (100, 30));
+        assert!(sent.borrow().is_empty() && out.seq == 0 && !out.stale, "nothing went, no seq is taken, nobody waits for a repair");
+        // It runs again: the pump's next tick.
+        room.set(true);
+        out.flush();
+        out.emit("snapshot", b"the screen after block 3", (100, 30));
+        assert_eq!(kinds(&sent.borrow()), [("output".into(), 0), ("snapshot".into(), 1)]);
+        assert_eq!(data(&sent.borrow()[0]), b"block 1, block 2, block 3", "all of it, in order, once");
+        assert_eq!(data(&sent.borrow()[1]), b"the screen after block 3");
+        // Output written at another size keeps its own.
+        room.set(false);
+        out.emit("output", b"wide", (100, 30));
+        out.emit("output", b"narrow", (80, 24));
+        room.set(true);
+        out.flush();
+        let shape: Vec<(Vec<u8>, u64)> = sent.borrow()[2..].iter().map(|f| (data(f), f["cols"].as_u64().unwrap())).collect();
+        assert_eq!(shape, [(b"wide".to_vec(), 100), (b"narrow".to_vec(), 80)]);
+    }
+
+    #[test]
+    fn a_snapshot_cut_short_by_a_full_queue_is_finished_as_the_output_it_is() {
+        let ctl = Ctl::new(0);
+        let calls = std::cell::Cell::new(0);
+        let sent = std::cell::RefCell::new(vec![]);
+        // Room for the first frame, none for the second, then room again.
+        let send = |f: Value| { calls.set(calls.get() + 1); calls.get() != 2 && { sent.borrow_mut().push(f); true } };
+        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget: Budget::new(), backlog: Default::default(), stale: false, dirty: false };
+        let screen: Vec<u8> = (0..2 * CHUNK + 5).map(|i| (i % 251) as u8).collect();
+        out.emit("snapshot", &screen, (120, 40));
+        out.emit("output", b"after", (120, 40));
+        assert_eq!(kinds(&sent.borrow())[..3], [("snapshot".into(), 0), ("output".into(), 1), ("output".into(), 2)]);
+        let all: Vec<u8> = sent.borrow().iter().flat_map(|f| base64::engine::general_purpose::STANDARD.decode(f["data"].as_str().unwrap()).unwrap()).collect();
+        assert_eq!(all, [screen, b"after".to_vec()].concat(), "the whole screen, then the output after it");
+        assert!(!out.stale && !ctl.snapshot.load(SeqCst));
+    }
+
+    #[test]
+    fn more_output_than_may_wait_is_given_up_with_a_gap_and_a_snapshot_follows() {
+        let ctl = Ctl::new(0);
+        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 4, ctl: &ctl, send: &|_| false, budget: Budget::new(), backlog: Default::default(), stale: false, dirty: false };
+        out.emit("output", &vec![b'x'; BACKLOG], (80, 24));
+        assert!(!out.stale && out.seq == 4 && !ctl.snapshot.load(SeqCst), "this much still waits");
+        out.emit("output", b"y", (80, 24));
+        assert!(out.stale && out.backlog.is_empty() && ctl.snapshot.load(SeqCst), "past it the viewers get the screen as it is");
+        assert_eq!(out.seq, 5, "the skipped seq tells viewers a frame is lost");
+        out.emit("output", b"z", (80, 24));
+        assert!(out.backlog.is_empty(), "output until that snapshot is in it");
+    }
+
+    /// Review of #3912: with output still waiting for the queue, a new viewer's history went out
+    /// at once, with the next seqs. It is the holder's lines AFTER that output, so the output, sent
+    /// later, drew over them again in every viewer.
+    #[test]
+    fn a_history_burst_goes_out_behind_the_output_that_waits_and_never_ahead_of_it() {
+        let ctl = Ctl::new(0);
+        let calls = std::cell::Cell::new(0);
+        let sent = std::cell::RefCell::new(vec![]);
+        // The queue is full for the first three tries.
+        let send = |f: Value| { calls.set(calls.get() + 1); calls.get() > 3 && { sent.borrow_mut().push(f); true } };
+        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget: Budget::new(), backlog: Default::default(), stale: false, dirty: false };
+        out.emit("output", b"waiting", (80, 24));
+        assert!(sent.borrow().is_empty() && !out.backlog.is_empty());
+        // A viewer arrives.
+        assert!(out.history(&|_| Some(b"lines".to_vec()), (80, 24)));
+        assert_eq!(kinds(&sent.borrow()), [("output".into(), 0), ("history".into(), 1)]);
+        assert!(!out.stale && out.backlog.is_empty());
+    }
+
+    #[test]
+    fn output_given_up_while_a_viewer_waits_is_repaired_first_and_the_history_follows_the_snapshot() {
+        let ctl = Ctl::new(0);
+        let room = std::cell::Cell::new(false);
+        let sent = std::cell::RefCell::new(vec![]);
+        let send = |f: Value| room.get() && { sent.borrow_mut().push(f); true };
+        let asked = std::cell::Cell::new(0);
+        let fetch = |_: usize| { asked.set(asked.get() + 1); Some(b"lines".to_vec()) };
+        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget: Budget::new(), backlog: Default::default(), stale: false, dirty: false };
+        out.emit("output", b"waiting", (80, 24));
+        // The queue stays full: the viewer is not held longer than PACE.
+        let started = Instant::now();
+        assert!(!out.history(&fetch, (80, 24)), "to be asked for again");
+        assert!(started.elapsed() >= PACE && started.elapsed() < PACE + Duration::from_millis(500));
+        assert!(out.stale && out.backlog.is_empty() && out.seq == 1 && ctl.snapshot.swap(false, SeqCst), "the output is given up: a gap, and a snapshot is asked for");
+        assert_eq!(asked.get(), 0, "no lines were read for a burst that did not go");
+        // Still no history while that snapshot is owed, queue or no queue.
+        room.set(true);
+        assert!(!out.history(&fetch, (80, 24)) && sent.borrow().is_empty());
+        out.emit("snapshot", b"screen", (80, 24));
+        assert!(out.history(&fetch, (80, 24)));
+        assert_eq!(kinds(&sent.borrow()), [("snapshot".into(), 1), ("history".into(), 2)]);
+        assert_eq!(asked.get(), 1);
+    }
+
+    #[test]
+    fn a_session_that_ends_with_output_still_waiting_never_shows_its_kept_picture_ahead_of_it() {
+        let data = |f: &Value| base64::engine::general_purpose::STANDARD.decode(f["data"].as_str().unwrap()).unwrap();
+        let run = |above: Option<Vec<u8>>| {
+            let ctl = Ctl::new(0);
+            let room = std::cell::Cell::new(false);
+            let sent = std::cell::RefCell::new(vec![]);
+            // No room for output yet (the budget is short, or the queue just filled).
+            let send = |f: Value| (room.get() || f["kind"] != "output") && { sent.borrow_mut().push(f); true };
+            let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 7, ctl: &ctl, send: &send, budget: Budget::new(), backlog: Default::default(), stale: false, dirty: false };
+            out.emit("output", b"last lines", (80, 24));
+            // EXIT with `startOver`, as `pump` takes it; then the holder's kept picture.
+            out.start_over(&|_| above.clone(), (80, 24), 5);
+            out.emit("snapshot", b"kept", (80, 24));
+            let asked_again = ctl.snapshot.swap(false, SeqCst);
+            room.set(true);
+            out.flush();
+            if asked_again {
+                out.emit("snapshot", b"kept", (80, 24));
+            }
+            let frames: Vec<(String, u64, Vec<u8>, bool)> = sent.borrow().iter()
+                .map(|f| (f["kind"].as_str().unwrap().to_owned(), f["seq"].as_u64().unwrap(), data(f), f["epoch"].as_u64().unwrap() == 1)).collect();
+            frames
+        };
+        // The run goes on (not all the lines above the picture came): the picture waits behind the output.
+        assert_eq!(run(None), [("output".to_owned(), 7, b"last lines".to_vec(), true), ("snapshot".to_owned(), 8, b"kept".to_vec(), true)]);
+        // The viewers start over: the old run's waiting output is dropped, never sent into the new run.
+        assert_eq!(run(Some(b"above".to_vec())), [("history".to_owned(), 0, b"above".to_vec(), false), ("snapshot".to_owned(), 1, b"kept".to_vec(), false)]);
+    }
+
+    /// A holder that keeps its lines: it answers HISTORY with `lines[n]` for the n-th request (output
+    /// it wrote just before, then its lines, then the screen behind them) and every snapshot request
+    /// with its screen.
+    struct Keeping {
+        tx: std::sync::mpsc::Sender<(u8, Vec<u8>)>,
+        lines: Vec<Vec<(u8, Vec<u8>)>>,
+        asked: Vec<(u8, u64)>,
+    }
+
+    impl Write for Keeping {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let (kind, payload) = read_frame(&mut &buf[..]).unwrap();
+            let answer = if kind == HISTORY {
+                self.lines.get(self.asked.iter().filter(|(kind, _)| *kind == HISTORY).count()).cloned().unwrap_or_default()
+            } else {
+                vec![(SNAPSHOT, with_offset(0, b"asked screen"))]
+            };
+            self.asked.push((kind, split_offset(&payload).map_or(0, |(max, _)| max)));
+            for frame in answer {
+                let _ = self.tx.send(frame);
+            }
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Review of #3912: the lines were read on another connection while output waited in this
+    /// relay's 200 ms buffer, or unread in its channel. The holder's model had that output already,
+    /// so it went out again after the history, and a viewer who joined then drew it twice.
+    #[test]
+    fn output_that_reaches_the_relay_before_the_holders_lines_is_sent_before_them_and_never_twice() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        // The holder's unasked first screen, then output in the same tick as the new viewer.
+        tx.send((SNAPSHOT, with_offset(0, b"first screen"))).unwrap();
+        tx.send((OUTPUT, with_offset(0, b"block one"))).unwrap();
+        let ctl = Arc::new(leased(Duration::from_millis(1500)));
+        ctl.lines.store(true, SeqCst);
+        // A second viewer arrives later; the holder writes more just before it answers.
+        let later = ctl.clone();
+        std::thread::spawn(move || { std::thread::sleep(Duration::from_millis(500)); later.history.store(true, SeqCst); });
+        let screen = |text: &[u8]| (SNAPSHOT, with_offset(0, text));
+        let mut holder = Keeping { tx, asked: vec![], lines: vec![
+            vec![(HISTORY, b"lines with block one\r\n".to_vec()), screen(b"screen one")],
+            vec![(OUTPUT, with_offset(9, b"block two")), (HISTORY, b"lines with block two\r\n".to_vec()), screen(b"screen two")],
+        ] };
+        let sent = std::cell::RefCell::new(vec![]);
+        pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|f| { sent.borrow_mut().push(f); true }, Budget::new(),
+            &|_| panic!("a holder that keeps its lines is never asked on another connection")).unwrap();
+        let sent = sent.into_inner();
+        let data = |f: &Value| String::from_utf8(base64::engine::general_purpose::STANDARD.decode(f["data"].as_str().unwrap()).unwrap()).unwrap();
+        let drawn: Vec<(String, String)> = sent.iter().filter(|f| f["kind"] != "ping").map(|f| (f["kind"].as_str().unwrap().to_owned(), data(f))).collect();
+        let frame = |kind: &str, text: &str| (kind.to_owned(), text.to_owned());
+        assert_eq!(drawn, [
+            // Not "first screen": it is older than the lines asked for, and the one behind them is the picture.
+            frame("output", "block one"), frame("history", "lines with block one\r\n"), frame("snapshot", "screen one"), frame("snapshot", "asked screen"),
+            frame("output", "block two"), frame("history", "lines with block two\r\n"), frame("snapshot", "screen two"), frame("snapshot", "asked screen"),
+        ]);
+        assert_eq!(sent.iter().map(|f| f["seq"].as_u64().unwrap()).collect::<Vec<_>>(), (0..8).collect::<Vec<_>>(), "one run, no gap");
+        assert_eq!(holder.asked.iter().map(|(kind, _)| *kind).collect::<Vec<_>>(), [HISTORY, SNAPSHOT, HISTORY, SNAPSHOT]);
+        assert_eq!(holder.asked[0].1, (BURST - HISTORY_RESERVE) as u64, "asked for what the budget has room for");
+    }
+
+    #[test]
+    fn a_holder_that_never_sends_its_lines_still_gives_the_viewers_a_screen() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send((SNAPSHOT, with_offset(0, b"first screen"))).unwrap();
+        let ctl = leased(LINES_WAIT + Duration::from_millis(800));
+        ctl.lines.store(true, SeqCst);
+        let mut holder = Keeping { tx, asked: vec![], lines: vec![] };
+        let sent = std::cell::RefCell::new(vec![]);
+        let started = Instant::now();
+        pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|f| { sent.borrow_mut().push((started.elapsed(), f)); true }, Budget::new(), &|_| None).unwrap();
+        let sent = sent.into_inner();
+        assert_eq!(sent.iter().map(|(_, f)| f["kind"].as_str().unwrap()).collect::<Vec<_>>(), ["snapshot"]);
+        assert!(sent[0].0 >= LINES_WAIT && sent[0].0 < LINES_WAIT + Duration::from_millis(500), "{:?}", sent[0].0);
+    }
+
+    /// Review of #3912: output sent while the holder's lines were on their way left the budget
+    /// less room than was asked for, and the answer was cut by bytes: inside a character or a
+    /// colour sequence.
+    #[test]
+    fn lines_that_no_longer_all_fit_lose_whole_lines_from_the_old_end_never_part_of_one() {
+        // As `Model::history` writes them: each row from the default attributes, a reset, CR LF;
+        // then the line feeds that push the last line off an empty screen.
+        let rows = ["\x1b[38;2;99;168;248mérable \u{4e2d}\u{6587} one", "plain two", "\x1b[1m\u{1f600} three\x1b[22m \x1b[48;2;49;49;53m!", "four"];
+        let each: Vec<Vec<u8>> = rows.iter().map(|row| format!("{row}\x1b[m\r\n").into_bytes()).collect();
+        let feeds = b"\n\n\n";
+        let all: Vec<u8> = each.iter().flatten().copied().chain(feeds.iter().copied()).collect();
+        for room in 0..=all.len() + 1 {
+            let kept = newest_lines(&all, room);
+            assert!(kept.len() <= room.min(all.len()), "{room}");
+            // Always some of the newest lines, whole, then the feeds; the most that fit.
+            let lines = (0..=each.len()).find(|skip| each[*skip..].iter().map(Vec::len).sum::<usize>() + feeds.len() <= room);
+            let expected: Vec<u8> = match lines {
+                Some(skip) => each[skip..].iter().flatten().copied().chain(feeds.iter().copied()).collect(),
+                None => vec![],
+            };
+            assert_eq!(kept, expected, "room {room}");
+        }
+        assert_eq!(newest_lines(b"", 10), b"");
+        // In the relay: 20 bytes of room when the answer comes, for lines asked for with more.
+        let ctl = Ctl::new(0);
+        let sent = std::cell::RefCell::new(vec![]);
+        let send = |f: Value| { sent.borrow_mut().push(f); true };
+        let budget = Budget { tokens: (HISTORY_RESERVE + 20) as f64, cap: BURST as f64, per_s: 0.0, at: Instant::now() };
+        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget, backlog: Default::default(), stale: false, dirty: false };
+        assert!(out.lines(&all, (80, 24)));
+        let data = base64::engine::general_purpose::STANDARD.decode(sent.borrow()[0]["data"].as_str().unwrap()).unwrap();
+        assert_eq!(data, b"four\x1b[m\r\n\n\n\n", "the last line whole, not the last 20 bytes");
+        // No room for even one line: nothing is sent, which is not "there are no lines".
+        assert!(out.lines(&all, (80, 24)) && sent.borrow().len() == 1);
     }
 
     #[test]
@@ -1361,7 +1818,7 @@ mod tests {
         let calls = std::cell::Cell::new(0);
         let sent = std::cell::RefCell::new(vec![]);
         let send = |f: Value| { calls.set(calls.get() + 1); calls.get() % 2 == 0 && { sent.borrow_mut().push(f); true } };
-        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget: Budget::new(), stale: false, dirty: false };
+        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget: Budget::new(), backlog: Default::default(), stale: false, dirty: false };
         out.history(&|_| Some(vec![b'h'; 3 * CHUNK]), (80, 24));
         assert_eq!(kinds(&sent.borrow()), [("history".into(), 0), ("history".into(), 1), ("history".into(), 2)]);
         assert!(!out.stale, "a full queue for a moment is not a lost frame");
@@ -1372,7 +1829,7 @@ mod tests {
         let ctl = Ctl::new(0);
         let sent = std::cell::RefCell::new(vec![]);
         let send = |f: Value| { sent.borrow_mut().push(f); true };
-        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget: Budget::new(), stale: false, dirty: false };
+        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget: Budget::new(), backlog: Default::default(), stale: false, dirty: false };
         out.history(&|_| Some(vec![]), (80, 24));
         out.history(&|_| None, (80, 24));
         assert_eq!(kinds(&sent.borrow()), [("history".into(), 0)], "the viewer hears it has all there is; no answer says nothing");
@@ -1382,7 +1839,7 @@ mod tests {
     #[test]
     fn a_history_burst_that_never_finds_room_is_lost_within_its_pace() {
         let ctl = Ctl::new(0);
-        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &|_| false, budget: Budget::new(), stale: false, dirty: false };
+        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &|_| false, budget: Budget::new(), backlog: Default::default(), stale: false, dirty: false };
         let started = Instant::now();
         out.history(&|_| Some(vec![b'h'; 3 * CHUNK]), (80, 24));
         assert!(started.elapsed() < PACE + Duration::from_millis(500));

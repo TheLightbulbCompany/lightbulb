@@ -36,6 +36,11 @@ logger = logging.getLogger(__name__)
 
 VIEWER_TTL_S = 45
 ACK_CAP = 24
+# ponytail: `forward` signs one publish per viewer per frame, so a session's fan-out is
+# O(viewers); dev measured frame p95 3.7 s at 25 viewers and a stalled backend at 50. Drop the
+# cap when frames get one channel per session (design note in #3903). Two new viewers racing
+# for the last seat can both get in: a soft ceiling, not a lock.
+MAX_SESSION_VIEWERS = 20
 _clock = time.time
 
 
@@ -102,6 +107,17 @@ async def watch(auth: sessions.Caller, session_id: str, mounted: bool = False) -
             if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
                 raise
             fresh = True
+    if fresh and auth.user_id != row["humanUserId"]:
+        # Counted as `forward` counts whom it publishes to. Never evicts; never refuses the sharer.
+        live = {
+            r["userId"]
+            for r in await store._query(key["pk"], begins_with="VIEWER#")
+            if int(r.get("expiresAt", 0)) > now
+        }
+        if auth.user_id not in live and len(live) >= MAX_SESSION_VIEWERS:
+            raise sessions.ApiProblem(
+                "LOCAL_SESSION_VIEWERS_FULL", f"This session already has {MAX_SESSION_VIEWERS} live viewers."
+            )
     if fresh:
         await store.run_in_thread(
             table.update_item,
@@ -179,7 +195,7 @@ async def ack_with_watching(ack: dict, owner: str, human: str, device: str) -> d
         live = [r for r in rows if int(r.get("expiresAt", 0)) > now]
         for r in sorted(live, key=lambda r: int(r.get("since", 0)))[-ACK_CAP:]:
             meta = await repo.get_session(owner, r["sessionId"])
-            if meta is None or meta.get("unshared"):
+            if meta is None or meta.get("unshared") or meta.get("removedAt") is not None:
                 continue
             if meta.get("endedAt") is not None and not sessions.screen_available(meta, now):
                 continue

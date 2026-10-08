@@ -260,7 +260,16 @@ resume permission back. If the Mac refuses, the session reads "Not resumed:
 <reason>". You cannot resume a session; tell the person to press Resume. A Claude Code
 session that ended before its first message has nothing to resume: it shows
 "This session ended before anything was sent." and is not listed. A Codex
-session that ended that way stays listed and can be resumed.
+session that ended that way stays listed and can be resumed. A session that
+had a live terminal also stays listed, with no Resume while it has no events.
+
+**Remove from list**: the owner of an ENDED session can remove it (the bin icon
+on its row in All sessions and in its header, or "Remove my ended sessions" for
+all of them). It is then gone for everyone: not listed, not openable, not
+resumable from Lightbulb, its link stops working, and you can no longer read
+it. Nothing on the person's Mac is deleted; starting that conversation again
+on the Mac lists it again. A live session cannot be removed: end it first. You
+cannot remove a session; tell its owner to.
 
 **Pick up** continues someone's Claude Code session on your own Mac, as a new
 shared session in your Lightbulb app's panel, with the files it changed on a new branch and folder; the

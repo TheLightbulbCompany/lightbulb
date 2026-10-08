@@ -682,7 +682,10 @@ def _without_moved(found: list[LocalSession]) -> list[LocalSession]:
     find it. It is hidden instead, and its origin (which holds the history) stays listed.
 
     Any other session that ended before its first message (`ended_empty`) is not listed either; it
-    stays readable by id, for a panel that is open on it."""
+    stays readable by id, for a panel that is open on it. Not one that had a live terminal
+    (`wasHeld`): a held session's first events take 40-60 s to reach us, so one ended in its first
+    minute reads as zero events while people were watching real work in it (prod 2026-10-08). The
+    two cannot be told apart from here, so a held session is always listed; its owner can remove it."""
     ids = {(s.human_user_id, s.session_id) for s in found}
     empty = {
         (s.human_user_id, s.session_id)
@@ -698,7 +701,7 @@ def _without_moved(found: list[LocalSession]) -> list[LocalSession]:
         s
         for s in found
         if (s.human_user_id, s.session_id) not in empty
-        and not ended_empty(s.provider, s.status, s.latest_event_seq, s.control_unavailable_reason)
+        and not (ended_empty(s.provider, s.status, s.latest_event_seq, s.control_unavailable_reason) and not s.was_held)
         and not (s.status in ("ended", "offline") and (s.human_user_id, s.session_id) in moved)
     ]
 
@@ -994,7 +997,8 @@ async def authorize_session(
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Local session invocation is unavailable.")
     session_id = validate_uuid(session_id, label="local session ID")
     row = await repo.get_session(owner, session_id)
-    if row is None or row.get("ownerId") != owner:
+    if row is None or row.get("ownerId") != owner or row.get("removedAt") is not None:
+        # Removed by its owner (`remove_session`): gone for everyone, its owner included.
         raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
     if row.get("unshared") and (agent or auth.user_id != row["humanUserId"]):
         # A session its owner stopped sharing reads as gone to everyone else, agents included.
@@ -1191,6 +1195,8 @@ async def _live_public_sessions(
         for row in itertools.islice(rows, len(human_rows)):
             if row is None or row.get("ownerId") != owner or row.get("humanUserId") != human:
                 continue
+            if row.get("removedAt") is not None:
+                continue
             key = (human, row["deviceId"])
             if key not in enrolled:
                 try:
@@ -1295,6 +1301,7 @@ async def referenced_sessions(owner: str, members: list[dict], session_ids: list
                 row is None
                 or row.get("ownerId") != owner
                 or row.get("unshared")
+                or row.get("removedAt") is not None
                 or row.get("kind") == "background"
                 or row.get("humanUserId") not in humans
             ):
@@ -2855,14 +2862,14 @@ def _link_public(link: dict) -> SessionLink:
     return SessionLink(url=url, audience=link["audience"])
 
 
-async def _owned_session(auth: AuthContext, session_id: str) -> dict:
+async def _owned_session(auth: AuthContext, session_id: str, verb: str = "share") -> dict:
     """The owner's own session. Reading and turning off skip the enrollment check on purpose: an
     owner who turned sharing off must still be able to find and kill their link."""
     row = await repo.get_session(resolve_owner_id(auth), validate_uuid(session_id, label="local session ID"))
     if row is None:
         raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
     if auth.user_id != row["humanUserId"]:
-        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can share it.")
+        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", f"Only the session's owner can {verb} it.")
     return row
 
 
@@ -2965,25 +2972,29 @@ async def get_link(auth: AuthContext, session_id: str) -> SessionLink:
     return _link_public(row["shareLink"])
 
 
-async def delete_link(auth: AuthContext, session_id: str) -> None:
+async def delete_link(auth: AuthContext, session_id: str, *, removed_only: bool = False) -> None:
     """Turn the link off: every page reads "turned off" and no new copy can be made. On a Claude
-    session this retires the snapshot too, in retire's own transaction. Idempotent."""
+    session this retires the snapshot too, in retire's own transaction. Idempotent.
+    ``removed_only`` is `remove_session`'s cleanup: it acts only on a row that still carries
+    `removedAt`, and every write below is fenced on that row's revision, so a session that started
+    again meanwhile keeps its link and snapshot."""
     from core.services import session_pickup
     from core.services.local_session_relay import publish_resources_changed
 
     table = messaging_repo._table().name
     for _ in range(6):
         row = await _owned_session(auth, session_id)
+        if removed_only and row.get("removedAt") is None:
+            return
         link = row.get("shareLink")
-        if not link:
-            # Pick-up switched on by the removed switch has no link: turning off still turns it off.
-            if row.get("pickupAllowed"):
-                await session_pickup.set_pickup(auth, session_id, False)
+        if not link and not row.get("pickupAllowed"):
             return
         owner, sid = row["ownerId"], row["sessionId"]
         try:
             if row.get("pickupAllowed"):
-                await session_pickup.retire(owner, sid, row, auth=auth, action="share_link_revoked")
+                # Pick-up switched on by the removed switch has no link: turning off still turns it off.
+                action = "share_link_revoked" if link else "pickup_off"
+                await session_pickup.retire(owner, sid, row, auth=auth, action=action)
                 return
             await messaging_repo._transact(
                 [
@@ -3007,3 +3018,101 @@ async def delete_link(auth: AuthContext, session_id: str) -> None:
         await publish_resources_changed(owner, row["humanUserId"])
         return
     raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
+
+
+async def remove_session(auth: AuthContext, session_id: str, *, hint: bool = True) -> None:
+    """The owner takes one of their ENDED sessions off every list. A stamp (`removedAt`), not a
+    delete: events, receipts, audit rows, the chat and the Mac's own mirror all hang off this row,
+    and the stamp makes `authorize_session` (and the public link door) answer "not found" at once.
+    The stamp is the commit point, fenced on the row still being ended: a resume that lands first
+    wins, this answers 409, and the live session keeps its link and snapshot. Only then are the
+    link and the pick-up snapshot turned off, and the chat emptied of everyone but the owner; a
+    repeat call finishes a cleanup that failed part-way. Starting the conversation again on the
+    Mac registers a new run and lists it again. Idempotent."""
+    from core.services import session_chat  # lazy: it imports this module
+    from core.services.local_session_relay import publish_resources_changed
+
+    for _ in range(6):
+        row = await _owned_session(auth, session_id, "remove")
+        if row.get("removedAt") is not None:
+            break
+        if row.get("endedAt") is None:
+            raise ApiProblem("LOCAL_SESSION_CONFLICT", "End this session before you remove it.")
+        try:
+            await messaging_repo._transact(
+                [
+                    {
+                        "Update": {
+                            "TableName": messaging_repo._table().name,
+                            "Key": {"pk": row["pk"], "sk": "META"},
+                            "UpdateExpression": "SET removedAt = :now, revision = :new "
+                            "REMOVE resumeAllowed, #resume, screenUntil",
+                            # Still ended: a resume that registered meanwhile is a live session.
+                            "ConditionExpression": "revision = :old AND attribute_exists(endedAt)",
+                            "ExpressionAttributeNames": {"#resume": "resume"},
+                            "ExpressionAttributeValues": {
+                                ":now": int(time.time()),
+                                ":new": str(uuid.uuid4()),
+                                ":old": row["revision"],
+                            },
+                        }
+                    }
+                ]
+            )
+        except ClientError as exc:
+            if not messaging_repo._is_cancelled(exc):
+                raise
+            continue
+        break
+    else:
+        raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
+    # On every call, not only the one that stamped: a retry after a failed cleanup finishes it.
+    await delete_link(auth, session_id, removed_only=True)
+    # The chat is emptied only while the row is still removed: a new run that registered since
+    # the stamp cleared it and reopened the chat, and its readers keep their seats.
+    # ponytail: a re-read, not a transaction (seats live on the room, not this row); a run that
+    # registers inside this one call's window loses seats that the next chat open gives back.
+    current = await repo.get_session(row["ownerId"], row["sessionId"])
+    if current is not None and current.get("removedAt") is not None:
+        await session_chat.silence(row["ownerId"], row["sessionId"], keep=row["humanUserId"])
+    await session_chat.follow_session(row["ownerId"], row["sessionId"])
+    if hint:
+        await publish_resources_changed(row["ownerId"], row["humanUserId"])
+
+
+REMOVE_ENDED_CAP = 100
+
+
+async def remove_ended_sessions(auth: AuthContext) -> int:
+    """Remove every ended session of the caller's own that the lists can still show (the last 7
+    days). Returns how many were removed."""
+    owner = resolve_owner_id(auth)
+    since = int(time.time()) - RECENT_ENDED_SECONDS
+    listed = await repo.list_user_sessions(owner, auth.user_id)
+    rows = await repo.get_sessions(owner, [p["sessionId"] for p in listed])
+    mine = [
+        row["sessionId"]
+        for row in rows
+        if row
+        and row.get("humanUserId") == auth.user_id
+        and row.get("removedAt") is None
+        and (row.get("endedAt") or 0) >= since
+    ]
+    # ponytail: 100 per call, ten at a time, inside API Gateway's 30 s; the caller asks again for more.
+    mine = mine[:REMOVE_ENDED_CAP]
+    removed = 0
+    for start in range(0, len(mine), 10):
+        results = await asyncio.gather(
+            *(remove_session(auth, sid, hint=False) for sid in mine[start : start + 10]), return_exceptions=True
+        )
+        for result in results:
+            if isinstance(result, ApiProblem):
+                continue  # resumed or changed meanwhile: it stays
+            if isinstance(result, BaseException):
+                raise result
+            removed += 1
+    if removed:
+        from core.services.local_session_relay import publish_resources_changed
+
+        await publish_resources_changed(owner, auth.user_id)  # one hint for the lot
+    return removed

@@ -1163,3 +1163,12 @@ it("gates Send on an incomplete reply only while the starter chips are shown", (
   view.rerender(<RoomPanel {...props} room={{ ...props.room!, isDefault: false }} composer={composer} messages={[message]} />);
   expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
 });
+
+it("opens the member picker once when the sidebar asks for Add people", async () => {
+  const onAddPeopleOpened = vi.fn();
+  render(<RoomPanel {...props} room={{ ...props.room!, kind: "group-dm", name: "Launch" }}
+    addMemberCandidates={[{ kind: "agent", id: "atlas", displayName: "Atlas", mentionHandle: null }]}
+    onAddMember={vi.fn()} openAddPeople onAddPeopleOpened={onAddPeopleOpened} />);
+  expect(await screen.findByRole("searchbox", { name: "Search people" })).toBeInTheDocument();
+  expect(onAddPeopleOpened).toHaveBeenCalledTimes(1);
+});

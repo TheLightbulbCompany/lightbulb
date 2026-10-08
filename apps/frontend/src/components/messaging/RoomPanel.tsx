@@ -18,10 +18,10 @@ import { attachmentIdFromHref } from "@/components/teams/shared/lib/attachments"
 import { hasBlockingShortcutDialog } from "@/components/teams/shared/lib/keyboardShortcuts";
 import { safeHref } from "@/components/teams/shared/lib/safeHref";
 import { handleShellLinkClick, shellUrlFromPaperclipPath } from "@/lib/shellNav";
-import { ApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { roomUrlTransform } from "./markdown";
-import { copyText, JoinLinkCopyError, messagePermalink, parseSessionPermalink } from "./messageLinks";
+import { JOIN_LINK_COPIED, joinLinkNote } from "@/hooks/useCopyJoinLink";
+import { copyText, messagePermalink, parseSessionPermalink } from "./messageLinks";
 import { openSessionPanel, useBrowserThreadHost } from "@/components/workspace/workspaceController";
 import { RunBrowserPreview } from "./BrowserRunPreview";
 import { RoomComposer, type RoomComposerProps } from "./RoomComposer";
@@ -94,6 +94,9 @@ export interface RoomPanelProps {
   /** Copies the workspace join link (minting one if there is none): the door for someone not in the
    *  workspace yet. Rejects with an `ApiError` 403 for anyone but a workspace admin. */
   onCopyJoinLink?: () => Promise<void>;
+  /** One-shot: open the member picker as soon as this room allows adding (the sidebar's ⋯ → Add people). */
+  openAddPeople?: boolean;
+  onAddPeopleOpened?: () => void;
   onRenameRoom?: (name: string) => Promise<void>;
   onRemoveMember?: (member: MemberRef) => Promise<void>;
   pinnedMessageIds?: readonly string[];
@@ -272,6 +275,8 @@ function RoomContent({
   addMemberCandidates = [],
   onAddMember,
   onCopyJoinLink,
+  openAddPeople = false,
+  onAddPeopleOpened,
   onRenameRoom,
   onRemoveMember,
   pinnedMessageIds = NO_PINNED_MESSAGES,
@@ -355,15 +360,9 @@ function RoomContent({
     setInviteNote(null);
     try {
       await onCopyJoinLink?.();
-      setInviteNote("Copied. Anyone who opens it and signs in joins this workspace.");
+      setInviteNote(JOIN_LINK_COPIED);
     } catch (error) {
-      setInviteNote(error instanceof ApiError && error.status === 403
-        ? "Only a workspace admin can copy it. Ask an admin to copy it from Settings → Members."
-        : error instanceof JoinLinkCopyError && error.reason === "unavailable"
-          ? "This workspace's link can't be shown here. Regenerate it under Settings → Members (that turns the old link off)."
-          : error instanceof JoinLinkCopyError && error.reason === "clipboard"
-            ? "Couldn't copy automatically. Copy it from Settings → Members."
-            : "Couldn't get the join link. Try again, or copy it from Settings → Members.");
+      setInviteNote(joinLinkNote(error));
     } finally {
       setInviteBusy(false);
     }
@@ -556,6 +555,20 @@ function RoomContent({
     setSelection(null);
   }, [onSelectThread, selection?.kind]);
 
+  const openMemberPicker = useCallback(() => {
+    closeDetail();
+    setDetailsTab("members");
+    setMemberError(undefined);
+    setMemberQuery("");
+    setMemberPickerOpen(true);
+    setContextCollapsed(false);
+  }, [closeDetail]);
+  useEffect(() => {
+    if (!openAddPeople || !canAddMembers) return;
+    openMemberPicker();
+    onAddPeopleOpened?.();
+  }, [openAddPeople, canAddMembers, openMemberPicker, onAddPeopleOpened]);
+
   const closeOverlay = useCallback(() => {
     if (showDetail && !isNarrow && !sideHost && window.matchMedia(overlayQuery).matches) closeDetail();
   }, [closeDetail, isNarrow, showDetail, sideHost]);
@@ -736,22 +749,8 @@ function RoomContent({
             }
           }} />}
         onOpenDetails={(tab) => { closeDetail(); if (tab) setDetailsTab(tab); setContextCollapsed(false); }}
-        onQuickAddPeople={canManageMembers && !visibleRoom?.shared ? () => {
-          closeDetail();
-          setDetailsTab("members");
-          setMemberError(undefined);
-          setMemberQuery("");
-          setMemberPickerOpen(true);
-          setContextCollapsed(false);
-        } : undefined}
-        onAddPeople={canAddMembers ? () => {
-          closeDetail();
-          setDetailsTab("members");
-          setMemberError(undefined);
-          setMemberQuery("");
-          setMemberPickerOpen(true);
-          setContextCollapsed(false);
-        } : undefined}
+        onQuickAddPeople={canManageMembers && !visibleRoom?.shared ? openMemberPicker : undefined}
+        onAddPeople={canAddMembers ? openMemberPicker : undefined}
         onSetPrefs={onSetPrefs} onRenameRoom={onRenameRoom} onSetTopic={onSetTopic} onLeaveRoom={onLeaveRoom}
         onSetArchived={onSetArchived} onDeleteRoom={onDeleteRoom}
         views={<nav className="room-views" aria-label="Conversation views">

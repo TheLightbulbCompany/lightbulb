@@ -819,3 +819,40 @@ it("starts the Archived group collapsed and expands it on request", async () => 
   await userEvent.click(screen.getByRole("button", { name: "Expand Archived" }));
   expect(screen.getByRole("button", { name: /^Old launch/ })).toBeInTheDocument();
 });
+
+it("nudges a lone founder to invite people, and copies the join link from the nudge", async () => {
+  const onInvitePeople = vi.fn(async () => undefined);
+  const { rerender } = render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[base]} participants={[atlas]}
+    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onInvitePeople={onInvitePeople} />);
+  expect(screen.getByText(/just you and your agents here/)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Invite people" }));
+  expect(onInvitePeople).toHaveBeenCalledTimes(1);
+  expect(await screen.findByText("Copied. Anyone who opens it and signs in joins this workspace.")).toHaveAttribute("role", "status");
+  rerender(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[base]} participants={[atlas, alice]}
+    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} />);
+  expect(screen.queryByText(/just you and your agents here/)).not.toBeInTheDocument();
+});
+
+it("offers Add people in a row's menu only where the viewer may add, and asks for that room's picker", async () => {
+  const me = { kind: "human" as const, id: "me", displayName: "Me", mentionHandle: null, listenMode: null, joinedAt: "2026-09-10T00:00:00Z", joinedSeq: 0 };
+  const onAddPeople = vi.fn();
+  render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" participants={[]} currentUserId="me"
+    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onAddPeople={onAddPeople} rooms={[
+      { ...base, roomId: "mine", name: "Mine", members: [{ ...me, role: "owner" }] },
+      { ...base, roomId: "theirs", name: "Theirs", members: [{ ...me, role: "member" }] },
+      { ...base, roomId: "vendor", name: "Vendor", shared: true, members: [{ ...me, role: "owner" }] },
+      { ...base, roomId: "crew", kind: "group-dm", name: "Crew", participants: [alice, atlas], members: [{ ...me, role: "member" }] },
+    ]} />);
+  const menuFor = async (label: string) => {
+    await userEvent.click(screen.getByRole("button", { name: `Conversation actions for ${label}` }));
+    const item = screen.queryByRole("menuitem", { name: "Add people" });
+    if (!item) await userEvent.keyboard("{Escape}");
+    return item;
+  };
+  expect(await menuFor("Theirs")).toBeNull();
+  expect(await menuFor("Vendor")).toBeNull();
+  expect(await menuFor("Crew")).not.toBeNull();
+  await userEvent.keyboard("{Escape}");
+  await userEvent.click((await menuFor("Mine"))!);
+  expect(onAddPeople).toHaveBeenCalledWith("mine");
+});

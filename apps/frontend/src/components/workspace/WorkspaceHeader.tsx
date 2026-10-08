@@ -2,11 +2,13 @@
 
 import "./workspace.css";
 import { UserButton } from "@clerk/nextjs";
-import { Fragment } from "react";
-import { Bell, Chrome, FolderOpen, HelpCircle, Home, Images, ListTodo, Mail, MessageSquare, Plug, Search, Settings, UserPlus } from "lucide-react";
+import { Fragment, useRef } from "react";
+import { Bell, Chrome, FolderOpen, HelpCircle, Home, Images, ListTodo, Mail, MessageSquare, Plug, Search, Send, Settings, UserPlus } from "lucide-react";
 import Link from "next/link";
 import { useStatusLoaded } from "@lightbulb/shared";
 import { capture } from "@/lib/analytics";
+import { notify, notifySuccess } from "@/lib/notify";
+import { JOIN_LINK_COPIED, joinLinkNote, useCopyJoinLink } from "@/hooks/useCopyJoinLink";
 import { useActiveTeamRunCount } from "@/components/notifications/teamRunActivity";
 import { useActivity } from "@/hooks/useActivity";
 import { useNewMailCount } from "@/components/mail/useTeamMail";
@@ -52,6 +54,17 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
   // it only once a status body has landed for this workspace — `false` hides
   // it rather than offering a panel that can only render its empty state.
   const browserShown = useStatusLoaded();
+  // Joining is one door: an admin copies the join link and sends it (Second Catch, 2026-10-08).
+  // Shown to everyone; a non-admin is told to ask an admin rather than finding nothing.
+  const copyJoinLink = useCopyJoinLink();
+  const inviting = useRef(false); // one mint at a time: a second POST replaces the first link
+  const invite = () => {
+    if (inviting.current) return;
+    inviting.current = true;
+    copyJoinLink("workspace_header")
+      .then(() => notifySuccess(JOIN_LINK_COPIED, { dedupeKey: "join-link" }), (error: unknown) => notify(joinLinkNote(error), { dedupeKey: "join-link" }))
+      .finally(() => { inviting.current = false; });
+  };
   const destinations = browserShown ? DESTINATIONS : DESTINATIONS.filter((d) => d.panel !== "browser");
   return (
     <nav className="workspace-rail" aria-label="Workspace">
@@ -96,6 +109,12 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
             onClick={() => { openMarketplace({ view: "browse" }); onNavigate?.(); }}>
             <span className="workspace-rail__icon"><UserPlus size={20} aria-hidden="true" /></span>
             <span>Hire</span>
+          </button>
+        )}
+        {panel === "teams-issues" && (
+          <button type="button" aria-label="Invite people" title="Copy the workspace join link" onClick={invite}>
+            <span className="workspace-rail__icon"><Send size={20} aria-hidden="true" /></span>
+            <span>Invite</span>
           </button>
         )}</Fragment>;
       })}

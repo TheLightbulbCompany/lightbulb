@@ -134,17 +134,17 @@ async def watch(auth: sessions.Caller, session_id: str, mounted: bool = False) -
         + (":now" if fresh else "if_not_exists(since, :now)"),
         ExpressionAttributeValues={":sid": row["sessionId"], ":exp": expires, ":now": now},
     )
-    if fresh:
-        # The marker the frames channel's authorizer reads, for a session shared before
-        # put_session wrote it (it is checked shared just above). Idempotent.
-        await store.run_in_thread(
-            table.put_item,
-            Item={
-                "pk": store.workspace_pk(await store.ensure_workspace_id(row["ownerId"])),
-                "sk": f"SESSION#{row['sessionId']}",
-                "ownerId": row["ownerId"],
-            },
-        )
+    # The marker the frames channel's authorizer reads, for a session shared before put_session
+    # wrote it (checked shared just above). On every watch, renewals too: a view whose lease is
+    # still live renews instead of starting fresh (Codex on #3916). Idempotent; one write per 15 s.
+    await store.run_in_thread(
+        table.put_item,
+        Item={
+            "pk": store.workspace_pk(await store.ensure_workspace_id(row["ownerId"])),
+            "sk": f"SESSION#{row['sessionId']}",
+            "ownerId": row["ownerId"],
+        },
+    )
     if fresh and "liveTerminal" in row.get("deviceFeatures", ()):
         await _nudge(row, now)
     # The owner's band names the new viewer now, not at the next heartbeat ack (up to 10 s later).

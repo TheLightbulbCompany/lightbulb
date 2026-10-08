@@ -159,6 +159,19 @@ async def test_the_frames_authorizer_marker_exists_exactly_while_the_session_is_
 
 
 @pytest.mark.asyncio
+async def test_a_renewal_recreates_a_missing_marker_and_does_not_nudge(transport, db):
+    """A session shared before put_session wrote markers, watched by a view whose lease is live."""
+    sid = await start(transport)
+    await session_screen.watch(BOB, sid)
+    key = {"pk": messaging_repo.workspace_pk(await messaging_repo.ensure_workspace_id(OWNER)), "sk": f"SESSION#{sid}"}
+    db[0].delete_item(Key=key)
+    nudged = len(_nudges(transport))
+    await session_screen.watch(BOB, sid)  # a renewal, not a fresh watch
+    assert "Item" in db[0].get_item(Key=key)
+    assert len(_nudges(transport)) == nudged
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("case", ["unshared", "generation", "connection", "expired", "invalid"])
 async def test_a_screen_frame_is_dropped_silently(transport, monkeypatch, case):
     sid = await start(transport)

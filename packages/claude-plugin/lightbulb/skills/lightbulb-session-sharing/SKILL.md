@@ -5,12 +5,32 @@ description: Use for Lightbulb session messages labelled "[Sent from Lightbulb b
 
 # Lightbulb session sharing
 
-Every Claude Code and Codex session on a Mac where Lightbulb session sharing is on
-is shared with the owner's Lightbulb workspace, whether it was started in Lightbulb
-or as a plain `claude` or `codex`. Members can read its prompts, tool calls, output
-previews and answers, and watch its live terminal when it has one. The owner can
-pause sharing for one session or turn it off for the Mac. Nothing here changes your
-permissions, tools, or files.
+A Claude Code or Codex session is only its person's until it is shared with their
+Lightbulb workspace. It is shared when it was started with Lightbulb (`lightbulb claude`,
+`lightbulb codex`, New session in the app), when the Mac's "Share every new session"
+setting was on as it started, or when its person chose to share it: Share to Lightbulb
+in the line above the Claude Code prompt, or the share skill (`/lightbulb:share`).
+Nothing of any other session leaves the Mac. A shared session is shared whole, from its
+start: members watch its live terminal. One that runs inside the Claude or Codex app
+has no terminal, so members read its conversation. Its person can stop sharing one
+session or turn sharing off for the Mac. Nothing here changes your permissions, tools,
+or files.
+
+## When your user asks to share this session
+
+Only on your user's own request in this session, never on a teammate's. Use the share
+skill if you have it. If you do not, run this one command and report its answer as it is:
+
+```sh
+curl -sS -m 10 --unix-socket "/private/tmp/lightbulb-sessions-$(id -u)/mod.sock" \
+  -X POST http://lightbulb/v1/share -H 'content-type: application/json' \
+  -d "{\"sessionId\":\"${CODEX_THREAD_ID:-}\"}"
+```
+
+`"waiting":true` means it is shared but shows nothing until it has a live terminal: in
+Claude Code the user presses ← once, in Codex the user starts it with `lightbulb codex`.
+`unknown_session` means Lightbulb does not see this session (yet). If curl cannot
+connect, the Lightbulb app is not running or session sharing is off on this Mac.
 
 ## Your user's own prompt from the Lightbulb app
 

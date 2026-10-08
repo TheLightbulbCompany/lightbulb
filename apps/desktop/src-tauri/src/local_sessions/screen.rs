@@ -158,14 +158,25 @@ fn send_out(frame: Value) -> bool {
 /// The relay loop's live mirrors by session id, refreshed every second.
 pub(super) fn index(mirrors: &BTreeMap<String, Mirror>) {
     let live = mirrors
-        .values()
-        .filter(|m| m.ended_at.is_none())
-        .filter_map(|m| Some((m.session_id.clone()?, Live { generation: m.generation.clone(), native: m.native.clone() })))
+        .iter()
+        .filter(|(key, m)| m.ended_at.is_none() && !super::transport::stopped(key, m))
+        .filter_map(|(_, m)| Some((m.session_id.clone()?, Live { generation: m.generation.clone(), native: m.native.clone() })))
         .collect();
     if let Ok(mut slot) = LIVE.lock() {
         *slot = live;
     }
     INDEXED.store(true, SeqCst);
+}
+
+/// Sharing stopped for this session: its relay stops sending now, and no watch, typed input or
+/// panel finds it live. `index` keeps it out until it is shared again.
+pub(super) fn revoke(session_id: &str) {
+    if let Ok(mut live) = LIVE.lock() {
+        live.remove(session_id);
+    }
+    if let Some(ctl) = RELAYS.lock().ok().and_then(|mut relays| relays.remove(session_id)) {
+        ctl.stop.store(true, SeqCst);
+    }
 }
 
 /// Whether `index` has run since this app started. Until then `LIVE` says nothing.

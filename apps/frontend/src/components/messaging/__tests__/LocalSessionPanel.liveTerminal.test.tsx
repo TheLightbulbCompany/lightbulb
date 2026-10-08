@@ -103,7 +103,7 @@ it("tells a plain session's owner what it means first, then the one step in thei
     "This session's screen is not shared yet.",
     "Teammates can see that it is running, but not what is on its screen.",
     "To share it, go to the terminal window where it runs and press the left arrow key (←) once. Teammates can then watch it live.",
-    "To share every new session without this step, turn on Share every session live in Settings.",
+    "To share every new session without this step, turn on Share every new session in Settings.",
   ]);
   expect(panel.querySelector("p")!.className).toBe("session-state-title");
   expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();

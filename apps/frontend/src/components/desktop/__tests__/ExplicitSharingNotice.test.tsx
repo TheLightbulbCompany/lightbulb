@@ -18,7 +18,7 @@ it("tells a Mac that shares sessions, once", async () => {
   const first = render(<ExplicitSharingNotice />);
   await waitFor(() => expect(toast).toHaveBeenCalledTimes(1));
   const { container } = render(<>{toast.mock.calls[0][0]}</>);
-  expect(container.textContent).toBe("Every Claude Code and Codex session on this Mac is shared with your workspace again, including plain claude and codex. Pause one, or turn sharing off in Settings.");
+  expect(container.textContent).toBe("A Claude Code or Codex session on this Mac is shared with your workspace when you start it with Lightbulb, choose Share to Lightbulb in it, or have Share every new session on. Any other session is only yours. Stop sharing one, or turn sharing off in Settings.");
   expect(localStorage.getItem(EXPLICIT_SHARING_SEEN_KEY)).toBe("1");
   first.unmount();
   render(<ExplicitSharingNotice />);
@@ -44,12 +44,12 @@ const bridge = (sharing: boolean, liveOn: boolean | Error) => invoke.mockImpleme
   return null;
 });
 
-it("offers Share every session live once to a paired Mac that shares sessions, and turns it on from the offer", async () => {
+it("offers Share every new session once to a paired Mac that shares sessions, and turns it on from the offer", async () => {
   bridge(true, false);
   const first = render(<LiveSharingOffer />);
   await waitFor(() => expect(toast).toHaveBeenCalledTimes(1));
   const [title, options] = toast.mock.calls[0];
-  expect(title).toBe("Share every session live");
+  expect(title).toBe("Share every new session");
   expect(options.duration).toBe(Infinity);
   expect(options.cancel.label).toBe("Not now");
   expect(localStorage.getItem(LIVE_SHARING_OFFER_KEY)).toBe("1");

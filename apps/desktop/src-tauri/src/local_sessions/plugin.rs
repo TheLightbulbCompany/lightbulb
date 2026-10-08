@@ -3,8 +3,9 @@
 //! compiles in the mod's files only, writes them to its state dir as a folder marketplace of the
 //! same name, and installs them with the person's own `claude`. It leaves out the plugin's
 //! `.mcp.json` (on a Mac the stdio `lightbulb` shim in native_mcp.rs is the server) and its
-//! `skills/` (enrollment.rs copies the skill to ~/.claude/skills and ~/.codex/skills), so a Mac
-//! never gets a second server or a second copy of the skill. Claude reads a folder marketplace
+//! session-sharing skill (enrollment.rs copies it to ~/.claude/skills and ~/.codex/skills), so a
+//! Mac never gets a second server or a second copy of that skill. The share skill
+//! (`/lightbulb:share`) comes only from here. Claude reads a folder marketplace
 //! from the folder itself, so an app update rewrites the files and the next session loads them.
 //! Never fatal: the mod is an addition to sharing, not part of it.
 //!
@@ -27,6 +28,7 @@ pub(crate) const FILES: &[(&str, &str)] = &[
     ("lightbulb/hooks/state.ts", include_str!("../../../../../packages/claude-plugin/lightbulb/hooks/state.ts")),
     ("lightbulb/hooks/rules.ts", include_str!("../../../../../packages/claude-plugin/lightbulb/hooks/rules.ts")),
     ("lightbulb/types/index.d.ts", include_str!("../../../../../packages/claude-plugin/lightbulb/types/index.d.ts")),
+    ("lightbulb/skills/share/SKILL.md", include_str!("../../../../../packages/claude-plugin/lightbulb/skills/share/SKILL.md")),
 ];
 pub(crate) const ID: &str = "lightbulb@lightbulb";
 
@@ -202,8 +204,9 @@ mod tests {
     }
 
     #[test]
-    fn plugin_the_app_copy_has_no_mcp_server_and_no_skill() {
-        assert!(FILES.iter().all(|(p, _)| !p.ends_with(".mcp.json") && !p.contains("/skills/")));
+    fn plugin_the_app_copy_has_no_mcp_server_and_no_session_sharing_skill() {
+        assert!(FILES.iter().all(|(p, _)| !p.ends_with(".mcp.json") && !p.contains("/skills/lightbulb-session-sharing/")));
+        assert!(FILES.iter().any(|(p, _)| *p == "lightbulb/skills/share/SKILL.md"), "`/lightbulb:share` ships with the app");
     }
 
     #[test]
@@ -231,11 +234,11 @@ mod tests {
                     walk(&p, base, out);
                 } else if !p.file_name().unwrap().to_string_lossy().contains(".test.") {
                     let rel = p.strip_prefix(base).unwrap().to_string_lossy().into_owned();
-                    // Left out on purpose: the Mac app serves MCP and the skill itself, and the
+                    // Left out on purpose: the Mac app serves MCP and the session-sharing skill itself, and the
                     // README is the public repo's front page, and .codex-plugin/ is for Codex.
                     if rel != "lightbulb/.mcp.json"
                         && rel != "README.md"
-                        && !rel.starts_with("lightbulb/skills/")
+                        && !rel.starts_with("lightbulb/skills/lightbulb-session-sharing/")
                         && !rel.starts_with("lightbulb/.codex-plugin/")
                     {
                         out.push(rel);

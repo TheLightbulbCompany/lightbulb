@@ -182,6 +182,7 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
         holder: None,
         job,
         forked_from,
+        app: !background && in_app(home, pid, conversation),
     })
 }
 
@@ -232,6 +233,22 @@ pub(super) fn parked_origin(home: &Path, job: &str) -> Option<String> {
             .filter(|id| uuid::Uuid::parse_str(id).is_ok())
             .map(str::to_owned)
     })
+}
+
+/// Whether this conversation runs inside an app, an IDE or an SDK and not in a terminal, by
+/// Claude's own per-pid registry: `entrypoint` says how it was started (`cli` in a terminal,
+/// read from 2.1.289-2.1.294). A file that is missing, unreadable, another conversation's or
+/// silent says a terminal: nothing of the session is then uploaded without a live one.
+// ponytail: the values the Claude desktop app and the IDE extensions write were not observed;
+// anything that is not `cli` counts. Name them here if one of them turns out to have a terminal.
+fn in_app(home: &Path, pid: u32, conversation: &str) -> bool {
+    let mut text = String::new();
+    confined_path(home, &home.join(format!(".claude/sessions/{pid}.json")))
+        .and_then(|path| secure_file(&path))
+        .ok()
+        .and_then(|file| file.take(64 * 1024).read_to_string(&mut text).ok())
+        .and_then(|_| serde_json::Deserializer::from_str(&text).into_iter::<Value>().next()?.ok())
+        .is_some_and(|row| row["sessionId"] == conversation && row["entrypoint"].as_str().is_some_and(|e| e != "cli"))
 }
 
 /// Whether pid `pid` still runs `conversation`, by Claude's own per-pid registry. Leaving a
@@ -1678,6 +1695,7 @@ mod tests {
             holder: None,
             job: None,
             forked_from: None,
+            app: true,
         };
         let ingress = Ingress {
             workspace_revision: None,
@@ -2181,6 +2199,13 @@ mod tests {
         assert!(!still_registered(home.path(), 4242, "22222222-2222-4222-8222-222222222222"));
         fs::write(sessions.join("4242.json"), "not json").unwrap();
         assert!(still_registered(home.path(), 4242, a), "an unreadable file is not evidence");
+        // Where it runs: only an `entrypoint` that is not `cli` says an app.
+        assert!(!in_app(home.path(), 4242, a), "an unreadable file says a terminal");
+        fs::write(sessions.join("4242.json"), format!("{{\"pid\":4242,\"sessionId\":\"{a}\",\"entrypoint\":\"cli\"}}")).unwrap();
+        assert!(!in_app(home.path(), 4242, a));
+        fs::write(sessions.join("4242.json"), format!("{{\"pid\":4242,\"sessionId\":\"{a}\",\"entrypoint\":\"claude-desktop\"}}")).unwrap();
+        assert!(in_app(home.path(), 4242, a));
+        assert!(!in_app(home.path(), 4242, "22222222-2222-4222-8222-222222222222"), "another conversation's file");
     }
 
 }

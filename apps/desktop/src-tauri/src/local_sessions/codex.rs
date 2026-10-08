@@ -218,6 +218,8 @@ fn from_rollout(
         holder: None,
         job: None,
         forked_from: None,
+        // (`terminal_reason` knows the Codex app by its executable.)
+        app: false,
     })
 }
 

@@ -390,11 +390,7 @@ pub async fn terminal_start(app: tauri::AppHandle, params: Value) -> Result<Valu
     Ok(json!({"holderId": info.id, "tool": start.tool}))
 }
 
-/// Whether `folder` (canonical) is one of the approved folders or anywhere inside one: the
-/// person running `lightbulb` is at this Mac and already in that folder. A view or a remote
-/// start still names an approved folder exactly (`validate`).
-/// The approved folders as they are now, canonical: what a start from a terminal (and a resume)
-/// must be inside.
+/// The approved folders as they are now, canonical: what a resume must be inside.
 pub(crate) fn approved_now() -> Vec<PathBuf> {
     approved_folders()
         .iter()
@@ -402,56 +398,10 @@ pub(crate) fn approved_now() -> Vec<PathBuf> {
         .collect()
 }
 
+/// Whether `folder` (canonical) is one of the approved folders or anywhere inside one. A view
+/// or a remote start names an approved folder exactly (`validate`).
 pub(crate) fn inside_approved(folder: &Path, approved: &[PathBuf]) -> bool {
     approved.iter().any(|a| crate::file_access::is_inside(folder, a))
-}
-
-/// The provider flags that point it at another folder: Codex `-C`/`--cd` (its working root) and
-/// `--add-dir` (writable folders), Claude `--add-dir` (folders it may use; it takes several).
-fn path_flags(tool: &str) -> &'static [&'static str] {
-    if tool == "codex" { &["-C", "--cd", "--add-dir"] } else { &["--add-dir"] }
-}
-
-/// The refusal when a path-bearing flag names a folder outside every approved folder. Each path
-/// is taken relative to `cwd`, made canonical and held to the same rule as the folder the command
-/// runs in. Both `--flag value` and `--flag=value` (and `-Cvalue`), repeated or not; Claude's
-/// `--add-dir` takes every following word up to the next flag. After `--` is prompt text.
-fn unapproved_path_flag(tool: &str, args: &[String], cwd: &Path, approved: &[PathBuf]) -> Option<String> {
-    let flags = path_flags(tool);
-    let mut paths: Vec<(&str, &str)> = vec![];
-    let mut i = 0;
-    while i < args.len() && args[i] != "--" {
-        let arg = args[i].as_str();
-        if let Some(flag) = flags.iter().find(|f| arg == **f) {
-            if tool == "claude" {
-                while i + 1 < args.len() && !args[i + 1].starts_with('-') {
-                    paths.push((flag, &args[i + 1]));
-                    i += 1;
-                }
-            } else if let Some(value) = args.get(i + 1) {
-                paths.push((flag, value));
-                i += 1;
-            }
-        } else if let Some((flag, value)) = flags.iter().find_map(|f| {
-            arg.strip_prefix(&format!("{f}="))
-                .or_else(|| (f.len() == 2).then(|| arg.strip_prefix(*f)).flatten())
-                .filter(|v| !v.is_empty())
-                .map(|v| (*f, v))
-        }) {
-            paths.push((flag, value));
-        }
-        i += 1;
-    }
-    paths.into_iter().find_map(|(flag, path)| {
-        let ok = cwd
-            .join(path)
-            .to_str()
-            .and_then(|p| crate::file_access::canonicalize(p).ok())
-            .is_some_and(|p| inside_approved(&p, approved));
-        (!ok).then(|| format!(
-            "{flag} {path} is not inside a folder you approved for Lightbulb. Add it in the Lightbulb app under Settings → Desktop → Approved folders, then run this again."
-        ))
-    })
 }
 
 /// The `lightbulb` command's argv: the person's own arguments, unchanged. Codex also gets
@@ -474,18 +424,17 @@ struct CliStart {
     start_id: String,
 }
 
-/// `lightbulb claude|codex` in a terminal (`cli.rs`): the tool must be installed, the folder an
-/// approved folder or inside one, and sharing on. No window, because the terminal that asked
-/// attaches itself. Never starts a session that would not be shared.
+/// `lightbulb claude|codex` in a terminal (`cli.rs`): the tool must be installed and sharing
+/// on. Any folder: starting a session with Lightbulb is what shares it, and the approved folders
+/// are only what agents may read and where a remote start may run. No window, because the
+/// terminal that asked attaches itself.
 /// `env` is the calling terminal's environment (the provider gets it instead of the login
-/// shell's); `approve_folder` is the person's "yes" in that terminal to adding the folder to the
-/// approved folders.
+/// shell's).
 pub(crate) fn cli_start(
     app: &tauri::AppHandle,
     params: Value,
     size: (u16, u16),
     env: Option<Vec<(String, String)>>,
-    approve_folder: bool,
 ) -> Result<crate::holder::manager::HolderInfo, String> {
     let start: CliStart = serde_json::from_value(params).map_err(|_| "Malformed request.".to_string())?;
     if let Some(reason) = crate::cli::refusal(&start.tool, &start.args) {
@@ -514,18 +463,10 @@ pub(crate) fn cli_start(
             return Err(reason);
         }
     }
-    if approve_folder && Path::new(&start.folder).is_dir() {
-        // The same store Settings → Desktop → Approved folders writes.
-        crate::file_access::add_path(&start.folder).map_err(|e| e.to_string())?;
-    }
-    let approved = approved_now();
     let folder = crate::file_access::canonicalize(&start.folder)
         .ok()
-        .filter(|f| f.is_dir() && inside_approved(f, &approved))
-        .ok_or(crate::cli::FOLDER_NOT_APPROVED.to_string())?;
-    if let Some(reason) = unapproved_path_flag(&start.tool, &start.args, &folder, &approved) {
-        return Err(reason);
-    }
+        .filter(|f| f.is_dir())
+        .ok_or("This folder no longer exists.".to_string())?;
     let argv = held_argv(&cli_argv(&program, &start.tool, &start.args), Some((start.start_id.as_str(), scope.as_str())));
     let info = crate::holder::manager::start_sized_env(&folder, &argv, Some(size), env)?;
     crate::log(&format!("[session-start] terminal command {} {} in {}", start.start_id, start.tool, folder.display()));
@@ -535,33 +476,6 @@ pub(crate) fn cli_start(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn cli_path_flags_must_name_approved_folders() {
-        let approved_dir = tempfile::tempdir().unwrap();
-        let root = crate::file_access::canonicalize(approved_dir.path().to_str().unwrap()).unwrap();
-        std::fs::create_dir(root.join("lib")).unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        let outside = outside.path().to_str().unwrap().to_owned();
-        let approved = vec![root.clone()];
-        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        // An approved --add-dir passes, also relative to the folder the command runs in.
-        assert_eq!(unapproved_path_flag("claude", &args(&["--add-dir", "lib"]), &root, &approved), None);
-        assert_eq!(unapproved_path_flag("codex", &args(&["--add-dir", root.to_str().unwrap()]), &root, &approved), None);
-        // An unapproved -C, --add-dir=…, -C<path> and a second --add-dir are refused.
-        let refused = unapproved_path_flag("codex", &args(&["-C", &outside]), &root, &approved).unwrap();
-        assert!(refused.contains(&outside), "{refused}");
-        assert!(unapproved_path_flag("codex", &args(&[&format!("--add-dir={outside}")]), &root, &approved).is_some());
-        assert!(unapproved_path_flag("codex", &args(&[&format!("-C{outside}")]), &root, &approved).is_some());
-        assert!(unapproved_path_flag("claude", &args(&["--add-dir", "lib", &outside]), &root, &approved).is_some());
-        assert!(unapproved_path_flag("claude", &args(&["--add-dir", "lib", "--add-dir", &outside]), &root, &approved).is_some());
-        assert!(unapproved_path_flag("codex", &args(&["--cd", "../.."]), &root, &approved).is_some());
-        // After `--` it is prompt text, never checked; other flags are not paths.
-        assert_eq!(unapproved_path_flag("codex", &args(&["--", "-C", &outside]), &root, &approved), None);
-        assert_eq!(unapproved_path_flag("claude", &args(&["--model", "opus", "--", "--add-dir", &outside]), &root, &approved), None);
-        // Claude has no -C flag of its own.
-        assert_eq!(unapproved_path_flag("claude", &args(&["-C", &outside]), &root, &approved), None);
-    }
 
     fn start(tool: &str, model: Option<&str>, mode: Option<&str>, prompt: &str) -> Start {
         Start {

@@ -53,7 +53,7 @@ it("in the desktop app shows the four cards in order and no raw org id", async (
   expect(await screen.findByRole("switch", { name: "Open at login" })).toBeChecked();
   expect(await screen.findByText("On · Acme")).toBeInTheDocument();
   expect(await screen.findByText("No folders yet.")).toBeInTheDocument();
-  expect(await screen.findByRole("switch", { name: "Share every session live" })).not.toBeChecked();
+  expect(await screen.findByRole("switch", { name: "Share every new session" })).not.toBeChecked();
   // Shown once, after Session sharing, not inside it.
   expect(await screen.findAllByRole("switch", { name: "Agents can message my sessions without asking" })).toHaveLength(1);
   const order = ["Open at login", "Agents on this Mac", "Approved folders", "Session sharing"].map((text) => screen.getByText(text));

@@ -643,9 +643,12 @@ button.native-session-panel-row:hover .native-session-panel-activity { color: va
 /* The body of a session with no terminal: ended, offline, or not started through Lightbulb. */
 .session-state-panel { flex: 1; min-height: 160px; display: grid; place-content: center; justify-items: center; gap: 6px; padding: 24px; text-align: center; color: var(--fg-mute); background: var(--plane-pane); }
 .session-state-panel .session-state-title { color: var(--fg); font-weight: 600; }
+/* Above an app session's conversation: its own height, the conversation takes the rest. */
+.session-state-panel[data-compact] { flex: none; min-height: 0; padding: 12px; }
 /* Pending and queued follow-ups stay visible under the live terminal. */
 .local-session-feedback:empty { display: none; }
 .local-session-feedback { flex: none; max-height: 30%; overflow: auto; }
+.local-session-conversation { flex: 1; min-height: 0; max-height: none; display: flex; flex-direction: column-reverse; }
 
 /* The live terminal's own column: a strip for the Fit / Readable switch, then the box that scrolls
    when the Mac's screen, at a readable scale, is larger than the pane. Added beside

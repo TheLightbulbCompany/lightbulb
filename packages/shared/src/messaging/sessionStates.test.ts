@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { sessionScreenNotice, terminalStateReason } from "./sessionStates";
+import { conversationOnly, sessionScreenNotice } from "./sessionStates";
 import type { LocalSession } from "./types";
 
 const base: LocalSession = {
@@ -8,37 +8,22 @@ const base: LocalSession = {
   capabilitiesVerified: true, latestEventSeq: 0, controlUnavailableReason: null,
 };
 
-it("names why a running session has no terminal, and nothing otherwise", () => {
-  expect(terminalStateReason(base)).toBe("plain"); // an older Mac sends no reason: a plain Claude is `plain`
-  expect(terminalStateReason({ ...base, provider: "codex" })).toBeNull();
-  expect(terminalStateReason({ ...base, provider: "codex", terminalReason: "no-daemon" })).toBe("no-daemon");
-  expect(terminalStateReason({ ...base, terminalReason: "unknown" })).toBeNull();
-  expect(terminalStateReason({ ...base, terminal: "held", terminalReason: "plain" })).toBeNull();
-  expect(terminalStateReason({ ...base, status: "ended" })).toBeNull();
-  expect(terminalStateReason({ ...base, status: "offline" })).toBeNull();
+it("shows the conversation only for a session that can never have a terminal", () => {
+  for (const terminalReason of ["app", "sdk", "unknown"] as const) expect(conversationOnly({ ...base, terminalReason })).toBe(true);
+  expect(conversationOnly({ ...base, status: "ended", terminalReason: "unknown" })).toBe(true);
+  // A terminal session with no terminal right now (an older Mac app): a notice, never its conversation.
+  expect(conversationOnly(base)).toBe(false);
+  expect(conversationOnly({ ...base, terminalReason: "plain" })).toBe(false);
+  expect(conversationOnly({ ...base, provider: "codex", terminalReason: "no-daemon" })).toBe(false);
+  expect(conversationOnly({ ...base, terminal: "held", terminalReason: "unknown" })).toBe(false);
 });
 
-// ISOA-731: every state of the "no screen" family, for both readers.
-it("gives a teammate no terminal instructions in any variant", () => {
-  const variants: LocalSession[] = [base, { ...base, terminalReason: "plain" }, { ...base, provider: "codex", terminalReason: "no-daemon" },
-    { ...base, provider: "codex" }, { ...base, terminalReason: "app" }, { ...base, terminalReason: "sdk" }, { ...base, terminalReason: "unknown" }];
-  for (const session of variants) {
-    const notice = sessionScreenNotice(session, false, "Ada");
-    expect(notice.title).toBe("Ada is working in this session, but its screen is not shared.");
-    expect(notice.how).toBeUndefined();
-    expect(notice.settings).toBeUndefined();
-    expect(`${notice.title} ${notice.body}`).not.toMatch(/←|terminal|press|codex/i);
+it("says what an app session is, and gives nobody terminal steps for any other", () => {
+  const app = { title: "This session runs inside an app, so there is no terminal to show.", body: "This is its conversation." };
+  expect(sessionScreenNotice({ ...base, terminalReason: "unknown" }, true, "Ada")).toEqual(app);
+  expect(sessionScreenNotice({ ...base, terminalReason: "app" }, false, "Ada")).toEqual(app);
+  for (const session of [base, { ...base, terminalReason: "plain" as const }, { ...base, provider: "codex" as const, terminalReason: "no-daemon" as const }]) {
+    expect(sessionScreenNotice(session, true, "Ada").title).toBe("This session's screen is not shared.");
+    expect(sessionScreenNotice(session, false, "Ada")).toEqual({ title: "Ada is working in this session, but its screen is not shared.", body: "You can still follow its status and what it changed." });
   }
-});
-
-it("gives the owner the meaning first, and a step only where one exists", () => {
-  const plain = sessionScreenNotice(base, true, "Ada");
-  expect(plain.title).toBe("This session's screen is not shared yet.");
-  expect(plain.how).toBe("To share it, go to the terminal window where it runs and press the left arrow key (←) once. Teammates can then watch it live.");
-  expect(plain.settings).toBe("To share every new session without this step, turn on Share every new session in Settings.");
-  const codex = sessionScreenNotice({ ...base, provider: "codex", terminalReason: "no-daemon" }, true, "Ada");
-  expect(codex.how).toBe("To share it, close it and start it again by typing lightbulb codex in your terminal. Teammates can then watch it live.");
-  expect(codex.settings).toBeUndefined();
-  const unknown = sessionScreenNotice({ ...base, terminalReason: "unknown" }, true, "Ada");
-  expect(unknown).toEqual({ title: "This session's screen is not shared.", body: "Lightbulb cannot show this session's screen. Teammates still see its status and what it changed." });
 });

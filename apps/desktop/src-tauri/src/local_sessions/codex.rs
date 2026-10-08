@@ -218,8 +218,9 @@ fn from_rollout(
         holder: None,
         job: None,
         forked_from: None,
-        // (`terminal_reason` knows the Codex app by its executable.)
-        app: false,
+        // The header says who wrote it: the app's own conversations, never a TUI (the app's
+        // bundled CLI run in a terminal writes `cli`).
+        app: source == "vscode" && row["payload"]["originator"] == "Codex Desktop",
     })
 }
 
@@ -1868,6 +1869,7 @@ mod tests {
         assert_eq!(found.conversation, "owned");
         assert_eq!(found.process.birth_micros, 123);
         assert_eq!(found.status, "busy");
+        assert!(!found.app, "a `cli` rollout is a terminal Codex, whatever binary wrote it");
         assert!(from_rollout(
             &root.join("other-profile"),
             process.clone(),
@@ -1883,6 +1885,7 @@ mod tests {
         assert_eq!(bounded_cwd.cwd_name.unwrap().chars().count(), 128);
         fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"app\",\"source\":\"vscode\",\"originator\":\"Codex Desktop\",\"history_mode\":\"paginated\",\"cli_version\":\"0.153.4\"}}\n").unwrap();
         let app = from_rollout(&root, process.clone(), &path, "0.153.4").unwrap();
+        assert!(app.app, "the Codex app's own conversation: never a terminal");
         assert_eq!((app.conversation.as_str(), app.version.as_str(), app.restriction), ("app", "0.153.4", None));
         let unverified = from_rollout(&root, process.clone(), &path, "0.149.0").unwrap();
         assert_eq!(unverified.restriction.as_deref(), Some("runtime-unverified"));

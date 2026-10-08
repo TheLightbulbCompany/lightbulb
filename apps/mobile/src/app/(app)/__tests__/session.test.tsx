@@ -508,24 +508,17 @@ describe("session screen", () => {
     expect(await screen.findByText("Ended · 5m")).toBeTruthy();
   });
 
-  it("tells a teammate how a plain session gets its screen", async () => {
-    mockSession = { ...base, humanUserId: "user-b" };
-    await render(<SessionScreen />);
-    expect(await screen.findByText("Bob is working in this session, but its screen is not shared. Its screen shows in Lightbulb as soon as Bob shares it. Until then you can follow its status and what it changed.")).toBeTruthy();
-    expect(screen.queryByText(/←|terminal/)).toBeNull();
-  });
-
-  it("tells a teammate how a no-daemon Codex session gets its screen, with no ← line", async () => {
+  it("gives a terminal session with no terminal one short line, with no steps", async () => {
     mockSession = { ...base, humanUserId: "user-b", provider: "codex", terminalReason: "no-daemon" };
     await render(<SessionScreen />);
-    expect(await screen.findByText(/^Bob is working in this session, but its screen is not shared\./)).toBeTruthy();
+    expect(await screen.findByText("Bob is working in this session, but its screen is not shared. You can still follow its status and what it changed.")).toBeTruthy();
     expect(screen.queryByText(/←|lightbulb codex/)).toBeNull();
   });
 
-  it("says a session has no screen when the Mac gives a reason nobody can act on, or none", async () => {
+  it("says a session inside an app has no terminal, above its conversation", async () => {
     mockSession = { ...base, humanUserId: "user-b", provider: "codex", terminalReason: "unknown" };
     await render(<SessionScreen />);
-    expect(await screen.findByText("Bob is working in this session, but its screen is not shared. You can still follow its status and what it changed.")).toBeTruthy();
+    expect(await screen.findByText("This session runs inside an app, so there is no terminal to show. This is its conversation.")).toBeTruthy();
   });
 
   it("shows someone else's session read-only: no prompt row, only who can send", async () => {

@@ -32,7 +32,7 @@ describe("per-session sharing", () => {
   it("lets the owner stop sharing one session, then resume it", async () => {
     const c = client();
     const { rerender } = render(panel(session, true, c));
-    expect(screen.queryByText(/^Sharing is paused/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Only you can see this session/)).not.toBeInTheDocument();
     const dialog = await access();
     await userEvent.selectOptions(await who(dialog), "me");
     expect(c.setLocalSessionSharing).not.toHaveBeenCalled(); // Only me takes a second click
@@ -40,9 +40,9 @@ describe("per-session sharing", () => {
     expect(c.setLocalSessionSharing).toHaveBeenCalledWith("session", false);
     expect(await who(dialog)).toHaveValue("me");
     expect(within(dialog).getByText("Only you see this session. Sharing again shares the whole session.")).toBeInTheDocument();
-    // The session row comes back paused: the pane itself says so.
+    // The session row comes back as Only me: the pane itself says so.
     rerender(panel({ ...session, shared: false }, true, c));
-    expect(screen.getByText("Sharing is paused. Only you can see this session, and nothing it does now is shared.")).toHaveAttribute("role", "status");
+    expect(screen.getByText("Only you can see this session. Nothing it does now is shared.")).toHaveAttribute("role", "status");
     await userEvent.selectOptions(await who(dialog), "workspace");
     expect(c.setLocalSessionSharing).toHaveBeenLastCalledWith("session", true);
     expect(within(dialog).queryByRole("switch", { name: "Shared with the workspace" })).toBeNull(); // one control

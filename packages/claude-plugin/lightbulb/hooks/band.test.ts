@@ -80,9 +80,9 @@ test('the band draws watcher names and the asker in their colors', async ($, on)
   }
 })
 
-test('band says transcript for a plain session, and paused wins', () => {
-  expect(bandLine({ ...base, terminal: null })).toBe('● Shared as a transcript')
-  expect(bandLine({ ...base, paused: true })).toBe('○ Sharing paused')
+test('band says shared for a session with no terminal, and Only you wins', () => {
+  expect(bandLine({ ...base, terminal: null })).toBe('● Shared in Lightbulb')
+  expect(bandLine({ ...base, paused: true })).toBe(ONLY_YOU_LINE)
 })
 
 test('band shows nothing when the app does not answer', async ($, on) => {
@@ -236,15 +236,15 @@ test('a poll that resolves a refused decision clears its error line', async ($, 
   await ui.unmount()
 })
 
-test('Pause posts pause, and a paused band offers Resume', async ($, on) => {
+test('Stop sharing posts pause, and an Only you band offers Share to Lightbulb', async ($, on) => {
   const { calls, clock } = world(on, path => ({ status: 200, body: path === '/v1/decide' ? { ...base, paused: true } : base }))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await clock.settle()
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
   await ui.press({ key: 'pause' })
   expect(calls[calls.length - 1]?.body).toEqual({ decision: 'pause' })
-  expect(await ui.find({ text: '○ Sharing paused' })).toBeDefined()
-  expect(await ui.find({ key: 'resume' })).toBeDefined()
+  expect(await ui.find({ text: new RegExp(`^${ONLY_YOU_LINE}`) })).toBeDefined()
+  expect(await ui.find({ key: 'resume' })).toMatchObject({ props: { label: 'Share to Lightbulb' } })
 })
 
 test('a missed poll keeps the last band for a minute, then hides it', async ($, on) => {
@@ -325,7 +325,7 @@ test('a shared session in a plain terminal says how to go live and offers nothin
   await ui.unmount()
 })
 
-test('Pause stops sharing: the band says Only you and offers Share again', async ($, on) => {
+test('Stop sharing: the band says Only you and offers Share again', async ($, on) => {
   let state: Reply = { status: 200, body: base }
   const { clock } = world(on, path => (path === '/v1/decide' ? (state = ONLY_YOU) : state))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
@@ -386,7 +386,7 @@ test('every band Button has its own hotkey', async ($, on) => {
   expect(await hotkeys()).toEqual({ pause: 'p', allow: 'a', decline: 'd' })
   state = { ...base, paused: true }
   await clock.advance(2000)
-  expect(await hotkeys()).toEqual({ resume: 'p' })
+  expect(await hotkeys()).toEqual({ resume: 's' }) // the same key as Share on a session that was never shared
 })
 
 // Prod 2026-10-07, Claude Code 2.1.292: `a` at the prompt typed "a"; only a click reached Allow.
@@ -395,7 +395,7 @@ test('every band Button has its own hotkey', async ($, on) => {
 test('the key hint names the way to the band and the letters that work there', () => {
   expect(keysHint(asking)).toBe('ctrl+x tab, then a or d · or click')
   expect(keysHint(base)).toBe('ctrl+x tab, then p')
-  expect(keysHint({ ...base, paused: true })).toBe('ctrl+x tab, then p')
+  expect(keysHint({ ...base, paused: true })).toBe('ctrl+x tab, then s')
 })
 
 test('the terminal band shows the key hint beside its buttons; a desktop, which has no chord, does not', async ($, on) => {

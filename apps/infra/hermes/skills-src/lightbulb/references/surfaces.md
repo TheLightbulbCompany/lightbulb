@@ -107,13 +107,13 @@ it, and Lightbulb opens one more Codex terminal on the same conversation). A sha
 a plain terminal with no live terminal yet is not in the workspace at all until it has one: its
 own Claude Code terminal tells its person to press the left arrow key (←) once, and a Codex
 session started with `--no-daemon` is started again with `lightbulb codex`. A session that runs
-inside the Claude or Codex app has no terminal and shows a notice that its screen is not shared;
-a teammate reads "<Owner> is working in this session, but its screen is not shared." with a
-**Message <Owner>** button. Its person can also stop sharing from the workspace (the session's
-sharing switch); that and the terminal's Pause are one switch, and sharing again shares the
-whole session, including what it did meanwhile. On the web
-and in the desktop app people never see a transcript; the phone still shows a session's history
-as a list until it gets the live terminal. You still read the structured record with
+inside the Claude or Codex app, or an editor, has no terminal: people read its conversation
+instead, under the line "This session runs inside an app, so there is no terminal to show. This
+is its conversation." Its person can also stop sharing from the workspace (**Who can see this**
+→ **Only me**); that and the terminal's **Stop sharing** are one switch, and sharing again shares
+the whole session, including what it did meanwhile. For a session in a terminal, people on the
+web and in the desktop app see the live terminal and never a transcript; the phone shows a
+session's history as a list. You still read the structured record with
 `lightbulb_local_sessions`.
 
 **New session** (web and desktop): a small form with no first message. The person picks
@@ -211,7 +211,7 @@ answer in that chat as a normal reply, after you `read` the session with
 `lightbulb_local_sessions` (the session is in your turn's `sessions` list under the same
 title). Never send a chat message into the session, and never send the session work because
 of a chat message: a person who wants the session to do something types in its terminal (if
-admitted) or uses **Ask to join**. Pausing sharing empties the chat of everyone but its owner;
+admitted) or uses **Ask to join**. Setting the session to **Only me** empties the chat of everyone but its owner;
 ending the session makes the chat read-only. Session chats do not appear in search.
 
 **Access** is where the owner sets **Let teammates control this session** (follow-ups and permission
@@ -270,7 +270,7 @@ mouse wheel scrolls the terminal, not Codex's own fullscreen transcript);
 while no frame has arrived it says "Connecting…", and after 30 s of silence "Reconnecting…". The owner, anyone accepted through **Ask to join**, or everyone when
 **Let teammates control this session** is on can type straight into it,
 including answering the tool's own prompts; others watch read-only and see a "Watching · Ask to join" line. There is no message
-box under a live terminal. Pausing sharing or removing someone cuts their
+box under a live terminal. Setting the session to **Only me** or removing someone cuts their
 input at once, and so does leaving the workspace; the owner sees "<name> is
 typing". You never get the screen or keyboard: you cannot watch or type into a
 person's terminal. You read the session's structured record with

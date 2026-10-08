@@ -428,10 +428,10 @@ function SessionBody({
         </View>
       )}
       {noScreen && (
-        // No terminal here yet: what gets its screen shared (spec 2026-10-07 §4 f, g).
+        // No terminal: it runs inside an app (this is its conversation), or its Mac app is an older one.
         <Text style={[styles.meta, styles.liveHint, { color: palette.fgMute }]} accessibilityLiveRegion="polite">
           {/* The web panel's words (sessionScreenNotice), on one line. */}
-          {(({ title, body, how, settings }) => [title, body, how, settings].filter(Boolean).join(" "))(sessionScreenNotice(session, own, ownerName))}
+          {(({ title, body }) => `${title} ${body}`)(sessionScreenNotice(session, own, ownerName))}
         </Text>
       )}
       {remoteApproval && <SessionApprovalCard key={session.pendingApproval?.approvalId} session={session} client={client} allowed={control} own={own} ownerName={ownerName} />}

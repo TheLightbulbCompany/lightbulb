@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import type { LiveEvent } from "@lightbulb/shared";
 import { type LocalSession } from "@lightbulb/shared";
@@ -93,54 +93,79 @@ it("says to answer in the live terminal only while the terminal accepts typing",
   typing.canType = true;
 });
 
-// ISOA-731: what it means first, in plain words; the one step only the owner can do, second.
-it("tells a plain session's owner what it means first, then the one step in their terminal", () => {
+// A terminal session with no terminal reached the workspace from an older Mac app: a short notice, never its conversation.
+it("gives a terminal session with no terminal a short notice with no steps, and never its conversation", async () => {
   client.watchLocalSession.mockClear();
-  const plain: LocalSession = { ...session, terminal: undefined, status: "busy" };
-  render(<LocalSessionPanel session={plain} ownerName="Alice" own client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
-  const panel = document.querySelector(".session-state-panel")!;
-  expect([...panel.querySelectorAll("p")].map(p => p.textContent)).toEqual([
-    "This session's screen is not shared yet.",
-    "Teammates can see that it is running, but not what is on its screen.",
-    "To share it, go to the terminal window where it runs and press the left arrow key (←) once. Teammates can then watch it live.",
-    "To share every new session without this step, turn on Share every new session in Settings.",
-  ]);
-  expect(panel.querySelector("p")!.className).toBe("session-state-title");
-  expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();
-  expect(screen.queryByRole("region", { name: /Live terminal/ })).toBeNull();
-  expect(client.watchLocalSession).not.toHaveBeenCalled();
-  expect(screen.getByRole("textbox", { name: /send to/i })).toBeTruthy();
-});
-
-it("links the hint's Settings to the live-sessions switch in the desktop app", () => {
-  (window as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke: vi.fn(async () => ({ live: false })) } };
-  try {
-    render(<LocalSessionPanel session={{ ...session, terminal: undefined, status: "busy" }} ownerName="Alice" own client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
-    expect(screen.getByRole("link", { name: "Settings" }).getAttribute("href")).toBe("/settings?panel=desktop#share-every-session-live");
-  } finally {
-    delete (window as { __TAURI__?: unknown }).__TAURI__;
-  }
-});
-
-it("gives a teammate no terminal instructions: what it is, and the one action in the panel", () => {
+  client.listLocalSessionEvents.mockResolvedValueOnce({ events: [{ seq: 1, truncated: false, kind: "text", role: "assistant", text: "All good." }], nextAfterSeq: null } as never);
   const onMessageOwner = vi.fn();
   const props = { ownerName: "Alice", client: client as never, revision: 0, onAccessLost: () => {}, onEvent: () => () => {}, onMessageOwner };
   const words = () => [...document.querySelectorAll(".session-state-panel p")].map(p => p.textContent);
-  const codex = render(<LocalSessionPanel {...props} own={false} session={{ ...session, provider: "codex", terminal: undefined }} />);
-  expect(words()).toEqual(["Alice is working in this session, but its screen is not shared.", "You can still follow its status and what it changed."]);
-  codex.unmount();
+  const mine = render(<LocalSessionPanel {...props} own session={{ ...session, terminal: undefined, status: "busy", latestEventSeq: 1 }} />);
+  expect(words()).toEqual(["This session's screen is not shared.", "Lightbulb cannot show this session's screen. Teammates still see its status and what it changed."]);
+  await waitFor(() => expect(client.listLocalSessionEvents).toHaveBeenCalled());
+  expect(screen.queryByText("All good.")).toBeNull();
+  expect(screen.queryByRole("log")).toBeNull();
+  expect(screen.queryByRole("region", { name: /Live terminal/ })).toBeNull();
+  expect(client.watchLocalSession).not.toHaveBeenCalled();
+  expect(screen.getByRole("textbox", { name: /send to/i })).toBeTruthy();
+  mine.unmount();
+  for (const variant of [{ provider: "codex" as const, terminalReason: "no-daemon" as const }, { terminalReason: "plain" as const }, {}]) {
+    const theirs = render(<LocalSessionPanel {...props} own={false} session={{ ...session, terminal: undefined, ...variant }} />);
+    expect(words()).toEqual(["Alice is working in this session, but its screen is not shared.", "You can still follow its status and what it changed."]);
+    theirs.unmount();
+  }
   render(<LocalSessionPanel {...props} own={false} session={{ ...session, terminal: undefined }} />);
-  expect(words()).toEqual([
-    "Alice is working in this session, but its screen is not shared.",
-    "Its screen shows in Lightbulb as soon as Alice shares it. Until then you can follow its status and what it changed.",
-  ]);
-  expect(document.querySelector(".session-state-panel")!.textContent).not.toMatch(/←|terminal|press/i);
   // One Message button, in the panel, not a second one under it.
   const message = screen.getByRole("button", { name: "Message Alice" });
   expect(message.closest(".session-state-panel")).not.toBeNull();
   fireEvent.click(message);
   expect(onMessageOwner).toHaveBeenCalled();
-  expect(document.querySelector(".session-status-line")!.textContent).not.toMatch(/Transcript/);
+});
+
+it("shows the conversation of a session that runs inside an app, with one line saying why there is no terminal", async () => {
+  client.watchLocalSession.mockClear();
+  const events = { events: [
+    { seq: 1, truncated: false, kind: "text", role: "user", text: "run it" },
+    { seq: 2, truncated: false, kind: "text", role: "assistant", text: "All good." },
+  ], nextAfterSeq: null };
+  client.listLocalSessionEvents.mockResolvedValue(events as never);
+  const app: LocalSession = { ...session, terminal: undefined, terminalReason: "unknown", latestEventSeq: 2 };
+  const props = { ownerName: "Alice", client: client as never, revision: 0, onAccessLost: () => {}, onEvent: () => () => {} };
+  const theirs = render(<LocalSessionPanel {...props} own={false} session={app} />);
+  const log = await screen.findByRole("log", { name: "Session conversation" });
+  expect(await within(log).findByText("All good.")).toBeTruthy();
+  expect(within(log).getByText("run it")).toBeTruthy();
+  expect(screen.getByRole("note").textContent).toBe("This session runs inside an app, so there is no terminal to show. This is its conversation.");
+  expect(document.querySelector(".session-state-panel")).toBeNull();
+  expect(client.watchLocalSession).not.toHaveBeenCalled();
+  expect(screen.queryByRole("textbox")).toBeNull(); // a teammate who may not send reads it
+  theirs.unmount();
+  // Its owner keeps the follow-up box; ended or offline, the conversation stays.
+  const mine = render(<LocalSessionPanel {...props} own session={app} />);
+  expect(screen.getByRole("textbox", { name: /send to/i })).toBeTruthy();
+  mine.unmount();
+  render(<LocalSessionPanel {...props} own={false} session={{ ...app, status: "ended" }} />);
+  expect(await within(await screen.findByRole("log")).findByText("All good.")).toBeTruthy();
+  expect(document.querySelector(".session-ended-line")!.textContent).toBe("Ended");
+  expect(screen.queryByText(/screen is gone/)).toBeNull();
+  cleanup();
+  // Offline: the offline panel (last seen, Resume, Pick up) stays above the conversation.
+  render(<LocalSessionPanel {...props} own={false} session={{ ...app, status: "offline" }} />);
+  expect(screen.getByText("Alice's Mac is offline")).toBeTruthy();
+  expect(await within(await screen.findByRole("log")).findByText("All good.")).toBeTruthy();
+  cleanup();
+  // Ended with nothing in it: the ended panel alone.
+  render(<LocalSessionPanel {...props} own={false} session={{ ...app, provider: "codex", status: "ended", latestEventSeq: 0 }} />);
+  expect(screen.getByText("This session ended before anything was sent.")).toBeTruthy();
+  expect(screen.queryByRole("log")).toBeNull();
+  expect(screen.queryByRole("note")).toBeNull();
+  cleanup();
+  // Its events arrived after the end, and the cached row still says none: the conversation shows once they are read.
+  client.listLocalSessionEvents.mockResolvedValue(events as never);
+  render(<LocalSessionPanel {...props} own={false} session={{ ...app, status: "ended", latestEventSeq: 0 }} />);
+  expect(await within(await screen.findByRole("log")).findByText("All good.")).toBeTruthy();
+  expect(screen.queryByText("This session ended before anything was sent.")).toBeNull();
+  client.listLocalSessionEvents.mockResolvedValue({ events: [], nextAfterSeq: null } as never);
 });
 
 it("still probes this Mac's holder for an offline session, and never for a running one with no terminal", () => {
@@ -322,29 +347,6 @@ it("offers Pick up and a disabled Resume while the owner's Mac is offline", () =
   expect(screen.getByRole("button", { name: "Resume" })).toBeDisabled();
   expect(screen.getByText("Resume works once Alice's Mac is back. Pick up continues it on your Mac now.")).toBeTruthy();
   expect(screen.getByRole("button", { name: /Pick up/ })).toBeTruthy();
-});
-
-it("tells a no-daemon Codex session's owner how to share it, a teammate nothing about terminals, and no step for a reason nobody can act on", () => {
-  const props = { ownerName: "Alice", client: client as never, revision: 0, onAccessLost: () => {}, onEvent: () => () => {} };
-  const codex: LocalSession = { ...session, provider: "codex", terminal: undefined, terminalReason: "no-daemon" };
-  const words = () => [...document.querySelectorAll(".session-state-panel p")].map(p => p.textContent);
-  const mine = render(<LocalSessionPanel {...props} own session={codex} />);
-  expect(words()).toEqual([
-    "This session's screen is not shared yet.",
-    "Teammates can see that it is running, but not what is on its screen.",
-    "To share it, close it and start it again by typing lightbulb codex in your terminal. Teammates can then watch it live.",
-  ]);
-  expect(document.querySelector(".session-state-panel code")!.textContent).toBe("lightbulb codex");
-  mine.unmount();
-  const theirs = render(<LocalSessionPanel {...props} own={false} session={codex} />);
-  expect(words()[0]).toBe("Alice is working in this session, but its screen is not shared.");
-  expect(document.querySelector(".session-state-panel")!.textContent).not.toMatch(/←|lightbulb codex|terminal/);
-  theirs.unmount();
-  const unknown = render(<LocalSessionPanel {...props} own={false} session={{ ...session, terminal: undefined, terminalReason: "unknown" }} />);
-  expect(words()).toEqual(["Alice is working in this session, but its screen is not shared.", "You can still follow its status and what it changed."]);
-  unknown.unmount();
-  render(<LocalSessionPanel {...props} own session={{ ...session, terminal: undefined, terminalReason: "unknown" }} />);
-  expect(words()).toEqual(["This session's screen is not shared.", "Lightbulb cannot show this session's screen. Teammates still see its status and what it changed."]);
 });
 
 it("says Ended just now, not that the screen is gone, while a held session's kept screen is still on its way", async () => {

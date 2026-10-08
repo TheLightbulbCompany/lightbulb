@@ -95,7 +95,7 @@ export interface MessagingClient {
   getLocalSessionCommand(sessionId: string, requestId: string): Promise<LocalSessionCommandReceipt>;
   cancelLocalSessionCommand(sessionId: string, requestId: string): Promise<LocalSessionCommandReceipt>;
   listLocalSessionOutbox(sessionId: string): Promise<LocalSessionOfflineOutbox>;
-  /** Owner only: pause or resume sharing one session. */
+  /** Owner only: set one session to Only me (false) or share it again (true). */
   setLocalSessionSharing(sessionId: string, shared: boolean): Promise<LocalSession>;
   /** Owner-only: let workspace members use this session's controls. */
   setLocalSessionTeamControl(sessionId: string, enabled: boolean): Promise<LocalSession>;

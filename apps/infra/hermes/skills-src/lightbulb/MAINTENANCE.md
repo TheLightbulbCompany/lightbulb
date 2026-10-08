@@ -45,7 +45,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               `.scratch/` for worktrees <- the upstream base image's HERMES_WRITE_SAFE_ROOT=/opt/data
                                  (write_file/patch refuse /tmp, which is why the old "/tmp/wt" rule never worked);
                                  sync.py SCRATCH_DIR in EXCLUDE_GLOBS (never synced); save_profile (only the profile dir persists).
-                              ONE worktree, removed at task end, no installs/test suites for the lightbulb repo
+                              ONE worktree, removed at task end, no installs/test suites for any repository
                                  (SKILL.md scripts bullet + software-projects.md "Keep the workspace small"):
                                  .scratch/ and /tmp share the microVM's ~4 GB disk across teammates until it is
                                  recycled; numbered slots filled it twice for the founder's engineering agent

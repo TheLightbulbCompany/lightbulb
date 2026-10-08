@@ -41,7 +41,12 @@ from livekit.plugins.openai.realtime import (
 )
 from livekit.plugins.openai.realtime.gpt_live_model import _render_item
 from openai import AsyncOpenAI
-from openai.types.realtime import ResponseCreateEvent
+from openai.types.realtime import (
+    ConversationItemDeleteEvent,
+    RealtimeConversationItemUserMessage,
+    ResponseCancelEvent,
+    ResponseCreateEvent,
+)
 
 from huddle_agent import record
 from huddle_agent.backend import Backend
@@ -303,17 +308,69 @@ async def write_line(persona: str, event: str) -> str:
         return ""
 
 
+# After a cut, the next order waits for the cancelled response's `response.done`, this long at most. A
+# `response.create` that raced a `response.cancel` failed outright (10-08 spike, config e). The wait itself was
+# not measured: the done normally follows the cancel at once.
+CANCEL_WAIT_S = 0.5
+
+
 class _DrivenSession(openai.realtime.RealtimeSession):
-    """A line to say word for word goes to the model without the conversation (`input: []`), and what it said
-    still joins the conversation. With the conversation in view the model answers the last thing a person
-    said instead, from its own head (10-07, real model: 5 of 12 lines exact after an open question, "$12 per
-    user per month" among the rest; 12 of 12 without)."""
+    """A line to say word for word goes to the model without the conversation: its order is the line, in the
+    instructions and again as the one user message of that response (`response.input`, which is never added
+    to the conversation). With the conversation in view the model answers the last thing a person said
+    instead, from its own head (10-07, real model: 5 of 12 lines exact after an open question, "$12 per user
+    per month" among the rest; 12 of 12 without). With the line in the instructions alone (`input: []`) a
+    short line sometimes came out as silence (10-08 spike, short lines: 5 of 52 silent, first sound p50
+    0.88 s; with the user message 0 of 52, 52 of 52 word for word, p50 0.58 s).
+
+    What it said is deleted from the conversation when its response is done: nothing reads it, and a long
+    call does not pile it up. An order sent while a cut response is still ending is held until it has ended."""
+
+    _cancelling: asyncio.TimerHandle | None = None  # a cancel is out and its `response.done` is not in
+    _held: tuple = ()  # the orders waiting for it
+    #: Told as each `response.create` is sent (`_create`): the unit's first-sound time counts from then.
+    sent: Callable[[], None] | None = None
 
     # ponytail: private API (the plugin builds response.create itself), re-check on livekit-agents upgrades
     def send_event(self, event) -> None:
-        if isinstance(event, ResponseCreateEvent):
-            event.response.input = []  # every order carries all it needs: the voice never reads the conversation
+        if isinstance(event, ResponseCancelEvent) and self._cancelling is None and self._current_generation is not None:
+            self._cancelling = asyncio.get_running_loop().call_later(CANCEL_WAIT_S, self._release)
+        elif isinstance(event, ResponseCreateEvent):
+            # every order carries all it needs: the voice never reads the conversation
+            _, say, line = (event.response.instructions or "").rpartition(SAY)
+            event.response.input = [
+                RealtimeConversationItemUserMessage(
+                    type="message", role="user", content=[{"type": "input_text", "text": f'Say exactly: "{line}"'}]
+                )
+            ] if say else []  # fmt: skip
+            if self._cancelling is not None:
+                self._held += (event,)
+                return
+            return self._create(event)
         super().send_event(event)
+
+    def _create(self, event) -> None:
+        """A `response.create` goes to the model, now: at once, or after its hold. The one place it does."""
+        super().send_event(event)
+        if self.sent is not None:
+            self.sent()
+
+    def _release(self) -> None:
+        if self._cancelling is not None:
+            self._cancelling.cancel()
+        held, self._cancelling, self._held = self._held, None, ()
+        for event in held:
+            self._create(event)
+
+    def _handle_response_done(self, event) -> None:
+        said = list(getattr(self._current_generation, "messages", ()))
+        super()._handle_response_done(event)
+        for item_id in said:
+            super().send_event(ConversationItemDeleteEvent(type="conversation.item.delete", item_id=item_id))
+        self._release()
+
+    def truncate(self, **_kw) -> None:
+        pass  # a cut unit's item is deleted with the rest: a truncate after that is an error from the server
 
 
 class _DrivenModel(openai.realtime.RealtimeModel):
@@ -328,7 +385,50 @@ class _DrivenModel(openai.realtime.RealtimeModel):
 # either time). Whether its frames were silent or never came was not recorded then: the receipt says now.
 AUDIBLE_S = 0.1
 LOUD = 500  # of 32768: about -36 dBFS, well under any spoken word and over a silent frame's dither
-FIRST_SOUND_S = 3.0  # a unit with no audible audio this long after its order is stopped and reported failed
+# A unit with no audible audio this long after its `response.create` went to the model is stopped and reported
+# failed, and the worker says it again at once (`Huddle.on_playback_ended`). Counted from the send itself
+# (`_DrivenSession._create`), so a create held behind a cancelled response (CANCEL_WAIT_S: after an interrupt,
+# after the unit before stopped itself, or the first order of a mouth that was parked) has the whole time.
+# 10-08 spike, the order as it is now: first sound p50 0.58 s, max 0.80 s of 52. It was 3.0 s: a dead unit cost
+# the room three seconds of nothing (rig: 3 of 83 units silent).
+FIRST_SOUND_S = 1.0
+# An order whose create has not gone out this long after it was given is stopped the same way (`unsent`): the
+# longest hold there is, and as much again. Nothing else bounds it short of the plugin's own 5 s.
+SEND_WAIT_S = 2 * CANCEL_WAIT_S
+# A unit with more sound than this is stopped and reported failed (`long`). It is there for audio that runs
+# away, not to time normal speech: the rig's units took a median 62 ms of sound a character, and 8 of 83 took
+# far more ("I have it." was 4.05 s), most of them lines of 11 characters or fewer, hence the floor. 0.155 is
+# 2.5 times the median (it was 1.8 times, of the written characters), per character as spoken (`spoken_chars`).
+LONG_MIN_S, LONG_PER_CHAR_S = 1.5, 0.155
+# What a written character is worth in spoken ones. A digit or a symbol is a word or more aloud ("$1,249.50"
+# is "one thousand two hundred forty-nine dollars and fifty cents": 9 written, 57 said), and a capital may be a
+# letter spelled out ("PR", "API"). Both err long: the limit is a ceiling.
+SPOKEN_SYMBOL, SPOKEN_CAPITAL = 8, 3
+
+
+def spoken_chars(unit: str) -> int:
+    """About how many characters `unit` is when said aloud. A lower-case letter, a space, an apostrophe, a
+    hyphen, a quote or a bracket is 1, and so is punctuation that ends a word. A capital is SPOKEN_CAPITAL.
+    Anything else is SPOKEN_SYMBOL: a digit, a currency or other symbol, and punctuation inside a token (the
+    dot of "1.5" or of "example.com", a slash)."""
+    # ponytail: no number or URL is read out here, a count by character. A text normaliser if a receipt's
+    # `overMs` ever shows the count far off.
+    n = 0
+    for i, c in enumerate(unit):
+        if c.islower() or c.isspace() or c in "'’-\"“”()":
+            n += 1
+        elif c.isupper():
+            n += SPOKEN_CAPITAL
+        elif c in ".,;:!?" and not unit[i + 1 : i + 2].isalnum():
+            n += 1
+        else:
+            n += SPOKEN_SYMBOL
+    return n
+
+
+def sound_limit(unit: str) -> float:
+    """Seconds of sound `unit` may have before it is stopped as `long`."""
+    return max(LONG_MIN_S, LONG_PER_CHAR_S * spoken_chars(unit))
 
 
 @dataclass
@@ -345,7 +445,9 @@ class _Unit:
     lead: float = 0.0  # seconds of quiet frames before the first one with sound: when the room began to hear it
     sounded: float = 0.0  # when the first frame with sound passed (monotonic)
     revoked: bool = False
-    dead: bool = False  # no sound came in FIRST_SOUND_S and it was stopped
+    limit: float = float("inf")  # seconds of sound it may have (`sound_limit`)
+    stop: Callable[[str], None] = lambda why: None  # ends it as failed: "unsent", "no_sound" or "long"
+    why: str = ""  # why it was stopped, if it was
 
 
 class _Mouth(Agent):
@@ -371,6 +473,9 @@ class _Mouth(Agent):
                         m.sounded = time.monotonic()
                         m.audible()
                     m.loud += frame.duration
+                    if m.loud > m.limit:
+                        m.stop("long")  # no more of it reaches the track
+                        return
                 elif not m.loud:
                     m.lead += frame.duration
             yield frame
@@ -406,6 +511,7 @@ class _DrivenLive:
         self._tail: asyncio.Task | None = None
         self._epoch = 0  # raised by interrupt: a speech order queued under an older one is dropped
         self._cut_at: float | None = None  # when the last interrupt was sent, until its audio is known stopped
+        self._long: str | None = None  # the unit last stopped as `long`, until it is said or another unit is
         # The Realtime plugin reports tokens, not session seconds (`session_duration` is 0): wall clock, open to
         # close, is what a GPT-Live session bills by too.
         self._opened, self._closed = time.monotonic(), None
@@ -428,29 +534,51 @@ class _DrivenLive:
 
     async def _speak(self, order: int | None, index: int, unit: str) -> str:
         """One unit, word for word, then its receipt: `said` (audible audio went to the track and played to its
-        end), `cut` (interrupted), `revoked` (permission went before its first audible audio, so none was sent) or
-        `silent` (it ended uncut and nothing audible was sent: a failure). The receipt carries the order and
+        end), `cut` (interrupted), `revoked` (permission went before its first audible audio, so none was sent),
+        `silent` (nothing audible was sent: a failure) or `long` (far more sound than its words need, and it
+        was stopped: a failure, once for a unit). A failure's evidence says `why`. The receipt carries the order and
         unit it is for and what the track was sent, never the model's transcript of itself."""
-        m = self._agent.unit = _Unit(order, index, lambda: self._may(order, index), lambda: self._audible(order, index))
-        began = time.monotonic()
-        handle = self._session.generate_reply(instructions=SAY + unit)
+        # A unit stopped as `long` is not limited on its next try: the limit that cut it is an estimate, and
+        # the same one would cut the same unit again, try after try, until it went out in writing.
+        free, limit = unit == self._long, sound_limit(unit)
+        m = self._agent.unit = _Unit(
+            order, index, lambda: self._may(order, index), lambda: self._audible(order, index),
+            limit=float("inf") if free else limit,
+        )  # fmt: skip
+        began, loop, handle = time.monotonic(), asyncio.get_running_loop(), None
 
-        def no_sound() -> None:
+        def stop(why: str) -> None:
             # Stopped here, so a dead order costs the room FIRST_SOUND_S and not however long the model goes on.
-            if not m.loud and not handle.done():
-                m.dead = True
+            if not m.why and handle is not None and not handle.done():
+                m.why = why
                 handle.interrupt(force=True)
 
-        watch = asyncio.get_running_loop().call_later(FIRST_SOUND_S, no_sound)
+        def sent() -> None:  # its response.create went to the model: the one moment its first sound is timed from
+            nonlocal watch
+            watch.cancel()
+            watch = loop.call_later(FIRST_SOUND_S, lambda: m.loud or stop("no_sound"))
+
+        m.stop = stop
+        watch = loop.call_later(SEND_WAIT_S, lambda: stop("unsent"))
+        realtime = None
+        with contextlib.suppress(RuntimeError):  # (no realtime session: SEND_WAIT_S bounds it)
+            realtime = self._agent.realtime_llm_session
+            realtime.sent = sent
+        handle = self._session.generate_reply(instructions=SAY + unit)
         try:
             await handle  # done when the unit is said, or cut. It never raises.
         finally:
             watch.cancel()
             self._agent.unit = None
+            if realtime is not None:
+                realtime.sent = None
         if m.revoked:
             outcome = "revoked"
-        elif m.dead or (not handle.interrupted and m.loud < AUDIBLE_S):
+        elif m.why == "long":
+            outcome = "long"
+        elif m.why or (not handle.interrupted and m.loud < AUDIBLE_S):
             outcome = "silent"
+            m.why = m.why or ("quiet" if m.frames else "no_frames")  # it ended uncut: frames with no sound, or none
         else:
             outcome = "cut" if handle.interrupted else "said"
         evidence = {
@@ -462,6 +590,15 @@ class _DrivenLive:
             "leadMs": round(m.lead * 1000),
             "tookMs": round((time.monotonic() - began) * 1000),
         }
+        if m.why:
+            evidence["why"] = m.why
+        if free and m.loud > limit:
+            evidence["overMs"] = round((m.loud - limit) * 1000)  # past the limit its last try was stopped at
+            logger.warning("huddle driven voice: a unit ran %d ms over its sound limit on its second try", evidence["overMs"])
+        if outcome == "long":
+            self._long = unit
+        elif outcome == "said" or not free:
+            self._long = None
         if self._cut_at is not None and outcome != "said":
             evidence["stopMs"] = round((time.monotonic() - self._cut_at) * 1000)  # interrupt sent -> audio stopped
         self._cut_at = None
@@ -483,7 +620,7 @@ class _DrivenLive:
                         break
                     outcome = await self._speak(order, index, unit)
                     if outcome != "said":
-                        failed = outcome == "silent"
+                        failed = outcome in ("silent", "long")
                         break
             except Exception:
                 logger.exception("huddle driven voice could not say its line")
@@ -530,8 +667,29 @@ class _DrivenLive:
         if self._closed is None:
             self._closed = time.monotonic()
 
+    #: The call's mouths by agent (`start_live`), when this one is kept open for the call.
+    kept: dict | None = None
+
     async def aclose(self) -> None:
+        """The worker's voice is over (`Huddle._close_live`), and it is billed to here. A kept mouth's session
+        stays open, silent, for the next time its agent speaks: 15 rig calls opened a session 24 times, 0.4-1.0 s
+        each, and every silent unit was the first or second after an open (10-08). An idle Realtime session
+        costs nothing: it is billed by the token."""
         self._stop()
+        if self.kept is None or self.kept.get(self.agent_id) is not self:
+            return await self.close()
+        with contextlib.suppress(RuntimeError):  # (a session that is not running has nothing to stop)
+            self.interrupt()
+
+    def reopen(self) -> _DrivenLive:
+        self._opened, self._closed, self._cut_at = time.monotonic(), None, None
+        return self
+
+    async def close(self) -> None:
+        """The session itself ends: its call is over, or it is not a kept one."""
+        self._stop()
+        if self.kept is not None and self.kept.get(self.agent_id) is self:
+            del self.kept[self.agent_id]
         await self._session.aclose()
         await _unpublish(self._room, self.track_name)
 
@@ -634,6 +792,8 @@ async def _start_driven(
 
     def closed(_ev) -> None:
         live._stop()  # billed to here, whoever closed it
+        if live.kept is not None and live.kept.get(agent_id) is live:
+            del live.kept[agent_id]  # a kept mouth that died: the next one is opened new
         huddle.on_live_closed(live)
 
     session.on("close", closed)
@@ -641,8 +801,21 @@ async def _start_driven(
 
 
 async def start_live(
-    room, huddle: Huddle, vad, *, agent_id, persona, voice, speaker, seed
+    room, huddle: Huddle, vad, *, agent_id, persona, voice, speaker, seed, mouths: dict | None = None
 ) -> _Live | _DrivenLive:
+    """`mouths`: the call's mouths by agent. An agent's mouth opens once in a call and is kept until the call
+    ends (`_DrivenLive.aclose`): the worker opens and closes its voice as before, over the same session.
+    Its seed is nothing to a mouth, which never reads the conversation."""
+    # ponytail: opened at its agent's first line, not at the join. Opening (and one warm-up unit) as the
+    # worker joins would take the open off the first line too: a follow-up, it needs a look at the bill.
+    if mouths is not None and in_meet(speaker):
+        if (live := mouths.get(agent_id)) is not None and live._closed is not None:
+            return live.reopen()
+        live = mouths[agent_id] = await start_live(
+            room, huddle, vad, agent_id=agent_id, persona=persona, voice=voice, speaker=speaker, seed=seed
+        )
+        live.kept = mouths
+        return live
     # Every Meet voice is a mouth: the worker listens, /route and the agent decide, the voice says it.
     start = _start_driven if in_meet(speaker) else _start
     try:
@@ -722,8 +895,10 @@ async def entrypoint(ctx: JobContext) -> None:
     def _stt_metrics(m) -> None:
         usage["stt"] += m.audio_duration
 
+    mouths: dict[str, _DrivenLive] = {}  # each agent's mouth, open from its first line to the end of the call
+
     async def live_factory(**kw) -> _Live | _DrivenLive:
-        return await start_live(ctx.room, huddle, vad, **kw)
+        return await start_live(ctx.room, huddle, vad, mouths=mouths, **kw)
 
     def flush_metrics() -> None:
         # deltas since the last flush, so a crashed job loses at most a minute
@@ -876,6 +1051,9 @@ async def entrypoint(ctx: JobContext) -> None:
             huddle.clear_presence()
         )  # first: a stale "Live" marker outlives everything below
         await huddle.end_exchange(force=True)  # a request still open must not hold the call's window
+        for live in list(mouths.values()):  # the last person left: the kept mouths close with the call
+            with contextlib.suppress(Exception):
+                await live.close()
         flush_metrics()
         await backend.aclose()
 

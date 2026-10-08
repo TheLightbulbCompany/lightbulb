@@ -332,6 +332,26 @@ async def test_a_silent_receipt_moves_no_cursor_and_the_unit_is_tried_again():
     assert h._ledger == [] and row.status == "delivered"
 
 
+async def test_a_long_unit_is_a_failed_try_like_a_silent_one_and_the_log_says_which_try_and_why(caplog):
+    """10-08 rig: "I have it." took 4.05 s. The mouth stops such a unit (`long`), and it is said again."""
+    import json
+
+    h, backend, lives, clock, row = await ready(talking=False)
+    clock.t += h_mod.MEET_QUIET_S
+    await h.tick()
+    (u,) = h._ledger
+    first = lives[0].order
+    with caplog.at_level("INFO"):
+        h.on_unit("forge", first, 0, ANSWER, "long", {"loudMs": 4050, "why": "long"})
+        assert (u.cursor, u.state) == (0, "speaking") and row.status == "ready", "not said"
+        h.on_playback_ended("forge", first, True)
+        assert says_of(lives[0])[1:] == [("say", ANSWER)] * 2 and u.tries == 1, "tried again at once, from the same unit"
+        h.on_unit("forge", first + 1, 0, ANSWER, "silent", {"loudMs": 0, "why": "no_sound"})
+    logged = [json.loads(m.split(" ", 2)[2]) for r in caplog.records if (m := r.getMessage()).startswith("huddle receipt")]
+    assert [(x["outcome"], x["attempt"], x["why"]) for x in logged] == [("long", 1, "long"), ("silent", 2, "no_sound")]
+    assert not any(x.text == ANSWER for x in h._transcript._lines), "neither is on the record as said"
+
+
 # -- the exchange and the lines owed to it --
 
 

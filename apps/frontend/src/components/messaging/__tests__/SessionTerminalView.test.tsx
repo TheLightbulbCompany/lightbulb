@@ -7,7 +7,10 @@ import { SessionTerminalView, terminalScale } from "../SessionTerminalView";
 
 const writes: Uint8Array[] = [];
 const hooks: { data?: (d: string) => void; key?: (e: unknown) => boolean; term?: { cols: number; rows: number };
-  options?: { scrollback?: number }; resets: number; screen?: { w: number; h: number }; scrolled: number[]; binary?: boolean } = { resets: 0, scrolled: [] };
+  options?: { scrollback?: number }; resets: number; screen?: { w: number; h: number }; scrolled: number[]; binary?: boolean;
+  /** Set: writes wait, as in xterm, until `drain` parses them in order; `did` is what the terminal then did. */
+  later?: (() => void)[]; did: string[] } = { resets: 0, scrolled: [], did: [] };
+const drain = () => { for (const step of hooks.later?.splice(0) ?? []) step(); };
 vi.mock("@xterm/xterm", () => ({ Terminal: class {
   cols = 80; rows = 24; options = { disableStdin: true };
   buffer = { active: { viewportY: 100 } }; // 100 rows of history above the screen
@@ -20,13 +23,17 @@ vi.mock("@xterm/xterm", () => ({ Terminal: class {
     Object.defineProperty(shown, "offsetWidth", { get: () => hooks.screen?.w ?? 0 });
     Object.defineProperty(shown, "offsetHeight", { get: () => hooks.screen?.h ?? 0 });
   }
-  reset() { hooks.resets += 1; } dispose() {}
+  reset() { hooks.resets += 1; hooks.did.push("reset"); } dispose() {}
   onData(cb: (d: string) => void) { hooks.data = cb; }
   attachCustomKeyEventHandler(cb: (e: unknown) => boolean) { hooks.key = cb; }
   resize(c: number, r: number) { this.cols = c; this.rows = r; }
-  write(data: Uint8Array, done?: () => void) { writes.push(data); done?.(); }
+  // An empty write only keeps a reset or a resize in its place in the order.
+  write(data: Uint8Array | string, done?: () => void) {
+    const parse = () => { if (typeof data !== "string") { writes.push(data); hooks.did.push(new TextDecoder().decode(data).replace(/\x1b[^a-zA-Z]*[a-zA-Z]/g, "")); } done?.(); };
+    if (hooks.later) hooks.later.push(parse); else parse();
+  }
 } }));
-afterEach(() => { writes.length = 0; hooks.resets = 0; hooks.scrolled = []; hooks.binary = undefined; hooks.screen = undefined; window.localStorage.clear(); vi.useRealTimers(); });
+afterEach(() => { writes.length = 0; hooks.resets = 0; hooks.later = undefined; hooks.did = []; hooks.scrolled = []; hooks.binary = undefined; hooks.screen = undefined; window.localStorage.clear(); vi.useRealTimers(); });
 const CLEAR = Array.from(new TextEncoder().encode("\x1b[?1049l\x1b[r\x1b[2J\x1b[H"));
 
 const screenEvent = (sessionId: string, kind = "snapshot", seq = 0, epoch = 1, data = "G1tI") => ({ schemaVersion: 1, eventId: `e${seq}`, type: "workspace.session.screen", occurredAt: "now",
@@ -338,6 +345,33 @@ it("writes history under the first snapshot, keeps it when later snapshots redra
   expect(hooks.resets).toBe(1);
   emit(screenEvent("s1", "snapshot", 0, 2));
   expect(hooks.resets).toBe(2);
+});
+
+it("history that arrives after its snapshot is written: the terminal starts over with it, then the screen again", async () => {
+  // Prod 2026-10-08: the Mac sends the burst, then the snapshot, each as its own request; when the
+  // snapshot came first the view showed 30 rows with no scrollback (about half of all opens).
+  const { emit } = await mountView();
+  emit(screenEvent("s1", "snapshot", 1));
+  expect([writes.length, hooks.resets]).toEqual([1, 1]);
+  emit(screenEvent("s1", "history", 0, 1, btoa("old\r\n")));
+  expect(hooks.resets).toBe(2);
+  expect(writes.slice(1).map((w) => new TextDecoder().decode(w).includes("old"))).toEqual([true, false]);
+  emit(screenEvent("s1", "history", 0, 1, btoa("old\r\n")));
+  expect([writes.length, hooks.resets]).toEqual([3, 2]);
+});
+
+it("a redraw starts after the bytes written before it: xterm resets at once but parses writes later", async () => {
+  // xterm 5.5.0 keeps queued writes through reset(). Two late history chunks in one tick each start the
+  // picture over; reset at once, both resets ran first and the two redraws then drew one after the other.
+  const { emit } = await mountView();
+  hooks.later = [];
+  emit(screenEvent("s1", "snapshot", 2, 1, btoa("screen")));
+  emit(screenEvent("s1", "history", 1, 1, btoa("new,")));
+  emit(screenEvent("s1", "history", 0, 1, btoa("old,")));
+  expect(hooks.did).toEqual([]);
+  act(drain);
+  expect(hooks.did).toEqual(["reset", "screen", "reset", "new,", "screen", "reset", "old,", "new,", "screen"]);
+  expect([hooks.term!.cols, hooks.term!.rows]).toEqual([100, 30]);
 });
 
 it("a ping keeps a quiet terminal live and draws nothing", async () => {

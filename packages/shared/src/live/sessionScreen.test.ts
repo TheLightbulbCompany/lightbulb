@@ -59,8 +59,40 @@ it("an empty history frame is all the history there is: later bursts are someone
   expect(order.bare).toBe(false);
   expect(feed([f(0, "snapshot")]).order.bare).toBe(true);
 });
-it("history arriving after its snapshot is never written", () => {
-  expect(feed([f(2, "snapshot"), f(0, "history"), f(1, "history"), f(3)]).written).toEqual(["s2", "o3"]);
+it("history that arrives after its snapshot starts the picture over: the history, then all that is written since", () => {
+  // Prod 2026-10-08: each frame is its own request from the Mac to the viewer, and the snapshot the
+  // Mac sent behind the burst can come first (once by 2.6 s). Such a view dropped the burst and kept
+  // only the last screen: about half of all opens.
+  expect(feed([f(1, "snapshot"), f(0, "history")]).written).toEqual(["s1", "h0", "s1"]);
+  const late = feed([f(2, "snapshot"), f(3), f(1, "history"), f(4), f(0, "history"), f(5)]);
+  expect(late.written).toEqual(["s2", "o3", "h1", "s2", "o3", "o4", "h0", "h1", "s2", "o3", "o4", "o5"]);
+  expect(late.order.bare).toBe(false);
+  // Part of the burst before the snapshot, part after.
+  expect(feed([f(0, "history"), f(2, "history"), f(3, "snapshot"), f(4), f(1, "history")]).written)
+    .toEqual(["h2", "s3", "o4", "h0", "h1", "h2", "s3", "o4"]);
+  // A view that drew the run before its own watch brought the burst, and got that burst's snapshot first.
+  expect(feed([f(3, "snapshot"), f(5, "snapshot"), f(4, "history"), f(6)]).written).toEqual(["s3", "s5", "h4", "s5", "o6"]);
+});
+it("history that arrives late never redraws a viewer whose history is whole, and never twice", () => {
+  const whole = feed([f(0, "history"), f(1, "snapshot"), f(2)]);
+  // Someone else's burst, its snapshot first: consumed, nothing written again.
+  expect(feed([f(4, "snapshot"), f(3, "history"), f(5)], whole.order).written).toEqual(["s4", "o5"]);
+  // The same frame again, and one from an older run.
+  expect(feed([f(1, "snapshot"), f(0, "history"), f(0, "history"), f(0, "history", 0)]).written).toEqual(["s1", "h0", "s1"]);
+  // A chunk nearer the snapshot than the run written replaces it, though no longer: a lost chunk costs only the older part.
+  expect(feed([f(0, "history"), f(3, "snapshot"), f(2, "history")]).written).toEqual(["h0", "s3", "h2", "s3"]);
+  expect(feed([f(0, "history"), f(1, "history"), f(4, "snapshot"), f(3, "history"), f(3, "history")]).written).toEqual(["h0", "h1", "s4", "h3", "s4"]);
+  // An older chunk that does not join the run written makes it no longer; the chunk between them does.
+  expect(feed([f(3, "history"), f(4, "snapshot"), f(1, "history")]).written).toEqual(["h3", "s4"]);
+  expect(feed([f(3, "history"), f(4, "snapshot"), f(1, "history"), f(2, "history")]).written).toEqual(["h3", "s4", "h1", "h2", "h3", "s4"]);
+});
+it("history later than a long picture waits for the next snapshot, or is someone else's", () => {
+  const long = [f(1, "snapshot"), ...Array.from({ length: 32 }, (_, i) => f(i + 2))];
+  const bare = feed(long);
+  expect(bare.order.shown).toEqual([]);
+  expect(feed([f(0, "history"), f(34, "snapshot")], bare.order).written).toEqual(["h0", "s34"]);
+  const partial = feed([f(1, "history"), ...long.map((frame) => ({ ...frame, seq: frame.seq + 1 }))]);
+  expect(feed([f(0, "history"), f(35, "snapshot")], partial.order).written).toEqual(["s35"]);
 });
 it("a lost history chunk costs only the older part", () => {
   expect(feed([f(0, "history"), f(2, "history"), f(3, "snapshot")]).written).toEqual(["h2", "s3"]);

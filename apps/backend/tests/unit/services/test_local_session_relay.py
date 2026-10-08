@@ -2517,3 +2517,52 @@ async def test_a_hosted_client_follow_up_is_labelled_with_its_client_and_person(
     # A Clerk failure only blurs the label; dispatch still goes out.
     monkeypatch.setattr(session_presence, "human_display_name", AsyncMock(side_effect=RuntimeError("clerk down")))
     assert (await relay_module._actor_label(command))["displayName"] == "Claude Code via A teammate"
+
+
+@pytest.mark.asyncio
+async def test_a_session_hint_fans_out_off_the_callers_frame(monkeypatch):
+    """51-member fan-out took 2.4-3.2 s of a desktop register frame on dev (2026-10-08); the caller
+    must return at once and the publish still happen."""
+    import asyncio
+
+    from core.services import local_session_relay as relay
+
+    started, finished = asyncio.Event(), asyncio.Event()
+
+    async def slow_publish(owner, event):
+        started.set()
+        await asyncio.sleep(0.05)
+        assert event["type"] == "workspace.sessions.changed" and event["payload"]["humanUserId"] == "user_1"
+        finished.set()
+
+    monkeypatch.setattr("core.services.live_events.publish_owner_users", slow_publish)
+    await asyncio.wait_for(relay.publish_resources_changed("org_1", "user_1"), timeout=0.01)  # returns at once
+    assert not finished.is_set()
+    await asyncio.wait_for(finished.wait(), timeout=1)  # and the hint still went out
+    await asyncio.sleep(0)
+    assert not relay._hint_tasks  # the finished task released itself
+
+
+@pytest.mark.asyncio
+async def test_hints_for_one_person_coalesce_while_a_fan_out_is_running(monkeypatch):
+    """Codex on #3909: a streaming burst (one hint per session per second) must not pile up
+    detached fan-outs; at most one runs per (owner, human, transcript) with one follow-up."""
+    import asyncio
+
+    from core.services import local_session_relay as relay
+
+    calls, gate = [], asyncio.Event()
+
+    async def publish(owner, event):
+        calls.append(event["payload"])
+        await gate.wait()
+
+    monkeypatch.setattr("core.services.live_events.publish_owner_users", publish)
+    for _ in range(5):
+        await relay.publish_resources_changed("org_1", "user_1")
+    await asyncio.sleep(0)
+    assert len(calls) == 1 and len(relay._hint_tasks) == 1  # one in flight, the other four coalesced
+    gate.set()
+    await asyncio.gather(*list(relay._hint_tasks))
+    assert len(calls) == 2  # exactly one follow-up carried the coalesced hints
+    assert "org_1" not in {k[0] for k in relay._hint_running}

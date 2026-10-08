@@ -2100,6 +2100,10 @@ async def decide_agent_ask(
     if decision == "send":
         await _send_ask(row, ask)
     await _push_presence(row)
+    # The owner's Activity refetches on this, so a card answered elsewhere (band, teammate) resolves.
+    from core.services.local_session_relay import publish_resources_changed
+
+    await publish_resources_changed(owner, row["humanUserId"])
     return await _receipt_for(owner, sid, await _get_ask(owner, sid, ask["requestId"]) or ask)
 
 

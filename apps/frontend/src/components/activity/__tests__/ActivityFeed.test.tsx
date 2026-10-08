@@ -131,6 +131,35 @@ describe("ActivityFeed", () => {
     expect(within(pinned).getByRole("button", { name: "Decline" })).toBeInTheDocument();
   });
 
+  it("answers an agent's ask to message a session, opens the session, and shows the answer", async () => {
+    const reason = "Nothing is sent until you choose. Change this in Settings → Desktop.";
+    const agentAsk: ActivityItem = {
+      ...approval, id: "agentmsg:s1:req-1", kind: "session", subtype: "join_request", actor: friday,
+      summary: { title: "Friday wants to message Fix login", requester: friday, reason,
+        preview: { text: "Run the tests again", destination: null, fields: [] },
+        links: [{ kind: "session", id: "s1", label: "Session" }, { kind: "room", id: "room-1", label: "Room" }] },
+      actions: [
+        { id: "send", label: "Send", style: "primary", confirm: null, input: null, navigate: null },
+        { id: "decline", label: "Decline", style: null, confirm: null, input: null, navigate: null },
+      ],
+    };
+    const { props, rerender } = setup({ items: [agentAsk] });
+    const pinned = row(agentAsk.id);
+    expect(within(pinned).getByText(reason)).toBeInTheDocument();
+    expect(within(pinned).getByText("Run the tests again")).toBeInTheDocument();
+    await userEvent.click(within(pinned).getByRole("button", { name: "Send" }));
+    expect(props.onRunAction).toHaveBeenCalledWith(agentAsk.id, "send", {});
+    await userEvent.click(within(pinned).getByText("Run the tests again"));
+    expect(props.onNavigate).toHaveBeenCalledWith({ kind: "session", id: "s1", roomId: null });
+
+    const sent: ActivityItem = { ...agentAsk, state: "resolved", actions: [],
+      summary: { ...agentAsk.summary, title: "Sent · Friday wants to message Fix login" } };
+    rerender(<ActivityFeed {...props} items={[sent]} />);
+    const done = row(sent.id);
+    expect(within(done).getByText(/Sent · Friday wants to message Fix login/)).toBeInTheDocument();
+    expect(within(done).queryByRole("button", { name: "Send" })).toBeNull();
+  });
+
   it("decides inline, opens, and follows the location link", async () => {
     const { props } = setup();
     const pinned = row(approval.id);

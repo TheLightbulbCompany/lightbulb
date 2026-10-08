@@ -46,6 +46,9 @@ export interface ActivityFeedProps {
 export function rowTarget(item: ActivityItem): ActivityTarget | null {
   const action = item.actions.find((entry) => entry.navigate)?.navigate;
   if (action) return action;
+  // A session ask (pick-up, an agent's message) opens its session.
+  const session = item.kind === "session" ? item.summary.links.find((link) => link.kind === "session") : undefined;
+  if (session) return { kind: "session", id: session.id, roomId: null };
   if (!item.roomId) return null;
   return item.threadRootMessageId
     ? { kind: "thread", id: item.threadRootMessageId, roomId: item.roomId }

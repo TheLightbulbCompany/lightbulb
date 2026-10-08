@@ -306,6 +306,28 @@ describe("session link page", () => {
     expect(last().fresh).toBeUndefined();
   });
 
+  // Codex on #3946: AppSync down for longer than the 45 s lease right after the seat was taken, and
+  // the socket retried with the lapsed lease until a reload.
+  it("keeps the seat while the channel is not live, so the socket's next attempt has a live lease", async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
+    let lease = "pub-1.key-1";
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => ({ ok: true, status: 200, json: async () => url.endsWith("/viewing") ? { ...seat, lease } : model({}) }) as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const viewing = () => fetchMock.mock.calls.filter(c => String(c[0]).endsWith("/viewing"));
+    expect(viewing()).toHaveLength(1);
+    lease = "pub-1.key-2"; // the first lapsed: the server mints another
+    await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
+    expect(JSON.parse(String(viewing()[1][1]?.body))).toEqual({ token: "tok", lease: "pub-1.key-1" }); // no `fresh`: nothing can hear a picture yet
+    expect(await sockets.made[0].opts.getToken()).toBe("pub-1.key-2");
+    // Live: the terminal's own renewal takes over, and the page sends none.
+    await act(async () => { (sockets.made[0].opts as unknown as { onStatus: (s: { liveChannels: string[] }) => void }).onStatus({ liveChannels: ["/pub/pub-1"] }); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(45000); });
+    expect(viewing()).toHaveLength(2);
+  });
+
   it("shows the Continue instructions only when the owner turned Continue on", async () => {
     vi.useFakeTimers();
     auth.isSignedIn = true;

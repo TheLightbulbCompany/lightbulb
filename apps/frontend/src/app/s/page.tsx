@@ -115,6 +115,22 @@ function LinkTerminal({ token, onTrouble }: { token: string; onTrouble: () => vo
     // The seat was refused (narrowed, ended, offline): the page re-opens the link now and says which.
     catch (e) { if (e instanceof ApiError) onTrouble(); throw e; }
   }, [viewing, channel, onTrouble]);
+  // Until the channel is live the terminal renews nothing (it asks for a picture only once it can
+  // hear one), so the seat is kept here: AppSync refuses a connect or a subscribe made with a lapsed
+  // lease, and the socket would retry with it for good (AppSync down past 45 s right after the seat
+  // was taken, or a tab hidden that long). Each renewal hands the socket's next attempt a live lease,
+  // a new one if the old lapsed. One request per 15 s, and none while the tab is hidden.
+  const live = !!channel && liveChannels.includes(channel);
+  useEffect(() => {
+    if (!channel || live) return;
+    const keep = () => {
+      if (document.visibilityState === "hidden") return;
+      void viewing().then((next) => { if (next.channel !== channel) setRound((n) => n + 1); }, (e) => { if (e instanceof ApiError) onTrouble(); });
+    };
+    const timer = setInterval(keep, VIEWING_RETRY_MS);
+    document.addEventListener("visibilitychange", keep);
+    return () => { clearInterval(timer); document.removeEventListener("visibilitychange", keep); };
+  }, [channel, live, viewing, onTrouble]);
   const onEvent = useCallback((handler: (event: LiveEvent) => void) => { handlers.current.add(handler); return () => { handlers.current.delete(handler); }; }, []);
   const client = seat?.client;
   const claim = useCallback((wanted: string) => { client?.setChannels([wanted]); return () => client?.setChannels([]); }, [client]);

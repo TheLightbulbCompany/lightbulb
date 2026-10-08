@@ -27,7 +27,13 @@ from core.services.messaging import (
 logger = logging.getLogger(__name__)
 
 MAX_EVENT_BYTES = 230 * 1024
-_TIMEOUT = httpx.Timeout(5.0, connect=2.0)
+# pool=30: a burst waits its turn for a connection instead of failing with PoolTimeout.
+_TIMEOUT = httpx.Timeout(5.0, connect=2.0, pool=30.0)
+#: Publishes in flight at once, per process. Beyond it a publish waits; the pool is sized to it.
+#: ponytail: one bound for every channel; per-workspace fairness if one workspace's burst ever
+#: starves the others.
+_MAX_INFLIGHT_PUBLISHES = 64
+_inflight: asyncio.Semaphore | None = None
 #: One keep-alive client for every publisher without an injected one: Mac live frames publish
 #: several times a second, and a fresh client per POST paid a TLS handshake each time.
 _http_client: httpx.AsyncClient | None = None
@@ -249,14 +255,25 @@ class LiveEventPublisher:
         return _sign(credentials, endpoint, body)
 
     async def _post(self, endpoint: str, body: bytes, headers: dict[str, str]):
-        global _http_client
-        if self._http is not None:
-            return await self._http.post(endpoint, content=body, headers=headers)
-        if _http_client is None:
-            # Bound to the first event loop that posts: fine, the backend and the provisioner
-            # Lambda each keep one loop for the process.
-            _http_client = httpx.AsyncClient(timeout=_TIMEOUT)
-        return await _http_client.post(endpoint, content=body, headers=headers)
+        global _http_client, _inflight
+        if _inflight is None:
+            # Bound to the first event loop that posts, like the client below. Without it a
+            # fan-out burst (51 members x 30 session registrations on 2026-10-08) exhausted the
+            # connection pool and every publish past it was dropped with PoolTimeout.
+            _inflight = asyncio.Semaphore(_MAX_INFLIGHT_PUBLISHES)
+        async with _inflight:
+            if self._http is not None:
+                return await self._http.post(endpoint, content=body, headers=headers)
+            if _http_client is None:
+                # Bound to the first event loop that posts: fine, the backend and the provisioner
+                # Lambda each keep one loop for the process.
+                _http_client = httpx.AsyncClient(
+                    timeout=_TIMEOUT,
+                    limits=httpx.Limits(
+                        max_connections=_MAX_INFLIGHT_PUBLISHES, max_keepalive_connections=_MAX_INFLIGHT_PUBLISHES
+                    ),
+                )
+            return await _http_client.post(endpoint, content=body, headers=headers)
 
 
 def _task_credentials() -> Any:

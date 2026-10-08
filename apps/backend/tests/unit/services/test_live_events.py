@@ -77,3 +77,28 @@ async def test_post_reuses_one_keep_alive_client(monkeypatch):
 async def test_user_channel_is_none_without_a_user_stream(monkeypatch):
     monkeypatch.setattr(live_events.messaging_repo, "get_user_stream", AsyncMock(return_value=None))
     assert await live_events.LiveEventPublisher().user_channel("org_a", "user_a") is None
+
+
+@pytest.mark.asyncio
+async def test_publishes_in_flight_are_bounded_so_a_burst_queues_instead_of_exhausting_the_pool(monkeypatch):
+    """51 members x 30 session registrations (2026-10-08, dev) drove thousands of concurrent publishes
+    into the default pool and every one past it failed with PoolTimeout; now at most
+    _MAX_INFLIGHT_PUBLISHES post at once and the rest wait."""
+    import asyncio
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(live_events, "_inflight", None)
+    monkeypatch.setattr(live_events, "_MAX_INFLIGHT_PUBLISHES", 4)
+    live, peak = {"n": 0}, {"max": 0}
+
+    class Fake:
+        async def post(self, *_a, **_k):
+            live["n"] += 1
+            peak["max"] = max(peak["max"], live["n"])
+            await asyncio.sleep(0.01)
+            live["n"] -= 1
+            return SimpleNamespace(status_code=200, json=lambda: {"successful": [{}], "failed": []})
+
+    publisher = live_events.LiveEventPublisher(http_client=Fake())
+    await asyncio.gather(*(publisher._post("https://x", b"{}", {}) for _ in range(40)))
+    assert peak["max"] == 4

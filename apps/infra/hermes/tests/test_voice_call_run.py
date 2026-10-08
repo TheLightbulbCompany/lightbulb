@@ -197,7 +197,8 @@ def test_a_voice_run_gets_the_dm_environment_on_the_room_key(env, home, monkeypa
     assert turn._run_call(IDENTITY, REQUEST, _frames())[0::2] == ("completed", "It landed.")
     assert env["overlay"] is None and env["family"] == "call"
     assert env["session"] == SESSION
-    assert env["limits"] == {"reasoning_config": {"enabled": True, "effort": "low"}}  # no step cap
+    # No step cap, and no post-turn review fork after a spoken turn.
+    assert env["limits"] == {"reasoning_config": {"enabled": True, "effort": "low"}, "skip_background_review": True}
     assert env["body"]["room"] == {"id": ROOM, "kind": "channel"} and env["body"]["sender"] == SPEAKER
     assert env["keys"] == [SESSION, ("reset", "tok")]  # compression keeps async delegations attached
     assert env["desktop"] == [(SESSION, "run-1")]

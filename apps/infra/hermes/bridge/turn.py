@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 import traceback
+import types
 import urllib.error
 import urllib.request
 import uuid as _uuid
@@ -281,7 +282,92 @@ def register_call_run(identity: dict) -> bool:
 # the transport default of "medium". The number of steps is not capped (owner ruling 2026-10-05): the run
 # takes as many as the request needs and speaks short updates as it goes (backend TURN_NOTE). A
 # 4-step cap cut real lookups short (a PostHog query answered half-done, 10-04 prod Meet).
-CALL_RUN_LIMITS = {"reasoning_config": {"enabled": True, "effort": "low"}}
+#
+# skip_background_review is AIAgent's own switch (run_agent.py:265, read by turn_finalizer.py:616): no
+# memory/skill review is forked after a spoken turn. That fork compacts a DETACHED copy of an
+# over-threshold conversation and commits nothing (background_review._detach_fork_compression), so it
+# held the run's save for 83 s and the next spoken turn compacted the same session again (prod
+# 10-07). The skill counter still rides the session row, so the room's next chat turn runs the review.
+CALL_RUN_LIMITS = {"reasoning_config": {"enabled": True, "effort": "low"}, "skip_background_review": True}
+
+#: A spoken turn's bound on the history it replays, in Hermes's rough tokens. A spoken turn never
+#: compacts (see _run_call), so this is what keeps a session whose off-path compaction fell behind
+#: under the model's window and the openrouter-gate's request bound (~100k tokens with the prompt
+#: and tool schemas, ~33k of that on an agent with a large MCP). The threshold leaves ~27k of
+#: history, so the cut only applies to a session well past it.
+CALL_HISTORY_TOKENS = 40_000
+#: Seconds a spoken turn's model call may stay silent (no text, reasoning or tool call) before it is
+#: sent again once, and before the run is ended as a stalled agent. Hermes's own stale-stream
+#: detector cannot serve here: it is per provider, not per run, defaults to 180 s and is raised to
+#: 240 s above 50k tokens (chat_completion_helpers.py:589-602).
+CALL_SILENCE_REISSUE_S = 20.0
+CALL_SILENCE_FAIL_S = 45.0
+CALL_REISSUE_NOTE = "[No answer arrived in time, so this request was sent again. Answer the request above now.]"
+
+
+class _CallDeadline:
+    """The deadline on a spoken turn's model call, fed by the run's own stream callbacks.
+
+    Silent for CALL_SILENCE_REISSUE_S with no tool running: Hermes's ``redirect`` cancels only the
+    in-flight model request and retries it in the same turn, keeping the completed tool rounds
+    (interrupt_control.py:228-285); it answers False when no model request is in flight, and is then
+    tried again on the next poll. Silent for CALL_SILENCE_FAIL_S: Hermes's hard stop, and the run
+    ends as INTERRUPTED. A running tool is never timed (a query or a browser step is real work), and
+    an unpaired tool_start leaves the deadline off rather than on."""
+
+    def __init__(self, frames, clock=time.monotonic):
+        self.clock, self.agent = clock, None
+        self.last, self.tools, self.reissued, self.timed_out = clock(), 0, False, False
+        self._done = threading.Event()
+        for name, hook in (("delta", self._touch), ("thinking", self._touch), ("activity", self._touch),
+                           ("tool_start", self._tool_start), ("tool_complete", self._tool_complete)):
+            setattr(frames, name, self._first(hook, getattr(frames, name)))  # read by _construct_agent
+
+    @staticmethod
+    def _first(hook, callback):
+        def both(*args, **kwargs):
+            hook()
+            return callback(*args, **kwargs)
+        return both
+
+    def _touch(self) -> None:
+        self.last = self.clock()
+
+    def _tool_start(self) -> None:
+        self.tools += 1
+        self._touch()
+
+    def _tool_complete(self) -> None:
+        self.tools = max(0, self.tools - 1)
+        self._touch()
+
+    def check(self) -> None:
+        if self.tools or self.timed_out or self.agent is None:
+            return
+        silent = self.clock() - self.last
+        try:
+            if silent >= CALL_SILENCE_FAIL_S:
+                self.timed_out = True
+                log.warning("call turn: model silent for %.0fs; ending the run", silent)
+                self.agent.interrupt(hard_cancel=True, tool_reason="model call deadline")
+            elif silent >= CALL_SILENCE_REISSUE_S and not self.reissued:
+                self.reissued = bool(self.agent.redirect(CALL_REISSUE_NOTE))
+                if self.reissued:
+                    log.warning("call turn: model silent for %.0fs; request sent again", silent)
+        except Exception:  # noqa: BLE001 -- the deadline must never fail the turn it watches
+            log.warning("call deadline check failed", exc_info=True)
+
+    def __enter__(self):
+        self._touch()
+        threading.Thread(target=self._poll, name="call-deadline", daemon=True).start()
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self._done.set()
+
+    def _poll(self) -> None:
+        while not self._done.wait(1.0):
+            self.check()
 
 
 def _voice_body(identity: dict, request: dict) -> dict:
@@ -307,7 +393,8 @@ def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> t
     # The room turns' folder path, never filled or removed here: an observed row's "saved at" note
     # names it, and the room's next turn fills it (_observed_text).
     base = sync.turn_media_root() / f"{agent_id}.{room_id}"
-    with _waiting_turn_lock(agent_id, session_key, run_id, on_wait=lambda: frames.emit({"type": "run_queued"})):
+    watch = _CallDeadline(frames)
+    with _voice_turn_lock(agent_id, session_key, run_id, on_wait=lambda: frames.emit({"type": "run_queued"})):
         # A run stopped while queued gets no lock: nothing below may run (the context file is
         # keyed by the session key and belongs to the turn holding the lock).
         if run_aborted(run_id):
@@ -320,17 +407,28 @@ def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> t
         with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id, session_key), _desktop_active_turn(session_key, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
             try:
                 agent = _construct_agent(agent_id, body, frames, session_key, **CALL_RUN_LIMITS)
+                # No compaction inside a spoken turn (67-103 s each, prod 10-07): Hermes's own
+                # per-agent switch, which every automatic trigger reads (turn_context_compaction.py:239,
+                # turn_preflight.py:89/289) and Hermes sets the same way on its review fork
+                # (background_review.py:843). The session is compacted off the call path instead
+                # (compact_session), and CALL_HISTORY_TOKENS bounds what this turn replays.
+                agent.compression_enabled = False
+                watch.agent = agent
                 queued_steers = attach_agent(run_id, agent)
                 if run_aborted(run_id):
                     return "aborted", None, "", dict(ZERO_USAGE)
                 text = f"{request['input']}\n{queued_steers}" if queued_steers else request["input"]
                 try:
-                    result = _converse(agent, agent_id, session_key, run_id, body, base,
-                                       with_profile_agents_md(agent_id, request["instructions"]), text, text)
+                    with watch:
+                        result = _converse(agent, agent_id, session_key, run_id, body, base,
+                                           with_profile_agents_md(agent_id, request["instructions"]), text, text,
+                                           history_budget=CALL_HISTORY_TOKENS)
                     _post_turn.agent = agent
                 except Exception:
                     if run_aborted(run_id):
                         return "aborted", None, "", _agent_usage(agent)
+                    if watch.timed_out:
+                        return "error", INTERRUPTED, "", _agent_usage(agent)
                     raise
             finally:
                 browser_control.release(browser_lease)
@@ -338,7 +436,8 @@ def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> t
     if run_aborted(run_id):
         return "aborted", None, "", usage
     reply = result.get("final_response") or ""
-    if result.get("interrupted") is True:  # not our abort (checked above): Hermes stopped it itself
+    # Not our abort (checked above): the call deadline stopped it, or Hermes stopped it itself.
+    if watch.timed_out or result.get("interrupted") is True:
         return "error", INTERRUPTED, "", usage
     if result.get("failed") is True:
         return "error", _failed_kind(agent, result), "", usage
@@ -384,6 +483,8 @@ def run_call_turn(identity: dict, request: dict, reserved: bool = False) -> None
             sync.save_root_auth()
         except Exception:  # noqa: BLE001
             log.warning("save_root_auth failed for call turn", exc_info=True)
+        # The answer is delivered and saved: this turn did not compact, so do it here, where nobody waits.
+        compact_session(agent_id, session_key)
     finally:
         _end_turn()
 
@@ -2040,6 +2141,10 @@ def _message_content(text: str, image_paths: list[str]) -> str | list[dict]:
 #: Hermes's skill-review counter, carried across turns in the session row's model_config
 #: (_restore_review_counters).
 SKILL_COUNTER = "lightbulb_iters_since_skill"
+#: The session's size as a share of Hermes's compaction threshold, written after every
+#: run_conversation (_recorded_pressure) and zeroed by an off-path compaction that commits
+#: (compact_session).
+PRESSURE = "lightbulb_context_pressure"
 
 #: Hermes's observed group context, as its gateway frames it for a Telegram group turn
 #: (gateway/run.py: _OBSERVED_GROUP_CONTEXT_HEADER, _CURRENT_ADDRESSED_MESSAGE_HEADER, and the
@@ -2483,6 +2588,9 @@ _turn_locks_guard = threading.Lock()
 #: A ceiling on turns executing at once in this microVM, whatever their agent or conversation.
 MAX_CONCURRENT_TURNS = max(1, int(os.environ.get("LIGHTBULB_MAX_CONCURRENT_TURNS") or 4))
 _turn_slots = threading.BoundedSemaphore(MAX_CONCURRENT_TURNS)
+#: Off-path compactions (compact_session) take a turn slot too, and at most this many of them at
+#: once, so compactions alone never hold every slot.
+_compaction_slots = threading.BoundedSemaphore(max(1, MAX_CONCURRENT_TURNS - 1))
 
 
 def _turn_lock(agent_id: str, session_key: str) -> threading.Lock:
@@ -2642,7 +2750,8 @@ def _run_conversation(agent, agent_id: str, session_key: str, **kwargs) -> dict:
     stops before its tools run): rerunning it unrecorded could repeat a tool's side effects."""
     try:
         result = agent.run_conversation(**kwargs) or {}
-        _save_session_meta(agent, {SKILL_COUNTER: int(getattr(agent, "_iters_since_skill", 0) or 0)})
+        _save_session_meta(agent, {SKILL_COUNTER: int(getattr(agent, "_iters_since_skill", 0) or 0),
+                                   PRESSURE: _recorded_pressure(agent)})
         return result
     finally:  # a raising run must still end its non-room session, or prune never ages it
         _end_unless_room(agent, agent_id, session_key)
@@ -2712,6 +2821,217 @@ def _restore_review_counters(agent) -> None:
         agent._iters_since_skill = meta[SKILL_COUNTER]
 
 
+def _context_pressure(agent) -> float:
+    """Hermes's last real prompt size (context_compressor.last_prompt_tokens, the figure its own
+    in-loop gate reads) plus what a bounded replay left out of that prompt (_converse), over its
+    threshold_tokens; 0.0 when there is no reading."""
+    compressor = getattr(agent, "context_compressor", None)
+    try:
+        tokens = max(0, int(compressor.last_prompt_tokens)) + int(getattr(agent, OMITTED_TOKENS, 0) or 0)
+        return round(tokens / int(compressor.threshold_tokens), 3)
+    except Exception:  # noqa: BLE001 -- no compressor (a test double), a plugin engine, a zero threshold
+        return 0.0
+
+
+#: Agent attribute: rough tokens of session history a bounded replay did not send this turn.
+OMITTED_TOKENS = "_lightbulb_omitted_tokens"
+
+
+def _recorded_pressure(agent) -> float:
+    """The pressure to store after a run. A run that could not compact (a spoken turn) cannot have
+    shrunk its session, so it never lowers the stored reading: its own prompt may be a bounded
+    tail, and a lower figure would hide a session that still owes a compaction."""
+    pressure = _context_pressure(agent)
+    if getattr(agent, "compression_enabled", True) is False:
+        try:
+            pressure = max(pressure, float(_session_meta(agent).get(PRESSURE) or 0))
+        except (TypeError, ValueError):
+            pass
+    return pressure
+
+
+def _rough_tokens(messages: list[dict]) -> int:
+    try:
+        from agent.model_metadata import estimate_messages_tokens_rough as estimate
+    except ImportError:  # outside the Hermes image
+        return sum(len(json.dumps(m, default=str)) for m in messages) // 4
+    return estimate(messages)
+
+
+def _bounded_history(history: list[dict], budget: int) -> list[dict]:
+    """`history` when it fits `budget` rough tokens, else its longest tail that does and starts at a
+    user message (no tool result without its call). The rows stay in state.db: Hermes records a
+    turn's new messages after whatever history it was handed (session_persistence.py:337-369)."""
+    estimate = _rough_tokens
+    if estimate(history) <= budget:
+        return history
+    starts = [i for i, m in enumerate(history) if m.get("role") == "user"]
+    # ponytail: one estimate per candidate start; bisect if a session ever holds thousands of rows.
+    for i in starts:
+        if estimate(history[i:]) <= budget:
+            log.warning("call turn: history bounded to its last %d of %d messages", len(history) - i, len(history))
+            return history[i:]
+    return history[starts[-1]:] if starts else history
+
+
+# ---- compaction off the call path ------------------------------------------------------------
+# A spoken turn never compacts (_run_call). A room session near Hermes's threshold is compacted
+# here instead, where nobody is waiting: when someone goes Live (server profile.warm, from the
+# backend's prewake) and after a spoken turn's answer is delivered and saved (run_call_turn).
+# The compaction is Hermes's own and is COMMITTED to the session -- unlike the one its post-turn
+# review fork runs on a detached copy, after which the next turn compacted the same session again.
+
+#: Share of compression.threshold_tokens at which a session is compacted off the call path.
+OFF_PATH_COMPACT_RATIO = 0.85
+#: Conversation -> its running off-path compaction, so a spoken turn can stop them (_voice_turn_arriving).
+_compacting: dict[tuple[str, str], dict] = {}
+#: Conversation -> spoken turns that have arrived and do not hold its turn lock yet. A count:
+#: several can wait at once. Both maps change under _compacting_guard, which is what makes
+#: "a turn arrived" and "a compaction started" one ordered pair instead of a race.
+_voice_arriving: dict[tuple[str, str], int] = {}
+_compacting_guard = threading.Lock()
+
+
+@contextlib.contextmanager
+def _voice_turn_arriving(agent_id: str, session_key: str):
+    """A spoken turn is here and is about to take its conversation's turn lock and a turn slot.
+    For as long as this is open no off-path compaction starts (compact_session) and every one
+    already running is stopped -- in ANY conversation: the one in this conversation holds its
+    lock, and each of the others holds a turn slot this turn may need. Hermes's hard stop cancels
+    a compaction before its commit (interrupt_control.py:126-135,
+    conversation_compression.py:2696-2716), so the session and its pressure reading are unchanged
+    and its next chance compacts it. The caller closes this once it has the lock and slot or has
+    given up; the count drops on every way out.
+    ponytail: a call in one room also stops a compaction in an unrelated room, which then waits
+    for that session's next chance. Stop only the others when no slot is free if that waste shows."""
+    key, agents = (agent_id, session_key), []
+    with _compacting_guard:
+        _voice_arriving[key] = _voice_arriving.get(key, 0) + 1
+        for entry in _compacting.values():
+            entry["yielded"] = True
+            if entry["agent"] is not None:
+                agents.append(entry["agent"])
+    try:
+        for agent in agents:
+            _interrupt("off-path compaction", agent)
+        yield
+    finally:
+        with _compacting_guard:
+            if _voice_arriving[key] > 1:
+                _voice_arriving[key] -= 1
+            else:
+                del _voice_arriving[key]
+
+
+@contextlib.contextmanager
+def _voice_turn_lock(agent_id: str, session_key: str, run_id: str | None, on_wait=None):
+    """_waiting_turn_lock for a spoken turn: it is announced BEFORE the lock is tried and until
+    it has the lock and its turn slot (or gave up), so no compaction can slip into that gap and
+    make a spoken question queue behind it."""
+    with contextlib.ExitStack() as arriving:
+        arriving.enter_context(_voice_turn_arriving(agent_id, session_key))
+        with _waiting_turn_lock(agent_id, session_key, run_id, on_wait):
+            arriving.close()
+            yield
+
+
+def _construct_compaction_agent(agent_id: str, session_key: str, db):
+    """Hermes's detached compaction agent, as its gateway builds one for /compress and session
+    hygiene (gateway/slash_commands_session.py:569-600): no memory provider, the memory toolset
+    only, and the session's STORED system prompt seeded so compaction does not persist one rebuilt
+    outside a turn's environment (gateway/run.py:467-479, mirrored: importing gateway.run loads the
+    profile's .env into os.environ)."""
+    agent = _construct_agent(agent_id, {}, None, session_key, max_iterations=4, skip_memory=True,
+                             skip_background_review=True, enabled_toolsets=["memory"], disabled_toolsets=None)
+    agent._cached_system_prompt = str((db.get_session(agent.session_id) or {}).get("system_prompt") or "")
+    agent.platform = "gateway_hygiene"  # a prompt compaction rebuilds is stale for the next turn
+    agent._end_session_on_close = False
+    return agent
+
+
+def _compact_locked(agent_id: str, session_key: str, entry: dict) -> str:
+    db = _session_db(agent_id)
+    if db is None:
+        return "skipped"
+    if entry["yielded"]:  # checked between every step: a spoken turn is waiting for this lock
+        return "yielded"
+    ref = types.SimpleNamespace(_session_db=db, session_id=_session_tip(db, session_key))
+    if float(_session_meta(ref).get(PRESSURE) or 0) < OFF_PATH_COMPACT_RATIO:
+        return "below"
+    try:
+        import run_agent  # noqa: F401 -- first import outside the home scope (see _run_turn_in)
+        from agent.conversation_compression import finalize_context_engine_compression_notification as finalize
+        from agent.conversation_compression_manual import CompressRequest, compress_now
+    except ImportError:  # outside the Hermes image
+        return "skipped"
+    with sync.profile_lock(agent_id):
+        sync.ensure_profile(agent_id)
+    if entry["yielded"]:
+        return "yielded"
+    with _hermes_home_scope(agent_id), _secret_scope(agent_id):
+        agent = _construct_compaction_agent(agent_id, session_key, db)
+        history, _observed = _room_history(agent)  # what a turn replays, so what its compaction rewrites
+        with _compacting_guard:
+            if entry["yielded"]:
+                return "yielded"
+            entry["agent"] = agent
+        # compress_now is Hermes's manual /compress core (conversation_compression_manual.py:69-124).
+        # In-place mode (our default) archives the old rows and inserts the summary itself.
+        result = compress_now(agent, history, CompressRequest(), system_message="", skip_without_window=True)
+        # compress_now's contract: the caller settles the deferred context-engine notice.
+        finalize(agent, committed=result.status == "compressed" and not entry["yielded"])
+    if entry["yielded"]:
+        return "yielded"
+    if result.status != "compressed":
+        return result.status  # nothing was committed: the reading stands and the next chance retries
+    _save_session_meta(ref, {PRESSURE: 0.0})  # the next turn measures the compacted session
+    return "compacted" if result.after_tokens < result.before_tokens else "unchanged"
+
+
+def compact_session(agent_id: str, session_key: str) -> str:
+    """Compact one room session now if its last turn left it near Hermes's threshold. Never
+    waits and never raises: a conversation with a turn (or another compaction) in it answers
+    "busy", as does a microVM with no turn slot to spare -- a compaction counts against
+    MAX_CONCURRENT_TURNS like a turn, and compactions together leave one slot free
+    (_compaction_slots) -- and the next trigger is the next chance. While a spoken turn is
+    arriving anywhere it answers "yielded" without starting -- asked again once the lock and
+    slots are held, because the turn may arrive between the two -- and one that arrives later
+    stops it (_voice_turn_arriving). The caller holds a busy count and has restored the profile.
+    Returns the outcome word, for the log and the tests."""
+    key = (agent_id, session_key)
+    if not ROOM_SESSION_RE.match(session_key):
+        return "busy"
+    if _voice_arriving:
+        return "yielded"
+    entry, started = {"agent": None, "yielded": False}, time.monotonic()
+    with contextlib.ExitStack() as held:  # the lock and both slots, released on every way out
+        for lock in (_turn_lock(agent_id, session_key), _compaction_slots, _turn_slots):
+            if not lock.acquire(blocking=False):
+                return "busy"
+            held.callback(lock.release)
+        try:
+            # One step under the guard: either a turn is already counted and this stands down,
+            # releasing everything at once, or this is registered and a turn's arrival will stop it.
+            with _compacting_guard:
+                entry["yielded"] = bool(_voice_arriving)
+                _compacting[key] = entry
+            outcome = "yielded" if entry["yielded"] else _compact_locked(agent_id, session_key, entry)
+        except Exception:  # noqa: BLE001 -- housekeeping: the session stays as it was
+            log.warning("off-path compaction failed for %s", session_key, exc_info=True)
+            outcome = "failed"
+        finally:
+            with _compacting_guard:
+                _compacting.pop(key, None)
+    if outcome != "below":
+        log.info("off-path compaction %s: %s in %.1fs", session_key, outcome, time.monotonic() - started)
+    if outcome == "compacted":
+        try:
+            save_profile(agent_id)
+        except Exception:  # noqa: BLE001 -- the next turn's save uploads it
+            log.warning("save_profile failed after compaction", exc_info=True)
+    return outcome
+
+
 def _construct_agent(agent_id: str, body: dict, frames, session_key: str, **limits):
     """The one place that builds a real Hermes AIAgent. Home-scoping is the CALLER's job now
     (_run_hermes's `_hermes_home_scope`, held across construction AND run_conversation — see
@@ -2748,22 +3068,24 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str, **limi
     db = _session_db(agent_id)
     if db is None and ROOM_SESSION_RE.match(session_key):  # a state.db failure fails the turn
         raise RuntimeError(f"state.db unavailable for {agent_id}")
-    agent = AIAgent(
-        model=model,
-        provider=provider,
-        quiet_mode=True,
-        session_id=_session_tip(db, session_key) if db is not None else session_key,
-        session_db=db,
-        platform="lightbulb",
-        user_id=str((body.get("sender") or {}).get("id", "")),
-        chat_id=str(room.get("id", "")),
-        chat_type="dm" if room.get("kind") == "dm" else "group",
-        gateway_session_key=session_key,
-        enabled_toolsets=enabled_toolsets,
-        disabled_toolsets=disabled_toolsets,
+    agent = AIAgent(**{
+        "model": model,
+        "provider": provider,
+        "quiet_mode": True,
+        "session_id": _session_tip(db, session_key) if db is not None else session_key,
+        "session_db": db,
+        "platform": "lightbulb",
+        "user_id": str((body.get("sender") or {}).get("id", "")),
+        "chat_id": str(room.get("id", "")),
+        "chat_type": "dm" if room.get("kind") == "dm" else "group",
+        "gateway_session_key": session_key,
+        "enabled_toolsets": enabled_toolsets,
+        "disabled_toolsets": disabled_toolsets,
         **callbacks,
-        **limits,  # CALL_RUN_LIMITS on a voice turn only; every other turn passes none
-    )
+        # CALL_RUN_LIMITS on a voice turn, the compaction agent's own (_construct_compaction_agent);
+        # every other turn passes none. Last, so the compaction agent can narrow the toolsets.
+        **limits,
+    })
     if db is not None:
         _restore_review_counters(agent)
     _capture_api_errors(agent)
@@ -2793,7 +3115,7 @@ def _turn_folder(base: Path):
 
 
 def _converse(agent, agent_id: str, session_key: str, run_id: str | None, body: dict, base: Path, system: str,
-              turn_text: str, user_message, message_id: str | None = None) -> dict:
+              turn_text: str, user_message, message_id: str | None = None, history_budget: int | None = None) -> dict:
     """One turn's conversation on `session_key` -- a room turn's and a voice run's alike: a room
     key runs on its own transcript plus what it observes from `body["recentHistory"]`, and a
     steer that lands too late is answered in the same run."""
@@ -2813,6 +3135,10 @@ def _converse(agent, agent_id: str, session_key: str, run_id: str | None, body: 
             run = {"system_message": None}
             _observe_room(agent, agent_id, body, base)
             history, observed = _room_history(agent)
+            if history_budget:
+                whole, history = history, _bounded_history(history, history_budget)
+                if history is not whole:  # the session is larger than this turn's prompt will say
+                    setattr(agent, OMITTED_TOKENS, _rough_tokens(whole) - _rough_tokens(history))
             run["conversation_history"] = history or None
             if message_id:
                 run["persist_user_platform_id"] = message_id

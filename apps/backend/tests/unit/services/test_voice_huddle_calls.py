@@ -719,6 +719,23 @@ async def test_prewake_warms_every_room_agents_profile_after_the_health_wake(mon
     ]
 
 
+async def test_prewake_names_the_room_so_its_sessions_compact_before_the_first_question(monkeypatch):
+    """A spoken turn never compacts (67-103 s inside a turn, prod 10-07): the bridge does it on this
+    warm instead, off its request thread, so the RPC still answers at once."""
+    calls = []
+
+    async def fake_call(owner_id, method, params=None, **kwargs):
+        calls.append((method, params, kwargs.get("timeout_s")))
+        return {"ok": True}
+
+    tasks = []
+    monkeypatch.setattr(vc.container_rpc, "call", fake_call)
+    monkeypatch.setattr(vc, "_fire", lambda coro: tasks.append(asyncio.ensure_future(coro)))
+    vc.prewake_owner("org_a", [{"id": "a1", "name": "Pulse"}], "room-1")
+    await asyncio.gather(*tasks)
+    assert calls[1] == ("profile.warm", {"agentId": "a1", "roomId": "room-1"}, 10.0)
+
+
 @pytest.mark.asyncio
 async def test_post_late_answer_is_the_agents_own_message_once_per_run(monkeypatch):
     create = AsyncMock()

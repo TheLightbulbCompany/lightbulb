@@ -708,6 +708,13 @@ auxiliary:
     # (agent/turn_context.py:155-182). Ours are per room, thread, call, mail thread, Paperclip
     # run and event: a title nobody reads, on the trial's daily cap, outside reported usage.
     enabled: false
+  compression:
+    # A compaction summary was 67-103 s on the main model at its default effort (prod 10-07),
+    # inline in a chat turn or, since spoken turns stopped compacting, behind a call. The
+    # provider and model stay each profile's own pin (hermes_profiles.auxiliary_tasks_block), so
+    # every provider path keeps a model it can serve; only the effort drops
+    # (auxiliary_client.py:5846-5870 folds it into the request).
+    reasoning_effort: low
 agent:
   turn_liveness:
     # Hermes's watchdog hard-cancels a turn with no activity for 600 s once it holds a session

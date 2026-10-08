@@ -171,7 +171,7 @@ async def _on_status(
             await meeting_invites._patch_meeting(
                 room_id, {"status": "in_call", "lastBotStatus": code, "inCallAt": int(time.time())}
             )
-            voice_calls.prewake_owner(owner_id, team=await voice_calls.room_agents(room_id))
+            voice_calls.prewake_owner(owner_id, team=await voice_calls.room_agents(room_id), room_id=room_id)
             await _publish(room_id, "in_call")
         elif target == "ended":
             # endedAt is written once (a terminal status returns above on every later webhook), from

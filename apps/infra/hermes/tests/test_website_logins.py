@@ -15,6 +15,8 @@ def backend(monkeypatch):
     def call(method, path, body=None, timeout=20.0):
         state["calls"].append((method, path, body))
         if path == "/requests":
+            if (body or {}).get("kind") == "code":
+                return state.get("code_reply", {"requestId": None, "status": "posted"})
             return {"requestId": "a" * 32}
         if method == "GET" and path.startswith("/requests/"):
             return state["polls"].pop(0) if state["polls"] else {"status": "pending"}
@@ -86,6 +88,42 @@ def test_a_run_with_no_room_does_not_wait_for_a_person_nobody_told(backend, monk
         assert json.loads(wl.transform_tool_result("browser_vault_enter_code", declined))["error_type"] == "no_room"
     finally:
         wl._ASK.reset(token)
+
+
+def test_a_line_that_did_not_post_means_nobody_waits(backend, monkeypatch):
+    """The room write failed (or the backend is older and answered without a status): the agent
+    says the line itself instead of waiting six minutes for a person who never heard."""
+    monkeypatch.setattr(wl, "_code_field_present", lambda: True)
+    monkeypatch.setattr(wl, "_page_heading", lambda: "")
+    for reply in ({"requestId": None, "status": "unposted"}, {"requestId": ""}, None):
+        backend["code_reply"] = reply
+        ctx = {}
+        assert _in_turn(lambda: wl._code_prompt("x.com", ""), ctx=ctx) == ""
+        assert ctx["code"] == "not_told"
+    declined = json.dumps({"success": False, "error_type": "code_declined", "error": "x"})
+    out = json.loads(_in_turn(lambda: wl.transform_tool_result("browser_vault_enter_code", declined),
+                              ctx={"code": "not_told"}))
+    assert out["error_type"] == "not_told" and "Say it yourself" in out["error"]
+
+
+def test_the_page_watch_covers_every_tab_the_run_browsed_on(monkeypatch):
+    """Two tasks browsed (the agent and a subagent); the code page is in one of them. It has moved
+    on only when no tab shows a code field; a tab that does not answer is ignored."""
+    import types
+
+    probes = {"otp": "PROBE"}
+    monkeypatch.setitem(__import__("sys").modules, "tools.browser_vault_tool",
+                        types.SimpleNamespace(_TAB_PROBES=probes, _eval_js=lambda task, expr: pages[task]))
+    monkeypatch.setitem(__import__("sys").modules, "tools", types.SimpleNamespace())
+    monkeypatch.setattr(wl, "_browser_task_ids", lambda: ["t-agent", "t-sub"])
+    pages = {"t-agent": {"success": True, "result": False}, "t-sub": {"success": True, "result": True}}
+    assert wl._code_field_present() is True  # the subagent's tab still shows the field
+    pages["t-sub"] = {"success": True, "result": "false"}
+    assert wl._code_field_present() is False  # every tab answered, none shows it: the person typed it
+    pages["t-sub"] = {"success": False}
+    assert wl._code_field_present() is None  # the tab that may hold the field did not answer: keep waiting
+    pages = {"t-agent": {"success": False}, "t-sub": None}
+    assert wl._code_field_present() is None  # nobody answered: keep waiting
 
 
 def test_nobody_typing_the_code_in_time_is_reported_as_such(backend, monkeypatch):

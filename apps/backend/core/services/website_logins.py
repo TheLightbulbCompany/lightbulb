@@ -454,6 +454,7 @@ async def create_request(
             room_id = None  # not this workspace's room: ask the workspace instead
     request_id = uuid.uuid4().hex
     if kind == "code":
+        posted = False
         if room_id:
             site = host_of(origin)
             heading = " ".join(str(hint or "").split())[:120]
@@ -469,7 +470,7 @@ async def create_request(
                     f"phone has no live view): {settings.FRONTEND_URL.rstrip('/')}/chat?panel=browser — and "
                     f"I'll carry on as soon as the page moves."
                 )
-            await _post_notice(
+            posted = await _post_notice(
                 owner_id,
                 {
                     "requestId": request_id,
@@ -481,9 +482,15 @@ async def create_request(
                 text,
             )
         logger.info(
-            "website_login.code_notice owner=%s origin=%s agent=%s room=%s", owner_id, origin, agent_id, room_id
+            "website_login.code_notice owner=%s origin=%s agent=%s room=%s posted=%s",
+            owner_id,
+            origin,
+            agent_id,
+            room_id,
+            posted,
         )
-        return {"requestId": None, "status": "posted"}
+        # "unposted" tells the bridge nobody was told, so it does not wait for anyone.
+        return {"requestId": None, "status": "posted" if posted else "unposted"}
     created = utc_now_iso()
     row = {
         "pk": messaging_repo.owner_pk(owner_id),
@@ -544,10 +551,10 @@ async def create_request(
     return {"requestId": request_id, "status": "pending"}
 
 
-async def _post_notice(owner_id: str, row: dict, text: str) -> None:
+async def _post_notice(owner_id: str, row: dict, text: str) -> bool:
     """The agent's line in the room. Written straight through the canonical writer with no
     dispatch targets, so it wakes nobody (an ``active`` teammate would otherwise take it as a
-    room event). No run id: that would retire the asking run's live card."""
+    room event). No run id: that would retire the asking run's live card. False = it did not land."""
     try:
         await messaging_repo.create_message(
             room_id=row["roomId"],
@@ -565,10 +572,12 @@ async def _post_notice(owner_id: str, row: dict, text: str) -> None:
             source_agent_id=row["agentId"],
             client_message_id=None,
         )
-    except Exception:  # noqa: BLE001 -- Activity still carries the ask
+    except Exception:  # noqa: BLE001 -- a login ask is still carried by Activity; a code ask is not
         logger.warning(
             "website_login request notice failed owner=%s request=%s", owner_id, row["requestId"], exc_info=True
         )
+        return False
+    return True
 
 
 async def _settle(owner_id: str, request_id: str, status: str, **fields: Any) -> bool:

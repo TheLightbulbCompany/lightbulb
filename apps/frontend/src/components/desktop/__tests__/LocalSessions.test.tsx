@@ -311,7 +311,8 @@ it("keeps a Mac's own answer when it pairs again: off stays off, and turning it 
   on = true;
   render(<DesktopPermissionsGate />);
   const live = await screen.findByRole("button", {name:/Share every session live/});
-  expect(live).toHaveAttribute("aria-pressed", "true");
+  // The switch renders before shell_integration_status answers; wait for the Mac's answer.
+  await waitFor(() => expect(live).toHaveAttribute("aria-pressed", "true"));
   await userEvent.click(live);
   await userEvent.click(screen.getByRole("button", {name:"Continue"}));
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("shell_integration_set", {enabled:false}));

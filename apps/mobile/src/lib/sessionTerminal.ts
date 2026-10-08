@@ -1,5 +1,5 @@
 import {
-  NEW_SCREEN, SNAPSHOT_WAIT_MS, chunkInput, dropMouseReports, dropProbeReplies, inputRefused, receiveScreen, settleScreen, snapshotWaits, toBase64,
+  NEW_SCREEN, SNAPSHOT_WAIT_MS, createInputQueue, dropMouseReports, dropProbeReplies, receiveScreen, settleScreen, snapshotWaits, toBase64,
   type SessionScreen,
 } from "@lightbulb/shared";
 
@@ -96,7 +96,7 @@ export const withCtrl = (data: string): string => {
 export function createTypist({ send, epoch, canType, onRefused }: {
   send: (data: string, epoch: number) => Promise<unknown>; epoch: () => number; canType: () => boolean; onRefused: () => void;
 }) {
-  let sending: Promise<unknown> = Promise.resolve();
+  const queue = createInputQueue(onRefused);
   let ctrl = false;
   return {
     /** Sticky Ctrl from the key bar: applies to the next key, then lets go. */
@@ -110,9 +110,7 @@ export function createTypist({ send, epoch, canType, onRefused }: {
       if (at < 0) return false;
       const used = ctrl;
       if (ctrl) { data = withCtrl(data); ctrl = false; }
-      for (const part of chunkInput(new TextEncoder().encode(data))) {
-        sending = sending.then(() => (canType() ? send(toBase64(part), at) : undefined)).catch((e) => { if (inputRefused(e)) onRefused(); });
-      }
+      queue(new TextEncoder().encode(data), (part) => (canType() ? send(toBase64(part), at) : undefined));
       return used;
     },
   };

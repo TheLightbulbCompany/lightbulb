@@ -41,3 +41,22 @@ export const toBase64 = (bytes: Uint8Array): string => {
  *  OFFLINE is another 409 and passes: it loses only that batch. */
 export const inputRefused = (e: unknown): boolean => e instanceof ApiError && (e.status === 403 || e.status === 404
   || (e.status === 409 && (e.body as { code?: string } | null)?.code === "LOCAL_SESSION_UNSUPPORTED"));
+
+/** Typed bytes on their way to the Mac: calls of at most MAX_INPUT_BYTES, one at a time so keys stay
+ *  in order. A refusal (`inputRefused`) drops everything queued behind it at once and for good: the
+ *  flag is this queue's own, set before `onRefused` runs, because a view's "can type" state changes
+ *  only at its next render and the chunks already chained would go out before that (a 10 KB paste
+ *  whose first call got a 403 sent the other two). `send` may return undefined to skip a chunk. */
+export function createInputQueue(onRefused: () => void) {
+  let sending: Promise<unknown> = Promise.resolve();
+  let refused = false;
+  return (bytes: Uint8Array, send: (part: Uint8Array) => Promise<unknown> | undefined): void => {
+    for (const part of chunkInput(bytes)) {
+      sending = sending.then(() => (refused ? undefined : send(part))).catch((e) => {
+        if (!inputRefused(e) || refused) return;
+        refused = true;
+        onRefused();
+      });
+    }
+  };
+}

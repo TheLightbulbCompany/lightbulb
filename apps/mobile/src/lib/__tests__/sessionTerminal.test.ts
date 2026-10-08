@@ -193,6 +193,20 @@ describe("createTypist", () => {
     expect(send.mock.calls.map(([data]) => decode(data).length)).toEqual([4096, 904]);
   });
 
+  it("sends exactly one request for a 10 KB paste whose first chunk is refused, though the view has not re-rendered", async () => {
+    const send = jest.fn().mockRejectedValue(new ApiError(403, null));
+    // `canType` stays true: the component's state changes only at its next render.
+    const { it, onRefused } = typist({ send, canType: () => true });
+    it.type("x".repeat(10_240));
+    await settle();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(onRefused).toHaveBeenCalledTimes(1);
+    // And nothing typed after it, from this typist.
+    it.type("y");
+    await settle();
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
   it("drops what is queued behind a refusal and says so; an offline Mac loses only that batch", async () => {
     let allowed = true;
     const send = jest.fn()

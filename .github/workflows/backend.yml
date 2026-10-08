@@ -11,6 +11,7 @@ on:
       - 'apps/backend/**'
       - 'apps/infra/lambda/ses-inbound/**'
       - 'apps/infra/lambda/ws-connect/**'
+      - 'apps/infra/lambda/pub-authorizer/**'
       - 'apps/infra/lambda/messaging-projector/**'
       - 'apps/infra/lambda/messaging-search-indexer/**'
       - 'apps/infra/lambda/openrouter-settlement/**'
@@ -100,6 +101,15 @@ jobs:
           AWS_ACCESS_KEY_ID: testing
           AWS_SECRET_ACCESS_KEY: testing
         run: uv run pytest ../infra/lambda/ws-connect -v
+        working-directory: apps/backend
+
+      # Decides who may hear a public session link's terminal.
+      - name: Run pub-authorizer Lambda tests
+        env:
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: testing
+          AWS_SECRET_ACCESS_KEY: testing
+        run: uv run pytest ../infra/lambda/pub-authorizer -v
         working-directory: apps/backend
 
       # Fourth one in the same state, and the reason an image-attachment

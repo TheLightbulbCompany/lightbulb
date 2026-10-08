@@ -124,7 +124,12 @@ describe("useRooms persistence", () => {
   });
 
   it("drops a room from the snapshot on room.access.removed", async () => {
-    messaging.listRooms.mockResolvedValueOnce(list("room-1", "room-2")).mockImplementation(never);
+    // The list never answers: the event arrives while the painted snapshot is what is on screen.
+    // This used to resolve the first list and wait only for the first save, which is the
+    // snapshot's own, on mount: the event then raced the list. It passed when the event came
+    // first and failed when the list had landed (CI, 2026-10-08), because a list that has
+    // landed keeps the removed room on screen until its refetch answers.
+    messaging.listRooms.mockImplementation(never);
     const persistence = fakeStore({ "user-a:org-a": snapshot(["room-1", "room-2"]) });
     const { result } = renderHook(() => useRooms(platform(), { autoSelect: false, persistence }), { wrapper });
     await waitFor(() => expect(persistence.save).toHaveBeenCalled());

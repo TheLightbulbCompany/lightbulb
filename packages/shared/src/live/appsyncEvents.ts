@@ -127,7 +127,8 @@ export class AppSyncEventsClient {
    *  (see framesChannelFor). Any other extra room-family channel, including a
    *  `/frames` channel that does not match the current room, is a `protocol_error`
    *  and is dropped rather than subscribed. Any number of shared sessions' `/session-frames/`
-   *  channels ride along: one per open terminal view. */
+   *  channels ride along: one per open terminal view. A public session link's page holds one
+   *  `/pub/<id>` channel and nothing else (its token is a link viewer's lease, not a Clerk token). */
   setChannels(channels: readonly string[]): void {
     if (this.closed) return;
     const unique = [...new Set(channels)];
@@ -135,7 +136,7 @@ export class AppSyncEventsClient {
     const rooms = unique.filter((channel) => channel.includes("/rooms/"));
     const frames = unique.filter((channel) => channel.includes("/frames/"));
     const sessions = unique.filter((channel) => channel.endsWith("/sessions"));
-    const sessionFrames = unique.filter((channel) => channel.includes("/session-frames/"));
+    const sessionFrames = unique.filter((channel) => channel.includes("/session-frames/") || channel.startsWith("/pub/"));
     const room = rooms[0];
     const validFrames = frames.filter((channel) => !!room && channel === framesChannelFor(room));
     if (

@@ -45,6 +45,7 @@ def names():
 async def link_for(transport, s3, audience="anyone", repo_info=None):
     sid = await claude_session(transport)
     url = (await service.put_link(ALICE, sid, audience)).url
+    await pickup_tests.pickup.set_pickup(ALICE, sid, True)  # "Let people continue this session"
     extra = {"repo": repo_info} if repo_info is not None else {}
     assert (await upload_and_commit(s3, sid, **extra)).status_code == 204
     return sid, url.split("#", 1)[1]

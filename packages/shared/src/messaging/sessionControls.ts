@@ -349,30 +349,6 @@ export function useUsageSharing(client: SessionControlClient, session: LocalSess
   return { enabled: override ?? session.shareUsage === true, saving, set };
 }
 
-/** One owner switch on a session: optimistic, with the server's answer as the truth. */
-function useSessionSwitch(current: boolean, save: ((next: boolean) => Promise<boolean>) | null, failed: string) {
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [override, setOverride] = useState<boolean | null>(null);
-  useEffect(() => { setOverride(null); }, [current]);
-  const set = useCallback(async (next: boolean) => {
-    if (!save) return;
-    setSaving(true); setError(null); setOverride(next);
-    try { setOverride(await save(next)); }
-    catch { setOverride(null); setError(failed); }
-    finally { setSaving(false); }
-  }, [save, failed]);
-  return { enabled: override ?? current, saving, error, set, supported: save !== null };
-}
-
-/** The owner's "Shared with the workspace": off pauses sharing, and only they can see the session. */
-export function useSessionSharing(client: SessionControlClient, session: LocalSession) {
-  const { setLocalSessionSharing } = client;
-  const save = useCallback(async (next: boolean) => (await setLocalSessionSharing!(session.sessionId, next)).shared !== false,
-    [setLocalSessionSharing, session.sessionId]);
-  return useSessionSwitch(session.shared !== false, setLocalSessionSharing ? save : null, "Could not change sharing. Try again.");
-}
-
 const megabytes = (bytes: number) => (bytes >= 1_048_576 ? `${(bytes / 1_048_576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`);
 
 /** "github.com/acme/app on fix/login", "acme/app", or "" when the snapshot holds no files. */

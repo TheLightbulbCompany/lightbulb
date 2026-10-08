@@ -659,6 +659,35 @@ export class ApiStack extends cdk.Stack {
     // SubscribeClientErrors), and the two-week LogRetention below bounds how long
     // that exposure sits in CloudWatch — same irreducible-verbosity tradeoff the
     // Bedrock invocation log takes (see the Billing section of CLAUDE.md).
+    // An "Anyone with the link" session link's live terminal (owner ruling 2026-10-08): the `pub`
+    // namespace, subscribed with a 45 s lease the backend mints for a link holder
+    // (session_links.viewing). The authorizer reads that one row and nothing else.
+    const pubAuthorizerFn = new lambda.Function(this, "PubAuthorizer", {
+      functionName: `${resourcePrefix(env)}pub-authorizer`,
+      runtime: lambda.Runtime.PYTHON_3_13,
+      handler: "index.handler",
+      code: lambda.Code.fromAsset(path.join(__dirname, "..", "..", "lambda", "pub-authorizer"), {
+        exclude: ["test_*.py"],
+      }),
+      timeout: cdk.Duration.seconds(5),
+      memorySize: 512,
+      environment: { MESSAGING_TABLE: messagingTable.tableName },
+      logGroup: new logs.LogGroup(this, "PubAuthorizerLogs", {
+        logGroupName: logGroupPath(env, "pub-authorizer"),
+        retention: logs.RetentionDays.TWO_WEEKS,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }),
+    });
+    pubAuthorizerFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        // A connect and a subscribe each consume the lease with one conditional write, so one
+        // lease is one connection and one subscription. The authorizer reads nothing else.
+        actions: ["dynamodb:UpdateItem"],
+        resources: [messagingTable.tableArn],
+        conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["PUBWATCH#*"] } },
+      }),
+    );
+    messagingKey.grantEncryptDecrypt(pubAuthorizerFn);
     const eventApi = new appsync.EventApi(this, "MessagingEventApi", {
       apiName: `${resourcePrefix(env)}messaging-events`,
       logConfig: {
@@ -675,8 +704,15 @@ export class ApiStack extends cdk.Stack {
             },
           },
           { authorizationType: appsync.AppSyncAuthorizationType.IAM },
+          {
+            authorizationType: appsync.AppSyncAuthorizationType.LAMBDA,
+            lambdaAuthorizerConfig: { handler: pubAuthorizerFn, resultsCacheTtl: cdk.Duration.seconds(0) },
+          },
         ],
-        connectionAuthModeTypes: [appsync.AppSyncAuthorizationType.OIDC],
+        connectionAuthModeTypes: [
+          appsync.AppSyncAuthorizationType.OIDC,
+          appsync.AppSyncAuthorizationType.LAMBDA,
+        ],
         defaultPublishAuthModeTypes: [appsync.AppSyncAuthorizationType.IAM],
         defaultSubscribeAuthModeTypes: [appsync.AppSyncAuthorizationType.OIDC],
       },
@@ -698,6 +734,16 @@ export class ApiStack extends cdk.Stack {
       authorizationConfig: {
         publishAuthModeTypes: [appsync.AppSyncAuthorizationType.IAM],
         subscribeAuthModeTypes: [appsync.AppSyncAuthorizationType.OIDC],
+      },
+    });
+
+    // No handler: the Lambda authorizer already bound the subscribe to its lease's one channel.
+    // The `ws` namespace above stays OIDC-only, so a lease subscribes to nothing in it.
+    eventApi.addChannelNamespace("PubNamespace", {
+      channelNamespaceName: "pub",
+      authorizationConfig: {
+        publishAuthModeTypes: [appsync.AppSyncAuthorizationType.IAM],
+        subscribeAuthModeTypes: [appsync.AppSyncAuthorizationType.LAMBDA],
       },
     });
 

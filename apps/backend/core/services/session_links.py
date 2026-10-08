@@ -22,6 +22,7 @@ import time
 import uuid
 from typing import Annotated, Literal
 
+from botocore.exceptions import ClientError
 from pydantic import Field, model_serializer
 
 from core import encryption
@@ -101,7 +102,7 @@ async def resolve(auth: AuthContext | None, token: str) -> tuple[dict, dict, boo
     except ApiProblem as exc:
         raise _gone() from exc
     member = await _member(auth, row)
-    if link["audience"] != "anyone" and not member:
+    if not sessions.public_id(link) and not member:
         raise _gone()
     return row, link, member
 
@@ -234,6 +235,249 @@ async def open_page(auth: AuthContext | None, token: str, *, refresh: bool = Fal
         continuable=continuable,
         me=LinkMe(signed_in=auth is not None, member=member),
         session_id=row["sessionId"] if member else None,
+    )
+
+
+# --- Watching (owner ruling 2026-10-08: an "Anyone" link shows the live terminal, view only) ---
+#
+# PUBWATCH#<publicId> / VIEWER#<sha256(key)>   one link viewer's 45 s lease; `connectedAt` and
+#                                              `subscribedAt` once it opened its one connection and
+#                                              its one subscription (the authorizer writes them)
+# PUBWATCH#<publicId> / WATCHED                when the newest lease lapses (`until`), when the Mac
+#                                              was last asked for a picture (`askedAt`), and the
+#                                              seats taken in the channel's life (`seats`)
+# SHARELINK#<tokenHash> / SEATS                the seats the LINK gave out in this ten minutes
+#                                              (`mintWindow`, `minted`), whatever its channel
+#
+# The lease `<publicId>.<key>` is the viewer's whole credential on AppSync: the `pub` namespace's
+# Lambda authorizer (apps/infra/lambda/pub-authorizer) admits a subscribe to `/pub/<publicId>` and
+# nothing else while that row is unexpired. Frames reach the channel only while the link is public
+# and has a live lease (`session_screen.forward` reads the row on every frame), so narrowing the
+# link, Only me, ending or removing the session stops them at once; an open subscription then hears
+# nothing, and the next renewal is refused. A viewer gets screen frames and nothing else: no input,
+# chat, events or lists, and neither the session's nor the workspace's id (frames carry the publicId).
+
+# ponytail: counted, not locked: two viewers racing for the last seat both get in, and a viewer
+# who stops renewing keeps an open subscription uncounted until the page closes.
+MAX_LINK_VIEWERS = 20
+# A lease connects once and subscribes once (the authorizer consumes it), so every connection
+# and every subscription costs a seat taken here, and a link gives out at most this many per ten minutes: what bounds the sockets a link
+# holder can pile up on one channel (AppSync never asks the authorizer again once a subscription
+# is open). An honest viewer takes one per page load, reconnect or return to the tab; 20 of them
+# on bad networks fit. Narrowing the link silences every socket at once: the channel is renamed.
+MINT_WINDOW_S = 600
+MINTS_PER_WINDOW = 120
+# That budget is a rate, and an open subscription never ends by itself. So a channel also has a
+# life total: the seat after its last moves the LINK to a new `publicId` (same token, same
+# audience), and `forward` publishes only to the current one, so no channel ever has more
+# subscriptions than this and every socket on the old one goes silent at once. Viewers there follow
+# at their next 15 s renewal: it answers with a seat on the new channel. The window budget is the
+# link's, counted first and kept across a move, so a refused seat costs the channel nothing and a
+# link changes channel at most once per window (a channel needs more seats than a window gives).
+# No key exchange, no sweeper: the old channel's rows lapse by TTL.
+MAX_CHANNEL_SEATS = 200
+# How long a channel's seat count is kept after its last viewer: longer than any socket subscribed
+# to it can live (AppSync ends a connection after 24 h). Were the count forgotten sooner, the next
+# seat would start the same channel at one, with its old sockets still listening.
+CHANNEL_MEMORY_S = 25 * 3600
+# A link's viewers together get the Mac asked for history and a snapshot at most this often: each
+# ask is a burst out of the session's frame budget, which workspace viewers share, and `fresh` is
+# only a stranger's word. Per link, not per lease: taking new seats buys no more asks. A viewer
+# who joins inside the window has no picture yet: its page asks again with each 15 s renewal until
+# it draws a snapshot, and the first of those is past the window, so it waits at most one renewal
+# (15 s, plus delivery) on an idle session. Sooner when the Mac sends a snapshot of its own (every
+# 10 s while the screen prints) or another viewer's ask is granted: every viewer hears that picture.
+ASK_EVERY_S = 15
+
+
+def public_pk(public_id: str) -> str:
+    return f"PUBWATCH#{public_id}"
+
+
+class ViewingRequest(LinkTokenRequest):
+    lease: Annotated[str, Field(max_length=128)] | None = None
+    fresh: bool = False  # subscribed and has no screen: a request, granted at most once per ASK_EVERY_S per link
+    retake: bool = False  # about to connect: trade this seat for a new one if its lease was already used
+
+
+class Viewing(ContractModel):
+    lease: str
+    channel: str
+    watch_id: str  # the publicId: what this viewer's frames carry in place of the session's ids
+    http_endpoint: str
+    realtime_endpoint: str
+
+
+async def _count_mint(table, link: dict, now: int) -> None:
+    """One more seat out of this link's ten-minute budget, or the same answer as a full session.
+    On the link's own row, so the count outlives a channel."""
+    window = now // MINT_WINDOW_S
+    budget = {"pk": sessions._share_pk(link["tokenHash"]), "sk": "SEATS"}
+    ttl = {":ttl": now + 3600}
+    count = (
+        "SET minted = minted + :one, expiresAt = :ttl",
+        "mintWindow = :w AND minted < :max",
+        {":max": MINTS_PER_WINDOW, **ttl},
+    )
+    start = (
+        "SET mintWindow = :w, minted = :one, expiresAt = :ttl",
+        "attribute_not_exists(mintWindow) OR mintWindow <> :w",
+        ttl,
+    )
+    # Count again after a lost start: two seats racing to open a window both belong in it.
+    for expression, condition, values in (count, start, count):
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key=budget,
+                UpdateExpression=expression,
+                ConditionExpression=condition,
+                ExpressionAttributeValues={":w": window, ":one": 1, **values},
+            )
+            return
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+    raise ApiProblem(
+        "LOCAL_SESSION_VIEWERS_FULL", "Too many people opened this link just now. Try again in a few minutes."
+    )
+
+
+async def _seat_in_channel(table, watched: dict) -> bool:
+    """One more seat out of this channel's life total; False when it has given out its last."""
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key=watched,
+            UpdateExpression="SET seats = if_not_exists(seats, :zero) + :one",
+            ConditionExpression="attribute_not_exists(seats) OR seats < :max",
+            ExpressionAttributeValues={":zero": 0, ":one": 1, ":max": MAX_CHANNEL_SEATS},
+        )
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return False
+
+
+async def _new_channel(row: dict, public: str) -> None:
+    """Move the link to a new publicId. Conditional on the old one, so of two seats racing past the
+    total one moves it and the other finds it moved (or narrowed): both then read the same row.
+    The revision moves too, so a writer holding the row from before this starts over."""
+    try:
+        await run_in_thread(
+            store._table().update_item,
+            Key={"pk": row["pk"], "sk": "META"},
+            UpdateExpression="SET shareLink.publicId = :new, revision = :rev",
+            ConditionExpression="shareLink.publicId = :old",
+            ExpressionAttributeValues={":new": str(uuid.uuid4()), ":rev": str(uuid.uuid4()), ":old": public},
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+
+async def viewing(token: str, lease: str | None, fresh: bool, retake: bool = False, *, moved: bool = False) -> Viewing:
+    """A link holder has the terminal on screen: every 15 s, no sign-in. The token is checked on
+    every call, so a link that stopped being public refuses the next renewal."""
+    from core.config import settings
+    from core.services import session_screen
+
+    row, link, _ = await resolve(None, token)
+    public = sessions.public_id(link)
+    if not public:
+        raise _gone()
+    now = int(time.time())
+    # A running session only. An ended one's kept final screen is for the workspace.
+    if row.get("endedAt") is not None or int(row.get("onlineUntil", 0)) <= now:
+        raise ApiProblem("LOCAL_SESSION_OFFLINE", "This session is not running.")
+    if sessions.session_terminal(row) is None:
+        raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "This session has no live terminal.")
+    table = store._table()
+    expires = now + session_screen.VIEWER_TTL_S
+
+    def key_of(secret: str) -> dict:
+        return {"pk": public_pk(public), "sk": f"VIEWER#{sessions._token_hash(secret)}"}
+
+    watched = {"pk": public_pk(public), "sk": "WATCHED"}
+    renewed = False
+    held = lease.partition(".")[2] if lease and lease.startswith(public + ".") else ""
+    if held:
+        # `retake`: the viewer is about to connect, and a lease connects and subscribes once (the
+        # authorizer marks it). The server decides: an unused lease is only renewed, so a connect
+        # that never reached AppSync costs no seat; a used one is traded.
+        unused = " AND attribute_not_exists(connectedAt) AND attribute_not_exists(subscribedAt)" if retake else ""
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key=key_of(held),
+                UpdateExpression="SET expiresAt = :exp",
+                ConditionExpression="attribute_exists(pk) AND expiresAt > :now" + unused,
+                ExpressionAttributeValues={":exp": expires, ":now": now},
+            )
+            renewed = True
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+            if retake:
+                # One viewer, one seat: the old row goes before the new one is counted against the cap.
+                await run_in_thread(table.delete_item, Key=key_of(held))
+    if not renewed:
+        seats = await store._query(public_pk(public), begins_with="VIEWER#")
+        lapsed = [{"pk": r["pk"], "sk": r["sk"]} for r in seats if int(r["expiresAt"]) <= now]
+        if lapsed:
+            # Their TTL delete lags up to 48 h: dropped here, so this read stays as small as the cap.
+            def drop() -> None:
+                with table.batch_writer() as batch:
+                    for key in lapsed:
+                        batch.delete_item(Key=key)
+
+            await run_in_thread(drop)
+        if len(seats) - len(lapsed) >= MAX_LINK_VIEWERS:
+            raise ApiProblem(
+                "LOCAL_SESSION_VIEWERS_FULL", f"This session already has {MAX_LINK_VIEWERS} people watching by link."
+            )
+        # The link's budget first: a seat it refuses costs the channel nothing. Counted once, so
+        # not again on the way to a new channel.
+        if not moved:
+            await _count_mint(table, link, now)
+        if not await _seat_in_channel(table, watched):
+            if moved:  # the new channel filled while this call was on its way to it
+                raise ApiProblem("LOCAL_SESSION_VIEWERS_FULL", "Too many people opened this link just now. Try again.")
+            await _new_channel(row, public)
+            return await viewing(token, None, fresh, moved=True)
+        secret = secrets.token_urlsafe(32)
+        lease = f"{public}.{secret}"
+        await run_in_thread(table.put_item, Item={**key_of(secret), "expiresAt": expires})
+    # One row says whether anyone watches by link, so `forward` reads one item per frame. It
+    # outlives its viewers by CHANNEL_MEMORY_S, and with it the channel's seat count.
+    await run_in_thread(
+        table.update_item,
+        Key=watched,
+        UpdateExpression="SET #u = :exp, expiresAt = :ttl",
+        ExpressionAttributeNames={"#u": "until"},
+        ExpressionAttributeValues={":exp": expires, ":ttl": now + CHANNEL_MEMORY_S},
+    )
+    if fresh:
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key=watched,
+                UpdateExpression="SET askedAt = :now",
+                ConditionExpression="attribute_not_exists(askedAt) OR askedAt <= :cut",
+                ExpressionAttributeValues={":now": now, ":cut": now - ASK_EVERY_S},
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+            fresh = False
+    await session_screen.tell_mac(row, now, fresh)
+    return Viewing(
+        lease=lease,
+        channel=f"/pub/{public}",
+        watch_id=public,
+        http_endpoint=settings.APPSYNC_EVENTS_HTTP_ENDPOINT,
+        realtime_endpoint=settings.APPSYNC_EVENTS_REALTIME_ENDPOINT,
     )
 
 
@@ -611,7 +855,7 @@ async def redeem(code: str, verifier: str) -> CopyTicket | Preparing:
         # The same door Continue went through: a workspace link opens only for a current member.
         if item["member"]:
             await _still_a_member(row, item["userId"])
-        elif link["audience"] != "anyone":
+        elif not sessions.public_id(link):
             raise _gone()
     except ApiProblem as exc:
         raise _gone() from exc

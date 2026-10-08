@@ -158,6 +158,7 @@ async def test_a_resume_that_lands_first_keeps_its_link_and_the_remove_answers_4
     again while the DELETE was in flight is live with its link and pick-up intact."""
     sid = await claude_session(transport)
     link = await service.put_link(ALICE, sid, "anyone")
+    await pickup_tests.pickup.set_pickup(ALICE, sid, True)
     token = link.url.split("#", 1)[1]
     await end(transport, sid)
     transact, resumed = messaging_repo._transact, []

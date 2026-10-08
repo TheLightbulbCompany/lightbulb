@@ -290,6 +290,20 @@ describe("subscriptions", () => {
     client.close();
   });
 
+  it("a public session link's page subscribes its one /pub channel with its lease", async () => {
+    const PUB = "/pub/55555555-5555-4555-8555-555555555555";
+    const { client, errors } = setup();
+    client.setChannels([PUB]);
+    await flush();
+    const ws = FakeSocket.instances[0];
+    ws.open();
+    ws.ack();
+    await flush();
+    expect(ws.sentOf("subscribe").map((s) => s.channel)).toEqual([PUB]);
+    expect(errors).toEqual([]);
+    client.close();
+  });
+
   it("a refused session frames channel is dropped for good and the socket's other channels stay live", async () => {
     // The authorizer said no: closing the socket would cost the user channel for nothing.
     const SESSION = `/ws/${WS}/session-frames/44444444-4444-5444-8444-444444444444`;

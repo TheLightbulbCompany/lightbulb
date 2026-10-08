@@ -644,6 +644,7 @@ async def test_owner_wipe_deletes_only_that_owners_snapshots(transport, s3):
 async def test_owner_wipe_removes_link_lookup_and_copies(transport, s3):
     sid = await claude_session(transport)
     await service.put_link(ALICE, sid, "anyone")
+    await pickup.set_pickup(ALICE, sid, True)
     await upload_and_commit(s3, sid)
     row = await repo.get_session(OWNER, sid)
     lookup = service._share_pk(row["shareLink"]["tokenHash"])
@@ -677,7 +678,9 @@ async def test_human_routes_over_http(transport, s3):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         result = await client.put(f"/messaging/sessions/{sid}/link", json={"audience": "workspace"})
         assert result.status_code == 200 and result.json()["audience"] == "workspace"
-        assert (await service.get_session(ALICE, sid)).pickup.state == "preparing"  # the link is the permission
+        assert (await service.get_session(ALICE, sid)).pickup.allowed is False  # a link only shows the session
+        switched = await client.put(f"/messaging/sessions/{sid}/pickup", json={"enabled": True})
+        assert switched.status_code == 200 and switched.json()["pickup"]["state"] == "preparing"
         await upload_and_commit(s3, sid)
         user["who"] = BOB
         request_id = str(uuid.uuid4())
@@ -688,8 +691,9 @@ async def test_human_routes_over_http(transport, s3):
         assert body["downloads"]["code"] is None and body["manifest"]["code"] is None
         outcome = await client.post(f"/messaging/sessions/{sid}/pickups/{request_id}/outcome", json={"ok": True})
         assert outcome.status_code == 204
-        refused = await client.delete(f"/messaging/sessions/{sid}/link")
-        assert refused.status_code == 403
+        # Nobody but the owner flips the switch, and there is no route that deletes a link.
+        assert (await client.put(f"/messaging/sessions/{sid}/pickup", json={"enabled": False})).status_code == 403
+        assert (await client.delete(f"/messaging/sessions/{sid}/link")).status_code == 405
 
 
 @pytest.mark.asyncio

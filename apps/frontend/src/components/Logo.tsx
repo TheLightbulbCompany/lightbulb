@@ -27,7 +27,7 @@ type LogoProps = {
  * artwork — the manual's own Open Items note that true vector files do not
  * exist yet. Replace before anything is cut, etched, or printed.
  */
-const GLASS_PATH =
+export const GLASS_PATH =
   "M 86,150 L 72,132 L 72,76 A 28,32 0 0 1 128,76 L 128,132 L 114,150 Z";
 
 /** Three tapered blades gathering at the stem, crossed by two ties. */

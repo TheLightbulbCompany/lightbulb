@@ -1041,6 +1041,7 @@ subscription, so every human membership removal **rotates the room's
 `deliveryKey`** in the same transaction and writes durable `LIVE` notices
 (`room.subscription.rotated` to the rest, `room.access.removed` to the removed
 member); the frames channel is revoked under the same key rotation. The old channels go permanently silent. This is a security boundary.
+A second namespace, `pub`, carries one thing: the live terminal of a session whose link is "Anyone with the link" (`/pub/<publicId>`, view only, no sign-in). Its subscribers hold no Clerk token: the `pub-authorizer` Lambda admits a 45 s lease the backend mints for a link holder (`session_links.viewing`), for that one channel. Revocation there is cooperative, with no key rotation: `session_screen.forward` re-reads the row on every frame and stops publishing the moment the link is narrowed, and the `publicId` is new each time a link is made public.
 
 **Agent dispatch.** The stream fans out twice, independently: the projector for
 live UI, and an EventBridge Pipe filtering `WORK#` inserts into

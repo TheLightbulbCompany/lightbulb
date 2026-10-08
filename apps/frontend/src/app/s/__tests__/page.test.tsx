@@ -8,7 +8,24 @@ vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
   return { ...actual, useApi: () => ({}), BACKEND_URL: "http://api.test" };
 });
-vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
+const router = vi.hoisted(() => ({ push: vi.fn(), replace: vi.fn() }));
+vi.mock("next/navigation", () => ({ useRouter: () => router }));
+// The terminal itself has its own tests; here it is what the page gives it.
+const terminal = vi.hoisted(() => ({ props: null as null | Record<string, unknown> }));
+vi.mock("@/components/messaging/SessionTerminalView", () => ({
+  SessionTerminalView: (props: Record<string, unknown>) => { terminal.props = props; return <div data-testid="terminal" />; },
+}));
+const sockets = vi.hoisted(() => ({ made: [] as Array<{ opts: { getToken: () => Promise<string | null> }; channels: string[][]; closed: boolean }> }));
+vi.mock("@lightbulb/shared", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@lightbulb/shared")>();
+  class AppSyncEventsClient {
+    channels: string[][] = []; closed = false;
+    constructor(public opts: { getToken: () => Promise<string | null> }) { sockets.made.push(this); }
+    setChannels(next: string[]) { this.channels.push(next); }
+    close() { this.closed = true; }
+  }
+  return { ...actual, AppSyncEventsClient };
+});
 const auth = vi.hoisted(() => ({ isSignedIn: false }));
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ isLoaded: true, isSignedIn: auth.isSignedIn, orgId: null, getToken: async () => "jwt" }),
@@ -23,7 +40,7 @@ const model = (over: object) => ({
   continuable: false, me: { signedIn: false, member: false }, ...over,
 });
 
-afterEach(() => { auth.isSignedIn = false; vi.useRealTimers(); vi.unstubAllGlobals(); window.sessionStorage.clear(); });
+afterEach(() => { auth.isSignedIn = false; vi.useRealTimers(); vi.unstubAllGlobals(); window.sessionStorage.clear(); router.replace.mockClear(); terminal.props = null; sockets.made.length = 0; });
 
 describe("session link page", () => {
   // The acceptance finding: an incomplete link was one unstyled line in the top-left corner.
@@ -59,7 +76,7 @@ describe("session link page", () => {
     expect(window.sessionStorage.getItem("lightbulb:session-link")).toContain("tok");
   });
 
-  it("opens the same link after sign-in, with the person's token, and shows the session", async () => {
+  it("opens the same link after sign-in, with the person's token, and sends a member into the app", async () => {
     window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
     refuse();
     const view = render(<SessionLinkPageRoute />);
@@ -68,11 +85,12 @@ describe("session link page", () => {
     vi.stubGlobal("fetch", fetchMock);
     auth.isSignedIn = true;
     view.rerender(<SessionLinkPageRoute />);
-    expect(await screen.findByRole("heading", { name: "Fix login" })).toBeTruthy();
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(String(init.body))).toEqual({ token: "tok" });
     expect((init.headers as Record<string, string>).Authorization).toBe("Bearer jwt");
-    expect(screen.getByRole("link", { name: "Open in Lightbulb" })).toBeTruthy();
+    expect(router.replace).toHaveBeenCalledWith("/chat?panel=session&session=s1");
+    expect(screen.queryByRole("heading", { name: "Fix login" })).toBeNull(); // nothing of the page while it leaves
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
@@ -96,6 +114,7 @@ describe("session link page", () => {
     expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
   });
 
+  // A link viewer has the terminal up: its own renewal hears trouble, so the page re-opens every 30 s, not 5.
   it("re-opens on every tick while the session is live", async () => {
     vi.useFakeTimers();
     window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
@@ -110,10 +129,10 @@ describe("session link page", () => {
     expect(screen.getByText("A shared session")).toBeTruthy();
     const openCalls = () => fetchMock.mock.calls.filter(c => String(c[0]).endsWith("/open")).length;
     expect(openCalls()).toBe(1);
-    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
     expect(screen.getByText("Fix the bug")).toBeTruthy();
     expect(openCalls()).toBe(2);
-    await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(90000); });
     expect(openCalls()).toBe(5); // a live session keeps being re-opened, ready or not
   });
 
@@ -133,10 +152,10 @@ describe("session link page", () => {
     render(<SessionLinkPageRoute />);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(screen.getByText(/· Live/)).toBeTruthy();
-    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
     expect(screen.getByText(/· Ended/)).toBeTruthy();
     const openCalls = () => fetchMock.mock.calls.filter(c => String(c[0]).endsWith("/open")).length;
-    await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(90000); });
     expect(openCalls()).toBe(2); // ended: the poll stopped
   });
 
@@ -152,11 +171,11 @@ describe("session link page", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<SessionLinkPageRoute />);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
     // Signed out, so the same words as any other refusal: sign in, or it was turned off.
     expect(screen.getByRole("alert").textContent).toBe("Sign in to open this session.");
     const openCalls = () => fetchMock.mock.calls.filter(c => String(c[0]).endsWith("/open")).length;
-    await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(90000); });
     expect(openCalls()).toBe(2);
   });
 
@@ -174,7 +193,7 @@ describe("session link page", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<SessionLinkPageRoute />);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-    await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(90000); });
     expect(screen.queryByRole("alert")).toBeNull();
     const opens = fetchMock.mock.calls.filter(c => String(c[0]).endsWith("/open"));
     expect(opens.length).toBe(4);
@@ -209,19 +228,238 @@ describe("session link page", () => {
     expect(screen.getByLabelText("Session state").textContent).toBe("Ended");
     expect(fetchMock.mock.calls.some(c => String(c[0]).endsWith("/events"))).toBe(false);
   });
-  it("tells a member to open a live session in Lightbulb, and a nonmember only that it is live", async () => {
+  // The owner's report (2026-10-08): "Anyone with the link" showed a signed-out person only "This
+  // session is live.", and someone signed in to another workspace the Continue instructions.
+  const seat = { lease: "pub-1.key-1", channel: "/pub/pub-1", watchId: "pub-1", httpEndpoint: "https://events.test/event", realtimeEndpoint: "wss://events.test/event/realtime" };
+  it.each([false, true])("shows anyone holding the link the live terminal, view only (signed in elsewhere: %s)", async (signedIn) => {
     vi.useFakeTimers();
+    auth.isSignedIn = signedIn;
     window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
-    let member = true;
-    vi.stubGlobal("fetch", vi.fn(async (_url: string) => ({ ok: true, status: 200, json: async () => model({ state: "live", sessionId: "s1", me: { signedIn: member, member } }) } as Response)));
-    const first = render(<SessionLinkPageRoute />);
-    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-    expect(screen.getByText(/Open it there to watch its terminal/)).toBeTruthy();
-    first.unmount();
-    member = false;
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => ({ ok: true, status: 200, json: async () => url.endsWith("/viewing") ? seat : model({ title: "Fix login", me: { signedIn, member: false } }) }) as Response);
+    vi.stubGlobal("fetch", fetchMock);
     render(<SessionLinkPageRoute />);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-    expect(screen.getByText("This session is live.")).toBeTruthy();
-    expect(screen.queryByText(/Open it there/)).toBeNull();
+    expect(screen.getByRole("heading", { name: "Fix login" })).toBeTruthy();
+    expect(screen.getByText(/Ada's Claude Code session · Live/)).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Live terminal" })).toContainElement(screen.getByTestId("terminal"));
+    expect(router.replace).not.toHaveBeenCalled();
+    // Watch only by default: no Continue, no "Get Lightbulb for Mac", no command.
+    expect(screen.queryByText(/lightbulb continue/)).toBeNull();
+    expect(screen.queryByText("Get Lightbulb for Mac")).toBeNull();
+    // The seat is taken with the link's token alone, in a body, with no sign-in.
+    const viewing = () => fetchMock.mock.calls.filter(c => String(c[0]).endsWith("/viewing"));
+    expect(JSON.parse(String(viewing()[0][1]?.body))).toEqual({ token: "tok" });
+    expect((viewing()[0][1]?.headers as Record<string, string>).Authorization).toBeUndefined();
+    // View only, on the seat's own channel, under an id that is not the session's.
+    const props = terminal.props!;
+    expect(props.admitted).toBe(false);
+    expect(props.input).toBeUndefined();
+    expect(props.session).toEqual({ sessionId: "pub-1", generation: "pub-1" });
+    expect((props.frames as { channel: string }).channel).toBe("/pub/pub-1");
+    expect(await sockets.made[0].opts.getToken()).toBe("pub-1.key-1"); // the lease is the whole credential
+    const release = (props.frames as { claim: (c: string, r: () => void) => () => void }).claim("/pub/pub-1", () => {});
+    expect(sockets.made[0].channels).toEqual([["/pub/pub-1"]]);
+    release();
+    // The terminal's own 15 s renewal carries the lease, and `fresh` asks the Mac for a picture.
+    await act(async () => { await (props.watch as (id: string, fresh?: boolean) => Promise<void>)("pub-1", true); });
+    expect(JSON.parse(String(viewing()[1][1]?.body))).toEqual({ token: "tok", lease: "pub-1.key-1", fresh: true });
+  });
+
+  it("re-opens at once when the terminal's seat is refused, and shows what happened", async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
+    let ended = false;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (!url.endsWith("/viewing")) return { ok: true, status: 200, json: async () => model({ state: ended ? "ended" : "live" }) } as Response;
+      return ended ? { ok: false, status: 409, json: async () => ({ code: "LOCAL_SESSION_OFFLINE", message: "This session is not running." }) } as Response
+        : { ok: true, status: 200, json: async () => seat } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    ended = true;
+    await act(async () => { await (terminal.props!.watch as (id: string) => Promise<void>)("pub-1").catch(() => {}); await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByLabelText("Session state").textContent).toBe("Ended"); // no 30 s wait
+    expect(screen.queryByTestId("terminal")).toBeNull();
+  });
+
+  // Joined inside another viewer's 15 s ask window on an idle session: the server refused the ask
+  // and nothing was coming. The page keeps asking until it has a picture.
+  it("asks for a picture on every renewal until a snapshot arrives, then stops", async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => ({ ok: true, status: 200, json: async () => url.endsWith("/viewing") ? seat : model({}) }) as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const renew = terminal.props!.watch as (id: string, fresh?: boolean) => Promise<void>;
+    const last = () => JSON.parse(String(fetchMock.mock.calls.filter(c => String(c[0]).endsWith("/viewing")).at(-1)![1]?.body));
+    await act(async () => { await renew("pub-1", false); });
+    expect(last().fresh).toBe(true); // a plain renewal, but still no picture
+    const frame = (kind: string) => ({ eventId: kind, type: "workspace.session.screen", payload: { sessionId: "pub-1", generation: "pub-1", epoch: 1, seq: 0, cols: 80, rows: 24, kind, data: "" } });
+    const deliver = (sockets.made[0].opts as unknown as { onEvent: (e: unknown) => void }).onEvent;
+    deliver(frame("output"));
+    await act(async () => { await renew("pub-1", false); });
+    expect(last().fresh).toBe(true); // output alone draws nothing on an empty terminal
+    deliver(frame("snapshot"));
+    await act(async () => { await renew("pub-1", false); });
+    expect(last().fresh).toBeUndefined();
+  });
+
+  // Codex on #3946: AppSync down for longer than the 45 s lease right after the seat was taken, and
+  // the socket retried with the lapsed lease until a reload.
+  it("keeps the seat while the channel is not live, so the socket's next attempt has a live lease", async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
+    let lease = "pub-1.key-1";
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => ({ ok: true, status: 200, json: async () => url.endsWith("/viewing") ? { ...seat, lease } : model({}) }) as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const viewing = () => fetchMock.mock.calls.filter(c => String(c[0]).endsWith("/viewing"));
+    expect(viewing()).toHaveLength(1);
+    lease = "pub-1.key-2"; // the first lapsed: the server mints another
+    await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
+    expect(JSON.parse(String(viewing()[1][1]?.body))).toEqual({ token: "tok", lease: "pub-1.key-1", retake: true }); // no `fresh`: nothing can hear a picture yet
+    expect(await sockets.made[0].opts.getToken()).toBe("pub-1.key-2");
+    // Live: the terminal's own renewal takes over, and the page sends none.
+    await act(async () => { (sockets.made[0].opts as unknown as { onStatus: (s: { connected: boolean; liveChannels: string[] }) => void }).onStatus({ connected: true, liveChannels: ["/pub/pub-1"] }); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(45000); });
+    expect(viewing()).toHaveLength(2);
+  });
+
+  // Codex on #3946: a lease connects once and subscribes once (the authorizer consumes it). Before
+  // the socket connects again the page asks for a seat it can connect with, and the socket waits.
+  it("asks for a usable seat before every further connect, and never offers one lease to two", async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
+    let lease = "pub-1.key-1";
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => ({ ok: true, status: 200, json: async () => url.endsWith("/viewing") ? { ...seat, lease } : model({}) }) as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const socket = sockets.made[0].opts as unknown as { getToken: () => Promise<string | null>; onStatus: (s: { connected: boolean; liveChannels: string[] }) => void; onError: (kind: string, channel?: string) => void };
+    const viewing = () => fetchMock.mock.calls.filter(c => String(c[0]).endsWith("/viewing")).map(c => JSON.parse(String(c[1]?.body)));
+    // The first connect, then its subscribe on that connection: the seat just taken, and no request.
+    expect(await socket.getToken()).toBe("pub-1.key-1");
+    await act(async () => { socket.onStatus({ connected: true, liveChannels: [] }); });
+    expect(await socket.getToken()).toBe("pub-1.key-1");
+    expect(viewing()).toHaveLength(1);
+    await act(async () => { socket.onStatus({ connected: true, liveChannels: ["/pub/pub-1"] }); });
+    // The socket drops: the page asks at once, and the reconnect's connect waits for the answer.
+    lease = "pub-1.key-2";
+    let token!: Promise<string | null>;
+    await act(async () => { socket.onStatus({ connected: false, liveChannels: [] }); token = socket.getToken(); });
+    expect(viewing().at(-1)).toEqual({ token: "tok", lease: "pub-1.key-1", retake: true });
+    expect(await token).toBe("pub-1.key-2"); // never the used lease
+    expect(viewing()).toHaveLength(2);
+    // That connect fails too (AppSync may or may not have taken the lease): ask again before the next.
+    lease = "pub-1.key-3";
+    await act(async () => { token = socket.getToken(); await token; });
+    expect(viewing().at(-1)).toEqual({ token: "tok", lease: "pub-1.key-2", retake: true });
+    expect(await token).toBe("pub-1.key-3");
+    // A refused subscribe asks once more.
+    await act(async () => { socket.onStatus({ connected: true, liveChannels: [] }); socket.onError("subscribe_error", "/pub/pub-1"); });
+    expect(viewing().at(-1)).toEqual({ token: "tok", lease: "pub-1.key-3", retake: true });
+  });
+
+  // Codex on #3946: a trade still pending after 15 s was asked for again by the tick or by the
+  // tab coming back, and the server gave a new seat for each: one browser, several seats.
+  it("asks once while a trade is in flight, however many things ask for it", async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
+    let answer: (() => void) | null = null;
+    let slow = false;
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+      if (url.endsWith("/viewing") && slow) await new Promise<void>((resolve) => { answer = resolve; });
+      return { ok: true, status: 200, json: async () => url.endsWith("/viewing") ? { ...seat, lease: slow ? "pub-1.key-2" : seat.lease } : model({}) } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const socket = sockets.made[0].opts as unknown as { getToken: () => Promise<string | null>; onStatus: (s: { connected: boolean; liveChannels: string[] }) => void; onError: (kind: string, channel?: string) => void };
+    const viewing = () => fetchMock.mock.calls.filter(c => String(c[0]).endsWith("/viewing"));
+    await act(async () => { socket.onStatus({ connected: true, liveChannels: ["/pub/pub-1"] }); });
+    slow = true;
+    await act(async () => { socket.onStatus({ connected: false, liveChannels: [] }); }); // dropped: the trade starts
+    expect(viewing()).toHaveLength(2);
+    // Still pending: two ticks of the 15 s keepalive, the tab shown again, and a refused subscribe.
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
+    await act(async () => { document.dispatchEvent(new Event("visibilitychange")); socket.onError("subscribe_error", "/pub/pub-1"); });
+    expect(viewing()).toHaveLength(2);
+    // It answers: the socket gets the one new lease, and a later ask is a new request.
+    const token = socket.getToken();
+    await act(async () => { answer!(); await vi.advanceTimersByTimeAsync(0); });
+    expect(await token).toBe("pub-1.key-2");
+    await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
+    expect(viewing()).toHaveLength(3);
+  });
+
+  // A channel gives out a life total of seats, then the link moves to a new one. A viewer's next
+  // renewal answers with a seat there: the page follows with that seat, not a second one.
+  it("follows the link to its new channel with the seat the renewal gave it", async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
+    let now = seat;
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => ({ ok: true, status: 200, json: async () => url.endsWith("/viewing") ? now : model({}) }) as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    now = { ...seat, lease: "pub-2.key-9", channel: "/pub/pub-2", watchId: "pub-2" };
+    await act(async () => { await (terminal.props!.watch as (id: string) => Promise<void>)("pub-1"); await vi.advanceTimersByTimeAsync(0); });
+    const viewing = fetchMock.mock.calls.filter(c => String(c[0]).endsWith("/viewing")).map(c => JSON.parse(String(c[1]?.body)));
+    expect(viewing.at(-1).lease).toBe("pub-2.key-9"); // renewed, so no second seat on the new channel
+    expect(sockets.made[0].closed).toBe(true);
+    expect((terminal.props!.frames as { channel: string }).channel).toBe("/pub/pub-2");
+    expect(terminal.props!.session).toEqual({ sessionId: "pub-2", generation: "pub-2" });
+  });
+
+  it("shows the Continue instructions only when the owner turned Continue on", async () => {
+    vi.useFakeTimers();
+    auth.isSignedIn = true;
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => ({ ok: true, status: 200, json: async () => url.endsWith("/viewing") ? seat : model({ continuable: true, me: { signedIn: true, member: false } }) }) as Response));
+    render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByTestId("terminal")).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Continue" })).toBeTruthy();
+  });
+
+  it("says why there is no terminal, and tries again later", async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
+    let full = true;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (!url.endsWith("/viewing")) return { ok: true, status: 200, json: async () => model({}) } as Response;
+      return full ? { ok: false, status: 409, json: async () => ({ code: "LOCAL_SESSION_VIEWERS_FULL", message: "This session already has 20 people watching by link." }) } as Response
+        : { ok: true, status: 200, json: async () => seat } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByLabelText("Session state").textContent).toBe("This session already has 20 people watching by link.");
+    full = false;
+    await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
+    expect(screen.getByTestId("terminal")).toBeTruthy();
+  });
+
+  it("sends a workspace member into the app's session view, except in the CLI's confirm mode", async () => {
+    vi.useFakeTimers();
+    auth.isSignedIn = true;
+    const open = () => vi.stubGlobal("fetch", vi.fn(async (_url: string) => ({ ok: true, status: 200, json: async () => model({ state: "live", sessionId: "s1", me: { signedIn: true, member: true } }) } as Response)));
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
+    open();
+    const first = render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(router.replace).toHaveBeenCalledWith("/chat?panel=session&session=s1");
+    expect(screen.queryByTestId("terminal")).toBeNull();
+    first.unmount();
+    router.replace.mockClear();
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok", port: 4000, challenge: "c".repeat(43) }));
+    render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(router.replace).not.toHaveBeenCalled();
+    expect(screen.getByText(/Open it there to watch its terminal/)).toBeTruthy();
+    expect(screen.queryByTestId("terminal")).toBeNull();
   });
 });

@@ -408,7 +408,9 @@ async def _turn_off(auth: AuthContext, owner: str, session_id: str) -> sessions.
             return sessions._session_public(row, auth.user_id)
         try:
             # An upload in flight may still land; the sweeper deletes a prefix nobody allows.
-            return sessions._session_public(await retire(owner, sid, row, auth=auth, action="pickup_off"), auth.user_id)
+            return sessions._session_public(
+                await retire(owner, sid, row, auth=auth, action="pickup_off", keep_link=True), auth.user_id
+            )
         except ClientError as exc:
             if not store._is_cancelled(exc):
                 raise
@@ -886,12 +888,19 @@ async def sweep_once(*, now: int | None = None) -> int:
 
 
 async def retire(
-    owner: str, sid: str, row: dict | None, *, auth: AuthContext | None = None, action: str = "pickup_expired"
+    owner: str,
+    sid: str,
+    row: dict | None,
+    *,
+    auth: AuthContext | None = None,
+    action: str = "pickup_expired",
+    keep_link: bool = False,
 ) -> dict | None:
     """Delete a session's snapshot, and when it was still allowed, clear the flags, drop its want
     row and audit ``action`` in one transaction. Fenced on the META revision alone (never pairing
     or enrolment): of two concurrent callers (tasks, the sweeper, a device route, the author's
-    off switch) one wins and the other is cancelled. Returns the updated META when there was one."""
+    off switch) one wins and the other is cancelled. Returns the updated META when there was one.
+    ``keep_link``: the owner's "Let people continue" switch going off; the link still shows the session."""
     from core.services.local_session_relay import publish_resources_changed
 
     table = store._table().name
@@ -915,7 +924,7 @@ async def retire(
     if not allowed:
         items.append({"ConditionCheck": {"TableName": table, "Key": {"pk": pk, "sk": "META"}, **check}})
     else:
-        drop = ("pickupAllowed", "pickupSnapshot", "pickupEpoch", "shareLink")
+        drop = ("pickupAllowed", "pickupSnapshot", "pickupEpoch") + (() if keep_link else ("shareLink",))
         updated = {key: value for key, value in row.items() if key not in drop}
         updated["revision"] = str(uuid.uuid4())
         items += [
@@ -923,7 +932,7 @@ async def retire(
                 "Update": {
                     "TableName": table,
                     "Key": {"pk": row["pk"], "sk": "META"},
-                    "UpdateExpression": "REMOVE pickupAllowed, pickupSnapshot, pickupEpoch, shareLink SET revision = :new",
+                    "UpdateExpression": f"REMOVE {', '.join(drop)} SET revision = :new",
                     "ConditionExpression": "revision = :old",
                     "ExpressionAttributeValues": {":new": updated["revision"], ":old": row["revision"]},
                 }
@@ -931,7 +940,7 @@ async def retire(
             _want_delete(row),
             _audit(owner, sid, auth, action),
         ]
-        if row.get("shareLink"):
+        if row.get("shareLink") and not keep_link:
             # The link dies with its snapshot: expiry and turning the link off are one act (spec §3.1).
             items.append(
                 {

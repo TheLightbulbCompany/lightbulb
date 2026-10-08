@@ -1,13 +1,14 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { SignInButton, SignUpButton, useAuth } from "@clerk/nextjs";
-import { createMessagingClient, type SessionLinkCode, type SessionLinkPage } from "@lightbulb/shared";
+import { AppSyncEventsClient, createMessagingClient, type LiveEvent, type SessionLinkCode, type SessionLinkPage, type SessionLinkViewing } from "@lightbulb/shared";
 import { ApiError, BACKEND_URL, useApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { copyText, sessionPermalink } from "@/components/messaging/messageLinks";
+import { SessionTerminalView } from "@/components/messaging/SessionTerminalView";
 // For .session-state-panel: this route is outside /chat, which is where the sheet is otherwise loaded.
 import "@/components/messaging/messaging.css";
 
@@ -15,6 +16,11 @@ import "@/components/messaging/messaging.css";
 // on this page) and onboarding, never in a URL a server sees (spec §3.7).
 const KEY = "lightbulb:session-link";
 const POLL_MS = 5000;
+/** While the terminal is up: its own 15 s renewal already hears a refusal, an end or an offline Mac
+ *  (and asks for a re-open then), so this poll only follows the title and the Continue switch.
+ *  A link viewer then costs the shared /public throttle 0.1 requests a second, not 0.27. */
+const WATCHING_POLL_MS = 30_000;
+const watchingPage = (page: SessionLinkPage) => page.state === "live" && !page.me.member;
 type Stash = { token: string; port?: number; challenge?: string };
 
 export const go = { to: (url: string) => window.location.assign(url) };
@@ -45,8 +51,138 @@ async function publicPost<T>(path: string, body: unknown, token: string | null):
     body: JSON.stringify(body),
   });
   const json = await res.json().catch(() => null);
-  if (!res.ok) throw Object.assign(new Error((json as { message?: string } | null)?.message || "Could not open this link. Try again."), { refused: res.status === 403 || res.status === 404 || res.status === 410 }); // a 429 or 5xx is not a refusal
+  if (!res.ok) throw new ApiError(res.status, json, (json as { message?: string } | null)?.message || "Could not open this link. Try again.");
   return json as T;
+}
+/** The server refused the link itself. A 409 (offline, full), a 429 or a 5xx is not a refusal. */
+const refusal = (e: unknown) => e instanceof ApiError && (e.status === 403 || e.status === 404 || e.status === 410);
+
+const VIEWING_RETRY_MS = 15_000;
+const noop = () => {};
+
+/** An "Anyone with the link" session's live terminal, view only, with no sign-in (owner ruling
+ *  2026-10-08). The page holds a 45 s seat it renews with the link's token, and one AppSync
+ *  subscription whose only credential is that seat's lease. It gets screen frames and nothing else:
+ *  no input route, no chat, no events, and no session or workspace id (frames carry `watchId`). */
+function LinkTerminal({ token, onTrouble }: { token: string; onTrouble: () => void }) {
+  const [seat, setSeat] = useState<{ view: SessionLinkViewing; client: AppSyncEventsClient } | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [liveChannels, setLiveChannels] = useState<readonly string[]>([]);
+  // Bumped to take a seat again: after a failure, or when the link was made public anew (a new channel).
+  const [round, setRound] = useState(0);
+  const lease = useRef<string | null>(null);
+  const leaseOf = useRef(token);
+  const handlers = useRef(new Set<(event: LiveEvent) => void>());
+  // Whether this seat has drawn a snapshot. Until it has, every renewal asks for one: the server
+  // grants an ask once per 15 s per link, so a viewer who joined just after someone else's would
+  // otherwise look at a blank terminal until an idle Mac's own 30 s resync.
+  const pictured = useRef(false);
+  // AppSync lets a lease connect once and subscribe once (its authorizer marks it). So before the
+  // socket connects again, the page asks for a seat it can connect with (`retake`): the server
+  // renews this one if AppSync never took it, and trades it for a new one if it did.
+  // `trading`: that request in flight; the socket's next connect and subscribe wait for it.
+  const trading = useRef<Promise<void> | null>(null);
+  // The lease the socket's last connect went out with: the same one is never offered to a second.
+  const offered = useRef<string | null>(null);
+  const connected = useRef(false);
+  const viewing = useCallback(async (fresh?: boolean, retake?: boolean) => {
+    const next = await publicPost<SessionLinkViewing>("/public/session-links/viewing",
+      { token, ...(lease.current ? { lease: lease.current } : {}), ...(fresh ? { fresh: true } : {}), ...(retake ? { retake: true } : {}) }, null);
+    lease.current = next.lease;
+    return next;
+  }, [token]);
+  // Keeps a seat the socket can connect with while the channel is not live. Never while the tab is hidden.
+  // One at a time: a second ask while the first is still on its way (a slow network, then the
+  // 15 s tick or the tab shown again) would hand in the same used lease twice, and the server
+  // would give a new seat for each.
+  const reseat = useCallback((channel: string) => {
+    if (document.visibilityState === "hidden" || trading.current) return;
+    const trade: Promise<void> = viewing(false, true).then(
+      (next) => { if (next.channel !== channel) setRound((n) => n + 1); },
+      (e) => { if (e instanceof ApiError) onTrouble(); },
+    ).then(() => { if (trading.current === trade) trading.current = null; });
+    trading.current = trade;
+  }, [viewing, onTrouble]);
+  useEffect(() => {
+    let alive = true;
+    let client: AppSyncEventsClient | undefined;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    // A round on the same link keeps its lease: when the link moved to a new channel, the renewal
+    // that said so already holds a seat there, and taking another would cost the channel two.
+    if (leaseOf.current !== token) { lease.current = null; leaseOf.current = token; }
+    pictured.current = false;
+    trading.current = null;
+    offered.current = null;
+    connected.current = false;
+    let wasLive = false;
+    viewing().then((view) => {
+      if (!alive) return;
+      client = new AppSyncEventsClient({
+        httpEndpoint: view.httpEndpoint, realtimeEndpoint: view.realtimeEndpoint,
+        getToken: async () => {
+          await trading.current;
+          if (!connected.current) {
+            // A connect. One that follows a failed connect would go out with the same lease, and
+            // AppSync may have taken it: ask first (one request per attempt, on the socket's backoff).
+            if (offered.current === lease.current) { reseat(view.channel); await trading.current; }
+            offered.current = lease.current;
+          }
+          return lease.current;
+        },
+        onEvent: (event) => {
+          if (event.type === "workspace.session.screen" && event.payload.kind === "snapshot") pictured.current = true;
+          handlers.current.forEach((handler) => handler(event));
+        },
+        onStatus: (status) => {
+          if (!alive) return;
+          connected.current = status.connected;
+          const liveNow = status.liveChannels.includes(view.channel);
+          if (wasLive && !liveNow) reseat(view.channel); // dropped: the next connect or subscribe needs a new seat
+          wasLive = liveNow;
+          setLiveChannels(status.liveChannels);
+        },
+        // Refused: by a lapsed or used lease. One request per refusal, on the socket's own backoff.
+        onError: (kind) => { if (alive && kind === "subscribe_error") reseat(view.channel); },
+        uuid: () => crypto.randomUUID(),
+      });
+      setNote(null);
+      setSeat({ view, client });
+    }, (e) => {
+      if (!alive) return;
+      setNote(e instanceof ApiError ? e.message : "Could not reach this session. Trying again.");
+      if (!refusal(e)) retry = setTimeout(() => setRound((n) => n + 1), VIEWING_RETRY_MS); // a refused link is the page poll's to show
+    });
+    return () => { alive = false; clearTimeout(retry); client?.close(); setSeat(null); setLiveChannels([]); };
+  }, [viewing, reseat, round, token]);
+  const channel = seat?.view.channel;
+  const watch = useCallback(async (_id: string, fresh?: boolean) => {
+    await trading.current; // renew the seat a trade in flight is about to give, not the one it gives up
+    try { if ((await viewing(fresh || !pictured.current)).channel !== channel) setRound((n) => n + 1); }
+    // The seat was refused (narrowed, ended, offline): the page re-opens the link now and says which.
+    catch (e) { if (e instanceof ApiError) onTrouble(); throw e; }
+  }, [viewing, channel, onTrouble]);
+  // Until the channel is live the terminal renews nothing (it asks for a picture only once it can
+  // hear one), so the seat is kept here: AppSync refuses a connect or a subscribe made with a lapsed
+  // lease, and the socket would retry with it for good (AppSync down past 45 s right after the seat
+  // was taken, or a tab hidden that long). One request per 15 s, and at once when the tab is shown.
+  const live = !!channel && liveChannels.includes(channel);
+  useEffect(() => {
+    if (!channel || live) return;
+    const keep = () => reseat(channel);
+    const timer = setInterval(keep, VIEWING_RETRY_MS);
+    document.addEventListener("visibilitychange", keep);
+    return () => { clearInterval(timer); document.removeEventListener("visibilitychange", keep); };
+  }, [channel, live, reseat]);
+  const onEvent = useCallback((handler: (event: LiveEvent) => void) => { handlers.current.add(handler); return () => { handlers.current.delete(handler); }; }, []);
+  const client = seat?.client;
+  const claim = useCallback((wanted: string) => { client?.setChannels([wanted]); return () => client?.setChannels([]); }, [client]);
+  const watchId = seat?.view.watchId;
+  const session = useMemo(() => (watchId ? { sessionId: watchId, generation: watchId } : null), [watchId]);
+  const frames = useMemo(() => (channel ? { channel, claim, liveChannels } : undefined), [channel, claim, liveChannels]);
+  if (!session) return <section aria-label="Session state" className="session-state-panel rounded-lg border"><p role="status">{note ?? "Connecting…"}</p></section>;
+  return <section aria-label="Live terminal" className="flex h-[70dvh] flex-col overflow-hidden rounded-lg border">
+    <SessionTerminalView session={session} frames={frames} onEvent={onEvent} watch={watch} onLive={noop} admitted={false} />
+  </section>;
 }
 
 function CodeLine({ code }: { code: SessionLinkCode }) {
@@ -82,6 +218,8 @@ export default function SessionLinkPageRoute() {
   const [continueError, setContinueError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // A ref, not an effect dependency: a getToken that changes identity would reopen the page each render.
+  const reopen = useRef(noop);
+  const reopenNow = useCallback(() => reopen.current(), []);
   const tokenOf = useRef(getToken);
   useEffect(() => { tokenOf.current = getToken; });
 
@@ -100,39 +238,37 @@ export default function SessionLinkPageRoute() {
     // A fresh Clerk token on each poll: they live about a minute, and the poll runs for as long as
     // the session is live.
     const bearerNow = async () => (isSignedIn ? await tokenOf.current() : null);
-    let timer: ReturnType<typeof setInterval> | undefined;
-    (async () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let last: SessionLinkPage | undefined;
+    // Each tick re-opens the link, so the header follows the session (live, ended, offline) and a
+    // turned-off link shows its refusal; the poll stops once the session is not live or the link is
+    // refused. A network blip (not a refusal) just tries again next tick.
+    const tick = async (first: boolean) => {
       try {
-        const opened = await publicPost<SessionLinkPage>("/public/session-links/open", { token: stash.token }, await bearerNow());
+        const next = await publicPost<SessionLinkPage>("/public/session-links/open", { token: stash.token, ...(first ? {} : { refresh: true }) }, await bearerNow());
         if (!alive) return;
-        setError(null); setRefused(false); // a sign-in reopens a link that was refused while signed out
-        setPage(opened);
-        // The page shows facts only, never a transcript. Each tick re-opens the link, so the header follows the session (live, ended, offline) and
-        // a turned-off link shows its refusal; the poll stops once the session is not live or the
-        // link is refused. A network blip (not a refusal) just tries again next tick.
-        if (opened.state === "live") timer = setInterval(() => {
-          void (async () => {
-            try {
-              const next = await publicPost<SessionLinkPage>("/public/session-links/open", { token: stash.token, refresh: true }, await bearerNow());
-              if (!alive) return;
-              setPage(next);
-              if (next.state !== "live" && timer) clearInterval(timer);
-            } catch (e) {
-              if (!alive || !(e as { refused?: boolean }).refused) return;
-              if (timer) clearInterval(timer);
-              setRefused(true);
-              setError(e instanceof Error ? e.message : "Could not open this link. Try again.");
-            }
-          })();
-        }, POLL_MS);
+        if (first) { setError(null); setRefused(false); } // a sign-in reopens a link that was refused while signed out
+        setPage(last = next);
       } catch (e) {
         if (!alive) return;
-        setRefused(!!(e as { refused?: boolean }).refused);
-        setError(e instanceof Error ? e.message : "Could not open this link. Try again.");
+        if (first || refusal(e)) {
+          last = undefined;
+          setRefused(refusal(e));
+          setError(e instanceof Error ? e.message : "Could not open this link. Try again.");
+        }
       }
-    })();
-    return () => { alive = false; if (timer) clearInterval(timer); };
+      clearTimeout(timer);
+      if (alive && last?.state === "live") timer = setTimeout(() => void tick(false), watchingPage(last) ? WATCHING_POLL_MS : POLL_MS);
+    };
+    reopen.current = () => { if (alive && last?.state === "live") { clearTimeout(timer); void tick(false); } };
+    void tick(true);
+    return () => { alive = false; clearTimeout(timer); };
   }, [stash, isLoaded, isSignedIn]);
+
+  // A workspace member lands in the app's own session view (Watch, Ask to join). Not in the CLI's
+  // confirm mode: that visit is here to press Continue.
+  const memberAt = page?.me.member && !stash?.port ? page.sessionId : undefined;
+  useEffect(() => { if (memberAt) router.replace(sessionPermalink(memberAt, "")); }, [memberAt, router]);
 
   const confirmContinue = async () => {
     if (!stash?.port || !stash.challenge) return;
@@ -163,10 +299,11 @@ export default function SessionLinkPageRoute() {
     <p role="alert" className="session-state-title">{error}</p>
     {refused && isSignedIn && <p>You are signed in, so this link was turned off or was shared with a workspace you are not in. Ask the person who sent it for a new link.</p>}
   </Unopened>;
-  if (!page || !stash) return <main className="mx-auto max-w-3xl p-4"><p role="status">Opening…</p></main>;
+  if (!page || !stash || memberAt) return <main className="mx-auto max-w-3xl p-4"><p role="status">Opening…</p></main>;
   const command = `lightbulb continue '${window.location.origin}/s#${stash.token}'`;
   const canContinue = page.provider === "claude" && page.continuable;
-  return <main className="mx-auto max-w-3xl p-4">
+  const watching = watchingPage(page);
+  return <main className={`mx-auto p-4 ${watching ? "max-w-5xl" : "max-w-3xl"}`}>
     <header className="mb-4">
       <h1 className="text-lg font-semibold">{page.title?.trim() || "A shared session"}</h1>
       <p className="text-sm text-muted-foreground">{page.ownerFirstName}&apos;s {page.provider === "claude" ? "Claude Code" : "Codex"} session · {page.state === "live" ? "Live" : page.state === "ended" ? "Ended" : "Offline"}</p>
@@ -190,12 +327,11 @@ export default function SessionLinkPageRoute() {
             <Button type="button" variant="outline" size="sm" onClick={() => void copyText(command)}>Copy command</Button>
           </>}
     </section>}
-    <section aria-label="Session state" className="session-state-panel rounded-lg border">
-      {/* No word on the screen: this page never shows one, and an ended session's Mac may still keep it for teammates. */}
+    {watching ? <LinkTerminal token={stash.token} onTrouble={reopenNow} /> : <section aria-label="Session state" className="session-state-panel rounded-lg border">
+      {/* An ended session shows no screen here: its Mac may still keep the final one, for teammates only. */}
       {page.state === "ended" ? <p className="font-semibold">Ended</p>
         : page.state === "offline" ? <p className="font-semibold">{page.ownerFirstName}&apos;s Mac is offline</p>
-        : page.me.member ? <p>This session is live in Lightbulb. Open it there to watch its terminal.</p>
-        : <p>This session is live.</p>}
-    </section>
+        : <p>This session is live in Lightbulb. Open it there to watch its terminal.</p>}
+    </section>}
   </main>;
 }

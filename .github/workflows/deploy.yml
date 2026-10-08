@@ -707,7 +707,7 @@ jobs:
           --only-show-errors && rm -rf cdk.out && tar -xzf cdk.out.tgz
       - id: Publish
         name: Publish Assets-FileAsset27
-        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset27-step.sh
+        run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset27-step.sh
   Assets-FileAsset28:
     name: Publish Assets Assets-FileAsset28
     needs:
@@ -1204,6 +1204,37 @@ jobs:
       - id: Publish
         name: Publish Assets-FileAsset41
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset41-step.sh
+  Assets-FileAsset42:
+    name: Publish Assets Assets-FileAsset42
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ vars.DEPLOY_RUNNER }}
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/lightbulb-github-actions
+      - name: Download cdk.out from S3
+        run: aws s3 cp s3://cdk-hnb659fds-assets-877352799272-us-east-1/gha-cdk-out/${{
+          github.run_id }}-${{ github.run_attempt }}/cdk.out.tgz cdk.out.tgz
+          --only-show-errors && rm -rf cdk.out && tar -xzf cdk.out.tgz
+      - id: Publish
+        name: Publish Assets-FileAsset42
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset42-step.sh
   Assets-FileAsset5:
     name: Publish Assets Assets-FileAsset5
     needs:
@@ -1523,6 +1554,7 @@ jobs:
       - Assets-FileAsset13
       - Assets-FileAsset14
       - Assets-FileAsset15
+      - Assets-FileAsset16
       - dev-lightbulb-dev-network-Deploy
       - dev-lightbulb-dev-dns-Deploy
       - dev-lightbulb-dev-auth-Deploy
@@ -1561,7 +1593,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset16
+      - Assets-FileAsset17
       - Assets-FileAsset8
       - dev-lightbulb-dev-network-Deploy
     runs-on: ${{ vars.DEPLOY_RUNNER }}
@@ -1588,7 +1620,7 @@ jobs:
         with:
           name: lightbulb-dev-container
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset16.outputs.asset-hash }}.json
+            needs.Assets-FileAsset17.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1599,7 +1631,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset17
+      - Assets-FileAsset18
       - dev-lightbulb-dev-network-Deploy
       - dev-lightbulb-dev-auth-Deploy
     runs-on: ${{ vars.DEPLOY_RUNNER }}
@@ -1626,7 +1658,7 @@ jobs:
         with:
           name: lightbulb-dev-database
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset17.outputs.asset-hash }}.json
+            needs.Assets-FileAsset18.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1637,9 +1669,9 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset18
       - Assets-FileAsset19
       - Assets-FileAsset20
+      - Assets-FileAsset21
       - dev-lightbulb-dev-database-Deploy
     runs-on: ${{ vars.DEPLOY_RUNNER }}
     steps:
@@ -1665,7 +1697,7 @@ jobs:
         with:
           name: lightbulb-dev-openrouter-gate
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset18.outputs.asset-hash }}.json
+            needs.Assets-FileAsset19.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1676,7 +1708,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset21
+      - Assets-FileAsset22
       - Assets-FileAsset8
       - dev-lightbulb-dev-database-Deploy
       - dev-lightbulb-dev-auth-Deploy
@@ -1706,7 +1738,7 @@ jobs:
         with:
           name: lightbulb-dev-paperclip
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset21.outputs.asset-hash }}.json
+            needs.Assets-FileAsset22.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1717,11 +1749,11 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset22
-      - Assets-FileAsset8
       - Assets-FileAsset23
+      - Assets-FileAsset8
       - Assets-FileAsset24
       - Assets-FileAsset25
+      - Assets-FileAsset26
       - Assets-DockerAsset1
       - dev-lightbulb-dev-agent-mail-outbound-Deploy
       - dev-lightbulb-dev-database-Deploy
@@ -1753,7 +1785,7 @@ jobs:
         with:
           name: lightbulb-dev-service
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset22.outputs.asset-hash }}.json
+            needs.Assets-FileAsset23.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1764,7 +1796,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset26
+      - Assets-FileAsset27
       - dev-lightbulb-dev-database-Deploy
       - dev-lightbulb-dev-paperclip-Deploy
       - dev-lightbulb-dev-network-Deploy
@@ -1795,7 +1827,7 @@ jobs:
         with:
           name: lightbulb-dev-observability
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset26.outputs.asset-hash }}.json
+            needs.Assets-FileAsset27.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1970,7 +2002,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset27
+      - Assets-FileAsset28
       - Assets-FileAsset2
       - dev-lightbulb-dev-auth-Deploy
       - dev-lightbulb-dev-dns-Deploy
@@ -2009,7 +2041,7 @@ jobs:
         with:
           name: lightbulb-prod-auth
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset27.outputs.asset-hash }}.json
+            needs.Assets-FileAsset28.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -2021,7 +2053,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset28
+      - Assets-FileAsset29
       - dev-lightbulb-dev-auth-Deploy
       - dev-lightbulb-dev-dns-Deploy
       - dev-lightbulb-dev-agent-mail-outbound-Deploy
@@ -2059,7 +2091,7 @@ jobs:
         with:
           name: lightbulb-prod-dns
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset28.outputs.asset-hash }}.json
+            needs.Assets-FileAsset29.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -2071,7 +2103,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset29
+      - Assets-FileAsset30
       - prod-lightbulb-prod-auth-Deploy
       - dev-lightbulb-dev-auth-Deploy
       - dev-lightbulb-dev-dns-Deploy
@@ -2110,7 +2142,7 @@ jobs:
         with:
           name: lightbulb-prod-agent-mail-outbound
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset29.outputs.asset-hash }}.json
+            needs.Assets-FileAsset30.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -2122,7 +2154,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset30
+      - Assets-FileAsset31
       - Assets-FileAsset6
       - prod-lightbulb-prod-dns-Deploy
       - dev-lightbulb-dev-auth-Deploy
@@ -2162,7 +2194,7 @@ jobs:
         with:
           name: lightbulb-prod-network
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset30.outputs.asset-hash }}.json
+            needs.Assets-FileAsset31.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -2174,10 +2206,10 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset31
       - Assets-FileAsset32
       - Assets-FileAsset33
       - Assets-FileAsset34
+      - Assets-FileAsset35
       - prod-lightbulb-prod-auth-Deploy
       - dev-lightbulb-dev-auth-Deploy
       - dev-lightbulb-dev-dns-Deploy
@@ -2216,7 +2248,7 @@ jobs:
         with:
           name: lightbulb-prod-ses-inbound
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset31.outputs.asset-hash }}.json
+            needs.Assets-FileAsset32.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -2228,7 +2260,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset35
+      - Assets-FileAsset36
       - Assets-FileAsset9
       - Assets-FileAsset10
       - Assets-FileAsset11
@@ -2236,6 +2268,7 @@ jobs:
       - Assets-FileAsset13
       - Assets-FileAsset14
       - Assets-FileAsset15
+      - Assets-FileAsset16
       - prod-lightbulb-prod-network-Deploy
       - prod-lightbulb-prod-dns-Deploy
       - prod-lightbulb-prod-auth-Deploy
@@ -2276,7 +2309,7 @@ jobs:
         with:
           name: lightbulb-prod-api
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset35.outputs.asset-hash }}.json
+            needs.Assets-FileAsset36.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -2288,7 +2321,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset36
+      - Assets-FileAsset37
       - prod-lightbulb-prod-network-Deploy
       - dev-lightbulb-dev-auth-Deploy
       - dev-lightbulb-dev-dns-Deploy
@@ -2327,7 +2360,7 @@ jobs:
         with:
           name: lightbulb-prod-container
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset36.outputs.asset-hash }}.json
+            needs.Assets-FileAsset37.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -2339,7 +2372,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset37
+      - Assets-FileAsset38
       - prod-lightbulb-prod-network-Deploy
       - prod-lightbulb-prod-auth-Deploy
       - dev-lightbulb-dev-auth-Deploy
@@ -2379,7 +2412,7 @@ jobs:
         with:
           name: lightbulb-prod-database
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset37.outputs.asset-hash }}.json
+            needs.Assets-FileAsset38.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -2391,9 +2424,9 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset38
-      - Assets-FileAsset19
+      - Assets-FileAsset39
       - Assets-FileAsset20
+      - Assets-FileAsset21
       - prod-lightbulb-prod-database-Deploy
       - dev-lightbulb-dev-auth-Deploy
       - dev-lightbulb-dev-dns-Deploy
@@ -2432,7 +2465,7 @@ jobs:
         with:
           name: lightbulb-prod-openrouter-gate
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset38.outputs.asset-hash }}.json
+            needs.Assets-FileAsset39.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -2444,7 +2477,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset39
+      - Assets-FileAsset40
       - prod-lightbulb-prod-database-Deploy
       - prod-lightbulb-prod-auth-Deploy
       - prod-lightbulb-prod-container-Deploy
@@ -2486,7 +2519,7 @@ jobs:
         with:
           name: lightbulb-prod-paperclip
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset39.outputs.asset-hash }}.json
+            needs.Assets-FileAsset40.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -2498,10 +2531,10 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset40
-      - Assets-FileAsset23
+      - Assets-FileAsset41
       - Assets-FileAsset24
       - Assets-FileAsset25
+      - Assets-FileAsset26
       - Assets-DockerAsset1
       - prod-lightbulb-prod-agent-mail-outbound-Deploy
       - prod-lightbulb-prod-database-Deploy
@@ -2546,7 +2579,7 @@ jobs:
         with:
           name: lightbulb-prod-service
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset40.outputs.asset-hash }}.json
+            needs.Assets-FileAsset41.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -2558,7 +2591,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset41
+      - Assets-FileAsset42
       - prod-lightbulb-prod-database-Deploy
       - prod-lightbulb-prod-paperclip-Deploy
       - prod-lightbulb-prod-network-Deploy
@@ -2602,7 +2635,7 @@ jobs:
         with:
           name: lightbulb-prod-observability
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset41.outputs.asset-hash }}.json
+            needs.Assets-FileAsset42.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1

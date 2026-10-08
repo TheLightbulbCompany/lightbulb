@@ -1394,6 +1394,9 @@ async def set_sharing(
                 updated.pop("pauseNoticed", None)
             else:
                 updated["unshared"] = True
+                if public_id(row.get("shareLink")):
+                    # Only me: an "Anyone" link does not come back public when sharing resumes.
+                    updated["shareLink"] = _with_audience(row["shareLink"], "workspace")
                 updated.pop("pendingApproval", None)
                 updated.pop("privateSendApproval", None)
             try:
@@ -2750,7 +2753,7 @@ async def decide_pickup_request(
         # without its link. A failure before any write leaves the request pending; one after the link
         # exists takes the link back.
         had_link = bool(row.get("shareLink"))
-        await put_link(auth, session_id, None, turn_on_pickup=False)
+        await put_link(auth, session_id, None)
         try:
             public = await session_pickup.set_pickup(
                 auth, session_id, True, expect_request=(user_id, current["requestId"])
@@ -2930,8 +2933,9 @@ async def set_usage_sharing(auth: AuthContext, session_id: str, enabled: bool) -
 
 # --- The one link (spec 2026-10-05-public-session-links §3.1) -------------------------------
 #
-# One link per session; its audience is the owner's only setting. On a Claude session the link is
-# the pick-up permission. META.shareLink is the truth: the SHARELINK# lookup row only finds it.
+# One link per session, and its audience: the workspace, or anyone holding it (who then watches the
+# live terminal with no sign-in, session_links.viewing). A link only shows the session; continuing
+# it is the owner's own switch. META.shareLink is the truth: the SHARELINK# lookup row only finds it.
 
 AUDIENCES = Literal["workspace", "anyone"]
 
@@ -2965,6 +2969,19 @@ def link_url(token: str) -> str:
     return f"{settings.FRONTEND_URL.rstrip('/')}/s#{token}"
 
 
+def public_id(link: dict | None) -> str | None:
+    """The id an "Anyone with the link" link's watch channel is named by (`/pub/<id>`); None for a
+    workspace link. It is what makes a link public: an "anyone" link made before public watch has
+    none, so it opens for the workspace only until its owner picks Anyone again (owner ruling
+    2026-10-08). Minted new each time a link is made public, so an earlier watcher's channel is dead."""
+    return (link or {}).get("publicId")
+
+
+def _with_audience(link: dict, audience: str) -> dict:
+    kept = {k: v for k, v in link.items() if k != "publicId"}
+    return {**kept, "audience": audience, **({"publicId": str(uuid.uuid4())} if audience == "anyone" else {})}
+
+
 def _link_public(link: dict) -> SessionLink:
     from core import encryption
 
@@ -2973,7 +2990,7 @@ def _link_public(link: dict) -> SessionLink:
     except ValueError:  # encryption.decrypt's only failure
         logger.warning("session link undecryptable")
         url = None
-    return SessionLink(url=url, audience=link["audience"])
+    return SessionLink(url=url, audience="anyone" if public_id(link) else "workspace")
 
 
 async def _owned_session(auth: AuthContext, session_id: str, verb: str = "share") -> dict:
@@ -3003,16 +3020,13 @@ def _capture_growth(row: dict, event: str, distinct_id: str, **props) -> None:
     )
 
 
-async def put_link(
-    auth: AuthContext, session_id: str, audience: str | None, *, turn_on_pickup: bool = True
-) -> SessionLink:
+async def put_link(auth: AuthContext, session_id: str, audience: str | None) -> SessionLink:
     """Create the session's one link, or change its audience. ``audience`` None (Share, and Ask to
     pick up's Allow): create a workspace link if there is none, otherwise leave the link as it is.
-    Allow passes ``turn_on_pickup=False``: it turns pick-up on itself, under its own request fence."""
+    A link only shows the session: continuing it is the owner's own switch (`session_pickup.set_pickup`)."""
     import secrets
 
     from core import encryption
-    from core.services import session_pickup
     from core.services.local_session_relay import publish_resources_changed
 
     table = messaging_repo._table().name
@@ -3025,10 +3039,10 @@ async def put_link(
         if pickup_expired(row):
             raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "This session is too old to share.")
         owner, sid, link = row["ownerId"], row["sessionId"], row.get("shareLink")
-        if link and (audience is None or link["audience"] == audience):
+        if link and (audience is None or ("anyone" if public_id(link) else "workspace") == audience):
             break
         if link:
-            new = {**link, "audience": audience}
+            new = _with_audience(link, audience)
             extra = [
                 {
                     "Put": {
@@ -3039,13 +3053,15 @@ async def put_link(
             ]
         else:
             token = secrets.token_urlsafe(32)
-            new = {
-                "tokenHash": _token_hash(token),
-                "tokenEnc": encryption.encrypt(token),
-                "audience": audience or "workspace",
-                "createdAt": int(time.time()),
-                "createdBy": auth.user_id,
-            }
+            new = _with_audience(
+                {
+                    "tokenHash": _token_hash(token),
+                    "tokenEnc": encryption.encrypt(token),
+                    "createdAt": int(time.time()),
+                    "createdBy": auth.user_id,
+                },
+                audience or "workspace",
+            )
             lookup = {"pk": _share_pk(new["tokenHash"]), "sk": "META", "ownerId": owner, "sessionId": sid}
             extra = [
                 {"Put": {"TableName": table, "Item": lookup}},
@@ -3071,9 +3087,6 @@ async def put_link(
         break
     else:
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
-    # The link is the pick-up permission on a Claude session; set_pickup is a no-op while it is on.
-    if row["provider"] == "claude" and turn_on_pickup:
-        await session_pickup.set_pickup(auth, session_id, True)
     return _link_public(link)
 
 

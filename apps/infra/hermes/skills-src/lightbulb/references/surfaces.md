@@ -190,11 +190,9 @@ An open session shows a status line (status, owner, folder, files changed,
 plan progress) with a **Details** button; a teammate's pickable session also
 shows **Pick up**. **Details** opens a dialog with four tabs: **About** (owner,
 tool, model, folder, repository, tokens), **Changes** (plan and changed files),
-**Access** and **Linked work**. Its footer has **Copy link for teammates**, **Message
-<owner>** on someone else's session, and **Pick up** on your own. That link is the
-in-app address: it selects the existing session for people already in the workspace
-and sends nothing. It is not the share link under **Access**, the only link a person
-outside the workspace can open. The normal room
+**Access** and **Linked work**. Its footer has **Message
+<owner>** on someone else's session, and **Pick up** on your own. The session's one
+link is **Copy link** under **Access**. The normal room
 composer remains a room message. A person may `@`-tag a session there: the
 tag is a reference, like a document link, shown as a session card (tool,
 title, status, **Open session**). It never messages the session. When a
@@ -216,13 +214,12 @@ of a chat message: a person who wants the session to do something types in its t
 admitted) or uses **Ask to join**. Pausing sharing empties the chat of everyone but its owner;
 ending the session makes the chat read-only. Session chats do not appear in search.
 
-**Access** is where the owner sets **Shared with the workspace** (off pauses
-sharing), **Let teammates control this session** (follow-ups and permission
-prompts on their Mac), **Show token usage to teammates**, and **Share**: the
-session's one link. **Share** makes it and copies it; **Who can open it** is
-its only setting, **Workspace only** (the default) or **Anyone with the link**,
-and every copy says which ("Link copied. Only people in your workspace can open
-it."); **Turn off link** (two clicks) ends it everywhere. Access also lists the copies people took.
+**Access** is where the owner sets **Let teammates control this session** (follow-ups and permission
+prompts on their Mac), **Show token usage to teammates**, and **Who can see this**: **Only me** (a
+second click; it cuts everyone off at once), **My workspace**, or **Anyone
+with the link**. **Copy link** copies the session's one link and says who can
+open it. **Let people continue this session** is a separate switch, off by
+default. Access also lists the copies people took.
 Teammates see what the owner allows instead of switches.
 
 **Session links** open at `/s`. A workspace link opens for signed-in members.
@@ -230,16 +227,19 @@ A signed-out visitor to a workspace link, and to any link that was turned off,
 reads the same thing: "Sign in to open this session. If it was shared with your
 workspace, it opens after you sign in. Otherwise this link was turned off." So a
 person outside the workspace needs **Anyone with the link**. An "anyone" link opens with no
-sign-in. The page shows the session's title, owner, tool and state (live, ended
-or offline) and the **Continue** option; it shows no conversation and no
-transcript. On a Claude Code session the link is also the pick-up permission.
+sign-in and shows the session's title, owner, tool, state and its **live
+terminal, view only**: they cannot type, and they see everything it prints. A
+workspace member who opens a link lands in the app's session view. An ended or
+offline session shows its state and no terminal. The link only shows the
+session: **Continue** appears only when the owner turned **Let people continue
+this session** on (Claude Code sessions).
 **Continue** takes a copy into the person's own Claude Code: they need the
 Lightbulb desktop app and a free workspace, then run `lightbulb continue
 '<link>'` in a terminal and confirm in the browser. That copy is the only way
 the conversation reaches an outsider, with likely secrets redacted and, for a
 private repository, its name hidden. A public repository is cloned for them; a
-private one comes as the conversation only. The original session never changes. You cannot make, change or turn off
-a link: tell the owner to use **Share** under **Access**.
+private one comes as the conversation only. The original session never changes. You cannot make or change
+a link: tell the owner to use **Who can see this** under **Access**.
 
 **Ask to join**: a teammate who cannot send to someone's session taps **Ask to
 join** (it then reads **Requested**, with "Waiting for <owner> to answer."). A
@@ -311,10 +311,10 @@ answers from a notification, Activity, the session view on web or phone, or the 
 terminal band. **Allow** turns pick-up on for the whole session (every member may pick it
 up) and shares the whole conversation and uncommitted changes with the workspace,
 unredacted except git-ignored files, kept until 7 days after the session ends. Allow also creates
-the session's link (**Workspace only**) if it has none. After Allow the button reads
+the session's link (**My workspace**) if it has none. After Allow the button reads
 **Preparing…** until the snapshot is ready, then **Pick up**. The owner can also turn it on
-with **Share** under **Access** (only while the session is shared); **Turn off link** turns
-it off. There is no separate pick-up switch. Codex sessions cannot be picked up
+and off with **Let people continue this session** under **Access** (only while the
+session is shared); off keeps the link. Codex sessions cannot be picked up
 yet.
 
 **Linked work** is optional: in that tab, **Link existing work** links an

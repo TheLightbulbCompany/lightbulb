@@ -157,18 +157,21 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   - Session Details dialog .. references/surfaces.md (status line, Details tabs, Access switches, footer)
                               <- apps/frontend/src/components/messaging/LocalSessionPanel.tsx (status line, Details + Pick up
                                  buttons); SessionDetails.tsx (About/Changes/Access/Linked work tabs, the Access switches,
-                                 footer Copy link for teammates / Message owner / Pick up); SessionShareLink.tsx (Share, Who can open it,
-                                 the audience named on every copy, two-click Turn off link); LocalSessionWork.tsx (Link existing work).
+                                 footer Message owner / Pick up); SessionShareLink.tsx (Who can see this: Only me with its
+                                 second click / My workspace / Anyone with the link, Copy link, the Let people continue
+                                 this session switch); LocalSessionWork.tsx (Link existing work).
   - Session chat ............ references/surfaces.md ("Session chat" paragraph: hidden room, CEO on mentions,
                               answer in the chat, never into the session)
                               <- apps/backend/core/services/session_chat.py; apps/backend/routers/messaging.py (POST .../chat);
                                  apps/frontend/src/components/messaging/{SessionChat,SessionFocus}.tsx;
                                  apps/mobile/src/app/(app)/session/[sessionId].tsx (Chat button)
   - Session links + Continue  references/surfaces.md ("Session links" paragraph)
-                              <- apps/frontend/src/app/s/page.tsx (the /s page: the one signed-out refusal that leads with sign in, Continue, the
+                              <- apps/frontend/src/app/s/page.tsx (the /s page: the one signed-out refusal that leads with sign in, the
+                                 live terminal for an "anyone" link, the member redirect, Continue, the
                                  `lightbulb continue '<link>'` command); apps/backend/core/services/session_links.py
-                                 (open, copies, redaction); core/services/local_sessions.py (put_link / delete_link:
-                                 one link, audience, the pick-up permission); apps/desktop/src-tauri/src/session_continue.rs
+                                 (open, viewing: the link viewer's seat, copies, redaction); core/services/local_sessions.py
+                                 (put_link: one link, audience, publicId); core/services/session_pickup.py (set_pickup: the
+                                 continue switch); apps/infra/lambda/pub-authorizer; apps/desktop/src-tauri/src/session_continue.rs
                                  (`lightbulb continue`).
   - Session live vs transcript  references/surfaces.md (running = live terminal or a "screen is not shared" notice from packages/shared/src/messaging/sessionStates.ts sessionScreenNotice: a teammate gets Message <Owner> and no terminal words, the owner gets ← (plain Claude) or `lightbulb codex` (Codex --no-daemon); ended = final screen + "Ended · <time>" + Resume while the owner's app runs, then "screen is gone"; offline = "Mac offline" + Resume greyed + Pick up; Share every session live on at pairing; no transcript on web and desktop (the phone still lists history); sidebar lists live, All sessions lists every session; no message box under a live terminal)
                               <- apps/desktop/src-tauri/src/holder/run.rs (ended mode), local_sessions/session_states.rs,
@@ -207,8 +210,8 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  packages/shared/src/messaging/sessionControls.ts (RESUME_REFUSED, "Not resumed: …").
   - Session pick-up ......... references/surfaces.md ("Pick up" paragraph)
                               <- apps/frontend/src/components/messaging/SessionPickup.tsx (Ask to pick up / Requested / declined / Preparing… / Pick up;
-                                 desktop-only, browser copy); SessionShareLink.tsx (the link is the pick-up permission:
-                                 needs sharing on, upload warning, 7-day retention, Codex not yet; no separate switch);
+                                 desktop-only, browser copy); SessionShareLink.tsx (Let people continue this session is the
+                                 pick-up switch: needs sharing on, 7-day retention, Codex not yet; a link alone only shows the session);
                                  core/services/local_sessions.py decide_pickup_request (Allow creates a Workspace only link).
   - Workspace search ........ references/surfaces.md
                               <- apps/frontend/src/components/workspace/WorkspaceHeader.tsx (search button + shortcut label);

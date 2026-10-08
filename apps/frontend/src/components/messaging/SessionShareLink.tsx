@@ -1,94 +1,150 @@
 "use client";
 
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Link2 } from "lucide-react";
 import { ApiError, type createMessagingClient, type LocalSession, type SessionLink, type SessionLinkAudience } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { copyText, copyTextWhenReady } from "./messageLinks";
 
-type Client = Partial<Pick<ReturnType<typeof createMessagingClient>, "getLocalSessionLink" | "putLocalSessionLink" | "deleteLocalSessionLink">>;
+type Client = Partial<Pick<ReturnType<typeof createMessagingClient>, "getLocalSessionLink" | "putLocalSessionLink" | "setLocalSessionSharing" | "setLocalSessionPickup">>;
+type Who = "me" | SessionLinkAudience;
+
+const ABOUT: Record<Who, string> = {
+  me: "Only you see this session. Sharing again shares the whole session.",
+  workspace: "People signed in to your workspace can watch it in Lightbulb. Anyone else is asked to sign in and then cannot open it.",
+  anyone: "Anyone with the link can watch this terminal live without signing in. They cannot type.",
+};
 
 /**
- * The session's one link (spec 2026-10-05-public-session-links §2.1): Share makes it and copies
- * it; the audience is the only setting and is named wherever the link is copied; Turn off (two
- * clicks) ends it everywhere. On a Claude session the link
- * is also what lets people pick it up or continue it.
+ * Who can see a session, in one place (owner ruling 2026-10-08, the Google Doc model): Only me,
+ * My workspace, or Anyone with the link, and the one link to copy. Only me is the server's
+ * `set_sharing(false)` and takes a second click: it cuts everyone off at once. A link only shows
+ * the session; "Let people continue this session" is the owner's separate switch (pick-up).
  */
 export function SessionShareLink({ session, client }: { session: LocalSession; client: Client }) {
   const [link, setLink] = useState<SessionLink | null>(null);
-  // Share never sends an audience, so a read still in flight or one that failed cannot narrow an
-  // "anyone" link; a failed read still says so.
+  // Whether the link's audience is known: read, or known to be absent (404). Until then the
+  // control names no audience: "My workspace" over a link the backend opens for anyone would be a lie.
+  const [known, setKnown] = useState(false);
   const [readFailed, setReadFailed] = useState(false);
+  const [readRound, setReadRound] = useState(0);
+  // Bumped by every change the owner makes here: a read that started before one is stale, and
+  // must not put the old audience back over what the owner just chose (a paused session's control
+  // is usable while its link is still being read).
+  const writes = useRef(0);
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [offArmed, setOffArmed] = useState(false);
-  useEffect(() => {
-    if (!offArmed) return;
-    const timer = setTimeout(() => setOffArmed(false), 3000);
-    return () => clearTimeout(timer);
-  }, [offArmed]);
-  const audienceId = useId();
+  const [armed, setArmed] = useState(false);
+  const [shared, setShared] = useState(session.shared !== false);
+  useEffect(() => { setShared(session.shared !== false); }, [session.shared]);
+  const [continues, setContinues] = useState(!!session.pickup?.allowed);
+  useEffect(() => { setContinues(!!session.pickup?.allowed); }, [session.pickup?.allowed]);
+  const whoId = useId();
+  const continueId = useId();
   useEffect(() => {
     let alive = true;
-    // A 404 is "no link yet": Share makes one.
+    const started = writes.current;
+    const current = () => alive && writes.current === started;
+    setKnown(false); setReadFailed(false);
+    // A 404 is "no link yet": Copy link makes one.
     client.getLocalSessionLink?.(session.sessionId).then(
-      l => { if (alive) setLink(l); },
-      e => { if (alive && !(e instanceof ApiError && e.status === 404)) setReadFailed(true); },
+      l => { if (current()) { setLink(l); setKnown(true); } },
+      e => { if (!current()) return; if (e instanceof ApiError && e.status === 404) setKnown(true); else setReadFailed(true); },
     );
     return () => { alive = false; };
-  }, [client, session.sessionId]);
+  }, [client, session.sessionId, readRound]);
   if (!client.putLocalSessionLink) return null;
+  const who: Who = !shared ? "me" : link?.audience === "anyone" ? "anyone" : "workspace";
   const save = async (audience?: SessionLinkAudience) => {
-    setBusy(true); setStatus(null);
-    try { const next = await client.putLocalSessionLink!(session.sessionId, audience); setLink(next); setReadFailed(false); return next; }
-    catch { setStatus("Could not change the link. Try again."); return null; }
+    writes.current += 1;
+    try { const next = await client.putLocalSessionLink!(session.sessionId, audience); setLink(next); setKnown(true); setReadFailed(false); return next; }
+    // The change may have cancelled a read still in flight (`writes`): read again, so the control
+    // names what the server holds and never waits on a read nobody will answer.
+    catch { setStatus("Could not change who can see this. Try again."); setReadRound(n => n + 1); return null; }
+  };
+  const choose = async (next: Who) => {
+    setStatus(null);
+    if (next === "me") { setArmed(true); return; }
+    setArmed(false); setBusy(true);
+    try {
+      if (!shared) {
+        try { await client.setLocalSessionSharing!(session.sessionId, true); setShared(true); }
+        catch { setStatus("Could not change who can see this. Try again."); return; }
+      }
+      // A workspace choice with no link, or a workspace link already, has nothing to write.
+      if ((next === "anyone" || link?.audience === "anyone") && !(await save(next))) return;
+      setStatus(ABOUT[next]);
+    } finally { setBusy(false); }
+  };
+  // The second click (the select was the first): everyone watching is cut off at once.
+  const onlyMe = async () => {
+    setArmed(false); setBusy(true);
+    writes.current += 1;
+    try {
+      await client.setLocalSessionSharing!(session.sessionId, false);
+      setShared(false);
+      setLink(l => l && { ...l, audience: "workspace" }); // the server narrows the link with it
+      setStatus("Only you can see this session now.");
+    } catch { setStatus("Could not stop sharing. Try again."); }
     finally { setBusy(false); }
   };
-  // Said wherever the link is copied or its audience changes: a signed-out person cannot open a workspace link (ISOA-732).
-  const who = (audience: SessionLinkAudience) => audience === "anyone" ? "Anyone with the link can open it." : "Only people in your workspace can open it.";
-  const copied = (ok: boolean, audience: SessionLinkAudience) => `${ok ? "Link copied." : "Copy the link below."} ${who(audience)}`;
-  const share = async () => {
-    if (link?.url) { setStatus(copied(await copyText(link.url), link.audience)); return; }
+  const copy = async () => {
+    setStatus(null);
+    const said = (ok: boolean, audience: SessionLinkAudience) => `${ok ? "Link copied." : "Copy the link below."} ${audience === "anyone" ? "Anyone with the link can watch." : "Only people in your workspace can open it."}`;
+    if (link?.url) { setStatus(said(await copyText(link.url), link.audience)); return; }
+    setBusy(true);
     const made = save();
     const wrote = copyTextWhenReady(made.then(n => n?.url ?? ""));
     const next = await made;
-    if (next?.url) setStatus(copied(await wrote, next.audience));
+    setBusy(false);
+    if (next?.url) setStatus(said(await wrote, next.audience));
   };
-  const setAudience = async (audience: SessionLinkAudience) => { if (await save(audience)) setStatus(who(audience)); };
-  // Two clicks, like End session: the link stops working for everyone who has it. Prod 2026-10-08: an owner's own
-  // client sent this DELETE 1.5 s after their audience change, and their signed-out open 5 s later was refused.
-  // When the audience warning appeared, this button moved down onto the place of the Details footer's own "Copy link" (now "Copy link for teammates").
-  const off = async () => {
-    if (!offArmed) { setOffArmed(true); return; }
-    setOffArmed(false); setBusy(true);
-    try { await client.deleteLocalSessionLink?.(session.sessionId); setLink(null); setStatus("Link turned off. It no longer opens for anyone."); }
-    catch { setStatus("Could not turn the link off. Try again."); }
+  const setContinue = async (enabled: boolean) => {
+    setBusy(true); setStatus(null);
+    try { setContinues(!!(await client.setLocalSessionPickup!(session.sessionId, enabled)).pickup?.allowed); }
+    catch { setStatus("Could not change that. Try again."); }
     finally { setBusy(false); }
   };
-  if (!link) return <div className="flex flex-col gap-2 text-sm">
-    <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => void share()}><Link2 aria-hidden="true" />Share</Button>
-    <p className="session-setting-about">Makes a link only people in your workspace can open. You can change who can open it afterwards.</p>
-    {readFailed && <p role="alert">Could not load this session&apos;s link. Share still works.</p>}
-    {status && <p role="status">{status}</p>}
+  const shown: Who = armed ? "me" : who;
+  // Only me is the session's own state; the other two are the link's, and that is not read yet.
+  if (!known && shared) return <div className="flex flex-col gap-2 text-sm">
+    <label htmlFor={whoId} className="session-setting-label">Who can see this</label>
+    <select id={whoId} className="room-input w-auto" value="" disabled><option value="">{readFailed ? "Not loaded" : "Loading…"}</option></select>
+    {readFailed && <>
+      <p role="alert">Could not load who can see this session.</p>
+      <Button type="button" variant="outline" size="sm" className="self-start" onClick={() => setReadRound(n => n + 1)}>Try again</Button>
+    </>}
   </div>;
   return <div className="flex flex-col gap-2 text-sm">
-    <label htmlFor={audienceId}>Who can open it</label>
-    <select id={audienceId} className="room-input w-auto" value={link.audience} disabled={busy} onChange={e => void setAudience(e.target.value as SessionLinkAudience)}>
-      <option value="workspace">Workspace only</option>
+    <label htmlFor={whoId} className="session-setting-label">Who can see this</label>
+    <select id={whoId} className="room-input w-auto" value={shown} disabled={busy} onChange={e => void choose(e.target.value as Who)}>
+      {client.setLocalSessionSharing && <option value="me">Only me</option>}
+      <option value="workspace">My workspace</option>
       <option value="anyone">Anyone with the link</option>
     </select>
-    {link.audience === "workspace" && <p className="session-setting-about">Only people signed in to your workspace can open it. Anyone else is asked to sign in and then cannot open it.</p>}
-    {link.audience === "anyone" && <p role="note" className="session-setting-warning">
-      Anyone with the link sees this session&apos;s title, who runs it, the tool and its state{session.provider === "claude" ? ", and can continue it with a copy of the conversation in their Claude Code. Likely secrets are redacted from that copy; anything else in it is not." : "."}
-    </p>}
-    {link.audience === "anyone" && session.pickup?.privateRepo && <p className="session-setting-warning">This conversation includes code Claude read from your private repository.</p>}
-    {session.provider === "claude" && <p className="session-setting-about">Teammates with the link can pick it up with your uncommitted changes, unredacted. Files your repository ignores are never uploaded. Kept until 7 days after the session ends.</p>}
-    {/* The audience above, the link and its Copy together: what is copied is always next to who can open it. */}
-    <div className="flex items-center gap-2">
-      {link.url && <input aria-label="Session link" readOnly className="room-input min-w-0 flex-1 font-mono text-xs" value={link.url} onFocus={e => e.currentTarget.select()} />}
-      <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => void share()}><Link2 aria-hidden="true" />Copy link</Button>
-    </div>
+    {armed
+      ? <Button type="button" variant="outline" size="sm" className="self-start" disabled={busy} onClick={() => void onlyMe()}>Click again to stop sharing</Button>
+      : shown === "anyone"
+        ? <p role="note" className="session-setting-warning">{ABOUT.anyone} They see everything the terminal prints, secrets included.</p>
+        : <p className="session-setting-about">{ABOUT[shown]}</p>}
+    {who !== "me" && !armed && <>
+      {/* The audience above, the link and its Copy together: what is copied is always next to who can open it. */}
+      <div className="flex items-center gap-2">
+        {link?.url && <input aria-label="Session link" readOnly className="room-input min-w-0 flex-1 font-mono text-xs" value={link.url} onFocus={e => e.currentTarget.select()} />}
+        <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => void copy()}><Link2 aria-hidden="true" />Copy link</Button>
+      </div>
+      {session.provider === "claude" && client.setLocalSessionPickup && <div className="session-setting">
+        <div className="session-setting-text">
+          <label htmlFor={continueId}>Let people continue this session</label>
+          <div id={`${continueId}-about`} className="session-setting-about">
+            Off, the link only shows the terminal. On, people who can open it can continue it in their own Claude Code with a copy of the conversation: teammates with your uncommitted changes, anyone else with likely secrets redacted.
+          </div>
+          {continues && who === "anyone" && session.pickup?.privateRepo && <p className="session-setting-warning">This conversation includes code Claude read from your private repository.</p>}
+        </div>
+        <Switch id={continueId} checked={continues} disabled={busy} onCheckedChange={next => void setContinue(next)} aria-describedby={`${continueId}-about`} />
+      </div>}
+    </>}
     {status && <p role="status">{status}</p>}
-    <Button type="button" variant="ghost" size="sm" className="self-start" disabled={busy} onClick={() => void off()}>{offArmed ? "Click again to turn off" : "Turn off link"}</Button>
   </div>;
 }

@@ -517,3 +517,332 @@ async def test_a_session_admits_twenty_live_viewers_and_refuses_a_new_twenty_fir
     await session_screen.watch(BOB, sid)  # an existing viewer's heartbeat
     await session_screen.watch(BOB, sid, mounted=True)  # and its page refresh
     await session_screen.watch(ALICE, sid)  # the sharer
+
+
+# --- An "Anyone with the link" link's live terminal (session_links.viewing) ----------------------
+
+
+async def _trade(token, lease):
+    """A viewer about to reconnect with a lease AppSync already took (the authorizer marked it)."""
+    import hashlib
+
+    from core.services import session_links
+
+    public, _, key = lease.partition(".")
+    messaging_repo._table().update_item(
+        Key={"pk": f"PUBWATCH#{public}", "sk": f"VIEWER#{hashlib.sha256(key.encode()).hexdigest()}"},
+        UpdateExpression="SET connectedAt = :t",
+        ExpressionAttributeValues={":t": int(time.time())},
+    )
+    return await session_links.viewing(token, lease, False, retake=True)
+
+
+async def _public_link(sid):
+    token = (await service.put_link(ALICE, sid, "anyone")).url.split("#", 1)[1]
+    return token, (await repo.get_session(OWNER, sid))["shareLink"]["publicId"]
+
+
+@pytest.mark.asyncio
+async def test_a_link_viewer_gets_frames_on_the_public_channel_with_no_session_or_workspace_id(transport, db):
+    from core.services import session_links
+
+    sid = await start(transport)
+    await ack(transport, sid)  # the golden heartbeat advertises liveTerminal
+    token, public = await _public_link(sid)
+    transport[4].clear()
+    await session_screen.forward(relay(transport), "conn-1", frame(sid))
+    assert await _published(transport) == [], "public, but nobody watches: no publish"
+    transport[3].clear()
+    seat = await session_links.viewing(token, None, True)
+    assert seat.channel == f"/pub/{public}" and seat.lease.startswith(public + ".") and seat.watch_id == public
+    assert [w["sessionId"] for w in (await ack(transport, sid))["watching"]] == [sid], "the Mac streams it"
+    assert [m["type"] for _, m in transport[3]][0] == "local.session.watch", "a fresh viewer gets history now"
+    stored = db[0].query(KeyConditionExpression="pk = :p", ExpressionAttributeValues={":p": f"PUBWATCH#{public}"})
+    assert len(stored["Items"]) == 2 and seat.lease.split(".", 1)[1] not in str(stored["Items"]), "the key is hashed"
+    transport[4].clear()
+    await session_screen.forward(relay(transport), "conn-1", frame(sid))
+    ((channel, event),) = await _published(transport)  # one publish: no workspace viewer, so no members' channel
+    assert channel == f"/pub/{public}"
+    assert event["payload"] == {
+        **{k: v for k, v in frame(sid).items() if k != "type"},
+        "sessionId": public,
+        "generation": public,
+    }
+    assert sid not in _json.dumps(event) and "generation-1" not in _json.dumps(event)
+    # A workspace viewer too: the members' channel is untouched, and each audience gets its own publish.
+    await session_screen.watch(BOB, sid)
+    transport[4].clear()
+    await session_screen.forward(relay(transport), "conn-1", frame(sid))
+    assert sorted(c for c, _ in await _published(transport)) == sorted([await _frames_channel(sid), f"/pub/{public}"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revoke", ["workspace", "only_me"])
+async def test_narrowing_the_link_stops_public_frames_at_once_and_refuses_the_next_renewal(transport, revoke):
+    from core.services import session_links
+
+    sid = await start(transport)
+    token, public = await _public_link(sid)
+    seat = await session_links.viewing(token, None, True)
+    if revoke == "workspace":
+        await service.put_link(ALICE, sid, "workspace")
+    else:
+        await service.set_sharing(ALICE, sid, False)
+    transport[4].clear()
+    await session_screen.forward(relay(transport), "conn-1", frame(sid))
+    assert [c for c, _ in await _published(transport) if c.startswith("/pub/")] == []
+    with pytest.raises(ApiProblem) as refused:
+        await session_links.viewing(token, seat.lease, False)
+    assert refused.value.error.code == "LOCAL_SESSION_NOT_FOUND"
+    if revoke == "workspace":
+        # Public again is a new channel: the old lease is for nothing, and a new one is not for the old channel.
+        await service.put_link(ALICE, sid, "anyone")
+        again = await session_links.viewing(token, seat.lease, False)
+        assert again.channel != seat.channel and again.lease != seat.lease
+
+
+@pytest.mark.asyncio
+async def test_link_viewers_are_capped_and_a_renewal_keeps_its_seat(transport, monkeypatch):
+    from core.services import session_links
+
+    monkeypatch.setattr(session_links, "MAX_LINK_VIEWERS", 2)
+    sid = await start(transport)
+    token, _ = await _public_link(sid)
+    first = await session_links.viewing(token, None, False)
+    await session_links.viewing(token, None, False)
+    with pytest.raises(ApiProblem) as full:
+        await session_links.viewing(token, None, False)
+    assert full.value.error.code == "LOCAL_SESSION_VIEWERS_FULL"
+    assert (await session_links.viewing(token, first.lease, False)).lease == first.lease
+    with pytest.raises(ApiProblem):  # a made-up key is no seat: it counts as a new viewer
+        await session_links.viewing(token, first.lease + "x", False)
+
+
+@pytest.mark.asyncio
+async def test_a_workspace_link_or_an_ended_session_has_no_public_terminal(transport, db):
+    from core.services import session_links
+
+    sid = await start(transport)
+    token = (await service.put_link(ALICE, sid, "workspace")).url.split("#", 1)[1]
+    with pytest.raises(ApiProblem) as refused:
+        await session_links.viewing(token, None, True)
+    assert refused.value.error.code == "LOCAL_SESSION_NOT_FOUND"
+    await service.put_link(ALICE, sid, "anyone")
+    db[0].update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+        UpdateExpression="SET endedAt = :t",
+        ExpressionAttributeValues={":t": int(time.time())},
+    )
+    with pytest.raises(ApiProblem) as ended:
+        await session_links.viewing(token, None, True)
+    assert ended.value.error.code == "LOCAL_SESSION_OFFLINE"
+
+
+@pytest.mark.asyncio
+async def test_ending_stops_public_frames_and_the_next_renewal_though_the_mac_keeps_the_final_screen(transport, db):
+    from core.services import session_links
+
+    sid = await start(transport)
+    token, _ = await _public_link(sid)
+    seat = await session_links.viewing(token, None, True)
+    await session_screen.watch(BOB, sid)
+    db[0].update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+        UpdateExpression="SET endedAt = :t, screenUntil = :u, screenConnectionId = :c, terminal = :h",
+        ExpressionAttributeValues={":t": int(time.time()), ":u": int(time.time()) + 30, ":c": "conn-1", ":h": "held"},
+    )
+    transport[4].clear()
+    await session_screen.forward(relay(transport), "conn-1", frame(sid))
+    # The kept final screen still reaches the workspace, and only the workspace.
+    assert [c for c, _ in await _published(transport)] == [await _frames_channel(sid)]
+    with pytest.raises(ApiProblem) as refused:
+        await session_links.viewing(token, seat.lease, False)
+    assert refused.value.error.code == "LOCAL_SESSION_OFFLINE"
+
+
+@pytest.mark.asyncio
+async def test_a_link_holder_cannot_make_the_mac_resend_its_history_in_a_loop(transport, monkeypatch):
+    from core.services import session_links
+
+    sid = await start(transport)
+    await ack(transport, sid)  # liveTerminal
+    token, _ = await _public_link(sid)
+    now = time.time()
+    monkeypatch.setattr(session_links.time, "time", lambda: now)
+    seat = await session_links.viewing(token, None, False)
+    transport[3].clear()
+    for lease in (seat.lease, seat.lease, None):  # the same seat again, and a new seat: no more asks
+        await session_links.viewing(token, lease, True)
+    assert len(_nudges(transport)) == 1, "`fresh` is a request: one ask per link per window"
+    monkeypatch.setattr(session_links.time, "time", lambda: now + session_links.ASK_EVERY_S)
+    await session_links.viewing(token, seat.lease, True)
+    assert len(_nudges(transport)) == 2
+
+
+@pytest.mark.asyncio
+async def test_lapsed_seats_are_dropped_when_a_new_one_is_taken(transport, db):
+    from core.services import session_links
+
+    sid = await start(transport)
+    token, public = await _public_link(sid)
+    for _ in range(3):
+        await session_links.viewing(token, None, False)
+
+    def seats():
+        rows = db[0].query(KeyConditionExpression="pk = :p", ExpressionAttributeValues={":p": f"PUBWATCH#{public}"})
+        return [r for r in rows["Items"] if r["sk"].startswith("VIEWER#")]
+
+    for row in seats():  # their leases lapsed; DynamoDB's own TTL delete lags up to 48 h
+        db[0].update_item(
+            Key={"pk": row["pk"], "sk": row["sk"]},
+            UpdateExpression="SET expiresAt = :t",
+            ExpressionAttributeValues={":t": 1},
+        )
+    await session_links.viewing(token, None, False)
+    assert len(seats()) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failed_read_of_the_link_watchers_never_costs_the_workspace_its_frame(transport, monkeypatch):
+    from core.services import session_links
+
+    sid = await start(transport)
+    token, public = await _public_link(sid)
+    await session_links.viewing(token, None, False)
+    await session_screen.watch(BOB, sid)
+    get = messaging_repo._get
+
+    async def broken(pk, sk):
+        if pk.startswith("PUBWATCH#"):
+            raise RuntimeError("dynamo down")
+        return await get(pk, sk)
+
+    monkeypatch.setattr(messaging_repo, "_get", broken)
+    transport[4].clear()
+    await session_screen.forward(relay(transport), "conn-1", frame(sid))
+    assert [c for c, _ in await _published(transport)] == [await _frames_channel(sid)]
+
+
+@pytest.mark.asyncio
+async def test_a_reconnecting_viewer_trades_its_used_seat_for_a_new_one(transport, db, monkeypatch):
+    """The authorizer lets a lease subscribe once, so a reconnect needs a new one; the old row
+    goes, so one viewer never holds two seats."""
+    from core.services import session_links
+
+    sid = await start(transport)
+    token, public = await _public_link(sid)
+    first = await session_links.viewing(token, None, False)
+    # About to connect with a lease AppSync never took (the connect did not reach it): renewed, no new seat.
+    assert (await session_links.viewing(token, first.lease, False, retake=True)).lease == first.lease
+    again = await _trade(token, first.lease)
+    assert again.lease != first.lease and again.channel == first.channel
+    rows = db[0].query(KeyConditionExpression="pk = :p", ExpressionAttributeValues={":p": f"PUBWATCH#{public}"})
+    assert len([r for r in rows["Items"] if r["sk"].startswith("VIEWER#")]) == 1
+    monkeypatch.setattr(session_links, "MAX_LINK_VIEWERS", 1)
+    with pytest.raises(ApiProblem):  # the seat given up is gone: at a full session it is no way back in
+        await session_links.viewing(token, first.lease, False)
+
+
+@pytest.mark.asyncio
+async def test_a_link_gives_out_a_bounded_number_of_seats_per_ten_minutes(transport, monkeypatch):
+    from core.services import session_links
+
+    monkeypatch.setattr(session_links, "MINTS_PER_WINDOW", 3)
+    sid = await start(transport)
+    token, _ = await _public_link(sid)
+    now = time.time()
+    monkeypatch.setattr(session_links.time, "time", lambda: now)
+    seat = await session_links.viewing(token, None, False)
+    for _ in range(2):  # every new subscription costs one, a traded seat included
+        seat = await _trade(token, seat.lease)
+    with pytest.raises(ApiProblem) as busy:
+        await _trade(token, seat.lease)
+    assert busy.value.error.code == "LOCAL_SESSION_VIEWERS_FULL"
+    with pytest.raises(ApiProblem):
+        await session_links.viewing(token, None, False)
+    # The next window starts over. (The session's own liveness is read on this clock too.)
+    monkeypatch.setattr(session_links.time, "time", lambda: now + 1)
+    monkeypatch.setattr(session_links, "MINT_WINDOW_S", 1)
+    assert (await session_links.viewing(token, None, False)).lease
+
+
+@pytest.mark.asyncio
+async def test_a_channel_gives_out_a_life_total_of_seats_and_then_the_link_moves_to_a_new_one(transport, monkeypatch):
+    """An open subscription never ends by itself, so a channel's subscriptions are bounded by
+    moving the link to a new channel: the old one's sockets all go silent."""
+    from core.services import session_links
+
+    monkeypatch.setattr(session_links, "MAX_CHANNEL_SEATS", 3)
+    sid = await start(transport)
+    token, public = await _public_link(sid)
+    old = await session_links.viewing(token, None, False)
+    for _ in range(2):
+        await session_links.viewing(token, None, False)
+    before = await repo.get_session(OWNER, sid)
+    link = before["shareLink"]
+    third = await session_links.viewing(token, None, False)  # past the total: seated on a new channel
+    # A seat that raced the third past the total read the old row too. Its move is conditional on
+    # the old publicId, so it moves nothing, and it is seated on the same new channel.
+    await session_links._new_channel(before, public)
+    fourth = await session_links.viewing(token, None, False)
+    moved = (await repo.get_session(OWNER, sid))["shareLink"]
+    assert moved["publicId"] != public and third.channel == fourth.channel == f"/pub/{moved['publicId']}"
+    assert {k: v for k, v in moved.items() if k != "publicId"} == {k: v for k, v in link.items() if k != "publicId"}
+    assert (await service.get_link(ALICE, sid)).audience == "anyone", "the same link, still public"
+    # Frames go to the new channel only: every socket on the old one hears nothing more.
+    transport[4].clear()
+    await session_screen.forward(relay(transport), "conn-1", frame(sid))
+    assert [c for c, _ in await _published(transport)] == [third.channel]
+    # A viewer from the old channel follows at its next renewal: its lease renews nothing, and
+    # it is seated on the new channel, for one seat.
+    followed = await session_links.viewing(token, old.lease, False)
+    assert followed.channel == third.channel and followed.lease != old.lease
+    assert (await session_links.viewing(token, followed.lease, False)).lease == followed.lease
+
+
+@pytest.mark.asyncio
+async def test_a_refused_seat_costs_the_channel_nothing_and_the_budget_outlives_a_channel(transport, db, monkeypatch):
+    """Codex on #3946: refused seats still counted against the channel, so a holder at the budget
+    could spam requests, use the channel up and move it every few seconds, each move with a fresh
+    budget. The budget is the link's and is counted first."""
+    from core.services import session_links
+
+    monkeypatch.setattr(session_links, "MAX_CHANNEL_SEATS", 2)
+    monkeypatch.setattr(session_links, "MINTS_PER_WINDOW", 4)
+    sid = await start(transport)
+    token, first = await _public_link(sid)
+    now = time.time()
+    monkeypatch.setattr(session_links.time, "time", lambda: now)
+
+    async def channel():
+        return (await repo.get_session(OWNER, sid))["shareLink"]["publicId"]
+
+    def taken(public):
+        return int(db[0].get_item(Key={"pk": f"PUBWATCH#{public}", "sk": "WATCHED"})["Item"].get("seats", 0))
+
+    seat = await session_links.viewing(token, None, False)
+    for _ in range(3):  # the third moves the link; the window count goes with it
+        seat = await _trade(token, seat.lease)
+    second = await channel()
+    assert second != first and taken(first) == 2 and taken(second) == 2
+    for _ in range(5):  # at the budget: refused, and nothing moves or is counted
+        with pytest.raises(ApiProblem) as busy:
+            await _trade(token, seat.lease)
+        assert busy.value.error.code == "LOCAL_SESSION_VIEWERS_FULL"
+    assert await channel() == second and taken(second) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_channels_seat_count_is_kept_for_as_long_as_a_socket_on_it_can_live(transport, db):
+    """Codex on #3946: the count's row lapsed an hour after the last viewer, and the next seat
+    started the same channel at one while sockets from before (AppSync keeps one for 24 h) still
+    listened. The row now outlives them."""
+    from core.services import session_links
+
+    sid = await start(transport)
+    token, public = await _public_link(sid)
+    await session_links.viewing(token, None, False)
+    row = db[0].get_item(Key={"pk": f"PUBWATCH#{public}", "sk": "WATCHED"})["Item"]
+    assert int(row["seats"]) == 1
+    assert int(row["expiresAt"]) - int(time.time()) > 24 * 3600  # `expiresAt` is the table's TTL attribute
+    assert int(row["until"]) - int(time.time()) <= session_screen.VIEWER_TTL_S  # liveness is still 45 s

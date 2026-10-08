@@ -30,7 +30,7 @@ async def audit(sid):
 
 
 @pytest.mark.asyncio
-async def test_owner_creates_one_link_that_is_the_pickup_permission(transport, s3):
+async def test_owner_creates_one_link_and_it_only_shows_the_session(transport, s3):
     sid = await claude_session(transport)
     with pytest.raises(ApiProblem, match="owner"):
         await service.put_link(BOB, sid, "workspace")
@@ -45,18 +45,62 @@ async def test_owner_creates_one_link_that_is_the_pickup_permission(transport, s
         "ownerId": OWNER,
         "sessionId": sid,
     }
-    assert row["pickupAllowed"] is True  # the link is the permission
+    assert "pickupAllowed" not in row  # watch only: continuing is the owner's own switch
     # Same link again; the audience changes in place.
     assert (await service.get_link(ALICE, sid)).url == link.url
     again = await service.put_link(ALICE, sid, "anyone")
     assert again.url == link.url and again.audience == "anyone"
-    assert (await audit(sid))[-3:] == ["share_link_created", "pickup_on", "share_link_audience"]
+    assert (await audit(sid))[-2:] == ["share_link_created", "share_link_audience"]
+
+
+@pytest.mark.asyncio
+async def test_a_link_is_public_only_with_a_public_id_minted_each_time_it_is_made_public(transport, s3):
+    sid = await claude_session(transport)
+    await service.put_link(ALICE, sid, "anyone")
+    first = (await repo.get_session(OWNER, sid))["shareLink"]["publicId"]
+    assert (await service.put_link(ALICE, sid, "workspace")).audience == "workspace"
+    assert "publicId" not in (await repo.get_session(OWNER, sid))["shareLink"]
+    await service.put_link(ALICE, sid, "anyone")
+    assert (await repo.get_session(OWNER, sid))["shareLink"]["publicId"] != first, "an old watcher's channel is dead"
+    # Only me narrows it: resuming sharing never brings a public link back.
+    await service.set_sharing(ALICE, sid, False)
+    await service.set_sharing(ALICE, sid, True)
+    assert (await service.get_link(ALICE, sid)).audience == "workspace"
+
+
+@pytest.mark.asyncio
+async def test_an_anyone_link_from_before_public_watch_is_a_workspace_link(transport, s3):
+    sid = await claude_session(transport)
+    link = await service.put_link(ALICE, sid, "anyone")
+    token = link.url.split("#", 1)[1]
+    messaging_repo._table().update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"}, UpdateExpression="REMOVE shareLink.publicId"
+    )
+    assert (await service.get_link(ALICE, sid)).audience == "workspace"
+    from core.services import session_links
+
+    with pytest.raises(ApiProblem, match="turned off or is not for you"):
+        await session_links.resolve(None, token)
+    assert (await session_links.resolve(BOB, token))[2] is True  # a member still opens it
+    assert (await service.put_link(ALICE, sid, "anyone")).audience == "anyone"  # the owner picks Anyone again
+    assert (await session_links.resolve(None, token))[0]["sessionId"] == sid
+
+
+@pytest.mark.asyncio
+async def test_turning_continue_off_keeps_the_link(transport, s3):
+    sid = await claude_session(transport)
+    link = await service.put_link(ALICE, sid, "anyone")
+    await pickup.set_pickup(ALICE, sid, True)
+    await pickup.set_pickup(ALICE, sid, False)
+    row = await repo.get_session(OWNER, sid)
+    assert not row.get("pickupAllowed") and (await service.get_link(ALICE, sid)).url == link.url
 
 
 @pytest.mark.asyncio
 async def test_turning_the_link_off_deletes_it_and_retires_pickup(transport, s3):
     sid = await claude_session(transport)
     link = await service.put_link(ALICE, sid, "anyone")
+    await pickup.set_pickup(ALICE, sid, True)
     digest = service._token_hash(link.url.split("#", 1)[1])
     with pytest.raises(ApiProblem, match="owner"):
         await service.delete_link(BOB, sid)
@@ -92,6 +136,7 @@ async def test_a_paused_session_cannot_get_a_link(transport, s3):
 async def test_pickup_expiry_takes_the_link_with_it(transport, s3):
     sid = await claude_session(transport)
     link = await service.put_link(ALICE, sid, "workspace")
+    await pickup.set_pickup(ALICE, sid, True)
     await pickup.retire(OWNER, sid, await repo.get_session(OWNER, sid))
     assert "shareLink" not in await repo.get_session(OWNER, sid)
     assert await messaging_repo._get(service._share_pk(service._token_hash(link.url.split("#")[1])), "META") is None
@@ -122,8 +167,8 @@ async def test_a_failed_allow_takes_its_new_link_back(transport, s3):
 @pytest.mark.asyncio
 async def test_share_without_an_audience_never_narrows_a_link(transport, s3):
     sid = await claude_session(transport)
-    first = await service.put_link(ALICE, sid, None)  # Share: a workspace link, pick-up on
-    assert first.audience == "workspace" and (await repo.get_session(OWNER, sid))["pickupAllowed"] is True
+    first = await service.put_link(ALICE, sid, None)  # Share: a workspace link
+    assert first.audience == "workspace"
     await service.put_link(ALICE, sid, "anyone")
     again = await service.put_link(ALICE, sid, None)  # Share again (a stale or failed read)
     assert again.url == first.url and again.audience == "anyone"

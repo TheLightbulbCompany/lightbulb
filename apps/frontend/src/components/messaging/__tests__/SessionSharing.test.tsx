@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { LocalSession } from "@lightbulb/shared";
@@ -14,7 +14,10 @@ const session: LocalSession = { sessionId: "session", deviceId: "mac", humanUser
 const client = (setLocalSessionSharing = vi.fn(async (_: string, shared: boolean) => ({ ...session, shared }))) => ({
   listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(),
   getLocalSession: vi.fn(), listWorkspaceSessions: vi.fn(), setLocalSessionSharing,
+  getLocalSessionLink: vi.fn(async () => ({ url: "https://dev.thelightbulb.company/s#t", audience: "workspace" as const })), putLocalSessionLink: vi.fn(),
 });
+/** The one control, once it has read the link. */
+const who = async (dialog: HTMLElement) => { await waitFor(() => expect(within(dialog).getByLabelText("Who can see this")).toBeEnabled()); return within(dialog).getByLabelText("Who can see this"); };
 const panel = (s: LocalSession, own: boolean, c: ReturnType<typeof client>) =>
   <LocalSessionPanel session={s} ownerName="Alice" own={own} client={c as never} revision={0} onAccessLost={() => {}} />;
 
@@ -31,20 +34,24 @@ describe("per-session sharing", () => {
     const { rerender } = render(panel(session, true, c));
     expect(screen.queryByText(/^Sharing is paused/)).not.toBeInTheDocument();
     const dialog = await access();
-    await userEvent.click(within(dialog).getByRole("switch", { name: "Shared with the workspace" }));
+    await userEvent.selectOptions(await who(dialog), "me");
+    expect(c.setLocalSessionSharing).not.toHaveBeenCalled(); // Only me takes a second click
+    await userEvent.click(within(dialog).getByRole("button", { name: "Click again to stop sharing" }));
     expect(c.setLocalSessionSharing).toHaveBeenCalledWith("session", false);
-    expect(within(dialog).getByRole("switch", { name: "Shared with the workspace" })).not.toBeChecked();
+    expect(await who(dialog)).toHaveValue("me");
+    expect(within(dialog).getByText("Only you see this session. Sharing again shares the whole session.")).toBeInTheDocument();
     // The session row comes back paused: the pane itself says so.
     rerender(panel({ ...session, shared: false }, true, c));
     expect(screen.getByText("Sharing is paused. Only you can see this session, and nothing it does now is shared.")).toHaveAttribute("role", "status");
-    await userEvent.click(within(dialog).getByRole("switch", { name: "Shared with the workspace" }));
+    await userEvent.selectOptions(await who(dialog), "workspace");
     expect(c.setLocalSessionSharing).toHaveBeenLastCalledWith("session", true);
+    expect(within(dialog).queryByRole("switch", { name: "Shared with the workspace" })).toBeNull(); // one control
   });
 
   it("never offers it to a teammate", async () => {
     render(panel(session, false, client()));
     const dialog = await access();
-    expect(within(dialog).queryByRole("switch", { name: "Shared with the workspace" })).toBeNull();
+    expect(within(dialog).queryByLabelText("Who can see this")).toBeNull();
     expect(within(dialog).getByText(/^Only Alice can send to this session/)).toBeInTheDocument();
   });
 });

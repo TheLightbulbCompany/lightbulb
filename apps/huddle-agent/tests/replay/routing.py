@@ -170,7 +170,11 @@ def known(scenario: str, check: str) -> str | None:
 # check": seeds failing}}}, written by `python -m tests.replay all --seeds 200 --profile P --rebase`. A known
 # failure is known at a rate: KNOWN_FAILING says why a check may fail, this says how often it did.
 BASELINE_PATH = os.path.join(os.path.dirname(__file__), "baseline.json")
-SIGMAS = 3.0  # the tolerance: this many standard deviations of a run of n seeds over the baseline rate
+# The tolerance. A check may fail as many of a run's seeds as chance alone gives it at its baseline rate less
+# than once in CHANCE runs: there are about 70 check-profiles, so no run in a hundred is failed by luck. The
+# run as a whole is one comparison more, held to SIGMAS standard deviations over the baseline's total.
+CHANCE = 1e-4
+SIGMAS = 3.0
 
 
 def baseline() -> dict:
@@ -182,7 +186,12 @@ def allowed(base: dict, key: str, n: int) -> int:
     """The most of `n` seeds this check may fail and still be no worse than its baseline. 0 for a check
     that passed every seed of the baseline: one that used to pass may not start to fail."""
     p = base["fails"].get(key, 0) / base["seeds"]
-    return math.ceil(n * p + SIGMAS * math.sqrt(n * p * (1 - p)) - 1e-9)
+    tail = 1.0  # the chance of more than k failures in n seeds at rate p (binomial)
+    for k in range(n + 1):
+        tail -= math.comb(n, k) * p**k * (1 - p) ** (n - k)
+        if tail < CHANCE:
+            return k
+    return n
 
 
 def gate(base: dict, fails: dict[str, int], n: int) -> list[str]:

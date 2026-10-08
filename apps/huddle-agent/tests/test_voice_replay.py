@@ -37,9 +37,9 @@ def test_every_failure_in_the_baseline_has_its_cause_written_down():
 def test_the_gate_fails_a_known_failure_that_got_worse_and_a_check_that_used_to_pass():
     base = {"seeds": 200, "fails": {"gap | ack_within": 40, "gap | no_talk_over": 2}}
     assert routing.gate(base, {"gap | ack_within": 4, "gap | no_talk_over": 1}, 20) == [], "at its rate, and inside the noise"
-    assert routing.allowed(base, "gap | ack_within", 20) == 10 and routing.allowed(base, "gap | said_once", 20) == 0
-    worse = routing.gate(base, {"gap | ack_within": 11}, 20)[0]
-    assert "WORSE" in worse and "gap | ack_within" in worse, "known to fail one seed in five, not one in two"
+    assert routing.allowed(base, "gap | ack_within", 20) == 12 and routing.allowed(base, "gap | said_once", 20) == 0
+    worse = routing.gate(base, {"gap | ack_within": 13}, 20)[0]
+    assert "WORSE" in worse and "gap | ack_within" in worse, "known to fail one seed in five, not two in three"
     (new,) = routing.gate(base, {"gap | said_once": 1}, 20)
     assert "NEW" in new
     many = {"seeds": 200, "fails": {f"s{i} | ack_within": 40 for i in range(30)}}

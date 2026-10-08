@@ -291,7 +291,11 @@ async def _record_outcome(
     retry's refusal (sharing switched off since) never overwrites it."""
     pk, sk = _sent_key(auth, request_id)
     if accepted:
-        kwargs = {"UpdateExpression": "SET accepted = :s REMOVE refusal", "ExpressionAttributeValues": {":s": accepted}}
+        # Write-once: overlapping retries must not replace a later state with an earlier snapshot.
+        kwargs = {
+            "UpdateExpression": "SET accepted = if_not_exists(accepted, :s) REMOVE refusal",
+            "ExpressionAttributeValues": {":s": accepted},
+        }
     else:
         kwargs = {
             "UpdateExpression": "SET refusal = :c",

@@ -445,7 +445,10 @@ async def test_record_outcome_writes_accepted_as_final_and_a_refusal_only_before
     request_id = uuid.uuid4()
     await hosted_mcp._record_outcome(auth, request_id, accepted="queued")
     await hosted_mcp._record_outcome(auth, request_id, refusal="LOCAL_SESSION_FORBIDDEN")  # swallowed
-    assert [c["UpdateExpression"] for c in calls] == ["SET accepted = :s REMOVE refusal", "SET refusal = :c"]
+    assert [c["UpdateExpression"] for c in calls] == [
+        "SET accepted = if_not_exists(accepted, :s) REMOVE refusal",
+        "SET refusal = :c",
+    ]
     assert calls[1]["ConditionExpression"] == "attribute_not_exists(accepted)"
 
 

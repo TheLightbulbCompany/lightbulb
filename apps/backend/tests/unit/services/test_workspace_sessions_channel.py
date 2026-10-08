@@ -97,3 +97,62 @@ async def test_the_user_channel_refuses_the_sessions_hint(published):
         await live_events.get_live_event_publisher().publish_user(
             OWNER, ALICE.user_id, messaging.make_live_event("workspace.sessions.changed", {"humanUserId": "x"})
         )
+
+
+def _conflict():
+    from botocore.exceptions import ClientError
+
+    return ClientError(
+        {
+            "Error": {"Code": "TransactionCanceledException", "Message": "conflict"},
+            "CancellationReasons": [{"Code": "TransactionConflict"}, {"Code": "None"}],
+        },
+        "TransactWriteItems",
+    )
+
+
+def _conflicting(monkeypatch, times: int) -> list[list[dict]]:
+    """``_transact`` refuses the first ``times`` calls with a TransactionConflict, as DynamoDB does
+    when two transactions touch the same row at once; records every call's items."""
+    calls: list[list[dict]] = []
+    real = messaging_repo._transact
+
+    async def transact(items):
+        calls.append(items)
+        if len(calls) <= times:
+            raise _conflict()
+        await real(items)
+
+    monkeypatch.setattr(messaging_repo, "_transact", transact)
+    monkeypatch.setattr("core.repositories.container_repo.asyncio.sleep", AsyncMock())
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_a_removal_that_meets_a_concurrent_enrollment_retries_and_never_acks_a_member_left_on(
+    published, monkeypatch
+):
+    await live_config(BOB)
+    await live_config(ALICE)
+    _conflicting(monkeypatch, 1)
+    assert await messaging_repo.deactivate_user_stream(OWNER, BOB.user_id) is True
+    assert await _member_row(BOB.user_id) is None
+
+    monkeypatch.undo()
+    _conflicting(monkeypatch, 99)  # the conflict outlasts the retries: raise, so the webhook is redelivered
+    with pytest.raises(Exception, match="conflict"):
+        await messaging_repo.deactivate_user_stream(OWNER, ALICE.user_id)
+    assert (await messaging_repo.get_user_stream(OWNER, ALICE.user_id))["active"] is True
+
+
+@pytest.mark.asyncio
+async def test_concurrent_enrollments_never_read_as_membership_loss(published, monkeypatch):
+    await live_config(ALICE)  # the workspace lookup row exists now
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    calls = _conflicting(monkeypatch, 1)
+    config = await live_config(BOB)  # a conflict is retried, not answered 403
+    assert config.workspace_id
+    assert (await _member_row(BOB.user_id))["active"] is True
+    assert all(item.get("Put", {}).get("Item", {}).get("sk") != "META" for call in calls for item in call), (
+        "the workspace META row is not rewritten on every live-config"
+    )

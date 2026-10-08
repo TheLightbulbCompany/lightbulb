@@ -2135,51 +2135,61 @@ async def enroll_sessions_member(owner_id: str, user_id: str, channel_key: str) 
     the ``WORKSPACE#<ws>`` lookup and member rows the AppSync handler reads, conditioned on the
     user's stream still being on with ``channel_key``. Returns the workspace id, or None when
     the stream went off meanwhile (a concurrent removal: that transaction deletes the row)."""
+    from core.repositories.container_repo import retry_conflict
+
     workspace_id = await ensure_workspace_id(owner_id)
     table_name = _table().name
     now = utc_now_iso()
+    # The lookup row is written once, outside the member write: rewriting it on every live-config
+    # made concurrent members' enrollments contend on one item (Codex on #3915).
     try:
-        await _transact(
-            [
-                {
-                    "Put": {
-                        "TableName": table_name,
-                        "Item": {
-                            "pk": workspace_pk(workspace_id),
-                            "sk": "META",
-                            "ownerId": owner_id,
-                            "workspaceId": workspace_id,
-                        },
-                    }
-                },
-                {
-                    "Put": {
-                        "TableName": table_name,
-                        "Item": {
-                            "pk": workspace_pk(workspace_id),
-                            "sk": f"MEMBER#{user_id}",
-                            "ownerId": owner_id,
-                            "userId": user_id,
-                            "active": True,
-                            "updatedAt": now,
-                        },
-                    }
-                },
-                {
-                    "ConditionCheck": {
-                        "TableName": table_name,
-                        "Key": {"pk": owner_pk(owner_id), "sk": userstream_sk(user_id)},
-                        "ConditionExpression": "active = :t AND channelKey = :key",
-                        "ExpressionAttributeValues": {":t": True, ":key": channel_key},
-                    }
-                },
-            ]
+        await run_in_thread(
+            _table().put_item,
+            Item={"pk": workspace_pk(workspace_id), "sk": "META", "ownerId": owner_id, "workspaceId": workspace_id},
+            ConditionExpression="attribute_not_exists(pk)",
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+    try:
+        await retry_conflict(
+            lambda: _transact(
+                [
+                    {
+                        "Put": {
+                            "TableName": table_name,
+                            "Item": {
+                                "pk": workspace_pk(workspace_id),
+                                "sk": f"MEMBER#{user_id}",
+                                "ownerId": owner_id,
+                                "userId": user_id,
+                                "active": True,
+                                "updatedAt": now,
+                            },
+                        }
+                    },
+                    {
+                        "ConditionCheck": {
+                            "TableName": table_name,
+                            "Key": {"pk": owner_pk(owner_id), "sk": userstream_sk(user_id)},
+                            "ConditionExpression": "active = :t AND channelKey = :key",
+                            "ExpressionAttributeValues": {":t": True, ":key": channel_key},
+                        }
+                    },
+                ]
+            )
         )
         return workspace_id
     except ClientError as exc:
-        if _is_cancelled(exc):
+        if _condition_failed(exc):  # the stream went off meanwhile: not a member
             return None
-        raise
+        raise  # a conflict that outlasted the retries is not a removal: the caller answers 5xx
+
+
+def _condition_failed(exc: ClientError) -> bool:
+    return _is_cancelled(exc) and any(
+        r.get("Code") == "ConditionalCheckFailed" for r in exc.response.get("CancellationReasons", [])
+    )
 
 
 async def deactivate_user_stream(owner_id: str, user_id: str) -> bool:
@@ -2203,37 +2213,44 @@ async def deactivate_user_stream(owner_id: str, user_id: str) -> bool:
         if workspace
         else []
     )
+    from core.repositories.container_repo import retry_conflict
+
     try:
-        await _transact(
-            member_row
-            + [
-                {
-                    "Update": {
-                        "TableName": table_name,
-                        "Key": {"pk": owner_pk(owner_id), "sk": userstream_sk(user_id)},
-                        "UpdateExpression": "SET active = :f, updatedAt = :now",
-                        "ConditionExpression": "active = :t AND channelKey = :key",
-                        "ExpressionAttributeValues": {
-                            ":f": False,
-                            ":t": True,
-                            ":key": current["channelKey"],
-                            ":now": now,
-                        },
-                    }
-                },
-                {
-                    "Update": {
-                        "TableName": table_name,
-                        "Key": {"pk": stream_pk(current["channelKey"]), "sk": "META"},
-                        "UpdateExpression": "SET active = :f, deactivatedAt = :now",
-                        "ExpressionAttributeValues": {":f": False, ":now": now},
-                    }
-                },
-            ]
+        await retry_conflict(
+            lambda: _transact(
+                member_row
+                + [
+                    {
+                        "Update": {
+                            "TableName": table_name,
+                            "Key": {"pk": owner_pk(owner_id), "sk": userstream_sk(user_id)},
+                            "UpdateExpression": "SET active = :f, updatedAt = :now",
+                            "ConditionExpression": "active = :t AND channelKey = :key",
+                            "ExpressionAttributeValues": {
+                                ":f": False,
+                                ":t": True,
+                                ":key": current["channelKey"],
+                                ":now": now,
+                            },
+                        }
+                    },
+                    {
+                        "Update": {
+                            "TableName": table_name,
+                            "Key": {"pk": stream_pk(current["channelKey"]), "sk": "META"},
+                            "UpdateExpression": "SET active = :f, deactivatedAt = :now",
+                            "ExpressionAttributeValues": {":f": False, ":now": now},
+                        }
+                    },
+                ]
+            )
         )
         return True
     except ClientError as exc:
-        if _is_cancelled(exc):
+        # Only a failed condition means another write already turned it off (or rotated it). A
+        # conflict that outlasted the retries raises, so the removal webhook is redelivered
+        # instead of acked with the member still on (Codex on #3915).
+        if _condition_failed(exc):
             return False
         raise
 

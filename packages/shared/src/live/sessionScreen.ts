@@ -18,14 +18,22 @@ import type { SessionScreen } from "./types";
  *  inline Codex session writes its finished lines that way). It is written in its place when the
  *  lower frames come, or as it is when the view's timer says they will not (`settleScreen`,
  *  SNAPSHOT_WAIT_MS): then it is a repair, as before. One rule with output ahead of a gap, which is
- *  held the same way. Never the first picture of a viewer or a run, nor a viewer out of sync. */
+ *  held the same way. Never the first picture of a viewer or a run, nor a viewer out of sync.
+ *  A snapshot written as a repair leaves this viewer `torn`: the frames it replaced never came, so
+ *  the lines their output scrolled off the top are in no scrollback of this viewer (prod
+ *  2026-10-08: 82 rows, 4 Codex blocks). The step says `lost`, the view asks the Mac for a fresh
+ *  watch, and the history burst that follows starts this viewer's picture over, as a bare one's
+ *  does. Nobody else writes that burst. */
 export type ScreenOrder = { epoch: number; next: number; synced: boolean; held: SessionScreen[]; history: SessionScreen[];
   /** No history is written in this run yet. An empty history frame counts: the Mac has none to give. */
   bare: boolean;
   /** What is written since the snapshot this viewer's history goes under, that snapshot first: the
    *  picture to write again under history that arrives after it. Empty once it is more than SHOWN
    *  frames: history that late is not written. */
-  shown: SessionScreen[] };
+  shown: SessionScreen[];
+  /** A snapshot repaired this run's picture over frames that never came: lines are missing above
+   *  the screen until a history burst is written again. An empty burst does not count for it. */
+  torn?: boolean };
 export const NEW_SCREEN: ScreenOrder = { epoch: -1, next: 0, synced: false, held: [], history: [], bare: true, shown: [] };
 /** How long a snapshot waits for the frames below it. Frames of one burst reached the backend up to
  *  150 ms out of order (prod 2026-10-08, a snapshot ahead of 12 history chunks) and up to 184 ms in
@@ -40,7 +48,8 @@ const SHOWN = 32;
 /** ceil(256 KiB / 11 KiB): one history burst at most (the Mac's BURST over CHUNK). */
 const HISTORY = 24;
 
-type Step = { order: ScreenOrder; write: SessionScreen[] };
+/** `lost`: a snapshot was written over frames this viewer never got (`ScreenOrder.torn`). */
+type Step = { order: ScreenOrder; write: SessionScreen[]; lost?: boolean };
 
 export function receiveScreen(order: ScreenOrder, frame: SessionScreen): Step {
   let step = receive(order, frame);
@@ -49,7 +58,7 @@ export function receiveScreen(order: ScreenOrder, frame: SessionScreen): Step {
     const ready = heldSnapshots(step.order).find((s) => !missing(step.order, s));
     if (!ready) return step;
     const drawn = draw(step.order, ready);
-    step = { order: drawn.order, write: [...step.write, ...drawn.write] };
+    step = { order: drawn.order, write: [...step.write, ...drawn.write], lost: step.lost || drawn.lost };
   }
 }
 
@@ -76,12 +85,20 @@ function missing(order: ScreenOrder, snapshot: SessionScreen) {
 }
 
 function draw(order: ScreenOrder, frame: SessionScreen): Step {
-  // History only for a viewer with none of this run's: scrollback it has stays as it is.
-  const wants = order.bare || frame.epoch !== order.epoch;
-  const history = order.history.filter((f) => f.epoch >= frame.epoch);
-  const before = wants ? newestRun(history, frame) : [];
-  return drain({ epoch: frame.epoch, next: frame.seq + 1, synced: true, history, bare: wants && !before.length, shown: order.shown,
-    held: order.held.filter((f) => f.epoch === frame.epoch && f.seq > frame.seq) }, [...before, frame], wants);
+  const same = frame.epoch === order.epoch;
+  // A repair: this run's picture goes on from the screen alone, over frames that never came.
+  const lost = same && (!order.synced || missing(order, frame));
+  // History only for a viewer with none of this run's, or with a hole in it: scrollback that is whole stays as it is.
+  const fresh = order.bare || !same;
+  // (The burst a torn viewer was first drawn from is not its history now.)
+  const history = (lost && !order.bare ? [] : order.history).filter((f) => f.epoch >= frame.epoch);
+  let before = fresh || order.torn ? newestRun(history, frame) : [];
+  // "Nothing above the screen" (or a budget with no room) is no reason to drop the lines a torn viewer has.
+  if (!fresh && before.every((f) => !f.data)) before = [];
+  const step = drain({ epoch: frame.epoch, next: frame.seq + 1, synced: true, history, bare: fresh && !before.length, shown: order.shown,
+    torn: (same && (order.torn || lost) && !before.length) || undefined,
+    held: order.held.filter((f) => f.epoch === frame.epoch && f.seq > frame.seq) }, [...before, frame], before.length > 0 || fresh);
+  return lost ? { ...step, lost } : step;
 }
 
 function receive(order: ScreenOrder, frame: SessionScreen): Step {
@@ -97,7 +114,7 @@ function receive(order: ScreenOrder, frame: SessionScreen): Step {
     if (frame.seq < order.next) return frame.kind === "history" ? late(order, frame) : { order, write: [] };
     if (frame.seq === order.next) return drain({ ...order, next: order.next + 1, history: stash(order, frame) }, frame.kind === "history" ? [] : [frame]);
   }
-  if (frame.kind === "history" && (frame.epoch > order.epoch || (order.bare && frame.epoch === order.epoch))) {
+  if (frame.kind === "history" && (frame.epoch > order.epoch || ((order.bare || order.torn) && frame.epoch === order.epoch))) {
     return { order: { ...order, history: stash(order, frame) }, write: [] };
   }
   const held = [...order.held, frame];
@@ -109,7 +126,7 @@ function receive(order: ScreenOrder, frame: SessionScreen): Step {
 
 /** The history kept for the next snapshot, with `frame` when it is history this viewer may yet write. */
 function stash(order: ScreenOrder, frame: SessionScreen) {
-  if (frame.kind !== "history" || !(order.bare || frame.epoch > order.epoch)) return order.history;
+  if (frame.kind !== "history" || !(order.bare || order.torn || frame.epoch > order.epoch)) return order.history;
   return add(order.history, frame);
 }
 

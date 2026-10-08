@@ -9,6 +9,8 @@ import { chunkInput, dropMouseReports, dropProbeReplies, SHIFT_ENTER } from "./s
 const WATCH_EVERY_MS = 15_000;
 /** A snapshot or a ping comes at least every 10 s; this long with no frame, or only pings that do not match the screen it has, and the picture is frozen, so it says Reconnecting. */
 const STALE_AFTER_MS = 30_000;
+/** A viewer that lost frames asks the Mac for its lines again at most this often: each ask is a history burst out of the session's budget. */
+const REPAIR_EVERY_MS = 30_000;
 /** Stops input: no access (403/404) or a Mac that cannot take typing. OFFLINE is another 409 and passes. */
 const refuses = (e: unknown) => e instanceof ApiError && (e.status === 403 || e.status === 404
   || (e.status === 409 && (e.body as { code?: string } | null)?.code === "LOCAL_SESSION_UNSUPPORTED"));
@@ -93,6 +95,8 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
   // The screen this view last asked for (a session's, or its kept one): `watch` may change identity
   // between renders, and each fresh ask costs every viewer a history burst.
   const asked = useRef("");
+  const watchNow = useRef(watch);
+  watchNow.current = watch;
   // The backend refused a new viewer: this session is full (LOCAL_SESSION_VIEWERS_FULL), with its message.
   const [full, setFull] = useState<string | null>(null);
   const screenKey = `${session.sessionId}:${kept}`;
@@ -141,6 +145,15 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     let stale: ReturnType<typeof setTimeout> | undefined;
     // Runs while a snapshot waits for the frames below it (`receiveScreen`); from the first one that waits.
     let settle: ReturnType<typeof setTimeout> | undefined;
+    // A snapshot repaired the screen over frames that never came (`receiveScreen`): the lines they
+    // scrolled off the top are missing above it. One fresh watch brings a history burst, which
+    // starts this view's picture over with them; a view with nothing missing writes none of it.
+    let repaired = 0;
+    const repair = (lost?: boolean) => {
+      if (!lost || document.visibilityState === "hidden" || Date.now() - repaired < REPAIR_EVERY_MS) return;
+      repaired = Date.now();
+      void watchNow.current(session.sessionId, true).catch(() => { /* the watch effect shows a refusal */ });
+    };
     let pending = "";
     let frameId = 0;
     let sending: Promise<unknown> = Promise.resolve();
@@ -282,8 +295,9 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
       const step = receiveScreen(order, frame);
       order = step.order;
       apply(step.write);
+      repair(step.lost);
       if (!snapshotWaits(order)) { clearTimeout(settle); settle = undefined; }
-      else settle ??= setTimeout(() => { settle = undefined; const late = settleScreen(order); order = late.order; apply(late.write); }, SNAPSHOT_WAIT_MS);
+      else settle ??= setTimeout(() => { settle = undefined; const late = settleScreen(order); order = late.order; apply(late.write); repair(late.lost); }, SNAPSHOT_WAIT_MS);
     });
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(fit);
     if (box.current) observer?.observe(box.current);

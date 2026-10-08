@@ -153,3 +153,38 @@ it("no snapshot waits for a viewer with no picture, a new run, or a viewer out o
   expect(next.written).toEqual(["s0"]);
   expect(snapshotWaits(next.order)).toBe(false);
 });
+
+it("a viewer repaired by a snapshot over frames that never came asks for its lines and starts over from the burst", () => {
+  // Prod 2026-10-08: the Mac's connection loop stalled 6.1 s; the frames of 4 Codex blocks never
+  // came, two snapshots repaired the screen, and those 82 rows were in no scrollback of the viewer.
+  const lines = (seq: number): SessionScreen => ({ ...f(seq, "history"), data: "bGluZXM=" });
+  const whole = feed([lines(0), f(1, "snapshot"), f(2)]);
+  expect(whole.written).toEqual(["h0", "s1", "o2"]);
+  // Seq 3 is lost. Output ahead of it waits; the beat's snapshot waits its turn too, then is the repair.
+  const waiting = feed([f(4), f(5, "snapshot")], whole.order);
+  expect(waiting.written).toEqual([]);
+  const repair = settleScreen(waiting.order);
+  expect(repair.write.map((w) => `${w.kind[0]}${w.seq}`)).toEqual(["s5"]);
+  expect(repair.lost).toBe(true);
+  // What it was first drawn from is not written again: the next snapshot alone changes nothing.
+  expect(feed([f(6), f(7, "snapshot")], repair.order).written).toEqual(["o6", "s7"]);
+  // A burst with nothing in it ("nothing above the screen", or a budget with no room) costs it no line it has.
+  const empty = feed([f(6, "history"), f(7, "snapshot")], repair.order);
+  expect(empty.written).toEqual(["s7"]);
+  // The burst its fresh watch brings: history first, the picture over it. Once.
+  const burst = feed([lines(8), lines(9), f(10, "snapshot"), f(11)], empty.order);
+  expect(burst.written).toEqual(["h8", "h9", "s10", "o11"]);
+  expect(feed([lines(12), f(13, "snapshot")], burst.order).written).toEqual(["s13"]);
+  // A viewer that missed nothing says nothing and writes none of that burst.
+  const other = feed([f(3), f(4), f(5, "snapshot")], whole.order);
+  expect(other.written).toEqual(["o3", "o4", "s5"]);
+  expect(receiveScreen(whole.order, f(3)).lost).toBeUndefined();
+  expect(feed([lines(6), lines(7), f(8, "snapshot")], other.order).written).toEqual(["s8"]);
+  // Out of sync (more lost than is held): the snapshot that brings it back is a repair too.
+  let order = whole.order;
+  for (let seq = 4; seq <= 20; seq += 1) order = receiveScreen(order, f(seq)).order;
+  expect(order.synced).toBe(false);
+  expect(receiveScreen(order, f(21, "snapshot")).lost).toBe(true);
+  // A new run is no repair: it draws everything.
+  expect(receiveScreen(whole.order, f(0, "snapshot", 2)).lost).toBeUndefined();
+});

@@ -748,4 +748,37 @@ describe("a snapshot that arrives ahead of the output below it", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
     expect(hooks.did).toEqual(["reset", "first", "repair"]);
   });
+
+  it("a repair asks the Mac for the lines it could not show, once, and starts over from the history that brings", async () => {
+    // Prod 2026-10-08: frames lost while the Mac's connection loop stalled were repaired with two
+    // snapshots; the 82 rows their output scrolled off the top never reached the viewer's scrollback.
+    vi.useFakeTimers();
+    let emit: (e: LiveEvent) => void = () => {};
+    const watch = vi.fn(async () => undefined);
+    render(<SessionTerminalView session={{ sessionId: "s1", generation: "g1" }} onEvent={(h) => { emit = h; return () => {}; }} watch={watch} onLive={vi.fn()} />);
+    await act(async () => { await vi.dynamicImportSettled(); });
+    const send = (kind: string, seq: number, text: string) => act(() => emit(screenEvent("s1", kind, seq, 1, btoa(text))));
+    const fresh = () => watch.mock.calls.filter((call) => (call as unknown[])[1] === true).length;
+    send("history", 0, "old lines");
+    send("snapshot", 1, "first");
+    send("snapshot", 3, "screen");
+    expect(fresh()).toBe(1); // its own mount
+    send("output", 2, "in time");
+    expect(fresh()).toBe(1); // nothing was lost: nothing is asked
+    send("snapshot", 5, "repair");
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    expect(hooks.did.slice(-1)).toEqual(["repair"]);
+    expect(fresh()).toBe(2);
+    expect(watch).toHaveBeenLastCalledWith("s1", true);
+    // A second loss right after costs the session's budget no second burst.
+    send("snapshot", 7, "repair again");
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    expect(fresh()).toBe(2);
+    // The burst: the terminal starts over, history first.
+    const resets = hooks.resets;
+    send("history", 8, "all the lines");
+    send("snapshot", 9, "screen");
+    expect(hooks.resets).toBe(resets + 1);
+    expect(hooks.did.slice(-3)).toEqual(["reset", "all the lines", "screen"]);
+  });
 });

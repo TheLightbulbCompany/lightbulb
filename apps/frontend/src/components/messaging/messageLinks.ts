@@ -27,6 +27,14 @@ export function parseSessionPermalink(href: string, origin = window.location.ori
   } catch { return null; }
 }
 
+/** Why a workspace join link could not be copied: the row exists but its plaintext cannot be
+ *  shown (a legacy hash-only row, or a token the current key cannot decrypt) — only a deliberate
+ *  Regenerate in Settings → Members replaces it, since that turns the old link off for everyone —
+ *  or the browser refused the clipboard write. */
+export class JoinLinkCopyError extends Error {
+  constructor(public readonly reason: "unavailable" | "clipboard") { super(reason); }
+}
+
 /** Copies text that is still being fetched. Started inside the click, so Safari and the desktop
  *  webview still count the press: they refuse a clipboard write that begins after an await. */
 export async function copyTextWhenReady(text: Promise<string>): Promise<boolean> {

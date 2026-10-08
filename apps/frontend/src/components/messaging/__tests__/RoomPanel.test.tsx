@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { ApiError } from "@/lib/api";
+import { JoinLinkCopyError } from "../messageLinks";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
@@ -570,6 +572,54 @@ it("adds only eligible non-members to an existing channel", async () => {
   await user.click(screen.getByRole("checkbox", { name: "Atlas" }));
   await user.click(screen.getByRole("button", { name: "Add selected" }));
   expect(onAddMember).toHaveBeenCalledWith({ kind: "agent", id: "atlas" });
+});
+
+it("offers the workspace join link for someone who is not a member yet", async () => {
+  const user = userEvent.setup();
+  const onCopyJoinLink = vi.fn(async () => undefined);
+  render(<RoomPanel {...props} room={{ ...props.room!, kind: "channel", name: "Launch" }} onCopyJoinLink={onCopyJoinLink} />);
+
+  await user.click(screen.getByRole("button", { name: /^Details/ }));
+  await user.click(screen.getByRole("button", { name: "Copy the workspace join link" }));
+  expect(onCopyJoinLink).toHaveBeenCalledTimes(1);
+  expect(await screen.findByText("Copied. Anyone who opens it and signs in joins this workspace.")).toBeInTheDocument();
+});
+
+it("sends an admin to Regenerate when the link cannot be shown, instead of rotating it", async () => {
+  const user = userEvent.setup();
+  const onCopyJoinLink = vi.fn(async () => { throw new JoinLinkCopyError("unavailable"); });
+  render(<RoomPanel {...props} room={{ ...props.room!, kind: "channel", name: "Launch" }} onCopyJoinLink={onCopyJoinLink} />);
+
+  await user.click(screen.getByRole("button", { name: /^Details/ }));
+  await user.click(screen.getByRole("button", { name: "Copy the workspace join link" }));
+  expect(await screen.findByText(/Regenerate it under Settings → Members/)).toBeInTheDocument();
+});
+
+it("takes one copy at a time so a double click cannot mint two links", async () => {
+  const user = userEvent.setup();
+  let finish!: () => void;
+  const onCopyJoinLink = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+  render(<RoomPanel {...props} room={{ ...props.room!, kind: "channel", name: "Launch" }} onCopyJoinLink={onCopyJoinLink} />);
+
+  await user.click(screen.getByRole("button", { name: /^Details/ }));
+  const button = screen.getByRole("button", { name: "Copy the workspace join link" });
+  await user.click(button);
+  expect(button).toBeDisabled();
+  await user.click(button);
+  expect(onCopyJoinLink).toHaveBeenCalledTimes(1);
+  finish();
+  expect(await screen.findByText(/Copied\./)).toBeInTheDocument();
+  expect(button).toBeEnabled();
+});
+
+it("tells a non-admin where the join link lives instead of a bare error", async () => {
+  const user = userEvent.setup();
+  const onCopyJoinLink = vi.fn(async () => { throw new ApiError(403, { detail: "Only a workspace admin" }); });
+  render(<RoomPanel {...props} room={{ ...props.room!, kind: "channel", name: "Launch" }} onCopyJoinLink={onCopyJoinLink} />);
+
+  await user.click(screen.getByRole("button", { name: /^Details/ }));
+  await user.click(screen.getByRole("button", { name: "Copy the workspace join link" }));
+  expect(await screen.findByText("Only a workspace admin can copy it. Ask an admin to copy it from Settings → Members.")).toBeInTheDocument();
 });
 
 it("shows member-add progress and a useful retryable error", async () => {

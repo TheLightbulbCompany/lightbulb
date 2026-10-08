@@ -1179,10 +1179,13 @@ def _engaged(addressing: dict, engagements: list[dict], open_requests: list[dict
     no probability bar on "is this a request": that a line asks something does not say whom it asks.
 
     A line that addresses a person is for that person. A line that continues or calls off a request is for
-    that request's agent, whoever the speaker has turned to since. Otherwise it is for the agent the speaker
-    is talking with (``state`` active) when something is still open between the two: the agent asked them
-    something (``expects`` reply), they have just heard its answer and may follow up (``last`` delivered), or
-    they talked over what it was saying (``last`` paused, ``lastBy`` speaker). Recency alone is no evidence:
+    that request's agent, whoever the speaker has turned to since: that reference is the evidence a follow-up
+    is one ("And what are they called?" after the answer), and the worker lists the answered requests for it.
+    Otherwise it is for the agent the speaker is talking with (``state`` active) when something is still open
+    between the two: the agent asked them something (``expects`` reply), or they talked over what it was
+    saying (``last`` paused, ``lastBy`` speaker). Having just heard its answer (``last`` delivered) opens
+    nothing by itself: 10-08 Meet, 25 s after the answer its asker said "Yeah, I think we should move the
+    stand-up to eight" to a colleague, and it became the agent's request. Recency alone is no evidence:
     people in a meeting go on talking to each other."""
     parts = addressing["parts"]
     if addressing["humans"] or (parts and all(p["kind"][0] == "people" for p in parts)):
@@ -1193,14 +1196,21 @@ def _engaged(addressing: dict, engagements: list[dict], open_requests: list[dict
         if choice in rows and p >= AMEND_P:
             return rows[choice]
     for e in engagements:
-        open_between = (
-            e.get("expects") == "reply"
-            or e.get("last") == "delivered"
-            or (e.get("last") == "paused" and e.get("lastBy") == "speaker")
-        )
+        open_between = e.get("expects") == "reply" or (e.get("last") == "paused" and e.get("lastBy") == "speaker")
         if e.get("state") == "active" and open_between:
             return e["agentId"]
     return None
+
+
+def _said_to_people(addressing: dict, engagements: list[dict]) -> bool:
+    """A meeting line the worker sent as part of someone's talk with an agent, and that is not the agent's
+    (``_engaged``): is it talk between people, which ends that talk? Yes, unless its speaker has only just
+    heard the agent out (``state`` active, ``last`` delivered) and nothing reads the line as said to a
+    person: "Okay, thanks." after an answer turns to nobody. It starts nothing and ends nothing."""
+    parts = addressing["parts"]
+    if addressing["humans"] or (parts and all(p["kind"][0] == "people" for p in parts)):
+        return True
+    return not any(e.get("state") == "active" and e.get("last") == "delivered" for e in engagements)
 
 
 async def route_live_line(
@@ -1379,7 +1389,7 @@ async def route_live_line(
         claimed = mine or bool(talking)  # the worker sent it as someone's conversation with an agent
         mine, floor_agent = engaged is not None, engaged or floor_agent
         if claimed and not (mine or named or wake or unclaimed):
-            to_people = True
+            to_people = unread or _said_to_people(addressing, talking)
     implied = bool(named) or wake or mine or unclaimed or (humans <= 1 and not meeting)
     picked = None  # the room judge's agent for a line among people
     if early and named:

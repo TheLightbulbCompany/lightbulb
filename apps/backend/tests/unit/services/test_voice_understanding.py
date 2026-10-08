@@ -481,7 +481,8 @@ async def test_a_meeting_implies_nobody_but_the_named_the_wake_word_and_the_floo
         ("gauge", "Can we get the conversion numbers for last quarter", "fit")
     ]
     assert tasks(await route(decide, line, said, humans=3, setting="meeting", floor="forge")) == []
-    talking = [engaged("forge")]  # its speaker is talking with Forge: the ask is the team's, and Gauge fits it
+    # its speaker is answering what Forge asked them: the ask is the team's, and Gauge fits it
+    talking = [engaged("forge", expects="reply")]
     assert tasks(await route(decide, line, said, humans=3, setting="meeting", engagements=talking))[0][0] == "gauge"
     hello = await route(decide, "morning all", jev_says(kinds=["social"]), humans=1, setting="meeting")
     assert hello["ops"]["social"] is None  # nobody greets a meeting unasked
@@ -684,30 +685,58 @@ async def test_in_a_meeting_an_unnamed_line_is_people_talk_without_evidence_howe
 
 
 @pytest.mark.parametrize(
-    "talking,theirs",
+    "talking,whose",
     [
-        (engaged(last="delivered"), True),  # they have just heard its answer: a follow-up
-        (engaged(expects="reply", last="delivered"), True),  # it asked them something
-        (engaged(expects="answer", last="paused", last_by="speaker"), True),  # they talked over it
-        (engaged(expects="answer", last="paused", last_by="other"), False),  # someone else did
-        (engaged(expects="answer", last="none"), False),  # it is working: they are talking to the others meanwhile
-        (engaged(state="suspended", why="people"), False),  # they turned to a colleague
-        (engaged(state="suspended", why="other"), False),  # another exchange came between
-        (engaged(state="suspended", why="gap"), False),
+        (engaged(expects="reply", last="delivered"), "the agent's"),  # it asked them something
+        (engaged(expects="answer", last="paused", last_by="speaker"), "the agent's"),  # they talked over it
+        # They have just heard its answer, and that is all: the line is not the agent's, and nothing says
+        # it was said to a person either. It starts nothing and their talk with the agent is not over.
+        (engaged(last="delivered"), "nobody's"),
+        (engaged(expects="answer", last="delivered"), "nobody's"),  # they heard its acknowledgement
+        (engaged(expects="answer", last="paused", last_by="other"), "people's"),  # someone else did
+        (engaged(expects="answer", last="none"), "people's"),  # it is working: they talk to the others meanwhile
+        (engaged(state="suspended", why="people"), "people's"),  # they turned to a colleague
+        (engaged(state="suspended", why="other"), "people's"),  # another exchange came between
+        (engaged(state="suspended", why="gap"), "people's"),
     ],
 )
-async def test_in_a_meeting_an_unnamed_line_is_the_agents_when_its_speaker_is_talking_with_it(decide, talking, theirs):
+async def test_in_a_meeting_an_unnamed_line_is_the_agents_when_its_speaker_is_talking_with_it(decide, talking, whose):
     got = await meet(decide, "what about Thursday morning", jev_says(kinds=["request"], p=0.55), talking)
-    if theirs:
+    if whose == "the agent's":
         assert tasks(got) == [("friday", "what about Thursday morning", "floor")] and not got["ops"]["people"]
         assert got["ops"]["say"]["kind"] == "ack"
     else:
-        assert got["ops"] == {**NOBODY, "people": True}
+        assert got["ops"] == {**NOBODY, "people": whose == "people's"} and got["agentIds"] == []
     # in-app Live does not read it: its lone speaker's line is the floor agent's either way
     live = await route(
         decide, "what about Thursday morning", jev_says(kinds=["request"]), floor="friday", engagements=[talking]
     )
     assert tasks(live) == [("friday", "what about Thursday morning", "floor")]
+
+
+@pytest.mark.parametrize("kind,p", [("request", 0.95), ("request", 0.55), ("context", 0.9), ("social", 0.9)])
+async def test_after_an_answer_the_askers_next_line_is_the_agents_only_when_it_continues_the_request(decide, kind, p):
+    """10-08 Meet: 25 s after Friday's answer its asker said the stand-up line to a colleague, the classifier
+    read it as a request, and Friday took it (`by=floor`) because she had just been heard. Having heard an
+    answer is no evidence about the next line. What is: the line continues that request (the classifier's
+    reference to it), or it answers what the agent asked."""
+    heard = engaged(last="delivered")
+    aside = await meet(decide, STAND_UP, jev_says(kinds=[kind], p=p), heard)
+    assert aside["ops"] == NOBODY and aside["agentIds"] == []  # however sure the read: no run, no word
+    to_leo = await meet(decide, STAND_UP, jev_says(kinds=["people"]), heard)
+    assert to_leo["ops"] == {**NOBODY, "people": True}  # read as said to a person: that ends their talk with it
+    follow = await meet(decide, "And what about Thursday?", jev_says(kinds=[kind], p=p, amends="c1"), heard)
+    if kind == "social":  # a remark about the answer ("Huh, okay") asks nothing: no run, and no chatter back
+        assert follow["ops"] == NOBODY
+    else:
+        assert [(r["agentId"], r["by"]) for r in follow["ops"]["requests"]] == [("friday", "follow")]
+        assert follow["ops"]["say"]["kind"] == "ack"
+    unsure = jev_says(kinds=[kind], p=p, amends="c1")
+    unsure["amends"]["probabilities"]["c1"] = vc.AMEND_P - 0.1  # a reference the classifier does not stand behind
+    assert (await meet(decide, "And what about Thursday?", unsure, heard))["ops"] == NOBODY
+    asked = engaged(expects="reply", last="delivered")  # "Do you want the annual price too?" ... "Yes, both"
+    reply = await meet(decide, "Yes, both", jev_says(kinds=["request"], p=0.6), asked)
+    assert tasks(reply) == [("friday", "Yes, both", "floor")]
 
 
 async def test_in_a_meeting_a_line_that_addresses_a_person_is_theirs_whoever_the_speaker_was_talking_with(decide):
@@ -719,7 +748,12 @@ async def test_in_a_meeting_a_line_that_addresses_a_person_is_theirs_whoever_the
     assert to_leo["ops"] == {**NOBODY, "people": True}
     # two agents, two people: the line goes with its own speaker's exchange, not the floor voice's
     mine = await meet(
-        decide, "and the week after", jev_says(kinds=["request"]), engaged("gauge"), floor="friday", mine=False
+        decide,
+        "and the week after",
+        jev_says(kinds=["request"]),
+        engaged("gauge", expects="reply"),
+        floor="friday",
+        mine=False,
     )
     assert tasks(mine) == [("gauge", "the week after", "floor")]
 

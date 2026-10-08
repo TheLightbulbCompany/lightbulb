@@ -85,6 +85,7 @@ def test_create_requires_hook_token_and_native_identity_headers(client):
 
 
 def test_create_preserves_native_body_and_uses_validated_identity_for_routing(client, monkeypatch):
+    monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "hermetic-signing-key")
     monkeypatch.setattr(settings, "PAPERCLIP_INTERNAL_URL", "http://paperclip.internal:3100")
     captured = {}
 
@@ -113,7 +114,12 @@ def test_create_preserves_native_body_and_uses_validated_identity_for_routing(cl
         },
         "request": BODY,
     }
-    assert captured["headers"] == {"Authorization": f"Bearer {GATEWAY_TOKEN}"}
+    from core.services import local_session_grants
+
+    headers = dict(captured["headers"])
+    grant = headers.pop("X-Lightbulb-Local-Session-Token")
+    assert headers == {"Authorization": f"Bearer {GATEWAY_TOKEN}"}
+    assert local_session_grants.verify(grant).origin == {"kind": "paperclip", "runId": RUN, "issueId": ISSUE}
     assert captured["timeout_s"] == 25.0  # under the 30s public-gateway ceiling, see below
     repo.resolve_owner_row.assert_awaited_once_with(OWNER)
     admin.get_agent.assert_awaited_once_with(session_cookie="admin-cookie", agent_id=AGENT)

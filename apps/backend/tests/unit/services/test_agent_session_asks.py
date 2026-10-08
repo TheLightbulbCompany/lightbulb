@@ -263,6 +263,9 @@ async def test_team_control_may_approve_an_allowed_sender_may_not_and_the_settin
         UpdateExpression="SET allowedSenders = :b",
         ExpressionAttributeValues={":b": [BOB.user_id]},
     )
+    from core.repositories import messaging_repo
+
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
     with pytest.raises(ApiProblem, match="team control"):
         await service.decide_agent_ask(BOB, sid, "request-1", "send")
     assert await service.list_agent_asks(BOB, sid) == []
@@ -281,6 +284,34 @@ async def test_team_control_may_approve_an_allowed_sender_may_not_and_the_settin
     direct = await service.agent_command(asks.grant(), sid, command(service, requestId="request-2"))
     assert not isinstance(direct, service.AgentCommandReceipt)
     assert (await service.list_resources(asks.grant(), ROOM)).sessions[0].agent_send == "direct"
+
+
+@pytest.mark.asyncio
+async def test_a_removed_teammate_with_a_live_token_cannot_answer_or_deliver(asks):
+    """Codex P1 on #3877: under team control, a former teammate whose Clerk token still names
+    the org must not list, answer, or carry an approval through delivery."""
+    from core.repositories import messaging_repo
+
+    sid = await registered()
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    await service.set_team_control(ALICE, sid, True)
+    await service.agent_command(asks.grant(), sid, command(service))
+    await service.decide_agent_ask(BOB, sid, "request-1", "send")
+    [stored] = await repo.list_commands(OWNER, sid)
+    await service.agent_command(
+        asks.grant(event="55555555-5555-4555-8555-555555555555"), sid, command(service, requestId="request-2")
+    )
+    asks.table.update_item(
+        Key={"pk": messaging_repo.owner_pk(OWNER), "sk": messaging_repo.userstream_sk(BOB.user_id)},
+        UpdateExpression="SET active = :off",
+        ExpressionAttributeValues={":off": False},
+    )
+    assert await service.list_agent_asks(BOB, sid) == []
+    with pytest.raises(ApiProblem) as refused:
+        await service.decide_agent_ask(BOB, sid, "request-2", "send")
+    assert refused.value.error.code == "LOCAL_SESSION_FORBIDDEN"
+    with pytest.raises(ApiProblem, match="owner"):
+        await service.authorize_session(service.command_caller(OWNER, stored), ROOM, sid, owner_only=True)
 
 
 @pytest.mark.asyncio

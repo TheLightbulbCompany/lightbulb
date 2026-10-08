@@ -1025,10 +1025,14 @@ async def _reachable_from_background(human: str) -> bool:
     return user_repo.sessions_reachable_from_background_work(await user_repo.get(human))
 
 
-def may_approve_agent(row: dict, user_id: str) -> bool:
+async def may_approve_agent(row: dict, user_id: str) -> bool:
     """Who may answer an agent's ask (owner review 2026-10-07): the session's owner, or anyone
-    while its owner has team control on. People let in one by one are not approvers."""
-    return user_id == row["humanUserId"] or team_control_on(row)
+    while its owner has team control on. People let in one by one are not approvers. Only a
+    current member: removal deactivates the user stream, and a Clerk token can outlive it."""
+    if not (user_id == row["humanUserId"] or team_control_on(row)):
+        return False
+    stream = await messaging_repo.get_user_stream(row["ownerId"], user_id)
+    return bool(stream and stream.get("active"))
 
 
 async def agent_may_command(auth: AgentInvocation, row: dict) -> bool:
@@ -1040,7 +1044,7 @@ async def agent_may_command(auth: AgentInvocation, row: dict) -> bool:
     if auth.requester_id == row["humanUserId"]:
         return True
     if auth.approved_by is not None:
-        return may_approve_agent(row, auth.approved_by)
+        return await may_approve_agent(row, auth.approved_by)
     return user_repo.agent_send_without_asking(await user_repo.get(row["humanUserId"]))
 
 
@@ -2060,7 +2064,7 @@ async def decide_agent_ask(
     conditional write, and only that winner admits the command; a loser gets 409 with the current
     receipt. A ``sent`` ask with no command (a crash between the two) is admitted by the next Send."""
     row, _ = await authorize_session(auth, None, session_id)
-    if not may_approve_agent(row, auth.user_id):
+    if not await may_approve_agent(row, auth.user_id):
         raise ApiProblem(
             "LOCAL_SESSION_FORBIDDEN",
             "Only the session's owner, or a teammate while team control is on, can answer this.",
@@ -2089,7 +2093,7 @@ async def decide_agent_ask(
 async def list_agent_asks(auth: AuthContext, session_id: str) -> list[AgentCommandReceipt]:
     """The asks waiting on a session, for the people who may answer them."""
     row, _ = await authorize_session(auth, None, session_id)
-    if not may_approve_agent(row, auth.user_id):
+    if not await may_approve_agent(row, auth.user_id):
         return []
     return [_ask_receipt(ask) for ask in await pending_agent_asks(row["ownerId"], row["sessionId"])]
 

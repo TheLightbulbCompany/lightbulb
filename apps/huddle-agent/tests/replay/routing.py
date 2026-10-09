@@ -41,6 +41,8 @@ ANSWERS = {
     "calendar": "Your Google Calendar isn't connected, so I can't verify what's on your calendar tomorrow. "
     "I checked the available calendar connections just now.",
     "thursday": "I can't verify Thursday either because your Google Calendar isn't connected.",
+    "sessions": "Two Claude Code sessions are running in the workspace: one is fixing the voice router and one is "
+    "writing the billing tests. That's from the workspace's session list just now.",
     "deploy": "Last night's deployment finished successfully at 7:30 PM Eastern, from GitHub just now.",
 }
 
@@ -48,6 +50,8 @@ PRICE = {"ask": "friday", "task": "what the Workspace plan costs per month", "an
 AGENTS = {"ask": "friday", "task": "how many agents come with a new workspace", "answer": "agents", "when": "agents"}
 FIVE = {"ask": "friday", "task": "five sentences on what Lightbulb does", "answer": "five"}
 CALENDAR = {"ask": "friday", "task": "what is on their calendar tomorrow", "answer": "calendar", "when": "calendar"}
+SESSIONS = {"ask": "friday", "task": "what the workspace's Claude Code sessions are doing", "answer": "sessions"}
+PIECE_ENDS = r"(summary of|are doing\.)$"  # one_turn_in_pieces: where prod's router read the turn as unfinished
 PEOPLE = {"people": True}
 GO_AHEAD = {"called": "friday", "when": "go ahead|friday"}
 
@@ -79,6 +83,18 @@ ROUTING: dict[str, dict[int, dict]] = {
     },  # fmt: skip
     "status_check": {0: PRICE, 1: {"called": "friday"}, 2: GO_AHEAD},
     "stop_mid_answer": {0: FIVE, 2: {"stop": "hush", "agent": "friday"}},
+    # prod Meet 10-09: the router's labels as logged (`voice route labels`). The second piece is a name alone and
+    # is held by the worker itself (`only_name`); every piece but the last comes back unfinished
+    # (`when`: the turn up to the third or fourth piece is unfinished; the whole turn is the request. Both say
+    # it, since a joined line is read as the scenario line that explains most of its words)
+    "one_turn_in_pieces": {
+        0: {"social": "friday", "reply": "Yes, I can hear you."},
+        1: {"social": "friday", "hold": True},
+        2: {"called": "friday", "hold": True},
+        3: {**SESSIONS, "when": PIECE_ENDS, "hold": True, "else": SESSIONS},
+        4: {**SESSIONS, "when": PIECE_ENDS, "hold": True, "else": SESSIONS},
+        5: SESSIONS,
+    },
     "trailing": {0: {"hold": True}, 1: {"hold": True}, 2: PRICE},
     "two_agents": {
         0: PRICE,

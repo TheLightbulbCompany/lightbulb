@@ -92,6 +92,7 @@ class Backend:
         unclaimed: bool = False,
         open: list[dict] = (),
         engagements: list[dict] = (),
+        turn: int | None = None,
     ) -> dict:
         """{agentId, agentIds, hold?}: agentIds empty is nobody; `hold` is an unfinished line. `humans` (people
         in the call) lets Jev pick nobody when 2+ are talking; None is the wake word. `floor`/`voiceRuns` are
@@ -99,7 +100,8 @@ class Backend:
         `setting` is "live" or "meeting"; `unclaimed`: a meeting question nobody took within UNCLAIMED_QUESTION_S.
         `open`: the call's request rows (RequestList.for_route), each with its `asker` and how far its answer
         has been said (`delivery`); `floor` may carry `mine` (understanding §4.4). `engagements`: who the speaker
-        is talking with (`Huddle._evidence`), the evidence a meeting line with no name is routed on."""
+        is talking with (`Huddle._evidence`), the evidence a meeting line with no name is routed on. `turn`: the
+        speaker's turn this line is (all of) so far: a turn said in pieces is routed again as it grows."""
         body = {
             "speakerUserId": speaker,
             "utterance": utterance,
@@ -112,6 +114,7 @@ class Backend:
             "unclaimed": unclaimed,
             "open": list(open),
             "engagements": list(engagements),
+            **({"turn": turn} if turn is not None else {}),
         }
         # understanding §4.6: a delegation may wait on this answer; a slow one is a failure like any other
         return await self._post(f"/internal/huddles/{self._room_id}/route", body, timeout=ROUTE_TIMEOUT_S)

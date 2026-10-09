@@ -576,3 +576,47 @@ async def test_an_answer_that_is_ready_is_said_and_no_status_line_with_it():
     await says(h, P1, "Forge, go ahead.")
     await pause(h, clock)
     assert says_of(lives[-1]) == [("say", "Three PRs are open.")]
+
+
+async def test_a_named_line_the_router_calls_unfinished_asks_nothing_until_its_rest_comes():
+    """10-09 prod Meet: "Hey, Friday. That's awesome, but can you actually give me a summary of" came back
+    `hold` and was made a request all the same; its rest made two more. Unfinished means wait, also by name."""
+    h, room, backend, lives, clock, log = await per_person()
+    backend.route_extra = {**ops([("forge", "give me a summary of", "name")]), "hold": True}
+    await says(h, P1, "Forge, can you actually give me a summary of")
+    assert h._requests.items == [] and backend.turns == [], "an unfinished turn starts nothing"
+    assert all(("say",) != c[:1] for live in lives for c in live.calls), "and says nothing"
+    backend.route_extra = ops([("forge", "summarise my open PRs", "name")])
+    await says(h, P1, "my open PRs.")
+    assert backend.routes[-1][1] == "Forge, can you actually give me a summary of my open PRs.", "routed once, whole"
+    assert [r.task for r in h._requests.items] == ["summarise my open PRs"]
+
+
+async def test_more_of_a_turn_that_already_asked_amends_its_request_and_is_not_acknowledged_again():
+    """A piece that goes straight on from a routed turn is the same turn: routed again whole, its request is that
+    row, amended. Not a second run, and not a second "on it"."""
+    h, room, backend, lives, clock, log = await per_person()
+    backend.steer = True  # its run takes the words (a run that already ended makes a row of them: `_steer_row`)
+    h.on_speech(P1, True)
+    clock.t += 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "summarise what my sessions are doing", "name")])
+    await says(h, P1, "Forge, summarise what my sessions are doing.")
+    (row,) = h._requests.items
+    acks = [u for u in h._ledger if u.kind == "ack"]
+    h.on_speech(P1, True)  # 0.5 s later they go on
+    clock.t += 0.5 + 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "the sessions of the whole workspace", "name")])
+    await says(h, P1, "or the sessions of the workspace.")
+    assert backend.routes[-1][1] == "Forge, summarise what my sessions are doing. or the sessions of the workspace."
+    assert h._requests.items == [row] and row.status in h_mod.OPEN, "no second request"
+    assert backend.late_steers[-1]["steerRunId"] == row.run_id, "the words went into its run"
+    assert [u for u in h._ledger if u.kind == "ack"] == acks, "acknowledged once"
+    clock.t += 5  # a later line, after a real pause, is a turn of its own
+    h.on_speech(P1, True)
+    clock.t += 1
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "check the deploy", "name")])
+    await says(h, P1, "Forge, also check the deploy.")
+    assert len(h._requests.items) == 2

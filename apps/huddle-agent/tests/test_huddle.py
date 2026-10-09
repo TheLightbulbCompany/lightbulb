@@ -136,6 +136,7 @@ class FakeBackend:
         unclaimed=False,
         open=(),
         engagements=(),
+        turn=None,
     ):
         self.routes.append((speaker, utterance, transcript))
         self.route_floors = getattr(self, "route_floors", []) + [floor]

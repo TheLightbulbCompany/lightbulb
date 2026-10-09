@@ -1140,6 +1140,26 @@ describe("background subagents", () => {
     }
   });
 
+  it("takes no snapshot until the subagents option turns on, and none again after it turns off", async () => {
+    vi.useFakeTimers();
+    try {
+      messaging.listSubagents.mockResolvedValue({ subagents: [] });
+      const { result, rerender } = renderHook(({ on }) => useRooms(platform(), { subagents: on }), { wrapper, initialProps: { on: false } });
+      act(() => result.current.selectRoom(room.roomId));
+      await act(() => vi.advanceTimersByTimeAsync(10_000));
+      expect(messaging.listSubagents).not.toHaveBeenCalled();
+      rerender({ on: true });
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      expect(messaging.listSubagents).toHaveBeenCalledTimes(1);
+      rerender({ on: false });
+      act(() => result.current.subagentsPollVisible(true));
+      await act(() => vi.advanceTimersByTimeAsync(10_000));
+      expect(messaging.listSubagents).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("skips a poll tick while the previous snapshot is still in flight", async () => {
     vi.useFakeTimers();
     try {

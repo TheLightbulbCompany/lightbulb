@@ -53,7 +53,7 @@ export type { ApiCallOptions, ApiMethods } from "./api/client";
 export { accumulateStreamText } from "./live/streamText";
 export { AppSyncEventsClient, framesChannelFor } from "./live/appsyncEvents";
 export { useLiveEvents } from "./live/useLiveEvents";
-export type { CallTurnFrame, ChatIncomingMessage, LiveEvent, LiveEventOf, MessagePush, RoomActivityChanged, RoomBrowserFrame, SessionAttention, SessionScreen, SessionTyping } from "./live/types";
+export type { CallTurnFrame, ChatIncomingMessage, LiveEvent, LiveEventOf, MessagePush, RoomActivityChanged, RoomBrowserFrame, RoomSubagentEvent, SessionAttention, SessionScreen, SessionTyping } from "./live/types";
 export { applyRoomActivity, pruneRoomActivity, roomLiveLine, typingLine } from "./messaging/roomActivity";
 export type { RoomActivity } from "./messaging/roomActivity";
 export { createMessagingClient } from "./messaging/client";
@@ -314,3 +314,12 @@ export {
 export type { ContentBlock, HistoryMessage } from "./chat/history";
 export { sessionIdFromKey } from "./chat/sessionKey";
 export * from "./voice/words";
+export {
+  EMPTY_ROOM_SUBAGENTS,
+  applySubagentEvent,
+  liveSubagents,
+  pruneFinishedSubagents,
+  reconcileSubagentSnapshot,
+  subagentActivity,
+} from "./messaging/subagents";
+export type { RoomSubagents, SubagentProgress, SubagentStatus } from "./messaging/subagents";

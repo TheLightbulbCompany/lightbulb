@@ -127,6 +127,7 @@ export type LiveEventType =
   | "room.activity.changed"
   | "room.run.frame"
   | "room.browser.frame"
+  | "room.subagent.event"
   | "room.metadata.changed"
   | "workspace.sessions.changed"
   | "workspace.access.removed"
@@ -154,6 +155,7 @@ export const LIVE_EVENT_TYPES: ReadonlySet<string> = new Set<LiveEventType>([
   "room.activity.changed",
   "room.run.frame",
   "room.browser.frame",
+  "room.subagent.event",
   "room.metadata.changed",
   "workspace.sessions.changed",
   "workspace.access.removed",
@@ -249,6 +251,11 @@ export type RoomRunFrame = { roomId: string; agentId: string; runId: string; thr
  * have the one live view. `w`x`h` is the tab/screen's CSS size: clicks are sent in it. `tier`
  * distinguishes a Mac cast's sharp view frames (its own `/frames` sibling channel) from its
  * low-rate thumbnail (the room channel); absent means the legacy AgentCore browser-tab frame. */
+export type RoomSubagentEvent = {
+  roomId: string;
+  agentId: string;
+  events: { type: string; seq: number; payload: Record<string, unknown> }[];
+};
 export type RoomBrowserFrame = { roomId: string; agentId: string; runId: string; seq: number; jpegBase64: string; w: number; h: number; tier?: "view" | "thumb" };
 export type RoomMetadataChanged = { roomId: string; roomRevision: number };
 export type RoomMemberUpdated = { roomId: string };
@@ -303,6 +310,7 @@ export type LiveEvent =
   | LiveEventEnvelope<"room.activity.changed", RoomActivityChanged>
   | LiveEventEnvelope<"room.run.frame", RoomRunFrame>
   | LiveEventEnvelope<"room.browser.frame", RoomBrowserFrame>
+  | LiveEventEnvelope<"room.subagent.event", RoomSubagentEvent>
   | LiveEventEnvelope<"room.metadata.changed", RoomMetadataChanged>
   | LiveEventEnvelope<"workspace.sessions.changed", { humanUserId: string; transcript?: true }>
   /** You were removed from this workspace: drop its live subscriptions (user channel only). */
@@ -449,6 +457,9 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
       return str(payload.roomId) && str(payload.agentId) && str(payload.runId) && num(payload.seq)
         && str(payload.jpegBase64) && num(payload.w) && num(payload.h)
         && (payload.tier === undefined || payload.tier === "view" || payload.tier === "thumb");
+    case "room.subagent.event":
+      return str(payload.roomId) && str(payload.agentId) && Array.isArray(payload.events)
+        && payload.events.every((e: unknown) => isObj(e) && str(e.type) && typeof e.seq === "number" && isObj(e.payload));
     case "room.metadata.changed":
     case "room.access.removed":
       return str(payload.roomId) && num(payload.roomRevision);

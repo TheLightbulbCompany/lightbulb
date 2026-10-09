@@ -73,6 +73,10 @@ test('the band counts watchers the workspace did not name (an Anyone link shows 
   ] }
   expect(bandLine(s)).toBe('● Live · 2 watching · 1 typing')
   expect(bandRuns(s).some(r => r.color)).toBe(false)
+  // People on the link's page are a count after it; with no teammate watching, the count alone.
+  expect(bandLine({ ...s, linkViewers: 3 })).toBe('● Live · 2 watching · 1 typing · 3 via link')
+  expect(bandLine({ ...base, linkViewers: 3 })).toBe('● Live · 3 via link')
+  expect(bandLine({ ...base, linkViewers: 0 })).toBe('● Live in Lightbulb')
 })
 
 test('the band draws watcher names and the asker in their colors', async ($, on) => {

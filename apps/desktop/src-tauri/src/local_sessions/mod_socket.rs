@@ -128,9 +128,9 @@ fn owed_stops(scope: &Path) -> Vec<(String, String, String)> {
 }
 
 pub(super) fn state_json(sid: &str, terminal: Option<&str>, presence: Option<presence::Entry>, approval_waiting: bool) -> Value {
-    let p = presence.unwrap_or(presence::Entry { generation: String::new(), paused: false, viewers: vec![], join_requests: vec![], at: 0 });
+    let p = presence.unwrap_or(presence::Entry { generation: String::new(), paused: false, viewers: vec![], join_requests: vec![], link_viewers: 0, at: 0 });
     json!({"sessionId": sid, "paused": p.paused, "terminal": terminal,
-           "viewers": p.viewers, "joinRequests": p.join_requests, "approvalWaiting": approval_waiting})
+           "viewers": p.viewers, "linkViewers": p.link_viewers, "joinRequests": p.join_requests, "approvalWaiting": approval_waiting})
 }
 
 pub(super) fn decision_body(sid: &str, generation: &str, body: &Value) -> Result<Value> {

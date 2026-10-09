@@ -211,10 +211,19 @@ fn asks(said: &str) -> bool {
 
 /// `said`, without spaces, is all a band says before its button: one of BAND_LEADS, and live the
 /// viewers' names, "watching" and, when someone types, "·", their names and "typing".
+/// A live band ends with "· N via link" while people watch on the session's public link; with no
+/// teammate watching, that count is all it says after "● Live".
 fn opens_band(said: &str) -> bool {
+    let (said, by_link) = match said.rsplit_once('·') {
+        Some((before, count)) if count.strip_suffix("vialink").is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit())) => (before, true),
+        _ => (said, false),
+    };
     BAND_LEADS.iter().map(|lead| squash(lead)).any(|lead| {
         if !lead.ends_with('·') {
-            return said == lead;
+            return !by_link && said == lead;
+        }
+        if by_link && lead.strip_suffix('·') == Some(said) {
+            return true;
         }
         let Some((names, typing)) = said.strip_prefix(lead.as_str()).and_then(|rest| rest.split_once("watching")) else { return false };
         !names.is_empty() && !typing.contains("watching") && (typing.is_empty() || typing.strip_prefix('·').and_then(|rest| rest.strip_suffix("typing")).is_some_and(|names| !names.is_empty()))
@@ -1163,6 +1172,7 @@ mod tests {
         }
         // Every band the mod draws today goes the same way.
         for band in ["● Live in Lightbulb [ Stop sharing ] ctrl+x tab, then p", "● Live · Ada watching [ Stop sharing ]", "● Shared in Lightbulb [ Stop sharing ]",
+            "● Live · 3 via link [ Stop sharing ] ctrl+x tab, then p", "● Live · 2 watching · 1 typing · 3 via link [ Stop sharing ] ctrl+x tab, then p",
             "○ Only you [ Share to Lightbulb ] ctrl+x tab, then s", "○ Stopping… teammates may still see earlier output", "○ Press ← once to go live"] {
             let screen = format!("the answer\r\n\r\n{band}\r\n\r\n> ");
             assert_eq!(kept(screen.as_str(), false).0, rows(&["the answer", "", "", ">"]), "{band}");
@@ -1185,6 +1195,9 @@ mod tests {
         // Review of #3878: nothing caps the viewers the mod names, so the button can be any number of rows down.
         let many = format!("the answer\r\n● Live · {}Zed watching\r\n[ Pause ] ctrl+x tab, then p\r\n\r\n> ", "Bartholomew Featherstonehaugh,\r\n".repeat(7));
         assert_eq!(kept_at(40, many.as_str(), false).0, rows(&["the answer", "", ">"]));
+        // The count of link viewers wraps in the text's column like the names do.
+        let by_link = "the answer\r\n● Live · 2 watching  [ Pause ] ctrl+x tab,          [-]\r\n· 3 via link                    then p\r\n\r\n> ";
+        assert_eq!(kept_at(60, by_link, false).0, rows(&["the answer", "", ">"]));
         let asked = "● Sharing is not a lead\r\n○ Sharing paused [ Resume\r\nsharing ]\r\nBartholomew Featherstonehaugh asked to\r\njoin [ Allow ] [ Decline ] ctrl+x tab,\r\nthen a or d · or click\r\n> ";
         assert_eq!(kept_at(40, asked, false).0, rows(&["● Sharing is not a lead", ">"]));
         // Prod 2026-10-08 (desktop 0.4.687, 60 columns): the request's parts wrap each in its own column, and

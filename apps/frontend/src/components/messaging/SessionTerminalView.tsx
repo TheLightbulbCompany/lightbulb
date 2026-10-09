@@ -108,6 +108,8 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
   watchNow.current = watch;
   // The backend refused a new viewer: this session is full (LOCAL_SESSION_VIEWERS_FULL), with its message.
   const [full, setFull] = useState<string | null>(null);
+  // While people watch on the "Anyone with the link" page: how many, and how many teammates. Never who.
+  const [audience, setAudience] = useState("");
   const screenKey = `${session.sessionId}:${kept}`;
   // The frames channel is held until access is lost (403/404 or a full session on a watch). A
   // refused subscribe is released and claimed again, 1 s doubling to 15 s, so the socket asks
@@ -155,7 +157,10 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     if (!ready) return;
     let refused = false;
     setFull(null);
-    const ping = (fresh: boolean) => void watch(session.sessionId, fresh).catch((e) => {
+    const ping = (fresh: boolean) => void watch(session.sessionId, fresh).then((counts) => {
+      const { watching = 0, viaLink = 0 } = (counts ?? {}) as { watching?: number; viaLink?: number };
+      setAudience(viaLink ? [watching && `${watching} watching`, `${viaLink} via link`].filter(Boolean).join(" · ") : "");
+    }).catch((e) => {
       if (!(e instanceof ApiError)) return;
       // The session already has its most live viewers: say so, and stop asking (no retry loop).
       const full = e.status === 409 && (e.body as { code?: string } | null)?.code === "LOCAL_SESSION_VIEWERS_FULL";
@@ -357,6 +362,7 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
   return <>
     <div className="session-terminal-view session-terminal-frame" data-live={live} role="region" aria-label={canType ? "Live terminal" : "Live terminal (view only)"}>
       <div className="session-terminal-size" role="group" aria-label="Terminal size">
+        {audience && <span className="session-terminal-hint">{audience}</span>}
         {wide && <span className="session-terminal-hint">Wider than this pane · scroll sideways or choose Fit</span>}
         <button type="button" aria-pressed={size === "readable"} title="Text at a readable size; scroll to see the rest" onClick={() => choose("readable")}>Readable</button>
         <button type="button" aria-pressed={size === "fit"} title="The whole screen at once" onClick={() => choose("fit")}>Fit</button>

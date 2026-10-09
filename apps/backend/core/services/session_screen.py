@@ -69,7 +69,7 @@ async def _still_a_member(row: dict, user: str) -> None:
         raise sessions.ApiProblem("LOCAL_SESSION_FORBIDDEN", "You are no longer in this workspace.")
 
 
-async def watch(auth: sessions.Caller, session_id: str, mounted: bool = False) -> None:
+async def watch(auth: sessions.Caller, session_id: str, mounted: bool = False) -> dict:
     """A person has this running session's terminal on screen. Humans who can read it only:
     `authorize_session` refuses agents on the roomless path, and no room id is accepted here.
 
@@ -142,6 +142,15 @@ async def watch(auth: sessions.Caller, session_id: str, mounted: bool = False) -
     # After the nudge: the picture matters more than the name. The owner is never listed.
     if fresh and row.get("endedAt") is None and auth.user_id != row["humanUserId"]:
         await session_presence.push(row)
+    # What the view says about its audience, while people watch by link: counts only. The owner
+    # is not counted, as on the band. No link viewer (nearly every session): no read, and zeros.
+    via_link = await session_presence.link_viewers(row, now)
+    members = {
+        r["userId"]
+        for r in (await store._query(key["pk"], begins_with="VIEWER#") if via_link else ())
+        if int(r.get("expiresAt", 0)) > now and r["userId"] != row["humanUserId"]
+    }
+    return {"watching": len(members), "viaLink": via_link}
 
 
 async def tell_mac(row: dict, now: int, fresh: bool) -> None:

@@ -45,6 +45,10 @@ pub(super) struct Entry {
     pub paused: bool,
     pub viewers: Vec<Viewer>,
     pub join_requests: Vec<JoinRequest>,
+    /// How many people watch on the session's "Anyone with the link" page: a count, never who
+    /// (0 from an older backend, and whenever the link is not public).
+    #[serde(default)]
+    pub link_viewers: u32,
     /// Server milliseconds when the backend read the session row (0 from an older backend). The
     /// ack and the push are independent posts that can arrive in either order: the newest read
     /// wins, never the latest arrival.
@@ -137,9 +141,9 @@ pub(super) fn pending(sid: &str, generation: &str, user: &str, request: &str) ->
 pub(super) fn decided(sid: &str, payload: &Value, session: &Value) {
     let Ok(mut map) = PRESENCE.lock() else { return };
     let generation = payload["generation"].as_str().unwrap_or("");
-    let e = map.entry(sid.to_owned()).or_insert_with(|| Entry { generation: generation.to_owned(), paused: false, viewers: vec![], join_requests: vec![], at: 0 });
+    let e = map.entry(sid.to_owned()).or_insert_with(|| Entry { generation: generation.to_owned(), paused: false, viewers: vec![], join_requests: vec![], link_viewers: 0, at: 0 });
     if e.generation != generation {
-        *e = Entry { generation: generation.to_owned(), paused: false, viewers: vec![], join_requests: vec![], at: e.at };
+        *e = Entry { generation: generation.to_owned(), paused: false, viewers: vec![], join_requests: vec![], link_viewers: 0, at: e.at };
     }
     match payload["decision"].as_str() {
         Some("allow" | "decline") => e.join_requests.retain(|r| Some(r.request_id.as_str()) != payload["requestId"].as_str()),

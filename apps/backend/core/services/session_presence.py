@@ -1,7 +1,8 @@
 """What the owner's Mac shows in its Claude terminal about one shared session (spec
 2026-10-04-session-sharing-mod §4.2): who watches, who may type, who is typing, pending join
-requests, paused. A new request and a new viewer are pushed at once so the band shows them;
-everything else (a viewer leaving, typing) rides the heartbeat ack."""
+requests, paused, and how many watch by an "Anyone" link (a count, never who). A new request and
+a new viewer (by link too) are pushed at once so the band shows them; everything else (a viewer
+leaving, typing) rides the heartbeat ack."""
 
 from __future__ import annotations
 
@@ -53,6 +54,21 @@ def _ms() -> int:
     return int(_clock() * 1000)
 
 
+async def link_viewers(row: dict, now: int) -> int:
+    """How many people watch on the "Anyone with the link" page right now: the unexpired seats on
+    the link's CURRENT channel, so 0 the moment the link is narrowed. A number and nothing else:
+    nobody, the owner included, learns anything more about a link viewer."""
+    from core.services.session_links import MAX_LINK_VIEWERS, public_pk  # imports this module
+
+    public = sessions.public_id(row.get("shareLink"), row)
+    if not public or row.get("unshared") or row.get("endedAt") is not None:
+        return 0
+    # ponytail: one bounded read. `viewing` drops lapsed seats whenever it gives out a new one, so
+    # the channel holds about the cap's worth of rows; past that this counts low, never high.
+    seats = await store._query(public_pk(public), begins_with="VIEWER#", limit=MAX_LINK_VIEWERS + 1)
+    return min(sum(int(r.get("expiresAt", 0)) > now for r in seats), MAX_LINK_VIEWERS)
+
+
 async def entry(row: dict, at: int) -> dict:
     """`at`: server milliseconds taken before `row` was read. The Mac keeps the entry with the
     greatest `at`, so an ack and a push that arrive out of order cannot undo a newer read."""
@@ -81,6 +97,7 @@ async def entry(row: dict, at: int) -> dict:
         "generation": row["generation"],
         "at": at,
         "paused": bool(row.get("unshared")),
+        "linkViewers": await link_viewers(row, now),
         "viewers": [
             {
                 "userId": u,
@@ -120,7 +137,7 @@ async def ack_with_presence(ack: dict, owner: str, session_ids: list[str]) -> di
         rows = [r for r in await repo.get_sessions(owner, session_ids) if r and r.get("endedAt") is None]
         # One frame's sessions concurrently: each entry is a bounded read or two (viewers, ask slots).
         for e in await asyncio.gather(*(entry(row, read_at) for row in rows)):
-            if e["viewers"] or e["joinRequests"] or e["paused"]:
+            if e["viewers"] or e["linkViewers"] or e["joinRequests"] or e["paused"]:
                 out.append(e)
     except Exception:  # noqa: BLE001
         logger.warning("Session presence unavailable")

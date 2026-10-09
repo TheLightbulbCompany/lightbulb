@@ -389,7 +389,7 @@ async def viewing(token: str, lease: str | None, fresh: bool, retake: bool = Fal
     """A link holder has the terminal on screen: every 15 s, no sign-in. The token is checked on
     every call, so a link that stopped being public refuses the next renewal."""
     from core.config import settings
-    from core.services import session_screen
+    from core.services import session_presence, session_screen
 
     row, link, _ = await resolve(None, token)
     public = sessions.public_id(link, row)
@@ -408,7 +408,7 @@ async def viewing(token: str, lease: str | None, fresh: bool, retake: bool = Fal
         return {"pk": public_pk(public), "sk": f"VIEWER#{sessions._token_hash(secret)}"}
 
     watched = {"pk": public_pk(public), "sk": "WATCHED"}
-    renewed = False
+    renewed = seated = False
     held = lease.partition(".")[2] if lease and lease.startswith(public + ".") else ""
     if held:
         # `retake`: the viewer is about to connect, and a lease connects and subscribes once (the
@@ -457,6 +457,7 @@ async def viewing(token: str, lease: str | None, fresh: bool, retake: bool = Fal
         secret = secrets.token_urlsafe(32)
         lease = f"{public}.{secret}"
         await run_in_thread(table.put_item, Item={**key_of(secret), "expiresAt": expires})
+        seated = True
     # One row says whether anyone watches by link, so `forward` reads one item per frame. It
     # outlives its viewers by CHANNEL_MEMORY_S, and with it the channel's seat count.
     await run_in_thread(
@@ -484,6 +485,9 @@ async def viewing(token: str, lease: str | None, fresh: bool, retake: bool = Fal
                 raise
             fresh = False
     await session_screen.tell_mac(row, now, fresh)
+    if seated:
+        # The owner's band counts the new link viewer now, not at the next heartbeat ack.
+        await session_presence.push(row)
     return Viewing(
         lease=lease,
         channel=f"/pub/{public}",

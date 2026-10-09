@@ -289,12 +289,20 @@ class SessionViewingRequest(ContractModel):
     fresh: bool = False
 
 
-@router.post("/messaging/sessions/{session_id}/viewing", status_code=204)
+class SessionWatchers(ContractModel):
+    via_link: int  # people on its "Anyone with the link" page: a count, never who
+    watching: int  # workspace members with the terminal on screen, its owner aside; counted only while via_link > 0
+
+
+@router.post("/messaging/sessions/{session_id}/viewing", response_model=SessionWatchers)
 async def watch_local_session(
     session_id: str, body: SessionViewingRequest | None = None, auth: AuthContext = Depends(get_human_session)
 ):
-    """A person keeps a running session's live terminal coming: every 15 s while it is on screen."""
-    await session_screen.watch(auth, session_id, mounted=bool(body and body.fresh))
+    """A person keeps a running session's live terminal coming: every 15 s while it is on screen.
+    Answers with how many people watch it."""
+    return SessionWatchers.model_validate(
+        await session_screen.watch(auth, session_id, mounted=bool(body and body.fresh))
+    )
 
 
 @router.post("/messaging/sessions/{session_id}/input", status_code=204)

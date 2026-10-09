@@ -8,6 +8,8 @@ export type SessionState = {
   paused: boolean
   terminal: 'held' | 'attach' | null
   viewers: Viewer[]
+  /** People on the session's "Anyone with the link" page: a count, never who. Absent from an older app. */
+  linkViewers?: number
   joinRequests: JoinRequest[]
   approvalWaiting: boolean
   /** The teammate whose keys were the live terminal's last input; absent when the owner's were. */

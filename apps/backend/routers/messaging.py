@@ -1130,6 +1130,57 @@ async def steer_run(run_id: str, request: SteerRunRequest, auth: AuthContext = D
     raise ApiProblem("RUNTIME_UNAVAILABLE", "The runtime is unavailable.", retryable=True, retry_after=3)
 
 
+async def _subagent_scope(auth: AuthContext, room_id: str, agent_id: str | None = None) -> str:
+    owner_id = resolve_owner_id(auth)
+    await service.require_room_member(owner_id, auth.user_id, room_id)
+    if agent_id is not None:
+        agent_id = service.validate_uuid(agent_id, label="agent ID")
+        if await messaging_repo.get_member(room_id, "agent", agent_id) is None:
+            raise ApiProblem("SUBAGENT_NOT_FOUND", "That agent is not in this room.")
+    return owner_id
+
+
+async def _subagent_control_gate(auth: AuthContext, owner_id: str, room_id: str, agent_id: str) -> None:
+    gate = await chat_gate.gate_chat(
+        user_id=auth.user_id, owner_id=owner_id, session_key=subagents.session_key(room_id, agent_id)
+    )
+    if gate.get("blocked"):
+        raise ApiProblem("RUN_NOT_ACTIVE", gate.get("message", "This workspace cannot act on agents right now."))
+    await container_repo.touch_last_interactive(owner_id)
+
+
+@router.get("/messaging/rooms/{room_id}/subagents")
+async def list_room_subagents(room_id: str, auth: AuthContext = Depends(get_current_user)):
+    owner_id = await _subagent_scope(auth, room_id)
+    return await subagents.list_for_room(owner_id, room_id)
+
+
+@router.get("/messaging/rooms/{room_id}/agents/{agent_id}/subagents/{subagent_id}/tail")
+async def tail_subagent(room_id: str, agent_id: str, subagent_id: str, auth: AuthContext = Depends(get_current_user)):
+    owner_id = await _subagent_scope(auth, room_id, agent_id)
+    return await subagents.tail(owner_id, room_id, agent_id, subagent_id)
+
+
+@router.post("/messaging/rooms/{room_id}/agents/{agent_id}/subagents/{subagent_id}/steer")
+async def steer_subagent(
+    room_id: str,
+    agent_id: str,
+    subagent_id: str,
+    request: SteerRunRequest,
+    auth: AuthContext = Depends(get_current_user),
+):
+    owner_id = await _subagent_scope(auth, room_id, agent_id)
+    await _subagent_control_gate(auth, owner_id, room_id, agent_id)
+    return await subagents.steer(owner_id, room_id, agent_id, subagent_id, request.text)
+
+
+@router.post("/messaging/rooms/{room_id}/agents/{agent_id}/subagents/{subagent_id}/stop")
+async def stop_subagent(room_id: str, agent_id: str, subagent_id: str, auth: AuthContext = Depends(get_current_user)):
+    owner_id = await _subagent_scope(auth, room_id, agent_id)
+    await _subagent_control_gate(auth, owner_id, room_id, agent_id)
+    return await subagents.stop(owner_id, room_id, agent_id, subagent_id)
+
+
 @router.post(
     "/internal/messaging/agent-messages/{owner_id}",
     response_model=AgentMessageReceiptResponse,

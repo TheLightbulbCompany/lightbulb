@@ -530,6 +530,10 @@ impl Host {
                     mirror.ended_at = None;
                     mirror.ended_at_ms = None;
                     mirror.ended_reason = None;
+                    // It runs again: an End asked of the run before says nothing about this one's end.
+                    if let Some(session) = &mirror.session_id {
+                        crate::holder::manager::end_asked_forget(session);
+                    }
                     if native.provider == "codex" && native.status == "idle" {
                         // The turn completed between discovery sweeps: upload it, then
                         // finish the session instead of leaving a closed thread live.
@@ -1926,6 +1930,9 @@ impl Host {
                             recovering_ended.remove(&key);
                             let before=serde_json::to_value(&*mirror).map_err(|e|e.to_string())?;
                             mirror.ended_sent = true;
+                            if let Some(session) = &mirror.session_id {
+                                crate::holder::manager::end_asked_forget(session);
+                            }
                             persist_changed(&self.dir,&key,mirror,&before)?;
                         },
                         Some("local.session.events.ack") => {
@@ -2216,7 +2223,11 @@ impl Host {
         // Only this Mac's own human ends a session, and only one whose process is its own: one
         // Lightbulb holds, or a Claude (a background session is one process too, and Claude's
         // daemon stops it when asked). A Codex app or daemon process hosts many conversations.
-        if cmd.kind == "end" && (!cmd.own || (native.holder.is_none() && native.provider != "claude")) {
+        // A background session is stopped by its job id alone, never by a signal to a pid the
+        // daemon hosts: one whose id is not a job id (also one verification dropped) is refused.
+        let job = native.job.as_deref().or(mirror.native.job.as_deref());
+        let no_job_id = job.is_some_and(|job| crate::holder::manager::attach_provider(job) != Some("claude"));
+        if cmd.kind == "end" && (!cmd.own || (native.holder.is_none() && (native.provider != "claude" || no_job_id))) {
             *why = "this session's process is not its own to end";
             return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
         }
@@ -2268,10 +2279,14 @@ impl Host {
             // by `claude stop`, which keeps its conversation. The mirror then reports the end. The
             // check just above proved this pid is still the process that was verified.
             if native.holder.is_none() {
-                // No holder to ask (`manager::end` notes its own): the end that follows was asked for.
+                // No holder to ask (`manager::end` notes its own): the end that follows was asked
+                // for. Noted before the stop, which can end it before it returns; forgotten below
+                // when no stop was sent.
                 crate::holder::manager::end_asked_now(&cmd.session_id);
             }
-            let sent = match (native.holder.clone(), native.job.as_deref()) {
+            // ponytail: `claude stop` is awaited here, on the relay loop, for up to 5 s (a holder's
+            // End for up to 2 s): no heartbeat goes meanwhile. Off-loop when that is ever seen.
+            let sent = match (native.holder.clone(), job) {
                 (Some(id), _) => tokio::task::spawn_blocking(move || crate::holder::manager::list().into_iter().find(|h| h.id == id)
                     .map(|holder| crate::holder::manager::end(&holder)).is_some()).await.unwrap_or(false),
                 (None, Some(job)) => match provider_program(&self.home, "claude") {
@@ -2280,6 +2295,9 @@ impl Host {
                 },
                 (None, None) => unsafe { libc::kill(native.process.pid as libc::pid_t, libc::SIGTERM) == 0 },
             };
+            if !sent && native.holder.is_none() {
+                crate::holder::manager::end_asked_forget(&cmd.session_id);
+            }
             return journal.finish(&cmd.session_id, &cmd.request_id, sent.then(|| cmd.request_id.clone()), false);
         }
         if live {
@@ -3273,6 +3291,27 @@ pub(super) mod tests {
         assert_eq!(fs::read_to_string(bin.join("claude.args")).unwrap().trim(), "stop 1234abcd");
         assert!(crate::holder::manager::end_asked(JOB).is_some());
         assert!(child.try_wait().unwrap().is_none(), "no signal: Claude's daemon stops its own session");
+
+        // Refused, with no stop, no signal and no ask recorded: a teammate's End, an id that is
+        // not a job id, and a stop Claude did not carry out (not applied: it runs on).
+        crate::holder::manager::end_asked_forget(JOB);
+        fs::remove_file(bin.join("claude.args")).unwrap();
+        let mut theirs = command("r4", "end", Value::Null, 2);
+        theirs.session_id = JOB.into();
+        theirs.own = false;
+        assert_eq!(host.command(&theirs, Some(&anchor)).await.unwrap().outcome, "rejected");
+        host.mirrors.get_mut("job-end").unwrap().native.job = Some("../../x".into());
+        let mut forged = command("r5", "end", Value::Null, 3);
+        forged.session_id = JOB.into();
+        assert_eq!(host.command(&forged, Some(&anchor)).await.unwrap().outcome, "rejected");
+        assert!(!bin.join("claude.args").exists() && crate::holder::manager::end_asked(JOB).is_none());
+        host.mirrors.get_mut("job-end").unwrap().native.job = Some("1234abcd".into());
+        fs::write(bin.join("claude"), "#!/bin/sh\nexit 1\n").unwrap();
+        let mut failed = command("r6", "end", Value::Null, 4);
+        failed.session_id = JOB.into();
+        assert_ne!(host.command(&failed, Some(&anchor)).await.unwrap().outcome, "applied");
+        assert!(crate::holder::manager::end_asked(JOB).is_none(), "a later crash is not an end its person asked for");
+        assert!(child.try_wait().unwrap().is_none());
         child.kill().unwrap();
         child.wait().unwrap();
     }
@@ -3344,8 +3383,11 @@ pub(super) mod tests {
         mirror.session_id = Some("5eed0006-5e55-4000-8000-000000000006".into());
         mirror.registration.acknowledged = Some(known.clone());
         mirror.ended_sent = false;
+        // Its person had asked the run before to end (End): that says nothing about this one's end.
+        crate::holder::manager::end_asked_now("5eed0006-5e55-4000-8000-000000000006");
         host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
         assert_ne!(host.mirrors[&key].generation, known, "revived under a generation that never registers");
+        assert!(crate::holder::manager::end_asked("5eed0006-5e55-4000-8000-000000000006").is_none(), "its next end is a plain exit");
         host.end_session(&key, "exited").unwrap();
         let (_, frame) = host.ended_frame(&mut BTreeSet::new()).unwrap().expect("its end is told");
         assert_eq!((frame["type"].as_str(), frame["generation"].as_str()), (Some("local.session.ended"), Some(known.as_str())));

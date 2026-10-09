@@ -182,10 +182,11 @@ fn holder_end(id: &str) -> Option<u64> {
 /// next pass has asked the holder (up to PROBE_SOON and an `index` later): a viewer waits that
 /// long for the kept picture. A pass already under way may still drop it; the one after finds it.
 pub(super) fn holder_ended(id: &str, clean: bool) {
+    // How it left first: the relay loop must never read the end as known and not yet clean.
+    note_clean(id, clean);
     if let Ok(mut at) = ENDS.at.lock() {
         at.entry(id.to_owned()).or_insert_with(now_ms);
     }
-    note_clean(id, clean);
     ENDED_NOW.store(true, SeqCst);
 }
 
@@ -210,6 +211,7 @@ fn ask_holder(id: &str) -> Option<u64> {
     let socket = manager::socket_dir().join(format!("{id}.sock"));
     match ENDS.get(id) {
         Some(at) => UnixStream::connect(&socket).ok().map(|_| at),
+        // (`note_clean` before `refresh` stores the end, for the same reason as in `holder_ended`.)
         None => manager::ended(&socket).map(|(at, clean)| {
             note_clean(id, clean);
             at

@@ -81,6 +81,14 @@ pub fn end_asked_now(id: &str) {
     }
 }
 
+/// That ask is over: the stop was never sent, its end was told, or the session runs again. An
+/// end after this is not one its person asked for.
+pub fn end_asked_forget(id: &str) {
+    if let Ok(mut asked) = END_ASKED.lock() {
+        asked.remove(id);
+    }
+}
+
 /// End the session a holder runs and keep its last picture: the holder ends its provider itself
 /// (END) and then shows the final screen, as after `/exit`. A holder from a build before END is
 /// stopped, as End always did; its screen goes with it (false). Blocks for up to 2 s.
@@ -437,6 +445,29 @@ mod tests {
                 conn.write_all(&encode(HELLO, facts.to_string().as_bytes())).unwrap();
             });
             assert_eq!(hello(&path).is_some(), claimed == std::process::id());
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn holder_ended_says_its_provider_left_by_itself_only_for_status_zero() {
+        use std::os::unix::net::UnixListener;
+        for (facts, expected) in [
+            (serde_json::json!({"ended":true,"endedAt":5,"endedCode":0}), Some((5, true))),
+            (serde_json::json!({"ended":true,"endedAt":5,"endedCode":1}), Some((5, false))),
+            // A holder from a build before `endedCode`.
+            (serde_json::json!({"ended":true,"endedAt":5}), Some((5, false))),
+            (serde_json::json!({"ended":false,"endedAt":null,"endedCode":null}), None),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("ab12cd34.sock");
+            let listener = UnixListener::bind(&path).unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut conn, _) = listener.accept().unwrap();
+                assert_eq!(read_frame(&mut conn).unwrap().0, HELLO);
+                conn.write_all(&encode(HELLO, facts.to_string().as_bytes())).unwrap();
+            });
+            assert_eq!(ended(&path), expected);
             server.join().unwrap();
         }
     }

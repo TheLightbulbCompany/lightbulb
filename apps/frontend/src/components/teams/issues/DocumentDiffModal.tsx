@@ -100,7 +100,7 @@ export function DocumentDiffModal({
           <div className="flex items-center gap-2">
             <span className="label-caps text-err">Old</span>
             <Select value={effectiveLeftId ?? ""} onValueChange={setLeftRevisionId}>
-              <SelectTrigger className="h-7 w-56 text-xs">
+              <SelectTrigger aria-label="Old revision" className="h-7 w-56 text-xs">
                 <SelectValue placeholder="Select revision" />
               </SelectTrigger>
               <SelectContent>
@@ -115,7 +115,7 @@ export function DocumentDiffModal({
           <div className="flex items-center gap-2">
             <span className="label-caps text-ok">New</span>
             <Select value={effectiveRightId ?? ""} onValueChange={setRightRevisionId}>
-              <SelectTrigger className="h-7 w-56 text-xs">
+              <SelectTrigger aria-label="New revision" className="h-7 w-56 text-xs">
                 <SelectValue placeholder="Select revision" />
               </SelectTrigger>
               <SelectContent>

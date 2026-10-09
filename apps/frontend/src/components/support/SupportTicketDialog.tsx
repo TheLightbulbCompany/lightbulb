@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { capture } from "@/lib/analytics";
 import { useApi } from "@/lib/api";
@@ -48,6 +48,13 @@ export function SupportTicketDialog({ open, onClose, presetCategory, presetMessa
   const [category, setCategory] = useState(presetCategory ?? "Bug report");
   const [message, setMessage] = useState(presetMessage ?? "");
   const [state, setState] = useState<SubmitState>("idle");
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
 
   if (!open) return null;
 

@@ -249,7 +249,7 @@ export default function Page() {
 
       <div className="auth-layout">
         {/* LEFT: BRAND PANEL */}
-        <div className="auth-brand" aria-hidden="true">
+        <div className="auth-brand" aria-hidden="true" inert>
           <div className="auth-brand-top">
             <Logo tone="cream" size="lg" withMark />
           </div>

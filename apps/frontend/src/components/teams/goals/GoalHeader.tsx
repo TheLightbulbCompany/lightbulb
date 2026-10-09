@@ -70,6 +70,7 @@ export function GoalHeader({ goal, onTitleSave, onStatusChange }: GoalHeaderProp
       <div className="flex flex-wrap items-center gap-3">
         {editing ? (
           <input
+            aria-label="Goal title"
             ref={inputRef}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}

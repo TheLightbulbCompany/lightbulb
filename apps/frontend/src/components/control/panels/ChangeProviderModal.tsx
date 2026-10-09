@@ -101,7 +101,7 @@ export function ChangeProviderModal({
         if (!next) onClose();
       }}
     >
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-2xl" showCloseButton>
         {/*
           Stage state lives inside the keyed body so each open mounts a
           fresh component — React resets `stage` to "picker" automatically,
@@ -462,7 +462,7 @@ function ByoKeyStage({ currentByoProvider, onComplete, onCancel }: ByoKeyStagePr
         </label>
       </fieldset>
 
-      <input
+      <input aria-label="API key"
         type="password"
         value={apiKey}
         onChange={(e) => setApiKey(e.target.value)}

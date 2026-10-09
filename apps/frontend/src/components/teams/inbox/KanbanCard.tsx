@@ -24,6 +24,9 @@ export interface KanbanCardProps {
   issue: Issue;
   agents?: KanbanAgent[];
   isLive?: boolean;
+  // Keyboard/screen-reader alternative to dragging between columns.
+  columns?: readonly string[];
+  onStatusChange?: (id: string, status: string) => void;
 }
 
 interface CardContentProps {
@@ -124,7 +127,7 @@ function CardContent({ issue, agents, isLive, isDragging }: CardContentProps) {
 
 // Sortable card rendered inside a column. Registers a draggable instance
 // with dnd-kit keyed by issue.id.
-export function KanbanCard({ issue, agents, isLive }: KanbanCardProps) {
+export function KanbanCard({ issue, agents, isLive, columns, onStatusChange }: KanbanCardProps) {
   const {
     attributes,
     listeners,
@@ -143,20 +146,40 @@ export function KanbanCard({ issue, agents, isLive }: KanbanCardProps) {
     <div
       ref={setNodeRef}
       style={style}
-      {...attributes}
-      {...listeners}
       data-kanban-card-id={issue.id}
       className={cn(
-        "editorial-card p-2.5 cursor-grab active:cursor-grabbing transition-shadow hover:shadow-sm",
+        "editorial-card p-2.5 transition-shadow hover:shadow-sm",
         isDragging && "opacity-30",
       )}
     >
-      <CardContent
-        issue={issue}
-        agents={agents}
-        isLive={isLive}
-        isDragging={isDragging}
-      />
+      {/* Sortable role/tabIndex live here so the status <select> below is a
+          sibling, not nested inside a role="button". */}
+      <div
+        {...attributes}
+        {...listeners}
+        className="cursor-grab active:cursor-grabbing"
+      >
+        <CardContent
+          issue={issue}
+          agents={agents}
+          isLive={isLive}
+          isDragging={isDragging}
+        />
+      </div>
+      {columns && onStatusChange && (
+        <select
+          aria-label={`Status of ${issue.title}`}
+          value={issue.status}
+          className="mt-2 w-full rounded border bg-transparent text-xs"
+          onChange={(e) => onStatusChange(issue.id, e.target.value)}
+        >
+          {columns.map((s) => (
+            <option key={s} value={s}>
+              {s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+            </option>
+          ))}
+        </select>
+      )}
     </div>
   );
 }

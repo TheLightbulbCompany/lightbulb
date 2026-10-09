@@ -145,6 +145,8 @@ export function KanbanBoard({
             issues={columnIssues[status] ?? []}
             agents={agents}
             liveIssueIds={liveIssueIds}
+            columns={columns}
+            onStatusChange={(id, s) => onUpdateIssue(id, { status: s })}
           />
         ))}
       </div>

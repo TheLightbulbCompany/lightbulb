@@ -69,6 +69,7 @@ export function ProjectHeader({ project, onNameSave }: ProjectHeaderProps) {
       <div className="flex flex-wrap items-center gap-3">
         {editing ? (
           <input
+            aria-label="Project title"
             ref={inputRef}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}

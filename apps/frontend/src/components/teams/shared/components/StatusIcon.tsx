@@ -181,7 +181,13 @@ export function StatusIcon({
       <span className="text-sm">{statusLabel(status)}</span>
     </button>
   ) : (
-    circle
+    <button
+      type="button"
+      aria-label={`Change status: ${ariaLabel}`}
+      className="inline-flex rounded-full"
+    >
+      {circle}
+    </button>
   );
 
   return (

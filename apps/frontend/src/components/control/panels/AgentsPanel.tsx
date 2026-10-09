@@ -122,7 +122,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
           <Button variant="outline" size="sm" onClick={() => setCreateStep("choose")}>
             <Plus size={16} className="mr-1" /> New
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => mutate()}>
+          <Button variant="ghost" size="sm" onClick={() => mutate()} aria-label="Refresh agents">
             <RefreshCw size={16} />
           </Button>
         </div>

@@ -9,6 +9,7 @@ fanout and the runtime's own registry is the truth while children live.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from typing import Any, Literal
@@ -25,6 +26,9 @@ logger = logging.getLogger(__name__)
 
 GOAL_CAP = 500
 STRING_CAP = 220
+ENVELOPE_BUDGET = 60_000  # bytes of JSON per publish; live_events rejects >230 KiB and drops the batch
+# Upstream fields no UI reads (the shared reducer takes ids, goal, status, tool_*, text, summary, counts).
+_UNREAD = frozenset({"toolsets", "files_read", "files_written", "output_tail"})
 EventType = Literal["subagent.start", "subagent.progress", "subagent.tool", "subagent.thinking", "subagent.complete"]
 
 
@@ -43,14 +47,14 @@ def _clip(value: Any, cap: int) -> Any:
     if isinstance(value, str):
         return value[:cap]
     if isinstance(value, list):
-        return [_clip(v, cap) for v in value[:50]]
+        return [_clip(v, cap) for v in value[:10]]
     if isinstance(value, dict):
         return {k: _clip(v, cap) for k, v in list(value.items())[:50]}
     return value
 
 
 def _clipped(payload: dict[str, Any]) -> dict[str, Any]:
-    return {k: _clip(v, GOAL_CAP if k == "goal" else STRING_CAP) for k, v in payload.items()}
+    return {k: _clip(v, GOAL_CAP if k == "goal" else STRING_CAP) for k, v in payload.items() if k not in _UNREAD}
 
 
 async def _publish(room_id: str, event: dict) -> bool:
@@ -76,11 +80,26 @@ async def room_and_agent(owner_id: str, session_key: str) -> tuple[str, str]:
 async def publish_events(owner_id: str, body: SubagentEventsRequest) -> dict:
     room_id, agent_id = await room_and_agent(owner_id, body.session_key)
     events = [{"type": e.type, "seq": e.seq, "payload": _clipped(e.payload)} for e in body.events]
-    event = make_live_event(
-        "room.subagent.event", {"roomId": room_id, "agentId": agent_id, "events": events}, room_id=room_id
-    )
-    published = await _publish(room_id, event)
-    return {"published": len(events) if published else 0}
+    batches: list[list[dict]] = []
+    size = 0
+    for e in events:
+        n = len(json.dumps(e, separators=(",", ":"), ensure_ascii=False).encode())
+        if n > ENVELOPE_BUDGET:
+            logger.warning("dropping oversize subagent event seq=%s (%d bytes)", e["seq"], n)
+            continue
+        if not batches or size + n > ENVELOPE_BUDGET:
+            batches.append([])
+            size = 0
+        batches[-1].append(e)
+        size += n
+    published = 0
+    for batch in batches:
+        event = make_live_event(
+            "room.subagent.event", {"roomId": room_id, "agentId": agent_id, "events": batch}, room_id=room_id
+        )
+        if await _publish(room_id, event):
+            published += len(batch)
+    return {"published": published}
 
 
 def session_key(room_id: str, agent_id: str) -> str:

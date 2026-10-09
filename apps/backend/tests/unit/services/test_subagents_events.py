@@ -71,3 +71,58 @@ def test_unknown_event_types_and_oversize_batches_are_rejected():
         _body(events=[{"type": "tool.started", "seq": 1, "payload": {}}])
     with pytest.raises(ValueError):
         _body(events=[{"type": "subagent.tool", "seq": i, "payload": {}} for i in range(26)])
+
+
+def _big(seq):
+    return {
+        "type": "subagent.progress",
+        "seq": seq,
+        "payload": {
+            "subagent_id": "sa-1",
+            "text": "t" * 900,
+            "toolsets": ["x" * 900] * 50,
+            "output_tail": ["y" * 900] * 50,
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_large_batch_is_split_under_budget_without_losing_events():
+    import json
+
+    a, b, c = _patches()
+    events = [
+        {
+            "type": "subagent.progress",
+            "seq": i,
+            "payload": {"subagent_id": "sa-1", "text": "t" * 220, "extra": ["z" * 220] * 10, "goal": "g" * 500},
+        }
+        for i in range(24)
+    ]
+    events += [_big(100)]
+    with a, b, c as publish:
+        out = await subagents.publish_events(OWNER, _body(events))
+    assert out == {"published": 25}
+    assert publish.await_count >= 2
+    seqs = []
+    for call in publish.await_args_list:
+        ev = call.args[1]
+        assert len(json.dumps(ev).encode()) < subagents.ENVELOPE_BUDGET + 1000
+        seqs += [e["seq"] for e in ev["payload"]["events"]]
+    assert seqs == list(range(24)) + [100]
+    assert "toolsets" not in call.args[1]["payload"]["events"][-1]["payload"]
+
+
+@pytest.mark.asyncio
+async def test_oversize_single_event_is_dropped_others_published():
+    a, b, c = _patches()
+    huge = {
+        "type": "subagent.progress",
+        "seq": 2,
+        "payload": {f"k{i}": "v" * 220 for i in range(50)} | {"l": [{f"k{i}": "v" * 220 for i in range(50)}] * 10},
+    }
+    ok = {"type": "subagent.progress", "seq": 1, "payload": {"subagent_id": "sa-1"}}
+    with a, b, c as publish:
+        out = await subagents.publish_events(OWNER, _body([ok, huge]))
+    assert out == {"published": 1}
+    assert [e["seq"] for e in publish.await_args.args[1]["payload"]["events"]] == [1]

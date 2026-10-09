@@ -2393,7 +2393,15 @@ async def leave_room(auth: AuthContext, room_id: str) -> None:
 
 def _channel_heir(meta: dict, members: list[dict], leaving_id: str) -> str | None:
     """Who owns a channel once its owner is gone: an admin first, then whoever joined
-    earliest. None when the leaver is not the channel's owner, or nobody else is there."""
+    earliest. None when the leaver is not the channel's owner, or nobody else is there.
+
+    With nobody else there, nobody is made owner, on purpose. Every room power is a
+    room membership (require_room_member / require_room_admin): there is no
+    workspace-admin override and no way to browse or join a channel, so a workspace
+    admin seated as its owner would get a private history they were never part of.
+    leave_room refuses that case (delete instead); a workspace removal must never be
+    blocked, so it removes the last person and the channel is left with only agents,
+    which no person can reach."""
     if meta.get("kind") != "channel":
         return None
     humans = [row for row in members if row.get("kind") == "human"]

@@ -5,6 +5,7 @@ import {
   LISTEN_MODE_LABELS,
   listenModeOptions,
   roomDisplayName,
+  soleChannelOwner,
   type ListenMode,
   type MemberRef,
   type RoomDetail,
@@ -82,8 +83,7 @@ export function RoomDetails({
   // A group chat's creator holds no powers there, so anyone may leave or archive
   // one; a channel owner leaving hands it to another person, so only an owner alone
   // in it may not leave; never the shared room.
-  const ownerAlone = viewer?.role === "owner" && !room.members.some((m) => m.kind === "human" && m.id !== viewer.id);
-  const canLeave = !room.shared && !managed && (room.kind === "group-dm" || (isChannel && !!viewer && !ownerAlone));
+  const canLeave = !room.shared && !managed && (room.kind === "group-dm" || (isChannel && !!viewer && !soleChannelOwner(room, currentUserId)));
   const canArchive = !room.shared && !managed && !room.isDefault && (room.kind === "group-dm" || (isChannel && isAdmin));
 
   const run = (action: () => Promise<unknown>, fallback: string) => {

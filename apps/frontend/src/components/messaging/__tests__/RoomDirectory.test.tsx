@@ -643,6 +643,20 @@ it("offers Leave on a channel only, and confirms before leaving", async () => {
   expect(onLeaveRoom).toHaveBeenCalledWith("chan");
 });
 
+it("offers no Leave to a channel's owner who is alone in it, but does once someone else is there", async () => {
+  const me = { kind: "human" as const, id: "me", displayName: "Me", mentionHandle: null, role: "owner" as const, listenMode: null, joinedAt: "2026-09-10T00:00:00Z", joinedSeq: 0 };
+  const other = { ...me, id: "other", role: "member" as const };
+  render(<RoomDirectory {...sectionProps} currentUserId="me" sections={[]} rooms={[
+    { ...base, roomId: "solo", name: "Solo", members: [me] },
+    { ...base, roomId: "pair", name: "Pair", members: [me, other] },
+  ]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Conversation actions for Solo" }));
+  expect(screen.queryByRole("menuitem", { name: "Leave channel" })).not.toBeInTheDocument();
+  await userEvent.keyboard("{Escape}");
+  await userEvent.click(screen.getByRole("button", { name: "Conversation actions for Pair" }));
+  expect(await screen.findByRole("menuitem", { name: "Leave channel" })).toBeInTheDocument();
+});
+
 it("offers Leave on a group chat too", async () => {
   const onLeaveRoom = vi.fn().mockResolvedValue(undefined);
   render(<RoomDirectory {...sectionProps} onLeaveRoom={onLeaveRoom} sections={[]} rooms={[

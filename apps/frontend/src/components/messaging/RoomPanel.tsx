@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
 import { ArrowLeft, Check, Circle, CircleAlert, Link, ListChecks, MessagesSquare, PanelRight, Square } from "lucide-react";
 import type { Components } from "react-markdown";
-import { LISTEN_MODE_LABELS, listenModeOptions, type CreateMessageRequest, type ListenMode, type MemberPrefsRequest, type MemberRef, type UpdateMessageRequest } from "@lightbulb/shared";
+import { LISTEN_MODE_LABELS, listenModeOptions, soleChannelOwner, type CreateMessageRequest, type ListenMode, type MemberPrefsRequest, type MemberRef, type UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
 import { QuietDisclosure } from "@/components/chat/QuietDisclosure";
 import { Button } from "@/components/ui/button";
@@ -473,11 +473,10 @@ function RoomContent({
   // A group chat's creator holds no powers there, so anyone may leave one. A channel owner
   // leaving hands the channel to another person in it (the backend picks them) -- but
   // alone in it, they can only delete it: the Leave dialog explains that and offers Delete.
-  const ownerAlone = viewer?.role === "owner"
-    && !participants.some((participant) => participant.kind === "human" && participant.id !== currentUserId);
+  const ownerAlone = soleChannelOwner(visibleRoom && { kind: visibleRoom.kind, members: participants }, currentUserId);
   const canLeaveRoom = !visibleRoom?.shared
     && (visibleRoom?.kind === "group-dm" || (visibleRoom?.kind === "channel" && !ownerAlone));
-  const ownerCannotLeave = !visibleRoom?.shared && visibleRoom?.kind === "channel" && ownerAlone;
+  const ownerCannotLeave = !visibleRoom?.shared && ownerAlone;
   // A group chat has no admins: any member archives and unarchives it.
   const canUnarchive = !!onSetArchived && (visibleRoom?.kind === "group-dm" || isRoomAdmin);
   const roomNoun = visibleRoom?.kind === "group-dm" ? "group chat" : "channel";

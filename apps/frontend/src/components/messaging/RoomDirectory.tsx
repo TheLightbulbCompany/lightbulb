@@ -5,7 +5,7 @@ import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, us
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { ChevronDown, ChevronRight, GripVertical, History, MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
-import { listenModeOptions, roomDisplayName, SIDEBAR_SESSION_CAP, sessionLive, type ListenMode, type MemberPrefsRequest, type RoomKind, type RoomSection } from "@lightbulb/shared";
+import { listenModeOptions, roomDisplayName, soleChannelOwner, SIDEBAR_SESSION_CAP, sessionLive, type ListenMode, type MemberPrefsRequest, type RoomKind, type RoomSection } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -480,7 +480,7 @@ function DirectoryContent({
             onMarkUnread={onMarkUnread && (() => void markRoomUnread(room.roomId, label))}
             onMoveToSection={onSetPrefs && sections.length > 0
               ? (sectionId) => setRoomPrefs(room.roomId, { sectionId }, `Could not move ${label}.`) : undefined}
-            onLeave={onLeaveRoom && (room.kind === "channel" || room.kind === "group-dm") && !room.shared ? (trigger) => { leave.reset(); leaveTrigger.current = trigger; setLeaving(room); } : undefined}
+            onLeave={onLeaveRoom && (room.kind === "channel" || room.kind === "group-dm") && !room.shared && !soleChannelOwner(room, currentUserId) ? (trigger) => { leave.reset(); leaveTrigger.current = trigger; setLeaving(room); } : undefined}
             onCopyLink={() => void copyText(roomPermalink(room.roomId))}
             onAddPeople={onAddPeople && canAddPeople(room) ? () => onAddPeople(room.roomId) : undefined} />;
         })}</ul>

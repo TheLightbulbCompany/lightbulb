@@ -718,6 +718,28 @@ def test_a_channel_owner_hands_the_channel_to_an_admin_then_the_earliest_joiner(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "others,heir", [([], None), ([{"kind": "human", "id": "bob", "role": "member", "joinedAt": "1"}], "bob")]
+)
+async def test_removing_a_channel_owner_hands_it_on_or_still_removes_them_alone(monkeypatch, others, heir):
+    # A workspace removal reaches this seam without leave_room's refusal: it must still
+    # remove the owner, with the key rotation, whether or not anyone can take the channel.
+    meta = {"roomId": "11111111-1111-4111-8111-111111111111", "ownerId": "org_1", "kind": "channel", "revision": 3}
+    members = [{"kind": "human", "id": "owner", "role": "owner"}, {"kind": "agent", "id": "ceo"}, *others]
+    remove = AsyncMock(return_value=meta)
+    monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=members))
+    monkeypatch.setattr(messaging.messaging_repo, "ensure_user_stream", AsyncMock(return_value="key"))
+    monkeypatch.setattr(messaging.messaging_repo, "remove_member", remove)
+    monkeypatch.setattr(messaging.livekit_huddles, "remove_participant", AsyncMock())
+
+    await messaging._remove_member_with_notices(meta, "human", "owner")
+
+    kwargs = remove.await_args.kwargs
+    assert kwargs["member_id"] == "owner" and kwargs["new_delivery_key"]
+    assert kwargs["new_owner_id"] == heir
+
+
+@pytest.mark.asyncio
 async def test_set_pin_allows_any_member_validates_the_message_and_publishes_metadata(monkeypatch):
     auth = AuthContext(user_id="member", org_id="org_1")
     meta = {"roomId": "room-1", "ownerId": "org_1", "kind": "channel", "revision": 2}

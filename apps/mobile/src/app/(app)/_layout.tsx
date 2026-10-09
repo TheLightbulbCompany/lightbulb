@@ -87,7 +87,14 @@ export default function AppLayout() {
           5.1.1(i)/5.1.2(i)). */}
       <AiConsentGate>
         {/* A person Clerk has no name for (Apple's "Hide My Email") says what to
-            be called before a workspace is opened or joined. */}
+            be called before a workspace is opened or joined. Today this is the
+            only thing that asks an Apple user for a name on the phone: the
+            installed @clerk/clerk-expo 2.20.0 useSignInWithApple requests
+            Apple's FULL_NAME but drops it (it calls
+            signUp.create({ transfer: true, unsafeMetadata }) only). The renamed
+            package @clerk/expo 4.x passes firstName/lastName from fullName
+            itself, so moving to it (a native-binary release) makes this gate
+            rarely needed for Apple users. */}
         <NameGate>
         {/* Every product API 409s without an active workspace, so everything
             that calls one — live events included — sits under this. */}

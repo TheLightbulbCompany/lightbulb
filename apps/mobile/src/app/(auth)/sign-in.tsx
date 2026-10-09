@@ -1,4 +1,4 @@
-import { useClerk, useSignIn, useSignUp, useSSO } from "@clerk/clerk-expo";
+import { useSignIn, useSignInWithApple, useSSO } from "@clerk/clerk-expo";
 import * as AppleAuthentication from "expo-apple-authentication";
 import * as AuthSession from "expo-auth-session";
 import * as WebBrowser from "expo-web-browser";
@@ -15,7 +15,6 @@ import {
 } from "react-native";
 
 import { colors, fonts, radii, spacing, type } from "../../config/theme";
-import { keepAppleName, signInWithApple } from "../../lib/appleSignIn";
 
 // Required for the SSO browser round-trip: closes the auth popup and hands
 // the redirect result back to the pending startSSOFlow promise.
@@ -39,8 +38,7 @@ function clerkErrorMessage(e: unknown, fallback: string): string {
 export default function SignIn() {
   const { signIn, setActive, isLoaded } = useSignIn();
   const { startSSOFlow } = useSSO();
-  const { signUp } = useSignUp();
-  const clerk = useClerk();
+  const { startAppleAuthenticationFlow } = useSignInWithApple();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -53,19 +51,21 @@ export default function SignIn() {
   const anySubmitting = submitting || googleSubmitting || appleSubmitting;
 
   // Native Sign in with Apple (guideline 4.8 — required alongside Google).
-  // lib/appleSignIn drives expo-apple-authentication and Clerk's sign-in↔sign-up
-  // transfer, and keeps the name Apple shares once; iOS-only by platform gate below.
+  // Clerk's hook drives expo-apple-authentication and handles the
+  // sign-in↔sign-up transfer flow itself; iOS-only by platform gate below.
   async function onAppleSignIn() {
-    if (!isLoaded || !signUp || anySubmitting) return;
+    if (!isLoaded || anySubmitting) return;
     setAppleSubmitting(true);
     setError(null);
     try {
-      const { createdSessionId, name } = await signInWithApple(signIn, signUp);
-      if (createdSessionId) {
-        await setActive({ session: createdSessionId });
+      const { createdSessionId, setActive: setActiveFromFlow } =
+        await startAppleAuthenticationFlow();
+      if (createdSessionId && setActiveFromFlow) {
+        await setActiveFromFlow({ session: createdSessionId });
         // (auth) layout redirects to /(app)/home once isSignedIn flips.
-        await keepAppleName(clerk.user, name);
       }
+      // A null session is the user dismissing the native Apple sheet (Clerk
+      // resolves rather than throwing for cancels) — stay quiet, no error.
     } catch (e) {
       // The native sheet's cancel surfaces as ERR_REQUEST_CANCELED — quiet.
       if ((e as { code?: string })?.code !== "ERR_REQUEST_CANCELED") {

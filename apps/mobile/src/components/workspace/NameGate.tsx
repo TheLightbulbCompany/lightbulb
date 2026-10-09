@@ -4,8 +4,7 @@
  * Sign in with Apple + "Hide My Email" (or an email-code sign-up) gives us no name,
  * and every room, roster and notification then has nothing real to call them. Sits
  * above WorkspaceGate in (app)/_layout.tsx, so the name exists before a workspace
- * is joined or opened. Most Apple users never see it: sign-in keeps Apple's own
- * `fullName` (lib/appleSignIn.ts).
+ * is joined or opened.
  */
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import { useState, type ReactNode } from "react";

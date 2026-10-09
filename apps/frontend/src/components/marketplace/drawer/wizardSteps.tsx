@@ -583,7 +583,7 @@ export function PricingStep({
           </label>
           <div className="flex items-center bg-cream-deep border border-[var(--edge)] rounded-xl px-3.5 py-3 gap-2 mb-2">
             <span className="font-editorial-serif text-2xl text-muted-foreground">$</span>
-            <input aria-label="Price per month in dollars"
+            <input aria-label="Price per install in dollars, one-time"
               type="number"
               min={1}
               max={20}

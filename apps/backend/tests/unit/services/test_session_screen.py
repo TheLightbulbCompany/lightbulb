@@ -846,3 +846,34 @@ async def test_a_channels_seat_count_is_kept_for_as_long_as_a_socket_on_it_can_l
     assert int(row["seats"]) == 1
     assert int(row["expiresAt"]) - int(time.time()) > 24 * 3600  # `expiresAt` is the table's TTL attribute
     assert int(row["until"]) - int(time.time()) <= session_screen.VIEWER_TTL_S  # liveness is still 45 s
+
+
+@pytest.mark.asyncio
+async def test_the_owners_end_stops_public_frames_before_the_exit_output_and_a_refused_end_frees_them(transport, db):
+    """Round 18: a link viewer read the provider's `claude --resume <id>` lines between End and the end."""
+    import uuid
+
+    from core.services import session_links
+    from core.services.local_sessions import LocalSessionCommand
+
+    sid = await start(transport)
+    await ack(transport, sid)
+    token, public = await _public_link(sid)
+    await session_links.viewing(token, None, True)
+    await session_screen.watch(BOB, sid)
+    key = {"pk": repo.session_pk(OWNER, sid), "sk": "META"}
+    db[0].update_item(Key=key, UpdateExpression="SET terminal = :h", ExpressionAttributeValues={":h": "held"})
+    end = LocalSessionCommand(request_id=str(uuid.uuid4()), expected_generation="generation-1", kind="end")
+    await service.submit_command(ALICE, None, sid, end)
+    transport[4].clear()
+    await session_screen.forward(relay(transport), "conn-1", frame(sid))
+    assert [c for c, _ in await _published(transport)] == [await _frames_channel(sid)], "the workspace only"
+    # The End never took effect (refused, or it never reached the Mac): the link gets frames again.
+    db[0].update_item(
+        Key=key,
+        UpdateExpression="SET endAskedAt = :t",
+        ExpressionAttributeValues={":t": int(time.time()) - session_screen.END_QUIET_S - 1},
+    )
+    transport[4].clear()
+    await session_screen.forward(relay(transport), "conn-1", frame(sid))
+    assert f"/pub/{public}" in [c for c, _ in await _published(transport)]

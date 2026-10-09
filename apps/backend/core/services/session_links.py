@@ -212,7 +212,9 @@ def _title(row: dict, member: bool) -> str | None:
     title = row.get("displayTitle") or row.get("title")
     if member or title is None:
         return title
-    return redact(title, _project(row)) if _known(row) else None
+    # Not a member, so the link is "Anyone with the link" and they watch the whole terminal: the
+    # title hides nothing (owner ruling 2026-10-08). Likely secrets and a private repo's folder name do.
+    return redact(title, _project(row))
 
 
 async def open_page(auth: AuthContext | None, token: str, *, refresh: bool = False) -> LinkPage:

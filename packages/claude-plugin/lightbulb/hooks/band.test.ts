@@ -66,6 +66,15 @@ test('band names watchers and typists', () => {
   ])
 })
 
+test('the band counts watchers the workspace did not name (an Anyone link shows this terminal)', () => {
+  const s = { ...base, viewers: [
+    { userId: 'a', name: '', canType: true, typing: true },
+    { userId: 'm', name: '', canType: false, typing: false },
+  ] }
+  expect(bandLine(s)).toBe('● Live · 2 watching · 1 typing')
+  expect(bandRuns(s).some(r => r.color)).toBe(false)
+})
+
 test('the band draws watcher names and the asker in their colors', async ($, on) => {
   const s: SessionState = { ...asking, viewers: [{ userId: 'm', name: 'Mira Shah', canType: true, typing: true }] }
   const { clock } = world(on, () => ({ status: 200, body: s }))

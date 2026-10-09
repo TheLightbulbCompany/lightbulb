@@ -12,6 +12,7 @@ export function conversationOnly(session: LocalSession): boolean {
 export function sessionScreenNotice(session: LocalSession, own: boolean, ownerName: string): { title: string; body: string } {
   if (conversationOnly(session)) return { title: "This session runs inside an app, so there is no terminal to show.", body: "This is its conversation." };
   return own
-    ? { title: "This session's screen is not shared.", body: "Lightbulb cannot show this session's screen. Teammates still see its status and what it changed." }
+    // Only me: nobody else sees anything of it, so the teammates clause would be false.
+    ? { title: "This session's screen is not shared.", body: `Lightbulb cannot show this session's screen.${session.shared === false ? "" : " Teammates still see its status and what it changed."}` }
     : { title: `${ownerName} is working in this session, but its screen is not shared.`, body: "You can still follow its status and what it changed." };
 }

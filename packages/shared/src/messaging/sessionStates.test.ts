@@ -24,6 +24,9 @@ it("says what an app session is, and gives nobody terminal steps for any other",
   expect(sessionScreenNotice({ ...base, terminalReason: "app" }, false, "Ada")).toEqual(app);
   for (const session of [base, { ...base, terminalReason: "plain" as const }, { ...base, provider: "codex" as const, terminalReason: "no-daemon" as const }]) {
     expect(sessionScreenNotice(session, true, "Ada").title).toBe("This session's screen is not shared.");
+    expect(sessionScreenNotice(session, true, "Ada").body).toContain("Teammates still see its status");
+    // Only me: nobody else sees anything of it.
+    expect(sessionScreenNotice({ ...session, shared: false }, true, "Ada").body).toBe("Lightbulb cannot show this session's screen.");
     expect(sessionScreenNotice(session, false, "Ada")).toEqual({ title: "Ada is working in this session, but its screen is not shared.", body: "You can still follow its status and what it changed." });
   }
 });

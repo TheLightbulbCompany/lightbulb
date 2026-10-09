@@ -289,6 +289,9 @@ async def keep_screens(owner: str, human: str, device: str, cid: str, sids: list
 
 
 MAX_RAW_BYTES = 11 * 1024
+# How long the public watch stays quiet after the owner's End was admitted: End has 30 s to reach
+# the Mac, and the provider a few more to leave.
+END_QUIET_S = 60
 BUDGET_BYTES_PER_MINUTE = 2 * 1024 * 1024
 # ponytail: per backend task, so N tasks allow N x 2 MiB/min per session; a shared counter would
 # cost a write per frame. Move to a per-minute DynamoDB counter if a session is seen abusing it.
@@ -385,7 +388,10 @@ async def forward(relay, cid: str, body: dict) -> None:
         # link that stops being public, loses its last watcher, or whose session ends gets no
         # further frame (an ended session's kept final screen is for the workspace). One item,
         # written by `session_links.viewing`. A failure here never costs the workspace its frame.
-        public = sessions.public_id(row.get("shareLink"), row) if row.get("endedAt") is None else None
+        # Nor while the owner's End is on its way (`endAskedAt`): what the provider prints as it
+        # leaves (`claude --resume <id>`) is not for the link. A refused End frees it after a minute.
+        ending = int(row.get("endAskedAt") or 0) > now - END_QUIET_S
+        public = sessions.public_id(row.get("shareLink"), row) if row.get("endedAt") is None and not ending else None
         by_link = False
         if public:
             try:

@@ -18,6 +18,11 @@ export function bandRuns(s: SessionState): Run[] {
   const names = (vs: SessionState['viewers']) =>
     vs.flatMap((v, i): Run[] => [...(i ? [{ text: ', ' }] : []), { text: v.name, color: colorFor(v.userId) }])
   const typing = s.viewers.filter(v => v.typing)
+  // An "Anyone with the link" session: the band is in the terminal that link shows, so the
+  // workspace sends its watchers unnamed and the band counts them.
+  if (s.viewers.some(v => !v.name)) {
+    return [{ text: `● Live · ${s.viewers.length} watching${typing.length ? ` · ${typing.length} typing` : ''}` }]
+  }
   return [{ text: '● Live · ' }, ...names(s.viewers), { text: ' watching' },
     ...(typing.length ? [{ text: ' · ' }, ...names(typing), { text: ' typing' }] : [])]
 }

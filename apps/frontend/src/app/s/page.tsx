@@ -20,6 +20,10 @@ const POLL_MS = 5000;
  *  (and asks for a re-open then), so this poll only follows the title and the Continue switch.
  *  A link viewer then costs the shared /public throttle 0.1 requests a second, not 0.27. */
 const WATCHING_POLL_MS = 30_000;
+/** After a refusal the open page keeps asking, slowly and not for long: the owner may have narrowed
+ *  the link and widened it again (a refused open costs one read). It stops when the tab is hidden. */
+const REFUSED_POLL_MS = 30_000;
+const REFUSED_POLL_FOR_MS = 10 * 60_000;
 const watchingPage = (page: SessionLinkPage) => page.state === "live" && !page.me.member;
 type Stash = { token: string; port?: number; challenge?: string };
 
@@ -240,25 +244,33 @@ export default function SessionLinkPageRoute() {
     const bearerNow = async () => (isSignedIn ? await tokenOf.current() : null);
     let timer: ReturnType<typeof setTimeout> | undefined;
     let last: SessionLinkPage | undefined;
+    let refusedAt = 0; // when the link was first refused; 0 while it opens
     // Each tick re-opens the link, so the header follows the session (live, ended, offline) and a
-    // turned-off link shows its refusal; the poll stops once the session is not live or the link is
-    // refused. A network blip (not a refusal) just tries again next tick.
+    // turned-off link shows its refusal; the poll stops once the session is not live. A refused
+    // link is asked for again slowly, for a while (see REFUSED_POLL_MS), and the page comes back by
+    // itself when it opens again. A network blip (not a refusal) just tries again next tick.
     const tick = async (first: boolean) => {
       try {
         const next = await publicPost<SessionLinkPage>("/public/session-links/open", { token: stash.token, ...(first ? {} : { refresh: true }) }, await bearerNow());
         if (!alive) return;
-        if (first) { setError(null); setRefused(false); } // a sign-in reopens a link that was refused while signed out
+        // A sign-in reopens a link that was refused while signed out; so does the owner sharing it again.
+        if (first || refusedAt) { setError(null); setRefused(false); }
+        refusedAt = 0;
         setPage(last = next);
       } catch (e) {
         if (!alive) return;
         if (first || refusal(e)) {
           last = undefined;
           setRefused(refusal(e));
+          if (refusal(e)) refusedAt ||= Date.now();
           setError(e instanceof Error ? e.message : "Could not open this link. Try again.");
         }
       }
       clearTimeout(timer);
-      if (alive && last?.state === "live") timer = setTimeout(() => void tick(false), watchingPage(last) ? WATCHING_POLL_MS : POLL_MS);
+      if (!alive) return;
+      if (last?.state === "live") timer = setTimeout(() => void tick(false), watchingPage(last) ? WATCHING_POLL_MS : POLL_MS);
+      else if (refusedAt && Date.now() - refusedAt < REFUSED_POLL_FOR_MS)
+        timer = setTimeout(() => { if (alive && document.visibilityState !== "hidden") void tick(false); }, REFUSED_POLL_MS);
     };
     reopen.current = () => { if (alive && last?.state === "live") { clearTimeout(timer); void tick(false); } };
     void tick(true);
@@ -311,18 +323,24 @@ export default function SessionLinkPageRoute() {
       {page.me.member && page.sessionId && <a href={sessionPermalink(page.sessionId)}>Open in Lightbulb</a>}
     </header>
     {canContinue && <section aria-label="Continue" className="mb-4 flex flex-col gap-2">
-      {!isSignedIn ? <SignUpButton mode="modal" forceRedirectUrl="/s"><Button type="button">Sign up to continue</Button></SignUpButton>
-        : !orgId ? <Button type="button" onClick={() => router.push(`/onboarding?returnTo=${encodeURIComponent("/s")}`)}>Create your free workspace</Button>
+      {/* Signed out with no CLI waiting: the steps to continue, in order. `lightbulb continue` opens this
+          page again (its confirm mode, `stash.port`), and that visit is where signing up happens. */}
+      {!isSignedIn && stash.port ? <>
+          <p>Sign up, free, to continue {page.title?.trim() || "this session"} in Claude Code on this computer.</p>
+          <SignUpButton mode="modal" forceRedirectUrl="/s"><Button type="button">Sign up to continue</Button></SignUpButton>
+        </>
+        : isSignedIn && !orgId ? <Button type="button" onClick={() => router.push(`/onboarding?returnTo=${encodeURIComponent("/s")}`)}>Create your free workspace</Button>
         : stash.port ? <>
             <p>Continue {page.title?.trim() || "this session"} in Claude Code on this computer?</p>
             <Button type="button" disabled={busy} onClick={() => void confirmContinue()}>Continue in Claude Code</Button>
             {continueError && <p role="alert">{continueError}</p>}
           </>
         : <>
+            <p>Continue {page.title?.trim() || "this session"} in your own Claude Code, with a copy of the conversation.</p>
             {/* Plain <a>: an API route (302 to the signed DMG), not a Next page. */}
             {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
             <a href="/api/download/desktop">Get Lightbulb for Mac</a>
-            <p>Then run this in your terminal:</p>
+            <p>Then run this in your terminal{isSignedIn ? "" : ". It opens this page again, where you sign up, free, and confirm"}:</p>
             <code className="font-mono text-xs">{command}</code>
             <Button type="button" variant="outline" size="sm" onClick={() => void copyText(command)}>Copy command</Button>
           </>}

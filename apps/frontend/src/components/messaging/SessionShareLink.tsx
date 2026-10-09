@@ -76,8 +76,8 @@ export function SessionShareLink({ session, client }: { session: LocalSession; c
         catch { setStatus("Could not change who can see this. Try again."); return; }
       }
       // A workspace choice with no link, or a workspace link already, has nothing to write.
+      // (The line under the control already says what the new choice means.)
       if ((next === "anyone" || link?.audience === "anyone") && !(await save(next))) return;
-      setStatus(ABOUT[next]);
     } finally { setBusy(false); }
   };
   // The second click (the select was the first): everyone watching is cut off at once.

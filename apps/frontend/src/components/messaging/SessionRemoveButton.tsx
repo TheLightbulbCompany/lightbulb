@@ -33,7 +33,8 @@ export function SessionRemoveButton({ name, onRemove, icon = false, live = false
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent className="sm:max-w-sm">
         <DialogHeader>
-          <DialogTitle>{!name ? "Remove your ended sessions?" : live ? "End and remove this session?" : "Remove this session from the list?"}</DialogTitle>
+          {/* Named: the lists reorder by activity, and a click can land on the row that just moved up. */}
+          <DialogTitle>{!name ? "Remove your ended sessions?" : live ? `End and remove “${name}”?` : `Remove “${name}” from the list?`}</DialogTitle>
           <DialogDescription>
             {!name ? "Every ended session of yours is removed for everyone in the workspace."
               : live ? "It stops on your Mac, and is removed for everyone in the workspace." : "It is removed for everyone in the workspace."}

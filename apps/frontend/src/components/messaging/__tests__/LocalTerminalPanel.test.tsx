@@ -44,6 +44,17 @@ it("Details takes the terminal away so the sheet is not drawn under it", async (
   await waitFor(() => expect(invoke).toHaveBeenLastCalledWith("terminal_panel", expect.objectContaining({ rect: null })));
 });
 
+// Round 18: "End and remove this session?" opened under the terminal, which the app draws above the whole page.
+it("any dialog on the page takes the terminal away, and closing it brings the terminal back", async () => {
+  const invoke = desktop({ live: true });
+  render(panel(session));
+  await waitFor(() => expect(invoke).toHaveBeenLastCalledWith("terminal_panel", expect.objectContaining({ rect: expect.anything() })));
+  const dialog = document.body.appendChild(Object.assign(document.createElement("div"), { role: "dialog" }));
+  await waitFor(() => expect(invoke).toHaveBeenLastCalledWith("terminal_panel", expect.objectContaining({ rect: null })));
+  dialog.remove();
+  await waitFor(() => expect(invoke).toHaveBeenLastCalledWith("terminal_panel", expect.objectContaining({ rect: expect.anything() })));
+});
+
 it("an ended session never asks for a terminal", async () => {
   const invoke = desktop({ live: true });
   render(panel({ ...session, status: "ended" }));

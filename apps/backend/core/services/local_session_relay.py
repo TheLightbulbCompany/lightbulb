@@ -663,6 +663,7 @@ class LocalSessionRelay:
                     # A resumed conversation re-registers under the same id: registering un-ends it.
                     row.pop("endedAt", None)
                     row.pop("endedReason", None)
+                    row.pop("endAskedAt", None)
                     # A prompt belongs to the generation that asked it; a new one re-reports.
                     # So does teammate control, and so do the people the owner let in: a restarted
                     # process is a new run the owner has not opted into, even when no Ended frame

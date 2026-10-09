@@ -72,13 +72,21 @@ async def entry(row: dict, at: int) -> dict:
         if AGENT_ASK_FEATURE in row.get("deviceFeatures", ())
         else []
     )
+    # The band is drawn in the terminal, and an "Anyone with the link" link shows that terminal to
+    # people outside the workspace: no watcher is named there. The band counts them instead.
+    named = not sessions.public_id(row.get("shareLink"), row)
     return {
         "sessionId": row["sessionId"],
         "generation": row["generation"],
         "at": at,
         "paused": bool(row.get("unshared")),
         "viewers": [
-            {"userId": u, "name": await _name(u), "canType": sessions.may_control(row, u), "typing": u in typing}
+            {
+                "userId": u,
+                "name": await _name(u) if named else "",
+                "canType": sessions.may_control(row, u),
+                "typing": u in typing,
+            }
             for u in viewers
         ],
         "joinRequests": sorted(

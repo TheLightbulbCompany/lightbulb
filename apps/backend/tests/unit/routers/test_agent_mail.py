@@ -300,6 +300,20 @@ def test_patch_address_reenable_sends_null(client):
     assert upd.call_args.kwargs == {"outbound_disabled": None}
 
 
+@pytest.mark.parametrize(
+    "body",
+    [{"outbound_disabled": None}, {"send_to_anyone": True}, {"verified_senders": ["bob@x.y"]}],
+)
+async def test_patch_address_is_admin_only(async_client_org_member, body):
+    """A member could lift a spam-complaint pause, open the mailbox to anyone, or rewrite who
+    may wake the agents. Reading stays open to members; changing it is the admin's."""
+    a, b, c = _mailbox()
+    with a, b, c, patch.object(agent_mail.agent_email_repo, "update_settings", AsyncMock()) as upd:
+        r = await async_client_org_member.patch("/api/v1/agent-mail/address", json=body)
+    assert r.status_code == 403
+    upd.assert_not_called()
+
+
 def test_patch_address_nonnull_outbound_disabled_400(client):
     """outbound_disabled is read-only from the owner settings surface except
     for the explicit-null re-enable — any other value must be rejected, not

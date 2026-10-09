@@ -90,7 +90,7 @@ it("stops sharing on retry even when failed enrollment status has not arrived", 
 });
 it.each([true, false])("does not re-prompt or change saved enrollment on relaunch (enabled=%s)", async (enabled) => {
   invoke.mockResolvedValue({ enrollment:{ownerId:"org",humanUserId:"alice",enabled,paused:false}, pairedWorkspaceId:"org", status:"connected" });
-  writeDesktopPermissionGrant(DEFAULT_DESKTOP_PERMISSIONS);
+  await writeDesktopPermissionGrant(DEFAULT_DESKTOP_PERMISSIONS);
   render(<DesktopPermissionsGate />);
   await waitFor(() => expect(invoke).toHaveBeenCalled());
   expect(screen.queryByRole("alertdialog")).toBeNull();
@@ -246,6 +246,32 @@ it("Settings switches read the Mac's stored consent and write each change throug
   expect(screen.getByRole("switch", {name:"Files"})).not.toBeChecked();
   await userEvent.click(paperclip);
   expect(invoke).toHaveBeenCalledWith("desktop_permissions_set", {permissions:{shell:true,browser:true,files:false,screen:false,paperclip:false}});
+});
+it("a Settings switch the Mac refused to save says so and shows what the Mac still allows", async () => {
+  invoke.mockImplementation(async (command) => {
+    if (command === "desktop_permissions_set") throw "write desktop_permissions.json: Permission denied";
+    return command === "desktop_permissions_get"
+      ? {consented:true,shell:true,browser:true,files:false,screen:false,paperclip:true,updatedAt:"1"}
+      : undefined;
+  });
+  render(<DesktopPermissions />);
+  const shell = await screen.findByRole("switch", {name:"Shell"});
+  await userEvent.click(shell);
+  expect(await screen.findByRole("alert")).toHaveTextContent("Permission denied");
+  expect(screen.getByRole("switch", {name:"Shell"})).toBeChecked();
+  expect(localStorage.getItem("isol8.desktop.permissions.v1")).toBeNull();
+});
+it("pairing does not close over a consent the Mac refused to save", async () => {
+  invoke.mockImplementation(async (command) => {
+    if (command === "desktop_permissions_set") throw "write desktop_permissions.json: Permission denied";
+    if (command === "local_sessions_set") return 1;
+    return { enrollment:null, pairedWorkspaceId:"org", status:"paused" };
+  });
+  render(<DesktopPermissionsGate />);
+  await userEvent.click(await screen.findByRole("button", {name:"Basic only"}));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Permission denied");
+  expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+  expect(invoke.mock.calls.some(([command]) => command === "local_sessions_set")).toBe(false);
 });
 it("shows per-provider setup read from disk and retries setup without re-enrolling", async () => {
   invoke.mockImplementation(async command => command === "local_sessions_repair" ? [] : {

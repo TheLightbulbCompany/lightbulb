@@ -48,15 +48,21 @@ export const DESKTOP_PERMISSION_ITEMS: Array<{
  *  approval from these; there is no per-action prompt. */
 export function DesktopPermissions() {
   const [permissions, setPermissions] = useState<DesktopPermissionSet | null>(null);
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     if (!bridge()) return;
     void readDesktopPermissionsFromDesktop().then(p => setPermissions(p ?? readDesktopPermissionGrant()?.permissions ?? null));
   }, []);
   if (!permissions) return null;
-  const toggle = (key: keyof DesktopPermissionSet) => {
+  const toggle = async (key: keyof DesktopPermissionSet) => {
     const next = { ...permissions, [key]: !permissions[key] };
-    setPermissions(next);
-    writeDesktopPermissionGrant(next);
+    setPermissions(next); setError(null);
+    try { await writeDesktopPermissionGrant(next); }
+    catch (e) {
+      // The Mac did not save it: say so, and show what the Mac still allows.
+      setError(message(e));
+      setPermissions(await readDesktopPermissionsFromDesktop() ?? permissions);
+    }
   };
   return <section className="settings-card" aria-labelledby="desktop-permissions-heading">
     <div className="settings-card-header settings-card-header--rows">
@@ -66,10 +72,11 @@ export function DesktopPermissions() {
       </div>
     </div>
     {DESKTOP_PERMISSION_ITEMS.map(({ key, label, description }) => (
-      <SettingRow key={key} title={label} description={description} toggle={{ checked: permissions[key], onChange: () => toggle(key) }}>
+      <SettingRow key={key} title={label} description={description} toggle={{ checked: permissions[key], onChange: () => void toggle(key) }}>
         {key === "browser" && permissions.browser && <LocalBrowserSetup />}
       </SettingRow>
     ))}
+    {error ? <p className="settings-row-error" role="alert">{error}</p> : null}
   </section>;
 }
 

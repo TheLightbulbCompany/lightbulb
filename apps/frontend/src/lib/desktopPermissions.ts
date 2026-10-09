@@ -79,9 +79,15 @@ export function readDesktopPermissionGrant(): DesktopPermissionGrant | null {
   }
 }
 
-export function writeDesktopPermissionGrant(
+export async function writeDesktopPermissionGrant(
   permissions: DesktopPermissionSet,
-): DesktopPermissionGrant {
+): Promise<DesktopPermissionGrant> {
+  // The Mac answers approval requests from its own copy (consent once, at
+  // pairing — no per-operation prompt), so every choice is pushed to it FIRST:
+  // if the Mac refuses the write this throws and nothing here changes, so a
+  // switch can never read off while the Mac still allows it.
+  // The Browser switch is the whole setup: the Mac starts its agent Chrome on first use.
+  await desktopInvoke()?.("desktop_permissions_set", { permissions });
   const grant: DesktopPermissionGrant = {
     version: 1,
     acceptedAt: new Date().toISOString(),
@@ -92,11 +98,6 @@ export function writeDesktopPermissionGrant(
     JSON.stringify(grant),
   );
   window.dispatchEvent(new CustomEvent(DESKTOP_PERMISSIONS_CHANGED_EVENT));
-  // The Mac answers approval requests from its own copy (consent once, at
-  // pairing — no per-operation prompt), so every choice is pushed to it.
-  const invoke = desktopInvoke();
-  void invoke?.("desktop_permissions_set", { permissions })?.catch(() => {});
-  // The Browser switch is the whole setup: the Mac starts its agent Chrome on first use.
   return grant;
 }
 

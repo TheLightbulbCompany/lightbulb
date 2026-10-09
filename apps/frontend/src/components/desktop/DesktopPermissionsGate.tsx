@@ -94,7 +94,12 @@ export function DesktopPermissionsGate() {
     setSaving(true); setSaveError(null);
     // Pairing uses the existing node grant; sharing is a separate native command.
     if (shouldShowGate) {
-      writeDesktopPermissionGrant(next);
+      // The Mac saves the consent first; if it refuses, pairing stops here and says why.
+      try { await writeDesktopPermissionGrant(next); }
+      catch (error) {
+        if (operation.current === current) { setSaveError(desktopErrorMessage(error)); setSaving(false); }
+        return;
+      }
       setPermissions(next);
     }
     if (mode === "basic") setChoice(false);

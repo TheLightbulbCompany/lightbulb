@@ -65,9 +65,11 @@ async function handle(msg, sender) {
     }
     case "save": {
       const pending = (await chrome.storage.session.get(pendingKey(tab)))[pendingKey(tab)];
-      await chrome.storage.session.remove(pendingKey(tab));
       if (!pending) throw new Error("Nothing to save.");
-      return call("/logins", { origin: pending.origin, username: pending.username, password: pending.password });
+      // Kept until it is stored: the backend refuses a save without a person's fresh click, and they retry.
+      const saved = await call("/logins", { origin: pending.origin, username: pending.username, password: pending.password });
+      await chrome.storage.session.remove(pendingKey(tab));
+      return saved;
     }
     case "dismiss":
       await chrome.storage.session.remove(pendingKey(tab));

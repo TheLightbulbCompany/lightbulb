@@ -117,11 +117,7 @@ def _revoke_mocks():
 
 def test_revoke_all_composes_each_primitive_once_in_order(client, facts):
     manager, cancel, sdelete, deauth = _revoke_mocks()
-    rows = [
-        {"provider": "projects/stripe"},
-        {"provider": "google"},  # OAuth rail row — not ours to delete here
-        {"provider": "projects/posthog"},
-    ]
+    rows = [{"provider": "projects/stripe"}, {"provider": "projects/posthog"}]
     billing_row = {"owner_id": "org_a", "company_stripe_account_id": "acct_1"}
     clear = AsyncMock(return_value=billing_row)
     manager.attach_mock(clear, "clear")
@@ -143,7 +139,8 @@ def test_revoke_all_composes_each_primitive_once_in_order(client, facts):
             "secret:projects/posthog",
             "secret:posthog",
             "stripe_connect:acct_1",
-        ]
+        ],
+        "failed": [],
     }
     cancel.assert_awaited_once_with("org_a")
     deauth.assert_awaited_once_with(account_id="acct_1")
@@ -198,8 +195,62 @@ def test_revoke_all_skips_stripe_when_unbound(client):
     ):
         resp = client.post("/api/v1/company/revoke-all", json={"confirm": "revoke"})
     assert resp.status_code == 200
-    assert resp.json() == {"revoked": ["workflows_cancelled:1", "secret:posthog"]}
+    assert resp.json() == {"revoked": ["workflows_cancelled:1", "secret:posthog"], "failed": []}
     deauth.assert_not_awaited()
+
+
+class _Guard:
+    async def __aenter__(self):
+        return None
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+def test_revoke_all_disconnects_every_connected_app_and_reports_the_one_that_failed(client):
+    """The dialog says it "deletes our copies of your credentials". It deleted the projects/*
+    blobs and left every OAuth app connected. Each remaining row goes through the Disconnect
+    route's own teardown; one that fails is reported and the rest still go."""
+    _, cancel, sdelete, _ = _revoke_mocks()
+    rows = [
+        {"provider": "projects/stripe"},
+        {"provider": "google"},
+        {"provider": "slack"},
+        {"provider": "github"},
+    ]
+
+    async def teardown(owner_id, provider, p):
+        if provider == "slack":
+            raise RuntimeError("s3 down")
+
+    torn = AsyncMock(side_effect=teardown)
+    github = AsyncMock()
+    with (
+        patch.object(mod.account_wipe, "cancel_open_workflows", cancel),
+        patch.object(mod.integrations_repo, "list_for_owner", AsyncMock(return_value=rows)),
+        patch.object(mod.integration_secret_store, "delete", sdelete),
+        patch.object(billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
+        patch.object(mod.connections, "owner_lifecycle_guard", lambda owner_id: _Guard()),
+        patch.object(mod.connections, "_get_provider_for_teardown", lambda provider: provider),
+        patch.object(mod.connections, "_disconnect_teardown", torn),
+        patch.object(mod.connections.paperclip_github_token, "sync_after_disconnect", github),
+    ):
+        resp = client.post("/api/v1/company/revoke-all", json={"confirm": "revoke"})
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "revoked": [
+            "workflows_cancelled:1",
+            "secret:projects/stripe",
+            "secret:posthog",
+            "connection:google",
+            "connection:github",
+        ],
+        "failed": ["slack"],
+    }
+    # The Projects rail's row is not an OAuth connection: its blob is deleted above and it
+    # never reaches the OAuth teardown (which is keyed by the bare provider).
+    assert [c.args[:2] for c in torn.await_args_list] == [("org_a", "google"), ("org_a", "slack"), ("org_a", "github")]
+    github.assert_awaited_once_with("org_a")
 
 
 @pytest.mark.parametrize("body", [{}, {"confirm": "REVOKE"}, {"confirm": "revoke everything"}])

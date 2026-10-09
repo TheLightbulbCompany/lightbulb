@@ -27,6 +27,7 @@ from core.repositories import billing_repo, integrations_repo
 from core.services import account_wipe, company_stripe
 from core.services.credentials import integration_secret_store
 from core.services.owner_facts import write_owner_facts
+from routers import connections
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -63,7 +64,7 @@ class RevokeAllBody(BaseModel):
 @router.post("/revoke-all")
 async def revoke_all(body: RevokeAllBody, auth: Annotated[AuthContext, Depends(get_current_user)]):
     """The kill switch: close open provisioning asks, delete OUR credential
-    copies, and sever the Stripe Connect link. Order matters — workflows
+    copies, disconnect every connected app, and sever the Stripe Connect link. Order matters — workflows
     first, so no reader mid-step can land a fresh secret after the deletes.
     Every step is idempotent; a raise leaves earlier steps done and the call
     safe to retry."""
@@ -72,6 +73,7 @@ async def revoke_all(body: RevokeAllBody, auth: Annotated[AuthContext, Depends(g
         raise HTTPException(status_code=422, detail='confirm must be exactly "revoke"')
 
     revoked: list[str] = []
+    failed: list[str] = []
 
     # 1. Cancel open provisioning workflows (pure DDB; never deprovisions).
     cancelled, _open = await account_wipe.cancel_open_workflows(owner_id)
@@ -80,15 +82,31 @@ async def revoke_all(body: RevokeAllBody, auth: Annotated[AuthContext, Depends(g
     # 2. Delete our Secrets Manager copies: every projects/* credential the
     # Provisioning rail landed, plus the retained posthog token (delete
     # no-ops when absent).
-    keys = [
-        r["provider"]
-        for r in await integrations_repo.list_for_owner(owner_id)
-        if str(r.get("provider", "")).startswith(integrations_repo.PROJECTS_KEY_PREFIX)
-    ]
+    rows = [str(r.get("provider", "")) for r in await integrations_repo.list_for_owner(owner_id)]
+    keys = [k for k in rows if k.startswith(integrations_repo.PROJECTS_KEY_PREFIX)]
     keys.append("posthog")
     for key in keys:
         await integration_secret_store.delete(owner_id, key)
         revoked.append(f"secret:{key}")
+
+    # 2b. Every connected app, through the Disconnect route's own teardown (same per-owner
+    # guard, same github follow-up). One that fails is reported; the rest still go.
+    for provider in rows:
+        if provider.startswith(integrations_repo.PROJECTS_KEY_PREFIX):
+            continue
+        try:
+            p = connections._get_provider_for_teardown(provider)
+        except HTTPException:
+            continue  # a reserved key on the same table (website_logins, manual_mcp), not an app
+        try:
+            async with connections.owner_lifecycle_guard(owner_id):
+                await connections._disconnect_teardown(owner_id, provider, p)
+            if provider == "github":
+                await connections.paperclip_github_token.sync_after_disconnect(owner_id)
+            revoked.append(f"connection:{provider}")
+        except Exception:  # noqa: BLE001 — a kill switch keeps going past one bad provider
+            logger.exception("company_policy: revoke-all could not disconnect %s owner_id=%s", provider, owner_id)
+            failed.append(provider)
 
     # 3. Stripe Connect: the disconnect route's service path — sever the
     # platform link and unbind. The owner's account itself is untouched.
@@ -105,5 +123,5 @@ async def revoke_all(body: RevokeAllBody, auth: Annotated[AuthContext, Depends(g
         revoked.append(f"stripe_connect:{account_id}" + ("" if released else "(stripe_unconfirmed)"))
         await write_owner_facts(owner_id)
 
-    logger.info("company_policy: revoke-all owner_id=%s revoked=%s", owner_id, revoked)
-    return {"revoked": revoked}
+    logger.info("company_policy: revoke-all owner_id=%s revoked=%s failed=%s", owner_id, revoked, failed)
+    return {"revoked": revoked, "failed": failed}

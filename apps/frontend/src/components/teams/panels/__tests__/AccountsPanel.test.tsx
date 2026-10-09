@@ -249,6 +249,18 @@ describe("AccountsPanel — revoke everything", () => {
     expect(notifySuccess).toHaveBeenCalled();
   });
 
+  it("names the connected apps the backend could not disconnect", async () => {
+    post.mockResolvedValue({ revoked: ["workflows_cancelled:0", "connection:google"], failed: ["slack"] });
+    const input = await openDialog();
+    fireEvent.change(input, { target: { value: "revoke" } });
+    fireEvent.click(
+      screen.getAllByRole("button", { name: /^Revoke everything$/ }).find((b) => b.closest("[role=dialog]"))!,
+    );
+    await waitFor(() => expect(notifyError).toHaveBeenCalled());
+    expect(notifyError.mock.calls[0][0]).toMatch(/slack/);
+    expect(notifySuccess).toHaveBeenCalledWith("Revoked 2 item(s).");
+  });
+
   it("surfaces a failure instead of closing as if it worked", async () => {
     post.mockRejectedValue(new Error("500"));
     const input = await openDialog();

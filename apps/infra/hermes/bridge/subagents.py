@@ -134,3 +134,96 @@ def _ensure_started() -> None:
             return
         _started = True
     threading.Thread(target=_loop, name="subagent-relay", daemon=True).start()
+
+
+# ---- RPCs: ports of Hermes v2026.9.14 tui_gateway/methods_subagents.py ------------------------
+TAIL_BYTES = 16384
+SNAPSHOT_FIELDS = ("subagent_id", "parent_id", "depth", "goal", "delegation_id", "model",
+                   "started_at", "status", "tool_count", "last_tool", "accepting_steer")
+
+
+def _invalid(message: str) -> dict:
+    return {"ok": False, "error": {"code": "INVALID", "message": message}}
+
+
+def _registry():
+    """Hermes's live-child registry, only if a turn already imported it: an RPC must not import
+    Hermes (and open a state.db) on a warm-pool microVM. No turn in this process means no children."""
+    import sys
+
+    return sys.modules.get("tools.delegate_tool_registry")
+
+
+def _owner(subagent_id: str) -> str | None:
+    with _lock:
+        return OWNER_OF.get(subagent_id)
+
+
+def _owned(reg, session_key: str, subagent_id: str) -> dict | None:
+    if reg is None or _owner(subagent_id) != session_key:
+        return None
+    with reg._active_subagents_lock:
+        record = reg._active_subagents.get(subagent_id)
+        return dict(record) if record else None
+
+
+def _ids(params: dict) -> tuple[str, str] | None:
+    key, sid = params.get("sessionKey"), params.get("subagentId")
+    return (key, sid) if isinstance(key, str) and key and isinstance(sid, str) and sid else None
+
+
+def rpc_list(params: dict, **_kw) -> dict:
+    keys = params.get("sessionKeys")
+    if not isinstance(keys, list) or not keys or not all(isinstance(k, str) for k in keys):
+        return _invalid("sessionKeys must be a non-empty list of strings")
+    reg, wanted = _registry(), set(keys)
+    if reg is None:
+        return {"ok": True, "payload": {"subagents": []}}
+    with reg._active_subagents_lock:
+        records = [dict(r) for r in reg._active_subagents.values()]
+    with _lock:
+        owners = dict(OWNER_OF)
+    rows = [{**{k: r.get(k) for k in SNAPSHOT_FIELDS}, "session_key": owners[str(r["subagent_id"])]}
+            for r in records if owners.get(str(r.get("subagent_id"))) in wanted]
+    return {"ok": True, "payload": {"subagents": rows}}
+
+
+def rpc_tail(params: dict, **_kw) -> dict:
+    ids = _ids(params)
+    if ids is None:
+        return _invalid("sessionKey and subagentId are required")
+    result = {"subagent_id": ids[1], "available": False, "text": "", "truncated": False}
+    record = _owned(_registry(), *ids)
+    path = getattr(record.get("agent"), "_live_transcript_path", None) if record else None
+    if not path:
+        return {"ok": True, "payload": result}
+    try:
+        with open(path, "rb") as stream:
+            size = stream.seek(0, 2)
+            stream.seek(max(0, size - TAIL_BYTES))
+            text = stream.read(TAIL_BYTES).decode("utf-8", errors="ignore")
+    except OSError:
+        return {"ok": True, "payload": result}  # creation/cleanup races are normal
+    return {"ok": True, "payload": {**result, "available": True, "text": text, "truncated": size > TAIL_BYTES}}
+
+
+def rpc_steer(params: dict, **_kw) -> dict:
+    ids, text = _ids(params), params.get("text")
+    if ids is None or not isinstance(text, str) or not text.strip():
+        return _invalid("sessionKey, subagentId and text are required")
+    reg = _registry()
+    queued = bool(_owned(reg, *ids)) and bool(reg.steer_subagent(ids[1], text))
+    return {"ok": True, "payload": {"queued": queued}}
+
+
+def rpc_interrupt(params: dict, **_kw) -> dict:
+    ids = _ids(params)
+    if ids is None:
+        return _invalid("sessionKey and subagentId are required")
+    reg = _registry()
+    found = bool(_owned(reg, *ids)) and bool(reg.interrupt_subagent(ids[1]))
+    return {"ok": True, "payload": {"found": found}}
+
+
+RPC_METHODS = {"subagent.list": rpc_list, "subagent.tail": rpc_tail,
+               "subagent.steer": rpc_steer, "subagent.interrupt": rpc_interrupt}

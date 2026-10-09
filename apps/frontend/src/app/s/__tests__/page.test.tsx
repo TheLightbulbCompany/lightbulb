@@ -192,6 +192,25 @@ describe("session link page", () => {
     expect(openCalls()).toBe(stopped);
   });
 
+  it("stops asking while the tab is hidden, and asks at once when the person comes back", async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
+    let open = false;
+    const fetchMock = vi.fn(async () => open ? { ok: true, status: 200, json: async () => model({ title: "ALPHA18", state: "offline" }) } as Response
+      : { ok: false, status: 404, json: async () => ({ message: "This link was turned off or is not for you." }) } as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(5 * 60000); });
+    expect(fetchMock).toHaveBeenCalledTimes(1); // hidden: nothing after the first refusal
+    open = true;
+    visibility.mockReturnValue("visible");
+    await act(async () => { document.dispatchEvent(new Event("visibilitychange")); await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByRole("heading", { name: "ALPHA18" })).toBeTruthy();
+    visibility.mockRestore();
+  });
+
   it("shows the refusal when the link is turned off, and asks again only slowly", async () => {
     vi.useFakeTimers();
     window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));

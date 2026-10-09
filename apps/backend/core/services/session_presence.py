@@ -74,7 +74,8 @@ async def entry(row: dict, at: int) -> dict:
     )
     # The band is drawn in the terminal, and an "Anyone with the link" link shows that terminal to
     # people outside the workspace: no watcher is named there. The band counts them instead.
-    named = not sessions.public_id(row.get("shareLink"), row)
+    # Nor is anyone who asks, and an agent's ask carries no message; the app's own UI names them.
+    named = not sessions.is_public(row)
     return {
         "sessionId": row["sessionId"],
         "generation": row["generation"],
@@ -91,18 +92,18 @@ async def entry(row: dict, at: int) -> dict:
         ],
         "joinRequests": sorted(
             [
-                {"userId": u, "name": await _name(u), "requestId": rid, "kind": kind}
+                {"userId": u, "name": await _name(u) if named else "Someone", "requestId": rid, "kind": kind}
                 for kind, pending in (("join", pending_joins(row)), ("pickup", shown_pickups(row)))
                 for u, rid in pending.items()
             ]
             + [
                 {
                     "userId": ask["agentId"],
-                    "name": ask.get("agentName") or "Your agent",
+                    "name": (ask.get("agentName") or "Your agent") if named else "An agent",
                     "requestId": ask["requestId"],
                     "kind": "agent_message",
                     "action": ask["kind"],
-                    "text": (ask.get("text") or "")[: sessions.ASK_PRESENCE_TEXT_CHARS],
+                    "text": (ask.get("text") or "")[: sessions.ASK_PRESENCE_TEXT_CHARS] if named else "",
                 }
                 for ask in asks
             ],

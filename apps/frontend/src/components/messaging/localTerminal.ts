@@ -55,8 +55,10 @@ const now = () => (last = Math.max(performance.timeOrigin + performance.now(), l
  * The session's live terminal on this Mac, drawn by the desktop app over `slot` (its own webview;
  * this page never touches the terminal or its key). "local": it is there. "none": not in the
  * desktop app, or this Mac does not run the session. `visible` false (an overlay is open) and
- * unmounting take it away; neither ends the session. So does any dialog on the page: the terminal
- * is drawn above the whole page, and a confirmation under it could not be seen or answered.
+ * unmounting take it away; neither ends the session. So does a modal dialog (`ui/dialog`,
+ * `ui/alert-dialog`: their overlay carries `data-modal-overlay`): the terminal is drawn above the
+ * whole page, and a confirmation under it could not be seen or answered. A popover or the emoji
+ * picker is not modal and leaves the terminal where it is.
  */
 export function useLocalTerminal(target: { sessionId: string } | { holderId: string } | null,
   slot: RefObject<HTMLElement | null>, visible: boolean): LocalTerminal {
@@ -72,7 +74,7 @@ export function useLocalTerminal(target: { sessionId: string } | { holderId: str
     const t0 = Date.now();
     const report = () => {
       const box = slot.current?.getBoundingClientRect();
-      const rect = visible && !document.querySelector('[role="dialog"], [role="alertdialog"]') && box && box.width > 0 && box.height > 0 ? { x: box.left, y: box.top, width: box.width, height: box.height } : null;
+      const rect = visible && !document.querySelector("[data-modal-overlay]") && box && box.width > 0 && box.height > 0 ? { x: box.left, y: box.top, width: box.width, height: box.height } : null;
       // The page's own size too: the app places the terminal in the window, and the page can start below the window's top.
       const viewport = rect ? { width: innerWidth, height: innerHeight } : null;
       const shape = JSON.stringify([rect, viewport]);

@@ -249,3 +249,19 @@ async def test_an_anyone_link_session_names_no_watcher_to_the_band(monkeypatch):
     ]
     workspace = await presence.entry(_row(shareLink={"audience": "workspace"}), 1)
     assert [v["name"] for v in workspace["viewers"]] == ["Aden", "Mira"]
+    # Nor anyone who asks, and an agent's ask carries no message.
+    ask = {"agentId": "agent-1", "agentName": "Friday", "requestId": "a1", "kind": "send", "text": "Run the tests"}
+    monkeypatch.setattr(presence.sessions, "pending_agent_asks", AsyncMock(return_value=[ask]))
+    asked = _row(
+        shareLink={"audience": "anyone", "publicId": "pub-1"},
+        joinRequests={"user_zoe": {"state": "pending", "requestId": "r1"}},
+        deviceFeatures=["sessionPresence", "agentMessageAsks"],
+    )
+    assert [(r["userId"], r["name"], r.get("text")) for r in (await presence.entry(asked, 1))["joinRequests"]] == [
+        ("agent-1", "An agent", ""),
+        ("user_zoe", "Someone", None),
+    ]
+    named = [
+        (r["name"], r.get("text")) for r in (await presence.entry({**asked, "shareLink": None}, 1))["joinRequests"]
+    ]
+    assert named == [("Friday", "Run the tests"), ("Zoe", None)]

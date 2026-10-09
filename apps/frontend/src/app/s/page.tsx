@@ -21,7 +21,8 @@ const POLL_MS = 5000;
  *  A link viewer then costs the shared /public throttle 0.1 requests a second, not 0.27. */
 const WATCHING_POLL_MS = 30_000;
 /** After a refusal the open page keeps asking, slowly and not for long: the owner may have narrowed
- *  the link and widened it again (a refused open costs one read). It stops when the tab is hidden. */
+ *  the link and widened it again (a refused open costs one read). It stops while the tab is hidden,
+ *  and starts again with a fresh ten minutes when the person comes back to it. */
 const REFUSED_POLL_MS = 30_000;
 const REFUSED_POLL_FOR_MS = 10 * 60_000;
 const watchingPage = (page: SessionLinkPage) => page.state === "live" && !page.me.member;
@@ -272,9 +273,15 @@ export default function SessionLinkPageRoute() {
       else if (refusedAt && Date.now() - refusedAt < REFUSED_POLL_FOR_MS)
         timer = setTimeout(() => { if (alive && document.visibilityState !== "hidden") void tick(false); }, REFUSED_POLL_MS);
     };
+    // Back on the tab after it was hidden through a retry: ask now, with a fresh ten minutes.
+    const shown = () => {
+      if (!alive || !refusedAt || document.visibilityState === "hidden") return;
+      refusedAt = Date.now(); clearTimeout(timer); void tick(false);
+    };
+    document.addEventListener("visibilitychange", shown);
     reopen.current = () => { if (alive && last?.state === "live") { clearTimeout(timer); void tick(false); } };
     void tick(true);
-    return () => { alive = false; clearTimeout(timer); };
+    return () => { alive = false; clearTimeout(timer); document.removeEventListener("visibilitychange", shown); };
   }, [stash, isLoaded, isSignedIn]);
 
   // A workspace member lands in the app's own session view (Watch, Ask to join). Not in the CLI's

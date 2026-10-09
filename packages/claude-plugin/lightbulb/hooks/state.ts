@@ -31,7 +31,8 @@ export const bandLine = (s: SessionState) => bandRuns(s).map(r => r.text).join('
 
 export function requestLine(r: JoinRequest, count: number): string {
   const verb = r.kind === 'agent_message'
-    ? (r.action === 'interrupt' ? 'wants to stop this session' : `wants to message this session: ${printable(r.text)}`)
+    // No text: the session is on an "Anyone with the link" page, and the workspace sent none.
+    ? (r.action === 'interrupt' ? 'wants to stop this session' : printable(r.text) ? `wants to message this session: ${printable(r.text)}` : 'is asking to message this session')
     : r.kind === 'pickup' ? 'wants to pick this up · conversation + uncommitted changes' : 'asked to join'
   return `${r.name} ${verb}` + (count > 1 ? ` (+${count - 1} more)` : '')
 }

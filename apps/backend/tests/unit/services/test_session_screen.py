@@ -877,3 +877,42 @@ async def test_the_owners_end_stops_public_frames_before_the_exit_output_and_a_r
     transport[4].clear()
     await session_screen.forward(relay(transport), "conn-1", frame(sid))
     assert f"/pub/{public}" in [c for c, _ in await _published(transport)]
+
+
+@pytest.mark.asyncio
+async def test_changing_a_links_audience_redraws_the_band_at_once(transport):
+    """Workspace to Anyone: the names leave the band before a link viewer's first picture, not ~10 s later."""
+    sid = await start(transport)
+    await relay(transport).handle_message("conn-1", {**heartbeat(sid), "sessionPresence": True})
+    await session_screen.watch(BOB, sid)
+    await service.put_link(ALICE, sid, "workspace")
+    transport[3].clear()
+    await service.put_link(ALICE, sid, "anyone")
+    await service.put_link(ALICE, sid, "workspace")
+    names = [[v["name"] for v in p["viewers"]] for p in _presence(transport)]
+    assert len(names) == 2 and names[0] == [""] and names[1] != [""]
+
+
+@pytest.mark.asyncio
+async def test_an_only_me_session_admits_its_owners_end_and_nothing_else(transport, db):
+    """Round 18: the server admitted the owner's send and left the refusal to the Mac."""
+    import uuid
+
+    from core.services.local_sessions import LocalSessionCommand
+
+    sid = await start(transport)
+    await ack(transport, sid)
+    db[0].update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+        UpdateExpression="SET terminal = :h",
+        ExpressionAttributeValues={":h": "held"},
+    )
+    await service.set_sharing(ALICE, sid, False)
+
+    def command(kind, **more):
+        return LocalSessionCommand(request_id=str(uuid.uuid4()), expected_generation="generation-1", kind=kind, **more)
+
+    with pytest.raises(ApiProblem) as refused:
+        await service.submit_command(ALICE, None, sid, command("send", text="hello"))
+    assert refused.value.error.code == "LOCAL_SESSION_CONFLICT"
+    assert (await service.submit_command(ALICE, None, sid, command("end"))).state == "pending"

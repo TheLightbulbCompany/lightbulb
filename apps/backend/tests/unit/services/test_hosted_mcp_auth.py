@@ -121,6 +121,7 @@ async def test_room_target_search_does_not_offer_offline_queue(monkeypatch):
         control_unavailable_reason=None,
         team_control=False,
         allowed_senders=[],
+        shared=False,
     )
     monkeypatch.setattr(hosted_mcp, "_caller", lambda: AuthContext(user_id="user_sender", org_id="org_test"))
     monkeypatch.setattr(
@@ -131,6 +132,7 @@ async def test_room_target_search_does_not_offer_offline_queue(monkeypatch):
     monkeypatch.setattr(hosted_mcp.messaging, "human_display_name", AsyncMock(return_value="Tester"))
     result = await hosted_mcp.find_sessions()
     assert result["sessions"][0]["canSend"] is False
+    assert result["sessions"][0]["shared"] is False  # the caller's own Only me session says so
 
 
 def test_client_identity_names_known_clients_and_falls_back_to_host():

@@ -1542,6 +1542,9 @@ def _require_control(row: dict, request: LocalSessionCommand, *, allow_offline_s
         raise ApiProblem("LOCAL_SESSION_OFFLINE", "The desktop session has ended.")
     if (row["status"] == "offline" or row["onlineUntil"] <= int(time.time())) and not allow_offline_send:
         raise ApiProblem("LOCAL_SESSION_OFFLINE", "The desktop session is offline.")
+    if row.get("unshared") and request.kind != "end":
+        # Only me: its Mac carries out nothing but its owner's End (Remove), so nothing else is admitted.
+        raise ApiProblem("LOCAL_SESSION_CONFLICT", "Share this session with your workspace first.")
     if request.kind == "end":
         # The Mac stops the session's own process: one Lightbulb holds, or a plain Claude. A Codex
         # app or daemon process hosts many conversations. Ending needs no send capability, so an
@@ -2990,6 +2993,12 @@ def public_id(link: dict | None, row: dict | None = None) -> str | None:
     return (link or {}).get("publicId")
 
 
+def is_public(row: dict) -> bool:
+    """This session's terminal is on an "Anyone with the link" page right now. The one test for
+    everything that must keep a person's name out of that picture (the band, a typed-row label)."""
+    return bool(public_id(row.get("shareLink"), row))
+
+
 def _with_audience(link: dict, audience: str) -> dict:
     kept = {k: v for k, v in link.items() if k != "publicId"}
     return {**kept, "audience": audience, **({"publicId": str(uuid.uuid4())} if audience == "anyone" else {})}
@@ -3098,13 +3107,15 @@ async def put_link(auth: AuthContext, session_id: str, audience: str | None) -> 
                 },
             ]
         try:
-            await repo.put_session(
-                {**row, "shareLink": new, "revision": str(uuid.uuid4())}, row, enrollment, extra=extra
-            )
+            updated = {**row, "shareLink": new, "revision": str(uuid.uuid4())}
+            await repo.put_session(updated, row, enrollment, extra=extra)
         except ClientError as exc:
             if not messaging_repo._is_cancelled(exc):
                 raise
             continue
+        if is_public(updated) != is_public(row):
+            # The band redraws now: unnamed before a link viewer's first picture, named again after.
+            await _push_presence(updated)
         if not link:
             _capture_growth(row, "share_link_created", auth.user_id, audience=new["audience"])
         await publish_resources_changed(owner, row["humanUserId"])

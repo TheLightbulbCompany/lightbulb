@@ -20,6 +20,8 @@ const DialogOverlay = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <DialogPrimitive.Overlay
     ref={ref}
+    // Read by useLocalTerminal: the desktop app's terminal steps aside for a modal, and only for one.
+    data-modal-overlay=""
     className={cn(
       "fixed inset-0 z-(--z-overlay) bg-[color-mix(in_srgb,var(--midnight)_80%,transparent)] ease-out duration-(--dur-slow) data-[state=closed]:duration-(--dur-base) data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
       className

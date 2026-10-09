@@ -278,6 +278,9 @@ async def create_portal(
 class CheckoutRequest(BaseModel):
     plan: Literal["base", "workspace", "ultra"]
     return_to: Literal["web", "app"] = "web"
+    # Required to change the plan of a live subscription; without it the
+    # response is ``confirm_required`` with the cost and nothing is changed.
+    confirm: bool = False
 
 
 @router.post(
@@ -311,7 +314,11 @@ async def create_workspace_checkout(
 
     try:
         result = await create_checkout(
-            owner_id=owner_id, clerk_user_id=auth.user_id, plan=body.plan, return_to=body.return_to
+            owner_id=owner_id,
+            clerk_user_id=auth.user_id,
+            plan=body.plan,
+            return_to=body.return_to,
+            confirm=body.confirm,
         )
     except BillingServiceError as e:
         if str(e) == "checkout_in_progress":

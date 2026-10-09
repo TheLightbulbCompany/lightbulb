@@ -254,7 +254,12 @@ async def refresh_launch(_auth: AuthContext = Depends(require_platform_admin)):
 
 
 @router.delete("/launch/entries/{owner_id}")
-async def delete_launch_entry(owner_id: str, _auth: AuthContext = Depends(require_platform_admin)):
+@audit_admin_action("launch.entry.remove", target_param="owner_id")
+async def delete_launch_entry(
+    owner_id: str,
+    request: Request,
+    auth: AuthContext = Depends(require_platform_admin),
+):
     """Take an entry off the public board and revoke its stored Stripe key.
 
     The only removal door — self-serve key revocation is a v1 non-goal, so a

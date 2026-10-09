@@ -76,6 +76,11 @@ async def checkout(
     # listing the org already owns. Deploy's entitlement check uses the same
     # identity.
     buyer_identity = resolve_owner_id(auth)
+    # A seller is never charged for their own listing — they deploy it free
+    # through the seller bypass. A listing's seller_id is the publishing user
+    # or, for workspace-published listings, the workspace id.
+    if listing.get("seller_id") in {auth.user_id, buyer_identity}:
+        raise HTTPException(status_code=409, detail="This is your own listing — you can't buy it.")
     # An entitled buyer must never reach Stripe again — the storefront's only
     # recovery path after a broken paid deploy used to re-prompt payment.
     # Consumers branch on this shape and deploy instead.

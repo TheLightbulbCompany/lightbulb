@@ -24,7 +24,7 @@ from core.services import company_stripe, company_stripe_approval, provision_gat
 from core.services.owner_facts import write_owner_facts
 from core.services.container_auth import _require_hook_token
 from routers.company_board import file_card
-from routers.teams._guards import require_always_on_entitlement
+from routers.teams._guards import COMPANY_STRIPE_MESSAGE, require_always_on_entitlement
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -129,7 +129,7 @@ async def create(auth: Annotated[AuthContext, Depends(get_current_user)]):
     """Create the company account if absent and return a fresh onboarding link."""
     _gate_admin(auth)
     owner_id = resolve_owner_id(auth)
-    await require_always_on_entitlement(owner_id)
+    await require_always_on_entitlement(owner_id, message=COMPANY_STRIPE_MESSAGE)
     row = await billing_repo.get_by_owner_id(owner_id) or {}
     account_id = row.get("company_stripe_account_id")
     if account_id and row.get("company_stripe_source") == "connected":
@@ -196,7 +196,7 @@ async def bind_api_key(body: ApiKeyBody, auth: Annotated[AuthContext, Depends(ge
     """
     _gate_admin(auth)
     owner_id = resolve_owner_id(auth)
-    await require_always_on_entitlement(owner_id)
+    await require_always_on_entitlement(owner_id, message=COMPANY_STRIPE_MESSAGE)
     row = await billing_repo.get_by_owner_id(owner_id) or {}
     if row.get("company_stripe_account_id"):
         raise HTTPException(status_code=409, detail="A Stripe account is already bound")
@@ -255,7 +255,7 @@ async def bind_api_key(body: ApiKeyBody, auth: Annotated[AuthContext, Depends(ge
 async def onboarding_link(auth: Annotated[AuthContext, Depends(get_current_user)]):
     _gate_admin(auth)
     owner_id = resolve_owner_id(auth)
-    await require_always_on_entitlement(owner_id)
+    await require_always_on_entitlement(owner_id, message=COMPANY_STRIPE_MESSAGE)
     row = await billing_repo.get_by_owner_id(owner_id) or {}
     account_id = row.get("company_stripe_account_id")
     if not account_id or row.get("company_stripe_source") != "created":
@@ -272,7 +272,7 @@ async def connect_start(auth: Annotated[AuthContext, Depends(get_current_user)])
     _require_connect_configured()
     _gate_admin(auth)
     owner_id = resolve_owner_id(auth)
-    await require_always_on_entitlement(owner_id)
+    await require_always_on_entitlement(owner_id, message=COMPANY_STRIPE_MESSAGE)
     row = await billing_repo.get_by_owner_id(owner_id) or {}
     if row.get("company_stripe_account_id"):
         raise HTTPException(status_code=409, detail="A Stripe account is already bound")

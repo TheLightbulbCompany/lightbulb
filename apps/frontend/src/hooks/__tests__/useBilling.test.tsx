@@ -130,7 +130,7 @@ describe("useBilling", () => {
         String(c[0]).includes("/billing/checkout"),
       );
       expect(call).toBeTruthy();
-      expect(JSON.parse((call![1] as RequestInit).body as string)).toEqual({ plan: "workspace" });
+      expect(JSON.parse((call![1] as RequestInit).body as string)).toEqual({ plan: "workspace", confirm: false });
       expect(window.location.href).toBe("https://checkout/flat");
       Object.defineProperty(window, "location", { value: orig, writable: true });
     },

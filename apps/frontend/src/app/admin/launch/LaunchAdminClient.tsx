@@ -238,9 +238,15 @@ export function LaunchAdminClient({ data }: { data: LaunchOpsSheet }) {
             {closeFailures ? (
               <div className="flex items-center gap-2">
                 <ErrorBanner error="Some coupon attaches or winner emails failed — a forced rerun retries only the failed steps." />
-                <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => close(true)}>
-                  Retry (force)
-                </Button>
+                <ConfirmActionDialog
+                  confirmText="close"
+                  actionLabel="Retry the failed coupon attaches and winner emails (force)"
+                  onConfirm={() => close(true)}
+                >
+                  <Button type="button" variant="outline" size="sm" disabled={busy}>
+                    Retry (force)
+                  </Button>
+                </ConfirmActionDialog>
               </div>
             ) : null}
           </div>
@@ -284,15 +290,21 @@ export function LaunchAdminClient({ data }: { data: LaunchOpsSheet }) {
             formatPct(r.pct),
             r.refreshed_at ?? "never",
             r.refresh_error ?? "",
-            <button
+            <ConfirmActionDialog
               key="remove"
-              type="button"
-              onClick={() => remove(r.owner_id)}
-              disabled={busy}
-              className="rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+              confirmText={r.owner_id}
+              actionLabel="Remove this entry from the board and revoke its stored Stripe key"
+              destructive
+              onConfirm={() => remove(r.owner_id)}
             >
-              Remove
-            </button>,
+              <button
+                type="button"
+                disabled={busy}
+                className="rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+              >
+                Remove
+              </button>
+            </ConfirmActionDialog>,
           ])}
         />
       </Card>

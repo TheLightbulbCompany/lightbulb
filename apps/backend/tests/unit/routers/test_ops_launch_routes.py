@@ -40,7 +40,7 @@ async def test_ops_launch_requires_admin(async_client):
     assert r.status_code in (401, 403)
 
 
-async def test_ops_launch_delete_entry_removes_row_and_key_in_order(admin_client):
+async def test_ops_launch_delete_entry_removes_row_and_key_in_order(admin_client, audited):
     # Key first: a dangling Secrets Manager entry with no owning row is worse
     # than a row that still points at an already-revoked key.
     calls: list[str] = []
@@ -56,11 +56,11 @@ async def test_ops_launch_delete_entry_removes_row_and_key_in_order(admin_client
         patch("core.repositories.launch_entries_repo.delete", AsyncMock(side_effect=_delete_row)),
     ):
         r = await admin_client.delete("/api/v1/ops/launch/entries/user_1")
-    assert r.status_code == 200 and r.json() == {"deleted": "user_1"}
+    assert r.status_code == 200 and r.json()["deleted"] == "user_1"
     assert calls == ["key:user_1", "row:user_1"]
 
 
-async def test_ops_launch_delete_entry_drops_the_public_response_cache(admin_client):
+async def test_ops_launch_delete_entry_drops_the_public_response_cache(admin_client, audited):
     # A taken-down entrant has to leave the public board now, not up to 30s later.
     with (
         patch("core.services.launch_revenue.delete_key", AsyncMock()),
@@ -474,3 +474,18 @@ async def test_settings_put_round_trips_a_non_default_pot_per_seat(admin_client)
     assert r.status_code == 200
     assert stored["pot_per_seat_cents"] == 1_000
     assert r.json()["pot_per_seat_cents"] == 1_000
+
+
+@pytest.mark.asyncio
+async def test_ops_launch_delete_entry_writes_an_audit_row(admin_client, audited):
+    """Remove revokes a stored Stripe key and deletes the entry: it leaves the
+    same audit trail as every other destructive admin action."""
+    with (
+        patch("core.services.launch_revenue.delete_key", AsyncMock()),
+        patch("core.repositories.launch_entries_repo.delete", AsyncMock()),
+    ):
+        r = await admin_client.delete("/api/v1/ops/launch/entries/user_1")
+    assert r.status_code == 200
+    audited.assert_awaited_once()
+    assert audited.await_args.kwargs["action"] == "launch.entry.remove"
+    assert audited.await_args.kwargs["target_user_id"] == "user_1"

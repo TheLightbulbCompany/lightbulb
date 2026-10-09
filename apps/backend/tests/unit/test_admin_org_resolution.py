@@ -403,6 +403,7 @@ class TestAdminMutationOwnerResolution:
             "org_abc",
             amount_cents=500,
             reason="incident_comp",
+            request_id=None,
         )
 
     @pytest.mark.asyncio

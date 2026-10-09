@@ -278,7 +278,7 @@ describe("BillingPanel — org trial_local conversion", () => {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Choose Workspace" }));
     });
-    expect(billing.startCheckout).toHaveBeenCalledWith("workspace");
+    expect(billing.startCheckout).toHaveBeenCalledWith("workspace", false);
     // The Bedrock card is gone (#2932); managed inference shows only when available.
     expect(screen.queryByText(/managed Claude inference/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Create or select a workspace/i)).not.toBeInTheDocument();

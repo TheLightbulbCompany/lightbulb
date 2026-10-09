@@ -80,6 +80,16 @@ def _paperclip_repo():
 class IssueCreditRequest(BaseModel):
     amount_cents: int = Field(..., gt=0, description="Credit amount in cents")
     reason: str = Field(..., min_length=1, description="Reason for credit (audited)")
+    request_id: str | None = Field(
+        None,
+        min_length=8,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_-]+$",
+        description=(
+            "One id per admin submission. A retry of the same submission reuses it and is "
+            "deduplicated; a second deliberate credit sends a new one and is a new credit."
+        ),
+    )
 
 
 class MarkInvoiceResolvedRequest(BaseModel):
@@ -381,6 +391,27 @@ async def admin_provision_retry(
 # ---------------------------------------------------------------------------
 
 
+# A billing action that changed nothing must not read as "succeeded": the admin
+# UI prints the 409 detail, and the audit row records an error instead of a success.
+_BILLING_NOOP_REASONS = {
+    "no_billing_account": "This workspace has no billing account — nothing was changed.",
+    "no_subscription": "This workspace has no Stripe subscription — nothing was changed.",
+    "no_customer": "This workspace has no Stripe customer — nothing was changed.",
+    "invoice_not_found": "Stripe has no invoice with that id — nothing was changed.",
+    "invoice_customer_mismatch": (
+        "That invoice belongs to a different Stripe customer than this workspace — nothing was changed."
+    ),
+    "already_paid": "That invoice is already paid — nothing was changed.",
+}
+
+
+def _refuse_billing_noop(result: dict) -> dict:
+    reason = _BILLING_NOOP_REASONS.get(result.get("status"))
+    if reason:
+        raise HTTPException(status_code=409, detail=reason)
+    return result
+
+
 @router.post(
     "/users/{user_id}/billing/cancel-subscription",
     description="Cancel the user's Stripe subscription and revert to free tier.",
@@ -396,7 +427,7 @@ async def admin_billing_cancel_subscription(
     # Without the resolver the mutation targets a personal-key account that
     # doesn't exist for org members (admin-org-owner-id P1).
     owner_id, _ = await resolve_admin_owner_id(user_id)
-    return await billing_service.cancel_subscription_for_owner(owner_id)
+    return _refuse_billing_noop(await billing_service.cancel_subscription_for_owner(owner_id))
 
 
 @router.post(
@@ -411,7 +442,7 @@ async def admin_billing_pause_subscription(
     auth: AuthContext = Depends(require_platform_admin),
 ):
     owner_id, _ = await resolve_admin_owner_id(user_id)
-    return await billing_service.pause_subscription_for_owner(owner_id)
+    return _refuse_billing_noop(await billing_service.pause_subscription_for_owner(owner_id))
 
 
 @router.post(
@@ -427,7 +458,11 @@ async def admin_billing_issue_credit(
     auth: AuthContext = Depends(require_platform_admin),
 ):
     owner_id, _ = await resolve_admin_owner_id(user_id)
-    return await billing_service.issue_credit_for_owner(owner_id, amount_cents=body.amount_cents, reason=body.reason)
+    return _refuse_billing_noop(
+        await billing_service.issue_credit_for_owner(
+            owner_id, amount_cents=body.amount_cents, reason=body.reason, request_id=body.request_id
+        )
+    )
 
 
 @router.post(
@@ -443,7 +478,7 @@ async def admin_billing_mark_invoice_resolved(
     auth: AuthContext = Depends(require_platform_admin),
 ):
     owner_id, _ = await resolve_admin_owner_id(user_id)
-    return await billing_service.mark_invoice_resolved(owner_id, body.invoice_id)
+    return _refuse_billing_noop(await billing_service.mark_invoice_resolved(owner_id, body.invoice_id))
 
 
 # ---------------------------------------------------------------------------

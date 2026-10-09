@@ -51,7 +51,7 @@ from core.services.inbound_triggers import (
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
 from core.services.paperclip_admin_session import get_admin_session_cookie, invalidate_admin_session
 from routers import paperclip_trigger_proxy
-from routers.teams._guards import require_always_on_entitlement
+from routers.teams._guards import WEBHOOK_AUTOMATIONS_MESSAGE, require_always_on_entitlement
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +151,7 @@ async def from_integration(
     """
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
-    await require_always_on_entitlement(owner_id)
+    await require_always_on_entitlement(owner_id, message=WEBHOOK_AUTOMATIONS_MESSAGE)
     try:
         return await seed_trigger_routine(
             owner_id,

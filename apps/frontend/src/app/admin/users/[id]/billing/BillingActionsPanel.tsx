@@ -86,8 +86,12 @@ export function BillingActionsPanel({ userId, email }: BillingActionsPanelProps)
       setError("Issue credit failed: reason is required.");
       return;
     }
-    const result = await issueCredit(userId, cents, creditReason.trim());
-    if (result.ok) {
+    // One id per submission: crypto.randomUUID() is new on every confirmed
+    // submit, and the dialog's busy state blocks a double click inside one.
+    const result = await issueCredit(userId, cents, creditReason.trim(), crypto.randomUUID());
+    if (result.ok && (result.data as { status?: string } | undefined)?.status === "duplicate") {
+      setNotice("This credit was already issued — Stripe returned the earlier one; no new credit was created.");
+    } else if (result.ok) {
       setNotice("Credit issued.");
       setCreditAmount("");
       setCreditReason("");

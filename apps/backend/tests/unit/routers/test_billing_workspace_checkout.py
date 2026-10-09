@@ -33,7 +33,9 @@ async def test_org_admin_can_start_workspace_checkout(plan, monkeypatch):
         result = await billing.create_workspace_checkout(billing.CheckoutRequest(plan=plan), auth=_admin())
 
     assert result == {"checkout_url": "https://checkout.test/cs_1"}
-    create.assert_awaited_once_with(owner_id="org_1", clerk_user_id="user_admin", plan=plan, return_to="web")
+    create.assert_awaited_once_with(
+        owner_id="org_1", clerk_user_id="user_admin", plan=plan, return_to="web", confirm=False
+    )
 
 
 @pytest.mark.asyncio
@@ -46,11 +48,13 @@ async def test_workspace_checkout_passes_return_to_app_through(monkeypatch):
     create = AsyncMock(return_value={"checkout_url": "https://checkout.test/cs_1"})
     with patch("core.services.billing_service.create_workspace_checkout", new=create):
         result = await billing.create_workspace_checkout(
-            billing.CheckoutRequest(plan="workspace", return_to="app"), auth=_admin()
+            billing.CheckoutRequest(plan="workspace", return_to="app", confirm=False), auth=_admin()
         )
 
     assert result == {"checkout_url": "https://checkout.test/cs_1"}
-    create.assert_awaited_once_with(owner_id="org_1", clerk_user_id="user_admin", plan="workspace", return_to="app")
+    create.assert_awaited_once_with(
+        owner_id="org_1", clerk_user_id="user_admin", plan="workspace", return_to="app", confirm=False
+    )
 
 
 @pytest.mark.asyncio
@@ -108,3 +112,16 @@ async def test_workspace_checkout_refuses_an_apple_billed_workspace(monkeypatch)
     assert exc.value.status_code == 409
     assert exc.value.detail == "apple_managed"
     create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_workspace_checkout_passes_the_plan_change_confirmation_through(monkeypatch):
+    create = AsyncMock(return_value={"updated": True})
+    monkeypatch.setattr(billing, "_get_billing_account", AsyncMock(return_value={"stripe_customer_id": "cus_1"}))
+    with patch("core.services.billing_service.create_workspace_checkout", create):
+        result = await billing.create_workspace_checkout(
+            billing.CheckoutRequest(plan="ultra", confirm=True), auth=_admin()
+        )
+
+    assert result == {"updated": True}
+    assert create.await_args.kwargs["confirm"] is True

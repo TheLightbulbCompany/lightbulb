@@ -24,25 +24,37 @@ const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
  *     /marketplace/deploy-success?entitled=1 which runs the deploy.
  */
 export function BuyButton({ listing }: { listing: Listing }) {
-  const { isSignedIn, getToken } = useAuth();
+  const { isSignedIn, getToken, userId, orgId } = useAuth();
   const { user } = useUser();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [retryable, setRetryable] = useState(true);
 
-  if (listing.price_cents === 0) {
+  const freeDeploy = (
+    <FreeDeployButton
+      listingId={listing.listing_id}
+      isSignedIn={!!isSignedIn}
+      getToken={getToken}
+      loading={loading}
+      setLoading={setLoading}
+      error={error}
+      setError={setError}
+      retryable={retryable}
+      setRetryable={setRetryable}
+    />
+  );
+
+  if (listing.price_cents === 0) return freeDeploy;
+
+  // A seller is never charged for their own listing (checkout 409s it); the
+  // deploy route lets them deploy it free. seller_id is the publishing user
+  // or, for a workspace listing, the workspace id.
+  if (listing.seller_id && (listing.seller_id === userId || listing.seller_id === orgId)) {
     return (
-      <FreeDeployButton
-        listingId={listing.listing_id}
-        isSignedIn={!!isSignedIn}
-        getToken={getToken}
-        loading={loading}
-        setLoading={setLoading}
-        error={error}
-        setError={setError}
-        retryable={retryable}
-        setRetryable={setRetryable}
-      />
+      <div>
+        {freeDeploy}
+        <p className="mt-2 text-sm text-[var(--midnight-soft)]">This is your listing</p>
+      </div>
     );
   }
 

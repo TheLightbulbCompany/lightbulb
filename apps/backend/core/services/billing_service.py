@@ -157,8 +157,14 @@ async def create_workspace_checkout(
     clerk_user_id: str,
     plan: Literal["base", "workspace", "ultra"],
     return_to: Literal["web", "app"] = "web",
+    confirm: bool = False,
 ) -> dict:
-    """Create or change the single recurring subscription for a workspace."""
+    """Create or change the single recurring subscription for a workspace.
+
+    Changing the plan of a LIVE subscription needs ``confirm=True``. Without it
+    nothing is changed and the result is ``confirm_required`` plus what the
+    change will cost, so no client can move a paid plan in one unconfirmed call.
+    """
     checkout_bucket = int(time.time() // 300)
     checkout_expires_at = (checkout_bucket * 300) + 36 * 60
     price_id = {
@@ -236,6 +242,11 @@ async def create_workspace_checkout(
         item = items[0]
         if (item.get("price") or {}).get("id") == price_id:
             return {"updated": False}
+        if not confirm:
+            # Nothing is charged at the swap (create_prorations below): the
+            # prorated difference lands on the next invoice. The client states
+            # that and resends with confirm=True.
+            return {"updated": False, "confirm_required": True}
         try:
             revision = str(int((subscription.get("metadata") or {}).get("workspace_plan_revision", "0")) + 1)
         except ValueError as e:
@@ -642,7 +653,7 @@ async def pause_subscription_for_owner(user_id: str) -> dict:
     return {"status": "paused", "subscription_id": sub_id}
 
 
-async def issue_credit_for_owner(user_id: str, *, amount_cents: int, reason: str) -> dict:
+async def issue_credit_for_owner(user_id: str, *, amount_cents: int, reason: str, request_id: str) -> dict:
     """Admin: credit the user's Stripe customer balance by amount_cents.
 
     Stripe applies negative balance amounts as a credit toward future invoices.
@@ -651,26 +662,54 @@ async def issue_credit_for_owner(user_id: str, *, amount_cents: int, reason: str
     if not billing or not billing.get("stripe_customer_id"):
         return {"status": "no_customer"}
     customer_id = billing["stripe_customer_id"]
-    # No admin_action_id is threaded through here yet, so derive a stable
-    # hash from (amount, reason). Two genuinely-different credits with the
-    # same reason but different amounts get different keys; a retry of the
-    # same logical credit collapses to one Stripe write.
+    # ``request_id`` is one admin SUBMISSION: a double click or a retry of it
+    # reuses the id and collapses to one Stripe write, while a second deliberate
+    # credit of the same amount and reason carries a new id and is a new credit.
+    # Without it the key was (amount, reason) alone, and Stripe merged two
+    # identical credits issued within its 24 h idempotency window.
     reason_hash = hashlib.sha256(f"{amount_cents}:{reason}".encode("utf-8")).hexdigest()[:16]
+    key = f"balance_tx:{customer_id}:{reason_hash}:{request_id}"
     try:
         txn = stripe.Customer.create_balance_transaction(
             customer_id,
             amount=-abs(amount_cents),
             currency="usd",
             description=reason,
-            idempotency_key=f"balance_tx:{customer_id}:{reason_hash}",
+            idempotency_key=key,
         )
     except Exception as e:  # noqa: BLE001
         raise BillingServiceError(f"stripe_credit_failed: {e}")
-    return {"status": "credited", "transaction_id": txn["id"], "amount_cents": amount_cents}
+    # Stripe marks a response it served from an earlier request with the same key.
+    headers = getattr(getattr(txn, "last_response", None), "headers", None) or {}
+    replayed = any(k.lower() == "idempotent-replayed" and str(v).lower() == "true" for k, v in headers.items())
+    return {
+        "status": "duplicate" if replayed else "credited",
+        "transaction_id": txn["id"],
+        "amount_cents": amount_cents,
+    }
 
 
 async def mark_invoice_resolved(user_id: str, invoice_id: str) -> dict:
-    """Admin: mark a Stripe invoice as paid out-of-band (e.g. wire transfer)."""
+    """Admin: mark a Stripe invoice as paid out-of-band (e.g. wire transfer).
+
+    The invoice must belong to this owner's Stripe customer: an invoice id is
+    typed by hand, and paying another customer's invoice would also write an
+    audit row naming the wrong workspace. Every refusal returns before any write.
+    """
+    billing = await billing_repo.get_by_owner_id(user_id)
+    customer_id = (billing or {}).get("stripe_customer_id")
+    if not customer_id:
+        return {"status": "no_customer"}
+    try:
+        current = stripe.Invoice.retrieve(invoice_id)
+    except Exception as e:  # noqa: BLE001
+        if _is_stripe_missing(e):
+            return {"status": "invoice_not_found"}
+        raise BillingServiceError(f"stripe_invoice_retrieve_failed: {e}")
+    if current.get("customer") != customer_id:
+        return {"status": "invoice_customer_mismatch"}
+    if current.get("status") == "paid":
+        return {"status": "already_paid"}
     try:
         invoice = stripe.Invoice.pay(
             invoice_id,

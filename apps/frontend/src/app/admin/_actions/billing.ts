@@ -6,8 +6,8 @@ import { adminPost, type ActionResult } from "./_shared";
  * Server Actions for the per-user billing surface (admin dashboard).
  *
  * Each action POSTs to a backend `/admin/users/{user_id}/billing/*` route
- * with a fresh `Idempotency-Key` (CEO D1) — duplicate clicks return the
- * cached response instead of double-charging or double-cancelling.
+ * with a fresh `Idempotency-Key` (CEO D1). A billing action that changed
+ * nothing comes back as a 409 whose detail says why.
  */
 
 export async function cancelSubscription(userId: string): Promise<ActionResult> {
@@ -22,10 +22,13 @@ export async function issueCredit(
   userId: string,
   amountCents: number,
   reason: string,
+  requestId: string,
 ): Promise<ActionResult> {
+  // requestId is one admin submission: a retry of it is deduplicated by Stripe,
+  // a second deliberate credit (new requestId) is a new credit.
   return adminPost(
     `/admin/users/${encodeURIComponent(userId)}/billing/issue-credit`,
-    { amount_cents: amountCents, reason },
+    { amount_cents: amountCents, reason, request_id: requestId },
   );
 }
 

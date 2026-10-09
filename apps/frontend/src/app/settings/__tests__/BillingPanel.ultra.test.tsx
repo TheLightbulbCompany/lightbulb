@@ -90,10 +90,12 @@ describe("BillingPanel — Ultra upgrade CTA", () => {
     expect(screen.getByText("Lightbulb — $50 / month")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /manage payment/i })).toBeInTheDocument();
 
+    // A live plan change asks first (the prorated difference lands on the next invoice).
+    vi.spyOn(window, "confirm").mockReturnValue(true);
     await act(async () => {
       fireEvent.click(btn);
     });
-    expect(billing.startCheckout).toHaveBeenCalledWith("ultra");
+    expect(billing.startCheckout).toHaveBeenCalledWith("ultra", true);
   });
 
   it("ultra_pro owner sees the Ultra badge and no upgrade button", () => {

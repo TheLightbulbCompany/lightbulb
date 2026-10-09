@@ -78,7 +78,9 @@ and **Ultra, $150/month** (this owner's current plan is in the facts file). Ever
 plan allows unlimited agent identities and unlimited members; agent identity count
 is not a plan entitlement, and membership and invitations do not change the
 subscription price. Runtime capacity remains finite. Upgrade lives in
-thelightbulb.company/settings. There is also a **free trial** (no card, 30 days) on
+thelightbulb.company/settings. Changing the plan of a workspace that already
+pays needs the owner to confirm it there; nothing is charged at that moment, and
+the prorated difference for the rest of the period goes on the next invoice. There is also a **free trial** (no card, 30 days) on
 Lightbulb-managed DeepSeek within a daily allowance. Inference runs on one of
 three provider paths chosen by the owner:
 **Lightbulb-managed** (DeepSeek within the plan's daily allowance; prepaid

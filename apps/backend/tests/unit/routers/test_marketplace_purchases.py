@@ -925,6 +925,53 @@ def test_checkout_already_entitled_409s_before_stripe(mock_stripe_create, client
     mock_stripe_create.assert_not_called()
 
 
+@pytest.mark.parametrize("seller_id", ["human_s1", "org_s1"])
+@patch("routers.marketplace_purchases.stripe.checkout.Session.create")
+def test_checkout_refuses_the_listings_own_seller(mock_stripe_create, client, seller_id):
+    """A seller must not be charged for their own listing (they deploy it free
+    through the seller bypass). Listings carry either the publishing user's id
+    or the workspace's id as ``seller_id``; both are the seller."""
+    from main import app
+
+    from core.auth import AuthContext, get_current_user
+
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(
+        user_id="human_s1", org_id="org_s1", org_role="org:admin"
+    )
+    try:
+        with (
+            patch("core.services.marketplace_service.get_published_by_id", new_callable=AsyncMock) as mock_get,
+            patch(
+                "routers.marketplace_purchases.marketplace_repo.has_unrevoked_purchase",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+        ):
+            mock_get.return_value = {
+                "listing_id": "lst_1",
+                "status": "published",
+                "price_cents": 2000,
+                "name": "Pulse",
+                "slug": "pulse",
+                "version": 1,
+                "seller_id": seller_id,
+            }
+            resp = client.post(
+                "/api/v1/marketplace/checkout",
+                json={
+                    "listing_id": "lst_1",
+                    "success_url": f"https://{RETURN_APEX}/marketplace/deploy-success",
+                    "cancel_url": f"https://{RETURN_APEX}/marketplace/listing/lst_1",
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"] == "This is your own listing — you can't buy it."
+    mock_stripe_create.assert_not_called()
+
+
 @patch("routers.marketplace_purchases.stripe.checkout.Session.create")
 def test_checkout_scopes_purchase_identity_to_org(mock_stripe_create, client):
     """Regression (codex): the install is org-scoped, so purchase identity

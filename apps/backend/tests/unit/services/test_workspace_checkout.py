@@ -232,7 +232,15 @@ async def test_workspace_checkout_swaps_an_active_subscription_item_in_place(mon
     modify = MagicMock()
     monkeypatch.setattr(billing_service.stripe.Subscription, "modify", modify)
 
+    # Unconfirmed: nothing is changed; the caller must confirm the prorated change.
     result = await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="ultra")
+
+    assert result == {"updated": False, "confirm_required": True}
+    modify.assert_not_called()
+
+    result = await billing_service.create_workspace_checkout(
+        owner_id="org_1", clerk_user_id="user_1", plan="ultra", confirm=True
+    )
 
     assert result == {"updated": True}
     assert modify.call_args.args == ("sub_1",)
@@ -355,7 +363,9 @@ async def test_workspace_checkout_does_not_create_a_second_subscription_while_we
     modify = MagicMock()
     monkeypatch.setattr(billing_service.stripe.Subscription, "modify", modify)
 
-    result = await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="ultra")
+    result = await billing_service.create_workspace_checkout(
+        owner_id="org_1", clerk_user_id="user_1", plan="ultra", confirm=True
+    )
 
     assert result == {"updated": True}
     assert modify.call_args.args[0] == "sub_webhook"

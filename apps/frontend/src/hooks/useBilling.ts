@@ -119,8 +119,10 @@ export function useBilling() {
     window.location.href = portal_url;
   }, [api]);
 
-  const startCheckout = useCallback(async (plan: "base" | "workspace" | "ultra") => {
-    const res = (await api.post("/billing/checkout", { plan })) as {
+  // `confirm` is required to change a live subscription's plan; without it the
+  // server changes nothing and answers `confirm_required`.
+  const startCheckout = useCallback(async (plan: "base" | "workspace" | "ultra", confirm = false) => {
+    const res = (await api.post("/billing/checkout", { plan, confirm })) as {
       checkout_url?: string;
       updated?: boolean;
     };

@@ -27,6 +27,7 @@
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   AppState,
   Linking,
   Pressable,
@@ -67,6 +68,22 @@ const LINK_REFUSED =
   "We couldn't apply this purchase to this workspace. Contact support@thelightbulb.company.";
 const LINK_STRIPE_MANAGED =
   "This workspace is already billed another way, so this App Store purchase wasn't applied. Contact support@thelightbulb.company for a refund.";
+
+/** Same wording as the web: a live plan change is prorated onto the next invoice. */
+function confirmPlanChange(name: string, price: number | null): Promise<boolean> {
+  return new Promise((resolve) =>
+    Alert.alert(
+      "Change plan?",
+      `Switch to ${name}${price === null ? "" : ` ($${price}/month)`}? Your plan changes now. ` +
+        "The prorated difference for the rest of this billing period is added to your next invoice.",
+      [
+        { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+        { text: "Change plan", onPress: () => resolve(true) },
+      ],
+      { cancelable: true, onDismiss: () => resolve(false) },
+    ),
+  );
+}
 
 type Purchase = { purchaseToken?: string | null; productId?: string; id?: string };
 
@@ -240,9 +257,17 @@ export function PaywallScreen({
     setBusyBoth(true);
     setError(null);
     try {
-      const url = await startWebCheckout(api.post, sku);
-      webCheckoutOpened.current = true;
-      await Linking.openURL(url);
+      let result = await startWebCheckout(api.post, sku);
+      if (result.confirm_required) {
+        if (!(await confirmPlanChange(FALLBACK_TITLES[sku] ?? "this plan", webPriceFor(sku, account)))) return;
+        result = await startWebCheckout(api.post, sku, true);
+      }
+      if (result.checkout_url) {
+        webCheckoutOpened.current = true;
+        await Linking.openURL(result.checkout_url);
+      } else if (result.updated) {
+        onWebReturn(); // swapped in place: refetch the account
+      }
     } catch (e) {
       webCheckoutOpened.current = false;
       const err = e as { status?: number; body?: { detail?: string } } | null;

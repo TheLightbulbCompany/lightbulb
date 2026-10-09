@@ -396,13 +396,14 @@ class TestAdminMutationOwnerResolution:
         with patch("routers.admin.billing_service", new=billing):
             res = await async_client.post(
                 "/api/v1/admin/users/user_123/billing/issue-credit",
-                json={"amount_cents": 500, "reason": "incident_comp"},
+                json={"amount_cents": 500, "reason": "incident_comp", "request_id": "submit-aaaa"},
             )
         assert res.status_code == 200
         billing.issue_credit_for_owner.assert_awaited_once_with(
             "org_abc",
             amount_cents=500,
             reason="incident_comp",
+            request_id="submit-aaaa",
         )
 
     @pytest.mark.asyncio

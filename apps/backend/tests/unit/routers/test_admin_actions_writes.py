@@ -348,7 +348,7 @@ class TestBillingIssueCredit:
         with patch("routers.admin.billing_service", new=billing):
             res = await async_client.post(
                 "/api/v1/admin/users/u_target/billing/issue-credit",
-                json={"amount_cents": 500, "reason": "incident_compensation"},
+                json={"amount_cents": 500, "reason": "incident_compensation", "request_id": "submit-aaaa"},
             )
         assert res.status_code == 200
         billing.issue_credit_for_owner.assert_awaited_once()
@@ -357,7 +357,7 @@ class TestBillingIssueCredit:
     async def test_403_for_non_admin(self, async_client, non_admin_env):
         res = await async_client.post(
             "/api/v1/admin/users/u_target/billing/issue-credit",
-            json={"amount_cents": 500, "reason": "x"},
+            json={"amount_cents": 500, "reason": "x", "request_id": "submit-aaaa"},
         )
         assert res.status_code == 403
 
@@ -368,7 +368,7 @@ class TestBillingIssueCredit:
         with patch("routers.admin.billing_service", new=billing):
             res = await async_client.post(
                 "/api/v1/admin/users/u_target/billing/issue-credit",
-                json={"amount_cents": 500, "reason": "incident_comp"},
+                json={"amount_cents": 500, "reason": "incident_comp", "request_id": "submit-aaaa"},
             )
         assert res.status_code == 200
         kwargs = mock_audit_repo.await_args.kwargs
@@ -391,13 +391,20 @@ class TestBillingIssueCredit:
             # Missing amount_cents
             res2 = await async_client.post(
                 "/api/v1/admin/users/u_target/billing/issue-credit",
-                json={"reason": "x"},
+                json={"reason": "x", "request_id": "submit-aaaa"},
             )
             # Empty body
             res3 = await async_client.post(
                 "/api/v1/admin/users/u_target/billing/issue-credit",
                 json={},
             )
+            # Missing request_id: without it the Stripe key would be (amount, reason)
+            # alone and two identical credits would merge.
+            res4 = await async_client.post(
+                "/api/v1/admin/users/u_target/billing/issue-credit",
+                json={"amount_cents": 500, "reason": "x"},
+            )
+        assert res4.status_code == 422
         assert res1.status_code == 422
         assert res2.status_code == 422
         assert res3.status_code == 422
@@ -409,7 +416,7 @@ class TestBillingIssueCredit:
         billing.issue_credit_for_owner = AsyncMock(return_value={"credit_id": "cn_abc"})
         with patch("routers.admin.billing_service", new=billing):
             headers = {"Idempotency-Key": "credit-key-1"}
-            body = {"amount_cents": 500, "reason": "x"}
+            body = {"amount_cents": 500, "reason": "x", "request_id": "submit-aaaa"}
             r1 = await async_client.post(
                 "/api/v1/admin/users/u_target/billing/issue-credit",
                 json=body,
@@ -718,3 +725,55 @@ class TestAgentDelete:
         kwargs = mock_audit_repo.await_args.kwargs
         assert kwargs["action"] == "agent.delete"
         assert kwargs["target_user_id"] == "u_target"
+
+
+# ===========================================================================
+# Billing actions that changed nothing must not read as success
+# ===========================================================================
+
+
+class TestBillingActionsAreHonestAboutNoOps:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("path", "method", "body", "status"),
+        [
+            ("cancel-subscription", "cancel_subscription_for_owner", None, "no_subscription"),
+            ("cancel-subscription", "cancel_subscription_for_owner", None, "no_billing_account"),
+            ("pause-subscription", "pause_subscription_for_owner", None, "no_subscription"),
+            (
+                "issue-credit",
+                "issue_credit_for_owner",
+                {"amount_cents": 500, "reason": "goodwill", "request_id": "submit-aaaa"},
+                "no_customer",
+            ),
+            ("mark-invoice-resolved", "mark_invoice_resolved", {"invoice_id": "in_1"}, "no_customer"),
+            ("mark-invoice-resolved", "mark_invoice_resolved", {"invoice_id": "in_1"}, "invoice_not_found"),
+            ("mark-invoice-resolved", "mark_invoice_resolved", {"invoice_id": "in_1"}, "invoice_customer_mismatch"),
+            ("mark-invoice-resolved", "mark_invoice_resolved", {"invoice_id": "in_1"}, "already_paid"),
+        ],
+    )
+    async def test_a_no_op_is_a_409_with_the_reason_and_an_error_audit_row(
+        self, async_client, admin_env, mock_audit_repo, path, method, body, status
+    ):
+        billing = MagicMock()
+        setattr(billing, method, AsyncMock(return_value={"status": status}))
+        with patch("routers.admin.billing_service", new=billing):
+            res = await async_client.post(f"/api/v1/admin/users/u_target/billing/{path}", json=body)
+        assert res.status_code == 409
+        assert "nothing was changed" in res.json()["detail"]
+        assert mock_audit_repo.await_args.kwargs["result"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_issue_credit_threads_the_submission_id_and_reports_a_duplicate(self, async_client, admin_env):
+        billing = MagicMock()
+        billing.issue_credit_for_owner = AsyncMock(
+            return_value={"status": "duplicate", "transaction_id": "cbtxn_1", "amount_cents": 500}
+        )
+        with patch("routers.admin.billing_service", new=billing):
+            res = await async_client.post(
+                "/api/v1/admin/users/u_target/billing/issue-credit",
+                json={"amount_cents": 500, "reason": "goodwill", "request_id": "submit-aaaa"},
+            )
+        assert res.status_code == 200
+        assert res.json()["status"] == "duplicate"
+        assert billing.issue_credit_for_owner.await_args.kwargs["request_id"] == "submit-aaaa"

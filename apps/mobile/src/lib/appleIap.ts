@@ -85,13 +85,24 @@ export function webPriceFor(productId: string, account: WebPrices | null): numbe
   return (plan && account?.[`${plan}_price_usd` as const]) ?? null;
 }
 
-/** Create a Stripe Checkout session that returns to the app; resolves to its URL. */
-export async function startWebCheckout(post: ApiPost, productId: string): Promise<string> {
-  const body = (await post("/billing/checkout", {
+export type WebCheckoutResult = { checkout_url?: string; updated?: boolean; confirm_required?: boolean };
+
+/**
+ * Start the web (Stripe) plan purchase, returning to the app. A workspace with
+ * no subscription gets a Checkout `checkout_url`. A workspace that already pays
+ * gets `confirm_required` until it resends with `confirm`, then `updated`:
+ * the plan is swapped in place and there is no URL to open.
+ */
+export async function startWebCheckout(
+  post: ApiPost,
+  productId: string,
+  confirm = false,
+): Promise<WebCheckoutResult> {
+  return (await post("/billing/checkout", {
     plan: WEB_PLAN_FOR_PRODUCT[productId],
     return_to: "app",
-  })) as { checkout_url: string };
-  return body.checkout_url;
+    confirm,
+  })) as WebCheckoutResult;
 }
 
 /**

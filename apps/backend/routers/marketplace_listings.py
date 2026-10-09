@@ -712,11 +712,11 @@ async def deploy_listing(
         # check below ever runs, and that was an entitlement bypass waiting for
         # buyer launch (harmless only while the route was platform-admin-only).
         # Same rules as the agent path: free deploys for anyone signed in,
-        # sellers skip their own listing's check, purchase identity is the
+        # sellers (the publishing user or their workspace) skip their own listing's check, purchase identity is the
         # RESOLVED owner. Checked before any artifact or runtime work.
         if (
             int(listing.get("price_cents", 0) or 0) > 0
-            and listing.get("seller_id") != auth.user_id
+            and listing.get("seller_id") not in {auth.user_id, owner_id}
             and not await marketplace_repo.has_unrevoked_purchase(
                 buyer_id=owner_id,
                 listing_id=listing["listing_id"],
@@ -818,7 +818,9 @@ async def deploy_listing(
     # an indefinite "Setting up the workspace…" spinner in the storefront.
     # Free listings already skip the check; paid listings need the explicit
     # identity bypass.
-    is_seller = listing.get("seller_id") == auth.user_id
+    # A listing's seller_id is the publishing user or, for a workspace listing,
+    # the workspace id; checkout refuses both as the seller, so both deploy free.
+    is_seller = listing.get("seller_id") in {auth.user_id, resolve_owner_id(auth)}
     # Purchase identity is the RESOLVED owner (org id for org workspaces):
     # the install is org-scoped, so keying entitlement to the individual
     # admin would double-charge a second admin for an already-installed

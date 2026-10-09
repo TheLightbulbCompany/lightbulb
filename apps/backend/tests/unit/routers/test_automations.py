@@ -68,6 +68,9 @@ class TestFromIntegration:
             json={"provider": "stripe", "event_id": "invoice.payment_failed"},
         )
         assert response.status_code == 402
+        # The copy names what was gated: a webhook automation, not a scheduled routine.
+        message = response.json()["detail"]["message"]
+        assert "webhook" in message.lower() and "Scheduled routines" not in message
         mock_seed.assert_not_awaited()
 
     @pytest.mark.asyncio

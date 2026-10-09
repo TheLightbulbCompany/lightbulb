@@ -780,3 +780,25 @@ def test_status_reports_the_key_mode_so_the_card_can_label_test_data():
         is True
     )
     assert mod._status_payload({})["livemode"] is None
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("post", "/api/v1/company/stripe/create", None),
+        ("post", "/api/v1/company/stripe/api-key", {"api_key": "rk_test_" + "x" * 24}),
+        ("post", "/api/v1/company/stripe/onboarding-link", None),
+        ("get", "/api/v1/company/stripe/connect/start", None),
+    ],
+)
+def test_the_paywall_copy_names_stripe_not_scheduled_routines(client, monkeypatch, method, path, body):
+    from routers.teams import _guards
+
+    monkeypatch.setattr(mod, "require_always_on_entitlement", _guards.require_always_on_entitlement)
+    monkeypatch.setattr(_guards.billing_repo, "get_by_owner_id", AsyncMock(return_value=None))
+
+    resp = client.request(method, path, json=body)
+
+    assert resp.status_code == 402
+    message = resp.json()["detail"]["message"]
+    assert "Stripe" in message and "Scheduled routines" not in message

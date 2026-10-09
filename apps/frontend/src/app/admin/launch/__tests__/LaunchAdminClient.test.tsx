@@ -199,6 +199,10 @@ describe("LaunchAdminClient", () => {
     );
     const retry = await screen.findByRole("button", { name: /retry \(force\)/i });
     await user.click(retry);
+    const dialog = await screen.findByRole("alertdialog");
+    expect(closeLaunchSheet).not.toHaveBeenCalled();
+    await user.type(within(dialog).getByRole("textbox"), "close");
+    await user.click(within(dialog).getByRole("button", { name: /^confirm /i }));
     expect(closeLaunchSheet).toHaveBeenLastCalledWith(true);
   });
 
@@ -269,9 +273,14 @@ describe("LaunchAdminClient", () => {
     expect(await screen.findByText(/refreshed 2/i)).toBeInTheDocument();
   });
 
-  it("removes an entry from the board", async () => {
+  it("removes an entry from the board only after a typed confirm", async () => {
+    const user = userEvent.setup();
     render(<LaunchAdminClient data={data} />);
-    fireEvent.click(screen.getByRole("button", { name: /^remove$/i }));
+    await user.click(screen.getByRole("button", { name: /^remove$/i }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(removeLaunchEntry).not.toHaveBeenCalled();
+    await user.type(within(dialog).getByRole("textbox"), "u1");
+    await user.click(within(dialog).getByRole("button", { name: /^confirm /i }));
     expect(removeLaunchEntry).toHaveBeenCalledWith("u1");
     expect(await screen.findByText(/removed u1/i)).toBeInTheDocument();
   });

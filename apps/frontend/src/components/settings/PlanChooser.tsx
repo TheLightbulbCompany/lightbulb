@@ -42,7 +42,8 @@ export function PlanChooser({
   account: BillingAccount | null | undefined;
   /** False for the free trial: no plan is current, every card starts one. */
   subscribed: boolean;
-  startCheckout: (plan: CheckoutPlan) => Promise<void>;
+  /** `confirm` is required by the server to change a LIVE subscription's plan. */
+  startCheckout: (plan: CheckoutPlan, confirm: boolean) => Promise<void>;
 }) {
   const [pending, setPending] = useState<CheckoutPlan | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -54,13 +55,26 @@ export function PlanChooser({
   const currentIndex = subscribed ? PLANS.findIndex((p) => p.stored === (account?.plan ?? "standard")) : -1;
 
   const choose = async (plan: CheckoutPlan) => {
+    const changing = currentIndex !== -1;
+    if (changing) {
+      // Swapping a live plan is prorated by Stripe: nothing is charged now, and
+      // the difference for the rest of this period lands on the next invoice.
+      const name = PLANS.find((p) => p.key === plan)?.name ?? plan;
+      const price = prices[plan];
+      const ok = window.confirm(
+        `Switch to ${name}${price === undefined ? "" : ` ($${price}/mo)`}?\n\n` +
+          "Your plan changes now. The prorated difference for the rest of this billing period " +
+          "is added to your next invoice.",
+      );
+      if (!ok) return;
+    }
     capture("billing_plan_chosen", { plan });
     setError(null);
     setPending(plan);
     try {
       // Fresh Checkout redirects away; an in-place swap resolves and the refreshed
       // account re-marks the current plan.
-      await startCheckout(plan);
+      await startCheckout(plan, changing);
     } catch {
       setError("Couldn't start the plan change. Please try again.");
     } finally {

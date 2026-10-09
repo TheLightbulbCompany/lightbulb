@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
-import { AppState, Linking } from "react-native";
+import { Alert, AppState, Linking } from "react-native";
 
 // expo-iap is a native module; drive it from a fake so the purchase flow's
 // ORDER can be asserted. The server must confirm before the transaction is
@@ -345,8 +345,41 @@ describe("PaywallScreen", () => {
       await renderPaywall({ api, account: ACCOUNT });
       await fireEvent.press(screen.getByText("Or pay $50/month on the web"));
       await waitFor(() => expect(Linking.openURL).toHaveBeenCalledWith(CHECKOUT));
-      expect(api.post).toHaveBeenCalledWith("/billing/checkout", { plan: "workspace", return_to: "app" });
+      expect(api.post).toHaveBeenCalledWith("/billing/checkout", { plan: "workspace", return_to: "app", confirm: false });
       expect(mockRequestPurchase).not.toHaveBeenCalled();
+    });
+
+    it("a plan change on a subscribed workspace asks first, then swaps in place with no browser", async () => {
+      const alert = jest.spyOn(Alert, "alert").mockImplementation((_t, _m, buttons) => {
+        buttons?.find((b) => b.style !== "cancel")?.onPress?.();
+      });
+      const post = jest
+        .fn()
+        .mockResolvedValueOnce({ updated: false, confirm_required: true })
+        .mockResolvedValueOnce({ updated: true });
+      const onWebReturn = jest.fn();
+      await renderPaywall({ api: makeApi(post), account: ACCOUNT, onWebReturn });
+      await fireEvent.press(screen.getByText("Or pay $150/month on the web"));
+
+      await waitFor(() => expect(post).toHaveBeenCalledTimes(2));
+      expect(alert.mock.calls[0][1]).toMatch(/\$150\/month.*next invoice/s);
+      expect(post).toHaveBeenLastCalledWith("/billing/checkout", { plan: "ultra", return_to: "app", confirm: true });
+      expect(Linking.openURL).not.toHaveBeenCalled();
+      await waitFor(() => expect(onWebReturn).toHaveBeenCalledTimes(1));
+    });
+
+    it("a declined plan change sends nothing more and opens nothing", async () => {
+      jest.spyOn(Alert, "alert").mockImplementation((_t, _m, buttons) => {
+        buttons?.find((b) => b.style === "cancel")?.onPress?.();
+      });
+      const post = jest.fn().mockResolvedValue({ updated: false, confirm_required: true });
+      await renderPaywall({ api: makeApi(post), account: ACCOUNT });
+      await fireEvent.press(screen.getByText("Or pay $150/month on the web"));
+
+      await waitFor(() => expect(Alert.alert).toHaveBeenCalled());
+      expect(post).toHaveBeenCalledTimes(1);
+      expect(Linking.openURL).not.toHaveBeenCalled();
+      expect(screen.queryByText("Couldn't open checkout. Try again in a moment.")).toBeNull();
     });
 
     it("a checkout already open or App Store billing says so", async () => {

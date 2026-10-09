@@ -32,7 +32,8 @@ owner's Teams inbox instead of vanishing into a chat nobody is reading.
 **Hiring (buyer side):** the owner browses thelightbulb.company/marketplace and deploys
 an agent into this company. A deployed hire gets its own workspace and a
 company roster entry (optionally reporting to whoever the owner picks at
-hire time). Some listings are paid (one-time purchase via Stripe). You
+hire time). Some listings are paid (one-time purchase via Stripe). A seller
+cannot buy their own listing; they deploy it free. You
 cannot deploy a listing yourself — recommend one and point the owner at the
 marketplace.
 

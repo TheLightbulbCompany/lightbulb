@@ -77,9 +77,17 @@ describe("appleIap", () => {
 
   it("starts a web checkout for the product's plan, returning to the app", async () => {
     const post = jest.fn().mockResolvedValue({ checkout_url: "https://checkout.stripe.com/c/x" });
-    await expect(startWebCheckout(post, "company.thelightbulb.mobile.plan.monthly")).resolves.toBe(
-      "https://checkout.stripe.com/c/x",
-    );
-    expect(post).toHaveBeenCalledWith("/billing/checkout", { plan: "workspace", return_to: "app" });
+    await expect(startWebCheckout(post, "company.thelightbulb.mobile.plan.monthly")).resolves.toEqual({
+      checkout_url: "https://checkout.stripe.com/c/x",
+    });
+    expect(post).toHaveBeenCalledWith("/billing/checkout", { plan: "workspace", return_to: "app", confirm: false });
+  });
+
+  it("passes the plan-change confirmation and returns the server's answer as is", async () => {
+    const post = jest.fn().mockResolvedValue({ updated: true });
+    await expect(startWebCheckout(post, "company.thelightbulb.mobile.ultra.monthly", true)).resolves.toEqual({
+      updated: true,
+    });
+    expect(post).toHaveBeenCalledWith("/billing/checkout", { plan: "ultra", return_to: "app", confirm: true });
   });
 });

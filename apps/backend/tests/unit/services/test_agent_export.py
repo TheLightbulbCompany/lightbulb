@@ -1915,6 +1915,12 @@ def test_download_s3_profile_excludes_runtime_and_secret_keys(s3_hermes_bucket, 
     assert downloaded == set(keep.keys())
 
 
+def test_download_s3_profile_refuses_an_agent_with_no_profile(s3_hermes_bucket, tmp_path):
+    """A valid id with nothing under its prefix must not publish an empty listing."""
+    with pytest.raises(agent_export.AgentNotFoundError):
+        agent_export._download_s3_profile("owner_1/hermes/gone", tmp_path)
+
+
 def _seed_publishable_profile(s3, prefix: str, agent_id: str) -> None:
     """The minimum a profile needs to be publishable: content, the roster openclaw.json the
     slice is projected from, plus the two things the download must REFUSE to carry."""

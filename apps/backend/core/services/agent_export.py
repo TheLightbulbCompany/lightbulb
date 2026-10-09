@@ -437,8 +437,10 @@ def _download_s3_profile(prefix: str, dest: Path) -> set[str]:
     bucket = settings.OWNER_STATE_BUCKET
     key_prefix = f"{prefix}/"
     repo_dirs: set[str] = set()
+    found = False
     for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=key_prefix):
         for obj in page.get("Contents", []):
+            found = True
             rel = obj["Key"][len(key_prefix) :]
             if not rel:
                 continue
@@ -455,6 +457,10 @@ def _download_s3_profile(prefix: str, dest: Path) -> set[str]:
             target = dest / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             s3.download_file(bucket, obj["Key"], str(target))
+    if not found:
+        # A valid id with no profile (a deleted or stale agent, a direct API call). Without this
+        # the Hermes slice fallback would publish an empty listing for an agent that is not there.
+        raise AgentNotFoundError(f"no agent profile at {prefix!r}")
     return repo_dirs
 
 

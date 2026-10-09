@@ -183,6 +183,12 @@ LEVEL_FRESH_S = 1.5
 # it (`Huddle.on_unit_audible`): a unit is permitted, and may send quiet frames, a second before that.
 # Not for a person whose words so far are only a listening sound (`Huddle._only_listening`).
 PREROLL_S = 0.6
+# A piece a person begins this soon after their last piece ended (the detector's stop to its next start; the
+# transcriber ends a piece at 400 ms of silence) is more of the same turn. Hermes merges a split message the
+# same way before it dispatches once. A turn that already made requests is routed again as a whole, and what
+# it asks now replaces what it asked (`Huddle._amend_turn`): it never starts a second request.
+# ponytail: inferred from the 10-09 prod Meet (gaps of 0.4-0.6 s); tune from `turn` ids in the route log
+TURN_GAP_S = 1.0
 TRAIL_S = 8.0  # an unfinished turn ("Can one of you tell me...", "Friday.") is joined to a rest that comes this soon
 CALL_ON_S = 3.0  # a name said alone, then this much silence from its speaker: the agent was called on
 # The room has been without talk this long: sound has settled and speech may start. An answer whose asker is
@@ -696,6 +702,12 @@ class Huddle:
         ] = []  # (agent_id, speaker, request, the asker's meeting label) still to answer
         # identity -> (line, at, mark, its /route answer, _route's arguments): unfinished, /route said hold
         self._held: dict[str, tuple[str, float, int, dict, dict]] = {}
+        # A meeting person's turn, which may be said in pieces: identity -> (turn id, when its last piece's
+        # speech ended, the whole turn so far). Every /route call for it carries the id; the rows its lines made
+        # (`_turn_rows`, by each row's mark) are amended by a later piece of it (`_amend_turn`).
+        self._turn_id: dict[str, tuple[int, float | None, str]] = {}
+        self._turn_of: dict[int, int] = {}  # transcript mark -> the turn its line is part of
+        self._tid = 0
         self._final_mark: dict[
             str, int
         ] = {}  # identity -> mark of their latest final: a hold older than it is stale
@@ -1232,7 +1244,7 @@ class Huddle:
             return
         now = self._clock()
         record = text  # what goes on the record: a joined line records only its new piece
-        holding, called = False, None
+        holding, called, tid = False, None, None
         if mouth(identity):
             # The transcriber ends a line at a short pause, so a turn said in pieces arrives in pieces. One its
             # speaker has not finished is not a request yet: it trails off (10-06 prod Meet: "Can one of you
@@ -1241,12 +1253,46 @@ class Huddle:
             # name on it). It is joined to what its speaker says next.
             # The record keeps each piece as it was said; only the understanding sees them joined.
             control = self._control(text)  # a stop or "don't post that" stands on its own, never held or joined
+            piece, joined = text, False  # (`record` stays the piece: the pieces before it are on the record)
             before = self._incomplete.pop(identity, None)
             if before and not control and now - before[1] <= TRAIL_S:
-                text = f"{before[0]} {text}"
-                record = text[len(before[0]) + 1 :]  # the pieces before it are on the record already
-            # Nothing after a name alone for CALL_ON_S: the agent was called on (`_call_on`).
-            called = None if control else only_name(text, self._team["agents"])
+                text, joined = f"{before[0]} {text}", True
+            held = None if control or joined else self._held.get(identity)
+            if held and now - held[1] <= HOLD_SECONDS and not _words_in(held[0], text, 1):
+                # /route said the turn so far is unfinished: this piece is its rest, joined before anything else
+                # is decided, also a piece that is only a name (10-09 prod Meet: "A cool" was held, "Hey,
+                # Friday." was held apart from it, and "A cool" was then answered as small talk on its own).
+                del self._held[identity]
+                text, joined = f"{held[0]} {text}", True
+            ep, prev = _ROUTING.get(), self._turn_id.get(identity)
+            detected = ep is not None and ep.began < ep.ended  # the detector heard this piece (else: a final alone)
+            if (
+                not joined
+                and not control
+                and prev is not None
+                and not mixed_meet(identity)  # (one identity for everyone: who goes on is not known here)
+                and self._last_speaker == identity
+                and prev[1] is not None
+                and detected  # (when it began is known only from the detector)
+                and (
+                    ep.began - prev[1] <= TURN_GAP_S and self._turn_rows(prev[0])
+                    or ep.began - prev[1] <= HOLD_SECONDS and self._routing.get(identity)
+                )
+            ):
+                # They went straight on after a turn that already asked something, or went on at all while /route
+                # still decides on it (its answer may be `hold`, and a hold waits HOLD_SECONDS for the rest): it is
+                # the same turn, routed again whole, and what it asks now replaces what it asked (`_amend_turn`); an
+                # answer for the piece before comes too late to count (`_regrown`).
+                text, joined = f"{prev[2]} {text}", True
+            if not (joined and prev):
+                self._tid += 1
+            tid = prev[0] if joined and prev else self._tid
+            self._turn_id[identity] = (tid, ep.ended if detected else None, text)
+            # Nothing after a name alone for CALL_ON_S: the agent was called on (`_call_on`). A name that ends
+            # an unfinished turn waits the same way for what it is called for.
+            called = None if control else only_name(text, self._team["agents"]) or (
+                only_name(piece, self._team["agents"]) if held else None
+            )
             holding = not control and (trails_off(text) or called is not None)
         if self.setting == "meeting":
             self._unclaimed = (
@@ -1271,6 +1317,8 @@ class Huddle:
         else:
             mark = self._transcript.add_person(identity, name, text, at=now)
         self._final_mark[identity] = mark
+        if tid is not None:
+            self._turn_of[mark] = tid  # ponytail: one int per line of the call; trim if calls get days long
         self._final_at[identity] = self._heard_at[identity] = now
         if real_speech(text) and not backchannel(text):
             self._turn_at[self._who(identity, mark) or (identity, "")] = now  # they took a turn (`_expire`)
@@ -2628,7 +2676,19 @@ class Huddle:
         if o is None:
             self._record(identity, fut, None, text)
             return None
-        rows = self._apply(identity, mark, o)  # `hold` ignored: the person named the agent
+        if self._regrown(identity, mark):
+            self._record(identity, fut, None, text)
+            return None, None, None, None
+        if r.get("hold") and mouth(identity):
+            # Unfinished, though it names the agent (10-09 prod Meet: "Hey, Friday. That's awesome, but can you
+            # actually give me a summary of" became a request, and its rest two more). Nothing is asked or said
+            # yet: the rest is joined to it (`_heard_final`), or it is applied as it is after a silence.
+            self._hold_line(identity, text, self._clock(), mark, r, {"humans": len(self._people)})
+            self._record(identity, fut, None, text)
+            return None, None, None, None
+        # (a Live voice heard the person itself: there `hold` is ignored, the person named the agent)
+        o = self._amend_turn(mark, o)
+        rows = self._apply(identity, mark, o)
         mine = [x for x in rows if x.agent == agent_id]
         first = mine[0] if voice and mine and mine[0] in self._startable() else None
         if first is not None:
@@ -2792,8 +2852,10 @@ class Huddle:
                 unclaimed=unclaimed,
                 open=self._open_rows(),
                 engagements=talking,
+                turn=self._turn_of.get(mark),
             )
             outcome = self._outcome(r)
+            self._log("route", turn=self._turn_of.get(mark), mark=mark, outcome=outcome, hold=bool(r.get("hold")))
             return r
         except BackendError as e:
             # spoken to the agents: say it failed (an unclaimed question asked nobody)
@@ -2830,9 +2892,11 @@ class Huddle:
                 emit_metric("live.request.steered", 1, "Count", {"how": "queued"})
                 if v is not None and v.live is not None:
                     self._live_call(v, "append_thinking", said)
-                self._steer_ack(r, identity, mark)
+                if not s.get("quiet"):  # (a turn's own row, amended by more of the turn: acknowledged once)
+                    self._steer_ack(r, identity, mark)
             elif r is not None and r.status == "working":
-                self._steer_ack(r, identity, mark)
+                if not s.get("quiet"):
+                    self._steer_ack(r, identity, mark)
                 self._spawn(self._steer_row(r, identity, mark, text))
             elif (r is not None or v is not None) and not (later and (r is None or r.by != "name")):
                 # answered already, or unknown: a new ask of its owner (superseded like any unnamed ask, §4.2)
@@ -2967,6 +3031,14 @@ class Huddle:
             if v is not None and v.live is not None:
                 self._live_call(v, "append_thinking", f'Added to "{r.task}": {text}')
             return
+        tid = self._turn_of.get(mark)
+        twin = next(
+            (x for x in self._turn_rows(tid) if x is not r and x.agent == r.agent and x.status == "queued"), None
+        ) if tid is not None else None
+        if twin is not None:  # another piece's steer of this row already made its row: that one, amended
+            self._requests.amend(twin, text)
+            self._sync_state()
+            return
         new = [{"agentId": r.agent, "task": text, "by": r.by}]
         for x in self._requests.settle(mark, speaker, new, self._clock(), self._label(speaker, mark)):
             emit_metric("live.request.created", 1, "Count", {"by": x.by or "none"})
@@ -3079,13 +3151,16 @@ class Huddle:
         r = routed if routed is not None else await self._understand(
             identity, text, humans, unclaimed, quiet=heard is not None or floor_line, mark=mark
         )
+        if not stands and self._regrown(identity, mark):
+            return None
         outcome = "error" if r is None else self._outcome(r)
         r = r or {}
         if r.get("ops") is not None and not r.get("hold"):
             # understanding §4.4: the backend listed the line's requests; they replace today's whole-line routing
             if heard is not None and heard[2]:
                 self._unwanted(heard[2], identity)
-            return await self._act(identity, text, mark, r["ops"], heard_at, switch, stands, floor_line), r["ops"]
+            o = self._amend_turn(mark, r["ops"])
+            return await self._act(identity, text, mark, o, heard_at, switch, stands, floor_line), o
         if floor_line and not r.get("hold"):
             return [], None
         if heard is not None and not r.get("hold"):  # a held line waits for the rest, as below
@@ -3114,13 +3189,8 @@ class Huddle:
         if r.get(
             "hold"
         ):  # unfinished ("Friday, we're trying to"): the speaker's next final carries the rest
-            if self._final_mark.get(identity, -1) <= mark:
-                # understanding §4.4: kept with its answer; applied as it is if nothing more is said (tick). A
-                # delegation's own transcript carries a later mark than its speaker's last final: held too.
-                kw = {"humans": humans, "switch": switch, "unclaimed": unclaimed, "heard": heard, "floor_line": floor_line}
-                self._held[identity] = (text, heard_at, mark, {**r, "hold": False}, kw)
-            else:  # that final arrived while /route decided and routed on its own: nothing left to merge
-                emit_metric("live.route.hold_stale", 1, "Count")
+            kw = {"humans": humans, "switch": switch, "unclaimed": unclaimed, "heard": heard, "floor_line": floor_line}
+            self._hold_line(identity, text, heard_at, mark, r, kw)
             return
         agent_ids = r.get("agentIds") or ([r["agentId"]] if r.get("agentId") else [])
         if agent_ids and self._requests.stopped(mark, agent_ids[0]):
@@ -4838,11 +4908,75 @@ class Huddle:
         agents = self._team["agents"]
         return stop_all(text) or stop_request(text, agents) or no_post_command(text, agents)[0]
 
+    def _hold_line(self, identity: str, text: str, heard_at: float, mark: int, r: dict, kw: dict) -> None:
+        """/route said the turn so far is unfinished (`hold`): nothing of it is asked or said yet. Kept with its
+        answer: its speaker's next piece is joined to it (`_heard_final`), or it is applied as it is once they
+        are silent (`_apply_held`)."""
+        if self._final_mark.get(identity, -1) <= mark:
+            # understanding §4.4. A delegation's own transcript carries a later mark than its speaker's last
+            # final: held too.
+            kw = {"humans": None, "switch": False, "unclaimed": False, "heard": None, "floor_line": False, **kw}
+            self._held[identity] = (text, heard_at, mark, {**r, "hold": False}, kw)
+        else:  # that final arrived while /route decided and routed on its own: nothing left to merge
+            emit_metric("live.route.hold_stale", 1, "Count")
+
+    def _regrown(self, identity: str, mark: int) -> bool:
+        """A later piece of this line's turn was heard while /route decided on it: that piece is routed with the
+        whole turn (`_heard_final`), so this answer, for the turn's start alone, is not acted on."""
+        last = self._final_mark.get(identity, -1)
+        if last > mark and (tid := self._turn_of.get(mark)) is not None and self._turn_of.get(last) == tid:
+            emit_metric("live.turn.regrown", 1, "Count")
+            return True
+        return False
+
+    def _turn_rows(self, tid: int) -> list[Request]:
+        """The open rows a turn's lines made, whichever path made them (`_apply`, a steer's fallback row). Not a
+        multi-name line's strip rows (`routed` False): never started, and its own /route answer replaces them."""
+        return [r for r in self._requests.items if r.routed and r.status in OPEN and self._turn_of.get(r.turn) == tid]
+
+    def _amend_turn(self, mark: int, ops: dict) -> dict:
+        """A turn said in pieces is routed again as it grows (`_heard_final`): what it asks now REPLACES what it
+        asked before, and never adds to it. A request of an agent the turn already asked is that row, amended
+        with the turn's words (a queued row's task, a working row's run, `_apply`'s steer); one of another
+        agent replaces the turn's rows, which are called off. A steer of the turn's own row is no follow-up.
+        The turn's acknowledgement was said once, when it first asked: none again, and no small talk."""
+        tid = self._turn_of.get(mark)
+        mine = self._turn_rows(tid) if tid is not None else []
+        if not mine:
+            return ops
+        ids = {r.id for r in mine}
+        reqs = list(ops.get("requests") or [])
+        cancel = list(ops.get("cancel") or [])
+        # Each request it makes now amends one live row of the same agent, if one is left; a row the router steers
+        # stays; every other row of the turn is called off, also when the whole turn now asks nothing (it was talk to
+        # a person, or taken back). A `ready` row's run is over, so words cannot reach it: it is called off (its
+        # answer struck) and asked again. A row the turn withdraws (`ops.cancel`) is not amended: its replacement is
+        # a request of its own.
+        steered = {x.get("requestId") for x in ops.get("steer") or []}
+        live = [r for r in mine if r.status in ("queued", "working") and r.id not in cancel]
+        free, kept, amends, fresh = list(live), [], [], []
+        for x in reqs:
+            if r := next((r for r in free if r.agent == x.get("agentId")), None):
+                free.remove(r)
+                kept.append(r)
+                amends.append({"requestId": r.id, "text": x.get("task") or "", "quiet": True})
+            else:
+                fresh.append(x)
+        cancel += [r.id for r in mine if r not in kept and not (r in live and r.id in steered) and r.id not in cancel]
+        steer = [{**x, "quiet": True} if x.get("requestId") in ids else x for x in ops.get("steer") or [] if x.get("requestId") not in cancel]
+        steer += amends
+        reqs = fresh
+        emit_metric("live.turn.amended", 1, "Count", {"how": "replaced" if len(cancel) > len(ops.get("cancel") or []) else "steered"})
+        return {**ops, "requests": reqs, "steer": steer, "cancel": cancel, "social": None, "say": None, "called": None}
+
     def _apply_held(self, now: float) -> None:
         """understanding §4.4: a held line whose speaker said nothing more for HOLD_APPLY_S is applied as /route
-        answered it (never thrown away), once: a later final routes on its own."""
+        answered it (never thrown away), once: a later final routes on its own. Not while they are still saying
+        it: a piece being said, or one whose words have not come, is more of the same turn."""
         for identity, (text, at, mark, r, kw) in list(self._held.items()):
-            if now - self._final_at.get(identity, at) < HOLD_APPLY_S:
+            if now - self._final_at.get(identity, at) < HOLD_APPLY_S or identity in self._incomplete:
+                continue
+            if self._saying(identity):
                 continue
             del self._held[identity]
             if (u := self._unbound.get(identity)) and u[0] >= at and _words_in(text, u[1], 1):
@@ -4853,13 +4987,18 @@ class Huddle:
             else:  # it stands whoever spoke since (review B5-3): nobody else's line re-makes its asks
                 self._spawn(self._route_and_summon(identity, text, mark, routed=r, stands=True, **kw))
 
+    def _saying(self, identity: str) -> bool:
+        """They are still saying their turn: talking now, or a piece of it has ended and its words have not come.
+        What they said of it so far is not answered yet (`_apply_held`, `_call_on`)."""
+        return identity in self._speaking or any(e.state in ("speaking", "awaiting-final") for e in self._turns.get(identity, []))
+
     def _call_on(self, now: float) -> None:
         """Turns their speakers did not finish. A name said alone, then CALL_ON_S of silence from its speaker:
         the agent was called on. It speaks next: an answer it has ready, else how its open work stands, else
         one short line. A line that trailed off and got no rest within TRAIL_S is forgotten."""
         for identity, (_, at, mark, agent_id) in list(self._incomplete.items()):
             silent = now - max(at, self._heard_at.get(identity, -math.inf))
-            if identity in self._speaking or silent < (CALL_ON_S if agent_id else TRAIL_S):
+            if self._saying(identity) or silent < (CALL_ON_S if agent_id else TRAIL_S):
                 continue
             del self._incomplete[identity]
             if agent_id is None or identity not in self._people or self._agent(agent_id) is None:

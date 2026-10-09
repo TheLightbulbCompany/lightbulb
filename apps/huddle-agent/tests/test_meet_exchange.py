@@ -576,3 +576,239 @@ async def test_an_answer_that_is_ready_is_said_and_no_status_line_with_it():
     await says(h, P1, "Forge, go ahead.")
     await pause(h, clock)
     assert says_of(lives[-1]) == [("say", "Three PRs are open.")]
+
+
+async def test_a_named_line_the_router_calls_unfinished_asks_nothing_until_its_rest_comes():
+    """10-09 prod Meet: "Hey, Friday. That's awesome, but can you actually give me a summary of" came back
+    `hold` and was made a request all the same; its rest made two more. Unfinished means wait, also by name."""
+    h, room, backend, lives, clock, log = await per_person()
+    backend.route_extra = {**ops([("forge", "give me a summary of", "name")]), "hold": True}
+    await says(h, P1, "Forge, can you actually give me a summary of")
+    assert h._requests.items == [] and backend.turns == [], "an unfinished turn starts nothing"
+    assert all(("say",) != c[:1] for live in lives for c in live.calls), "and says nothing"
+    backend.route_extra = ops([("forge", "summarise my open PRs", "name")])
+    await says(h, P1, "my open PRs.")
+    assert backend.routes[-1][1] == "Forge, can you actually give me a summary of my open PRs.", "routed once, whole"
+    assert [r.task for r in h._requests.items] == ["summarise my open PRs"]
+
+
+async def test_more_of_a_turn_that_already_asked_amends_its_request_and_is_not_acknowledged_again():
+    """A piece that goes straight on from a routed turn is the same turn: routed again whole, its request is that
+    row, amended. Not a second run, and not a second "on it"."""
+    h, room, backend, lives, clock, log = await per_person()
+    backend.steer = True  # its run takes the words (a run that already ended makes a row of them: `_steer_row`)
+    h.on_speech(P1, True)
+    clock.t += 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "summarise what my sessions are doing", "name")])
+    await says(h, P1, "Forge, summarise what my sessions are doing.")
+    (row,) = h._requests.items
+    acks = [u for u in h._ledger if u.kind == "ack"]
+    h.on_speech(P1, True)  # 0.5 s later they go on
+    clock.t += 0.5 + 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "the sessions of the whole workspace", "name")])
+    await says(h, P1, "or the sessions of the workspace.")
+    assert backend.routes[-1][1] == "Forge, summarise what my sessions are doing. or the sessions of the workspace."
+    assert h._requests.items == [row] and row.status in h_mod.OPEN, "no second request"
+    assert backend.late_steers[-1]["steerRunId"] == row.run_id, "the words went into its run"
+    assert [u for u in h._ledger if u.kind == "ack"] == acks, "acknowledged once"
+    clock.t += 5  # a later line, after a real pause, is a turn of its own
+    h.on_speech(P1, True)
+    clock.t += 1
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "check the deploy", "name")])
+    await says(h, P1, "Forge, also check the deploy.")
+    assert len(h._requests.items) == 2
+
+
+async def test_a_grown_turn_that_drops_an_agent_calls_that_agents_row_off():
+    """#3961 review (P1): a first piece asked two agents; the whole turn asks one. The other's row is called off,
+    not left to run and answer."""
+    h, room, backend, lives, clock, log = await per_person()
+    backend.steer = True
+    h.on_speech(P1, True)
+    clock.t += 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "check the deploy", "name"), ("gauge", "check the numbers", "name")])
+    await says(h, P1, "Forge and Gauge, check the deploy")
+    forge, gauge = sorted(h._requests.items, key=lambda r: r.agent)
+    h.on_speech(P1, True)
+    clock.t += 0.5 + 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "check the deploy and the numbers", "name")])
+    await says(h, P1, "actually just Forge, both.")
+    assert forge.status in h_mod.OPEN, "the agent it still asks keeps its row"
+    assert gauge.status not in h_mod.OPEN, "the dropped agent's row is called off"
+    assert len(h._requests.items) == 2, "no new row"
+
+
+async def test_a_piece_said_while_the_turn_before_it_is_at_route_joins_that_turn():
+    """#3961 review (P1): /route is slower than the pause. The first piece's `hold` comes back after the rest was
+    heard; the rest is routed with the whole turn, and the late answer for the start alone is not acted on."""
+    h, room, backend, lives, clock, log = await per_person()
+    h.on_speech(P1, True)
+    clock.t += 2
+    h.on_speech(P1, False)
+    slow = backend.route_gate = asyncio.Event()
+    backend.route_extra = {**ops([("forge", "give me a summary of", "name")]), "hold": True}
+    await h.on_final_transcript(P1, "Priya", "Forge, can you give me a summary of")
+    for _ in range(30):
+        await asyncio.sleep(0)
+    backend.route_gate = None
+    h.on_speech(P1, True)
+    clock.t += 0.5 + 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "summarise my open PRs", "name")])
+    await h.on_final_transcript(P1, "Priya", "my open PRs.")
+    for _ in range(30):
+        await asyncio.sleep(0)
+    slow.set()
+    await settle(h)
+    assert backend.routes[-1][1] == "Forge, can you give me a summary of my open PRs.", "the rest routed whole"
+    assert [r.task for r in h._requests.items] == ["summarise my open PRs"], "one request, for the whole turn"
+    assert P1 not in h._held, "the late hold is not kept to join a later line"
+
+
+async def test_a_grown_turn_that_now_asks_nothing_calls_its_row_off():
+    """#3961 review (P1): the first piece asked Forge; the whole turn is talk to a person. Its row is called off."""
+    h, room, backend, lives, clock, log = await per_person()
+    backend.steer = True
+    h.on_speech(P1, True)
+    clock.t += 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "check the deploy", "name")])
+    await says(h, P1, "Forge, check the deploy")
+    (row,) = h._requests.items
+    h.on_speech(P1, True)
+    clock.t += 0.5 + 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([])
+    await says(h, P1, "actually no, Dan, what do you think?")
+    assert row.status not in h_mod.OPEN, "taken back: its row is called off"
+
+
+async def test_a_grown_turn_whose_first_answer_is_ready_asks_again_and_drops_that_answer():
+    """#3961 review (P1): the first piece's run already answered, unsaid, when the turn goes on. That answer is
+    struck and the whole turn is one new request, not a second request beside a queued answer."""
+    h, room, backend, lives, clock, log = await per_person()
+    h.on_speech(P1, True)
+    clock.t += 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "check the deploy", "name")])
+    await says(h, P1, "Forge, check the deploy")
+    (row,) = h._requests.items
+    row.status = "ready"  # its run answered; the answer is not said yet
+    h.on_speech(P1, True)
+    clock.t += 0.5 + 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "check the deploy and the numbers", "name")])
+    await says(h, P1, "and the numbers.")
+    assert row.status not in h_mod.OPEN, "the answer for half the turn is struck"
+    assert [r.task for r in h._requests.items if r.status in h_mod.OPEN] == ["check the deploy and the numbers"]
+
+
+async def test_a_grown_turn_that_withdraws_its_ask_and_asks_the_same_agent_again_keeps_the_new_ask():
+    """#3961 review (P1): "Forge, check the deploy. Never mind that; check the pipeline instead." The first row is
+    withdrawn and the replacement is a request, not a steer of the withdrawn row."""
+    h, room, backend, lives, clock, log = await per_person()
+    h.on_speech(P1, True)
+    clock.t += 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "check the deploy", "name")])
+    await says(h, P1, "Forge, check the deploy.")
+    (row,) = h._requests.items
+    h.on_speech(P1, True)
+    clock.t += 0.5 + 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "check the pipeline", "name")], cancel=[row.id])
+    await says(h, P1, "Never mind that; check the pipeline instead.")
+    assert row.status not in h_mod.OPEN
+    assert [r.task for r in h._requests.items if r.status in h_mod.OPEN] == ["check the pipeline"]
+
+
+async def test_a_grown_turn_that_asks_one_agent_two_things_keeps_both_asks():
+    """The first piece asked Forge one thing; the whole turn asks Forge two. One amends its row, one is new."""
+    h, room, backend, lives, clock, log = await per_person()
+    backend.steer = True
+    h.on_speech(P1, True)
+    clock.t += 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "check the deploy", "name")])
+    await says(h, P1, "Forge, check the deploy")
+    (row,) = h._requests.items
+    h.on_speech(P1, True)
+    clock.t += 0.5 + 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "check the deploy", "name"), ("forge", "draft the release notes", "name")])
+    await says(h, P1, "and draft the release notes.")
+    assert row.status in h_mod.OPEN
+    assert sorted(r.task for r in h._requests.items if r.status in h_mod.OPEN) == ["check the deploy", "draft the release notes"]
+
+
+async def test_a_third_piece_amends_the_row_a_failed_steer_made_instead_of_adding_another():
+    """#3961 review (P1): the second piece's steer found the run ended and made a row of its own (`_steer_row`).
+    A third piece sees that row as the turn's: one replacement stays open, never two."""
+    h, room, backend, lives, clock, log = await per_person()
+    backend.steer = False  # every steer finds the run gone: `_steer_row` makes a row of the words
+    pieces = [("Forge, check the deploy", "check the deploy"), ("and the numbers", "check the deploy and the numbers"),
+              ("and the logs.", "check the deploy, the numbers and the logs")]
+    for said, task in pieces:
+        h.on_speech(P1, True)
+        clock.t += 0.5 + 2
+        h.on_speech(P1, False)
+        backend.route_extra = ops([("forge", task, "name")])
+        await says(h, P1, said)
+    assert len([r for r in h._requests.items if r.status in h_mod.OPEN]) <= 2, "the run's row and one replacement"
+
+
+async def test_a_piece_said_seconds_later_while_the_turn_is_at_route_joins_it():
+    """#3961 review (P1): /route still decides on the first piece when they go on 3 s later, inside the hold's
+    window. The rest is routed with the whole turn; the late `hold` for the start alone is not acted on."""
+    h, room, backend, lives, clock, log = await per_person()
+    h.on_speech(P1, True)
+    clock.t += 2
+    h.on_speech(P1, False)
+    slow = backend.route_gate = asyncio.Event()
+    backend.route_extra = {**ops([("forge", "give me a summary of", "name")]), "hold": True}
+    await h.on_final_transcript(P1, "Priya", "Forge, can you give me a summary of")
+    for _ in range(30):
+        await asyncio.sleep(0)
+    backend.route_gate = None
+    clock.t += 3
+    h.on_speech(P1, True)
+    clock.t += 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "summarise my open PRs", "name")])
+    await h.on_final_transcript(P1, "Priya", "my open PRs.")
+    for _ in range(30):
+        await asyncio.sleep(0)
+    slow.set()
+    await settle(h)
+    assert backend.routes[-1][1] == "Forge, can you give me a summary of my open PRs."
+    assert [r.task for r in h._requests.items] == ["summarise my open PRs"]
+
+
+async def test_two_steers_of_a_turns_row_in_flight_make_one_replacement_row():
+    """#3961 review (P1): two pieces steer the turn's working row at once and both find its run gone. One
+    replacement row, amended by the second, never two."""
+    h, room, backend, lives, clock, log = await per_person()
+    backend.steer = False
+    h.on_speech(P1, True)
+    clock.t += 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "check the deploy", "name")])
+    await says(h, P1, "Forge, check the deploy")
+    backend.steer_gate = asyncio.Event()
+    for said, task in [("and the numbers", "check the deploy and the numbers"), ("and the logs.", "check all three")]:
+        h.on_speech(P1, True)
+        clock.t += 0.5 + 2
+        h.on_speech(P1, False)
+        backend.route_extra = ops([("forge", task, "name")])
+        await h.on_final_transcript(P1, "Priya", said)
+        for _ in range(30):
+            await asyncio.sleep(0)
+    assert len(backend.late_steers) == 2, "both steers are in flight"
+    backend.steer_gate.set()
+    await settle(h)
+    assert len([r for r in h._requests.items if r.status == "queued"]) == 1, "one replacement"

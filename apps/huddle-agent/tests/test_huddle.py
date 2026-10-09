@@ -136,6 +136,7 @@ class FakeBackend:
         unclaimed=False,
         open=(),
         engagements=(),
+        turn=None,
     ):
         self.routes.append((speaker, utterance, transcript))
         self.route_floors = getattr(self, "route_floors", []) + [floor]
@@ -213,6 +214,8 @@ class FakeBackend:
                     "steerRunId": steer_run_id,
                 }
             )
+            if gate := getattr(self, "steer_gate", None):
+                await gate.wait()
             return {"runId": steer_run_id, "agentId": agent_id, "steered": self.steer}
         self.turns.append(
             {

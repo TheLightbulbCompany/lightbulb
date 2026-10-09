@@ -1,0 +1,119 @@
+{
+ "about": "Prod Meet 2026-10-09 03:57:55-03:58:14: after a greeting Friday answered, one thought said in five pieces, each ended by the transcriber after a short silence ('A cool' / 'Hey, Friday.' / 'That's awesome, but can you actually give me a summary of' / 'what my current cloud code sessions are doing.' / 'or the cloud code sessions of the workspace.'). The router read the first four as unfinished (hold) and still made requests and small talk of them. One turn: one request, one acknowledgement, one answer.",
+ "people": {
+  "a": {
+   "name": "Prasiddha",
+   "voice": "Daniel"
+  },
+  "b": {
+   "name": "Leonardo",
+   "voice": "Fred"
+  }
+ },
+ "lines": [
+  {
+   "at": 3,
+   "who": "a",
+   "say": "Hey Friday, can you hear me?"
+  },
+  {
+   "at": 24,
+   "who": "a",
+   "say": "A cool"
+  },
+  {
+   "at": 25.6,
+   "who": "a",
+   "say": "Hey, Friday."
+  },
+  {
+   "at": 27.4,
+   "who": "a",
+   "say": "That's awesome, but can you actually give me a summary of"
+  },
+  {
+   "at": 31.5,
+   "who": "a",
+   "say": "what my current cloud code sessions are doing."
+  },
+  {
+   "at": 34.6,
+   "who": "a",
+   "say": "or the cloud code sessions of the workspace."
+  }
+ ],
+ "notes": "Friday answers the greeting, and her voice has closed (MEET_FOLLOWUP_S) when the pieces come 20 s later; Prasiddha is still talking with her, as in prod. The pieces follow each other after 0.5-0.6 s of silence (the transcriber ends a piece after 400 ms). The router's labels are prod's: the first four come back unfinished (hold), with 'A cool' read as small talk and the next two as a request of Friday by name. Leonardo is in the meeting and says nothing.",
+ "tail": 55,
+ "timeout": 80,
+ "expect": [
+  {
+   "ack_within": {
+    "line": 0,
+    "seconds": 4
+   },
+   "why": "the greeting gets its reply"
+  },
+  {
+   "no_new_run": {
+    "lines": [
+     0,
+     1,
+     2,
+     3,
+     4
+    ]
+   },
+   "why": "an unfinished turn starts nothing; its pieces are joined first"
+  },
+  {
+   "max_runs": {
+    "max": 1
+   },
+   "why": "five pieces, one request"
+  },
+  {
+   "silent_between": {
+    "from": 1,
+    "to": 5,
+    "to_edge": "end"
+   },
+   "why": "no small talk and no acknowledgement for a turn that is still being said"
+  },
+  {
+   "ack_within": {
+    "line": 5,
+    "seconds": 4
+   }
+  },
+  {
+   "answer_contains": {
+    "after": 4,
+    "contains": [
+     "session"
+    ]
+   },
+   "why": "she answers the joined question"
+  },
+  {
+   "said_once": {
+    "text": "sessions? (are|is) running"
+   }
+  },
+  {
+   "said_once": {},
+   "why": "this also catches a second acknowledgement"
+  },
+  {
+   "max_agent_lines": {
+    "max": 4
+   },
+   "why": "the greeting reply, one acknowledgement and the answer in two sentences"
+  },
+  {
+   "no_text": {
+    "pattern": "\\b(Vera|Atlas|Pulse|Tally|Gauge|Forge|Jev|Hermes|Paperclip)\\b"
+   },
+   "why": "internal names"
+  }
+ ]
+}

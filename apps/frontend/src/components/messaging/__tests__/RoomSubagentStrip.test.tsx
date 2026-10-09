@@ -1,6 +1,6 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { applySubagentEvent, EMPTY_ROOM_SUBAGENTS } from "@lightbulb/shared";
+import { ApiError, applySubagentEvent, EMPTY_ROOM_SUBAGENTS } from "@lightbulb/shared";
 import { RoomSubagentStrip } from "../RoomSubagentStrip";
 
 const mk = (n: number) => Array.from({ length: n }).reduce<typeof EMPTY_ROOM_SUBAGENTS>((s, _, i) =>
@@ -40,7 +40,7 @@ describe("RoomSubagentStrip", () => {
   });
 
   it("a finished subagent's steer shows the 404 copy", async () => {
-    const p = { ...props(), onSteer: vi.fn().mockRejectedValue(Object.assign(new Error("gone"), { code: "SUBAGENT_NOT_FOUND" })) };
+    const p = { ...props(), onSteer: vi.fn().mockRejectedValue(new ApiError(404, { code: "SUBAGENT_NOT_FOUND" })) };
     render(<RoomSubagentStrip {...p} />);
     fireEvent.click(screen.getByRole("button", { name: /Track 0/ }));
     fireEvent.change(screen.getByRole("textbox", { name: "Steer Track 0" }), { target: { value: "x" } });

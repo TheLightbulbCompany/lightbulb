@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { liveSubagents, sessionClock, subagentActivity, useSubagentTail, type MessagingClient, type RoomSubagents, type SubagentProgress } from "@lightbulb/shared";
+import { isSubagentGone, liveSubagents, sessionClock, subagentActivity, useSubagentTail, type MessagingClient, type RoomSubagents, type SubagentProgress } from "@lightbulb/shared";
 
 const PREVIEW = 3; // upstream Desktop previews three workers
 const GONE = "That subagent has already finished.";
@@ -23,7 +23,7 @@ function Detail({ item, roomId, client, onSteer, onStop }: {
   const { tail } = useSubagentTail(client, { roomId, agentId: item.agentId, subagentId: item.id });
   const [text, setText] = useState("");
   const [note, setNote] = useState("");
-  const fail = (e: unknown) => setNote((e as { code?: string })?.code === "SUBAGENT_NOT_FOUND" ? GONE : "Could not reach the agent. Try again.");
+  const fail = (e: unknown) => setNote(isSubagentGone(e) ? GONE : "Could not reach the agent. Try again.");
   return <div className="room-subagent-detail">
     <form className="room-subagent-steer" onSubmit={(e) => {
       e.preventDefault();

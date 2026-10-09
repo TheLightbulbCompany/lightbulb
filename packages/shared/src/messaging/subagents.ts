@@ -145,3 +145,8 @@ export function subagentActivity(item: SubagentProgress): string {
   if (last) return last;
   return item.status === "queued" ? "queued" : "waiting for activity";
 }
+
+/** The steer/stop route answers 404 `SUBAGENT_NOT_FOUND` once the child has finished. `ApiError` keeps the code in `body`. */
+export function isSubagentGone(e: unknown): boolean {
+  return (e as { body?: { code?: unknown } } | null)?.body?.code === "SUBAGENT_NOT_FOUND";
+}

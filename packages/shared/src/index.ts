@@ -322,5 +322,6 @@ export {
   pruneFinishedSubagents,
   reconcileSubagentSnapshot,
   subagentActivity,
+  isSubagentGone,
 } from "./messaging/subagents";
 export type { RoomSubagents, SubagentProgress, SubagentStatus } from "./messaging/subagents";

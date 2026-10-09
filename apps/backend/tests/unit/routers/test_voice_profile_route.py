@@ -129,6 +129,7 @@ def test_a_guests_steer_makes_them_the_requester_c8_checks(world, monkeypatch):
     monkeypatch.setattr(messaging_repo, "update_voice_run", AsyncMock(side_effect=steer))
     monkeypatch.setattr(vc, "_run_control", AsyncMock(return_value=202))
     monkeypatch.setattr(vc, "_speaker_name", AsyncMock(return_value="Gus"))
+    monkeypatch.setattr(vc.local_session_grants, "mint", lambda *a: "lowered-grant")
     import asyncio
 
     call = {"ownerId": OWNER, "roomId": R_LIVE}

@@ -19,14 +19,28 @@ def _auth(user_id: str):
     return auth
 
 
-async def _type(is_typing: bool, *, publish_room=None, activity=None):
+MEMBERS = [
+    {"kind": "human", "id": "user_a"},
+    {"kind": "agent", "id": "ceo", "displayName": "CEO", "listenMode": "active"},
+    {"kind": "agent", "id": "eng", "displayName": "Eng", "listenMode": "mentions"},
+    {"kind": "agent", "id": "obs", "displayName": "Obs", "listenMode": "observe"},
+]
+
+
+async def _type(is_typing: bool, *, publish_room=None, activity=None, prewake=None, meta=None, clear=True):
     router._typing_last.clear()
+    if clear:
+        router._typing_prewaked.clear()
     publisher = MagicMock()
     publisher.publish_room = publish_room or AsyncMock(return_value=True)
     activity = activity or AsyncMock()
     with (
         patch("routers.messaging.resolve_owner_id", return_value="org_1"),
-        patch.object(router.service, "require_room_member", AsyncMock()),
+        patch.object(
+            router.service, "require_room_member", AsyncMock(return_value=(meta or {"ownerId": "org_host"}, {}))
+        ),
+        patch.object(router.messaging_repo, "list_members", AsyncMock(return_value=MEMBERS)),
+        patch.object(router.voice_calls, "prewake_owner", prewake or MagicMock()),
         patch.object(router.service, "human_display_name", AsyncMock(return_value="Ann")),
         patch("routers.messaging.get_live_event_publisher", return_value=publisher),
         patch("routers.messaging.publish_room_activity", activity),
@@ -60,3 +74,27 @@ async def test_stopping_typing_hints_idle_without_expiry():
 async def test_a_failing_hint_never_fails_the_typing_call():
     response, _ = await _type(True, activity=AsyncMock(side_effect=RuntimeError("boom")))
     assert response.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_typing_wakes_the_room_owners_runtime_for_agents_that_can_answer():
+    prewake = MagicMock()
+    await _type(True, prewake=prewake)
+    # The ROOM's owner (a shared-channel guest types toward the host's agents); observe never runs.
+    prewake.assert_called_once_with("org_host", [{"id": "ceo", "name": "CEO"}, {"id": "eng", "name": "Eng"}])
+
+
+@pytest.mark.asyncio
+async def test_typing_wakes_once_per_room_per_window():
+    prewake = MagicMock()
+    await _type(True, prewake=prewake)
+    await _type(True, prewake=prewake, clear=False)
+    assert prewake.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_stopping_typing_or_an_archived_room_wakes_nothing():
+    prewake = MagicMock()
+    await _type(False, prewake=prewake)
+    await _type(True, prewake=prewake, meta={"ownerId": "org_host", "archivedAt": "2026-10-01"})
+    prewake.assert_not_called()

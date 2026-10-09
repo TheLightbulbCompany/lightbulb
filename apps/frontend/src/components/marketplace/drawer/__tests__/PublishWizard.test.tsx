@@ -134,6 +134,23 @@ describe("PickAgentStep", () => {
     >("@/components/marketplace/drawer/wizardSteps");
     render(<PickAgentStep onSelect={onSelect} />);
     await user.click(screen.getByText("Pulse"));
-    expect(onSelect).toHaveBeenCalledWith("agent_pulse");
+    // The display name rides along so the listing name is "Pulse", not the id.
+    expect(onSelect).toHaveBeenCalledWith("agent_pulse", "Pulse");
+  });
+
+  it("a card is selectable from the keyboard", async () => {
+    useAgentsMock.mockReturnValue({
+      agents: [{ id: "agent_pulse", name: "pulse", identity: { name: "Pulse" } }],
+      defaultId: "agent_main",
+    });
+    const onSelect = vi.fn();
+    const user = userEvent.setup();
+    const { PickAgentStep } = await vi.importActual<
+      typeof import("@/components/marketplace/drawer/wizardSteps")
+    >("@/components/marketplace/drawer/wizardSteps");
+    render(<PickAgentStep onSelect={onSelect} />);
+    screen.getByRole("button", { name: /pulse/i }).focus();
+    await user.keyboard("{Enter}");
+    expect(onSelect).toHaveBeenCalledWith("agent_pulse", "Pulse");
   });
 });

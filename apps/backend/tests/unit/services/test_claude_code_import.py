@@ -57,6 +57,14 @@ def test_detect_rejects_workspace_tar():
     assert cci.detect_claude_root(["CLAUDE.md", "skills/s/SKILL.md"]) is None
 
 
+def test_detect_accepts_the_dialogs_own_partial_archives():
+    """The dialog says "include whichever exist": a ``.claude/``-prefixed archive with only
+    CLAUDE.md, or only skills, is a Claude Code context."""
+    assert cci.detect_claude_root([".claude/CLAUDE.md"]) == ".claude/"
+    assert cci.detect_claude_root([".claude/skills/s/SKILL.md"]) == ".claude/"
+    assert cci.detect_claude_root(["./.claude/CLAUDE.md", "./.claude/skills/s/SKILL.md"]) == ".claude/"
+
+
 def test_detect_requires_md_under_memory():
     assert cci.detect_claude_root(["projects/x/memory/notes.txt"]) is None
 

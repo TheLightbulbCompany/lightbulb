@@ -462,16 +462,16 @@ async def create_new_version(*, listing_id: str, seller_id: str) -> dict:
 async def discard_draft(*, listing_id: str, seller_id: str, version: int) -> None:
     """Delete a non-terminal draft row.
 
+    Any version: a v1 draft has never been published (approval moves v1 to 'published' and
+    a later republish retires it, never back to 'draft'), so nobody holds a license to it,
+    and the slug is cosmetic (``listing_id`` is the identity). Refusing v1 left every
+    abandoned first publish stuck in the seller's list.
+
     Guards:
-      - version must be > 1 (v=1 carries the slug reservation; full
-        listing retraction is a separate flow not in scope here)
       - row must exist and be in 'draft' status (not 'review', which
         requires admin reject)
       - seller_id must match the row's seller_id
     """
-    if version <= 1:
-        raise InvalidStateError("cannot discard v1; full listing retraction is a separate flow")
-
     row = await marketplace_repo.get_listing(listing_id, version)
     if row is None:
         raise InvalidStateError(f"v{version} not found for listing {listing_id}")

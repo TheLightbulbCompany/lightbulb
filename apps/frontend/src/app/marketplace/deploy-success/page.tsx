@@ -3,16 +3,14 @@
 import { useAuth } from "@clerk/nextjs";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 
 import { Monogram, AgentPill } from "@/components/agents/AgentIdentity";
 import { fromListing, initialsFor, paletteFor } from "@/lib/agentDesign";
-import { SITE_URL } from "@/lib/domain";
 import { getListing } from "@/lib/marketplace/api";
 import type { ListingDetailResponse } from "@/lib/marketplace/types";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
-const APP_URL = SITE_URL;
 
 function titleCase(token: string): string {
   return token
@@ -60,6 +58,11 @@ function DeploySuccessInner() {
   const [automationsPending, setAutomationsPending] = useState(Number(params.get("pending")) || 0);
   const [errorRetryable, setErrorRetryable] = useState(true);
   const [detail, setDetail] = useState<ListingDetailResponse | null>(null);
+  // Each deploy attempt runs once. The effect used to list `phase` as a dep and
+  // cancel on cleanup, so its own setPhase("deploying") cancelled the request it
+  // had just sent and the page sat on "Hiring…" forever. "Try again" bumps it.
+  const [attempt, setAttempt] = useState(0);
+  const startedAttempt = useRef(-1);
 
   // Editorial identity — uses the fetched listing if available, otherwise
   // derives a placeholder from the listing_id so the celebration still has
@@ -119,9 +122,9 @@ function DeploySuccessInner() {
     if (initialAgentUuid) return;
     if (!sessionId && !entitled) return;
     if (!listingId) return;
-    if (phase !== "idle") return;
+    if (startedAttempt.current === attempt) return;
+    startedAttempt.current = attempt;
 
-    let cancelled = false;
     (async () => {
       setPhase("deploying");
       try {
@@ -136,7 +139,6 @@ function DeploySuccessInner() {
             },
           },
         );
-        if (cancelled) return;
         if (resp.status === 403) {
           setPhase("entitlement_pending");
           return;
@@ -178,15 +180,11 @@ function DeploySuccessInner() {
         setAutomationsPending(body.automations_pending?.length ?? 0);
         setPhase("ready");
       } catch (e) {
-        if (cancelled) return;
         setErrorMsg(e instanceof Error ? e.message : "Deploy failed.");
         setPhase("error");
       }
     })();
-    return () => {
-      cancelled = true;
-    };
-  }, [isLoaded, isSignedIn, getToken, listingId, sessionId, entitled, initialAgentUuid, phase]);
+  }, [isLoaded, isSignedIn, getToken, listingId, sessionId, entitled, initialAgentUuid, attempt]);
 
   if (isLoaded && !isSignedIn) return <Loading />;
 
@@ -238,7 +236,7 @@ function DeploySuccessInner() {
             {editorial.name} is already installing — give it a moment, then open your workspace.
           </p>
           <Link
-            href={`${APP_URL}/chat`}
+            href="/chat"
             className="editorial-btn editorial-btn--primary mt-6 inline-flex h-11 px-6"
           >
             Open workspace
@@ -260,6 +258,7 @@ function DeploySuccessInner() {
               onClick={() => {
                 setErrorMsg(null);
                 setPhase("idle");
+                setAttempt((a) => a + 1);
               }}
               className="editorial-btn editorial-btn--primary mt-6 h-11 px-6"
             >
@@ -302,8 +301,8 @@ function DeploySuccessInner() {
           <Link
             href={
               agentUuid
-                ? `${APP_URL}/chat?agent=${encodeURIComponent(agentUuid)}`
-                : `${APP_URL}/chat`
+                ? `/chat?agent=${encodeURIComponent(agentUuid)}`
+                : "/chat"
             }
             className="editorial-btn editorial-btn--primary mt-8 inline-flex h-12 px-8 text-sm"
           >

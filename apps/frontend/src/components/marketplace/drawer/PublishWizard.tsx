@@ -173,13 +173,19 @@ export function PublishWizard() {
   // doesn't lose track of why they're here.
   const rejectionNote = editingListing?.rejection_notes ?? null;
 
-  const setAgent = (id: string) =>
-    setForm((f) => ({
-      ...f,
-      agentId: id,
-      name: f.name || titleFromId(id),
-      tagline: f.tagline || `${titleFromId(id)} agent`,
-    }));
+  // Prefill from the agent's display name; the id is a UUID, so titling it gave
+  // listings names like "3f2a 9c41 …". The id is only the fallback (an import
+  // hands back an id alone).
+  const setAgent = (id: string, agentName?: string) =>
+    setForm((f) => {
+      const display = agentName?.trim() || titleFromId(id);
+      return {
+        ...f,
+        agentId: id,
+        name: f.name || display,
+        tagline: f.tagline || `${display} agent`,
+      };
+    });
 
   const updateForm = (patch: Partial<PublishForm>) => setForm((f) => ({ ...f, ...patch }));
 
@@ -250,6 +256,7 @@ export function PublishWizard() {
       const priceCents = form.priceTier === "free" ? 0 : Math.round(form.priceDollars * 100);
 
       let listingId = draftListingId;
+      let createdDraft = false;
       // Republish path: editingListing is a v_new=N+1 draft row created
       // by POST /republish. PATCH, artifact-from-agent, and submit all
       // need ?version=N+1 to revise that row instead of clobbering the
@@ -285,19 +292,35 @@ export function PublishWizard() {
           category: form.category.toLowerCase(),
         })) as { listing_id: string };
         listingId = draft.listing_id;
+        createdDraft = true;
         setDraftListingId(listingId);
       }
       // Always include ?version=N when editing so the artifact + submit
       // calls land on the same row we PATCH'd. Initial publish (version=1)
       // omits the QS to match the backend default and keep URLs clean.
       const versionQs = isEditing ? `?version=${version}` : "";
-      await api.post(
-        `/marketplace/listings/${listingId}/artifact-from-agent${versionQs}`,
-        {
-          agent_id: form.agentId,
-          bundle: { mcps: form.bundleMcps, skills: form.bundleSkills },
-        },
-      );
+      try {
+        await api.post(
+          `/marketplace/listings/${listingId}/artifact-from-agent${versionQs}`,
+          {
+            agent_id: form.agentId,
+            bundle: { mcps: form.bundleMcps, skills: form.bundleSkills },
+          },
+        );
+      } catch (artifactErr) {
+        // A draft this click just made has no artifact and no agent bound, so
+        // it is junk: delete it rather than leave one Draft behind per failed
+        // attempt. A retry makes a fresh one.
+        if (createdDraft) {
+          try {
+            await api.del(`/marketplace/listings/${listingId}?version=1`);
+          } catch {
+            // The original error is the one to show; a leftover draft can be deleted by hand.
+          }
+          setDraftListingId(null);
+        }
+        throw artifactErr;
+      }
       await api.post(`/marketplace/listings/${listingId}/submit${versionQs}`, {});
       setStep(6);
     } catch (err) {

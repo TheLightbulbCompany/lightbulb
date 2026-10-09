@@ -809,9 +809,8 @@ class TestDiscardDraft:
             await marketplace_service.discard_draft(listing_id=listing_id, seller_id="other", version=2)
 
     @pytest.mark.asyncio
-    async def test_cannot_discard_v1(self, dynamodb_table):
-        """v=1 is the listing's root row; full listing retraction is a
-        separate flow not in scope here."""
+    async def test_discards_a_never_published_v1_draft(self, dynamodb_table):
+        """A first publish that never went live can be deleted; it used to 422/409 forever."""
         result = await marketplace_service.create_draft(
             seller_id="seller_1",
             slug="x",
@@ -824,8 +823,8 @@ class TestDiscardDraft:
             artifact_bytes=b"",
             manifest={"name": "X"},
         )
-        with pytest.raises(marketplace_service.InvalidStateError):
-            await marketplace_service.discard_draft(listing_id=result["listing_id"], seller_id="seller_1", version=1)
+        await marketplace_service.discard_draft(listing_id=result["listing_id"], seller_id="seller_1", version=1)
+        assert await marketplace_service.get_by_id(listing_id=result["listing_id"], version=1) is None
 
     @pytest.mark.asyncio
     async def test_race_handled_when_state_changes_between_read_and_delete(self, dynamodb_table, monkeypatch):

@@ -80,7 +80,7 @@ published). Key rules:
 ## Importing an existing setup (the same publish wizard)
 
 - **"Can I bring my local Claude Code context?"** → Yes: run
-  `cd ~ && tar czf claude-code.tar.gz .claude/CLAUDE.md .claude/projects/*/memory .claude/skills`
+  `cd ~ && find .claude -maxdepth 3 \( -path .claude/CLAUDE.md -o -path '.claude/projects/*/memory' -o -path .claude/skills \) -prune -print | tar czf claude-code.tar.gz -T -`
   (include whichever exist) and upload it through the same import
   wizard — it detects the shape and applies onto ONE
   existing agent the owner picks: auto-memory lands under `memory/imports/claude-code/`,

@@ -810,12 +810,15 @@ you cannot guess from the filename:
   marketplace deploys; `_install_agentcore_deploy` is the half that writes the
   buyer's profile.
 - `agent_export.py` — seller-agent → tarball snapshotter. It downloads the
-  seller's **Hermes profile** from S3 and tars that; the marketplace slice is
-  projected from the PROFILE's own `openclaw.json`, not from a per-user one.
-  A Hermes-native profile (`config.yaml` + `.env`, no `openclaw.json`) cannot
-  publish, and the refusal says so — which keeps the whole credential-leak gate
-  and safety-scan suite exercising live code instead of a door that always
-  raised. `_refuse_bad_id` emits `marketplace.path_traversal_attempt` on every
+  seller's **Hermes profile** from S3 and tars its portable part (persona,
+  skills, files). The backend-owned files (`config.yaml`, the facts file,
+  `cli-env.json`), the agent's `home/`, and every connector credential
+  projection are dropped at download time. A Hermes-native profile has no
+  `openclaw.json`, so its slice is just the agent's identity entry (its MCP
+  servers are the workspace's own connections; the buyer's profile writer
+  fills in the buyer's). A legacy profile that still carries `openclaw.json`
+  keeps using it. The slice-leak gate and the tarball safety scan run on both.
+  `_refuse_bad_id` emits `marketplace.path_traversal_attempt` on every
   id refusal (agent id **and** seller id, the other half of the profile key):
   that metric is the marketplace's last path-traversal trip-wire and page-tier
   alarm P11 sits on it, so do not sweep it as emitter-less.
@@ -1353,9 +1356,9 @@ POST /listings/{id}/artifact-from-agent                 (download the seller's p
               s3://$MARKETPLACE_ARTIFACTS_BUCKET/listings/{id}/v{n}/
                 ├─ workspace.tar.gz    (deterministic; mtimes zeroed)
                 ├─ manifest.json       (file count, safety flags, agent_id)
-                └─ openclaw-slice.json (the slice, projected from the PROFILE's own
-                                        openclaw.json — a Hermes-native profile with
-                                        none cannot publish, and the refusal says so)
+                └─ openclaw-slice.json (the slice: the profile's own openclaw.json
+                                        when it has one, else the agent's identity
+                                        entry — see agent_export above)
 POST /listings/{id}/submit                              (draft → review)
 ```
 

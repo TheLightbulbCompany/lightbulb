@@ -102,7 +102,7 @@ export function PickAgentStep({
   onSelect,
 }: {
   selected?: string;
-  onSelect: (id: string) => void;
+  onSelect: (id: string, name?: string) => void;
 }) {
   const { agents, defaultId, refresh } = useAgents() as unknown as {
     agents: Agent[];
@@ -143,7 +143,12 @@ export function PickAgentStep({
               role="button"
               aria-disabled={isMain}
               tabIndex={isMain ? -1 : 0}
-              onClick={() => !isMain && onSelect(agent.id)}
+              onClick={() => !isMain && onSelect(agent.id, agentDisplayName(agent))}
+              onKeyDown={(e) => {
+                if (isMain || (e.key !== "Enter" && e.key !== " ")) return;
+                e.preventDefault();
+                onSelect(agent.id, agentDisplayName(agent));
+              }}
               className={`flex items-center gap-3 p-3 rounded-xl border bg-card cursor-pointer transition ${
                 isMain
                   ? "opacity-45 cursor-not-allowed bg-[var(--cream-deep)]"
@@ -600,7 +605,7 @@ export function PricingStep({
             <span className="text-xs text-muted-foreground">USD · one-time, perpetual license</span>
           </div>
           <p className="text-caption text-muted-foreground mb-3">
-            Suggested range: $5–$20. Listings over $20 require Lightbulb approval.
+            Suggested range: $5–$20. The maximum is $20.
           </p>
           <div className="bg-card border border-[var(--edge)] rounded-xl px-4 py-3.5 text-ui">
             <Row label="List price" value={`$${v.toFixed(2)}`} />

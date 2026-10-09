@@ -137,7 +137,16 @@ def detect_claude_root(names: list[str]) -> str | None:
         return None  # openclaw backup layout
     root = ".claude/" if any(n.startswith(".claude/") for n in stripped) else ""
     for n in stripped:
-        if n.startswith(root) and _MEMORY_MD_RE.fullmatch(n[len(root) :]):
+        if not n.startswith(root):
+            continue
+        rel = n[len(root) :]
+        if _MEMORY_MD_RE.fullmatch(rel):
+            return root
+        # A ``.claude/`` prefix is itself the proof: the dialog's own command archives
+        # ``.claude/CLAUDE.md .claude/projects/*/memory .claude/skills`` "whichever exist", so
+        # CLAUDE.md or a skill alone is valid there. Only the BARE layout still needs a memory
+        # file, because bare CLAUDE.md + skills is also a plain workspace shape.
+        if root and (rel == "CLAUDE.md" or (rel.startswith("skills/") and rel.count("/") >= 2)):
             return root
     return None
 

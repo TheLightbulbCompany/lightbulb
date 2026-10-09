@@ -6,6 +6,7 @@ import { Check, Copy, Mail } from "lucide-react";
 import { ApiError } from "@lightbulb/shared";
 
 import { Button } from "@/components/ui/button";
+import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { useApi } from "@/lib/api";
 import { navigateShell } from "@/lib/shellNav";
 
@@ -21,7 +22,10 @@ interface AddressRow {
 // extractDetailMessage doesn't promote (it only lifts a string `detail` or a
 // `detail.message`), so ApiError.message falls back to the opaque "API 400".
 // Read the structured body ourselves rather than touching the shared client.
+const ADMIN_ONLY = "Only a workspace admin can change this.";
+
 function describeSaveError(e: unknown): string {
+  if (e instanceof ApiError && e.status === 403) return ADMIN_ONLY;
   if (e instanceof ApiError && e.body && typeof e.body === "object" && "detail" in e.body) {
     const detail = (e.body as { detail?: unknown }).detail;
     if (detail && typeof detail === "object") {
@@ -38,6 +42,7 @@ function describeSaveError(e: unknown): string {
 
 export function AgentEmailSection() {
   const api = useApi();
+  const canManage = useIsWorkspaceAdmin();
   const { data: row, error, isLoading, mutate } = useSWR<AddressRow>(
     "/agent-mail/address",
     () => api.get("/agent-mail/address") as Promise<AddressRow>,
@@ -129,9 +134,11 @@ export function AgentEmailSection() {
         {row.outbound_disabled && (
           <div role="alert" className="rounded-lg border border-warn bg-cream px-3 py-2 text-ui">
             Outbound email is paused: a recipient reported a message as spam.
-            <Button type="button" variant="outline" size="sm" className="ml-2" disabled={saving} onClick={reenable}>
-              Re-enable
-            </Button>
+            {canManage && (
+              <Button type="button" variant="outline" size="sm" className="ml-2" disabled={saving} onClick={reenable}>
+                Re-enable
+              </Button>
+            )}
           </div>
         )}
         <label className="block text-xs">
@@ -141,16 +148,18 @@ export function AgentEmailSection() {
             className="mt-1 w-full rounded-md border border-[var(--edge)] bg-transparent p-2 font-mono text-xs"
             rows={4}
             value={senders}
-            disabled={saving}
+            disabled={saving || !canManage}
             onChange={(e) => setSenders(e.target.value)}
           />
         </label>
         <label className="flex items-center gap-2 text-xs">
-          <input type="checkbox" checked={anyone} disabled={saving} onChange={(e) => setAnyone(e.target.checked)} />
+          <input type="checkbox" checked={anyone} disabled={saving || !canManage} onChange={(e) => setAnyone(e.target.checked)} />
           Open email: anyone can email the team and agents can email anyone (daily limit applies; a spam report pauses all outbound)
         </label>
         {err && <p className="text-xs text-err">{err}</p>}
-        <Button type="button" size="sm" disabled={saving} onClick={() => save()}>{saving ? "Saving…" : "Save"}</Button>
+        {canManage
+          ? <Button type="button" size="sm" disabled={saving} onClick={() => save()}>{saving ? "Saving…" : "Save"}</Button>
+          : <p className="text-xs text-[var(--midnight-muted)]">{ADMIN_ONLY}</p>}
       </div>
     </div>
   );

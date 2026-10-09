@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+import time
 from typing import Annotated
 
 import stripe
@@ -20,7 +21,7 @@ from core.auth import AuthContext, get_current_user, require_org_admin, resolve_
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, oauth_state_repo
-from core.services import company_stripe, company_stripe_approval, provision_gate
+from core.services import company_stripe, company_stripe_approval, owner_lifecycle, provision_gate
 from core.services.owner_facts import write_owner_facts
 from core.services.container_auth import _require_hook_token
 from routers.company_board import file_card
@@ -127,6 +128,7 @@ async def _refresh_api_key_status(row: dict) -> dict | None:
 @router.post("/create")
 async def create(auth: Annotated[AuthContext, Depends(get_current_user)]):
     """Create the company account if absent and return a fresh onboarding link."""
+    started_ms = int(time.time() * 1000)
     _gate_admin(auth)
     owner_id = resolve_owner_id(auth)
     await require_always_on_entitlement(owner_id, message=COMPANY_STRIPE_MESSAGE)
@@ -142,7 +144,8 @@ async def create(auth: Annotated[AuthContext, Depends(get_current_user)]):
             )
         except stripe.error.StripeError as e:
             raise _stripe_failure(e) from e
-        bound = await billing_repo.set_company_stripe_account(owner_id, account_id=account_id, source="created")
+        async with owner_lifecycle.revoke_fence(owner_id, started_ms):
+            bound = await billing_repo.set_company_stripe_account(owner_id, account_id=account_id, source="created")
         if bound is None:
             # None means EITHER a concurrent create bound first OR there is no
             # billing row at all — the condition covers both. A consistent
@@ -194,6 +197,7 @@ async def bind_api_key(body: ApiKeyBody, auth: Annotated[AuthContext, Depends(ge
     relationship is created, which is the whole point: this is the door for
     an owner who will not (or, like us, cannot) grant Connect.
     """
+    started_ms = int(time.time() * 1000)
     _gate_admin(auth)
     owner_id = resolve_owner_id(auth)
     await require_always_on_entitlement(owner_id, message=COMPANY_STRIPE_MESSAGE)
@@ -227,17 +231,20 @@ async def bind_api_key(body: ApiKeyBody, auth: Annotated[AuthContext, Depends(ge
     # until it lands, a bound row with no key reads as unbound
     # (company_stripe_reads._addressing) — "not connected", never
     # "connected but every read 401s".
-    bound = await billing_repo.set_company_stripe_account(owner_id, account_id=account_id, source="api_key")
-    if bound is None:
-        raise HTTPException(status_code=409, detail="A Stripe account is already bound")
-    try:
-        await company_stripe.store_api_key(owner_id, body.api_key)
-    except Exception as e:  # noqa: BLE001 — the vault write failed; the binding must not outlive it
-        logger.exception("company_stripe: api key store failed owner_id=%s; unbinding", owner_id)
-        await billing_repo.clear_company_stripe_account(owner_id, account_id=account_id)
-        raise HTTPException(
-            status_code=502, detail={"code": "vault_error", "message": "Couldn't store the key. Try again."}
-        ) from e
+    # The key is stored under the same lease, so revoke-all's unbind can never run between the
+    # two writes and leave a key in the vault with no binding.
+    async with owner_lifecycle.revoke_fence(owner_id, started_ms):
+        bound = await billing_repo.set_company_stripe_account(owner_id, account_id=account_id, source="api_key")
+        if bound is None:
+            raise HTTPException(status_code=409, detail="A Stripe account is already bound")
+        try:
+            await company_stripe.store_api_key(owner_id, body.api_key)
+        except Exception as e:  # noqa: BLE001 — the vault write failed; the binding must not outlive it
+            logger.exception("company_stripe: api key store failed owner_id=%s; unbinding", owner_id)
+            await billing_repo.clear_company_stripe_account(owner_id, account_id=account_id)
+            raise HTTPException(
+                status_code=502, detail={"code": "vault_error", "message": "Couldn't store the key. Try again."}
+            ) from e
     await billing_repo.set_company_stripe_status(
         owner_id,
         account_id=account_id,
@@ -329,7 +336,17 @@ async def connect_callback(code: str = Query(default=""), state: str = Query(def
             owner_id,
         )
         return _return("stripe_error=account_in_use")
-    bound = await billing_repo.set_company_stripe_account(owner_id, account_id=account_id, source="connected")
+    # Revoke everything reads the binding under this lease: a bind either lands before that read
+    # (and is released) or finds the mark here.
+    try:
+        async with owner_lifecycle.owner_lifecycle_guard(owner_id):
+            if await owner_lifecycle.revoked_since(owner_id, rec):
+                await _release(account_id)
+                return _return("stripe_error=revoked")
+            bound = await billing_repo.set_company_stripe_account(owner_id, account_id=account_id, source="connected")
+    except owner_lifecycle.OwnerLifecycleBusyError:
+        await _release(account_id)
+        return _return("stripe_error=busy")
     if bound is None:
         # We hold an authorization on an account we are not going to use.
         # Hand it back rather than leaving the platform attached to it.

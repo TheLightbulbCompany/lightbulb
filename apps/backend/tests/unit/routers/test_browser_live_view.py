@@ -371,6 +371,46 @@ async def test_helper_fill_needs_a_persons_fresh_click_and_no_agent_and_answers_
 
 
 @pytest.mark.asyncio
+async def test_helper_save_needs_a_persons_fresh_click_and_no_agent(async_client):
+    """The helper's token can be read by a page or an agent inside the browser, and a save
+    replaces the password of an existing origin + username: the same two checks as Fill."""
+    import time
+
+    from core.services.browser_extensions import helper_token
+
+    ok = {"Authorization": f"Bearer {helper_token('org_h', 'n')}"}
+    body = {"origin": "https://a.example", "username": "me", "password": "pw"}
+    agent = {
+        "mode": "agent",
+        "agent_id": "friday",
+        "lease_until": int(time.time()) + 100,
+        "session_id": "s1",
+        "helper_nonce": "n",
+    }
+    idle = {"mode": "idle", "session_id": "s1", "helper_nonce": "n"}
+    for state, touched, status in ((agent, time.time(), 409), (idle, time.time() - 60, 403), (idle, None, 403)):
+        with (
+            patch("routers.container.container_repo.get_browser_state", return_value=state),
+            patch("routers.container.container_repo.get_browser_input_at", return_value=touched),
+            patch("core.services.website_logins.add_login") as add,
+        ):
+            resp = await async_client.post("/api/v1/browser/helper/logins", json=body, headers=ok)
+        assert resp.status_code == status
+        add.assert_not_called()
+
+    with (
+        patch("routers.container.container_repo.get_browser_state", return_value=idle),
+        patch("routers.container.container_repo.get_browser_input_at", return_value=time.time() - 1),
+        patch("core.services.website_logins.add_login", return_value={"id": "vault_aaaaaaaaaaaa"}) as add,
+    ):
+        resp = await async_client.post("/api/v1/browser/helper/logins", json=body, headers=ok)
+    assert resp.status_code == 201 and resp.json() == {"id": "vault_aaaaaaaaaaaa"}
+    add.assert_awaited_once_with(
+        "org_h", "https://a.example", "me", "pw", added_by="browser", added_by_name="Shared browser"
+    )
+
+
+@pytest.mark.asyncio
 async def test_agent_extension_request_is_hook_token_gated_and_only_asks(async_client):
     with (
         patch("routers.messaging._require_hook_token") as hook,

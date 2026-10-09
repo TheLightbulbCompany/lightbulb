@@ -601,10 +601,16 @@ async def browser_helper_logins(origin: str, request: Request):
 @browser_router.post("/helper/logins", status_code=201)
 async def browser_helper_save(body: HelperSave, request: Request):
     """The helper's "Save this login for the workspace?" -- into the same store Connections ->
-    Website sign-ins lists and the agents' vault fills from."""
+    Website sign-ins lists and the agents' vault fills from. A save replaces the password of an
+    existing origin + username, and the helper's token can be read by a page or an agent, so it
+    takes the same two checks as Fill: no run holding the browser, and a person's fresh click."""
     from core.services import website_logins
 
-    owner_id, _ = await _helper_owner(request)
+    owner_id, state = await _helper_owner(request)
+    if browser_control._mode(state) == "agent":
+        raise HTTPException(status_code=409, detail=browser_control.AGENT_BUSY)
+    if not await _person_just_clicked(owner_id):
+        raise HTTPException(status_code=403, detail="Click Save yourself in the browser panel.")
     try:
         return await website_logins.add_login(
             owner_id, body.origin, body.username, body.password, added_by="browser", added_by_name="Shared browser"

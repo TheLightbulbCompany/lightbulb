@@ -49,7 +49,7 @@ from core.auth import AuthContext, get_current_user, require_org_admin, resolve_
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, container_repo, oauth_state_repo, slack_installs_repo
-from core.services import runtime_transport, slack_install_service, slack_signing, webhook_dedup
+from core.services import owner_lifecycle, runtime_transport, slack_install_service, slack_signing, webhook_dedup
 from core.services.credentials import platform_oauth_app_store
 from core.services.provision_gate import has_always_on_entitlement
 
@@ -328,19 +328,27 @@ async def slack_oauth_callback(code: str = "", state: str = "", error: str = "")
                 status_code=302,
             )
 
+        owner_id = rec["owner_id"]
         try:
-            await slack_install_service.apply_install(
-                owner_id=rec["owner_id"],
-                agent_id=agent_id,
-                team_id=token["team"]["id"],
-                team_name=token["team"].get("name") or "",
-                bot_token=token["access_token"],
-                bot_user_id=token.get("bot_user_id") or "",
-                app_id=token.get("app_id") or "",
-                scopes=[s for s in (token.get("scope") or "").split(",") if s],
-                installer_slack_user_id=(token.get("authed_user") or {}).get("id") or "",
-                installer_member_id=rec.get("member_id") or "",
-            )
+            # Same lease revoke-all reads its Slack snapshot under: an install either lands
+            # before that snapshot (and is uninstalled) or finds the mark here.
+            async with owner_lifecycle.owner_lifecycle_guard(owner_id):
+                if await owner_lifecycle.revoked_since(owner_id, rec):
+                    return RedirectResponse(_frontend_return(agent_id, "error:revoked"), status_code=302)
+                await slack_install_service.apply_install(
+                    owner_id=owner_id,
+                    agent_id=agent_id,
+                    team_id=token["team"]["id"],
+                    team_name=token["team"].get("name") or "",
+                    bot_token=token["access_token"],
+                    bot_user_id=token.get("bot_user_id") or "",
+                    app_id=token.get("app_id") or "",
+                    scopes=[s for s in (token.get("scope") or "").split(",") if s],
+                    installer_slack_user_id=(token.get("authed_user") or {}).get("id") or "",
+                    installer_member_id=rec.get("member_id") or "",
+                )
+        except owner_lifecycle.OwnerLifecycleBusyError:
+            return RedirectResponse(_frontend_return(agent_id, "error:busy"), status_code=302)
         except slack_install_service.SlackInstallConflict:
             return RedirectResponse(_frontend_return(agent_id, "error:workspace_already_connected"), status_code=302)
         return RedirectResponse(_frontend_return(agent_id, "connected"), status_code=302)
@@ -362,5 +370,5 @@ async def delete_slack_install(team_id: str, auth: AuthContext = Depends(get_cur
     row = await slack_installs_repo.get(team_id)
     if not row or row.get("owner_id") != resolve_owner_id(auth):
         raise HTTPException(status_code=404, detail="install_not_found")
-    await slack_install_service.revoke_install(team_id)
+    await slack_install_service.revoke_install(team_id, expected_owner_id=row["owner_id"])
     return {"status": "revoked"}

@@ -101,6 +101,12 @@ async def test_apply_install_unwinds_when_the_greeting_fails():
     revoke.assert_awaited_once_with("T1")
 
 
+@pytest.fixture(autouse=True)
+def _team_ids(monkeypatch):
+    """revoke_install drops the team from the owner's team_ids row; admit it without a table."""
+    monkeypatch.setattr(svc.integrations_repo, "remove_connected_team", AsyncMock(return_value=set()))
+
+
 @pytest.mark.asyncio
 async def test_revoke_install_tears_down_everything():
     """The secret delete is UNCONDITIONAL now. It used to be ordered behind a task-definition
@@ -119,10 +125,16 @@ async def test_revoke_install_tears_down_everything():
         ) as sweep,
         patch("core.services.slack_install_service.slack_installs_repo.list_for_owner", AsyncMock(return_value=[])),
         patch("core.services.slack_install_service._mark_disconnected", AsyncMock()) as mark_disconnected,
+        patch(
+            "core.services.slack_install_service.integrations_repo.remove_connected_team",
+            AsyncMock(return_value=set()),
+        ) as forget,
     ):
         assert await svc.revoke_install("T1") is True
     mark_disconnected.assert_awaited_once_with("org_1")
-    set_status.assert_awaited_once_with("T1", "revoked")
+    # The owner's team_ids set stops naming a workspace it no longer holds.
+    forget.assert_awaited_once_with("org_1", "slack", "T1")
+    set_status.assert_awaited_once_with("T1", "revoked", expected_owner_id=None)
     del_secret.assert_awaited_once_with("org_1", "slack/T1")
     sweep.assert_awaited_once_with(owner_id="org_1", provider="slack", agent_id="agent_f")
 
@@ -150,6 +162,51 @@ async def test_revoke_keeps_slack_connected_while_another_workspace_remains():
     ):
         assert await svc.revoke_install("T1") is True
     mark_disconnected.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_revoke_keeps_the_slack_row_while_its_team_ids_name_another_workspace(monkeypatch):
+    """Two teams; the eventually consistent GSI has not caught up with T2. The strongly read
+    team_ids set still names T2, so revoking T1 keeps the owner's slack row."""
+    row = {"team_id": "T1", "owner_id": "org_1", "agent_id": "agent_f", "status": "active"}
+    monkeypatch.setattr(svc.integrations_repo, "remove_connected_team", AsyncMock(return_value={"T2"}))
+    with (
+        patch("core.services.slack_install_service.slack_installs_repo.get", AsyncMock(return_value=row)),
+        patch("core.services.slack_install_service.slack_installs_repo.set_status", AsyncMock(return_value=True)),
+        patch("core.services.slack_install_service.integration_secret_store.delete", AsyncMock()),
+        patch(
+            "core.services.slack_install_service.channel_link_repo.sweep_by_owner_provider_agent",
+            AsyncMock(return_value=0),
+        ),
+        patch("core.services.slack_install_service.slack_installs_repo.list_for_owner", AsyncMock(return_value=[row])),
+        patch("core.services.slack_install_service._mark_disconnected", AsyncMock()) as mark_disconnected,
+    ):
+        assert await svc.revoke_install("T1") is True
+    mark_disconnected.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_revoke_for_an_owner_that_no_longer_holds_the_row_touches_nothing():
+    """revoke-all checked T1 was ours, then another owner installed it. The conditional row
+    update fails, so their token, routes and status row are left alone."""
+    row = {"team_id": "T1", "owner_id": "org_1", "agent_id": "agent_f", "status": "active"}
+    with (
+        patch("core.services.slack_install_service.slack_installs_repo.get", AsyncMock(return_value=row)),
+        patch(
+            "core.services.slack_install_service.slack_installs_repo.set_status", AsyncMock(return_value=False)
+        ) as set_status,
+        patch("core.services.slack_install_service.integration_secret_store.delete", AsyncMock()) as del_secret,
+        patch(
+            "core.services.slack_install_service.channel_link_repo.sweep_by_owner_provider_agent", AsyncMock()
+        ) as sweep,
+        patch("core.services.slack_install_service._mark_disconnected", AsyncMock()) as mark_disconnected,
+    ):
+        assert await svc.revoke_install("T1", expected_owner_id="org_1") is False
+    set_status.assert_awaited_once_with("T1", "revoked", expected_owner_id="org_1")
+    del_secret.assert_not_awaited()
+    sweep.assert_not_awaited()
+    mark_disconnected.assert_not_awaited()
+    svc.integrations_repo.remove_connected_team.assert_not_awaited()
 
 
 @pytest.mark.asyncio

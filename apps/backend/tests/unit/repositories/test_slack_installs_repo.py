@@ -112,6 +112,19 @@ async def test_get_missing_is_none(installs_table):
 
 
 @pytest.mark.asyncio
+async def test_a_revoke_for_the_wrong_owner_leaves_the_row_alone(installs_table):
+    """The owner changed between revoke-all's pre-check and its revoke: the conditional write fails
+    and the other owner's active row is untouched."""
+    await _put(owner_id="org_2")
+    assert await repo.set_status("T0123ABC", "revoked", expected_owner_id="org_1") is False
+    assert (await repo.get("T0123ABC"))["status"] == "active"
+    assert await repo.set_status("T0123ABC", "revoked", expected_owner_id="org_2") is True
+    assert (await repo.get("T0123ABC"))["status"] == "revoked"
+    # Already revoked: not "ours and active" any more.
+    assert await repo.set_status("T0123ABC", "revoked", expected_owner_id="org_2") is False
+
+
+@pytest.mark.asyncio
 async def test_set_status_on_unknown_team_creates_nothing(installs_table):
     await repo.set_status("T_NOPE", "revoked")
     assert await repo.get("T_NOPE") is None

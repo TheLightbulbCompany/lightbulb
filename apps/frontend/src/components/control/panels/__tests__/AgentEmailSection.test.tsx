@@ -11,6 +11,9 @@ vi.mock("@/lib/api", () => ({
 const navigateShell = vi.fn();
 vi.mock("@/lib/shellNav", () => ({ navigateShell: (url: string) => navigateShell(url) }));
 
+let isAdmin = true;
+vi.mock("@/hooks/useIsWorkspaceAdmin", () => ({ useIsWorkspaceAdmin: () => isAdmin }));
+
 import { AgentEmailSection } from "../AgentEmailSection";
 
 // SWR has a global cache that persists across renders/tests — wrap each
@@ -37,6 +40,31 @@ describe("AgentEmailSection", () => {
     mockGet.mockReset();
     mockPatch.mockReset();
     mockPatch.mockResolvedValue({});
+    isAdmin = true;
+  });
+
+  it("shows a member the settings read-only and says who can change them", async () => {
+    isAdmin = false;
+    mockGet.mockResolvedValue({ ...baseAddress, outbound_disabled: "complaint" });
+    renderSection();
+
+    await screen.findByText(ADDR);
+    expect(screen.getByRole("textbox")).toBeDisabled();
+    expect(screen.getByRole("checkbox")).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /^save$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /re-enable/i })).not.toBeInTheDocument();
+    expect(screen.getByText("Only a workspace admin can change this.")).toBeInTheDocument();
+  });
+
+  it("says only an admin can change this when the server answers 403", async () => {
+    mockGet.mockResolvedValue(baseAddress);
+    mockPatch.mockRejectedValueOnce(new ApiError(403, { detail: "Organization admin access required" }));
+    renderSection();
+
+    await screen.findByText(ADDR);
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    expect(await screen.findByText("Only a workspace admin can change this.")).toBeInTheDocument();
   });
 
   it("renders the team address and the verified-senders textarea seeded from the row", async () => {

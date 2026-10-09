@@ -43,6 +43,7 @@ from core.services.credentials.mcp_server import reconcile_integrations
 from core.services import paperclip_github_token
 from core.services.google_identity import seed_agent_google_identity
 from core.services.owner_facts import write_owner_facts
+from core.services import owner_lifecycle
 from core.services.owner_lifecycle import OwnerLifecycleBusyError, owner_lifecycle_guard
 
 logger = logging.getLogger(__name__)
@@ -520,6 +521,7 @@ async def aws_credentials(body: AwsCredentialsBody, request: Request):
 
 @router.post("/{provider}")
 async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depends(get_current_user)):
+    started_ms = int(time.time() * 1000)
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     p = _get_provider_or_404(provider, owner_id)
@@ -550,25 +552,27 @@ async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depe
     # Paste tokens are backend-custodian: store the credential in Secrets
     # Manager (KMS-encrypted at rest) — never in DynamoDB — then deliver the
     # literal into the container. Mark the integration connected only after
-    # wiring succeeds, so status never reports a false "connected".
-    await integration_secret_store.put(owner_id, provider, credential)
-    try:
-        await apply_connection.apply_connection(owner_id, provider, credential)
-    except RuntimeUnsupportedError as exc:
-        # M6-R31: a clear, specific answer instead of the generic apply_failed/502 --
-        # this provider has no known Hermes/AgentCore equivalent yet. Same rollback as
-        # the generic failure path: the row must never read connected.
-        await _remove_materialized_artifacts(owner_id, p, credential)
-        await integration_secret_store.delete(owner_id, provider)
-        raise HTTPException(status_code=422, detail=f"RUNTIME_UNSUPPORTED: {exc}") from exc
-    except Exception:
-        await _remove_materialized_artifacts(owner_id, p, credential)
-        await integration_secret_store.delete(owner_id, provider)
-        raise HTTPException(
-            status_code=502,
-            detail="failed to apply the connection to your container; please retry",
-        )
-    await integrations_repo.put_status(owner_id, provider, "connected")
+    # wiring succeeds, so status never reports a false "connected". Under the lease revoke-all
+    # reads under, and refused when it ran after this request began.
+    async with owner_lifecycle.revoke_fence(owner_id, started_ms):
+        await integration_secret_store.put(owner_id, provider, credential)
+        try:
+            await apply_connection.apply_connection(owner_id, provider, credential)
+        except RuntimeUnsupportedError as exc:
+            # M6-R31: a clear, specific answer instead of the generic apply_failed/502 --
+            # this provider has no known Hermes/AgentCore equivalent yet. Same rollback as
+            # the generic failure path: the row must never read connected.
+            await _remove_materialized_artifacts(owner_id, p, credential)
+            await integration_secret_store.delete(owner_id, provider)
+            raise HTTPException(status_code=422, detail=f"RUNTIME_UNSUPPORTED: {exc}") from exc
+        except Exception:
+            await _remove_materialized_artifacts(owner_id, p, credential)
+            await integration_secret_store.delete(owner_id, provider)
+            raise HTTPException(
+                status_code=502,
+                detail="failed to apply the connection to your container; please retry",
+            )
+        await integrations_repo.put_status(owner_id, provider, "connected")
     await write_owner_facts(owner_id)  # best-effort: refresh the agents' connected_integrations manifest
     return {"status": "connected", "provider": provider}
 
@@ -654,6 +658,7 @@ async def aws_complete(provider: str, body: AwsCompleteBody, auth: AuthContext =
         vend-time AssumeRole back at Isol8's own infrastructure.
     The vend endpoint (POST /aws/credentials) assumes EXACTLY the stored ARN;
     this validation is the gate that keeps a bad ARN from ever being stored."""
+    started_ms = int(time.time() * 1000)
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     p = _get_provider_or_404(provider, owner_id)
@@ -715,39 +720,41 @@ async def aws_complete(provider: str, body: AwsCompleteBody, auth: AuthContext =
     # connected, with the status row written ONLY after a clean apply so the
     # integration never reports a false "connected". No IAM grant step: the
     # backend's own role performs the AssumeRole at vend time.
-    await integration_secret_store.put(owner_id, provider, credential)
-    try:
-        await apply_connection.apply_connection(owner_id, provider, {**credential, "cli_token": cli_token})
-        await integrations_repo.put_status(owner_id, provider, "connected")
-        await write_owner_facts(owner_id)  # best-effort: refresh the agents' connected_integrations manifest
-    except Exception:
-        # Best-effort rollback: a failed connect must leave no on-disk ~/.aws
-        # bundle. Each teardown step is wrapped independently so one failure
-        # doesn't skip the others. Rather than deleting the whole secret,
-        # RE-PUT the pending {external_id} record: the owner has already baked
-        # this ExternalId into their CloudFormation trust policy, and aws-setup
-        # is documented to reuse it — dropping it would silently break the
-        # already-created role on a retry. Then always re-raise as a 5xx.
+    # Under the lease revoke-all reads under; refused when it ran after this request began.
+    async with owner_lifecycle.revoke_fence(owner_id, started_ms):
+        await integration_secret_store.put(owner_id, provider, credential)
         try:
-            await _remove_materialized_artifacts(owner_id, p, credential)
+            await apply_connection.apply_connection(owner_id, provider, {**credential, "cli_token": cli_token})
+            await integrations_repo.put_status(owner_id, provider, "connected")
+            await write_owner_facts(owner_id)  # best-effort: refresh the agents' connected_integrations manifest
         except Exception:
-            logger.warning(
-                "aws-complete rollback: failed to remove materialized artifacts for owner=%s",
-                owner_id,
-                exc_info=True,
+            # Best-effort rollback: a failed connect must leave no on-disk ~/.aws
+            # bundle. Each teardown step is wrapped independently so one failure
+            # doesn't skip the others. Rather than deleting the whole secret,
+            # RE-PUT the pending {external_id} record: the owner has already baked
+            # this ExternalId into their CloudFormation trust policy, and aws-setup
+            # is documented to reuse it — dropping it would silently break the
+            # already-created role on a retry. Then always re-raise as a 5xx.
+            try:
+                await _remove_materialized_artifacts(owner_id, p, credential)
+            except Exception:
+                logger.warning(
+                    "aws-complete rollback: failed to remove materialized artifacts for owner=%s",
+                    owner_id,
+                    exc_info=True,
+                )
+            try:
+                await integration_secret_store.put(owner_id, provider, {"external_id": external_id})
+            except Exception:
+                logger.warning(
+                    "aws-complete rollback: failed to reset pending secret for owner=%s",
+                    owner_id,
+                    exc_info=True,
+                )
+            raise HTTPException(
+                status_code=502,
+                detail="failed to apply the AWS connection to your container; please retry",
             )
-        try:
-            await integration_secret_store.put(owner_id, provider, {"external_id": external_id})
-        except Exception:
-            logger.warning(
-                "aws-complete rollback: failed to reset pending secret for owner=%s",
-                owner_id,
-                exc_info=True,
-            )
-        raise HTTPException(
-            status_code=502,
-            detail="failed to apply the AWS connection to your container; please retry",
-        )
     return {"status": "connected", "provider": provider}
 
 
@@ -1151,6 +1158,11 @@ async def oauth_callback(
     # network call, never around it.
     try:
         async with owner_lifecycle_guard(owner_id):
+            # Revoke everything ran after this connect started (its code may already have been
+            # exchanged): land nothing. Judged under the lock revoke-all's teardown takes, from
+            # the stored state's mint time, never the request.
+            if await owner_lifecycle.revoked_since(owner_id, rec):
+                return _done("error=revoked", origin)
             # Agent-started flow landing on a provider that went live in between
             # (the owner connected via the tab during the state TTL): drop it. The
             # agent may start a missing connection, never rebind a live one — judged

@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 
-from core.auth import AuthContext, get_current_user, resolve_owner_id
+from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.dynamodb import run_in_thread
 from core.repositories import agent_email_repo, container_repo, messaging_repo
 from core.repositories.agent_mail_inbox_repo import (
@@ -181,6 +181,7 @@ class AddressSettings(BaseModel):
 
 @router.patch("/address")
 async def patch_address(body: AddressSettings, auth: AuthContext = Depends(get_current_user)) -> dict:
+    require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
     row, owner_email = await _team_row(owner_id)
     kwargs: dict = {}

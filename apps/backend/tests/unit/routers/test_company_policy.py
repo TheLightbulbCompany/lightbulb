@@ -47,6 +47,17 @@ def member_client():
 
 
 @pytest.fixture(autouse=True)
+def _lease(monkeypatch):
+    """revoke-all marks the owner revoked and takes the lifecycle lease: admit both without a table."""
+    from core.repositories import container_repo
+
+    monkeypatch.setattr(container_repo, "mark_oauth_revoked", AsyncMock(return_value=200))
+    monkeypatch.setattr(container_repo, "try_claim_owner_lifecycle", AsyncMock(return_value="lease-token"))
+    monkeypatch.setattr(container_repo, "release_owner_lifecycle_claim", AsyncMock())
+    monkeypatch.setattr(mod.slack_installs_repo, "list_for_owner", AsyncMock(return_value=[]))
+
+
+@pytest.fixture(autouse=True)
 def facts(monkeypatch):
     writer = AsyncMock()
     monkeypatch.setattr(mod, "write_owner_facts", writer)
@@ -117,11 +128,7 @@ def _revoke_mocks():
 
 def test_revoke_all_composes_each_primitive_once_in_order(client, facts):
     manager, cancel, sdelete, deauth = _revoke_mocks()
-    rows = [
-        {"provider": "projects/stripe"},
-        {"provider": "google"},  # OAuth rail row — not ours to delete here
-        {"provider": "projects/posthog"},
-    ]
+    rows = [{"provider": "projects/stripe"}, {"provider": "projects/posthog"}]
     billing_row = {"owner_id": "org_a", "company_stripe_account_id": "acct_1"}
     clear = AsyncMock(return_value=billing_row)
     manager.attach_mock(clear, "clear")
@@ -143,7 +150,8 @@ def test_revoke_all_composes_each_primitive_once_in_order(client, facts):
             "secret:projects/posthog",
             "secret:posthog",
             "stripe_connect:acct_1",
-        ]
+        ],
+        "failed": [],
     }
     cancel.assert_awaited_once_with("org_a")
     deauth.assert_awaited_once_with(account_id="acct_1")
@@ -198,8 +206,122 @@ def test_revoke_all_skips_stripe_when_unbound(client):
     ):
         resp = client.post("/api/v1/company/revoke-all", json={"confirm": "revoke"})
     assert resp.status_code == 200
-    assert resp.json() == {"revoked": ["workflows_cancelled:1", "secret:posthog"]}
+    assert resp.json() == {"revoked": ["workflows_cancelled:1", "secret:posthog"], "failed": []}
     deauth.assert_not_awaited()
+
+
+class _Guard:
+    async def __aenter__(self):
+        return None
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+def test_revoke_all_disconnects_every_connected_app_and_reports_the_one_that_failed(client):
+    """The dialog says it "deletes our copies of your credentials". It deleted the projects/*
+    blobs and left every OAuth app connected. Each remaining row goes through the Disconnect
+    route's own teardown; one that fails is reported and the rest still go."""
+    _, cancel, sdelete, _ = _revoke_mocks()
+    rows = [
+        {"provider": "projects/stripe"},
+        {"provider": "google"},
+        {"provider": "slack"},
+        {"provider": "github"},
+    ]
+
+    async def teardown(owner_id, provider, p):
+        if provider == "slack":
+            raise RuntimeError("s3 down")
+
+    torn = AsyncMock(side_effect=teardown)
+    github = AsyncMock()
+    order = MagicMock()
+    mark = AsyncMock(return_value=200)
+    listing = AsyncMock(return_value=rows)
+    order.attach_mock(mark, "mark")
+    order.attach_mock(listing, "list")
+    order.attach_mock(torn, "teardown")
+    with (
+        patch.object(mod.account_wipe, "cancel_open_workflows", cancel),
+        patch.object(mod.integrations_repo, "list_for_owner", listing),
+        patch.object(mod.integration_secret_store, "delete", sdelete),
+        patch.object(billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
+        patch.object(mod.container_repo, "mark_oauth_revoked", mark),
+        patch.object(mod.connections, "owner_lifecycle_guard", lambda owner_id: _Guard()),
+        patch.object(mod.connections, "_get_provider_for_teardown", lambda provider: provider),
+        patch.object(mod.connections, "_disconnect_teardown", torn),
+        patch.object(mod.connections.paperclip_github_token, "sync_after_disconnect", github),
+    ):
+        resp = client.post("/api/v1/company/revoke-all", json={"confirm": "revoke"})
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "revoked": [
+            "workflows_cancelled:1",
+            "secret:projects/stripe",
+            "secret:posthog",
+            "connection:google",
+            "connection:github",
+        ],
+        "failed": ["slack"],
+    }
+    # The Projects rail's row is not an OAuth connection: its blob is deleted above and it
+    # never reaches the OAuth teardown (which is keyed by the bare provider).
+    assert [c.args[:2] for c in torn.await_args_list] == [("org_a", "google"), ("org_a", "slack"), ("org_a", "github")]
+    github.assert_awaited_once_with("org_a")
+    # The mark is down before the rows are read, so a callback that lands after this snapshot
+    # finds it and refuses (oauth_callback); one that was mid-write is waited out by the guard.
+    mark.assert_awaited_once_with("org_a")
+    assert [name for name, _, _ in order.mock_calls][:2] == ["mark", "list"]
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_revoke_all_uninstalls_every_slack_workspace(client, fails):
+    """Slack is not a registry provider: its bare row used to be skipped as a reserved key while
+    the installs, their slack/<team> tokens and channel routes stayed live. Each active install
+    goes through the Disconnect route's revoke_install; one that fails puts Slack in `failed`."""
+    _, cancel, sdelete, _ = _revoke_mocks()
+    installs = [
+        {"team_id": "T1", "status": "active"},
+        {"team_id": "T2", "status": "active"},
+        {"team_id": "T0", "status": "revoked"},
+    ]
+
+    async def revoke(team_id, expected_owner_id=None):
+        if fails and team_id == "T1":
+            raise RuntimeError("ddb down")
+        return True
+
+    revoke_install = AsyncMock(side_effect=revoke)
+    listing = AsyncMock(return_value=[{"provider": "slack", "team_ids": {"T1", "T8", "T9"}}])
+    # Each team's install row, read strongly by team id. T8 was ours once; another owner has
+    # installed that workspace since, so its row, token and routes are theirs and stay.
+    current = {
+        "T1": {"owner_id": "org_a", "status": "active"},
+        "T2": {"owner_id": "org_a", "status": "active"},
+        "T8": {"owner_id": "org_other", "status": "active"},
+        "T9": {"owner_id": "org_a", "status": "active"},
+    }
+    with (
+        patch.object(mod.account_wipe, "cancel_open_workflows", cancel),
+        patch.object(mod.integrations_repo, "list_for_owner", listing),
+        patch.object(mod.integration_secret_store, "delete", sdelete),
+        patch.object(billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
+        patch.object(mod.slack_installs_repo, "list_for_owner", AsyncMock(return_value=installs)),
+        patch.object(mod.slack_install_service, "revoke_install", revoke_install),
+        patch.object(mod.slack_installs_repo, "get", AsyncMock(side_effect=current.get)),
+    ):
+        resp = client.post("/api/v1/company/revoke-all", json={"confirm": "revoke"})
+    assert resp.status_code == 200
+    # T8 is not ours any more: never revoked. T9 is on the owner's slack row (read strongly) but not yet on the by-owner GSI: still revoked.
+    assert [c.args for c in revoke_install.await_args_list] == [("T1",), ("T2",), ("T9",)]
+    assert {c.kwargs["expected_owner_id"] for c in revoke_install.await_args_list} == {"org_a"}
+    listing.assert_awaited_once_with("org_a", consistent=True)
+    body = resp.json()
+    if fails:
+        assert body["failed"] == ["slack"] and "slack:T2" in body["revoked"] and "slack:T1" not in body["revoked"]
+    else:
+        assert body["failed"] == [] and body["revoked"][-3:] == ["slack:T1", "slack:T2", "slack:T9"]
 
 
 @pytest.mark.parametrize("body", [{}, {"confirm": "REVOKE"}, {"confirm": "revoke everything"}])

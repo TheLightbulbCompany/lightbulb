@@ -14,6 +14,11 @@ def _oauth_state(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _never_revoked(monkeypatch):
+    monkeypatch.setattr("core.repositories.container_repo.get_oauth_revoked_at", AsyncMock(return_value=None))
+
+
 @asynccontextmanager
 async def _timing_out_guard(owner_id):
     raise OwnerLifecycleBusyError("timed out")

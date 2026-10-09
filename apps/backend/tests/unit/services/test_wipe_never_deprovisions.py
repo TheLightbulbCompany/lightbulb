@@ -22,7 +22,7 @@ from core.services.account_wipe import wipe_account  # noqa: E402
 from core.repositories import integrations_repo  # noqa: E402
 from core.services.company_stripe import deauthorize as real_company_stripe_deauthorize  # noqa: E402
 from core.services.credentials import integration_secret_store  # noqa: E402
-from routers import company_policy  # noqa: E402
+from routers import company_policy, connections  # noqa: E402
 from tests.unit.services.test_account_wipe import OWNER_ID, wipe_mocks  # noqa: E402, F401
 
 # What this rail's blob is actually NAMED, computed the same way the writer
@@ -35,7 +35,15 @@ _PROJECTS_SECRET_NAME = integration_secret_store._secret_name(OWNER_ID, integrat
 # the literal joined string.
 _PROJECTS_REMOVE_TOKENS = re.compile(r"""["']projects["']\s*,\s*["']remove["']""")
 
-_TEARDOWN_MODULES = (account_wipe, workspace_wipe, entitlement_teardown, owner_secret_sweep, company_policy)
+# `connections`: revoke-all runs its Disconnect teardown for every connected app.
+_TEARDOWN_MODULES = (
+    account_wipe,
+    workspace_wipe,
+    entitlement_teardown,
+    owner_secret_sweep,
+    company_policy,
+    connections,
+)
 
 # The modules that CAN deprovision, and the three call names that do it.
 # `provisioning_workflow_repo` is deliberately absent: the wipe closes the

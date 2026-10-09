@@ -31,7 +31,7 @@ import { useProvisioningRail } from "@/components/settings/ProvisionedResources"
 import { useConnections } from "@/hooks/useConnections";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { useApi } from "@/lib/api";
-import { notifyApiError, notifySuccess } from "@/lib/notify";
+import { notifyApiError, notifyError, notifySuccess } from "@/lib/notify";
 import { cn } from "@/lib/utils";
 
 const POLICY_PATH = "/company/policy";
@@ -152,10 +152,14 @@ export function AccountsPanel() {
     try {
       const res = (await api.post("/company/revoke-all", { confirm: REVOKE_CONFIRM })) as {
         revoked?: string[];
+        failed?: string[];
       };
       setRevokeOpen(false);
       setTyped("");
       notifySuccess(`Revoked ${res.revoked?.length ?? 0} item(s).`);
+      if (res.failed?.length) {
+        notifyError(`Still connected: ${res.failed.join(", ")}. Try again, or disconnect them below.`);
+      }
       // Everything on this page just changed shape — revalidate the lot rather
       // than naming four SWR keys that live in three other modules.
       void globalMutate(() => true);
@@ -310,7 +314,7 @@ export function AccountsPanel() {
               </p>
               <p className="text-caption" style={{ color: "var(--midnight-muted)" }}>
                 Cancels open requests, deletes our copies of your credentials, and disconnects
-                Stripe. It does not cancel or delete anything you already own at those providers.
+                your connected apps and Stripe. It does not cancel or delete anything you already own at those providers.
               </p>
               <div>
                 <EditorialButton
@@ -336,7 +340,7 @@ export function AccountsPanel() {
           }
         }}
         title="Revoke everything?"
-        description="This cancels open requests, deletes our copies of your credentials, and disconnects Stripe. It does not cancel or delete anything you already own at those providers."
+        description="This cancels open requests, deletes our copies of your credentials, and disconnects your connected apps and Stripe. It does not cancel or delete anything you already own at those providers."
         footer={
           <>
             <EditorialButton

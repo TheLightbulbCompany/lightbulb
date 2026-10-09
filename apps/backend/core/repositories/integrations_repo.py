@@ -11,6 +11,7 @@ from __future__ import annotations
 import time
 
 from boto3.dynamodb.conditions import Key
+from botocore.exceptions import ClientError
 
 from core.dynamodb import get_table, run_in_thread
 
@@ -49,6 +50,40 @@ async def put_status(
     await run_in_thread(_table().put_item, Item=item)
 
 
+async def add_connected_team(owner_id: str, provider: str, team_id: str) -> None:
+    """Mark ``provider`` connected and add ``team_id`` to the row's ``team_ids`` set (Slack: one
+    row per owner, many workspaces). An update, so an earlier team's id is kept."""
+    now = int(time.time())
+    await run_in_thread(
+        _table().update_item,
+        Key={"owner_id": owner_id, "provider": provider},
+        UpdateExpression="SET #s = :c, connected_at = if_not_exists(connected_at, :now), updated_at = :now "
+        "ADD team_ids :t",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={":c": "connected", ":now": now, ":t": {team_id}},
+    )
+
+
+async def remove_connected_team(owner_id: str, provider: str, team_id: str) -> set[str]:
+    """Drop ``team_id`` from the row's ``team_ids`` (its install was revoked) and return the team
+    ids still on it. A row that is already gone stays gone: the condition stops the update from
+    creating one."""
+    try:
+        response = await run_in_thread(
+            _table().update_item,
+            Key={"owner_id": owner_id, "provider": provider},
+            UpdateExpression="DELETE team_ids :t",
+            ConditionExpression="attribute_exists(owner_id)",
+            ExpressionAttributeValues={":t": {team_id}},
+            ReturnValues="UPDATED_NEW",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return set()
+    return set((response.get("Attributes") or {}).get("team_ids") or ())
+
+
 async def set_status(owner_id: str, provider: str, status: str) -> None:
     """Flip an existing row's status (e.g. ``reconnect_required``), keeping its identity,
     tenant and connected_at -- unlike ``put_status``, which rewrites the whole row."""
@@ -69,10 +104,11 @@ async def get(owner_id: str, provider: str) -> dict | None:
     return response.get("Item")
 
 
-async def list_for_owner(owner_id: str) -> list[dict]:
+async def list_for_owner(owner_id: str, *, consistent: bool = False) -> list[dict]:
     response = await run_in_thread(
         _table().query,
         KeyConditionExpression=Key("owner_id").eq(owner_id),
+        ConsistentRead=consistent,
     )
     return response.get("Items", [])
 

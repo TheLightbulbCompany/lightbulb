@@ -90,21 +90,28 @@ async def list_for_owner(owner_id: str) -> list[dict]:
     return resp.get("Items", [])
 
 
-async def set_status(team_id: str, status: str) -> None:
-    """No-op for an unknown team — never upserts a partial row."""
+async def set_status(team_id: str, status: str, *, expected_owner_id: str | None = None) -> bool:
+    """No-op for an unknown team — never upserts a partial row. With ``expected_owner_id``, only
+    an ACTIVE row of that owner changes (a revoke must not reach a workspace another owner has
+    installed since). False when nothing was written."""
+    condition, values = "attribute_exists(team_id)", {":s": status, ":t": utc_now_iso()}
+    if expected_owner_id is not None:
+        condition = "owner_id = :o AND #st = :active"
+        values.update({":o": expected_owner_id, ":active": STATUS_ACTIVE})
     try:
         await run_in_thread(
             _get_table().update_item,
             Key={"team_id": team_id},
             UpdateExpression="SET #st = :s, updated_at = :t",
-            ConditionExpression="attribute_exists(team_id)",
+            ConditionExpression=condition,
             ExpressionAttributeNames={"#st": "status"},
-            ExpressionAttributeValues={":s": status, ":t": utc_now_iso()},
+            ExpressionAttributeValues=values,
         )
     except ClientError as e:
         if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            return
+            return False
         raise
+    return True
 
 
 async def delete_all_for_owner(owner_id: str) -> list[str]:

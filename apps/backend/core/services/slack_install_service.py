@@ -77,8 +77,10 @@ def secret_provider(team_id: str) -> str:
 # including the maintenance notes addressed to our own engineers, into the
 # owner's shared company channel. The draft card still shows that work is
 # happening; only the raw tool payloads are withheld.
-async def _mark_connected(owner_id: str) -> None:
-    await integrations_repo.put_status(owner_id, PROVIDER, "connected")
+async def _mark_connected(owner_id: str, team_id: str) -> None:
+    # The team id goes on the owner's row too: revoke-all reads that strongly, where the
+    # by-owner GSI can still miss an install that just finished.
+    await integrations_repo.add_connected_team(owner_id, PROVIDER, team_id)
 
 
 async def _mark_disconnected(owner_id: str) -> None:
@@ -151,7 +153,7 @@ async def apply_install(
         # Somebody else's workspace. Don't leave our copy of their token behind.
         await integration_secret_store.delete(owner_id, provider)
         raise SlackInstallConflict(team_id)
-    await _mark_connected(owner_id)
+    await _mark_connected(owner_id, team_id)
 
     try:
         await _greet_installer(bot_token, installer_slack_user_id)
@@ -165,23 +167,31 @@ async def apply_install(
     return row
 
 
-async def revoke_install(team_id: str) -> bool:
+async def revoke_install(team_id: str, *, expected_owner_id: str | None = None) -> bool:
     """``app_uninstalled`` / ``tokens_revoked`` / owner Disconnect: mark the row, drop the
-    secret, sweep pairing rows. Clerk and billing are untouched."""
+    secret, sweep pairing rows. Clerk and billing are untouched. An owner-initiated revoke passes
+    ``expected_owner_id``: the row is flipped only while it is that owner's and active, and when
+    it is not (another owner installed the workspace in between) nothing else is touched."""
     row = await slack_installs_repo.get(team_id)
     if not row:
         return False
     owner_id, agent_id = row["owner_id"], row.get("agent_id") or ""
-    await slack_installs_repo.set_status(team_id, slack_installs_repo.STATUS_REVOKED)
+    updated = await slack_installs_repo.set_status(
+        team_id, slack_installs_repo.STATUS_REVOKED, expected_owner_id=expected_owner_id
+    )
+    if expected_owner_id is not None and not updated:
+        return False
     # No task-def entry to drop first any more: the token is ours alone, so the delete is
     # unconditional.
     await integration_secret_store.delete(owner_id, secret_provider(team_id))
+    remaining_ids = await integrations_repo.remove_connected_team(owner_id, PROVIDER, team_id)
     if agent_id:
         await channel_link_repo.sweep_by_owner_provider_agent(owner_id=owner_id, provider=PROVIDER, agent_id=agent_id)
     # The owner has ONE integrations status row for Slack, shared by every
     # workspace. Only flip it to disconnected once no active install is left,
     # or a second workspace keeps transporting while catalog requirement
-    # checks report Slack as missing.
+    # checks report Slack as missing. The row's own team_ids (read strongly) decides; the
+    # GSI below can only keep the row (installs from before team_ids), never delete it.
     # list_for_owner reads the by-owner GSI, which is eventually consistent:
     # the row just flipped to revoked can still come back as active, so it is
     # excluded by team id rather than trusted.
@@ -190,7 +200,7 @@ async def revoke_install(team_id: str) -> bool:
         for r in await slack_installs_repo.list_for_owner(owner_id)
         if r.get("team_id") != team_id and r.get("status") == slack_installs_repo.STATUS_ACTIVE
     ]
-    if not remaining:
+    if not remaining and not remaining_ids:
         await _mark_disconnected(owner_id)
     logger.info("slack install revoked owner=%s team=%s remaining=%d", owner_id, team_id, len(remaining))
     return True

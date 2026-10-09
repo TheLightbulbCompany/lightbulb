@@ -110,9 +110,11 @@ async def ensure_agentcore_trust(owner_id: str, role_name: str, account_id: str)
     return True
 
 
-#: How long AgentCore keeps an idle session's microVM warm before reaping it (the owner's ruling:
-#: long enough that a working day does not pay a cold start twice).
-IDLE_TIMEOUT_S = 4 * 60 * 60
+#: How long AgentCore keeps an idle session's microVM warm before reaping it. Short (owner ruling
+#: 2026-10-09, was 4 h): a person typing wakes the runtime ahead of the send (routers/messaging
+#: typing prewake), so a parked session costs no visible cold start, and an idle microVM is spend.
+#: A running turn or follow-up reports HealthyBusy on /ping, which AgentCore never counts as idle.
+IDLE_TIMEOUT_S = 30 * 60
 #: AWS's hard ceiling for a microVM session; the backend rolls sessions at a quiet point before it.
 MAX_LIFETIME_S = 8 * 60 * 60
 

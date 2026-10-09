@@ -198,6 +198,7 @@ def _seam(monkeypatch, *, row):
     monkeypatch.setattr("core.repositories.container_repo.delete_browser_state", AsyncMock())
     monkeypatch.setattr(hermes_provisioning, "teardown_hermes_runtime", AsyncMock())
     monkeypatch.setattr(hermes_provisioning, "_delete_profile_prefix_objects", lambda *a: None)
+    monkeypatch.setattr("core.services.paperclip_agent_lifecycle.pause_owner_automation", AsyncMock())
 
     async def _reap(*a, **kw):
         calls.append("reap")
@@ -240,3 +241,14 @@ async def test_a_failed_memory_wipe_fails_the_seam(monkeypatch):
     )
     with pytest.raises(RuntimeError, match="throttled"):
         await hermes_provisioning.delete_workspace_runtime("org_a", delete_profiles=True)
+
+
+@pytest.mark.asyncio
+async def test_teardown_pauses_paperclip_automation_and_a_paperclip_failure_never_blocks_it(monkeypatch):
+    """No runtime = every scheduled routine/heartbeat files a task that can only block."""
+    calls = _seam(monkeypatch, row=ROW)
+    pause = AsyncMock(side_effect=RuntimeError("paperclip down"))
+    monkeypatch.setattr("core.services.paperclip_agent_lifecycle.pause_owner_automation", pause)
+    await hermes_provisioning.delete_workspace_runtime("org_a")
+    pause.assert_awaited_once_with("org_a")
+    assert calls == ["reap"]

@@ -208,6 +208,14 @@ class PaperclipWorkspace:
 
     first_contact_reason: Optional[str] = None
 
+    automation_paused_at: Optional[str] = None
+    """Set by ``paperclip_agent_lifecycle.pause_owner_automation`` when the owner stopped
+    being live; removed by ``resume_owner_automation``. The two sets below name exactly
+    what WE paused, so a resume never re-enables a routine or heartbeat the owner turned
+    off themselves (the starter routines are seeded paused)."""
+    automation_paused_agent_ids: Optional[set[str]] = None
+    automation_paused_routine_ids: Optional[set[str]] = None
+
 
 @dataclass
 class PaperclipIdentity:
@@ -250,6 +258,9 @@ _WORKSPACE_PLAIN_FIELDS = (
     "first_contact_state",
     "first_contact_attempts",
     "first_contact_reason",
+    "automation_paused_at",
+    "automation_paused_agent_ids",
+    "automation_paused_routine_ids",
 )
 
 
@@ -369,6 +380,13 @@ class PaperclipRepo:
                 int(item["first_contact_attempts"]) if item.get("first_contact_attempts") is not None else None
             ),
             first_contact_reason=item.get("first_contact_reason"),
+            automation_paused_at=item.get("automation_paused_at"),
+            automation_paused_agent_ids=set(item["automation_paused_agent_ids"])
+            if item.get("automation_paused_agent_ids")
+            else None,
+            automation_paused_routine_ids=set(item["automation_paused_routine_ids"])
+            if item.get("automation_paused_routine_ids")
+            else None,
         )
 
     async def resolve_owner_row(
@@ -505,6 +523,61 @@ class PaperclipRepo:
             return True
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             return False
+
+    async def record_paused_automation(self, org_id: str, *, agent_ids: list[str], routine_ids: list[str]) -> None:
+        """Stamp ``automation_paused_at`` (first pause wins) and ADD what is about to be
+        paused. Written BEFORE the Paperclip PATCHes, so a pause that dies halfway still
+        leaves the resume a full list (re-activating a routine that never got paused is a
+        no-op). Conditional on the row existing: never resurrects a deleted workspace."""
+        expr = "SET automation_paused_at = if_not_exists(automation_paused_at, :t)"
+        values: dict = {":t": utc_now_iso()}
+        adds = []
+        if agent_ids:
+            adds.append("automation_paused_agent_ids :a")
+            values[":a"] = set(agent_ids)
+        if routine_ids:
+            adds.append("automation_paused_routine_ids :r")
+            values[":r"] = set(routine_ids)
+        if adds:
+            expr += " ADD " + ", ".join(adds)
+        table = self._table()
+        try:
+            await run_in_thread(
+                table.update_item,
+                Key={"user_id": org_id},
+                UpdateExpression=expr,
+                ConditionExpression="attribute_exists(user_id)",
+                ExpressionAttributeValues=values,
+            )
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            return
+
+    async def clear_paused_automation(self, org_id: str, *, agent_ids: list[str], routine_ids: list[str]) -> None:
+        """Undo ``record_paused_automation`` for exactly the ids a resume handled. DELETE
+        (not REMOVE) on the sets, so ids a racing pause added after our read survive."""
+        expr = "REMOVE automation_paused_at"
+        values: dict = {}
+        deletes = []
+        if agent_ids:
+            deletes.append("automation_paused_agent_ids :a")
+            values[":a"] = set(agent_ids)
+        if routine_ids:
+            deletes.append("automation_paused_routine_ids :r")
+            values[":r"] = set(routine_ids)
+        if deletes:
+            expr += " DELETE " + ", ".join(deletes)
+        kwargs: dict = {
+            "Key": {"user_id": org_id},
+            "UpdateExpression": expr,
+            "ConditionExpression": "attribute_exists(user_id)",
+        }
+        if values:
+            kwargs["ExpressionAttributeValues"] = values
+        table = self._table()
+        try:
+            await run_in_thread(table.update_item, **kwargs)
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            return
 
     async def put_failed_marker_if_absent(self, *, org_id: str, reason: str) -> bool:
         """Durably record "this workspace's seed failed" when NO workspace row

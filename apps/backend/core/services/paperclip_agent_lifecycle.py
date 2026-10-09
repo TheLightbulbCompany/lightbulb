@@ -19,9 +19,10 @@ from typing import Any
 import httpx
 
 from core.config import settings
+from core.observability.metrics import put_metric
 from core.repositories import container_repo
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services.paperclip_admin_client import PaperclipAdminClient
+from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
 from core.services.paperclip_agent_idempotency import (
     build_agent_create_idempotency_key,
     paperclip_agent_intent,
@@ -141,90 +142,149 @@ def ensure_root_ceo_survives(*, target: dict, agents: list[dict]) -> None:
         raise AgentLifecycleConflict(FINAL_ROOT_CEO_CONFLICT)
 
 
-async def disarm_owner_nightly_automation(owner_id: str) -> dict[str, int]:
-    """Turn off a de-entitled owner's timer heartbeats and cancel the
-    in-progress issues that would retry-loop against their deleted container.
+def _heartbeat_enabled(agent: dict) -> bool:
+    return ((agent.get("runtimeConfig") or {}).get("heartbeat") or {}).get("enabled") is True
 
-    Called from entitlement teardown after the container is gone. Paperclip's
-    scheduler fires an agent's timer heartbeat while
-    ``runtimeConfig.heartbeat.enabled`` holds and the Paperclip company is
-    active (teardown leaves it active; fork ``heartbeat.ts`` timer tick), and
-    its heartbeat runner retry-loops ``in_progress`` issues, so a cancelled
-    owner left armed reproduces the storm where every wake fails on the dead
-    container. Sets ``enabled: false`` on every starter agent's heartbeat — the
-    CEO's AND the specialists', whose daily timers would otherwise wake on any
-    leftover todo — and cancels the looping issues. Assignment/on-demand wakes
-    are untouched.
 
-    RE-SUBSCRIBE: self-heals. ``arm_nightly_ceo`` re-enables the heartbeats on
-    both re-entitlement paths (the provision executor, and the reconcile the
-    Stripe ``entering_live`` edge dispatches).
+async def list_all_issues(admin: PaperclipAdminClient, *, cookie: str, company_id: str, params: dict) -> list[dict]:
+    """Every page of a filtered issue list. Snapshot ALL pages before mutating: cancelling
+    shrinks a status-filtered result set, so offset paging interleaved with the cancels
+    would skip rows (same reason ``prepare_paperclip_agent_delete`` snapshots first)."""
+    issues: list[dict] = []
+    offset = 0
+    while True:
+        page = _rows(
+            await admin.list_issues(
+                company_id=company_id,
+                session_cookie=cookie,
+                params={**params, "limit": str(_ISSUE_PAGE_SIZE), "offset": str(offset)},
+            ),
+            "issues",
+        )
+        issues.extend(page)
+        if len(page) < _ISSUE_PAGE_SIZE:
+            return issues
+        offset += len(page)
 
-    Idempotent: an already-disabled heartbeat is not re-PATCHed and terminal
-    issues are skipped. Issue cancellation covers every in-progress issue for
-    the company (nothing can progress once the container is gone). May raise;
-    its one caller (entitlement teardown) runs it as a guarded best-effort step.
+
+async def pause_owner_automation(owner_id: str, *, dry_run: bool = False) -> dict[str, list[str]]:
+    """THE seam that stops an owner's Paperclip company waking on its own once the owner
+    is not live (cancelled, expired trial, runtime torn down).
+
+    Paperclip's scheduler fires a routine while ``routine.status == "active"`` (fork
+    ``routines.ts`` ``tickScheduledTriggers``) and an agent's timer heartbeat while
+    ``runtimeConfig.heartbeat.enabled`` holds -- neither checks whether a runtime exists, so
+    a dead workspace kept filing a BLOCKED task every night. This pauses every active routine
+    (``PATCH /api/routines/{id} {status: "paused"}``) and turns off every agent's enabled timer
+    heartbeat (all agents, not just the starters: a legacy roster's specialists fired too),
+    recording exactly what it paused on the workspace row first.
+
+    Callers: ``hermes_provisioning.delete_workspace_runtime`` (every runtime teardown),
+    ``user_provision.arm_nightly_ceo``'s not-entitled branch (every billing reconcile), the
+    expired-trial sweep (``durable_activity``), and ``disarm_owner_nightly_automation``.
+    ``resume_owner_automation`` undoes it from ``arm_nightly_ceo``'s entitled branch.
+
+    Idempotent (only active things are touched). Raises on failure; callers on a
+    cancellation path guard it. ``dry_run`` reports without writing.
     """
     repo = PaperclipRepo(table_name="paperclip-companies")
-    ws = await repo.resolve_owner_row(owner_id)
-    company_id = (ws.company_id or None) if ws is not None else None
-    if company_id is None:
-        return {"heartbeats_checked": 0, "issues_cancelled": 0}
-    agent_ids = [a for a in (ws.starter_agent_ids or {}).values() if a] or list(ws.seeded_agent_ids or [])[:1]
-
-    http = httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0)
-    try:
+    ws = await repo.resolve_owner_row(owner_id, include_inactive=True)
+    if ws is None or not ws.company_id:
+        return {"agent_ids": [], "routine_ids": []}
+    async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
         admin = PaperclipAdminClient(http_client=http)
         cookie = await get_admin_session_cookie(http)
+        agents = _rows(await admin.list_agents(session_cookie=cookie, company_id=ws.company_id), "agents")
+        routines = _rows(await admin.list_routines(session_cookie=cookie, company_id=ws.company_id), "routines")
+        agent_ids = [a["id"] for a in agents if a.get("id") and _heartbeat_enabled(a)]
+        routine_ids = [r["id"] for r in routines if r.get("id") and r.get("status") == "active"]
+        if not dry_run:
+            await repo.record_paused_automation(owner_id, agent_ids=agent_ids, routine_ids=routine_ids)
+            for agent_id in agent_ids:
+                await admin.set_agent_heartbeat(session_cookie=cookie, agent_id=agent_id, heartbeat={"enabled": False})
+            for routine_id in routine_ids:
+                await admin.patch_routine(session_cookie=cookie, routine_id=routine_id, body={"status": "paused"})
+    if not dry_run:
+        put_metric("paperclip.automation.pause", dimensions={"outcome": "ran"})
+        logger.info(
+            "paperclip automation paused owner=%s heartbeats=%d routines=%d", owner_id, len(agent_ids), len(routine_ids)
+        )
+    return {"agent_ids": agent_ids, "routine_ids": routine_ids}
 
-        for agent_id in agent_ids:
-            await admin.set_agent_heartbeat(session_cookie=cookie, agent_id=agent_id, heartbeat={"enabled": False})
 
-        # Snapshot every page before mutating: cancelling shrinks the
-        # status=in_progress result set, so offset paging interleaved with the
-        # cancels would skip rows (same reason prepare_paperclip_agent_delete
-        # snapshots first).
-        in_progress: list[dict] = []
-        offset = 0
-        while True:
-            page = _rows(
-                await admin.list_issues(
-                    company_id=company_id,
-                    session_cookie=cookie,
-                    params={
-                        "status": "in_progress",
-                        "limit": str(_ISSUE_PAGE_SIZE),
-                        "offset": str(offset),
-                    },
-                ),
-                "issues",
-            )
-            in_progress.extend(page)
-            if len(page) < _ISSUE_PAGE_SIZE:
-                break
-            offset += len(page)
+async def resume_owner_automation(owner_id: str) -> dict[str, int]:
+    """Undo ``pause_owner_automation``: re-enable exactly the heartbeats and routines IT
+    paused, then clear the record. A routine is re-activated only while it is still
+    ``paused`` (the owner may have archived it since); an agent or routine that no longer
+    exists is skipped. ``arm_nightly_ceo`` re-applies the starters' own heartbeat configs
+    (interval, CEO opt-out) right after. Idempotent; raises on a Paperclip failure, leaving
+    the record for the next reconcile."""
+    repo = PaperclipRepo(table_name="paperclip-companies")
+    ws = await repo.resolve_owner_row(owner_id, consistent_read=True, include_inactive=True)
+    if ws is None or not (
+        ws.automation_paused_at or ws.automation_paused_agent_ids or ws.automation_paused_routine_ids
+    ):
+        return {"heartbeats_resumed": 0, "routines_resumed": 0}
+    agent_ids = sorted(ws.automation_paused_agent_ids or ())
+    routine_ids = sorted(ws.automation_paused_routine_ids or ())
+    heartbeats = routines = 0
+    if agent_ids or routine_ids:
+        async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
+            admin = PaperclipAdminClient(http_client=http)
+            cookie = await get_admin_session_cookie(http)
+            for agent_id in agent_ids:
+                try:
+                    await admin.set_agent_heartbeat(
+                        session_cookie=cookie, agent_id=agent_id, heartbeat={"enabled": True}
+                    )
+                    heartbeats += 1
+                except PaperclipApiError as e:
+                    if e.status_code != 404:
+                        raise
+            for routine_id in routine_ids:
+                try:
+                    routine = await admin.get_routine(session_cookie=cookie, routine_id=routine_id)
+                except PaperclipApiError as e:
+                    if e.status_code != 404:
+                        raise
+                    continue
+                if routine.get("status") == "paused":
+                    await admin.patch_routine(session_cookie=cookie, routine_id=routine_id, body={"status": "active"})
+                    routines += 1
+    await repo.clear_paused_automation(owner_id, agent_ids=agent_ids, routine_ids=routine_ids)
+    put_metric("paperclip.automation.resume", dimensions={"outcome": "ran"})
+    logger.info("paperclip automation resumed owner=%s heartbeats=%d routines=%d", owner_id, heartbeats, routines)
+    return {"heartbeats_resumed": heartbeats, "routines_resumed": routines}
 
+
+async def disarm_owner_nightly_automation(owner_id: str) -> dict[str, int]:
+    """Entitlement teardown's Paperclip step: ``pause_owner_automation``, then cancel the
+    ``in_progress`` issues Paperclip's heartbeat runner would retry-loop against the deleted
+    runtime. RE-SUBSCRIBE self-heals through ``resume_owner_automation`` (via
+    ``arm_nightly_ceo``); cancelled issues stay cancelled. May raise; its one caller runs it
+    as a guarded best-effort step."""
+    paused = await pause_owner_automation(owner_id)
+    repo = PaperclipRepo(table_name="paperclip-companies")
+    ws = await repo.resolve_owner_row(owner_id, include_inactive=True)
+    if ws is None or not ws.company_id:
+        return {"heartbeats_paused": 0, "routines_paused": 0, "issues_cancelled": 0}
+    async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
+        admin = PaperclipAdminClient(http_client=http)
+        cookie = await get_admin_session_cookie(http)
+        in_progress = await list_all_issues(
+            admin, cookie=cookie, company_id=ws.company_id, params={"status": "in_progress"}
+        )
         issues_cancelled = 0
         for issue in in_progress:
             if issue.get("status") != "in_progress":
                 continue
-            await admin.patch_issue(
-                issue_id=issue["id"],
-                body={"status": "cancelled"},
-                session_cookie=cookie,
-            )
+            await admin.patch_issue(issue_id=issue["id"], body={"status": "cancelled"}, session_cookie=cookie)
             issues_cancelled += 1
-
-        logger.info(
-            "paperclip nightly disarm owner=%s company=%s heartbeats_checked=%d issues_cancelled=%d",
-            owner_id,
-            company_id,
-            len(agent_ids),
-            issues_cancelled,
-        )
-        return {"heartbeats_checked": len(agent_ids), "issues_cancelled": issues_cancelled}
-    finally:
-        await http.aclose()
+    return {
+        "heartbeats_paused": len(paused["agent_ids"]),
+        "routines_paused": len(paused["routine_ids"]),
+        "issues_cancelled": issues_cancelled,
+    }
 
 
 async def prepare_paperclip_agent_delete(

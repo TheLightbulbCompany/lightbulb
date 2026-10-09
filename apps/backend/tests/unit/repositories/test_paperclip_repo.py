@@ -1115,3 +1115,23 @@ async def test_seed_takeover_does_not_erase_credentials_staged_after_its_read(re
     assert await repo.stage_signup_credentials(
         "user_race", email="replacement@example.com", password_encrypted="replacement-secret"
     ) == ("original@example.com", "original-secret")
+
+
+async def test_paused_automation_record_survives_a_whole_item_put_and_clears_per_id(repo):
+    await repo.put_workspace(_make_company(user_id="org_pause"))
+    await repo.record_paused_automation("org_pause", agent_ids=["a1"], routine_ids=["r1", "r2"])
+    await repo.record_paused_automation("org_pause", agent_ids=[], routine_ids=[])  # no-op ids, marker kept
+
+    ws = await repo.get_workspace("org_pause")
+    assert ws.automation_paused_at and ws.automation_paused_agent_ids == {"a1"}
+    await repo.put_workspace(ws)  # a carried-forward put must not wipe the record
+    ws = await repo.get_workspace("org_pause")
+    assert ws.automation_paused_routine_ids == {"r1", "r2"}
+
+    await repo.clear_paused_automation("org_pause", agent_ids=["a1"], routine_ids=["r1"])
+    ws = await repo.get_workspace("org_pause")
+    assert ws.automation_paused_at is None and ws.automation_paused_agent_ids is None
+    assert ws.automation_paused_routine_ids == {"r2"}
+    # Never resurrects a deleted row.
+    await repo.record_paused_automation("org_gone", agent_ids=["a"], routine_ids=[])
+    assert await repo.get_workspace("org_gone") is None

@@ -556,9 +556,22 @@ async def delete_workspace_runtime(owner_id: str, *, delete_profiles: bool = Fal
     ``routers/debug.py``'s ``DELETE /debug/user-data`` (the e2e
     empty-slate reset; debug is 403 in prod). Do not re-broaden it.
 
+    Before any of that, pause the owner's Paperclip routines and timer heartbeats
+    (``pause_owner_automation``): with no runtime, every scheduled wake files a task that
+    can only block. Best-effort -- a Paperclip failure never blocks the teardown. A
+    reprovision resumes them (the executor's ``arm_nightly_ceo``).
+
     Returns the containers row as it was at the instant it was deleted, or None when
     there was none.
     """
+    try:
+        from core.services.paperclip_agent_lifecycle import pause_owner_automation
+
+        await pause_owner_automation(owner_id)
+    except Exception:  # noqa: BLE001 -- never block a teardown on Paperclip
+        logger.exception("teardown: pausing Paperclip automation failed for owner=%s", owner_id)
+        put_metric("paperclip.automation.pause", dimensions={"outcome": "error"})
+
     container = await container_repo.get_by_owner_id(owner_id)
     if container:
         await teardown_hermes_runtime(owner_id, container_row=container, delete_profiles=delete_profiles)

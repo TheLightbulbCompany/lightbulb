@@ -30,26 +30,36 @@ export function BuyButton({ listing }: { listing: Listing }) {
   const [error, setError] = useState<string | null>(null);
   const [retryable, setRetryable] = useState(true);
 
-  if (listing.price_cents === 0) {
-    return (
-      <FreeDeployButton
-        listingId={listing.listing_id}
-        isSignedIn={!!isSignedIn}
-        getToken={getToken}
-        loading={loading}
-        setLoading={setLoading}
-        error={error}
-        setError={setError}
-        retryable={retryable}
-        setRetryable={setRetryable}
-      />
-    );
-  }
+  const freeDeploy = (
+    <FreeDeployButton
+      listingId={listing.listing_id}
+      isSignedIn={!!isSignedIn}
+      getToken={getToken}
+      loading={loading}
+      setLoading={setLoading}
+      error={error}
+      setError={setError}
+      retryable={retryable}
+      setRetryable={setRetryable}
+    />
+  );
 
-  // A seller is never charged for their own listing (the backend 409s it);
-  // seller_id is the publishing user or, for a workspace listing, the workspace.
+  if (listing.price_cents === 0) return freeDeploy;
+
+  // A seller is never charged for their own listing (checkout 409s it).
+  // The deploy route lets the publishing USER deploy it free
+  // (seller_id == auth.user_id), so they get the free deploy. A
+  // workspace-published listing (seller_id is the workspace id) gets no Buy.
   if (listing.seller_id && (listing.seller_id === userId || listing.seller_id === orgId)) {
-    return <p className="text-sm text-[var(--midnight-soft)]">This is your listing</p>;
+    const caption = <p className="mt-2 text-sm text-[var(--midnight-soft)]">This is your listing</p>;
+    return listing.seller_id === userId ? (
+      <div>
+        {freeDeploy}
+        {caption}
+      </div>
+    ) : (
+      caption
+    );
   }
 
   return (

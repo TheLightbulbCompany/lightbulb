@@ -2187,10 +2187,13 @@ impl Host {
             return Err("unknown command session".into());
         };
         let live = cmd.kind == "interrupt" || cmd.expected_turn_id.is_some();
+        // This Mac's own human ending their own process shares nothing, so it is carried out for
+        // a session that is not shared too ("Remove" on an Only me session). Nothing else is.
+        let own_end = cmd.kind == "end" && cmd.own;
         // (`withheld` changes only between this loop's turns, so it holds until the dispatch.)
         let eligible = mirror.generation == cmd.expected_generation
             && mirror.registration.successor.is_none()
-            && !mirror.withheld()
+            && (own_end || !mirror.withheld())
             && !self.stop.load(Ordering::SeqCst)
             && anchor
                 .and_then(ClockAnchor::now)
@@ -2235,7 +2238,7 @@ impl Host {
             None
         };
         // After the verification and the connect this turn awaited: its person may have pressed stop.
-        if self.stopped_now(&key) {
+        if !own_end && self.stopped_now(&key) {
             *why = "sharing stopped";
             return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
         }
@@ -3210,6 +3213,34 @@ pub(super) mod tests {
         found.holder = Some("cd34ab12".into());
         host.observe(vec![found], &BTreeSet::new()).unwrap();
         assert!(!host.mirrors[&key].shared, "its person stopped sharing it");
+    }
+
+    #[tokio::test]
+    async fn local_sessions_the_owners_own_end_stops_a_session_that_is_not_shared_and_no_other_command_does() {
+        fn unchanged(_: PathBuf, native: NativeSession) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<NativeSession>> + Send>> {
+            Box::pin(async move { Ok(native) })
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut child = std::process::Command::new("sleep").arg("60").spawn().unwrap();
+        let mut mirror = test_mirror("5eed00e0-0000-4000-8000-0000000000e0", "g1");
+        mirror.session_id = Some(SID.into());
+        mirror.shared = false; // Only me
+        mirror.native.provider = "claude".into();
+        mirror.native.process = process(child.id()).unwrap();
+        let mut host = test_host(dir.path(), vec![("own-end", mirror)]);
+        host.verify = unchanged;
+        let at = epoch_secs();
+        let anchor = ClockAnchor { server: at, round_trip: 0.0, at: Instant::now(), wall: SystemTime::now() };
+        let command = |request: &str, kind: &str, turn: Value, seq: u64| parse_command(&json!({"command":{"requestId":request,
+            "expectedGeneration":"g1","kind":kind,"text":null,"expectedTurnId":turn,"sessionId":SID,"roomId":"","actorUserId":"alice",
+            "commandSeq":seq,"state":"dispatched","createdAt":at,"deliverBy":at + 30,"held":false,"providerMessageId":null}}), "alice").unwrap();
+        let refused = host.command(&command("r1", "interrupt", json!("turn-1"), 1), Some(&anchor)).await.unwrap();
+        assert_eq!(refused.outcome, "rejected", "their own, and still refused: only End is carried out");
+        assert!(child.try_wait().unwrap().is_none());
+        let ended = host.command(&command("r2", "end", Value::Null, 2), Some(&anchor)).await.unwrap();
+        assert_eq!(ended.outcome, "applied");
+        assert!(!child.wait().unwrap().success(), "SIGTERM reached its process");
+        assert!(!host.mirrors["own-end"].shared, "ending it shared nothing");
     }
 
     #[test]

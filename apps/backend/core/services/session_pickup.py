@@ -367,7 +367,9 @@ async def set_pickup(
             return sessions._session_public(row, auth.user_id)
         if row.get("unshared"):
             # Every device route refuses a paused session, so its Mac would retry forever.
-            raise ApiProblem("LOCAL_SESSION_CONFLICT", "Resume sharing before allowing pick-up.")
+            raise ApiProblem(
+                "LOCAL_SESSION_CONFLICT", "Share this session with your workspace before allowing pick-up."
+            )
         sid = row["sessionId"]
         updated = {
             **row,

@@ -102,8 +102,9 @@ it("explains the full audience and requires an already connected Mac", async () 
   invoke.mockResolvedValue({enrollment:null,pairedWorkspaceId:null,status:""});
   render(<LocalSessions />);
   await waitFor(()=>expect(screen.getByText("Connect this Mac first.")).toBeTruthy());
-  expect(screen.getByText(/Something typed in one conversation can be visible in another/)).toBeTruthy();
-  expect(screen.getByText(/can be visible in another, and someone added/)).toBeTruthy();
+  // The text a person ticks "I understand" under states the model: opt in, the workspace, the link apart.
+  expect(screen.getByText(/^Nothing is shared until you start a session with Lightbulb, choose Share to Lightbulb in it, or turn on “Share every new session”\. Every member of your workspace can see a shared session’s live terminal and conversation\./)).toBeTruthy();
+  expect(screen.getByText(/Every member of the workspace where sharing is on sees a shared session/)).toBeTruthy();
   expect(screen.getByText("claude plugin marketplace add TheLightbulbCompany/lightbulb-plugin")).toBeInTheDocument();
   expect(document.body.textContent).not.toMatch(/org_/);
   expect(screen.getByRole("button",{name:"Turn on sharing"}).hasAttribute("disabled")).toBe(true);
@@ -269,28 +270,29 @@ it("turns Share every new session on and off through the desktop, off by default
   await waitFor(() => expect(box).toBeChecked());
   expect(invoke).toHaveBeenCalledWith("shell_integration_set", {enabled:true});
 });
-it("turns Share every new session on at pairing unless the person turns it off", async () => {
+it("leaves Share every new session off on a fresh pairing when the box is untouched, and says what on does", async () => {
   localStorage.removeItem("lightbulb.desktop.liveSharingOffer");
-  invoke.mockImplementation(async (command) => command === "local_sessions_set" ? 1 : { enrollment:null, pairedWorkspaceId:"org", status:"paused" });
+  invoke.mockImplementation(async (command) => command === "shell_integration_status" ? false : command === "local_sessions_set" ? 1 : { enrollment:null, pairedWorkspaceId:"org", status:"paused" });
   render(<DesktopPermissionsGate />);
   const live = await screen.findByRole("button", {name:/Share every new session/});
-  expect(live).toHaveAttribute("aria-pressed", "true");
+  expect(live).toHaveAttribute("aria-pressed", "false");
+  expect(live).toHaveTextContent("On: every claude or codex you type in a new terminal tab is shared with your workspace");
   expect(live).toHaveTextContent("~/.zshrc, ~/.bashrc and your bash login file");
+  expect(screen.getByText(/Nothing is shared until you start a session with Lightbulb/)).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", {name:"Continue"}));
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith("shell_integration_set", {enabled:true}));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  expect(invoke.mock.calls.some(([command]) => command === "shell_integration_set")).toBe(false);
+  // The once-per-Mac notice for Macs paired before the switch existed must not ask again.
+  expect(localStorage.getItem("lightbulb.desktop.liveSharingOffer")).toBe("1");
 });
-it("records that pairing made the Share every new session offer, also when it was turned off", async () => {
+it("turns Share every new session on at pairing only when the person ticks it", async () => {
   localStorage.removeItem("lightbulb.desktop.liveSharingOffer");
-  invoke.mockImplementation(async (command) => command === "local_sessions_set" ? 1 : { enrollment:null, pairedWorkspaceId:"org", status:"paused" });
+  invoke.mockImplementation(async (command) => command === "shell_integration_status" ? false : command === "local_sessions_set" ? 1 : { enrollment:null, pairedWorkspaceId:"org", status:"paused" });
   render(<DesktopPermissionsGate />);
   await userEvent.click(await screen.findByRole("button", {name:/Share every new session/}));
   await userEvent.click(screen.getByRole("button", {name:"Continue"}));
-  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-  // An explicit off is always applied: the block may be there although this Mac's storage says it was never offered.
-  expect(invoke).toHaveBeenCalledWith("shell_integration_set", {enabled:false});
-  expect(invoke).not.toHaveBeenCalledWith("shell_integration_set", {enabled:true});
-  // The once-per-Mac notice for Macs paired before the switch existed must not ask again.
-  expect(localStorage.getItem("lightbulb.desktop.liveSharingOffer")).toBe("1");
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("shell_integration_set", {enabled:true}));
+  expect(invoke).not.toHaveBeenCalledWith("shell_integration_set", {enabled:false});
 });
 it("keeps a Mac's own answer when it pairs again: off stays off, and turning it off there removes the block", async () => {
   // This Mac was offered the switch before (an earlier pairing, or the notice) and its rc files say no.
@@ -320,8 +322,8 @@ it("applies an explicit off when the block is there but local storage was cleare
   invoke.mockImplementation(async (command) => command === "shell_integration_status" ? true : command === "local_sessions_set" ? 1 : { enrollment:null, pairedWorkspaceId:"org", status:"paused" });
   render(<DesktopPermissionsGate />);
   const live = await screen.findByRole("button", {name:/Share every new session/});
-  expect(live).toHaveAttribute("aria-pressed", "true");
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith("shell_integration_status"));
+  // The block is there: the switch shows it once the Mac has answered.
+  await waitFor(() => expect(live).toHaveAttribute("aria-pressed", "true"));
   await userEvent.click(live);
   await userEvent.click(screen.getByRole("button", {name:"Continue"}));
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("shell_integration_set", {enabled:false}));

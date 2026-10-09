@@ -36,7 +36,8 @@ CLAIM_SECONDS = 5
 RECONCILE_EVERY_S = 60
 # The desktop's Journal::admit refuses a command whose deliverBy - createdAt exceeds this.
 DISPATCH_WINDOW_SECONDS = 30
-PAUSED_NOTICE = "Sharing was paused here. Activity from this point until sharing resumed is not shown."
+# True for a Mac of any age: an older one discards what it ran meanwhile, a current one uploads it on sharing again.
+PAUSED_NOTICE = "Sharing was stopped here."
 logger = logging.getLogger(__name__)
 _ANALYTICS_NS = uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb:local-session-lifecycle")
 

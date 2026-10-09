@@ -86,9 +86,7 @@ async def watch(auth: sessions.Caller, session_id: str, mounted: bool = False) -
             await _screen_gone(row)
         raise sessions.ApiProblem("LOCAL_SESSION_OFFLINE", "This session is not running.")
     if sessions.session_terminal(row) is None:
-        raise sessions.ApiProblem(
-            "LOCAL_SESSION_UNSUPPORTED", "This session has no live terminal. Its transcript is shown instead."
-        )
+        raise sessions.ApiProblem("LOCAL_SESSION_UNSUPPORTED", "This session has no live terminal.")
     key = _viewer_key(row, auth.user_id)
     expires = now + VIEWER_TTL_S
     table = store._table()
@@ -387,7 +385,7 @@ async def forward(relay, cid: str, body: dict) -> None:
         # link that stops being public, loses its last watcher, or whose session ends gets no
         # further frame (an ended session's kept final screen is for the workspace). One item,
         # written by `session_links.viewing`. A failure here never costs the workspace its frame.
-        public = sessions.public_id(row.get("shareLink")) if row.get("endedAt") is None else None
+        public = sessions.public_id(row.get("shareLink"), row) if row.get("endedAt") is None else None
         by_link = False
         if public:
             try:
@@ -532,9 +530,7 @@ async def type_into(auth: AuthContext, session_id: str, body: SessionInput) -> N
     if row.get("endedAt") is not None or row.get("unshared") or int(row.get("onlineUntil", 0)) <= now:
         raise sessions.ApiProblem("LOCAL_SESSION_OFFLINE", "This session is not running.")
     if sessions.session_terminal(row) is None:
-        raise sessions.ApiProblem(
-            "LOCAL_SESSION_UNSUPPORTED", "This session has no live terminal. Its transcript is shown instead."
-        )
+        raise sessions.ApiProblem("LOCAL_SESSION_UNSUPPORTED", "This session has no live terminal.")
     if "remoteInput" not in row.get("deviceFeatures", ()):
         raise sessions.ApiProblem("LOCAL_SESSION_UNSUPPORTED", "This Mac cannot take typing from elsewhere yet.")
     size = len(base64.b64decode(body.data))

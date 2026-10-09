@@ -42,7 +42,7 @@ describe("per-session sharing", () => {
     expect(within(dialog).getByText("Only you see this session. Sharing again shares the whole session.")).toBeInTheDocument();
     // The session row comes back as Only me: the pane itself says so.
     rerender(panel({ ...session, shared: false }, true, c));
-    expect(screen.getByText("Only you can see this session. Nothing it does now is shared.")).toHaveAttribute("role", "status");
+    expect(screen.getAllByText("Only you see this session. Sharing again shares the whole session.").some(line => line.getAttribute("role") === "status")).toBe(true);
     await userEvent.selectOptions(await who(dialog), "workspace");
     expect(c.setLocalSessionSharing).toHaveBeenLastCalledWith("session", true);
     expect(within(dialog).queryByRole("switch", { name: "Shared with the workspace" })).toBeNull(); // one control

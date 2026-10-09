@@ -344,7 +344,7 @@ async def test_redeem_reruns_the_link_checks(transport, s3, started):
     await service.set_sharing(ALICE, sid, False)  # paused
     with pytest.raises(ApiProblem) as paused:
         await links.redeem(code, VERIFIER)
-    assert paused.value.error.code == "LOCAL_SESSION_CONFLICT" and "paused" in paused.value.error.message
+    assert paused.value.error.code == "LOCAL_SESSION_CONFLICT" and "stopped sharing" in paused.value.error.message
 
 
 @pytest.mark.asyncio

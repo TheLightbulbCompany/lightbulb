@@ -195,7 +195,7 @@ async def test_allow_on_a_paused_session_keeps_the_request(transport):
         await service.request_pickup_access(BOB, sid)
         rid = (await stored(sid))["pickupRequests"][BOB.user_id]["requestId"]
         await service.set_sharing(ALICE, sid, False)
-        with pytest.raises(ApiProblem, match="Resume sharing"):
+        with pytest.raises(ApiProblem, match="with your workspace"):
             await service.decide_pickup_request(ALICE, sid, BOB.user_id, "allow", request_id=rid)
     assert (await stored(sid))["pickupRequests"][BOB.user_id]["state"] == "pending"
 

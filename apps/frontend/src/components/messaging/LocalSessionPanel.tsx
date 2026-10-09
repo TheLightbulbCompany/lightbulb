@@ -272,7 +272,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       line={pickupRequestLine} decide={(who, d, id) => client.decideLocalSessionPickup!(session.sessionId, who, d, id)}
       enabled={!!client.decideLocalSessionPickup} personName={personName} />}
     {(session.shared === false || session.controlUnavailableReason || session.workspace?.changed) && <div className="session-notices">
-      {session.shared === false && <p role="status">Only you can see this session. Nothing it does now is shared.</p>}
+      {session.shared === false && <p role="status">Only you see this session. Sharing again shares the whole session.</p>}
       {session.controlUnavailableReason && <p role="status" className="text-warn">{unavailableReason[session.controlUnavailableReason]}</p>}
       {session.workspace?.changed && <p role="status" className="text-warn">Files changed outside this session. It will re-read them before your next follow-up.</p>}
     </div>}

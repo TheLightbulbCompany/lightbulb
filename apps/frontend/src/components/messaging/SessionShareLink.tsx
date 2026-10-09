@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import { Link2 } from "lucide-react";
-import { ApiError, type createMessagingClient, type LocalSession, type SessionLink, type SessionLinkAudience } from "@lightbulb/shared";
+import { ApiError, conversationOnly, type createMessagingClient, type LocalSession, type SessionLink, type SessionLinkAudience } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { copyText, copyTextWhenReady } from "./messageLinks";
@@ -53,9 +53,12 @@ export function SessionShareLink({ session, client }: { session: LocalSession; c
       e => { if (!current()) return; if (e instanceof ApiError && e.status === 404) setKnown(true); else setReadFailed(true); },
     );
     return () => { alive = false; };
-  }, [client, session.sessionId, readRound]);
+    // `session.shared`: stopping in the terminal narrows the link on the server, so sharing again reads it again.
+  }, [client, session.sessionId, session.shared, readRound]);
   if (!client.putLocalSessionLink) return null;
-  const who: Who = !shared ? "me" : link?.audience === "anyone" ? "anyone" : "workspace";
+  // No terminal, so nothing a link could show publicly: the server refuses Anyone and opens an older public link for the workspace only.
+  const appOnly = conversationOnly(session);
+  const who: Who = !shared ? "me" : link?.audience === "anyone" && !appOnly ? "anyone" : "workspace";
   const save = async (audience?: SessionLinkAudience) => {
     writes.current += 1;
     try { const next = await client.putLocalSessionLink!(session.sessionId, audience); setLink(next); setKnown(true); setReadFailed(false); return next; }
@@ -121,8 +124,9 @@ export function SessionShareLink({ session, client }: { session: LocalSession; c
     <select id={whoId} className="room-input w-auto" value={shown} disabled={busy} onChange={e => void choose(e.target.value as Who)}>
       {client.setLocalSessionSharing && <option value="me">Only me</option>}
       <option value="workspace">My workspace</option>
-      <option value="anyone">Anyone with the link</option>
+      <option value="anyone" disabled={appOnly}>Anyone with the link</option>
     </select>
+    {appOnly && <p className="session-setting-about">Sessions inside an app can be shared with your workspace only.</p>}
     {armed
       ? <Button type="button" variant="outline" size="sm" className="self-start" disabled={busy} onClick={() => void onlyMe()}>Click again to stop sharing</Button>
       : shown === "anyone"

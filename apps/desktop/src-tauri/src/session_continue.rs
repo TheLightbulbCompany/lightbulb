@@ -402,7 +402,7 @@ fn refusal(body: &Value) -> String {
             return "Another program answered first. Run the command again.".into()
         }
         Some("LOCAL_SESSION_NOT_FOUND") => "The owner turned this link off.",
-        Some("LOCAL_SESSION_CONFLICT") => "The owner paused this session.",
+        Some("LOCAL_SESSION_CONFLICT") => "The owner stopped sharing this session.",
         Some("LOCAL_SESSION_OFFLINE") => "The owner's Mac stopped sharing sessions.",
         _ => "Lightbulb refused the copy.",
     };
@@ -531,9 +531,9 @@ mod tests {
         assert_eq!(
             say(
                 "LOCAL_SESSION_CONFLICT",
-                Some("The owner paused this session.")
+                Some("The owner stopped sharing this session.")
             ),
-            "The owner paused this session."
+            "The owner stopped sharing this session."
         );
         assert_eq!(
             say("LOCAL_SESSION_OFFLINE", None),

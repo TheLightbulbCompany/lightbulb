@@ -32,7 +32,8 @@ pub(crate) const FILES: &[(&str, &str)] = &[
 ];
 pub(crate) const ID: &str = "lightbulb@lightbulb";
 
-fn write_files(state_dir: &Path) -> Result<PathBuf> {
+/// The file sync alone, with no `claude` call: fast, and safe to repeat.
+pub(crate) fn write_files(state_dir: &Path) -> Result<PathBuf> {
     let root = state_dir.join("claude-mods");
     for (rel, text) in FILES {
         let path = root.join(rel);

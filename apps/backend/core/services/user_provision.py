@@ -35,6 +35,7 @@ from core.services.paperclip_provisioning import (
     build_paperclip_provisioning,
     close_paperclip_provisioning,
 )
+from core.services.paperclip_agent_lifecycle import pause_owner_automation, resume_owner_automation
 from core.services.provision_gate import evaluate_provision_gate, should_arm_nightly_ceo
 from core.services.trial_cap import utc_today
 
@@ -251,10 +252,11 @@ async def arm_nightly_ceo(owner_id: str) -> str:
     Armed for paid OR an unexpired trial (``should_arm_nightly_ceo``). Sets the
     CEO's ``runtimeConfig.heartbeat`` to a timer at ``ceo_heartbeat_interval_sec``
     that runs even on an empty inbox, and re-applies ``SPECIALIST_HEARTBEAT`` to
-    the starter specialists (teardown's disarm turns theirs off too). No
+    the starter specialists. Not entitled: ``pause_owner_automation`` (routines + every
+    heartbeat); entitled again: ``resume_owner_automation`` first. No
     ``maxDailyRuns``: Paperclip counts every run against it, assignment wakes
     included, so it would silence chat-driven work. It converges both ways: a
-    not-entitled owner gets every starter heartbeat turned off, and an owner
+    not-entitled owner is paused, and an owner
     opt-out (``nightly_ceo_opted_out``, written only by the CEO's heartbeat toggle on
     the agent page, ``POST /teams/agents/{id}/heartbeat``) turns the CEO's off.
 
@@ -265,12 +267,21 @@ async def arm_nightly_ceo(owner_id: str) -> str:
     classifies it into its retry ABI exactly like a seed failure;
     ``reconcile_runtime`` logs and moves on.
     """
-    if not settings.NIGHTLY_CEO_HEARTBEATS_ENABLED:
-        return _arm_status("heartbeats_disabled")
     try:
         # Consistent: a reconcile runs right after the billing write it follows.
         account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
-        entitled = should_arm_nightly_ceo(account)
+        # Converge, never only enable: a de-entitled owner (expired trial, past_due,
+        # canceled) must stop waking, or every timer and routine fires into a runtime the
+        # gate refuses. The shared seam pauses routines AND every agent's heartbeat.
+        if not should_arm_nightly_ceo(account):
+            await pause_owner_automation(owner_id)
+            return _arm_status("not_entitled")
+        # Re-entitled: put back exactly what the pause took (no-op when nothing is recorded).
+        # Before the kill switch: the switch governs arming starter timers, not putting back
+        # what our own pause took.
+        await resume_owner_automation(owner_id)
+        if not settings.NIGHTLY_CEO_HEARTBEATS_ENABLED:
+            return _arm_status("heartbeats_disabled")
 
         provisioning = await build_paperclip_provisioning()
         try:
@@ -280,11 +291,11 @@ async def arm_nightly_ceo(owner_id: str) -> str:
             # ``row.org_id != owner_id``: never touch a company that belongs to a
             # different workspace under this workspace's billing account.
             if row is None or row.status != "active" or row.org_id != owner_id:
-                return _arm_status("company_not_active" if entitled else "not_entitled")
+                return _arm_status("company_not_active")
             starters = row.starter_agent_ids or {}
             ceo_id = ceo_agent_id(row)
             if not ceo_id:
-                return _arm_status("friday_not_seeded" if entitled else "not_entitled")
+                return _arm_status("friday_not_seeded")
             specialists = [agent_id for key, agent_id in starters.items() if key != "ceo" and agent_id]
             admin = provisioning._admin
             admin_cookie = await get_admin_session_cookie(admin._http)
@@ -292,13 +303,6 @@ async def arm_nightly_ceo(owner_id: str) -> str:
             async def put(agent_id: str, heartbeat: dict) -> None:
                 await admin.set_agent_heartbeat(session_cookie=admin_cookie, agent_id=agent_id, heartbeat=heartbeat)
 
-            # Converge, never only enable: a de-entitled owner (expired trial,
-            # past_due, canceled) must stop waking, or every timer cold-starts a
-            # microVM the gate then refuses.
-            if not entitled:
-                for agent_id in (ceo_id, *specialists):
-                    await put(agent_id, {"enabled": False})
-                return _arm_status("not_entitled")
             for agent_id in specialists:
                 await put(agent_id, SPECIALIST_HEARTBEAT)
             if (account or {}).get("nightly_ceo_opted_out"):

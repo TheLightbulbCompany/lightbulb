@@ -133,7 +133,8 @@ async def teardown_if_unentitled(owner_id: str, *, trigger: str) -> bool:
     except Exception:
         logger.exception("entitlement.teardown OpenRouter key retirement failed for owner %s", owner_id)
 
-    # Turn off the starter agents' timer heartbeats and cancel the looping in-progress issues.
+    # Pause the company's routines + timer heartbeats (pause_owner_automation; delete_workspace_runtime
+    # above already ran it, so this is normally a no-op) and cancel the looping in-progress issues.
     # This MUST run BEFORE ``disable`` below: ``disable`` flips this owner's
     # Paperclip row to status="disabled", and org company-resolution
     # (``resolve_company_id_for_owner``) only returns an ACTIVE row — so
@@ -151,13 +152,7 @@ async def teardown_if_unentitled(owner_id: str, *, trigger: str) -> bool:
 
         summary = await disarm_owner_nightly_automation(owner_id)
         put_metric("nightly_ceo.disarm", dimensions={"trigger": trigger, "outcome": "ran"})
-        logger.info(
-            "entitlement.teardown nightly disarm owner=%s trigger=%s heartbeats_checked=%d issues_cancelled=%d",
-            owner_id,
-            trigger,
-            summary["heartbeats_checked"],
-            summary["issues_cancelled"],
-        )
+        logger.info("entitlement.teardown nightly disarm owner=%s trigger=%s %s", owner_id, trigger, summary)
     except Exception:
         logger.exception("entitlement.teardown nightly disarm failed for owner %s", owner_id)
         put_metric("nightly_ceo.disarm", dimensions={"trigger": trigger, "outcome": "error"})

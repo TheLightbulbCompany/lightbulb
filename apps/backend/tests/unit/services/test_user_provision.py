@@ -1108,6 +1108,9 @@ def _arm_provisioning(row):
     fake._repo.resolve_owner_row = AsyncMock(return_value=row)
     fake._admin = MagicMock()  # ._http is just an attribute access
     fake._admin.set_agent_heartbeat = AsyncMock(return_value={})
+    # The shared pause/resume seam (paperclip_agent_lifecycle), patched in by _arm.
+    fake.pause_automation = AsyncMock(return_value={"agent_ids": [], "routine_ids": []})
+    fake.resume_automation = AsyncMock(return_value={"heartbeats_resumed": 0, "routines_resumed": 0})
     return fake
 
 
@@ -1139,6 +1142,8 @@ async def _arm(provisioning, account, owner_id="org_p"):
         patch("core.services.user_provision.build_paperclip_provisioning", AsyncMock(return_value=provisioning)),
         patch("core.services.user_provision.close_paperclip_provisioning", AsyncMock()),
         patch("core.services.user_provision.get_admin_session_cookie", AsyncMock(return_value="admin-cookie")),
+        patch("core.services.user_provision.pause_owner_automation", provisioning.pause_automation),
+        patch("core.services.user_provision.resume_owner_automation", provisioning.resume_automation),
     ):
         return await arm_nightly_ceo(owner_id)
 
@@ -1220,22 +1225,25 @@ async def test_rearm_follows_the_new_billing_no_cache():
         {"owner_id": "org_p", "subscription_status": "canceled"},
     ],
 )
-async def test_arm_not_entitled_turns_every_starter_heartbeat_off(account):
+async def test_arm_not_entitled_pauses_through_the_shared_seam(account):
     """Converge, not only enable: an expired trial / past_due / canceled / no-row owner
-    stops waking (each timer would cold-start a microVM the gate then refuses)."""
+    stops waking -- routines AND heartbeats, through pause_owner_automation."""
     provisioning = _arm_provisioning(_company_row(starter_ids={"ceo": "ceo1", **_SPECIALISTS}))
     with patch("core.services.user_provision.put_metric") as metric:
         assert await _arm(provisioning, account) == "not_entitled"
-    assert _heartbeats(provisioning) == {a: {"enabled": False} for a in ("ceo1", "eng1", "fin1")}
+    provisioning.pause_automation.assert_awaited_once_with("org_p")
+    provisioning.resume_automation.assert_not_awaited()
+    provisioning._admin.set_agent_heartbeat.assert_not_awaited()
     metric.assert_called_once_with("nightly_ceo.arm", dimensions={"status": "not_entitled"})
     assert should_arm_nightly_ceo(account) is False
 
 
 @pytest.mark.asyncio
-async def test_arm_not_entitled_without_a_company_touches_nothing():
-    provisioning = _arm_provisioning(None)
-    assert await _arm(provisioning, None) == "not_entitled"
-    provisioning._admin.set_agent_heartbeat.assert_not_awaited()
+async def test_arm_re_entitled_resumes_what_the_pause_took_then_arms():
+    provisioning = _arm_provisioning(_company_row(starter_ids={"ceo": "ceo1", **_SPECIALISTS}))
+    assert await _arm(provisioning, _paid_account()) == "armed"
+    provisioning.resume_automation.assert_awaited_once_with("org_p")
+    provisioning.pause_automation.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1262,6 +1270,15 @@ async def test_arm_is_a_noop_when_heartbeats_are_disabled():
     with patch("core.services.user_provision.settings.NIGHTLY_CEO_HEARTBEATS_ENABLED", False):
         assert await _arm(provisioning, _paid_account()) == "heartbeats_disabled"
     provisioning._admin.set_agent_heartbeat.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_the_kill_switch_still_resumes_what_our_pause_took():
+    """The switch governs arming starter timers, not restoring a re-subscribed owner's own."""
+    provisioning = _arm_provisioning(_company_row(starter_ids={"ceo": "ceo1", **_SPECIALISTS}))
+    with patch("core.services.user_provision.settings.NIGHTLY_CEO_HEARTBEATS_ENABLED", False):
+        assert await _arm(provisioning, _paid_account()) == "heartbeats_disabled"
+    provisioning.resume_automation.assert_awaited_once_with("org_p")
 
 
 @pytest.mark.asyncio

@@ -3020,64 +3020,89 @@ def _bounded_history(history: list[dict], budget: int) -> list[dict]:
 
 
 # ---- compaction off the call path ------------------------------------------------------------
-# A room session near Hermes's threshold is compacted here, where nobody is waiting: when someone
-# goes Live (server profile.warm, from the backend's prewake). A spoken turn no longer asks for it:
+# A room session near Hermes's threshold is compacted here, where nobody is waiting: right after a
+# room turn ends (compact_after_turn) and when someone goes Live or starts typing (server
+# profile.warm, from the backend's prewake). Typed turns used to pay for it inline at turn start
+# instead, 67-103 s in prod before the first token. A spoken turn no longer asks for it:
 # a call runs on its own transcript (_run_call) and adds one row to the room session.
 # The compaction is Hermes's own and is COMMITTED to the session -- unlike the one its post-turn
 # review fork runs on a detached copy, after which the next turn compacted the same session again.
 
 #: Share of compression.threshold_tokens at which a session is compacted off the call path.
-OFF_PATH_COMPACT_RATIO = 0.85
-#: Conversation -> its running off-path compaction, so a spoken turn can stop them (_voice_turn_arriving).
+#: 0.70 leaves the background compaction room to land before the session reaches the threshold
+#: and the next typed turn compacts inline anyway (the Grok Bot pattern; owner ruling 10-09).
+OFF_PATH_COMPACT_RATIO = 0.70
+#: Conversation -> its running off-path compaction, so an arriving turn can stop it (_turn_arriving).
 _compacting: dict[tuple[str, str], dict] = {}
 #: Conversation -> spoken turns that have arrived and do not hold its turn lock yet. A count:
 #: several can wait at once. Both maps change under _compacting_guard, which is what makes
 #: "a turn arrived" and "a compaction started" one ordered pair instead of a race.
 _voice_arriving: dict[tuple[str, str], int] = {}
+#: The same for typed (room) turns, which stop only their own conversation's compaction.
+_typed_arriving: dict[tuple[str, str], int] = {}
 _compacting_guard = threading.Lock()
 
 
+def _must_yield(key: tuple[str, str]) -> bool:
+    """A spoken turn is arriving anywhere, or a typed one in this conversation. Read under
+    _compacting_guard when the answer must be ordered with a turn's arrival."""
+    return bool(_voice_arriving) or key in _typed_arriving
+
+
 @contextlib.contextmanager
-def _voice_turn_arriving(agent_id: str, session_key: str):
-    """A spoken turn is here and is about to take its conversation's turn lock and a turn slot.
-    For as long as this is open no off-path compaction starts (compact_session) and every one
-    already running is stopped -- in ANY conversation: the one in this conversation holds its
-    lock, and each of the others holds a turn slot this turn may need. Hermes's hard stop cancels
-    a compaction before its commit (interrupt_control.py:126-135,
-    conversation_compression.py:2696-2716), so the session and its pressure reading are unchanged
-    and its next chance compacts it. The caller closes this once it has the lock and slot or has
-    given up; the count drops on every way out.
+def _turn_arriving(agent_id: str, session_key: str, *, everywhere: bool):
+    """A turn is here and is about to take its conversation's turn lock and a turn slot. For as
+    long as this is open no off-path compaction starts in its conversation (compact_session) and
+    one already running there is stopped. Hermes's hard stop cancels a compaction before its
+    commit (interrupt_control.py:126-135, conversation_compression.py:2696-2716), so the session
+    and its pressure reading are unchanged: a typed turn then compacts inline if the session is
+    truly over Hermes's threshold, so correctness never rests on the background one finishing.
+    A spoken turn (``everywhere``) stops them in ANY conversation: each of the others holds a
+    turn slot the call may need, and a call cannot afford to queue. A typed turn does not: it can
+    wait for a slot like any turn, and typed turns are frequent enough that stopping every room's
+    compaction on each would leave none finishing. The caller closes this once it has the lock and
+    slot or has given up; the count drops on every way out.
     ponytail: a call in one room also stops a compaction in an unrelated room, which then waits
     for that session's next chance. Stop only the others when no slot is free if that waste shows."""
     key, agents = (agent_id, session_key), []
+    counts = _voice_arriving if everywhere else _typed_arriving
     with _compacting_guard:
-        _voice_arriving[key] = _voice_arriving.get(key, 0) + 1
-        for entry in _compacting.values():
-            entry["yielded"] = True
-            if entry["agent"] is not None:
-                agents.append(entry["agent"])
+        counts[key] = counts.get(key, 0) + 1
+        for k, entry in _compacting.items():
+            if everywhere or k == key:
+                entry["yielded"] = True
+                if entry["agent"] is not None:
+                    agents.append(entry["agent"])
     try:
         for agent in agents:
             _interrupt("off-path compaction", agent)
         yield
     finally:
         with _compacting_guard:
-            if _voice_arriving[key] > 1:
-                _voice_arriving[key] -= 1
+            if counts[key] > 1:
+                counts[key] -= 1
             else:
-                del _voice_arriving[key]
+                del counts[key]
+
+
+def _voice_turn_arriving(agent_id: str, session_key: str):
+    return _turn_arriving(agent_id, session_key, everywhere=True)
 
 
 @contextlib.contextmanager
-def _voice_turn_lock(agent_id: str, session_key: str, run_id: str | None, on_wait=None):
-    """_waiting_turn_lock for a spoken turn: it is announced BEFORE the lock is tried and until
-    it has the lock and its turn slot (or gave up), so no compaction can slip into that gap and
-    make a spoken question queue behind it."""
+def _announced_turn_lock(agent_id: str, session_key: str, run_id: str | None, on_wait=None, *, everywhere: bool):
+    """_waiting_turn_lock for a room turn, spoken or typed: it is announced BEFORE the lock is
+    tried and until it has the lock and its turn slot (or gave up), so no compaction can slip
+    into that gap and make the turn queue behind it for a minute or more."""
     with contextlib.ExitStack() as arriving:
-        arriving.enter_context(_voice_turn_arriving(agent_id, session_key))
+        arriving.enter_context(_turn_arriving(agent_id, session_key, everywhere=everywhere))
         with _waiting_turn_lock(agent_id, session_key, run_id, on_wait):
             arriving.close()
             yield
+
+
+def _voice_turn_lock(agent_id: str, session_key: str, run_id: str | None, on_wait=None):
+    return _announced_turn_lock(agent_id, session_key, run_id, on_wait, everywhere=True)
 
 
 def _construct_compaction_agent(agent_id: str, session_key: str, db):
@@ -3139,14 +3164,14 @@ def compact_session(agent_id: str, session_key: str) -> str:
     "busy", as does a microVM with no turn slot to spare -- a compaction counts against
     MAX_CONCURRENT_TURNS like a turn, and compactions together leave one slot free
     (_compaction_slots) -- and the next trigger is the next chance. While a spoken turn is
-    arriving anywhere it answers "yielded" without starting -- asked again once the lock and
+    arriving anywhere, or a typed one in this conversation, it answers "yielded" without starting -- asked again once the lock and
     slots are held, because the turn may arrive between the two -- and one that arrives later
-    stops it (_voice_turn_arriving). The caller holds a busy count and has restored the profile.
+    stops it (_turn_arriving). The caller holds a busy count and has restored the profile.
     Returns the outcome word, for the log and the tests."""
     key = (agent_id, session_key)
     if not ROOM_SESSION_RE.match(session_key):
         return "busy"
-    if _voice_arriving:
+    if _must_yield(key):
         return "yielded"
     entry, started = {"agent": None, "yielded": False}, time.monotonic()
     with contextlib.ExitStack() as held:  # the lock and both slots, released on every way out
@@ -3158,7 +3183,7 @@ def compact_session(agent_id: str, session_key: str) -> str:
             # One step under the guard: either a turn is already counted and this stands down,
             # releasing everything at once, or this is registered and a turn's arrival will stop it.
             with _compacting_guard:
-                entry["yielded"] = bool(_voice_arriving)
+                entry["yielded"] = _must_yield(key)
                 _compacting[key] = entry
             outcome = "yielded" if entry["yielded"] else _compact_locked(agent_id, session_key, entry)
         except Exception:  # noqa: BLE001 -- housekeeping: the session stays as it was
@@ -3175,6 +3200,34 @@ def compact_session(agent_id: str, session_key: str) -> str:
         except Exception:  # noqa: BLE001 -- the next turn's save uploads it
             log.warning("save_profile failed after compaction", exc_info=True)
     return outcome
+
+
+def compact_after_turn(agent_id: str, session_key: str) -> threading.Thread | None:
+    """Start compact_session in the background when the room turn that just ended left its
+    session at or over OFF_PATH_COMPACT_RATIO, so the NEXT typed message finds it compacted
+    instead of paying for it inline. Called at the end of run_turn, after the reply, run.ended
+    and the profile save, so nothing the person sees waits on it. Counted as a turn
+    (reserve_turn), so a roll or the recycle waits for it, and none starts under their hold; it
+    ends through _end_turn so the curator still runs when it is the last thing live. A turn that
+    arrives meanwhile stops it (_turn_arriving). Returns the thread, for the tests."""
+    if not ROOM_SESSION_RE.match(session_key):  # mail, Paperclip, calls: no typed follow-up to spare
+        return None
+    db = _session_db(agent_id)
+    if db is None:
+        return None
+    ref = types.SimpleNamespace(_session_db=db, session_id=_session_tip(db, session_key))
+    if float(_session_meta(ref).get(PRESSURE) or 0) < OFF_PATH_COMPACT_RATIO or not reserve_turn():
+        return None
+
+    def compact() -> None:
+        try:
+            compact_session(agent_id, session_key)
+        finally:
+            _end_turn()
+
+    thread = threading.Thread(target=compact, name=f"compact-{agent_id[:8]}", daemon=True)
+    thread.start()
+    return thread
 
 
 def _construct_agent(agent_id: str, body: dict, frames, session_key: str, **limits):
@@ -3334,7 +3387,11 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
     # (Hazard 1). Taken AFTER run_turn has posted run.started and launched the heartbeat, so a
     # queued turn keeps heartbeating and the backend sweeper does not close it as never-started.
     run_id = (body.get("run") or {}).get("runId")
-    with _waiting_turn_lock(agent_id, session_key, run_id):
+    # A room turn announces itself, so an off-path compaction of this conversation (started when
+    # the last turn ended, or when the person began typing) stops instead of making it wait.
+    lock = (_announced_turn_lock(agent_id, session_key, run_id, everywhere=False) if ROOM_SESSION_RE.match(session_key)
+            else _waiting_turn_lock(agent_id, session_key, run_id))
+    with lock:
         # Queueing widens the abort window run_turn's own pre-dispatch check covers: a stop that
         # lands while this turn waits has no agent to interrupt yet, so without this the turn
         # runs a whole conversation and only then reports `aborted`. run_turn's post-_run_hermes
@@ -3910,6 +3967,11 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
             sync.save_root_auth()
         except Exception as exc:  # noqa: BLE001 -- best-effort, same as save_profile above
             log.warning("save_root_auth failed: %s", exc)
+        if has_run:  # a room turn; agent_mail carries no run block
+            try:
+                compact_after_turn(agent_id, session_key)
+            except Exception:  # noqa: BLE001 -- housekeeping: the next turn compacts inline instead
+                log.warning("post-turn compaction did not start", exc_info=True)
         _last_turn[agent_id] = took
         # Fix round (minor 11): log the reply LENGTH, never the reply text -- room content has
         # no business in CloudWatch, and this line used to truncate-and-print it.

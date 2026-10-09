@@ -540,6 +540,102 @@ def test_no_compaction_starts_while_a_spoken_turn_arrives_anywhere(compaction, h
     assert compaction.runs == [] and turn.compact_session("agent-1", SESSION) == "compacted"
 
 
+# ---- 2b. compaction after a typed turn, off its path ----------------------------------------------
+def test_a_room_turn_starts_its_compaction_only_after_its_save(home, posted, monkeypatch):
+    """The reply, run.ended and the save come first: nothing the person waits on is behind it."""
+    from tests import factories as f
+
+    order = []
+    monkeypatch.setattr(turn, "_run_hermes", lambda *a, **k: ("completed", None, "ack", turn.ZERO_USAGE))
+    monkeypatch.setattr(turn, "save_profile", lambda a: order.append("save"))
+    monkeypatch.setattr(turn, "compact_after_turn", lambda a, key: order.append(("compact", a, key)))
+    body = f.ingress()
+    turn.run_turn("ceo", body)
+    assert order == ["save", ("compact", "ceo", turn.lightbulb_session_key("ceo", body["room"]["id"]))]
+
+
+def test_a_mail_turn_starts_no_compaction(home, posted, monkeypatch):
+    from tests.test_agent_mail import MAIL
+
+    monkeypatch.setattr(turn, "_run_hermes", lambda *a, **k: ("completed", None, "ok", turn.ZERO_USAGE))
+    monkeypatch.setattr(turn, "compact_after_turn", lambda *_a: pytest.fail("a mail turn owes no compaction"))
+    turn.run_turn("ceo", dict(MAIL))
+
+
+def test_a_session_at_the_ratio_is_compacted_in_the_background_counted_as_a_turn(compaction, home):
+    compaction.db = _DB(turn.OFF_PATH_COMPACT_RATIO)
+    compaction.gate = threading.Event()
+    worker = turn.compact_after_turn("agent-1", SESSION)
+    assert compaction.started.wait(5) and turn._busy == 1  # a roll or the recycle waits for it
+    compaction.gate.set()
+    worker.join(5)
+    assert len(compaction.runs) == 1 and turn._busy == 0 and compaction.db.meta[SESSION][turn.PRESSURE] == 0.0
+
+
+def test_a_session_below_the_ratio_or_not_a_room_starts_nothing(compaction, home):
+    compaction.db = _DB(turn.OFF_PATH_COMPACT_RATIO - 0.01)
+    assert turn.compact_after_turn("agent-1", SESSION) is None
+    compaction.db = _DB(0.9)
+    assert turn.compact_after_turn("agent-1", "lightbulb-email:abc") is None  # mail
+    assert turn.compact_after_turn("agent-1", "agent:agent-1:paperclip:run-1") is None
+    assert compaction.runs == [] and turn._busy == 0
+
+
+def test_nothing_starts_under_a_roll_or_recycle_hold(compaction, home):
+    assert turn.hold_turns()
+    try:
+        assert turn.compact_after_turn("agent-1", SESSION) is None and turn._busy == 0
+    finally:
+        turn.release_hold()
+
+
+def test_a_typed_turn_stops_its_rooms_compaction_instead_of_waiting_for_it(compaction, home, monkeypatch):
+    """A person who starts typing warms the room (profile.warm), which can start a compaction just
+    before their message lands: the message takes the session at once, unchanged, and Hermes
+    compacts it inline only if it is truly over its threshold."""
+    compaction.gate = threading.Event()
+    monkeypatch.setattr(turn, "_interrupt", lambda _what, agent: (agent.interrupt(), compaction.gate.set()))
+    outcome = []
+    worker = threading.Thread(target=lambda: outcome.append(turn.compact_session("agent-1", SESSION)))
+    worker.start()
+    assert compaction.started.wait(5)
+    with turn._announced_turn_lock("agent-1", SESSION, None, everywhere=False):
+        worker.join(5)
+        assert outcome == ["yielded"] and turn._typed_arriving == {}
+    assert compaction.interrupts == [{}] and compaction.settled == [False] and compaction.saved == []
+    assert compaction.db.meta[SESSION][turn.PRESSURE] == 0.9  # still owed
+
+
+def test_a_typed_turn_in_another_room_leaves_a_compaction_running(compaction, home):
+    """Unlike a call: typed turns are too frequent to stop every room's compaction on each."""
+    compaction.gate = threading.Event()
+    outcome = []
+    worker = threading.Thread(target=lambda: outcome.append(turn.compact_session("agent-1", SESSION)))
+    worker.start()
+    assert compaction.started.wait(5)
+    with turn._turn_arriving("agent-2", OTHER, everywhere=False):
+        assert compaction.interrupts == []
+        assert turn.compact_session("agent-2", OTHER) == "yielded"  # but none starts in its own room
+        compaction.gate.set()
+        worker.join(5)
+    assert outcome == ["compacted"] and turn._typed_arriving == {}
+
+
+def test_a_typed_room_turn_announces_itself_and_others_do_not(home, monkeypatch):
+    from tests import factories as f
+
+    seen = []
+    real = turn._announced_turn_lock
+    monkeypatch.setattr(turn, "_announced_turn_lock", lambda *a, **k: seen.append(k) or real(*a, **k))
+    monkeypatch.setattr(turn.sync, "ensure_profile", lambda _a: (_ for _ in ()).throw(RuntimeError("stop here")))
+    with pytest.raises(RuntimeError, match="stop here"):
+        turn._run_turn_in("ceo", f.ingress(), None, home)
+    assert seen == [{"everywhere": False}]
+    with pytest.raises(RuntimeError, match="stop here"):
+        turn._run_turn_in("ceo", {**f.ingress(), "sessionKey": "lightbulb-email:abc"}, None, home)
+    assert seen == [{"everywhere": False}] and turn._typed_arriving == {}
+
+
 # ---- 3. call records count toward the room's pressure ---------------------------------------------
 def test_call_records_raise_the_rooms_pressure_until_the_next_call_start_compacts_it(compaction, home):
     """A room only ever spoken to is measured by no run: each record adds its own size to the

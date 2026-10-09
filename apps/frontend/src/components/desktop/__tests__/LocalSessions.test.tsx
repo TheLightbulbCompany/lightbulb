@@ -103,8 +103,8 @@ it("explains the full audience and requires an already connected Mac", async () 
   render(<LocalSessions />);
   await waitFor(()=>expect(screen.getByText("Connect this Mac first.")).toBeTruthy());
   // The text a person ticks "I understand" under states the model: opt in, the workspace, the link apart.
-  expect(screen.getByText(/^Nothing is shared until you start a session with Lightbulb, choose Share to Lightbulb in it, or turn on “Share every new session”\. Every member of your workspace can see a shared session’s live terminal and conversation\./)).toBeTruthy();
-  expect(screen.getByText(/Every member of the workspace where sharing is on sees a shared session/)).toBeTruthy();
+  expect(screen.getByText(/^Nothing is shared until you start a session with Lightbulb, choose Share to Lightbulb in it, or turn on “Share every new session”\. Every member of your workspace, and its AI agents, can see a shared session’s live terminal and conversation\./)).toBeTruthy();
+  expect(screen.getByText(/Every member of the workspace where sharing is on, and its AI agents, can see a shared session/)).toBeTruthy();
   expect(screen.getByText("claude plugin marketplace add TheLightbulbCompany/lightbulb-plugin")).toBeInTheDocument();
   expect(document.body.textContent).not.toMatch(/org_/);
   expect(screen.getByRole("button",{name:"Turn on sharing"}).hasAttribute("disabled")).toBe(true);
@@ -276,7 +276,7 @@ it("leaves Share every new session off on a fresh pairing when the box is untouc
   render(<DesktopPermissionsGate />);
   const live = await screen.findByRole("button", {name:/Share every new session/});
   expect(live).toHaveAttribute("aria-pressed", "false");
-  expect(live).toHaveTextContent("On: every claude or codex you type in a new terminal tab is shared with your workspace");
+  expect(live).toHaveTextContent("On, while session sharing is on: every claude or codex you type in a new terminal tab is shared with your workspace");
   expect(live).toHaveTextContent("~/.zshrc, ~/.bashrc and your bash login file");
   expect(screen.getByText(/Nothing is shared until you start a session with Lightbulb/)).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", {name:"Continue"}));

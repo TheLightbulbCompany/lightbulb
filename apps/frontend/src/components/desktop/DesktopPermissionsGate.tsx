@@ -210,7 +210,7 @@ export function DesktopPermissionsGate() {
           })}
         </div>
         <p className="text-xs leading-relaxed text-[var(--midnight-muted)]">
-          Nothing is shared until you start a session with Lightbulb, choose Share to Lightbulb in it, or turn on “{SHARE_LIVE_LABEL}”. Every member of your workspace can see a shared session’s live terminal and conversation, secrets it prints included. “Anyone with the link” is a separate choice you make per session, and you can switch any session back to Only me. This choice is saved; change it in Settings.
+          Nothing is shared until you start a session with Lightbulb, choose Share to Lightbulb in it, or turn on “{SHARE_LIVE_LABEL}”. Every member of your workspace, and its AI agents, can see a shared session’s live terminal and conversation, secrets it prints included. “Anyone with the link” is a separate choice you make per session, and you can switch any session back to Only me. This choice is saved; change it in Settings.
         </p>
         {checking && <p role="status" className="text-xs text-[var(--midnight-muted)]">Checking local-session sharing… You can continue with Basic only.</p>}
         {(saveError || sharing.error) && <p role="alert" className="text-sm text-destructive">{sharing.error || saveError}</p>}

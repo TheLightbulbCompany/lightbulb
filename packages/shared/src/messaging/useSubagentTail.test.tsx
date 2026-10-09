@@ -6,7 +6,7 @@ import { useSubagentTail } from "./useSubagentTail";
 describe("useSubagentTail", () => {
   afterEach(() => { vi.useRealTimers(); });
 
-  it("polls every 2 s while a target is set and stops when cleared", async () => {
+  it("polls every 2 s while a target is set, and stops when cleared while keeping the last text", async () => {
     vi.useFakeTimers();
     const subagentTail = vi.fn().mockResolvedValue({ subagentId: "sa-1", available: true, text: "hi", truncated: false });
     const client = { subagentTail } as never;
@@ -20,6 +20,7 @@ describe("useSubagentTail", () => {
     rerender({ t: null });
     await act(() => vi.advanceTimersByTimeAsync(10_000));
     expect(subagentTail).toHaveBeenCalledTimes(3);
+    expect(result.current.tail?.text).toBe("hi");
   });
 
   it("clears the previous target's text when the target changes", async () => {

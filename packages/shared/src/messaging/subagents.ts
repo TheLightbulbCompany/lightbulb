@@ -154,6 +154,8 @@ export function isSubagentGone(e: unknown): boolean {
 /** The `delegation_id` a `delegate_task` tool result carries (object or JSON string), else null. */
 export function delegationIdOf(result: unknown): string | null {
   const parse = (v: unknown): unknown => { if (typeof v !== "string") return v; try { return JSON.parse(v); } catch { return null; } };
+  // The bridge sends a tool result as ToolResultBlock[] (turn.py tool_complete): read its first text block.
+  if (Array.isArray(result)) result = (result.find((b) => b && typeof b === "object" && b.type === "text") as { text?: unknown } | undefined)?.text;
   const r = parse(result) as { delegation_id?: unknown } | null;
   return r && typeof r.delegation_id === "string" ? r.delegation_id : null;
 }

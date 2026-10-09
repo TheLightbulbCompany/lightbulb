@@ -147,6 +147,9 @@ export interface UseRoomsOptions {
    * after. MUST be referentially stable.
    */
   persistence?: RoomsPersistence;
+  /** The one screen showing the subagent strip opts in to the snapshot hydrate, the 5 s poll and the
+   *  foreground refresh: each is a runtime invoke that extends its idle clock. Live events need none. */
+  subagents?: boolean;
 }
 
 /** What `RoomsPersistence` keeps for one `userId:orgId` scope. */
@@ -247,7 +250,7 @@ const contiguousSequence = (messages: readonly CanonicalRoomMessage[]) => {
 };
 
 export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {}) {
-  const { initialAgentId = null, subscribeToRoom = true, autoSelect = true, boundedHistory = false, persistence } = options;
+  const { initialAgentId = null, subscribeToRoom = true, autoSelect = true, boundedHistory = false, persistence, subagents: watchSubagents = false } = options;
   const { userId, orgId, live, isVisible, onVisibilityChange, uuid } = platform;
   const {
     messaging,
@@ -345,7 +348,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
   subagentsRef.current = subagents;
   const activeRoomIdRef = useRef(activeRoomId);
   activeRoomIdRef.current = activeRoomId;
-  const subagentPoll = useRef({ visible: false, failures: 0 });
+  const subagentPoll = useRef({ visible: false, failures: 0, inFlight: false });
   const [receipts, setReceipts] = useState<RoomReceipts>(NO_RECEIPTS);
   const generation = useRef(0);
   const requestedAfter = useRef<number | null>(null);
@@ -1345,28 +1348,36 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
   const refreshSubagents = useCallback(async () => {
     if (!activeRoomId) return;
     const roomId = activeRoomId;
+    subagentPoll.current.inFlight = true;
     try {
       const { subagents: children } = await messaging.listSubagents(roomId);
       subagentPoll.current.failures = 0;
       if (roomId === activeRoomIdRef.current) setSubagents((s) => reconcileSubagentSnapshot(s, children, Date.now()));
     } catch {
       subagentPoll.current.failures += 1;
+    } finally {
+      subagentPoll.current.inFlight = false;
     }
   }, [activeRoomId, messaging]);
 
-  useEffect(() => { void refreshSubagents(); }, [refreshSubagents]); // hydrate once per room
+  useEffect(() => { if (watchSubagents) void refreshSubagents(); }, [watchSubagents, refreshSubagents]); // hydrate once per room
 
-  // upstream's only polling: every 5 s while the strip is on screen and a row is live; 3 failures stop it until focus.
+  // upstream's only polling: every 5 s while the strip is on screen and a row is live; 3 failures stop it until the page is visible again.
   useEffect(() => {
+    if (!watchSubagents) return;
     const id = setInterval(() => {
       const p = subagentPoll.current;
-      if (!p.visible || p.failures >= 3 || !liveSubagents(subagentsRef.current).length) return;
+      if (!p.visible || p.inFlight || p.failures >= 3 || !liveSubagents(subagentsRef.current).length) return;
       void refreshSubagents();
     }, 5_000);
-    const onFocus = () => { const p = subagentPoll.current; if (!p.visible) return; p.failures = 0; void refreshSubagents(); };
-    globalThis.addEventListener?.("focus", onFocus);
-    return () => { clearInterval(id); globalThis.removeEventListener?.("focus", onFocus); };
-  }, [refreshSubagents]);
+    const unsubscribe = onVisibilityChange(() => {
+      const p = subagentPoll.current;
+      if (!p.visible || p.inFlight || !isVisible()) return;
+      p.failures = 0;
+      void refreshSubagents();
+    });
+    return () => { clearInterval(id); unsubscribe(); };
+  }, [watchSubagents, refreshSubagents, onVisibilityChange, isVisible]);
 
   const subagentsPollVisible = useCallback((visible: boolean) => { subagentPoll.current.visible = visible; }, []);
   const steerSubagent = useCallback((agentId: string, subagentId: string, text: string) =>

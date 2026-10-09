@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EMPTY_ROOM_SUBAGENTS, applySubagentEvent, liveSubagents, pruneFinishedSubagents, reconcileSubagentSnapshot, subagentActivity } from "./subagents";
+import { EMPTY_ROOM_SUBAGENTS, applySubagentEvent, delegationIdOf, liveSubagents, pruneFinishedSubagents, reconcileSubagentSnapshot, subagentActivity } from "./subagents";
 
 const A = "agent-ceo";
 const base = { subagent_id: "sa-1", goal: "Map Paperclip", task_index: 0, task_count: 3, delegation_id: "d-1" };
@@ -65,5 +65,19 @@ describe("subagent reducer (port of Hermes desktop store/subagents.ts)", () => {
   it("a queued row with no activity says queued", () => {
     const s = applySubagentEvent(EMPTY_ROOM_SUBAGENTS, A, "subagent.start", { ...base, status: "queued" }, 1);
     expect(subagentActivity(s.items[0])).toBe("queued");
+  });
+});
+
+describe("delegationIdOf", () => {
+  it("reads the bridge's ToolResultBlock[] shape (turn.py tool_complete)", () => {
+    expect(delegationIdOf([{ type: "text", text: '{"status":"dispatched","delegation_id":"d-1"}' }])).toBe("d-1");
+    expect(delegationIdOf([{ type: "image" }, { type: "text", text: '{"delegation_id":"d-3"}' }])).toBe("d-3");
+    expect(delegationIdOf([{ type: "text", text: "not json" }])).toBeNull();
+    expect(delegationIdOf([])).toBeNull();
+  });
+  it("still reads a JSON string or an object", () => {
+    expect(delegationIdOf('{"delegation_id":"d-1"}')).toBe("d-1");
+    expect(delegationIdOf({ delegation_id: "d-2" })).toBe("d-2");
+    expect(delegationIdOf("oops")).toBeNull();
   });
 });

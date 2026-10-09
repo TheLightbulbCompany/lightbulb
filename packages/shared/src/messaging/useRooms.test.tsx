@@ -1123,7 +1123,7 @@ describe("background subagents", () => {
     vi.useFakeTimers();
     try {
       messaging.listSubagents.mockResolvedValue({ subagents: [{ subagent_id: "sa-1", agent_id: "a1", goal: "g", status: "running" }] });
-      const { result } = renderHook(() => useRooms(platform()), { wrapper });
+      const { result } = renderHook(() => useRooms(platform(), { subagents: true }), { wrapper });
       act(() => result.current.selectRoom(room.roomId));
       await act(() => vi.advanceTimersByTimeAsync(0));
       expect(messaging.listSubagents).toHaveBeenCalledTimes(1);
@@ -1140,19 +1140,64 @@ describe("background subagents", () => {
     }
   });
 
-  it("window focus refreshes only while the strip is visible", async () => {
-    cleanup(); // earlier hooks in this file are never unmounted and would answer the same focus
+  it("skips a poll tick while the previous snapshot is still in flight", async () => {
+    vi.useFakeTimers();
+    try {
+      messaging.listSubagents.mockResolvedValue({ subagents: [{ subagent_id: "sa-1", agent_id: "a1", goal: "g", status: "running" }] });
+      const { result } = renderHook(() => useRooms(platform(), { subagents: true }), { wrapper });
+      act(() => result.current.selectRoom(room.roomId));
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      act(() => result.current.subagentsPollVisible(true));
+      messaging.listSubagents.mockImplementation(() => new Promise(() => {})); // never answers
+      await act(() => vi.advanceTimersByTimeAsync(5_000));
+      expect(messaging.listSubagents).toHaveBeenCalledTimes(2);
+      await act(() => vi.advanceTimersByTimeAsync(15_000));
+      expect(messaging.listSubagents).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("an instance that did not opt in never asks the runtime for a snapshot", async () => {
+    cleanup(); // an earlier opted-in hook would answer the same events
+    vi.useFakeTimers();
+    try {
+      messaging.listSubagents.mockResolvedValue({ subagents: [{ subagent_id: "sa-1", agent_id: "a1", goal: "g", status: "running" }] });
+      const { result } = renderHook(() => useRooms(platform()), { wrapper });
+      act(() => result.current.selectRoom(room.roomId));
+      act(() => result.current.subagentsPollVisible(true));
+      emit({ type: "room.subagent.event", payload: { roomId: room.roomId, agentId: "a1", events: [
+        sub("subagent.start", 1, { subagent_id: "sa-1", goal: "Map" }),
+      ] } } as LiveEvent);
+      await act(() => vi.advanceTimersByTimeAsync(20_000));
+      act(() => { for (const listener of visibilityListeners) listener(); });
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      expect(messaging.listSubagents).not.toHaveBeenCalled();
+      expect(result.current.subagents.items.map((i) => i.id)).toEqual(["sa-1"]); // live events still apply
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("becoming visible again refreshes only while the strip is visible, and resets the failure stop", async () => {
+    cleanup(); // earlier hooks in this file are never unmounted and would answer the same visibility change
     messaging.listSubagents.mockResolvedValue({ subagents: [] });
-    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    const { result } = renderHook(() => useRooms(platform(), { subagents: true }), { wrapper });
     act(() => result.current.selectRoom(room.roomId));
     await waitFor(() => expect(messaging.listSubagents).toHaveBeenCalled());
     await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
     const settled = messaging.listSubagents.mock.calls.length;
-    act(() => { globalThis.dispatchEvent(new Event("focus")); });
+    const regain = () => act(() => { for (const listener of visibilityListeners) listener(); });
+    regain();
     await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
     expect(messaging.listSubagents).toHaveBeenCalledTimes(settled);
     act(() => result.current.subagentsPollVisible(true));
-    act(() => { globalThis.dispatchEvent(new Event("focus")); });
+    visible = false;
+    regain(); // a visibility LOSS is not a refresh
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(messaging.listSubagents).toHaveBeenCalledTimes(settled);
+    visible = true;
+    regain();
     await waitFor(() => expect(messaging.listSubagents).toHaveBeenCalledTimes(settled + 1));
   });
 });

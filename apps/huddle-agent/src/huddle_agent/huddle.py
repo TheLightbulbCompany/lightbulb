@@ -4934,13 +4934,14 @@ class Huddle:
         ids = {r.id for r in mine}
         reqs = list(ops.get("requests") or [])
         cancel = list(ops.get("cancel") or [])
+        # One row per agent it still asks is amended, a row it steers stays; every other row of the turn is called
+        # off, also when the whole turn now asks nothing (it was talk to a person, or taken back).
+        asked, steered = {x.get("agentId") for x in reqs}, {x.get("requestId") for x in ops.get("steer") or []}
         keep: dict = {}
-        if reqs:  # one row per agent it still asks is amended; every other row of the turn is called off
-            asked = {x.get("agentId") for x in reqs}
-            for r in mine:
-                if r.agent in asked:
-                    keep.setdefault(r.agent, r)
-            cancel += [r.id for r in mine if r not in keep.values() and r.id not in cancel]
+        for r in mine:
+            if r.agent in asked:
+                keep.setdefault(r.agent, r)
+        cancel += [r.id for r in mine if r not in keep.values() and r.id not in steered and r.id not in cancel]
         steer = [{**x, "quiet": True} if x.get("requestId") in ids else x for x in ops.get("steer") or [] if x.get("requestId") not in cancel]
         steer += [{"requestId": keep[x["agentId"]].id, "text": x.get("task") or "", "quiet": True} for x in reqs if x.get("agentId") in keep]
         reqs = [x for x in reqs if x.get("agentId") not in keep]

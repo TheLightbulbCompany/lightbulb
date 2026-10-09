@@ -668,3 +668,21 @@ async def test_a_piece_said_while_the_turn_before_it_is_at_route_joins_that_turn
     assert backend.routes[-1][1] == "Forge, can you give me a summary of my open PRs.", "the rest routed whole"
     assert [r.task for r in h._requests.items] == ["summarise my open PRs"], "one request, for the whole turn"
     assert P1 not in h._held, "the late hold is not kept to join a later line"
+
+
+async def test_a_grown_turn_that_now_asks_nothing_calls_its_row_off():
+    """#3961 review (P1): the first piece asked Forge; the whole turn is talk to a person. Its row is called off."""
+    h, room, backend, lives, clock, log = await per_person()
+    backend.steer = True
+    h.on_speech(P1, True)
+    clock.t += 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "check the deploy", "name")])
+    await says(h, P1, "Forge, check the deploy")
+    (row,) = h._requests.items
+    h.on_speech(P1, True)
+    clock.t += 0.5 + 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([])
+    await says(h, P1, "actually no, Dan, what do you think?")
+    assert row.status not in h_mod.OPEN, "taken back: its row is called off"

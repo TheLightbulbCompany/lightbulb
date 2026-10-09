@@ -72,7 +72,7 @@ const companyVercelSteps = (prod: boolean) => [
   { name: "Checkout", uses: "actions/checkout@v7", with: { "persist-credentials": false } },
   setupPnpmStep(),
   { name: "Setup Node.js", uses: "actions/setup-node@v7", with: { "node-version": "20", cache: "pnpm" } },
-  { name: "Install Vercel CLI", run: "npm install -g vercel" },
+  { name: "Install Vercel CLI", run: "npm install -g vercel@63.1.0" },
   { name: "Pull Vercel Settings", run: `vercel pull --yes${prod ? " --environment=production" : ""} --token=$VERCEL_TOKEN`, env: companyVercelEnv },
   { name: "Build Company Site", run: `vercel build${prod ? " --prod" : ""} --token=$VERCEL_TOKEN`, env: companyVercelEnv },
 ];
@@ -240,7 +240,7 @@ pipeline.addStageWithGitHubOptions(devStage, {
         { name: "Checkout", uses: "actions/checkout@v7" },
         setupPnpmStep(),
         { name: "Setup Node.js", uses: "actions/setup-node@v7", with: { "node-version": "20", cache: "pnpm" } },
-        { name: "Install Vercel CLI", run: "npm install -g vercel" },
+        { name: "Install Vercel CLI", run: "npm install -g vercel@63.1.0" },
         { name: "Pull Vercel Settings", run: "vercel pull --yes --token=$VERCEL_TOKEN", env: vercelEnv },
         {
           name: "Build Frontend",
@@ -350,7 +350,7 @@ pipeline.addStageWithGitHubOptions(prodStage, {
         { name: "Checkout", uses: "actions/checkout@v7" },
         setupPnpmStep(),
         { name: "Setup Node.js", uses: "actions/setup-node@v7", with: { "node-version": "20", cache: "pnpm" } },
-        { name: "Install Vercel CLI", run: "npm install -g vercel" },
+        { name: "Install Vercel CLI", run: "npm install -g vercel@63.1.0" },
         { name: "Pull Vercel Settings", run: "vercel pull --yes --environment=production --token=$VERCEL_TOKEN", env: vercelEnv },
         {
           name: "Build Frontend (Production)",

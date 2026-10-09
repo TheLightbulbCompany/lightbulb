@@ -33,6 +33,7 @@ import type {
   IssueUpdateInput,
 } from "@/components/teams/shared/types";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { paperclipUserIdOf } from "@/components/teams/shared/lib/assignees";
 
 export interface IssuesPanelProps {
   /** Agent-scope filter (from the roster's "See her work →"). null = no filter. */
@@ -116,6 +117,7 @@ export function IssuesPanel({
   // dashboard does (useLiveRuns → isRunActive); SWR self-refreshes the feed.
   const { runs: liveRuns } = useLiveRuns();
   const { user } = useUser();
+  const myPaperclipUserId = paperclipUserIdOf(membersData?.members, user?.id);
   // Seed from the one-shot so a mount that already carries the intent opens the
   // dialog on first render (no effect); the prev-compare below covers re-delivery.
   const [creating, setCreating] = useState(newTask);
@@ -312,7 +314,7 @@ export function IssuesPanel({
         onGroupByChange={setLiveGroupBy}
         liveIssueIds={liveIssueIds}
         externalObjectSummaries={externalObjectSummaries}
-        currentUserId={user?.id ?? null}
+        currentUserId={myPaperclipUserId}
         searchActive={search.trim().length > 0 || agentFilter !== null}
         isLoading={isLoading}
         onUpdateIssue={handleUpdateIssue}

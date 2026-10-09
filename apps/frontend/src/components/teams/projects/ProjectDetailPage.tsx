@@ -40,6 +40,7 @@ import { useProjectMutations } from "./hooks/useProjectMutations";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { handleShellLinkClick, teamsPanelUrl } from "@/lib/shellNav";
 import { teamsQueryKeys } from "@/components/teams/shared/queryKeys";
+import { paperclipUserIdOf } from "@/components/teams/shared/lib/assignees";
 import type {
   CompanyAgent,
   CompanyMember,
@@ -231,7 +232,7 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
           agents={agents}
           liveIssueIds={liveIssueIds}
           externalObjectSummaries={externalObjectSummaries}
-          currentUserId={user?.id ?? null}
+          currentUserId={paperclipUserIdOf(membersResp?.members, user?.id)}
           isLoading={issuesLoading}
           onUpdateIssue={handleUpdateIssue}
           onNewTask={() => setCreating(true)}

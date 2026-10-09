@@ -1101,7 +1101,16 @@ export function IssueProperties({
         issueId={issue.id}
         monitor={issue.executionPolicy?.monitor ?? null}
         monitorState={issue.executionState?.monitor ?? null}
-        onMonitorChange={onMonitorChange}
+        // Paperclip refuses a monitor (422) unless an agent owns the task and it
+        // is in progress or in review (issue-execution-policy.ts), so only offer
+        // Schedule there.
+        onMonitorChange={
+          issue.assigneeAgentId &&
+          !issue.assigneeUserId &&
+          (issue.status === "in_progress" || issue.status === "in_review")
+            ? onMonitorChange
+            : undefined
+        }
         onMonitorClear={onMonitorClear}
         onCheckNow={onCheckNow}
       />

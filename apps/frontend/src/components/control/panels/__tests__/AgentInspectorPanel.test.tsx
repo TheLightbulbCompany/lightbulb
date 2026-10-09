@@ -56,6 +56,7 @@ const renderInspector = () =>
     </SWRConfig>,
   );
 
+const refreshSpy = vi.fn();
 // agents.list feeds the header (name/emoji), mirroring AgentsPanel.
 const agentsListData: { defaultId?: string; agents?: Array<{ id: string; name?: string; identity?: { emoji?: string } }> } =
   { defaultId: "main", agents: [{ id: "agent_42", name: "Scout", identity: { emoji: "🔭" } }] };
@@ -71,7 +72,7 @@ vi.mock("@/hooks/useAgents", async (importOriginal) => {
       error: undefined,
       isLoading: false,
       isSettled: true,
-      refresh: vi.fn(),
+      refresh: refreshSpy,
       createAgent: vi.fn(),
       deleteAgent: vi.fn(),
       updateAgent: vi.fn(),
@@ -123,6 +124,15 @@ describe("AgentInspectorPanel", () => {
     inspectorTabParam = null;
     rosterData = { agents: [{ id: "agent_42", name: "Scout" }] };
     rosterError = undefined;
+  });
+
+  it("names a roster agent agents.list does not know yet, and refetches agents.list", () => {
+    agentParam = "agent_new";
+    rosterData = { agents: [{ id: "agent_new", name: "Nova" }] };
+    refreshSpy.mockClear();
+    renderInspector();
+    expect(screen.getByRole("heading", { name: "Nova" })).toBeInTheDocument();
+    expect(refreshSpy).toHaveBeenCalledTimes(1);
   });
 
   it("renders the four tab labels", () => {

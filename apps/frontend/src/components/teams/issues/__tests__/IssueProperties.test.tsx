@@ -181,6 +181,23 @@ describe("IssueProperties monitor row", () => {
     expect(within(monitorRow()).getByText("Timed out")).toBeInTheDocument();
   });
 
+  it("offers Schedule only where Paperclip accepts a monitor", () => {
+    const props = {
+      onStatusChange: noop,
+      onPriorityChange: noop,
+      onAssigneeChange: noop,
+      onProjectChange: noop,
+      onBlockedByChange: noop,
+      onMonitorChange: noop,
+    };
+    const { rerender } = render(<IssueProperties issue={BASE_ISSUE} {...props} />);
+    expect(within(monitorRow()).queryByText("Schedule")).toBeNull();
+    rerender(
+      <IssueProperties issue={{ ...BASE_ISSUE, status: "in_progress", assigneeAgentId: "agent-1" }} {...props} />,
+    );
+    expect(within(monitorRow()).getByText("Schedule")).toBeInTheDocument();
+  });
+
   it("still reads 'Not scheduled' when no monitor was ever set", () => {
     renderProperties();
     expect(within(monitorRow()).getByText("Not scheduled")).toBeInTheDocument();

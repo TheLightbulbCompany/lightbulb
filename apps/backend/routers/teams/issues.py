@@ -250,6 +250,14 @@ async def patch_issue(
     # new agent is woken, its run is cancelled as blocked, and the issue snaps back to the
     # recovery owner (Paperclip audit 2026-09-24 F6). Real open blockers still 422, and that
     # reason reaches the caller (main.py's PaperclipApiError handler).
+    new_parent = payload.get("parentId")
+    if new_parent:
+        # Paperclip accepts any parent, so a task could become its own ancestor
+        # (Aden audit 10-02 #1). Its issue read carries the parent's ancestor chain.
+        parent = await admin.get_issue(issue_id=new_parent, session_cookie=ctx.session_cookie) or {}
+        chain = {new_parent, parent.get("id"), *(a.get("id") for a in parent.get("ancestors") or [])}
+        if issue_id in chain:
+            raise HTTPException(status_code=422, detail="A task can't be moved under one of its own sub-tasks.")
     if payload.get("assigneeAgentId") and "status" not in payload:
         current = await admin.get_issue(issue_id=issue_id, session_cookie=ctx.session_cookie)
         if (current or {}).get("status") == "blocked":

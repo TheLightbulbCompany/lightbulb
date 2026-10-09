@@ -588,10 +588,15 @@ async def patch_project(
     body: PatchProjectBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
-    """Patch a project."""
+    """Patch a project.
+
+    ``exclude_unset`` (not ``exclude_none``) so an explicit ``null`` reaches
+    upstream: clearing the description sends ``description: null``, which
+    ``exclude_none`` dropped, so the clear silently reverted.
+    """
     return await _agents._admin().patch_project(
         project_id=project_id,
-        body=body.model_dump(exclude_none=True, by_alias=True),
+        body=body.model_dump(exclude_unset=True, by_alias=True),
         session_cookie=ctx.session_cookie,
     )
 

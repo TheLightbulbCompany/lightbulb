@@ -49,6 +49,7 @@ from core.services.paperclip_agent_lifecycle import (
     resolve_agent_adapter,
 )
 from core.services.paperclip_user_session import get_user_session_cookie
+from core.services.person_label import NEW_MEMBER, is_relay_email
 from core.services.provision_gate import evaluate_provision_gate
 from core.services.user_provision import (
     arm_nightly_ceo,
@@ -470,9 +471,11 @@ async def list_members(ctx: TeamsContext = Depends(_ctx)):
 
 def _member_row(user_id: str, first: str | None, last: str | None, email: str | None, image_url) -> dict:
     """The ``CompanyMember`` row. Name falls back from the full name → email →
-    the raw id so the picker always has a label to show."""
+    the raw id so the picker always has a label to show. An Apple relay address is
+    never that label: every client renders ``name || email``, so this is the one fix."""
     name = " ".join(part for part in (first, last) if part).strip()
-    return {"userId": user_id, "name": name or email or user_id, "email": email or None, "imageUrl": image_url}
+    fallback = NEW_MEMBER if is_relay_email(email) else email
+    return {"userId": user_id, "name": name or fallback or user_id, "email": email or None, "imageUrl": image_url}
 
 
 async def _resolve_member_identity(user_id: str) -> dict | None:

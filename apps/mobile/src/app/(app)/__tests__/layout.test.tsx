@@ -78,6 +78,9 @@ jest.mock("../../../providers/live", () => ({ LiveProvider: ({ children }: { chi
 jest.mock("../../../components/voice/LiveSheet", () => ({ LiveSheet: () => null }));
 // null = the session has no active workspace yet (the gate shows its chooser).
 let mockWorkspaceReady = true;
+jest.mock("../../../components/workspace/NameGate", () => ({
+  NameGate: ({ children }: { children?: ReactNode }) => children,
+}));
 let mockWorkspaceGateRenders = 0;
 jest.mock("../../../components/workspace/WorkspaceGate", () => ({
   WorkspaceGate: ({ children }: { children?: ReactNode }) => {

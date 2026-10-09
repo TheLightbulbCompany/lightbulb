@@ -27,6 +27,7 @@ import logging
 import time
 
 from core.services import clerk_admin, curator
+from core.services.person_label import is_relay_email
 
 
 logger = logging.getLogger(__name__)
@@ -135,13 +136,13 @@ def _name_from_user(user: dict) -> str | None:
     for entry in emails:
         if entry.get("id") == primary_id:
             address = entry.get("email_address") or ""
-            local = address.split("@", 1)[0].strip()
+            local = "" if is_relay_email(address) else address.split("@", 1)[0].strip()
             if local:
                 return local
             break
     for entry in emails:
         address = entry.get("email_address") or ""
-        local = address.split("@", 1)[0].strip()
+        local = "" if is_relay_email(address) else address.split("@", 1)[0].strip()
         if local:
             return local
     return None

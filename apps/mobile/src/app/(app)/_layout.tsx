@@ -9,6 +9,7 @@ import { AiConsentGate } from "../../components/consent/AiConsentGate";
 import { ProvisionGate } from "../../components/provision/ProvisionGate";
 import { NotificationTapRouter } from "../../components/push/NotificationTapRouter";
 import { PushRegistration } from "../../components/push/PushRegistration";
+import { NameGate } from "../../components/workspace/NameGate";
 import { WorkspaceGate } from "../../components/workspace/WorkspaceGate";
 import { StatusBar } from "expo-status-bar";
 import { Text, useColorScheme } from "react-native";
@@ -85,6 +86,9 @@ export default function AppLayout() {
           to their content going to a third-party AI provider (App Store
           5.1.1(i)/5.1.2(i)). */}
       <AiConsentGate>
+        {/* A person Clerk has no name for (Apple's "Hide My Email") says what to
+            be called before a workspace is opened or joined. */}
+        <NameGate>
         {/* Every product API 409s without an active workspace, so everything
             that calls one — live events included — sits under this. */}
         <WorkspaceGate>
@@ -200,6 +204,7 @@ export default function AppLayout() {
             </LiveEventsProvider>
           </IapProvider>
         </WorkspaceGate>
+        </NameGate>
       </AiConsentGate>
     </>
   );

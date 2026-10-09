@@ -8,7 +8,7 @@ const clerk = vi.hoisted(() => ({
   organization: null as { id: string } | null,
   memberships: [] as Array<{ organization: { id: string } }>,
   invitations: [] as Array<{ id: string }>,
-  listLoading: false,
+  listLoading: false, firstName: "Ada" as string | null, username: null as string | null,
   setActive: vi.fn().mockResolvedValue(undefined), replace: vi.fn(), update: vi.fn(),
 }));
 vi.mock("next/navigation", () => ({
@@ -16,7 +16,8 @@ vi.mock("next/navigation", () => ({
 }));
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ isLoaded: clerk.loaded, isSignedIn: clerk.signedIn, orgId: clerk.orgId }),
-  useUser: () => ({ isLoaded: clerk.loaded, user: { unsafeMetadata: {}, update: clerk.update } }),
+  useUser: () => ({ isLoaded: clerk.loaded, user: clerk.signedIn
+    ? { unsafeMetadata: {}, update: clerk.update, firstName: clerk.firstName, username: clerk.username } : null }),
   useOrganization: () => ({ isLoaded: clerk.loaded, organization: clerk.organization }),
   useOrganizationList: () => ({ isLoaded: clerk.loaded, setActive: clerk.setActive,
     userMemberships: { data: clerk.listsPresent ? clerk.memberships : undefined, isLoading: clerk.listLoading },
@@ -25,7 +26,8 @@ vi.mock("@clerk/nextjs", () => ({
 }));
 beforeEach(() => {
   Object.assign(clerk, { listsPresent: true, loaded: true, signedIn: true, orgId: null, organization: null,
-    memberships: [], invitations: [], listLoading: false });
+    memberships: [], invitations: [], listLoading: false, firstName: "Ada", username: null });
+  window.history.replaceState(null, "", "/chat?panel=teams");
   vi.clearAllMocks();
   clerk.setActive.mockResolvedValue(undefined);
   clerk.update.mockResolvedValue(undefined);
@@ -59,6 +61,29 @@ describe("a join link parked in this tab", () => {
     clerk.organization = { id: "org_a" }; clerk.orgId = "org_a";
     expect(renderHook(useOnboardingGate).result.current).toBe("ready");
     expect(clerk.replace).not.toHaveBeenCalled();
+  });
+});
+describe("a signed-in person with no name", () => {
+  it.each(["no workspace", "a parked join link", "an active workspace", "a sole membership"])("is asked for one first: %s", (state) => {
+    clerk.firstName = null;
+    if (state === "a parked join link") window.sessionStorage.setItem("lightbulb:workspace-join:org_join", "tok");
+    if (state !== "no workspace") clerk.memberships = [{ organization: { id: "org_a" } }];
+    if (state === "an active workspace") { clerk.organization = { id: "org_a" }; clerk.orgId = "org_a"; }
+    expect(renderHook(useOnboardingGate).result.current).toBe("redirecting");
+    expect(clerk.replace).toHaveBeenCalledTimes(1);
+    expect(clerk.replace).toHaveBeenCalledWith("/welcome/name?returnTo=%2Fchat%3Fpanel%3Dteams");
+    expect(clerk.setActive).not.toHaveBeenCalled();
+    expect(window.sessionStorage.length).toBe(state === "a parked join link" ? 1 : 0);
+  });
+  it.each([{ firstName: "Ada", username: null }, { firstName: null, username: "ada" }])("is left alone once named: %j", (named) => {
+    Object.assign(clerk, named, { memberships: [{ organization: { id: "org_a" } }], organization: { id: "org_a" }, orgId: "org_a" });
+    expect(renderHook(useOnboardingGate).result.current).toBe("ready");
+    expect(clerk.replace).not.toHaveBeenCalled();
+  });
+  it("a blank first name is no name", () => {
+    clerk.firstName = "  ";
+    expect(renderHook(useOnboardingGate).result.current).toBe("redirecting");
+    expect(clerk.replace).toHaveBeenCalledWith(expect.stringMatching(/^\/welcome\/name\?/));
   });
 });
 describe("workspace onboarding gate", () => {

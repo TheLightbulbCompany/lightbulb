@@ -14,6 +14,7 @@ const isProtectedRoute = createRouteMatcher([
   "/chat(.*)",
   "/onboarding",
   "/settings(.*)",
+  "/welcome(.*)",
 ]);
 
 // NEXT_PUBLIC_ADMIN_HOSTS is set in no deployed environment, so the derived

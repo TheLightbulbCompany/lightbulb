@@ -840,8 +840,17 @@ async def _mirror_agent_update(
                 )
     except AgentLifecycleConflict:
         raise
-    except (PaperclipApiError, httpx.HTTPError, RuntimeError):
+    except (PaperclipApiError, httpx.HTTPError, RuntimeError) as exc:
+        # Name/role/title/capabilities live only on the Paperclip row: swallowing this answered
+        # {"ok": True} to an edit that was lost.
         logger.warning("Paperclip agent metadata mirror failed owner=%s agent=%s", owner_id, agent_id, exc_info=True)
+        raise ApiProblem(
+            "RUNTIME_UNAVAILABLE",
+            "Couldn't save the agent's details.",
+            retryable=True,
+            retry_after=3,
+            details={"method": "agents.update"},
+        ) from exc
     if agentcore:
         # Row #2 (Q9a fix round 1): an AgentCore row has no openclaw.json for
         # apply_paperclip_meta to write. name/role/title/capabilities/icon already landed on

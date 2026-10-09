@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { AgentHeartbeatSection } from "../AgentHeartbeatSection";
 
 const post = vi.fn().mockResolvedValue({});
@@ -30,6 +30,37 @@ describe("AgentHeartbeatSection", () => {
     expect(screen.getByTestId("viewer").textContent).toBe("editable");
     fireEvent.click(screen.getByText("Turn off"));
     expect(post).toHaveBeenCalledWith("/agents/a1/heartbeat", { enabled: false });
+  });
+
+  const off = { ...ceo, runtimeConfig: { heartbeat: { enabled: false, intervalSec: 28800 } } };
+
+  it.each([
+    ["not_entitled", "Heartbeats need an active plan or trial."],
+    ["company_not_active", "Your team is still being set up. Try again in a minute."],
+    ["heartbeats_disabled", "Heartbeats are turned off for this workspace."],
+    ["friday_not_seeded", "This workspace has no CEO to wake yet."],
+  ])("says why turning on did nothing (%s) and stays off", async (status, line) => {
+    post.mockResolvedValueOnce({ status });
+    render(<AgentHeartbeatSection agentId="a1" agent={off} />);
+    fireEvent.click(screen.getByText("Turn on"));
+    await waitFor(() => expect(screen.getByText(line)).toBeTruthy());
+    expect(screen.getByText("Off")).toBeTruthy();
+    expect(screen.getByText("Turn on")).toBeTruthy();
+  });
+
+  it("shows a retry line when the request throws", async () => {
+    post.mockRejectedValueOnce(new Error("boom"));
+    render(<AgentHeartbeatSection agentId="a1" agent={off} />);
+    fireEvent.click(screen.getByText("Turn on"));
+    await waitFor(() => expect(screen.getByText("Couldn't change the heartbeat. Try again.")).toBeTruthy());
+  });
+
+  it("shows no message when it armed", async () => {
+    post.mockResolvedValueOnce({ status: "armed" });
+    render(<AgentHeartbeatSection agentId="a1" agent={off} />);
+    fireEvent.click(screen.getByText("Turn on"));
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/agents/a1/heartbeat", { enabled: true }));
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("has no toggle for a specialist and is read-only for a member", () => {

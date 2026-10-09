@@ -450,6 +450,33 @@ async def test_agents_update_on_agentcore_row_returns_ok_and_never_reaches_conta
     )
 
 
+@pytest.mark.asyncio
+async def test_agents_update_paperclip_failure_is_an_error_not_ok(monkeypatch):
+    """Role/title/capabilities live only on the Paperclip row: a failed mirror must not answer ok."""
+    admin = MagicMock()
+    admin.get_agent = AsyncMock(return_value={"id": "a1", "companyId": "company", "role": "general"})
+    admin.patch_agent = AsyncMock(side_effect=RuntimeError("paperclip down"))
+    _wire_paperclip_mirror(monkeypatch, admin)
+    monkeypatch.setattr(
+        "core.services.messaging.load_agent_roster", AsyncMock(return_value=[{"id": "a1", "name": "Renamed"}])
+    )
+    monkeypatch.setattr(rpc.hermes_profiles, "upload_soul_md", MagicMock())
+    monkeypatch.setattr(rpc, "publish_owner_users", AsyncMock())
+
+    with pytest.raises(ApiProblem) as exc_info:
+        await rpc.execute_sync(
+            owner_id="owner_1",
+            user_id="user_1",
+            request_id="r1",
+            method="agents.update",
+            params={"agentId": "a1", "name": "Renamed"},
+        )
+
+    assert exc_info.value.error.code == "RUNTIME_UNAVAILABLE"
+    assert exc_info.value.error.retryable is True
+    assert exc_info.value.error.message == "Couldn't save the agent's details."
+
+
 # ---------------------------------------------------------------------------
 # M6 task 10, row 12 -- agents.update must not answer ok while writing nothing
 # ---------------------------------------------------------------------------

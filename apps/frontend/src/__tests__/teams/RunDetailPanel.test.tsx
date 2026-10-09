@@ -54,6 +54,45 @@ describe("RunDetailPanel", () => {
     expect(screen.getByText(/1,200 in/)).toBeInTheDocument();
   });
 
+  const NOTICE = "[hermes-gateway] event stream HTTP 404; falling back to polling";
+
+  function runWith(status: string, stderrExcerpt: string) {
+    mockReads({
+      "/heartbeat-runs/r1/log": { content: "" },
+      "/heartbeat-runs/r1/events": { events: [] },
+      "/heartbeat-runs/r1": { id: "r1", agentId: "agt_1", status, stderrExcerpt },
+      "/agents": { agents: [] },
+    });
+  }
+
+  it("shows no error box for a succeeded run whose stderr is only adapter notices", () => {
+    runWith("succeeded", NOTICE);
+    const { container } = render(<RunDetailPanel runId="r1" />);
+    expect(screen.queryByText(/falling back to polling/)).toBeNull();
+    expect(container.querySelector('section[style*="var(--err)"]')).toBeNull();
+  });
+
+  it("shows other stderr of a succeeded run as a neutral log, not an error", () => {
+    runWith("succeeded", `${NOTICE}\nwarn: slow tool`);
+    const { container } = render(<RunDetailPanel runId="r1" />);
+    expect(screen.getByText("Log")).toBeInTheDocument();
+    expect(container.querySelector('section[style*="var(--err)"]')).toBeNull();
+  });
+
+  it("keeps a gateway failure line in the error box of a failed run", () => {
+    runWith("failed", "[hermes-gateway] status poll failed: 503");
+    const { container } = render(<RunDetailPanel runId="r1" />);
+    expect(container.querySelector('section[style*="var(--err)"]')).not.toBeNull();
+    expect(screen.getByText("[hermes-gateway] status poll failed: 503")).toBeInTheDocument();
+  });
+
+  it("still shows real stderr of a failed run as an error", () => {
+    runWith("failed", `${NOTICE}\nTraceback: boom`);
+    const { container } = render(<RunDetailPanel runId="r1" />);
+    expect(container.querySelector('section[style*="var(--err)"]')).not.toBeNull();
+    expect(screen.getByText(/Traceback: boom/)).toBeInTheDocument();
+  });
+
   it("falls back to the legacy generic run when the heartbeat-run 404s", () => {
     read.mockImplementation((path: string) => {
       if (path.startsWith("/heartbeat-runs/r1") ) {

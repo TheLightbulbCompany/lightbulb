@@ -12,6 +12,7 @@ import { EditorialButton } from "@/components/teams/shell";
 import { LiveRunDot } from "@/components/teams/shared/components/LiveRunDot";
 import { formatSilenceAgeMs, liveRunActivity, liveRunTitle } from "@/components/teams/shared/lib/liveRuns";
 import { isActiveStatus, statusColor } from "@/components/teams/shared/lib/runStatus";
+import { isBenignFallbackNotice } from "@/components/teams/runs/runLogToMessages";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import type { CompanyAgent, RunDetail, RunEvent } from "@/components/teams/shared/types";
 
@@ -245,6 +246,14 @@ export function RunDetailPanel({ runId }: { runId: string }) {
   const canCancel = isActiveStatus(run?.status);
   const s = (run?.status ?? "").toLowerCase();
   const canRetry = s === "failed" || s === "timed_out";
+  // Adapter chatter ("falling back to polling") is not the run's error, and a run that did
+  // not fail has no error to show: its leftover stderr is only a neutral log.
+  const runFailed = s === "failed" || s === "timed_out";
+  // A failed run keeps every stderr line: a gateway failure may be its only diagnostic.
+  const stderrText = (run.stderrExcerpt ?? "")
+    .split("\n")
+    .filter((line) => line.trim() && (runFailed || !isBenignFallbackNotice(line)))
+    .join("\n");
   const canResume = s === "failed" && run?.errorCode === "process_lost" && !!run?.agentId;
 
   const usage = run.usageJson ?? null;
@@ -339,7 +348,7 @@ export function RunDetailPanel({ runId }: { runId: string }) {
           </section>
         )}
 
-        {(run.error || run.retryExhaustedReason || run.stderrExcerpt) && (
+        {(run.error || run.retryExhaustedReason || (runFailed && stderrText)) && (
           <section
             className="flex flex-col gap-1 rounded-sm px-3 py-2 text-sm"
             style={{
@@ -351,12 +360,19 @@ export function RunDetailPanel({ runId }: { runId: string }) {
             {run.retryExhaustedReason && (
               <p style={{ color: "var(--err)" }}>{run.retryExhaustedReason}</p>
             )}
-            {run.stderrExcerpt && (
+            {runFailed && stderrText && (
               <pre className="whitespace-pre-wrap text-xs" style={{ color: "var(--midnight-muted)" }}>
-                {run.stderrExcerpt}
+                {stderrText}
               </pre>
             )}
           </section>
+        )}
+
+        {!runFailed && stderrText && (
+          <details className="text-xs" style={{ color: "var(--midnight-muted)" }}>
+            <summary className="cursor-pointer">Log</summary>
+            <pre className="whitespace-pre-wrap">{stderrText}</pre>
+          </details>
         )}
 
         <section className="flex flex-col gap-3">

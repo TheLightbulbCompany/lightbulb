@@ -60,6 +60,13 @@ async def _acquire_lease(owner_id: str, deadline: float) -> str:
         await asyncio.sleep(_POLL_INTERVAL_S)
 
 
+async def revoked_after(owner_id: str, started_ms: int) -> bool:
+    """Revoke everything ran at or after ``started_ms`` (a request's entry time). Asked under
+    ``owner_lifecycle_guard`` by every bind that is not an OAuth callback."""
+    mark = await container_repo.get_oauth_revoked_at(owner_id)
+    return mark is not None and started_ms <= mark
+
+
 async def revoked_since(owner_id: str, state: dict) -> bool:
     """Revoke everything ran after this OAuth attempt's stored state was minted. Every OAuth
     callback asks this under ``owner_lifecycle_guard`` and lands nothing when it is True."""

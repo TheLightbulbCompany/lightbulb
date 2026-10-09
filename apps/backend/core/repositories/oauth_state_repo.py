@@ -56,11 +56,11 @@ async def put(
 
 def started_before(rec: dict, mark_ms: int) -> bool:
     """Whether the stored state was minted at or before ``mark_ms`` (revoke-all's mark). A state
-    from before ``created_at_ms`` existed knows only its second (from its TTL), so it counts as
-    earlier only when that whole second precedes the mark's: the boundary second is allowed."""
+    from before ``created_at_ms`` existed knows only its second (from its TTL), so the mark's own
+    second fails closed."""
     if "created_at_ms" in rec:
         return int(rec["created_at_ms"]) <= mark_ms
-    return int(rec["ttl"]) - _TTL_SECONDS < mark_ms // 1000
+    return int(rec["ttl"]) - _TTL_SECONDS <= mark_ms // 1000
 
 
 async def consume(state: str) -> dict | None:

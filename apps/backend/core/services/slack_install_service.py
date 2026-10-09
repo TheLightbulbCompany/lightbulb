@@ -77,8 +77,10 @@ def secret_provider(team_id: str) -> str:
 # including the maintenance notes addressed to our own engineers, into the
 # owner's shared company channel. The draft card still shows that work is
 # happening; only the raw tool payloads are withheld.
-async def _mark_connected(owner_id: str) -> None:
-    await integrations_repo.put_status(owner_id, PROVIDER, "connected")
+async def _mark_connected(owner_id: str, team_id: str) -> None:
+    # The team id goes on the owner's row too: revoke-all reads that strongly, where the
+    # by-owner GSI can still miss an install that just finished.
+    await integrations_repo.add_connected_team(owner_id, PROVIDER, team_id)
 
 
 async def _mark_disconnected(owner_id: str) -> None:
@@ -151,7 +153,7 @@ async def apply_install(
         # Somebody else's workspace. Don't leave our copy of their token behind.
         await integration_secret_store.delete(owner_id, provider)
         raise SlackInstallConflict(team_id)
-    await _mark_connected(owner_id)
+    await _mark_connected(owner_id, team_id)
 
     try:
         await _greet_installer(bot_token, installer_slack_user_id)

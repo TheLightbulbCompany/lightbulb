@@ -1608,8 +1608,8 @@ class TestOAuthCallback:
             ({"created_at_ms": 200_400}, False),
             ({"created_at_ms": 200_500}, False),
             ({"created_at_ms": 200_501}, True),  # the same second as revoke-all, but after it
-            ({"ttl": 199 + 600}, False),  # a state minted before this field: its whole second must precede
-            ({"ttl": 200 + 600}, True),
+            ({"ttl": 200 + 600}, False),  # a state minted before this field: its second fails closed
+            ({"ttl": 201 + 600}, True),
         ],
     )
     @patch("routers.connections.google_accounts_repo")

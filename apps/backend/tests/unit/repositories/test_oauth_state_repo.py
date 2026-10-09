@@ -53,8 +53,8 @@ async def test_put_stores_the_mint_time_in_milliseconds():
     [
         ({"created_at_ms": 200_500, "ttl": 800}, True),  # at the mark
         ({"created_at_ms": 200_501, "ttl": 800}, False),  # the same second, after it
-        ({"ttl": 199 + 600}, True),  # legacy: only a whole earlier second counts
-        ({"ttl": 200 + 600}, False),  # legacy: the mark's own second is allowed
+        ({"ttl": 200 + 600}, True),  # legacy: the mark's own second fails closed
+        ({"ttl": 201 + 600}, False),
     ],
 )
 def test_started_before(rec, before):

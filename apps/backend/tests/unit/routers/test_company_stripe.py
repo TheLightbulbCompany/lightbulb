@@ -163,6 +163,44 @@ def test_create_binds_and_returns_link(client, facts, metric):
     metric.assert_called_once_with("company_stripe.account.created")
 
 
+def _revoked_after_entry(monkeypatch):
+    """revoke-all's mark lands after the request began: one millisecond past its entry time."""
+    import time as _time
+
+    from core.repositories import container_repo
+
+    start = int(_time.time() * 1000)
+    monkeypatch.setattr(container_repo, "get_oauth_revoked_at", AsyncMock(return_value=start + 60_000))
+
+
+def test_create_that_began_before_revoke_all_binds_nothing(client, monkeypatch):
+    _revoked_after_entry(monkeypatch)
+    with (
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
+        patch.object(mod.company_stripe, "resolve_company_name", AsyncMock(return_value="N")),
+        patch.object(mod.company_stripe, "create_company_account", AsyncMock(return_value="acct_new")),
+        patch.object(mod.billing_repo, "set_company_stripe_account", AsyncMock()) as bind,
+    ):
+        resp = client.post("/api/v1/company/stripe/create")
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "revoked"
+    bind.assert_not_awaited()
+
+
+def test_api_key_that_began_before_revoke_all_stores_nothing(client, monkeypatch):
+    _revoked_after_entry(monkeypatch)
+    with (
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
+        patch.object(mod.company_stripe, "validate_api_key", AsyncMock(return_value=_KEY_INFO)),
+        patch.object(mod.billing_repo, "get_by_company_stripe_account_id", AsyncMock(return_value=None)),
+        patch.object(mod.billing_repo, "set_company_stripe_account", AsyncMock()) as bind,
+        patch.object(mod.company_stripe, "store_api_key", AsyncMock()) as store,
+    ):
+        resp = client.post("/api/v1/company/stripe/api-key", json={"api_key": "rk_live_abc"})
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "revoked"
+    bind.assert_not_awaited()
+    store.assert_not_awaited()
+
+
 def test_create_reuses_existing_created_account(client, metric):
     """Idempotent path: no account is minted, so no metric either."""
     row = {"owner_id": "org_a", "company_stripe_account_id": "acct_old", "company_stripe_source": "created"}

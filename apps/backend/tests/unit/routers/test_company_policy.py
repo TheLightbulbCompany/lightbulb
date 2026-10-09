@@ -293,9 +293,10 @@ def test_revoke_all_uninstalls_every_slack_workspace(client, fails):
         return True
 
     revoke_install = AsyncMock(side_effect=revoke)
+    listing = AsyncMock(return_value=[{"provider": "slack", "team_ids": {"T1", "T9"}}])
     with (
         patch.object(mod.account_wipe, "cancel_open_workflows", cancel),
-        patch.object(mod.integrations_repo, "list_for_owner", AsyncMock(return_value=[{"provider": "slack"}])),
+        patch.object(mod.integrations_repo, "list_for_owner", listing),
         patch.object(mod.integration_secret_store, "delete", sdelete),
         patch.object(billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
         patch.object(mod.slack_installs_repo, "list_for_owner", AsyncMock(return_value=installs)),
@@ -303,12 +304,14 @@ def test_revoke_all_uninstalls_every_slack_workspace(client, fails):
     ):
         resp = client.post("/api/v1/company/revoke-all", json={"confirm": "revoke"})
     assert resp.status_code == 200
-    assert [c.args for c in revoke_install.await_args_list] == [("T1",), ("T2",)]
+    # T9 is on the owner's slack row (read strongly) but not yet on the by-owner GSI: still revoked.
+    assert [c.args for c in revoke_install.await_args_list] == [("T1",), ("T2",), ("T9",)]
+    listing.assert_awaited_once_with("org_a", consistent=True)
     body = resp.json()
     if fails:
         assert body["failed"] == ["slack"] and "slack:T2" in body["revoked"] and "slack:T1" not in body["revoked"]
     else:
-        assert body["failed"] == [] and body["revoked"][-2:] == ["slack:T1", "slack:T2"]
+        assert body["failed"] == [] and body["revoked"][-3:] == ["slack:T1", "slack:T2", "slack:T9"]
 
 
 @pytest.mark.parametrize("body", [{}, {"confirm": "REVOKE"}, {"confirm": "revoke everything"}])

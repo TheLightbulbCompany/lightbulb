@@ -88,12 +88,19 @@ async def revoke_all(body: RevokeAllBody, auth: Annotated[AuthContext, Depends(g
     await container_repo.mark_oauth_revoked(owner_id)
     try:
         async with connections.owner_lifecycle_guard(owner_id):
-            rows = [str(r.get("provider", "")) for r in await integrations_repo.list_for_owner(owner_id)]
-            teams = [
-                r["team_id"]
-                for r in await slack_installs_repo.list_for_owner(owner_id)
-                if r.get("status") == slack_installs_repo.STATUS_ACTIVE
-            ]
+            items = await integrations_repo.list_for_owner(owner_id, consistent=True)
+            rows = [str(r.get("provider", "")) for r in items]
+            # The owner's slack row (read strongly) names every team installed, including one the
+            # by-owner GSI has not caught up with; the GSI covers installs from before that row
+            # carried team_ids.
+            teams = sorted(
+                {
+                    r["team_id"]
+                    for r in await slack_installs_repo.list_for_owner(owner_id)
+                    if r.get("status") == slack_installs_repo.STATUS_ACTIVE
+                }
+                | {t for r in items if r.get("provider") == "slack" for t in r.get("team_ids") or ()}
+            )
             billing_row = await billing_repo.get_by_owner_id(owner_id) or {}
     except connections.OwnerLifecycleBusyError:
         raise HTTPException(status_code=409, detail="busy") from None

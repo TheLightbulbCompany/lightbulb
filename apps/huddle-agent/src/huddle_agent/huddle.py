@@ -4937,11 +4937,13 @@ class Huddle:
         # One row per agent it still asks is amended, a row it steers stays; every other row of the turn is called
         # off, also when the whole turn now asks nothing (it was talk to a person, or taken back).
         asked, steered = {x.get("agentId") for x in reqs}, {x.get("requestId") for x in ops.get("steer") or []}
+        # A `ready` row's run is over: words cannot reach it, so it is called off (its answer struck) and asked again.
+        live = [r for r in mine if r.status in ("queued", "working")]
         keep: dict = {}
-        for r in mine:
+        for r in live:
             if r.agent in asked:
                 keep.setdefault(r.agent, r)
-        cancel += [r.id for r in mine if r not in keep.values() and r.id not in steered and r.id not in cancel]
+        cancel += [r.id for r in mine if r not in keep.values() and not (r in live and r.id in steered) and r.id not in cancel]
         steer = [{**x, "quiet": True} if x.get("requestId") in ids else x for x in ops.get("steer") or [] if x.get("requestId") not in cancel]
         steer += [{"requestId": keep[x["agentId"]].id, "text": x.get("task") or "", "quiet": True} for x in reqs if x.get("agentId") in keep]
         reqs = [x for x in reqs if x.get("agentId") not in keep]

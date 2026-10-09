@@ -686,3 +686,23 @@ async def test_a_grown_turn_that_now_asks_nothing_calls_its_row_off():
     backend.route_extra = ops([])
     await says(h, P1, "actually no, Dan, what do you think?")
     assert row.status not in h_mod.OPEN, "taken back: its row is called off"
+
+
+async def test_a_grown_turn_whose_first_answer_is_ready_asks_again_and_drops_that_answer():
+    """#3961 review (P1): the first piece's run already answered, unsaid, when the turn goes on. That answer is
+    struck and the whole turn is one new request, not a second request beside a queued answer."""
+    h, room, backend, lives, clock, log = await per_person()
+    h.on_speech(P1, True)
+    clock.t += 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "check the deploy", "name")])
+    await says(h, P1, "Forge, check the deploy")
+    (row,) = h._requests.items
+    row.status = "ready"  # its run answered; the answer is not said yet
+    h.on_speech(P1, True)
+    clock.t += 0.5 + 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "check the deploy and the numbers", "name")])
+    await says(h, P1, "and the numbers.")
+    assert row.status not in h_mod.OPEN, "the answer for half the turn is struck"
+    assert [r.task for r in h._requests.items if r.status in h_mod.OPEN] == ["check the deploy and the numbers"]

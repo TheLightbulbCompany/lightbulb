@@ -14,6 +14,7 @@ import {
 } from "@/lib/marketplace/api";
 import type { PublishForm } from "./PublishWizard";
 import { ImportBackupDialog } from "./ImportBackupDialog";
+import { notifyApiError } from "@/lib/notify";
 
 /**
  * Whether the seller has a Stripe Connect payout account on file.
@@ -509,6 +510,8 @@ export function PricingStep({
       // Web: navigates away. Desktop: opens the system browser (the webview
       // must not navigate to Stripe onboarding); status refreshes on return.
       await openAuthUrl(r.onboarding_url);
+    } catch (err) {
+      notifyApiError(err, "Couldn't open payout setup");
     } finally {
       setPayoutBusy(false);
     }

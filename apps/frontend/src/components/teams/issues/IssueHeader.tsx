@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { workModeMetaFor } from "@/components/teams/shared/lib/workModeMeta";
 import type { Issue } from "@/components/teams/shared/types";
+import { notifyApiError } from "@/lib/notify";
 
 export interface IssueHeaderProps {
   issue: Issue;
@@ -50,6 +51,8 @@ export function IssueHeader({ issue, onTitleSave }: IssueHeaderProps) {
     try {
       await onTitleSave(trimmed);
       setEditing(false);
+    } catch (err) {
+      notifyApiError(err, "Couldn't save the task title");
     } finally {
       setSaving(false);
     }

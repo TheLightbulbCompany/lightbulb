@@ -18,6 +18,7 @@ import { useEffect, useRef, useState } from "react";
 import { Pencil } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { TaskChatMarkdown } from "./task-chat/TaskChatMarkdown";
+import { notifyApiError } from "@/lib/notify";
 
 export function IssueDescription({
   description,
@@ -49,6 +50,8 @@ export function IssueDescription({
     try {
       await onSave(next);
       setEditing(false);
+    } catch (err) {
+      notifyApiError(err, "Couldn't save the task description");
     } finally {
       setSaving(false);
     }

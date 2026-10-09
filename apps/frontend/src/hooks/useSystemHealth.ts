@@ -4,6 +4,7 @@ import { useCallback, useRef, useState } from "react";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { useProvisioningState } from "@/hooks/useProvisioningState";
 import { useApi } from "@/lib/api";
+import { notifyApiError } from "@/lib/notify";
 
 export type HealthState =
   | "HEALTHY"
@@ -73,7 +74,8 @@ export function useSystemHealth(): SystemHealth {
     setIsRecovering(true);
     try {
       return await api.post("/container/recover", {}) as RecoverResponse;
-    } catch {
+    } catch (err) {
+      notifyApiError(err, "Couldn't restart your agents");
       return null;
     } finally {
       setTimeout(() => {

@@ -11,6 +11,7 @@
 import { useState, useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
 import type { Project } from "@/components/teams/shared/types";
+import { notifyApiError } from "@/lib/notify";
 
 export interface ProjectHeaderProps {
   project: Project;
@@ -45,6 +46,8 @@ export function ProjectHeader({ project, onNameSave }: ProjectHeaderProps) {
     try {
       await onNameSave(trimmed);
       setEditing(false);
+    } catch (err) {
+      notifyApiError(err, "Couldn't save the project name");
     } finally {
       setSaving(false);
     }

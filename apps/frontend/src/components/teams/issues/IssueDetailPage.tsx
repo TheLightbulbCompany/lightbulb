@@ -231,6 +231,8 @@ function IssueDetailView({ issueId, routeId }: { issueId: string; routeId: strin
       await mutations.remove(issueId);
       setDeleteOpen(false);
       leaveForTasksList();
+    } catch (err) {
+      notifyApiError(err, "Couldn't delete the task");
     } finally {
       setDeleting(false);
     }

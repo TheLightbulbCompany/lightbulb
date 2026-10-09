@@ -10,6 +10,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import { notifyApiError } from "@/lib/notify";
 
 export interface ProjectDescriptionProps {
   description: string;
@@ -46,6 +47,8 @@ export function ProjectDescription({
     try {
       await onSave(trimmed);
       setEditing(false);
+    } catch (err) {
+      notifyApiError(err, "Couldn't save the project description");
     } finally {
       setSaving(false);
     }

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useApi } from "@/lib/api";
+import { notifyApiError } from "@/lib/notify";
 
 type UserPrefs = { timezone: string; dailySummary: boolean };
 
@@ -34,8 +35,9 @@ export function DailySummaryCard() {
     setBusy(true);
     try {
       setPrefs((await api.put("/users/me/prefs", { dailySummary: next })) as UserPrefs);
-    } catch {
+    } catch (err) {
       // Unchanged on failure; the checkbox keeps showing the stored state.
+      notifyApiError(err, "Couldn't save the daily summary setting");
     } finally {
       setBusy(false);
     }

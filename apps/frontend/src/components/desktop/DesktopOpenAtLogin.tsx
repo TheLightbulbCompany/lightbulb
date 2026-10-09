@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { SettingRow } from "./SettingRow";
+import { notifyApiError } from "@/lib/notify";
 
 // Settings → Desktop → "Open at login". The desktop app turns it on once per
 // install (so messages reach you after a restart); from then on this toggle is
@@ -36,8 +37,9 @@ export function DesktopOpenAtLogin() {
     try {
       await invoke(next ? "plugin:autostart|enable" : "plugin:autostart|disable");
       setEnabled(next);
-    } catch {
+    } catch (err) {
       // Unchanged on failure; the switch keeps showing the real state.
+      notifyApiError(err, "Couldn't change Open at login");
     } finally {
       setBusy(false);
     }

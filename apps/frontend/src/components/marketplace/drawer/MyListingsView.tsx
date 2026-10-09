@@ -10,6 +10,7 @@ import { useMarketplaceWriteGate } from "@/lib/marketplace/useMarketplaceWriteGa
 import { MarketplaceRestrictedView } from "@/components/marketplace/RestrictedView";
 import { useMarketplaceDrawer } from "./MarketplaceDrawerProvider";
 import type { Listing } from "@/lib/marketplace/types";
+import { notifyApiError } from "@/lib/notify";
 
 interface PayoutsDashboard {
   balance_held_cents?: number;
@@ -182,6 +183,8 @@ export function MyListingsView() {
         // must not navigate to Stripe onboarding); status refreshes on return.
         await openAuthUrl(r.onboarding_url);
       }
+    } catch (err) {
+      notifyApiError(err, "Couldn't open payout setup");
     } finally {
       setBusy(false);
     }

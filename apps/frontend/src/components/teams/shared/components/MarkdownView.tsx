@@ -14,6 +14,7 @@ import {
   useAttachmentIssueId,
   useAttachmentObjectUrl,
 } from "@/components/teams/shared/lib/attachments";
+import { notifyApiError } from "@/lib/notify";
 
 function textContent(node: React.ReactNode): string {
   if (typeof node === "string") return node;
@@ -50,8 +51,8 @@ function AttachmentLink({ attachmentId, name, children }: {
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-    } catch {
-      // Best-effort — a download hiccup should not wedge the comment thread.
+    } catch (err) {
+      notifyApiError(err, "Couldn't download this attachment");
     } finally {
       setBusy(false);
     }

@@ -197,18 +197,19 @@ def test_priced_company_with_purchase_202(
     mock_create_task.assert_called_once_with(mock_run.return_value)
 
 
+@pytest.mark.parametrize("seller_id", ["user_admin", "org_admin"])
 @patch("routers.marketplace_listings.marketplace_repo.has_unrevoked_purchase", new_callable=AsyncMock)
 @patch("routers.marketplace_listings.asyncio.create_task")
 @patch("routers.marketplace_listings.company_deploy_service.run_company_deploy", new_callable=MagicMock)
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
 def test_seller_deploys_own_priced_company_without_purchase(
-    mock_get_published, mock_boto, mock_run, mock_create_task, mock_purchase, admin_client
+    mock_get_published, mock_boto, mock_run, mock_create_task, mock_purchase, admin_client, seller_id
 ):
     """Sellers don't buy their own listings — the identity bypass from the
     agent path applies to companies too."""
     listing = _company_listing(price_cents=2000)
-    listing["seller_id"] = "user_admin"
+    listing["seller_id"] = seller_id  # the publishing user or their workspace
     mock_get_published.return_value = listing
     mock_boto.return_value.get_object.return_value = _tar_body(b"COMPANYTAR")
 

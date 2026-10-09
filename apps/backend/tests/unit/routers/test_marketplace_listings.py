@@ -1008,7 +1008,8 @@ def test_deploy_maps_a_failed_hermes_profile_to_503_not_500(
 def test_deploy_paid_listing_without_purchase_403(
     mock_get_published, mock_get_catalog, mock_boto, mock_purchases, client
 ):
-    mock_get_published.return_value = _published_listing(price_cents=2000)
+    # Another workspace's listing: not the caller's user id or workspace id.
+    mock_get_published.return_value = {**_published_listing(price_cents=2000), "seller_id": "org_other"}
     mock_purchases.return_value.query.return_value = {"Items": []}
 
     resp = client.post("/api/v1/marketplace/listings/lst_1/deploy")
@@ -1018,13 +1019,14 @@ def test_deploy_paid_listing_without_purchase_403(
     mock_get_catalog.assert_not_called()
 
 
+@pytest.mark.parametrize("seller_id", ["user_test_123", "org_test_456"])
 @patch("routers.marketplace_listings.create_paperclip_for_marketplace", new_callable=AsyncMock)
 @patch("core.repositories.marketplace_repo._purchases_table")
 @patch("routers.marketplace_listings.boto3.client")
 @patch("routers.marketplace_listings.get_catalog_service")
 @patch("routers.marketplace_listings.marketplace_service.get_published_by_id", new_callable=AsyncMock)
 def test_deploy_paid_listing_seller_bypass_succeeds(
-    mock_get_published, mock_get_catalog, mock_boto, mock_purchases, mock_create_pc, client
+    mock_get_published, mock_get_catalog, mock_boto, mock_purchases, mock_create_pc, client, seller_id
 ):
     """Regression: a seller deploying their own paid listing must bypass
     the entitlement check. Without the bypass, sellers are 403'd by their
@@ -1034,8 +1036,11 @@ def test_deploy_paid_listing_seller_bypass_succeeds(
     listing = _published_listing(price_cents=1000)
     # ``client`` fixture authenticates as user_test_123 — match seller_id
     # to that so the bypass fires.
-    listing["seller_id"] = "user_test_123"
+    # The publishing user, or the workspace a listing was published from
+    # (checkout refuses both as the seller, so both must deploy free).
+    listing["seller_id"] = seller_id
     mock_get_published.return_value = listing
+    mock_purchases.return_value.query.return_value = {"Items": []}  # no purchase: only the bypass admits
     mock_create_pc.return_value = {"id": "agent_self_deployed", "name": "Demo Agent"}
     mock_boto.return_value = _stub_s3_get_object(
         _slice={"agent": {"name": "Demo Agent"}, "plugins": {}, "tools": {}, "cron_jobs": []}

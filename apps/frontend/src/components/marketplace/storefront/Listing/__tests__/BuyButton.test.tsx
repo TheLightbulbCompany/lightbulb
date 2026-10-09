@@ -21,9 +21,10 @@ describe("BuyButton on a paid listing", () => {
     expect(screen.queryByRole("button", { name: /buy for/i })).not.toBeInTheDocument();
   });
 
-  it("does not offer Buy on a workspace-published listing to that workspace", () => {
+  it("offers the free deploy, captioned, on a workspace-published listing to that workspace", () => {
     render(<BuyButton listing={{ ...paid, seller_id: "org_seller" }} />);
     expect(screen.getByText("This is your listing")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /deploy to my lightbulb container/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /buy for/i })).not.toBeInTheDocument();
   });
 

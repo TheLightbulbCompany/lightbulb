@@ -46,19 +46,15 @@ export function BuyButton({ listing }: { listing: Listing }) {
 
   if (listing.price_cents === 0) return freeDeploy;
 
-  // A seller is never charged for their own listing (checkout 409s it).
-  // The deploy route lets the publishing USER deploy it free
-  // (seller_id == auth.user_id), so they get the free deploy. A
-  // workspace-published listing (seller_id is the workspace id) gets no Buy.
+  // A seller is never charged for their own listing (checkout 409s it); the
+  // deploy route lets them deploy it free. seller_id is the publishing user
+  // or, for a workspace listing, the workspace id.
   if (listing.seller_id && (listing.seller_id === userId || listing.seller_id === orgId)) {
-    const caption = <p className="mt-2 text-sm text-[var(--midnight-soft)]">This is your listing</p>;
-    return listing.seller_id === userId ? (
+    return (
       <div>
         {freeDeploy}
-        {caption}
+        <p className="mt-2 text-sm text-[var(--midnight-soft)]">This is your listing</p>
       </div>
-    ) : (
-      caption
     );
   }
 

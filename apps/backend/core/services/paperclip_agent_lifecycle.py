@@ -14,6 +14,7 @@ for ``httpx.AsyncClient`` + admin-cookie management.
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any
 
 import httpx
@@ -199,26 +200,49 @@ async def pause_owner_automation(owner_id: str, *, dry_run: bool = False) -> dic
         agent_ids = [a["id"] for a in agents if a.get("id") and _heartbeat_enabled(a)]
         routine_ids = [r["id"] for r in routines if r.get("id") and r.get("status") == "active"]
         if not dry_run:
-            await repo.record_paused_automation(owner_id, agent_ids=agent_ids, routine_ids=routine_ids)
-            for agent_id in agent_ids:
-                await admin.set_agent_heartbeat(session_cookie=cookie, agent_id=agent_id, heartbeat={"enabled": False})
-            # Each paused routine's ``updatedAt`` as OUR pause left it: any later edit (the
-            # owner pausing it on purpose, a manual run) moves it, and resume then leaves the
-            # routine alone.
-            versions = dict(ws.automation_paused_routine_versions or {})
-            for routine_id in routine_ids:
-                paused = await admin.patch_routine(
-                    session_cookie=cookie, routine_id=routine_id, body={"status": "paused"}
-                )
-                if isinstance(paused, dict) and paused.get("updatedAt"):
-                    versions[routine_id] = paused["updatedAt"]
-            await repo.mark_pause_complete(owner_id, routine_versions=versions)
+            outcome = await _apply_pause(repo, admin, cookie, owner_id, agent_ids, routine_ids)
     if not dry_run:
-        put_metric("paperclip.automation.pause", dimensions={"outcome": "ran"})
+        put_metric("paperclip.automation.pause", dimensions={"outcome": outcome})
         logger.info(
-            "paperclip automation paused owner=%s heartbeats=%d routines=%d", owner_id, len(agent_ids), len(routine_ids)
+            "paperclip automation pause owner=%s outcome=%s heartbeats=%d routines=%d",
+            owner_id,
+            outcome,
+            len(agent_ids),
+            len(routine_ids),
         )
     return {"agent_ids": agent_ids, "routine_ids": routine_ids}
+
+
+async def _apply_pause(repo, admin, cookie, owner_id, agent_ids, routine_ids) -> str:
+    """The writes of one pause, fenced by its token. A re-entitlement that lands mid-pause
+    resumes and clears the record (token gone); without the fence this pause would go on
+    turning things off with no record, and a paying owner's automation stayed off. So every
+    PATCH first re-checks the token and the pause stops as soon as it lost the row.
+
+    No entitlement re-check here on purpose: a runtime teardown pauses an owner who may still
+    be entitled (a reprovision), and the only thing that may undo a pause is a resume, which
+    is exactly what clears the token.
+
+    ponytail: a resume landing between the check and its PATCH still loses that one item
+    (one GetItem wide); a held lease across Paperclip calls would close it, add if seen."""
+    token = uuid.uuid4().hex
+    if not await repo.record_paused_automation(owner_id, agent_ids=agent_ids, routine_ids=routine_ids, token=token):
+        return "no_row"
+    for agent_id in agent_ids:
+        if not await repo.pause_token_current(owner_id, token):
+            return "superseded"
+        await admin.set_agent_heartbeat(session_cookie=cookie, agent_id=agent_id, heartbeat={"enabled": False})
+    for routine_id in routine_ids:
+        if not await repo.pause_token_current(owner_id, token):
+            return "superseded"
+        paused = await admin.patch_routine(session_cookie=cookie, routine_id=routine_id, body={"status": "paused"})
+        # This routine's ``updatedAt`` as OUR pause left it, persisted now (a later failure
+        # must not lose it): any later edit moves it, and resume then leaves the routine alone.
+        if isinstance(paused, dict) and paused.get("updatedAt"):
+            await repo.record_routine_version(
+                owner_id, token=token, routine_id=routine_id, updated_at=paused["updatedAt"]
+            )
+    return "ran" if await repo.mark_pause_complete(owner_id, token=token) else "superseded"
 
 
 async def resume_owner_automation(owner_id: str) -> dict[str, int]:

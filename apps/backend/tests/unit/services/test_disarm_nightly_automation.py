@@ -6,7 +6,7 @@ workspace kept filing a BLOCKED task every night. The pause turns both off and r
 took; the resume (on re-entitlement) puts back exactly that, never what the owner paused.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -52,9 +52,11 @@ def _ws(**kw):
 def _repo(ws):
     repo = MagicMock()
     repo.resolve_owner_row = AsyncMock(return_value=ws)
-    repo.record_paused_automation = AsyncMock()
+    repo.record_paused_automation = AsyncMock(return_value=True)
     repo.clear_paused_automation = AsyncMock()
-    repo.mark_pause_complete = AsyncMock()
+    repo.mark_pause_complete = AsyncMock(return_value=True)
+    repo.pause_token_current = AsyncMock(return_value=True)
+    repo.record_routine_version = AsyncMock(return_value=True)
     return repo
 
 
@@ -80,7 +82,7 @@ async def test_cancel_pauses_active_routines_and_every_enabled_heartbeat_recordi
 
     assert result == {"agent_ids": ["ceo1", "legacy-spec"], "routine_ids": ["r-live"]}
     repo.record_paused_automation.assert_awaited_once_with(
-        "owner", agent_ids=["ceo1", "legacy-spec"], routine_ids=["r-live"]
+        "owner", agent_ids=["ceo1", "legacy-spec"], routine_ids=["r-live"], token=ANY
     )
     assert [(c.kwargs["agent_id"], c.kwargs["heartbeat"]) for c in admin.set_agent_heartbeat.await_args_list] == [
         ("ceo1", {"enabled": False}),
@@ -89,7 +91,25 @@ async def test_cancel_pauses_active_routines_and_every_enabled_heartbeat_recordi
     admin.patch_routine.assert_awaited_once_with(
         session_cookie="cookie", routine_id="r-live", body={"status": "paused"}
     )
-    repo.mark_pause_complete.assert_awaited_once_with("owner", routine_versions={"r-live": "t-paused"})
+    token = repo.record_paused_automation.await_args.kwargs["token"]
+    repo.record_routine_version.assert_awaited_once_with(
+        "owner", token=token, routine_id="r-live", updated_at="t-paused"
+    )
+    repo.mark_pause_complete.assert_awaited_once_with("owner", token=token)
+
+
+@pytest.mark.asyncio
+async def test_a_resume_landing_mid_pause_stops_the_stale_pause_before_its_next_patch():
+    """Re-entitled mid-pause: the resume cleared the record (token gone). The stale pause
+    must not go on turning a paying owner's automation off with nothing to restore it."""
+    admin = _admin()
+    ws = _ws()
+    repo = _repo(ws)
+    repo.pause_token_current = AsyncMock(side_effect=[True, False])  # resume lands after the 1st PATCH
+    await _call(lifecycle.pause_owner_automation, admin, ws, repo=repo)
+    assert [c.kwargs["agent_id"] for c in admin.set_agent_heartbeat.await_args_list] == ["ceo1"]
+    admin.patch_routine.assert_not_awaited()
+    repo.mark_pause_complete.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -102,6 +122,18 @@ async def test_a_partial_pause_keeps_its_record_but_is_not_marked_complete():
         await _call(lifecycle.pause_owner_automation, admin, ws, repo=repo)
     repo.record_paused_automation.assert_awaited_once()  # ids recorded first, so resume restores them
     repo.mark_pause_complete.assert_not_awaited()  # so the expired-trial sweep retries
+
+
+@pytest.mark.asyncio
+async def test_each_routine_version_is_persisted_as_it_is_paused_not_only_at_completion():
+    admin = _admin()
+    admin.list_routines = AsyncMock(return_value=[{"id": "r1", "status": "active"}, {"id": "r2", "status": "active"}])
+    admin.patch_routine = AsyncMock(side_effect=[{"updatedAt": "t1"}, RuntimeError("paperclip down")])
+    ws = _ws()
+    repo = _repo(ws)
+    with pytest.raises(RuntimeError):
+        await _call(lifecycle.pause_owner_automation, admin, ws, repo=repo)
+    repo.record_routine_version.assert_awaited_once_with("owner", token=ANY, routine_id="r1", updated_at="t1")
 
 
 @pytest.mark.asyncio

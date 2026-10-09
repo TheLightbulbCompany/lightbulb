@@ -172,6 +172,18 @@ it("opens the rail and sidebar as the phone drawer, and closes it on a pick, the
   expect(shell).toHaveAttribute("data-nav-open", "false");
 });
 
+it("closes the phone drawer when navigation moves the active panel, whatever control caused it", () => {
+  state.phase = "ready";
+  state.organization = { id: "org_1" };
+  const view = render(<WorkspaceShell />);
+  const shell = view.container.querySelector(".workspace-shell")!;
+  fireEvent.click(screen.getByRole("button", { name: "Open menu", hidden: true }));
+  expect(shell).toHaveAttribute("data-nav-open", "true");
+  state.activePanelId = "teams-issues";
+  view.rerender(<WorkspaceShell />);
+  expect(shell).toHaveAttribute("data-nav-open", "false");
+});
+
 it("closes the phone drawer when the window widens past the phone breakpoint", () => {
   // Wider, the backdrop is hidden: an open drawer would leave the pane inert with no way out.
   let onChange: (() => void) | undefined;

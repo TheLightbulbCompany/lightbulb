@@ -174,6 +174,12 @@ function AuthenticatedWorkspace({ scopeId, workspaceName }: { scopeId: string; w
   // Phone widths only: the rail + sidebar drawer. Wider, the CSS ignores it.
   const [navOpen, setNavOpen] = useState(false);
   const closeNav = useCallback(() => setNavOpen(false), []);
+  // Any navigation (rail, sidebar, + Task, See work, Inspect, a link) moves the
+  // active panel or the URL; the drawer closes with it instead of each caller
+  // remembering to. Opening the drawer changes neither.
+  useEffect(() => {
+    closeNav();
+  }, [activePanelId, searchParams, closeNav]);
   const shellRef = useRef<HTMLDivElement>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {

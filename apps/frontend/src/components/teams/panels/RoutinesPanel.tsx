@@ -568,10 +568,10 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
       ) : filtered.length === 0 ? (
         <PanelEmptyState
           icon={Repeat}
-          headline="No automations yet."
+          headline={search || agentPick ? "No automations match your filters." : "No automations yet."}
           supporting={
             search || agentPick
-              ? "No automations match your filters."
+              ? undefined
               : "Build one here, or hire an agent from the marketplace — any automations it was published with arrive paused, ready for you to switch on."
           }
           // Canned automation lives in the marketplace (published agents carry

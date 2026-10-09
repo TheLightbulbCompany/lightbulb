@@ -1,24 +1,22 @@
 "use client";
 
-import Script from "next/script";
 import { useEffect } from "react";
-
-declare global {
-  interface Window {
-    Termly?: { initialize?: () => void };
-  }
-}
 
 /**
  * Renders a Termly-hosted legal document. The Termly SDK scans the page for
  * elements with `name="termly-embed"` and injects the published policy by
- * `data-id`. The SDK only runs automatically on initial load, so we call
- * `Termly.initialize()` on mount to re-render when navigating between legal
- * pages client-side. The <Script> is deduped by `id`, so it loads once.
+ * `data-id` — once, when its script runs. Client-side navigation to a legal page
+ * never re-ran it (and `Termly.initialize()` does not re-scan), so the embed was
+ * blank. Appending a fresh script element per mount is the initial-load path
+ * every time; the browser re-executes it from cache.
  */
 export function TermlyEmbed({ dataId }: { dataId: string }) {
   useEffect(() => {
-    window.Termly?.initialize?.();
+    const script = document.createElement("script");
+    script.src = "https://app.termly.io/embed-policy.min.js";
+    script.async = true;
+    document.body.appendChild(script);
+    return () => script.remove();
   }, [dataId]);
 
   // The Termly SDK locates embeds by the non-standard `name="termly-embed"`
@@ -29,15 +27,5 @@ export function TermlyEmbed({ dataId }: { dataId: string }) {
     "data-id": dataId,
   } as React.HTMLAttributes<HTMLDivElement>;
 
-  return (
-    <>
-      <div {...embedProps} />
-      <Script
-        id="termly-jssdk"
-        src="https://app.termly.io/embed-policy.min.js"
-        strategy="afterInteractive"
-        onReady={() => window.Termly?.initialize?.()}
-      />
-    </>
-  );
+  return <div key={dataId} {...embedProps} />;
 }

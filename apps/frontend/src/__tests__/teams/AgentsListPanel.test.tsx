@@ -87,6 +87,13 @@ describe("AgentsListPanel", () => {
     expect(screen.getByText("No agents yet.")).toBeInTheDocument();
   });
 
+  it("a search with no match says so once, not beside \"No agents yet.\"", () => {
+    render(<AgentsListPanel />);
+    fireEvent.change(screen.getByLabelText("Search agents"), { target: { value: "zzz" } });
+    expect(screen.getByText("No agents match your search.")).toBeInTheDocument();
+    expect(screen.queryByText("No agents yet.")).toBeNull();
+  });
+
   it("create form posts ONLY {name, role} (no adapterType, no URL)", async () => {
     mockPost.mockResolvedValue({ id: "a1" });
     render(<AgentsListPanel />);

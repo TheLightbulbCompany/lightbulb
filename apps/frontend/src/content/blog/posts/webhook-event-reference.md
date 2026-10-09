@@ -12,12 +12,6 @@ tags: ["webhooks","integrations","automation","providers"]
 
 Lightbulb agents can now subscribe to a registry-backed set of webhook triggers instead of hand-rolled one-off callbacks. This reference is generated from the same provider registry that powers connection setup, so the public list and product wiring stay aligned.
 
-## Source of truth
-
-- Provider and event registry: [`apps/backend/core/services/credentials/providers.yaml`](https://github.com/Isol8AI/isol8/blob/main/apps/backend/core/services/credentials/providers.yaml)
-- Registry guardrails: [`apps/backend/tests/credentials/test_registry.py`](https://github.com/Isol8AI/isol8/blob/main/apps/backend/tests/credentials/test_registry.py)
-- Public article source: [`apps/frontend/src/content/blog/posts/webhook-event-reference.md`](https://github.com/Isol8AI/isol8/blob/main/apps/frontend/src/content/blog/posts/webhook-event-reference.md)
-
 ## Provider coverage
 
 | Provider | Registry key | Inbound trigger events | Registration mode | Signing mode |

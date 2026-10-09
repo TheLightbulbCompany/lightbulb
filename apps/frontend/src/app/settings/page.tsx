@@ -692,8 +692,16 @@ function SettingsPageInner() {
       ? RELOCATED_PANEL_HREFS[initialPanelParam]
       : undefined);
   useEffect(() => {
-    if (outboundHref) router.replace(outboundHref);
-  }, [outboundHref, router]);
+    if (!outboundHref) return;
+    // Forward the rest of the query too (?checkout=, ?connected=, ?action= …): the
+    // destination's return-banner and one-shot handlers read them.
+    const rest = new URLSearchParams(searchParams.toString());
+    rest.delete("panel");
+    const [path, query = ""] = outboundHref.split("?");
+    const merged = new URLSearchParams(query);
+    rest.forEach((v, k) => { if (!merged.has(k)) merged.set(k, v); });
+    router.replace(`${path}?${merged.toString()}`);
+  }, [outboundHref, router, searchParams]);
 
   // Arrow-key roving focus operates only over the in-page tabs. Outbound
   // links (e.g. Connections) are excluded so they don't try to set a panel

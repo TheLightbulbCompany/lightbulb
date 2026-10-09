@@ -101,6 +101,7 @@ export function Navbar() {
   };
 
   return (
+    <>
     <nav className="landing-nav" aria-label="Main navigation">
       <div className="nav-brand">
         <Logo size="md" withMark />
@@ -194,7 +195,10 @@ export function Navbar() {
           <span className={`hamburger-line${mobileOpen ? " open" : ""}`} />
         </button>
       </div>
-      {mobileOpen && <div className="nav-mobile-backdrop" onClick={() => setMobileOpen(false)} />}
     </nav>
+    {/* Outside the nav: its backdrop-filter makes it the containing block for
+        fixed children, which shrank this backdrop to the bar's own box. */}
+    {mobileOpen && <div className="nav-mobile-backdrop" onClick={() => setMobileOpen(false)} />}
+    </>
   );
 }

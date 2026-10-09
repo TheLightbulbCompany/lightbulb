@@ -42,7 +42,7 @@ A few things reliably bite people wiring agents into channels:
 
 ## How Lightbulb handles it
 
-[Lightbulb](/) treats channels as first-class. Each agent in your pod can be bound to **Slack, Discord, or Telegram**, and the platform manages the parts that are tedious and easy to get wrong:
+[Lightbulb](/) treats channels as first-class. Each agent in your workspace can be bound to **Slack, Discord, or Telegram**, and the platform manages the parts that are tedious and easy to get wrong:
 
 - **Guided setup** — a setup wizard walks you through connecting the bot, instead of hand-wiring webhooks and tokens for each platform separately.
 - **One agent per channel** — a bot token binds to a single agent, and the platform refuses to assign the same token to two agents, so routing is never ambiguous.
@@ -52,10 +52,10 @@ You pick the agent, connect the channel, and your agent is now reachable from th
 
 ## Try it
 
-Start a private pod for **free, no credit card required** — you can chat with your agents right away. Connecting an agent to a Slack, Discord, or Telegram channel is a paid feature (a bound bot keeps your agent working around the clock), so channel binding unlocks once you're on a subscription.
+Start a private workspace for **free, no credit card required** — you can chat with your agents right away. Connecting an agent to a Slack, Discord, or Telegram channel is a paid feature (a bound bot keeps your agent working around the clock), so channel binding unlocks once you're on a subscription.
 
-[Start your pod →](/chat)
+[Open your workspace →](/chat)
 
 ---
 
-*Lightbulb gives you a private, isolated AI pod with a team of agents that can live in your channels.*
+*Lightbulb gives you a private, isolated AI workspace with a team of agents that can live in your channels.*

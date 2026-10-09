@@ -15,7 +15,6 @@ import hashlib
 import hmac
 import json
 import logging
-import re
 import secrets
 import tarfile
 import tempfile
@@ -217,9 +216,10 @@ def _title(row: dict, member: bool) -> str | None:
     # title hides nothing (owner ruling 2026-10-08). Likely secrets and a private repo's folder name do.
     shown = redact(title, _project(row))
     if not _known(row):
-        # No snapshot yet, so whether the repo is private (and its folder's name) is not known:
-        # every path goes, the words stay.
-        shown = " ".join(re.sub(r"(?<!\S)~?/\S*", "", shown).split())
+        # No snapshot yet, so whether the repo is private (and its folder's name) is not known.
+        # No path shape is guessed at: every word holding "/", "\\" or "~" goes, whatever
+        # punctuation is around it. Nothing left: no title (the page says "A shared session").
+        shown = " ".join(word for word in shown.split() if not set(word) & set("/\\~"))
     return shown or None
 
 

@@ -96,6 +96,16 @@ async def test_an_anyone_link_shows_the_title_to_a_non_member_before_any_snapsho
     await service.set_display_title(ALICE, sid, "Fix login in /Users/alice/private-repo/src/auth.py and ~/notes")
     assert (await links.open_page(None, token)).title == "Fix login in and"
     assert (await links.open_page(BOB, token)).title.endswith("~/notes"), "a member reads it as it is"
+    for title, shown in (
+        ('Open "/Users/alice/private-repo/src/auth.py" now', "Open now"),  # quoted
+        ("Read (/Users/alice/private-repo/a.py) first", "Read first"),  # parenthesised
+        ("Fix private-repo/src/auth.py today", "Fix today"),  # relative
+        ("Run `~/private-repo/run.sh` again", "Run again"),  # backticked
+        ("Edit C:\\Users\\alice\\private-repo now", "Edit now"),  # backslashes
+        ("/Users/alice/private-repo", None),  # only a path: the page says "A shared session"
+    ):
+        await service.set_display_title(ALICE, sid, title)
+        assert (await links.open_page(None, token)).title == shown, title
 
 
 @pytest.mark.asyncio

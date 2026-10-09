@@ -1257,13 +1257,13 @@ async def republish(
 async def discard_listing_version(
     listing_id: str,
     auth: Annotated[AuthContext, Depends(get_current_user)],
-    version: int = Query(..., ge=2),
+    version: int = Query(..., ge=1),
 ):
-    """Discard a non-terminal draft version (v>=2).
+    """Discard a draft version.
 
-    Used when the seller starts a republish then changes their mind, or
-    when a v(N+1) sits as a rejected draft they no longer want to revise.
-    The live v(N) row is untouched.
+    Used when the seller starts a republish then changes their mind, when a
+    v(N+1) sits as a rejected draft they no longer want to revise, or to delete
+    a first-publish v1 draft that never went live. A live v(N) row is untouched.
     """
     require_org_admin(auth)
     try:
@@ -1386,21 +1386,13 @@ async def upload_artifact_from_agent(
     auth: Annotated[AuthContext, Depends(get_current_user)],
     version: int = Query(default=1, ge=1),
 ):
-    """Snapshot one of the seller's existing OpenClaw agents.
+    """Snapshot one of the seller's agents.
 
-    Body: ``{ agent_id }``. Reads ``/mnt/efs/users/{seller}/workspace-{agent_id}/``
-    directly from EFS (no container interaction — this is the seller's content
-    dir, NEVER ``agents/{agent_id}/``, which is OpenClaw runtime state), tars
-    the directory, packs it as a CatalogPackage, and replaces the listing's
-    artifact.
+    Body: ``{ agent_id }``. Reads the agent's Hermes profile from S3
+    (``<owner>/hermes/<agent_id>/``), tars the portable part of it, packs it as a
+    CatalogPackage, and replaces the listing's artifact.
 
-    Authentication is the only gate. The natural floor is "user has a
-    provisioned container with a registered agent" — ``agent_export``
-    surfaces ``AgentNotInConfigError`` (→ 400) when the seller has no
-    openclaw.json or the agent_id isn't in their agents.list, so a user
-    without a container can't get past this endpoint regardless.
-
-    EFS workspace is keyed by owner_id (= org_id for org members), so
+    The profile is keyed by owner_id (= org_id for org members), so
     the export must use the resolved id. The listing row's seller_id
     below stays as auth.user_id — that's the author/attribution field.
     """

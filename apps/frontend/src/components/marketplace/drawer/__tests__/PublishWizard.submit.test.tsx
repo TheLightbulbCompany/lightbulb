@@ -2,8 +2,9 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-const { apiPost, setView, getMySellerProfile } = vi.hoisted(() => ({
+const { apiPost, apiDel, setView, getMySellerProfile } = vi.hoisted(() => ({
   apiPost: vi.fn(),
+  apiDel: vi.fn(),
   setView: vi.fn(),
   getMySellerProfile: vi.fn(),
 }));
@@ -23,7 +24,7 @@ vi.mock("@/lib/api", () => ({
     post: apiPost,
     put: vi.fn(),
     patch: vi.fn(),
-    del: vi.fn(),
+    del: apiDel,
     syncUser: vi.fn(),
     patchConfig: vi.fn(),
     uploadFiles: vi.fn(),
@@ -112,7 +113,7 @@ describe("PublishWizard — submit chain", () => {
     await waitFor(() => expect(screen.getByText("step6-success")).toBeInTheDocument());
   });
 
-  it("after step 1 succeeds but step 2 fails, retry skips listing creation", async () => {
+  it("when the snapshot fails, the draft it just made is deleted and a retry starts clean", async () => {
     const snapshotError = Object.assign(new Error("snapshot failed"), {
       status: 500,
       detail: "snapshot failed",
@@ -120,8 +121,10 @@ describe("PublishWizard — submit chain", () => {
     apiPost
       .mockResolvedValueOnce({ listing_id: "list_99" }) // create draft
       .mockRejectedValueOnce(snapshotError) // first artifact-from-agent fails
+      .mockResolvedValueOnce({ listing_id: "list_100" }) // retry creates a fresh draft
       .mockResolvedValueOnce({ ok: true }) // retry artifact-from-agent succeeds
       .mockResolvedValueOnce({ ok: true }); // submit succeeds
+    apiDel.mockResolvedValue(undefined);
 
     const user = userEvent.setup();
     render(<PublishWizard />);
@@ -133,16 +136,13 @@ describe("PublishWizard — submit chain", () => {
     await user.click(screen.getByRole("button", { name: /submit for review/i }));
 
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(/snapshot failed/i));
+    // No Draft left behind per failed attempt.
+    expect(apiDel).toHaveBeenCalledWith("/marketplace/listings/list_99?version=1");
 
-    // Retry — submit chain should resume from step 2 (artifact-from-agent), not recreate the draft
     await user.click(screen.getByRole("button", { name: /submit for review/i }));
 
-    await waitFor(() => expect(apiPost).toHaveBeenCalledTimes(4));
-    // First call was POST /marketplace/listings — only ONE call to that path overall
-    const listingCreates = apiPost.mock.calls.filter((c) => c[0] === "/marketplace/listings");
-    expect(listingCreates).toHaveLength(1);
-    // Both artifact-from-agent and submit calls reuse the same listing_id
-    expect(apiPost.mock.calls[2][0]).toBe("/marketplace/listings/list_99/artifact-from-agent");
-    expect(apiPost.mock.calls[3][0]).toBe("/marketplace/listings/list_99/submit");
+    await waitFor(() => expect(apiPost).toHaveBeenCalledTimes(5));
+    expect(apiPost.mock.calls[3][0]).toBe("/marketplace/listings/list_100/artifact-from-agent");
+    expect(apiPost.mock.calls[4][0]).toBe("/marketplace/listings/list_100/submit");
   });
 });

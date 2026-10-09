@@ -4,7 +4,7 @@ import { use, useEffect, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import Link from "next/link";
 
-import { getListingById } from "@/lib/marketplace/api";
+import { myListings } from "@/lib/marketplace/api";
 import { ListingDetailView } from "@/components/marketplace/ListingDetailView";
 import { MarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawer";
 import { MarketplaceDrawerProvider } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
@@ -49,9 +49,13 @@ export default function ManagePage({
     (async () => {
       const jwt = await getToken();
       if (!alive || !jwt) return;
-      let row: Listing;
+      // The seller's OWN listings, not the public GET: that one only serves
+      // published rows, so a draft or in-review listing 404'd and bounced its
+      // owner to a public page that 404s too.
+      let row: Listing | undefined;
       try {
-        row = await getListingById({ listingId, jwt });
+        const { items } = await myListings({ sellerId: userId, jwt });
+        row = items.find((l) => l.listing_id === listingId);
       } catch {
         // 404 (bad listing_id), 401 (token expired), 5xx, network. All map to
         // the same UX: send them to the public listing page rather than
@@ -63,7 +67,7 @@ export default function ManagePage({
         return;
       }
       if (!alive) return;
-      if (row.seller_id !== userId) {
+      if (!row || row.seller_id !== userId) {
         // Soft-redirect rather than throwing — owners arriving via a stale
         // session or admins poking the URL should land on the public page,
         // not a hard error.

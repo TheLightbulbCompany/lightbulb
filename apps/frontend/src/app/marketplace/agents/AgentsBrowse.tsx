@@ -41,7 +41,7 @@ export function AgentsBrowse({ items }: { items: Listing[] }) {
       <section className="mx-auto max-w-6xl px-6 py-10">
         {filtered.length === 0 ? (
           <p className="py-20 text-center font-editorial-serif text-2xl italic text-[var(--midnight-muted)]">
-            No agents fit that brief.
+            {items.length === 0 ? "No agents on the marketplace yet." : "No agents with that tag."}
           </p>
         ) : (
           <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">

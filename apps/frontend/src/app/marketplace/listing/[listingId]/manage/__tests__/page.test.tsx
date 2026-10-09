@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, render, screen, waitFor } from "@testing-library/react";
 
 import ManagePage from "../page";
-import { getListingById, myListings } from "@/lib/marketplace/api";
+import { myListings } from "@/lib/marketplace/api";
 
 // Stable auth object — ManagePage's useEffect lists getToken as a dep, and a
 // fresh function per render would refetch indefinitely (same trap that bit
@@ -20,9 +20,8 @@ vi.mock("@clerk/nextjs", () => ({
 }));
 
 vi.mock("@/lib/marketplace/api", () => ({
-  getListingById: vi.fn(),
-  // ListingDetailView calls myListings under the hood; the page test stubs it
-  // so the inner component can resolve without hitting the network.
+  // Both the page's owner gate and ListingDetailView read the seller's own
+  // listings; stubbed so neither hits the network.
   myListings: vi.fn().mockResolvedValue({ items: [] }),
   republishListing: vi.fn(),
   discardListingVersion: vi.fn(),
@@ -97,14 +96,13 @@ async function renderManagePage() {
       />
     </Suspense>,
   );
-  // Flush ManagePage's useEffect microtask chain — getListingById resolves,
+  // Flush ManagePage's useEffect microtask chain — myListings resolves,
   // then setListing/setForbidden + setListing's render.
   await act(async () => {});
   return result;
 }
 
 beforeEach(() => {
-  vi.mocked(getListingById).mockReset();
   vi.mocked(myListings).mockReset();
   vi.mocked(myListings).mockResolvedValue({ items: [baseListing] });
   startEditListingSpy.mockReset();
@@ -112,7 +110,6 @@ beforeEach(() => {
 
 describe("/marketplace/listing/[listingId]/manage", () => {
   it("renders ListingDetailView for the owner", async () => {
-    vi.mocked(getListingById).mockResolvedValueOnce(baseListing);
     await renderManagePage();
     // ListingDetailView re-fetches via myListings → live row → name visible.
     await waitFor(() =>
@@ -123,9 +120,21 @@ describe("/marketplace/listing/[listingId]/manage", () => {
     ).toBeInTheDocument();
   });
 
+  it("opens the owner's own draft, offers Delete, and hides the dead public link", async () => {
+    // The public GET 404s for drafts, so the page used to bounce the owner
+    // to a public page that 404s too.
+    vi.mocked(myListings).mockResolvedValue({
+      items: [{ ...baseListing, status: "draft" as const, published_at: null }],
+    });
+    await renderManagePage();
+    await waitFor(() => expect(screen.getByText("Agent X")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: /delete draft/i })).toBeInTheDocument();
+    expect(screen.queryByText(/view on marketplace/i)).toBeNull();
+  });
+
   it("redirects non-owner to public listing page", async () => {
-    const otherListing = { ...baseListing, seller_id: "someone_else" };
-    vi.mocked(getListingById).mockResolvedValueOnce(otherListing);
+    // /listings/search?seller_id=<me> never returns someone else's listing.
+    vi.mocked(myListings).mockResolvedValue({ items: [] });
 
     // jsdom's window.location.replace is read-only by default — stub the
     // whole location object so the redirect is observable.
@@ -149,13 +158,11 @@ describe("/marketplace/listing/[listingId]/manage", () => {
     });
   });
 
-  it("soft-redirects when getListingById rejects (404/401/network)", async () => {
-    // Backend 404 / token-expiry / transient failure must terminate the
-    // gate flow — otherwise the page sits on indefinite Loading… and the
-    // owner-gate effect never completes.
-    vi.mocked(getListingById).mockRejectedValueOnce(
-      Object.assign(new Error("not found"), { status: 404 }),
-    );
+  it("soft-redirects when the listings fetch rejects (401/network)", async () => {
+    // Token-expiry / transient failure must terminate the gate flow —
+    // otherwise the page sits on indefinite Loading… and the owner-gate
+    // effect never completes.
+    vi.mocked(myListings).mockRejectedValueOnce(new Error("offline"));
 
     const replaceSpy = vi.fn();
     const originalLocation = window.location;
@@ -195,9 +202,8 @@ describe("/marketplace/listing/[listingId]/manage", () => {
     await waitFor(() =>
       expect(replaceSpy).toHaveBeenCalledWith("/marketplace/listing/lst_x"),
     );
-    // getListingById should never have been called — we shortcut before
-    // any authed fetch.
-    expect(getListingById).not.toHaveBeenCalled();
+    // No authed fetch — we shortcut before it.
+    expect(myListings).not.toHaveBeenCalled();
 
     Object.defineProperty(window, "location", {
       configurable: true,

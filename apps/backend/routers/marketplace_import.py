@@ -140,8 +140,9 @@ def _normalize(key: str, etag: str | None, dst: Path) -> claude_code_import.Clau
 
     if claude_code_import.detect_claude_root(names) is None:
         raise claude_code_import.ClaudeImportError(
-            "this does not look like a Claude Code context — export it with "
-            "`tar czf claude-context.tgz .claude` from your home directory"
+            "this does not look like a Claude Code context — from your home directory run "
+            "`tar czf claude-code.tar.gz .claude/CLAUDE.md .claude/projects/*/memory .claude/skills` "
+            "(whichever exist)"
         )
     return claude_code_import.extract_claude_archive(get, dst)
 

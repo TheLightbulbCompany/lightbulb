@@ -45,7 +45,7 @@ export function BrowseView() {
         })
         .catch(() => {
           // A failed search must not render as an empty catalog — "No agents
-          // fit that brief" on a network error reads as a wiped marketplace.
+          // on the marketplace yet" on a network error reads as a wiped marketplace.
           if (alive) {
             setLoadError(true);
             setLoading(false);
@@ -125,7 +125,9 @@ export function BrowseView() {
           </p>
         ) : items.length === 0 ? (
           <p className="font-editorial-serif italic text-[var(--midnight-muted)] col-span-full">
-            {scope === "companies" ? "No companies fit that brief." : "No agents fit that brief."}
+            {q.trim() || (scope === "agents" && category !== "all")
+              ? `No ${scope} match that search.`
+              : `No ${scope} on the marketplace yet.`}
           </p>
         ) : scope === "companies" ? (
           items.map((listing) => (

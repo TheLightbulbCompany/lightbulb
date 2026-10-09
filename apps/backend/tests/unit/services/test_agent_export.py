@@ -577,15 +577,39 @@ def test_the_slice_never_carries_cron_jobs(hermes_profile, tmp_path):
     assert pkg.openclaw_slice["cron_jobs"] == []
 
 
-def test_export_missing_user_config_raises(hermes_profile, tmp_path):
-    """If the profile carries no openclaw.json, publish must fail with a
-    clear error rather than shipping an empty slice.
-    """
-    seller_id, agent_id, _ = hermes_profile
-    user_config = tmp_path / "users" / seller_id / f"workspace-{agent_id}" / "openclaw.json"
-    user_config.unlink()
-    with pytest.raises(agent_export.AgentNotInConfigError, match="this Hermes profile has none"):
-        agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
+def test_a_hermes_native_profile_publishes(hermes_profile, tmp_path):
+    """A Hermes-native profile has no openclaw.json. It used to be refused ("this Hermes profile
+    has none"), so no seller could ever publish. The profile itself is the agent: its persona
+    and skills ship, the slice is the identity entry, and the owner-keyed files the backend
+    wrote (config.yaml, the facts file, CLI credentials, $HOME) never reach the artifact."""
+    seller_id, agent_id, agent_dir = hermes_profile
+    (agent_dir / "openclaw.json").unlink()
+    (agent_dir / "SOUL.md").write_text("You are a careful researcher.\n", encoding="utf-8")
+    (agent_dir / "config.yaml").write_text("model: x\n", encoding="utf-8")
+    (agent_dir / "lightbulb-facts.json").write_text("{}", encoding="utf-8")
+    (agent_dir / "cli-env.json").write_text('{"GOG_KEYRING_PASSWORD": "pw"}', encoding="utf-8")
+    for rel in ("skills/research/SKILL.md", "skills/instagram/token.sh", "home/notes.txt"):
+        (agent_dir / rel).parent.mkdir(parents=True, exist_ok=True)
+        (agent_dir / rel).write_text("x\n", encoding="utf-8")
+
+    pkg = agent_export.export_agent_from_profile(seller_id=seller_id, agent_id=agent_id)
+
+    names = {n.removeprefix("./") for n in _list_tar_names(pkg.tarball_bytes)}
+    assert {"SOUL.md", "skills/research/SKILL.md", "README.md"} <= names
+    for leaked in (
+        "config.yaml",
+        "lightbulb-facts.json",
+        "cli-env.json",
+        "skills/instagram/token.sh",
+        "home/notes.txt",
+    ):
+        assert leaked not in names, leaked
+    assert pkg.openclaw_slice["agent"] == {}  # the seller's id is stripped; the buyer mints its own
+    assert pkg.openclaw_slice["cron_jobs"] == []
+    assert pkg.manifest["name"] == agent_id
+
+    preview = agent_export.enumerate_for_preview(seller_id=seller_id, agent_id=agent_id)
+    assert preview["auto_ship_skills"] == ["research"]
 
 
 def test_export_agent_not_in_config_raises(hermes_profile, tmp_path):
@@ -1853,10 +1877,17 @@ def test_download_s3_profile_excludes_runtime_and_secret_keys(s3_hermes_bucket, 
     prefix = "owner_1/hermes/agent_1"
     keep = {
         "SOUL.md": b"# Soul",
-        "config.yaml": b"model: ${ANTHROPIC_MODEL}",
         "skills/foo.md": b"# Foo skill",
     }
     drop = {
+        # Backend-written, owner-keyed config -- the buyer's deploy writes its own.
+        "config.yaml": b"model: ${ANTHROPIC_MODEL}",
+        "lightbulb-facts.json": b"{}",
+        "cli-env.json": b"{}",
+        # Connector credential projections and the agent's $HOME.
+        "home/.aws/credentials": b"[default]",
+        "home/quickbooks/token.json": b"{}",
+        "skills/shopify/token.sh": b"#!/bin/sh",
         ".env": b"SECRET=1",
         ".revision": b"abc123",
         "sessions/session-1.json": b"{}",

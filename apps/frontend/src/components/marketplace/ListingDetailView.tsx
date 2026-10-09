@@ -144,6 +144,7 @@ export function ListingDetailView({ listingId, mode }: Props) {
       <Header
         live={live}
         pending={pending}
+        mode={mode}
         onPendingChange={() => setRefreshKey((k) => k + 1)}
       />
       <Stats live={live} />
@@ -166,14 +167,16 @@ export function ListingDetailView({ listingId, mode }: Props) {
 function Header({
   live,
   pending,
+  mode,
   onPendingChange,
 }: {
   live: Listing;
   pending: Listing | null;
+  mode: "drawer" | "page";
   onPendingChange: () => void;
 }) {
   const { getToken } = useAuth();
-  const { startEditListing } = useMarketplaceDrawer();
+  const { startEditListing, setView } = useMarketplaceDrawer();
   const [busy, setBusy] = useState(false);
 
   // Sub-badge surfaces an in-flight v(N+1) on the same pill so the seller
@@ -216,6 +219,22 @@ function Header({
         jwt,
       });
       onPendingChange();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // A listing that never went live is just its draft: deleting it removes the
+  // listing, so leave this view for the seller's list afterwards.
+  async function handleDeleteDraft() {
+    if (!window.confirm(`Delete the draft "${live.name}"? This can't be undone.`)) return;
+    setBusy(true);
+    try {
+      const jwt = await getToken();
+      if (!jwt) return;
+      await discardListingVersion({ listingId: live.listing_id, version: live.version, jwt });
+      if (mode === "drawer") setView("mine");
+      else window.location.assign("/marketplace");
     } finally {
       setBusy(false);
     }
@@ -317,12 +336,25 @@ function Header({
             Discard pending update
           </button>
         )}
-        <a
-          href={`/marketplace/listing/${live.listing_id}`}
-          className="text-ui font-semibold text-[var(--midnight)] hover:underline"
-        >
-          View on marketplace →
-        </a>
+        {live.status === "draft" && (
+          <button
+            type="button"
+            onClick={handleDeleteDraft}
+            disabled={busy}
+            className="text-ui font-semibold text-[var(--err)] hover:underline"
+          >
+            Delete draft
+          </button>
+        )}
+        {/* Only a published listing has a public page; a draft's link 404s. */}
+        {live.status === "published" && (
+          <a
+            href={`/marketplace/listing/${live.listing_id}`}
+            className="text-ui font-semibold text-[var(--midnight)] hover:underline"
+          >
+            View on marketplace →
+          </a>
+        )}
       </div>
     </header>
   );

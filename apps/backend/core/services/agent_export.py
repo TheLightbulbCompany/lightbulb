@@ -31,6 +31,8 @@ from core.config import settings
 from core.observability.metrics import put_metric
 from core.services import marketplace_safety
 from core.services.catalog_package import CatalogPackage
+from core.services.credentials import hermes_cli
+from core.services.hermes_profiles import BACKEND_OWNED_FILES
 from core.services.catalog_slice import (
     _agents_list,
     classify_skill,
@@ -78,17 +80,6 @@ _SCAN_MAX_FILE_BYTES = 1 * 1024 * 1024
 # would still reference the seller's workspace path — which on the
 # buyer's container doesn't exist (different agent_id).
 _AGENT_DIR_SENTINEL = "__AGENT_DIR__"
-
-
-def _agent_id_from_dir_name(dir_name: str) -> str:
-    """Strip the upstream per-agent workspace prefix from a dir name.
-
-    Workspace dirs are ``workspace-{agent_id}`` (upstream convention); the
-    agent id is everything after the prefix. Passing an already-bare id
-    through is a no-op, so callers can use this on any resolved dir name.
-    """
-    prefix = "workspace-"
-    return dir_name[len(prefix) :] if dir_name.startswith(prefix) else dir_name
 
 
 def _rewrite_mcp_args_paths(slice_: dict, seller_agent_id: str) -> None:
@@ -383,7 +374,19 @@ def _slugify(name: str) -> str:
 # the agent knows about its OWNER (and where the pasted business-context dump
 # lands), ``MEMORY.md`` the agent's own notes about that owner's work. Neither
 # is part of a portable agent definition.
-_S3_PROFILE_SKIP_TOP_DIRS = frozenset({"sessions", "logs", "mcp-tokens", "memories"})
+_S3_PROFILE_SKIP_TOP_DIRS = frozenset({"sessions", "logs", "mcp-tokens", "memories", hermes_cli.HOME_DIR})
+
+# Top-level profile files the BACKEND writes for this owner (config.yaml, the facts file, the CLI
+# env values): owner-keyed config, never the seller's portable agent. The buyer's deploy writes
+# its own. SOUL.md stays: it is the agent's persona, and the deploy reads it as the identity.
+_S3_PROFILE_SKIP_TOP_FILES = (BACKEND_OWNED_FILES - {"SOUL.md"}) | {hermes_cli.CLI_ENV_FILE}
+
+# Every profile prefix a connector's credential projection owns (``home/.aws/``,
+# ``skills/instagram/``, ``skills/shopify/`` ...). The projection writes the OWNER's tokens
+# there, and a buyer gets their own from their own connection, so none of it can ship.
+_S3_PROFILE_CREDENTIAL_PREFIXES = tuple(
+    path for materializer in hermes_cli.OWNED_PATHS for path in hermes_cli.profile_paths(materializer)
+)
 
 
 def _is_excluded_profile_key(rel: str) -> bool:
@@ -397,6 +400,10 @@ def _is_excluded_profile_key(rel: str) -> bool:
     if not parts:
         return True
     if parts[0] in _S3_PROFILE_SKIP_TOP_DIRS:
+        return True
+    if len(parts) == 1 and parts[0] in _S3_PROFILE_SKIP_TOP_FILES:
+        return True
+    if rel.startswith(_S3_PROFILE_CREDENTIAL_PREFIXES):
         return True
     if any(p.startswith(".") for p in parts):
         return True
@@ -680,22 +687,24 @@ def _build_tarball(
     return gz_buf.getvalue(), sorted(contents), sorted(pruned)
 
 
-def _summarize_openclaw_config(agent_dir: Path) -> dict:
+def _summarize_openclaw_config(agent_dir: Path, agent_id: str) -> dict:
     """Extract a small summary from openclaw.json if present.
 
-    Best-effort; returns minimal dict on missing / invalid file.
+    Best-effort; returns minimal dict on missing / invalid file. The fallback name is the
+    agent id, never ``agent_dir.name``: the export reads a scratch dir, whose name is random.
     """
     cfg_path = agent_dir / "openclaw.json"
+    fallback = {"name": agent_id, "description": ""}
     if not cfg_path.exists():
-        return {"name": _agent_id_from_dir_name(agent_dir.name), "description": ""}
+        return fallback
     try:
         data = json.loads(cfg_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {"name": _agent_id_from_dir_name(agent_dir.name), "description": ""}
+        return fallback
 
     identity = data.get("identity", {}) if isinstance(data, dict) else {}
     return {
-        "name": identity.get("name") or _agent_id_from_dir_name(agent_dir.name),
+        "name": identity.get("name") or agent_id,
         "description": identity.get("description") or identity.get("vibe") or "",
     }
 
@@ -826,17 +835,7 @@ def export_agent_from_profile(
         resolved_agent_id = agent_id
         tarball_bytes, contents, pruned = _build_tarball(agent_dir, paths=paths, repo_dirs=repo_dirs)
 
-        # The slice source is the PROFILE's own openclaw.json, not a per-user file on EFS.
-        # KNOWN GAP (M6): a Hermes-NATIVE profile carries config.yaml + .env and no
-        # openclaw.json, so its seller cannot publish until the slice is re-shaped onto the
-        # profile (Task 10 remap work). The refusal says exactly that rather than surfacing as
-        # "agent not registered".
-        config = _read_profile_openclaw_config(agent_dir)
-        if not config:
-            raise AgentNotInConfigError(
-                f"publishing agent {agent_id!r} is unavailable on this runtime: the marketplace slice is an "
-                "openclaw.json projection and this Hermes profile has none"
-            )
+        config = _profile_slice_config(agent_dir, resolved_agent_id)
         workspace_skill_names = _enumerate_workspace_skill_names(agent_dir)
         try:
             slice_ = extract_agent_slice(
@@ -871,7 +870,7 @@ def export_agent_from_profile(
 
         safety_flags = _scan_tarball_for_safety_flags(tarball_bytes)
 
-        summary = _summarize_openclaw_config(agent_dir)
+        summary = _summarize_openclaw_config(agent_dir, resolved_agent_id)
         manifest = {
             "name": summary["name"],
             "description": summary["description"],
@@ -939,6 +938,20 @@ def _read_profile_openclaw_config(profile_dir: Path) -> dict | None:
             if isinstance(data, dict):
                 return data
     return None
+
+
+def _profile_slice_config(profile_dir: Path, agent_id: str) -> dict:
+    """The config the marketplace slice is projected from.
+
+    A legacy profile that still carries its own openclaw.json keeps using it. A Hermes-native
+    profile (config.yaml + .env + SOUL.md + skills/) has no roster file, and the profile ITSELF
+    is the agent: its persona and skills ship in the tarball, and its ``mcp_servers`` are the
+    workspace's own connections, which the buyer's profile writer fills from the buyer's own
+    connections. So the slice is just the agent's identity entry -- no plugins, tools, MCP
+    servers or skill entries to carry. The slice-leak gate and the tarball safety scan still
+    run on it unchanged.
+    """
+    return _read_profile_openclaw_config(profile_dir) or {"agents": {"list": [{"id": agent_id}]}}
 
 
 # ---------------------------------------------------------------------------
@@ -1015,9 +1028,8 @@ def enumerate_for_preview(*, seller_id: str, agent_id: str, container: dict | No
         agent_dir = Path(tmp_dir.name)
         repo_dirs = _download_s3_profile(location, agent_dir)
         resolved_agent_id = agent_id
-        # Same slice source as the publish (see export_agent_from_profile): the profile's own
-        # openclaw.json, absent on a Hermes-native profile.
-        config = _read_profile_openclaw_config(agent_dir) or {}
+        # Same slice source as the publish (see export_agent_from_profile).
+        config = _profile_slice_config(agent_dir, resolved_agent_id)
         # Validate the agent is registered in the seller's config; the entry
         # itself is NOT used as a skills source (no per-agent skill scoping
         # exists at runtime — see the addable-skills note below).

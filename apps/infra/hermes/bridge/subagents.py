@@ -19,6 +19,8 @@ log = logging.getLogger("bridge")
 
 FLUSH_S = 1.0
 MAX_BATCH = 25
+# Exactly the types the backend's SubagentEventsRequest accepts: one unknown type would 422 its whole batch.
+RELAYED = frozenset({"subagent.start", "subagent.thinking", "subagent.tool", "subagent.progress", "subagent.complete"})
 # subagent id -> the room session key whose turn started it: the only authority the subagent RPCs
 # accept. A child's events only ever arrive through its own parent turn's callback.
 OWNER_OF: dict[str, str] = {}
@@ -80,8 +82,8 @@ def payload(event_type: str, name, preview, kw: dict) -> dict:
 
 
 def relay(session_key: str | None, event_type: str, name, preview, kw: dict) -> None:
-    # subagent.text is the child's per-token reply; upstream drops it on the parent too.
-    if not session_key or event_type == "subagent.text":
+    # subagent.text (the child's per-token reply; upstream drops it too) and anything unknown is dropped.
+    if not session_key or event_type not in RELAYED:
         return
     try:
         p = payload(event_type, name, preview, kw)

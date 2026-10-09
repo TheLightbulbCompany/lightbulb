@@ -35,6 +35,11 @@ def test_text_events_are_never_sent():
     assert subagents._pending == {}
 
 
+def test_unknown_subagent_event_types_are_never_queued():
+    subagents.relay(KEY, "subagent.spawn_requested", None, "x", _kw())
+    assert subagents._pending == {}
+
+
 def test_thinking_coalesces_per_subagent_but_tools_do_not():
     subagents.relay(KEY, "subagent.thinking", None, "a", _kw())
     subagents.relay(KEY, "subagent.tool", "read_file", "x", _kw())

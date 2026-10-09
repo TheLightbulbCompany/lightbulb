@@ -169,6 +169,28 @@ def test_list_activity_enriches_user_actor_email_and_name(client, monkeypatch):
     repo.get_workspace.assert_awaited_once_with("o1")
 
 
+def test_list_activity_never_names_an_actor_by_an_apple_relay_address(client, monkeypatch):
+    """A Hide-My-Email sign-up has only a relay address; it must read "New member", never the
+    random relay string (ActivityRow prefers actorName over every other fallback)."""
+    admin = MagicMock()
+    admin.list_activity = AsyncMock(
+        return_value={"events": [{"id": "e1", "actorType": "user", "actorId": "pcu_aaa", "action": "issue.created"}]}
+    )
+    repo = _member_repo({"clerk_aaa": "pcu_aaa"})
+
+    async def fake_resolve(user_id: str) -> str:
+        return "m2jdw4mbmt@privaterelay.appleid.com"
+
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(agents_mod, "_repo", lambda: repo)
+    monkeypatch.setattr(agents_mod, "_resolve_user_email", fake_resolve)
+
+    events = client.get("/api/v1/teams/activity", headers={"Authorization": "Bearer x"}).json()["events"]
+    assert events[0]["actorName"] == "New member"
+
+
 def test_list_activity_resolves_each_unique_actor_once(client, monkeypatch):
     """Two events from the same actor only trigger a single Clerk lookup
     (the enrichment batches unique actor ids)."""

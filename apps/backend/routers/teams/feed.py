@@ -28,6 +28,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
+from core.services.person_label import NEW_MEMBER, is_relay_email
 
 from . import agents as _agents
 from .deps import TeamsContext, TeamsContextError
@@ -106,9 +107,10 @@ async def _enrich_actor_names(ctx: TeamsContext, events: list) -> None:
         if email:
             evt["actorEmail"] = email
             # No separate display-name source on the Clerk join here, so
-            # the email doubles as the name; the frontend prefers
-            # actorName/actorEmail over the raw id either way.
-            evt.setdefault("actorName", email)
+            # the email doubles as the name (the frontend prefers actorName
+            # over every fallback), except an Apple relay address, whose
+            # local part is random noise: that reads "New member".
+            evt.setdefault("actorName", NEW_MEMBER if is_relay_email(email) else email)
 
 
 @router.get("/activity")

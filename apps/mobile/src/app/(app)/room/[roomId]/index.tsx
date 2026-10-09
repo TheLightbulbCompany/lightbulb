@@ -20,7 +20,6 @@ import { router, Stack, useFocusEffect, useIsPreview, useLocalSearchParams } fro
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  AppState,
   FlatList,
   Pressable,
   StyleSheet,
@@ -117,16 +116,10 @@ function Conversation() {
       };
     }, [roomId, preview]),
   );
-  const rooms = useMobileRooms({ subscribeToRoom: focused, autoSelect: false, visible: focused, boundedHistory: true });
+  // `subagents`: this screen shows the strip, so it alone snapshots and polls (the shared hook
+  // also refreshes on return to the foreground while the strip is visible).
+  const rooms = useMobileRooms({ subscribeToRoom: focused, autoSelect: false, visible: focused, boundedHistory: true, subagents: true });
   const { messaging } = useLiveEvents();
-  // Polling follows the strip being on screen; coming back to the foreground re-polls only then.
-  const stripVisible = useRef(false);
-  const { subagentsPollVisible, refreshSubagents } = rooms;
-  const onStripVisible = useCallback((v: boolean) => { stripVisible.current = v; subagentsPollVisible(v); }, [subagentsPollVisible]);
-  useEffect(() => {
-    const sub = AppState.addEventListener("change", (s) => { if (s === "active" && stripVisible.current) void refreshSubagents(); });
-    return () => sub.remove();
-  }, [refreshSubagents]);
   // The room's own timeline drafts separately from each of its threads.
   const composerDraftKey = useDraftKey(roomId, null);
 
@@ -696,7 +689,7 @@ function Conversation() {
           client={messaging}
           onSteer={rooms.steerSubagent}
           onStop={rooms.stopSubagent}
-          onVisible={onStripVisible}
+          onVisible={rooms.subagentsPollVisible}
         />
         <RoomComposer
           members={members ?? []}

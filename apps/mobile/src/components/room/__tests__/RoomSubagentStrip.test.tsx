@@ -63,3 +63,19 @@ it("DelegateCard announces status icons and shows a dispatched row for an idle a
   await render(<DelegateCard state={EMPTY_ROOM_SUBAGENTS} agentId="a1" delegationId="d2" agentLive={false} />);
   expect(screen.getByText("Background subagents dispatched")).toBeTruthy();
 });
+
+it("keeps the sheet open on a child that finished, with its final status and last transcript", async () => {
+  const one = applySubagentEvent(EMPTY_ROOM_SUBAGENTS, "a1", "subagent.tool",
+    { subagent_id: "sa-0", goal: "Track 0", tool_name: "web_search", tool_preview: "q" }, Date.now());
+  const client = { subagentTail: jest.fn().mockResolvedValue({ subagentId: "sa-0", available: true, text: "line 2", truncated: false }) } as never;
+  const props = { roomId: "r1", agentName: () => "Forge", client, onSteer: jest.fn(), onStop: jest.fn(), onVisible: jest.fn() };
+  await render(<RoomSubagentStrip state={one} {...props} />);
+  await fireEvent.press(screen.getByLabelText(/Track 0/));
+  await waitFor(() => expect(screen.getByText(/line 2/)).toBeTruthy());
+  const done = applySubagentEvent(one, "a1", "subagent.complete", { subagent_id: "sa-0", goal: "Track 0", status: "completed" }, Date.now());
+  await screen.rerender(<RoomSubagentStrip state={done} {...props} />);
+  expect(screen.getByText("Finished")).toBeTruthy();
+  expect(screen.getByText(/line 2/)).toBeTruthy();
+  await fireEvent.press(screen.getByLabelText("Stop"));
+  expect(props.onStop).not.toHaveBeenCalled();
+});

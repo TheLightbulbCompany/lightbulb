@@ -16,6 +16,7 @@ import { BottomSheet } from "../ui/BottomSheet";
 
 const PREVIEW = 3; // upstream Desktop previews three workers
 const GONE = "That subagent has already finished.";
+const ENDED: Record<string, string> = { completed: "Finished", failed: "Failed", interrupted: "Stopped" };
 
 function useNow(on: boolean) {
   const [now, setNow] = useState(() => Date.now());
@@ -44,7 +45,9 @@ function Detail({ item, roomId, client, onSteer, onStop }: {
   onSteer: Act; onStop: (agentId: string, id: string) => Promise<unknown>;
 }) {
   const palette = useChatPalette();
-  const { tail } = useSubagentTail(client, { roomId, agentId: item.agentId, subagentId: item.id });
+  const live = item.status === "running" || item.status === "queued";
+  // A finished child stops polling but keeps its last transcript on screen until the person closes the sheet.
+  const { tail } = useSubagentTail(client, live ? { roomId, agentId: item.agentId, subagentId: item.id } : null);
   const [text, setText] = useState("");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
@@ -56,10 +59,12 @@ function Detail({ item, roomId, client, onSteer, onStop }: {
       .finally(() => setBusy(false));
   };
   const value = text.trim();
-  const off = busy ? styles.disabled : null;
+  const blocked = busy || !live;
+  const off = blocked ? styles.disabled : null;
   return (
     <View style={styles.detail}>
       <Text style={[styles.title, { color: palette.fg }]} numberOfLines={2}>{item.goal}</Text>
+      {!live ? <Text style={[styles.note, { color: palette.fgSoft }]}>{ENDED[item.status] ?? "Finished"}</Text> : null}
       <View style={[styles.steerRow, { backgroundColor: palette.surface, borderColor: palette.edge }]}>
         <TextInput
           style={[styles.input, { color: palette.fg }]}
@@ -67,12 +72,12 @@ function Detail({ item, roomId, client, onSteer, onStop }: {
           placeholderTextColor={palette.fgMute}
           value={text}
           onChangeText={setText}
-          editable={!busy}
+          editable={!blocked}
           accessibilityLabel={`Steer ${item.goal}`}
         />
         <Pressable
-          style={[styles.button, { backgroundColor: palette.fg }, (!value || busy) && styles.disabled]}
-          disabled={!value || busy}
+          style={[styles.button, { backgroundColor: palette.fg }, (!value || blocked) && styles.disabled]}
+          disabled={!value || blocked}
           onPress={() => run(() => onSteer(item.agentId, item.id, value), "Steer queued", () => setText(""))}
           accessibilityRole="button"
           accessibilityLabel="Steer"
@@ -81,7 +86,7 @@ function Detail({ item, roomId, client, onSteer, onStop }: {
         </Pressable>
         <Pressable
           style={[styles.button, { borderColor: palette.edge, borderWidth: 1 }, off]}
-          disabled={busy}
+          disabled={blocked}
           onPress={() => run(() => onStop(item.agentId, item.id), "Stopping…")}
           accessibilityRole="button"
           accessibilityLabel="Stop"
@@ -113,9 +118,10 @@ export function RoomSubagentStrip({ state, roomId, agentName, client, onSteer, o
   const now = useNow(live.length > 0);
   const visible = live.length > 0 && open;
   useEffect(() => { onVisible(visible); return () => onVisible(false); }, [visible, onVisible]);
-  if (!live.length) return null;
+  // From all items, not the live list: the sheet stays open on a child that just finished.
+  const pickedItem = state.items.find((i) => i.id === picked);
+  if (!live.length && !pickedItem) return null;
   const rows = all ? live : live.slice(0, PREVIEW);
-  const pickedItem = live.find((i) => i.id === picked);
   return (
     <View style={[styles.strip, { borderColor: palette.edge, backgroundColor: palette.raised }]} accessibilityLabel="Running subagents">
       <Pressable

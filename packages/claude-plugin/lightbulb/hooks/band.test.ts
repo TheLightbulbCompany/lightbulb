@@ -1,6 +1,6 @@
 import { test, expect, mock } from 'claude-code/testing'
 import type { On } from 'claude-code'
-import { bandLine, bandRuns, continuedLine, GO_LIVE_LINE, keysHint, ONLY_YOU_LINE, parseContinued, rememberTyped, STOPPING_LINE, typist } from './state'
+import { bandLine, bandRuns, continuedLine, GO_LIVE_LINE, keysHint, ONLY_YOU_LINE, parseContinued, rememberTyped, requestLine, STOPPING_LINE, typist } from './state'
 import { colorFor, type Sender } from './rules'
 import type { SessionState } from '../types'
 
@@ -64,6 +64,15 @@ test('band names watchers and typists', () => {
   expect(bandRuns(s).filter(r => r.color)).toEqual([
     { text: 'Aden Kim', color: colorFor('a') }, { text: 'Mira Shah', color: colorFor('m') }, { text: 'Aden Kim', color: colorFor('a') },
   ])
+})
+
+test('the band counts watchers the workspace did not name (an Anyone link shows this terminal)', () => {
+  const s = { ...base, viewers: [
+    { userId: 'a', name: '', canType: true, typing: true },
+    { userId: 'm', name: '', canType: false, typing: false },
+  ] }
+  expect(bandLine(s)).toBe('● Live · 2 watching · 1 typing')
+  expect(bandRuns(s).some(r => r.color)).toBe(false)
 })
 
 test('the band draws watcher names and the asker in their colors', async ($, on) => {
@@ -462,6 +471,11 @@ test('a pick-up request names itself and Allow posts its request id', async ($, 
   const post = calls.filter(c => c.method === 'POST')
   expect(post[post.length - 1].body).toEqual({ decision: 'allow', userId: 'u1', requestId: 'r9' })
   await ui.unmount()
+})
+
+test('an ask with no text (an Anyone link session) says only that an agent is asking', () => {
+  expect(requestLine({ userId: 'agent-1', name: 'An agent', requestId: 'a1', kind: 'agent_message', action: 'send', text: '' }, 1))
+    .toBe('An agent is asking to message this session')
 })
 
 test("an agent's ask names its message and Allow posts the agent id and the ask", async ($, on) => {

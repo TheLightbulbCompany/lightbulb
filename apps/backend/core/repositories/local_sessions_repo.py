@@ -329,6 +329,7 @@ async def admit_command(
 ) -> None:
     owner, human, device = row["ownerId"], row["humanUserId"], row["deviceId"]
     table = store._table().name
+    ending = receipt.get("kind") == "end"
     await store._transact(
         room_conditions(owner, human, receipt, include_meta=not room_meta_fenced_by_extra)
         + [
@@ -338,7 +339,10 @@ async def admit_command(
                 "Update": {
                     "TableName": table,
                     "Key": {"pk": row["pk"], "sk": "META"},
-                    "UpdateExpression": "SET commandSeq = :next, revision = :newRevision",
+                    # `endAskedAt`: the owner's End is on its way, so the public watch stops now
+                    # (`session_screen.forward`), before the provider prints its exit lines.
+                    "UpdateExpression": "SET commandSeq = :next, revision = :newRevision"
+                    + (", endAskedAt = :now" if ending else ""),
                     "ConditionExpression": "revision = :revision AND generation = :generation AND attribute_not_exists(endedAt)"
                     + ("" if allow_offline else " AND onlineUntil > :now"),
                     "ExpressionAttributeValues": {
@@ -346,7 +350,7 @@ async def admit_command(
                         ":revision": row["revision"],
                         ":newRevision": str(uuid.uuid4()),
                         ":generation": receipt["expectedGeneration"],
-                        **({} if allow_offline else {":now": receipt["createdAt"]}),
+                        **({} if allow_offline and not ending else {":now": receipt["createdAt"]}),
                     },
                 }
             },

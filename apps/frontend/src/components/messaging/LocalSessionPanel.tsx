@@ -5,7 +5,7 @@ import { useAuth } from "@clerk/nextjs";
 import { capture } from "@/lib/analytics";
 import { Info, MessageSquare, Send } from "lucide-react";
 import {
-  canControlSession, useSessionResume, mainEvents, pendingApproval, receiptChip, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionPlan, sessionStatus, unavailableReason,
+  canControlSession, useSessionResume, mainEvents, pendingApproval, receiptChip, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionPlan, sessionStatus, sessionTitle, unavailableReason,
   conversationOnly, joinRequestView, pickupRequestLine, pickupStatus, sessionScreenNotice, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionJoinRequest, useSessionOutbox,
   type LocalSession, type SessionControlClient, type SessionSource,
 } from "@lightbulb/shared";
@@ -261,7 +261,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
         {command.attempt?.request.kind === "end" && command.chip && <span role="status" className="text-sm"><ReceiptChip chip={command.chip} /></span>}
         {/* The app's own terminal on this Mac has End in its bar; this is the same control everywhere else. */}
         {command.canEnd && local !== "local" && <Button type="button" variant="outline" size="sm" disabled={command.locked}
-          onClick={() => { if (endArmed) command.end(); setEndArmed(!endArmed); }}>{endArmed ? "Click again to end" : "End session"}</Button>}
+          onClick={() => { if (endArmed) command.end(); setEndArmed(!endArmed); }}>{endArmed ? `Click again to end “${sessionTitle(session)}”` : "End session"}</Button>}
         <Button type="button" variant="ghost" size="sm" onClick={() => show(tab)}><Info aria-hidden="true" />Details</Button>
       </div>
     </div>

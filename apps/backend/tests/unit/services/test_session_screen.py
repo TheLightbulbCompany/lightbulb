@@ -538,7 +538,13 @@ async def _trade(token, lease):
 
 
 async def _public_link(sid):
+    """An "Anyone" link past its first seconds (`public_settling`), as nearly every viewer finds it."""
     token = (await service.put_link(ALICE, sid, "anyone")).url.split("#", 1)[1]
+    messaging_repo._table().update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+        UpdateExpression="SET shareLink.publicAt = :t",
+        ExpressionAttributeValues={":t": int(time.time()) - service.PUBLIC_GRACE_S - 1},
+    )
     return token, (await repo.get_session(OWNER, sid))["shareLink"]["publicId"]
 
 
@@ -846,3 +852,99 @@ async def test_a_channels_seat_count_is_kept_for_as_long_as_a_socket_on_it_can_l
     assert int(row["seats"]) == 1
     assert int(row["expiresAt"]) - int(time.time()) > 24 * 3600  # `expiresAt` is the table's TTL attribute
     assert int(row["until"]) - int(time.time()) <= session_screen.VIEWER_TTL_S  # liveness is still 45 s
+
+
+@pytest.mark.asyncio
+async def test_the_owners_end_stops_public_frames_before_the_exit_output_and_a_refused_end_frees_them(transport, db):
+    """Round 18: a link viewer read the provider's `claude --resume <id>` lines between End and the end."""
+    import uuid
+
+    from core.services import session_links
+    from core.services.local_sessions import LocalSessionCommand
+
+    sid = await start(transport)
+    await ack(transport, sid)
+    token, public = await _public_link(sid)
+    await session_links.viewing(token, None, True)
+    await session_screen.watch(BOB, sid)
+    key = {"pk": repo.session_pk(OWNER, sid), "sk": "META"}
+    db[0].update_item(Key=key, UpdateExpression="SET terminal = :h", ExpressionAttributeValues={":h": "held"})
+    end = LocalSessionCommand(request_id=str(uuid.uuid4()), expected_generation="generation-1", kind="end")
+    await service.submit_command(ALICE, None, sid, end)
+    transport[4].clear()
+    await session_screen.forward(relay(transport), "conn-1", frame(sid))
+    assert [c for c, _ in await _published(transport)] == [await _frames_channel(sid)], "the workspace only"
+    # The End never took effect (refused, or it never reached the Mac): the link gets frames again.
+    db[0].update_item(
+        Key=key,
+        UpdateExpression="SET endAskedAt = :t",
+        ExpressionAttributeValues={":t": int(time.time()) - session_screen.END_QUIET_S - 1},
+    )
+    transport[4].clear()
+    await session_screen.forward(relay(transport), "conn-1", frame(sid))
+    assert f"/pub/{public}" in [c for c, _ in await _published(transport)]
+
+
+@pytest.mark.asyncio
+async def test_changing_a_links_audience_redraws_the_band_at_once(transport):
+    """Workspace to Anyone: the names leave the band before a link viewer's first picture, not ~10 s later."""
+    sid = await start(transport)
+    await relay(transport).handle_message("conn-1", {**heartbeat(sid), "sessionPresence": True})
+    await session_screen.watch(BOB, sid)
+    await service.put_link(ALICE, sid, "workspace")
+    transport[3].clear()
+    await service.put_link(ALICE, sid, "anyone")
+    await service.put_link(ALICE, sid, "workspace")
+    names = [[v["name"] for v in p["viewers"]] for p in _presence(transport)]
+    assert len(names) == 2 and names[0] == [""] and names[1] != [""]
+
+
+@pytest.mark.asyncio
+async def test_an_only_me_session_admits_its_owners_end_and_nothing_else(transport, db):
+    """Round 18: the server admitted the owner's send and left the refusal to the Mac."""
+    import uuid
+
+    from core.services.local_sessions import LocalSessionCommand
+
+    sid = await start(transport)
+    await ack(transport, sid)
+    db[0].update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+        UpdateExpression="SET terminal = :h",
+        ExpressionAttributeValues={":h": "held"},
+    )
+    await service.set_sharing(ALICE, sid, False)
+
+    def command(kind, **more):
+        return LocalSessionCommand(request_id=str(uuid.uuid4()), expected_generation="generation-1", kind=kind, **more)
+
+    with pytest.raises(ApiProblem) as refused:
+        await service.submit_command(ALICE, None, sid, command("send", text="hello"))
+    assert refused.value.error.code == "LOCAL_SESSION_CONFLICT"
+    assert (await service.submit_command(ALICE, None, sid, command("end"))).state == "pending"
+
+
+@pytest.mark.asyncio
+async def test_a_link_that_just_became_public_gets_no_frame_until_the_band_has_surely_redrawn(transport, db):
+    """Workspace to Anyone: the Mac's band may still name people until its next heartbeat ack."""
+    from core.services import session_links
+
+    sid = await start(transport)
+    await ack(transport, sid)
+    token = (await service.put_link(ALICE, sid, "anyone")).url.split("#", 1)[1]
+    public = (await repo.get_session(OWNER, sid))["shareLink"]["publicId"]
+    transport[3].clear()
+    await session_links.viewing(token, None, True)
+    assert "local.session.watch" not in [m["type"] for _, m in transport[3]], "no picture asked of the Mac yet"
+    watched = db[0].get_item(Key={"pk": f"PUBWATCH#{public}", "sk": "WATCHED"})["Item"]
+    assert "askedAt" not in watched, "the viewer's next renewal may still ask"
+    transport[4].clear()
+    await session_screen.forward(relay(transport), "conn-1", frame(sid))
+    assert await _published(transport) == []
+    db[0].update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+        UpdateExpression="SET shareLink.publicAt = :t",
+        ExpressionAttributeValues={":t": int(time.time()) - service.PUBLIC_GRACE_S - 1},
+    )
+    await session_screen.forward(relay(transport), "conn-1", frame(sid))
+    assert [c for c, _ in await _published(transport)] == [f"/pub/{public}"]

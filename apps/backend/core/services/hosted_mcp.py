@@ -197,6 +197,8 @@ async def sessions_for(auth: AuthContext, query: str = "", limit: int = 30) -> d
                 "ownerName": owner_names[session.human_user_id],
                 "status": session.status,
                 "sendMode": session.capabilities.send_mode,
+                # False: your own session set to Only me. Nobody else sees it, and it takes no message.
+                "shared": session.shared,
                 "canSend": native_session_tools.sendable(session, auth.user_id),
             }
             for session in matches[: max(1, min(limit, 50))]
@@ -237,7 +239,7 @@ async def find_rooms(query: str = "", limit: int = 30) -> dict:
 
 @mcp.tool()
 async def find_sessions(query: str = "", limit: int = 30) -> dict:
-    """Find shared coding sessions by readable title, provider or folder. Passing a sessionId as send_message session_id types your text into that live session (canSend says whether you may; a refused send fails with a code such as LOCAL_SESSION_FORBIDDEN, LOCAL_SESSION_NOT_FOUND or LOCAL_SESSION_CONFLICT, and message_receipt then reads rejected with that reason)."""
+    """Find coding sessions shared with the workspace, and your own that are not (shared false: Only me, takes no message), by readable title, provider or folder. Passing a sessionId as send_message session_id types your text into that live session (canSend says whether you may; a refused send fails with a code such as LOCAL_SESSION_FORBIDDEN, LOCAL_SESSION_NOT_FOUND or LOCAL_SESSION_CONFLICT, and message_receipt then reads rejected with that reason)."""
     return await sessions_for(_caller(), query, limit)
 
 

@@ -236,3 +236,32 @@ def test_a_mac_that_advertises_pickup_requests_lands_the_feature():
     assert presence.BAND_OWNER_ONLY_FEATURE in FEATURES
     newest = DeviceHeartbeat.model_validate({**frame, "pickupRequests": True, "bandOwnerOnly": True})
     assert newest.device_features() == ["bandOwnerOnly", "pickupRequests", "sessionPresence"]
+
+
+@pytest.mark.asyncio
+async def test_an_anyone_link_session_names_no_watcher_to_the_band(monkeypatch):
+    """The band is drawn in the terminal a public link shows: its watchers are counted, not named."""
+    monkeypatch.setattr(presence.store, "_query", _rows(viewers=["user_aden", "user_mira"], typed=["user_aden"]))
+    public = await presence.entry(_row(shareLink={"audience": "anyone", "publicId": "pub-1"}), 1)
+    assert [(v["userId"], v["name"], v["typing"]) for v in public["viewers"]] == [
+        ("user_aden", "", True),
+        ("user_mira", "", False),
+    ]
+    workspace = await presence.entry(_row(shareLink={"audience": "workspace"}), 1)
+    assert [v["name"] for v in workspace["viewers"]] == ["Aden", "Mira"]
+    # Nor anyone who asks, and an agent's ask carries no message.
+    ask = {"agentId": "agent-1", "agentName": "Friday", "requestId": "a1", "kind": "send", "text": "Run the tests"}
+    monkeypatch.setattr(presence.sessions, "pending_agent_asks", AsyncMock(return_value=[ask]))
+    asked = _row(
+        shareLink={"audience": "anyone", "publicId": "pub-1"},
+        joinRequests={"user_zoe": {"state": "pending", "requestId": "r1"}},
+        deviceFeatures=["sessionPresence", "agentMessageAsks"],
+    )
+    assert [(r["userId"], r["name"], r.get("text")) for r in (await presence.entry(asked, 1))["joinRequests"]] == [
+        ("agent-1", "An agent", ""),
+        ("user_zoe", "Someone", None),
+    ]
+    named = [
+        (r["name"], r.get("text")) for r in (await presence.entry({**asked, "shareLink": None}, 1))["joinRequests"]
+    ]
+    assert named == [("Friday", "Run the tests"), ("Zoe", None)]

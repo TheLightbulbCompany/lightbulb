@@ -82,8 +82,9 @@ async def test_people_targets_require_an_existing_direct_message(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_session_targets_exclude_offline_and_unsendable_sessions(monkeypatch):
-    def session(status: str, send_mode: str):
+    def session(status: str, send_mode: str, shared: bool = True):
         return SimpleNamespace(
+            shared=shared,
             session_id=uuid.uuid4(),
             provider="codex",
             title="Target",
@@ -97,11 +98,12 @@ async def test_session_targets_exclude_offline_and_unsendable_sessions(monkeypat
         )
 
     offline, unsendable, reachable = session("offline", "queue"), session("idle", "none"), session("idle", "queue")
+    only_me = session("idle", "queue", shared=False)  # its owner's own: listed for them, and the Mac refuses a send
     monkeypatch.setattr(tools.messaging, "list_rooms", AsyncMock(return_value=SimpleNamespace(rooms=[])))
     monkeypatch.setattr(
         tools.local_sessions,
         "list_workspace_sessions",
-        AsyncMock(return_value=SimpleNamespace(sessions=[offline, unsendable, reachable])),
+        AsyncMock(return_value=SimpleNamespace(sessions=[offline, unsendable, only_me, reachable])),
     )
     targets = await tools._targets(tools.AuthContext(user_id="user_owner", org_id="org_a"), "source")
     assert [entry["destination"] for entry in targets["sessions"]] == [f"session:{reachable.session_id}"]

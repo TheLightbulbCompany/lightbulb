@@ -419,7 +419,7 @@ it("lets the owner remove an ended session from the list, after a confirmation",
   rerender(view({ session: ended, ownerName: "You", own: true }));
   await userEvent.click(screen.getByRole("button", { name: "Remove Load test from the list" }));
   expect(onRemove).not.toHaveBeenCalled();
-  await userEvent.click(within(screen.getByRole("dialog", { name: "Remove this session from the list?" })).getByRole("button", { name: "Remove" }));
+  await userEvent.click(within(screen.getByRole("dialog", { name: "Remove “Load test” from the list?" })).getByRole("button", { name: "Remove" }));
   expect(onRemove).toHaveBeenCalledWith("s1");
 });
 
@@ -441,7 +441,7 @@ it("lets the owner end and remove a running session in one confirmed action, and
   rerender(view(session));
   expect(screen.queryByRole("button", { name: /from the list/ })).toBeNull();
   await userEvent.click(screen.getByRole("button", { name: "End and remove Load test" }));
-  const confirm = screen.getByRole("dialog", { name: "End and remove this session?" });
+  const confirm = screen.getByRole("dialog", { name: "End and remove “Load test”?" });
   expect(confirm).toHaveTextContent("It stops on your Mac, and is removed for everyone in the workspace.");
   expect(onRemove).not.toHaveBeenCalled();
   await userEvent.click(within(confirm).getByRole("button", { name: "End and remove" }));
@@ -496,7 +496,7 @@ it("closes after a removal succeeded, never before, and for a displayed fork too
   render(<SessionFocus focus={{ sessionId: "s1" }} entries={[{ session: origin, ownerName: "You", own: true }, { session: fork, ownerName: "You", own: true }]}
     loading={false} hintRevision={0} client={client} resolveSessionOwner={resolveSessionOwner} onAccessLost={vi.fn()} onClose={onClose} onRemove={onRemove} />);
   await userEvent.click(screen.getByRole("button", { name: "Remove Load test from the list" }));
-  const confirm = screen.getByRole("dialog", { name: "Remove this session from the list?" });
+  const confirm = screen.getByRole("dialog", { name: "Remove “Load test” from the list?" });
   await userEvent.click(within(confirm).getByRole("button", { name: "Remove" }));
   // Refused: the panel and its confirmation stay, and say so.
   expect(onRemove).toHaveBeenCalledWith("s2");

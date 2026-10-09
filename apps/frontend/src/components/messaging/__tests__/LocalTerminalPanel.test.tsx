@@ -1,4 +1,5 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { LocalSession } from "@lightbulb/shared";
@@ -42,6 +43,28 @@ it("Details takes the terminal away so the sheet is not drawn under it", async (
   await userEvent.click(screen.getByRole("button", { name: "Details" }));
   await screen.findByRole("dialog");
   await waitFor(() => expect(invoke).toHaveBeenLastCalledWith("terminal_panel", expect.objectContaining({ rect: null })));
+});
+
+// Round 18: "End and remove this session?" opened under the terminal, which the app draws above the whole page.
+it("a modal dialog takes the terminal away and closing it brings it back; a popover or the emoji picker does not", async () => {
+  const invoke = desktop({ live: true });
+  render(<>{panel(session)}<Dialog open><DialogContent><DialogTitle>End and remove “x”?</DialogTitle><DialogDescription>It stops.</DialogDescription></DialogContent></Dialog></>);
+  // The app's own confirm dialog (what SessionRemoveButton renders), not a stand-in.
+  await waitFor(() => expect(invoke).toHaveBeenLastCalledWith("terminal_panel", expect.objectContaining({ rect: null })));
+  cleanup();
+  invoke.mockClear();
+  render(panel(session));
+  await waitFor(() => expect(invoke).toHaveBeenLastCalledWith("terminal_panel", expect.objectContaining({ rect: expect.anything() })));
+  // Not modal (Radix Popover content and the emoji picker are `role="dialog"` too): the terminal stays.
+  const popover = document.body.appendChild(Object.assign(document.createElement("div"), { role: "dialog" }));
+  await new Promise((r) => setTimeout(r, 300));
+  expect(invoke).toHaveBeenLastCalledWith("terminal_panel", expect.objectContaining({ rect: expect.anything() }));
+  popover.remove();
+  const dialog = document.body.appendChild(Object.assign(document.createElement("div"), { role: "presentation" }));
+  dialog.setAttribute("data-modal-overlay", "");
+  await waitFor(() => expect(invoke).toHaveBeenLastCalledWith("terminal_panel", expect.objectContaining({ rect: null })));
+  dialog.remove();
+  await waitFor(() => expect(invoke).toHaveBeenLastCalledWith("terminal_panel", expect.objectContaining({ rect: expect.anything() })));
 });
 
 it("an ended session never asks for a terminal", async () => {

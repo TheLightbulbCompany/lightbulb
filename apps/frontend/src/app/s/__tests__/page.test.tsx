@@ -159,7 +159,59 @@ describe("session link page", () => {
     expect(openCalls()).toBe(2); // ended: the poll stopped
   });
 
-  it("stops polling and shows the refusal when the link is turned off", async () => {
+  // Round 18: the owner narrowed the link and widened it again; the open page never came back.
+  it("keeps asking after a refusal, slowly and for ten minutes, and comes back when the link opens again", async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
+    let open = true;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith("/viewing")) return { ok: true, status: 200, json: async () => seat } as Response;
+      return open ? { ok: true, status: 200, json: async () => model({ title: "ALPHA18" }) } as Response
+        : { ok: false, status: 404, json: async () => ({ message: "This link was turned off or is not for you." }) } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const openCalls = () => fetchMock.mock.calls.filter(c => String(c[0]).endsWith("/open")).length;
+    render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByRole("heading", { name: "ALPHA18" })).toBeTruthy();
+    open = false; // narrowed to My workspace
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
+    expect(screen.getByRole("alert").textContent).toBe("Sign in to open this session.");
+    const refusedAt = openCalls();
+    await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
+    expect(openCalls()).toBe(refusedAt + 2); // one every 30 s
+    open = true; // Anyone with the link again
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
+    expect(screen.getByRole("heading", { name: "ALPHA18" })).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+    // Refused for good: it gives up after ten minutes.
+    open = false;
+    await act(async () => { await vi.advanceTimersByTimeAsync(30 * 60000); });
+    const stopped = openCalls();
+    await act(async () => { await vi.advanceTimersByTimeAsync(10 * 60000); });
+    expect(openCalls()).toBe(stopped);
+  });
+
+  it("stops asking while the tab is hidden, and asks at once when the person comes back", async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
+    let open = false;
+    const fetchMock = vi.fn(async () => open ? { ok: true, status: 200, json: async () => model({ title: "ALPHA18", state: "offline" }) } as Response
+      : { ok: false, status: 404, json: async () => ({ message: "This link was turned off or is not for you." }) } as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(5 * 60000); });
+    expect(fetchMock).toHaveBeenCalledTimes(1); // hidden: nothing after the first refusal
+    open = true;
+    visibility.mockReturnValue("visible");
+    await act(async () => { document.dispatchEvent(new Event("visibilitychange")); await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByRole("heading", { name: "ALPHA18" })).toBeTruthy();
+    visibility.mockRestore();
+  });
+
+  it("shows the refusal when the link is turned off, and asks again only slowly", async () => {
     vi.useFakeTimers();
     window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
     const opens: Array<{ ok: boolean; body: object }> = [{ ok: true, body: model({ continuable: true }) }];
@@ -175,7 +227,7 @@ describe("session link page", () => {
     // Signed out, so the same words as any other refusal: sign in, or it was turned off.
     expect(screen.getByRole("alert").textContent).toBe("Sign in to open this session.");
     const openCalls = () => fetchMock.mock.calls.filter(c => String(c[0]).endsWith("/open")).length;
-    await act(async () => { await vi.advanceTimersByTimeAsync(90000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(29000); });
     expect(openCalls()).toBe(2);
   });
 
@@ -423,6 +475,27 @@ describe("session link page", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(screen.getByTestId("terminal")).toBeTruthy();
     expect(screen.getByRole("region", { name: "Continue" })).toBeTruthy();
+  });
+
+  // Round 18: a signed-out person saw only "Sign up to continue", and nothing about the Mac app or the command.
+  it("tells a signed-out person how to continue: the Mac app, then the command; sign-up is the CLI's confirm step", async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => ({ ok: true, status: 200, json: async () => url.endsWith("/viewing") ? seat : model({ continuable: true }) }) as Response));
+    const { unmount } = render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const steps = screen.getByRole("region", { name: "Continue" });
+    expect(steps.querySelector("a")?.getAttribute("href")).toBe("/api/download/desktop");
+    expect(steps.textContent).toContain("lightbulb continue '");
+    expect(steps.textContent).toContain("It opens this page again, where you sign up, free, and confirm");
+    expect(screen.queryByRole("button", { name: "Sign up to continue" })).toBeNull();
+    unmount();
+    // The page the command opened: here signing up is the next step.
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok", port: 4321, challenge: "c".repeat(43) }));
+    render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByRole("button", { name: "Sign up to continue" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Continue" }).textContent).not.toContain("lightbulb continue '");
   });
 
   it("says why there is no terminal, and tries again later", async () => {

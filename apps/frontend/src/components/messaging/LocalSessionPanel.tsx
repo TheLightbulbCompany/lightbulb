@@ -5,7 +5,7 @@ import { useAuth } from "@clerk/nextjs";
 import { capture } from "@/lib/analytics";
 import { Info, MessageSquare, Send } from "lucide-react";
 import {
-  canControlSession, useSessionResume, mainEvents, pendingApproval, receiptChip, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionPlan, sessionStatus, sessionTitle, unavailableReason,
+  audienceLine, canControlSession, useSessionResume, mainEvents, pendingApproval, receiptChip, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionPlan, sessionStatus, sessionTitle, unavailableReason,
   conversationOnly, joinRequestView, pickupRequestLine, pickupStatus, sessionScreenNotice, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionJoinRequest, useSessionOutbox,
   type LocalSession, type SessionControlClient, type SessionSource,
 } from "@lightbulb/shared";
@@ -14,7 +14,7 @@ import { NativeSessionTranscript, ReceiptChip, type Person } from "./NativeSessi
 import { SessionApprovalCard } from "./SessionControls";
 import { SessionTerminalView, type SessionFrames } from "./SessionTerminalView";
 import { useOptionalLiveEvents } from "@/hooks/useLiveEvents";
-import { useLocalTerminal } from "./localTerminal";
+import { useLocalAudience, useLocalTerminal } from "./localTerminal";
 import { toBase64 } from "./sessionInput";
 import { SessionDetails, type SessionDetailsTab } from "./SessionDetails";
 import { canPickUp, SessionPickup } from "./SessionPickup";
@@ -103,6 +103,8 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     placed.current = session.sessionId;
     box.scrollTop = 0; box.scrollLeft = 0;
   };
+  // The owner's own terminal on this Mac says who watches as the web terminal view does (`audienceLine`).
+  const audience = audienceLine(useLocalAudience(local === "local", session.sessionId, session.generation));
   const canWatch = local === "none" && !!onEvent && !!client.watchLocalSession;
   const liveEvents = useOptionalLiveEvents();
   const framesChannel = liveEvents?.sessionFramesChannel(session.sessionId) ?? null;
@@ -287,7 +289,8 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     </div>}
     {typing.length > 0 && <p role="status" className="text-sm text-muted-foreground">{typing.join(", ")} {typing.length === 1 ? "is" : "are"} typing</p>}
     {local !== "none"
-      ? <div ref={slot} className="local-session-terminal" role="region" aria-label="Session terminal" />
+      ? <>{audience && <div className="session-terminal-size local-session-audience"><span className="session-terminal-hint">{audience}</span></div>}
+        <div ref={slot} className="local-session-terminal" role="region" aria-label="Session terminal" /></>
       : <>
       {convoEmpty ? endedPanel : convo ? <>{session.status === "ended" && endedLine}{session.status === "offline" && offlinePanel}<p className="session-ended-line" role="note">{notice.title} {notice.body}</p></>
         : session.status === "ended" ? (endedScreen || keptWatching ? endedLine : endedPanel) : session.status === "offline" ? offlinePanel : notStarted ? noticePanel : null}

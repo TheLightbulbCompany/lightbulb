@@ -150,6 +150,7 @@
 .local-session-composer { max-height: 45%; overflow: auto; }
 /* The desktop app draws the live terminal over this box, in a webview of its own. */
 .local-session-terminal { flex: 1; min-height: 240px; background: var(--terminal-bg); }
+.local-session-audience { background: var(--terminal-bg); padding: 6px 8px 0; }
 .local-session-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 /* Waiting on the owner's terminal: impossible to miss, but no remote approve. */
 .local-session-waiting { display: grid; gap: 4px; justify-items: start; margin: 8px 16px 0; padding: 10px 12px; border: 1px solid var(--warn); border-radius: 6px; background: color-mix(in srgb, var(--warn) 8%, var(--background)); color: var(--foreground); }

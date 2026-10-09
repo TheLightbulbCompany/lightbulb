@@ -723,6 +723,11 @@ async fn snapshot_once(
     let sid = &wanted.session_id;
     let conversation = wanted.conversation_id.clone();
     let Some(transcript) = config_dir().and_then(|c| find_transcript(&c, &conversation)) else {
+        // Claude writes the transcript at the first turn. Before it, there is nothing to send yet:
+        // "missing" is final (the backend stops asking), so only an ended session says it.
+        if !wanted.ended {
+            return Ok(None);
+        }
         return unavailable(author, client, sid, "transcript-missing").await;
     };
     let meta = fs::metadata(&transcript).map_err(|_| "transcript unreadable")?;
@@ -1459,5 +1464,18 @@ mod tests {
             "invalid ids and non-claude providers are dropped"
         );
         assert!(!list[0].busy && list[0].ended, "no mirror: not busy, ended");
+    }
+
+    #[tokio::test]
+    async fn no_transcript_waits_for_the_first_turn_and_is_missing_only_once_ended() {
+        let dir = tempfile::tempdir().unwrap();
+        // No key: any report fails before it leaves, so Ok(None) proves nothing was said.
+        let author = Author { dir: dir.path().into(), api: "http://127.0.0.1:9".into(), key_pem: String::new(), device: "d".into(), owner: "o".into() };
+        let mut wanted = Wanted { session_id: "7d3f2a1e-1111-4222-8333-944455556666".into(),
+            conversation_id: uuid::Uuid::new_v4().to_string(), busy: false, ended: false };
+        let client = reqwest::Client::new();
+        assert_eq!(snapshot_once(&author, &client, &wanted, false, &mut HashMap::new()).await, Ok(None), "not written yet: ask again later");
+        wanted.ended = true;
+        assert!(snapshot_once(&author, &client, &wanted, false, &mut HashMap::new()).await.is_err(), "ended with none: reported missing");
     }
 }

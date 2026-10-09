@@ -658,6 +658,14 @@ pub async fn local_sessions_auth(
     })
 }
 
+/// Who watches this run, as counts: the owner's own app shows them over its terminal as the web
+/// terminal does (`SessionTerminalView`), read from the presence the band draws. No network.
+#[tauri::command]
+pub fn local_session_audience(session_id: String, generation: String) -> Value {
+    let entry = super::presence::get(&session_id, &generation);
+    json!({"watching": entry.as_ref().map_or(0, |e| e.viewers.len()), "viaLink": entry.map_or(0, |e| e.link_viewers)})
+}
+
 #[tauri::command]
 pub async fn local_sessions_status(
     app: tauri::AppHandle,
@@ -1147,6 +1155,16 @@ async fn enroll_remote(token: &str, body: Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audience_counts_this_runs_link_viewers_and_nothing_for_another_run() {
+        use super::super::presence;
+        let _g = presence::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        const SID: &str = "a0d1e2c3-0000-4000-8000-0000000000a1";
+        presence::set(SID, presence::Entry { generation: "g1".into(), paused: false, viewers: vec![], join_requests: vec![], link_viewers: 3, at: 0 });
+        assert_eq!(local_session_audience(SID.into(), "g1".into()), json!({"watching": 0, "viaLink": 3}));
+        assert_eq!(local_session_audience(SID.into(), "g2".into()), json!({"watching": 0, "viaLink": 0}));
+    }
 
     #[test]
     fn mod_socket_and_native_tools_serve_while_every_shared_worker_is_blocked() {

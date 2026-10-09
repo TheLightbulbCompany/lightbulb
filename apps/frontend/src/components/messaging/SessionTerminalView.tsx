@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ApiError, NEW_SCREEN, SNAPSHOT_WAIT_MS, receiveScreen, settleScreen, snapshotWaits, type LiveEvent, type LocalSession, type SessionScreen } from "@lightbulb/shared";
+import { ApiError, audienceLine, NEW_SCREEN, SNAPSHOT_WAIT_MS, receiveScreen, settleScreen, snapshotWaits, type LiveEvent, type LocalSession, type SessionScreen } from "@lightbulb/shared";
 import type { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { createInputQueue, dropMouseReports, dropProbeReplies, SHIFT_ENTER } from "./sessionInput";
@@ -158,8 +158,7 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     let refused = false;
     setFull(null);
     const ping = (fresh: boolean) => void watch(session.sessionId, fresh).then((counts) => {
-      const { watching = 0, viaLink = 0 } = (counts ?? {}) as { watching?: number; viaLink?: number };
-      setAudience(viaLink ? [watching && `${watching} watching`, `${viaLink} via link`].filter(Boolean).join(" · ") : "");
+      setAudience(audienceLine(counts));
     }).catch((e) => {
       // A refused watch (Only me, offline, ended, full) is a session nobody watches through this view: no count.
       setAudience("");

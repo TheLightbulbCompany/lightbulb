@@ -1855,6 +1855,7 @@ end tell"#,
         .invoke_handler(tauri::generate_handler![
             local_sessions::enrollment::local_sessions_auth,
             local_sessions::enrollment::local_sessions_status,
+            local_sessions::enrollment::local_session_audience,
             local_sessions::enrollment::local_sessions_set,
             local_sessions::enrollment::local_sessions_repair,
             local_sessions::enrollment::local_sessions_revoke,

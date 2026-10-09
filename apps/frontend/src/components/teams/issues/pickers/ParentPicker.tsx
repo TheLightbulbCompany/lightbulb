@@ -28,11 +28,9 @@ export interface ParentPickerProps {
  * "Clear parent" option. The current parent is shown as an in-shell link when
  * the popover is closed (identifier + title, matching the old read-only row).
  *
- * Cycle prevention is intentionally shallow — we only exclude the issue itself
- * from the candidate list, which blocks the trivial self-parent cycle. A full
- * descendant exclusion would need the subtree, which the rail doesn't load; the
- * server is the authority on deeper cycles (it rejects a parent that would
- * create one), so the picker stays cheap and lets the BFF be the backstop. */
+ * The issue itself and every descendant in the loaded list are excluded, so the
+ * picker never offers a parent that would make a cycle. The BFF refuses one too
+ * (PATCH /issues/{id}), which covers sub-tasks this list does not hold. */
 export function ParentPicker({
   issueId,
   parentId,
@@ -58,8 +56,19 @@ export function ParentPicker({
 
   const candidates = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return (allIssues ?? [])
-      .filter((candidate) => candidate.id !== issueId)
+    const list = allIssues ?? [];
+    const excluded = new Set([issueId]);
+    for (let grew = true; grew; ) {
+      grew = false;
+      for (const i of list) {
+        if (i.parentId && excluded.has(i.parentId) && !excluded.has(i.id)) {
+          excluded.add(i.id);
+          grew = true;
+        }
+      }
+    }
+    return list
+      .filter((candidate) => !excluded.has(candidate.id))
       .filter((candidate) => {
         if (!q) return true;
         const label = `${candidate.identifier ?? ""} ${candidate.title}`.toLowerCase();

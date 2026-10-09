@@ -857,6 +857,31 @@ async def test_patch_issue_forwards_explicit_null_goal_to_detach():
 
 
 @pytest.mark.asyncio
+async def test_patch_issue_refuses_parent_that_would_make_a_cycle():
+    """Reparenting a task under its own grandchild is refused; a normal parent passes."""
+    from fastapi import HTTPException
+
+    fake_admin = MagicMock()
+    fake_admin.patch_issue = AsyncMock(return_value={"id": "iss_1"})
+    fake_admin.get_issue = AsyncMock(
+        return_value={"id": "iss_grandchild", "ancestors": [{"id": "iss_child"}, {"id": "iss_1"}]}
+    )
+    fake_agents_module = MagicMock()
+    fake_agents_module._admin.return_value = fake_admin
+    fake_ctx = MagicMock()
+
+    with patch("routers.teams.issues._agents", fake_agents_module):
+        with pytest.raises(HTTPException) as exc:
+            await patch_issue(issue_id="iss_1", body=PatchIssueBody(parent_id="iss_grandchild"), ctx=fake_ctx)
+        assert exc.value.status_code == 422
+        fake_admin.patch_issue.assert_not_called()
+
+        fake_admin.get_issue.return_value = {"id": "iss_other", "ancestors": [{"id": "iss_root"}]}
+        await patch_issue(issue_id="iss_1", body=PatchIssueBody(parent_id="iss_other"), ctx=fake_ctx)
+        assert fake_admin.patch_issue.call_args.kwargs["body"] == {"parentId": "iss_other"}
+
+
+@pytest.mark.asyncio
 async def test_patch_issue_omits_unset_fields():
     """Empty PATCH body must not send unrelated keys to upstream."""
     fake_admin = MagicMock()

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Bot, ScrollText, Wrench, CalendarClock, LayoutDashboard, History } from "lucide-react";
 import { AgentOverviewTab } from "./AgentOverviewTab";
 import { AgentInstructionsTab } from "./AgentInstructionsTab";
@@ -81,7 +81,7 @@ export function AgentInspectorPanel({
 
   // Header name/emoji: read from agents.list exactly as AgentsPanel does (the
   // inspector only has an id from the URL, not the agent object).
-  const { agents: gatewayAgents } = useAgents();
+  const { agents: gatewayAgents, isSettled, refresh } = useAgents();
   const agent: AgentEntry | undefined = (gatewayAgents as AgentEntry[]).find(
     (a: AgentEntry) => a.id === resolvedAgentId,
   );
@@ -91,6 +91,17 @@ export function AgentInspectorPanel({
       rosterError ? undefined : rosterAgents.find((a) => a.id === resolvedAgentId),
     [rosterError, rosterAgents, resolvedAgentId],
   );
+
+  // An agent created through the Teams roster (or a marketplace hire) is in
+  // the roster before agents.list's cache knows it, so the header showed the
+  // raw id and the Overview fields were blank. Refetch once per such agent.
+  const refreshedFor = useRef<string | null>(null);
+  const missingFromGateway = isSettled && !agent && orgAgent !== undefined;
+  useEffect(() => {
+    if (!missingFromGateway || refreshedFor.current === resolvedAgentId) return;
+    refreshedFor.current = resolvedAgentId;
+    void refresh();
+  }, [missingFromGateway, resolvedAgentId, refresh]);
 
   // A deep link can preselect a tab. Seeded at mount; manual tab clicks own the
   // state thereafter. A new command with a different tab re-applies (render-time
@@ -118,7 +129,7 @@ export function AgentInspectorPanel({
   // is found, and only falls back to agentId itself otherwise — never to null.
   const inspectedAgentId = resolvedAgentId ?? agentId;
   const emoji = agent?.identity?.emoji;
-  const displayName = agent?.name || inspectedAgentId;
+  const displayName = agent?.name || orgAgent?.name || inspectedAgentId;
 
   return (
     <div className="flex flex-col h-full">

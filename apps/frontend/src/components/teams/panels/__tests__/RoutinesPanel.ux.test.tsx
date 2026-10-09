@@ -186,3 +186,11 @@ describe("RoutinesPanel — Run now", () => {
     expect(notifySuccess).not.toHaveBeenCalled();
   });
 });
+
+describe("RoutinesPanel — agent filter", () => {
+  it("reads 'All agents' while no agent is picked, not 'Unassigned'", () => {
+    render(<RoutinesPanel />);
+    expect(screen.getByRole("button", { name: "All agents" })).toBeInTheDocument();
+    expect(screen.queryByText("Unassigned")).toBeNull();
+  });
+});

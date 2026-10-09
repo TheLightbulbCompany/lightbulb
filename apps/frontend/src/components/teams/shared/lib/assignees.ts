@@ -14,6 +14,16 @@ export function assignableMembers(members: readonly CompanyMember[]): CompanyMem
   return members.flatMap((m) => (m.paperclipUserId ? [{ ...m, userId: m.paperclipUserId }] : []));
 }
 
+/** The signed-in member's Paperclip user id (what an issue's `assigneeUserId`
+ * holds), from the `/members` roster and their Clerk id. Null until known. */
+export function paperclipUserIdOf(
+  members: readonly CompanyMember[] | undefined,
+  clerkUserId: string | null | undefined,
+): string | null {
+  if (!clerkUserId) return null;
+  return members?.find((m) => m.userId === clerkUserId)?.paperclipUserId ?? null;
+}
+
 export interface AssigneeSelection {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;

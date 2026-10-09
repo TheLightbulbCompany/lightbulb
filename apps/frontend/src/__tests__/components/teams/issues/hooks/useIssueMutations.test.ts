@@ -67,9 +67,11 @@ describe("useIssueMutations", () => {
       await result.current.update("iss_1", { status: "in_progress" });
     });
     expect(mockPatch).toHaveBeenCalledWith("/issues/iss_1", { status: "in_progress" });
-    // 2 mutate calls: detail key + inbox predicate
+    // 2 mutate calls: every issue-detail key (this one included) + inbox predicate
     expect(mockMutate).toHaveBeenCalledTimes(2);
-    expect(mockMutate).toHaveBeenCalledWith("/teams/issues/iss_1");
+    const [detailMatcher] = mockMutate.mock.calls[0] as [(key: unknown) => boolean];
+    expect(detailMatcher("/teams/issues/iss_1")).toBe(true);
+    expect(detailMatcher("/teams/issues/iss_1/comments")).toBe(false);
   });
 
   test("update forwards the full blockedByIssueIds array (replace semantics)", async () => {

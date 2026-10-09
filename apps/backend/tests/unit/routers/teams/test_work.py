@@ -510,6 +510,16 @@ def test_create_project(client, admin):
     assert body == {"name": "Q3", "description": "Quarter"}
 
 
+def test_patch_project_forwards_null_description_to_clear_it(client, admin):
+    r = client.patch(
+        "/api/v1/teams/projects/pr_1",
+        json={"description": None},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    assert admin.patch_project.await_args.kwargs["body"] == {"description": None}
+
+
 def test_get_project(client, admin):
     r = client.get(
         "/api/v1/teams/projects/pr_1",

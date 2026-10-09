@@ -37,6 +37,9 @@ export interface AssigneePickerProps {
   /** Noun used by empty/search copy. Routine forms reuse the same
    * company-agent picker for their reviewer. */
   noun?: "assignee" | "reviewer";
+  /** Label for "nothing picked" (trigger and the clear option) when the picker
+   * is a filter, where null means "everyone" rather than "unassigned". */
+  emptyLabel?: string;
   className?: string;
 }
 
@@ -54,6 +57,7 @@ export function AssigneePicker({
   onUserChange,
   variant = "row",
   noun = "assignee",
+  emptyLabel,
   className,
 }: AssigneePickerProps) {
   const [open, setOpen] = useState(false);
@@ -84,9 +88,8 @@ export function AssigneePicker({
           : "Unknown agent"
         : selectedUserId
           ? "Unknown member"
-          : noun === "reviewer"
-            ? "No reviewer"
-            : "Unassigned";
+          : emptyLabel ??
+            (noun === "reviewer" ? "No reviewer" : "Unassigned");
   const hasAssignee = Boolean(selectedAgent || selectedMember);
 
   // Merge recent + remainder so frequently-picked bubble up. Recent ids
@@ -299,7 +302,7 @@ export function AssigneePicker({
               )}
               style={{ color: "var(--midnight-muted)" }}
             >
-              No {noun}
+              {emptyLabel ?? `No ${noun}`}
             </button>
           </li>
           {peopleEnabled && (

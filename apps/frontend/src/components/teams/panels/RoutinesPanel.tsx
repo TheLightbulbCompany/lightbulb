@@ -531,6 +531,7 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
                 agents={agents}
                 selectedAgentId={agentPick}
                 onChange={setAgentPick}
+                emptyLabel="All agents"
                 variant="inline"
                 className="border border-[var(--edge)]"
               />

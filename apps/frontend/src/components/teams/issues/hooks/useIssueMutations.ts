@@ -54,8 +54,10 @@ export function useIssueMutations(): UseIssueMutationsResult {
   const update = useCallback(
     async (issueId: string, input: IssueUpdateInput): Promise<Issue> => {
       const updated = await patch<Issue>(`/issues/${issueId}`, input);
-      // Invalidate the detail key + inbox lists.
-      mutate(swrKey(teamsQueryKeys.issues.detail(issueId)));
+      // Every cached issue detail, not just this one: another task's
+      // "Blocking"/"Blocked by" chips show this task and its status, so a
+      // blocker or status change leaves them stale until reload otherwise.
+      mutate((key) => typeof key === "string" && /^\/teams\/issues\/[^/?]+$/.test(key));
       mutate((key) => typeof key === "string" && key.startsWith("/teams/inbox?"));
       return updated;
     },

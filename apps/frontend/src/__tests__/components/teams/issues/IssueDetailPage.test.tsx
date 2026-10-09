@@ -279,7 +279,9 @@ describe("IssueDetailPage", () => {
     const issue: Issue = {
       id: "iss_1",
       title: "Gated task",
-      status: "todo",
+      // Monitors are editable only on an agent-owned in-progress task.
+      status: "in_progress",
+      assigneeAgentId: "ag_rev",
       executionPolicy: policy,
     };
     vi.mocked(useIssueDetail).mockReturnValue({

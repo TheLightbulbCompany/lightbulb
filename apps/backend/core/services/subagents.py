@@ -1,4 +1,4 @@
-"""Background subagents in rooms (docs/superpowers/specs/2026-10-09-background-subagents-design.md).
+"""Background subagents in rooms.
 
 The bridge relays Hermes's `subagent.*` events here; this module publishes them on the room's
 CURRENT live channel (a removed member's rotated key stays silent), and serves the product

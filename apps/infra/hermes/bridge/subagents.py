@@ -1,6 +1,5 @@
 """Background subagents: relay Hermes's `subagent.*` progress events to the backend, which
-publishes them on the room's current live channel, and serve the subagent RPCs
-(docs/superpowers/specs/2026-10-09-background-subagents-design.md).
+publishes them on the room's current live channel, and serve the subagent RPCs.
 
 A child keeps its parent turn's `tool_progress_callback` for its whole life, so its events keep
 arriving through FramePublisher.activity after that turn's run has closed. They cannot go out on

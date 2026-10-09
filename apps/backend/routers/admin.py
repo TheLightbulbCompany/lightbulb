@@ -80,14 +80,15 @@ def _paperclip_repo():
 class IssueCreditRequest(BaseModel):
     amount_cents: int = Field(..., gt=0, description="Credit amount in cents")
     reason: str = Field(..., min_length=1, description="Reason for credit (audited)")
-    request_id: str | None = Field(
-        None,
+    request_id: str = Field(
+        ...,
         min_length=8,
         max_length=64,
         pattern=r"^[A-Za-z0-9_-]+$",
         description=(
             "One id per admin submission. A retry of the same submission reuses it and is "
-            "deduplicated; a second deliberate credit sends a new one and is a new credit."
+            "deduplicated; a second deliberate credit sends a new one and is a new credit. Required: "
+            "without it two identical credits would merge into one Stripe write."
         ),
     )
 

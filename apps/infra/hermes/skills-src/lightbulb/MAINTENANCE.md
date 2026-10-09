@@ -268,6 +268,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- apps/backend/routers/integrations.py; core/services/hermes_profiles.py (translate_mcp_servers)
   - Marketplace flows ....... references/marketplace.md
                               <- apps/backend/routers/{marketplace_listings,marketplace_import}.py; core/services/{marketplace_service,agent_export,catalog_service,claude_code_import}.py
+                                 routers/marketplace_purchases.py (checkout: seller cannot buy own listing)
   - Starter team + roster ... references/company-and-plans.md
                               <- apps/backend/core/services/paperclip_provisioning.py (STARTER_ROSTER + provision_org);
                                  core/services/{agent_provenance,paperclip_agent_lifecycle}.py;
@@ -278,6 +279,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  apps/frontend/src/components/messaging/FirstReplyChips.tsx
   - Plans / providers ....... references/company-and-plans.md
                               <- apps/backend/core/services/{billing_service,provision_gate,owner_facts}.py
+                                 (billing_service.create_workspace_checkout: confirm=True to change a live plan; prorated onto the next invoice)
   - Voice calls ............. references/company-and-plans.md ("Voice calls")
                               <- apps/backend/core/billing/voice_billing.py (free 10 min/UTC day, credits mode, MIN_CALL_SECONDS);
                                  core/services/voice_calls.py (30 min cap, one free call at a time, no transcript);

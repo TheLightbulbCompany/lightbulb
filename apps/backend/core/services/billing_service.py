@@ -653,9 +653,7 @@ async def pause_subscription_for_owner(user_id: str) -> dict:
     return {"status": "paused", "subscription_id": sub_id}
 
 
-async def issue_credit_for_owner(
-    user_id: str, *, amount_cents: int, reason: str, request_id: str | None = None
-) -> dict:
+async def issue_credit_for_owner(user_id: str, *, amount_cents: int, reason: str, request_id: str) -> dict:
     """Admin: credit the user's Stripe customer balance by amount_cents.
 
     Stripe applies negative balance amounts as a credit toward future invoices.
@@ -670,7 +668,7 @@ async def issue_credit_for_owner(
     # Without it the key was (amount, reason) alone, and Stripe merged two
     # identical credits issued within its 24 h idempotency window.
     reason_hash = hashlib.sha256(f"{amount_cents}:{reason}".encode("utf-8")).hexdigest()[:16]
-    key = f"balance_tx:{customer_id}:{reason_hash}" + (f":{request_id}" if request_id else "")
+    key = f"balance_tx:{customer_id}:{reason_hash}:{request_id}"
     try:
         txn = stripe.Customer.create_balance_transaction(
             customer_id,

@@ -35,6 +35,10 @@ export function BillingActionsPanel({ userId, email }: BillingActionsPanelProps)
   const [creditAmount, setCreditAmount] = React.useState("");
   const [creditReason, setCreditReason] = React.useState("");
   const [invoiceId, setInvoiceId] = React.useState("");
+  // One submission id per credit (amount + reason) until a definitive outcome.
+  // A lost response may mean Stripe already created the credit, so a retry of
+  // the same credit must reuse the id (Stripe returns the earlier one).
+  const creditSubmission = React.useRef<{ key: string; id: string } | null>(null);
 
   // Without an email we can't enforce the typed-confirmation gate the way the
   // spec requires. Surface the constraint instead of silently degrading.
@@ -86,9 +90,16 @@ export function BillingActionsPanel({ userId, email }: BillingActionsPanelProps)
       setError("Issue credit failed: reason is required.");
       return;
     }
-    // One id per submission: crypto.randomUUID() is new on every confirmed
-    // submit, and the dialog's busy state blocks a double click inside one.
-    const result = await issueCredit(userId, cents, creditReason.trim(), crypto.randomUUID());
+    const key = `${cents}:${creditReason.trim()}`;
+    if (creditSubmission.current?.key !== key) {
+      creditSubmission.current = { key, id: crypto.randomUUID() };
+    }
+    const result = await issueCredit(userId, cents, creditReason.trim(), creditSubmission.current.id);
+    // Definitive: a success, or a 4xx the server refused before any write.
+    // Network errors and 5xx keep the id so a retry cannot credit twice.
+    if (result.ok || (result.status >= 400 && result.status < 500)) {
+      creditSubmission.current = null;
+    }
     if (result.ok && (result.data as { status?: string } | undefined)?.status === "duplicate") {
       setNotice("This credit was already issued — Stripe returned the earlier one; no new credit was created.");
     } else if (result.ok) {

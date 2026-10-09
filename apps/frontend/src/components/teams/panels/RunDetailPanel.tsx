@@ -12,7 +12,7 @@ import { EditorialButton } from "@/components/teams/shell";
 import { LiveRunDot } from "@/components/teams/shared/components/LiveRunDot";
 import { formatSilenceAgeMs, liveRunActivity, liveRunTitle } from "@/components/teams/shared/lib/liveRuns";
 import { isActiveStatus, statusColor } from "@/components/teams/shared/lib/runStatus";
-import { isAdapterNotice } from "@/components/teams/runs/runLogToMessages";
+import { isBenignFallbackNotice } from "@/components/teams/runs/runLogToMessages";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import type { CompanyAgent, RunDetail, RunEvent } from "@/components/teams/shared/types";
 
@@ -249,9 +249,10 @@ export function RunDetailPanel({ runId }: { runId: string }) {
   // Adapter chatter ("falling back to polling") is not the run's error, and a run that did
   // not fail has no error to show: its leftover stderr is only a neutral log.
   const runFailed = s === "failed" || s === "timed_out";
+  // A failed run keeps every stderr line: a gateway failure may be its only diagnostic.
   const stderrText = (run.stderrExcerpt ?? "")
     .split("\n")
-    .filter((line) => line.trim() && !isAdapterNotice(line))
+    .filter((line) => line.trim() && (runFailed || !isBenignFallbackNotice(line)))
     .join("\n");
   const canResume = s === "failed" && run?.errorCode === "process_lost" && !!run?.agentId;
 

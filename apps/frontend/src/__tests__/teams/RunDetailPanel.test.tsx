@@ -79,12 +79,18 @@ describe("RunDetailPanel", () => {
     expect(container.querySelector('section[style*="var(--err)"]')).toBeNull();
   });
 
+  it("keeps a gateway failure line in the error box of a failed run", () => {
+    runWith("failed", "[hermes-gateway] status poll failed: 503");
+    const { container } = render(<RunDetailPanel runId="r1" />);
+    expect(container.querySelector('section[style*="var(--err)"]')).not.toBeNull();
+    expect(screen.getByText("[hermes-gateway] status poll failed: 503")).toBeInTheDocument();
+  });
+
   it("still shows real stderr of a failed run as an error", () => {
     runWith("failed", `${NOTICE}\nTraceback: boom`);
     const { container } = render(<RunDetailPanel runId="r1" />);
     expect(container.querySelector('section[style*="var(--err)"]')).not.toBeNull();
-    expect(screen.getByText("Traceback: boom")).toBeInTheDocument();
-    expect(screen.queryByText(/falling back to polling/)).toBeNull();
+    expect(screen.getByText(/Traceback: boom/)).toBeInTheDocument();
   });
 
   it("falls back to the legacy generic run when the heartbeat-run 404s", () => {

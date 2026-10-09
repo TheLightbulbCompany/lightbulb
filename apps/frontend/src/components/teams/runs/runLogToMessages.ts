@@ -38,6 +38,11 @@ function noticePrefix(line: string): string | null {
   return ADAPTER_NOTICE_PREFIXES.find((p) => t.startsWith(p)) ?? null;
 }
 
+/** The one adapter line that is benign noise: our facade has no events route, so every run falls back to polling. */
+export function isBenignFallbackNotice(line: string): boolean {
+  return /^\[hermes-gateway\] event stream HTTP \d+; falling back to polling/.test(line.trim());
+}
+
 export function isAdapterNotice(line: string): boolean {
   return noticePrefix(line) !== null;
 }

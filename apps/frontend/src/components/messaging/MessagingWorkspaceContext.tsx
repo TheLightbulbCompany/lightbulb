@@ -200,6 +200,8 @@ export function MessagingWorkspaceProvider({
     defaultAgentId && freshLanding === false ? initialAgentId ?? defaultAgentId : initialAgentId,
     (subscribeToRoom || observeRuns) && !sessionChatOpen,
     roomVisible,
+    true,
+    true, // this instance feeds RoomPanel's subagent strip
   );
   const observedLanding = rooms.roomsLoading || rooms.roomsError ? null : landingFor(rooms.rooms);
   if (freshLanding === null && observedLanding !== null) setLanding({ scope, fresh: observedLanding });

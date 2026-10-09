@@ -4,6 +4,7 @@ import { isSubagentGone, liveSubagents, sessionClock, subagentActivity, useSubag
 
 const PREVIEW = 3; // upstream Desktop previews three workers
 const GONE = "That subagent has already finished.";
+const ENDED: Record<string, string> = { completed: "Finished", failed: "Failed", interrupted: "Stopped" };
 
 function useNow(on: boolean) {
   const [now, setNow] = useState(() => Date.now());
@@ -20,20 +21,31 @@ function Detail({ item, roomId, client, onSteer, onStop }: {
   onSteer: (agentId: string, id: string, text: string) => Promise<unknown>;
   onStop: (agentId: string, id: string) => Promise<unknown>;
 }) {
-  const { tail } = useSubagentTail(client, { roomId, agentId: item.agentId, subagentId: item.id });
+  const live = item.status === "running" || item.status === "queued";
+  // A finished child stops polling but keeps its last transcript on screen until the person closes it.
+  const { tail } = useSubagentTail(client, live ? { roomId, agentId: item.agentId, subagentId: item.id } : null);
   const [text, setText] = useState("");
   const [note, setNote] = useState("");
-  const fail = (e: unknown) => setNote(isSubagentGone(e) ? GONE : "Could not reach the agent. Try again.");
+  const [busy, setBusy] = useState(false);
+  const run = (call: () => Promise<unknown>, ok: string, after?: () => void) => {
+    if (busy) return;
+    setBusy(true);
+    call().then(() => { after?.(); setNote(ok); },
+      (e) => setNote(isSubagentGone(e) ? GONE : "Could not reach the agent. Try again."))
+      .finally(() => setBusy(false));
+  };
+  const off = busy || !live;
   return <div className="room-subagent-detail">
+    {!live && <p className="room-subagent-note" role="status">{ENDED[item.status] ?? "Finished"}</p>}
     <form className="room-subagent-steer" onSubmit={(e) => {
       e.preventDefault();
       const value = text.trim();
       if (!value) return;
-      onSteer(item.agentId, item.id, value).then(() => { setText(""); setNote("Steer queued"); }, fail);
+      run(() => onSteer(item.agentId, item.id, value), "Steer queued", () => setText(""));
     }}>
-      <input aria-label={`Steer ${item.goal}`} value={text} onChange={(e) => setText(e.target.value)} placeholder="Steer this subagent" />
-      <button type="submit" disabled={!text.trim()}>Steer</button>
-      <button type="button" onClick={() => onStop(item.agentId, item.id).then(() => setNote("Stopping…"), fail)}>Stop</button>
+      <input aria-label={`Steer ${item.goal}`} value={text} onChange={(e) => setText(e.target.value)} placeholder="Steer this subagent" disabled={off} />
+      <button type="submit" disabled={off || !text.trim()}>Steer</button>
+      <button type="button" disabled={off} onClick={() => run(() => onStop(item.agentId, item.id), "Stopping…")}>Stop</button>
     </form>
     {note && <p className="room-subagent-note" role="status">{note}</p>}
     <pre className="room-subagent-tail">{tail?.available ? tail.text : "No transcript yet."}</pre>
@@ -53,9 +65,10 @@ export function RoomSubagentStrip({ state, roomId, agentName, client, onSteer, o
   const now = useNow(live.length > 0);
   const visible = live.length > 0 && open;
   useEffect(() => { onVisible(visible); return () => onVisible(false); }, [visible, onVisible]);
-  if (!live.length) return null;
+  // From all items, not the live list: the pane stays open on a child that just finished.
+  const pickedItem = state.items.find((i) => i.id === picked);
+  if (!live.length && !pickedItem) return null;
   const rows = all ? live : live.slice(0, PREVIEW);
-  const pickedItem = live.find((i) => i.id === picked);
   return <div className="room-subagent-strip" role="region" aria-label="Running subagents">
     <button type="button" className="room-subagent-heading" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
       Subagents ({live.length})

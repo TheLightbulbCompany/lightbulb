@@ -47,4 +47,32 @@ describe("RoomSubagentStrip", () => {
     fireEvent.click(screen.getByRole("button", { name: "Steer" }));
     await waitFor(() => expect(screen.getByText("That subagent has already finished.")).toBeInTheDocument());
   });
+
+  it("disables Steer and Stop while a request is in flight", async () => {
+    let settle: (v: unknown) => void = () => {};
+    const p = { ...props(), onStop: vi.fn(() => new Promise((r) => { settle = r; })) };
+    render(<RoomSubagentStrip {...p} />);
+    fireEvent.click(screen.getByRole("button", { name: /Track 0/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    expect(screen.getByRole("button", { name: "Stop" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    expect(p.onStop).toHaveBeenCalledTimes(1);
+    settle({ state: "stopping" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled());
+  });
+
+  it("keeps the pane open on a child that finished, with its final status and last transcript, and stops polling", async () => {
+    const p = props(mk(1));
+    const { rerender } = render(<RoomSubagentStrip {...p} />);
+    fireEvent.click(screen.getByRole("button", { name: /Track 0/ }));
+    await waitFor(() => expect(screen.getByText(/line 2/)).toBeInTheDocument());
+    const done = applySubagentEvent(p.state, "a1", "subagent.complete", { subagent_id: "sa-0", goal: "Track 0", status: "completed" }, Date.now());
+    rerender(<RoomSubagentStrip {...p} state={done} />);
+    expect(screen.getByText("Finished")).toBeInTheDocument();
+    expect(screen.getByText(/line 2/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stop" })).toBeDisabled();
+    const calls = (p.client as unknown as { subagentTail: ReturnType<typeof vi.fn> }).subagentTail.mock.calls.length;
+    await new Promise((r) => setTimeout(r, 2_100));
+    expect((p.client as unknown as { subagentTail: ReturnType<typeof vi.fn> }).subagentTail).toHaveBeenCalledTimes(calls);
+  });
 });

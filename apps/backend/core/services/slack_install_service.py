@@ -178,6 +178,7 @@ async def revoke_install(team_id: str) -> bool:
     # No task-def entry to drop first any more: the token is ours alone, so the delete is
     # unconditional.
     await integration_secret_store.delete(owner_id, secret_provider(team_id))
+    await integrations_repo.remove_connected_team(owner_id, PROVIDER, team_id)
     if agent_id:
         await channel_link_repo.sweep_by_owner_provider_agent(owner_id=owner_id, provider=PROVIDER, agent_id=agent_id)
     # The owner has ONE integrations status row for Slack, shared by every

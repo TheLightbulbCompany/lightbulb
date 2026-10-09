@@ -101,6 +101,12 @@ async def test_apply_install_unwinds_when_the_greeting_fails():
     revoke.assert_awaited_once_with("T1")
 
 
+@pytest.fixture(autouse=True)
+def _team_ids(monkeypatch):
+    """revoke_install drops the team from the owner's team_ids row; admit it without a table."""
+    monkeypatch.setattr(svc.integrations_repo, "remove_connected_team", AsyncMock())
+
+
 @pytest.mark.asyncio
 async def test_revoke_install_tears_down_everything():
     """The secret delete is UNCONDITIONAL now. It used to be ordered behind a task-definition
@@ -119,9 +125,12 @@ async def test_revoke_install_tears_down_everything():
         ) as sweep,
         patch("core.services.slack_install_service.slack_installs_repo.list_for_owner", AsyncMock(return_value=[])),
         patch("core.services.slack_install_service._mark_disconnected", AsyncMock()) as mark_disconnected,
+        patch("core.services.slack_install_service.integrations_repo.remove_connected_team", AsyncMock()) as forget,
     ):
         assert await svc.revoke_install("T1") is True
     mark_disconnected.assert_awaited_once_with("org_1")
+    # The owner's team_ids set stops naming a workspace it no longer holds.
+    forget.assert_awaited_once_with("org_1", "slack", "T1")
     set_status.assert_awaited_once_with("T1", "revoked")
     del_secret.assert_awaited_once_with("org_1", "slack/T1")
     sweep.assert_awaited_once_with(owner_id="org_1", provider="slack", agent_id="agent_f")

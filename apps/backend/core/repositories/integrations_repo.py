@@ -11,6 +11,7 @@ from __future__ import annotations
 import time
 
 from boto3.dynamodb.conditions import Key
+from botocore.exceptions import ClientError
 
 from core.dynamodb import get_table, run_in_thread
 
@@ -61,6 +62,22 @@ async def add_connected_team(owner_id: str, provider: str, team_id: str) -> None
         ExpressionAttributeNames={"#s": "status"},
         ExpressionAttributeValues={":c": "connected", ":now": now, ":t": {team_id}},
     )
+
+
+async def remove_connected_team(owner_id: str, provider: str, team_id: str) -> None:
+    """Drop ``team_id`` from the row's ``team_ids`` (its install was revoked). A row that is
+    already gone stays gone: the condition stops the update from creating one."""
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"owner_id": owner_id, "provider": provider},
+            UpdateExpression="DELETE team_ids :t",
+            ConditionExpression="attribute_exists(owner_id)",
+            ExpressionAttributeValues={":t": {team_id}},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
 
 
 async def set_status(owner_id: str, provider: str, status: str) -> None:

@@ -134,6 +134,11 @@ async def revoke_all(body: RevokeAllBody, auth: Annotated[AuthContext, Depends(g
     slack_failed = False
     for team_id in teams:
         try:
+            # Only a workspace that is ours right now (the check DELETE /slack/install/{team} makes):
+            # a team id we once held may have been installed by another owner since.
+            row = await slack_installs_repo.get(team_id)
+            if not row or row.get("owner_id") != owner_id or row.get("status") != slack_installs_repo.STATUS_ACTIVE:
+                continue
             await slack_install_service.revoke_install(team_id)
             revoked.append(f"slack:{team_id}")
         except Exception:  # noqa: BLE001 — same as above: report it, keep going

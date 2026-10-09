@@ -7,6 +7,7 @@ import { EditorialButton } from "@/components/teams/shell";
 import { ReportsToPicker } from "@/components/teams/agents/ReportsToPicker";
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
 import { classifyAgentStatus } from "@/components/teams/shared/lib/agentStatus";
+import { notifyApiError } from "@/lib/notify";
 
 /**
  * Org-chart controls for a single agent: the editable reporting line plus the
@@ -55,6 +56,8 @@ export function AgentOrgControls({
     setBusy(true);
     try {
       await fn();
+    } catch (err) {
+      notifyApiError(err, "Couldn't update the agent");
     } finally {
       setBusy(false);
     }

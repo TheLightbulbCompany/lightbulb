@@ -20,6 +20,7 @@ import { useAgents } from "@/hooks/useAgents";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { AgentEntry } from "./agents-types";
+import { notifyApiError } from "@/lib/notify";
 
 type AgentTab = "overview" | "tools";
 
@@ -75,7 +76,7 @@ export function AgentsPanel({ initialAgentId = null }: AgentsPanelProps = {}) {
       if (selectedAgent === agentId) setSelectedAgent(null);
       mutate();
     } catch (err) {
-      console.error("Failed to delete agent:", err);
+      notifyApiError(err, "Couldn't delete the agent");
     } finally {
       setDeleting(null);
     }

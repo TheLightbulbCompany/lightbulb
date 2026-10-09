@@ -324,6 +324,8 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
       // `nextRoutineStatus` (paperclip/ui/src/components/RoutineList.tsx).
       await patch(`/routines/${r.id}`, { status: next ? "active" : "paused" });
       mutate();
+    } catch (err) {
+      notifyApiError(err, "Couldn't update the automation");
     } finally {
       setBusy(null);
     }
@@ -335,6 +337,8 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
     try {
       await del(`/routines/${id}`);
       mutate();
+    } catch (err) {
+      notifyApiError(err, "Couldn't delete the automation");
     } finally {
       setBusy(null);
     }

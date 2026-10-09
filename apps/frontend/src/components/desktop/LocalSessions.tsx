@@ -12,6 +12,7 @@ import {
   readDesktopPermissionsFromDesktop,
   writeDesktopPermissionGrant,
 } from "@/lib/desktopPermissions";
+import { notifyApiError } from "@/lib/notify";
 
 type State = { enrollment: { ownerId: string; humanUserId: string; enabled: boolean; paused: boolean; recoveryPending?: boolean; remoteDisabled?: boolean } | null; pairedWorkspaceId: string | null; status: string; providers?: Record<"claude" | "codex", ProviderSetup> };
 type ProviderSetup = { cli: boolean; mcp: "configured" | "missing" | "collision"; hooks: "configured" | "missing" | "disabled" };
@@ -137,7 +138,7 @@ export function AgentSessionSwitches() {
   const toggle = async (key: keyof AgentSessionPrefs, next: boolean) => {
     setBusy(true);
     try { setPrefs((await api.put("/users/me/prefs", { [key]: next })) as AgentSessionPrefs); }
-    catch { /* Unchanged on failure; the switch keeps showing the stored state. */ }
+    catch (err) { notifyApiError(err, "Couldn't save that setting"); /* the switch keeps showing the stored state */ }
     finally { setBusy(false); }
   };
   // Account-level, so it shows in a browser too (the ask card points here).

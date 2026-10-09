@@ -112,6 +112,8 @@ function ChatGPTOAuthBlock({
     try {
       await disconnect();
       onDisconnected();
+    } catch (err) {
+      notifyApiError(err, "Couldn't disconnect ChatGPT");
     } finally {
       setBusy(false);
     }

@@ -11,6 +11,7 @@ import { useState, useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
 import type { Goal, GoalStatus } from "@/components/teams/shared/types";
 import { GoalStatusIcon } from "./GoalStatusIcon";
+import { notifyApiError } from "@/lib/notify";
 
 export interface GoalHeaderProps {
   goal: Goal;
@@ -46,6 +47,8 @@ export function GoalHeader({ goal, onTitleSave, onStatusChange }: GoalHeaderProp
     try {
       await onTitleSave(trimmed);
       setEditing(false);
+    } catch (err) {
+      notifyApiError(err, "Couldn't save the goal title");
     } finally {
       setSaving(false);
     }

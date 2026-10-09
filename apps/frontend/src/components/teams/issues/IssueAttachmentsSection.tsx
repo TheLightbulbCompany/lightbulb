@@ -8,6 +8,7 @@ import { useIssueWorkProducts } from "./hooks/useIssueWorkProducts";
 import { getPromotedOutputAttachmentIds } from "./lib/issue-output";
 import type { IssueAttachment } from "@/components/teams/shared/types";
 import { formatBytes } from "@/lib/utils";
+import { notifyApiError } from "@/lib/notify";
 
 /** Human-readable byte size. Local (no shared helper exists in the teams tree). */
 function AttachmentRow({
@@ -26,6 +27,8 @@ function AttachmentRow({
     setBusy("download");
     try {
       await onDownload(attachment);
+    } catch (err) {
+      notifyApiError(err, "Couldn't download the attachment");
     } finally {
       setBusy(null);
     }

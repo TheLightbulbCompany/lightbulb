@@ -9,6 +9,7 @@ import {
 } from "@/lib/marketplace/api";
 import type { Listing } from "@/lib/marketplace/types";
 import { useMarketplaceDrawer } from "./drawer/MarketplaceDrawerProvider";
+import { notifyApiError } from "@/lib/notify";
 
 type Tab = "overview" | "bundle" | "pending" | "history";
 
@@ -199,6 +200,8 @@ function Header({
         jwt,
       });
       startEditListing(draft);
+    } catch (err) {
+      notifyApiError(err, "Couldn't start the republish");
     } finally {
       setBusy(false);
     }
@@ -216,6 +219,8 @@ function Header({
         jwt,
       });
       onPendingChange();
+    } catch (err) {
+      notifyApiError(err, "Couldn't discard the pending version");
     } finally {
       setBusy(false);
     }

@@ -66,6 +66,7 @@ import type {
   SuggestTasksInteraction,
   SuggestTasksResultCreatedTask,
 } from "@/components/teams/shared/types";
+import { notifyApiError } from "@/lib/notify";
 
 const OTHER_ANSWER_ID = "__isol8_other__";
 
@@ -487,6 +488,8 @@ function SuggestTasksCard({
     setWorking("accept");
     try {
       await onAcceptInteraction(interaction, [...selectedClientKeys]);
+    } catch (err) {
+      notifyApiError(err, "Couldn't accept the suggested tasks");
     } finally {
       setWorking(null);
     }
@@ -498,6 +501,8 @@ function SuggestTasksCard({
     try {
       await onRejectInteraction(interaction, rejectReason.trim() || undefined);
       setRejecting(false);
+    } catch (err) {
+      notifyApiError(err, "Couldn't reject the suggested tasks");
     } finally {
       setWorking(null);
     }
@@ -839,6 +844,8 @@ function AskUserQuestionsCard({
           };
         }),
       );
+    } catch (err) {
+      notifyApiError(err, "Couldn't send your answers");
     } finally {
       setWorking(false);
     }
@@ -849,6 +856,8 @@ function AskUserQuestionsCard({
     setCancelling(true);
     try {
       await onCancelInteraction(interaction);
+    } catch (err) {
+      notifyApiError(err, "Couldn't cancel the questions");
     } finally {
       setCancelling(false);
     }

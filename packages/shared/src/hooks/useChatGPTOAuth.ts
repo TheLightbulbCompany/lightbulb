@@ -102,6 +102,8 @@ export function useChatGPTOAuth(api: Pick<ApiMethods, "get" | "post">) {
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : "Disconnect failed";
       setState({ status: "error", message });
+      // Rethrow so the button that asked can say it failed instead of moving on as if disconnected.
+      throw e;
     }
   }, [api, stopPolling]);
 

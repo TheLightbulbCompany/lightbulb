@@ -57,6 +57,7 @@ import type {
   CompanyArtifact,
   CompanyArtifactsResponse,
 } from "@/components/teams/shared/types";
+import { notifyApiError } from "@/lib/notify";
 
 /** Which list the panel is showing. `recent` is the default — a flat,
  * date-bucketed feed; `by-task` is the ported stack view. */
@@ -205,8 +206,8 @@ export function ArtifactsPanel() {
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-    } catch {
-      // Best-effort — a download hiccup should not wedge the gallery.
+    } catch (err) {
+      notifyApiError(err, "Couldn't download this deliverable");
     }
   }
 

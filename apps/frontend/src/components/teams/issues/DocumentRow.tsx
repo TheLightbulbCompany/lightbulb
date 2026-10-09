@@ -17,6 +17,7 @@ import type {
   DocumentRevisionRef,
   PendingAnchor,
 } from "./lib/documentReviewTypes";
+import { notifyApiError } from "@/lib/notify";
 
 // The upstream wire payload carries the latest-revision fields even though the
 // trimmed local `IssueDocument` type omits them.
@@ -169,6 +170,8 @@ export function DocumentRow({
       void mutateRevisions();
       void mutateAnnotations();
       onRestored?.();
+    } catch (err) {
+      notifyApiError(err, "Couldn't restore that revision");
     } finally {
       setRestoring(false);
     }

@@ -66,25 +66,25 @@ describe("AgentInstructionsTab", () => {
     lastReadPath = null;
   });
 
-  it("renders the three identity-file options", () => {
+  it("renders the identity-file options, never IDENTITY.md (Hermes refuses its save)", () => {
     render(<AgentInstructionsTab agentId="agent_42" />);
-    expect(screen.getByRole("button", { name: "IDENTITY.md" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "IDENTITY.md" })).toBeNull();
     expect(screen.getByRole("button", { name: "SOUL.md" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "USER.md" })).toBeInTheDocument();
   });
 
-  it("defaults to reading IDENTITY.md", () => {
+  it("defaults to reading SOUL.md", () => {
     render(<AgentInstructionsTab agentId="agent_42" />);
     expect(lastReadAgentId).toBe("agent_42");
-    expect(lastReadPath).toBe("IDENTITY.md");
-    expect(screen.getByTestId("viewer-path")).toHaveTextContent("IDENTITY.md");
-  });
-
-  it("reads SOUL.md when its option is selected", () => {
-    render(<AgentInstructionsTab agentId="agent_42" />);
-    fireEvent.click(screen.getByRole("button", { name: "SOUL.md" }));
     expect(lastReadPath).toBe("SOUL.md");
     expect(screen.getByTestId("viewer-path")).toHaveTextContent("SOUL.md");
+  });
+
+  it("reads USER.md when its option is selected", () => {
+    render(<AgentInstructionsTab agentId="agent_42" />);
+    fireEvent.click(screen.getByRole("button", { name: "USER.md" }));
+    expect(lastReadPath).toBe("USER.md");
+    expect(screen.getByTestId("viewer-path")).toHaveTextContent("USER.md");
   });
 
   it("saves via saveWorkspaceFile(agentId, path, content, 'config')", async () => {
@@ -108,7 +108,7 @@ describe("AgentInstructionsTab", () => {
 
   it("marks the active identity-file option with aria-pressed", () => {
     render(<AgentInstructionsTab agentId="agent_42" />);
-    expect(screen.getByRole("button", { name: "IDENTITY.md" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "SOUL.md" })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
@@ -117,7 +117,7 @@ describe("AgentInstructionsTab", () => {
       "aria-pressed",
       "true",
     );
-    expect(screen.getByRole("button", { name: "IDENTITY.md" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "SOUL.md" })).toHaveAttribute(
       "aria-pressed",
       "false",
     );

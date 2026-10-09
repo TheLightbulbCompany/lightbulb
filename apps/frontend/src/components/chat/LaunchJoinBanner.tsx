@@ -12,8 +12,9 @@ import type { LaunchMe } from "@/lib/launch";
  * The in-product competition-sheet status strip: position + referral link for
  * an owner who has ALREADY joined, dismissible per user.
  *
- * It no longer asks anyone to join — {@link LaunchJoinModal} owns that now,
- * for two reasons. The join form here was gated on `me.onboarded`, so it was
+ * It never asks anyone to join: `POST /launch/join` refuses every workspace
+ * (org) context and every account is a workspace, so a join ask could only
+ * fail. History: the ask moved from here into a modal, for two reasons. The join form here was gated on `me.onboarded`, so it was
  * invisible for the whole provisioning window; and because `/launch/me` is
  * read once per page load with focus revalidation off app-wide (`SwrProvider`),
  * nothing ever re-asked once Friday's first run landed. The strip only
@@ -21,7 +22,7 @@ import type { LaunchMe } from "@/lib/launch";
  * the bug, a slim line beside two other banners was losing to everything else
  * on the page: 200 comped months on offer, three signups taken.
  *
- * So the ask is one deliberate modal and this is the receipt. It still mounts
+ * That modal was deleted once no caller could reach it. It still mounts
  * unconditionally in both shells because it also carries
  * `useReferralAttribution`, which must run for every signed-in owner whether
  * or not they ever join.
@@ -36,8 +37,6 @@ export function LaunchJoinBanner() {
   const { user } = useUser();
   const info = useLaunchInfo();
   const open = info?.phase === "open";
-  // Same SWR key as LaunchJoinModal, so joining there flips this strip to its
-  // joined state in the same render — no refetch, no reload.
   const { data: me } = useSWR<LaunchMe>(open ? "/launch/me" : null, (k: string) => api.get(k) as Promise<LaunchMe>);
   useReferralAttribution(api, open ? me : null);
 

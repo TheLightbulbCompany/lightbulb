@@ -26,7 +26,6 @@ import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
 import { TrialBanner } from "@/components/chat/TrialBanner";
 import { OutOfCreditsBanner } from "@/components/chat/OutOfCreditsBanner";
 import { LaunchJoinBanner } from "@/components/chat/LaunchJoinBanner";
-import { LaunchJoinModal } from "@/components/chat/LaunchJoinModal";
 import { InlineTeamsNavProvider } from "@/components/chat/InlineTeamsNav";
 import { TeamsEventsProvider } from "@/components/teams/TeamsEventsProvider";
 import { MessagingWorkspaceProvider } from "@/components/messaging/MessagingWorkspaceContext";
@@ -505,7 +504,6 @@ function AuthenticatedWorkspace({ scopeId, workspaceName }: { scopeId: string; w
                   <TrialBanner />
                   <OutOfCreditsBanner />
                   <LaunchJoinBanner />
-                  <LaunchJoinModal />
                   {showSubscriptionSuccess && (
                     <div className="subscription-banner">
                       <p>Subscription confirmed! Your agent is being upgraded.</p>

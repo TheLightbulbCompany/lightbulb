@@ -31,9 +31,9 @@ function etDay(iso: string): string {
 
 // NO pot mention anywhere on this page — the pot is admin-only.
 const rules = (info: LaunchInfo): string[] => [
-  // Was "Onboard — Friday's first run has to complete — then hit Join."
-  // Joining no longer waits on onboarding, so the rule is just: sign up, join.
-  "Sign up and hit Join — you can do it while your workspace is still building.",
+  // Every account is a workspace, and `POST /launch/join` refuses workspaces,
+  // so entry is the team hand-raise below (the founders add each one).
+  "Sign up, then raise your hand as a team below — the founders enter you by hand.",
   `The sheet closes ${etDateTime(info.sheet_closes_at)}.`,
   `The first ${info.comp_slots.toLocaleString("en-US")} on the sheet get their first month free.`,
   `Every referral who subscribes moves you up ${info.referral_jump} spots — the first 20 count.`,

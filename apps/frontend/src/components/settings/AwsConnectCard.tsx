@@ -206,7 +206,9 @@ export function AwsConnectCard({ connection, canManage, refreshConnections }: Aw
 
   return (
     <div className="flex w-80 flex-col items-stretch gap-2 rounded-md border border-[var(--edge)] bg-cream p-3">
-      <p className="text-sm font-medium text-midnight">Connect {display_name} (read-only)</p>
+      <p className="text-sm font-medium text-midnight">
+        Connect {display_name} {scope === "power_user" ? "(read + write)" : "(read-only)"}
+      </p>
       <p className="text-xs text-[var(--midnight-muted)]">
         Lightbulb will assume a role you create in your AWS account — no keys to paste.
       </p>
@@ -301,7 +303,7 @@ export function AwsConnectCard({ connection, canManage, refreshConnections }: Aw
                 Create role in AWS
               </Button>
               <span className="text-caption text-[var(--midnight-muted)]">
-                AWS role template coming soon — paste an existing read-only role ARN below.
+                AWS role template coming soon — paste an existing role ARN below.
               </span>
             </div>
           )}
@@ -317,7 +319,7 @@ export function AwsConnectCard({ connection, canManage, refreshConnections }: Aw
             spellCheck={false}
             value={roleArn}
             disabled={busy || !canManage}
-            placeholder="arn:aws:iam::123456789012:role/IsolReadOnly"
+            placeholder="arn:aws:iam::123456789012:role/LightbulbAccess"
             onChange={(e) => setRoleArn(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") {

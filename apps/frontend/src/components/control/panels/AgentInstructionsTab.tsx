@@ -6,11 +6,13 @@ import { useConfigFile } from "@/hooks/useWorkspaceFiles";
 import { useApi } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-// The inspector exposes only the three identity files, not the full
-// CONFIG_ALLOWLIST (MEMORY/TOOLS/HEARTBEAT/AGENTS live elsewhere). All three
+// The inspector exposes only the identity files, not the full
+// CONFIG_ALLOWLIST (MEMORY/TOOLS/HEARTBEAT/AGENTS live elsewhere). No
+// IDENTITY.md: on Hermes an agent's one identity document is SOUL.md, and the
+// backend refuses an IDENTITY.md save with a 422 (`workspace_files.py`). Both
 // are config-tab writes — saveWorkspaceFile(..., "config") creates them on
 // first save when they don't exist on disk yet.
-const IDENTITY_FILES = ["IDENTITY.md", "SOUL.md", "USER.md"] as const;
+const IDENTITY_FILES = ["SOUL.md", "USER.md"] as const;
 type IdentityFile = (typeof IDENTITY_FILES)[number];
 
 interface AgentInstructionsTabProps {
@@ -20,14 +22,14 @@ interface AgentInstructionsTabProps {
 /**
  * Instructions tab (increment 3 of the unified-nav migration).
  *
- * Edits the agent's identity files (IDENTITY/SOUL/USER) in place. Reuses the
+ * Edits the agent's identity files (SOUL/USER) in place. Reuses the
  * existing config-file read (`useConfigFile`, which synthesizes an empty
  * editable buffer on 404 so an un-seeded file opens blank + savable) and the
  * shared `FileContentViewer` editor — saves flow through the already-existing
  * `saveWorkspaceFile(..., "config")` PUT path. No new backend.
  */
 export function AgentInstructionsTab({ agentId }: AgentInstructionsTabProps) {
-  const [selectedFile, setSelectedFile] = useState<IdentityFile>("IDENTITY.md");
+  const [selectedFile, setSelectedFile] = useState<IdentityFile>("SOUL.md");
   const [editorDirty, setEditorDirty] = useState(false);
 
   const { file, isLoading, error } = useConfigFile(agentId, selectedFile);

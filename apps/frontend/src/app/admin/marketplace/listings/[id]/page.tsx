@@ -268,9 +268,12 @@ export default async function ListingDetail({
         )}
       </section>
 
-      {/* Takedown — destructive action for already-published listings.
-          Hidden once the listing is already taken_down to avoid double-fire. */}
-      {preview.status !== "taken_down" && (
+      {/* Takedown — destructive action for the PUBLISHED version only. It is
+          listing-scoped (takedown_service resolves the live version), so
+          offering it on a retired/draft version page acted on a different
+          version than the one shown, and a retired v1 of an already taken-down
+          listing still offered it (double-fire). */}
+      {preview.status === "published" && (
         <section className="rounded-lg border-l-2 border-err bg-card p-5 flex items-start justify-between gap-6">
           <div className="min-w-0 flex-1">
             <h2 className="text-sm font-semibold text-err">

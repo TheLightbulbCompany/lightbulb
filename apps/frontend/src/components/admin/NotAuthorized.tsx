@@ -1,9 +1,9 @@
 "use client";
 
-import Link from "next/link";
 import { useClerk, useUser } from "@clerk/nextjs";
 
 import { Button } from "@/components/ui/button";
+import { SITE_URL } from "@/lib/domain";
 
 /**
  * Terminal "not a platform admin" screen.
@@ -37,8 +37,11 @@ export function NotAuthorized() {
         <Button onClick={() => signOut({ redirectUrl: "/sign-in" })}>
           Sign out / switch account
         </Button>
+        {/* Absolute product URL, not "/": on the admin host the middleware
+            funnels every non-/admin path back to /admin, so "/" landed on this
+            403 again — a loop with no way out but sign-out. */}
         <Button asChild variant="outline">
-          <Link href="/">Back to home</Link>
+          <a href={SITE_URL}>Back to home</a>
         </Button>
       </div>
     </div>

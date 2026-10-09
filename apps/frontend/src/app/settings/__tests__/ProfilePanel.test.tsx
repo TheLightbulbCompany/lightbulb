@@ -96,7 +96,7 @@ describe("ProfilePanel — subscription badge", () => {
 
 // Covers the self-serve DeleteAccountCard: typed-email confirm gating the
 // POST /users/me/delete call, sign-out on success, honest error on a partial
-// teardown (502 deletion_incomplete), and the org-context support-only state.
+// teardown (502 deletion_incomplete), offered in a workspace context too.
 describe("ProfilePanel — delete account", () => {
   const fetchMock = vi.fn();
 
@@ -167,19 +167,9 @@ describe("ProfilePanel — delete account", () => {
     expect(clerk.signOut).not.toHaveBeenCalled();
   });
 
-  it("org context gets the support-only message, never a delete button", () => {
+  it("offers deletion in a workspace context too (the backend supports it)", () => {
     clerk.organization = { id: "org_1" };
     render(<SettingsPage />);
-    expect(screen.getByText(/contact support@thelightbulb\.company/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /delete account/i })).toBeNull();
-  });
-
-  it("withholds the card entirely while Clerk's org context is still loading", () => {
-    // organization is unset during the load window — reading that as
-    // "personal" would offer deletion to an org member (backend would 403).
-    clerk.orgLoaded = false;
-    render(<SettingsPage />);
-    expect(screen.queryByRole("button", { name: /delete account/i })).toBeNull();
-    expect(screen.queryByText(/contact support@thelightbulb\.company/)).toBeNull();
+    expect(screen.getByRole("button", { name: /delete account/i })).toBeInTheDocument();
   });
 });

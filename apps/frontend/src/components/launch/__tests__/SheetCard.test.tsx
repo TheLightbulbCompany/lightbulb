@@ -7,7 +7,6 @@ const post = vi.fn();
 const patch = vi.fn();
 vi.mock("@/lib/api", () => ({ useApi: () => ({ get, post, put: vi.fn(), patch, del: vi.fn() }) }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
-vi.mock("../JoinForm", () => ({ JoinForm: () => <div data-testid="join-form" /> }));
 vi.mock("../ConnectStripeForm", () => ({
   ConnectStripeForm: ({ onConnected }: { onConnected: (e: unknown) => void }) => (
     <button
@@ -76,27 +75,17 @@ function mount(i: LaunchInfo = info()) {
 describe("SheetCard", () => {
   beforeEach(() => { get.mockReset(); post.mockReset(); patch.mockReset(); useLaunchRef.mockReturnValue(null); localStorage.clear(); });
 
-  it("not onboarded: still renders the join form, with no onboard-first wall", async () => {
-    // This page used to answer a brand-new owner with "Onboard first —
-    // Friday's first run has to complete. Then come back and join." Nobody
-    // came back, and the backend no longer refuses an unonboarded join.
-    get.mockResolvedValue(me({ onboarded: false }));
-    mount();
-    expect(await screen.findByTestId("join-form")).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: /onboard first/i })).not.toBeInTheDocument();
-  });
-
-  it("onboarded, open, not joined: renders the join form", async () => {
+  it("open, not joined: no join form (workspaces can't self-join), points at the team hand-raise", async () => {
     get.mockResolvedValue(me());
     mount();
-    expect(await screen.findByTestId("join-form")).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: /raise your hand as a team/i })).toHaveAttribute("href", "#teams");
+    expect(screen.queryByRole("form", { name: /join the competition/i })).toBeNull();
   });
 
   it("not joined after the close: sheet-closed copy, no join form", async () => {
     get.mockResolvedValue(me({ phase: "closed" }));
     mount(info({ phase: "closed" }));
     expect(await screen.findByText(/The sheet has closed/)).toBeInTheDocument();
-    expect(screen.queryByTestId("join-form")).not.toBeInTheDocument();
   });
 
   it("joined (open): effective position with the raw one secondary, referrals, credits, referral link", async () => {

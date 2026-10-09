@@ -102,6 +102,16 @@ describe("AwsConnectCard", () => {
     expect(screen.getByText(SETUP.read_only.policy_arn)).toBeInTheDocument();
   });
 
+  it("titles the card read-only only while a read-only scope is picked", async () => {
+    renderCard();
+    fireEvent.click(screen.getByRole("button", { name: /connect aws/i }));
+    await screen.findByText(SETUP.external_id);
+    expect(screen.getByText(/\(read-only\)/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "PowerUser" }));
+    expect(screen.queryByText(/\(read-only\)/)).toBeNull();
+    expect(screen.getByText(/\(read \+ write\)/)).toBeInTheDocument();
+  });
+
   it("offers an in-card Retry that re-runs aws-setup after a setup failure", async () => {
     getMock.mockRejectedValueOnce(new Error("boom"));
     renderCard();

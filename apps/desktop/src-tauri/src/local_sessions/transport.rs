@@ -1059,7 +1059,7 @@ impl Host {
                 ended_pending.remove(index);
                 continue;
             };
-            if codex_turn_active_after_end(mirror) {
+            if codex_turn_active_after_end(mirror) || super::session_states::awaits_exit(mirror) {
                 continue;
             }
             // `bound`, not `linked`: a mirror restricted since (an app restart marks it
@@ -2214,11 +2214,9 @@ impl Host {
             return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
         }
         // Only this Mac's own human ends a session, and only one whose process is its own: one
-        // Lightbulb holds, or a plain Claude. A Codex app or daemon process hosts many
-        // conversations and a Claude background session belongs to Claude's daemon.
-        if cmd.kind == "end"
-            && (!cmd.own || (native.holder.is_none() && (native.provider != "claude" || native.job.is_some())))
-        {
+        // Lightbulb holds, or a Claude (a background session is one process too, and Claude's
+        // daemon stops it when asked). A Codex app or daemon process hosts many conversations.
+        if cmd.kind == "end" && (!cmd.own || (native.holder.is_none() && native.provider != "claude")) {
             *why = "this session's process is not its own to end";
             return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
         }
@@ -2265,12 +2263,22 @@ impl Host {
         if cmd.kind == "end" {
             // The owner's End, from any device. A held session ends as the panel's End does: its
             // holder ends the provider and keeps the last picture; a plain Claude as closing its
-            // terminal does (it saves and leaves on SIGTERM). The mirror then reports the end. The check just above proved
-            // this pid is still the process that was verified.
-            let sent = match native.holder.clone() {
-                Some(id) => tokio::task::spawn_blocking(move || crate::holder::manager::list().into_iter().find(|h| h.id == id)
+            // terminal does (it saves and leaves on SIGTERM); a Claude background session (← moved
+            // it to Claude's daemon, which keeps it running after its person's terminal is gone)
+            // by `claude stop`, which keeps its conversation. The mirror then reports the end. The
+            // check just above proved this pid is still the process that was verified.
+            if native.holder.is_none() {
+                // No holder to ask (`manager::end` notes its own): the end that follows was asked for.
+                crate::holder::manager::end_asked_now(&cmd.session_id);
+            }
+            let sent = match (native.holder.clone(), native.job.as_deref()) {
+                (Some(id), _) => tokio::task::spawn_blocking(move || crate::holder::manager::list().into_iter().find(|h| h.id == id)
                     .map(|holder| crate::holder::manager::end(&holder)).is_some()).await.unwrap_or(false),
-                None => unsafe { libc::kill(native.process.pid as libc::pid_t, libc::SIGTERM) == 0 },
+                (None, Some(job)) => match provider_program(&self.home, "claude") {
+                    Some(program) => native_output(&program, &["stop", job]).await.is_ok(),
+                    None => false,
+                },
+                (None, None) => unsafe { libc::kill(native.process.pid as libc::pid_t, libc::SIGTERM) == 0 },
             };
             return journal.finish(&cmd.session_id, &cmd.request_id, sent.then(|| cmd.request_id.clone()), false);
         }
@@ -3241,6 +3249,32 @@ pub(super) mod tests {
         assert_eq!(ended.outcome, "applied");
         assert!(!child.wait().unwrap().success(), "SIGTERM reached its process");
         assert!(!host.mirrors["own-end"].shared, "ending it shared nothing");
+
+        // A Claude background session (← moved it to Claude's daemon, which keeps it running when
+        // its person's terminal is gone): ended by Claude's own `stop`, never by a signal, and
+        // the end that follows is one its person asked for.
+        use std::os::unix::fs::PermissionsExt;
+        const JOB: &str = "0b0b0b0b-0000-4000-8000-0000000000b0";
+        let bin = dir.path().join(".local/bin");
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(bin.join("claude"), "#!/bin/sh\necho \"$@\" > \"$0.args\"\n").unwrap();
+        fs::set_permissions(bin.join("claude"), fs::Permissions::from_mode(0o755)).unwrap();
+        let mut child = std::process::Command::new("sleep").arg("60").spawn().unwrap();
+        let mut job = test_mirror("5eed00e1-0000-4000-8000-0000000000e1", "g1");
+        job.session_id = Some(JOB.into());
+        job.native.provider = "claude".into();
+        job.native.job = Some("1234abcd".into());
+        job.native.process = process(child.id()).unwrap();
+        host.mirrors.insert("job-end".into(), job);
+        let mut end = command("r3", "end", Value::Null, 1);
+        end.session_id = JOB.into();
+        assert!(crate::holder::manager::end_asked(JOB).is_none());
+        assert_eq!(host.command(&end, Some(&anchor)).await.unwrap().outcome, "applied");
+        assert_eq!(fs::read_to_string(bin.join("claude.args")).unwrap().trim(), "stop 1234abcd");
+        assert!(crate::holder::manager::end_asked(JOB).is_some());
+        assert!(child.try_wait().unwrap().is_none(), "no signal: Claude's daemon stops its own session");
+        child.kill().unwrap();
+        child.wait().unwrap();
     }
 
     #[test]

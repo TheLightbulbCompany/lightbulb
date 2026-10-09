@@ -447,6 +447,8 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
     let mut ended = false;
     // When the provider exited (unix ms): HELLO's `endedAt` once `ended`.
     let mut exited_at_ms = 0u64;
+    // Its exit status: HELLO's `endedCode` once `ended` (0: it left by itself; a signal is 1).
+    let mut exit_code = 0u32;
     // Once `ended`: the picture the person last saw, when the final screen is not it
     // (`Model::end`). Every snapshot is then this picture, and nothing follows it.
     let mut ended_picture: Option<Vec<u8>> = None;
@@ -501,7 +503,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 let facts = serde_json::json!({"protocol": 1, "pid": std::process::id(),
                     "providerPid": provider_pid, "argv": argv, "cwd": cwd, "rows": rows, "cols": cols,
                     "watch": true, "type": true, "joined": joining, "origin": true, "lastInput": last_input, "end": true, "history": classic || inline,
-                    "ended": ended, "endedAt": ended.then_some(exited_at_ms)});
+                    "ended": ended, "endedAt": ended.then_some(exited_at_ms), "endedCode": ended.then_some(exit_code)});
                 if !client.send(encode(HELLO, facts.to_string().as_bytes())) {
                     continue;
                 }
@@ -646,6 +648,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 }
             }
             Event::Exit(status, code) => {
+                exit_code = code;
                 exited = Some((status, code, Instant::now()));
                 exited_at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
             }

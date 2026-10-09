@@ -259,6 +259,78 @@ def test_the_sessions_tool_finds_the_grant_in_a_call_turn(env, home, monkeypatch
     assert turn_context.read(CALL_SESSION) is None  # cleared with the turn
 
 
+def _sessions_tool(monkeypatch):
+    """The real plugin tool, recording the grant each call sends."""
+    plugins = str(pathlib.Path(__file__).resolve().parents[1] / "plugins")
+    if plugins not in sys.path:
+        sys.path.insert(0, plugins)
+    import lightbulb
+    from lightbulb import turn_context
+
+    monkeypatch.setattr(turn_context, "_home", lambda: turn._profile_dir("agent-1"))
+    tokens = []
+    monkeypatch.setattr(lightbulb, "_call_sessions", lambda method, url, token, body=None: tokens.append(token) or {"sessions": []})
+    return lambda: lightbulb._local_sessions({"action": "resources"}, session_id=CALL_SESSION), tokens
+
+
+def _steer(grant=None):
+    return turn.steer_run("run-1", "Guest (voice): x", grant=grant)
+
+
+def test_the_steer_route_hands_the_lowered_grant_to_the_run(monkeypatch):
+    seen = []
+    monkeypatch.setattr(turn, "steer_run", lambda run_id, text, grant=None: seen.append(grant) or True)
+    path = f"/plugins/lightbulb-channel/runs/{CALL}/steer"
+    server.handle_plugin(path, "POST", {**AUTH, "X-Lightbulb-Local-Session-Token": "lowered"}, {"text": "x"})
+    server.handle_plugin(path, "POST", AUTH, {"text": "x"})
+    assert seen == ["lowered", None]
+
+
+@pytest.mark.parametrize("when", ["queued", "running"])
+def test_a_steer_by_another_speaker_lowers_the_grant_for_the_rest_of_the_run(env, home, monkeypatch, when):
+    """P1: a guest's steer must not borrow the asker's direct access to their own sessions."""
+    tool, tokens = _sessions_tool(monkeypatch)
+    turn.register_call_run(IDENTITY)
+    if when == "queued":
+        assert _steer("lowered") is True
+
+    def mid_run():
+        env["agent"].steer = lambda text: True
+        tool()  # before the steer: the asker's grant
+        if when == "running":
+            assert _steer("lowered") is True
+        tool()
+        assert _steer() is True  # a later steer without a grant (the same speaker) never raises it
+        tool()
+
+    env["script"].append(mid_run)
+    assert turn._run_call({**IDENTITY, "localSessionToken": "jwt"}, REQUEST, _frames())[0] == "completed"
+    assert tokens == (["lowered"] * 3 if when == "queued" else ["jwt", "lowered", "lowered"])
+    assert not turn._turn_context_path(turn._profile_dir("agent-1"), CALL_SESSION).exists()
+
+
+def test_a_steer_by_the_same_speaker_keeps_the_grant(env, home, monkeypatch):
+    tool, tokens = _sessions_tool(monkeypatch)
+    turn.register_call_run(IDENTITY)
+
+    def mid_run():
+        env["agent"].steer = lambda text: True
+        assert _steer() is True
+        tool()
+
+    env["script"].append(mid_run)
+    turn._run_call({**IDENTITY, "localSessionToken": "jwt"}, REQUEST, _frames())
+    assert tokens == ["jwt"]
+
+
+def test_a_steer_after_the_turn_never_recreates_its_context_file(env, home):
+    turn.register_call_run(IDENTITY)
+    turn._run_call({**IDENTITY, "localSessionToken": "jwt"}, REQUEST, _frames())
+    turn.RUNS["run-1"]["agent"].steer = lambda text: True
+    turn.steer_run("run-1", "Guest (voice): x", grant="lowered")  # still "running" until finish_run
+    assert not turn._turn_context_path(turn._profile_dir("agent-1"), CALL_SESSION).exists()
+
+
 def test_a_steer_that_lands_before_the_agent_rides_the_user_message(env, home):
     turn.register_call_run(IDENTITY)
     assert turn.steer_run("run-1", "Aden (voice): also X") is True

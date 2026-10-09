@@ -877,10 +877,16 @@ async def dispatch_voice_run(
     return {"runId": run_id, "agentId": agent_id, "steered": False}
 
 
-async def _run_control(owner_id: str, run_id: str, action: str, body: dict) -> int | None:
+async def _run_control(
+    owner_id: str, run_id: str, action: str, body: dict, local_session_token: str | None = None
+) -> int | None:
     try:
         resp = await _runtime(
-            owner_id, f"/plugins/lightbulb-channel/runs/{run_id}/{action}", body, timeout_s=_STEER_TIMEOUT_S
+            owner_id,
+            f"/plugins/lightbulb-channel/runs/{run_id}/{action}",
+            body,
+            timeout_s=_STEER_TIMEOUT_S,
+            local_session_token=local_session_token,
         )
         return resp.status_code
     except (httpx.HTTPError, ValueError):
@@ -897,7 +903,17 @@ async def steer_voice_run(
     if not row or row.get("roomId") != call["roomId"] or row.get("agentId") != agent_id:
         return None
     name = _meet_label(speaker_name) if speaker_id.startswith("meet:") else await _speaker_name(speaker_id)
-    if await _run_control(call["ownerId"], run_id, "steer", {"text": f"{name} (voice): {utterance}"}) != 202:
+    # The run's local-session grant must not outrank its least-privileged speaker: a steer by anyone
+    # but the run's latest speaker drops it to no requester (every session "ask") for the rest of the
+    # run. Only ever lowered: a steer never carries a grant naming anyone, and the bridge swaps it in.
+    grant = None
+    if speaker_id != row.get("speakerUserId"):
+        try:
+            grant = local_session_grants.mint(call["ownerId"], call["roomId"], agent_id, run_id, None)
+        except (RuntimeError, messaging.ApiProblem):
+            return None  # the old grant cannot be lowered: the steerer gets a run (and grant) of its own
+    text = {"text": f"{name} (voice): {utterance}"}
+    if await _run_control(call["ownerId"], run_id, "steer", text, local_session_token=grant) != 202:
         return None
     # The latest requester is who C8 checks: a guest's steer must not borrow the member's rights.
     # An atomic SET, not a whole-row put: a noPost mark landing after our read must survive.

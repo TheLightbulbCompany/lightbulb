@@ -467,6 +467,32 @@ def _carry_call_records(agent, room_key: str) -> None:
         log.warning("could not carry call records into %s", sid, exc_info=True)
 
 
+def _write_call_ctx(entry: dict) -> None:
+    """Under _RUNS_LOCK: rewrite a live call turn's context file with the run's lowered grant."""
+    ctx = dict(entry["ctx"], localSessionToken=entry["grant"])
+    write_turn_context(_profile_dir(ctx["agentId"]), ctx["sessionKey"], ctx)
+
+
+@contextlib.contextmanager
+def _call_grant_scope(run_id: str, ctx: dict):
+    """Entered once the call turn's context file is written: while open, a steer's lowered grant
+    rewrites it (steer_run), and one that landed before (queued, or between the ctx and the write)
+    is applied on entry, before the agent exists, so no tool reads the original grant after a
+    lowering. Closed before the file is cleared, so a late steer never recreates it."""
+    with _RUNS_LOCK:
+        entry = RUNS.get(run_id)
+        if entry is not None:
+            entry["ctx"] = ctx
+            if entry.get("grant"):
+                _write_call_ctx(entry)
+    try:
+        yield
+    finally:
+        with _RUNS_LOCK:
+            if entry is not None:
+                entry.pop("ctx", None)
+
+
 def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> tuple[str, str | None, str, dict]:
     """A voice request: a run on the CALL's own Hermes transcript (call_session_key), with the
     environment a DM turn gets (the profile's own secrets, no Paperclip overlay, MCP, terminal,
@@ -503,7 +529,7 @@ def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> t
             sync.normalize_profile_backends(agent_id)
         browser_lease = browser_control.begin_turn(str(run_id), agent_id, None, "call")
         logins = website_logins.prompt_scope(agent_id, None, None, lambda: run_aborted(run_id))
-        with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id, session_key), _desktop_active_turn(call_key, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
+        with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id, session_key), _desktop_active_turn(call_key, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx), _call_grant_scope(run_id, ctx):
             try:
                 agent = _construct_agent(agent_id, body, frames, call_key, **CALL_RUN_LIMITS)
                 # No compaction inside a spoken turn (67-103 s each, prod 10-07): Hermes's own
@@ -824,17 +850,25 @@ def report_usage(session_key, agent_id, run_id, success, duration_ms, usage, fam
     return True
 
 
-def steer_run(run_id: str, text: str) -> bool:
+def steer_run(run_id: str, text: str, grant: str | None = None) -> bool:
     """A running turn gets the text through Hermes's own steer (queued as a user row after the
     current tool batch; settle_steers catches one that lands after the last). A turn still
     queued behind this agent's lock keeps it for its user message (attach_agent). A finishing
     or ended turn refuses, so the caller falls back to a turn of its own. Under _RUNS_LOCK so
-    the steer and settle_steers' final drain cannot interleave."""
+    the steer and settle_steers' final drain cannot interleave.
+
+    ``grant``: a call turn's lowered local-session grant (the backend sends one, naming nobody,
+    when someone other than the run's speaker steers it). It replaces the turn's grant for the
+    rest of the run, before the steer's text can reach the agent (_set_call_grant)."""
     with _RUNS_LOCK:
         entry = RUNS.get(run_id)
         if (entry is None or entry["aborted"] or entry["state"] not in ("queued", "running")
                 or entry.get("kind") == "paperclip"):  # a Paperclip turn never reads stashed steers
             return False
+        if grant and entry.get("kind") == "call":
+            entry["grant"] = grant
+            if entry.get("ctx"):
+                _write_call_ctx(entry)
         if entry["agent"] is None:
             entry.setdefault("steers", []).append(text)
             return True

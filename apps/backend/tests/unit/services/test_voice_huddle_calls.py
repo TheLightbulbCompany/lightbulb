@@ -526,6 +526,37 @@ async def test_steer_lands_in_the_agents_live_voice_run(run_env):
     vc.messaging_repo.put_voice_run.assert_not_awaited()  # never a whole-row rewrite: it would drop noPost
 
 
+@pytest.mark.parametrize("steerer", ["user_a", "meet:room-1"], ids=["another-member", "meet-speaker"])
+async def test_a_steer_by_another_speaker_lowers_the_runs_grant(run_env, steerer):
+    """P1: a guest or Meet voice steering a member's run must not borrow that member's direct access to
+    their own local sessions: the steer carries a grant naming nobody, which the bridge swaps in."""
+    vc.messaging_repo.get_voice_run.return_value = VOICERUN  # user_b asked
+    mint = MagicMock(return_value="lowered")
+    with patch.object(vc.local_session_grants, "mint", mint):
+        result = await vc.steer_voice_run(
+            call=WINDOW, run_id="run-1", agent_id="fin-1", speaker_id=steerer, utterance="x", speaker_name="Z"
+        )
+    assert result["steered"] is True
+    mint.assert_called_once_with("org_a", "room-1", "fin-1", "run-1", None)  # never a requester: only lowered
+    assert run_env.await_args.kwargs["headers"]["X-Lightbulb-Local-Session-Token"] == "lowered"
+
+
+async def test_a_steer_by_the_runs_own_speaker_keeps_the_grant(run_env):
+    vc.messaging_repo.get_voice_run.return_value = VOICERUN
+    mint = MagicMock()
+    with patch.object(vc.local_session_grants, "mint", mint):
+        await _steer()
+    mint.assert_not_called()
+    assert run_env.await_args.kwargs["headers"] == {"Authorization": "Bearer gw"}
+
+
+async def test_a_steer_that_cannot_lower_the_grant_is_not_steered(run_env):
+    vc.messaging_repo.get_voice_run.return_value = {**VOICERUN, "speakerUserId": "user_a"}
+    with patch.object(vc.local_session_grants, "mint", MagicMock(side_effect=RuntimeError)):
+        assert await _steer() is None  # the caller dispatches a run of its own instead
+    run_env.assert_not_awaited()
+
+
 async def test_steer_into_a_finished_run_falls_back(run_env):
     vc.messaging_repo.get_voice_run.return_value = VOICERUN
     run_env.return_value = MagicMock(status_code=404)

@@ -1119,28 +1119,31 @@ async def test_seed_takeover_does_not_erase_credentials_staged_after_its_read(re
 
 async def test_paused_automation_record_survives_a_whole_item_put_and_clears_per_id(repo):
     await repo.put_workspace(_make_company(user_id="org_pause"))
-    await repo.record_paused_automation("org_pause", agent_ids=["a1"], routine_ids=["r1", "r2"])
-    await repo.record_paused_automation("org_pause", agent_ids=[], routine_ids=[])  # no-op ids, marker kept
-
+    assert await repo.record_paused_automation("org_pause", agent_ids=["a1"], routine_ids=["r1", "r2"], token="t")
     ws = await repo.get_workspace("org_pause")
     assert ws.automation_paused_at and ws.automation_paused_agent_ids == {"a1"}
-    await repo.put_workspace(ws)  # a carried-forward put must not wipe the record
+    assert ws.automation_paused_routine_versions == {} and ws.automation_pause_token == "t"
+    await repo.put_workspace(ws)  # a carried-forward put must keep the record AND the empty map
+    assert await repo.record_routine_version("org_pause", token="t", routine_id="r1", updated_at="v1")
+    assert await repo.pause_token_current("org_pause", "t")
+    assert await repo.mark_pause_complete("org_pause", token="t")
     ws = await repo.get_workspace("org_pause")
     assert ws.automation_paused_routine_ids == {"r1", "r2"}
+    assert ws.automation_paused_routine_versions == {"r1": "v1"} and ws.automation_pause_complete_at
 
-    assert ws.automation_pause_complete_at is None
-    await repo.mark_pause_complete("org_pause", routine_versions={"r1": "t1"})
-    ws = await repo.get_workspace("org_pause")
-    assert ws.automation_pause_complete_at and ws.automation_paused_routine_versions == {"r1": "t1"}
-    # A new pause is incomplete until it finishes.
-    await repo.record_paused_automation("org_pause", agent_ids=[], routine_ids=["r2"])
+    # A newer pause takes the fence: the old token can no longer write.
+    assert await repo.record_paused_automation("org_pause", agent_ids=[], routine_ids=[], token="t2")
     assert (await repo.get_workspace("org_pause")).automation_pause_complete_at is None
+    assert not await repo.record_routine_version("org_pause", token="t", routine_id="r2", updated_at="v2")
+    assert not await repo.mark_pause_complete("org_pause", token="t")
 
+    # The resume's clear drops the fence: the running pause sees it gone.
     await repo.clear_paused_automation("org_pause", agent_ids=["a1"], routine_ids=["r1"])
+    assert not await repo.pause_token_current("org_pause", "t2")
     ws = await repo.get_workspace("org_pause")
     assert ws.automation_paused_at is None and ws.automation_paused_agent_ids is None
     assert ws.automation_paused_routine_versions is None
     assert ws.automation_paused_routine_ids == {"r2"}
     # Never resurrects a deleted row.
-    await repo.record_paused_automation("org_gone", agent_ids=["a"], routine_ids=[])
+    assert not await repo.record_paused_automation("org_gone", agent_ids=["a"], routine_ids=[], token="t")
     assert await repo.get_workspace("org_gone") is None

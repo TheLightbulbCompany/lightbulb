@@ -217,6 +217,9 @@ class PaperclipWorkspace:
     automation_paused_routine_ids: Optional[set[str]] = None
     automation_pause_complete_at: Optional[str] = None
     automation_paused_routine_versions: Optional[dict[str, str]] = None
+    automation_pause_token: Optional[str] = None
+    """The running pause's fence: written with the record, removed by the resume. A pause
+    re-checks it before every PATCH and stops once it no longer owns the row."""
     """routine id -> its ``updatedAt`` right after our pause PATCH; resume re-activates a
     routine only if it still matches (nobody touched it since)."""
     """Set only after a pause's Paperclip PATCHes ALL landed; every new pause removes it
@@ -269,6 +272,7 @@ _WORKSPACE_PLAIN_FIELDS = (
     "automation_paused_routine_ids",
     "automation_pause_complete_at",
     "automation_paused_routine_versions",
+    "automation_pause_token",
 )
 
 
@@ -390,9 +394,12 @@ class PaperclipRepo:
             first_contact_reason=item.get("first_contact_reason"),
             automation_paused_at=item.get("automation_paused_at"),
             automation_pause_complete_at=item.get("automation_pause_complete_at"),
+            # Keep an EMPTY map as {}: a carried-forward put must not drop it, or the
+            # pause's per-routine nested SET has no parent to write into.
             automation_paused_routine_versions=dict(item["automation_paused_routine_versions"])
-            if item.get("automation_paused_routine_versions")
+            if "automation_paused_routine_versions" in item
             else None,
+            automation_pause_token=item.get("automation_pause_token"),
             automation_paused_agent_ids=set(item["automation_paused_agent_ids"])
             if item.get("automation_paused_agent_ids")
             else None,
@@ -536,13 +543,18 @@ class PaperclipRepo:
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             return False
 
-    async def record_paused_automation(self, org_id: str, *, agent_ids: list[str], routine_ids: list[str]) -> None:
-        """Stamp ``automation_paused_at`` (first pause wins) and ADD what is about to be
-        paused. Written BEFORE the Paperclip PATCHes, so a pause that dies halfway still
-        leaves the resume a full list (re-activating a routine that never got paused is a
-        no-op). Conditional on the row existing: never resurrects a deleted workspace."""
-        expr = "SET automation_paused_at = if_not_exists(automation_paused_at, :t)"
-        values: dict = {":t": utc_now_iso()}
+    async def record_paused_automation(
+        self, org_id: str, *, agent_ids: list[str], routine_ids: list[str], token: str
+    ) -> bool:
+        """Stamp ``automation_paused_at`` (first pause wins), ADD what is about to be paused,
+        and take the fence (``automation_pause_token``). Written BEFORE the Paperclip PATCHes,
+        so a pause that dies halfway still leaves the resume a full list. Returns False when
+        the row is gone (never resurrects a deleted workspace)."""
+        expr = (
+            "SET automation_paused_at = if_not_exists(automation_paused_at, :t), automation_pause_token = :k, "
+            "automation_paused_routine_versions = if_not_exists(automation_paused_routine_versions, :empty)"
+        )
+        values: dict = {":t": utc_now_iso(), ":k": token, ":empty": {}}
         adds = []
         if agent_ids:
             adds.append("automation_paused_agent_ids :a")
@@ -562,35 +574,58 @@ class PaperclipRepo:
                 ConditionExpression="attribute_exists(user_id)",
                 ExpressionAttributeValues=values,
             )
+            return True
         except table.meta.client.exceptions.ConditionalCheckFailedException:
-            return
+            return False
 
-    async def mark_pause_complete(self, org_id: str, *, routine_versions: dict[str, str]) -> None:
-        """Every PATCH of a pause landed: the expired-trial sweep may stop retrying. Also
-        stores the paused routines' versions (the caller merged them over the row's)."""
-        expr = "SET automation_pause_complete_at = :t"
-        values: dict = {":t": utc_now_iso()}
-        if routine_versions:
-            expr += ", automation_paused_routine_versions = :v"
-            values[":v"] = routine_versions
+    async def pause_token_current(self, org_id: str, token: str) -> bool:
+        """Whether the pause holding ``token`` still owns the row (no resume cleared it, no
+        newer pause took it). Strongly consistent."""
+        ws = await self.get_workspace(org_id, consistent_read=True)
+        return ws is not None and ws.automation_pause_token == token
+
+    async def _fenced_set(self, org_id: str, token: str, expr: str, names: dict, values: dict) -> bool:
         table = self._table()
+        kwargs: dict = {
+            "Key": {"user_id": org_id},
+            "UpdateExpression": expr,
+            "ConditionExpression": "automation_pause_token = :k",
+            "ExpressionAttributeValues": {**values, ":k": token},
+        }
+        if names:
+            kwargs["ExpressionAttributeNames"] = names
         try:
-            await run_in_thread(
-                table.update_item,
-                Key={"user_id": org_id},
-                UpdateExpression=expr,
-                ConditionExpression="attribute_exists(user_id)",
-                ExpressionAttributeValues=values,
-            )
+            await run_in_thread(table.update_item, **kwargs)
+            return True
         except table.meta.client.exceptions.ConditionalCheckFailedException:
-            return
+            return False
+
+    async def record_routine_version(self, org_id: str, *, token: str, routine_id: str, updated_at: str) -> bool:
+        """Persist one paused routine's ``updatedAt`` the moment it is paused, so a pause
+        that fails later still leaves resume the versions of what it already paused."""
+        return await self._fenced_set(
+            org_id,
+            token,
+            "SET automation_paused_routine_versions.#r = :v",
+            {"#r": routine_id},
+            {":v": updated_at},
+        )
+
+    async def mark_pause_complete(self, org_id: str, *, token: str) -> bool:
+        """Every PATCH of this pause landed: the expired-trial sweep may stop retrying.
+        Fenced: a pause a resume superseded never marks itself complete."""
+        return await self._fenced_set(org_id, token, "SET automation_pause_complete_at = :t", {}, {":t": utc_now_iso()})
 
     async def clear_paused_automation(self, org_id: str, *, agent_ids: list[str], routine_ids: list[str]) -> None:
         """Undo ``record_paused_automation`` for exactly the ids a resume handled. DELETE
         (not REMOVE) on the sets, so ids a racing pause added after our read survive."""
         # ponytail: drops every version, not just these ids; a pause racing a resume then
         # falls back to the plain "still paused" check for its routines.
-        expr = "REMOVE automation_paused_at, automation_pause_complete_at, automation_paused_routine_versions"
+        # Removing the token is the fence: a pause still running sees it gone and stops.
+        expr = (
+            "REMOVE automation_paused_at, automation_pause_complete_at, automation_paused_routine_versions, "
+            "automation_pause_token"
+        )
         values: dict = {}
         deletes = []
         if agent_ids:

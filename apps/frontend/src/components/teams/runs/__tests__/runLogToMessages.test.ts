@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { pairToolBlocks } from "@/hooks/internal/toolBlockExtract";
 import { resolveMessageBlocks } from "@lightbulb/shared";
 import type { ContentBlock } from "@lightbulb/shared";
-import { runLogToMessages } from "../runLogToMessages";
+import { isAdapterNotice, runLogToMessages } from "../runLogToMessages";
 
 /** Wrap an agent event the way the adapter writes it into the run log. */
 function event(stream: string, data: unknown): string {
@@ -151,6 +151,21 @@ describe("runLogToMessages", () => {
       }),
     );
     expect(blocks[0].text).toBe("agent accepted runId=abc status=running");
+  });
+
+  it("treats the hermes-gateway lines as adapter notices", () => {
+    expect(isAdapterNotice("[hermes-gateway] event stream HTTP 404; falling back to polling")).toBe(true);
+    expect(isAdapterNotice("[hermes-gateway] status poll failed: 503")).toBe(true);
+    expect(isAdapterNotice("[openclaw-gateway] agent accepted")).toBe(true);
+    expect(isAdapterNotice("Traceback (most recent call last):")).toBe(false);
+    const blocks = blocksOf(
+      JSON.stringify({
+        ts: "t",
+        stream: "stderr",
+        chunk: "[hermes-gateway] event stream HTTP 404; falling back to polling\n",
+      }),
+    );
+    expect(blocks[0].text).toBe("event stream HTTP 404; falling back to polling");
   });
 
   it("keeps adapter notices out of the agent's prose block", () => {

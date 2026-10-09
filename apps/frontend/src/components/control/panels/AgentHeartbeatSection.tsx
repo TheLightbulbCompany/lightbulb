@@ -11,6 +11,14 @@ import { useApi } from "@/lib/api";
 
 const CHECKLIST_FILE = "HEARTBEAT.md";
 
+// What the backend's arm answered when turning on armed nothing (arm_nightly_ceo).
+const NOT_ARMED: Record<string, string> = {
+  not_entitled: "Heartbeats need an active plan or trial.",
+  company_not_active: "Your team is still being set up. Try again in a minute.",
+  heartbeats_disabled: "Heartbeats are turned off for this workspace.",
+  friday_not_seeded: "This workspace has no CEO to wake yet.",
+};
+
 function formatInterval(sec: number): string {
   return sec % 3600 === 0 ? `${sec / 3600} h` : `${Math.round(sec / 60)} min`;
 }
@@ -35,6 +43,7 @@ export function AgentHeartbeatSection({
   const { post, mutate } = useTeamsApi();
   const { file, isLoading, error } = useConfigFile(agentId, CHECKLIST_FILE);
   const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const heartbeat = agent?.runtimeConfig?.heartbeat;
   const on = heartbeat?.enabled === true;
@@ -49,10 +58,16 @@ export function AgentHeartbeatSection({
 
   const toggle = useCallback(async () => {
     setBusy(true);
+    setNotice(null);
     try {
-      await post(`/agents/${agentId}/heartbeat`, { enabled: !on });
+      const res = await post<{ status?: string }>(`/agents/${agentId}/heartbeat`, { enabled: !on });
+      if (!on && res?.status !== "armed") {
+        setNotice(NOT_ARMED[res?.status ?? ""] ?? "The heartbeat did not turn on. Try again.");
+      }
       mutate("/teams/agents");
       mutate(`/teams/agents/${agentId}`);
+    } catch {
+      setNotice("Couldn't change the heartbeat. Try again.");
     } finally {
       setBusy(false);
     }
@@ -77,6 +92,11 @@ export function AgentHeartbeatSection({
           </EditorialButton>
         ) : null}
       </div>
+      {notice ? (
+        <p role="alert" className="text-caption text-err">
+          {notice}
+        </p>
+      ) : null}
       <h4 className="label-caps text-[var(--midnight-muted)]">Heartbeat checklist</h4>
       <p className="text-caption text-[var(--midnight-muted)]">
         What this agent does on every timer wake. Leave it empty to use the built-in

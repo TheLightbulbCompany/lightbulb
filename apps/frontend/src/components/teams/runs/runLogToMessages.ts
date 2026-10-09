@@ -28,7 +28,19 @@ import type { ContentBlock, HistoryMessage } from "@lightbulb/shared";
 
 // `data=` is matched with [\s\S]* so a payload containing newlines stays whole.
 const EVENT_RE = /^\[openclaw-gateway:event\]\s+run=(\S+)\s+stream=(\S+)\s+data=([\s\S]*)$/;
-const ADAPTER_NOTICE_PREFIX = "[openclaw-gateway]";
+// The retired OpenClaw adapter and the Hermes gateway adapter both log their own chatter
+// ("event stream HTTP 404; falling back to polling") under a bracketed prefix.
+const ADAPTER_NOTICE_PREFIXES = ["[openclaw-gateway]", "[hermes-gateway]"];
+
+/** The adapter notice's prefix at the start of `line`, or null. */
+function noticePrefix(line: string): string | null {
+  const t = line.trim();
+  return ADAPTER_NOTICE_PREFIXES.find((p) => t.startsWith(p)) ?? null;
+}
+
+export function isAdapterNotice(line: string): boolean {
+  return noticePrefix(line) !== null;
+}
 
 function asRecord(v: unknown): Record<string, unknown> | null {
   if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
@@ -243,8 +255,9 @@ export function runLogToMessages(content: string): HistoryMessage[] {
       handleEvent(builder, asString(match[2]).toLowerCase(), asString(match[3]));
       continue;
     }
-    if (chunk.trim().startsWith(ADAPTER_NOTICE_PREFIX)) {
-      builder.pushText(chunk.trim().slice(ADAPTER_NOTICE_PREFIX.length).trim());
+    const prefix = noticePrefix(chunk);
+    if (prefix) {
+      builder.pushText(chunk.trim().slice(prefix.length).trim());
       continue;
     }
     builder.appendText(`${chunk.replace(/\s+$/, "")}\n`);

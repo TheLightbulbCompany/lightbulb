@@ -172,14 +172,13 @@ function AuthenticatedWorkspace({ scopeId, workspaceName }: { scopeId: string; w
   const lastAppliedRef = useRef<string | null>(null);
   const [recoveryTriggered, setRecoveryTriggered] = useState(false);
   // Phone widths only: the rail + sidebar drawer. Wider, the CSS ignores it.
-  const [navOpen, setNavOpen] = useState(false);
-  const closeNav = useCallback(() => setNavOpen(false), []);
-  // Any navigation (rail, sidebar, + Task, See work, Inspect, a link) moves the
-  // active panel or the URL; the drawer closes with it instead of each caller
-  // remembering to. Opening the drawer changes neither.
-  useEffect(() => {
-    closeNav();
-  }, [activePanelId, searchParams, closeNav]);
+  // The drawer is open only at the place it was opened: any navigation (rail,
+  // sidebar, + Task, See work, Inspect, a link) moves the active panel or the
+  // URL, which closes it without each caller remembering to.
+  const navPlace = `${activePanelId}|${searchParams?.toString() ?? ""}`;
+  const [navOpenAt, setNavOpenAt] = useState<string | null>(null);
+  const navOpen = navOpenAt === navPlace;
+  const closeNav = useCallback(() => setNavOpenAt(null), []);
   const shellRef = useRef<HTMLDivElement>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -502,7 +501,7 @@ function AuthenticatedWorkspace({ scopeId, workspaceName }: { scopeId: string; w
               />
               <div className="workspace-main" inert={navOpen}>
                 <div className="workspace-phone-bar">
-                  <button type="button" ref={menuButtonRef} aria-label="Open menu" aria-expanded={navOpen} onClick={() => setNavOpen(true)}>
+                  <button type="button" ref={menuButtonRef} aria-label="Open menu" aria-expanded={navOpen} onClick={() => setNavOpenAt(navPlace)}>
                     <Menu size={20} aria-hidden="true" />
                   </button>
                   <span className="workspace-name">{workspaceName}</span>

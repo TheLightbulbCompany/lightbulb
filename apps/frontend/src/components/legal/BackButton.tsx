@@ -7,7 +7,10 @@ export function BackButton() {
   const router = useRouter();
   const cameFromHere = () => {
     try {
-      return window.history.length > 1 && !!document.referrer && new URL(document.referrer).origin === window.location.origin;
+      // document.referrer is frozen at the first load, so it cannot see in-app navigation;
+      // Next's router marks every history entry it handles with __NA.
+      const inApp = !!window.history.state?.__NA || (!!document.referrer && new URL(document.referrer).origin === window.location.origin);
+      return window.history.length > 1 && inApp;
     } catch {
       return false;
     }

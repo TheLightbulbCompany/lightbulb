@@ -15,7 +15,7 @@ export function useSubagentTail(client: MessagingClient, target: { roomId: strin
     void read();
     const id = setInterval(read, 2_000);
     return () => { live = false; clearInterval(id); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `key` is the target's identity
+    // `key` is the target's identity
   }, [client, key]);
   return { tail };
 }

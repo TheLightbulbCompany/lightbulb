@@ -223,7 +223,7 @@ export function ByoKeyStep({ onComplete }: Props) {
         </label>
       </fieldset>
 
-      <input
+      <input aria-label="API key"
         type="password"
         value={apiKey}
         onChange={(e) => setApiKey(e.target.value)}

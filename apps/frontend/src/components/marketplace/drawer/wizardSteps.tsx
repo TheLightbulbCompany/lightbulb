@@ -190,14 +190,14 @@ export function DetailsStep({
         Help buyers find your agent. This is what they&apos;ll see in the marketplace.
       </p>
       <Field label="Public name">
-        <input
+        <input aria-label="Public name"
           value={form.name}
           onChange={(e) => onChange({ name: e.target.value })}
           className="border border-[var(--edge)] bg-cream-deep rounded-xl px-3.5 py-2.5 text-sm w-full"
         />
       </Field>
       <Field label="One-line tagline" hint="Max 80 characters.">
-        <input
+        <input aria-label="One-line tagline"
           maxLength={80}
           value={form.tagline}
           onChange={(e) => onChange({ tagline: e.target.value })}
@@ -205,7 +205,7 @@ export function DetailsStep({
         />
       </Field>
       <Field label="Description" hint="Markdown allowed.">
-        <textarea
+        <textarea aria-label="Description"
           rows={4}
           value={form.description}
           onChange={(e) => onChange({ description: e.target.value })}
@@ -214,7 +214,7 @@ export function DetailsStep({
       </Field>
       <div className="grid grid-cols-2 gap-3">
         <Field label="Category">
-          <select
+          <select aria-label="Category"
             value={form.category}
             onChange={(e) => onChange({ category: e.target.value })}
             className="border border-[var(--edge)] bg-cream-deep rounded-xl px-3.5 py-2.5 text-sm w-full"
@@ -237,13 +237,14 @@ export function DetailsStep({
                 <button
                   type="button"
                   onClick={() => onChange({ tags: form.tags.filter((x) => x !== t) })}
+                  aria-label={`Remove tag ${t}`}
                   className="text-muted-foreground hover:text-[var(--midnight)]"
                 >
                   ×
                 </button>
               </span>
             ))}
-            <input
+            <input aria-label="Add tag"
               value={tagInput}
               onChange={(e) => setTagInput(e.target.value)}
               onKeyDown={(e) => {
@@ -582,7 +583,7 @@ export function PricingStep({
           </label>
           <div className="flex items-center bg-cream-deep border border-[var(--edge)] rounded-xl px-3.5 py-3 gap-2 mb-2">
             <span className="font-editorial-serif text-2xl text-muted-foreground">$</span>
-            <input
+            <input aria-label="Price per month in dollars"
               type="number"
               min={1}
               max={20}

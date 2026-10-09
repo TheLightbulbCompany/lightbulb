@@ -229,7 +229,7 @@ export function McpServersTab(props: { agentId?: string }) {
       {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="font-editorial-serif text-title">MCP Servers</h2>
-        <Button variant="ghost" size="sm" onClick={fetchServers}>
+        <Button variant="ghost" size="sm" onClick={fetchServers} aria-label="Refresh MCP servers">
           <RefreshCw size={16} />
         </Button>
       </div>
@@ -239,7 +239,7 @@ export function McpServersTab(props: { agentId?: string }) {
         <p className="text-xs text-muted-foreground">
           Add a local command or remote transport and URL by pasting its configuration:
         </p>
-        <textarea
+        <textarea aria-label="MCP server configuration"
           className="w-full h-36 rounded-lg border border-border bg-background p-3 text-xs font-mono resize-y"
           placeholder={PLACEHOLDER_CONFIG}
           value={configInput}

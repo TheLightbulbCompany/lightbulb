@@ -9,6 +9,7 @@ import { Menu } from "lucide-react";
 import { LogoMark } from "@/components/Logo";
 import "./workspace.css";
 import { constrainGroupHeight } from "./groupConstraints";
+import { DockTab } from "./DockTab";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { OrganizationList, useAuth, useOrganization } from "@clerk/nextjs";
@@ -455,6 +456,7 @@ function AuthenticatedWorkspace({ scopeId, workspaceName }: { scopeId: string; w
         onReady={onReady}
         disableFloatingGroups
         rightHeaderActionsComponent={TasksHeaderActions}
+        defaultTabComponent={DockTab}
         // Tabs only. This kills BOTH drag backends at the source
         // (resolveDndCapabilities returns html5:false + pointer:false), which
         // is why it is one option rather than four handler removals: tab

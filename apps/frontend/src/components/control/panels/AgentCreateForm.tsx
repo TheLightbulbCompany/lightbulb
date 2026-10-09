@@ -67,6 +67,7 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
         <button
           type="button"
           onClick={onCancel}
+          aria-label="Close"
           className="rounded-md p-1 text-muted-foreground hover:text-foreground hover:bg-cream-deep transition-colors"
         >
           <X size={16} />
@@ -75,7 +76,7 @@ export function AgentCreateForm({ existingNames, onCreated, onCancel }: AgentCre
 
       <div className="space-y-1">
         <label className="text-xs text-muted-foreground">Name</label>
-        <input
+        <input aria-label="Name"
           type="text"
           value={name}
           onChange={(e) => {

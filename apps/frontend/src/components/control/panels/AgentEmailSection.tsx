@@ -144,7 +144,7 @@ export function AgentEmailSection() {
         <label className="block text-xs">
           <span className="font-semibold">Who can email the team</span>
           <span className="block text-[var(--midnight-muted)]">One per line: an address (bob@example.com) or a domain (@example.com). You are always allowed. Applies when open email is off; while it is on, anyone whose mail passes authentication can email the team.</span>
-          <textarea
+          <textarea aria-label="Who can email the team"
             className="mt-1 w-full rounded-md border border-[var(--edge)] bg-transparent p-2 font-mono text-xs"
             rows={4}
             value={senders}

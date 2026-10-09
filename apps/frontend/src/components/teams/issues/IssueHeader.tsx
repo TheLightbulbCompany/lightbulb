@@ -80,6 +80,7 @@ export function IssueHeader({ issue, onTitleSave }: IssueHeaderProps) {
 
       {editing ? (
         <input
+          aria-label="Task title"
           ref={inputRef}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}

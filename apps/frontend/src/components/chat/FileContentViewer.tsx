@@ -164,7 +164,7 @@ export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChang
           </button>
         </div>
       </div>
-      <textarea
+      <textarea aria-label="File contents"
         ref={textareaRef}
         value={editContent}
         onChange={(e) => setEditContent(e.target.value)}

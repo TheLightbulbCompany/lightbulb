@@ -17,7 +17,7 @@ export function StartSessionDialog() {
   const [copied, setCopied] = useState<string | null>(null);
   return <Dialog>
     <DialogTrigger asChild><Button variant="outline" size="sm">Start a session</Button></DialogTrigger>
-    <DialogContent>
+    <DialogContent showCloseButton>
       <DialogHeader>
         <DialogTitle>Share a session</DialogTitle>
         <DialogDescription>A session you start with Lightbulb is shared with this workspace, with its live terminal here. Any other session is only yours until you choose Share to Lightbulb in it or turn on Share every new session.</DialogDescription>

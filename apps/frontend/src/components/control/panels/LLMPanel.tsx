@@ -620,7 +620,7 @@ function ReplaceKeyForm({
   return (
     <div className="flex flex-col gap-2">
       <form onSubmit={submit} className="flex gap-2">
-        <Input
+        <Input aria-label="API key"
           type="password"
           value={apiKey}
           onChange={(e) => setApiKey(e.target.value)}

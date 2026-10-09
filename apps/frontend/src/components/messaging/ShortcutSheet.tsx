@@ -36,7 +36,7 @@ const GROUPS: { name: string; rows: [string, string][] }[] = [
 
 export function ShortcutSheet({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   return <Dialog open={open} onOpenChange={onOpenChange}>
-    <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-lg max-h-[calc(100dvh-2rem)] overflow-y-auto">
+    <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-lg max-h-[calc(100dvh-2rem)] overflow-y-auto" showCloseButton>
       <DialogHeader><DialogTitle>Keyboard shortcuts</DialogTitle>
         <DialogDescription>On Windows and Linux, ⌘ is Ctrl and ⌥ is Alt.</DialogDescription></DialogHeader>
       {GROUPS.map((group) => <section key={group.name} aria-label={group.name}>

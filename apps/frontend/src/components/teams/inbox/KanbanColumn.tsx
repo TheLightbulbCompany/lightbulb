@@ -16,6 +16,8 @@ export interface KanbanColumnProps {
   issues: Issue[];
   agents?: KanbanAgent[];
   liveIssueIds?: Set<string>;
+  columns?: readonly string[];
+  onStatusChange?: (id: string, status: string) => void;
 }
 
 function statusLabel(status: string): string {
@@ -27,6 +29,8 @@ export function KanbanColumn({
   issues,
   agents,
   liveIssueIds,
+  columns,
+  onStatusChange,
 }: KanbanColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
 
@@ -76,6 +80,8 @@ export function KanbanColumn({
               issue={issue}
               agents={agents}
               isLive={liveIssueIds?.has(issue.id)}
+              columns={columns}
+              onStatusChange={onStatusChange}
             />
           ))}
         </SortableContext>

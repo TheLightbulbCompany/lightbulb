@@ -291,7 +291,7 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
             </TooltipTrigger>
             <TooltipContent>View the agent configuration</TooltipContent>
           </Tooltip>
-          <Button variant="ghost" size="sm" onClick={handleRefresh}>
+          <Button variant="ghost" size="sm" onClick={handleRefresh} aria-label="Refresh">
             <RefreshCw size={16} />
           </Button>
         </div>
@@ -426,7 +426,7 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
           minimal (browser monospace + JSON.stringify). For an editable
           surface, we'd add structured cards backed by PATCH /config. */}
       <Dialog open={configOpen} onOpenChange={setConfigOpen}>
-        <DialogContent className="max-w-3xl">
+        <DialogContent className="max-w-3xl" showCloseButton>
           <DialogHeader>
             <DialogTitle>Agent configuration</DialogTitle>
             <DialogDescription>

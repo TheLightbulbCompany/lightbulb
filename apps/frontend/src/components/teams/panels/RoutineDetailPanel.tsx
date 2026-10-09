@@ -1426,7 +1426,7 @@ function EditRoutineDialog({
                   className="flex flex-col gap-2 rounded-sm border border-[var(--edge)] p-2"
                 >
                   <div className="grid grid-cols-[1fr_auto_auto] gap-2 items-center">
-                    <input
+                    <input aria-label="Variable name"
                       value={v.name}
                       onChange={(e) => setVar(i, { name: e.target.value })}
                       placeholder="name"
@@ -1458,14 +1458,14 @@ function EditRoutineDialog({
                       <TooltipContent>Remove</TooltipContent>
                     </Tooltip>
                   </div>
-                  <input
+                  <input aria-label="Variable label"
                     value={v.label}
                     onChange={(e) => setVar(i, { label: e.target.value })}
                     placeholder="label (optional)"
                     className="border border-[var(--edge)] bg-[var(--cream)] rounded-md px-2 py-1 text-sm text-[var(--midnight)]"
                   />
                   {v.type === "select" && (
-                    <input
+                    <input aria-label="Variable options"
                       value={v.options}
                       onChange={(e) => setVar(i, { options: e.target.value })}
                       placeholder="options, comma-separated"
@@ -1523,7 +1523,7 @@ function VarDefaultInput({
   }
   const inputType = v.type === "date" ? "date" : v.type === "number" ? "number" : "text";
   return (
-    <input
+    <input aria-label="Default value"
       type={inputType}
       value={v.defaultValue}
       onChange={(e) => onChange(e.target.value)}

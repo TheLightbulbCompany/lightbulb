@@ -24,6 +24,9 @@ export interface KanbanCardProps {
   issue: Issue;
   agents?: KanbanAgent[];
   isLive?: boolean;
+  // Keyboard/screen-reader alternative to dragging between columns.
+  columns?: readonly string[];
+  onStatusChange?: (id: string, status: string) => void;
 }
 
 interface CardContentProps {
@@ -124,7 +127,7 @@ function CardContent({ issue, agents, isLive, isDragging }: CardContentProps) {
 
 // Sortable card rendered inside a column. Registers a draggable instance
 // with dnd-kit keyed by issue.id.
-export function KanbanCard({ issue, agents, isLive }: KanbanCardProps) {
+export function KanbanCard({ issue, agents, isLive, columns, onStatusChange }: KanbanCardProps) {
   const {
     attributes,
     listeners,
@@ -157,6 +160,22 @@ export function KanbanCard({ issue, agents, isLive }: KanbanCardProps) {
         isLive={isLive}
         isDragging={isDragging}
       />
+      {columns && onStatusChange && (
+        <select
+          aria-label={`Status of ${issue.title}`}
+          value={issue.status}
+          className="mt-2 w-full rounded border bg-transparent text-xs"
+          onPointerDown={(e) => e.stopPropagation()}
+          onKeyDown={(e) => e.stopPropagation()}
+          onChange={(e) => onStatusChange(issue.id, e.target.value)}
+        >
+          {columns.map((s) => (
+            <option key={s} value={s}>
+              {s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+            </option>
+          ))}
+        </select>
+      )}
     </div>
   );
 }

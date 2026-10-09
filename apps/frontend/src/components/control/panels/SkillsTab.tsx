@@ -263,7 +263,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
             >
               + Create custom skill
             </Button>
-            <Button variant="ghost" size="sm" onClick={() => mutate()} className="text-[var(--midnight-muted)] hover:text-[var(--midnight)]">
+            <Button variant="ghost" size="sm" onClick={() => mutate()} className="text-[var(--midnight-muted)] hover:text-[var(--midnight)]" aria-label="Refresh skills">
               <RefreshCw size={16} />
             </Button>
           </div>
@@ -295,7 +295,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
         {/* Search bar */}
         <div className="relative">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--midnight-muted)]" />
-          <Input
+          <Input aria-label="Search skills"
             placeholder="Search skills..."
             className="pl-10 h-10 text-sm bg-cream-deep border-[var(--edge)] rounded-lg"
             value={filter}

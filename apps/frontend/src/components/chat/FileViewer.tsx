@@ -27,19 +27,15 @@ interface FileViewerProps {
 
 type ViewerTab = "workspace" | "config";
 
-function Breadcrumbs({ path, onNavigate }: { path: string; onNavigate: (segment: string) => void }) {
+// Display only: the viewer has no folder view to navigate to, so a segment is text, not a button.
+function Breadcrumbs({ path }: { path: string }) {
   const segments = path.split("/");
   return (
     <div className="flex items-center gap-1 text-sm text-[var(--midnight-muted)] min-w-0">
       {segments.map((segment, i) => (
         <React.Fragment key={i}>
           {i > 0 && <span className="text-[var(--midnight-faint)]">/</span>}
-          <button
-            onClick={() => onNavigate(segments.slice(0, i + 1).join("/"))}
-            className="hover:text-[var(--midnight)] transition-colors truncate"
-          >
-            {segment}
-          </button>
+          <span className="truncate">{segment}</span>
         </React.Fragment>
       ))}
     </div>
@@ -189,7 +185,7 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
 
         {selectedPath && file && (
           <>
-            <Breadcrumbs path={relativeFilePath ?? selectedPath} onNavigate={() => {}} />
+            <Breadcrumbs path={relativeFilePath ?? selectedPath} />
             <span className="text-xs text-[var(--midnight-muted)] shrink-0 ml-2">
               {formatFileSize(file.size)} · {formatDate(file.modified_at)}
             </span>

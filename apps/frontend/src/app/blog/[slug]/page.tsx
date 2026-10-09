@@ -109,13 +109,13 @@ export default async function BlogPostPage({
         <BlogArticleBody source={post.content} />
 
         <footer className="blog-article-footer">
-          <h2>Start your own AI pod</h2>
+          <h2>Start your own AI workspace</h2>
           <p>
-            A private, isolated pod with a team of agents and persistent memory —
+            A private, isolated workspace with a team of agents and persistent memory —
             free to start, no credit card required.
           </p>
           <Link href="/chat" className="ld-btn">
-            Start your pod
+            Open your workspace
             <span className="ld-btn-arrow" aria-hidden="true">
               →
             </span>

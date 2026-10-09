@@ -8,7 +8,7 @@ tags: ["ai-native company","ai agents","paperclip","company brain","human in the
 
 An AI-native company operating system is not just a chatbot attached to a task list. It is a workspace where agents can understand goals, break work into projects and tasks, use company context, connect to tools, ask for human approval, and keep working after the approval arrives.
 
-[Lightbulb](/) is built around that model: a private AI pod, a roster of agents, Paperclip for company operations, and a persistent company brain.
+[Lightbulb](/) is built around that model: a private AI workspace, a roster of agents, Paperclip for company operations, and a persistent company brain.
 
 ## The core jobs an AI-native company OS should handle
 

@@ -126,10 +126,10 @@ export function ProjectsListPanel() {
       ) : filtered.length === 0 ? (
         <PanelEmptyState
           icon={FolderKanban}
-          headline="No projects yet."
+          headline={search ? "No projects match your search." : "No projects yet."}
           supporting={
             search
-              ? "No projects match your search."
+              ? undefined
               : "Create a project to group related issues + measure progress on a deliverable."
           }
           action={{ label: "New project", onClick: () => setCreating(true) }}

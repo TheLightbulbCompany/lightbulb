@@ -78,7 +78,7 @@ export default async function SeoLandingPage({ params }: SeoRouteProps) {
           ))}
         </div>
         <div className="mt-10 flex flex-wrap gap-4">
-          <Link href="/#start" className="editorial-btn editorial-btn--primary h-11 px-6">
+          <Link href="/sign-up" className="editorial-btn editorial-btn--primary h-11 px-6">
             Start with Lightbulb
           </Link>
           <Link href="/marketplace/agents" className="editorial-btn h-11 px-6">

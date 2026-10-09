@@ -5,6 +5,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { DeployRefresh } from "@/components/DeployRefresh";
 import { DesktopAuthListener } from "@/components/DesktopAuthListener";
 import { ExplicitSharingNotice, LiveSharingOffer } from "@/components/desktop/ExplicitSharingNotice";
+import { InAppNavTracker } from "@/components/legal/BackButton";
 import { PostHogProvider } from "@/components/PostHogProvider";
 import { SwrProvider } from "@/components/SwrProvider";
 import { SupportProvider } from "@/components/support/SupportProvider";
@@ -114,6 +115,7 @@ export default function RootLayout({
                   {/* One provider for the whole app so the tooltip skip-delay
                       grace is shared: after the first tooltip, neighbouring
                       ones open instantly instead of re-waiting. */}
+                  <InAppNavTracker />
                   <TooltipProvider>{children}</TooltipProvider>
                   {/* Toaster INSIDE SupportProvider so a toast's <ReportButton/>
                       (a custom-JSX sonner action) can resolve useSupport(). */}

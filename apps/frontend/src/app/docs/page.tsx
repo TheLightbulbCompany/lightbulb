@@ -53,7 +53,7 @@ export default function DocsPage() {
         </p>
         <div className="docs-hero-actions">
           <Link href="/chat" className="ld-btn">
-            Start your pod
+            Open your workspace
             <span className="ld-btn-arrow" aria-hidden="true">→</span>
           </Link>
           <Link href="/blog" className="ld-btn ld-btn-secondary">

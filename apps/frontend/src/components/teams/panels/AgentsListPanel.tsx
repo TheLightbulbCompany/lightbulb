@@ -197,10 +197,10 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
       ) : filtered.length === 0 ? (
         <PanelEmptyState
           icon={Bot}
-          headline="No agents yet."
+          headline={search ? "No agents match your search." : "No agents yet."}
           supporting={
             search
-              ? "No agents match your search."
+              ? undefined
               : "Spin up your first agent — assign a role + start delegating work."
           }
           action={{ label: "New agent", onClick: () => setCreating(true) }}

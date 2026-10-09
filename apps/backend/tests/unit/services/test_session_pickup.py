@@ -899,7 +899,7 @@ async def test_turning_it_off_never_deletes_a_snapshot_committed_after(transport
 async def test_a_paused_session_cannot_be_allowed(transport, s3):
     sid = await claude_session(transport)
     await service.set_sharing(ALICE, sid, False)
-    with pytest.raises(ApiProblem, match="Resume sharing") as refused:
+    with pytest.raises(ApiProblem, match="with your workspace") as refused:
         await pickup.set_pickup(ALICE, sid, True)
     assert refused.value.error.code == "LOCAL_SESSION_CONFLICT"
     assert await messaging_repo._query(repo.user_pk(OWNER, ALICE.user_id), begins_with="PICKUPWANT#") == []

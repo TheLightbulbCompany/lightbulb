@@ -143,3 +143,25 @@ it("a paused session reads Only me even when the link cannot be read", async () 
   render(<SessionShareLink session={{ ...session, shared: false }} client={client} />);
   expect(await who()).toHaveValue("me");
 });
+
+it("reads the link again when the session is shared again: stopping in the terminal narrowed it on the server", async () => {
+  let audience: "workspace" | "anyone" = "anyone";
+  const client = { ...make("anyone"), getLocalSessionLink: vi.fn(async () => ({ url, audience })) };
+  const view = render(<SessionShareLink session={session} client={client} />);
+  expect(await who()).toHaveValue("anyone");
+  audience = "workspace"; // the band's Stop: the server narrows the link with it
+  view.rerender(<SessionShareLink session={{ ...session, shared: false }} client={client} />);
+  expect(await who()).toHaveValue("me");
+  view.rerender(<SessionShareLink session={{ ...session, shared: true }} client={client} />);
+  expect(await who()).toHaveValue("workspace");
+  expect(screen.queryByRole("note")).toBeNull();
+});
+
+it("a session inside an app has no terminal, so it is never Anyone with the link", async () => {
+  const client = make("anyone"); // a public link made before the rule: the server opens it for the workspace only
+  render(<SessionShareLink session={{ ...session, terminalReason: "app" }} client={client} />);
+  expect(await who()).toHaveValue("workspace");
+  expect(screen.getByRole("option", { name: "Anyone with the link" })).toBeDisabled();
+  expect(screen.getByText("Sessions inside an app can be shared with your workspace only.")).toBeInTheDocument();
+  expect(screen.queryByRole("note")).toBeNull();
+});

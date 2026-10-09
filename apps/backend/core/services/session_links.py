@@ -80,7 +80,7 @@ async def _live(row: dict | None, digest: str) -> dict:
     if row is None or row.get("removedAt") is not None or link.get("tokenHash") != digest:
         raise _turned_off()
     if row.get("unshared"):
-        raise ApiProblem("LOCAL_SESSION_CONFLICT", "The owner paused this session.")
+        raise ApiProblem("LOCAL_SESSION_CONFLICT", "The owner stopped sharing this session.")
     try:
         await sessions._enrolled(row["ownerId"], row["humanUserId"], row["deviceId"])
     except ApiProblem as exc:
@@ -102,7 +102,7 @@ async def resolve(auth: AuthContext | None, token: str) -> tuple[dict, dict, boo
     except ApiProblem as exc:
         raise _gone() from exc
     member = await _member(auth, row)
-    if not sessions.public_id(link) and not member:
+    if not sessions.public_id(link, row) and not member:
         raise _gone()
     return row, link, member
 
@@ -384,7 +384,7 @@ async def viewing(token: str, lease: str | None, fresh: bool, retake: bool = Fal
     from core.services import session_screen
 
     row, link, _ = await resolve(None, token)
-    public = sessions.public_id(link)
+    public = sessions.public_id(link, row)
     if not public:
         raise _gone()
     now = int(time.time())
@@ -855,7 +855,7 @@ async def redeem(code: str, verifier: str) -> CopyTicket | Preparing:
         # The same door Continue went through: a workspace link opens only for a current member.
         if item["member"]:
             await _still_a_member(row, item["userId"])
-        elif not sessions.public_id(link):
+        elif not sessions.public_id(link, row):
             raise _gone()
     except ApiProblem as exc:
         raise _gone() from exc

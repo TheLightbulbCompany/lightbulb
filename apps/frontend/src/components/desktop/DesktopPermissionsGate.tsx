@@ -49,21 +49,24 @@ export function DesktopPermissionsGate() {
     DEFAULT_DESKTOP_PERMISSIONS,
   );
   const [choice, setChoice] = useState<boolean | null>(null);
-  // On by default (owner ruling 2026-10-07) for a Mac that was never offered the switch: the item
-  // says which files it edits, and one click turns it off. A Mac that already answered (an earlier
-  // pairing, or the notice) keeps its answer: `stored` is what its rc files say now (read for every
-  // Mac). Until that is read an offered Mac's switch waits, and if it cannot be read the switch
-  // stays disabled, so nothing is written.
-  // Read on every render: the notice can make the offer while this is mounted.
-  const offered = (() => { try { return !!localStorage.getItem(LIVE_SHARING_OFFER_KEY); } catch { return true; } })();
+  // Off unless its person turns it on (owner ruling 2026-10-08: all sharing is opt in). The switch
+  // shows what this Mac's rc files say now (`stored`: on only on a Mac that turned it on before),
+  // and pairing writes only what the person pressed. The switch and Continue wait for that read on
+  // every Mac (the block can be there although this app's storage is new: a reinstall), so the box
+  // never shows off over a Mac that is on. If it cannot be read the dialog says so, the switch
+  // stays disabled and nothing is written.
   const [stored, setStored] = useState<boolean | null>(null);
+  const [storedFailed, setStoredFailed] = useState(false);
   const [liveChoice, setLive] = useState<boolean | null>(null);
-  const liveKnown = !offered || stored !== null;
-  const live = liveChoice ?? (offered ? stored ?? false : true);
+  const liveKnown = stored !== null;
+  const live = liveChoice ?? stored ?? false;
   useEffect(() => {
     if (!shouldShowGate) return;
     let current = true;
-    getTauri()?.core?.invoke<boolean>("shell_integration_status").then(on => { if (current && typeof on === "boolean") setStored(on); }, () => {});
+    getTauri()?.core?.invoke<boolean>("shell_integration_status").then(
+      on => { if (!current) return; if (typeof on === "boolean") setStored(on); else setStoredFailed(true); },
+      () => { if (current) setStoredFailed(true); },
+    );
     return () => { current = false; };
   }, [shouldShowGate]);
   const [saving, setSaving] = useState(false);
@@ -128,12 +131,11 @@ export function DesktopPermissionsGate() {
         }
       }
       // What the person pressed is always applied, whatever this dialog believes the rc files say
-      // (off removes the block). Untouched: a never-offered Mac gets the default, an offered one
-      // keeps what it has.
-      const write = liveChoice ?? (!offered && stored !== true ? true : null);
-      if (enableSharing && write !== null) {
+      // (off removes the block). Untouched: nothing is written, so a Mac keeps what it has and a
+      // fresh one stays off.
+      if (enableSharing && liveChoice !== null) {
         // Best effort: the switch stays in Settings if this build or the rc files refuse.
-        await getTauri()?.core?.invoke("shell_integration_set", { enabled: write }).catch(() => {});
+        await getTauri()?.core?.invoke("shell_integration_set", { enabled: liveChoice }).catch(() => {});
       }
       // This dialog made the offer, whatever the answer: the notice for Macs paired before the
       // switch existed (LiveSharingOffer) must not ask again.
@@ -145,7 +147,7 @@ export function DesktopPermissionsGate() {
   };
   const items: Array<{key:keyof DesktopPermissionSet | "sessions" | "live";label:string;description:string;Icon:LucideIcon}> = [
     ...DESKTOP_PERMISSION_ITEMS,
-    {key:"sessions",label:"Share Claude & Codex sessions",description:"Let people in your workspace conversations view and steer the Claude Code and Codex sessions you share from this Mac.",Icon:Terminal},
+    {key:"sessions",label:"Share Claude & Codex sessions",description:"Lets you share Claude Code and Codex sessions from this Mac with your workspace. On its own this shares nothing.",Icon:Terminal},
     ...(sessionChoice ? [{key:"live" as const,label:SHARE_LIVE_LABEL,description:SHARE_LIVE_DESCRIPTION,Icon:Radio}] : []),
   ];
 
@@ -212,8 +214,9 @@ export function DesktopPermissionsGate() {
           })}
         </div>
         <p className="text-xs leading-relaxed text-[var(--midnight-muted)]">
-          Sharing includes active sessions’ existing transcripts and new sessions. Current human members of conversations you share in this workspace can view and steer them; contributions can be visible across conversations. Personal memory files are not uploaded. Tool commands, output previews and file changes are shared as the harness shows them. Enrollment is saved and resumes automatically when you reopen Lightbulb. You can disable sharing in Settings.
+          Nothing is shared until you start a session with Lightbulb, choose Share to Lightbulb in it, or turn on “{SHARE_LIVE_LABEL}”. Every member of your workspace, and its AI agents, can see a shared session’s live terminal and conversation, secrets it prints included. “Anyone with the link” is a separate choice you make per session, and you can switch any session back to Only me. This choice is saved; change it in Settings.
         </p>
+        {sessionChoice && storedFailed && !liveKnown && <p role="status" className="text-xs text-[var(--midnight-muted)]">Could not read whether “{SHARE_LIVE_LABEL}” is on for this Mac. It is left as it is: check it in Settings.</p>}
         {checking && <p role="status" className="text-xs text-[var(--midnight-muted)]">Checking local-session sharing… You can continue with Basic only.</p>}
         {(saveError || sharing.error) && <p role="alert" className="text-sm text-destructive">{sharing.error || saveError}</p>}
 
@@ -228,7 +231,7 @@ export function DesktopPermissionsGate() {
           </button>
           <button
             type="button"
-            disabled={saving || checking || !sharing.userId || !sharing.orgId}
+            disabled={saving || checking || !sharing.userId || !sharing.orgId || (shouldShowGate && sessionChoice && !liveKnown && !storedFailed)}
             onClick={() => void save(permissions, "custom")}
             className="rounded-md bg-midnight px-4 py-2 text-sm font-medium text-cream hover:bg-[var(--midnight-soft)]"
           >

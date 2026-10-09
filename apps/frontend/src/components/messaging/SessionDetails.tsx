@@ -156,7 +156,7 @@ function Access({ session, ownerName, own, client, nameOf, switches: { control, 
       {session.pickup?.allowed && <p role="status" className="session-setting-state">{pickupStatus(session.pickup, timeAgo) || "Taking the first snapshot."}</p>}
     </div>
     {!ended && client.setLocalSessionTeamControl && <Setting label="Let teammates control this session" checked={control.enabled} disabled={control.saving} onChange={next => void control.set(next)} error={control.error}>
-      Workspace members can send follow-ups and answer permission prompts on your Mac. Every action is logged in the transcript. Turns off when the session ends.
+      Workspace members can send follow-ups and answer permission prompts on your Mac. Every action is logged in the session’s conversation. Turns off when the session ends.
     </Setting>}
     {!ended && <People session={session} ids={session.allowedSenders} remove={client.removeLocalSessionSender} nameOf={nameOf}
       label="People you let in" about="They asked to join. They can send follow-ups and answer permission prompts until the session ends." />}

@@ -99,8 +99,9 @@ every new session** was on as it started, or when its person chose **Share to Li
 Codex). Every other session is only its person's: nothing of it leaves the Mac, and you cannot
 see or message it. A shared session is shared whole, from its start. Its person can stop
 sharing one session or turn sharing off for the Mac. When a
-person pairs a Mac, **Share every new session** starts on (they can turn it off there or later
-in Settings), so a plain `claude` or `codex` typed in a new terminal tab runs through Lightbulb.
+person pairs a Mac, **Share every new session** starts off (they can turn it on there or later
+in Settings); while it is on, a plain `claude` or `codex` typed in a new terminal tab runs
+through Lightbulb.
 A running session shows its live terminal when Lightbulb started it, when it is a Claude Code
 background session, or when it is a plain Codex session (Codex's own background service runs
 it, and Lightbulb opens one more Codex terminal on the same conversation). A shared session in

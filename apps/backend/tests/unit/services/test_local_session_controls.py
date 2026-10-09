@@ -861,8 +861,9 @@ async def test_a_pick_up_request_shows_and_is_answered_in_activity(transport):
 
 @pytest.mark.asyncio
 async def test_link_changes_log_who_and_which_client_and_never_the_link(caplog):
-    """ISOA-732: a link revoked seconds after its audience changed could be traced to a person
-    (the audit row) but not to a client. The routes now say which, without the token or URL."""
+    """ISOA-732: a link change could be traced to a person (the audit row) but not to a client.
+    The route says which, without the token or URL. PUT is the only route that changes a link
+    since "Turn off link" went (#3946): narrowing it is a PUT too."""
     from unittest.mock import AsyncMock
 
     from fastapi import FastAPI
@@ -875,21 +876,22 @@ async def test_link_changes_log_who_and_which_client_and_never_the_link(caplog):
     app.include_router(messaging.router, prefix="/api/v1")
     app.dependency_overrides[get_current_user] = lambda: ALICE
     sid, secret = "8ad82a70-e3cd-5d26-b43a-9de9db3dd0c3", "https://x/s#do-not-log-this-token"
-    link = service.SessionLink(url=secret, audience="anyone")
+    links = [service.SessionLink(url=secret, audience=audience) for audience in ("anyone", "workspace")]
     headers = {"user-agent": "Mozilla/5.0 TestWebView", "origin": "https://thelightbulb.company"}
     with (
-        patch.object(service, "put_link", AsyncMock(return_value=link)),
-        patch.object(service, "delete_link", AsyncMock()),
+        patch.object(service, "put_link", AsyncMock(side_effect=links)),
         caplog.at_level("INFO", logger="routers.messaging"),
     ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             path = f"/api/v1/messaging/sessions/{sid}/link"
-            assert (await client.put(path, json={"audience": "anyone"}, headers=headers)).status_code == 200
-            assert (await client.delete(path, headers=headers)).status_code == 204
-    put, revoked = [r for r in caplog.records if r.getMessage().startswith("session link ")]
-    assert (put.getMessage(), put.audience) == ("session link put", "anyone")
-    assert (revoked.getMessage(), revoked.audience) == ("session link revoked", None)
-    for record in (put, revoked):
+            for audience in ("anyone", "workspace"):
+                assert (await client.put(path, json={"audience": audience}, headers=headers)).status_code == 200
+    records = [r for r in caplog.records if r.getMessage().startswith("session link ")]
+    assert [(r.getMessage(), r.audience) for r in records] == [
+        ("session link put", "anyone"),
+        ("session link put", "workspace"),
+    ]
+    for record in records:
         assert record.actor_user_id == ALICE.user_id and record.session_id == sid
         assert record.user_agent == "Mozilla/5.0 TestWebView" and record.origin == "https://thelightbulb.company"
         assert "do-not-log" not in str(record.__dict__)

@@ -667,6 +667,13 @@ def session_terminal(row: dict) -> Literal["held", "attach"] | None:
     return "held" if reported is None and row.get("holderId") else None
 
 
+def conversation_only(row: dict) -> bool:
+    """A session that never has a terminal (it runs inside an app, an IDE or an SDK; a Mac older
+    than 2026-10-08 said `unknown`). The clients' `conversationOnly`. There is no public page for
+    a conversation, so it is never "Anyone with the link"."""
+    return session_terminal(row) is None and row.get("terminalReason") in ("app", "sdk", "unknown")
+
+
 def screen_available(row: dict, now: int | None = None) -> bool:
     """An ended held session whose holder still shows its final screen (spec 2026-10-07 §5.4). The
     Mac says so on the end and renews `screenUntil` with every heartbeat while it lasts; it lapses
@@ -2971,11 +2978,15 @@ def link_url(token: str) -> str:
     return f"{settings.FRONTEND_URL.rstrip('/')}/s#{token}"
 
 
-def public_id(link: dict | None) -> str | None:
+def public_id(link: dict | None, row: dict | None = None) -> str | None:
     """The id an "Anyone with the link" link's watch channel is named by (`/pub/<id>`); None for a
     workspace link. It is what makes a link public: an "anyone" link made before public watch has
     none, so it opens for the workspace only until its owner picks Anyone again (owner ruling
-    2026-10-08). Minted new each time a link is made public, so an earlier watcher's channel is dead."""
+    2026-10-08). Minted new each time a link is made public, so an earlier watcher's channel is dead.
+    ``row``: the link's session, at the doors that open it. One with no terminal has nothing public
+    to show, so a public link made on it earlier opens for the workspace only."""
+    if row is not None and conversation_only(row):
+        return None
     return (link or {}).get("publicId")
 
 
@@ -2984,7 +2995,15 @@ def _with_audience(link: dict, audience: str) -> dict:
     return {**kept, "audience": audience, **({"publicId": str(uuid.uuid4())} if audience == "anyone" else {})}
 
 
-def _link_public(link: dict) -> SessionLink:
+def narrow_link(row: dict) -> None:
+    """A session known to have no terminal keeps no public link: the relay narrows it on the row
+    it is writing, so a later run of the conversation in a terminal is not public again without a
+    new "Anyone with the link" choice. (`public_id`'s `row` covers the time before that write.)"""
+    if public_id(row.get("shareLink")):
+        row["shareLink"] = _with_audience(row["shareLink"], "workspace")
+
+
+def _link_public(link: dict, row: dict) -> SessionLink:
     from core import encryption
 
     try:
@@ -2992,7 +3011,7 @@ def _link_public(link: dict) -> SessionLink:
     except ValueError:  # encryption.decrypt's only failure
         logger.warning("session link undecryptable")
         url = None
-    return SessionLink(url=url, audience="anyone" if public_id(link) else "workspace")
+    return SessionLink(url=url, audience="anyone" if public_id(link, row) else "workspace")
 
 
 async def _owned_session(auth: AuthContext, session_id: str, verb: str = "share") -> dict:
@@ -3037,7 +3056,11 @@ async def put_link(auth: AuthContext, session_id: str, audience: str | None) -> 
         if auth.user_id != row["humanUserId"]:
             raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can share it.")
         if row.get("unshared"):
-            raise ApiProblem("LOCAL_SESSION_CONFLICT", "Resume sharing before sharing a link.")
+            raise ApiProblem("LOCAL_SESSION_CONFLICT", "Share this session with your workspace first.")
+        if audience == "anyone" and conversation_only(row):
+            raise ApiProblem(
+                "LOCAL_SESSION_UNSUPPORTED", "Sessions inside an app can be shared with your workspace only."
+            )
         if pickup_expired(row):
             raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "This session is too old to share.")
         owner, sid, link = row["ownerId"], row["sessionId"], row.get("shareLink")
@@ -3089,7 +3112,7 @@ async def put_link(auth: AuthContext, session_id: str, audience: str | None) -> 
         break
     else:
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
-    return _link_public(link)
+    return _link_public(link, row)
 
 
 async def get_link(auth: AuthContext, session_id: str) -> SessionLink:
@@ -3098,7 +3121,7 @@ async def get_link(auth: AuthContext, session_id: str) -> SessionLink:
         raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "This session has no link.")
     if pickup_expired(row):
         raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "This session is too old to share.")
-    return _link_public(row["shareLink"])
+    return _link_public(row["shareLink"], row)
 
 
 async def delete_link(auth: AuthContext, session_id: str, *, removed_only: bool = False) -> None:

@@ -33,8 +33,11 @@ def _env(monkeypatch):
 
 
 def _rows(viewers=(), typed=()):
-    async def query(pk, begins_with):
+    async def query(pk, begins_with, limit=None):
         assert begins_with == "VIEWER#", "presence reads only the VIEWER rows, never the typing history"
+        if pk.startswith("PUBWATCH#"):  # an "Anyone" link's seats: one bounded read
+            assert limit == 21
+            return [{"expiresAt": NOW + 30}, {"expiresAt": NOW - 1}]
         # A typist typed 2 s ago; everyone else last typed a minute ago.
         return [{"userId": u, "expiresAt": NOW + 30, "typedAt": NOW - (2 if u in typed else 60)} for u in viewers] + [
             {"userId": "user_old", "expiresAt": NOW - 1, "typedAt": NOW}
@@ -247,7 +250,9 @@ async def test_an_anyone_link_session_names_no_watcher_to_the_band(monkeypatch):
         ("user_aden", "", True),
         ("user_mira", "", False),
     ]
+    assert public["linkViewers"] == 1, "live seats only"
     workspace = await presence.entry(_row(shareLink={"audience": "workspace"}), 1)
+    assert workspace["linkViewers"] == 0
     assert [v["name"] for v in workspace["viewers"]] == ["Aden", "Mira"]
     # Nor anyone who asks, and an agent's ask carries no message.
     ask = {"agentId": "agent-1", "agentName": "Friday", "requestId": "a1", "kind": "send", "text": "Run the tests"}

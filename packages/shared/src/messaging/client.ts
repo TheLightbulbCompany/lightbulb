@@ -106,7 +106,8 @@ export interface MessagingClient {
   decideLocalSessionPickup(sessionId: string, userId: string, decision: "allow" | "decline", requestId?: string): Promise<LocalSession>;
   /** Keep a running session's live terminal coming to this person; sent every 15 s while it is on screen. */
   /** `fresh`: the view just mounted with no screen; the backend asks the Mac for one now. */
-  watchLocalSession(sessionId: string, fresh?: boolean): Promise<void>;
+  /** Answers with how many people watch while some watch by an "Anyone" link (counts, never who); nothing from an older backend. */
+  watchLocalSession(sessionId: string, fresh?: boolean): Promise<{ watching: number; viaLink: number } | undefined>;
   /** An admitted viewer's keystrokes (base64, at most 4096 raw bytes) for the live terminal screen `epoch` they are looking at. */
   sendLocalSessionInput(sessionId: string, data: string, epoch: number): Promise<void>;
   /** The owner allows or declines one person's ask. Allow lets just that person send. */
@@ -199,7 +200,7 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     requestLocalSessionPickupAccess: (sessionId) => api.post(`${sessionPath(sessionId)}/pickup-requests`, {}) as Promise<LocalSession>,
     decideLocalSessionPickup: (sessionId, userId, decision, requestId) =>
       api.post(`${sessionPath(sessionId)}/pickup-requests/${encodeURIComponent(userId)}`, { decision, ...(requestId ? { requestId } : {}) }) as Promise<LocalSession>,
-    watchLocalSession: (sessionId, fresh) => api.post(`${sessionPath(sessionId)}/viewing`, fresh === true ? { fresh: true } : {}) as Promise<void>,
+    watchLocalSession: (sessionId, fresh) => api.post(`${sessionPath(sessionId)}/viewing`, fresh === true ? { fresh: true } : {}) as Promise<{ watching: number; viaLink: number } | undefined>,
     sendLocalSessionInput: async (sessionId, data, epoch) => { await api.post(`${sessionPath(sessionId)}/input`, { data, epoch }); },
     decideLocalSessionJoin: (sessionId, userId, decision, requestId) =>
       api.post(`${sessionPath(sessionId)}/join-requests/${encodeURIComponent(userId)}`, { decision, ...(requestId ? { requestId } : {}) }) as Promise<LocalSession>,

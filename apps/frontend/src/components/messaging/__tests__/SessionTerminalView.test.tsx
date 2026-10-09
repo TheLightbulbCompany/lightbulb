@@ -108,6 +108,38 @@ it("a view mounted in a hidden tab asks for nothing until the tab is shown", asy
   spy.mockRestore();
 });
 
+it("says how many watch while people watch by link, as counts, and nothing otherwise", async () => {
+  vi.useFakeTimers();
+  const answers = [{ watching: 2, viaLink: 3 }, { watching: 0, viaLink: 1 }, { watching: 4, viaLink: 0 }, undefined];
+  const watch = vi.fn(async () => answers.shift());
+  render(<SessionTerminalView session={{ sessionId: "s1", generation: "g1" }} onEvent={() => () => {}} watch={watch} onLive={vi.fn()} />);
+  const size = () => screen.getByRole("group", { name: "Terminal size" }).textContent;
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  expect(size()).toBe("2 watching · 3 via linkReadableFit");
+  await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+  expect(size()).toBe("1 via linkReadableFit");
+  await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+  expect(size()).toBe("ReadableFit"); // no link viewer: as before
+  await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+  expect(size()).toBe("ReadableFit"); // an older backend answers nothing
+});
+
+it("drops the count when a watch is refused (the owner chose Only me)", async () => {
+  vi.useFakeTimers();
+  let refuse = false;
+  const watch = vi.fn(async () => {
+    if (refuse) throw new ApiError(409, { code: "LOCAL_SESSION_OFFLINE", message: "This session is not running." }, "This session is not running.");
+    return { watching: 0, viaLink: 3 };
+  });
+  render(<SessionTerminalView session={{ sessionId: "s1", generation: "g1" }} onEvent={() => () => {}} watch={watch} onLive={vi.fn()} />);
+  const size = () => screen.getByRole("group", { name: "Terminal size" }).textContent;
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  expect(size()).toBe("3 via linkReadableFit");
+  refuse = true;
+  await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+  expect(size()).toBe("ReadableFit");
+});
+
 it("a full session says so with the API's message and stops asking", async () => {
   vi.useFakeTimers();
   const message = "This session already has 20 live viewers.";

@@ -14,17 +14,19 @@ export function bandRuns(s: SessionState): Run[] {
   if (s.paused) return [{ text: ONLY_YOU_LINE }]
   // No terminal: it runs inside an app, and members read its conversation.
   if (s.terminal === null) return [{ text: '● Shared in Lightbulb' }]
-  if (s.viewers.length === 0) return [{ text: '● Live in Lightbulb' }]
+  // People on the "Anyone with the link" page: a count, and nothing when there are none.
+  const link = s.linkViewers ? ` · ${s.linkViewers} via link` : ''
+  if (s.viewers.length === 0) return [{ text: link ? `● Live${link}` : '● Live in Lightbulb' }]
   const names = (vs: SessionState['viewers']) =>
     vs.flatMap((v, i): Run[] => [...(i ? [{ text: ', ' }] : []), { text: v.name, color: colorFor(v.userId) }])
   const typing = s.viewers.filter(v => v.typing)
   // An "Anyone with the link" session: the band is in the terminal that link shows, so the
   // workspace sends its watchers unnamed and the band counts them.
   if (s.viewers.some(v => !v.name)) {
-    return [{ text: `● Live · ${s.viewers.length} watching${typing.length ? ` · ${typing.length} typing` : ''}` }]
+    return [{ text: `● Live · ${s.viewers.length} watching${typing.length ? ` · ${typing.length} typing` : ''}${link}` }]
   }
   return [{ text: '● Live · ' }, ...names(s.viewers), { text: ' watching' },
-    ...(typing.length ? [{ text: ' · ' }, ...names(typing), { text: ' typing' }] : [])]
+    ...(typing.length ? [{ text: ' · ' }, ...names(typing), { text: ' typing' }] : []), ...(link ? [{ text: link }] : [])]
 }
 
 export const bandLine = (s: SessionState) => bandRuns(s).map(r => r.text).join('')

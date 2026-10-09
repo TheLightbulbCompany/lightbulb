@@ -422,9 +422,11 @@ def test_the_viewing_route_passes_a_mount_on_and_takes_no_body_as_a_renewal(monk
 
     async def watch(auth, session_id, mounted=False):
         seen.append(mounted)
+        return {"watching": 2, "viaLink": 3}
 
     monkeypatch.setattr(router.session_screen, "watch", watch)
-    asyncio.run(router.watch_local_session("s1", router.SessionViewingRequest(fresh=True), BOB))
+    counts = asyncio.run(router.watch_local_session("s1", router.SessionViewingRequest(fresh=True), BOB))
+    assert counts.model_dump() == {"watching": 2, "viaLink": 3}, "counts and nothing else"
     asyncio.run(router.watch_local_session("s1", router.SessionViewingRequest(), BOB))
     asyncio.run(router.watch_local_session("s1", None, BOB))  # a client older than `fresh`
     assert seen == [True, False, False]
@@ -897,6 +899,32 @@ async def test_changing_a_links_audience_redraws_the_band_at_once(transport):
     await service.put_link(ALICE, sid, "workspace")
     names = [[v["name"] for v in p["viewers"]] for p in _presence(transport)]
     assert len(names) == 2 and names[0] == [""] and names[1] != [""]
+
+
+@pytest.mark.asyncio
+async def test_link_viewers_are_counted_for_the_workspace_live_seats_of_the_current_channel_only(transport, db):
+    """Owner ask 2026-10-08: the band and the web view say how many watch by link. A count, never who."""
+    from core.services import session_links
+
+    sid = await start(transport)
+    await relay(transport).handle_message("conn-1", {**heartbeat(sid), "sessionPresence": True})
+    token, public = await _public_link(sid)
+    transport[3].clear()
+    seat = await session_links.viewing(token, None, False)
+    await session_links.viewing(token, seat.lease, False)  # a renewal is not news
+    (pushed,) = _presence(transport)  # the new seat reached the band at once
+    assert pushed["linkViewers"] == 1 and pushed["viewers"] == []
+    assert seat.lease.split(".", 1)[1] not in _json.dumps(pushed) and public not in _json.dumps(pushed)
+    await session_links.viewing(token, None, False)
+    lapsed = {"pk": f"PUBWATCH#{public}", "sk": "VIEWER#gone", "expiresAt": int(time.time()) - 1}
+    db[0].put_item(Item=lapsed)
+    assert await session_screen.watch(BOB, sid) == {"watching": 1, "viaLink": 2}
+    # Narrowed: zero at once, in the push the audience change already sends. Public again is a new channel.
+    transport[3].clear()
+    await service.put_link(ALICE, sid, "workspace")
+    assert [p["linkViewers"] for p in _presence(transport)] == [0]
+    await service.put_link(ALICE, sid, "anyone")
+    assert (await session_screen.watch(BOB, sid))["viaLink"] == 0
 
 
 @pytest.mark.asyncio

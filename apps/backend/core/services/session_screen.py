@@ -400,8 +400,7 @@ async def forward(relay, cid: str, body: dict) -> None:
         # Nor while the owner's End is on its way (`endAskedAt`): what the provider prints as it
         # leaves (`claude --resume <id>`) is not for the link. A refused End frees it after a minute.
         ending = int(row.get("endAskedAt") or 0) > now - END_QUIET_S
-        quiet = ending or sessions.public_settling(row, now)
-        public = sessions.public_id(row.get("shareLink"), row) if row.get("endedAt") is None and not quiet else None
+        public = sessions.public_id(row.get("shareLink"), row) if row.get("endedAt") is None and not ending else None
         by_link = False
         if public:
             try:
@@ -570,9 +569,8 @@ async def type_into(auth: AuthContext, session_id: str, body: SessionInput) -> N
         # Who typed: the Mac's Claude terminal labels a prompt a teammate submitted with their
         # name. `_name` keeps its own short cache, so nothing is kept here: a failed lookup (the
         # bare id, or its "A teammate" fallback) sends this frame without a name and the next asks again.
-        # Not on an "Anyone with the link" session: the label is in the terminal that link shows.
-        name = "A teammate" if sessions.is_public(row) else await session_presence._name(user)
-        if sessions.is_public(row) or name not in (user, "A teammate"):
+        name = await session_presence._name(user)
+        if name not in (user, "A teammate"):
             envelope["actor"] = {"userId": user, "name": name}
     check_envelope(envelope)
     new_burst = not typist.burst or now - typist.last > TYPED_BURST_GAP_S

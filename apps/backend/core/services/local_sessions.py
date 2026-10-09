@@ -2994,28 +2994,9 @@ def public_id(link: dict | None, row: dict | None = None) -> str | None:
     return (link or {}).get("publicId")
 
 
-def is_public(row: dict) -> bool:
-    """This session's terminal is on an "Anyone with the link" page right now. The one test for
-    everything that must keep a person's name out of that picture (the band, a typed-row label)."""
-    return bool(public_id(row.get("shareLink"), row))
-
-
 def _with_audience(link: dict, audience: str) -> dict:
-    kept = {k: v for k, v in link.items() if k not in ("publicId", "publicAt")}
-    # `publicAt`: when it became public, for `public_settling`.
-    public = {"publicId": str(uuid.uuid4()), "publicAt": int(time.time())} if audience == "anyone" else {}
-    return {**kept, "audience": audience, **public}
-
-
-# The Mac's heartbeat is 10 s (`heartbeat_interval`), and its ack carries the band's state.
-PUBLIC_GRACE_S = 14
-
-
-def public_settling(row: dict, now: float) -> bool:
-    """The link became public a moment ago and the Mac's band may still show what it drew for the
-    workspace (names, an agent's message): the presence push is best effort, the next heartbeat
-    ack is not. Until one has surely landed, nothing goes to the link's channel."""
-    return int((row.get("shareLink") or {}).get("publicAt") or 0) > now - PUBLIC_GRACE_S
+    kept = {k: v for k, v in link.items() if k != "publicId"}
+    return {**kept, "audience": audience, **({"publicId": str(uuid.uuid4())} if audience == "anyone" else {})}
 
 
 def narrow_link(row: dict) -> None:
@@ -3127,8 +3108,8 @@ async def put_link(auth: AuthContext, session_id: str, audience: str | None) -> 
             if not messaging_repo._is_cancelled(exc):
                 raise
             continue
-        if is_public(updated) != is_public(row):
-            # The band redraws now: unnamed before a link viewer's first picture, named again after.
+        if bool(public_id(new, updated)) != bool(public_id(link, row)):
+            # The band's "via link" count follows the audience at once.
             await _push_presence(updated)
         if not link:
             _capture_growth(row, "share_link_created", auth.user_id, audience=new["audience"])

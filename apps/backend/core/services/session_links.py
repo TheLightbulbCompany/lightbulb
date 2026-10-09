@@ -467,10 +467,6 @@ async def viewing(token: str, lease: str | None, fresh: bool, retake: bool = Fal
         ExpressionAttributeNames={"#u": "until"},
         ExpressionAttributeValues={":exp": expires, ":ttl": now + CHANNEL_MEMORY_S},
     )
-    if sessions.public_settling(row, now):
-        # No picture is asked of the Mac for a link viewer yet (`forward` would drop it): the page
-        # asks again at its next renewal, and that ask is not spent here.
-        fresh = False
     if fresh:
         try:
             await run_in_thread(

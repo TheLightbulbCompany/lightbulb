@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Lightbulb (`flickmeon.ai`) is an AI agent platform powered by **Hermes** (`nousresearch/hermes-agent`, pinned by digest in `hermes-version.json`). Users subscribe, get a per-workspace **AWS Bedrock AgentCore runtime** running our Hermes image, and work with them in a **Slack-like messaging workspace** — rooms, channels and DMs shared by AI employees and humans, driven by Clerk-authenticated HTTP commands with AWS AppSync Events for live delivery and DynamoDB as the canonical ordered store (see "Messaging"). The platform uses a Next.js 16 frontend (Vercel), FastAPI backend (ECS Fargate), Clerk for authentication, **DynamoDB** for metadata (users, containers, billing, usage counters, pending updates, channel links, admin actions, oauth tokens/state, integrations, webhook dedup, metronome fast-gate, bedrock AIP owners, agent-email, company slugs, paperclip-companies, marketplace listings/purchases/payouts/takedowns/sellers, provisioning-workflows — see `database-stack.ts` for the full set; BYO LLM keys live in **Secrets Manager**, not DynamoDB), managed OpenRouter inference (behind our openrouter-gate; Bedrock inference is gone) + ChatGPT OAuth + BYO API key for LLM inference, Stripe for new subscription and marketplace purchases, and Apple in-app purchase (StoreKit 2) for iOS workspace subscriptions — built and live in dev, switched off in prod until the Paid Apps Agreement is active. **S3 holds every per-owner agent workspace** — one Hermes profile per agent under `<owner>/hermes/<agent>/` in `OWNER_STATE_BUCKET`; there is no shared filesystem. A per-tenant Paperclip BFF (Aurora Serverless v2 Postgres) powers the Teams Inbox. Infrastructure is managed via **AWS CDK** in `apps/infra/` (single source of IaC truth). The desktop app is **Tauri** (not Electron) — see `project_desktop_app_tauri` memory. There is also an **Expo iOS app** at `apps/mobile/` — see the "Mobile App" section.
+Lightbulb (`thelightbulb.company`) is an AI agent platform powered by **Hermes** (`nousresearch/hermes-agent`, pinned by digest in `hermes-version.json`). Users subscribe, get a per-workspace **AWS Bedrock AgentCore runtime** running our Hermes image, and work with them in a **Slack-like messaging workspace** — rooms, channels and DMs shared by AI employees and humans, driven by Clerk-authenticated HTTP commands with AWS AppSync Events for live delivery and DynamoDB as the canonical ordered store (see "Messaging"). The platform uses a Next.js 16 frontend (Vercel), FastAPI backend (ECS Fargate), Clerk for authentication, **DynamoDB** for metadata (users, containers, billing, usage counters, pending updates, channel links, admin actions, oauth tokens/state, integrations, webhook dedup, metronome fast-gate, bedrock AIP owners, agent-email, company slugs, paperclip-companies, marketplace listings/purchases/payouts/takedowns/sellers, provisioning-workflows — see `database-stack.ts` for the full set; BYO LLM keys live in **Secrets Manager**, not DynamoDB), managed OpenRouter inference (behind our openrouter-gate; Bedrock inference is gone) + ChatGPT OAuth + BYO API key for LLM inference, Stripe for new subscription and marketplace purchases, and Apple in-app purchase (StoreKit 2) for iOS workspace subscriptions — built and live in dev, switched off in prod until the Paid Apps Agreement is active. **S3 holds every per-owner agent workspace** — one Hermes profile per agent under `<owner>/hermes/<agent>/` in `OWNER_STATE_BUCKET`; there is no shared filesystem. A per-tenant Paperclip BFF (Aurora Serverless v2 Postgres) powers the Teams Inbox. Infrastructure is managed via **AWS CDK** in `apps/infra/` (single source of IaC truth). The desktop app is **Tauri** (not Electron) — see `project_desktop_app_tauri` memory. There is also an **Expo iOS app** at `apps/mobile/` — see the "Mobile App" section.
 
 Every freshly provisioned workspace gets a six-agent Paperclip starter roster: **CEO**, **Engineering**, **Finance**, **Growth**, **Analytics**, and **Customer Operations**. `paperclip_provisioning.provision_org` records their role-keyed UUIDs in `starter_agent_ids`; CEO is the initial root and the specialists report to it. Names are user-editable, so policy follows those UUIDs and roles rather than a display name. This applies only to fresh workspaces — existing/founder rosters are not migrated. **Friday** and **Atlas** are portable curated marketplace packages, not automatic seeds. The roster is Lightbulb-native: it has no GStack or ACP dependency.
 
@@ -16,7 +16,7 @@ Each workspace gets its own AgentCore runtime; the backend reaches it with `Invo
 
 ## Product domain — moved to `thelightbulb.company` on 2026-10-02
 
-The product now runs on **`thelightbulb.company`** in both environments (`api.`/`api-dev.`, `ws.`/`ws-dev.`, `bv.`/`bv-dev.`, `admin.`, `admin.dev.`, `dev.`, Clerk's `clerk.`/`accounts.`/`clkmail.`), the SAME domain that carries mail. **`flickmeon.ai` is the launch-competition site**: Vercel only, its root serves `/launch` and every other path 308s to the product domain; it has no API hosts and no mail. The holding-company page is `about.thelightbulb.company`. Where the section below still says `flickmeon.ai` is the product domain, this paragraph wins.
+The product now runs on **`thelightbulb.company`** in both environments (`api.`/`api-dev.`, `ws.`/`ws-dev.`, `bv.`/`bv-dev.`, `admin.`, `admin.dev.`, `dev.`, Clerk's `clerk.`/`accounts.`/`clkmail.`), the SAME domain that carries mail. **`flickmeon.ai` is the launch-competition site**: Vercel only, its root serves `/launch` and every other path 308s to the product domain; it has no API hosts and no mail. The holding-company page is `about.thelightbulb.company`.
 
 Because product hosts and company slugs (`{agent}@{slug}.thelightbulb.company`) now share one namespace, **every new product host must be added to `RESERVED_SLUGS`** (`core/services/company_identity.py`) before its DNS record exists.
 
@@ -30,7 +30,7 @@ for the deliberate residue and pending items listed here. Current names:
 | | value |
 |---|---|
 | Product name | **Lightbulb** |
-| Product domain | **`flickmeon.ai`**, BOTH environments (`api.`/`api-dev.`, `ws.`/`ws-dev.`, `bv.`/`bv-dev.`, `admin.`, `admin.dev.`, `dev.`, `company.`, and Clerk's `clerk.`/`accounts.`/`clkmail.`) |
+| Product domain | **`thelightbulb.company`**, BOTH environments (`api.`/`api-dev.`, `ws.`/`ws-dev.`, `bv.`/`bv-dev.`, `admin.`, `admin.dev.`, `dev.`, `company.`, and Clerk's `clerk.`/`accounts.`/`clkmail.`) — see "Product domain" above; `flickmeon.ai` is the launch site only |
 | Mail — humans, vendor logins, platform sender | **`thelightbulb.company`** (`hello@ support@ tickets@ admin@`) |
 | Agent mail | **`{agent}@{slug}.thelightbulb.company`** (dev: `…@{slug}.dev.thelightbulb.company`) |
 | GitHub | org **`TheLightbulbCompany`**, repo **`lightbulb`** (renamed 2026-08-30 from `Isol8AI/isol8`; forks `agent`, `paperclip`, `goosetown` moved with the org). GHCR is **`ghcr.io/thelightbulbcompany/*`** — package namespaces do NOT redirect. |
@@ -38,9 +38,9 @@ for the deliberate residue and pending items listed here. Current names:
 | AWS account | name **"Lightbulb"**, alias **`thelightbulb`** (created 2026-08-30) |
 | Legal entity | **"Isol8 Inc., doing business as Lightbulb AI"** — the entity rename is NOT yet effective. Do not write any other legal name. |
 
-**`flickmeon.ai` is the product URL and carries NO mail** — no MX, no SES identity,
-no mail records of any kind. Mail lives on its own domain, which is why the root
-domain and the mail domain are two separate parameters
+**`flickmeon.ai` carries NO mail** — no MX, no SES identity, no mail records of
+any kind. The product domain and the mail domain are the same value today
+(`thelightbulb.company`) but stay two separate parameters
 (`apps/infra/lib/domains.ts`: `ROOT_DOMAIN`, `PLATFORM_MAIL_DOMAIN`) threaded
 through the stacks via `LightbulbStageProps`. `domains.ts` remains the per-environment
 truth — read it rather than trusting any doc when a hostname matters.
@@ -331,7 +331,7 @@ curl -sX POST https://api.clerk.com/v1/sign_in_tokens \
   -H "Authorization: Bearer $CLERK_SECRET_KEY" -H 'Content-Type: application/json' \
   -d '{"user_id":"user_XXX"}'   # -> {token, status:"pending"} (one-time, ~mins TTL)
 ```
-In the browser (already on a dev.flickmeon.ai page, Clerk loaded):
+In the browser (already on a dev.thelightbulb.company page, Clerk loaded):
 ```js
 const si = await window.Clerk.client.signIn.create({strategy:'ticket', ticket:'<token>'});
 await window.Clerk.setActive({session: si.createdSessionId});
@@ -581,7 +581,7 @@ the fork bulk (5×) buries this repo in every ranking. Keep it single-repo.
 ### High-Level Data Flow
 
 ```
-Chat:      Client --> https://api-{env}.flickmeon.ai/api/v1/messaging/* (Clerk HTTP commands)
+Chat:      Client --> https://api-{env}.thelightbulb.company/api/v1/messaging/* (Clerk HTTP commands)
              --> FastAPI --> lightbulb-{env}-messaging (DynamoDB; canonical, `seq`-ordered)
              --> DDB Stream --> messaging-projector λ --> AppSync Events  --> browser/mobile (live)
                            \-> EventBridge Pipe --> openclaw-work.fifo --> openclaw_work
@@ -589,10 +589,10 @@ Chat:      Client --> https://api-{env}.flickmeon.ai/api/v1/messaging/* (Clerk H
                                     derived from the owner id) --> the workspace's AgentCore runtime
                                     --> bridge ingress; native replies POST back over the hook token
 
-REST:      Client --> https://api-{env}.flickmeon.ai (API Gateway HTTP API) --> VPC Link V2 --> ALB --> FastAPI
-Machines:  Tauri node hosts / local sessions --> wss://ws-{env}.flickmeon.ai (API GW v2 WS;
+REST:      Client --> https://api-{env}.thelightbulb.company (API Gateway HTTP API) --> VPC Link V2 --> ALB --> FastAPI
+Machines:  Tauri node hosts / local sessions --> wss://ws-{env}.thelightbulb.company (API GW v2 WS;
              machine-only authorizer, connectionId map in lightbulb-{env}-ws-connections)
-Raw WS:    Desktop node hosts --> wss://bv-{env}.flickmeon.ai (CloudFront VpcOrigin — raw WS the
+Raw WS:    Desktop node hosts --> wss://bv-{env}.thelightbulb.company (CloudFront VpcOrigin — raw WS the
              HTTP API can't carry) --> ALB listener (path-capped /api/v1/gateway/* ONLY)
              --> routers/gateway_relay.py (terminates the node protocol in-process)
 
@@ -1472,7 +1472,7 @@ Located in `apps/infra/lib/stacks/`. Entry point: `apps/infra/lib/app.ts`. Per-e
 | `paperclip-stack.ts` | Per-tenant Paperclip BFF — Fargate service, Cloud Map service discovery, ALB host route (the Aurora cluster comes from database-stack as a prop). Cross-stack KMS-cycle posture documented inline. See `apps/infra/paperclip/RUNBOOK.md`. |
 | `ses-inbound-stack.ts` | Inbound agent email (SES → Lambda → backend). |
 | `agent-mail-outbound-stack.ts` | Outbound agent-mail SES configuration set + complaint events → `/api/v1/webhooks/ses-events`. Per-owner SES tenants are created by the backend at first send, not here. |
-| `dns-stack.ts` | HostedZone lookup + ONE wildcard ACM cert for the environment's root domain (`*.flickmeon.ai`; it is a cross-stack CFN Export, so a replacement cert is created alongside and consumers migrated, never edited in place). Route53 records live with their consumers (mostly api-stack). |
+| `dns-stack.ts` | HostedZone lookup + ONE wildcard ACM cert for the environment's root domain (`*.thelightbulb.company`; it is a cross-stack CFN Export, so a replacement cert is created alongside and consumers migrated, never edited in place). Route53 records live with their consumers (mostly api-stack). |
 | `observability-stack.ts` | CloudWatch dashboards, alarms, log retention |
 
 `apps/infra/hermes/` is a sibling directory (not a stack) holding the whole
@@ -1492,7 +1492,7 @@ leaf), `skills-src/` + `build-skills.sh`, and its own
 Tauri 2 app at `apps/desktop/`. Bundle ID: **`company.thelightbulb.desktop`** (shipped 2026-08-30 — a fresh install relative to the old `co.isol8.desktop`; devices re-pair). Product name: **Lightbulb**; crate/binary `lightbulb-desktop`; keychain service and app-support dirs follow the bundle id; default docs folder `~/Lightbulb`; env vars `LIGHTBULB_API_BASE`/`LIGHTBULB_WS_URL`/`LIGHTBULB_CALLBACK_URL`. `LIGHTBULB_WS_URL` is compile-time-only (`option_env!` in `lib.rs`, set per env by `desktop-build.yml`) and now points at the `bv[-env]` **machine gateway relay** (`wss://bv[-env].thelightbulb.company/api/v1/gateway/ws`), not the old `ws[-env]` API Gateway door — it seeds the Mac node client's URL directly; the CLI node's loopback proxy instead reads the relay URL live from `/desktop/pair`'s `relayUrl` field (`gatewayUrl` there stays on `ws[-env]` for the local-session relay).
 
 - Rust host at `apps/desktop/src-tauri/src/`: `lib.rs`, `main.rs`, `bootstrap.rs`, `device_token.rs`, `file_access.rs`, `keychain.rs`, `node_client.rs`, `node_invoke.rs`, `notify.rs` (native macOS notifications over `UNUserNotificationCenter` via `objc2-user-notifications` — NOT `tauri-plugin-notification`, whose `NSUserNotificationCenter` backend is deprecated and never registered the app; the webview calls the `native_notify` command and gets clicks back as `notification:clicked`; launch registers the app provisionally — no prompt, but always listed in System Settings → Notifications — and `MessageNotifications` raises the real macOS prompt through `notification_permission` once after sign-in, with no in-app ask in front of it (a browser waits for the first click, which is all its own prompt needs); provisional counts as not asked, and `native_notify` answers false unless macOS permission is granted — macOS accepts requests from a switched-off app and silently shows nothing, so without that check the toast fallback never fires), `pair_client.rs`, `pair_state.rs`, `proxy.rs`, `screen.rs`, `subprocess.rs`, `tray.rs`
-- Embedded web view: dev flavor points at `https://dev.flickmeon.ai/chat`; the prod job **patches the URL to `https://thelightbulb.company/chat`** (and the updater endpoint) at build time in `desktop-build.yml`
+- Embedded web view: dev flavor points at `https://dev.thelightbulb.company/chat`; the prod job **patches the URL to `https://thelightbulb.company/chat`** (and the updater endpoint) at build time in `desktop-build.yml`
 - Sidecars (the `lightbulb-browser-service` launcher shim plus per-arch `node` and `openclaw-host`) ship as bundle **resources** in `Contents/Resources/bin/`, never externalBin: a script in `Contents/MacOS` is signed via xattrs, which the updater tarball drops, and that broke every auto-updated install's seal. They are NOT checked in — `scripts/vendor-sidecars.sh` populates `src-tauri/bin/` at build (supports aarch64 + x86_64; CI builds aarch64 only)
 - Protocol handler: `lightbulbai://` deep links (via `tauri-plugin-deep-link`); single-instance lock (`tauri-plugin-single-instance`)
 - Signed DMG for macOS (arm64), built by the standalone `.github/workflows/desktop-build.yml` on a self-hosted macOS runner (label `macos-desktop`) — **prod only, on a manual dispatch** (`gh workflow run desktop-build.yml --ref main`), publishing `desktop-v0.4.*` GitHub Releases consumed by the Tauri auto-updater. There is no dev build (owner decision 2026-10-04): test the desktop app on prod, or build and run it locally against the dev API. Pull requests still run the Rust tests (`TestDesktop`).
@@ -1545,9 +1545,9 @@ initial history bound proves a renderer memory reduction; the observed
 
 ## Mobile App
 
-Expo iOS app at `apps/mobile/` (`@lightbulb/mobile`): Expo SDK 57 / React Native 0.86, expo-router file-based routing. Scheme `flickmeon`, `applinks:flickmeon.ai`; the **bundle id is `co.isol8.mobile` and is staying** (decided 2026-09-07 — see the Rebrand section; it is bound to App Store record 6788944100 and a rename strands the app). Expo project: owner `thelightbulbcompany`, slug `isol8-mobile` (unrenameable — see the Rebrand section), projectId unchanged; per-device storage keys are `lightbulb.*`.
+Expo iOS app at `apps/mobile/` (`@lightbulb/mobile`): Expo SDK 57 / React Native 0.86, expo-router file-based routing. Scheme `flickmeon`, `applinks:thelightbulb.company`; the **bundle id is `co.isol8.mobile` and is staying** (decided 2026-09-07 — see the Rebrand section; it is bound to App Store record 6788944100 and a rename strands the app). Expo project: owner `thelightbulbcompany`, slug `isol8-mobile` (unrenameable — see the Rebrand section), projectId unchanged; per-device storage keys are `lightbulb.*`.
 
-- **Reuses the web protocol via `@lightbulb/shared`** — the same `createMessagingClient`/`createRuntimeClient` HTTP clients and the same `AppSyncEventsClient`/`useLiveEvents` live transport (mounted by `src/providers/live-events.tsx`, the mobile twin of the web `LiveEventsProvider`), with platform specifics in `src/lib/adapter.ts` (`PlatformAdapter`). Env via `EXPO_PUBLIC_API_URL` / `EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY`, baked per `eas.json` profile (dev → api-dev.flickmeon.ai, production → api.thelightbulb.company).
+- **Reuses the web protocol via `@lightbulb/shared`** — the same `createMessagingClient`/`createRuntimeClient` HTTP clients and the same `AppSyncEventsClient`/`useLiveEvents` live transport (mounted by `src/providers/live-events.tsx`, the mobile twin of the web `LiveEventsProvider`), with platform specifics in `src/lib/adapter.ts` (`PlatformAdapter`). Env via `EXPO_PUBLIC_API_URL` / `EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY`, baked per `eas.json` profile (dev → api-dev.thelightbulb.company, production → api.thelightbulb.company).
 - Routes: `(auth)/sign-in`; `(app)/(tabs)/{home,dms,activity,more}`, `agent/[agentId]` and `room/*` (room conversations over the messaging client, NOT a gateway socket), `sessions`, `settings`, `teams/*`, and a control tree mirroring the web panels (overview, agents + agent-detail, integrations, llm, marketplace, skills, usage). `ls apps/mobile/src/app` for the current set.
 - Auth: Clerk Expo + `expo-apple-authentication`, token cache in `expo-secure-store`.
 - Push: `PushRegistration.tsx` gets an Expo push token → `POST /devices {token, platform, deviceId}`; unregister `DELETE /devices/{deviceId}`.

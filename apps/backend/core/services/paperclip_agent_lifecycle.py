@@ -204,6 +204,7 @@ async def pause_owner_automation(owner_id: str, *, dry_run: bool = False) -> dic
                 await admin.set_agent_heartbeat(session_cookie=cookie, agent_id=agent_id, heartbeat={"enabled": False})
             for routine_id in routine_ids:
                 await admin.patch_routine(session_cookie=cookie, routine_id=routine_id, body={"status": "paused"})
+            await repo.mark_pause_complete(owner_id)
     if not dry_run:
         put_metric("paperclip.automation.pause", dimensions={"outcome": "ran"})
         logger.info(

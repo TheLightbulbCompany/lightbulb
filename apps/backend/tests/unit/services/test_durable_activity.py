@@ -128,12 +128,22 @@ async def test_decimal_last_interactive_at_is_read_over_a_fresh_updated_at(secon
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("already_paused,expect_pause", [(None, True), ("2026-10-09T00:00:00Z", False)])
-async def test_an_expired_trial_pauses_paperclip_automation_once(already_paused, expect_pause):
+@pytest.mark.parametrize(
+    "paused_at,complete_at,expect_pause",
+    [
+        (None, None, True),
+        # A partial pause (marker written, a PATCH failed): no billing event re-runs it, so retry.
+        ("2026-10-09T00:00:00Z", None, True),
+        ("2026-10-09T00:00:00Z", "2026-10-09T00:00:01Z", False),
+    ],
+)
+async def test_an_expired_trial_pause_is_retried_until_it_completes(paused_at, complete_at, expect_pause):
     """A trial expiring has no billing event; this sweep is the edge that stops its routines."""
     metric, patches = _patches(has_open_runs=False)
     repo = MagicMock()
-    repo.resolve_owner_row = AsyncMock(return_value=MagicMock(automation_paused_at=already_paused))
+    repo.resolve_owner_row = AsyncMock(
+        return_value=MagicMock(automation_paused_at=paused_at, automation_pause_complete_at=complete_at)
+    )
     pause = AsyncMock()
     expired = {"subscription_status": "trial_local", "trial_end": 1}
     patches += [

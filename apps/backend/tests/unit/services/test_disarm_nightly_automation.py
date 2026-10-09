@@ -48,14 +48,20 @@ def _ws(**kw):
     return MagicMock(**{**defaults, **kw})
 
 
-async def _call(fn, admin, ws, *args, **kwargs):
-    http = MagicMock()
-    http.__aenter__ = AsyncMock(return_value=http)
-    http.__aexit__ = AsyncMock(return_value=False)
+def _repo(ws):
     repo = MagicMock()
     repo.resolve_owner_row = AsyncMock(return_value=ws)
     repo.record_paused_automation = AsyncMock()
     repo.clear_paused_automation = AsyncMock()
+    repo.mark_pause_complete = AsyncMock()
+    return repo
+
+
+async def _call(fn, admin, ws, *args, repo=None, **kwargs):
+    http = MagicMock()
+    http.__aenter__ = AsyncMock(return_value=http)
+    http.__aexit__ = AsyncMock(return_value=False)
+    repo = repo or _repo(ws)
     with (
         patch.object(lifecycle, "PaperclipRepo", return_value=repo),
         patch.object(lifecycle, "PaperclipAdminClient", return_value=admin),
@@ -82,6 +88,19 @@ async def test_cancel_pauses_active_routines_and_every_enabled_heartbeat_recordi
     admin.patch_routine.assert_awaited_once_with(
         session_cookie="cookie", routine_id="r-live", body={"status": "paused"}
     )
+    repo.mark_pause_complete.assert_awaited_once_with("owner")
+
+
+@pytest.mark.asyncio
+async def test_a_partial_pause_keeps_its_record_but_is_not_marked_complete():
+    admin = _admin()
+    admin.patch_routine.side_effect = RuntimeError("paperclip down")
+    ws = _ws()
+    repo = _repo(ws)
+    with pytest.raises(RuntimeError):
+        await _call(lifecycle.pause_owner_automation, admin, ws, repo=repo)
+    repo.record_paused_automation.assert_awaited_once()  # ids recorded first, so resume restores them
+    repo.mark_pause_complete.assert_not_awaited()  # so the expired-trial sweep retries
 
 
 @pytest.mark.asyncio

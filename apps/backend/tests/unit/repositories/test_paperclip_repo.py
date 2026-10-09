@@ -1128,6 +1128,13 @@ async def test_paused_automation_record_survives_a_whole_item_put_and_clears_per
     ws = await repo.get_workspace("org_pause")
     assert ws.automation_paused_routine_ids == {"r1", "r2"}
 
+    assert ws.automation_pause_complete_at is None
+    await repo.mark_pause_complete("org_pause")
+    assert (await repo.get_workspace("org_pause")).automation_pause_complete_at
+    # A new pause is incomplete until it finishes.
+    await repo.record_paused_automation("org_pause", agent_ids=[], routine_ids=["r2"])
+    assert (await repo.get_workspace("org_pause")).automation_pause_complete_at is None
+
     await repo.clear_paused_automation("org_pause", agent_ids=["a1"], routine_ids=["r1"])
     ws = await repo.get_workspace("org_pause")
     assert ws.automation_paused_at is None and ws.automation_paused_agent_ids is None

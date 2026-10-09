@@ -52,7 +52,9 @@ def _activity_epoch(row: dict) -> int:
 async def _pause_expired_trial(owner_id: str) -> None:
     try:
         ws = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id, include_inactive=True)
-        if ws is None or ws.automation_paused_at:
+        # Skip only a pause that FINISHED: a partial one (marker + ids written, a PATCH
+        # failed) has no billing event to re-run it, so the sweep retries until complete.
+        if ws is None or ws.automation_pause_complete_at:
             return
         await pause_owner_automation(owner_id)
     except Exception:  # noqa: BLE001 -- the next sweep retries; never stop the sweep
@@ -72,7 +74,7 @@ async def sweep_trial_idle_once(*, now: int | None = None) -> None:
             continue
         if is_trial_expired(account):
             # An expiring trial has no billing event, so this sweep is the edge that stops
-            # its Paperclip routines and heartbeats. Once per owner (the marker); a
+            # its Paperclip routines and heartbeats. Retried until a pause completes; a
             # subscribe resumes them through arm_nightly_ceo.
             await _pause_expired_trial(owner_id)
         activity = _activity_epoch(row)

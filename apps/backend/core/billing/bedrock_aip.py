@@ -177,9 +177,16 @@ async def ensure_owner_memory_policy(owner_id: str) -> None:
     exactly the shape the 2026-09-22 dev spike proved (a second owner was AccessDenied on every
     cross-owner call, including ``CreateEvent`` under the first owner's actor id):
 
-    - events only under ``actorId`` = this owner;
-    - records only in the EXACT namespace ``/owners/<owner>/`` (there is no ``namespacePath``
-      condition key; a prefix call fails closed under this Allow);
+    - events only under ``actorId`` = this owner (team scope) or ``<owner>:user_*`` (one
+      member's private scope);
+    - records only in ``/owners/<owner>/`` or ``/owners/<owner>:user_*/`` (there is no
+      ``namespacePath`` condition key; a prefix call fails closed under these Allows). Owner ids
+      never contain ``:`` (``owner_namespace`` refuses one), so ``<owner>:`` cannot reach
+      another owner. The private scope is a product boundary between members of ONE workspace,
+      not a security boundary: every agent of the workspace runs under this one role.
+
+    The private statements are separate Allows (OR), so the proven StringEquals pair keeps team
+    memory working even if the StringLike pair were not honoured.
     - an explicit Deny on the actions that carry no condition keys at all -- allowed anywhere,
       they reach any tenant's record by id. The CDK boundary omits them too; this is the belt.
 
@@ -207,11 +214,30 @@ async def ensure_owner_memory_policy(owner_id: str) -> None:
                 "Condition": {"StringEquals": {"bedrock-agentcore:actorId": owner_id}},
             },
             {
+                "Sid": "WorkspaceMemoryMemberEvents",
+                "Effect": "Allow",
+                "Action": [
+                    "bedrock-agentcore:CreateEvent",
+                    "bedrock-agentcore:ListEvents",
+                    "bedrock-agentcore:GetEvent",
+                    "bedrock-agentcore:ListSessions",
+                ],
+                "Resource": memory_arn,
+                "Condition": {"StringLike": {"bedrock-agentcore:actorId": f"{owner_id}:user_*"}},
+            },
+            {
                 "Sid": "WorkspaceMemoryOwnRecords",
                 "Effect": "Allow",
                 "Action": ["bedrock-agentcore:RetrieveMemoryRecords", "bedrock-agentcore:ListMemoryRecords"],
                 "Resource": memory_arn,
                 "Condition": {"StringEquals": {"bedrock-agentcore:namespace": owner_namespace(owner_id)}},
+            },
+            {
+                "Sid": "WorkspaceMemoryMemberRecords",
+                "Effect": "Allow",
+                "Action": ["bedrock-agentcore:RetrieveMemoryRecords", "bedrock-agentcore:ListMemoryRecords"],
+                "Resource": memory_arn,
+                "Condition": {"StringLike": {"bedrock-agentcore:namespace": f"/owners/{owner_id}:user_*/"}},
             },
             {
                 "Sid": "WorkspaceMemoryNoUnconditionable",

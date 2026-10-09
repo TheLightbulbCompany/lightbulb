@@ -15,14 +15,16 @@ MEMORY_ID = "lightbulb_dev-AbCdEf1234"
 
 
 class FakeClient:
-    def __init__(self, fail=False, records=()):
-        self.fail, self.records, self.calls = fail, list(records), []
+    def __init__(self, fail=False, records=(), by_ns=None):
+        # by_ns: {namespace: [texts] or an exception}, overriding records/fail per namespace.
+        self.fail, self.records, self.by_ns, self.calls = fail, list(records), by_ns or {}, []
 
     def retrieve_memory_records(self, **kw):
         self.calls.append(("retrieve", kw))
-        if self.fail:
-            raise TimeoutError("read timeout")
-        return {"memoryRecordSummaries": [{"content": {"text": t}} for t in self.records]}
+        got = self.by_ns.get(kw["namespace"], self.records)
+        if self.fail or isinstance(got, Exception):
+            raise got if isinstance(got, Exception) else TimeoutError("read timeout")
+        return {"memoryRecordSummaries": [{"content": {"text": t}} for t in got]}
 
     def create_event(self, **kw):
         self.calls.append(("create", kw))
@@ -52,11 +54,16 @@ def mod(monkeypatch):
     return m
 
 
-def provider(mod, client, session="room:ceo"):
+def provider(mod, client, session="room:ceo", **kw):
     mod._CLIENT = client
     p = mod.AgentCoreMemoryProvider()
-    p.initialize(session, hermes_home="/tmp", platform="lightbulb")
+    p.initialize(session, hermes_home="/tmp", platform="lightbulb", **kw)
     return p
+
+
+MEMBER = "user_2abcXYZ"
+DM = {"user_id": MEMBER, "chat_type": "dm"}
+TEAM_NS, PRIVATE_NS = f"/owners/{OWNER}/", f"/owners/{OWNER}:{MEMBER}/"
 
 
 def test_available_only_with_memory_id_and_owner(mod, monkeypatch):
@@ -187,6 +194,51 @@ def test_no_tools_and_a_short_prompt_line(mod):
     p = mod.AgentCoreMemoryProvider()
     assert p.get_tool_schemas() == []
     assert "shared" in p.system_prompt_block() and "\n" not in p.system_prompt_block()
+
+
+# ---- scopes: a 1:1 DM with a person is private to them; everything else is team -------------
+def test_a_dm_turn_from_a_person_writes_their_private_actor(mod):
+    client = FakeClient()
+    provider(mod, client, **DM).sync_turn("my salary is 90k", "noted")
+    (_, kw), = client.calls
+    assert kw["actorId"] == f"{OWNER}:{MEMBER}"
+
+
+@pytest.mark.parametrize("kw", [
+    {"user_id": MEMBER, "chat_type": "group"},          # channel and group DM
+    {"user_id": "agent-ceo", "chat_type": "dm"},        # an agent speaking in a DM
+    {"user_id": "", "chat_type": "dm"},                 # no sender
+    {"chat_type": "dm"},
+    {"user_id": "user_x:y", "chat_type": "dm"},         # never a ":" inside the actor's member half
+    {},                                                 # mail, Paperclip runs, routines
+])
+def test_every_other_turn_writes_the_team_actor(mod, kw):
+    client = FakeClient()
+    p = provider(mod, client, **kw)
+    p.sync_turn("our codename is PERIWINKLE-42", "noted")
+    p.prefetch("codename?")
+    assert [c[1].get("actorId") for c in client.calls if c[0] == "create"] == [OWNER]
+    assert [c[1]["namespace"] for c in client.calls if c[0] == "retrieve"] == [TEAM_NS]
+    assert "private" not in p.system_prompt_block()
+
+
+def test_dm_recall_reads_both_scopes_private_first_deduped_and_capped(mod):
+    client = FakeClient(by_ns={PRIVATE_NS: ["p1", "shared", "p2"], TEAM_NS: ["shared", "t1", "t2", "t3"]})
+    out = provider(mod, client, **DM).prefetch("what do you know?")
+    assert sorted(c[1]["namespace"] for c in client.calls) == sorted([PRIVATE_NS, TEAM_NS])
+    assert out.splitlines() == ["- p1", "- shared", "- p2", "- t1", "- t2"]
+
+
+@pytest.mark.parametrize("failing,kept", [(PRIVATE_NS, "- team fact"), (TEAM_NS, "- private fact")])
+def test_one_failing_scope_still_returns_the_other(mod, failing, kept):
+    by_ns = {PRIVATE_NS: ["private fact"], TEAM_NS: ["team fact"]}
+    by_ns[failing] = TimeoutError("read timeout")
+    assert provider(mod, FakeClient(by_ns=by_ns), **DM).prefetch("anything new?") == kept
+
+
+def test_dm_prompt_says_recall_is_private_and_not_to_save_it(mod):
+    block = provider(mod, FakeClient(), **DM).system_prompt_block()
+    assert "private" in block and "memory tool" in block and "\n" not in block
 
 
 # ---- enablement --------------------------------------------------------------------------

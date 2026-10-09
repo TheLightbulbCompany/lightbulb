@@ -161,6 +161,8 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
       const { watching = 0, viaLink = 0 } = (counts ?? {}) as { watching?: number; viaLink?: number };
       setAudience(viaLink ? [watching && `${watching} watching`, `${viaLink} via link`].filter(Boolean).join(" · ") : "");
     }).catch((e) => {
+      // A refused watch (Only me, offline, ended, full) is a session nobody watches through this view: no count.
+      setAudience("");
       if (!(e instanceof ApiError)) return;
       // The session already has its most live viewers: say so, and stop asking (no retry loop).
       const full = e.status === 409 && (e.body as { code?: string } | null)?.code === "LOCAL_SESSION_VIEWERS_FULL";

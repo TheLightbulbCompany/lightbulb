@@ -83,9 +83,6 @@ async def publish_events(owner_id: str, body: SubagentEventsRequest) -> dict:
     return {"published": len(events) if published else 0}
 
 
-RPC_TIMEOUT_S = 10.0
-
-
 def session_key(room_id: str, agent_id: str) -> str:
     return f"agent:{agent_id}:lightbulb:channel:{room_id}"
 
@@ -99,7 +96,7 @@ async def _warm(owner_id: str) -> bool:
 
 async def _rpc(owner_id: str, method: str, params: dict) -> dict:
     try:
-        return await container_rpc.call(owner_id, method, params, timeout_s=RPC_TIMEOUT_S) or {}
+        return await container_rpc.call(owner_id, method, params) or {}
     except (RuntimeError, asyncio.TimeoutError) as exc:
         raise ApiProblem("RUNTIME_UNAVAILABLE", "The runtime is unavailable.", retryable=True, retry_after=3) from exc
 

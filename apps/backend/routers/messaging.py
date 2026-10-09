@@ -1131,13 +1131,14 @@ async def steer_run(run_id: str, request: SteerRunRequest, auth: AuthContext = D
 
 
 async def _subagent_scope(auth: AuthContext, room_id: str, agent_id: str | None = None) -> str:
-    owner_id = resolve_owner_id(auth)
-    await service.require_room_member(owner_id, auth.user_id, room_id)
+    """Membership is checked from the caller's workspace; the subagents live in the ROOM owner's
+    runtime, so a guest in a shared/vendor room reaches that runtime, never their own."""
+    meta, _ = await service.require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
     if agent_id is not None:
         agent_id = service.validate_uuid(agent_id, label="agent ID")
         if await messaging_repo.get_member(room_id, "agent", agent_id) is None:
             raise ApiProblem("SUBAGENT_NOT_FOUND", "That agent is not in this room.")
-    return owner_id
+    return meta["ownerId"]
 
 
 async def _subagent_control_gate(auth: AuthContext, owner_id: str, room_id: str, agent_id: str) -> None:

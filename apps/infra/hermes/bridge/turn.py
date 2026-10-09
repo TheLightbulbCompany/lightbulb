@@ -1771,6 +1771,8 @@ class FramePublisher:
     def finished(self, outcome: str, text: str, error: str | None) -> None:
         """The closing sequence: a client that missed streaming still ends with the whole
         text (runs.ts:284-288), then done|error, run_ended, run_active:false."""
+        # First, so a background child's event racing this sequence cannot land on the closed run.
+        self._ended = True
         if outcome == "aborted":
             with self._lock:
                 self._queue = []  # deltas streamed after Stop are not shown
@@ -1783,7 +1785,6 @@ class FramePublisher:
             self.emit({"type": "error", "message": message}, closing=True)
         self.emit({"type": "run_ended", "outcome": _WIRE_OUTCOME.get(outcome, "error")}, closing=True)
         self.emit({"type": "run_active", "active": False}, closing=True)
-        self._ended = True
 
 
 class VoiceFramePublisher(FramePublisher):

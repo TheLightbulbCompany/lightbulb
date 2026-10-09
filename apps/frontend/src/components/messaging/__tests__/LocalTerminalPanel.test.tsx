@@ -11,9 +11,13 @@ vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ userId: "alice", orgId: "org
 const session: LocalSession = { sessionId: "session", deviceId: "mac", humanUserId: "alice", provider: "claude", terminal: "held", generation: "g1", status: "idle", providerVersion: "test", activeTurnId: null, capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true, latestEventSeq: 0, controlUnavailableReason: null };
 const client = () => ({ listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })), submitLocalSessionCommand: vi.fn(), getLocalSessionCommand: vi.fn(), getLocalSession: vi.fn(), listWorkspaceSessions: vi.fn(), setLocalSessionSharing: vi.fn() });
 const panel = (s: LocalSession) => <LocalSessionPanel session={s} ownerName="Alice" own client={client() as never} revision={0} onAccessLost={() => {}} />;
+// The spy sees the terminal's own calls; the panel's audience read (`local_session_audience`) goes past it.
+const bridge = (invoke: (command: string, args?: unknown) => Promise<unknown>) => {
+  (window as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke: (command: string, args?: unknown) => command === "local_session_audience" ? Promise.resolve(undefined) : invoke(command, args) } };
+};
 const desktop = (reply: unknown) => {
   const invoke = vi.fn(async () => reply);
-  (window as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke } };
+  bridge(invoke);
   return invoke;
 };
 beforeEach(() => { vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ left: 300, top: 120, width: 800, height: 500 } as DOMRect); });
@@ -93,7 +97,7 @@ it("keeps asking while no holder answers, and promotes the panel when one does",
     // so the unmount's rect-null call still gets a promise.
     let calls = 0;
     const invoke = vi.fn(async () => ({ live: calls++ > 0 }));
-    (window as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke } };
+    bridge(invoke);
     render(panel(session));
     await vi.advanceTimersByTimeAsync(100);
     expect(screen.getByRole("textbox", { name: /send to/i })).toBeInTheDocument();
@@ -112,7 +116,7 @@ it("keeps asking after the first half minute, more slowly, while the session run
   try {
     let live = false;
     const invoke = vi.fn(async () => ({ live }));
-    (window as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke } };
+    bridge(invoke);
     render(panel(session));
     await vi.advanceTimersByTimeAsync(31_000);
     const early = invoke.mock.calls.length;

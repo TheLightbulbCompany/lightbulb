@@ -358,6 +358,12 @@ export function pickupSource(pickup: LocalSessionPickup | undefined): string {
   return pickup.branch ? `${repo} on ${pickup.branch}` : repo;
 }
 
+/** What a live terminal says about its audience: "2 watching · 3 via link" while people watch by link; "" otherwise (also for an older answer with no counts). */
+export function audienceLine(counts: unknown): string {
+  const { watching = 0, viaLink = 0 } = (counts ?? {}) as { watching?: number; viaLink?: number };
+  return viaLink ? [watching && `${watching} watching`, `${viaLink} via link`].filter(Boolean).join(" · ") : "";
+}
+
 /**
  * Where a session's snapshot stands, in one sentence for the person deciding
  * whether to pick it up. `ago` formats the snapshot's age ("2m ago").

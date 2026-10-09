@@ -242,19 +242,17 @@ def test_a_mac_that_advertises_pickup_requests_lands_the_feature():
 
 
 @pytest.mark.asyncio
-async def test_an_anyone_link_session_names_no_watcher_to_the_band(monkeypatch):
-    """The band is drawn in the terminal a public link shows: its watchers are counted, not named."""
+async def test_an_anyone_link_session_still_names_its_watchers_and_counts_link_viewers(monkeypatch):
+    """Owner ruling: names show as ever; the link's viewers are only a count beside them."""
     monkeypatch.setattr(presence.store, "_query", _rows(viewers=["user_aden", "user_mira"], typed=["user_aden"]))
     public = await presence.entry(_row(shareLink={"audience": "anyone", "publicId": "pub-1"}), 1)
     assert [(v["userId"], v["name"], v["typing"]) for v in public["viewers"]] == [
-        ("user_aden", "", True),
-        ("user_mira", "", False),
+        ("user_aden", "Aden", True),
+        ("user_mira", "Mira", False),
     ]
     assert public["linkViewers"] == 1, "live seats only"
     workspace = await presence.entry(_row(shareLink={"audience": "workspace"}), 1)
     assert workspace["linkViewers"] == 0
-    assert [v["name"] for v in workspace["viewers"]] == ["Aden", "Mira"]
-    # Nor anyone who asks, and an agent's ask carries no message.
     ask = {"agentId": "agent-1", "agentName": "Friday", "requestId": "a1", "kind": "send", "text": "Run the tests"}
     monkeypatch.setattr(presence.sessions, "pending_agent_asks", AsyncMock(return_value=[ask]))
     asked = _row(
@@ -262,11 +260,7 @@ async def test_an_anyone_link_session_names_no_watcher_to_the_band(monkeypatch):
         joinRequests={"user_zoe": {"state": "pending", "requestId": "r1"}},
         deviceFeatures=["sessionPresence", "agentMessageAsks"],
     )
-    assert [(r["userId"], r["name"], r.get("text")) for r in (await presence.entry(asked, 1))["joinRequests"]] == [
-        ("agent-1", "An agent", ""),
-        ("user_zoe", "Someone", None),
+    assert [(r["name"], r.get("text")) for r in (await presence.entry(asked, 1))["joinRequests"]] == [
+        ("Friday", "Run the tests"),
+        ("Zoe", None),
     ]
-    named = [
-        (r["name"], r.get("text")) for r in (await presence.entry({**asked, "shareLink": None}, 1))["joinRequests"]
-    ]
-    assert named == [("Friday", "Run the tests"), ("Zoe", None)]

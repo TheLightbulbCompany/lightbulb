@@ -432,15 +432,3 @@ async def test_a_failed_typing_mark_still_sends_the_keystrokes(transport, monkey
     transport[3].clear()
     await session_screen.type_into(BOB, sid, body())
     assert len(sent(transport)) == 1
-
-
-@pytest.mark.asyncio
-async def test_a_teammate_typing_into_an_anyone_link_session_is_not_named_to_the_mac(transport):
-    """The Mac labels the typed row in the terminal, and that link shows the terminal."""
-    sid = await start(transport)
-    await capable(transport, sid)
-    await admit(sid)
-    await service.put_link(ALICE, sid, "anyone")
-    transport[3].clear()
-    await session_screen.type_into(BOB, sid, body())
-    assert [b.get("actor") for b in sent(transport)] == [{"userId": BOB.user_id, "name": "A teammate"}]

@@ -43,22 +43,30 @@ def _int_or_skip(v):
         return None
 
 
+def _float_or_skip(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 # Port of Hermes v2026.9.14 tui_gateway/tool_progress.py `_SUBAGENT_FIELDS`, in wire order.
 _FIELDS = (
     ("subagent_id", bool, str), ("parent_id", bool, str), ("child_session_id", bool, str),
-    ("delegation_id", bool, str), ("depth", _not_none, int), ("model", bool, str), ("tool_count", _not_none, int),
+    ("delegation_id", bool, str), ("depth", _not_none, _int_or_skip), ("model", bool, str), ("tool_count", _not_none, int),
     ("toolsets", bool, _str_list), ("input_tokens", _not_none, _int_or_skip), ("output_tokens", _not_none, _int_or_skip),
     ("reasoning_tokens", _not_none, _int_or_skip), ("api_calls", _not_none, _int_or_skip),
     ("files_read", bool, _str_list), ("files_written", bool, _str_list), ("output_tail", bool, list),
     ("tool_name", bool, str), ("text", bool, str), ("status", bool, str), ("summary", bool, str),
-    ("duration_seconds", _not_none, float),
+    ("duration_seconds", _not_none, _float_or_skip),
 )
 
 
 def payload(event_type: str, name, preview, kw: dict) -> dict:
     """Port of upstream `_progress_subagent`'s payload build: the exact shape the desktop app reads."""
-    out = {"goal": str(kw.get("goal") or ""), "task_count": int(kw.get("task_count") or 1),
-           "task_index": int(kw.get("task_index") or 0)}
+    count, index = _int_or_skip(kw.get("task_count") or 1), _int_or_skip(kw.get("task_index") or 0)
+    out = {"goal": str(kw.get("goal") or ""), "task_count": 1 if count is None else count,
+           "task_index": 0 if index is None else index}
     source = {**kw, "tool_name": name, "text": preview}
     for key, present, coerce in _FIELDS:
         if present(source.get(key)):
@@ -75,7 +83,11 @@ def relay(session_key: str | None, event_type: str, name, preview, kw: dict) -> 
     # subagent.text is the child's per-token reply; upstream drops it on the parent too.
     if not session_key or event_type == "subagent.text":
         return
-    p = payload(event_type, name, preview, kw)
+    try:
+        p = payload(event_type, name, preview, kw)
+    except Exception:  # noqa: BLE001 -- the relay must never raise into the agent's callback
+        log.warning("subagent event dropped: bad payload", exc_info=True)
+        return
     sid = p.get("subagent_id")
     global _seq
     with _lock:

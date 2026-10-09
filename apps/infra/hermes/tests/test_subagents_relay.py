@@ -79,3 +79,18 @@ def test_subagent_events_after_finish_go_to_relay_not_frames(monkeypatch):
     pub.activity("subagent.tool", "web_search", "q", None, **_kw())
     assert relayed and relayed[0][0] == KEY and relayed[0][1] == "subagent.tool"
     assert sent == []  # the closed run's channel gets nothing
+
+
+def test_malformed_numbers_never_raise_and_are_skipped():
+    bad = _kw(task_count="2/3", task_index="x", depth="x", duration_seconds="?")
+    p = subagents.payload("subagent.start", None, "g", bad)
+    assert p["task_count"] == 1 and p["task_index"] == 0
+    assert "depth" not in p and "duration_seconds" not in p
+    subagents.relay(KEY, "subagent.start", None, "g", bad)
+    assert len(subagents._pending[KEY]) == 1
+
+
+def test_relay_swallows_an_unexpected_payload_failure(monkeypatch):
+    monkeypatch.setattr(subagents, "payload", lambda *a: 1 / 0)
+    subagents.relay(KEY, "subagent.start", None, "g", _kw())
+    assert subagents._pending == {}

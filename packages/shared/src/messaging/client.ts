@@ -73,6 +73,11 @@ const sessionPath = (sessionId: string) => `/messaging/sessions/${encodeURICompo
 const SEND_MESSAGE_TIMEOUT_MS = 30_000;
 const HISTORY_TIMEOUT_MS = 30_000;
 
+const subagentPath = (roomId: string, agentId: string, subagentId: string) =>
+  `/messaging/rooms/${encodeURIComponent(roomId)}/agents/${encodeURIComponent(agentId)}/subagents/${encodeURIComponent(subagentId)}`;
+
+export type SubagentTail = { subagentId: string; available: boolean; text: string; truncated: boolean };
+
 export interface MessagingClient {
   /** `includeEnded` appends sessions that ended in the last 7 days (the sidebar's "Recent"). */
   listWorkspaceSessions(options?: { includeEnded?: boolean }): Promise<WorkspaceSessions>;
@@ -160,6 +165,10 @@ export interface MessagingClient {
   setTyping(request: TypingRequest): Promise<void>;
   abortRun(runId: string): Promise<AbortRunResponse>;
   steerRun(runId: string, request: SteerRunRequest): Promise<SteerRunResponse>;
+  listSubagents(roomId: string): Promise<{ subagents: Record<string, unknown>[] }>;
+  subagentTail(roomId: string, agentId: string, subagentId: string): Promise<SubagentTail>;
+  steerSubagent(roomId: string, agentId: string, subagentId: string, text: string): Promise<{ state: "queued" }>;
+  stopSubagent(roomId: string, agentId: string, subagentId: string): Promise<{ state: "stopping" }>;
   getRunStatus(runId: string): Promise<RunStatusResponse>;
   /** The Activity feed, newest first; Paperclip items ride the first page only. */
   listActivity(options?: { cursor?: string | null; limit?: number }): Promise<ActivityPage>;
@@ -306,6 +315,10 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     },
     abortRun: (runId) => api.post(`/messaging/runs/${encodeURIComponent(runId)}/abort`, {}) as Promise<AbortRunResponse>,
     steerRun: (runId, request) => api.post(`/messaging/runs/${encodeURIComponent(runId)}/steer`, request) as Promise<SteerRunResponse>,
+    listSubagents: (roomId) => api.get(`/messaging/rooms/${encodeURIComponent(roomId)}/subagents`) as Promise<{ subagents: Record<string, unknown>[] }>,
+    subagentTail: (roomId, agentId, subagentId) => api.get(`${subagentPath(roomId, agentId, subagentId)}/tail`) as Promise<SubagentTail>,
+    steerSubagent: (roomId, agentId, subagentId, text) => api.post(`${subagentPath(roomId, agentId, subagentId)}/steer`, { text }) as Promise<{ state: "queued" }>,
+    stopSubagent: (roomId, agentId, subagentId) => api.post(`${subagentPath(roomId, agentId, subagentId)}/stop`, {}) as Promise<{ state: "stopping" }>,
     getRunStatus: (runId) => api.get(`/messaging/runs/${encodeURIComponent(runId)}`) as Promise<RunStatusResponse>,
     listActivity: (options) => {
       const query = new URLSearchParams();

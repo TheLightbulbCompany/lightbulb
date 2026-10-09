@@ -10,6 +10,7 @@ import useSWR, { useSWRConfig } from "swr";
 import { ApiError } from "../api/error";
 import type { LiveEvent } from "../live/types";
 import type { MessagingClient, RoomAttachmentInput } from "./client";
+import { EMPTY_ROOM_SUBAGENTS, applySubagentEvent, liveSubagents, pruneFinishedSubagents, reconcileSubagentSnapshot, type RoomSubagents } from "./subagents";
 import { applyRunFrame, declinedRun, lastSequence, mergeCanonicalMessages, shownRunText, type LiveRoomRun } from "./timeline";
 import type {
   ActiveRoomRun,
@@ -339,6 +340,12 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
   const [runs, setRuns] = useState(new Map<string, LiveRoomRun>());
   const runsRef = useRef(runs);
   runsRef.current = runs;
+  const [subagents, setSubagents] = useState<RoomSubagents>(EMPTY_ROOM_SUBAGENTS);
+  const subagentsRef = useRef(subagents);
+  subagentsRef.current = subagents;
+  const activeRoomIdRef = useRef(activeRoomId);
+  activeRoomIdRef.current = activeRoomId;
+  const subagentPoll = useRef({ visible: false, failures: 0 });
   const [receipts, setReceipts] = useState<RoomReceipts>(NO_RECEIPTS);
   const generation = useRef(0);
   const requestedAfter = useRef<number | null>(null);
@@ -413,6 +420,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     requests.current.clear();
     setTyping(new Map());
     setRuns(new Map());
+    setSubagents(EMPTY_ROOM_SUBAGENTS);
     setReceipts(NO_RECEIPTS);
     setAccessRemoved(false);
     setDeliveryOverride(null);
@@ -941,9 +949,18 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
       });
       return;
     }
+    if (event.type === "room.subagent.event" && event.payload.roomId === activeRoomId) {
+      const { agentId, events } = event.payload;
+      const now = Date.now();
+      setSubagents((s) => [...events].sort((a, b) => a.seq - b.seq)
+        .reduce((acc, e) => applySubagentEvent(acc, agentId, e.type, e.payload, now), s));
+      return;
+    }
     if (event.type === "room.run.frame" && event.payload.roomId === activeRoomId) {
       const payload = event.payload;
       const key = `${payload.roomId}:${payload.agentId}:${payload.runId}`;
+      // upstream's `message.start` boundary: a new turn clears that agent's finished subagents
+      if (payload.frame.type === "run_active" && payload.frame.active) setSubagents((s) => pruneFinishedSubagents(s, payload.agentId));
       setRuns((current) => {
         const previous = current.get(key);
         const next = applyRunFrame(previous, payload);
@@ -1324,6 +1341,38 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     return [{ ...visible, threadRootMessageId: trigger?.threadRootMessageId ?? run.triggerMessageId }];
   }), [runs, messages, messagesById, activeRoom?.kind]);
   const abortRun = useCallback((runId: string) => messaging.abortRun(runId), [messaging]);
+  const refreshSubagents = useCallback(async () => {
+    if (!activeRoomId) return;
+    const roomId = activeRoomId;
+    try {
+      const { subagents: children } = await messaging.listSubagents(roomId);
+      subagentPoll.current.failures = 0;
+      if (roomId === activeRoomIdRef.current) setSubagents((s) => reconcileSubagentSnapshot(s, children, Date.now()));
+    } catch {
+      subagentPoll.current.failures += 1;
+    }
+  }, [activeRoomId, messaging]);
+
+  useEffect(() => { void refreshSubagents(); }, [refreshSubagents]); // hydrate once per room
+
+  // upstream's only polling: every 5 s while the strip is on screen and a row is live; 3 failures stop it until focus.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const p = subagentPoll.current;
+      if (!p.visible || p.failures >= 3 || !liveSubagents(subagentsRef.current).length) return;
+      void refreshSubagents();
+    }, 5_000);
+    const onFocus = () => { subagentPoll.current.failures = 0; void refreshSubagents(); };
+    globalThis.addEventListener?.("focus", onFocus);
+    return () => { clearInterval(id); globalThis.removeEventListener?.("focus", onFocus); };
+  }, [refreshSubagents]);
+
+  const subagentsPollVisible = useCallback((visible: boolean) => { subagentPoll.current.visible = visible; }, []);
+  const steerSubagent = useCallback((agentId: string, subagentId: string, text: string) =>
+    activeRoomId ? messaging.steerSubagent(activeRoomId, agentId, subagentId, text) : Promise.reject(new Error("No room selected.")), [activeRoomId, messaging]);
+  const stopSubagent = useCallback((agentId: string, subagentId: string) =>
+    activeRoomId ? messaging.stopSubagent(activeRoomId, agentId, subagentId) : Promise.reject(new Error("No room selected.")), [activeRoomId, messaging]);
+
   const steerRun = useCallback((runId: string, text: string) => messaging.steerRun(runId, { text }), [messaging]);
   const loadHistory = useCallback(() => {
     initialRequest.current += 1;
@@ -1397,5 +1446,10 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     setTyping: setRoomTyping,
     abortRun,
     steerRun,
+    subagents,
+    refreshSubagents,
+    steerSubagent,
+    stopSubagent,
+    subagentsPollVisible,
   };
 }

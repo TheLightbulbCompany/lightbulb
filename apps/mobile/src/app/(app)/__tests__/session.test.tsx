@@ -103,7 +103,7 @@ const mockLive = {
     decideLocalSessionPickup: mockDecidePickup,
     openSessionChat: jest.fn(async () => ({ ...mockRoom, roomId: "chat-1" })),
     sendMessage: jest.fn(), downloadAttachment: jest.fn(), attachmentUrl: jest.fn(), uploadAttachment: jest.fn(), markUnread: jest.fn(),
-    setTyping: jest.fn(), abortRun: jest.fn(), steerRun: jest.fn(), createRoom: jest.fn(), updateRoom: jest.fn(),
+    setTyping: jest.fn(), abortRun: jest.fn(), steerRun: jest.fn(), listSubagents: jest.fn().mockResolvedValue({ subagents: [] }), subagentTail: jest.fn(), steerSubagent: jest.fn(), stopSubagent: jest.fn(), createRoom: jest.fn(), updateRoom: jest.fn(),
     upsertMember: jest.fn(), removeMember: jest.fn(), updateMessage: jest.fn(), setReaction: jest.fn(),
     getLiveConfig: jest.fn(), setMemberPrefs: jest.fn(), putSections: jest.fn(),
   },

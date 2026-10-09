@@ -39,7 +39,7 @@ const messaging = {
   getRunStatus: vi.fn<(runId: string) => Promise<RunStatusResponse>>(async () => ({ runId: "run-1", state: "terminal" })),
   markUnread: vi.fn(), sendMessage: vi.fn(), setTyping: vi.fn(), createRoom: vi.fn(),
   updateRoom: vi.fn(), upsertMember: vi.fn(), removeMember: vi.fn(), abortRun: vi.fn(),
-  steerRun: vi.fn(), updateMessage: vi.fn(), setReaction: vi.fn(), downloadAttachment: vi.fn(),
+  steerRun: vi.fn(), listSubagents: vi.fn().mockResolvedValue({ subagents: [] }), subagentTail: vi.fn(), steerSubagent: vi.fn(), stopSubagent: vi.fn(), updateMessage: vi.fn(), setReaction: vi.fn(), downloadAttachment: vi.fn(),
   getLiveConfig: vi.fn(),
   setMemberPrefs: vi.fn(), putSections: vi.fn(), leaveRoom: vi.fn(), deleteRoom: vi.fn(), setPin: vi.fn(),
 };
@@ -1098,5 +1098,45 @@ describe("read and delivery receipts", () => {
 
     expect(result.current.receipts.agentReads.get("agent-1")?.has("m-live")).toBe(true);
     expect(result.current.receipts.agentDeliveries.get("agent-1")).toBe(3);
+  });
+});
+
+describe("background subagents", () => {
+  const sub = (type: string, seq: number, payload: Record<string, unknown>) => ({ type, seq, payload });
+  const emit = (event: LiveEvent) => act(() => { for (const handler of handlers) handler(event); });
+
+  it("room.subagent.event for the active room fills subagents; run_active prunes that agent's finished rows", async () => {
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.messages).toHaveLength(1));
+    emit({ type: "room.subagent.event", payload: { roomId: room.roomId, agentId: "a1", events: [
+      sub("subagent.start", 1, { subagent_id: "sa-1", goal: "Map" }),
+      sub("subagent.complete", 2, { subagent_id: "sa-2", goal: "Done", status: "completed" }),
+    ] } } as LiveEvent);
+    expect(result.current.subagents.items.map((i) => i.id)).toEqual(["sa-1", "sa-2"]);
+    emit({ type: "room.run.frame", payload: { roomId: room.roomId, agentId: "a1", runId: "run-x", threadRootMessageId: null,
+      frame: { type: "run_active", active: true } } } as LiveEvent);
+    expect(result.current.subagents.items.map((i) => i.id)).toEqual(["sa-1"]);
+  });
+
+  it("snapshots on room open, polls every 5 s only while visible with a live row, and stops after 3 failures", async () => {
+    vi.useFakeTimers();
+    try {
+      messaging.listSubagents.mockResolvedValue({ subagents: [{ subagent_id: "sa-1", agent_id: "a1", goal: "g", status: "running" }] });
+      const { result } = renderHook(() => useRooms(platform()), { wrapper });
+      act(() => result.current.selectRoom(room.roomId));
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      expect(messaging.listSubagents).toHaveBeenCalledTimes(1);
+      await act(() => vi.advanceTimersByTimeAsync(10_000));
+      expect(messaging.listSubagents).toHaveBeenCalledTimes(1);
+      act(() => result.current.subagentsPollVisible(true));
+      await act(() => vi.advanceTimersByTimeAsync(5_000));
+      expect(messaging.listSubagents).toHaveBeenCalledTimes(2);
+      messaging.listSubagents.mockRejectedValue(new Error("503"));
+      await act(() => vi.advanceTimersByTimeAsync(20_000));
+      expect(messaging.listSubagents).toHaveBeenCalledTimes(5);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

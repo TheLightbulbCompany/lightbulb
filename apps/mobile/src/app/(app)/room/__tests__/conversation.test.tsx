@@ -168,7 +168,7 @@ const mockLive = {
     sendMessage: mockSendMessage,
     getRunStatus: jest.fn(async () => ({ runId: "r", state: "terminal" })),
     downloadAttachment: jest.fn(), attachmentUrl: jest.fn(), uploadAttachment: jest.fn(), markUnread: mockMarkUnread,
-    setTyping: mockSetTyping, abortRun: jest.fn(), steerRun: jest.fn(), createRoom: jest.fn(),
+    setTyping: mockSetTyping, abortRun: jest.fn(), steerRun: jest.fn(), listSubagents: jest.fn().mockResolvedValue({ subagents: [] }), subagentTail: jest.fn(), steerSubagent: jest.fn(), stopSubagent: jest.fn(), createRoom: jest.fn(),
     updateRoom: jest.fn(), upsertMember: jest.fn(), removeMember: jest.fn(),
     updateMessage: jest.fn(), setReaction: mockSetReaction, getLiveConfig: jest.fn(),
     setMemberPrefs: mockSetMemberPrefs, putSections: jest.fn(),

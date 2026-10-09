@@ -744,3 +744,19 @@ async def test_a_grown_turn_that_asks_one_agent_two_things_keeps_both_asks():
     await says(h, P1, "and draft the release notes.")
     assert row.status in h_mod.OPEN
     assert sorted(r.task for r in h._requests.items if r.status in h_mod.OPEN) == ["check the deploy", "draft the release notes"]
+
+
+async def test_a_third_piece_amends_the_row_a_failed_steer_made_instead_of_adding_another():
+    """#3961 review (P1): the second piece's steer found the run ended and made a row of its own (`_steer_row`).
+    A third piece sees that row as the turn's: one replacement stays open, never two."""
+    h, room, backend, lives, clock, log = await per_person()
+    backend.steer = False  # every steer finds the run gone: `_steer_row` makes a row of the words
+    pieces = [("Forge, check the deploy", "check the deploy"), ("and the numbers", "check the deploy and the numbers"),
+              ("and the logs.", "check the deploy, the numbers and the logs")]
+    for said, task in pieces:
+        h.on_speech(P1, True)
+        clock.t += 0.5 + 2
+        h.on_speech(P1, False)
+        backend.route_extra = ops([("forge", task, "name")])
+        await says(h, P1, said)
+    assert len([r for r in h._requests.items if r.status in h_mod.OPEN]) <= 2, "the run's row and one replacement"

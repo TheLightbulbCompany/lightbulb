@@ -703,11 +703,10 @@ class Huddle:
         # identity -> (line, at, mark, its /route answer, _route's arguments): unfinished, /route said hold
         self._held: dict[str, tuple[str, float, int, dict, dict]] = {}
         # A meeting person's turn, which may be said in pieces: identity -> (turn id, when its last piece's
-        # speech ended, the whole turn so far). Every /route call for it carries the id, and every row it made
-        # is kept by it (`_turn_rows`), so a later piece of it amends those rows (`_amend_turn`).
+        # speech ended, the whole turn so far). Every /route call for it carries the id; the rows its lines made
+        # (`_turn_rows`, by each row's mark) are amended by a later piece of it (`_amend_turn`).
         self._turn_id: dict[str, tuple[int, float | None, str]] = {}
         self._turn_of: dict[int, int] = {}  # transcript mark -> the turn its line is part of
-        self._turn_rows: dict[int, list[Request]] = {}
         self._tid = 0
         self._final_mark: dict[
             str, int
@@ -1276,7 +1275,7 @@ class Huddle:
                 and prev[1] is not None
                 and detected  # (when it began is known only from the detector)
                 and ep.began - prev[1] <= TURN_GAP_S
-                and (any(r.status in OPEN for r in self._turn_rows.get(prev[0], [])) or self._routing.get(identity))
+                and (self._turn_rows(prev[0]) or self._routing.get(identity))
             ):
                 # They went straight on after a turn that already asked something, or whose /route has not answered
                 # yet: it is the same turn, routed again whole, and what it asks now replaces what it asked
@@ -2909,8 +2908,6 @@ class Huddle:
         rows = self._requests.settle(
             mark, identity, list(ops.get("requests") or []) + extra, self._clock(), self._label(identity, mark)
         )
-        if (tid := self._turn_of.get(mark)) is not None and rows:
-            self._turn_rows.setdefault(tid, []).extend(rows)
         for r in rows:
             emit_metric("live.request.created", 1, "Count", {"by": r.by or "none"})
         heard = ops if heard is None else heard  # the line as /route understood it, before supersede (§5.3)
@@ -4921,6 +4918,11 @@ class Huddle:
             return True
         return False
 
+    def _turn_rows(self, tid: int) -> list[Request]:
+        """The open rows a turn's lines made, whichever path made them (`_apply`, a steer's fallback row). Not a
+        multi-name line's strip rows (`routed` False): never started, and its own /route answer replaces them."""
+        return [r for r in self._requests.items if r.routed and r.status in OPEN and self._turn_of.get(r.turn) == tid]
+
     def _amend_turn(self, mark: int, ops: dict) -> dict:
         """A turn said in pieces is routed again as it grows (`_heard_final`): what it asks now REPLACES what it
         asked before, and never adds to it. A request of an agent the turn already asked is that row, amended
@@ -4928,7 +4930,7 @@ class Huddle:
         agent replaces the turn's rows, which are called off. A steer of the turn's own row is no follow-up.
         The turn's acknowledgement was said once, when it first asked: none again, and no small talk."""
         tid = self._turn_of.get(mark)
-        mine = [r for r in self._turn_rows.get(tid, []) if r.status in OPEN] if tid is not None else []
+        mine = self._turn_rows(tid) if tid is not None else []
         if not mine:
             return ops
         ids = {r.id for r in mine}

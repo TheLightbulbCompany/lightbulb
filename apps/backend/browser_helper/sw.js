@@ -13,7 +13,11 @@ async function call(path, body) {
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Something went wrong. Try again.");
+  if (!response.ok) {
+    const error = new Error(typeof data.detail === "string" ? data.detail : "Something went wrong. Try again.");
+    error.status = response.status;
+    throw error;
+  }
   return data;
 }
 
@@ -65,11 +69,23 @@ async function handle(msg, sender) {
     }
     case "save": {
       const pending = (await chrome.storage.session.get(pendingKey(tab)))[pendingKey(tab)];
-      if (!pending) throw new Error("Nothing to save.");
-      // Kept until it is stored: the backend refuses a save without a person's fresh click, and they retry.
-      const saved = await call("/logins", { origin: pending.origin, username: pending.username, password: pending.password });
-      await chrome.storage.session.remove(pendingKey(tab));
-      return saved;
+      // The captured password lives only PENDING_MS, on this path too: a retry later must not
+      // land in some future window of a person's input.
+      if (!pending || Date.now() - pending.at > PENDING_MS) {
+        await chrome.storage.session.remove(pendingKey(tab));
+        throw new Error("Nothing to save.");
+      }
+      try {
+        const saved = await call("/logins", { origin: pending.origin, username: pending.username, password: pending.password });
+        await chrome.storage.session.remove(pendingKey(tab));
+        return saved;
+      } catch (error) {
+        // 403: no person clicked Save, so whoever pressed it does not get another try. Anything
+        // else (409 while an agent holds the browser, a network fault) keeps it for a retry
+        // within PENDING_MS.
+        if (error.status === 403) await chrome.storage.session.remove(pendingKey(tab));
+        throw error;
+      }
     }
     case "dismiss":
       await chrome.storage.session.remove(pendingKey(tab));

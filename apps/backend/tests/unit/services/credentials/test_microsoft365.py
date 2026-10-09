@@ -21,6 +21,7 @@ def _owner_lifecycle_lease(monkeypatch):
 
     monkeypatch.setattr(container_repo, "try_claim_owner_lifecycle", AsyncMock(return_value="lease-token"))
     monkeypatch.setattr(container_repo, "release_owner_lifecycle_claim", AsyncMock())
+    monkeypatch.setattr(container_repo, "get_oauth_revoked_at", AsyncMock(return_value=None))
 
 
 _ID_TOKEN = jwt.encode({"tid": "tenant-a", "preferred_username": "ada@contoso.com"}, "k", algorithm="HS256")

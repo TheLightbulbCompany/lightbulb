@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
-from core.repositories import billing_repo, integrations_repo
+from core.repositories import billing_repo, container_repo, integrations_repo
 from core.services import account_wipe, company_stripe
 from core.services.credentials import integration_secret_store
 from core.services.owner_facts import write_owner_facts
@@ -82,7 +82,15 @@ async def revoke_all(body: RevokeAllBody, auth: Annotated[AuthContext, Depends(g
     # 2. Delete our Secrets Manager copies: every projects/* credential the
     # Provisioning rail landed, plus the retained posthog token (delete
     # no-ops when absent).
-    rows = [str(r.get("provider", "")) for r in await integrations_repo.list_for_owner(owner_id)]
+    # Mark first: every OAuth connect started before now is refused when it lands
+    # (connections.oauth_callback). Then read the rows under the lease, so a callback
+    # already past that check finishes its write before the snapshot and is torn down below.
+    await container_repo.mark_oauth_revoked(owner_id)
+    try:
+        async with connections.owner_lifecycle_guard(owner_id):
+            rows = [str(r.get("provider", "")) for r in await integrations_repo.list_for_owner(owner_id)]
+    except connections.OwnerLifecycleBusyError:
+        raise HTTPException(status_code=409, detail="busy") from None
     keys = [k for k in rows if k.startswith(integrations_repo.PROJECTS_KEY_PREFIX)]
     keys.append("posthog")
     for key in keys:

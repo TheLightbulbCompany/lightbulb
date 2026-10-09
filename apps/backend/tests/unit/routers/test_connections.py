@@ -40,6 +40,7 @@ def _owner_lifecycle_lease(monkeypatch):
 
     monkeypatch.setattr(container_repo, "try_claim_owner_lifecycle", AsyncMock(return_value="lease-token"))
     monkeypatch.setattr(container_repo, "release_owner_lifecycle_claim", AsyncMock())
+    monkeypatch.setattr(container_repo, "get_oauth_revoked_at", AsyncMock(return_value=None))
 
 
 @pytest.fixture(autouse=True)
@@ -1599,6 +1600,57 @@ class TestOAuthCallback:
         # Status row written after a clean apply.
         assert mock_repo.put_status.await_count == 1
         assert mock_repo.put_status.await_args.args == ("org_1", "google", "connected")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("started_at,connects", [(100, False), (200, False), (201, True)])
+    @patch("routers.connections.google_accounts_repo")
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections.oauth_dance")
+    async def test_a_connect_started_before_revoke_all_is_refused(
+        self,
+        mock_dance,
+        mock_repo,
+        mock_store,
+        mock_apply,
+        mock_accounts,
+        started_at,
+        connects,
+        async_client,
+        monkeypatch,
+        _oauth_state,
+    ):
+        """Revoke-all at t=200. A callback whose state was minted at or before it (its code
+        already exchanged, or a provider revoke-all never saw) must not land a credential after
+        the teardown. The start time is the stored state row's, never the request's."""
+        from core.repositories import container_repo
+
+        monkeypatch.setattr(container_repo, "get_oauth_revoked_at", AsyncMock(return_value=200))
+        _oauth_state.return_value = {
+            "owner_id": "org_1",
+            "provider": "google",
+            "verifier": "pkce",
+            "ttl": started_at + connections.oauth_state_repo._TTL_SECONDS,
+        }
+        cred = {"access_token": "a", "refresh_token": "r", "client_id": "c", "client_secret": "s"}
+        mock_dance.exchange = AsyncMock(return_value=("org_1", "google", cred, None))
+        mock_store.put = AsyncMock()
+        mock_repo.put_status = AsyncMock()
+        mock_apply.apply_connection = AsyncMock(return_value="user@example.com")
+        mock_accounts.add_account = AsyncMock()
+        mock_accounts.list_assignments = AsyncMock(return_value={})
+
+        response = await async_client.get("/api/v1/oauth/google/callback?code=abc&state=st1", follow_redirects=False)
+
+        if connects:
+            assert "/oauth/done?connected=google" in response.headers["location"]
+            assert mock_repo.put_status.await_count == 1
+        else:
+            assert response.headers["location"].endswith("/oauth/done?error=revoked")
+            mock_apply.apply_connection.assert_not_awaited()
+            mock_store.put.assert_not_called()
+            mock_repo.put_status.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_callback_redirects_on_provider_error_redirect(self, async_client):

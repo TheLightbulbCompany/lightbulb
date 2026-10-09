@@ -447,6 +447,26 @@ async def try_claim_owner_lifecycle(owner_id: str, *, stale_s: int = LIFECYCLE_C
         return None
 
 
+async def mark_oauth_revoked(owner_id: str) -> int:
+    """Revoke-all's mark: an OAuth connect whose state was minted at or before it is refused
+    (``routers.connections.oauth_callback``). On the lease row, which the release leaves alone
+    (it removes only ``claimed_at``/``tok``)."""
+    now = int(time.time())
+    await run_in_thread(
+        _get_table().update_item,
+        Key={"owner_id": f"{LIFECYCLE_KEY_PREFIX}{owner_id}"},
+        UpdateExpression="SET oauth_revoked_at = :now",
+        ExpressionAttributeValues={":now": now},
+    )
+    return now
+
+
+async def get_oauth_revoked_at(owner_id: str) -> int | None:
+    row = await get_by_owner_id(f"{LIFECYCLE_KEY_PREFIX}{owner_id}", consistent=True)
+    value = (row or {}).get("oauth_revoked_at")
+    return int(value) if value is not None else None
+
+
 async def release_owner_lifecycle_claim(owner_id: str, *, token: str) -> None:
     """Drop the owner's lifecycle claim, but only if ``token`` still holds it.
 

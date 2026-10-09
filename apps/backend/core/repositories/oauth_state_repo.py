@@ -52,6 +52,11 @@ async def put(
     await run_in_thread(_table().put_item, Item=item)
 
 
+def started_at(rec: dict) -> int:
+    """When the stored state was minted (its TTL is fixed from that moment)."""
+    return int(rec["ttl"]) - _TTL_SECONDS
+
+
 async def consume(state: str) -> dict | None:
     resp = await run_in_thread(_table().get_item, Key={"state": state})
     rec = resp.get("Item")

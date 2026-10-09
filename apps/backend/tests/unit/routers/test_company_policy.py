@@ -47,6 +47,16 @@ def member_client():
 
 
 @pytest.fixture(autouse=True)
+def _lease(monkeypatch):
+    """revoke-all marks the owner revoked and takes the lifecycle lease: admit both without a table."""
+    from core.repositories import container_repo
+
+    monkeypatch.setattr(container_repo, "mark_oauth_revoked", AsyncMock(return_value=200))
+    monkeypatch.setattr(container_repo, "try_claim_owner_lifecycle", AsyncMock(return_value="lease-token"))
+    monkeypatch.setattr(container_repo, "release_owner_lifecycle_claim", AsyncMock())
+
+
+@pytest.fixture(autouse=True)
 def facts(monkeypatch):
     writer = AsyncMock()
     monkeypatch.setattr(mod, "write_owner_facts", writer)
@@ -225,11 +235,18 @@ def test_revoke_all_disconnects_every_connected_app_and_reports_the_one_that_fai
 
     torn = AsyncMock(side_effect=teardown)
     github = AsyncMock()
+    order = MagicMock()
+    mark = AsyncMock(return_value=200)
+    listing = AsyncMock(return_value=rows)
+    order.attach_mock(mark, "mark")
+    order.attach_mock(listing, "list")
+    order.attach_mock(torn, "teardown")
     with (
         patch.object(mod.account_wipe, "cancel_open_workflows", cancel),
-        patch.object(mod.integrations_repo, "list_for_owner", AsyncMock(return_value=rows)),
+        patch.object(mod.integrations_repo, "list_for_owner", listing),
         patch.object(mod.integration_secret_store, "delete", sdelete),
         patch.object(billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
+        patch.object(mod.container_repo, "mark_oauth_revoked", mark),
         patch.object(mod.connections, "owner_lifecycle_guard", lambda owner_id: _Guard()),
         patch.object(mod.connections, "_get_provider_for_teardown", lambda provider: provider),
         patch.object(mod.connections, "_disconnect_teardown", torn),
@@ -251,6 +268,10 @@ def test_revoke_all_disconnects_every_connected_app_and_reports_the_one_that_fai
     # never reaches the OAuth teardown (which is keyed by the bare provider).
     assert [c.args[:2] for c in torn.await_args_list] == [("org_a", "google"), ("org_a", "slack"), ("org_a", "github")]
     github.assert_awaited_once_with("org_a")
+    # The mark is down before the rows are read, so a callback that lands after this snapshot
+    # finds it and refuses (oauth_callback); one that was mid-write is waited out by the guard.
+    mark.assert_awaited_once_with("org_a")
+    assert [name for name, _, _ in order.mock_calls][:2] == ["mark", "list"]
 
 
 @pytest.mark.parametrize("body", [{}, {"confirm": "REVOKE"}, {"confirm": "revoke everything"}])

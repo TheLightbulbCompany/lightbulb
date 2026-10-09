@@ -21,11 +21,11 @@ import { useBilling, type BillingAccount } from "@/hooks/useBilling";
  * layers down through MessageList, which carries no send on its props at
  * all; that is its own change, not a side effect of removing dead code.
  *
- * The backend forwards OpenClaw's `errorKind` as `code` on the chat error
- * payload (one of: refusal | timeout | rate_limit | context_length |
- * unknown — see upstream src/infra/errors.ts). We map the known codes to
- * tailored copy + an action button so the user knows what to do next,
- * instead of seeing a generic "Failed to generate" block.
+ * The OpenClaw `errorKind` branches (refusal | timeout | rate_limit |
+ * context_length) are gone: nothing on Hermes produces those codes. The one
+ * transcript producer (`runLogToMessages`) always passes `run_error`, which
+ * renders the generic card below with the run's own message; the money codes
+ * further down are what `RoomLimitBar` feeds `describeError`.
  *
  * `trial_daily_cap` is a separate, Isol8-side code (not an OpenClaw
  * errorKind) — the gate_chat free-tier $3/day cost cap blocks the turn
@@ -114,48 +114,6 @@ export function describeError(
     return describeIncludedCap(account, message);
   }
   switch (code) {
-    case "rate_limit":
-      // Generic "switch provider" framing is wrong here — switching to a BYO
-      // key has the same provider-quota problem. The three real remedies are
-      // (a) wait for the provider's quota to reset, (b) upgrade your plan
-      // with the provider, or (c) move this workspace to Lightbulb's own
-      // managed credits, which sidesteps third-party quotas entirely.
-      // Upstream `message` ("The usage limit has been reached.") isn't
-      // actionable, so we always use our own copy here.
-      //
-      // The action URL carries ``action=change-provider`` so LLMPanel
-      // auto-opens the change-provider modal on mount — without that the
-      // user lands on a static panel showing their current provider with
-      // no obvious "what now" surface (the original bug that motivated
-      // this flow).
-      return {
-        title: "Provider rate limit reached",
-        description:
-          "Your model provider hit its usage cap. Three ways to keep going: wait for your quota to reset, upgrade your plan with the provider, or switch this workspace to Lightbulb's managed credits.",
-        action: { label: "Switch provider", href: PROVIDER_PICKER },
-      };
-    case "context_length":
-      return {
-        title: "Conversation too long",
-        description:
-          message ||
-          "The conversation exceeded the model's context window. Start a new chat or pick a model with a larger context.",
-        action: { label: "Change provider", href: PROVIDER_PICKER },
-      };
-    case "timeout":
-      return {
-        title: "Provider timeout",
-        description:
-          message ||
-          "The model provider took too long to respond. This usually clears up on its own — try again in a moment.",
-      };
-    case "refusal":
-      return {
-        title: "Request refused",
-        description:
-          message ||
-          "The model declined to respond, usually due to content policy. Try rephrasing your message.",
-      };
     case "trial_daily_cap":
       // Copy is derived from `code` alone — the server message is ignored, so
       // the pre-send refusal (gate_chat) and the mid-run reclassification

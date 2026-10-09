@@ -37,7 +37,7 @@ describe("MessageList — error bubbles fill the row", () => {
     const { container } = renderAssistant({
       role: "assistant",
       content: "Error: upstream timed out",
-      errorCode: "timeout",
+      errorCode: "run_error",
     });
     expect(bubbleFor(container).classList.contains("w-full")).toBe(true);
   });

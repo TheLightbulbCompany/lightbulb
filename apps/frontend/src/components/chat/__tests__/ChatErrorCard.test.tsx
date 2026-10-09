@@ -9,44 +9,6 @@ const billing = vi.hoisted(() => ({ account: null as Record<string, unknown> | n
 vi.mock("@/hooks/useBilling", () => ({ useBilling: () => ({ account: billing.account }) }));
 
 describe("ChatErrorCard", () => {
-  it("renders the rate_limit variant with the three-remedies copy and Switch provider action", () => {
-    render(<ChatErrorCard code="rate_limit" message="429 from upstream" />);
-    expect(screen.getByText("Provider rate limit reached")).toBeInTheDocument();
-    // Description spells out all three remedies so the user can choose:
-    // wait, upgrade their provider plan, or switch to Lightbulb-managed credits.
-    expect(screen.getByText(/wait for your quota to reset/i)).toBeInTheDocument();
-    expect(screen.getByText(/upgrade your plan with the provider/i)).toBeInTheDocument();
-    expect(screen.getByText(/Lightbulb's managed credits/i)).toBeInTheDocument();
-    // Upstream "The usage limit has been reached." is intentionally NOT shown —
-    // it's not actionable and would compete with our copy.
-    expect(screen.queryByText("429 from upstream")).not.toBeInTheDocument();
-    // ``action=change-provider`` is required so LLMPanel auto-opens the
-    // change-provider modal on landing — without it the user lands on a
-    // static panel and has to dig for the change button (the original
-    // dead-end this card was created to fix).
-    const link = screen.getByRole("link", { name: "Switch provider" });
-    expect(link).toHaveAttribute("href", "/chat?panel=llm&action=change-provider");
-  });
-
-  it("renders the context_length variant with a change-provider action", () => {
-    render(<ChatErrorCard code="context_length" message="" />);
-    expect(screen.getByText("Conversation too long")).toBeInTheDocument();
-    const link = screen.getByRole("link", { name: "Change provider" });
-    expect(link).toHaveAttribute("href", "/chat?panel=llm&action=change-provider");
-  });
-
-  it("renders the timeout variant with no action button", () => {
-    render(<ChatErrorCard code="timeout" message="upstream timed out" />);
-    expect(screen.getByText("Provider timeout")).toBeInTheDocument();
-    expect(screen.getByText("upstream timed out")).toBeInTheDocument();
-    expect(screen.queryByRole("link")).not.toBeInTheDocument();
-  });
-
-  it("renders the refusal variant", () => {
-    render(<ChatErrorCard code="refusal" message="" />);
-    expect(screen.getByText("Request refused")).toBeInTheDocument();
-  });
-
   it("links a trial cap to the org billing surface without a personal provider picker", () => {
     render(<ChatErrorCard code="trial_daily_cap" message="server copy" />);
 
@@ -123,10 +85,7 @@ describe("ChatErrorCard", () => {
   it("has no Retry affordance, for any code, even when handed a handler", () => {
     const Card = ChatErrorCard as unknown as React.FC<Record<string, unknown>>;
     for (const code of [
-      "timeout",
-      "rate_limit",
-      "refusal",
-      "context_length",
+      "run_error",
       "trial_daily_cap",
       "trial_expired",
       "out_of_credits",
@@ -153,22 +112,11 @@ describe("ChatErrorCard", () => {
   });
 
   it("attaches the code as a data attribute for analytics / e2e", () => {
-    render(<ChatErrorCard code="rate_limit" message="m" />);
+    render(<ChatErrorCard code="run_error" message="m" />);
     expect(screen.getByTestId("chat-error-card")).toHaveAttribute(
       "data-error-code",
-      "rate_limit",
+      "run_error",
     );
-  });
-
-  it("never renders the scary 'Provider timeout' title for a stray lock-style error", () => {
-    // The backend serialize gate makes a raw "session file locked" reaching the
-    // web client a now-impossible/defensive path. Even on an untested edge, a
-    // lock error carries no OpenClaw errorKind — so it would never reach this
-    // card with the `timeout` code. Assert that a lock message under a
-    // non-timeout code (or no code) is NOT presented as "Provider timeout".
-    render(<ChatErrorCard message="session file locked" />);
-    expect(screen.queryByText("Provider timeout")).not.toBeInTheDocument();
-    expect(screen.getByText("Failed to generate")).toBeInTheDocument();
   });
 
   describe("included_daily_cap — a PAYING workspace's daily allowance", () => {

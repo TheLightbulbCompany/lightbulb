@@ -9,7 +9,8 @@ import { useApi } from "@/lib/api";
 import { closePendingTab, navigatePendingTab, openPendingTab } from "@/components/settings/openInNewTab";
 import { isTauri, openExternalUrl } from "@/lib/externalAuth";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
-import { handleShellLinkClick, teamsDetailUrl } from "@/lib/shellNav";
+import { handleShellLinkClick, navigateShell, teamsDetailUrl, teamsPanelUrl } from "@/lib/shellNav";
+import { useCompanyStripeStatus } from "@/components/settings/CompanyStripeSection";
 import { useApprovalMutations } from "@/components/teams/inbox/hooks/useApprovalMutations";
 import {
   approvalLabel,
@@ -46,6 +47,11 @@ export function ApprovalRow({
 }) {
   const { approve, reject } = useApprovalMutations();
   const api = useApi();
+  // "Set up Stripe" / "Connect existing" are the Connect doors, which exist
+  // only while the provisioning rail is on (same gate CompanyStripeSection
+  // uses). While it is off the card sends the owner to Accounts, where the
+  // API-key path lives.
+  const { data: stripeStatus } = useCompanyStripeStatus();
   const [busy, setBusy] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
@@ -190,7 +196,13 @@ export function ApprovalRow({
         )}
         {isActionable && !rejecting && (
           <div className="flex shrink-0 gap-2">
-            {isCompanyStripeApproval(approval) ? (
+            {isCompanyStripeApproval(approval) && !stripeStatus ? (
+              // Status not loaded yet: offer neither door set, or a load
+              // would briefly read as "provisioning off" and show Approve.
+              <EditorialButton size="sm" disabled>
+                Loading…
+              </EditorialButton>
+            ) : isCompanyStripeApproval(approval) && stripeStatus?.provisioning_enabled ? (
               <>
                 <EditorialButton
                   size="sm"
@@ -285,9 +297,16 @@ export function ApprovalRow({
                 </EditorialButton>
               </>
             ) : (
-              <EditorialButton size="sm" disabled={busy} onClick={() => run(() => approve(approval.id))}>
-                Approve
-              </EditorialButton>
+              <>
+                {isCompanyStripeApproval(approval) && (
+                  <EditorialButton size="sm" disabled={busy} onClick={() => navigateShell(teamsPanelUrl("accounts"))}>
+                    Open Accounts
+                  </EditorialButton>
+                )}
+                <EditorialButton size="sm" disabled={busy} onClick={() => run(() => approve(approval.id))}>
+                  Approve
+                </EditorialButton>
+              </>
             )}
             <EditorialButton variant="destructive" size="sm" disabled={busy} onClick={() => setRejecting(true)}>
               Reject

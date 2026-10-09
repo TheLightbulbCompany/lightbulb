@@ -5,7 +5,6 @@ import useSWR from "swr";
 import { useApi } from "@/lib/api";
 import { formatMoney, type LaunchInfo, type LaunchMe, type LaunchMeEntry } from "@/lib/launch";
 import { ConnectStripeForm } from "./ConnectStripeForm";
-import { JoinForm } from "./JoinForm";
 import { ReferralLink } from "./ReferralLink";
 import { RenameForm } from "./RenameForm";
 import { useLaunchRef } from "./useLaunchRef";
@@ -13,7 +12,7 @@ import { useReferralAttribution } from "./useReferralAttribution";
 
 /**
  * The signed-in "Your launch" card on /launch — the caller's competition-sheet
- * membership. States: onboard first → join (open phase) → sheet position +
+ * membership. States: not joined (open phase: the team hand-raise) → sheet position +
  * referrals; post-close it carries the winner / sheet-closed outcome, and
  * during the competition the revenue-board attachment (Stripe connect +
  * public toggle).
@@ -55,11 +54,13 @@ export function SheetCard({ info }: { info: LaunchInfo }) {
       <div className="lc-card" data-testid="sheet-card">
         <p className="ld-kicker">Your launch</p>
         {open ? (
-          // No onboarding wall. It used to say "Onboard first — Friday's first
-          // run has to complete. Then come back and join." Nobody came back,
-          // and the backend no longer refuses an unonboarded join anyway
-          // (launch_service.join_sheet).
-          <JoinForm onJoined={() => mutate()} suggestedName={me.suggested_display_name} />
+          // No self-serve join: `POST /launch/join` refuses every workspace
+          // (org) context — the sheet keys personal while billing keys the
+          // org — and every account is a workspace now. A join form here
+          // could only fail, so point at the team hand-raise instead.
+          <p className="lc-fine">
+            Workspaces enter by hand — <a href="#teams">raise your hand as a team</a> and the founders add you.
+          </p>
         ) : (
           <p className="lc-fine">The sheet has closed — you can&apos;t join the competition anymore, and nothing else changes.</p>
         )}

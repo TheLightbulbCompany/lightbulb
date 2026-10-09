@@ -61,6 +61,7 @@ export function TakedownButton({ listingId, listingName, slug }: TakedownButtonP
   const [wrongAttempts, setWrongAttempts] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [mismatch, setMismatch] = useState(false);
 
   const confirmText = `takedown ${slug}`;
   const locked = wrongAttempts >= MAX_WRONG_ATTEMPTS;
@@ -78,6 +79,7 @@ export function TakedownButton({ listingId, listingName, slug }: TakedownButtonP
       setBasis("");
       setTyped("");
       setError(null);
+      setMismatch(false);
     }
   }
 
@@ -85,9 +87,13 @@ export function TakedownButton({ listingId, listingName, slug }: TakedownButtonP
     event.preventDefault();
     if (locked || busy) return;
     if (!matchesTyped) {
+      // Say so: a silent miss let an admin burn all three attempts into the
+      // lockout without ever learning the phrase was wrong.
       setWrongAttempts((n) => n + 1);
+      setMismatch(true);
       return;
     }
+    setMismatch(false);
     setBusy(true);
     setError(null);
     try {
@@ -212,6 +218,12 @@ export function TakedownButton({ listingId, listingName, slug }: TakedownButtonP
             </div>
           )}
 
+          {mismatch && !locked && (
+            <p role="alert" className="text-xs text-err">
+              That doesn&apos;t match. {MAX_WRONG_ATTEMPTS - wrongAttempts} attempt
+              {MAX_WRONG_ATTEMPTS - wrongAttempts === 1 ? "" : "s"} left before this locks.
+            </p>
+          )}
           {error && (
             <p role="alert" className="text-xs text-err">
               {error}

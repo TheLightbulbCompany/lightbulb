@@ -351,7 +351,9 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- TheLightbulbCompany/paperclip fork: server/src/services/agent-permissions.ts,
                                  services/agents.ts (getChainOfCommand), adapters/registry.ts (hermes_gateway)
   - Launch competition ...... references/surfaces.md
-                              <- apps/backend/routers/launch.py; core/services/launch_{phase,settings,service,referral,close,revenue}.py
+                              <- apps/backend/routers/launch.py (/join refuses every org; /team-interest is the hand-raise);
+                                 core/services/launch_{phase,settings,service,referral,close,revenue}.py;
+                                 apps/frontend/src/components/launch/{SheetCard,TeamInterestForm}.tsx
   - Email (one shared team address) references/email.md
                               <- /app/skills/lightbulb/scripts/lightbulb-mail.sh + backend routers/agent_mail.py + core/services/agent_mail_send.py (one send door; policy table in its docstring)
   - Meetings (invite the team address) references/email.md ("Meetings")

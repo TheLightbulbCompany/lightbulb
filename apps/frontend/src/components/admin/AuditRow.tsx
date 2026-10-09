@@ -40,8 +40,12 @@ export function AuditRow({ entry, onClick }: AuditRowProps) {
 
   const Wrapper: React.ElementType = onClick ? "button" : "div";
   // A nested anchor inside a button wrapper would be invalid HTML, so the
-  // target-user link only renders on plain rows.
-  const linkTarget = !onClick && entry.target_user_id ? entry.target_user_id : null;
+  // target-user link only renders on plain rows. Sentinel targets
+  // (`__marketplace__`, `__launch__`, `__catalog__` — `target_user_id_override`
+  // on backend routes with no user) are not users, and linking them opened a
+  // broken user page.
+  const isSentinel = /^__.*__$/.test(entry.target_user_id ?? "");
+  const linkTarget = !onClick && entry.target_user_id && !isSentinel ? entry.target_user_id : null;
 
   return (
     <Wrapper

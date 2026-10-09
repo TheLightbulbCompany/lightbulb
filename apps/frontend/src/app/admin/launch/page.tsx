@@ -26,14 +26,12 @@ export default async function AdminLaunchPage() {
           {env?.source_state === "ok" && data?.enabled ? `Generated ${data.generated_at}, phase ${data.phase}.` : ""}
         </p>
       </div>
-      {/* `key` remounts the card on a saved row, so its form state (seeded
-          once from props) picks the new values up after router.refresh(). */}
-      {data ? <LaunchSettingsCard key={data.settings.updated_at ?? "new"} settings={data.settings} /> : null}
-      {/* `key` remounts the blocks after a saved override, so their form state
-          (seeded once from props) picks the new copy up on router.refresh(). */}
-      {emails ? (
-        <LaunchEmailsCard key={JSON.stringify(emails.variants.map((v) => v.override))} variants={emails.variants} />
-      ) : null}
+      {/* No remount `key` on either card. Both write the SAME settings row, so
+          a key on `updated_at` (or on the overrides) remounted every editor on
+          any save and threw away unsaved edits in the others. After a save the
+          saving editor's own state already holds what it saved. */}
+      {data ? <LaunchSettingsCard settings={data.settings} /> : null}
+      {emails ? <LaunchEmailsCard variants={emails.variants} /> : null}
       {!env ? (
         <ErrorBanner error="Launch read failed — nothing below is trustworthy." />
       ) : data && !data.enabled ? (

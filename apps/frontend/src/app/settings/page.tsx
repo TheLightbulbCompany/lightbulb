@@ -63,17 +63,12 @@ const DANGER = "var(--err)";
 
 // Self-serve account deletion (mirrors the mobile settings flow): explain
 // permanence, require the account email typed back (same guard the backend
-// enforces), run the server-side teardown, then sign out. Org members get the
-// support-only message — workspace deletion has per-member fan-out the wipe
-// orchestrator refuses, so the backend 403s it.
+// enforces), run the server-side teardown, then sign out. Every account is a
+// workspace member: with others in the workspace only the caller leaves; the
+// sole member takes the workspace with them (`POST /users/me/delete`). A
+// refusal (e.g. the last admin) comes back as a readable 409 detail.
 function DeleteAccountCard() {
   const { user } = useUser();
-  // `isLoaded` is load-bearing (same window FirstRunFunnel documents): Clerk
-  // resolves the org context independently, so `organization` can be unset
-  // while a workspace membership is still loading. Reading that as "personal"
-  // would offer the deletion flow to an org member, whose request the backend
-  // 403s. Until it resolves, render nothing.
-  const { organization, isLoaded: orgLoaded } = useOrganization();
   const { signOut } = useClerk();
   const api = useApi();
 
@@ -110,19 +105,14 @@ function DeleteAccountCard() {
     }
   }, [api, typed, signOut]);
 
-  if (!orgLoaded) return null;
-
   return (
     <div className="settings-card" style={{ borderColor: "color-mix(in srgb, var(--err) 25%, transparent)" }}>
       <div className="settings-card-title" style={{ color: DANGER }}>Delete account</div>
-      {organization ? (
-        <div className="settings-card-desc">
-          Workspace accounts can&apos;t be deleted in-app — contact {SUPPORT_EMAIL}.
-        </div>
-      ) : !open ? (
+      {!open ? (
         <>
           <div className="settings-card-desc">
-            Permanently delete your account, agents, workspace, and data. This cannot be undone.
+            Permanently delete your account. If you&apos;re the only member of this workspace, its agents and data
+            are deleted too; otherwise only you leave and the workspace keeps running. This cannot be undone.
           </div>
           <button
             type="button"
@@ -136,8 +126,8 @@ function DeleteAccountCard() {
       ) : (
         <>
           <div className="settings-card-desc">
-            Type your account email ({email}) to confirm. This permanently deletes your account,
-            agents, workspace, and data — it cannot be undone.
+            Type your account email ({email}) to confirm. This permanently deletes your account — it
+            cannot be undone.
           </div>
           <input
             type="email"

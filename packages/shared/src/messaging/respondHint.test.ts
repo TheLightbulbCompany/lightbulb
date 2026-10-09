@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canChangeListenMode, respondHint, type RespondTarget } from "./respondHint";
+import { canChangeListenMode, respondHint, soleChannelOwner, type RespondTarget } from "./respondHint";
 
 const friday: RespondTarget = { kind: "agent", id: "agent-friday", displayName: "Friday", listenMode: "active" };
 const gauge: RespondTarget = { kind: "agent", id: "agent-gauge", displayName: "Gauge", listenMode: "mentions" };
@@ -57,5 +57,17 @@ describe("canChangeListenMode", () => {
   it("keeps the web's room-less gate: any member, never an unknown viewer", () => {
     expect(canChangeListenMode("member")).toBe(true);
     expect(canChangeListenMode(undefined)).toBe(false);
+  });
+});
+
+describe("soleChannelOwner", () => {
+  const me = { kind: "human", id: "me", role: "owner" };
+  const agent = { kind: "agent", id: "ceo", role: "member" };
+  it("is true only for a channel's owner with no other person in it", () => {
+    expect(soleChannelOwner({ kind: "channel", members: [me, agent] }, "me")).toBe(true);
+    expect(soleChannelOwner({ kind: "channel", members: [me, { kind: "human", id: "you", role: "member" }] }, "me")).toBe(false);
+    expect(soleChannelOwner({ kind: "channel", members: [{ ...me, role: "admin" }] }, "me")).toBe(false);
+    expect(soleChannelOwner({ kind: "group-dm", members: [me] }, "me")).toBe(false);
+    expect(soleChannelOwner(undefined, "me")).toBe(false);
   });
 });

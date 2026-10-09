@@ -78,6 +78,12 @@ describe("shellUrlFromPaperclipPath", () => {
     expect(shellUrlFromPaperclipPath("/projects/growth")).toBeNull();
   });
 
+  it("reads the retired /teams/tasks and /teams/issues links agents still write as issue links", () => {
+    expect(shellUrlFromPaperclipPath("/teams/tasks/ISOA-12")).toBe("/chat?panel=teams-issue-detail&detailId=ISOA-12");
+    expect(shellUrlFromPaperclipPath("/teams/issues/ISOA-12")).toBe("/chat?panel=teams-issue-detail&detailId=ISOA-12");
+    expect(shellUrlFromPaperclipPath("/teams/inbox")).toBeNull();
+  });
+
   it("leaves everything else alone", () => {
     expect(shellUrlFromPaperclipPath(undefined)).toBeNull();
     expect(shellUrlFromPaperclipPath("")).toBeNull();

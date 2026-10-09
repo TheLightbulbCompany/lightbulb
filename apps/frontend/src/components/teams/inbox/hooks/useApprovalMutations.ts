@@ -21,8 +21,11 @@ export function useApprovalMutations() {
     mutate(APPROVALS_KEY);
     mutate(DASHBOARD_KEY);
     // Also refresh any per-issue linked-approvals lists (sub-project D2) so a
-    // reused ApprovalRow on an issue-detail page updates after approve/reject.
-    mutate((key) => typeof key === "string" && /^\/teams\/issues\/.+\/approvals$/.test(key));
+    // reused ApprovalRow on an issue-detail page updates after approve/reject,
+    // and the single-approval reads (`/teams/approvals/<id>`) behind the card in
+    // a chat message and the detail panel, which otherwise kept showing Pending.
+    mutate((key) => typeof key === "string"
+      && (/^\/teams\/issues\/.+\/approvals$/.test(key) || key.startsWith(`${APPROVALS_KEY}/`)));
   }, [mutate]);
 
   const approve = useCallback(

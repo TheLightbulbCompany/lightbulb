@@ -1614,13 +1614,15 @@ async def remove_member(
     member_id: str,
     new_delivery_key: str | None = None,
     live_events: list[dict] | None = None,
+    new_owner_id: str | None = None,
 ) -> dict:
     """Delete one membership; bump revision, conditioned on the ``meta`` the
     caller strongly read (so the notices it built for ``revision + 1`` are the
     ones that land). A HUMAN removal must supply ``new_delivery_key`` (the
     rotation) and the ``LIVE`` rows (``{userId, channelKey, event}`` per
     affected human) to write in the same transaction. An agent removal drops
-    its delivery cursor. Returns the new META."""
+    its delivery cursor. ``new_owner_id`` makes that human member the owner in the
+    same transaction (a channel owner leaving hands the room on). Returns the new META."""
     room_id = meta["roomId"]
     owner_id = meta["ownerId"]
     if kind == "human" and not new_delivery_key:
@@ -1653,6 +1655,19 @@ async def remove_member(
     if kind == "agent":
         items.append(
             {"Delete": {"TableName": table_name, "Key": {"pk": room_pk(room_id), "sk": delivery_sk(member_id)}}}
+        )
+    if new_owner_id:
+        items.append(
+            {
+                "Update": {
+                    "TableName": table_name,
+                    "Key": {"pk": room_pk(room_id), "sk": member_sk("human", new_owner_id)},
+                    "UpdateExpression": "SET #role = :owner",
+                    "ConditionExpression": "attribute_exists(sk)",
+                    "ExpressionAttributeNames": {"#role": "role"},
+                    "ExpressionAttributeValues": {":owner": "owner"},
+                }
+            }
         )
     for live in live_events or []:
         items.append(

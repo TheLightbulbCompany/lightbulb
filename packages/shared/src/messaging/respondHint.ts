@@ -31,6 +31,21 @@ export function canChangeListenMode(
   return admin || (!!viewerRole && !room?.shared);
 }
 
+/**
+ * The viewer owns this channel and is the only person in it. The server refuses
+ * that leave (with nobody to hand the channel to, it must be deleted instead);
+ * every other channel owner leaves and the server hands ownership on.
+ */
+export function soleChannelOwner(
+  room: { kind: RoomKind; members?: readonly { kind: string; id: string; role?: string | null }[] } | null | undefined,
+  userId: string | null | undefined,
+): boolean {
+  if (room?.kind !== "channel" || !userId) return false;
+  const humans = (room.members ?? []).filter((member) => member.kind === "human");
+  return humans.some((member) => member.id === userId && member.role === "owner")
+    && !humans.some((member) => member.id !== userId);
+}
+
 export interface RespondTarget {
   kind: "human" | "agent";
   id: string;

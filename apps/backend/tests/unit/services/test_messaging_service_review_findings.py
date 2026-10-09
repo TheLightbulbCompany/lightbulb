@@ -673,15 +673,23 @@ async def test_leave_room_removes_a_non_owner_human_and_refuses_the_owner(monkey
     await messaging.leave_room(auth, "room-1")
     remove.assert_awaited_once_with(meta, "human", "member")
 
+    # A channel owner alone in the room must delete it instead.
     monkeypatch.setattr(
         messaging,
         "require_room_member",
         AsyncMock(return_value=(meta, {"kind": "human", "id": "member", "role": "owner"})),
     )
+    members = [{"kind": "human", "id": "member", "role": "owner"}, {"kind": "agent", "id": "ceo", "role": "member"}]
+    monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(side_effect=lambda _room: members))
     with pytest.raises(ApiProblem) as exc:
         await messaging.leave_room(auth, "room-1")
     assert exc.value.error.code == "INVALID_REQUEST"
     assert remove.await_count == 1
+
+    # With other people there, the owner leaves through the same rotating removal.
+    members.append({"kind": "human", "id": "late", "role": "member", "joinedAt": "2026-10-02"})
+    await messaging.leave_room(auth, "room-1")
+    remove.assert_awaited_with(meta, "human", "member")
 
     # A group DM's creator holds no powers there, so they may leave it -- through the same
     # rotating removal path as everyone else.
@@ -693,6 +701,42 @@ async def test_leave_room_removes_a_non_owner_human_and_refuses_the_owner(monkey
     )
     await messaging.leave_room(auth, "room-1")
     remove.assert_awaited_with(group, "human", "member")
+
+
+def test_a_channel_owner_hands_the_channel_to_an_admin_then_the_earliest_joiner():
+    channel = {"kind": "channel"}
+    owner = {"kind": "human", "id": "owner", "role": "owner"}
+    late = {"kind": "human", "id": "late", "role": "member", "joinedAt": "2026-10-02"}
+    early = {"kind": "human", "id": "early", "role": "member", "joinedAt": "2026-10-01"}
+    admin = {"kind": "human", "id": "admin", "role": "admin", "joinedAt": "2026-10-03"}
+    agent = {"kind": "agent", "id": "ceo", "role": "member"}
+    assert messaging._channel_heir(channel, [owner, agent], "owner") is None
+    assert messaging._channel_heir(channel, [owner, late, early], "owner") == "early"
+    assert messaging._channel_heir(channel, [owner, late, early, admin], "owner") == "admin"
+    assert messaging._channel_heir(channel, [owner, late], "late") is None  # not the owner
+    assert messaging._channel_heir({"kind": "group-dm"}, [owner, late], "owner") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "others,heir", [([], None), ([{"kind": "human", "id": "bob", "role": "member", "joinedAt": "1"}], "bob")]
+)
+async def test_removing_a_channel_owner_hands_it_on_or_still_removes_them_alone(monkeypatch, others, heir):
+    # A workspace removal reaches this seam without leave_room's refusal: it must still
+    # remove the owner, with the key rotation, whether or not anyone can take the channel.
+    meta = {"roomId": "11111111-1111-4111-8111-111111111111", "ownerId": "org_1", "kind": "channel", "revision": 3}
+    members = [{"kind": "human", "id": "owner", "role": "owner"}, {"kind": "agent", "id": "ceo"}, *others]
+    remove = AsyncMock(return_value=meta)
+    monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(return_value=members))
+    monkeypatch.setattr(messaging.messaging_repo, "ensure_user_stream", AsyncMock(return_value="key"))
+    monkeypatch.setattr(messaging.messaging_repo, "remove_member", remove)
+    monkeypatch.setattr(messaging.livekit_huddles, "remove_participant", AsyncMock())
+
+    await messaging._remove_member_with_notices(meta, "human", "owner")
+
+    kwargs = remove.await_args.kwargs
+    assert kwargs["member_id"] == "owner" and kwargs["new_delivery_key"]
+    assert kwargs["new_owner_id"] == heir
 
 
 @pytest.mark.asyncio

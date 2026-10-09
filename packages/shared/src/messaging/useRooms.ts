@@ -1241,17 +1241,25 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     }
   }, [messaging, mutateRooms]);
 
-  const leaveRoom = useCallback(async (roomId: string) => {
-    await messaging.leaveRoom(roomId);
+  // A room this person left or deleted leaves the list BEFORE the open room clears:
+  // otherwise auto-select reopens it from the not-yet-refetched list, with a live
+  // composer onto a room they no longer belong to.
+  const dropRoom = useCallback(async (roomId: string) => {
+    forget(store, roomId);
+    await mutateRooms((current) => current && { ...current, rooms: current.rooms.filter((room) => room.roomId !== roomId) }, false);
     if (roomId === activeRoomId) setActiveRoomId(null);
     await mutateRooms();
-  }, [activeRoomId, messaging, mutateRooms]);
+  }, [activeRoomId, mutateRooms, store]);
+
+  const leaveRoom = useCallback(async (roomId: string) => {
+    await messaging.leaveRoom(roomId);
+    await dropRoom(roomId);
+  }, [dropRoom, messaging]);
 
   const deleteRoom = useCallback(async (roomId: string) => {
     await messaging.deleteRoom(roomId);
-    if (roomId === activeRoomId) setActiveRoomId(null);
-    await mutateRooms();
-  }, [activeRoomId, messaging, mutateRooms]);
+    await dropRoom(roomId);
+  }, [dropRoom, messaging]);
 
   const setPin = useCallback(async (messageId: string, pinned: boolean) => {
     if (!activeRoomId) throw new Error("No room selected.");

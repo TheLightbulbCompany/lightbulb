@@ -421,6 +421,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     setTyping(new Map());
     setRuns(new Map());
     setSubagents(EMPTY_ROOM_SUBAGENTS);
+    subagentPoll.current.failures = 0;
     setReceipts(NO_RECEIPTS);
     setAccessRemoved(false);
     setDeliveryOverride(null);
@@ -1362,7 +1363,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
       if (!p.visible || p.failures >= 3 || !liveSubagents(subagentsRef.current).length) return;
       void refreshSubagents();
     }, 5_000);
-    const onFocus = () => { subagentPoll.current.failures = 0; void refreshSubagents(); };
+    const onFocus = () => { const p = subagentPoll.current; if (!p.visible) return; p.failures = 0; void refreshSubagents(); };
     globalThis.addEventListener?.("focus", onFocus);
     return () => { clearInterval(id); globalThis.removeEventListener?.("focus", onFocus); };
   }, [refreshSubagents]);

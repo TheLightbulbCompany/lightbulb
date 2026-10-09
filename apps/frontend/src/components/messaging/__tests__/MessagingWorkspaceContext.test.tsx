@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useCallback, useEffect, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, type RoomDetail } from "@lightbulb/shared";
+import { ApiError, EMPTY_ROOM_SUBAGENTS, type RoomDetail } from "@lightbulb/shared";
 import type { RoomDirectoryProps } from "../RoomDirectory";
 import type { RoomPanelProps } from "../RoomPanel";
 import { RoomComposer } from "../RoomComposer";
@@ -78,7 +78,7 @@ const state = {
   directoryRoomDetails: new Map([[room.roomId, room]]),
   refreshRooms: vi.fn(), refreshRoom: vi.fn(), createRoom: vi.fn(), updateRoom: vi.fn(),
   upsertMember: vi.fn(), removeMember: vi.fn(), deleteRoom: vi.fn(), sendMessage: vi.fn(), reconcileSend: vi.fn(),
-  sendState: () => "idle", setTyping: vi.fn(), abortRun: vi.fn(), steerRun: vi.fn(), listSubagents: vi.fn().mockResolvedValue({ subagents: [] }), subagentTail: vi.fn(), steerSubagent: vi.fn(), stopSubagent: vi.fn(),
+  sendState: () => "idle", setTyping: vi.fn(), abortRun: vi.fn(), steerRun: vi.fn(), subagents: EMPTY_ROOM_SUBAGENTS, refreshSubagents: vi.fn(), subagentsPollVisible: vi.fn(), steerSubagent: vi.fn(), stopSubagent: vi.fn(),
 };
 beforeEach(() => {
   vi.clearAllMocks();

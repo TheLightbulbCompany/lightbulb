@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SWRConfig } from "swr";
 import type { ReactNode } from "react";
@@ -1138,5 +1138,21 @@ describe("background subagents", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("window focus refreshes only while the strip is visible", async () => {
+    cleanup(); // earlier hooks in this file are never unmounted and would answer the same focus
+    messaging.listSubagents.mockResolvedValue({ subagents: [] });
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(messaging.listSubagents).toHaveBeenCalled());
+    await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+    const settled = messaging.listSubagents.mock.calls.length;
+    act(() => { globalThis.dispatchEvent(new Event("focus")); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(messaging.listSubagents).toHaveBeenCalledTimes(settled);
+    act(() => result.current.subagentsPollVisible(true));
+    act(() => { globalThis.dispatchEvent(new Event("focus")); });
+    await waitFor(() => expect(messaging.listSubagents).toHaveBeenCalledTimes(settled + 1));
   });
 });

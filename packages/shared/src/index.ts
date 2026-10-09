@@ -60,7 +60,7 @@ export { createMessagingClient } from "./messaging/client";
 export { useSubagentTail } from "./messaging/useSubagentTail";
 export { PERSON_COLORS, personColor } from "./messaging/personColor";
 export type { PersonColor } from "./messaging/personColor";
-export type { RoomAttachmentInput, SubagentTail } from "./messaging/client";
+export type { MessagingClient, RoomAttachmentInput, SubagentTail } from "./messaging/client";
 export { wrapSelection } from "./messaging/composerText";
 export type { MarkdownStyle } from "./messaging/composerText";
 export { canChangeListenMode, LISTEN_MODE_LABELS, listenModeOptions, respondHint, soleChannelOwner } from "./messaging/respondHint";

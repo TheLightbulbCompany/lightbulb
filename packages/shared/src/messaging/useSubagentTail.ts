@@ -6,7 +6,8 @@ export function useSubagentTail(client: MessagingClient, target: { roomId: strin
   const [tail, setTail] = useState<SubagentTail | null>(null);
   const key = target ? `${target.roomId}/${target.agentId}/${target.subagentId}` : "";
   useEffect(() => {
-    if (!target) { setTail(null); return; }
+    setTail(null);
+    if (!target) return;
     let live = true;
     const read = () => client.subagentTail(target.roomId, target.agentId, target.subagentId)
       .then((t) => { if (live) setTail(t); }).catch(() => {});

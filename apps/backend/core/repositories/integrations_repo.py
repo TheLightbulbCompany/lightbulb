@@ -64,20 +64,24 @@ async def add_connected_team(owner_id: str, provider: str, team_id: str) -> None
     )
 
 
-async def remove_connected_team(owner_id: str, provider: str, team_id: str) -> None:
-    """Drop ``team_id`` from the row's ``team_ids`` (its install was revoked). A row that is
-    already gone stays gone: the condition stops the update from creating one."""
+async def remove_connected_team(owner_id: str, provider: str, team_id: str) -> set[str]:
+    """Drop ``team_id`` from the row's ``team_ids`` (its install was revoked) and return the team
+    ids still on it. A row that is already gone stays gone: the condition stops the update from
+    creating one."""
     try:
-        await run_in_thread(
+        response = await run_in_thread(
             _table().update_item,
             Key={"owner_id": owner_id, "provider": provider},
             UpdateExpression="DELETE team_ids :t",
             ConditionExpression="attribute_exists(owner_id)",
             ExpressionAttributeValues={":t": {team_id}},
+            ReturnValues="UPDATED_NEW",
         )
     except ClientError as e:
         if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
+        return set()
+    return set((response.get("Attributes") or {}).get("team_ids") or ())
 
 
 async def set_status(owner_id: str, provider: str, status: str) -> None:

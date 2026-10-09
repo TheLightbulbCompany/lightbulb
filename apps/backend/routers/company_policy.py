@@ -139,7 +139,8 @@ async def revoke_all(body: RevokeAllBody, auth: Annotated[AuthContext, Depends(g
             row = await slack_installs_repo.get(team_id)
             if not row or row.get("owner_id") != owner_id or row.get("status") != slack_installs_repo.STATUS_ACTIVE:
                 continue
-            await slack_install_service.revoke_install(team_id)
+            if not await slack_install_service.revoke_install(team_id, expected_owner_id=owner_id):
+                continue  # it changed hands after the check above: not ours to touch
             revoked.append(f"slack:{team_id}")
         except Exception:  # noqa: BLE001 — same as above: report it, keep going
             logger.exception(

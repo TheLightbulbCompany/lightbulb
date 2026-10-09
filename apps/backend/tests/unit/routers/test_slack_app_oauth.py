@@ -231,7 +231,7 @@ def test_delete_install_revokes_only_own_team(client):
     ):
         r = client.delete("/api/v1/slack/install/T1")
     assert r.status_code == 200 and r.json() == {"status": "revoked"}
-    rev.assert_awaited_once_with("T1")
+    rev.assert_awaited_once_with("T1", expected_owner_id="org_1")
     with patch(
         "routers.slack_app.slack_installs_repo.get", AsyncMock(return_value={"team_id": "T1", "owner_id": "org_other"})
     ):

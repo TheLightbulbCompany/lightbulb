@@ -370,5 +370,5 @@ async def delete_slack_install(team_id: str, auth: AuthContext = Depends(get_cur
     row = await slack_installs_repo.get(team_id)
     if not row or row.get("owner_id") != resolve_owner_id(auth):
         raise HTTPException(status_code=404, detail="install_not_found")
-    await slack_install_service.revoke_install(team_id)
+    await slack_install_service.revoke_install(team_id, expected_owner_id=row["owner_id"])
     return {"status": "revoked"}

@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 import secrets
 import time
-from contextlib import asynccontextmanager
 from typing import Annotated
 
 import stripe
@@ -126,25 +125,6 @@ async def _refresh_api_key_status(row: dict) -> dict | None:
     return await billing_repo.set_company_stripe_status(owner_id, account_id=account_id, **status)
 
 
-@asynccontextmanager
-async def _bind_lease(owner_id: str, started_ms: int):
-    """A bind's final write, under the lease revoke-all reads the binding under: refused when
-    revoke everything ran after this request began."""
-    try:
-        async with owner_lifecycle.owner_lifecycle_guard(owner_id):
-            if await owner_lifecycle.revoked_after(owner_id, started_ms):
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "code": "revoked",
-                        "message": "Revoke everything ran while this was connecting. Try again.",
-                    },
-                )
-            yield
-    except owner_lifecycle.OwnerLifecycleBusyError:
-        raise HTTPException(status_code=409, detail="busy") from None
-
-
 @router.post("/create")
 async def create(auth: Annotated[AuthContext, Depends(get_current_user)]):
     """Create the company account if absent and return a fresh onboarding link."""
@@ -164,7 +144,7 @@ async def create(auth: Annotated[AuthContext, Depends(get_current_user)]):
             )
         except stripe.error.StripeError as e:
             raise _stripe_failure(e) from e
-        async with _bind_lease(owner_id, started_ms):
+        async with owner_lifecycle.revoke_fence(owner_id, started_ms):
             bound = await billing_repo.set_company_stripe_account(owner_id, account_id=account_id, source="created")
         if bound is None:
             # None means EITHER a concurrent create bound first OR there is no
@@ -253,7 +233,7 @@ async def bind_api_key(body: ApiKeyBody, auth: Annotated[AuthContext, Depends(ge
     # "connected but every read 401s".
     # The key is stored under the same lease, so revoke-all's unbind can never run between the
     # two writes and leave a key in the vault with no binding.
-    async with _bind_lease(owner_id, started_ms):
+    async with owner_lifecycle.revoke_fence(owner_id, started_ms):
         bound = await billing_repo.set_company_stripe_account(owner_id, account_id=account_id, source="api_key")
         if bound is None:
             raise HTTPException(status_code=409, detail="A Stripe account is already bound")

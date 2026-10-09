@@ -792,6 +792,32 @@ class TestConnectPaste:
     @patch("routers.connections.integration_secret_store")
     @patch("routers.connections.integrations_repo")
     @patch("routers.connections._validate_token", new_callable=AsyncMock)
+    async def test_connect_paste_that_began_before_revoke_all_stores_nothing(
+        self, mock_validate, mock_repo, mock_store, mock_apply, async_client, monkeypatch
+    ):
+        import time as _time
+
+        from core.repositories import container_repo
+
+        monkeypatch.setattr(
+            container_repo, "get_oauth_revoked_at", AsyncMock(return_value=int(_time.time() * 1000) + 60_000)
+        )
+        mock_validate.return_value = True
+        mock_store.put = AsyncMock()
+        mock_repo.put_status = AsyncMock()
+        mock_apply.apply_connection = AsyncMock()
+
+        response = await async_client.post("/api/v1/connections/vercel_cli", json={"token": "vc_test_abc123"})
+        assert response.status_code == 409 and response.json()["detail"]["code"] == "revoked"
+        mock_store.put.assert_not_called()
+        mock_apply.apply_connection.assert_not_called()
+        mock_repo.put_status.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections._validate_token", new_callable=AsyncMock)
     async def test_connect_paste_happy_path(self, mock_validate, mock_repo, mock_store, mock_apply, async_client):
         mock_validate.return_value = True
         # Record relative call order — the rework's whole point is that the
@@ -2339,6 +2365,35 @@ class TestAwsComplete:
             json={"role_arn": self._GOOD_ARN},
         )
         assert resp.status_code == 409
+        mock_apply.apply_connection.assert_not_called()
+        mock_repo.put_status.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.bedrock_aip")
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    async def test_aws_complete_that_began_before_revoke_all_stores_nothing(
+        self, mock_repo, mock_store, mock_apply, mock_aip, async_client, monkeypatch
+    ):
+        import time as _time
+
+        from core.repositories import container_repo
+
+        monkeypatch.setattr(
+            container_repo, "get_oauth_revoked_at", AsyncMock(return_value=int(_time.time() * 1000) + 60_000)
+        )
+        mock_aip.OUR_ACCOUNT_ID = "877352799272"
+        mock_store.get = AsyncMock(return_value={"external_id": "ext_abc"})
+        mock_store.put = AsyncMock()
+        mock_apply.apply_connection = AsyncMock()
+        mock_repo.put_status = AsyncMock()
+
+        resp = await async_client.post(
+            "/api/v1/connections/aws/aws-complete", json={"role_arn": self._GOOD_ARN, "region": "us-west-2"}
+        )
+        assert resp.status_code == 409 and resp.json()["detail"]["code"] == "revoked"
+        mock_store.put.assert_not_called()
         mock_apply.apply_connection.assert_not_called()
         mock_repo.put_status.assert_not_called()
 

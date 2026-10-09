@@ -287,7 +287,7 @@ def test_revoke_all_uninstalls_every_slack_workspace(client, fails):
         {"team_id": "T0", "status": "revoked"},
     ]
 
-    async def revoke(team_id):
+    async def revoke(team_id, expected_owner_id=None):
         if fails and team_id == "T1":
             raise RuntimeError("ddb down")
         return True
@@ -315,6 +315,7 @@ def test_revoke_all_uninstalls_every_slack_workspace(client, fails):
     assert resp.status_code == 200
     # T8 is not ours any more: never revoked. T9 is on the owner's slack row (read strongly) but not yet on the by-owner GSI: still revoked.
     assert [c.args for c in revoke_install.await_args_list] == [("T1",), ("T2",), ("T9",)]
+    assert {c.kwargs["expected_owner_id"] for c in revoke_install.await_args_list} == {"org_a"}
     listing.assert_awaited_once_with("org_a", consistent=True)
     body = resp.json()
     if fails:

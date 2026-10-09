@@ -67,6 +67,27 @@ async def revoked_after(owner_id: str, started_ms: int) -> bool:
     return mark is not None and started_ms <= mark
 
 
+@asynccontextmanager
+async def revoke_fence(owner_id: str, started_ms: int) -> AsyncIterator[None]:
+    """A connect's final writes, under the lease revoke-all reads under: refused (409
+    ``revoked``) when revoke everything ran at or after ``started_ms``, the request's entry."""
+    from fastapi import HTTPException
+
+    try:
+        async with owner_lifecycle_guard(owner_id):
+            if await revoked_after(owner_id, started_ms):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "revoked",
+                        "message": "Revoke everything ran while this was connecting. Try again.",
+                    },
+                )
+            yield
+    except OwnerLifecycleBusyError:
+        raise HTTPException(status_code=409, detail="busy") from None
+
+
 async def revoked_since(owner_id: str, state: dict) -> bool:
     """Revoke everything ran after this OAuth attempt's stored state was minted. Every OAuth
     callback asks this under ``owner_lifecycle_guard`` and lands nothing when it is True."""

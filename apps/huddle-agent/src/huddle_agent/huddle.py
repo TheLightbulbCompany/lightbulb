@@ -4934,19 +4934,25 @@ class Huddle:
         ids = {r.id for r in mine}
         reqs = list(ops.get("requests") or [])
         cancel = list(ops.get("cancel") or [])
-        # One row per agent it still asks is amended, a row it steers stays; every other row of the turn is called
-        # off, also when the whole turn now asks nothing (it was talk to a person, or taken back).
-        asked, steered = {x.get("agentId") for x in reqs}, {x.get("requestId") for x in ops.get("steer") or []}
-        # A `ready` row's run is over: words cannot reach it, so it is called off (its answer struck) and asked again.
-        live = [r for r in mine if r.status in ("queued", "working")]
-        keep: dict = {}
-        for r in live:
-            if r.agent in asked:
-                keep.setdefault(r.agent, r)
-        cancel += [r.id for r in mine if r not in keep.values() and not (r in live and r.id in steered) and r.id not in cancel]
+        # Each request it makes now amends one live row of the same agent, if one is left; a row the router steers
+        # stays; every other row of the turn is called off, also when the whole turn now asks nothing (it was talk to
+        # a person, or taken back). A `ready` row's run is over, so words cannot reach it: it is called off (its
+        # answer struck) and asked again. A row the turn withdraws (`ops.cancel`) is not amended: its replacement is
+        # a request of its own.
+        steered = {x.get("requestId") for x in ops.get("steer") or []}
+        live = [r for r in mine if r.status in ("queued", "working") and r.id not in cancel]
+        free, kept, amends, fresh = list(live), [], [], []
+        for x in reqs:
+            if r := next((r for r in free if r.agent == x.get("agentId")), None):
+                free.remove(r)
+                kept.append(r)
+                amends.append({"requestId": r.id, "text": x.get("task") or "", "quiet": True})
+            else:
+                fresh.append(x)
+        cancel += [r.id for r in mine if r not in kept and not (r in live and r.id in steered) and r.id not in cancel]
         steer = [{**x, "quiet": True} if x.get("requestId") in ids else x for x in ops.get("steer") or [] if x.get("requestId") not in cancel]
-        steer += [{"requestId": keep[x["agentId"]].id, "text": x.get("task") or "", "quiet": True} for x in reqs if x.get("agentId") in keep]
-        reqs = [x for x in reqs if x.get("agentId") not in keep]
+        steer += amends
+        reqs = fresh
         emit_metric("live.turn.amended", 1, "Count", {"how": "replaced" if len(cancel) > len(ops.get("cancel") or []) else "steered"})
         return {**ops, "requests": reqs, "steer": steer, "cancel": cancel, "social": None, "say": None, "called": None}
 

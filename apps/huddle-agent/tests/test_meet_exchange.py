@@ -706,3 +706,41 @@ async def test_a_grown_turn_whose_first_answer_is_ready_asks_again_and_drops_tha
     await says(h, P1, "and the numbers.")
     assert row.status not in h_mod.OPEN, "the answer for half the turn is struck"
     assert [r.task for r in h._requests.items if r.status in h_mod.OPEN] == ["check the deploy and the numbers"]
+
+
+async def test_a_grown_turn_that_withdraws_its_ask_and_asks_the_same_agent_again_keeps_the_new_ask():
+    """#3961 review (P1): "Forge, check the deploy. Never mind that; check the pipeline instead." The first row is
+    withdrawn and the replacement is a request, not a steer of the withdrawn row."""
+    h, room, backend, lives, clock, log = await per_person()
+    h.on_speech(P1, True)
+    clock.t += 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "check the deploy", "name")])
+    await says(h, P1, "Forge, check the deploy.")
+    (row,) = h._requests.items
+    h.on_speech(P1, True)
+    clock.t += 0.5 + 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "check the pipeline", "name")], cancel=[row.id])
+    await says(h, P1, "Never mind that; check the pipeline instead.")
+    assert row.status not in h_mod.OPEN
+    assert [r.task for r in h._requests.items if r.status in h_mod.OPEN] == ["check the pipeline"]
+
+
+async def test_a_grown_turn_that_asks_one_agent_two_things_keeps_both_asks():
+    """The first piece asked Forge one thing; the whole turn asks Forge two. One amends its row, one is new."""
+    h, room, backend, lives, clock, log = await per_person()
+    backend.steer = True
+    h.on_speech(P1, True)
+    clock.t += 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "check the deploy", "name")])
+    await says(h, P1, "Forge, check the deploy")
+    (row,) = h._requests.items
+    h.on_speech(P1, True)
+    clock.t += 0.5 + 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "check the deploy", "name"), ("forge", "draft the release notes", "name")])
+    await says(h, P1, "and draft the release notes.")
+    assert row.status in h_mod.OPEN
+    assert sorted(r.task for r in h._requests.items if r.status in h_mod.OPEN) == ["check the deploy", "draft the release notes"]

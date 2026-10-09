@@ -145,7 +145,7 @@ export function ImportBackupDialog({ open, onOpenChange, onImported }: {
           <DialogDescription>
             Bring your CLAUDE.md, project memories and skills over to one of your agents.
             {tauriInvoke ? " Use the button below — or, from a terminal:" : " From a terminal, run"}{" "}
-            <code className="font-mono text-xs">cd ~ && tar czf claude-code.tar.gz .claude/CLAUDE.md .claude/projects/*/memory .claude/skills</code>{" "}
+            <code className="font-mono text-xs">{"cd ~ && find .claude -maxdepth 3 \\( -path .claude/CLAUDE.md -o -path '.claude/projects/*/memory' -o -path .claude/skills \\) -prune -print | tar czf claude-code.tar.gz -T -"}</code>{" "}
             (include whichever exist) and upload it. Pick what comes along; nothing is applied until you confirm.
           </DialogDescription>
         </DialogHeader>

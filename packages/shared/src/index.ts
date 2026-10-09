@@ -323,5 +323,6 @@ export {
   reconcileSubagentSnapshot,
   subagentActivity,
   isSubagentGone,
+  delegationIdOf,
 } from "./messaging/subagents";
 export type { RoomSubagents, SubagentProgress, SubagentStatus } from "./messaging/subagents";

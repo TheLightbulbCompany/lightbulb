@@ -6,7 +6,7 @@ import { ArrowLeft, Check, Circle, CircleAlert, Link, ListChecks, MessagesSquare
 import type { Components } from "react-markdown";
 import { LISTEN_MODE_LABELS, listenModeOptions, soleChannelOwner, type CreateMessageRequest, type ListenMode, type MemberPrefsRequest, type MemberRef, type UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
-import { DelegateCard, delegationIdOf } from "./DelegateCard";
+import { DelegateCard } from "./DelegateCard";
 import { RoomSubagentStrip } from "./RoomSubagentStrip";
 import { QuietDisclosure } from "@/components/chat/QuietDisclosure";
 import { Button } from "@/components/ui/button";
@@ -42,7 +42,7 @@ import { RoomMessageSearch } from "./RoomMessageSearch";
 import { RoomTasks } from "./RoomTasks";
 import { taskIdentifiers, useReferencedTasks } from "./MessageTaskCard";
 import { RoomTimeline, StickToBottom } from "./RoomTimeline";
-import { buildTimeline, collapseRuns, linkifyMentions, linkifySessionMentions, placeRuns, parseMentionHref, roomDisplayName, type LocalSession, type MessagingClient, type RoomRunView, type RoomSubagents, type RoomSummary } from "@lightbulb/shared";
+import { buildTimeline, collapseRuns, delegationIdOf, linkifyMentions, linkifySessionMentions, placeRuns, parseMentionHref, roomDisplayName, type LocalSession, type MessagingClient, type RoomRunView, type RoomSubagents, type RoomSummary } from "@lightbulb/shared";
 import { TypingReveal } from "./TypingReveal";
 import { useAsyncAction } from "./useAsyncAction";
 import type {

@@ -150,3 +150,10 @@ export function subagentActivity(item: SubagentProgress): string {
 export function isSubagentGone(e: unknown): boolean {
   return (e as { body?: { code?: unknown } } | null)?.body?.code === "SUBAGENT_NOT_FOUND";
 }
+
+/** The `delegation_id` a `delegate_task` tool result carries (object or JSON string), else null. */
+export function delegationIdOf(result: unknown): string | null {
+  const parse = (v: unknown): unknown => { if (typeof v !== "string") return v; try { return JSON.parse(v); } catch { return null; } };
+  const r = parse(result) as { delegation_id?: unknown } | null;
+  return r && typeof r.delegation_id === "string" ? r.delegation_id : null;
+}

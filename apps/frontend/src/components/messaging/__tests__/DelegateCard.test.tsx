@@ -1,7 +1,8 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { applySubagentEvent, EMPTY_ROOM_SUBAGENTS } from "@lightbulb/shared";
-import { DelegateCard, delegationIdOf } from "../DelegateCard";
+import { delegationIdOf } from "@lightbulb/shared";
+import { DelegateCard } from "../DelegateCard";
 
 describe("DelegateCard", () => {
   const s = [0, 1].reduce((acc, i) => applySubagentEvent(acc, "a1", i ? "subagent.complete" : "subagent.start",

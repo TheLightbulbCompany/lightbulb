@@ -11,12 +11,6 @@ const ICON: Record<SubagentStatus | "dispatched", { glyph: string; label: string
   dispatched: { glyph: "•", label: "Dispatched", cls: "is-muted" },
 };
 
-export function delegationIdOf(result: unknown): string | null {
-  const parse = (v: unknown): unknown => { if (typeof v !== "string") return v; try { return JSON.parse(v); } catch { return null; } };
-  const r = parse(result) as { delegation_id?: unknown } | null;
-  return r && typeof r.delegation_id === "string" ? r.delegation_id : null;
-}
-
 /** Upstream delegate.tsx: one row per child of this fan-out. A child nothing is watching shows a
  *  static dot and never spins. */
 export function DelegateCard({ state, agentId, delegationId, agentLive }: {

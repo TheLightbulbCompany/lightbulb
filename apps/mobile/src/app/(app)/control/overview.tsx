@@ -1,4 +1,4 @@
-import { useAuth } from "@clerk/clerk-expo";
+import { useAuth } from "@clerk/expo";
 import { useFocusEffect } from "expo-router";
 import {
   useCallback,

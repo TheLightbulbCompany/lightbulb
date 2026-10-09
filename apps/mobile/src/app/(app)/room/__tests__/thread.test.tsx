@@ -41,7 +41,7 @@ jest.mock("expo-router", () => {
     useLocalSearchParams: () => ({ roomId: mockRoomId, messageId: mockMessageId }),
   };
 });
-jest.mock("@clerk/clerk-expo", () => ({
+jest.mock("@clerk/expo", () => ({
   useAuth: () => ({ userId: "user-a", getToken: jest.fn(async () => "token") }),
   useOrganization: () => ({ organization: null }),
 }));

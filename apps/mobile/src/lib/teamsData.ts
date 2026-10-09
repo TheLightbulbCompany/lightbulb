@@ -25,7 +25,7 @@
  * load → setState → new getToken → reload forever. Do NOT put `[getToken]` in
  * any dependency array.
  */
-import { useAuth } from "@clerk/clerk-expo";
+import { useAuth } from "@clerk/expo";
 import { useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { Alert } from "react-native";

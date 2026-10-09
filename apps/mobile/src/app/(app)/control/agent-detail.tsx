@@ -1,4 +1,4 @@
-import { useAuth } from "@clerk/clerk-expo";
+import { useAuth } from "@clerk/expo";
 import { SymbolView } from "expo-symbols";
 import { router, Stack, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";

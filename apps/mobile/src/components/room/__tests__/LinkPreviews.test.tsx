@@ -3,7 +3,7 @@ import { Linking } from "react-native";
 
 import { LinkPreviews } from "../LinkPreviews";
 
-jest.mock("@clerk/clerk-expo", () => ({ useAuth: () => ({ getToken: async () => "t" }) }));
+jest.mock("@clerk/expo", () => ({ useAuth: () => ({ getToken: async () => "t" }) }));
 // SWR never fetches under jest-expo (no `window`, so it thinks it is a server render);
 // the hook's fetch is covered in packages/shared. Here: which URLs reach it, and the card.
 const mockGet = jest.fn();

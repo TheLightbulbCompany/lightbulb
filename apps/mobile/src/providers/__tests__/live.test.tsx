@@ -7,7 +7,7 @@ const mockGet = jest.fn();
 const mockRooms: { handlers: Record<string, (...a: unknown[]) => void>; rpc: jest.Mock; disconnect: jest.Mock }[] = [];
 let mockEmit: (e: LiveEvent) => void = () => {};
 
-jest.mock("@clerk/clerk-expo", () => ({ useAuth: () => ({ getToken: async () => "t" }) }));
+jest.mock("@clerk/expo", () => ({ useAuth: () => ({ getToken: async () => "t" }) }));
 jest.mock("../live-events", () => ({
   useLiveEvents: () => ({ onEvent: (h: (e: LiveEvent) => void) => { mockEmit = h; return () => {}; }, connectionRevision: 0 }),
 }));

@@ -14,7 +14,7 @@ const mockLive = {
   httpReady: true,
 };
 
-jest.mock("@clerk/clerk-expo", () => ({
+jest.mock("@clerk/expo", () => ({
   useAuth: () => ({ userId: "user-a" }),
   useOrganization: () => ({ organization: { id: "org-a" } }),
 }));

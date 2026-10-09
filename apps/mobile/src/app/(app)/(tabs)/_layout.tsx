@@ -1,4 +1,4 @@
-import { useAuth } from "@clerk/clerk-expo";
+import { useAuth } from "@clerk/expo";
 import * as Notifications from "expo-notifications";
 import { NativeTabs } from "expo-router/unstable-native-tabs";
 import { useEffect, useState } from "react";

@@ -25,7 +25,7 @@ jest.mock("expo-router", () => {
 let mockScope = 0;
 let mockSessionId = "sess-1";
 const mockEventHandlers = new Set<(event: LiveEvent) => void>();
-jest.mock("@clerk/clerk-expo", () => ({
+jest.mock("@clerk/expo", () => ({
   useAuth: () => ({ userId: "user-a", getToken: jest.fn(async () => "token") }),
   useOrganization: () => ({ organization: { id: `org-${mockScope}` } }),
 }));

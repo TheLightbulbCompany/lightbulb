@@ -9,7 +9,7 @@
  * (lib/appleIap) and skipped here, so one purchase is never linked twice.
  * Non-admins skip everything: the link route is admin-only and would 403.
  */
-import { useAuth, useOrganization } from "@clerk/clerk-expo";
+import { useAuth, useOrganization } from "@clerk/expo";
 import { createApiClient } from "@lightbulb/shared";
 import { useMemo, useRef } from "react";
 

@@ -10,7 +10,7 @@ const mockPush = jest.fn();
 // Per-test Clerk org context (null = no workspace).
 let mockOrg: { organization: unknown; membership: unknown } = { organization: null, membership: null };
 
-jest.mock("@clerk/clerk-expo", () => ({
+jest.mock("@clerk/expo", () => ({
   useAuth: () => ({ getToken: jest.fn(async () => "tok"), signOut: jest.fn() }),
   useUser: () => ({
     user: {

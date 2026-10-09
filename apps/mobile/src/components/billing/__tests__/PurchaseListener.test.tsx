@@ -19,7 +19,7 @@ jest.mock("@lightbulb/shared", () => ({
 }));
 
 let mockRole: string | undefined = "org:admin";
-jest.mock("@clerk/clerk-expo", () => ({
+jest.mock("@clerk/expo", () => ({
   useAuth: () => ({ getToken: jest.fn(async () => "tok") }),
   useOrganization: () => ({ membership: mockRole ? { role: mockRole } : null }),
 }));

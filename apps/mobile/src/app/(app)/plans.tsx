@@ -1,4 +1,4 @@
-import { useAuth } from "@clerk/clerk-expo";
+import { useAuth } from "@clerk/expo";
 import { router, Stack } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createApiClient } from "@lightbulb/shared";
@@ -25,7 +25,7 @@ const PLAN_PRODUCTS: Record<string, string> = {
 
 export default function PlansScreen() {
   const { getToken } = useAuth();
-  // Stable client despite clerk-expo's per-render getToken (see settings.tsx).
+  // Stable client despite Clerk's per-render getToken (see settings.tsx).
   const getTokenRef = useRef(getToken);
   getTokenRef.current = getToken;
   const api = useMemo(() => createApiClient(makeAdapter(() => getTokenRef.current())), []);

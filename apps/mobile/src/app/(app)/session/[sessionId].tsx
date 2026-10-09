@@ -1,4 +1,4 @@
-import { useAuth } from "@clerk/clerk-expo";
+import { useAuth } from "@clerk/expo";
 import { SymbolView } from "expo-symbols";
 import {
   ApiError, buildRows, canControlSession, groupRows, mainEvents, pendingApproval, receiptChip, sessionLabel, sessionRingState, sessionStatus, sessionTitle, sessionViewKey, sessionScreenNotice, unavailableReason, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionOutbox, useSessionResume, useWorkspaceSessions,

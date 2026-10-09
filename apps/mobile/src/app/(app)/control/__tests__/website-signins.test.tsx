@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react-native";
 import { ActionSheetIOS, Alert } from "react-native";
 
 let mockRole = "org:admin";
-jest.mock("@clerk/clerk-expo", () => ({
+jest.mock("@clerk/expo", () => ({
   useAuth: () => ({ getToken: async () => "test-token" }),
   useOrganization: () => ({ organization: { id: "org_1" }, membership: { role: mockRole } }),
 }));

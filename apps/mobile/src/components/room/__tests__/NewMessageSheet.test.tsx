@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { CreateRoomRequest, MemberRef } from "@lightbulb/shared";
 
-jest.mock("@clerk/clerk-expo", () => ({
+jest.mock("@clerk/expo", () => ({
   useAuth: () => ({ userId: "user-a", getToken: jest.fn(async () => "token") }),
   useOrganization: () => ({ organization: null }),
 }));

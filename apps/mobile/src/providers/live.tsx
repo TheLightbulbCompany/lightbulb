@@ -1,4 +1,4 @@
-import { useAuth } from "@clerk/clerk-expo";
+import { useAuth } from "@clerk/expo";
 import {
   createApiClient, createMessagingClient, LIVE_AGENT_IDENTITY, LIVE_NOTICE_TOPIC, liveJoinErrorCode, parseLiveNotice, SPEAKING_AGENT,
   type LiveNotice, type RoomMember,

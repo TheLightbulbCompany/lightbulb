@@ -1,4 +1,4 @@
-import { useAuth, useOrganization } from "@clerk/clerk-expo";
+import { useAuth, useOrganization } from "@clerk/expo";
 import { useFocusEffect } from "expo-router";
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import {

@@ -6,7 +6,7 @@
  * above WorkspaceGate in (app)/_layout.tsx, so the name exists before a workspace
  * is joined or opened.
  */
-import { useAuth, useUser } from "@clerk/clerk-expo";
+import { useAuth, useUser } from "@clerk/expo";
 import { useState, type ReactNode } from "react";
 import {
   ActivityIndicator,

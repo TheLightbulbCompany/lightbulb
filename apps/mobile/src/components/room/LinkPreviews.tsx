@@ -1,4 +1,4 @@
-import { useAuth } from "@clerk/clerk-expo";
+import { useAuth } from "@clerk/expo";
 import { createApiClient, extractPreviewUrls, linkDomain, useLinkPreview, type ApiMethods, type LinkPreview } from "@lightbulb/shared";
 import { Image } from "expo-image";
 import { useMemo, useRef, useState } from "react";

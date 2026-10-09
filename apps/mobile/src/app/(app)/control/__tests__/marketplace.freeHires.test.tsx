@@ -13,7 +13,7 @@ jest.mock("expo-router", () => ({
 }));
 
 let mockUserId: string | null = "user_me";
-jest.mock("@clerk/clerk-expo", () => ({
+jest.mock("@clerk/expo", () => ({
   useAuth: () => ({ userId: mockUserId, getToken: jest.fn(async () => "t") }),
 }));
 

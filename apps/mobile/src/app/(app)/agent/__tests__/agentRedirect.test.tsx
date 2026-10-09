@@ -7,7 +7,7 @@ jest.mock("expo-router", () => ({
   router: { replace: (...args: unknown[]) => mockReplace(...args) },
   useLocalSearchParams: () => ({ agentId: "agent-1" }),
 }));
-jest.mock("@clerk/clerk-expo", () => ({
+jest.mock("@clerk/expo", () => ({
   useAuth: () => ({ userId: "user-a" }),
   useOrganization: () => ({ organization: null }),
 }));

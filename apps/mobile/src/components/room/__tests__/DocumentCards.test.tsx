@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react-native";
 
 import { DocumentCards } from "../DocumentCards";
 
-jest.mock("@clerk/clerk-expo", () => ({ useAuth: () => ({ getToken: async () => "t" }) }));
+jest.mock("@clerk/expo", () => ({ useAuth: () => ({ getToken: async () => "t" }) }));
 // SWR never fetches under jest-expo; the hook's reads are covered in packages/shared.
 const mockPreview = jest.fn();
 jest.mock("@lightbulb/shared", () => ({

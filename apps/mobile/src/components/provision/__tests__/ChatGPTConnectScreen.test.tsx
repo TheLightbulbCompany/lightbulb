@@ -4,7 +4,7 @@ import * as WebBrowser from "expo-web-browser";
 const mockGet = jest.fn();
 const mockPost = jest.fn();
 
-jest.mock("@clerk/clerk-expo", () => ({
+jest.mock("@clerk/expo", () => ({
   useAuth: () => ({ getToken: jest.fn(async () => "tok"), signOut: jest.fn() }),
 }));
 

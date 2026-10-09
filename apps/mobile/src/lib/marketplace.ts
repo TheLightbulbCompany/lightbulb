@@ -8,7 +8,7 @@
  * built exactly once and the fetch callbacks stay stable (a `[getToken]` dep
  * is an infinite-loop trap — avoided across the codebase, kept that way here).
  */
-import { useAuth } from "@clerk/clerk-expo";
+import { useAuth } from "@clerk/expo";
 import { useCallback, useMemo, useRef, useState } from "react";
 import {
   ApiError,

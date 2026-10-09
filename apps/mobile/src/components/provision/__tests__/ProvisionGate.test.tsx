@@ -9,7 +9,7 @@ const mockUseContainerStatus = jest.fn();
 let mockOrganization: { id: string } | null = null;
 let mockOrgLoaded = true;
 
-jest.mock("@clerk/clerk-expo", () => ({
+jest.mock("@clerk/expo", () => ({
   useAuth: () => ({ signOut: jest.fn() }),
   useOrganization: () => ({ organization: mockOrganization, isLoaded: mockOrgLoaded }),
 }));
@@ -91,7 +91,7 @@ import { useContainerStatusContext } from "../../../lib/containerStatusContext";
 
 // NOTE (mobile onboarding-parity Slice 4): written against the same
 // mocking conventions proven in FirstRunGate.test.tsx and
-// ChatGPTConnectScreen.test.tsx (jest.mock @clerk/clerk-expo +
+// ChatGPTConnectScreen.test.tsx (jest.mock @clerk/expo +
 // react-native-safe-area-context; `await render(...)`). The routing cases
 // below cover all four blocking kinds this gate serves — blocked (generic,
 // oauth_required, byo_provider_required, and the adminOnly/ownerRole

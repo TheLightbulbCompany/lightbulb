@@ -34,7 +34,7 @@ jobs:
     # Linux, like every other CI workflow: the one self-hosted Mac is kept for
     # the native lanes (desktop-build, mobile-release), which queued behind this.
     # It once HUNG on ubuntu at `Mobile tests` (2026-07-29): importing
-    # @clerk/clerk-expo leaves MessagePort handles open, so jest never exits.
+    # @clerk/expo leaves MessagePort handles open, so jest never exits.
     # `--forceExit` on that step is the fix; the cap stays so a stall fails fast.
     runs-on: ${{ vars.CI_RUNNER }}
     timeout-minutes: 30
@@ -82,7 +82,7 @@ jobs:
         run: pnpm --filter @lightbulb/mobile run lint
 
       - name: Mobile tests
-        # ponytail: --forceExit papers over @clerk/clerk-expo's MessagePort
+        # ponytail: --forceExit papers over @clerk/expo's MessagePort
         # handles (seen with --detectOpenHandles); mock Clerk in jest-setup to drop it.
         run: pnpm --filter @lightbulb/mobile run test --forceExit
 

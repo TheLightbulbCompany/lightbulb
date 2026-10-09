@@ -13,7 +13,7 @@
  * The gateway provider uses AppState transitions directly to park/unpark; the
  * status read no longer takes a wake hint (it has no side effects).
  */
-import { useAuth } from "@clerk/clerk-expo";
+import { useAuth } from "@clerk/expo";
 import { createApiClient } from "@lightbulb/shared";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AppState } from "react-native";

@@ -1,4 +1,6 @@
-import { useSignIn, useSignInWithApple, useSSO } from "@clerk/clerk-expo";
+import { useSSO } from "@clerk/expo";
+import { useSignInWithApple } from "@clerk/expo/apple";
+import { useSignIn } from "@clerk/expo/legacy";
 import * as AppleAuthentication from "expo-apple-authentication";
 import * as AuthSession from "expo-auth-session";
 import * as WebBrowser from "expo-web-browser";

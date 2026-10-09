@@ -1,4 +1,4 @@
-import { useAuth } from "@clerk/clerk-expo";
+import { useAuth } from "@clerk/expo";
 import { ApiError } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
 import { router, Stack, useFocusEffect, useIsFocused } from "expo-router";

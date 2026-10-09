@@ -2,8 +2,9 @@ import * as SecureStore from "expo-secure-store";
 
 /**
  * Clerk token cache backed by the iOS keychain (expo-secure-store).
- * Hand-rolled rather than importing @clerk/clerk-expo/token-cache so the
- * storage posture is explicit and version-stable.
+ * Hand-rolled rather than importing @clerk/expo/token-cache: Clerk's cache
+ * DELETES the entry when a read throws, which is the sign-out bug the second
+ * rule below exists to prevent.
  *
  * Two rules keep sessions from evaporating:
  *

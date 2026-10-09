@@ -9,7 +9,7 @@ jest.mock("@lightbulb/shared", () => ({
   createApiClient: () => ({ post: mockPost }),
 }));
 jest.mock("../../lib/adapter", () => ({ makeAdapter: () => ({}) }));
-jest.mock("@clerk/clerk-expo", () => ({
+jest.mock("@clerk/expo", () => ({
   useAuth: () => ({ getToken: async () => "tok", userId: "user_1" }),
 }));
 jest.mock("expo-constants", () => ({

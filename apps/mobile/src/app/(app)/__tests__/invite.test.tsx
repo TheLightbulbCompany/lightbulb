@@ -3,7 +3,7 @@ import { ApiError } from "@lightbulb/shared";
 import * as Clipboard from "expo-clipboard";
 
 jest.mock("expo-clipboard", () => ({ setStringAsync: jest.fn(async () => true) }));
-jest.mock("@clerk/clerk-expo", () => ({
+jest.mock("@clerk/expo", () => ({
   useAuth: () => ({ getToken: async () => "token" }),
   useOrganization: () => ({ organization: { id: "org_1" } }),
 }));

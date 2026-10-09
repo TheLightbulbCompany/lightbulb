@@ -9,7 +9,7 @@ jest.mock("../teamsData", () => ({
   fetchAgents: (...a: unknown[]) => mockFetchAgents(...a),
   fetchMembers: (...a: unknown[]) => mockFetchMembers(...a),
 }));
-jest.mock("@clerk/clerk-expo", () => ({
+jest.mock("@clerk/expo", () => ({
   useOrganization: () => ({ organization: mockOrgId ? { id: mockOrgId } : null }),
 }));
 

@@ -10,7 +10,7 @@ jest.mock("expo-router", () => {
   return { useFocusEffect: (cb: () => void) => React.useEffect(cb, [cb]) };
 });
 
-jest.mock("@clerk/clerk-expo", () => ({
+jest.mock("@clerk/expo", () => ({
   useAuth: () => ({ getToken: async () => "test-token" }),
   useOrganization: () => ({ organization: null, membership: null }),
 }));

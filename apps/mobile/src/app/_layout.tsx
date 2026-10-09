@@ -1,4 +1,4 @@
-import { ClerkProvider } from "@clerk/clerk-expo";
+import { ClerkProvider } from "@clerk/expo";
 import {
   Lora_400Regular,
   Lora_400Regular_Italic,

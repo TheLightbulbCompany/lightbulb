@@ -641,3 +641,30 @@ async def test_a_grown_turn_that_drops_an_agent_calls_that_agents_row_off():
     assert forge.status in h_mod.OPEN, "the agent it still asks keeps its row"
     assert gauge.status not in h_mod.OPEN, "the dropped agent's row is called off"
     assert len(h._requests.items) == 2, "no new row"
+
+
+async def test_a_piece_said_while_the_turn_before_it_is_at_route_joins_that_turn():
+    """#3961 review (P1): /route is slower than the pause. The first piece's `hold` comes back after the rest was
+    heard; the rest is routed with the whole turn, and the late answer for the start alone is not acted on."""
+    h, room, backend, lives, clock, log = await per_person()
+    h.on_speech(P1, True)
+    clock.t += 2
+    h.on_speech(P1, False)
+    slow = backend.route_gate = asyncio.Event()
+    backend.route_extra = {**ops([("forge", "give me a summary of", "name")]), "hold": True}
+    await h.on_final_transcript(P1, "Priya", "Forge, can you give me a summary of")
+    for _ in range(30):
+        await asyncio.sleep(0)
+    backend.route_gate = None
+    h.on_speech(P1, True)
+    clock.t += 0.5 + 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "summarise my open PRs", "name")])
+    await h.on_final_transcript(P1, "Priya", "my open PRs.")
+    for _ in range(30):
+        await asyncio.sleep(0)
+    slow.set()
+    await settle(h)
+    assert backend.routes[-1][1] == "Forge, can you give me a summary of my open PRs.", "the rest routed whole"
+    assert [r.task for r in h._requests.items] == ["summarise my open PRs"], "one request, for the whole turn"
+    assert P1 not in h._held, "the late hold is not kept to join a later line"

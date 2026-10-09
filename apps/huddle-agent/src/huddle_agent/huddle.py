@@ -1276,10 +1276,11 @@ class Huddle:
                 and prev[1] is not None
                 and detected  # (when it began is known only from the detector)
                 and ep.began - prev[1] <= TURN_GAP_S
-                and any(r.status in OPEN for r in self._turn_rows.get(prev[0], []))
+                and (any(r.status in OPEN for r in self._turn_rows.get(prev[0], [])) or self._routing.get(identity))
             ):
-                # They went straight on after a turn that already asked something: it is the same turn, routed
-                # again whole, and what it asks now replaces what it asked (`_amend_turn`).
+                # They went straight on after a turn that already asked something, or whose /route has not answered
+                # yet: it is the same turn, routed again whole, and what it asks now replaces what it asked
+                # (`_amend_turn`); an answer for the piece before comes too late to count (`_regrown`).
                 text, joined = f"{prev[2]} {text}", True
             if not (joined and prev):
                 self._tid += 1
@@ -2673,6 +2674,9 @@ class Huddle:
         if o is None:
             self._record(identity, fut, None, text)
             return None
+        if self._regrown(identity, mark):
+            self._record(identity, fut, None, text)
+            return None, None, None, None
         if r.get("hold") and mouth(identity):
             # Unfinished, though it names the agent (10-09 prod Meet: "Hey, Friday. That's awesome, but can you
             # actually give me a summary of" became a request, and its rest two more). Nothing is asked or said
@@ -3139,6 +3143,8 @@ class Huddle:
         r = routed if routed is not None else await self._understand(
             identity, text, humans, unclaimed, quiet=heard is not None or floor_line, mark=mark
         )
+        if not stands and self._regrown(identity, mark):
+            return None
         outcome = "error" if r is None else self._outcome(r)
         r = r or {}
         if r.get("ops") is not None and not r.get("hold"):
@@ -4905,6 +4911,15 @@ class Huddle:
             self._held[identity] = (text, heard_at, mark, {**r, "hold": False}, kw)
         else:  # that final arrived while /route decided and routed on its own: nothing left to merge
             emit_metric("live.route.hold_stale", 1, "Count")
+
+    def _regrown(self, identity: str, mark: int) -> bool:
+        """A later piece of this line's turn was heard while /route decided on it: that piece is routed with the
+        whole turn (`_heard_final`), so this answer, for the turn's start alone, is not acted on."""
+        last = self._final_mark.get(identity, -1)
+        if last > mark and (tid := self._turn_of.get(mark)) is not None and self._turn_of.get(last) == tid:
+            emit_metric("live.turn.regrown", 1, "Count")
+            return True
+        return False
 
     def _amend_turn(self, mark: int, ops: dict) -> dict:
         """A turn said in pieces is routed again as it grows (`_heard_final`): what it asks now REPLACES what it

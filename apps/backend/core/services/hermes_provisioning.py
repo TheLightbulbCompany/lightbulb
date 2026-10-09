@@ -911,7 +911,11 @@ async def roll_runtime_image(
     actual = await run_in_thread(_runtime_description, arn)
     current = _image_of(actual)
     env_drifted = _env_drifted(actual.get("environmentVariables"), request.get("environmentVariables"))
-    drifted = current != settings.AGENTCORE_HERMES_IMAGE or env_drifted
+    # A lifecycle change (IDLE_TIMEOUT_S) on an unchanged image is drift too, or it would reach only new runtimes.
+    want_life = request.get("lifecycleConfiguration") or {}
+    have_life = actual.get("lifecycleConfiguration") or {}
+    life_drifted = any(have_life.get(k) != v for k, v in want_life.items())
+    drifted = current != settings.AGENTCORE_HERMES_IMAGE or env_drifted or life_drifted
     if not (drifted or restart_session or respec):
         return "current"
     if dry_run:

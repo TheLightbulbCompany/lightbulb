@@ -312,7 +312,7 @@ describe("IssueProperties", () => {
     const onMonitorChange = vi.fn();
     render(
       <IssueProperties
-        issue={baseIssue}
+        issue={{ ...baseIssue, status: "in_progress", assigneeAgentId: "ag_1" }}
         {...requiredHandlers()}
         onMonitorChange={onMonitorChange}
       />,

@@ -346,6 +346,13 @@ async fn get_code(t: &CopyTicket, dir: &Path, here: &Path) -> PathBuf {
 
 async fn ensure_mod(claude: &Path, home: &Path) {
     use crate::local_sessions::plugin;
+    let state = home
+        .join("Library/Application Support")
+        .join(crate::KEYCHAIN_SERVICE)
+        .join("local-sessions");
+    // Before the list: a plugin that is listed can still hold a file an older app wrote, and
+    // Claude then refuses it. The app does this same sync at launch, but may not have run yet.
+    let _ = plugin::write_files(&state);
     let listed = tokio::time::timeout(
         Duration::from_secs(15),
         tokio::process::Command::new(claude)
@@ -361,10 +368,6 @@ async fn ensure_mod(claude: &Path, home: &Path) {
     {
         return;
     }
-    let state = home
-        .join("Library/Application Support")
-        .join(crate::KEYCHAIN_SERVICE)
-        .join("local-sessions");
     if let Err(e) = plugin::install_now(&state, home) {
         eprintln!("lightbulb: the Lightbulb mod was not installed ({e}).");
     }
@@ -802,5 +805,25 @@ mod tests {
             serde_json::from_str::<Value>(&text).unwrap(),
             json!({"from": "Alice[31m", "title": "Fix login"})
         );
+    }
+
+    #[tokio::test]
+    async fn continue_syncs_the_mod_files_when_the_plugin_is_already_listed() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let claude = home.path().join("claude");
+        std::fs::write(&claude, "#!/bin/sh\necho lightbulb@lightbulb\n").unwrap();
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let plugin = home
+            .path()
+            .join("Library/Application Support")
+            .join(crate::KEYCHAIN_SERVICE)
+            .join("local-sessions/claude-mods/lightbulb");
+        let stale = plugin.join("hooks/hooks.json");
+        std::fs::create_dir_all(stale.parent().unwrap()).unwrap();
+        std::fs::write(&stale, "an older app's hooks module").unwrap();
+        ensure_mod(&claude, home.path()).await;
+        assert!(!stale.exists());
+        assert!(plugin.join("mod/hooks.json").is_file());
     }
 }

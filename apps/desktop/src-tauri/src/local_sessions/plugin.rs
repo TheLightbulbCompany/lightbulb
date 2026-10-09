@@ -32,7 +32,8 @@ pub(crate) const FILES: &[(&str, &str)] = &[
 ];
 pub(crate) const ID: &str = "lightbulb@lightbulb";
 
-fn write_files(state_dir: &Path) -> Result<PathBuf> {
+/// The file sync alone, with no `claude` call: fast, and safe to repeat.
+pub(crate) fn write_files(state_dir: &Path) -> Result<PathBuf> {
     let root = state_dir.join("claude-mods");
     for (rel, text) in FILES {
         let path = root.join(rel);
@@ -44,7 +45,37 @@ fn write_files(state_dir: &Path) -> Result<PathBuf> {
     let socket = enrollment::hook_path().with_file_name("mod.sock");
     fs::write(root.join("lightbulb/socket"), format!("{}\n", socket.display()))
         .map_err(|_| "plugin write failed")?;
+    for sub in SOURCE_DIRS {
+        remove_stale(&root.join("lightbulb").join(sub), &root);
+    }
     Ok(root)
+}
+
+/// The folders of `lightbulb/` that hold only plugin source. Each build owns them whole: after a
+/// sync they hold `FILES` and nothing an older build wrote. `.codex-plugin` is listed although the
+/// app writes nothing there, so a manifest a past or future build puts there cannot outlive it.
+/// Everything else at the plugin root is left alone, `lightbulb/socket` above all (the band reads
+/// the mod socket's path from it).
+const SOURCE_DIRS: &[&str] = &[".claude-plugin", ".codex-plugin", "hooks", "mod", "skills", "types"];
+
+/// Removes each regular file under `dir` that is not in `FILES`, then each folder that left empty.
+/// An app update that moves or drops a file must take the old one away: desktop 0.4.760 moved
+/// `hooks/hooks.json` to `mod/hooks.json`, the old file stayed, and Claude Code refused a plugin
+/// with two hooks modules, so no session had the band. Regular files only: a symlink is neither
+/// followed nor removed, and a socket or any other kind of entry stays. Never fatal.
+fn remove_stale(dir: &Path, root: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        // `DirEntry::file_type` does not follow a symlink.
+        let Ok(kind) = entry.file_type() else { continue };
+        if kind.is_dir() {
+            remove_stale(&path, root);
+            let _ = fs::remove_dir(&path); // fails unless empty, which is the intent
+        } else if kind.is_file() && !FILES.iter().any(|(rel, _)| root.join(rel) == path) && fs::remove_file(&path).is_err() {
+            transport::relay_log("lightbulb plugin: a file an older app wrote could not be removed");
+        }
+    }
 }
 
 fn commands(root: &Path, on: bool) -> Vec<Vec<String>> {
@@ -179,6 +210,45 @@ mod tests {
         std::fs::write(&file, "an older app's mod").unwrap();
         write_files(dir.path()).unwrap();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), include_str!("../../../../../packages/claude-plugin/lightbulb/hooks/register.tsx"));
+    }
+
+    #[test]
+    fn plugin_sync_removes_what_an_older_app_wrote_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("claude-mods");
+        // What a Mac held after desktop 0.4.760: the hooks module at its old path, beside the new.
+        let stale = root.join("lightbulb/hooks/hooks.json");
+        let stale_dir = root.join("lightbulb/skills/gone");
+        std::fs::create_dir_all(stale.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(&stale_dir).unwrap();
+        std::fs::write(&stale, r#"{ "modules": ["./register.tsx"] }"#).unwrap();
+        std::fs::write(stale_dir.join("SKILL.md"), "a dropped skill").unwrap();
+        std::fs::write(root.join("lightbulb/.mcp.json"), "{}").unwrap();
+        // Not plugin source: these stay.
+        let kept = [root.join("lightbulb/notes"), root.join("lightbulb-sessions/hooks/hooks.json"), root.join("other")];
+        for f in &kept {
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, "kept").unwrap();
+        }
+        let live = root.join("lightbulb/hooks/s"); // short: a socket path has ~104 bytes
+        let _listener = std::os::unix::net::UnixListener::bind(&live).unwrap();
+        let link = root.join("lightbulb/hooks/link");
+        std::os::unix::fs::symlink(root.join("other"), &link).unwrap();
+
+        assert_eq!(write_files(dir.path()).unwrap(), root);
+
+        assert!(!stale.exists(), "two hooks modules: Claude Code refuses the plugin");
+        assert!(!stale_dir.exists(), "a folder left empty goes too");
+        for (rel, text) in FILES {
+            assert_eq!(std::fs::read_to_string(root.join(rel)).unwrap(), *text, "{rel}");
+        }
+        assert!(std::fs::read_to_string(root.join("lightbulb/socket")).unwrap().trim().ends_with("/mod.sock"));
+        for f in &kept {
+            assert_eq!(std::fs::read_to_string(f).unwrap(), "kept", "{}", f.display());
+        }
+        assert!(root.join("lightbulb/.mcp.json").is_file(), "outside the source folders");
+        assert!(std::fs::symlink_metadata(&live).is_ok(), "a socket is not a regular file");
+        assert!(std::fs::symlink_metadata(&link).is_ok(), "a symlink is left alone");
     }
 
     #[test]

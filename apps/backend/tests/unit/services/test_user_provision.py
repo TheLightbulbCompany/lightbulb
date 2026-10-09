@@ -1273,6 +1273,15 @@ async def test_arm_is_a_noop_when_heartbeats_are_disabled():
 
 
 @pytest.mark.asyncio
+async def test_the_kill_switch_still_resumes_what_our_pause_took():
+    """The switch governs arming starter timers, not restoring a re-subscribed owner's own."""
+    provisioning = _arm_provisioning(_company_row(starter_ids={"ceo": "ceo1", **_SPECIALISTS}))
+    with patch("core.services.user_provision.settings.NIGHTLY_CEO_HEARTBEATS_ENABLED", False):
+        assert await _arm(provisioning, _paid_account()) == "heartbeats_disabled"
+    provisioning.resume_automation.assert_awaited_once_with("org_p")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("row", "status"),
     [

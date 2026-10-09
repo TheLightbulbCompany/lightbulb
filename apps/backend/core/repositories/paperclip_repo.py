@@ -216,6 +216,9 @@ class PaperclipWorkspace:
     automation_paused_agent_ids: Optional[set[str]] = None
     automation_paused_routine_ids: Optional[set[str]] = None
     automation_pause_complete_at: Optional[str] = None
+    automation_paused_routine_versions: Optional[dict[str, str]] = None
+    """routine id -> its ``updatedAt`` right after our pause PATCH; resume re-activates a
+    routine only if it still matches (nobody touched it since)."""
     """Set only after a pause's Paperclip PATCHes ALL landed; every new pause removes it
     first. The expired-trial sweep re-runs the (idempotent) pause until this is set."""
 
@@ -265,6 +268,7 @@ _WORKSPACE_PLAIN_FIELDS = (
     "automation_paused_agent_ids",
     "automation_paused_routine_ids",
     "automation_pause_complete_at",
+    "automation_paused_routine_versions",
 )
 
 
@@ -386,6 +390,9 @@ class PaperclipRepo:
             first_contact_reason=item.get("first_contact_reason"),
             automation_paused_at=item.get("automation_paused_at"),
             automation_pause_complete_at=item.get("automation_pause_complete_at"),
+            automation_paused_routine_versions=dict(item["automation_paused_routine_versions"])
+            if item.get("automation_paused_routine_versions")
+            else None,
             automation_paused_agent_ids=set(item["automation_paused_agent_ids"])
             if item.get("automation_paused_agent_ids")
             else None,
@@ -558,16 +565,22 @@ class PaperclipRepo:
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             return
 
-    async def mark_pause_complete(self, org_id: str) -> None:
-        """Every PATCH of a pause landed: the expired-trial sweep may stop retrying."""
+    async def mark_pause_complete(self, org_id: str, *, routine_versions: dict[str, str]) -> None:
+        """Every PATCH of a pause landed: the expired-trial sweep may stop retrying. Also
+        stores the paused routines' versions (the caller merged them over the row's)."""
+        expr = "SET automation_pause_complete_at = :t"
+        values: dict = {":t": utc_now_iso()}
+        if routine_versions:
+            expr += ", automation_paused_routine_versions = :v"
+            values[":v"] = routine_versions
         table = self._table()
         try:
             await run_in_thread(
                 table.update_item,
                 Key={"user_id": org_id},
-                UpdateExpression="SET automation_pause_complete_at = :t",
+                UpdateExpression=expr,
                 ConditionExpression="attribute_exists(user_id)",
-                ExpressionAttributeValues={":t": utc_now_iso()},
+                ExpressionAttributeValues=values,
             )
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             return
@@ -575,7 +588,9 @@ class PaperclipRepo:
     async def clear_paused_automation(self, org_id: str, *, agent_ids: list[str], routine_ids: list[str]) -> None:
         """Undo ``record_paused_automation`` for exactly the ids a resume handled. DELETE
         (not REMOVE) on the sets, so ids a racing pause added after our read survive."""
-        expr = "REMOVE automation_paused_at, automation_pause_complete_at"
+        # ponytail: drops every version, not just these ids; a pause racing a resume then
+        # falls back to the plain "still paused" check for its routines.
+        expr = "REMOVE automation_paused_at, automation_pause_complete_at, automation_paused_routine_versions"
         values: dict = {}
         deletes = []
         if agent_ids:

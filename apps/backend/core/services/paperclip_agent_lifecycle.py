@@ -202,9 +202,17 @@ async def pause_owner_automation(owner_id: str, *, dry_run: bool = False) -> dic
             await repo.record_paused_automation(owner_id, agent_ids=agent_ids, routine_ids=routine_ids)
             for agent_id in agent_ids:
                 await admin.set_agent_heartbeat(session_cookie=cookie, agent_id=agent_id, heartbeat={"enabled": False})
+            # Each paused routine's ``updatedAt`` as OUR pause left it: any later edit (the
+            # owner pausing it on purpose, a manual run) moves it, and resume then leaves the
+            # routine alone.
+            versions = dict(ws.automation_paused_routine_versions or {})
             for routine_id in routine_ids:
-                await admin.patch_routine(session_cookie=cookie, routine_id=routine_id, body={"status": "paused"})
-            await repo.mark_pause_complete(owner_id)
+                paused = await admin.patch_routine(
+                    session_cookie=cookie, routine_id=routine_id, body={"status": "paused"}
+                )
+                if isinstance(paused, dict) and paused.get("updatedAt"):
+                    versions[routine_id] = paused["updatedAt"]
+            await repo.mark_pause_complete(owner_id, routine_versions=versions)
     if not dry_run:
         put_metric("paperclip.automation.pause", dimensions={"outcome": "ran"})
         logger.info(
@@ -216,8 +224,10 @@ async def pause_owner_automation(owner_id: str, *, dry_run: bool = False) -> dic
 async def resume_owner_automation(owner_id: str) -> dict[str, int]:
     """Undo ``pause_owner_automation``: re-enable exactly the heartbeats and routines IT
     paused, then clear the record. A routine is re-activated only while it is still
-    ``paused`` (the owner may have archived it since); an agent or routine that no longer
-    exists is skipped. ``arm_nightly_ceo`` re-applies the starters' own heartbeat configs
+    ``paused`` AND its ``updatedAt`` is the one our pause left (the owner may have paused it
+    on purpose, or archived it, since); an agent or routine that no longer exists is skipped.
+    Heartbeats have no such check: an agent's ``updatedAt`` moves on every adapter-config
+    sync, and an owner who turns off a heartbeat we already turned off changes nothing. ``arm_nightly_ceo`` re-applies the starters' own heartbeat configs
     (interval, CEO opt-out) right after. Idempotent; raises on a Paperclip failure, leaving
     the record for the next reconcile."""
     repo = PaperclipRepo(table_name="paperclip-companies")
@@ -249,7 +259,11 @@ async def resume_owner_automation(owner_id: str) -> dict[str, int]:
                     if e.status_code != 404:
                         raise
                     continue
-                if routine.get("status") == "paused":
+                # Untouched since our pause: same ``updatedAt``. No recorded version (a pause
+                # that died before recording it) falls back to "still paused".
+                version = (ws.automation_paused_routine_versions or {}).get(routine_id)
+                untouched = routine.get("updatedAt") == version if version else True
+                if routine.get("status") == "paused" and untouched:
                     await admin.patch_routine(session_cookie=cookie, routine_id=routine_id, body={"status": "active"})
                     routines += 1
     await repo.clear_paused_automation(owner_id, agent_ids=agent_ids, routine_ids=routine_ids)

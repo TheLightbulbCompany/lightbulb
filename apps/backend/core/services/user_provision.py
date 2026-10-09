@@ -267,8 +267,6 @@ async def arm_nightly_ceo(owner_id: str) -> str:
     classifies it into its retry ABI exactly like a seed failure;
     ``reconcile_runtime`` logs and moves on.
     """
-    if not settings.NIGHTLY_CEO_HEARTBEATS_ENABLED:
-        return _arm_status("heartbeats_disabled")
     try:
         # Consistent: a reconcile runs right after the billing write it follows.
         account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
@@ -279,7 +277,11 @@ async def arm_nightly_ceo(owner_id: str) -> str:
             await pause_owner_automation(owner_id)
             return _arm_status("not_entitled")
         # Re-entitled: put back exactly what the pause took (no-op when nothing is recorded).
+        # Before the kill switch: the switch governs arming starter timers, not putting back
+        # what our own pause took.
         await resume_owner_automation(owner_id)
+        if not settings.NIGHTLY_CEO_HEARTBEATS_ENABLED:
+            return _arm_status("heartbeats_disabled")
 
         provisioning = await build_paperclip_provisioning()
         try:

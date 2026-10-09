@@ -31,7 +31,7 @@ def _admin(*, issue_pages=((),)):
     admin.list_agents = AsyncMock(return_value=AGENTS)
     admin.list_routines = AsyncMock(return_value=ROUTINES)
     admin.set_agent_heartbeat = AsyncMock(return_value={})
-    admin.patch_routine = AsyncMock(return_value={})
+    admin.patch_routine = AsyncMock(return_value={"updatedAt": "t-paused"})
     admin.get_routine = AsyncMock(return_value={"status": "paused"})
     admin.list_issues = AsyncMock(side_effect=[list(p) for p in issue_pages])
     admin.patch_issue = AsyncMock(return_value={})
@@ -44,6 +44,7 @@ def _ws(**kw):
         automation_paused_at=None,
         automation_paused_agent_ids=None,
         automation_paused_routine_ids=None,
+        automation_paused_routine_versions=None,
     )
     return MagicMock(**{**defaults, **kw})
 
@@ -88,7 +89,7 @@ async def test_cancel_pauses_active_routines_and_every_enabled_heartbeat_recordi
     admin.patch_routine.assert_awaited_once_with(
         session_cookie="cookie", routine_id="r-live", body={"status": "paused"}
     )
-    repo.mark_pause_complete.assert_awaited_once_with("owner")
+    repo.mark_pause_complete.assert_awaited_once_with("owner", routine_versions={"r-live": "t-paused"})
 
 
 @pytest.mark.asyncio
@@ -167,3 +168,20 @@ async def test_disarm_pauses_then_cancels_every_in_progress_issue_snapshotting_p
     assert result == {"heartbeats_paused": 2, "routines_paused": 1, "issues_cancelled": 3}
     assert [c.kwargs["params"]["offset"] for c in admin.list_issues.await_args_list] == ["0", "2", "4"]
     assert [c.kwargs["issue_id"] for c in admin.patch_issue.await_args_list] == ["a", "b", "c"]
+
+
+@pytest.mark.asyncio
+async def test_resume_leaves_a_routine_the_owner_touched_after_our_pause():
+    """A trial owner may pause a routine on purpose after ours did; its updatedAt moved."""
+    admin = _admin()
+    admin.get_routine = AsyncMock(
+        side_effect=[{"status": "paused", "updatedAt": "t-ours"}, {"status": "paused", "updatedAt": "t-owner"}]
+    )
+    ws = _ws(
+        automation_paused_at="2026-10-09T00:00:00Z",
+        automation_paused_routine_ids={"r-a", "r-b"},
+        automation_paused_routine_versions={"r-a": "t-ours", "r-b": "t-ours"},
+    )
+    result, _ = await _call(lifecycle.resume_owner_automation, admin, ws)
+    assert result["routines_resumed"] == 1
+    admin.patch_routine.assert_awaited_once_with(session_cookie="cookie", routine_id="r-a", body={"status": "active"})

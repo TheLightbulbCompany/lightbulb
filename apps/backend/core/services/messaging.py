@@ -2373,18 +2373,36 @@ async def remove_member(auth: AuthContext, room_id: str, kind: str, member_id: s
 
 
 async def leave_room(auth: AuthContext, room_id: str) -> None:
-    """A member removes themselves. A channel's owner must transfer ownership or delete
-    the channel instead, so this is a hard refusal. A group DM's
-    "owner" is just whoever started it and holds no powers there, so they may leave too."""
+    """A member removes themselves. A channel's owner hands the channel to another
+    person in it as they leave (see _channel_heir); with nobody else there they must
+    delete it instead. A group DM's "owner" is just whoever started it and holds no
+    powers there, so they simply leave. A DM's starter cannot leave it."""
     owner_id = resolve_owner_id(auth)
     meta, member = await require_room_member(owner_id, auth.user_id, room_id)
     _deny_vendor_human_change(meta, "human")
-    if member.get("role") == "owner" and meta.get("kind") != "group-dm":
-        raise ApiProblem(
-            "INVALID_REQUEST",
-            "The room owner cannot leave. Make someone else an admin and transfer ownership first.",
-        )
+    if member.get("role") == "owner" and meta.get("kind") == "dm":
+        raise ApiProblem("INVALID_REQUEST", "A direct message cannot be left.")
+    if (
+        member.get("role") == "owner"
+        and meta.get("kind") == "channel"
+        and _channel_heir(meta, await messaging_repo.list_members(room_id), auth.user_id) is None
+    ):
+        raise ApiProblem("INVALID_REQUEST", "You are the only person in this channel. Delete it instead of leaving.")
     await _remove_member_with_notices(meta, "human", auth.user_id)
+
+
+def _channel_heir(meta: dict, members: list[dict], leaving_id: str) -> str | None:
+    """Who owns a channel once its owner is gone: an admin first, then whoever joined
+    earliest. None when the leaver is not the channel's owner, or nobody else is there."""
+    if meta.get("kind") != "channel":
+        return None
+    humans = [row for row in members if row.get("kind") == "human"]
+    if not any(row["id"] == leaving_id and row.get("role") == "owner" for row in humans):
+        return None
+    others = [row for row in humans if row["id"] != leaving_id]
+    if not others:
+        return None
+    return min(others, key=lambda row: (row.get("role") != "admin", row.get("joinedAt") or ""))["id"]
 
 
 async def _remove_member_with_notices(meta: dict, kind: str, member_id: str) -> dict:
@@ -2394,13 +2412,16 @@ async def _remove_member_with_notices(meta: dict, kind: str, member_id: str) -> 
         return new_meta
 
     new_key = str(uuid.uuid4())
-    notices = await _rotation_notices(meta, new_key, removed={member_id})
+    members = await messaging_repo.list_members(meta["roomId"])
+    notices = await _rotation_notices(meta, new_key, removed={member_id}, members=members)
     new_meta = await messaging_repo.remove_member(
         meta=meta,
         kind="human",
         member_id=member_id,
         new_delivery_key=new_key,
         live_events=notices,
+        # A channel never loses its owner: leaving or a workspace removal hands it on.
+        new_owner_id=_channel_heir(meta, members, member_id),
     )
     if meta["roomId"] == default_room_id(meta["ownerId"]):
         # A removal (or leave) must stick: join_default_room never re-seats a marked user.
@@ -2414,11 +2435,14 @@ async def _remove_member_with_notices(meta: dict, kind: str, member_id: str) -> 
     return new_meta
 
 
-async def _rotation_notices(meta: dict, new_key: str, *, removed: set[str] | None = None) -> list[dict]:
+async def _rotation_notices(
+    meta: dict, new_key: str, *, removed: set[str] | None = None, members: list[dict] | None = None
+) -> list[dict]:
     """The durable ``LIVE`` rows a deliveryKey rotation writes in its own transaction:
     ``room.access.removed`` to each human in ``removed`` (every human when None),
     ``room.subscription.rotated`` with the new key to the rest."""
-    members = await messaging_repo.list_members(meta["roomId"])
+    if members is None:
+        members = await messaging_repo.list_members(meta["roomId"])
     humans = [row for row in members if row.get("kind") == "human"]
     revision = int(meta["revision"]) + 1
     notices: list[dict] = []

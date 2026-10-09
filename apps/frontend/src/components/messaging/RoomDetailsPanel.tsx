@@ -211,11 +211,11 @@ export function RoomDetailsPanel({
           </div>
           : <Button type="button" variant="outline" className="mt-4" disabled={!actionable}
             onClick={() => { reset(); setConfirmLeave(true); }}>Leave {noun}</Button>)}
-        {/* The owner can't leave a channel -- explain rather than offering an
+        {/* An owner alone in a channel can't leave it -- explain rather than offering an
             action that would 400. Deleting it is reachable from the header's
             "..." menu, which already carries the typed-confirmation flow. */}
         {!onLeaveRoom && ownerCannotLeave
-          && <p className="text-sm text-muted-foreground mt-4">You own this {noun}. Transfer ownership or delete it from the conversation options menu.</p>}
+          && <p className="text-sm text-muted-foreground mt-4">You are the only person in this {noun}. Delete it from the conversation options menu.</p>}
       </>}
 
       {error && <p role="alert" className="text-sm text-err">{error}</p>}

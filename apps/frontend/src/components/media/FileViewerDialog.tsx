@@ -84,7 +84,9 @@ export function FileViewerDialog({ attachments, index, onIndexChange, onOpenChan
             {!item.url ? (
               <p role="status" className="text-sm text-midnight-muted">Loading…</p>
             ) : (
-              <FileViewerContent item={{ ...item, url: item.url }} className="max-h-[70svh]" />
+              // A PDF's iframe has no size of its own: in this auto-height box h-full fell
+              // back to the 150px iframe default, so it gets a real height.
+              <FileViewerContent item={{ ...item, url: item.url }} className={item.contentType === "application/pdf" ? "h-[70svh]" : "max-h-[70svh]"} />
             )}
 
             {hasMultiple && (

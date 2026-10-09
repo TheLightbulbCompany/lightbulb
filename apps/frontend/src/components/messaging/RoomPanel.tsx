@@ -470,12 +470,14 @@ function RoomContent({
   const isRoomAdmin = viewer?.role === "owner" || viewer?.role === "admin";
   const canManageMembers = visibleRoom?.kind === "channel" && isRoomAdmin;
   const canEditRoom = visibleRoom?.kind !== "dm" && isRoomAdmin;
-  // A group chat's creator holds no powers there, so anyone may leave one; a channel owner may not.
+  // A group chat's creator holds no powers there, so anyone may leave one. A channel owner
+  // leaving hands the channel to another person in it (the backend picks them) -- but
+  // alone in it, they can only delete it: the Leave dialog explains that and offers Delete.
+  const ownerAlone = viewer?.role === "owner"
+    && !participants.some((participant) => participant.kind === "human" && participant.id !== currentUserId);
   const canLeaveRoom = !visibleRoom?.shared
-    && (visibleRoom?.kind === "group-dm" || (visibleRoom?.kind === "channel" && viewer?.role !== "owner"));
-  // The backend refuses to let a channel owner leave -- the Leave dialog explains
-  // that and offers Delete instead, rather than hiding Leave with no explanation.
-  const ownerCannotLeave = !visibleRoom?.shared && visibleRoom?.kind === "channel" && viewer?.role === "owner";
+    && (visibleRoom?.kind === "group-dm" || (visibleRoom?.kind === "channel" && !ownerAlone));
+  const ownerCannotLeave = !visibleRoom?.shared && visibleRoom?.kind === "channel" && ownerAlone;
   // A group chat has no admins: any member archives and unarchives it.
   const canUnarchive = !!onSetArchived && (visibleRoom?.kind === "group-dm" || isRoomAdmin);
   const roomNoun = visibleRoom?.kind === "group-dm" ? "group chat" : "channel";
@@ -723,7 +725,7 @@ function RoomContent({
     className={cn("room-panel", showContext && !sideHost && "room-has-context", showDetail ? "room-has-detail" : "room-has-default-context")} aria-label={roomName}>
     <div className="room-conversation" hidden={showContext && isNarrow && !sideHost} onClickCapture={closeOverlay} onFocusCapture={closeOverlay}>
       <RoomHeader room={visibleRoom} roomName={roomName} counterparts={counterparts} participants={participants} participantCount={participants.length}
-        canEditRoom={canEditRoom} canLeave={canLeaveRoom} ownerCannotLeave={ownerCannotLeave} actionable={actionable} pinnedCount={pinnedMessageIds.length}
+        canEditRoom={canEditRoom} canLeave={canLeaveRoom} ownerCannotLeave={ownerCannotLeave} ownerHandsOff={canLeaveRoom && visibleRoom?.kind === "channel" && viewer?.role === "owner"} actionable={actionable} pinnedCount={pinnedMessageIds.length}
         search={<RoomMessageSearch roomId={roomId}
           onSelect={(hit) => {
             const root = hit.threadRootMessageId;

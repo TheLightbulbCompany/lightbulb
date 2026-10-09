@@ -23,11 +23,12 @@ interface RoomHeaderProps {
   participants?: readonly RoomParticipant[]; // everyone, the viewer included; names the on-a-call marker
   participantCount: number;
   canEditRoom: boolean; // owner/admin AND kind !== "dm"
-  canLeave: boolean; // kind === "channel" AND role !== "owner"
-  // kind === "channel" AND role === "owner" (not shared): the backend refuses to
-  // let an owner leave, so the Leave dialog explains that instead of offering an
+  canLeave: boolean; // a channel or group chat, unless the viewer owns a channel alone
+  // kind === "channel", the viewer owns it and nobody else is in it (not shared): the
+  // backend refuses that leave, so the Leave dialog explains it instead of offering an
   // action that will 400, and offers Delete channel in its place when possible.
   ownerCannotLeave?: boolean;
+  ownerHandsOff?: boolean; // the viewer owns this channel and leaving hands it to someone else
   actionable: boolean;
   pinnedCount: number; // shown beside the facepile; the affordance opens the Details panel's Pins tab
   search: ReactNode; // the shipped <RoomMessageSearch />
@@ -57,6 +58,7 @@ export function RoomHeader({
   canEditRoom,
   canLeave,
   ownerCannotLeave,
+  ownerHandsOff,
   actionable,
   pinnedCount,
   search,
@@ -220,8 +222,10 @@ export function RoomHeader({
         onCloseAutoFocus={(event) => { event.preventDefault(); restoreOptionsFocus(); }}>
         <DialogHeader><DialogTitle className="break-words">{ownerCannotLeave ? `Can't leave ${roomName}` : `Leave ${roomName}?`}</DialogTitle>
           <DialogDescription>
-            {ownerCannotLeave ? "You own this channel. Transfer ownership or delete it."
-              : "You will lose access to this conversation and its messages."}
+            {ownerCannotLeave ? "You are the only person in this channel. Delete it instead."
+              : ownerHandsOff
+                ? "You will lose access to this conversation and its messages. Ownership passes to another member."
+                : "You will lose access to this conversation and its messages."}
           </DialogDescription>
         </DialogHeader>
         {error && <p role="alert" className="text-sm text-err break-words">{error}</p>}

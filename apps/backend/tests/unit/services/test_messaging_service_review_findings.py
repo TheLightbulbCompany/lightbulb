@@ -673,15 +673,23 @@ async def test_leave_room_removes_a_non_owner_human_and_refuses_the_owner(monkey
     await messaging.leave_room(auth, "room-1")
     remove.assert_awaited_once_with(meta, "human", "member")
 
+    # A channel owner alone in the room must delete it instead.
     monkeypatch.setattr(
         messaging,
         "require_room_member",
         AsyncMock(return_value=(meta, {"kind": "human", "id": "member", "role": "owner"})),
     )
+    members = [{"kind": "human", "id": "member", "role": "owner"}, {"kind": "agent", "id": "ceo", "role": "member"}]
+    monkeypatch.setattr(messaging.messaging_repo, "list_members", AsyncMock(side_effect=lambda _room: members))
     with pytest.raises(ApiProblem) as exc:
         await messaging.leave_room(auth, "room-1")
     assert exc.value.error.code == "INVALID_REQUEST"
     assert remove.await_count == 1
+
+    # With other people there, the owner leaves through the same rotating removal.
+    members.append({"kind": "human", "id": "late", "role": "member", "joinedAt": "2026-10-02"})
+    await messaging.leave_room(auth, "room-1")
+    remove.assert_awaited_with(meta, "human", "member")
 
     # A group DM's creator holds no powers there, so they may leave it -- through the same
     # rotating removal path as everyone else.
@@ -693,6 +701,20 @@ async def test_leave_room_removes_a_non_owner_human_and_refuses_the_owner(monkey
     )
     await messaging.leave_room(auth, "room-1")
     remove.assert_awaited_with(group, "human", "member")
+
+
+def test_a_channel_owner_hands_the_channel_to_an_admin_then_the_earliest_joiner():
+    channel = {"kind": "channel"}
+    owner = {"kind": "human", "id": "owner", "role": "owner"}
+    late = {"kind": "human", "id": "late", "role": "member", "joinedAt": "2026-10-02"}
+    early = {"kind": "human", "id": "early", "role": "member", "joinedAt": "2026-10-01"}
+    admin = {"kind": "human", "id": "admin", "role": "admin", "joinedAt": "2026-10-03"}
+    agent = {"kind": "agent", "id": "ceo", "role": "member"}
+    assert messaging._channel_heir(channel, [owner, agent], "owner") is None
+    assert messaging._channel_heir(channel, [owner, late, early], "owner") == "early"
+    assert messaging._channel_heir(channel, [owner, late, early, admin], "owner") == "admin"
+    assert messaging._channel_heir(channel, [owner, late], "late") is None  # not the owner
+    assert messaging._channel_heir({"kind": "group-dm"}, [owner, late], "owner") is None
 
 
 @pytest.mark.asyncio

@@ -268,7 +268,7 @@ it("explains ownership instead of offering a Leave that would fail, and offers D
   await userEvent.click(screen.getByRole("button", { name: "Conversation options" }));
   await userEvent.click(screen.getByRole("menuitem", { name: "Leave" }));
   const dialog = screen.getByRole("dialog", { name: "Can't leave Roadmap" });
-  expect(within(dialog).getByText("You own this channel. Transfer ownership or delete it.")).toBeInTheDocument();
+  expect(within(dialog).getByText("You are the only person in this channel. Delete it instead.")).toBeInTheDocument();
   expect(within(dialog).queryByRole("button", { name: /^Leave/ })).not.toBeInTheDocument();
   await userEvent.click(within(dialog).getByRole("button", { name: "Delete channel" }));
   const deleteDialog = screen.getByRole("dialog", { name: "Delete Roadmap?" });
@@ -282,7 +282,7 @@ it("explains ownership with no Delete offer when the owner may not delete the ro
   await userEvent.click(screen.getByRole("button", { name: "Conversation options" }));
   await userEvent.click(screen.getByRole("menuitem", { name: "Leave" }));
   const dialog = screen.getByRole("dialog", { name: "Can't leave Roadmap" });
-  expect(within(dialog).getByText("You own this channel. Transfer ownership or delete it.")).toBeInTheDocument();
+  expect(within(dialog).getByText("You are the only person in this channel. Delete it instead.")).toBeInTheDocument();
   expect(within(dialog).queryByRole("button", { name: "Delete channel" })).not.toBeInTheDocument();
   expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeInTheDocument();
 });

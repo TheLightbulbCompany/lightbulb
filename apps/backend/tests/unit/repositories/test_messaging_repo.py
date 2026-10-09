@@ -626,6 +626,14 @@ async def test_gsi_is_discovery_only_and_base_membership_is_strong(table):
 
 
 @pytest.mark.asyncio
+async def test_owner_removal_promotes_the_heir_in_the_same_transaction(table):
+    room_id, meta = await _room(members=[_member("human", USER_A, "owner"), _member("human", USER_B)])
+    await repo.remove_member(meta=meta, kind="human", member_id=USER_A, new_delivery_key="k2", new_owner_id=USER_B)
+    assert await repo.get_member(room_id, "human", USER_A) is None
+    assert (await repo.get_member(room_id, "human", USER_B))["role"] == "owner"
+
+
+@pytest.mark.asyncio
 async def test_human_removal_rotates_key_and_writes_live_rows_transactionally(table):
     room_id, meta = await _room(
         members=[_member("human", USER_A, "owner"), _member("human", USER_B), _member("agent", FRIDAY)]

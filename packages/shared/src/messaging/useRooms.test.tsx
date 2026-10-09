@@ -730,6 +730,20 @@ describe("useRooms platform seams", () => {
       await waitFor(() => expect(result.current.rooms.map((r) => r.roomId)).toEqual([newer.roomId]));
     });
 
+    it("leaving the open room never reopens it from the stale list", async () => {
+      messaging.leaveRoom.mockResolvedValue(undefined);
+      messaging.listRooms.mockResolvedValue({ rooms: [newer, older], sections: [] });
+      const { result } = renderHook(() => useRooms(platform()), { wrapper });
+      await waitFor(() => expect(result.current.activeRoomId).toBe(newer.roomId));
+      // The server list has not caught up yet: the refetch is still in flight.
+      messaging.listRooms.mockReturnValue(new Promise(() => {}));
+
+      await act(async () => { void result.current.leaveRoom(newer.roomId); });
+
+      await waitFor(() => expect(result.current.activeRoomId).toBe(older.roomId));
+      expect(result.current.rooms.map((r) => r.roomId)).toEqual([older.roomId]);
+    });
+
     it("deleteRoom calls the command and refetches the list", async () => {
       messaging.deleteRoom.mockResolvedValue(undefined);
       const { result } = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper });

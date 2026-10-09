@@ -15,6 +15,9 @@ describe("FileViewerDialog", () => {
     const frame = within(dialog).getByTitle("report.pdf");
     expect(frame.tagName).toBe("IFRAME");
     expect(frame).toHaveAttribute("src", "blob:pdf-1");
+    // A real height: h-full alone left the iframe at its 150px default (squashed).
+    expect(frame).toHaveClass("h-[70svh]");
+    expect(frame).not.toHaveClass("h-full");
   });
 
   it("falls back to a filename/size card with a download link for a non-previewable type", () => {

@@ -137,9 +137,14 @@ function useMessagingShortcuts(
       if (!event.altKey || event.metaKey || event.ctrlKey) return;
       if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
       const direction = event.key === "ArrowDown" ? 1 : -1;
+      // The order the sidebar shows (sections, the chosen sort, collapsed groups), which
+      // only RoomDirectory knows; the server's order when no sidebar is mounted.
+      const shown = [...document.querySelectorAll<HTMLElement>(".room-directory [data-room-id]")]
+        .flatMap((row) => rooms.find((room) => room.roomId === row.dataset.roomId) ?? []);
+      const ordered = shown.length > 0 ? shown : rooms;
       const next = event.shiftKey
-        ? nextUnreadRoomId(rooms, activeRoomId, direction)
-        : adjacentRoomId(rooms, activeRoomId, direction);
+        ? nextUnreadRoomId(ordered, activeRoomId, direction)
+        : adjacentRoomId(ordered, activeRoomId, direction);
       // Also a no-op when the only unread room is the one already open —
       // adjacentRoomId already excludes this case itself, but
       // nextUnreadRoomId (unlike RoomDirectory's own "next unread" button)
@@ -560,6 +565,28 @@ export function MessagingWorkspaceProvider({
     }
   }, [sendRoomMessage, rooms.activeRoomId, scope, recoverDraft]);
 
+  // "Check message status" replays the send by its client id (the server answers a
+  // replay with the stored message, never a second copy). Once that confirms it, the
+  // box must move on to a fresh id like a send does -- a composer still holding a
+  // persisted id stays locked with the sent text in it.
+  const reconcileRoomSend = rooms.reconcileSend;
+  const reconcileSend = useCallback(async (clientMessageId: string, thread = false) => {
+    if (!await reconcileRoomSend(clientMessageId)) return;
+    if (thread && threadClientMessageIdRef.current === clientMessageId) {
+      const next = crypto.randomUUID();
+      threadClientMessageIdRef.current = next;
+      threadDraftRef.current = "";
+      setThreadDraft("");
+      setThreadClientMessageId(next);
+    } else if (!thread && clientMessageIdRef.current === clientMessageId) {
+      const next = crypto.randomUUID();
+      clientMessageIdRef.current = next;
+      draftRef.current = "";
+      setDraft("");
+      setClientMessageId(next);
+    }
+  }, [reconcileRoomSend]);
+
   // localStorage is the source, so no prop dependency truly describes when this
   // changes — but it walks every key in the store and JSON.parses each hit, and
   // every writer is in this component: the draft effects below, and the
@@ -591,7 +618,7 @@ export function MessagingWorkspaceProvider({
     sendState: rooms.sendState(clientMessageId),
     onSubmit: (request) => send(request),
     onRetry: (request) => send(request),
-    onReconcile: (id) => rooms.reconcileSend(id),
+    onReconcile: (id) => void reconcileSend(id).catch(() => {}),
     disabled: !rooms.httpReady,
     onTypingChange: handleTyping,
     onUploadAttachment: rooms.uploadAttachment,
@@ -610,7 +637,7 @@ export function MessagingWorkspaceProvider({
       sendState: rooms.sendState(threadClientMessageId),
       onSubmit: (request: CreateMessageRequest) => send(request, true),
       onRetry: (request: CreateMessageRequest) => send(request, true),
-      onReconcile: (id: string) => rooms.reconcileSend(id),
+      onReconcile: (id: string) => void reconcileSend(id, true).catch(() => {}),
       replyToMessageId: threadId,
       threadRootMessageId: threadId,
       disabled: !rooms.httpReady,
@@ -869,7 +896,7 @@ export function MessagingWorkspaceProvider({
     onMarkUnreadFrom: markUnreadFrom,
     onSetPrefs: async (prefs) => { if (rooms.activeRoomId) await rooms.setRoomPrefs(rooms.activeRoomId, prefs); },
     // A group chat's creator holds no powers there, so anyone may leave or archive one.
-    onLeaveRoom: rooms.activeRoom?.kind === "group-dm" || (rooms.activeRoom?.kind === "channel" && viewerRole !== "owner")
+    onLeaveRoom: rooms.activeRoom?.kind === "group-dm" || rooms.activeRoom?.kind === "channel"
       ? async () => { if (rooms.activeRoomId) await rooms.leaveRoom(rooms.activeRoomId); } : undefined,
     ...(rooms.activeRoom?.kind === "group-dm" || (rooms.activeRoom?.kind === "channel" && ["owner", "admin"].includes(viewerRole))
       ? { onSetArchived: async (archived: boolean) => { await rooms.updateRoom({ archived }); } } : {}),

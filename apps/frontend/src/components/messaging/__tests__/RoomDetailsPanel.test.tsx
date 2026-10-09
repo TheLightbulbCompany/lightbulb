@@ -121,7 +121,7 @@ it("confirms before leaving the room from About", async () => {
 it("explains ownership under About instead of offering a Leave button, when no onLeaveRoom is given", () => {
   render(<RoomDetailsPanel {...props} tab="about" onLeaveRoom={undefined} ownerCannotLeave />);
   expect(screen.queryByRole("button", { name: "Leave channel" })).not.toBeInTheDocument();
-  expect(screen.getByText("You own this channel. Transfer ownership or delete it from the conversation options menu.")).toBeInTheDocument();
+  expect(screen.getByText("You are the only person in this channel. Delete it from the conversation options menu.")).toBeInTheDocument();
 });
 
 it("keeps a deleted pinned message unpinnable without showing its text", async () => {

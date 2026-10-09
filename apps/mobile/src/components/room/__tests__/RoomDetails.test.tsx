@@ -97,8 +97,11 @@ describe("RoomDetails", () => {
     await waitFor(() => expect(props.leaveRoom).toHaveBeenCalled());
   });
 
-  it("offers no leave to the channel owner or in the shared room", async () => {
+  it("offers leave to a channel owner only when someone else can take the channel, and never in the shared room", async () => {
     await setup(room({}, "owner"));
+    expect(screen.getByText("Leave channel")).toBeTruthy();
+    await screen.unmount();
+    await setup(room({ members: [member({ role: "owner" }), friday] }, "owner"));
     expect(screen.queryByText("Leave channel")).toBeNull();
     await screen.unmount();
     await setup(room({ shared: true }));

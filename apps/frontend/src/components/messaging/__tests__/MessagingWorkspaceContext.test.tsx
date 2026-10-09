@@ -560,6 +560,25 @@ it("hands a failed send back its text and its identity so retry still reaches it
   expect(panel.composer.clientMessageId).toBe(sentId);
 });
 
+it("moves the composer on once Check message status confirms the send", async () => {
+  // The composer re-adopted the uncertain send's id and text; a confirmed replay
+  // must free it, or it stays locked with the sent text in it.
+  state.sendMessage.mockImplementationOnce(() => Promise.reject(new Error("network")));
+  state.reconcileSend.mockResolvedValueOnce({ messageId: "m1" });
+  compose();
+  const sentId = panel.composer.clientMessageId;
+  act(() => panel.composer.onTextChange("Did it land?"));
+  const request = { clientMessageId: sentId, text: "Did it land?", mentions: [], replyToMessageId: null, threadRootMessageId: null };
+  await act(async () => { await Promise.resolve(panel.composer.onSubmit(request)).catch(() => {}); });
+  expect(panel.composer.clientMessageId).toBe(sentId);
+
+  await act(async () => { panel.composer.onReconcile!(sentId); });
+
+  expect(state.reconcileSend).toHaveBeenCalledWith(sentId);
+  await waitFor(() => expect(panel.composer.clientMessageId).not.toBe(sentId));
+  expect(panel.composer.text).toBe("");
+});
+
 it("recovers a failed send into the room it was sent from when the owner has moved on, and shows it in the sidebar", async () => {
   // The other half of the recovery path: the composer is showing a different
   // room by the time the send fails, so the text cannot go back into it. It
@@ -720,6 +739,25 @@ it("moves to the next room on Alt+ArrowDown and the next unread on Alt+Shift+Arr
 
   fireEvent.keyDown(window, { key: "ArrowDown", altKey: true, shiftKey: true });
   expect(state.selectRoom).toHaveBeenLastCalledWith(unreadRoom.roomId);
+});
+
+it("follows the sidebar's order on Alt+ArrowDown, not the server's", () => {
+  state.rooms = [room, { ...room, roomId: "room-2" }, { ...room, roomId: "room-3" }];
+  const sidebar = document.createElement("nav");
+  sidebar.className = "room-directory";
+  for (const id of ["room-3", "room-1", "room-2"]) {
+    const row = document.createElement("button");
+    row.dataset.roomId = id;
+    sidebar.append(row);
+  }
+  document.body.append(sidebar);
+  compose();
+
+  fireEvent.keyDown(window, { key: "ArrowDown", altKey: true });
+  expect(state.selectRoom).toHaveBeenCalledWith("room-2");
+  fireEvent.keyDown(window, { key: "ArrowUp", altKey: true });
+  expect(state.selectRoom).toHaveBeenLastCalledWith("room-3");
+  sidebar.remove();
 });
 
 it("moves rooms on Alt+ArrowUp from inside the composer instead of editing the last message", () => {

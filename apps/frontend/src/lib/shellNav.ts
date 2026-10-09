@@ -82,8 +82,12 @@ export function teamsDetailUrl(
 const PAPERCLIP_LINK =
   /^\/(?:([A-Z][A-Z0-9]{0,9})\/)?(issues|approvals|projects|agents|goals)\/([^/?#]+)(?:\/runs\/([^/?#]+))?\/?(?:\?[^#]*)?(#[^?]*)?$/;
 
+// The retired /teams/* tree: agents still write task links as /teams/tasks/<id>
+// (and /teams/issues/<id>), which 404 as they stand. Read them as unprefixed issue links.
+const RETIRED_TASK_LINK = /^\/teams\/(?:tasks|issues)\//;
+
 export function shellUrlFromPaperclipPath(href?: string | null): string | null {
-  const m = href ? PAPERCLIP_LINK.exec(href) : null;
+  const m = href ? PAPERCLIP_LINK.exec(href.replace(RETIRED_TASK_LINK, "/issues/")) : null;
   if (!m) return null;
   const [, prefix, section, id, runId, hash = ""] = m;
   if (!prefix && section !== "issues" && section !== "approvals") return null;

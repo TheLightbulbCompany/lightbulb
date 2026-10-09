@@ -116,9 +116,9 @@ function Conversation() {
       };
     }, [roomId, preview]),
   );
-  // `subagents`: this screen shows the strip, so it alone snapshots and polls (the shared hook
+  // `subagents`: the focused screen shows the strip, so only it snapshots and polls (a peek stays read-only) (the shared hook
   // also refreshes on return to the foreground while the strip is visible).
-  const rooms = useMobileRooms({ subscribeToRoom: focused, autoSelect: false, visible: focused, boundedHistory: true, subagents: true });
+  const rooms = useMobileRooms({ subscribeToRoom: focused, autoSelect: false, visible: focused, boundedHistory: true, subagents: focused });
   const { messaging } = useLiveEvents();
   // The room's own timeline drafts separately from each of its threads.
   const composerDraftKey = useDraftKey(roomId, null);

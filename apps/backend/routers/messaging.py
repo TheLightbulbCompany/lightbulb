@@ -37,6 +37,7 @@ from core.services import (
     session_links,
     session_resume,
     session_screen,
+    subagents,
 )
 from core.services import local_session_grants
 from core.services import container_rpc, message_search, runtime_transport, voice_calls
@@ -1207,6 +1208,12 @@ async def recycle_runtime_session(owner_id: str, request: Request):
 async def post_usage_report(owner_id: str, body: UsageReportRequest, request: Request):
     await _require_hook_token(owner_id, request)
     return await service.handle_usage_report(owner_id, body)
+
+
+@router.post("/internal/messaging/subagents/{owner_id}/events")
+async def post_subagent_events(owner_id: str, body: subagents.SubagentEventsRequest, request: Request):
+    await _require_hook_token(owner_id, request)
+    return await subagents.publish_events(owner_id, body)
 
 
 class VoiceProfileRequest(ContractModel):

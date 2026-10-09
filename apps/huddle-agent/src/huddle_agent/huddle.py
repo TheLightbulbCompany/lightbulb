@@ -4917,15 +4917,18 @@ class Huddle:
         if not mine:
             return ops
         ids = {r.id for r in mine}
-        agents = {r.agent: r for r in mine}
         reqs = list(ops.get("requests") or [])
-        steer = [{**x, "quiet": True} if x.get("requestId") in ids else x for x in ops.get("steer") or []]
         cancel = list(ops.get("cancel") or [])
-        if reqs and not any(x.get("agentId") in agents for x in reqs):
-            cancel += [r.id for r in mine if r.id not in cancel]  # the turn now asks someone else: it replaces
-        else:
-            steer += [{"requestId": agents[x["agentId"]].id, "text": x.get("task") or "", "quiet": True} for x in reqs if x.get("agentId") in agents]
-            reqs = [x for x in reqs if x.get("agentId") not in agents]
+        keep: dict = {}
+        if reqs:  # one row per agent it still asks is amended; every other row of the turn is called off
+            asked = {x.get("agentId") for x in reqs}
+            for r in mine:
+                if r.agent in asked:
+                    keep.setdefault(r.agent, r)
+            cancel += [r.id for r in mine if r not in keep.values() and r.id not in cancel]
+        steer = [{**x, "quiet": True} if x.get("requestId") in ids else x for x in ops.get("steer") or [] if x.get("requestId") not in cancel]
+        steer += [{"requestId": keep[x["agentId"]].id, "text": x.get("task") or "", "quiet": True} for x in reqs if x.get("agentId") in keep]
+        reqs = [x for x in reqs if x.get("agentId") not in keep]
         emit_metric("live.turn.amended", 1, "Count", {"how": "replaced" if len(cancel) > len(ops.get("cancel") or []) else "steered"})
         return {**ops, "requests": reqs, "steer": steer, "cancel": cancel, "social": None, "say": None, "called": None}
 

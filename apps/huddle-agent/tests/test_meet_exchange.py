@@ -620,3 +620,24 @@ async def test_more_of_a_turn_that_already_asked_amends_its_request_and_is_not_a
     backend.route_extra = ops([("forge", "check the deploy", "name")])
     await says(h, P1, "Forge, also check the deploy.")
     assert len(h._requests.items) == 2
+
+
+async def test_a_grown_turn_that_drops_an_agent_calls_that_agents_row_off():
+    """#3961 review (P1): a first piece asked two agents; the whole turn asks one. The other's row is called off,
+    not left to run and answer."""
+    h, room, backend, lives, clock, log = await per_person()
+    backend.steer = True
+    h.on_speech(P1, True)
+    clock.t += 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "check the deploy", "name"), ("gauge", "check the numbers", "name")])
+    await says(h, P1, "Forge and Gauge, check the deploy")
+    forge, gauge = sorted(h._requests.items, key=lambda r: r.agent)
+    h.on_speech(P1, True)
+    clock.t += 0.5 + 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "check the deploy and the numbers", "name")])
+    await says(h, P1, "actually just Forge, both.")
+    assert forge.status in h_mod.OPEN, "the agent it still asks keeps its row"
+    assert gauge.status not in h_mod.OPEN, "the dropped agent's row is called off"
+    assert len(h._requests.items) == 2, "no new row"

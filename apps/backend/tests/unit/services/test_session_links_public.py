@@ -92,6 +92,10 @@ async def test_an_anyone_link_shows_the_title_to_a_non_member_before_any_snapsho
     await service.set_display_title(ALICE, sid, "ALPHA18")
     page = await links.open_page(None, token)
     assert (page.title, page.owner_first_name, page.continuable) == ("ALPHA18", "Alice", False)
+    # Whether the repo is private is not known yet, so no path goes out; the words stay.
+    await service.set_display_title(ALICE, sid, "Fix login in /Users/alice/private-repo/src/auth.py and ~/notes")
+    assert (await links.open_page(None, token)).title == "Fix login in and"
+    assert (await links.open_page(BOB, token)).title.endswith("~/notes"), "a member reads it as it is"
 
 
 @pytest.mark.asyncio

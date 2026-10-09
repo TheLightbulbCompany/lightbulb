@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import secrets
 import tarfile
 import tempfile
@@ -214,7 +215,12 @@ def _title(row: dict, member: bool) -> str | None:
         return title
     # Not a member, so the link is "Anyone with the link" and they watch the whole terminal: the
     # title hides nothing (owner ruling 2026-10-08). Likely secrets and a private repo's folder name do.
-    return redact(title, _project(row))
+    shown = redact(title, _project(row))
+    if not _known(row):
+        # No snapshot yet, so whether the repo is private (and its folder's name) is not known:
+        # every path goes, the words stay.
+        shown = " ".join(re.sub(r"(?<!\S)~?/\S*", "", shown).split())
+    return shown or None
 
 
 async def open_page(auth: AuthContext | None, token: str, *, refresh: bool = False) -> LinkPage:
@@ -460,6 +466,10 @@ async def viewing(token: str, lease: str | None, fresh: bool, retake: bool = Fal
         ExpressionAttributeNames={"#u": "until"},
         ExpressionAttributeValues={":exp": expires, ":ttl": now + CHANNEL_MEMORY_S},
     )
+    if sessions.public_settling(row, now):
+        # No picture is asked of the Mac for a link viewer yet (`forward` would drop it): the page
+        # asks again at its next renewal, and that ask is not spent here.
+        fresh = False
     if fresh:
         try:
             await run_in_thread(

@@ -391,7 +391,8 @@ async def forward(relay, cid: str, body: dict) -> None:
         # Nor while the owner's End is on its way (`endAskedAt`): what the provider prints as it
         # leaves (`claude --resume <id>`) is not for the link. A refused End frees it after a minute.
         ending = int(row.get("endAskedAt") or 0) > now - END_QUIET_S
-        public = sessions.public_id(row.get("shareLink"), row) if row.get("endedAt") is None and not ending else None
+        quiet = ending or sessions.public_settling(row, now)
+        public = sessions.public_id(row.get("shareLink"), row) if row.get("endedAt") is None and not quiet else None
         by_link = False
         if public:
             try:

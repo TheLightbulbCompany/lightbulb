@@ -3000,8 +3000,21 @@ def is_public(row: dict) -> bool:
 
 
 def _with_audience(link: dict, audience: str) -> dict:
-    kept = {k: v for k, v in link.items() if k != "publicId"}
-    return {**kept, "audience": audience, **({"publicId": str(uuid.uuid4())} if audience == "anyone" else {})}
+    kept = {k: v for k, v in link.items() if k not in ("publicId", "publicAt")}
+    # `publicAt`: when it became public, for `public_settling`.
+    public = {"publicId": str(uuid.uuid4()), "publicAt": int(time.time())} if audience == "anyone" else {}
+    return {**kept, "audience": audience, **public}
+
+
+# The Mac's heartbeat is 10 s (`heartbeat_interval`), and its ack carries the band's state.
+PUBLIC_GRACE_S = 14
+
+
+def public_settling(row: dict, now: float) -> bool:
+    """The link became public a moment ago and the Mac's band may still show what it drew for the
+    workspace (names, an agent's message): the presence push is best effort, the next heartbeat
+    ack is not. Until one has surely landed, nothing goes to the link's channel."""
+    return int((row.get("shareLink") or {}).get("publicAt") or 0) > now - PUBLIC_GRACE_S
 
 
 def narrow_link(row: dict) -> None:

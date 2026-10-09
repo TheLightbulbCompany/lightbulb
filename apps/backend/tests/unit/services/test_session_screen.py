@@ -538,7 +538,13 @@ async def _trade(token, lease):
 
 
 async def _public_link(sid):
+    """An "Anyone" link past its first seconds (`public_settling`), as nearly every viewer finds it."""
     token = (await service.put_link(ALICE, sid, "anyone")).url.split("#", 1)[1]
+    messaging_repo._table().update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+        UpdateExpression="SET shareLink.publicAt = :t",
+        ExpressionAttributeValues={":t": int(time.time()) - service.PUBLIC_GRACE_S - 1},
+    )
     return token, (await repo.get_session(OWNER, sid))["shareLink"]["publicId"]
 
 
@@ -916,3 +922,29 @@ async def test_an_only_me_session_admits_its_owners_end_and_nothing_else(transpo
         await service.submit_command(ALICE, None, sid, command("send", text="hello"))
     assert refused.value.error.code == "LOCAL_SESSION_CONFLICT"
     assert (await service.submit_command(ALICE, None, sid, command("end"))).state == "pending"
+
+
+@pytest.mark.asyncio
+async def test_a_link_that_just_became_public_gets_no_frame_until_the_band_has_surely_redrawn(transport, db):
+    """Workspace to Anyone: the Mac's band may still name people until its next heartbeat ack."""
+    from core.services import session_links
+
+    sid = await start(transport)
+    await ack(transport, sid)
+    token = (await service.put_link(ALICE, sid, "anyone")).url.split("#", 1)[1]
+    public = (await repo.get_session(OWNER, sid))["shareLink"]["publicId"]
+    transport[3].clear()
+    await session_links.viewing(token, None, True)
+    assert "local.session.watch" not in [m["type"] for _, m in transport[3]], "no picture asked of the Mac yet"
+    watched = db[0].get_item(Key={"pk": f"PUBWATCH#{public}", "sk": "WATCHED"})["Item"]
+    assert "askedAt" not in watched, "the viewer's next renewal may still ask"
+    transport[4].clear()
+    await session_screen.forward(relay(transport), "conn-1", frame(sid))
+    assert await _published(transport) == []
+    db[0].update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+        UpdateExpression="SET shareLink.publicAt = :t",
+        ExpressionAttributeValues={":t": int(time.time()) - service.PUBLIC_GRACE_S - 1},
+    )
+    await session_screen.forward(relay(transport), "conn-1", frame(sid))
+    assert [c for c, _ in await _published(transport)] == [f"/pub/{public}"]

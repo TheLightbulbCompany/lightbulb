@@ -48,7 +48,7 @@ Hermes child ──subagent.* events──▶ parent tool_progress_callback (bri
                                          ▼
                         AppSync room channel: room.subagent.event ──▶ web / desktop / iPhone store
 
-client ──GET /messaging/rooms/{room}/agents/{agent}/subagents──────────▶ bridge RPC subagent.list
+client ──GET /messaging/rooms/{room}/subagents (all agent members, one invoke)▶ bridge RPC subagent.list
 client ──GET  …/subagents/{id}/tail────────────────────────────────────▶ bridge RPC subagent.tail
 client ──POST …/subagents/{id}/steer {text} / …/{id}/stop──────────────▶ bridge RPC subagent.steer / .interrupt
 ```
@@ -65,16 +65,18 @@ client ──POST …/subagents/{id}/steer {text} / …/{id}/stop─────
   - **Batching.** It batches per (room, agent): at most one POST per second, with up to 25 events,
     to `{LIGHTBULB_API_URL}/api/v1/internal/messaging/subagents/{owner}/events`, using the hook token.
   - **Order.** It keeps event order and stamps each event with a per-process monotonic `seq`.
-  - **Coalescing.** `subagent.text` and `subagent.thinking` collapse to the last one per subagent
-    within a batch. `start`, `complete` and `tool` are never dropped.
+  - **Coalescing.** `subagent.text` is never sent, as upstream's `_progress_subagent` skips it.
+    `subagent.thinking` collapses to the last one per subagent within a batch. `start`, `progress`,
+    `tool` and `complete` are never dropped.
   - **Failures.** Failures are logged and dropped, the same as frames. The snapshot heals the client.
   - **Startup.** It starts lazily, like `followups.ensure_started`. It does nothing on a warm-pool microVM.
 - **RPC methods** in `server.py` `RPC_METHODS`: `subagent.list`, `subagent.tail`, `subagent.steer`
   and `subagent.interrupt`. These are ports of the upstream handlers.
-  - **Authority.** It comes from the room **session key**, not from upstream's TUI transport: a
-    record is owned when its `delegation_id` belongs to an async delegation whose `session_key`
-    equals the room session key (`tools.async_delegation.list_async_delegations()`), or, for a
-    synchronous child, when `_owns_subagent_record(record, parent_agent)` holds for that session's agent.
+  - **Authority.** It comes from the room **session key**, not from upstream's TUI transport. The
+    relay records `OWNER_OF[subagent_id] = session_key` for every event it forwards; a child's events
+    only ever arrive through the callback of the room turn that started it. A record in Hermes's
+    `_active_subagents` is owned by a session key when `OWNER_OF` maps its id to that key.
+    `subagent.list` takes a list of session keys (one per agent member), so a room costs one invoke.
   - **Rules.** As upstream, control acts on the authorized record's own agent object and never
     re-resolves a global id. Stop never touches siblings.
 - **Liveness.** `/ping` already reports `HealthyBusy` while delegations live (`followups.busy()`).
@@ -91,8 +93,12 @@ client ──POST …/subagents/{id}/steer {text} / …/{id}/stop─────
   - **Publish.** It publishes one `room.subagent.event` live event per batch on the room's current channel.
   - **Storage.** It stores nothing. AppSync is the fanout, and the runtime's registry is the truth
     while children live.
-- **Product routes** under `/api/v1/messaging/rooms/{roomId}/agents/{agentId}/subagents`:
-  - `GET` (snapshot), `GET /{subagentId}/tail`, `POST /{subagentId}/steer {text}`, and `POST /{subagentId}/stop`.
+- **Product routes:**
+  - `GET /api/v1/messaging/rooms/{roomId}/subagents` (snapshot for every agent member, one RPC),
+    then, under `/agents/{agentId}/subagents`: `GET /{subagentId}/tail`, `POST /{subagentId}/steer {text}`
+    and `POST /{subagentId}/stop`.
+  - **Shape.** Envelopes are camelCase. Each subagent entry is upstream's snake_case snapshot record
+    plus `agent_id`, passed through so the ported reducer reads it unchanged.
   - **Auth.** A room member (ruling 3). Steer and Stop also pass `chat_gate.gate_chat` and
     `touch_last_interactive`, as `steer_run` does.
   - **Runtime calls.** Each route makes one runtime RPC through `container_rpc`, sending the room
@@ -141,8 +147,9 @@ steer box. The transcript opens in a native sheet.
 ## Failure handling
 
 - **Lost live event:** the 5 s snapshot heals it while the strip is visible.
-- **microVM dies or is recycled:** children are gone, and the next snapshot returns none. The reducer
-  marks rows it had as `interrupted` and does not mark them `completed`. No spinner stays after the snapshot answers.
+- **microVM dies or is recycled:** children are gone, and the next snapshot returns none. As upstream's
+  `reconcileSubagentSnapshot` does at our pin, live rows missing from the snapshot are dropped, never
+  marked `completed`. No spinner stays after the snapshot answers.
 - **Hermes stall monitor kills a child:** the `subagent.complete` it emits carries a failed or
   stalled status, which shows as failed.
 - **Steer after the child finished:** the RPC answers not-found, and the UI says the subagent already finished.

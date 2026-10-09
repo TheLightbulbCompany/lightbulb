@@ -417,6 +417,43 @@ async def test_voice_run_is_a_run_on_the_room_key_that_names_its_call(run_env):
     assert out == {"runId": "run-1", "agentId": "fin-1", "steered": False}
 
 
+@pytest.mark.parametrize(
+    "speaker, members, requester",
+    [
+        ("user_b", MEMBERS, "user_b"),  # in-app Live: the signed-in member who spoke
+        ("meet:room-1:p7", MEMBERS, None),  # a Meet speaker is never a member, nor the inviting owner
+        ("Priya", MEMBERS + [{"kind": "human", "id": "user_o", "displayName": "Owen", "role": "owner"}], None),
+        (
+            "user_g",
+            MEMBERS + [{"kind": "human", "id": "user_g", "displayName": "Gus", "homeOwnerId": "org_z"}],
+            None,
+        ),  # shared-room guest
+    ],
+    ids=["live-member", "meet-bot", "meet-label", "foreign-guest"],
+)
+async def test_voice_run_carries_the_room_grant_for_the_member_who_asked(run_env, speaker, members, requester):
+    """Prod 10-09: a voice turn had no local-session grant, so lightbulb_local_sessions said NO_TURN."""
+    mint = MagicMock(return_value="jwt")
+    with (
+        patch.object(vc.messaging_repo, "list_members", AsyncMock(return_value=members)),
+        patch.object(vc.local_session_grants, "mint", mint),
+    ):
+        await vc.dispatch_voice_run(
+            call=WINDOW, run_id="run-1", agent_id="fin-1", speaker_id=speaker, utterance="sessions?", transcript=""
+        )
+    mint.assert_called_once_with("org_a", "room-1", "fin-1", "run-1", requester)
+    assert run_env.await_args.kwargs["headers"] == {
+        "Authorization": "Bearer gw",
+        "X-Lightbulb-Local-Session-Token": "jwt",
+    }
+
+
+async def test_voice_run_goes_out_without_a_grant_when_none_can_be_minted(run_env):
+    with patch.object(vc.local_session_grants, "mint", MagicMock(side_effect=RuntimeError)):
+        await _dispatch()
+    assert run_env.await_args.kwargs["headers"] == {"Authorization": "Bearer gw"}
+
+
 async def test_voice_run_history_is_the_newest_few_messages_cut_short(run_env):
     """A voice answer is spoken while someone waits: the prompt carries the newest 12 room messages,
     each cut to 500 characters, not the 50 full messages a chat turn gets (a 30k-token first prompt

@@ -1,4 +1,5 @@
 import json
+import pathlib
 import sys
 import threading
 import types
@@ -62,6 +63,14 @@ def test_create_registers_and_spawns(monkeypatch):
     assert server.handle_plugin("/internal/calls/v1/runs", "POST", AUTH, BODY)[0] == 202
     assert spawned[0][0] is turn.run_call_turn
     assert turn.RUNS["run-1"]["kind"] == "call" and turn.RUNS["run-1"]["identity"] == IDENTITY
+
+
+def test_the_backend_grant_rides_into_the_call_turn(monkeypatch):
+    spawned = []
+    monkeypatch.setattr(server.threading, "Thread", lambda target, args, **_k: SimpleNamespace(start=lambda: spawned.append(args)))
+    assert server.handle_plugin("/internal/calls/v1/runs", "POST", {**AUTH, "X-Lightbulb-Local-Session-Token": "jwt"}, BODY)[0] == 202
+    assert spawned[0][0] == {**IDENTITY, "localSessionToken": "jwt"}
+    assert turn.RUNS["run-1"]["identity"] == IDENTITY  # the grant is never registered with the run
 
 
 def test_stop_takes_the_same_identity():
@@ -229,6 +238,25 @@ def test_the_turn_context_names_the_voice_room(env, home, monkeypatch):
     turn._run_call(IDENTITY, REQUEST, _frames())
     assert seen[0]["roomId"] is None and seen[0]["voiceRoomId"] == ROOM and seen[0]["family"] == "call"
     assert seen[0]["sessionKey"] == CALL_SESSION  # the plugin reads the file by the agent's session id
+
+
+def test_the_sessions_tool_finds_the_grant_in_a_call_turn(env, home, monkeypatch):
+    """Prod 10-09: lightbulb_local_sessions answered NO_TURN in every voice turn (no grant reached it)."""
+    plugins = str(pathlib.Path(__file__).resolve().parents[1] / "plugins")
+    if plugins not in sys.path:
+        sys.path.insert(0, plugins)
+    import lightbulb
+    from lightbulb import turn_context
+
+    monkeypatch.setattr(turn_context, "_home", lambda: turn._profile_dir("agent-1"))
+    seen = {}
+    monkeypatch.setattr(lightbulb, "_call_sessions", lambda method, url, token, body=None: seen.update(
+        token=token) or {"sessions": []})
+    env["script"].append(lambda: seen.update(out=lightbulb._local_sessions({"action": "resources"}, session_id=CALL_SESSION)))
+    turn.register_call_run(IDENTITY)
+    assert turn._run_call({**IDENTITY, "localSessionToken": "jwt"}, REQUEST, _frames())[0] == "completed"
+    assert seen["token"] == "jwt" and seen["out"] != lightbulb.NO_TURN
+    assert turn_context.read(CALL_SESSION) is None  # cleared with the turn
 
 
 def test_a_steer_that_lands_before_the_agent_rides_the_user_message(env, home):

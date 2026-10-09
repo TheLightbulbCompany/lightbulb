@@ -30,6 +30,7 @@ from core.services import (
     hermes_profiles,
     jev,
     livekit_huddles,
+    local_session_grants,
     meeting_invites,
     messaging,
     openclaw_work,
@@ -462,18 +463,31 @@ async def _hold(owner_id: str) -> tuple[int, int]:
     raise _problem(409, code="voice_busy")
 
 
-async def _runtime(owner_id: str, path: str, body: dict, *, timeout_s: float = _TURN_TIMEOUT_S):
+async def _runtime(
+    owner_id: str, path: str, body: dict, *, timeout_s: float = _TURN_TIMEOUT_S, local_session_token: str | None = None
+):
     container = await container_repo.get_by_owner_id(owner_id)
     if not container:
         raise _problem(409, code="workspace_not_ready")
+    headers = {"Authorization": f"Bearer {container.get('gateway_token') or ''}"}
+    if local_session_token:
+        headers["X-Lightbulb-Local-Session-Token"] = local_session_token
     return await runtime_transport.request(
         container,
         path,
         method="POST",
         json_body=body,
-        headers={"Authorization": f"Bearer {container.get('gateway_token') or ''}"},
+        headers=headers,
         timeout_s=timeout_s,
     )
+
+
+def _voice_requester(members: list[dict], owner_id: str, speaker_id: str) -> str | None:
+    """Who a voice run's local-session grant is FOR: the speaker, only when they are a human member of
+    this workspace seated in the room (the C8 rule). A Meet speaker (``meet:<room>`` or a label) is
+    never a member, so its grant names nobody and every session is "ask"; never the inviting owner."""
+    member = next((m for m in members if m.get("kind") == "human" and m["id"] == speaker_id), None)
+    return speaker_id if member and messaging_repo.member_home(member, owner_id) == owner_id else None
 
 
 def prewake_owner(owner_id: str, team: list[dict] | None = None, room_id: str | None = None) -> None:
@@ -840,8 +854,16 @@ async def dispatch_voice_run(
     fields = {"roomId": room_id, "agentId": agent_id, "speakerUserId": speaker_id, "speakerName": name}
     # An atomic SET of these fields: a /turns retry cannot drop a "don't post that" mark, whenever it lands.
     await messaging_repo.put_voice_run(owner_id, run_id, fields)
+    # The room grant a typed message here would get (openclaw_work), keyed on the voice run.
     try:
-        resp = await _runtime(owner_id, _BRIDGE_RUNS, body)
+        grant = local_session_grants.mint(
+            owner_id, room_id, agent_id, run_id, _voice_requester(members, owner_id, speaker_id)
+        )
+    except (RuntimeError, messaging.ApiProblem):
+        grant = None
+        logger.warning("Voice local session invocation unavailable")
+    try:
+        resp = await _runtime(owner_id, _BRIDGE_RUNS, body, local_session_token=grant)
         ok = resp.status_code in (200, 202)  # 200 = replayed: a retry of a run the bridge already has
         if not ok:
             logger.warning("voice run refused run=%s status=%s body=%s", run_id, resp.status_code, resp.text[:500])

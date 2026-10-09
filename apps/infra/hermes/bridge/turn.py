@@ -486,7 +486,8 @@ def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> t
     # Keyed by the call key, as _desktop_active_turn below: the plugin's tools find both by the
     # session id Hermes hands them, which is the agent's own (see run_turn's turn_ctx).
     ctx = {"apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "agentId": agent_id, "runId": run_id,
-           "sessionKey": call_key, "roomId": None, "voiceRoomId": room_id, "family": "call"}
+           "sessionKey": call_key, "roomId": None, "voiceRoomId": room_id,
+           "localSessionToken": identity.get("localSessionToken"), "family": "call"}
     body = _voice_body(identity, request)
     # The room turns' folder path, never filled or removed here: an observed row's "saved at" note
     # names it, and the room's next turn fills it (_observed_text).

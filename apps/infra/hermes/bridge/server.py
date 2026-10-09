@@ -195,7 +195,7 @@ def _call_envelope(body, *, path_run_id: str | None = None, require_request: boo
     return identity, request
 
 
-def _handle_call_run(path: str, method: str, body) -> tuple[int, dict] | None:
+def _handle_call_run(path: str, method: str, headers: dict, body) -> tuple[int, dict] | None:
     if path == "/internal/calls/v1/runs" and method == "POST":
         parsed = _call_envelope(body, require_request=True)
         if parsed is None:
@@ -207,7 +207,10 @@ def _handle_call_run(path: str, method: str, body) -> tuple[int, dict] | None:
             if not turn.register_call_run(identity):
                 turn.release_turn()
                 return 200, {"run_id": identity["runId"], "status": "replayed"}
-            threading.Thread(target=turn.run_call_turn, args=(dict(identity), dict(request), True),
+            # The backend's local-session grant for this voice run, as the room ingress takes it.
+            grant = _header(headers, "X-Lightbulb-Local-Session-Token")
+            threading.Thread(target=turn.run_call_turn,
+                             args=(dict(identity, localSessionToken=grant), dict(request), True),
                              daemon=True, name=f"call-{identity['runId']}").start()
         except Exception:
             turn.discard_run(identity["runId"])
@@ -233,7 +236,7 @@ def handle_plugin(path: str, method: str, headers: dict, body) -> tuple[int, dic
     vault = _header(headers, "X-Lightbulb-Vault")
     if vault:
         bridge.VAULT_TOKEN = vault
-    call = _handle_call_run(path, method, body)
+    call = _handle_call_run(path, method, headers, body)
     if call is not None:
         return call
     paperclip = _handle_paperclip_run(path, method, headers, body)

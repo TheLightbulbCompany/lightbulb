@@ -24,6 +24,11 @@ vi.mock("@/components/teams/agents/hooks/useAgentMutations", () => ({
   useAgentMutations: () => ({ remove }),
 }));
 vi.mock("@/lib/api", () => ({ useApi: () => ({ post: vi.fn(), get: vi.fn() }) }));
+// The company-Stripe card's Connect doors follow the provisioning flag.
+const stripeStatus = vi.hoisted(() => ({ provisioning_enabled: true }));
+vi.mock("@/components/settings/CompanyStripeSection", () => ({
+  useCompanyStripeStatus: () => ({ data: stripeStatus }),
+}));
 
 import { ApprovalDetail } from "@/components/teams/approvals/ApprovalDetail";
 
@@ -122,7 +127,8 @@ describe("ApprovalDetail (ported)", () => {
     await waitFor(() => expect(remove).toHaveBeenCalledWith("agent_new"));
   });
 
-  it("keeps Lightbulb's own cards on their inbox actions", () => {
+  it("keeps Lightbulb's own cards on their inbox actions (provisioning on: the Connect doors)", () => {
+    stripeStatus.provisioning_enabled = true;
     seed({
       type: "request_board_approval",
       payload: { isol8_action: "company_stripe", title: "Set up Northwind on Stripe" },
@@ -134,6 +140,22 @@ describe("ApprovalDetail (ported)", () => {
     for (const name of ["Approve", "Request revision"]) {
       expect(screen.queryByRole("button", { name })).toBeNull();
     }
+    expect(screen.queryByRole("link", { name: /Connect Stripe/ })).toBeNull();
+  });
+
+  it("keeps Lightbulb's own cards on their inbox actions (provisioning off: Open Accounts + Approve)", () => {
+    stripeStatus.provisioning_enabled = false;
+    seed({
+      type: "request_board_approval",
+      payload: { isol8_action: "company_stripe", title: "Set up Northwind on Stripe" },
+    });
+    render(<ApprovalDetail approvalId={ID} />);
+    expect(screen.queryByRole("button", { name: "Set up Stripe" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Connect existing" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Open Accounts" })).toBeInTheDocument();
+    // Exactly one Approve: the card's own, not the hidden generic row's.
+    expect(screen.getAllByRole("button", { name: "Approve" })).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "Request revision" })).toBeNull();
     expect(screen.queryByRole("link", { name: /Connect Stripe/ })).toBeNull();
   });
 });

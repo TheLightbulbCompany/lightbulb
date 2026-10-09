@@ -62,11 +62,12 @@ the entrant's own Stripe account's revenue lift, never platform revenue. **It
 gates nothing** — signing up, onboarding and using the product are unaffected,
 and nobody is ever held or queued waiting for it.
 
-Entry is a **sign-up sheet inside the product**: once the owner is onboarded
-(your first run has delivered), a banner in the workspace — and the card on
-`thelightbulb.company/launch` — offers **Join**. Joining takes a display name plus a
-public/private choice and stamps their position on the sheet. Org workspaces
-cannot join; the sheet is personal-account only.
+There is **no self-serve Join**. The sheet is personal-account only, and every
+Lightbulb account is a workspace, so the join door refuses everyone. Entry is
+the **team hand-raise form** on `thelightbulb.company/launch` ("Entering as a
+team?", shown only while the sheet is open): it emails the founders, who add
+the team by hand. Never tell an owner they are entered, or that a Join button
+exists — point them at that form, and say the founders do the entry.
 
 The sheet closes **September 30 at 12:00 PM ET**, and the competition runs
 **October 1 – December 1**. The first 200 positions on the sheet at close get

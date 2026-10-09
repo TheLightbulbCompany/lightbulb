@@ -196,7 +196,13 @@ export function ApprovalRow({
         )}
         {isActionable && !rejecting && (
           <div className="flex shrink-0 gap-2">
-            {isCompanyStripeApproval(approval) && stripeStatus?.provisioning_enabled ? (
+            {isCompanyStripeApproval(approval) && !stripeStatus ? (
+              // Status not loaded yet: offer neither door set, or a load
+              // would briefly read as "provisioning off" and show Approve.
+              <EditorialButton size="sm" disabled>
+                Loading…
+              </EditorialButton>
+            ) : isCompanyStripeApproval(approval) && stripeStatus?.provisioning_enabled ? (
               <>
                 <EditorialButton
                   size="sm"

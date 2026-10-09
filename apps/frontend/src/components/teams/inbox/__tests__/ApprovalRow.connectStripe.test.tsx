@@ -17,9 +17,9 @@ const get = vi.fn();
 vi.mock("@/lib/api", () => ({ useApi: () => ({ post, get }) }));
 
 // The Connect doors are offered only while the provisioning rail is on.
-const stripeStatus = vi.hoisted(() => ({ provisioning_enabled: true }));
+const stripeStatus = vi.hoisted(() => ({ provisioning_enabled: true, loaded: true }));
 vi.mock("@/components/settings/CompanyStripeSection", () => ({
-  useCompanyStripeStatus: () => ({ data: stripeStatus }),
+  useCompanyStripeStatus: () => ({ data: stripeStatus.loaded ? stripeStatus : undefined }),
 }));
 const { navigateShell } = vi.hoisted(() => ({ navigateShell: vi.fn() }));
 vi.mock("@/lib/shellNav", async (orig) => ({ ...(await orig<typeof import("@/lib/shellNav")>()), navigateShell }));
@@ -52,9 +52,20 @@ beforeEach(() => {
   get.mockReset();
   navigateShell.mockReset();
   stripeStatus.provisioning_enabled = true;
+  stripeStatus.loaded = true;
 });
 
 describe("ApprovalRow company_stripe", () => {
+  it("offers neither door set (and no Approve) until the Stripe status has loaded", () => {
+    stripeStatus.loaded = false;
+    render(<ApprovalRow approval={A} />);
+
+    expect(screen.getByRole("button", { name: "Loading…" })).toBeDisabled();
+    for (const name of ["Set up Stripe", "Connect existing", "Open Accounts", "Approve"]) {
+      expect(screen.queryByRole("button", { name })).toBeNull();
+    }
+  });
+
   it("with provisioning off, offers Open Accounts + Approve instead of the Connect doors", () => {
     stripeStatus.provisioning_enabled = false;
     render(<ApprovalRow approval={A} />);

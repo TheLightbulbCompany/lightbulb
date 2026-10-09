@@ -640,6 +640,10 @@ class LocalSessionRelay:
                         capabilitiesVerified=compatible,
                         lastEventAt=int(time.time()),
                     )
+                    # The run before had no terminal (it ran inside an app): this one, which may
+                    # have one, does not inherit its "Anyone with the link".
+                    if previous and sessions.conversation_only(previous):
+                        sessions.narrow_link(row)
                     # Absent, never a stored null.
                     for key in ("holderId", "forkedFrom"):
                         if row.get(key) is None:
@@ -912,6 +916,8 @@ class LocalSessionRelay:
                             updated["terminalReason"] = item.terminal_reason
                         else:
                             updated.pop("terminalReason", None)
+                        if sessions.conversation_only(updated):
+                            sessions.narrow_link(updated)
                     if item.capabilities is not None and row["capabilitiesVerified"]:
                         caps = item.capabilities
                         if caps.send_mode != "queue" or (row["provider"] != "codex" and (caps.steer or caps.interrupt)):

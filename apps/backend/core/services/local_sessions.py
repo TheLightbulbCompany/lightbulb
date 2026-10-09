@@ -2995,6 +2995,14 @@ def _with_audience(link: dict, audience: str) -> dict:
     return {**kept, "audience": audience, **({"publicId": str(uuid.uuid4())} if audience == "anyone" else {})}
 
 
+def narrow_link(row: dict) -> None:
+    """A session known to have no terminal keeps no public link: the relay narrows it on the row
+    it is writing, so a later run of the conversation in a terminal is not public again without a
+    new "Anyone with the link" choice. (`public_id`'s `row` covers the time before that write.)"""
+    if public_id(row.get("shareLink")):
+        row["shareLink"] = _with_audience(row["shareLink"], "workspace")
+
+
 def _link_public(link: dict, row: dict) -> SessionLink:
     from core import encryption
 

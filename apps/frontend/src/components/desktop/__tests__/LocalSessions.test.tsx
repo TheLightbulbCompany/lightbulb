@@ -329,25 +329,31 @@ it("applies an explicit off when the block is there but local storage was cleare
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("shell_integration_set", {enabled:false}));
   localStorage.removeItem("lightbulb.desktop.liveSharingOffer");
 });
-it("never writes the switch for an already-offered Mac before its stored answer is known, or when it cannot be read", async () => {
-  localStorage.setItem("lightbulb.desktop.liveSharingOffer", "1");
-  // The read is still out: the switch waits, and Continue leaves the rc files alone.
+// Codex on #3950: a reinstall leaves the block in the rc files and nothing in this app's storage.
+it("never shows the switch off over a Mac that is on: it and Continue wait for the Mac's answer, and a failed read says so", async () => {
+  localStorage.removeItem("lightbulb.desktop.liveSharingOffer");
   let answer: (on: boolean) => void = () => {};
   invoke.mockImplementation(async (command) => command === "shell_integration_status" ? new Promise<boolean>(resolve => { answer = resolve; }) : command === "local_sessions_set" ? 1 : { enrollment:null, pairedWorkspaceId:"org", status:"paused" });
   const first = render(<DesktopPermissionsGate />);
-  const waiting = await screen.findByRole("button", {name:/Share every new session/});
-  expect(waiting).toBeDisabled();
-  expect(waiting).toHaveAttribute("aria-pressed", "false");
+  const live = await screen.findByRole("button", {name:/Share every new session/});
+  expect(live).toBeDisabled();
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("local_sessions_status"));
+  expect(screen.getByRole("button", {name:"Continue"})).toBeDisabled();
+  // The block is there: the box shows on, and leaving it untouched changes nothing behind it.
+  await act(async () => { answer(true); });
+  await waitFor(() => expect(live).toHaveAttribute("aria-pressed", "true"));
+  await waitFor(() => expect(screen.getByRole("button", {name:"Continue"})).toBeEnabled());
   await userEvent.click(screen.getByRole("button", {name:"Continue"}));
   await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
   expect(invoke.mock.calls.some(([command]) => command === "shell_integration_set")).toBe(false);
-  answer(false);
   first.unmount();
   localStorage.removeItem("isol8.desktop.permissions.v1");
-  // The read failed: the same.
+  localStorage.removeItem("lightbulb.desktop.liveSharingOffer");
+  // The read failed: the dialog says so instead of showing a plain off, and writes nothing.
   invoke.mockImplementation(async (command) => { if (command === "shell_integration_status") throw new Error("no"); return command === "local_sessions_set" ? 1 : { enrollment:null, pairedWorkspaceId:"org", status:"paused" }; });
   render(<DesktopPermissionsGate />);
-  expect(await screen.findByRole("button", {name:/Share every new session/})).toBeDisabled();
+  expect(await screen.findByText(/Could not read whether “Share every new session” is on for this Mac/)).toBeInTheDocument();
+  expect(screen.getByRole("button", {name:/Share every new session/})).toBeDisabled();
   await userEvent.click(screen.getByRole("button", {name:"Continue"}));
   await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
   expect(invoke.mock.calls.some(([command]) => command === "shell_integration_set")).toBe(false);

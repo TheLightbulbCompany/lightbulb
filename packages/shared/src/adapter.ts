@@ -1,7 +1,7 @@
 /**
  * PlatformAdapter is the seam between the framework-neutral core and each
  * client platform. The web app (Next.js + @clerk/nextjs) and the mobile app
- * (Expo + @clerk/clerk-expo) each provide one; shared code never imports a
+ * (Expo + @clerk/expo) each provide one; shared code never imports a
  * platform SDK directly.
  *
  * Notes on `lib` targeting: the shared package compiles against ES2022 with

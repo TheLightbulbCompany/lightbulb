@@ -2,7 +2,7 @@
 // same way usage.spend.test.tsx does — this suite only exercises the pure
 // planLabel helper.
 jest.mock("expo-router", () => ({ useFocusEffect: jest.fn() }));
-jest.mock("@clerk/clerk-expo", () => ({ useAuth: () => ({ getToken: jest.fn() }) }));
+jest.mock("@clerk/expo", () => ({ useAuth: () => ({ getToken: jest.fn() }) }));
 
 import { planLabel } from "../overview";
 

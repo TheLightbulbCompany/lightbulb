@@ -14,7 +14,7 @@ jest.mock("expo-router", () => {
     useIsFocused: () => mockFocused,
   };
 });
-jest.mock("@clerk/clerk-expo", () => ({ useAuth: () => ({ userId: "user-a", orgId: mockOrgId, isLoaded: true }) }));
+jest.mock("@clerk/expo", () => ({ useAuth: () => ({ userId: "user-a", orgId: mockOrgId, isLoaded: true }) }));
 jest.mock("expo-crypto", () => ({ randomUUID: () => "33333333-3333-4333-8333-333333333333" }));
 jest.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
 jest.mock("../../../lib/keyboardOffset", () => ({ usePushedScreenKeyboardOffset: () => 0 }));

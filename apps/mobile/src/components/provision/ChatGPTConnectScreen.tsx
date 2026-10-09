@@ -11,7 +11,7 @@
  * so the verification URL opens via openBrowserAsync (NOT
  * openAuthSessionAsync, which would wait forever for a return URL).
  */
-import { useAuth } from "@clerk/clerk-expo";
+import { useAuth } from "@clerk/expo";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";

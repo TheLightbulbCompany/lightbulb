@@ -16,7 +16,7 @@ import { AppState } from "react-native";
  * `../api/client`, not the `@lightbulb/shared` barrel this file's mock used to
  * patch.
  */
-jest.mock("@clerk/clerk-expo", () => ({
+jest.mock("@clerk/expo", () => ({
   useAuth: () => ({ getToken: jest.fn(async () => "tok") }),
 }));
 jest.mock("@lightbulb/shared", () => ({

@@ -1,4 +1,4 @@
-import { useAuth } from "@clerk/clerk-expo";
+import { useAuth } from "@clerk/expo";
 import { createApiClient } from "@lightbulb/shared";
 import Constants from "expo-constants";
 import * as Device from "expo-device";

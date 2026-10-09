@@ -8,7 +8,7 @@ let mockLoaded = true;
 let mockUser: MockUser | null = null;
 const mockSignOut = jest.fn(async () => undefined);
 
-jest.mock("@clerk/clerk-expo", () => ({
+jest.mock("@clerk/expo", () => ({
   useUser: () => ({ isLoaded: mockLoaded, user: mockUser }),
   useAuth: () => ({ signOut: mockSignOut }),
 }));

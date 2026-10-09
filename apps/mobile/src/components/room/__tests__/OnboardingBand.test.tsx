@@ -15,7 +15,7 @@ jest.mock("expo-router", () => {
 
 let mockOrg: { id: string; membersCount: number } | null = { id: "org_1", membersCount: 1 };
 let mockRole = "org:admin";
-jest.mock("@clerk/clerk-expo", () => ({
+jest.mock("@clerk/expo", () => ({
   useAuth: () => ({ getToken: async () => "token" }),
   useOrganization: () => ({ organization: mockOrg, membership: { role: mockRole } }),
 }));

@@ -1,4 +1,4 @@
-import { useAuth, useOrganization } from "@clerk/clerk-expo";
+import { useAuth, useOrganization } from "@clerk/expo";
 import { createApiClient } from "@lightbulb/shared";
 import { SymbolView } from "expo-symbols";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -26,7 +26,7 @@ type Result = { email: string; text: string; ok: boolean };
 export default function InviteScreen() {
   const palette = useChatPalette();
   const { getToken } = useAuth();
-  // Stable client despite clerk-expo's per-render getToken (see settings.tsx).
+  // Stable client despite Clerk's per-render getToken (see settings.tsx).
   const getTokenRef = useRef(getToken);
   getTokenRef.current = getToken;
   const api = useMemo(() => createApiClient(makeAdapter(() => getTokenRef.current())), []);

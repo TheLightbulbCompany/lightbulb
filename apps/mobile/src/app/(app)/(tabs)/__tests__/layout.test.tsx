@@ -6,7 +6,7 @@ import type { ReactNode } from "react";
 // the layout's own imports are still resolving.
 let mockUnread = 0;
 let mockOrgId: string | null = "org-a";
-jest.mock("@clerk/clerk-expo", () => ({ useAuth: () => ({ orgId: mockOrgId }) }));
+jest.mock("@clerk/expo", () => ({ useAuth: () => ({ orgId: mockOrgId }) }));
 
 // The native tab bar is a UITabBarController; there is nothing to mount in
 // jest. This stands in for its SHAPE — one node per trigger, in order — which

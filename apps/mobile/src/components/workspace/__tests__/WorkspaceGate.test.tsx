@@ -9,7 +9,7 @@ const mockSetActive = jest.fn(async (_params: { organization: string }) => undef
 const mockRevalidate = jest.fn(async () => undefined);
 const mockResetSwrCache = jest.fn();
 
-jest.mock("@clerk/clerk-expo", () => ({
+jest.mock("@clerk/expo", () => ({
   useAuth: () => ({ orgId: mockOrgId, signOut: jest.fn() }),
   useOrganizationList: () => ({
     isLoaded: true,

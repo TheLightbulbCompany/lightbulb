@@ -1,4 +1,4 @@
-import { useAuth } from "@clerk/clerk-expo";
+import { useAuth } from "@clerk/expo";
 import { ApiError, createApiClient } from "@lightbulb/shared";
 import { useMemo, useRef } from "react";
 

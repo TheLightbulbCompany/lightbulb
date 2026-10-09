@@ -90,7 +90,7 @@ jest.mock("expo-router", () => {
 // The scope and not the user, because the screen reads `userId` and asserts on
 // it; `useOrganization` it never touches.
 let mockScope = 0;
-jest.mock("@clerk/clerk-expo", () => ({
+jest.mock("@clerk/expo", () => ({
   useAuth: () => ({ userId: "user-a", getToken: jest.fn(async () => "token") }),
   useOrganization: () => ({ organization: { id: `org-${mockScope}` } }),
 }));

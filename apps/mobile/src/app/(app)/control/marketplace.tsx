@@ -1,4 +1,4 @@
-import { useAuth } from "@clerk/clerk-expo";
+import { useAuth } from "@clerk/expo";
 import { SymbolView } from "expo-symbols";
 import { router } from "expo-router";
 import { useEffect, useRef, useState, type ReactElement } from "react";

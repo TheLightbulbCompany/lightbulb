@@ -16,7 +16,7 @@ describe("presence", () => {
 
 const mockGet = jest.fn(async () => ({ online: ["user_b"] }));
 const mockPost = jest.fn(async () => ({}));
-jest.mock("@clerk/clerk-expo", () => ({ useAuth: () => ({ getToken: async () => "t" }) }));
+jest.mock("@clerk/expo", () => ({ useAuth: () => ({ getToken: async () => "t" }) }));
 jest.mock("@lightbulb/shared", () => ({
   ...jest.requireActual("@lightbulb/shared"),
   createApiClient: () => ({ get: mockGet, post: mockPost }),

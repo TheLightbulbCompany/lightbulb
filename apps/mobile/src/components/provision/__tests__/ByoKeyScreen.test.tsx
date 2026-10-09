@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-
 const mockPut = jest.fn();
 const mockPost = jest.fn();
 
-jest.mock("@clerk/clerk-expo", () => ({
+jest.mock("@clerk/expo", () => ({
   useAuth: () => ({ getToken: jest.fn(async () => "tok"), signOut: jest.fn() }),
 }));
 

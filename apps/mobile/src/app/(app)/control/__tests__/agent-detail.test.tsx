@@ -4,7 +4,7 @@ import { Alert } from "react-native";
 const mockGet = jest.fn();
 const mockPut = jest.fn();
 
-jest.mock("@clerk/clerk-expo", () => ({ useAuth: () => ({ getToken: jest.fn(async () => "tok") }) }));
+jest.mock("@clerk/expo", () => ({ useAuth: () => ({ getToken: jest.fn(async () => "tok") }) }));
 jest.mock("expo-router", () => ({
   router: { back: jest.fn() },
   Stack: { Screen: () => null },

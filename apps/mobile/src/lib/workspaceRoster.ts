@@ -1,4 +1,4 @@
-import { useOrganization } from "@clerk/clerk-expo";
+import { useOrganization } from "@clerk/expo";
 import { useEffect, useState } from "react";
 
 import { fetchAgents, fetchMembers, useTeamsConfig, type CompanyMember, type TeamsAgent } from "./teamsData";

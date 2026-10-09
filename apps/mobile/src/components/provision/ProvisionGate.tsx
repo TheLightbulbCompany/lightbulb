@@ -48,7 +48,7 @@
  * Polling continues while `teamPending` (see useContainerStatus) so the gate
  * clears itself once the admin's workspace comes up.
  */
-import { useAuth, useOrganization } from "@clerk/clerk-expo";
+import { useAuth, useOrganization } from "@clerk/expo";
 import { createApiClient } from "@lightbulb/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {

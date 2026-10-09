@@ -1,4 +1,4 @@
-import { useAuth } from "@clerk/clerk-expo";
+import { useAuth } from "@clerk/expo";
 import { SymbolView } from "expo-symbols";
 import { agentDisplayName, useAgents, type MemberRef } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";

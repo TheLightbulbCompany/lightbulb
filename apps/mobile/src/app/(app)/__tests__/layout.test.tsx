@@ -32,7 +32,7 @@ jest.mock("expo-router/react-navigation", () => ({
   getFocusedRouteNameFromRoute: () => mockFocusedTab,
 }));
 let mockSignedIn = true;
-jest.mock("@clerk/clerk-expo", () => ({
+jest.mock("@clerk/expo", () => ({
   useAuth: () => ({ isSignedIn: mockSignedIn, isLoaded: true }),
 }));
 const mockClearRoomsCache = jest.fn();

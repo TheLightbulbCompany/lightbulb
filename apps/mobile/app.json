@@ -35,6 +35,7 @@
       ]
     },
     "plugins": [
+      "@clerk/expo",
       "expo-apple-authentication",
       "expo-iap",
       "expo-router",

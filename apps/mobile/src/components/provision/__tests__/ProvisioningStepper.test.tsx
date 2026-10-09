@@ -15,7 +15,7 @@ jest.mock("react-native-safe-area-context", () => ({
 // exit (same rule as ProvisionGate's Interstitial) — which means this
 // component now calls useAuth and needs Clerk stubbed.
 const mockSignOut = jest.fn();
-jest.mock("@clerk/clerk-expo", () => ({
+jest.mock("@clerk/expo", () => ({
   useAuth: () => ({ signOut: mockSignOut }),
 }));
 

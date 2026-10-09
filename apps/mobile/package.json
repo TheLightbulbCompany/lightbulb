@@ -15,7 +15,7 @@
     "test": "jest --ci"
   },
   "dependencies": {
-    "@clerk/clerk-expo": "^2.20.0",
+    "@clerk/expo": "^4.10.0",
     "@config-plugins/react-native-webrtc": "15.0.2",
     "@expo-google-fonts/lora": "^0.4.2",
     "@expo-google-fonts/source-sans-3": "^0.4.1",

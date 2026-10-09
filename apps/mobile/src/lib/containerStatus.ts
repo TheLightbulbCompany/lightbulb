@@ -65,7 +65,7 @@
  * per-CONTAINER `onboarded` fact for status consumers and legacy responses.
  * `undefined` means "not known" (old backend / not-yet-ready).
  */
-import { useAuth } from "@clerk/clerk-expo";
+import { useAuth } from "@clerk/expo";
 import { useMemo, useRef } from "react";
 import { AppState } from "react-native";
 import {

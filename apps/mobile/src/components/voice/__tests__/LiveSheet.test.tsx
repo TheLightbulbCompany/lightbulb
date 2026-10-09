@@ -12,7 +12,7 @@ let mockParticipants: { identity: string; name?: string }[] = [];
 let mockTracks: unknown[] = [];
 let mockEmit: (e: LiveEvent) => void = () => {};
 
-jest.mock("@clerk/clerk-expo", () => ({ useAuth: () => ({ getToken: async () => "t" }) }));
+jest.mock("@clerk/expo", () => ({ useAuth: () => ({ getToken: async () => "t" }) }));
 const mockLiveEvents = { onEvent: (h: (e: LiveEvent) => void) => { mockEmit = h; return () => {}; }, connectionRevision: 0 };
 jest.mock("../../../providers/live-events", () => ({ useLiveEvents: () => mockLiveEvents }));
 jest.mock("expo-router", () => ({ router: { push: (...a: unknown[]) => mockPush(...a) } }));

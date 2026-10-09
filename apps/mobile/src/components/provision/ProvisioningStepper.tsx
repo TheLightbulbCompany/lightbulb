@@ -47,7 +47,7 @@
  * Mobile keeps three status-derived steps rather than adding a second network
  * dependency to a screen whose whole job is "the network isn't ready yet".
  */
-import { useAuth } from "@clerk/clerk-expo";
+import { useAuth } from "@clerk/expo";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import {
   AccessibilityInfo,

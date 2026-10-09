@@ -27,7 +27,7 @@
  * that named fewer companies (settings.tsx `providerLabel` is where the live
  * choice is surfaced).
  */
-import { useAuth, useUser } from "@clerk/clerk-expo";
+import { useAuth, useUser } from "@clerk/expo";
 import { useEffect, useState, type ReactNode } from "react";
 import {
   ActivityIndicator,

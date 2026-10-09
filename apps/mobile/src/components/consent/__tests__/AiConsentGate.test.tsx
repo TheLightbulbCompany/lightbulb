@@ -12,7 +12,7 @@ let mockUser: { id: string } | null = { id: "user_1" };
 jest.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ top: 59, bottom: 34, left: 0, right: 0 }),
 }));
-jest.mock("@clerk/clerk-expo", () => ({
+jest.mock("@clerk/expo", () => ({
   useUser: () => ({ user: mockUser }),
   useAuth: () => ({ signOut: mockSignOut }),
 }));

@@ -6,7 +6,7 @@ import { render, screen } from "@testing-library/react-native";
 
 let mockAccountFixture: Record<string, unknown> | Error;
 
-jest.mock("@clerk/clerk-expo", () => ({
+jest.mock("@clerk/expo", () => ({
   useAuth: () => ({ getToken: jest.fn(async () => "tok") }),
   useOrganization: () => ({ organization: null, membership: null }),
 }));

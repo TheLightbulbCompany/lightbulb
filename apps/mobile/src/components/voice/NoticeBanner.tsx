@@ -1,4 +1,4 @@
-import { useAuth } from "@clerk/clerk-expo";
+import { useAuth } from "@clerk/expo";
 import { createApiClient, renamedText, voiceNoteText } from "@lightbulb/shared";
 import { router } from "expo-router";
 import { useEffect, useMemo, useRef } from "react";

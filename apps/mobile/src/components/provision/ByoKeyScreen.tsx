@@ -18,7 +18,7 @@
  * change_provider rejects with 409 `byo_key_missing` unless the key is
  * already saved.
  */
-import { useAuth } from "@clerk/clerk-expo";
+import { useAuth } from "@clerk/expo";
 import { useCallback, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,

@@ -1,4 +1,4 @@
-import { useAuth, useOrganization, useUser } from "@clerk/clerk-expo";
+import { useAuth, useOrganization, useUser } from "@clerk/expo";
 import { Button, HStack, LabeledContent, Section, Text, VStack } from "@expo/ui/swift-ui";
 import {
   accessibilityLabel,
@@ -96,7 +96,7 @@ type BillingState =
 
 function useBillingData(orgRestricted: boolean) {
   const { getToken } = useAuth();
-  // clerk-expo hands out a NEW getToken reference on every render. Routing it
+  // Clerk hands out a NEW getToken reference on every render. Routing it
   // through a ref (gateway.tsx getTokenRef pattern) keeps the api client and
   // `load` referentially stable, so useFocusEffect fires exactly once per
   // focus instead of looping load → setState → new getToken → reload forever.

@@ -1,4 +1,4 @@
-import { useAuth, useOrganization } from "@clerk/clerk-expo";
+import { useAuth, useOrganization } from "@clerk/expo";
 import { router, useFocusEffect } from "expo-router";
 import {
   useCallback,

@@ -19,6 +19,7 @@ from enum import Enum
 from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event
 from core.repositories import messaging_repo
+from core.services.person_label import is_relay_email
 
 logger = logging.getLogger(__name__)
 
@@ -261,7 +262,7 @@ async def seed_goal_and_project(
 
 def first_name_from_email(email: str | None) -> str:
     """ "priya.sharma@acme.co" -> "Priya Sharma". Names the seeded project."""
-    local = (email or "").split("@")[0].strip()
+    local = "" if is_relay_email(email) else (email or "").split("@")[0].strip()
     return local.replace(".", " ").title() or "there"
 
 

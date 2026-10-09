@@ -19,11 +19,12 @@ vi.mock("@/lib/api", async (importOriginal) => {
 const nav = vi.hoisted(() => ({
   params: { orgId: "org_1" } as Record<string, string>,
   push: vi.fn(),
+  replace: vi.fn(),
 }));
 
 vi.mock("next/navigation", () => ({
   useParams: () => nav.params,
-  useRouter: () => ({ push: nav.push }),
+  useRouter: () => ({ push: nav.push, replace: nav.replace }),
 }));
 
 const clerk = vi.hoisted(() => ({
@@ -31,12 +32,14 @@ const clerk = vi.hoisted(() => ({
   isSignedIn: true,
   orgListLoaded: true,
   setActive: vi.fn().mockResolvedValue(undefined),
+  firstName: "Ada" as string | null,
   signInButtonProps: null as Record<string, unknown> | null,
 }));
 
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ isLoaded: clerk.isLoaded, isSignedIn: clerk.isSignedIn }),
   useOrganizationList: () => ({ isLoaded: clerk.orgListLoaded, setActive: clerk.setActive }),
+  useUser: () => ({ isLoaded: clerk.isLoaded, user: clerk.isSignedIn ? { firstName: clerk.firstName } : null }),
   // Keep the props: dropping them is how a missing redirect shipped untested.
   SignInButton: ({ children, ...props }: { children: React.ReactNode }) => {
     clerk.signInButtonProps = props;
@@ -51,6 +54,8 @@ describe("JoinWorkspacePage", () => {
   beforeEach(() => {
     post.mockReset();
     nav.push.mockReset();
+    nav.replace.mockReset();
+    clerk.firstName = "Ada";
     clerk.setActive.mockReset().mockResolvedValue(undefined);
     clerk.isLoaded = true;
     clerk.isSignedIn = true;
@@ -75,6 +80,23 @@ describe("JoinWorkspacePage", () => {
     await waitFor(() => expect(clerk.setActive).toHaveBeenCalledWith({ organization: "org_1" }));
     await waitFor(() => expect(nav.push).toHaveBeenCalledWith("/chat"));
     expect(await screen.findByText(/welcome to acme/i)).toBeInTheDocument();
+  });
+
+  it("asks a person with no name for one BEFORE redeeming, and keeps the parked token", async () => {
+    clerk.firstName = null;
+    const { unmount } = render(<JoinWorkspacePage />);
+
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith("/welcome/name?returnTo=%2Fjoin%2Forg_1"));
+    expect(nav.replace.mock.calls[0][0]).not.toContain("s3cr3t-token");
+    expect(post).not.toHaveBeenCalled();
+    expect(window.location.hash).toBe("");
+    unmount(); // off to the name step
+    expect(window.sessionStorage.getItem("lightbulb:workspace-join:org_1")).toBe("s3cr3t-token");
+
+    // Back from /welcome/name with a name: the join goes through on the parked token.
+    clerk.firstName = "Sam";
+    render(<JoinWorkspacePage />);
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/orgs/org_1/join", { token: "s3cr3t-token" }));
   });
 
   it("treats already-a-member as a success", async () => {

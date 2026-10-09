@@ -7,7 +7,7 @@ const clerk = vi.hoisted(() => ({
   listsPresent: true, loaded: true, orgId: null as string | null, organization: null as { id: string } | null,
   memberships: [] as Array<{ organization: { id: string } }>,
   invitations: [] as Array<{ id: string; publicOrganizationData: { id: string; name: string }; accept: () => Promise<unknown> }>,
-  setActive: vi.fn().mockResolvedValue(undefined), replace: vi.fn(), update: vi.fn(),
+  setActive: vi.fn().mockResolvedValue(undefined), replace: vi.fn(), update: vi.fn(), firstName: "Ada" as string | null,
   revalidateInvitations: vi.fn().mockResolvedValue(undefined), revalidateMemberships: vi.fn().mockResolvedValue(undefined),
   selectProps: vi.fn(), createOrganization: vi.fn(),
   apiGet: vi.fn(), apiPost: vi.fn(),
@@ -20,7 +20,7 @@ vi.mock("next/navigation", () => ({ useRouter: () => ({ replace: clerk.replace, 
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ isLoaded: clerk.loaded, isSignedIn: true, orgId: clerk.orgId }),
-  useUser: () => ({ user: { unsafeMetadata: {}, update: clerk.update } }),
+  useUser: () => ({ isLoaded: clerk.loaded, user: { unsafeMetadata: {}, update: clerk.update, firstName: clerk.firstName } }),
   useOrganization: () => ({ isLoaded: clerk.loaded, organization: clerk.organization }),
   useOrganizationList: () => ({ isLoaded: clerk.loaded, setActive: clerk.setActive, createOrganization: clerk.createOrganization,
     userMemberships: { data: clerk.listsPresent ? clerk.memberships : undefined, isLoading: false, revalidate: clerk.revalidateMemberships },
@@ -29,7 +29,7 @@ vi.mock("@clerk/nextjs", () => ({
   OrganizationList: (props: unknown) => { clerk.selectProps(props); return null; },
 }));
 beforeEach(() => {
-  Object.assign(clerk, { listsPresent: true, loaded: true, orgId: null, organization: null, memberships: [], invitations: [] });
+  Object.assign(clerk, { listsPresent: true, loaded: true, orgId: null, organization: null, memberships: [], invitations: [], firstName: "Ada" });
   vi.clearAllMocks();
   clerk.setActive.mockResolvedValue(undefined);
   clerk.update.mockResolvedValue(undefined);
@@ -37,6 +37,16 @@ beforeEach(() => {
   clerk.revalidateMemberships.mockResolvedValue(undefined);
 });
 describe("workspace onboarding", () => {
+  it("asks a person with no name for one before the create-workspace form", () => {
+    clerk.firstName = null;
+    clerk.memberships = [{ organization: { id: "org_only" } }];
+    window.history.replaceState(null, "", "/onboarding");
+    render(<OnboardingPage />);
+    expect(clerk.replace).toHaveBeenCalledWith("/welcome/name?returnTo=%2Fonboarding");
+    expect(clerk.replace).toHaveBeenCalledTimes(1);
+    expect(screen.queryByLabelText("Workspace name")).not.toBeInTheDocument();
+    expect(clerk.setActive).not.toHaveBeenCalled();
+  });
   it("does not offer creation until membership and invitation lists are available", () => {
     clerk.listsPresent = false;
     render(<OnboardingPage />);

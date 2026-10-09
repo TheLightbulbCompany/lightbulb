@@ -6,6 +6,7 @@ import { OrganizationList, useAuth, useOrganization, useOrganizationList } from 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { JoinTeamBlock } from "@/components/onboarding/JoinTeamBlock";
+import { useNameGate } from "@/hooks/useNameGate";
 import { ApiError, useApi } from "@/lib/api";
 import { safeReturnTo } from "@/lib/returnTo";
 
@@ -114,7 +115,10 @@ export default function OnboardingPage() {
   const [joiningOrgId, setJoiningOrgId] = useState<string | null>(null);
   const [accepting, setAccepting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const loaded = isLoaded && isSignedIn && orgLoaded && listLoaded &&
+  // Ask for a name before a workspace exists: `loaded` stays false, so nothing below
+  // creates, activates or accepts while the person is on their way to /welcome/name.
+  const naming = useNameGate();
+  const loaded = !naming && isLoaded && isSignedIn && orgLoaded && listLoaded &&
     userMemberships?.data !== undefined && userInvitations?.data !== undefined &&
     !userMemberships?.isLoading && !userInvitations?.isLoading;
   const invitations = userInvitations?.data ?? [];

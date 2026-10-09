@@ -31,6 +31,7 @@ from core.observability.metrics import put_metric
 from core.observability.product_analytics import capture_product_event, schedule_trial_first_agent_response
 from core.dynamodb import run_in_thread
 from core.repositories import billing_repo, container_repo, messaging_repo
+from core.services.person_label import email_label, is_relay_email
 from core.services.push_service import send_push_to_user
 from core.services import clerk_admin, hermes_profiles, livekit_huddles, run_analytics
 from core.services.session_keys import parse_lightbulb_session_key, parse_session_key
@@ -1050,8 +1051,8 @@ def _email_local_part(email: str | None) -> str | None:
     """The part before ``@`` -- ``_handle_candidate`` does the rest (lowercase,
     charset, length cap), so ``first.last+tag`` still normalises to a legal
     handle exactly like a display name would."""
-    if not email or "@" not in email:
-        return None
+    if not email or "@" not in email or is_relay_email(email):
+        return None  # a relay's local part is random characters: the handle comes from the name
     local = email.split("@", 1)[0].strip()
     return local or None
 
@@ -1479,7 +1480,7 @@ async def _resolve_human_display_name(user_id: str) -> str:
         return str(user["username"])[:256]
     emails = user.get("email_addresses") or []
     if emails and emails[0].get("email_address"):
-        return str(emails[0]["email_address"]).split("@", 1)[0][:256]
+        return email_label(str(emails[0]["email_address"]))[:256] or user_id
     return user_id
 
 
@@ -1954,8 +1955,7 @@ def _display_name_from_membership(row: dict) -> str:
     name = " ".join(part.strip() for part in (row.get("first_name") or "", row.get("last_name") or "") if part.strip())
     if name:
         return name[:256]
-    email = row.get("email") or ""
-    return (email.split("@", 1)[0] if email else row["user_id"])[:256]
+    return (email_label(row.get("email")) or row["user_id"])[:256]
 
 
 def _vendor_room_human(row: dict, home_owner_id: str, *, role: str = "member") -> dict:

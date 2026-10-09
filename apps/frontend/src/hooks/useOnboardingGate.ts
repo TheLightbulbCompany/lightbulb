@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth, useOrganization, useOrganizationList } from "@clerk/nextjs";
+import { useNameGate } from "@/hooks/useNameGate";
 import { pendingJoinOrgId } from "@/lib/workspaceJoin";
 
 export type OnboardingGatePhase = "loading" | "redirecting" | "selecting" | "ready";
@@ -20,8 +21,10 @@ export function useOnboardingGate(): OnboardingGatePhase {
   const count = userMemberships?.data?.length ?? 0;
   const invited = (userInvitations?.data?.length ?? 0) > 0;
   const noActiveWorkspace = !orgId && !organization;
-  const redirect = loaded && isSignedIn && noActiveWorkspace && (invited || count === 0);
-  const soleOrgId = loaded && isSignedIn && !invited && noActiveWorkspace && count === 1
+  // A name comes first: nothing below may route or activate until Clerk has one.
+  const naming = useNameGate();
+  const redirect = !naming && loaded && isSignedIn && noActiveWorkspace && (invited || count === 0);
+  const soleOrgId = !naming && loaded && isSignedIn && !invited && noActiveWorkspace && count === 1
     ? userMemberships?.data?.[0]?.organization.id : undefined;
 
   useEffect(() => {
@@ -37,6 +40,7 @@ export function useOnboardingGate(): OnboardingGatePhase {
     void setActive({ organization: soleOrgId }).catch(() => router.replace("/onboarding"));
   }, [soleOrgId, setActive, router]);
 
+  if (naming) return "redirecting";
   if (!loaded || !isSignedIn) return "loading";
   if (redirect) return "redirecting";
   if (orgId && !organization) return "loading";

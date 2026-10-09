@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import { useParams, useRouter } from "next/navigation";
 import { SignInButton, useAuth, useOrganizationList } from "@clerk/nextjs";
 
+import { useNameGate } from "@/hooks/useNameGate";
 import { ApiError, useApi } from "@/lib/api";
 import { joinTokenKey } from "@/lib/workspaceJoin";
 import { Button } from "@/components/ui/button";
@@ -105,6 +106,11 @@ export default function JoinWorkspacePage() {
     }
   }, [token, tokenStorageKey]);
 
+  // Ask for a name BEFORE redeeming, so the first thing teammates see is a real one.
+  // Declared after the effect above and held until the token is read: the token is
+  // parked in sessionStorage before this navigates away, and comes back with us.
+  const naming = useNameGate(token !== null);
+
   useEffect(
     () => () => {
       // Keep the captured token available while the outcome renders.
@@ -116,7 +122,7 @@ export default function JoinWorkspacePage() {
   );
 
   useEffect(() => {
-    if (!isLoaded || !isSignedIn || !orgListLoaded || !setActive || !orgId || !token) return;
+    if (!isLoaded || !isSignedIn || !orgListLoaded || !setActive || !orgId || !token || naming) return;
     if (ran.current === attempt) return;
     ran.current = attempt;
 
@@ -160,6 +166,7 @@ export default function JoinWorkspacePage() {
     attempt,
     isLoaded,
     isSignedIn,
+    naming,
     orgListLoaded,
     orgId,
     token,
@@ -185,7 +192,7 @@ export default function JoinWorkspacePage() {
     );
   }
 
-  if (token === null || !isLoaded || (isSignedIn && !orgListLoaded)) {
+  if (token === null || !isLoaded || naming || (isSignedIn && !orgListLoaded)) {
     return (
       <main className="mx-auto flex min-h-screen max-w-md flex-col items-center justify-center gap-4 px-6 text-center">
         <div className="settings-spinner" role="status" aria-label="Loading join link" />

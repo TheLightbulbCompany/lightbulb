@@ -144,7 +144,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  apps/desktop/src-tauri/src/local_sessions/screen.rs (attach terminals);
                                  apps/desktop/src-tauri/src/local_sessions.rs (track);
                                  apps/frontend/src/components/messaging/{LocalSessionPanel,NativeSessionTranscript,RoomDirectory,SessionFocus,RoomComposer}.tsx;
-                                 apps/frontend/src/components/messaging/SessionRemoveButton.tsx + local_sessions.remove_session ("Remove from list"; a live one is ended first, by an End marked `removesOnEnd`);
+                                 apps/frontend/src/components/messaging/SessionRemoveButton.tsx + local_sessions.remove_session ("Remove from list"; a live one is ended first, by an End marked `removesOnEnd`; a Claude background session by `claude stop`, local_sessions/transport.rs);
                                  local_sessions.ENDED_ON_PURPOSE / _without_moved + local_session_relay._ended + desktop session_states::end_reason ("Ended on purpose is not listed");
                                  packages/shared/src/messaging/mentions.ts (human session tokens);
                                  packages/claude-plugin/lightbulb/skills/lightbulb-session-sharing/SKILL.md; SKILL.md (sessions routing row).

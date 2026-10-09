@@ -1546,10 +1546,11 @@ def _require_control(row: dict, request: LocalSessionCommand, *, allow_offline_s
         # Only me: its Mac carries out nothing but its owner's End (Remove), so nothing else is admitted.
         raise ApiProblem("LOCAL_SESSION_CONFLICT", "Share this session with your workspace first.")
     if request.kind == "end":
-        # The Mac stops the session's own process: one Lightbulb holds, or a plain Claude. A Codex
-        # app or daemon process hosts many conversations. Ending needs no send capability, so an
-        # unverified session can be ended too.
-        # A Claude background session belongs to Claude's daemon, not to itself.
+        # The Mac stops the session's own process: one Lightbulb holds, or a Claude (a plain one,
+        # or a background session, which its Mac stops with `claude stop`). A Codex app or daemon
+        # process hosts many conversations. Ending needs no send capability, so an unverified
+        # session can be ended too.
+        # `kind == "background"` is a legacy row no Mac registers any more (the relay drops it).
         if session_terminal(row) != "held" and (row["provider"] != "claude" or row.get("kind") == "background"):
             raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "This session can only be ended on its Mac.")
         return
@@ -3210,9 +3211,8 @@ async def remove_session(auth: AuthContext, session_id: str, *, hint: bool = Tru
     to its Mac, marked `removesOnEnd`. The relay stamps `removedAt` when that run's end arrives,
     and only if such an End reached the Mac and was not refused (`landed_ends`); a refused,
     expired or unanswered End leaves the session listed and running, and nothing on the row says
-    a removal was asked. Only what End can stop: an offline Mac, a Codex app thread or a Claude
-    background session is refused here (no command waits for a Mac to come back; End has 30 s to
-    arrive)."""
+    a removal was asked. Only what End can stop: an offline Mac or a Codex app thread is refused
+    here (no command waits for a Mac to come back; End has 30 s to arrive)."""
     was_ended = False
     for _ in range(6):
         row = await _owned_session(auth, session_id, "remove")

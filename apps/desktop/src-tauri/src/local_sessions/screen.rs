@@ -947,10 +947,10 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
                 // relay stays through that, and the report does not wait for a pass to ask the
                 // holder: the backend then asks for the picture again (a watch nudge).
                 ctl.hold();
-                if let Some(holder) = ctl.holder.lock().ok().and_then(|holder| holder.clone()) {
-                    super::session_states::holder_ended(&holder);
-                }
                 let exit: Value = serde_json::from_slice(&payload).unwrap_or_default();
+                if let Some(holder) = ctl.holder.lock().ok().and_then(|holder| holder.clone()) {
+                    super::session_states::holder_ended(&holder, exit["code"] == 0);
+                }
                 if let Some(whole) = exit["above"].as_u64().filter(|_| exit["startOver"] == true) {
                     out.start_over(history, size, whole as usize);
                 }

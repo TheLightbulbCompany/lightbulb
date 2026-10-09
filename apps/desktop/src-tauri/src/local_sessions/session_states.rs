@@ -43,6 +43,11 @@ const PROBE_SOON: Duration = Duration::from_millis(300);
 const SETTLE_MS: u64 = ENDED_WITH_MS + 5_000;
 /// An ended holder is closed no sooner than this after its provider exited, whatever is known.
 const SWEEP_AFTER_MS: u64 = 30_000;
+/// How long a held Codex session's end waits for its holder to say how its provider left.
+const EXIT_WAIT_MS: u64 = 4_000;
+/// The holders whose provider left by itself with status 0 (`manager::ended`).
+// ponytail: one id per such end until the app quits; prune with ENDS if that ever matters.
+static LEFT_CLEAN: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 /// The registered sessions the last `index` found `settling`.
 static SETTLING: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
@@ -114,17 +119,47 @@ pub(super) fn read_features(listed: &Value) {
 }
 
 /// The reason `local.session.ended` gives. "on-purpose" when its person ended it: the provider's
-/// own exit (`lifecycle::ON_PURPOSE`), or End asked of its holder at or before the end. Only for a
-/// relay that reads it; an older one hears "exited" (or "process-exited") as before.
+/// own exit (`lifecycle::ON_PURPOSE`), End asked of its holder (or of the session, when no holder
+/// runs it) at or before the end, or a held Codex that quit by itself. Only for a relay that reads
+/// it; an older one hears "exited" (or "process-exited") as before.
 pub(super) fn end_reason(mirror: &Mirror) -> &str {
-    end_reason_if(READS_ON_PURPOSE.load(SeqCst), mirror, &manager::end_asked)
+    end_reason_if(READS_ON_PURPOSE.load(SeqCst), mirror, &manager::end_asked, &left_clean)
 }
 
-fn end_reason_if<'a>(reads: bool, mirror: &'a Mirror, asked: &impl Fn(&str) -> Option<u64>) -> &'a str {
+/// When this holder's provider left by itself with status 0 (unix ms), as last asked.
+fn left_clean(id: &str) -> Option<u64> {
+    holder_end(id).filter(|_| LEFT_CLEAN.lock().is_ok_and(|left| left.contains(id)))
+}
+
+/// A held Codex session just ended and its holder has not said how its provider left: its end
+/// is reported once it has (`end_reason` reads that), or EXIT_WAIT_MS after it.
+// ponytail: `/new` in a held Codex tells the thread it left EXIT_WAIT_MS late (its holder runs on).
+pub(super) fn awaits_exit(mirror: &Mirror) -> bool {
+    READS_ON_PURPOSE.load(SeqCst) && awaits_exit_if(mirror, &holder_end, now_ms())
+}
+
+fn awaits_exit_if(mirror: &Mirror, end: &impl Fn(&str) -> Option<u64>, now_ms: u64) -> bool {
+    mirror.native.provider == "codex"
+        && mirror.native.holder.as_deref().is_some_and(|id| end(id).is_none())
+        && mirror.ended_at_ms.is_some_and(|at| at + EXIT_WAIT_MS > now_ms)
+}
+
+fn end_reason_if<'a>(reads: bool, mirror: &'a Mirror, asked: &impl Fn(&str) -> Option<u64>, left: &impl Fn(&str) -> Option<u64>) -> &'a str {
     let on_purpose = super::lifecycle::ON_PURPOSE;
     let stored = mirror.ended_reason.as_deref().unwrap_or("exited");
-    let purposeful = stored == on_purpose
-        || mirror.native.holder.as_deref().and_then(asked).is_some_and(|at| mirror.ended_at.is_some_and(|ended| ended >= at));
+    let holder = mirror.native.holder.as_deref();
+    let ended_as_asked = [holder, mirror.session_id.as_deref()]
+        .into_iter()
+        .flatten()
+        .filter_map(asked)
+        .any(|at| mirror.ended_at.is_some_and(|ended| ended >= at));
+    // Codex names no reason for its end (`lifecycle::transition`). Its own quit (`/exit`, ctrl+c)
+    // is its holder's provider leaving with status 0, and the session with it; a crash or a kill
+    // is never 0, and `/new` or `/resume` leave the holder running.
+    let ended_ms = mirror.ended_at_ms.or(mirror.ended_at.map(|at| at * 1000));
+    let quit = mirror.native.provider == "codex"
+        && holder.and_then(left).is_some_and(|exited| ended_ms.is_some_and(|ended| ended + ENDED_WITH_MS >= exited));
+    let purposeful = stored == on_purpose || ended_as_asked || quit;
     match (purposeful && reads, stored == on_purpose) {
         (true, _) => on_purpose,
         (false, true) => "exited",
@@ -146,11 +181,22 @@ fn holder_end(id: &str) -> Option<u64> {
 /// A relay read this holder's EXIT: its provider exited now. Known here at once, not when the
 /// next pass has asked the holder (up to PROBE_SOON and an `index` later): a viewer waits that
 /// long for the kept picture. A pass already under way may still drop it; the one after finds it.
-pub(super) fn holder_ended(id: &str) {
+pub(super) fn holder_ended(id: &str, clean: bool) {
+    // How it left first: the relay loop must never read the end as known and not yet clean.
+    note_clean(id, clean);
     if let Ok(mut at) = ENDS.at.lock() {
         at.entry(id.to_owned()).or_insert_with(now_ms);
     }
     ENDED_NOW.store(true, SeqCst);
+}
+
+/// `clean`: this holder's provider left by itself with status 0.
+fn note_clean(id: &str, clean: bool) {
+    if clean {
+        if let Ok(mut left) = LEFT_CLEAN.lock() {
+            left.insert(id.to_owned());
+        }
+    }
 }
 
 /// A relay read a holder's EXIT since the last call: the relay loop indexes now, not at its next
@@ -165,7 +211,11 @@ fn ask_holder(id: &str) -> Option<u64> {
     let socket = manager::socket_dir().join(format!("{id}.sock"));
     match ENDS.get(id) {
         Some(at) => UnixStream::connect(&socket).ok().map(|_| at),
-        None => manager::ended_at(&socket),
+        // (`note_clean` before `refresh` stores the end, for the same reason as in `holder_ended`.)
+        None => manager::ended(&socket).map(|(at, clean)| {
+            note_clean(id, clean);
+            at
+        }),
     }
 }
 
@@ -395,6 +445,10 @@ mod tests {
     fn an_end_is_on_purpose_only_for_the_tools_own_exit_or_an_end_asked_of_its_holder() {
         let none = |_: &str| None;
         let asked = |id: &str| (id == "h1").then_some(100);
+        // (No holder here says how its provider left.)
+        fn end_reason_if<'a>(reads: bool, mirror: &'a Mirror, asked: &impl Fn(&str) -> Option<u64>) -> &'a str {
+            super::end_reason_if(reads, mirror, asked, &|_: &str| None)
+        }
         let mut left = ended("h1", 100, SID);
         left.ended_reason = Some("on-purpose".into());
         assert_eq!(end_reason_if(true, &left, &none), "on-purpose", "`/exit`");
@@ -412,6 +466,41 @@ mod tests {
         let mut earlier = ended("h1", 99, SID);
         earlier.ended_reason = Some("exited".into());
         assert_eq!(end_reason_if(true, &earlier, &asked), "exited");
+        // No holder runs it (a plain Claude, a Claude background session): End is asked of the session.
+        let mut plain = ended("h1", 100, SID);
+        plain.native.holder = None;
+        plain.ended_reason = Some("process-exited".into());
+        assert_eq!(end_reason_if(true, &plain, &|id: &str| (id == SID).then_some(100)), "on-purpose", "End");
+        assert_eq!(end_reason_if(true, &plain, &asked), "process-exited", "another session's End");
+    }
+
+    #[test]
+    fn a_held_codex_that_quit_by_itself_ended_on_purpose_and_its_end_waits_to_learn_that() {
+        let none = |_: &str| None;
+        // Its holder's provider left with status 0 at 100.5 s.
+        let left = |id: &str| (id == "h1").then_some(100_500);
+        let mut quit = ended("h1", 100, SID);
+        quit.native.provider = "codex".into();
+        quit.ended_reason = Some("exited".into());
+        assert_eq!(end_reason_if(true, &quit, &none, &left), "on-purpose", "`/exit`");
+        assert_eq!(end_reason_if(false, &quit, &none, &left), "exited", "an older relay");
+        assert_eq!(end_reason_if(true, &quit, &none, &none), "exited", "a crash, a kill, or a holder that runs on");
+        // `/new` long before the quit: that thread did not end with the provider.
+        let mut before = ended("h1", 80, SID);
+        before.native.provider = "codex".into();
+        assert_eq!(end_reason_if(true, &before, &none, &left), "exited");
+        let mut claude = ended("h1", 100, SID);
+        claude.native.provider = "claude".into();
+        claude.ended_reason = Some("exited".into());
+        assert_eq!(end_reason_if(true, &claude, &none, &left), "exited", "Claude names its own reason");
+
+        // The end is held until the holder has answered, and no longer than EXIT_WAIT_MS.
+        assert!(awaits_exit_if(&quit, &none, 100_000 + EXIT_WAIT_MS - 1));
+        assert!(!awaits_exit_if(&quit, &none, 100_000 + EXIT_WAIT_MS));
+        assert!(!awaits_exit_if(&quit, &left, 100_100), "known");
+        assert!(!awaits_exit_if(&claude, &none, 100_100));
+        quit.native.holder = None;
+        assert!(!awaits_exit_if(&quit, &none, 100_100), "no holder to ask");
     }
 
     fn keys(kept: &[(&str, &Mirror)]) -> Vec<String> {

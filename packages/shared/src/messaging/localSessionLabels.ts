@@ -79,8 +79,9 @@ export const sessionArchived = (session: LocalSession, now = Date.now()): boolea
 export const sessionLive = (session: LocalSession): boolean => session.status !== "offline" && session.status !== "ended";
 
 /**
- * Its owner can end it from Lightbulb: live, and its process is its own (one Lightbulb holds, or a plain
- * Claude). A Codex app or daemon process hosts many conversations; a Claude background session is Claude's daemon's.
+ * Its owner can end it from Lightbulb: live, and its process is its own (one Lightbulb holds, or a
+ * Claude: a plain one, or a background session, which its Mac stops with `claude stop`). A Codex app or
+ * daemon process hosts many conversations. `kind: "background"` is a legacy row no Mac registers any more.
  */
 export const sessionEndable = (session: LocalSession): boolean => sessionLive(session)
   && (session.terminal === "held" || (session.provider === "claude" && session.kind !== "background"));

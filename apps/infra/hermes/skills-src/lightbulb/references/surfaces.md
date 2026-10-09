@@ -147,7 +147,8 @@ process has exited read **Ended** and are hidden until a member presses Show
 recent; they cannot receive follow-ups.
 
 **Ended on purpose is not listed.** A session its owner ended on purpose —
-**End session** in Lightbulb, or the tool's own exit (`/exit` in Claude Code) —
+**End session** in Lightbulb, or the tool's own exit (`/exit` in Claude Code or
+Codex) —
 leaves every list at once: All sessions, the sidebar, the phone, your own
 session listing, and `find_sessions` (which returns running sessions only).
 A message that references it gives you no session line. Treat it as gone:
@@ -300,8 +301,10 @@ confirmation ("End and remove this session? It stops on your Mac"), the
 session stops on the Mac and leaves the list when it has stopped. That works
 only where End session works: not while its Mac is offline (the owner removes
 it once the Mac is back, or ends it on the Mac), and not for a Codex app
-thread or a Claude background session. You cannot end or remove a session;
-tell its owner to.
+thread. A Claude background session (one moved to the background with ←, which
+keeps running after its terminal closes) can be ended and removed: its Mac
+stops it with `claude stop`, and the conversation is kept, so the owner can
+resume it later. You cannot end or remove a session; tell its owner to.
 
 **Pick up** continues someone's Claude Code session on your own Mac, as a new
 shared session in your Lightbulb app's panel, with the files it changed on a new branch and folder; the

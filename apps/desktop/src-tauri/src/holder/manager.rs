@@ -63,8 +63,8 @@ pub fn stop(pid: u32) {
     unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGTERM) };
 }
 
-/// Holder id -> when its person asked it to end (unix s). `end` is the one door for that: the
-/// panel's End, and the owner's End from another device.
+/// Holder id -> when its person asked it to end (unix s): the panel's End, and the owner's End
+/// from another device (`end`). A session no holder runs is under its session id (`end_asked_now`).
 // ponytail: this app run only; an end reported after a relaunch is a plain "exited" (it stays listed).
 static END_ASKED: std::sync::Mutex<std::collections::BTreeMap<String, u64>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
 
@@ -73,14 +73,27 @@ pub fn end_asked(id: &str) -> Option<u64> {
     END_ASKED.lock().ok()?.get(id).copied()
 }
 
+/// Its person asks `id` to end, now: the end that follows is one they asked for.
+pub fn end_asked_now(id: &str) {
+    if let Ok(mut asked) = END_ASKED.lock() {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        asked.entry(id.to_owned()).or_insert(now);
+    }
+}
+
+/// That ask is over: the stop was never sent, its end was told, or the session runs again. An
+/// end after this is not one its person asked for.
+pub fn end_asked_forget(id: &str) {
+    if let Ok(mut asked) = END_ASKED.lock() {
+        asked.remove(id);
+    }
+}
+
 /// End the session a holder runs and keep its last picture: the holder ends its provider itself
 /// (END) and then shows the final screen, as after `/exit`. A holder from a build before END is
 /// stopped, as End always did; its screen goes with it (false). Blocks for up to 2 s.
 pub fn end(info: &HolderInfo) -> bool {
-    if let Ok(mut asked) = END_ASKED.lock() {
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        asked.entry(info.id.clone()).or_insert(now);
-    }
+    end_asked_now(&info.id);
     let kept = ask_end(&info.socket);
     if !kept {
         stop(info.pid);
@@ -384,11 +397,18 @@ pub fn bind_thread(info: &HolderInfo, thread: &str) {
 /// When this holder's provider exited (unix ms), if it only shows the final screen now (spec
 /// 2026-10-07 §5.4). An older holder never says so; one that does not answer is not ended.
 pub fn ended_at(socket: &Path) -> Option<u64> {
+    ended(socket).map(|(at, _)| at)
+}
+
+/// `ended_at`, and whether the provider left by itself with status 0 (`/exit`, quit): a crash, a
+/// kill or a hang-up is never 0. A holder from a build before `endedCode` never says so.
+pub fn ended(socket: &Path) -> Option<(u64, bool)> {
     let mut conn = UnixStream::connect(socket).ok()?;
     conn.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
     conn.write_all(&encode(HELLO, br#"{"role":"origin"}"#)).ok()?;
     let (kind, facts) = read_frame(&mut conn).ok()?;
-    serde_json::from_slice::<serde_json::Value>(&facts).ok().filter(|_| kind == HELLO)?["endedAt"].as_u64()
+    let facts = serde_json::from_slice::<serde_json::Value>(&facts).ok().filter(|_| kind == HELLO)?;
+    Some((facts["endedAt"].as_u64()?, facts["endedCode"] == 0))
 }
 
 /// Whether this holder's provider exited and it only shows the final screen.
@@ -425,6 +445,29 @@ mod tests {
                 conn.write_all(&encode(HELLO, facts.to_string().as_bytes())).unwrap();
             });
             assert_eq!(hello(&path).is_some(), claimed == std::process::id());
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn holder_ended_says_its_provider_left_by_itself_only_for_status_zero() {
+        use std::os::unix::net::UnixListener;
+        for (facts, expected) in [
+            (serde_json::json!({"ended":true,"endedAt":5,"endedCode":0}), Some((5, true))),
+            (serde_json::json!({"ended":true,"endedAt":5,"endedCode":1}), Some((5, false))),
+            // A holder from a build before `endedCode`.
+            (serde_json::json!({"ended":true,"endedAt":5}), Some((5, false))),
+            (serde_json::json!({"ended":false,"endedAt":null,"endedCode":null}), None),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("ab12cd34.sock");
+            let listener = UnixListener::bind(&path).unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut conn, _) = listener.accept().unwrap();
+                assert_eq!(read_frame(&mut conn).unwrap().0, HELLO);
+                conn.write_all(&encode(HELLO, facts.to_string().as_bytes())).unwrap();
+            });
+            assert_eq!(ended(&path), expected);
             server.join().unwrap();
         }
     }

@@ -97,7 +97,7 @@ function Detail({ item, roomId, client, onSteer, onStop }: {
       {note ? <Text accessibilityRole="alert" style={[styles.note, { color: palette.fgSoft }]}>{note}</Text> : null}
       <ScrollView style={[styles.tail, { backgroundColor: palette.raised }]}>
         <Text selectable style={[styles.mono, { color: palette.fgSoft }]}>
-          {tail?.available ? tail.text : "No transcript yet."}
+          {tail?.available ? tail.text : (!live && item.summary) || "No transcript yet."}
         </Text>
       </ScrollView>
     </View>

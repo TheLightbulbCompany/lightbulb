@@ -75,4 +75,15 @@ describe("RoomSubagentStrip", () => {
     await new Promise((r) => setTimeout(r, 2_100));
     expect((p.client as unknown as { subagentTail: ReturnType<typeof vi.fn> }).subagentTail).toHaveBeenCalledTimes(calls);
   });
+
+  it("shows a finished child's summary when no transcript was ever received", async () => {
+    const p = props(mk(1));
+    (p.client as unknown as { subagentTail: ReturnType<typeof vi.fn> }).subagentTail.mockResolvedValue({ subagentId: "sa-0", available: false, text: "", truncated: false });
+    const { rerender } = render(<RoomSubagentStrip {...p} />);
+    fireEvent.click(screen.getByRole("button", { name: /Track 0/ }));
+    const done = applySubagentEvent(p.state, "a1", "subagent.complete", { subagent_id: "sa-0", goal: "Track 0", status: "completed", summary: "Found 3 libraries" }, Date.now());
+    rerender(<RoomSubagentStrip {...p} state={done} />);
+    expect(await screen.findByText("Found 3 libraries")).toBeInTheDocument();
+    expect(screen.queryByText("No transcript yet.")).toBeNull();
+  });
 });

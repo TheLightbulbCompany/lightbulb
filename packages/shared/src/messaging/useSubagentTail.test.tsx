@@ -35,4 +35,17 @@ describe("useSubagentTail", () => {
     rerender({ id: "sa-2" });
     expect(result.current.tail).toBeNull();
   });
+
+  it("keeps earlier text when a later reply is unavailable", async () => {
+    vi.useFakeTimers();
+    const subagentTail = vi.fn()
+      .mockResolvedValueOnce({ subagentId: "sa-1", available: true, text: "final words", truncated: false })
+      .mockResolvedValue({ subagentId: "sa-1", available: false, text: "", truncated: false });
+    const client = { subagentTail } as never;
+    const { result } = renderHook(() => useSubagentTail(client, { roomId: "r", agentId: "a", subagentId: "sa-1" }));
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    await act(() => vi.advanceTimersByTimeAsync(2_000));
+    expect(subagentTail).toHaveBeenCalledTimes(2);
+    expect(result.current.tail?.text).toBe("final words");
+  });
 });

@@ -48,7 +48,7 @@ function Detail({ item, roomId, client, onSteer, onStop }: {
       <button type="button" disabled={off} onClick={() => run(() => onStop(item.agentId, item.id), "Stopping…")}>Stop</button>
     </form>
     {note && <p className="room-subagent-note" role="status">{note}</p>}
-    <pre className="room-subagent-tail">{tail?.available ? tail.text : "No transcript yet."}</pre>
+    <pre className="room-subagent-tail">{tail?.available ? tail.text : (!live && item.summary) || "No transcript yet."}</pre>
   </div>;
 }
 

@@ -1253,9 +1253,12 @@ async def test_unknown_command_is_not_reconciled_on_every_heartbeat(transport):
     asked = [{"sessionId": sid, "requestId": "request-1", "generation": "generation-1", "state": "unknown"}]
     assert (await relay(transport).handle_message("conn-1", heartbeat(sid)))["reconcile"] == asked
     assert (await relay(transport).handle_message("conn-1", heartbeat(sid)))["reconcile"] == []
-    with patch("time.time", return_value=time.time() + 59):
+    # Measured from the second the ask was stamped, not from "now": the stamp is a whole second,
+    # so a clock that ticked over since made "now + 59" a full 60 s later (a CI failure, 2026-10-09).
+    asked_at = (await repo.get_command(OWNER, sid, "request-1"))["reconcileAskedAt"]
+    with patch("time.time", return_value=asked_at + 59.99):
         assert (await relay(transport).handle_message("conn-1", heartbeat(sid)))["reconcile"] == []
-    with patch("time.time", return_value=time.time() + 61):
+    with patch("time.time", return_value=asked_at + 60):
         assert (await relay(transport).handle_message("conn-1", heartbeat(sid)))["reconcile"] == asked
     # The ask is bookkeeping: the command is still the unknown one its receipt will settle.
     assert (await repo.get_command(OWNER, sid, "request-1"))["state"] == "unknown"

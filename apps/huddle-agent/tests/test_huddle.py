@@ -214,6 +214,8 @@ class FakeBackend:
                     "steerRunId": steer_run_id,
                 }
             )
+            if gate := getattr(self, "steer_gate", None):
+                await gate.wait()
             return {"runId": steer_run_id, "agentId": agent_id, "steered": self.steer}
         self.turns.append(
             {

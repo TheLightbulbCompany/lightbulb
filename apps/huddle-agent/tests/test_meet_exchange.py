@@ -760,3 +760,55 @@ async def test_a_third_piece_amends_the_row_a_failed_steer_made_instead_of_addin
         backend.route_extra = ops([("forge", task, "name")])
         await says(h, P1, said)
     assert len([r for r in h._requests.items if r.status in h_mod.OPEN]) <= 2, "the run's row and one replacement"
+
+
+async def test_a_piece_said_seconds_later_while_the_turn_is_at_route_joins_it():
+    """#3961 review (P1): /route still decides on the first piece when they go on 3 s later, inside the hold's
+    window. The rest is routed with the whole turn; the late `hold` for the start alone is not acted on."""
+    h, room, backend, lives, clock, log = await per_person()
+    h.on_speech(P1, True)
+    clock.t += 2
+    h.on_speech(P1, False)
+    slow = backend.route_gate = asyncio.Event()
+    backend.route_extra = {**ops([("forge", "give me a summary of", "name")]), "hold": True}
+    await h.on_final_transcript(P1, "Priya", "Forge, can you give me a summary of")
+    for _ in range(30):
+        await asyncio.sleep(0)
+    backend.route_gate = None
+    clock.t += 3
+    h.on_speech(P1, True)
+    clock.t += 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "summarise my open PRs", "name")])
+    await h.on_final_transcript(P1, "Priya", "my open PRs.")
+    for _ in range(30):
+        await asyncio.sleep(0)
+    slow.set()
+    await settle(h)
+    assert backend.routes[-1][1] == "Forge, can you give me a summary of my open PRs."
+    assert [r.task for r in h._requests.items] == ["summarise my open PRs"]
+
+
+async def test_two_steers_of_a_turns_row_in_flight_make_one_replacement_row():
+    """#3961 review (P1): two pieces steer the turn's working row at once and both find its run gone. One
+    replacement row, amended by the second, never two."""
+    h, room, backend, lives, clock, log = await per_person()
+    backend.steer = False
+    h.on_speech(P1, True)
+    clock.t += 2
+    h.on_speech(P1, False)
+    backend.route_extra = ops([("forge", "check the deploy", "name")])
+    await says(h, P1, "Forge, check the deploy")
+    backend.steer_gate = asyncio.Event()
+    for said, task in [("and the numbers", "check the deploy and the numbers"), ("and the logs.", "check all three")]:
+        h.on_speech(P1, True)
+        clock.t += 0.5 + 2
+        h.on_speech(P1, False)
+        backend.route_extra = ops([("forge", task, "name")])
+        await h.on_final_transcript(P1, "Priya", said)
+        for _ in range(30):
+            await asyncio.sleep(0)
+    assert len(backend.late_steers) == 2, "both steers are in flight"
+    backend.steer_gate.set()
+    await settle(h)
+    assert len([r for r in h._requests.items if r.status == "queued"]) == 1, "one replacement"

@@ -1274,12 +1274,15 @@ class Huddle:
                 and self._last_speaker == identity
                 and prev[1] is not None
                 and detected  # (when it began is known only from the detector)
-                and ep.began - prev[1] <= TURN_GAP_S
-                and (self._turn_rows(prev[0]) or self._routing.get(identity))
+                and (
+                    ep.began - prev[1] <= TURN_GAP_S and self._turn_rows(prev[0])
+                    or ep.began - prev[1] <= HOLD_SECONDS and self._routing.get(identity)
+                )
             ):
-                # They went straight on after a turn that already asked something, or whose /route has not answered
-                # yet: it is the same turn, routed again whole, and what it asks now replaces what it asked
-                # (`_amend_turn`); an answer for the piece before comes too late to count (`_regrown`).
+                # They went straight on after a turn that already asked something, or went on at all while /route
+                # still decides on it (its answer may be `hold`, and a hold waits HOLD_SECONDS for the rest): it is
+                # the same turn, routed again whole, and what it asks now replaces what it asked (`_amend_turn`); an
+                # answer for the piece before comes too late to count (`_regrown`).
                 text, joined = f"{prev[2]} {text}", True
             if not (joined and prev):
                 self._tid += 1
@@ -3027,6 +3030,14 @@ class Huddle:
         if steered:
             if v is not None and v.live is not None:
                 self._live_call(v, "append_thinking", f'Added to "{r.task}": {text}')
+            return
+        tid = self._turn_of.get(mark)
+        twin = next(
+            (x for x in self._turn_rows(tid) if x is not r and x.agent == r.agent and x.status == "queued"), None
+        ) if tid is not None else None
+        if twin is not None:  # another piece's steer of this row already made its row: that one, amended
+            self._requests.amend(twin, text)
+            self._sync_state()
             return
         new = [{"agentId": r.agent, "task": text, "by": r.by}]
         for x in self._requests.settle(mark, speaker, new, self._clock(), self._label(speaker, mark)):

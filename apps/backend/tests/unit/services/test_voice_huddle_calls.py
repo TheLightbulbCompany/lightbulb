@@ -417,6 +417,43 @@ async def test_voice_run_is_a_run_on_the_room_key_that_names_its_call(run_env):
     assert out == {"runId": "run-1", "agentId": "fin-1", "steered": False}
 
 
+@pytest.mark.parametrize(
+    "speaker, members, requester",
+    [
+        ("user_b", MEMBERS, "user_b"),  # in-app Live: the signed-in member who spoke
+        ("meet:room-1:p7", MEMBERS, None),  # a Meet speaker is never a member, nor the inviting owner
+        ("Priya", MEMBERS + [{"kind": "human", "id": "user_o", "displayName": "Owen", "role": "owner"}], None),
+        (
+            "user_g",
+            MEMBERS + [{"kind": "human", "id": "user_g", "displayName": "Gus", "homeOwnerId": "org_z"}],
+            None,
+        ),  # shared-room guest
+    ],
+    ids=["live-member", "meet-bot", "meet-label", "foreign-guest"],
+)
+async def test_voice_run_carries_the_room_grant_for_the_member_who_asked(run_env, speaker, members, requester):
+    """Prod 10-09: a voice turn had no local-session grant, so lightbulb_local_sessions said NO_TURN."""
+    mint = MagicMock(return_value="jwt")
+    with (
+        patch.object(vc.messaging_repo, "list_members", AsyncMock(return_value=members)),
+        patch.object(vc.local_session_grants, "mint", mint),
+    ):
+        await vc.dispatch_voice_run(
+            call=WINDOW, run_id="run-1", agent_id="fin-1", speaker_id=speaker, utterance="sessions?", transcript=""
+        )
+    mint.assert_called_once_with("org_a", "room-1", "fin-1", "run-1", requester)
+    assert run_env.await_args.kwargs["headers"] == {
+        "Authorization": "Bearer gw",
+        "X-Lightbulb-Local-Session-Token": "jwt",
+    }
+
+
+async def test_voice_run_goes_out_without_a_grant_when_none_can_be_minted(run_env):
+    with patch.object(vc.local_session_grants, "mint", MagicMock(side_effect=RuntimeError)):
+        await _dispatch()
+    assert run_env.await_args.kwargs["headers"] == {"Authorization": "Bearer gw"}
+
+
 async def test_voice_run_history_is_the_newest_few_messages_cut_short(run_env):
     """A voice answer is spoken while someone waits: the prompt carries the newest 12 room messages,
     each cut to 500 characters, not the 50 full messages a chat turn gets (a 30k-token first prompt
@@ -487,6 +524,37 @@ async def test_steer_lands_in_the_agents_live_voice_run(run_env):
         "org_a", "run-1", {"speakerUserId": "user_b", "speakerName": "Bea"}
     )
     vc.messaging_repo.put_voice_run.assert_not_awaited()  # never a whole-row rewrite: it would drop noPost
+
+
+@pytest.mark.parametrize("steerer", ["user_a", "meet:room-1"], ids=["another-member", "meet-speaker"])
+async def test_a_steer_by_another_speaker_lowers_the_runs_grant(run_env, steerer):
+    """P1: a guest or Meet voice steering a member's run must not borrow that member's direct access to
+    their own local sessions: the steer carries a grant naming nobody, which the bridge swaps in."""
+    vc.messaging_repo.get_voice_run.return_value = VOICERUN  # user_b asked
+    mint = MagicMock(return_value="lowered")
+    with patch.object(vc.local_session_grants, "mint", mint):
+        result = await vc.steer_voice_run(
+            call=WINDOW, run_id="run-1", agent_id="fin-1", speaker_id=steerer, utterance="x", speaker_name="Z"
+        )
+    assert result["steered"] is True
+    mint.assert_called_once_with("org_a", "room-1", "fin-1", "run-1", None)  # never a requester: only lowered
+    assert run_env.await_args.kwargs["headers"]["X-Lightbulb-Local-Session-Token"] == "lowered"
+
+
+async def test_a_steer_by_the_runs_own_speaker_keeps_the_grant(run_env):
+    vc.messaging_repo.get_voice_run.return_value = VOICERUN
+    mint = MagicMock()
+    with patch.object(vc.local_session_grants, "mint", mint):
+        await _steer()
+    mint.assert_not_called()
+    assert run_env.await_args.kwargs["headers"] == {"Authorization": "Bearer gw"}
+
+
+async def test_a_steer_that_cannot_lower_the_grant_is_not_steered(run_env):
+    vc.messaging_repo.get_voice_run.return_value = {**VOICERUN, "speakerUserId": "user_a"}
+    with patch.object(vc.local_session_grants, "mint", MagicMock(side_effect=RuntimeError)):
+        assert await _steer() is None  # the caller dispatches a run of its own instead
+    run_env.assert_not_awaited()
 
 
 async def test_steer_into_a_finished_run_falls_back(run_env):

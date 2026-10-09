@@ -30,6 +30,7 @@ from core.services import (
     hermes_profiles,
     jev,
     livekit_huddles,
+    local_session_grants,
     meeting_invites,
     messaging,
     openclaw_work,
@@ -462,18 +463,31 @@ async def _hold(owner_id: str) -> tuple[int, int]:
     raise _problem(409, code="voice_busy")
 
 
-async def _runtime(owner_id: str, path: str, body: dict, *, timeout_s: float = _TURN_TIMEOUT_S):
+async def _runtime(
+    owner_id: str, path: str, body: dict, *, timeout_s: float = _TURN_TIMEOUT_S, local_session_token: str | None = None
+):
     container = await container_repo.get_by_owner_id(owner_id)
     if not container:
         raise _problem(409, code="workspace_not_ready")
+    headers = {"Authorization": f"Bearer {container.get('gateway_token') or ''}"}
+    if local_session_token:
+        headers["X-Lightbulb-Local-Session-Token"] = local_session_token
     return await runtime_transport.request(
         container,
         path,
         method="POST",
         json_body=body,
-        headers={"Authorization": f"Bearer {container.get('gateway_token') or ''}"},
+        headers=headers,
         timeout_s=timeout_s,
     )
+
+
+def _voice_requester(members: list[dict], owner_id: str, speaker_id: str) -> str | None:
+    """Who a voice run's local-session grant is FOR: the speaker, only when they are a human member of
+    this workspace seated in the room (the C8 rule). A Meet speaker (``meet:<room>`` or a label) is
+    never a member, so its grant names nobody and every session is "ask"; never the inviting owner."""
+    member = next((m for m in members if m.get("kind") == "human" and m["id"] == speaker_id), None)
+    return speaker_id if member and messaging_repo.member_home(member, owner_id) == owner_id else None
 
 
 def prewake_owner(owner_id: str, team: list[dict] | None = None, room_id: str | None = None) -> None:
@@ -840,8 +854,16 @@ async def dispatch_voice_run(
     fields = {"roomId": room_id, "agentId": agent_id, "speakerUserId": speaker_id, "speakerName": name}
     # An atomic SET of these fields: a /turns retry cannot drop a "don't post that" mark, whenever it lands.
     await messaging_repo.put_voice_run(owner_id, run_id, fields)
+    # The room grant a typed message here would get (openclaw_work), keyed on the voice run.
     try:
-        resp = await _runtime(owner_id, _BRIDGE_RUNS, body)
+        grant = local_session_grants.mint(
+            owner_id, room_id, agent_id, run_id, _voice_requester(members, owner_id, speaker_id)
+        )
+    except (RuntimeError, messaging.ApiProblem):
+        grant = None
+        logger.warning("Voice local session invocation unavailable")
+    try:
+        resp = await _runtime(owner_id, _BRIDGE_RUNS, body, local_session_token=grant)
         ok = resp.status_code in (200, 202)  # 200 = replayed: a retry of a run the bridge already has
         if not ok:
             logger.warning("voice run refused run=%s status=%s body=%s", run_id, resp.status_code, resp.text[:500])
@@ -855,10 +877,16 @@ async def dispatch_voice_run(
     return {"runId": run_id, "agentId": agent_id, "steered": False}
 
 
-async def _run_control(owner_id: str, run_id: str, action: str, body: dict) -> int | None:
+async def _run_control(
+    owner_id: str, run_id: str, action: str, body: dict, local_session_token: str | None = None
+) -> int | None:
     try:
         resp = await _runtime(
-            owner_id, f"/plugins/lightbulb-channel/runs/{run_id}/{action}", body, timeout_s=_STEER_TIMEOUT_S
+            owner_id,
+            f"/plugins/lightbulb-channel/runs/{run_id}/{action}",
+            body,
+            timeout_s=_STEER_TIMEOUT_S,
+            local_session_token=local_session_token,
         )
         return resp.status_code
     except (httpx.HTTPError, ValueError):
@@ -875,7 +903,17 @@ async def steer_voice_run(
     if not row or row.get("roomId") != call["roomId"] or row.get("agentId") != agent_id:
         return None
     name = _meet_label(speaker_name) if speaker_id.startswith("meet:") else await _speaker_name(speaker_id)
-    if await _run_control(call["ownerId"], run_id, "steer", {"text": f"{name} (voice): {utterance}"}) != 202:
+    # The run's local-session grant must not outrank its least-privileged speaker: a steer by anyone
+    # but the run's latest speaker drops it to no requester (every session "ask") for the rest of the
+    # run. Only ever lowered: a steer never carries a grant naming anyone, and the bridge swaps it in.
+    grant = None
+    if speaker_id != row.get("speakerUserId"):
+        try:
+            grant = local_session_grants.mint(call["ownerId"], call["roomId"], agent_id, run_id, None)
+        except (RuntimeError, messaging.ApiProblem):
+            return None  # the old grant cannot be lowered: the steerer gets a run (and grant) of its own
+    text = {"text": f"{name} (voice): {utterance}"}
+    if await _run_control(call["ownerId"], run_id, "steer", text, local_session_token=grant) != 202:
         return None
     # The latest requester is who C8 checks: a guest's steer must not borrow the member's rights.
     # An atomic SET, not a whole-row put: a noPost mark landing after our read must survive.

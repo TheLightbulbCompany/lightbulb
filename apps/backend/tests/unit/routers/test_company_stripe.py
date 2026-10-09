@@ -42,6 +42,16 @@ def member_client():
 
 
 @pytest.fixture(autouse=True)
+def _owner_lifecycle_lease(monkeypatch):
+    """The callback binds under the owner lease and checks revoke-all's mark: admit both."""
+    from core.repositories import container_repo
+
+    monkeypatch.setattr(container_repo, "try_claim_owner_lifecycle", AsyncMock(return_value="lease-token"))
+    monkeypatch.setattr(container_repo, "release_owner_lifecycle_claim", AsyncMock())
+    monkeypatch.setattr(container_repo, "get_oauth_revoked_at", AsyncMock(return_value=None))
+
+
+@pytest.fixture(autouse=True)
 def _paid(monkeypatch):
     monkeypatch.setattr(mod, "require_always_on_entitlement", AsyncMock())
 
@@ -290,6 +300,26 @@ def test_connect_callback_binds_and_redirects(client, monkeypatch, facts):
         "org_a", account_id="acct_theirs", details_submitted=True, charges_enabled=True, payouts_enabled=True
     )
     facts.assert_awaited_once_with("org_a")
+
+
+def test_connect_callback_started_before_revoke_all_binds_nothing(client, monkeypatch):
+    monkeypatch.setattr(
+        mod.settings, "STRIPE_COMPANY_RETURN_URL", "https://dev.example/settings/connections?stripe=return"
+    )
+    state = {"owner_id": "org_a", "provider": "stripe_company", "ttl": 1, "created_at_ms": 100}
+    with (
+        patch.object(mod.oauth_state_repo, "consume", AsyncMock(return_value=state)),
+        patch.object(mod.company_stripe, "exchange_connect_code", AsyncMock(return_value="acct_theirs")),
+        patch.object(mod.billing_repo, "get_by_owner_id", AsyncMock(return_value=_PAID_ROW)),
+        patch.object(mod.billing_repo, "get_by_company_stripe_account_id", AsyncMock(return_value=None)),
+        patch("core.repositories.container_repo.get_oauth_revoked_at", AsyncMock(return_value=200)),
+        patch.object(mod.billing_repo, "set_company_stripe_account", AsyncMock()) as bind,
+        patch.object(mod.company_stripe, "deauthorize", AsyncMock(return_value=True)) as deauth,
+    ):
+        resp = client.get("/api/v1/company/stripe/connect/callback?code=ac_1&state=st_1", follow_redirects=False)
+    assert resp.headers["location"].endswith("&stripe_error=revoked")
+    bind.assert_not_awaited()
+    deauth.assert_awaited_once_with(account_id="acct_theirs")
 
 
 def test_connect_callback_already_bound_releases_the_authorization(client, monkeypatch):

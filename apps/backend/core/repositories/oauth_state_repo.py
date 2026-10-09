@@ -31,6 +31,8 @@ async def put(
         "provider": provider,
         "verifier": verifier,
         "ttl": int(time.time()) + _TTL_SECONDS,
+        # Revoke-all compares this to its millisecond mark (started_before).
+        "created_at_ms": int(time.time() * 1000),
     }
     # Bind the OAuth client this authorization was issued to into the state, so the
     # exchange uses THIS client_id rather than re-reading the app store (which a
@@ -52,9 +54,13 @@ async def put(
     await run_in_thread(_table().put_item, Item=item)
 
 
-def started_at(rec: dict) -> int:
-    """When the stored state was minted (its TTL is fixed from that moment)."""
-    return int(rec["ttl"]) - _TTL_SECONDS
+def started_before(rec: dict, mark_ms: int) -> bool:
+    """Whether the stored state was minted at or before ``mark_ms`` (revoke-all's mark). A state
+    from before ``created_at_ms`` existed knows only its second (from its TTL), so it counts as
+    earlier only when that whole second precedes the mark's: the boundary second is allowed."""
+    if "created_at_ms" in rec:
+        return int(rec["created_at_ms"]) <= mark_ms
+    return int(rec["ttl"]) - _TTL_SECONDS < mark_ms // 1000
 
 
 async def consume(state: str) -> dict | None:

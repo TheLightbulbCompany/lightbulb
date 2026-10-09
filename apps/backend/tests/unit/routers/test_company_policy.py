@@ -54,6 +54,7 @@ def _lease(monkeypatch):
     monkeypatch.setattr(container_repo, "mark_oauth_revoked", AsyncMock(return_value=200))
     monkeypatch.setattr(container_repo, "try_claim_owner_lifecycle", AsyncMock(return_value="lease-token"))
     monkeypatch.setattr(container_repo, "release_owner_lifecycle_claim", AsyncMock())
+    monkeypatch.setattr(mod.slack_installs_repo, "list_for_owner", AsyncMock(return_value=[]))
 
 
 @pytest.fixture(autouse=True)
@@ -272,6 +273,42 @@ def test_revoke_all_disconnects_every_connected_app_and_reports_the_one_that_fai
     # finds it and refuses (oauth_callback); one that was mid-write is waited out by the guard.
     mark.assert_awaited_once_with("org_a")
     assert [name for name, _, _ in order.mock_calls][:2] == ["mark", "list"]
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_revoke_all_uninstalls_every_slack_workspace(client, fails):
+    """Slack is not a registry provider: its bare row used to be skipped as a reserved key while
+    the installs, their slack/<team> tokens and channel routes stayed live. Each active install
+    goes through the Disconnect route's revoke_install; one that fails puts Slack in `failed`."""
+    _, cancel, sdelete, _ = _revoke_mocks()
+    installs = [
+        {"team_id": "T1", "status": "active"},
+        {"team_id": "T2", "status": "active"},
+        {"team_id": "T0", "status": "revoked"},
+    ]
+
+    async def revoke(team_id):
+        if fails and team_id == "T1":
+            raise RuntimeError("ddb down")
+        return True
+
+    revoke_install = AsyncMock(side_effect=revoke)
+    with (
+        patch.object(mod.account_wipe, "cancel_open_workflows", cancel),
+        patch.object(mod.integrations_repo, "list_for_owner", AsyncMock(return_value=[{"provider": "slack"}])),
+        patch.object(mod.integration_secret_store, "delete", sdelete),
+        patch.object(billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
+        patch.object(mod.slack_installs_repo, "list_for_owner", AsyncMock(return_value=installs)),
+        patch.object(mod.slack_install_service, "revoke_install", revoke_install),
+    ):
+        resp = client.post("/api/v1/company/revoke-all", json={"confirm": "revoke"})
+    assert resp.status_code == 200
+    assert [c.args for c in revoke_install.await_args_list] == [("T1",), ("T2",)]
+    body = resp.json()
+    if fails:
+        assert body["failed"] == ["slack"] and "slack:T2" in body["revoked"] and "slack:T1" not in body["revoked"]
+    else:
+        assert body["failed"] == [] and body["revoked"][-2:] == ["slack:T1", "slack:T2"]
 
 
 @pytest.mark.parametrize("body", [{}, {"confirm": "REVOKE"}, {"confirm": "revoke everything"}])

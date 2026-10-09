@@ -23,7 +23,7 @@ from core.billing.bedrock_aip import CONNECTOR_ROLE_NAME
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
-from core.repositories import container_repo, google_accounts_repo, integrations_repo, oauth_state_repo
+from core.repositories import google_accounts_repo, integrations_repo, oauth_state_repo
 from core.services.credentials import (
     apply_connection,
     aws_cfn,
@@ -43,6 +43,7 @@ from core.services.credentials.mcp_server import reconcile_integrations
 from core.services import paperclip_github_token
 from core.services.google_identity import seed_agent_google_identity
 from core.services.owner_facts import write_owner_facts
+from core.services import owner_lifecycle
 from core.services.owner_lifecycle import OwnerLifecycleBusyError, owner_lifecycle_guard
 
 logger = logging.getLogger(__name__)
@@ -1154,8 +1155,7 @@ async def oauth_callback(
             # Revoke everything ran after this connect started (its code may already have been
             # exchanged): land nothing. Judged under the lock revoke-all's teardown takes, from
             # the stored state's mint time, never the request.
-            revoked_at = await container_repo.get_oauth_revoked_at(owner_id)
-            if revoked_at is not None and oauth_state_repo.started_at(rec) <= revoked_at:
+            if await owner_lifecycle.revoked_since(owner_id, rec):
                 return _done("error=revoked", origin)
             # Agent-started flow landing on a provider that went live in between
             # (the owner connected via the tab during the state TTL): drop it. The

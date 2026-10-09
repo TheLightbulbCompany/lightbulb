@@ -24,7 +24,7 @@ from contextvars import ContextVar
 from functools import wraps
 from typing import AsyncIterator, Awaitable, Callable, ParamSpec, TypeVar, cast
 
-from core.repositories import container_repo
+from core.repositories import container_repo, oauth_state_repo
 
 #: How long a caller waits for the lease before giving up. Same budget the EFS sidecar lock
 #: used, and the callers map it to a retryable 409 rather than a 500.
@@ -58,6 +58,13 @@ async def _acquire_lease(owner_id: str, deadline: float) -> str:
         if asyncio.get_running_loop().time() >= deadline:
             raise OwnerLifecycleBusyError(f"timed out waiting for the lifecycle lease: {owner_id}")
         await asyncio.sleep(_POLL_INTERVAL_S)
+
+
+async def revoked_since(owner_id: str, state: dict) -> bool:
+    """Revoke everything ran after this OAuth attempt's stored state was minted. Every OAuth
+    callback asks this under ``owner_lifecycle_guard`` and lands nothing when it is True."""
+    mark = await container_repo.get_oauth_revoked_at(owner_id)
+    return mark is not None and oauth_state_repo.started_before(state, mark)
 
 
 @asynccontextmanager

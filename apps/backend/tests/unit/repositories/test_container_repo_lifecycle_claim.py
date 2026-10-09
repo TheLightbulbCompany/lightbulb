@@ -57,6 +57,7 @@ async def test_the_revoke_all_mark_survives_the_lease_and_reads_back(dynamodb_ta
     token = await container_repo.try_claim_owner_lifecycle("org_1")
     await container_repo.release_owner_lifecycle_claim("org_1", token=token)
     assert await container_repo.get_oauth_revoked_at("org_1") == at
+    assert abs(at - time.time() * 1000) < 5_000, "the mark is in milliseconds"
 
 
 @pytest.mark.asyncio

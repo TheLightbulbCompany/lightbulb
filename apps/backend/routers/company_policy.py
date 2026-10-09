@@ -23,8 +23,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
-from core.repositories import billing_repo, container_repo, integrations_repo
-from core.services import account_wipe, company_stripe
+from core.repositories import billing_repo, container_repo, integrations_repo, slack_installs_repo
+from core.services import account_wipe, company_stripe, slack_install_service
 from core.services.credentials import integration_secret_store
 from core.services.owner_facts import write_owner_facts
 from routers import connections
@@ -89,6 +89,12 @@ async def revoke_all(body: RevokeAllBody, auth: Annotated[AuthContext, Depends(g
     try:
         async with connections.owner_lifecycle_guard(owner_id):
             rows = [str(r.get("provider", "")) for r in await integrations_repo.list_for_owner(owner_id)]
+            teams = [
+                r["team_id"]
+                for r in await slack_installs_repo.list_for_owner(owner_id)
+                if r.get("status") == slack_installs_repo.STATUS_ACTIVE
+            ]
+            billing_row = await billing_repo.get_by_owner_id(owner_id) or {}
     except connections.OwnerLifecycleBusyError:
         raise HTTPException(status_code=409, detail="busy") from None
     keys = [k for k in rows if k.startswith(integrations_repo.PROJECTS_KEY_PREFIX)]
@@ -116,13 +122,28 @@ async def revoke_all(body: RevokeAllBody, auth: Annotated[AuthContext, Depends(g
             logger.exception("company_policy: revoke-all could not disconnect %s owner_id=%s", provider, owner_id)
             failed.append(provider)
 
+    # 2c. Slack is not a registry provider (its bare row is skipped above): uninstall each
+    # workspace through the Disconnect route's revoke_install (row, slack/<team> token, routes).
+    slack_failed = False
+    for team_id in teams:
+        try:
+            await slack_install_service.revoke_install(team_id)
+            revoked.append(f"slack:{team_id}")
+        except Exception:  # noqa: BLE001 — same as above: report it, keep going
+            logger.exception(
+                "company_policy: revoke-all could not uninstall slack team=%s owner_id=%s", team_id, owner_id
+            )
+            slack_failed = True
+    if slack_failed:
+        failed.append("slack")
+
     # 3. Stripe Connect: the disconnect route's service path — sever the
     # platform link and unbind. The owner's account itself is untouched.
     # `release_and_unbind` unbinds whatever Stripe answers: this is a kill
     # switch, and one that 500s on a Stripe outage (or on a `created` account
     # Stripe declines to deauthorize) is not a kill switch. An unconfirmed
     # revoke is reported in the payload rather than raised.
-    row = await billing_repo.get_by_owner_id(owner_id) or {}
+    row = billing_row
     account_id = row.get("company_stripe_account_id")
     if account_id:
         released = await company_stripe.release_and_unbind(

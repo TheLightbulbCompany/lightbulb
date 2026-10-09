@@ -23,6 +23,16 @@ def client():
     app.dependency_overrides.pop(get_current_user, None)
 
 
+@pytest.fixture(autouse=True)
+def _owner_lifecycle_lease(monkeypatch):
+    """The callback binds under the owner lease and checks revoke-all's mark: admit both."""
+    from core.repositories import container_repo
+
+    monkeypatch.setattr(container_repo, "try_claim_owner_lifecycle", AsyncMock(return_value="lease-token"))
+    monkeypatch.setattr(container_repo, "release_owner_lifecycle_claim", AsyncMock())
+    monkeypatch.setattr(container_repo, "get_oauth_revoked_at", AsyncMock(return_value=None))
+
+
 def _app_store():
     return patch(
         "core.services.credentials.platform_oauth_app_store.get",
@@ -115,6 +125,21 @@ def test_callback_exchanges_code_applies_install_and_redirects(client):
     assert kw["owner_id"] == "org_1" and kw["agent_id"] == "agent_f" and kw["team_id"] == "T1"
     assert kw["bot_token"] == "xoxb-token" and kw["scopes"] == ["chat:write", "app_mentions:read"]
     assert kw["installer_slack_user_id"] == "U_ADMIN" and kw["installer_member_id"] == "user_1"
+
+
+def test_callback_started_before_revoke_all_installs_nothing(client):
+    t = _SlackToken()
+    state_row = {"owner_id": "org_1", "provider": "slack", "agent_id": "agent_f", "ttl": 1, "created_at_ms": 100}
+    with (
+        _app_store(),
+        patch("routers.slack_app.oauth_state_repo.consume", AsyncMock(return_value=state_row)),
+        patch("routers.slack_app._client_factory", lambda: httpx.AsyncClient(transport=t)),
+        patch("core.repositories.container_repo.get_oauth_revoked_at", AsyncMock(return_value=200)),
+        patch("routers.slack_app.slack_install_service.apply_install", AsyncMock()) as apply,
+    ):
+        r = client.get("/api/v1/slack/oauth/callback?code=c0de&state=st", follow_redirects=False)
+    assert r.status_code == 302 and r.headers["location"].endswith("slack=error:revoked")
+    apply.assert_not_awaited()
 
 
 def test_callback_with_bad_state_redirects_with_error(client):

@@ -1602,7 +1602,16 @@ class TestOAuthCallback:
         assert mock_repo.put_status.await_args.args == ("org_1", "google", "connected")
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("started_at,connects", [(100, False), (200, False), (201, True)])
+    @pytest.mark.parametrize(
+        "state_times,connects",
+        [
+            ({"created_at_ms": 200_400}, False),
+            ({"created_at_ms": 200_500}, False),
+            ({"created_at_ms": 200_501}, True),  # the same second as revoke-all, but after it
+            ({"ttl": 199 + 600}, False),  # a state minted before this field: its whole second must precede
+            ({"ttl": 200 + 600}, True),
+        ],
+    )
     @patch("routers.connections.google_accounts_repo")
     @patch("routers.connections.apply_connection")
     @patch("routers.connections.integration_secret_store")
@@ -1615,23 +1624,24 @@ class TestOAuthCallback:
         mock_store,
         mock_apply,
         mock_accounts,
-        started_at,
+        state_times,
         connects,
         async_client,
         monkeypatch,
         _oauth_state,
     ):
-        """Revoke-all at t=200. A callback whose state was minted at or before it (its code
+        """Revoke-all at t=200.500 s. A callback whose state was minted at or before it (its code
         already exchanged, or a provider revoke-all never saw) must not land a credential after
         the teardown. The start time is the stored state row's, never the request's."""
         from core.repositories import container_repo
 
-        monkeypatch.setattr(container_repo, "get_oauth_revoked_at", AsyncMock(return_value=200))
+        monkeypatch.setattr(container_repo, "get_oauth_revoked_at", AsyncMock(return_value=200_500))
         _oauth_state.return_value = {
             "owner_id": "org_1",
             "provider": "google",
             "verifier": "pkce",
-            "ttl": started_at + connections.oauth_state_repo._TTL_SECONDS,
+            "ttl": 1_000_000,
+            **state_times,
         }
         cred = {"access_token": "a", "refresh_token": "r", "client_id": "c", "client_secret": "s"}
         mock_dance.exchange = AsyncMock(return_value=("org_1", "google", cred, None))

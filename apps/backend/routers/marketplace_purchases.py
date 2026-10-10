@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.config import settings
+from core.observability.metrics import put_metric
 from core.repositories import billing_repo, marketplace_repo
 from core.services import license_service, payout_service, rollup_service
 from core.services.owner_facts import write_owner_facts
@@ -186,7 +187,21 @@ async def stripe_webhook(
     event_type = event["type"]
     obj = event["data"]["object"]
     try:
-        if event_type in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
+        if event_type in (
+            "checkout.session.completed",
+            "checkout.session.async_payment_succeeded",
+            "charge.refunded",
+        ) and event.get("account"):
+            # Marketplace checkout and refunds run on the PLATFORM balance, so
+            # their events never carry `account`. One that does happened on a
+            # connected account (a seller's, or an owner's own business
+            # account) — money the platform never received. Treating it as a
+            # purchase would grant entitlement and credit a seller from it.
+            logger.warning(
+                "marketplace webhook: ignoring %s from connected account %s", event_type, event.get("account")
+            )
+            put_metric("marketplace.webhook.connected_account_ignored", dimensions={"event_type": event_type})
+        elif event_type in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
             # Both events flow through the same fulfillment path.
             # checkout.session.completed fires once payment is initiated;
             # for delayed-payment methods (ACH, BNPL, bank transfer) it
@@ -275,6 +290,20 @@ async def _handle_checkout_completed(session: dict) -> None:
     amount = session.get("amount_total", 0)
     if not (listing_id and buyer_id and seller_id):
         return  # invalid session metadata, ignore.
+    # Metadata is the only link from the payment to the listing, so check it
+    # against the listing row before crediting anyone: the seller must be the
+    # listing's seller and the buyer must have paid its price. A published
+    # row's price is immutable, so a mismatch is never a legitimate sale.
+    listing = await marketplace_repo.get_listing(listing_id, version)
+    if not listing or listing.get("seller_id") != seller_id or int(listing.get("price_cents", -1)) != amount:
+        logger.warning(
+            "marketplace checkout %s does not match listing %s v%s; not fulfilled",
+            session.get("id"),
+            listing_id,
+            version,
+        )
+        put_metric("marketplace.webhook.checkout_mismatch")
+        return
 
     payment_intent_id = session.get("payment_intent")
     transfer_group = ""

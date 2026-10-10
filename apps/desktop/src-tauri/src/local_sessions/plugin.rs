@@ -176,18 +176,31 @@ fn run_all(home: PathBuf, root: &Path, cmds: Vec<Vec<String>>) {
             transport::relay_log("lightbulb plugin: left in place, it is not the app's copy");
             continue;
         }
-        let step = |args: &[&str]| match run(args) {
+        match run(&args.iter().map(String::as_str).collect::<Vec<_>>()) {
             Ok(out) if out.status.success() => {}
             Ok(out) => transport::relay_log(&format!("lightbulb plugin: {} exited {}", args.join(" "), out.status)),
             Err(_) => transport::relay_log(&format!("lightbulb plugin: {} did not start", args.join(" "))),
-        };
-        step(&args.iter().map(String::as_str).collect::<Vec<_>>());
-        // After the install: refresh Claude's cached copy (see the module comment).
-        if args[1] == "install"
-            && run(&["plugin", "list", "--json"]).is_ok_and(|o| o.status.success() && stale(&o.stdout, root))
-        {
-            step(&["plugin", "update", ID]);
         }
+        if args[1] == "install" {
+            refresh(&claude, root);
+        }
+    }
+}
+
+/// Runs `claude plugin update` when Claude's cached copy of the app's plugin is older than the
+/// files the app wrote (see the module comment). Every path that installs or finds the plugin
+/// calls this after the files are written: the app's launch and `lightbulb continue`.
+pub(crate) fn refresh(claude: &Path, root: &Path) {
+    let run = |args: &[&str]| {
+        std::process::Command::new(claude).args(args).stdin(std::process::Stdio::null()).output()
+    };
+    if !run(&["plugin", "list", "--json"]).is_ok_and(|o| o.status.success() && stale(&o.stdout, root)) {
+        return;
+    }
+    match run(&["plugin", "update", ID]) {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => transport::relay_log(&format!("lightbulb plugin: plugin update {ID} exited {}", out.status)),
+        Err(_) => transport::relay_log(&format!("lightbulb plugin: plugin update {ID} did not start")),
     }
 }
 

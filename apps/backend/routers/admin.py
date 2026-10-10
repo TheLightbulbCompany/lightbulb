@@ -3,8 +3,9 @@
 Every endpoint is gated by Depends(require_platform_admin). The surface is for
 human Isol8 operators authenticated by Clerk; customer agents do not receive a
 parallel credential path into platform administration.
-Mutation endpoints are wrapped with @audit_admin_action so a row lands
-in DDB synchronously (fail-closed). Container + billing actions also
+Mutation endpoints, and the per-user reads under /users/{user_id}/*, are
+wrapped with @audit_admin_action so a row lands in DDB synchronously
+(fail-closed). Container + billing actions also
 accept an Idempotency-Key header to short-circuit double clicks.
 
 Read endpoints delegate to admin_service (composition layer).
@@ -231,8 +232,10 @@ async def admin_list_users(
     "/users/{user_id}/overview",
     description="Per-user identity + billing + container + usage merged from Clerk/Stripe/DDB.",
 )
+@audit_admin_action("user.read.overview")
 async def admin_user_overview(
     user_id: str,
+    request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
     return await admin_service.get_overview(user_id)
@@ -242,8 +245,10 @@ async def admin_user_overview(
     "/users/{user_id}/agents",
     description="List a user's agents via gateway RPC. Returns container_status when not running.",
 )
+@audit_admin_action("user.read.agents")
 async def admin_user_agents(
     user_id: str,
+    request: Request,
     cursor: str | None = Query(None),
     limit: int = Query(50, le=200),
     auth: AuthContext = Depends(require_platform_admin),
@@ -255,8 +260,10 @@ async def admin_user_agents(
     "/users/{user_id}/agents/{agent_id}",
     description="Full agent detail (config, sessions, skills) with secret redaction. 409 when container not running.",
 )
+@audit_admin_action("user.read.agent_detail")
 async def admin_agent_detail(
     user_id: str,
+    request: Request,
     agent_id: str,
     auth: AuthContext = Depends(require_platform_admin),
 ):
@@ -270,8 +277,10 @@ async def admin_agent_detail(
     "/users/{user_id}/posthog",
     description="PostHog Persons API timeline for the user (events + session replay links).",
 )
+@audit_admin_action("user.read.posthog")
 async def admin_user_posthog(
     user_id: str,
+    request: Request,
     limit: int = Query(100, le=500),
     auth: AuthContext = Depends(require_platform_admin),
 ):
@@ -282,8 +291,10 @@ async def admin_user_posthog(
     "/users/{user_id}/logs",
     description="Inline CloudWatch Logs filtered to the user with cursor pagination.",
 )
+@audit_admin_action("user.read.logs")
 async def admin_user_logs(
     user_id: str,
+    request: Request,
     level: str = Query("ERROR"),
     hours: int = Query(24, le=168),
     limit: int = Query(20, le=100),
@@ -297,8 +308,10 @@ async def admin_user_logs(
     "/users/{user_id}/cloudwatch-url",
     description="Build a CloudWatch Logs Insights deep-link pre-filtered to the user.",
 )
+@audit_admin_action("user.read.cloudwatch_url")
 async def admin_user_cloudwatch_url(
     user_id: str,
+    request: Request,
     start: str = Query(...),
     end: str = Query(...),
     level: str = Query("ERROR"),

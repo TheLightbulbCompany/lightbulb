@@ -823,14 +823,48 @@ async fn local_mcp_list(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
 /// restart would let two concurrent calls interleave their RMW of
 /// `openclaw.json` and silently drop one update — last writer wins on a value
 /// it read before the other's write.
+///
+/// Any server whose command line is new or changed needs a native "yes" first:
+/// the node host runs it on every launch, and the page that calls this is a
+/// remote origin, so it must not be able to install a local executable on its
+/// own. This is a configuration change by the page, not an agent operation, so
+/// the consent-once-at-pairing grants do not cover it.
 #[tauri::command]
 async fn local_mcp_set(app: tauri::AppHandle, servers: serde_json::Value) -> Result<(), String> {
     let state = app
         .try_state::<AuthState>()
         .ok_or_else(|| "AuthState not managed".to_string())?;
     let _serialized = state.node_host_mutation.lock().await;
-    local_mcp::set_servers(&openclaw_state_dir(&app)?, servers)?;
+    let dir = openclaw_state_dir(&app)?;
+    let servers = local_mcp::validate_servers(servers)?;
+    let launches =
+        local_mcp::launches_needing_confirmation(&local_mcp::list_servers(&dir)?, &servers);
+    if !launches.is_empty() && !confirm_local_mcp_launches(&app, &launches).await {
+        return Err("local MCP change was not approved on this Mac".into());
+    }
+    local_mcp::set_servers(&dir, serde_json::Value::Object(servers))?;
     restart_node_host_subprocess_locked(&app).await
+}
+
+/// Native confirmation for new local MCP commands. Cancel is the FIRST button,
+/// so it is the default (Return) and Escape/close also land on it; only the
+/// explicit "Allow" button approves.
+async fn confirm_local_mcp_launches(app: &tauri::AppHandle, launches: &[String]) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult};
+    const ALLOW: &str = "Allow";
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .message(format!(
+            "Lightbulb wants to run these commands on this Mac every time it starts:\n\n{}\n\nOnly allow commands you recognise.",
+            launches.join("\n\n")
+        ))
+        .title("Allow local MCP server?")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom("Cancel".into(), ALLOW.into()))
+        .show_with_result(move |res| {
+            let _ = tx.send(matches!(res, MessageDialogResult::Custom(ref s) if s == ALLOW));
+        });
+    rx.await.unwrap_or(false)
 }
 
 /// Remove one server. `false` (and no restart) if it wasn't there.

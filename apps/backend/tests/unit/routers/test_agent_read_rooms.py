@@ -96,3 +96,19 @@ def test_a_requester_who_left_the_turns_room_lends_nothing(client, monkeypatch, 
     agent_in_room.seated.discard(("human", "user_ana"))
     assert client.get(path, headers={"Authorization": f"Bearer {_grant('user_ana')}"}).status_code == 403
     read.assert_not_awaited()
+
+
+@pytest.mark.parametrize(("path", "reader"), ROUTES)
+def test_a_turn_in_a_deleted_room_reads_nothing(client, monkeypatch, path, reader):
+    """Codex #3997: deleting a room tombstones it but keeps its members; its running turn reads nothing."""
+    from core.repositories import messaging_repo
+
+    read = AsyncMock()
+    monkeypatch.setattr(router.hosted_mcp, reader, read)
+    monkeypatch.setattr(
+        messaging_repo,
+        "get_room",
+        AsyncMock(return_value={"roomId": ROOM, "ownerId": "org_1", "deletedAt": "2026-10-09"}),
+    )
+    assert client.get(path, headers={"Authorization": f"Bearer {_grant('user_ana')}"}).status_code == 403
+    read.assert_not_awaited()

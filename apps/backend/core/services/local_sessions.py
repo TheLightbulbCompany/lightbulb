@@ -618,6 +618,7 @@ async def require_caller(auth: Caller, room: str) -> None:
         auth.room_id != room
         or auth.expires_at <= int(time.time())
         or not meta
+        or meta.get("deletedAt")  # a deleted room keeps its member rows; its turns act for no one
         or meta.get("ownerId") != owner
         or await messaging_repo.get_member(room, "agent", auth.agent_id) is None
         # An agent answers everyone in the room, and a shared room's foreign

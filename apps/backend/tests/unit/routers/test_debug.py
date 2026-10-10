@@ -616,6 +616,28 @@ class TestAgentCoreDebugRoutes:
         return row
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["post", "patch"])
+    async def test_org_member_cannot_provision_or_rewrite_the_workspace(self, app, mock_org_member_user, method):
+        from httpx import ASGITransport, AsyncClient
+
+        from core.auth import get_current_user
+
+        dispatch, write = AsyncMock(), AsyncMock()
+        app.dependency_overrides[get_current_user] = mock_org_member_user
+        try:
+            with (
+                patch("routers.debug.dispatch_provision", dispatch),
+                patch("core.services.hermes_provisioning.write_profiles", write),
+            ):
+                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    res = await getattr(client, method)("/api/v1/debug/provision")
+        finally:
+            app.dependency_overrides.clear()
+        assert res.status_code == 403
+        dispatch.assert_not_awaited()
+        write.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_post_provision_stands_down_for_a_live_row(self, async_client):
         repo = MagicMock()
         repo.get_by_owner_id = AsyncMock(return_value=self._agentcore_row())

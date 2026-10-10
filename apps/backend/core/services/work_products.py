@@ -12,6 +12,7 @@ Company resolution + bootstrap-admin session mirror ``board_cards``.
 from __future__ import annotations
 
 import logging
+import uuid
 
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.paperclip_admin_client import shared_admin_client
@@ -40,6 +41,12 @@ async def register(
                 "work_products: no issue_id for owner_id=%s provider=%s — skipping receipt", owner_id, provider
             )
             return None
+        try:
+            # Canonical form only: the id lands in an upstream URL path.
+            issue_id = str(uuid.UUID(issue_id))
+        except ValueError:
+            logger.warning("work_products: issue_id is not a UUID for owner_id=%s — skipping receipt", owner_id)
+            return None
         repo = PaperclipRepo(table_name="paperclip-companies")
         company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)
         if not company_id:
@@ -47,6 +54,11 @@ async def register(
             return None
         admin = shared_admin_client()
         cookie = await get_admin_session_cookie(admin._http)
+        # The admin session can write to ANY company's issue, so the issue must be this owner's.
+        issue = await admin.get_issue(session_cookie=cookie, issue_id=issue_id)
+        if (issue or {}).get("companyId") != company_id:
+            logger.warning("work_products: issue %s is not owner_id=%s's — skipping receipt", issue_id, owner_id)
+            return None
         # camelCase per CreateWorkProductBody's wire aliases; None-valued
         # optionals omitted so upstream applies its own defaults.
         body = {"type": type, "provider": provider, "title": title, "reviewState": "none"}

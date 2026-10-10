@@ -306,9 +306,7 @@ async def get_optional_user(
 # (run_analytics' internal-owner flag). This is NOT an access check: any
 # self-registered Clerk account can carry one of these addresses, so platform
 # admin is ``PLATFORM_ADMIN_USER_IDS`` (see ``require_platform_admin``).
-# "@isol8.co" stays until the team mailbox move is done (the bootstrap admin
-# still signs in on it); dropping it early files our own runs as customers'.
-_PLATFORM_ADMIN_EMAIL_DOMAINS: tuple[str, ...] = ("@thelightbulb.company", "@isol8.co")
+_PLATFORM_ADMIN_EMAIL_DOMAINS: tuple[str, ...] = ("@thelightbulb.company",)
 
 # Team members on personal mailboxes, for the same analytics tagging.
 _PLATFORM_ADMIN_EXTRA_EMAILS: frozenset[str] = frozenset(

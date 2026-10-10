@@ -11,11 +11,14 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 from core.services import work_products as mod  # noqa: E402
 
+ISSUE = "6f1c2a4e-8b3d-4c5e-9f7a-1b2c3d4e5f60"
+
 
 def _admin(create=None):
     admin = MagicMock()
     admin._http = MagicMock()
     admin.create_issue_work_product = create or AsyncMock(return_value={"id": "wp_1"})
+    admin.get_issue = AsyncMock(return_value={"id": ISSUE, "companyId": "comp_1"})
     return admin
 
 
@@ -38,14 +41,14 @@ async def test_registers_with_the_camelcase_wire_body():
             type="artifact",
             provider="posthog",
             title="Provisioned svc_analytics",
-            issue_id="iss_1",
+            issue_id=ISSUE,
             external_id="res_1",
             metadata={"workflow_id": "pwf_1", "level": "company"},
         )
     assert out == "wp_1"
     call = admin.create_issue_work_product.await_args
     assert call.kwargs["session_cookie"] == "s=1"
-    assert call.kwargs["issue_id"] == "iss_1"
+    assert call.kwargs["issue_id"] == ISSUE
     assert call.kwargs["body"] == {
         "type": "artifact",
         "provider": "posthog",
@@ -74,7 +77,7 @@ async def test_no_issue_id_skips_without_any_paperclip_call():
 async def test_no_paperclip_company_skips_before_the_admin_client():
     admin = _admin()
     with _patched(admin, company_id=None):
-        out = await mod.register("org_a", type="artifact", provider="posthog", title="t", issue_id="iss_1")
+        out = await mod.register("org_a", type="artifact", provider="posthog", title="t", issue_id=ISSUE)
     assert out is None
     admin.create_issue_work_product.assert_not_awaited()
 
@@ -83,5 +86,36 @@ async def test_no_paperclip_company_skips_before_the_admin_client():
 async def test_a_failing_receipt_never_raises():
     admin = _admin(create=AsyncMock(side_effect=RuntimeError("paperclip down")))
     with _patched(admin):
-        out = await mod.register("org_a", type="artifact", provider="posthog", title="t", issue_id="iss_1")
+        out = await mod.register("org_a", type="artifact", provider="posthog", title="t", issue_id=ISSUE)
     assert out is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("issue_id", ["../companies/x", "x?mode=cancel&", "a/b"])
+async def test_a_path_shaped_issue_id_skips_before_any_paperclip_call(issue_id):
+    admin = _admin()
+    with _patched(admin):
+        out = await mod.register("org_a", type="artifact", provider="posthog", title="t", issue_id=issue_id)
+    assert out is None
+    admin.get_issue.assert_not_awaited()
+    admin.create_issue_work_product.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_issue_in_another_company_gets_no_receipt():
+    admin = _admin()
+    admin.get_issue = AsyncMock(return_value={"id": ISSUE, "companyId": "comp_other"})
+    with _patched(admin):
+        out = await mod.register("org_a", type="artifact", provider="posthog", title="t", issue_id=ISSUE)
+    assert out is None
+    admin.create_issue_work_product.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_identifier_style_issue_id_in_the_owners_company_gets_its_receipt():
+    admin = _admin()
+    admin.get_issue = AsyncMock(return_value={"id": ISSUE, "identifier": "LB-12", "companyId": "comp_1"})
+    with _patched(admin):
+        out = await mod.register("org_a", type="artifact", provider="posthog", title="t", issue_id="LB-12")
+    assert out == "wp_1"
+    assert admin.create_issue_work_product.await_args.kwargs["issue_id"] == "LB-12"

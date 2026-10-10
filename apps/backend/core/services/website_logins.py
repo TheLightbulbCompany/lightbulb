@@ -322,6 +322,9 @@ async def list_sites(owner_id: str) -> list[dict]:
 async def delete_login(owner_id: str, login_id: str, *, actor: str) -> bool:
     if not LOGIN_ID_RE.match(login_id or ""):
         return False
+    # Secret first: a failure after it leaves the row listed, so a retry finds it and finishes.
+    # Row first would strand a password no list could ever reach again.
+    await integration_secret_store.delete(owner_id, _secret_key(login_id))
     try:
         await run_in_thread(
             _table().update_item,
@@ -334,7 +337,6 @@ async def delete_login(owner_id: str, login_id: str, *, actor: str) -> bool:
         if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
         return False
-    await integration_secret_store.delete(owner_id, _secret_key(login_id))
     logger.info("website_login.deleted owner=%s login=%s actor=%s", owner_id, login_id, actor)
     return True
 

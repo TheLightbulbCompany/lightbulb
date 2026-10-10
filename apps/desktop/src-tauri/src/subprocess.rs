@@ -97,9 +97,10 @@ fn retire_legacy_node_host_config(state_dir: &std::path::Path) -> Result<(), Str
 ///   state. The identity file is written under here.
 /// - `private_key_pem` / `public_key_pem`: Ed25519 keypair from the
 ///   macOS Keychain. Serialized into `identity/device.json`.
-/// - `gateway_token`: `OPENCLAW_GATEWAY_TOKEN` — pre-shared token the
-///   proxy validates the subprocess with before forwarding to the
-///   real gateway.
+/// - `gateway_token`: `OPENCLAW_GATEWAY_TOKEN` — the token the subprocess
+///   presents in its own protocol frames. The loopback proxy relays frames
+///   verbatim and never checks it; the proxy only refuses browser handshakes
+///   (see `proxy::handle_connection`).
 pub async fn spawn(
     binary: PathBuf,
     proxy_port: u16,

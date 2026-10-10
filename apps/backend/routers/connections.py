@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import logging
@@ -136,6 +137,32 @@ _REGION_RE = re.compile(r"^[a-z0-9-]+$")
 # so the effective per-owner ceiling is 2-4x this value, not a hard cap).
 _AWS_CLI_RATE_LIMIT_PER_MINUTE = 10
 _aws_cli_rate_buckets: dict[str, deque[float]] = defaultdict(deque)
+# The SM credential, cached per owner so a wrong-token spray is refused WITHOUT a Secrets
+# Manager fetch and without touching the rate bucket (which only correct tokens fill, so
+# someone else's junk can never get the real helper a 429). A mismatch refetches at most
+# once per floor, which is how a reconnect's new token is picked up. Every entry, matching
+# or not, is refetched after the TTL, so a revoked token works at most that long on a task
+# that cached it (this task drops its entry on disconnect).
+_AWS_CLI_REFETCH_FLOOR_S = 10.0
+_AWS_CLI_RECORD_TTL_S = 60.0
+_aws_cli_records: dict[str, tuple[float, dict]] = {}
+# One refresh per owner at a time: concurrent misses wait for the first fetch, then re-check.
+_aws_cli_refresh_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+
+def _aws_cli_record_is_stale(owner_id: str, presented_hash: str) -> bool:
+    cached = _aws_cli_records.get(owner_id)
+    if cached is None:
+        return True
+    age = time.monotonic() - cached[0]
+    return age >= _AWS_CLI_RECORD_TTL_S or (
+        age >= _AWS_CLI_REFETCH_FLOOR_S and not _cli_token_matches(cached[1], presented_hash)
+    )
+
+
+def _cli_token_matches(rec: dict, presented_hash: str) -> bool:
+    expected = rec.get("cli_token_hash") or ""
+    return bool(expected) and hmac.compare_digest(presented_hash, expected)
 
 
 def _check_aws_cli_rate_limit(owner_id: str) -> bool:
@@ -464,10 +491,27 @@ async def aws_credentials(body: AwsCredentialsBody, request: Request):
         put_metric("connections.aws_credentials.fetch", dimensions={"result": "unauthorized"})
         raise HTTPException(status_code=401, detail="invalid_token")
 
-    # Rate limit AFTER the cheap DDB gate but BEFORE the Secrets Manager fetch.
-    # The gate has already rejected unconnected / garbage owner_ids with a 401,
-    # so spray can't fill buckets; capping here means a valid-owner + wrong-token
-    # spray is throttled before it can drive unbounded GetSecretValue calls.
+    presented_hash = _hash_cli_token(presented)
+    if _aws_cli_record_is_stale(body.owner_id, presented_hash):
+        async with _aws_cli_refresh_locks[body.owner_id]:
+            # Re-check: a concurrent request may have refreshed while this one waited.
+            if _aws_cli_record_is_stale(body.owner_id, presented_hash):
+                try:
+                    fetched = await integration_secret_store.get(body.owner_id, "aws") or {}
+                except ClientError:
+                    # Secrets Manager throttling / validation errors must surface as a
+                    # clean 503 (the helper falls back to its stale cache), never an
+                    # unhandled 500.
+                    logger.exception("aws credential secret fetch failed for owner=%s", body.owner_id)
+                    put_metric("connections.aws_credentials.fetch", dimensions={"result": "store_error"})
+                    raise HTTPException(status_code=503, detail="credential_service_unavailable")
+                _aws_cli_records[body.owner_id] = (time.monotonic(), fetched)
+    rec = _aws_cli_records[body.owner_id][1]
+    if not _cli_token_matches(rec, presented_hash):
+        put_metric("connections.aws_credentials.fetch", dimensions={"result": "unauthorized"})
+        raise HTTPException(status_code=401, detail="invalid_token")
+
+    # Rate limit only AUTHENTICATED vends (bounds STS calls per owner).
     if not _check_aws_cli_rate_limit(body.owner_id):
         put_metric("connections.aws_credentials.fetch", dimensions={"result": "rate_limited"})
         return Response(
@@ -476,20 +520,6 @@ async def aws_credentials(body: AwsCredentialsBody, request: Request):
             content=b'{"detail":"rate_limited"}',
             media_type="application/json",
         )
-
-    try:
-        rec = await integration_secret_store.get(body.owner_id, "aws")
-    except ClientError:
-        # Secrets Manager throttling / validation errors must surface as a
-        # clean 503 (the helper falls back to its stale cache), never an
-        # unhandled 500.
-        logger.exception("aws credential secret fetch failed for owner=%s", body.owner_id)
-        put_metric("connections.aws_credentials.fetch", dimensions={"result": "store_error"})
-        raise HTTPException(status_code=503, detail="credential_service_unavailable")
-    expected_hash = (rec or {}).get("cli_token_hash") or ""
-    if not expected_hash or not hmac.compare_digest(_hash_cli_token(presented), expected_hash):
-        put_metric("connections.aws_credentials.fetch", dimensions={"result": "unauthorized"})
-        raise HTTPException(status_code=401, detail="invalid_token")
 
     try:
         # RoleSessionName charset is [\w+=,.@-]; owner ids (org_/user_ + base62)
@@ -882,6 +912,8 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
 
 
 async def _disconnect_teardown(owner_id: str, provider: str, p: registry.Provider) -> None:
+    if provider == "aws":
+        _aws_cli_records.pop(owner_id, None)
     # A pure CLI-skill materializer (gh_cli/xurl_cli/skill_cli/instagram_cli/
     # gog_cli/aws_cli) has no Hermes equivalent and is skipped outright; an
     # MCP-shaped one (mcp_oauth/qbo_dotenv) needs no remover call either — its

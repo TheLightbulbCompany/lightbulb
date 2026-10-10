@@ -150,10 +150,15 @@ async def revoke_all(body: RevokeAllBody, auth: Annotated[AuthContext, Depends(g
     if slack_failed:
         failed.append("slack")
 
-    # 2d. Saved website logins: each one's password is a credential copy we hold.
-    for login in await website_logins.list_logins(owner_id):
-        if await website_logins.delete_login(owner_id, login["id"], actor=auth.user_id):
-            revoked.append(f"website_login:{login['id']}")
+    # 2d. Saved website logins: each one's password is a credential copy we hold. Same as
+    # above: a failure is reported and the rest of the kill switch still runs.
+    try:
+        for login in await website_logins.list_logins(owner_id):
+            if await website_logins.delete_login(owner_id, login["id"], actor=auth.user_id):
+                revoked.append(f"website_login:{login['id']}")
+    except Exception:  # noqa: BLE001 — report it, keep going
+        logger.exception("company_policy: revoke-all could not delete website logins owner_id=%s", owner_id)
+        failed.append("website_logins")
 
     # 3. Stripe Connect: the disconnect route's service path — sever the
     # platform link and unbind. The owner's account itself is untouched.

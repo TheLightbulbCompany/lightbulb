@@ -379,10 +379,11 @@ class Mouth:
             sound = sim.now() - at
             h.on_agent_state(self.agent_id, "listening")
             outcome = "revoked" if revoked else "cut" if cut else "long" if long else "said"
-            if outcome == "long":
-                self._long = unit
-            elif outcome == "said":
-                self._long = None
+        # agent.py `_DrivenLive._speak`: the exemption holds only for that unit's own next try
+        if outcome == "long":
+            self._long = unit
+        elif outcome == "said" or unit != self._long:
+            self._long = None
         evidence = {
             "audioMs": round(sound * 1000), "loudMs": round(loud * 1000), "heardMs": round(loud * 1000),
             "leadMs": round(lead * 1000),

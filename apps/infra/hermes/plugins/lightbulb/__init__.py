@@ -1,6 +1,7 @@
 """The `lightbulb` Hermes tool plugin: the room tools OpenClaw gave us for free."""
 from __future__ import annotations
 
+import base64
 import itertools
 import json
 import logging
@@ -351,12 +352,27 @@ class _LineageDB:
         return sid if sid and self._lineage(self._db, sid) in self._roots else None
 
 
+def _grant_requester(token) -> str | None:
+    """The requester the backend put in this turn's local-session grant (None: nobody verified --
+    a Meet speaker, or a run another speaker steered, whose grant the bridge swapped for a lowered
+    one). Read, not verified: the backend verifies the grant on every use; here it only narrows
+    what this agent's own history search returns."""
+    try:
+        payload = str(token).split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        return claims.get("requesterId") or None
+    except (IndexError, ValueError, TypeError, AttributeError):
+        return None
+
+
 def _recall_roots(tool, db, current_session_id: str) -> set:
-    """The lineages a turn may recall: its own, and on a spoken turn its room's (the call's turn
-    context names the room; the room's Hermes session is keyed like any room turn's)."""
+    """The lineages a turn may recall: its own, and on a spoken turn its room's when a signed-in
+    member asked (the call's turn context names the room; the room's Hermes session is keyed like
+    any room turn's). A Meet guest's turn keeps to the call: guests are not the room's members."""
     roots = {tool._resolve_lineage(db, current_session_id)}
     ctx = turn_context.read(current_session_id) or {}
-    if ctx.get("family") == "call" and ctx.get("voiceRoomId") and ctx.get("agentId"):
+    if (ctx.get("family") == "call" and ctx.get("voiceRoomId") and ctx.get("agentId")
+            and _grant_requester(ctx.get("localSessionToken"))):
         roots.add(tool._resolve_lineage(db, f"agent:{ctx['agentId']}:lightbulb:channel:{ctx['voiceRoomId']}"))
     return roots
 

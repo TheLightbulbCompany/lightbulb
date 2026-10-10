@@ -191,10 +191,27 @@ class _CallRecallDB(_RecallDB):
         return [{"session_id": s, "id": i} for i, s in enumerate(["dm", CALL_KEY, ROOM_KEY, "room-child"])]
 
 
+def _grant(requester):
+    import base64
+    claims = base64.urlsafe_b64encode(json.dumps({"requesterId": requester}).encode()).decode().rstrip("=")
+    return f"h.{claims}.sig"
+
+
+@pytest.mark.parametrize("ctx_over", [{"localSessionToken": _grant(None)}, {"localSessionToken": None}, {}],
+                         ids=["meet-guest", "no-grant", "missing"])
+def test_a_meet_guests_spoken_turn_keeps_to_the_call(monkeypatch, tmp_path, ctx_over):
+    """Codex P1: a Meet speaker is not the room's member; their turn must not speak its history."""
+    turn_context.write(tmp_path, CALL_KEY, {"family": "call", "agentId": "a1", "voiceRoomId": "r1", **ctx_over})
+    tool, calls = _recall(monkeypatch, tmp_path)
+    tool.session_search(query="pricing", db=_CallRecallDB(), current_session_id=CALL_KEY)
+    assert [r["session_id"] for r in calls[0]["db"].search_messages()] == [CALL_KEY]
+
+
 def test_a_spoken_turn_recalls_its_rooms_history_as_chat_does(monkeypatch, tmp_path):
     """Prod Meet 10-09: on a call, recall stopped at the call's own transcript. A spoken turn belongs
     to its room: it reaches the room's lineage too, and still never another conversation."""
-    turn_context.write(tmp_path, CALL_KEY, {"family": "call", "agentId": "a1", "voiceRoomId": "r1"})
+    turn_context.write(tmp_path, CALL_KEY, {"family": "call", "agentId": "a1", "voiceRoomId": "r1",
+                                            "localSessionToken": _grant("user_ana")})
     tool, calls = _recall(monkeypatch, tmp_path)
     db = _CallRecallDB()
     assert tool.session_search(query="pricing", db=db, current_session_id=CALL_KEY) == "hermes"

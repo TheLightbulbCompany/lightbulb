@@ -46,3 +46,18 @@ async def test_another_units_outcome_ends_the_free_retry(monkeypatch):
     assert await mouth._speak(1, 1, "B.") == "revoked"  # another unit, not said
     assert await mouth._speak(1, 0, "A.") == "long"  # A's exemption is gone
     await asyncio.sleep(0)
+
+
+async def test_a_long_units_receipt_waits_for_its_stop(monkeypatch):
+    """Codex P2 on #4016: agent.py interrupts a long unit and awaits it before the receipt."""
+    monkeypatch.setattr(sim_mod, "sound_limit", lambda unit: 0.05)
+    model = SimpleNamespace(
+        hear=lambda: 0.0, first_audio=lambda: 0.0, silent=lambda: False, lead=lambda: 0.0,
+        unit=lambda unit: 0.2, stop=lambda: 0.1, trailing=lambda: 0.0,
+    )  # fmt: skip
+    h = SimpleNamespace(may_say=lambda *a: True, on_agent_state=lambda *a: None, on_unit_audible=lambda *a: None,
+                        on_unit=lambda *a: None)
+    mouth = sim_mod.Mouth(SimpleNamespace(model=model, h=h, now=time.monotonic, audio=lambda *a: None), "friday", 0)
+    began = time.monotonic()
+    assert await mouth._speak(1, 0, "A.") == "long"
+    assert time.monotonic() - began >= 0.05 + 0.1  # the limit, then the stop

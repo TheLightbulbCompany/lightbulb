@@ -369,7 +369,7 @@ class Mouth:
                 need, limit = m.unit(unit), float("inf") if unit == self._long else sound_limit(unit)
                 cut = await self._wait(min(need, limit))
                 long = not cut and need > limit
-                if cut:
+                if cut or long:  # agent.py interrupts a long unit's generation too, and awaits it
                     await asyncio.sleep(m.stop())
                 loud = sim.now() - heard
                 sim.audio(self, False)

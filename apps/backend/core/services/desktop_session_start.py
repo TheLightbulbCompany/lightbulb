@@ -338,6 +338,9 @@ async def _finish(
                 "message": str(node_error.get("message") or "The Mac did not start the session.")[:300],
                 "retryable": False,
             }
+            # A Mac on a build from before Open in a terminal rejects the conversation-only payload.
+            if source == "open" and error["code"] == "INVALID_REQUEST" and error["message"] == "Malformed request.":
+                error["message"] = "Update the Lightbulb app on this Mac, then try again."
     except DesktopError as exc:
         ok, error = False, {"code": exc.code, "message": "Could not reach that Mac.", "retryable": True}
     except Exception:

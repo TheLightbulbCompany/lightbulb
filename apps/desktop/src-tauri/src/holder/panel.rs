@@ -180,17 +180,34 @@ fn relay(stream: TcpStream) -> std::io::Result<()> {
     if let Some(frame) = history_frame(recent) {
         to_page.send(Message::Binary(frame.into())).map_err(std::io::Error::other)?;
     }
+    let held = id.clone();
     std::thread::spawn(move || {
+        // The teammate the cursor names (S8), told as a text message whenever it changes: their
+        // keys echo, so a frame follows each batch. The page times it out itself (`forMs`).
+        let mut told = None;
         while let Ok((kind, payload)) = read_frame(&mut from_holder) {
             if to_page.send(Message::Binary(encode(kind, &payload).into())).is_err() || matches!(kind, DETACHED | EXIT) {
                 break;
+            }
+            let now = std::time::Instant::now();
+            let typist = crate::local_sessions::remote_input::cursor_typist(&held, now);
+            if typist != told {
+                let left = crate::local_sessions::remote_input::CURSOR_FOR.saturating_sub(typist.as_ref().map_or(Default::default(), |(_, at)| now.saturating_duration_since(*at)));
+                let who = typist.as_ref().map(|((user, name), _)| json!({"userId": user, "name": name, "forMs": left.as_millis() as u64}));
+                let _ = to_page.send(Message::Text(json!({"typist": who}).to_string().into()));
+                told = typist;
             }
         }
         let _ = to_page.close(None);
     });
     loop {
         match said(ws.read()) {
-            Said::Frame(kind, payload) => holder.write_all(&encode(kind, &payload))?,
+            Said::Frame(kind, payload) => {
+                if kind == INPUT {
+                    crate::local_sessions::remote_input::owner_typed(&id);
+                }
+                holder.write_all(&encode(kind, &payload))?
+            }
             Said::End => {
                 // The panel's End control: the provider ends and the holder keeps its last picture.
                 // The page hides End for an attach terminal; one sent anyway ends only that client.

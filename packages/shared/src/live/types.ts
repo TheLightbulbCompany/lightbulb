@@ -10,6 +10,7 @@
 
 import type { CanonicalRoomMessage, MessageAttachment, RoomLastMessage } from "../messaging/types";
 import { MESSAGE_ATTACHMENT_MAX_BYTES } from "../messaging/types";
+import { PERSON_COLORS, type PersonColor } from "../messaging/personColor";
 
 /** OpenClaw tool result content blocks — text blocks or image refs. Image
  *  data is replaced with `{ bytes, omitted: true }` by OpenClaw's sanitizer. */
@@ -232,6 +233,9 @@ const SESSION_ATTENTION_STATES = new Set<string>(["waiting", "finished", "join_r
 export type SessionScreen = {
   sessionId: string; generation: string; epoch: number; seq: number;
   cols: number; rows: number; kind: "snapshot" | "output" | "history" | "ping"; data: string;
+  /** The teammate who typed last, shown on the cursor for `forMs` (S8). Absent: the plain cursor.
+   *  Members get their `userId`; a link viewer gets only their `personColor` as `color`, never the id. */
+  typist?: { userId?: string; color?: PersonColor; name: string; forMs: number };
 };
 /** An admitted person started (or is still) typing into this owner's live session terminal. */
 export type SessionTyping = { sessionId: string; userId: string };
@@ -429,7 +433,8 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
         && Number.isSafeInteger(payload.seq) && (payload.seq as number) >= 0
         && Number.isInteger(payload.cols) && (payload.cols as number) >= 1 && (payload.cols as number) <= 1000
         && Number.isInteger(payload.rows) && (payload.rows as number) >= 1 && (payload.rows as number) <= 500
-        && (payload.kind === "ping" ? payload.data === "" : SCREEN_KINDS.has(payload.kind as string) && text(payload.data));
+        && (payload.kind === "ping" ? payload.data === "" : SCREEN_KINDS.has(payload.kind as string) && text(payload.data))
+        && (payload.typist === undefined || (isObj(payload.typist) && (str(payload.typist.userId) || PERSON_COLORS.includes(payload.typist.color as never)) && str(payload.typist.name) && num(payload.typist.forMs)));
     case "workspace.session.typing":
       return str(payload.sessionId) && str(payload.userId);
     case "workspace.session.attention":

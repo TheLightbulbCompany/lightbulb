@@ -577,6 +577,21 @@ async def test_a_link_viewer_gets_frames_on_the_public_channel_with_no_session_o
     transport[4].clear()
     await session_screen.forward(relay(transport), "conn-1", frame(sid))
     assert sorted(c for c, _ in await _published(transport)) == sorted([await _frames_channel(sid), f"/pub/{public}"])
+    # A teammate typing (S8): members get who it is; the link gets their name and colour, never their id.
+    db[0].update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": f"VIEWER#{BOB.user_id}"},
+        UpdateExpression="SET typedAt = :t",
+        ExpressionAttributeValues={":t": int(time.time())},
+    )
+    transport[4].clear()
+    await session_screen.forward(relay(transport), "conn-1", frame(sid))
+    shown = {c: e["payload"]["typist"] for c, e in await _published(transport)}
+    assert shown[await _frames_channel(sid)]["userId"] == BOB.user_id
+    assert set(shown[f"/pub/{public}"]) == {"name", "color", "forMs"}
+    assert shown[f"/pub/{public}"]["color"] == session_screen._person_color(BOB.user_id)
+    # personColor in @lightbulb/shared gives these same colours to these ids.
+    assert [session_screen._person_color(f"user_{n}") for n in range(4)] == ["yellow", "blue", "blueBright", "cyan"]
+    assert BOB.user_id not in _json.dumps(shown[f"/pub/{public}"])
 
 
 @pytest.mark.asyncio

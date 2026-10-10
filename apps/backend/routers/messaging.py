@@ -158,6 +158,32 @@ async def local_session_invocation(request: Request) -> local_session_grants.Age
     )
 
 
+async def agent_reader(
+    auth: local_session_grants.AgentInvocation = Depends(local_session_invocation),
+) -> AuthContext:
+    """An agent turn reads rooms as the person who asked it, with exactly that person's access (the
+    hosted MCP's find_rooms/read_messages). The person is the turn grant's requester, set by the
+    backend from the canonical trigger -- the human author of a typed message, the signed-in speaker
+    of a Live run -- never by the agent. No requester (a Meet speaker, a voice run another speaker
+    steered, a Paperclip run, an agent's message): nothing is readable, since every room is private
+    to its members."""
+    if not auth.requester_id:
+        raise ApiProblem("ROOM_FORBIDDEN", "No signed-in person asked for this, so no rooms can be read for it.")
+    return AuthContext(user_id=auth.requester_id, org_id=auth.owner_id)
+
+
+@router.get("/messaging/agent-read/rooms")
+async def agent_find_rooms(query: str = "", limit: int = 30, auth: AuthContext = Depends(agent_reader)):
+    return await hosted_mcp.rooms_for(auth, query, limit)
+
+
+@router.get("/messaging/agent-read/messages")
+async def agent_read_messages(
+    room_id: str, after_seq: int | None = None, limit: int = 25, auth: AuthContext = Depends(agent_reader)
+):
+    return await hosted_mcp.messages_for(auth, room_id, after_seq, limit)
+
+
 @router.get("/messaging/local-session-agent/resources", response_model=local_sessions.RoomResources)
 async def agent_local_session_resources(
     auth: local_session_grants.AgentInvocation = Depends(local_session_invocation),

@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from . import turn_context
@@ -307,6 +308,58 @@ def _local_sessions(args: dict, *, session_id: str = "", **_kw) -> str:
         return SESSIONS_UNAVAILABLE
 
 
+# ---- read_rooms: other rooms, with the access of the person who asked --------------------------
+READ_ROOMS_SCHEMA = {
+    "name": "lightbulb_read_rooms",
+    "description": "Find and read the workspace's other channels, DMs and group chats, with exactly the "
+                   "access of the person who asked you (what they could open themselves). action "
+                   "\"find\" lists rooms (optional query matches a room or member name); \"read\" returns "
+                   "a room's latest messages, or those after afterSeq. With no signed-in person behind "
+                   "this turn (a Meet guest, a routine) nothing is readable: say so.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["find", "read"]},
+            "query": {"type": "string", "maxLength": 200},
+            "roomId": {"type": "string"},
+            "afterSeq": {"type": "integer", "minimum": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+        },
+        "required": ["action"],
+    },
+}
+READ_ROOMS_REFUSED = ("No rooms can be read for this turn: no signed-in person asked for it, or they "
+                      "cannot open that room. Say so; do not guess what was said there.")
+
+
+def _read_rooms(args: dict, *, session_id: str = "", **_kw) -> str:
+    """The hosted MCP's find_rooms/read_messages for an agent turn, authorized by the turn's grant
+    (its requester is the backend's, never the agent's): routers/messaging.py agent_reader."""
+    ctx = turn_context.read(session_id)
+    if not ctx or not ctx.get("localSessionToken"):
+        return NO_TURN
+    base = f"{ctx['apiUrl'].rstrip('/')}/api/v1/messaging/agent-read"
+    limit = args.get("limit")
+    try:
+        if args.get("action") == "find":
+            query = urllib.parse.urlencode({"query": str(args.get("query") or ""), "limit": int(limit or 30)})
+            return json.dumps(_call_sessions("GET", f"{base}/rooms?{query}", ctx["localSessionToken"]))
+        if args.get("action") == "read":
+            room_id = str(args.get("roomId") or "")
+            if not _UUID_RE.match(room_id):
+                return "Invalid roomId: take it from action find."
+            params = {"room_id": room_id, "limit": int(limit or 25)}
+            if args.get("afterSeq") is not None:
+                params["after_seq"] = max(0, int(args["afterSeq"]))
+            url = f"{base}/messages?{urllib.parse.urlencode(params)}"
+            return json.dumps(_call_sessions("GET", url, ctx["localSessionToken"]))
+        return "action must be find or read."
+    except urllib.error.HTTPError as exc:
+        return READ_ROOMS_REFUSED if exc.code in (403, 404) else "Lightbulb rooms are unavailable right now."
+    except Exception:  # noqa: BLE001 -- no status, no URL, no detail reaches the agent
+        return "Lightbulb rooms are unavailable right now."
+
+
 def _log_memory_full(tool_name: str = "", result=None, **_kw) -> None:
     """Hermes refuses a built-in memory write over its char budget and tells only the model."""
     if tool_name == "memory" and isinstance(result, str) and "would exceed the limit" in result:
@@ -411,6 +464,8 @@ def register(ctx) -> None:
                       description=HIRE_SCHEMA["description"], emoji="🧑‍💼")
     ctx.register_tool("lightbulb_local_sessions", "lightbulb", SESSIONS_SCHEMA, _local_sessions,
                       description=SESSIONS_SCHEMA["description"], emoji="🖥️")
+    ctx.register_tool("lightbulb_read_rooms", "lightbulb", READ_ROOMS_SCHEMA, _read_rooms,
+                      description=READ_ROOMS_SCHEMA["description"], emoji="🗂️")
     ctx.register_tool("lightbulb_voice_profile", "lightbulb", VOICE_PROFILE_SCHEMA, _voice_profile,
                       description=VOICE_PROFILE_SCHEMA["description"], emoji="🎙️")
     from . import desktop

@@ -255,3 +255,32 @@ def test_session_search_refuses_anything_outside_it(monkeypatch, kw):
     tool, calls = _recall(monkeypatch)
     out = tool.session_search(**{"db": _RecallDB(), "current_session_id": "child", **kw})
     assert json.loads(out) == {"success": False, "error": lightbulb.RECALL_SCOPE} and calls == []
+
+
+# ---- lightbulb_read_rooms: other rooms with the asker's access ------------------------------------
+def test_read_rooms_reads_through_the_turns_grant(tmp_path, monkeypatch):
+    """The MCP's find_rooms/read_messages for an agent turn: the turn's grant, never an agent-chosen person."""
+    monkeypatch.setattr(turn_context, "_home", lambda: tmp_path)
+    ctx(tmp_path)
+    calls = []
+    monkeypatch.setattr(lightbulb, "_call_sessions", lambda method, url, token: calls.append((method, url, token)) or {"rooms": []})
+    assert json.loads(lightbulb._read_rooms({"action": "find", "query": "launch"}, session_id=SESSION)) == {"rooms": []}
+    lightbulb._read_rooms({"action": "read", "roomId": OTHER_ROOM, "afterSeq": 4}, session_id=SESSION)
+    assert calls == [
+        ("GET", "https://api.invalid/api/v1/messaging/agent-read/rooms?query=launch&limit=30", "jwt"),
+        ("GET", f"https://api.invalid/api/v1/messaging/agent-read/messages?room_id={OTHER_ROOM}&limit=25&after_seq=4", "jwt"),
+    ]
+
+
+def test_read_rooms_refusals_reach_the_agent_as_plain_words(tmp_path, monkeypatch):
+    import urllib.error
+    monkeypatch.setattr(turn_context, "_home", lambda: tmp_path)
+    assert lightbulb._read_rooms({"action": "find"}, session_id=SESSION) == lightbulb.NO_TURN  # no turn here
+    ctx(tmp_path)
+    assert "Invalid roomId" in lightbulb._read_rooms({"action": "read", "roomId": "general"}, session_id=SESSION)
+
+    def refused(*_a):
+        raise urllib.error.HTTPError("u", 403, "forbidden", None, None)
+
+    monkeypatch.setattr(lightbulb, "_call_sessions", refused)
+    assert lightbulb._read_rooms({"action": "find"}, session_id=SESSION) == lightbulb.READ_ROOMS_REFUSED

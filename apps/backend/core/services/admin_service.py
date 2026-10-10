@@ -257,7 +257,8 @@ async def get_overview(user_id: str) -> dict:
 
     return {
         "identity": clerk,
-        "container": container,
+        # Allowlisted: the raw row carries hook_token / gateway_token, which must never reach a browser.
+        "container": container if _read_failed(container, label="ddb_containers") else _narrow_container(container),
         "billing": billing,
         "usage": usage,
         "org": org_context,

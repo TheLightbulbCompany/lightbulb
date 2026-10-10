@@ -113,11 +113,11 @@ fn argv(program: &Path, w: &Wanted, own: bool) -> Vec<String> {
 
 /// The folder the session last ran in, from its own transcript (Claude) or rollout (Codex), if it
 /// still exists. The same folder, never one the request names.
-fn folder(home: &Path, claude_config: &Path, w: &Wanted) -> Option<PathBuf> {
-    let cwd = if w.provider == "codex" {
-        codex_cwd(home, &w.conversation_id)
+pub(crate) fn folder(home: &Path, claude_config: &Path, provider: &str, conversation: &str) -> Option<PathBuf> {
+    let cwd = if provider == "codex" {
+        codex_cwd(home, conversation)
     } else {
-        super::snapshot::find_transcript(claude_config, &w.conversation_id)
+        super::snapshot::find_transcript(claude_config, conversation)
             .and_then(|t| super::snapshot::cwd_and_version(&t).ok()?.0)
     }?;
     fs::canonicalize(cwd).ok().filter(|p| p.is_dir())
@@ -273,15 +273,18 @@ fn prepare(w: &Wanted, own: bool, home: &Path) -> std::result::Result<Option<(Pa
         return Err("TOOL_UNAVAILABLE");
     }
     let program = provider_program(home, &w.provider).ok_or("TOOL_UNAVAILABLE")?;
-    let claude = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).unwrap_or_else(|| home.join(".claude"));
-    let folder = folder(home, &claude, w).ok_or("FOLDER_MISSING")?;
+    let folder = folder(home, &claude_config(home), &w.provider, &w.conversation_id).ok_or("FOLDER_MISSING")?;
     // The folder it last ran in must still be approved now, as for New session and the CLI: the
     // owner may have removed it from File access after the session ended.
     let folder = approved_folder(&folder, &crate::session_start::approved_now())?;
     Ok(Some((folder, argv(&program, w, own))))
 }
 
-fn approved_folder(folder: &Path, approved: &[PathBuf]) -> std::result::Result<PathBuf, &'static str> {
+pub(crate) fn claude_config(home: &Path) -> PathBuf {
+    std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).unwrap_or_else(|| home.join(".claude"))
+}
+
+pub(crate) fn approved_folder(folder: &Path, approved: &[PathBuf]) -> std::result::Result<PathBuf, &'static str> {
     folder
         .to_str()
         .and_then(|f| crate::file_access::canonicalize(f).ok())
@@ -384,7 +387,7 @@ mod tests {
         fs::create_dir_all(&project).unwrap();
         fs::write(project.join(format!("{CONV}.jsonl")), format!("{{\"cwd\":\"{}\",\"version\":\"2.1.288\"}}\n", work.display())).unwrap();
         let canonical = fs::canonicalize(&work).unwrap();
-        assert_eq!(folder(home.path(), &claude, &wanted("claude", "plan")), Some(canonical.clone()));
+        assert_eq!(folder(home.path(), &claude, "claude", CONV), Some(canonical.clone()));
         let day = home.path().join(".codex/sessions/2026/10/03");
         fs::create_dir_all(&day).unwrap();
         fs::write(
@@ -392,9 +395,9 @@ mod tests {
             format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{CONV}\",\"cwd\":\"{}\"}}}}\n", work.display()),
         )
         .unwrap();
-        assert_eq!(folder(home.path(), &claude, &wanted("codex", "plan")), Some(canonical));
+        assert_eq!(folder(home.path(), &claude, "codex", CONV), Some(canonical));
         fs::remove_dir_all(&work).unwrap();
-        assert_eq!(folder(home.path(), &claude, &wanted("claude", "plan")), None, "a folder that is gone refuses it");
+        assert_eq!(folder(home.path(), &claude, "claude", CONV), None, "a folder that is gone refuses it");
     }
 
     #[test]

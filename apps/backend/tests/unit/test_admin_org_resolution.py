@@ -307,7 +307,9 @@ def admin_env(app):
     """Caller is on PLATFORM_ADMIN_USER_IDS — require_platform_admin admits them."""
     from core.auth import AuthContext, get_current_user
 
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_platform_admin", email="admin@thelightbulb.company")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(
+        user_id="user_platform_admin", email="admin@thelightbulb.company"
+    )
     try:
         yield
     finally:

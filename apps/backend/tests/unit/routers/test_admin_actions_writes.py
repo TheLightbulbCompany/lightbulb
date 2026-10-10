@@ -64,7 +64,9 @@ def admin_env(app):
     its own teardown, but we pop explicitly here as a safety net in case a
     test uses admin_env without async_client).
     """
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_platform_admin", email="admin@thelightbulb.company")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(
+        user_id="user_platform_admin", email="admin@thelightbulb.company"
+    )
     try:
         yield
     finally:

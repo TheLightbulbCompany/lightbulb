@@ -125,6 +125,13 @@ session's history as a list. You still read the structured record with
 including `/resume`. A Codex session joins Sessions only after its first prompt. The iPhone app still asks for a first message
 ("First message", "Send to Mac").
 
+**Open in a terminal** (web and desktop, owner only): a session that runs inside an app (the
+Claude app, the Codex app, an IDE) has no terminal to show, so Lightbulb shows its conversation.
+The person who owns it can press **Open in a terminal**. Their Mac starts a copy of that
+conversation in a live terminal, in the same folder (it must be an approved folder). The copy
+has the whole history so far; the app's own session keeps running separately. The new terminal
+is a normal shared session, so teammates can watch it, ask to join and type.
+
 Rooms' **Devices & sessions** panel lists human-shared Claude/Codex sessions;
 opening one from that list opens the session in that room's right column.
 Opening a session from the sidebar Sessions section or from a session link

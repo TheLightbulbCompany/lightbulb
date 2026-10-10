@@ -176,6 +176,22 @@ const SELECT_FAILED = "this conversation could not be opened";
 const failureMessage = (error: unknown, fallback: string): string =>
   error instanceof Error && error.message ? error.message : fallback;
 
+export interface MessageDelegations { agentId: string; delegationIds: string[] }
+
+// An ended run object never changes, so its delegation ids are read once, not on every frame of another run.
+const delegationIdsByRun = new WeakMap<LiveRoomRun, string[]>();
+const runDelegationIds = (run: LiveRoomRun): string[] => {
+  let ids = delegationIdsByRun.get(run);
+  if (!ids) {
+    ids = runView(run).tools.flatMap((t) => {
+      const id = t.name === "delegate_task" ? delegationIdOf(t.result) : null;
+      return id ? [id] : [];
+    });
+    delegationIdsByRun.set(run, ids);
+  }
+  return ids;
+};
+
 /** The saved message that carries this run's text: same runId, or the same agent with identical trimmed text. */
 const isRunReply = (message: CanonicalRoomMessage, run: LiveRoomRun): boolean => !message.progress && (message.runId === run.runId ||
   (!!run.text.trim() && message.author.kind === "agent" && message.author.id === run.agentId && message.text.trim() === run.text.trim()));
@@ -1351,21 +1367,24 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
    * The background subagents an ended run started, keyed by the saved reply that replaced its
    * card, so their DelegateCards stay under that message. Derived from the runs map, so it lives
    * as long as the strip does: until the room changes or the page reloads.
+   *
+   * Identity-stable by value, like RoomPanel's settledKey: every streamed frame replaces `runs`,
+   * and a fresh Map here would re-render the whole history for a chunk of a live run.
    */
+  const delegationsRef = useRef<{ key: string; map: ReadonlyMap<string, MessageDelegations> }>({ key: "", map: new Map() });
   const delegationsByMessage = useMemo(() => {
-    const out = new Map<string, { agentId: string; delegationIds: string[] }>();
+    const out = new Map<string, MessageDelegations>();
     for (const run of runs.values()) {
       if (run.state === "running") continue; // the live run card still shows its own
-      const ids = runView(run).tools.flatMap((t) => {
-        const id = t.name === "delegate_task" ? delegationIdOf(t.result) : null;
-        return id ? [id] : [];
-      });
+      const ids = runDelegationIds(run);
       const reply = ids.length ? [...messages].reverse().find((message) => isRunReply(message, run)) : undefined;
       if (!reply) continue;
       const entry = out.get(reply.messageId);
       out.set(reply.messageId, { agentId: run.agentId, delegationIds: [...(entry?.delegationIds ?? []), ...ids] });
     }
-    return out;
+    const key = [...out].map(([id, entry]) => `${id}:${entry.agentId}:${entry.delegationIds.join(",")}`).join("|");
+    if (key !== delegationsRef.current.key) delegationsRef.current = { key, map: out };
+    return delegationsRef.current.map;
   }, [runs, messages]);
   const abortRun = useCallback((runId: string) => messaging.abortRun(runId), [messaging]);
   const refreshSubagents = useCallback(async () => {

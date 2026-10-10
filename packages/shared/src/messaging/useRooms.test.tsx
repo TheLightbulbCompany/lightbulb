@@ -970,6 +970,18 @@ describe("runs already in progress when the room opens", () => {
     expect(result.current.delegationsByMessage.size).toBe(0);
   });
 
+  it("keeps delegationsByMessage the same Map while a live run streams", async () => {
+    messaging.getRoom.mockResolvedValue(withRun());
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.runs).toHaveLength(1));
+    const before = result.current.delegationsByMessage;
+    act(() => { for (const handler of handlers) handler(frame({ type: "chunk", runId: RUN, content: "Working" })); });
+    act(() => { for (const handler of handlers) handler(frame({ type: "chunk", runId: RUN, content: "Working on it" })); });
+    expect(result.current.runs[0].text).toBe("Working on it");
+    expect(result.current.delegationsByMessage).toBe(before);
+  });
+
   it("never retires the run card for a progress line", async () => {
     messaging.getRoom.mockResolvedValue(withRun());
     messaging.listMessages.mockResolvedValue({ messages: [message, { ...message, messageId: "progress", messageSeq: 2, runId: RUN, progress: true,

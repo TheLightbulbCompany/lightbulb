@@ -58,6 +58,14 @@ it("keeps an ended run's background subagents under the saved reply that replace
   expect(screen.getByText("Background subagents dispatched")).toBeInTheDocument();
 });
 
+it("keeps a thread run's background subagents under its saved reply in the thread pane", () => {
+  const reply = { ...message, messageId: "reply", messageSeq: 2, text: "A thread reply", threadRootMessageId: message.messageId, createdAt: "2026-09-11T00:00:00Z" };
+  const delegationsByMessage = new Map([["reply", { agentId: "agent", delegationIds: ["d-1"] }]]);
+  render(<RoomPanel {...props} messages={[message, reply]} subagents={EMPTY_ROOM_SUBAGENTS} delegationsByMessage={delegationsByMessage} />);
+  fireEvent.click(screen.getByRole("button", { name: /Reply in thread, 1 reply/ }));
+  expect(within(screen.getByRole("complementary", { name: "Thread" })).getByText("Background subagents dispatched")).toBeInTheDocument();
+});
+
 it("renders a session mention as a reference card with no delivery state", () => {
   const tagged: RoomMessage = { ...message, text: "Please review this", sessionMentions: ["s1"],
     sessionTargetLabels: { s1: "Claude Code · Launch check · Owner" } };

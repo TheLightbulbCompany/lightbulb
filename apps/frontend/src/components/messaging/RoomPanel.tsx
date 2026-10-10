@@ -42,7 +42,7 @@ import { RoomMessageSearch } from "./RoomMessageSearch";
 import { RoomTasks } from "./RoomTasks";
 import { taskIdentifiers, useReferencedTasks } from "./MessageTaskCard";
 import { RoomTimeline, StickToBottom } from "./RoomTimeline";
-import { buildTimeline, collapseRuns, delegationIdOf, linkifyMentions, linkifySessionMentions, placeRuns, parseMentionHref, roomDisplayName, type LocalSession, type MessagingClient, type RoomRunView, type RoomSubagents, type RoomSummary } from "@lightbulb/shared";
+import { buildTimeline, collapseRuns, delegationIdOf, linkifyMentions, linkifySessionMentions, placeRuns, parseMentionHref, roomDisplayName, type LocalSession, type MessageDelegations, type MessagingClient, type RoomRunView, type RoomSubagents, type RoomSummary } from "@lightbulb/shared";
 import { TypingReveal } from "./TypingReveal";
 import { useAsyncAction } from "./useAsyncAction";
 import type {
@@ -112,7 +112,7 @@ export interface RoomPanelProps {
   onAbortRun?: (runId: string) => void | Promise<unknown>;
   subagents?: RoomSubagents;
   /** Delegations of ended runs, keyed by the saved reply that replaced each run's card. */
-  delegationsByMessage?: ReadonlyMap<string, { agentId: string; delegationIds: string[] }>;
+  delegationsByMessage?: ReadonlyMap<string, MessageDelegations>;
   messagingClient?: MessagingClient;
   onSteerSubagent?: (agentId: string, subagentId: string, text: string) => Promise<unknown>;
   onStopSubagent?: (agentId: string, subagentId: string) => Promise<unknown>;
@@ -198,6 +198,12 @@ function subscribeNarrow(callback: () => void) {
 }
 const getNarrow = () => window.matchMedia(narrowQuery).matches;
 const getServerNarrow = () => false;
+
+/** The background subagents a run started outlive its card: they stay under the reply that replaced it. */
+function savedDelegations(state: RoomSubagents | undefined, entry: MessageDelegations | undefined) {
+  return state && entry ? <div className="room-message-delegations">{entry.delegationIds.map((delegationId) =>
+    <DelegateCard key={delegationId} state={state} agentId={entry.agentId} delegationId={delegationId} agentLive={false} />)}</div> : null;
+}
 
 export function RoomPanel(props: RoomPanelProps) {
   return <RoomBoundary key={JSON.stringify([props.ownerScopeId, props.currentUserId, props.roomId])} {...props} />;
@@ -689,19 +695,16 @@ function RoomContent({
   const settledRuns = useMemo(() => placeRuns(endedRuns, mainMessages).after,
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [settledKey, mainMessages]);
-  const renderMainMessage = useCallback((message: RoomMessage, collapsed: boolean) => {
-    // The background subagents a run started outlive its card: they stay under the reply that replaced it.
-    const delegations = subagents && delegationsByMessage?.get(message.messageId);
-    return <>
-      {renderMessage(message, false, collapsed)}
-      {subagents && delegations && <div className="room-message-delegations">{delegations.delegationIds.map((delegationId) =>
-        <DelegateCard key={delegationId} state={subagents} agentId={delegations.agentId} delegationId={delegationId} agentLive={false} />)}</div>}
-      {settledRuns.get(message.messageId)?.map(renderRun)}
-    </>;
-  },
+  // Subagent events re-render history only while some saved reply carries cards that read them.
+  const delegationState = delegationsByMessage?.size ? subagents : undefined;
+  const renderMainMessage = useCallback((message: RoomMessage, collapsed: boolean) => <>
+    {renderMessage(message, false, collapsed)}
+    {savedDelegations(delegationState, delegationsByMessage?.get(message.messageId))}
+    {settledRuns.get(message.messageId)?.map(renderRun)}
+  </>,
   // An ended run's card reads nothing renderRun closes over that settledRuns does not carry.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  [renderMessage, settledRuns, subagents, delegationsByMessage]);
+  [renderMessage, settledRuns, delegationState, delegationsByMessage]);
 
   function renderRun(run: RoomRunView) {
     const agent = participants.find((participant) => participant.kind === "agent" && participant.id === run.agentId);
@@ -920,7 +923,9 @@ function RoomContent({
           const replies = messages.filter((message) => message.threadRootMessageId === parentMessage.messageId);
           const placed = placeRuns(runs.filter((run) => run.threadRootMessageId === parentMessage.messageId), replies);
           return <div className="room-thread-replies" aria-label="Thread replies">{buildTimeline(replies, { readSeq: null }).map((item) => item.kind === "message"
-            ? <Fragment key={item.key}>{renderMessage(item.message, true, item.collapsed)}{placed.after.get(item.message.messageId)?.map(renderRun)}</Fragment> : null)}
+            ? <Fragment key={item.key}>{renderMessage(item.message, true, item.collapsed)}
+              {savedDelegations(delegationState, delegationsByMessage?.get(item.message.messageId))}
+              {placed.after.get(item.message.messageId)?.map(renderRun)}</Fragment> : null)}
           {placed.tail.map(renderRun)}
           </div>;
         })()}

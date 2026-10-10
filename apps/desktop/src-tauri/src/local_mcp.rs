@@ -298,6 +298,66 @@ pub fn validate_servers(servers: Value) -> Result<Map<String, Value>, String> {
     Ok(out)
 }
 
+/// The launch-relevant fields of a stdio server: what the node host will
+/// actually execute, and where, with what environment.
+const LAUNCH_FIELDS: [&str; 4] = ["command", "args", "env", "cwd"];
+
+/// Which entries of `next` (already validated) would make the node host run a
+/// local command it is not already configured to run: a command-bearing server
+/// that is new, whose `command`/`args`/`env`/`cwd` differs from `current`, or
+/// that `current` has disabled and `next` turns back on.
+///
+/// Each item is the text the native confirmation shows — the exact command
+/// line, its working directory, and every env var in full. Nothing is masked:
+/// any name-based rule can hide an exec-affecting var (`GIT_ASKPASS`,
+/// `NODE_OPTIONS`), and this is the person's own config on their own Mac.
+/// Removals, url-only servers and unchanged entries need no confirmation and
+/// are not listed.
+pub fn launches_needing_confirmation(current: &Value, next: &Map<String, Value>) -> Vec<String> {
+    let mut out = Vec::new();
+    for (name, server) in next {
+        let Some(command) = server.get("command").and_then(Value::as_str) else {
+            continue;
+        };
+        let before = current.get(name);
+        // A missing `enabled` means enabled (the node host's default), so
+        // turning a disabled entry back on starts a command that was not running.
+        let enabled = |s: &Value| s.get("enabled") != Some(&Value::Bool(false));
+        let unchanged = before.is_some_and(|b| {
+            LAUNCH_FIELDS.iter().all(|f| b.get(*f) == server.get(*f))
+                && (enabled(b) || !enabled(server))
+        });
+        if unchanged {
+            continue;
+        }
+        let mut line = String::from(command);
+        if let Some(Value::Array(args)) = server.get("args") {
+            for a in args {
+                line.push(' ');
+                match a {
+                    Value::String(s) => line.push_str(s),
+                    other => line.push_str(&other.to_string()),
+                }
+            }
+        }
+        let mut item = format!("\"{name}\": {line}");
+        if let Some(cwd) = server.get("cwd").and_then(Value::as_str) {
+            item.push_str(&format!("\n  in {cwd}"));
+        }
+        if let Some(Value::Object(env)) = server.get("env") {
+            for (key, value) in env {
+                let value = match value {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                item.push_str(&format!("\n  {key}={value}"));
+            }
+        }
+        out.push(item);
+    }
+    out
+}
+
 /// `None` if the field is absent, `Some(&str)` if it is a non-empty string,
 /// an error for anything else (including a blank string — upstream treats a
 /// whitespace-only command as "no command").
@@ -318,6 +378,50 @@ fn non_empty_str<'a>(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn launches_needing_confirmation_lists_only_new_or_changed_commands() {
+        let current = json!({
+            "same": {"command": "npx", "args": ["a"]},
+            "changed": {"command": "npx", "args": ["a"]},
+            "env_changed": {"command": "node", "env": {"K": "1"}},
+            "gone": {"command": "rm"},
+            "reenabled": {"command": "python3", "enabled": false},
+            "still_off": {"command": "ruby", "enabled": false},
+        });
+        let next = validate_servers(json!({
+            "same": {"command": "npx", "args": ["a"], "enabled": false},
+            "changed": {"command": "npx", "args": ["b"]},
+            "env_changed": {"command": "node", "env": {
+                "K": "2",
+                "NODE_OPTIONS": "--require /tmp/x.js",
+                "OPENAI_API_KEY": "sk-secret",
+                "DYLD_INSERT_LIBRARIES": "/tmp/x.dylib",
+                "GIT_ASKPASS": "/tmp/askpass.sh",
+            }},
+            "fresh": {"command": "/bin/sh", "args": ["-c", "x"], "cwd": "/tmp"},
+            "remote": {"url": "https://example.com/mcp"},
+            "reenabled": {"command": "python3"},
+            "still_off": {"command": "ruby", "enabled": false},
+        }))
+        .unwrap();
+        let mut got = launches_needing_confirmation(&current, &next);
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                "\"changed\": npx b".to_string(),
+                "\"env_changed\": node\n  K=2\n  NODE_OPTIONS=--require /tmp/x.js\n  OPENAI_API_KEY=sk-secret\n  DYLD_INSERT_LIBRARIES=/tmp/x.dylib\n  GIT_ASKPASS=/tmp/askpass.sh".to_string(),
+                "\"fresh\": /bin/sh -c x\n  in /tmp".to_string(),
+                "\"reenabled\": python3".to_string(),
+            ]
+        );
+        // Disabling ("same" above), removing everything, or re-sending the
+        // stored map asks nothing.
+        assert!(launches_needing_confirmation(&current, &Map::new()).is_empty());
+        let resend = validate_servers(current.clone()).unwrap();
+        assert!(launches_needing_confirmation(&current, &resend).is_empty());
+    }
 
     fn dir() -> tempfile::TempDir {
         tempfile::tempdir().expect("tempdir")

@@ -12,6 +12,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { useRuntimeRpc, useRuntimeRpcMutation } from "@/hooks/useRuntimeRpc";
+import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -157,6 +158,8 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
     params,
   );
   const callRpc = useRuntimeRpcMutation();
+  // Turning a skill on or off writes the profile config, which the backend lets only admins do.
+  const canManage = useIsWorkspaceAdmin();
   const [filter, setFilter] = useState("");
   const [activeCategory, setActiveCategory] = useState<Category>("All");
   const [showCreate, setShowCreate] = useState(false);
@@ -249,6 +252,9 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
             <p className="text-sm text-[var(--midnight-muted)] mt-0.5">
               Your agents&apos; skills. Turn one off, or ask an agent to write a new one.
             </p>
+            {!canManage && (
+              <p className="text-xs text-[var(--midnight-muted)] mt-1">Only admins can change skills.</p>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <Button
@@ -343,7 +349,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
                 <SkillCard
                   key={skill.skillKey || skill.name}
                   skill={skill}
-                  onToggle={toggleSkill}
+                  onToggle={canManage ? toggleSkill : undefined}
                   onRefresh={mutate}
                   variant="installed"
                 />
@@ -359,7 +365,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
               <SkillCard
                 key={skill.skillKey || skill.name}
                 skill={skill}
-                onToggle={toggleSkill}
+                onToggle={canManage ? toggleSkill : undefined}
                 onRefresh={mutate}
                 variant="installed"
               />
@@ -381,7 +387,7 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
                 <SkillCard
                   key={skill.skillKey || skill.name}
                   skill={skill}
-                  onToggle={toggleSkill}
+                  onToggle={canManage ? toggleSkill : undefined}
                   onRefresh={mutate}
                   variant="available"
                 />
@@ -426,7 +432,8 @@ function SkillCard({
   onRefresh: () => void;
   // Enabling a skill is runtime-specific (see `toggleSkill`), so the card is
   // handed the operation rather than deciding which RPC to send.
-  onToggle: (skill: SkillStatusEntry) => Promise<void>;
+  // Absent for a non-admin: the card shows no toggle.
+  onToggle?: (skill: SkillStatusEntry) => Promise<void>;
   variant: "installed" | "available";
 }) {
   const [toggleLoading, setToggleLoading] = useState(false);
@@ -436,6 +443,7 @@ function SkillCard({
   const [actionError, setActionError] = useState<string | null>(null);
 
   const handleToggle = async () => {
+    if (!onToggle) return;
     setToggleLoading(true);
     setActionError(null);
     try {
@@ -491,7 +499,7 @@ function SkillCard({
               >
                 Always on
               </span>
-            ) : (
+            ) : onToggle ? (
               <button
                 onClick={handleToggle}
                 disabled={toggleLoading}
@@ -499,7 +507,7 @@ function SkillCard({
               >
                 {toggleLoading ? <Loader2 size={12} strokeWidth={1.75} className="animate-spin" /> : "Disable"}
               </button>
-            )}
+            ) : null}
           </div>
         </div>
 
@@ -540,6 +548,7 @@ function SkillCard({
 
         <div className="flex items-center gap-2 shrink-0">
           {/* Install / Enable button */}
+          {onToggle && (
           <button
             onClick={handleToggle}
             disabled={toggleLoading || skill.always}
@@ -547,6 +556,7 @@ function SkillCard({
           >
             {toggleLoading ? <Loader2 size={12} strokeWidth={1.75} className="animate-spin" /> : "Install"}
           </button>
+          )}
         </div>
       </div>
 

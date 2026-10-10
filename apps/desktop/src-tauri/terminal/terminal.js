@@ -29,6 +29,7 @@ ws.binaryType = "arraybuffer";
 const enc = new TextEncoder();
 function send(kind, payload = new Uint8Array()) {
   if (ws.readyState !== WebSocket.OPEN) return;
+  if (kind === INPUT) typist(null); // the owner's keys: the plain cursor at once
   const frame = new Uint8Array(5 + payload.length);
   frame[0] = kind; new DataView(frame.buffer).setUint32(1, payload.length); frame.set(payload, 5);
   ws.send(frame);
@@ -78,7 +79,7 @@ term.attachCustomKeyEventHandler((e) => {
   }
   return true;
 });
-term.onData((d) => { typist(null); send(INPUT, enc.encode(d)); });
+term.onData((d) => send(INPUT, enc.encode(d)));
 term.onBinary((d) => send(INPUT, Uint8Array.from(d, (c) => c.charCodeAt(0))));
 ws.onopen = () => { resize(); };
 const end = document.getElementById("end");

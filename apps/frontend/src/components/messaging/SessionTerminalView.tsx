@@ -220,6 +220,7 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     const theme = { background: token("--terminal-bg"), foreground: token("--terminal-fg") };
     let typistTimer: ReturnType<typeof setTimeout> | undefined;
     let shownTypist = "";
+    let typistAt = { epoch: -1, seq: -1 };
     const showTypist = (who?: SessionScreen["typist"]) => {
       clearTimeout(typistTimer);
       if (who) typistTimer = setTimeout(showTypist, who.forMs);
@@ -360,7 +361,11 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
       if (event.type !== "workspace.session.screen") return;
       const frame = event.payload;
       if (frame.sessionId !== session.sessionId || frame.generation !== session.generation) return;
-      showTypist(frame.typist);
+      // Only a frame no older than the last one that set it: a late frame must not bring back a typist a newer one cleared.
+      if (frame.epoch > typistAt.epoch || (frame.epoch === typistAt.epoch && frame.seq >= typistAt.seq)) {
+        typistAt = { epoch: frame.epoch, seq: frame.seq };
+        showTypist(frame.typist);
+      }
       // A ping proves the picture is current only when it names the frame this view waits for:
       // one ahead of that means a frame was lost, and one with no screen yet proves nothing.
       const current = frame.kind === "ping" && order.synced && frame.epoch === order.epoch && frame.seq === order.next;

@@ -111,6 +111,8 @@ export interface RoomPanelProps {
   onSetArchived?: (archived: boolean) => Promise<void>;
   onAbortRun?: (runId: string) => void | Promise<unknown>;
   subagents?: RoomSubagents;
+  /** Delegations of ended runs, keyed by the saved reply that replaced each run's card. */
+  delegationsByMessage?: ReadonlyMap<string, { agentId: string; delegationIds: string[] }>;
   messagingClient?: MessagingClient;
   onSteerSubagent?: (agentId: string, subagentId: string, text: string) => Promise<unknown>;
   onStopSubagent?: (agentId: string, subagentId: string) => Promise<unknown>;
@@ -296,6 +298,7 @@ function RoomContent({
   onSetArchived,
   onAbortRun,
   subagents,
+  delegationsByMessage,
   messagingClient,
   onSteerSubagent,
   onStopSubagent,
@@ -686,13 +689,19 @@ function RoomContent({
   const settledRuns = useMemo(() => placeRuns(endedRuns, mainMessages).after,
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [settledKey, mainMessages]);
-  const renderMainMessage = useCallback((message: RoomMessage, collapsed: boolean) => <>
-    {renderMessage(message, false, collapsed)}
-    {settledRuns.get(message.messageId)?.map(renderRun)}
-  </>,
+  const renderMainMessage = useCallback((message: RoomMessage, collapsed: boolean) => {
+    // The background subagents a run started outlive its card: they stay under the reply that replaced it.
+    const delegations = subagents && delegationsByMessage?.get(message.messageId);
+    return <>
+      {renderMessage(message, false, collapsed)}
+      {subagents && delegations && <div className="room-message-delegations">{delegations.delegationIds.map((delegationId) =>
+        <DelegateCard key={delegationId} state={subagents} agentId={delegations.agentId} delegationId={delegationId} agentLive={false} />)}</div>}
+      {settledRuns.get(message.messageId)?.map(renderRun)}
+    </>;
+  },
   // An ended run's card reads nothing renderRun closes over that settledRuns does not carry.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  [renderMessage, settledRuns]);
+  [renderMessage, settledRuns, subagents, delegationsByMessage]);
 
   function renderRun(run: RoomRunView) {
     const agent = participants.find((participant) => participant.kind === "agent" && participant.id === run.agentId);

@@ -10,8 +10,8 @@ import useSWR, { useSWRConfig } from "swr";
 import { ApiError } from "../api/error";
 import type { LiveEvent } from "../live/types";
 import type { MessagingClient, RoomAttachmentInput } from "./client";
-import { EMPTY_ROOM_SUBAGENTS, applySubagentEvent, liveSubagents, pruneFinishedSubagents, reconcileSubagentSnapshot, type RoomSubagents } from "./subagents";
-import { applyRunFrame, declinedRun, lastSequence, mergeCanonicalMessages, shownRunText, type LiveRoomRun } from "./timeline";
+import { EMPTY_ROOM_SUBAGENTS, applySubagentEvent, delegationIdOf, liveSubagents, pruneFinishedSubagents, reconcileSubagentSnapshot, type RoomSubagents } from "./subagents";
+import { applyRunFrame, declinedRun, lastSequence, mergeCanonicalMessages, runView, shownRunText, type LiveRoomRun } from "./timeline";
 import type {
   ActiveRoomRun,
   CanonicalRoomMessage,
@@ -175,6 +175,10 @@ const SELECT_FAILED = "this conversation could not be opened";
 
 const failureMessage = (error: unknown, fallback: string): string =>
   error instanceof Error && error.message ? error.message : fallback;
+
+/** The saved message that carries this run's text: same runId, or the same agent with identical trimmed text. */
+const isRunReply = (message: CanonicalRoomMessage, run: LiveRoomRun): boolean => !message.progress && (message.runId === run.runId ||
+  (!!run.text.trim() && message.author.kind === "agent" && message.author.id === run.agentId && message.text.trim() === run.text.trim()));
 
 /**
  * What every `useRooms` under one SWR cache shares, for ONE scope at a time.
@@ -1330,8 +1334,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
    */
   const messagesById = useMemo(() => new Map(messages.map(message => [message.messageId, message])), [messages]);
   const visibleRuns = useMemo(() => [...runs.values()].flatMap((run) => {
-    const persisted = messages.some(message => !message.progress && (message.runId === run.runId ||
-      (run.text.trim() && message.author.kind === "agent" && message.author.id === run.agentId && message.text.trim() === run.text.trim())));
+    const persisted = messages.some(message => isRunReply(message, run));
     if (persisted && run.state !== "running") return [];
     if (declinedRun(run)) return [];
     // Keep activity/controls after an interim reply without painting that reply twice.
@@ -1344,6 +1347,26 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     if (!run.triggerMessageId || activeRoom?.kind === "dm") return [{ ...visible, threadRootMessageId: null }];
     return [{ ...visible, threadRootMessageId: trigger?.threadRootMessageId ?? run.triggerMessageId }];
   }), [runs, messages, messagesById, activeRoom?.kind]);
+  /**
+   * The background subagents an ended run started, keyed by the saved reply that replaced its
+   * card, so their DelegateCards stay under that message. Derived from the runs map, so it lives
+   * as long as the strip does: until the room changes or the page reloads.
+   */
+  const delegationsByMessage = useMemo(() => {
+    const out = new Map<string, { agentId: string; delegationIds: string[] }>();
+    for (const run of runs.values()) {
+      if (run.state === "running") continue; // the live run card still shows its own
+      const ids = runView(run).tools.flatMap((t) => {
+        const id = t.name === "delegate_task" ? delegationIdOf(t.result) : null;
+        return id ? [id] : [];
+      });
+      const reply = ids.length ? [...messages].reverse().find((message) => isRunReply(message, run)) : undefined;
+      if (!reply) continue;
+      const entry = out.get(reply.messageId);
+      out.set(reply.messageId, { agentId: run.agentId, delegationIds: [...(entry?.delegationIds ?? []), ...ids] });
+    }
+    return out;
+  }, [runs, messages]);
   const abortRun = useCallback((runId: string) => messaging.abortRun(runId), [messaging]);
   const refreshSubagents = useCallback(async () => {
     if (!activeRoomId) return;
@@ -1459,6 +1482,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     abortRun,
     steerRun,
     subagents,
+    delegationsByMessage,
     refreshSubagents,
     steerSubagent,
     stopSubagent,

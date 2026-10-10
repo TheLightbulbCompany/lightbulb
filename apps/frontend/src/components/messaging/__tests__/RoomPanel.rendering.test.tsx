@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
-import type { RoomRunView } from "@lightbulb/shared";
+import { applySubagentEvent, EMPTY_ROOM_SUBAGENTS, type RoomRunView } from "@lightbulb/shared";
 import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
 import type { RoomMessage, RoomParticipant } from "../types";
 
@@ -45,6 +45,17 @@ it("keeps canonical history out of draft and live-run renders", () => {
   expect(screen.getByText("Work progressed")).toBeInTheDocument();
   expect(screen.queryByText("Starting work")).not.toBeInTheDocument();
   expect(renders).not.toHaveBeenCalled();
+});
+
+it("keeps an ended run's background subagents under the saved reply that replaced its card", () => {
+  const subagents = applySubagentEvent(EMPTY_ROOM_SUBAGENTS, "agent", "subagent.complete",
+    { subagent_id: "sa-1", goal: "Survey pricing", delegation_id: "d-1", status: "completed" }, 1000);
+  const delegationsByMessage = new Map([["message", { agentId: "agent", delegationIds: ["d-1", "d-gone"] }]]);
+  render(<RoomPanel {...props} subagents={subagents} delegationsByMessage={delegationsByMessage} />);
+  expect(screen.getByText("Survey pricing")).toBeInTheDocument();
+  expect(screen.getByLabelText("Completed")).toBeInTheDocument();
+  // A delegation the reducer no longer holds still says it was dispatched.
+  expect(screen.getByText("Background subagents dispatched")).toBeInTheDocument();
 });
 
 it("renders a session mention as a reference card with no delivery state", () => {

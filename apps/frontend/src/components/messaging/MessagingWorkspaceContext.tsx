@@ -923,6 +923,7 @@ export function MessagingWorkspaceProvider({
     onAddPeopleOpened: () => setAddPeopleRoomId(null),
     onAbortRun: (runId) => rooms.abortRun(runId),
     subagents: rooms.subagents,
+    delegationsByMessage: rooms.delegationsByMessage,
     messagingClient: rooms.resourceSource.client,
     onSteerSubagent: rooms.steerSubagent,
     onStopSubagent: rooms.stopSubagent,

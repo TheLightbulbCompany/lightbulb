@@ -635,6 +635,7 @@ button.native-session-panel-row:hover .native-session-panel-activity { color: va
 .room-subagent-steer input { flex: 1; min-width: 0; }
 .room-subagent-note { color: var(--fg-soft); margin: 4px 0; }
 .room-subagent-tail { max-height: 16rem; overflow: auto; white-space: pre-wrap; font-size: .75rem; background: var(--plane-raised); padding: 8px; border-radius: 6px; }
+.room-message-delegations { padding: 0 0 4px 48px; } /* the saved reply's cards, under its content column */
 .room-delegate-card { margin: 4px 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; }
 .room-delegate-row { display: flex; gap: 8px; align-items: baseline; font-size: .8125rem; }
 .room-delegate-goal { font-weight: 600; }

@@ -146,6 +146,14 @@ pub fn newly_enabled(previous: &Store, next: &Store) -> Vec<&'static str> {
     .collect()
 }
 
+/// Whether the alert the person allowed (`shown`) lists everything `next` would turn on
+/// over the store as it is now.
+pub fn alert_covers(shown: &[&str], now: &Store, next: &Store) -> bool {
+    newly_enabled(now, next).iter().all(|c| shown.contains(c))
+}
+
+static SET_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[tauri::command]
 pub fn desktop_permissions_get(app: tauri::AppHandle) -> Result<Store, String> {
     Ok(load(&app))
@@ -163,6 +171,9 @@ pub async fn desktop_permissions_set(app: tauri::AppHandle, permissions: Store) 
         ..permissions
     };
     let dir = app_data(&app)?;
+    // One save at a time, alert included: a call waiting on the alert must not write its
+    // older set over a revocation another call saved meanwhile.
+    let _serialized = SET_LOCK.lock().await;
     let previous = load_from(&dir);
     let added = newly_enabled(&previous, &store);
     if !added.is_empty()
@@ -176,6 +187,11 @@ pub async fn desktop_permissions_set(app: tauri::AppHandle, permissions: Store) 
         )
         .await
     {
+        return Err(crate::DECLINED_ON_MAC.into());
+    }
+    // A pairing may still have narrowed the store while the alert was open; saving would
+    // turn back on something the alert never listed.
+    if !alert_covers(&added, &load_from(&dir), &store) {
         return Err(crate::DECLINED_ON_MAC.into());
     }
     save_to(&dir, &store)?;
@@ -451,5 +467,16 @@ mod tests {
         // A store without consent allows nothing, whatever its switches say.
         let stale = Store { consented: false, ..all_on() };
         assert_eq!(newly_enabled(&stale, &all_on()).len(), 5);
+    }
+
+    #[test]
+    fn a_save_refuses_what_changed_after_the_alert() {
+        let shell_on = Store { consented: true, shell: true, ..Store::default() };
+        let next = Store { files: true, ..shell_on.clone() };
+        let shown = newly_enabled(&shell_on, &next);
+        assert!(alert_covers(&shown, &shell_on, &next));
+        // Shell was turned off while the alert was open: saving `next` would turn it back on.
+        let revoked = Store { shell: false, ..shell_on };
+        assert!(!alert_covers(&shown, &revoked, &next));
     }
 }

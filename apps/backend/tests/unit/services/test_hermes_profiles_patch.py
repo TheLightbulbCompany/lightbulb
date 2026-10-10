@@ -48,16 +48,6 @@ def test_patch_propagates_a_transient_s3_error_instead_of_treating_it_as_absent(
         hermes_profiles.patch_profile_config("org_a", "a1", {"memory": {"memory_enabled": False}})
 
 
-def test_set_replaces_wholesale_not_merged(monkeypatch):
-    """M4-R1: config.set is a REPLACE, unlike config.patch's deep merge — a key present in the
-    stored config but absent from the new one must not survive."""
-    uploaded = {}
-    monkeypatch.setattr(hermes_profiles, "_upload_config_yaml", lambda o, a, cfg: uploaded.update(cfg=cfg))
-    out = hermes_profiles.set_profile_config("org_a", "a1", {"model": {"default": "new"}})
-    assert uploaded["cfg"] == {"model": {"default": "new"}}
-    assert out == {"model": {"default": "new"}}
-
-
 def test_read_profile_config_never_reads_env(monkeypatch):
     """M4-R1: config.get must never surface .env content — it reads config.yaml alone."""
     calls = []

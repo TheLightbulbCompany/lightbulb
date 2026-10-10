@@ -3141,6 +3141,18 @@ def _cue_spans(seg: str) -> list[tuple[int, int]]:
     return list(zip(cuts, [*cuts[1:], len(seg)]))
 
 
+def _between_names(pieces: list[tuple]) -> list[tuple]:
+    """``_pieces`` with the parts between two names (or a name and an end) merged into one part, re-numbered."""
+    out: list[tuple] = []
+    for piece in pieces:
+        if piece[0] == "part" and out and out[-1][0] == "part":
+            out[-1] = ("part", out[-1][1], piece[2], out[-1][3], piece[4])
+        else:
+            out.append(piece)
+    n = iter(range(len(out)))
+    return [(k, a, b, next(n) if k == "part" else ref, into) for k, a, b, ref, into in out]
+
+
 def _pieces(text: str, cands: list[dict], cues: bool = False) -> list[tuple[str, int, int, str | int, bool]]:
     """A Live line in order (conversation engine §3.2): ``("name", start, end, candidate name, False)``
     where a name stands, and ``("part", start, end, index, into_name)`` for the words between names and
@@ -3428,7 +3440,12 @@ async def address(
     # call says who each part is asked of.
     pieces = _pieces(text, cands, cues=understand is not None) if live else []
     if understand is not None and sum(kind == "part" for kind, *_ in pieces) > MAX_PARTS:
-        pieces = [("part", 0, len(text), 0, False)]  # too many parts to ask about: the line is one part
+        # Too many parts to ask about: the sentences between two names become one part, but the names still
+        # cut (10-09 prod Meet: a long turn made one part that began before "Forge, what are you working
+        # on?", so the words said to Forge were read from its first words, "Fine. Um", and nothing was asked).
+        pieces = _between_names(pieces)
+        if sum(kind == "part" for kind, *_ in pieces) > MAX_PARTS:
+            pieces = [("part", 0, len(text), 0, False)]  # too many names too: the line is one part
     said = {ref for kind, _, _, ref, _ in pieces if kind == "name"}
     askable = [c["name"] for c in cands if len(c["agents"]) == 1 and c["name"] in said]
     parts = [_clean(text[start:end], into) for kind, start, end, _, into in pieces if kind == "part"]

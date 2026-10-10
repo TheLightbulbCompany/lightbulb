@@ -15,10 +15,9 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.repositories import container_repo
-from core.services import container_rpc, provision_gate, trial_cap
+from core.services import container_rpc, provision_gate
 from core.services.provision_dispatch import dispatch_provision
 from core.services.user_provision import ensure_workspace_trial_default
-from routers.container import _owner_role
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +27,15 @@ router = APIRouter()
 async def _call_gateway_rpc(owner_id: str, method: str, params: dict | None = None) -> dict:
     """Recovery keeps a tight budget: a wedged gateway must fail fast so the flow escalates."""
     return await container_rpc.call(owner_id, method, params, timeout_s=10.0)
+
+
+async def _assert_gate_clear(auth: AuthContext, owner_id: str) -> None:
+    """402 with the structured card when the provision gate is up (the one /provision uses)."""
+    gate = await provision_gate.evaluate_provision_gate(
+        owner_id=owner_id, is_admin=auth.is_org_admin, actor_user_id=auth.user_id
+    )
+    if gate is not None:
+        raise HTTPException(status_code=402, detail=gate.to_payload())
 
 
 def _health_verdict(health) -> bool | None:
@@ -79,11 +87,7 @@ async def container_recover(
         if not auth.is_org_admin:
             raise HTTPException(status_code=404, detail="No container found")
         await ensure_workspace_trial_default(auth, owner_id)
-        gate = await provision_gate.evaluate_provision_gate(
-            owner_id=owner_id, is_admin=True, actor_user_id=auth.user_id
-        )
-        if gate is not None:
-            raise HTTPException(status_code=402, detail=gate.to_payload())
+        await _assert_gate_clear(auth, owner_id)
         await dispatch_provision(owner_id)
         return {"action": "reprovision", "state": "CONTAINER_DOWN", "reason": "Workspace not provisioned yet"}
 
@@ -110,17 +114,10 @@ async def container_recover(
         # reprovision runs through it and would otherwise deadlock against its
         # own marker). So the third door checks the same predicates here.
         #
-        # The FULL trial predicate, not just the cap. An owner whose trial
-        # window has expired but who is under today's $3 would otherwise
-        # fall through to the executor -- whose runner starts with
-        # force=True and therefore skips start_user_service's own check --
-        # and wake a container that is out of runway. Same 402 limit card
-        # the other doors return, for whichever reason applies.
-        trial_gate = provision_gate.gate_for_trial_reason(
-            await trial_cap.trial_block_reason(owner_id), _owner_role(auth)
-        )
-        if trial_gate is not None:
-            raise HTTPException(status_code=402, detail=trial_gate.to_payload())
+        # The FULL provision gate /provision and /retry apply, not just the trial
+        # predicate: a canceled or past-due workspace, or one with no provider or
+        # credits, must not reprovision its way back through this door either.
+        await _assert_gate_clear(auth, owner_id)
 
         reason = container.get("last_error", f"Container is {status}")
         logger.info("Recovering owner %s: reprovision (status=%s)", owner_id, status)
@@ -162,14 +159,12 @@ async def container_recover(
     # workspace it raised and fell straight through to this same escalation. Calling it was
     # one guaranteed-failing invoke (and, against a parked microVM, one cold start) buying a
     # log line.
-    # The SAME trial predicate the stopped/error branch applies. A reprovision re-mints the
+    # The SAME provision gate the stopped/error branch applies. A reprovision re-mints the
     # owner's gate bearer, which is exactly what the meter's backstop kill DENIED to stop a
     # capped trial -- so without this gate an unhealthy running row is the one door a capped owner
     # could reprovision their way back through. (It used to be covered by the running/no-IP branch
     # that resolved a live task IP; there is no task IP to miss now, so the check moves here.)
-    trial_gate = provision_gate.gate_for_trial_reason(await trial_cap.trial_block_reason(owner_id), _owner_role(auth))
-    if trial_gate is not None:
-        raise HTTPException(status_code=402, detail=trial_gate.to_payload())
+    await _assert_gate_clear(auth, owner_id)
 
     logger.warning("Owner %s: gateway unhealthy, reprovisioning", owner_id)
     # Status flip first: provision_hermes_runtime returns early for a "running" row, so without

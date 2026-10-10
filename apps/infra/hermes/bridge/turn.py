@@ -381,6 +381,32 @@ def call_session_key(agent_id: str, call_id: str) -> str:
     return f"agent:{agent_id}:lightbulb:call:{call_id}"
 
 
+def verified_call_room_key(session_id: str) -> str | None:
+    """The ROOM session key of the live call turn running on this Hermes session, when a verified member asked
+    it: the run's current grant (a steer's lowered one included) names a requester. From this
+    process's run registry -- what the backend sent over the authenticated invoke -- never from a
+    file the agent's own shell can write. None for a Meet speaker, a lowered run, or no such run."""
+    with _RUNS_LOCK:
+        for entry in RUNS.values():
+            identity = entry.get("identity") or {}
+            if (entry.get("kind") == "call" and not entry.get("aborted") and entry.get("state") != "ended"
+                    and call_session_key(identity.get("agentId", ""), identity.get("callId", "")) == session_id):
+                token = entry.get("grant") or identity.get("localSessionToken")
+                return identity.get("sessionId") if _grant_requester(token) else None
+    return None
+
+
+def _grant_requester(token) -> str | None:
+    """The requesterId claim of a local-session grant the backend minted (read, not verified: the
+    backend verifies it on every use; here it only narrows what this agent's own history returns)."""
+    try:
+        payload = str(token).split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        return claims.get("requesterId") or None
+    except (IndexError, ValueError, TypeError, AttributeError):
+        return None
+
+
 #: platform_message_id prefix of a call record: the one observed row a ROOM session gets per
 #: answered spoken turn (_record_call_exchange).
 CALL_RECORD_ID = "call:"

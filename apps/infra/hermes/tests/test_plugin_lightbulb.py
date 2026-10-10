@@ -197,21 +197,41 @@ def _grant(requester):
     return f"h.{claims}.sig"
 
 
-@pytest.mark.parametrize("ctx_over", [{"localSessionToken": _grant(None)}, {"localSessionToken": None}, {}],
-                         ids=["meet-guest", "no-grant", "missing"])
-def test_a_meet_guests_spoken_turn_keeps_to_the_call(monkeypatch, tmp_path, ctx_over):
+def _call_run(monkeypatch, requester, lowered_to=False):
+    """A live call turn in the bridge's own run registry (what the backend sent over the invoke)."""
+    from bridge import turn
+    monkeypatch.setattr(turn, "RUNS", {})
+    identity = {"runId": "run-c", "agentId": "a1", "roomId": "r1", "sessionId": ROOM_KEY, "callId": "c1",
+                "localSessionToken": _grant(requester)}
+    turn.register_call_run(identity)
+    if lowered_to is not False:
+        turn.RUNS["run-c"]["grant"] = _grant(lowered_to)  # a steer by another speaker
+
+
+@pytest.mark.parametrize(("requester", "lowered"), [(None, False), ("user_ana", None)],
+                         ids=["meet-guest", "steered-by-another-speaker"])
+def test_a_spoken_turn_nobody_verified_asked_keeps_to_the_call(monkeypatch, tmp_path, requester, lowered):
     """Codex P1: a Meet speaker is not the room's member; their turn must not speak its history."""
-    turn_context.write(tmp_path, CALL_KEY, {"family": "call", "agentId": "a1", "voiceRoomId": "r1", **ctx_over})
+    _call_run(monkeypatch, requester, lowered)
+    tool, calls = _recall(monkeypatch, tmp_path)
+    tool.session_search(query="pricing", db=_CallRecallDB(), current_session_id=CALL_KEY)
+    assert [r["session_id"] for r in calls[0]["db"].search_messages()] == [CALL_KEY]
+
+
+def test_an_agent_cannot_widen_recall_by_rewriting_its_turn_context(monkeypatch, tmp_path):
+    """Codex P1: the turn context file is the agent's to write; recall never reads it."""
+    _call_run(monkeypatch, None)
+    turn_context.write(tmp_path, CALL_KEY, {"family": "call", "agentId": "a1", "voiceRoomId": "r1",
+                                            "localSessionToken": _grant("user_forged")})
     tool, calls = _recall(monkeypatch, tmp_path)
     tool.session_search(query="pricing", db=_CallRecallDB(), current_session_id=CALL_KEY)
     assert [r["session_id"] for r in calls[0]["db"].search_messages()] == [CALL_KEY]
 
 
 def test_a_spoken_turn_recalls_its_rooms_history_as_chat_does(monkeypatch, tmp_path):
-    """Prod Meet 10-09: on a call, recall stopped at the call's own transcript. A spoken turn belongs
-    to its room: it reaches the room's lineage too, and still never another conversation."""
-    turn_context.write(tmp_path, CALL_KEY, {"family": "call", "agentId": "a1", "voiceRoomId": "r1",
-                                            "localSessionToken": _grant("user_ana")})
+    """Prod Meet 10-09: on a call, recall stopped at the call's own transcript. A spoken turn a
+    signed-in member asked belongs to its room: it reaches the room's lineage too, never another."""
+    _call_run(monkeypatch, "user_ana")
     tool, calls = _recall(monkeypatch, tmp_path)
     db = _CallRecallDB()
     assert tool.session_search(query="pricing", db=db, current_session_id=CALL_KEY) == "hermes"
@@ -219,7 +239,7 @@ def test_a_spoken_turn_recalls_its_rooms_history_as_chat_does(monkeypatch, tmp_p
     assert tool.session_search(session_id="room-child", db=db, current_session_id=CALL_KEY) == "hermes"
     out = tool.session_search(session_id="dm", db=db, current_session_id=CALL_KEY)
     assert json.loads(out)["error"] == lightbulb.RECALL_SCOPE
-    # A typed turn's own lineage only, as before: a room never reaches a call's transcript this way.
+    # A typed turn's own lineage only, as before.
     calls.clear()
     tool.session_search(query="pricing", db=db, current_session_id="room-child")
     assert [r["session_id"] for r in calls[0]["db"].search_messages()] == [ROOM_KEY, "room-child"]

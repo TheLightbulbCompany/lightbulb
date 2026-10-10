@@ -904,8 +904,9 @@ const styles = StyleSheet.create({
   // 22pt of leading in a 28pt row, the icons' height, so one line of text and
   // the icons beside it share a centre.
   inputWrapper: { flex: 1 },
+  // No flex here: the wrapper's height comes from this field, so a flexed field
+  // took the wrapper's one-line height and never grew past it.
   input: {
-    flex: 1,
     fontFamily: fonts.sans,
     fontSize: 16,
     lineHeight: 22,

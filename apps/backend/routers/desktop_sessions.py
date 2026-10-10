@@ -6,7 +6,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
-from core.auth import AuthContext, get_current_user, resolve_owner_id
+from core.auth import AuthContext, get_current_user, get_human_session, resolve_owner_id
 from core.config import settings
 from core.services import desktop_session_start as service
 from core.services.desktop_execution import DesktopError
@@ -41,6 +41,12 @@ async def start(
     ctx: AuthContext = Depends(get_current_user),
 ):
     return await _bounded(service.start(resolve_owner_id(ctx), ctx.user_id, body, source=source))
+
+
+@router.post("/open/{session_id}", status_code=202)
+async def open_in_terminal(session_id: str, body: dict = Body(...), ctx: AuthContext = Depends(get_human_session)):
+    """The owner opens their own app session in a held terminal on its Mac. Never a teammate or an agent."""
+    return await _bounded(service.open_in_terminal(ctx, session_id, body))
 
 
 @router.post("/internal")

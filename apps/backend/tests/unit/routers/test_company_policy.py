@@ -231,8 +231,10 @@ def test_revoke_all_deletes_every_saved_website_login(client, monkeypatch):
 
 def test_a_website_login_delete_failure_is_reported_and_stripe_still_disconnects(client, monkeypatch):
     _, cancel, sdelete, deauth = _revoke_mocks()
-    monkeypatch.setattr(mod.website_logins, "list_logins", AsyncMock(return_value=[{"id": "l1"}]))
-    monkeypatch.setattr(mod.website_logins, "delete_login", AsyncMock(side_effect=RuntimeError("ddb down")))
+    logins = [{"id": "l1"}, {"id": "l2"}, {"id": "l3"}]
+    monkeypatch.setattr(mod.website_logins, "list_logins", AsyncMock(return_value=logins))
+    delete_login = AsyncMock(side_effect=[True, RuntimeError("ddb down"), True])
+    monkeypatch.setattr(mod.website_logins, "delete_login", delete_login)
     billing_row = {"owner_id": "org_a", "company_stripe_account_id": "acct_1"}
     with (
         patch.object(mod.account_wipe, "cancel_open_workflows", cancel),
@@ -244,8 +246,9 @@ def test_a_website_login_delete_failure_is_reported_and_stripe_still_disconnects
     ):
         resp = client.post("/api/v1/company/revoke-all", json={"confirm": "revoke"})
     assert resp.status_code == 200
-    assert resp.json()["failed"] == ["website_logins"]
-    assert resp.json()["revoked"][-1] == "stripe_connect:acct_1"
+    assert resp.json()["failed"] == ["website_login:l2"]
+    assert resp.json()["revoked"][-3:] == ["website_login:l1", "website_login:l3", "stripe_connect:acct_1"]
+    assert delete_login.await_count == 3
     deauth.assert_awaited_once()
 
 

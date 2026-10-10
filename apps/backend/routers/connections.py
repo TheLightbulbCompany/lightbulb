@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import logging
@@ -145,6 +146,18 @@ _aws_cli_rate_buckets: dict[str, deque[float]] = defaultdict(deque)
 _AWS_CLI_REFETCH_FLOOR_S = 10.0
 _AWS_CLI_RECORD_TTL_S = 60.0
 _aws_cli_records: dict[str, tuple[float, dict]] = {}
+# One refresh per owner at a time: concurrent misses wait for the first fetch, then re-check.
+_aws_cli_refresh_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+
+def _aws_cli_record_is_stale(owner_id: str, presented_hash: str) -> bool:
+    cached = _aws_cli_records.get(owner_id)
+    if cached is None:
+        return True
+    age = time.monotonic() - cached[0]
+    return age >= _AWS_CLI_RECORD_TTL_S or (
+        age >= _AWS_CLI_REFETCH_FLOOR_S and not _cli_token_matches(cached[1], presented_hash)
+    )
 
 
 def _cli_token_matches(rec: dict, presented_hash: str) -> bool:
@@ -479,24 +492,21 @@ async def aws_credentials(body: AwsCredentialsBody, request: Request):
         raise HTTPException(status_code=401, detail="invalid_token")
 
     presented_hash = _hash_cli_token(presented)
-    cached = _aws_cli_records.get(body.owner_id)
-    rec = cached[1] if cached else {}
-    age = time.monotonic() - cached[0] if cached else None
-    if (
-        age is None
-        or age >= _AWS_CLI_RECORD_TTL_S
-        or (age >= _AWS_CLI_REFETCH_FLOOR_S and not _cli_token_matches(rec, presented_hash))
-    ):
-        try:
-            rec = await integration_secret_store.get(body.owner_id, "aws") or {}
-        except ClientError:
-            # Secrets Manager throttling / validation errors must surface as a
-            # clean 503 (the helper falls back to its stale cache), never an
-            # unhandled 500.
-            logger.exception("aws credential secret fetch failed for owner=%s", body.owner_id)
-            put_metric("connections.aws_credentials.fetch", dimensions={"result": "store_error"})
-            raise HTTPException(status_code=503, detail="credential_service_unavailable")
-        _aws_cli_records[body.owner_id] = (time.monotonic(), rec)
+    if _aws_cli_record_is_stale(body.owner_id, presented_hash):
+        async with _aws_cli_refresh_locks[body.owner_id]:
+            # Re-check: a concurrent request may have refreshed while this one waited.
+            if _aws_cli_record_is_stale(body.owner_id, presented_hash):
+                try:
+                    fetched = await integration_secret_store.get(body.owner_id, "aws") or {}
+                except ClientError:
+                    # Secrets Manager throttling / validation errors must surface as a
+                    # clean 503 (the helper falls back to its stale cache), never an
+                    # unhandled 500.
+                    logger.exception("aws credential secret fetch failed for owner=%s", body.owner_id)
+                    put_metric("connections.aws_credentials.fetch", dimensions={"result": "store_error"})
+                    raise HTTPException(status_code=503, detail="credential_service_unavailable")
+                _aws_cli_records[body.owner_id] = (time.monotonic(), fetched)
+    rec = _aws_cli_records[body.owner_id][1]
     if not _cli_token_matches(rec, presented_hash):
         put_metric("connections.aws_credentials.fetch", dimensions={"result": "unauthorized"})
         raise HTTPException(status_code=401, detail="invalid_token")

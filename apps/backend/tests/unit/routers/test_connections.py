@@ -2970,6 +2970,7 @@ class TestAwsCredentialsEndpoint:
 
         conn_mod._aws_cli_records.clear()
         conn_mod._aws_cli_rate_buckets.clear()
+        conn_mod._aws_cli_refresh_locks.clear()
         yield
         conn_mod._aws_cli_records.clear()
         conn_mod._aws_cli_rate_buckets.clear()
@@ -3220,6 +3221,31 @@ class TestAwsCredentialsEndpoint:
         conn_mod._aws_cli_records["org_rot"] = (stamp - conn_mod._AWS_CLI_RECORD_TTL_S, rec)
         assert (await call()).status_code == 401
         mock_store.get.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections.integration_secret_store")
+    async def test_a_concurrent_bad_token_burst_on_a_cold_cache_fetches_once(self, mock_store, mock_repo, async_client):
+        import asyncio
+
+        async def slow_get(owner_id, provider):
+            await asyncio.sleep(0.01)  # hold the fetch open so the burst really overlaps it
+            return self._stored()
+
+        mock_repo.get = AsyncMock(return_value={"status": "connected"})
+        mock_store.get = AsyncMock(side_effect=slow_get)
+        responses = await asyncio.gather(
+            *(
+                async_client.post(
+                    "/api/v1/connections/aws/credentials",
+                    json={"owner_id": "org_burst"},
+                    headers={"Authorization": f"Bearer wrong{i}"},
+                )
+                for i in range(20)
+            )
+        )
+        assert [r.status_code for r in responses] == [401] * 20
+        assert mock_store.get.await_count == 1
 
 
 class TestProjectsRailNamespaceIsInvisibleHere:

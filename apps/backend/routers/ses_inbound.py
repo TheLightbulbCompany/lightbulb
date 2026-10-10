@@ -262,17 +262,18 @@ async def handle_ses_inbound(body: SesInboundBody, request: Request):
         # Anti-spoof gate: DMARC is authoritative when SES reports a verdict
         # for it — an explicit FAIL always drops, and (unlike the Resend
         # path's best-effort header parse) a PASS is trusted outright with no
-        # further fallback. Only when SES surfaces NO dmarc verdict at all do
-        # we fall back to requiring SPF and DKIM to both explicitly FAIL
-        # before dropping. A missing/GRAY verdict on any of these is never a
-        # hard drop — the WAKE gate below (`sender_allowed` AND
-        # `authenticated_sender`) is what decides whether an unproven sender
-        # reaches the agent; the message is always stored either way.
-        dmarc = verdicts.get("dmarc")
-        if dmarc is not None:
-            if str(dmarc).upper() == "FAIL":
-                return _final("dropped_failed_authentication")
-        else:
+        # further fallback. Anything else is NO dmarc verdict — SES says GRAY
+        # for a domain without a DMARC record, and the Lambda always sends the
+        # key, "" when SES ran no check — and there we fall back to requiring
+        # SPF and DKIM to both explicitly FAIL before dropping. A missing/GRAY
+        # SPF or DKIM is never a hard drop — the WAKE gate below
+        # (`sender_allowed` AND `authenticated_sender`) is what decides whether
+        # an unproven sender reaches the agent; the message is always stored
+        # either way.
+        dmarc = str(verdicts.get("dmarc") or "").upper()
+        if dmarc == "FAIL":
+            return _final("dropped_failed_authentication")
+        if dmarc != "PASS":
             spf = str(verdicts.get("spf") or "").upper()
             dkim = str(verdicts.get("dkim") or "").upper()
             if spf == "FAIL" and dkim == "FAIL":

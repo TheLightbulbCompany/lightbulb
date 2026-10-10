@@ -743,6 +743,34 @@ def test_lookalike_domain_is_not_routed_to_dev(monkeypatch):
 _DKIM_SIG = "v=1; a=rsa-sha256; c=relaxed/relaxed; d=example.com; s=sel; h=from:to; bh=Zm8=; b=c2ln"
 
 
+def _rsa_key():
+    """A fresh RSA key as (PKCS#1 private PEM, DKIM TXT record bytes)."""
+    import base64
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=1024)
+    pem = key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL, serialization.NoEncryption()
+    )
+    der = key.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    return pem, b"v=DKIM1; k=rsa; p=" + base64.b64encode(der)
+
+
+def _signed(raw, domain, pem):
+    import dkim
+
+    return dkim.sign(raw, b"sel", domain.encode(), pem, include_headers=[b"from", b"to", b"subject"]) + raw
+
+
+def _post_with_dns(raw, dns, event=None):
+    import index
+
+    with patch.object(index, "_dkim_txt", side_effect=lambda name, timeout=None: dns.get(name.decode())):
+        return _post_and_capture(raw, event)
+
+
 def _post_and_capture(raw, event=None):
     import index
 
@@ -757,10 +785,11 @@ def _post_and_capture(raw, event=None):
     return captured["body"]
 
 
-def test_dkim_signer_domain_is_forwarded_when_ses_verified_the_signature():
-    raw = _build_raw_mime(extra_headers={"DKIM-Signature": _DKIM_SIG})
+def test_dkim_signer_domain_is_forwarded_when_its_signature_verifies():
+    pem, record = _rsa_key()
+    raw = _signed(_build_raw_mime(attachment=False), "example.com", pem)
 
-    verdicts = _post_and_capture(raw)["verdicts"]
+    verdicts = _post_with_dns(raw, {"sel._domainkey.example.com.": record})["verdicts"]
 
     assert verdicts["dkim_domains"] == ["example.com"]
     # From SES's receipt envelope (mail.source), not the MIME's Return-Path.
@@ -768,26 +797,34 @@ def test_dkim_signer_domain_is_forwarded_when_ses_verified_the_signature():
 
 
 def test_dkim_signer_domain_is_empty_when_ses_did_not_pass_dkim():
-    """SES's PASS is the only thing that makes a `d=` tag mean anything: without
-    it the signature is unverified and its domain proves nothing about `From`."""
-    raw = _build_raw_mime(extra_headers={"DKIM-Signature": _DKIM_SIG})
+    """SES's PASS gates the per-signature check: mail SES failed costs no DNS."""
+    pem, record = _rsa_key()
+    raw = _signed(_build_raw_mime(attachment=False), "example.com", pem)
     event = _ses_event(verdict_overrides={"dkimVerdict": {"status": "FAIL"}})
 
-    assert _post_and_capture(raw, event)["verdicts"]["dkim_domains"] == []
+    assert _post_with_dns(raw, {"sel._domainkey.example.com.": record}, event)["verdicts"]["dkim_domains"] == []
 
 
-def test_all_dkim_signature_domains_are_forwarded():
-    """SES's flat PASS says at least one signature verified, not which — so
-    every `d=` is forwarded and the backend aligns against any of them."""
-    msg = email.message.EmailMessage()
-    msg["From"] = "Jane Doe <jane@example.com>"
-    msg["To"] = "agent@agents.isol8.co"
-    msg["Subject"] = "Hello agent"
-    msg["DKIM-Signature"] = _DKIM_SIG
-    msg["DKIM-Signature"] = _DKIM_SIG.replace("d=example.com", "d=Mail.Example.NET")
-    msg.set_content("body\n")
+def test_only_the_dkim_signature_that_verifies_is_forwarded():
+    """SES's flat PASS says at least one signature verified, not which. A valid
+    signature for the sender's own domain must not vouch for a second,
+    unverifiable one naming another domain."""
+    own_pem, own_record = _rsa_key()
+    other_pem, _ = _rsa_key()
+    _, published_record = _rsa_key()  # the named domain publishes a key the sender does not hold
+    raw = _signed(_build_raw_mime(attachment=False), "example.com", own_pem)
+    raw = _signed(raw, "victim.test", other_pem)
 
-    assert _post_and_capture(msg.as_bytes())["verdicts"]["dkim_domains"] == ["example.com", "mail.example.net"]
+    dns = {"sel._domainkey.example.com.": own_record, "sel._domainkey.victim.test.": published_record}
+
+    assert _post_with_dns(raw, dns)["verdicts"]["dkim_domains"] == ["example.com"]
+
+
+def test_unverifiable_dkim_signature_forwards_no_domain():
+    """A syntactically plausible signature that does not verify proves nothing."""
+    raw = _build_raw_mime(extra_headers={"DKIM-Signature": _DKIM_SIG})
+
+    assert _post_with_dns(raw, {})["verdicts"]["dkim_domains"] == []
 
 
 def test_forged_authentication_results_is_not_an_identity_source():

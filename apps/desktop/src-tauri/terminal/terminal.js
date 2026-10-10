@@ -2,8 +2,23 @@
 // Frame: [u8 kind][u32 BE length][payload]. Kinds: 1 HELLO, 2 OUTPUT, 3 INPUT, 4 RESIZE, 5 EXIT, 8 SNAPSHOT,
 // 9 DETACHED, 10 PROMOTED.
 const HELLO = 1, OUTPUT = 2, INPUT = 3, RESIZE = 4, EXIT = 5, SNAPSHOT = 8, DETACHED = 9, PROMOTED = 10;
+const THEME = { background: "#16161a", foreground: "#e6e6e9" };
 const term = new Terminal({ macOptionIsMeta: true, scrollback: 5000, fontSize: 13,
-  fontFamily: "Menlo, 'SF Mono', monospace", theme: { background: "#16161a", foreground: "#e6e6e9" } });
+  fontFamily: "Menlo, 'SF Mono', monospace", theme: THEME });
+// A teammate typing (S8): the cursor in their colour, their name in the bar, for the `forMs` the
+// app gives; the owner's own keys clear it at once. The colour is the web's `personColor` (FNV-1a
+// over the user id, the same order), with globals.css's dark --person-* values: keep them in step.
+const PERSON = ["#67D4E4", "#E39AF0", "#7FD69A", "#E3C35A", "#93B4FA", "#B3A8FA"];
+const personColor = (id) => { let h = 0x811c9dc5; for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 0x01000193); return PERSON[(h >>> 0) % PERSON.length]; };
+const who = document.getElementById("who");
+let typistTimer = 0;
+function typist(t) {
+  clearTimeout(typistTimer);
+  const color = t ? personColor(t.userId) : undefined;
+  term.options.theme = color ? { ...THEME, cursor: color } : THEME;
+  who.textContent = t ? `${t.name} typing` : ""; who.style.color = color || "";
+  if (t) typistTimer = setTimeout(() => typist(null), t.forMs);
+}
 const fit = new FitAddon.FitAddon();
 term.loadAddon(fit);
 term.open(document.getElementById("t"));
@@ -63,7 +78,7 @@ term.attachCustomKeyEventHandler((e) => {
   }
   return true;
 });
-term.onData((d) => send(INPUT, enc.encode(d)));
+term.onData((d) => { typist(null); send(INPUT, enc.encode(d)); });
 term.onBinary((d) => send(INPUT, Uint8Array.from(d, (c) => c.charCodeAt(0))));
 ws.onopen = () => { resize(); };
 const end = document.getElementById("end");
@@ -73,6 +88,12 @@ const attach = new URLSearchParams(location.search).get("attach") === "1";
 if (attach) end.hidden = true;
 let pending = new Uint8Array();
 ws.onmessage = (event) => {
+  if (typeof event.data === "string") {
+    let said = {};
+    try { said = JSON.parse(event.data); } catch { /* not ours to fix */ }
+    typist(said.typist && typeof said.typist.userId === "string" ? said.typist : null);
+    return;
+  }
   const data = new Uint8Array(event.data);
   const buffered = new Uint8Array(pending.length + data.length); buffered.set(pending); buffered.set(data, pending.length);
   pending = buffered;

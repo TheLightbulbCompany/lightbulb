@@ -8,6 +8,7 @@
   html, body { margin: 0; height: 100%; background: #16161a; }
   #bar { position: absolute; top: 0; left: 0; right: 0; height: 28px; box-sizing: border-box; display: flex; justify-content: flex-end; align-items: center; padding: 0 8px;
          background: #1c1c21; border-bottom: 1px solid #2b2b33; }
+  #who { margin-right: auto; font: 12px -apple-system, system-ui, sans-serif; }
   #end { font: 12px -apple-system, system-ui, sans-serif; color: #e6e6e9; background: #2b2b33; border: 0; border-radius: 4px; padding: 3px 8px; cursor: pointer; }
   /* Clips a joined session's grid: nothing it draws lands on the bar or outside the panel. */
   #wrap { position: absolute; inset: 32px 4px 4px 8px; overflow: hidden; }
@@ -17,7 +18,7 @@
 </style>
 </head>
 <body>
-<div id="bar"><button id="end" type="button">End session</button></div>
+<div id="bar"><span id="who" role="status"></span><button id="end" type="button">End session</button></div>
 <div id="wrap"><div id="t"></div></div>
 <div id="note" role="status"></div>
 <script src="/xterm.js"></script>

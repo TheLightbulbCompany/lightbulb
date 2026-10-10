@@ -71,6 +71,27 @@ it("watches while on screen, draws the snapshot read-only, and ignores other ses
   expect(watch).toHaveBeenCalledTimes(2);
 });
 
+it("a teammate's keys colour the cursor and name them for the frame's time; a frame without them is plain at once", async () => {
+  vi.useFakeTimers();
+  document.documentElement.style.setProperty("--person-cyan", "rgb(1, 2, 3)");
+  let emit: (e: LiveEvent) => void = () => {};
+  render(<SessionTerminalView session={{ sessionId: "s1", generation: "g1" }}
+    onEvent={(h) => { emit = h; return () => {}; }} watch={vi.fn(async () => undefined)} onLive={vi.fn()} />);
+  await act(async () => { await vi.dynamicImportSettled(); });
+  const typed = (typist?: object) => { const e = screenEvent("s1"); (e.payload as Record<string, unknown>).typist = typist; return e; };
+  const cursor = () => (hooks.term as unknown as { options: { theme?: { cursor?: string } } }).options.theme?.cursor;
+  act(() => { emit(typed({ userId: "user_3", name: "Aden", forMs: 4000 })); }); // personColor("user_3") is cyan
+  expect(screen.getByText("Aden typing")).toBeInTheDocument();
+  expect(cursor()).toBe("rgb(1, 2, 3)");
+  act(() => { emit(typed()); });
+  expect(screen.queryByText("Aden typing")).toBeNull();
+  expect(cursor()).toBeUndefined();
+  act(() => { emit(typed({ userId: "user_3", name: "Aden", forMs: 4000 })); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+  expect(screen.queryByText("Aden typing")).toBeNull();
+  document.documentElement.style.removeProperty("--person-cyan");
+});
+
 it("a hidden tab stops watching, and asks for one fresh screen when it is shown again", async () => {
   vi.useFakeTimers();
   let state: DocumentVisibilityState = "visible";

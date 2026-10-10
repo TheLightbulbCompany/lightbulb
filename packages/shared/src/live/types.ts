@@ -232,6 +232,8 @@ const SESSION_ATTENTION_STATES = new Set<string>(["waiting", "finished", "join_r
 export type SessionScreen = {
   sessionId: string; generation: string; epoch: number; seq: number;
   cols: number; rows: number; kind: "snapshot" | "output" | "history" | "ping"; data: string;
+  /** The teammate who typed last, shown on the cursor for `forMs` (S8). Absent: the plain cursor. */
+  typist?: { userId: string; name: string; forMs: number };
 };
 /** An admitted person started (or is still) typing into this owner's live session terminal. */
 export type SessionTyping = { sessionId: string; userId: string };
@@ -429,7 +431,8 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
         && Number.isSafeInteger(payload.seq) && (payload.seq as number) >= 0
         && Number.isInteger(payload.cols) && (payload.cols as number) >= 1 && (payload.cols as number) <= 1000
         && Number.isInteger(payload.rows) && (payload.rows as number) >= 1 && (payload.rows as number) <= 500
-        && (payload.kind === "ping" ? payload.data === "" : SCREEN_KINDS.has(payload.kind as string) && text(payload.data));
+        && (payload.kind === "ping" ? payload.data === "" : SCREEN_KINDS.has(payload.kind as string) && text(payload.data))
+        && (payload.typist === undefined || (isObj(payload.typist) && str(payload.typist.userId) && str(payload.typist.name) && num(payload.typist.forMs)));
     case "workspace.session.typing":
       return str(payload.sessionId) && str(payload.userId);
     case "workspace.session.attention":

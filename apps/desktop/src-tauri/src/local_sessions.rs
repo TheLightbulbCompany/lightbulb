@@ -11,7 +11,7 @@ pub(crate) mod plugin;
 mod presence;
 pub use native_mcp::serve_mcp;
 pub(crate) mod snapshot;
-mod remote_input;
+pub(crate) mod remote_input;
 pub(crate) mod resume;
 pub(crate) mod screen;
 mod session_states;

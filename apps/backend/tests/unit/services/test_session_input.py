@@ -432,3 +432,36 @@ async def test_a_failed_typing_mark_still_sends_the_keystrokes(transport, monkey
     transport[3].clear()
     await session_screen.type_into(BOB, sid, body())
     assert len(sent(transport)) == 1
+
+
+@pytest.mark.asyncio
+async def test_frames_name_the_teammate_who_typed_last_for_four_seconds_and_the_owners_keys_clear_it(
+    transport, monkeypatch
+):
+    sid = await start(transport)
+    await capable(transport, sid)
+    await admit(sid)
+    now = time.time()
+    monkeypatch.setattr(session_screen, "_clock", lambda: now)
+    for person in (ALICE, BOB):
+        await session_screen.watch(person, sid)
+    screen = {**fixture("session-screen"), "sessionId": sid, "generation": "generation-1"}
+
+    async def typist(at):
+        monkeypatch.setattr(session_screen, "_clock", lambda: at)
+        transport[4].clear()
+        await session_screen.forward(relay(transport), "conn-1", screen)
+        frames = [
+            e for e in (_json.loads(h["events"][0]) for h in transport[4]) if e["type"] == "workspace.session.screen"
+        ]
+        return frames[0]["payload"].get("typist")
+
+    await session_screen.type_into(BOB, sid, body())
+    shown = await typist(now)
+    assert shown["userId"] == BOB.user_id and shown["name"] == BOB.user_id.removeprefix("user_").title()
+    assert 3000 < shown["forMs"] <= 4000
+    assert await typist(int(now) + 4) is None, "plain again after four seconds"
+    monkeypatch.setattr(session_screen, "_clock", lambda: now + 1)
+    await session_screen.type_into(BOB, sid, body())
+    await session_screen.type_into(ALICE, sid, body())
+    assert await typist(now + 1) is None, "the owner's keys put the plain cursor back"

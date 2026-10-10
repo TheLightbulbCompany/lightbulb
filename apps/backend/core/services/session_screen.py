@@ -388,11 +388,12 @@ async def forward(relay, cid: str, body: dict) -> None:
                 return
         elif not sessions.screen_available(row, int(now)) or row.get("screenConnectionId") != cid:
             return  # an ended session streams only its kept final screen, from the connection that keeps it
-        viewers = [
-            r["userId"]
+        seats = [
+            r
             for r in await store._query(repo.session_pk(owner, sid), begins_with="VIEWER#")
             if int(r.get("expiresAt", 0)) > now
         ]
+        viewers = [r["userId"] for r in seats]
         # An "Anyone with the link" link's watchers: read on every frame, like the row above, so a
         # link that stops being public, loses its last watcher, or whose session ends gets no
         # further frame (an ended session's kept final screen is for the workspace). One item,
@@ -414,6 +415,9 @@ async def forward(relay, cid: str, body: dict) -> None:
             put_metric("session.screen.frame.dropped")
             return
         payload = frame.model_dump(mode="json", by_alias=True, exclude={"type"})
+        typist = await _cursor_typist(row, seats, now)
+        if typist:
+            payload["typist"] = typist
         publisher = live_events.get_live_event_publisher()
 
         async def to_workspace() -> None:
@@ -444,6 +448,22 @@ async def forward(relay, cid: str, body: dict) -> None:
         put_metric("session.screen.viewers", len(viewers))
     except Exception as exc:  # noqa: BLE001 -- see docstring
         logger.info("session screen frame dropped error=%s", type(exc).__name__)
+
+
+TYPIST_SHOWN_S = 4
+
+
+async def _cursor_typist(row: dict, seats: list[dict], now: float) -> dict | None:
+    """Who typed into this terminal last, for about TYPIST_SHOWN_S after (S8): every view draws the
+    cursor in their colour with their name. From the `typedAt` marks on the viewer rows this frame
+    already read. The owner typing last (a tie included) shows nobody: the plain cursor."""
+    last = max(seats, key=lambda r: (int(r.get("typedAt", 0)), r["userId"] == row["humanUserId"]), default=None)
+    left = int(last.get("typedAt", 0)) + TYPIST_SHOWN_S - now if last else 0
+    if left <= 0 or last["userId"] == row["humanUserId"]:
+        return None
+    user = last["userId"]
+    name = await session_presence._name(user)
+    return {"userId": user, "name": "A teammate" if name == user else name, "forMs": int(left * 1000)}
 
 
 # Remote input (owner ruling 2026-10-03): an admitted person types into the live terminal. Their
@@ -592,8 +612,8 @@ async def type_into(auth: AuthContext, session_id: str, body: SessionInput) -> N
             ":n": size,
         },
     )
-    if user != row["humanUserId"]:
-        await _mark_typing(row, user, int(now))
+    # The owner's mark too: their keys put the plain cursor back on every view (`_cursor_typist`).
+    await _mark_typing(row, user, int(now))
     try:
         sent = await get_local_session_relay().management.send_message_async(row["connectionId"], envelope)
     except Exception as exc:  # noqa: BLE001 -- reported as offline; the content is never logged

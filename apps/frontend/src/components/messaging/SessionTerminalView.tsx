@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ApiError, audienceLine, NEW_SCREEN, SNAPSHOT_WAIT_MS, receiveScreen, settleScreen, snapshotWaits, type LiveEvent, type LocalSession, type SessionScreen } from "@lightbulb/shared";
+import { ApiError, audienceLine, NEW_SCREEN, personColor, SNAPSHOT_WAIT_MS, receiveScreen, settleScreen, snapshotWaits, type LiveEvent, type LocalSession, type SessionScreen } from "@lightbulb/shared";
 import type { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { createInputQueue, dropMouseReports, dropProbeReplies, SHIFT_ENTER } from "./sessionInput";
@@ -110,6 +110,9 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
   const [full, setFull] = useState<string | null>(null);
   // While people watch on the "Anyone with the link" page: how many, and how many teammates. Never who.
   const [audience, setAudience] = useState("");
+  // The teammate who typed last (S8): the cursor in their colour, their name in the bar, for the
+  // frame's `forMs`. Every frame says who it is now, so the owner's keys put the plain cursor back.
+  const [typist, setTypist] = useState<{ name: string; color: string } | null>(null);
   const screenKey = `${session.sessionId}:${kept}`;
   // The frames channel is held until access is lost (403/404 or a full session on a watch). A
   // refused subscribe is released and claimed again, 1 s doubling to 15 s, so the socket asks
@@ -211,6 +214,21 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
       if (!lost || document.visibilityState === "hidden" || Date.now() - repaired < REPAIR_EVERY_MS) return;
       repaired = Date.now();
       void watchNow.current(session.sessionId, true).catch(() => { /* the watch effect shows a refusal */ });
+    };
+    // xterm takes colour strings, not var(): read the tokens from globals.css.
+    const token = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || undefined;
+    const theme = { background: token("--terminal-bg"), foreground: token("--terminal-fg") };
+    let typistTimer: ReturnType<typeof setTimeout> | undefined;
+    let shownTypist = "";
+    const showTypist = (who?: SessionScreen["typist"]) => {
+      clearTimeout(typistTimer);
+      if (who) typistTimer = setTimeout(showTypist, who.forMs);
+      if ((who?.userId ?? "") === shownTypist) return;
+      shownTypist = who?.userId ?? "";
+      // The owner is never named (the backend sends nobody), so any id here is a teammate's colour.
+      const color = who ? `--person-${personColor(who.userId, "").replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}` : "";
+      setTypist(who ? { name: who.name, color } : null);
+      if (term) term.options.theme = { ...theme, cursor: color ? token(color) : undefined };
     };
     let pending = "";
     let frameId = 0;
@@ -315,10 +333,8 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     };
     void import("@xterm/xterm").then(({ Terminal }) => {
       if (!alive || !host.current) return;
-      // xterm takes colour strings, not var(): read the terminal tokens from globals.css.
-      const token = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || undefined;
       term = new Terminal({ disableStdin: true, cursorBlink: false, scrollback: 5000, fontSize: 13,
-        fontFamily: "Menlo, 'SF Mono', monospace", theme: { background: token("--terminal-bg"), foreground: token("--terminal-fg") } });
+        fontFamily: "Menlo, 'SF Mono', monospace", theme });
       term.open(host.current);
       termRef.current = term;
       term.options.disableStdin = !typing.current.canType;
@@ -341,6 +357,7 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
       if (event.type !== "workspace.session.screen") return;
       const frame = event.payload;
       if (frame.sessionId !== session.sessionId || frame.generation !== session.generation) return;
+      showTypist(frame.typist);
       // A ping proves the picture is current only when it names the frame this view waits for:
       // one ahead of that means a frame was lost, and one with no screen yet proves nothing.
       const current = frame.kind === "ping" && order.synced && frame.epoch === order.epoch && frame.seq === order.next;
@@ -358,11 +375,12 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     });
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(fit);
     if (box.current) observer?.observe(box.current);
-    return () => { alive = false; pending = ""; if (frameId) cancelAnimationFrame(frameId); termRef.current = null; clearTimeout(stale); clearTimeout(settle); off(); observer?.disconnect(); around?.removeEventListener("wheel", onWheel, { capture: true }); term?.dispose(); onLive(false); };
+    return () => { alive = false; pending = ""; clearTimeout(typistTimer); setTypist(null); if (frameId) cancelAnimationFrame(frameId); termRef.current = null; clearTimeout(stale); clearTimeout(settle); off(); observer?.disconnect(); around?.removeEventListener("wheel", onWheel, { capture: true }); term?.dispose(); onLive(false); };
   }, [session.sessionId, session.generation, onEvent, onLive]);
   return <>
     <div className="session-terminal-view session-terminal-frame" data-live={live} role="region" aria-label={canType ? "Live terminal" : "Live terminal (view only)"}>
       <div className="session-terminal-size" role="group" aria-label="Terminal size">
+        {typist && <span className="session-terminal-hint" style={{ color: `var(${typist.color})` }}>{typist.name} typing</span>}
         {audience && <span className="session-terminal-hint">{audience}</span>}
         {wide && <span className="session-terminal-hint">Wider than this pane · scroll sideways or choose Fit</span>}
         <button type="button" aria-pressed={size === "readable"} title="Text at a readable size; scroll to see the rest" onClick={() => choose("readable")}>Readable</button>

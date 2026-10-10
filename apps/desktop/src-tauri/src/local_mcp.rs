@@ -304,7 +304,8 @@ const LAUNCH_FIELDS: [&str; 4] = ["command", "args", "env", "cwd"];
 
 /// Which entries of `next` (already validated) would make the node host run a
 /// local command it is not already configured to run: a command-bearing server
-/// that is new, or whose `command`/`args`/`env`/`cwd` differs from `current`.
+/// that is new, whose `command`/`args`/`env`/`cwd` differs from `current`, or
+/// that `current` has disabled and `next` turns back on.
 ///
 /// Each item is the text the native confirmation shows — the exact command
 /// line, its working directory, and every env var in full. Nothing is masked:
@@ -319,8 +320,12 @@ pub fn launches_needing_confirmation(current: &Value, next: &Map<String, Value>)
             continue;
         };
         let before = current.get(name);
+        // A missing `enabled` means enabled (the node host's default), so
+        // turning a disabled entry back on starts a command that was not running.
+        let enabled = |s: &Value| s.get("enabled") != Some(&Value::Bool(false));
         let unchanged = before.is_some_and(|b| {
             LAUNCH_FIELDS.iter().all(|f| b.get(*f) == server.get(*f))
+                && (enabled(b) || !enabled(server))
         });
         if unchanged {
             continue;
@@ -381,6 +386,8 @@ mod tests {
             "changed": {"command": "npx", "args": ["a"]},
             "env_changed": {"command": "node", "env": {"K": "1"}},
             "gone": {"command": "rm"},
+            "reenabled": {"command": "python3", "enabled": false},
+            "still_off": {"command": "ruby", "enabled": false},
         });
         let next = validate_servers(json!({
             "same": {"command": "npx", "args": ["a"], "enabled": false},
@@ -394,6 +401,8 @@ mod tests {
             }},
             "fresh": {"command": "/bin/sh", "args": ["-c", "x"], "cwd": "/tmp"},
             "remote": {"url": "https://example.com/mcp"},
+            "reenabled": {"command": "python3"},
+            "still_off": {"command": "ruby", "enabled": false},
         }))
         .unwrap();
         let mut got = launches_needing_confirmation(&current, &next);
@@ -404,9 +413,11 @@ mod tests {
                 "\"changed\": npx b".to_string(),
                 "\"env_changed\": node\n  K=2\n  NODE_OPTIONS=--require /tmp/x.js\n  OPENAI_API_KEY=sk-secret\n  DYLD_INSERT_LIBRARIES=/tmp/x.dylib\n  GIT_ASKPASS=/tmp/askpass.sh".to_string(),
                 "\"fresh\": /bin/sh -c x\n  in /tmp".to_string(),
+                "\"reenabled\": python3".to_string(),
             ]
         );
-        // Removing everything, or re-sending the stored map, asks nothing.
+        // Disabling ("same" above), removing everything, or re-sending the
+        // stored map asks nothing.
         assert!(launches_needing_confirmation(&current, &Map::new()).is_empty());
         let resend = validate_servers(current.clone()).unwrap();
         assert!(launches_needing_confirmation(&current, &resend).is_empty());

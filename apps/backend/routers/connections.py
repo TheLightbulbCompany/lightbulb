@@ -136,6 +136,17 @@ _REGION_RE = re.compile(r"^[a-z0-9-]+$")
 # so the effective per-owner ceiling is 2-4x this value, not a hard cap).
 _AWS_CLI_RATE_LIMIT_PER_MINUTE = 10
 _aws_cli_rate_buckets: dict[str, deque[float]] = defaultdict(deque)
+# The SM credential, cached per owner so a wrong-token spray is refused WITHOUT a Secrets
+# Manager fetch and without touching the rate bucket (which only correct tokens fill, so
+# someone else's junk can never get the real helper a 429). A mismatch refetches at most
+# once per floor, which is how a reconnect's new token is picked up.
+_AWS_CLI_REFETCH_FLOOR_S = 10.0
+_aws_cli_records: dict[str, tuple[float, dict]] = {}
+
+
+def _cli_token_matches(rec: dict, presented_hash: str) -> bool:
+    expected = rec.get("cli_token_hash") or ""
+    return bool(expected) and hmac.compare_digest(presented_hash, expected)
 
 
 def _check_aws_cli_rate_limit(owner_id: str) -> bool:
@@ -464,10 +475,27 @@ async def aws_credentials(body: AwsCredentialsBody, request: Request):
         put_metric("connections.aws_credentials.fetch", dimensions={"result": "unauthorized"})
         raise HTTPException(status_code=401, detail="invalid_token")
 
-    # Rate limit AFTER the cheap DDB gate but BEFORE the Secrets Manager fetch.
-    # The gate has already rejected unconnected / garbage owner_ids with a 401,
-    # so spray can't fill buckets; capping here means a valid-owner + wrong-token
-    # spray is throttled before it can drive unbounded GetSecretValue calls.
+    presented_hash = _hash_cli_token(presented)
+    cached = _aws_cli_records.get(body.owner_id)
+    rec = cached[1] if cached else {}
+    if cached is None or (
+        not _cli_token_matches(rec, presented_hash) and time.monotonic() - cached[0] >= _AWS_CLI_REFETCH_FLOOR_S
+    ):
+        try:
+            rec = await integration_secret_store.get(body.owner_id, "aws") or {}
+        except ClientError:
+            # Secrets Manager throttling / validation errors must surface as a
+            # clean 503 (the helper falls back to its stale cache), never an
+            # unhandled 500.
+            logger.exception("aws credential secret fetch failed for owner=%s", body.owner_id)
+            put_metric("connections.aws_credentials.fetch", dimensions={"result": "store_error"})
+            raise HTTPException(status_code=503, detail="credential_service_unavailable")
+        _aws_cli_records[body.owner_id] = (time.monotonic(), rec)
+    if not _cli_token_matches(rec, presented_hash):
+        put_metric("connections.aws_credentials.fetch", dimensions={"result": "unauthorized"})
+        raise HTTPException(status_code=401, detail="invalid_token")
+
+    # Rate limit only AUTHENTICATED vends (bounds STS calls per owner).
     if not _check_aws_cli_rate_limit(body.owner_id):
         put_metric("connections.aws_credentials.fetch", dimensions={"result": "rate_limited"})
         return Response(
@@ -476,20 +504,6 @@ async def aws_credentials(body: AwsCredentialsBody, request: Request):
             content=b'{"detail":"rate_limited"}',
             media_type="application/json",
         )
-
-    try:
-        rec = await integration_secret_store.get(body.owner_id, "aws")
-    except ClientError:
-        # Secrets Manager throttling / validation errors must surface as a
-        # clean 503 (the helper falls back to its stale cache), never an
-        # unhandled 500.
-        logger.exception("aws credential secret fetch failed for owner=%s", body.owner_id)
-        put_metric("connections.aws_credentials.fetch", dimensions={"result": "store_error"})
-        raise HTTPException(status_code=503, detail="credential_service_unavailable")
-    expected_hash = (rec or {}).get("cli_token_hash") or ""
-    if not expected_hash or not hmac.compare_digest(_hash_cli_token(presented), expected_hash):
-        put_metric("connections.aws_credentials.fetch", dimensions={"result": "unauthorized"})
-        raise HTTPException(status_code=401, detail="invalid_token")
 
     try:
         # RoleSessionName charset is [\w+=,.@-]; owner ids (org_/user_ + base62)

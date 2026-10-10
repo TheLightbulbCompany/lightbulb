@@ -2963,6 +2963,17 @@ class TestAwsCredentialsEndpoint:
     aws-complete, validated against the SHA-256 hash in the SM credential."""
 
     _TOKEN = "tok_plain_abc"
+
+    @pytest.fixture(autouse=True)
+    def _fresh_state(self):
+        from routers import connections as conn_mod
+
+        conn_mod._aws_cli_records.clear()
+        conn_mod._aws_cli_rate_buckets.clear()
+        yield
+        conn_mod._aws_cli_records.clear()
+        conn_mod._aws_cli_rate_buckets.clear()
+
     # sha256("tok_plain_abc") — precomputed so tests don't re-derive via the
     # same helper they're testing.
     _TOKEN_HASH = "18197ef8f0b27b7cbf4f3acfa60448a622594f7a20279c4fa6a0cfded6a605cc"
@@ -3153,36 +3164,33 @@ class TestAwsCredentialsEndpoint:
             conn_mod._aws_cli_rate_buckets.clear()
 
     @pytest.mark.asyncio
+    @patch("routers.connections._sts_client")
     @patch("routers.connections.integrations_repo")
     @patch("routers.connections.integration_secret_store")
-    async def test_wrong_token_spray_is_rate_limited_before_secrets_manager(self, mock_store, mock_repo, async_client):
-        # A caller who knows a valid connected owner_id but sprays WRONG tokens
-        # must be throttled before it can drive unbounded Secrets Manager fetches:
-        # the rate limiter runs after the cheap DDB gate and before the SM get.
+    async def test_wrong_token_spray_never_locks_out_the_real_token(
+        self, mock_store, mock_repo, mock_sts, async_client
+    ):
+        # Wrong tokens are refused against the cached credential: no Secrets Manager fetch per
+        # attempt and no rate-bucket slot, so the real helper is never 429'd by someone's junk.
         from routers import connections as conn_mod
 
         mock_repo.get = AsyncMock(return_value={"status": "connected"})
         mock_store.get = AsyncMock(return_value=self._stored())
-        conn_mod._aws_cli_rate_buckets.clear()
-        try:
-            for _ in range(conn_mod._AWS_CLI_RATE_LIMIT_PER_MINUTE):
-                r = await async_client.post(
-                    "/api/v1/connections/aws/credentials",
-                    json={"owner_id": "org_spray"},
-                    headers={"Authorization": "Bearer wrong"},
-                )
-                assert r.status_code == 401  # bad token, but each consumed a slot
-            over = await async_client.post(
+        mock_sts.return_value.assume_role.return_value = self._sts_response()
+        for _ in range(conn_mod._AWS_CLI_RATE_LIMIT_PER_MINUTE * 3):
+            r = await async_client.post(
                 "/api/v1/connections/aws/credentials",
                 json={"owner_id": "org_spray"},
                 headers={"Authorization": "Bearer wrong"},
             )
-            assert over.status_code == 429
-            # SM was hit at most once per allowed slot (10), never on the 11th —
-            # the throttle caps GetSecretValue spend under a wrong-token spray.
-            assert mock_store.get.await_count <= conn_mod._AWS_CLI_RATE_LIMIT_PER_MINUTE
-        finally:
-            conn_mod._aws_cli_rate_buckets.clear()
+            assert r.status_code == 401
+        assert mock_store.get.await_count == 1
+        ok = await async_client.post(
+            "/api/v1/connections/aws/credentials",
+            json={"owner_id": "org_spray"},
+            headers={"Authorization": f"Bearer {self._TOKEN}"},
+        )
+        assert ok.status_code == 200
 
 
 class TestProjectsRailNamespaceIsInvisibleHere:

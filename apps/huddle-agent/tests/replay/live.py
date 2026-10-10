@@ -103,7 +103,7 @@ def load(path: str, scenario: dict, rig: str | None = None) -> Recording:
                 # again, and its free retry (its own receipt, said) comes next
                 need = max(proof.get("loudMs", 0) / 1000, sound_limit(e["text"])) + 0.05
                 fixed.setdefault("unit:" + e["text"], []).append(need)
-            if "leadMs" in proof and e["outcome"] in ("said", "cut") and proof.get("audioMs"):
+            if "leadMs" in proof and e["outcome"] in ("said", "cut", "long") and proof.get("audioMs"):
                 fixed["lead"].append(proof["leadMs"] / 1000)  # every sentence whose audio began, said or cut
                 if e["outcome"] == "said":
                     fixed["trailing"].append(max(proof["audioMs"] - proof["loudMs"] - proof["leadMs"], 0) / 1000)

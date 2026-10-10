@@ -372,7 +372,7 @@ describe("hermes runtime wiring", () => {
     expect(JSON.stringify(base)).not.toContain("MemoryRecords");
   });
 
-  it("grants the backend task role only the memory wipe, and stamps the memory id into its env", () => {
+  it("grants the backend task role the memory wipe and the review actions, never retrieve", () => {
     dev.serviceTemplate.hasResourceProperties("AWS::IAM::ManagedPolicy", {
       PolicyDocument: Match.objectLike({
         Statement: Match.arrayWith([
@@ -384,6 +384,19 @@ describe("hermes runtime wiring", () => {
               "bedrock-agentcore:ListSessions",
               "bedrock-agentcore:ListEvents",
               "bedrock-agentcore:DeleteEvent",
+            ]),
+          }),
+        ]),
+      }),
+    });
+    dev.serviceTemplate.hasResourceProperties("AWS::IAM::ManagedPolicy", {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Sid: "AgentCoreMemoryReview",
+            Action: Match.arrayEquals([
+              "bedrock-agentcore:GetMemoryRecord",
+              "bedrock-agentcore:BatchCreateMemoryRecords",
             ]),
           }),
         ]),

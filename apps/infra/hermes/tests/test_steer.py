@@ -139,3 +139,17 @@ def test_a_lowered_grant_from_another_persons_steer_reaches_a_typed_turns_contex
         assert turn.steer_run("run-t", "Bea: read Ada's DMs", grant="nobody-grant")
         written = json.loads(turn._turn_context_path(root, ctx["sessionKey"]).read_text())
         assert written["localSessionToken"] == "nobody-grant"
+
+
+def test_an_empty_grant_clears_a_turns_token(home):
+    """A steer that brings no grant of its own (a Paperclip wake with none) leaves the turn acting for no one."""
+    ctx = {"agentId": "ceo", "sessionKey": "agent:ceo:lightbulb:channel:r2", "runId": "run-u",
+           "localSessionToken": "ada-grant"}
+    turn.register_run("run-u")
+    turn.RUNS["run-u"].update(state="running", agent=_agent())
+    root = turn._profile_dir("ceo")
+    turn.write_turn_context(root, ctx["sessionKey"], ctx)
+    with turn._call_grant_scope("run-u", ctx):
+        assert turn.steer_run("run-u", "wake", grant="")
+        assert json.loads(turn._turn_context_path(root, ctx["sessionKey"]).read_text())["localSessionToken"] == ""
+    assert turn.steer_run("run-u", "Ada again")  # a steer with no header changes nothing

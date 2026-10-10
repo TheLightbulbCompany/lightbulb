@@ -529,7 +529,7 @@ def _call_grant_scope(run_id: str, ctx: dict):
         entry = RUNS.get(run_id)
         if entry is not None:
             entry["ctx"] = ctx
-            if entry.get("grant"):
+            if entry.get("grant") is not None:
                 _write_call_ctx(entry)
     try:
         yield
@@ -912,7 +912,7 @@ def steer_run(run_id: str, text: str, grant: str | None = None) -> bool:
         if (entry is None or entry["aborted"] or entry["state"] not in ("queued", "running")
                 or entry.get("kind") == "paperclip"):  # a Paperclip turn never reads stashed steers
             return False
-        if grant:
+        if grant is not None:  # "" clears it: a turn with no grant at all acts for no one
             entry["grant"] = grant
             if entry.get("ctx"):
                 _write_call_ctx(entry)
@@ -3825,7 +3825,10 @@ def _route_paperclip_run(identity: dict, request: dict) -> tuple[str, str | None
     with _issue_run_published(agent_id, issue_id, run_id):
         live = _live_room_run(conversation)  # a live room run is itself proof of membership
         steer = f"{BOUND_WAKE_STEER.format(issue=issue_id, run=run_id)}\n\n{request['input']}"
-        if live and steer_run(live, steer.encode()[:MAX_FOLLOWUP_TEXT_BYTES].decode("utf-8", "ignore")):
+        # The wake's text is no person's request: the room run's grant drops to the Paperclip run's
+        # own (it names no requester) or to none, as a steer by anyone but the requester does.
+        lowered = identity.get("localSessionToken") or ""
+        if live and steer_run(live, steer.encode()[:MAX_FOLLOWUP_TEXT_BYTES].decode("utf-8", "ignore"), grant=lowered):
             log.info("paperclip run %s joined room run %s", run_id, live)
             return _await_room_run(run_id, live)
         member = _room_member(conversation)

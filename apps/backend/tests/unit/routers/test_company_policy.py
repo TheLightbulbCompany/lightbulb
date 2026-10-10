@@ -55,6 +55,7 @@ def _lease(monkeypatch):
     monkeypatch.setattr(container_repo, "try_claim_owner_lifecycle", AsyncMock(return_value="lease-token"))
     monkeypatch.setattr(container_repo, "release_owner_lifecycle_claim", AsyncMock())
     monkeypatch.setattr(mod.slack_installs_repo, "list_for_owner", AsyncMock(return_value=[]))
+    monkeypatch.setattr(mod.website_logins, "list_logins", AsyncMock(return_value=[]))
 
 
 @pytest.fixture(autouse=True)
@@ -208,6 +209,24 @@ def test_revoke_all_skips_stripe_when_unbound(client):
     assert resp.status_code == 200
     assert resp.json() == {"revoked": ["workflows_cancelled:1", "secret:posthog"], "failed": []}
     deauth.assert_not_awaited()
+
+
+def test_revoke_all_deletes_every_saved_website_login(client, monkeypatch):
+    """A saved website password is a credential copy we hold; the kill switch left them all."""
+    _, cancel, sdelete, _ = _revoke_mocks()
+    monkeypatch.setattr(mod.website_logins, "list_logins", AsyncMock(return_value=[{"id": "l1"}, {"id": "l2"}]))
+    delete_login = AsyncMock(return_value=True)
+    monkeypatch.setattr(mod.website_logins, "delete_login", delete_login)
+    with (
+        patch.object(mod.account_wipe, "cancel_open_workflows", cancel),
+        patch.object(mod.integrations_repo, "list_for_owner", AsyncMock(return_value=[])),
+        patch.object(mod.integration_secret_store, "delete", sdelete),
+        patch.object(billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
+    ):
+        resp = client.post("/api/v1/company/revoke-all", json={"confirm": "revoke"})
+    assert resp.status_code == 200
+    assert resp.json()["revoked"][-2:] == ["website_login:l1", "website_login:l2"]
+    assert [c.args for c in delete_login.await_args_list] == [("org_a", "l1"), ("org_a", "l2")]
 
 
 class _Guard:

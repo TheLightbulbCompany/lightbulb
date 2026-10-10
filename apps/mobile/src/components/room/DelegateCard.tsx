@@ -1,7 +1,8 @@
-import { subagentActivity, type RoomSubagents, type SubagentStatus } from "@lightbulb/shared";
+import { subagentActivity, type MessageDelegations, type RoomSubagents, type SubagentStatus } from "@lightbulb/shared";
 import { StyleSheet, Text, View } from "react-native";
 
 import { fonts, spacing, useChatPalette, type ChatPalette } from "../../config/theme";
+import { AVATAR_GUTTER } from "../conversation/bubbles";
 
 const ICON: Record<SubagentStatus | "dispatched", { glyph: string; label: string; tone: keyof ChatPalette }> = {
   running: { glyph: "…", label: "Running", tone: "fgMute" },
@@ -43,7 +44,19 @@ export function DelegateCard({ state, agentId, delegationId, agentLive }: {
   );
 }
 
+/** The background subagents a run started outlive its card: they stay under the reply that replaced it. */
+export function SavedDelegations({ state, entry }: { state: RoomSubagents; entry: MessageDelegations | undefined }) {
+  return entry ? (
+    <View style={styles.saved}>
+      {entry.delegationIds.map((delegationId) => (
+        <DelegateCard key={delegationId} state={state} agentId={entry.agentId} delegationId={delegationId} agentLive={false} />
+      ))}
+    </View>
+  ) : null;
+}
+
 const styles = StyleSheet.create({
+  saved: { marginLeft: AVATAR_GUTTER },
   card: { marginTop: spacing.sm, gap: spacing.xs },
   row: { flexDirection: "row", gap: spacing.sm },
   icon: { fontFamily: fonts.sans, fontSize: 14, lineHeight: 18, width: 16, textAlign: "center" },

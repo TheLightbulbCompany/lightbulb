@@ -37,7 +37,7 @@ import { ConversationHeader } from "../../../../components/conversation/Conversa
 import { AVATAR_GUTTER, MetaText, WorkingBubble } from "../../../../components/conversation/bubbles";
 import { Avatar } from "../../../../components/room/Avatar";
 import { CatchUpSummary } from "../../../../components/room/CatchUpSummary";
-import { DelegateCard } from "../../../../components/room/DelegateCard";
+import { SavedDelegations } from "../../../../components/room/DelegateCard";
 import { MessageActionsSheet } from "../../../../components/room/MessageActionsSheet";
 import { LocalMessageRows, MessageGroup } from "../../../../components/room/MessageGroup";
 import { NoticeBanner } from "../../../../components/voice/NoticeBanner";
@@ -589,7 +589,6 @@ function Conversation() {
                 </View>
               );
             }
-            const delegations = rooms.delegationsByMessage.get(item.message.messageId);
             return (
               <View>
                 <MessageGroup
@@ -625,14 +624,7 @@ function Conversation() {
                   members={members ?? []}
                   sessionCandidates={sessionCandidates}
                 />
-                {/* The background subagents a run started outlive its card: they stay under the reply that replaced it. */}
-                {delegations ? (
-                  <View style={styles.delegations}>
-                    {delegations.delegationIds.map((delegationId) => (
-                      <DelegateCard key={delegationId} state={rooms.subagents} agentId={delegations.agentId} delegationId={delegationId} agentLive={false} />
-                    ))}
-                  </View>
-                ) : null}
+                <SavedDelegations state={rooms.subagents} entry={rooms.delegationsByMessage.get(item.message.messageId)} />
                 {placed.after.get(item.message.messageId)?.map((run) => (
                   <RunBlock
                     key={run.runId}
@@ -736,7 +728,6 @@ const styles = StyleSheet.create({
   // Indented level with a run's avatar column (AVATAR_GUTTER), last child of
   // the inverted list's header so it draws under the newest content (F13).
   typingWrap: { marginLeft: AVATAR_GUTTER, marginTop: spacing.sm },
-  delegations: { marginLeft: AVATAR_GUTTER },
   prefsError: {
     fontFamily: fonts.sans,
     fontSize: 13,

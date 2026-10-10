@@ -866,8 +866,12 @@ pub(crate) const DECLINED_ON_MAC: &str = "Not changed: declined on this Mac.";
 
 /// A native macOS alert for a change the PAGE asks for that widens what runs on this Mac
 /// (a local MCP command, a permission switch turned on, a folder added). The page cannot
-/// draw, fake or click it. Cancel is the FIRST button, so it is the default (Return) and
-/// Escape/close also land on it; only the explicit "Allow" button approves.
+/// draw, fake or click it. Fail-closed: only `Custom("Allow")` approves. Allow is the
+/// first button, because an alert that ends any other way (Escape, abort) reads as the
+/// SECOND button: rfd 0.16 maps any other NSAlert return to `Cancel`
+/// (`backend/macos/message_dialog.rs`), and tauri-plugin-dialog 2.8.1 maps that `Cancel`
+/// to `Custom(<second label>)` (`desktop.rs`). With Cancel first, such an ending read as
+/// Allow. Return pressing Allow is standard macOS; a page cannot press keys in this alert.
 pub(crate) async fn confirm_native(app: &tauri::AppHandle, title: &str, body: String) -> bool {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult};
     const ALLOW: &str = "Allow";
@@ -876,7 +880,7 @@ pub(crate) async fn confirm_native(app: &tauri::AppHandle, title: &str, body: St
         .message(body)
         .title(title)
         .kind(MessageDialogKind::Warning)
-        .buttons(MessageDialogButtons::OkCancelCustom("Cancel".into(), ALLOW.into()))
+        .buttons(MessageDialogButtons::OkCancelCustom(ALLOW.into(), "Cancel".into()))
         .show_with_result(move |res| {
             let _ = tx.send(matches!(res, MessageDialogResult::Custom(ref s) if s == ALLOW));
         });

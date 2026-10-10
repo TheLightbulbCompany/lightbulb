@@ -139,8 +139,11 @@ _aws_cli_rate_buckets: dict[str, deque[float]] = defaultdict(deque)
 # The SM credential, cached per owner so a wrong-token spray is refused WITHOUT a Secrets
 # Manager fetch and without touching the rate bucket (which only correct tokens fill, so
 # someone else's junk can never get the real helper a 429). A mismatch refetches at most
-# once per floor, which is how a reconnect's new token is picked up.
+# once per floor, which is how a reconnect's new token is picked up. Every entry, matching
+# or not, is refetched after the TTL, so a revoked token works at most that long on a task
+# that cached it (this task drops its entry on disconnect).
 _AWS_CLI_REFETCH_FLOOR_S = 10.0
+_AWS_CLI_RECORD_TTL_S = 60.0
 _aws_cli_records: dict[str, tuple[float, dict]] = {}
 
 
@@ -478,8 +481,11 @@ async def aws_credentials(body: AwsCredentialsBody, request: Request):
     presented_hash = _hash_cli_token(presented)
     cached = _aws_cli_records.get(body.owner_id)
     rec = cached[1] if cached else {}
-    if cached is None or (
-        not _cli_token_matches(rec, presented_hash) and time.monotonic() - cached[0] >= _AWS_CLI_REFETCH_FLOOR_S
+    age = time.monotonic() - cached[0] if cached else None
+    if (
+        age is None
+        or age >= _AWS_CLI_RECORD_TTL_S
+        or (age >= _AWS_CLI_REFETCH_FLOOR_S and not _cli_token_matches(rec, presented_hash))
     ):
         try:
             rec = await integration_secret_store.get(body.owner_id, "aws") or {}
@@ -896,6 +902,8 @@ async def disconnect(provider: str, account: str | None = None, auth: AuthContex
 
 
 async def _disconnect_teardown(owner_id: str, provider: str, p: registry.Provider) -> None:
+    if provider == "aws":
+        _aws_cli_records.pop(owner_id, None)
     # A pure CLI-skill materializer (gh_cli/xurl_cli/skill_cli/instagram_cli/
     # gog_cli/aws_cli) has no Hermes equivalent and is skipped outright; an
     # MCP-shaped one (mcp_oauth/qbo_dotenv) needs no remover call either — its

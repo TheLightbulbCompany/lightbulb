@@ -3192,6 +3192,35 @@ class TestAwsCredentialsEndpoint:
         )
         assert ok.status_code == 200
 
+    @pytest.mark.asyncio
+    @patch("routers.connections._sts_client")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections.integration_secret_store")
+    async def test_a_matching_cache_entry_expires_so_a_rotated_token_is_refused(
+        self, mock_store, mock_repo, mock_sts, async_client
+    ):
+        # Disconnect + reconnect on another task: the old token matched this task's cache.
+        # After the TTL the entry is refetched and the old token no longer works.
+        from routers import connections as conn_mod
+
+        mock_repo.get = AsyncMock(return_value={"status": "connected"})
+        mock_store.get = AsyncMock(return_value=self._stored())
+        mock_sts.return_value.assume_role.return_value = self._sts_response()
+
+        def call():
+            return async_client.post(
+                "/api/v1/connections/aws/credentials",
+                json={"owner_id": "org_rot"},
+                headers={"Authorization": f"Bearer {self._TOKEN}"},
+            )
+
+        assert (await call()).status_code == 200
+        mock_store.get = AsyncMock(return_value={**self._stored(), "cli_token_hash": "0" * 64})
+        stamp, rec = conn_mod._aws_cli_records["org_rot"]
+        conn_mod._aws_cli_records["org_rot"] = (stamp - conn_mod._AWS_CLI_RECORD_TTL_S, rec)
+        assert (await call()).status_code == 401
+        mock_store.get.assert_awaited_once()
+
 
 class TestProjectsRailNamespaceIsInvisibleHere:
     """Regression: the Stripe Projects provisioning rail keys its

@@ -1,4 +1,4 @@
-"""M4-R1 (Task 13a): config.get/config.patch/config.set/agents.list on an AgentCore row are served
+"""M4-R1 (Task 13a): config.get/config.patch/agents.list on an AgentCore row are served
 from the profile in S3 + the Paperclip roster -- no microVM wake for a settings read. ECS rows are
 untouched.
 
@@ -176,38 +176,6 @@ async def test_config_patch_still_accepts_a_plain_patch_dict_for_non_web_callers
     assert out == {"ok": True}
     assert patched["patch"] == {"memory": {"memory_enabled": False}}
     assert patched["owner_id"] == "org_a" and patched["agent_id"] == "a1"
-
-
-async def test_config_set_on_an_agentcore_row_replaces_wholesale(monkeypatch):
-    """M4-R1 extends the brief's config.get/config.patch pair with config.set (full replace,
-    not a merge) and agents.list."""
-    seen = {}
-    monkeypatch.setattr(
-        runtime_rpc.hermes_profiles,
-        "set_profile_config",
-        lambda owner_id, agent_id, config: seen.update(config=config) or config,
-    )
-    out = await runtime_rpc.execute_sync(
-        owner_id="org_a",
-        user_id="u1",
-        request_id="r1",
-        method="config.set",
-        params={"agentId": "a1", "config": {"model": {"default": "x"}}},
-    )
-    assert out == {"model": {"default": "x"}}
-    assert seen["config"] == {"model": {"default": "x"}}
-
-
-async def test_config_set_still_requires_an_agent_id(monkeypatch):
-    """Unlike config.get, config.set/config.patch inherently target ONE profile -- there is no
-    real caller that sends config.set/config.patch with no agentId, and no sane roster-map
-    fallback for a WRITE."""
-    import pytest
-
-    from core.services.messaging import ApiProblem
-
-    with pytest.raises(ApiProblem):
-        await runtime_rpc.execute_sync(owner_id="org_a", user_id="u1", request_id="r1", method="config.set", params={})
 
 
 def _fake_profile_models(monkeypatch, models: dict, *, names: dict | None = None):

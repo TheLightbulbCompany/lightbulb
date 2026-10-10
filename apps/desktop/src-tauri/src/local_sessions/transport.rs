@@ -823,6 +823,19 @@ impl Host {
         else {
             return Ok(None);
         };
+        // Claude writes a session's transcript only with its first turn, so one discovered
+        // before that (a Claude-app session, found by its start hook) has none, and nothing
+        // is uploaded until discovery's 60 s backstop looks again. Its own hook says it moved:
+        // look now. One directory listing, and only while the transcript is still unknown.
+        if provider == "claude" {
+            let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
+            if mirror.native.transcript.is_none() {
+                if let Ok(Some(path)) = claude::find_transcript(&self.home, &mirror.native.conversation) {
+                    mirror.native.transcript = Some(path);
+                    mirror.persist(&self.dir.join(format!("{key}.json")))?;
+                }
+            }
+        }
         match lifecycle::transition(event) {
             lifecycle::Transition::Status(status) => {
                 let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
@@ -3807,6 +3820,25 @@ pub(super) mod tests {
                 assert!(host.mirrors[&key].ended_at.is_some());
             }
         }
+    }
+
+    #[test]
+    fn local_sessions_a_claude_hook_finds_a_transcript_written_after_discovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native.provider = "claude".into();
+        let mut host = test_host(dir.path(), vec![(SID, mirror)]);
+        let key = host.mirrors.keys().next().unwrap().clone();
+        // Discovered before its first turn: no transcript yet, and the hook changes nothing.
+        host.apply_hook(&hook(lifecycle::Provider::Claude, "UserPromptSubmit", SID)).unwrap();
+        assert!(host.mirrors[&key].native.transcript.is_none());
+        let project = dir.path().join(".claude/projects/-w");
+        fs::create_dir_all(&project).unwrap();
+        let path = project.join(format!("{SID}.jsonl"));
+        fs::write(&path, "").unwrap();
+        // The turn wrote it: the next hook binds it, without waiting for discovery.
+        host.apply_hook(&hook(lifecycle::Provider::Claude, "Stop", SID)).unwrap();
+        assert_eq!(host.mirrors[&key].native.transcript.as_ref(), Some(&path));
     }
 
     #[test]

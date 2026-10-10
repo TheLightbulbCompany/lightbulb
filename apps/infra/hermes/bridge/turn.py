@@ -529,7 +529,7 @@ def _call_grant_scope(run_id: str, ctx: dict):
         entry = RUNS.get(run_id)
         if entry is not None:
             entry["ctx"] = ctx
-            if entry.get("grant"):
+            if entry.get("grant") is not None:
                 _write_call_ctx(entry)
     try:
         yield
@@ -903,15 +903,16 @@ def steer_run(run_id: str, text: str, grant: str | None = None) -> bool:
     or ended turn refuses, so the caller falls back to a turn of its own. Under _RUNS_LOCK so
     the steer and settle_steers' final drain cannot interleave.
 
-    ``grant``: a call turn's lowered local-session grant (the backend sends one, naming nobody,
-    when someone other than the run's speaker steers it). It replaces the turn's grant for the
-    rest of the run, before the steer's text can reach the agent (_set_call_grant)."""
+    ``grant``: a lowered local-session grant, naming nobody, which the backend sends when someone
+    other than the run's requester steers it (the speaker of a call turn, the author of a typed
+    one). It replaces the turn's grant for the rest of the run, before the steer's text can reach
+    the agent (_call_grant_scope), so the steerer never borrows the requester's access."""
     with _RUNS_LOCK:
         entry = RUNS.get(run_id)
         if (entry is None or entry["aborted"] or entry["state"] not in ("queued", "running")
                 or entry.get("kind") == "paperclip"):  # a Paperclip turn never reads stashed steers
             return False
-        if grant and entry.get("kind") == "call":
+        if grant is not None:  # "" clears it: a turn with no grant at all acts for no one
             entry["grant"] = grant
             if entry.get("ctx"):
                 _write_call_ctx(entry)
@@ -3497,8 +3498,10 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
         # check sees the same flag, so the outcome it reports is unchanged.
         if run_id and RUNS.get(run_id, {}).get("aborted"):
             return "aborted", None, "", ZERO_USAGE
-        with _turn_folder(base), _room_turn_env(agent_id, session_key, session_key, run_id, body, frames,
-                                                body.get("_turnContext")):
+        # The grant scope as on a spoken turn: a steer by someone other than the requester lowers it.
+        ctx = body.get("_turnContext")
+        with _turn_folder(base), _room_turn_env(agent_id, session_key, session_key, run_id, body, frames, ctx), \
+                (_call_grant_scope(run_id, ctx) if run_id and ctx else contextlib.nullcontext()):
             media = sync.materialize_attachments(body, base)
             # A follow-up's trigger message already had its turn: its attachments are not re-sent.
             current_media = [] if body.get("followUp") else _current_message_media(body, media, base)
@@ -3822,7 +3825,10 @@ def _route_paperclip_run(identity: dict, request: dict) -> tuple[str, str | None
     with _issue_run_published(agent_id, issue_id, run_id):
         live = _live_room_run(conversation)  # a live room run is itself proof of membership
         steer = f"{BOUND_WAKE_STEER.format(issue=issue_id, run=run_id)}\n\n{request['input']}"
-        if live and steer_run(live, steer.encode()[:MAX_FOLLOWUP_TEXT_BYTES].decode("utf-8", "ignore")):
+        # The wake's text is no person's request: the room run's grant drops to the Paperclip run's
+        # own (it names no requester) or to none, as a steer by anyone but the requester does.
+        lowered = identity.get("localSessionToken") or ""
+        if live and steer_run(live, steer.encode()[:MAX_FOLLOWUP_TEXT_BYTES].decode("utf-8", "ignore"), grant=lowered):
             log.info("paperclip run %s joined room run %s", run_id, live)
             return _await_room_run(run_id, live)
         member = _room_member(conversation)

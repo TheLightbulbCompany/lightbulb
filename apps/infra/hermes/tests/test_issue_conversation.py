@@ -270,6 +270,9 @@ def test_a_live_room_turn_takes_the_wake_and_holds_the_paperclip_run_open(routed
             break
         time.sleep(0.01)
     assert agent.seen and RUN in agent.seen[0] and REQUEST["input"] in agent.seen[0]
+    # Codex #3997: the wake is no person's request, so the room turn's grant is dropped (this
+    # Paperclip run carries none) before its text reaches the agent.
+    assert turn.RUNS[ROOM_RUN]["grant"] == ""
     assert worker.is_alive() and attached.read_text() == RUN
     assert turn.paperclip_run_status(RUN, IDENTITY)["status"] == "running"
     turn.finish_run(ROOM_RUN, "completed")

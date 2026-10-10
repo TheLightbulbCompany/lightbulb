@@ -71,6 +71,15 @@ ids are what Paperclip assignments use.
 - **@mention another agent only for a quick, in-room answer** the human is
   waiting on (one number, one yes/no) — and only once.
 
+## Other rooms (`lightbulb_read_rooms`)
+
+When someone asks about another channel, DM or group chat ("what did we decide
+in #launch?", "check our recent conversations"), use `lightbulb_read_rooms`:
+`find` the room, then `read` its latest messages. You see exactly what the person
+who asked can open, nothing more. With no signed-in person behind the turn (a
+Meet guest, a routine), nothing is readable: say so instead of guessing. Do not
+repeat a private DM into a room with other people unless the person asking wants it.
+
 ## Human-shared local sessions (optional native adapter)
 
 `lightbulb_local_sessions` reaches people's shared Claude Code/Codex sessions.

@@ -1005,9 +1005,10 @@ async def typing(request: TypingRequest, auth: AuthContext = Depends(get_current
 
 async def _prewake_for_typing(meta: dict, room_id: str) -> None:
     """Wake the room OWNER's runtime (a shared-channel guest types toward the host's agents) and
-    restore the profile of every agent that could answer; ``observe`` agents never run. Without a
-    roomId: an off-path compaction started here would hold the turn lock against the message
-    being typed. Best effort: a failure costs only the cold start the wake would have hidden."""
+    restore the profile of every agent that could answer; ``observe`` agents never run. With the
+    roomId the bridge also compacts that room's session if it is near the threshold, while the
+    person is still typing; the typed turn stops it when it arrives (bridge _turn_arriving). Best
+    effort: a failure costs only the cold start the wake would have hidden."""
     try:
         team = [
             {"id": m["id"], "name": m.get("displayName") or "Agent"}
@@ -1018,7 +1019,7 @@ async def _prewake_for_typing(meta: dict, room_id: str) -> None:
         logger.info("typing prewake: member read failed", exc_info=True)
         return
     if team and not meta.get("archivedAt"):
-        voice_calls.prewake_owner(meta.get("ownerId") or "", team)
+        voice_calls.prewake_owner(meta.get("ownerId") or "", team, room_id)
 
 
 async def _resolved_run(auth: AuthContext, run_id: str) -> tuple[str, dict]:

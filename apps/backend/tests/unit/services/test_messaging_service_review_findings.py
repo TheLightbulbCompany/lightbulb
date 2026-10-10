@@ -233,6 +233,19 @@ async def test_create_room_over_member_limit_returns_409_not_a_pydantic_400():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("count", [0, 2])
+async def test_create_room_refuses_a_dm_that_is_not_exactly_two_parties(count):
+    auth = AuthContext(user_id="user_owner", org_id="org_1")
+    members = [CreateRoomMember(kind="human", id=f"user_{i}", role="member", listen_mode=None) for i in range(count)]
+    request = CreateRoomRequest(client_room_id=uuid.uuid4(), name=None, kind="dm", members=members)
+
+    with pytest.raises(ApiProblem) as exc_info:
+        await create_room(auth, request)
+
+    assert exc_info.value.error.code == "INVALID_REQUEST"
+
+
+@pytest.mark.asyncio
 async def test_create_room_reuses_an_existing_dm_instead_of_making_a_duplicate(monkeypatch):
     """Regression: the generic create-conversation dialog (kind="dm") posted
     straight to this endpoint with no reuse check, unlike the roster-row click

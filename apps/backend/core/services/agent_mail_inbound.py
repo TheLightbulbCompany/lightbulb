@@ -153,8 +153,8 @@ def authenticated_sender(verdicts: dict, headers: dict, sender: str) -> bool:
     - ``dmarc == PASS`` is sufficient: DMARC *is* the From-alignment check.
     - With no DMARC verdict, either authenticated identity is accepted only
       when it ALIGNS with the sender's domain (relaxed, see ``_aligned``):
-      ``verdicts["dkim_domains"]`` (the `d=` tags of the signatures SES
-      verified) or ``verdicts["spf_domain"]`` (SES's envelope MAIL FROM).
+      ``verdicts["dkim_domains"]`` (the `d=` tags of the signatures that
+      each verified on their own in the Lambda) or ``verdicts["spf_domain"]`` (SES's envelope MAIL FROM).
     - Anything else (including no verdicts at all) is False.
 
     ``headers`` IS DELIBERATELY IGNORED and stays only so callers keep the

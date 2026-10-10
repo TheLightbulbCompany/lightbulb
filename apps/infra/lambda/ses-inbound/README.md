@@ -7,9 +7,9 @@ verdicts, stores attachments to S3 with 24h presigned download URLs, and
 POSTs a clean JSON payload to the Isol8 backend's `/webhooks/ses-inbound`
 ingest endpoint.
 
-Stdlib only — no pip dependencies (`requirements.txt` is intentionally
-empty), so the CDK deploys this asset with plain `Code.fromAsset` and no
-build/bundling step. `boto3`/`botocore` come from the Lambda runtime.
+One pip dependency, `dkimpy` (pure Python, plus `dnspython`), so each DKIM
+signature is verified on its own; the CDK bundles `requirements.txt` into the
+asset. `boto3`/`botocore` come from the Lambda runtime.
 
 See `index.py`'s module docstring for the full design (failure posture,
 attachment caps, why the backend—not this Lambda—makes every content

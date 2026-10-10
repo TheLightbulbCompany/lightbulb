@@ -468,6 +468,17 @@ class TestOwnerMemoryPolicy:
         # EXACT namespace, never a prefix: there is no namespacePath condition key, and a
         # namespacePath call fails closed under this Allow (spike).
         assert records["Condition"] == {"StringEquals": {"bedrock-agentcore:namespace": "/owners/org_x/"}}
+        # A member's private scope (1:1 DMs): separate Allows, so the proven team pair above
+        # keeps working even if StringLike were not honoured. "org_x:" never reaches "org_xy".
+        member_events = by_sid["WorkspaceMemoryMemberEvents"]
+        assert member_events["Effect"] == "Allow" and member_events["Resource"] == self.MEMORY_ARN
+        assert sorted(member_events["Action"]) == sorted(events["Action"])
+        assert member_events["Condition"] == {"StringLike": {"bedrock-agentcore:actorId": "org_x:user_*"}}
+        member_records = by_sid["WorkspaceMemoryMemberRecords"]
+        assert member_records["Effect"] == "Allow" and member_records["Resource"] == self.MEMORY_ARN
+        assert sorted(member_records["Action"]) == sorted(records["Action"])
+        assert member_records["Condition"] == {"StringLike": {"bedrock-agentcore:namespace": "/owners/org_x:user_*/"}}
+        assert len(doc["Statement"]) == 5
         deny = by_sid["WorkspaceMemoryNoUnconditionable"]
         assert deny["Effect"] == "Deny" and deny["Resource"] == "*"
         # These carry NO condition keys: allowed at all, they reach any owner's record by id.

@@ -384,6 +384,7 @@ describe("hermes runtime wiring", () => {
               "bedrock-agentcore:ListSessions",
               "bedrock-agentcore:ListEvents",
               "bedrock-agentcore:DeleteEvent",
+              "bedrock-agentcore:ListActors",
             ]),
           }),
         ]),

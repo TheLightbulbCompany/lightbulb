@@ -140,6 +140,30 @@ async def test_membership_delete_revokes_canonical_rooms_before_paperclip(lifecy
 
 
 @pytest.mark.asyncio
+async def test_membership_delete_wipes_the_members_private_memory_at_once(lifecycle_io, monkeypatch):
+    from core.services import workspace_memory
+    from routers import webhooks
+
+    wiped = AsyncMock()
+    monkeypatch.setattr(workspace_memory, "delete_member_memory", wiped)
+    monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=AsyncMock()))
+    monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
+
+    await webhooks._handle_organization_membership_deleted({"organization": {"id": "org_acme"}, "user_id": "user_a"})
+    wiped.assert_awaited_once_with("org_acme", "user_a", still_gone=None)
+
+    # Records never expire: a failed wipe must not complete the event, but Paperclip still ran.
+    provisioning = AsyncMock()
+    monkeypatch.setattr(webhooks, "build_paperclip_provisioning", AsyncMock(return_value=provisioning))
+    wiped.side_effect = RuntimeError("memory down")
+    with pytest.raises(RuntimeError, match="memory down"):
+        await webhooks._handle_organization_membership_deleted(
+            {"organization": {"id": "org_acme"}, "user_id": "user_a"}
+        )
+    provisioning.archive_member.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_newer_admission_stops_old_delete_during_paperclip_cleanup(
     monkeypatch,
 ):

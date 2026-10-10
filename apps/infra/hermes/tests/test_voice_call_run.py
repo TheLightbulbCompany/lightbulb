@@ -70,7 +70,8 @@ def test_the_backend_grant_rides_into_the_call_turn(monkeypatch):
     monkeypatch.setattr(server.threading, "Thread", lambda target, args, **_k: SimpleNamespace(start=lambda: spawned.append(args)))
     assert server.handle_plugin("/internal/calls/v1/runs", "POST", {**AUTH, "X-Lightbulb-Local-Session-Token": "jwt"}, BODY)[0] == 202
     assert spawned[0][0] == {**IDENTITY, "localSessionToken": "jwt"}
-    assert turn.RUNS["run-1"]["identity"] == IDENTITY  # the grant is never registered with the run
+    assert turn.RUNS["run-1"]["identity"] == IDENTITY  # never in the identity (Paperclip persists those)
+    assert turn.RUNS["run-1"]["grant"] == "jwt"  # the run's current grant: verified_call_room_key reads it
 
 
 def test_stop_takes_the_same_identity():

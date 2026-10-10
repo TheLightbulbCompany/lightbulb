@@ -201,9 +201,8 @@ def _call_run(monkeypatch, requester, lowered_to=False):
     """A live call turn in the bridge's own run registry (what the backend sent over the invoke)."""
     from bridge import turn
     monkeypatch.setattr(turn, "RUNS", {})
-    identity = {"runId": "run-c", "agentId": "a1", "roomId": "r1", "sessionId": ROOM_KEY, "callId": "c1",
-                "localSessionToken": _grant(requester)}
-    turn.register_call_run(identity)
+    identity = {"runId": "run-c", "agentId": "a1", "roomId": "r1", "sessionId": ROOM_KEY, "callId": "c1"}
+    turn.register_call_run(identity, _grant(requester))  # as server.py registers it, with the header's grant
     if lowered_to is not False:
         turn.RUNS["run-c"]["grant"] = _grant(lowered_to)  # a steer by another speaker
 

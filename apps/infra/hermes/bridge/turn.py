@@ -262,16 +262,18 @@ def _replay_or_conflict(entry: dict, identity: dict, fingerprint: str) -> str:
     return "conflict"
 
 
-def register_call_run(identity: dict) -> bool:
+def register_call_run(identity: dict, grant: str | None = None) -> bool:
     """Register a call turn in the run registry (abort/attach use it). False = already registered
-    (a retried POST). No durable record: a call leaves nothing behind."""
+    (a retried POST). No durable record: a call leaves nothing behind. `grant` is the run's current
+    local-session grant (a steer by another speaker replaces it with a lowered one); it stays out of
+    `identity`, which the Paperclip paths persist."""
     with _RUNS_LOCK:
         if identity["runId"] in RUNS:
             return False
         RUNS[identity["runId"]] = {
             "state": "queued", "agent": None, "aborted": False, "outcome": None, "started": False,
             "kind": "call", "identity": dict(identity), "output": "", "error": None,
-            "usage": dict(ZERO_USAGE), "acceptedAt": time.time(),
+            "usage": dict(ZERO_USAGE), "acceptedAt": time.time(), **({"grant": grant} if grant else {}),
         }
     return True
 
@@ -391,7 +393,7 @@ def verified_call_room_key(session_id: str) -> str | None:
             identity = entry.get("identity") or {}
             if (entry.get("kind") == "call" and not entry.get("aborted") and entry.get("state") != "ended"
                     and call_session_key(identity.get("agentId", ""), identity.get("callId", "")) == session_id):
-                token = entry.get("grant") or identity.get("localSessionToken")
+                token = entry.get("grant")
                 return identity.get("sessionId") if _grant_requester(token) else None
     return None
 

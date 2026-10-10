@@ -100,7 +100,9 @@ def _well_formed(claims) -> bool:
     if claims["purpose"] != PURPOSE or not all(claims[k] for k in ("ownerId", "deviceId", "generation", "profileId")):
         return False
     return (
-        claims["use"] == "agent" and claims["family"] in {"room", "paperclip"} and valid_auth(auth_from_claims(claims))
+        claims["use"] == "agent"
+        and claims["family"] in {"room", "paperclip", "call"}
+        and valid_auth(auth_from_claims(claims))
     )
 
 

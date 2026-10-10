@@ -32,6 +32,18 @@ def _grant(requester):
     return local_session_grants.mint("org_1", ROOM, "friday", "44444444-4444-4444-8444-444444444444", requester)
 
 
+@pytest.fixture(autouse=True)
+def agent_in_room(monkeypatch):
+    """The grant's room, as require_caller reads it: the agent seated, no other org in it."""
+    from core.repositories import messaging_repo
+
+    member = AsyncMock(return_value={"kind": "agent", "id": "friday"})
+    monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(return_value={"roomId": ROOM, "ownerId": "org_1"}))
+    monkeypatch.setattr(messaging_repo, "get_member", member)
+    monkeypatch.setattr(messaging_repo, "has_foreign_members", AsyncMock(return_value=False))
+    return member
+
+
 @pytest.mark.parametrize(("path", "reader"), ROUTES)
 def test_a_turn_reads_with_its_requesters_access(client, monkeypatch, path, reader):
     read = AsyncMock(return_value={"ok": reader})
@@ -62,3 +74,13 @@ def test_agent_reads_are_read_only():
 
     guarded = [route for route in router.router.routes if router.agent_reader in set(deps(route.dependant))]
     assert len(guarded) == len(ROUTES) and all(route.methods == {"GET"} for route in guarded)
+
+
+@pytest.mark.parametrize(("path", "reader"), ROUTES)
+def test_an_agent_removed_from_the_turns_room_reads_nothing(client, monkeypatch, agent_in_room, path, reader):
+    """Codex #3997: an unexpired grant is not enough; the agent must still be in the turn's room."""
+    read = AsyncMock()
+    monkeypatch.setattr(router.hosted_mcp, reader, read)
+    agent_in_room.return_value = None
+    assert client.get(path, headers={"Authorization": f"Bearer {_grant('user_ana')}"}).status_code == 403
+    read.assert_not_awaited()

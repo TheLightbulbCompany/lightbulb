@@ -167,8 +167,11 @@ async def agent_reader(
     of a Live run -- never by the agent. No requester (a Meet speaker, a voice run another speaker
     steered, a Paperclip run, an agent's message): nothing is readable, since every room is private
     to its members."""
-    if not auth.requester_id:
+    if not auth.requester_id or not auth.room_id:
         raise ApiProblem("ROOM_FORBIDDEN", "No signed-in person asked for this, so no rooms can be read for it.")
+    # The turn's room, re-checked on every read as a local-session read is: the agent still a member
+    # (a removed agent's unexpired grant reads nothing), and no other org in the room to hear it.
+    await local_sessions.require_caller(auth, auth.room_id)
     return AuthContext(user_id=auth.requester_id, org_id=auth.owner_id)
 
 

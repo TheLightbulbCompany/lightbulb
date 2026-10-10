@@ -302,13 +302,31 @@ pub fn validate_servers(servers: Value) -> Result<Map<String, Value>, String> {
 /// actually execute, and where, with what environment.
 const LAUNCH_FIELDS: [&str; 4] = ["command", "args", "env", "cwd"];
 
+/// Whether the confirmation hides this env var's value. Only credential-looking
+/// names are masked, and never a var that changes what gets loaded or run
+/// (`NODE_OPTIONS=--require …`, `DYLD_INSERT_LIBRARIES`, a redirected `PATH`):
+/// hiding those would let a harmless-looking command carry its payload unseen.
+fn masks_env_value(key: &str) -> bool {
+    let k = key.to_ascii_uppercase();
+    let affects_exec = ["PATH", "NODE_OPTIONS", "NODE_PATH", "PYTHONPATH", "PYTHONSTARTUP"]
+        .contains(&k.as_str())
+        || k.starts_with("LD_")
+        || k.starts_with("DYLD_")
+        || k.ends_with("_OPTIONS")
+        || k.ends_with("_PATH");
+    !affects_exec
+        && ["KEY", "TOKEN", "SECRET", "PASSWORD", "PASS", "AUTH", "CREDENTIAL"]
+            .iter()
+            .any(|w| k.contains(w))
+}
+
 /// Which entries of `next` (already validated) would make the node host run a
 /// local command it is not already configured to run: a command-bearing server
 /// that is new, or whose `command`/`args`/`env`/`cwd` differs from `current`.
 ///
 /// Each item is the text the native confirmation shows — the exact command
-/// line, its working directory, and the NAMES of any env vars (values can be
-/// secrets). Removals, url-only servers and unchanged entries need no
+/// line, its working directory, and every env var in full except a credential's
+/// value (see [`masks_env_value`]). Removals, url-only servers and unchanged entries need no
 /// confirmation and are not listed.
 pub fn launches_needing_confirmation(current: &Value, next: &Map<String, Value>) -> Vec<String> {
     let mut out = Vec::new();
@@ -338,9 +356,13 @@ pub fn launches_needing_confirmation(current: &Value, next: &Map<String, Value>)
             item.push_str(&format!("\n  in {cwd}"));
         }
         if let Some(Value::Object(env)) = server.get("env") {
-            if !env.is_empty() {
-                let keys: Vec<&str> = env.keys().map(String::as_str).collect();
-                item.push_str(&format!("\n  env: {}", keys.join(", ")));
+            for (key, value) in env {
+                let value = match value {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                let shown = if masks_env_value(key) { "••••".to_string() } else { value };
+                item.push_str(&format!("\n  {key}={shown}"));
             }
         }
         out.push(item);
@@ -380,7 +402,13 @@ mod tests {
         let next = validate_servers(json!({
             "same": {"command": "npx", "args": ["a"], "enabled": false},
             "changed": {"command": "npx", "args": ["b"]},
-            "env_changed": {"command": "node", "env": {"K": "2"}},
+            "env_changed": {"command": "node", "env": {
+                "K": "2",
+                "NODE_OPTIONS": "--require /tmp/x.js",
+                "OPENAI_API_KEY": "sk-secret",
+                "DYLD_INSERT_LIBRARIES": "/tmp/x.dylib",
+                "AUTH_PATH": "/tmp/auth",
+            }},
             "fresh": {"command": "/bin/sh", "args": ["-c", "x"], "cwd": "/tmp"},
             "remote": {"url": "https://example.com/mcp"},
         }))
@@ -391,7 +419,7 @@ mod tests {
             got,
             vec![
                 "\"changed\": npx b".to_string(),
-                "\"env_changed\": node\n  env: K".to_string(),
+                "\"env_changed\": node\n  K=2\n  NODE_OPTIONS=--require /tmp/x.js\n  OPENAI_API_KEY=••••\n  DYLD_INSERT_LIBRARIES=/tmp/x.dylib\n  AUTH_PATH=/tmp/auth".to_string(),
                 "\"fresh\": /bin/sh -c x\n  in /tmp".to_string(),
             ]
         );

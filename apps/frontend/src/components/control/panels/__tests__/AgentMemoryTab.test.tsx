@@ -9,6 +9,9 @@ vi.mock("@/lib/api", () => ({
   useApi: () => ({ get: mockGet, del: mockDel, post: mockPost }),
 }));
 
+let mockOrg = "org_a";
+vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ orgId: mockOrg, userId: "user_1" }) }));
+
 import { AgentMemoryTab, resetMemoryOverlay } from "../AgentMemoryTab";
 
 const LIST = {
@@ -29,6 +32,7 @@ const renderTab = () =>
 
 beforeEach(() => {
   resetMemoryOverlay();
+  mockOrg = "org_a";
   mockGet.mockReset().mockResolvedValue(LIST);
   mockDel.mockReset().mockResolvedValue(undefined);
   mockPost.mockReset();
@@ -125,6 +129,8 @@ describe("AgentMemoryTab", () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     fireEvent.click(screen.getAllByRole("button", { name: "Delete" })[2]);
     await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+    // The refetched (old) lists must RENDER: mem-t2 is deleted and gone, the rest stays.
+    await waitFor(() => expect(screen.queryByText("Ships on Tuesdays")).not.toBeInTheDocument());
     expect(screen.getAllByText("I am allergic to nuts")).toHaveLength(1);
     expect(screen.getAllByText("Confirmed")).toHaveLength(2);
   });
@@ -158,5 +164,20 @@ describe("AgentMemoryTab", () => {
     releaseShare({ id: "mem-new" });
     await waitFor(() => expect(screen.getAllByText("Confirmed")).toHaveLength(3));
     expect(screen.queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
+  });
+
+  it("does not show org A's overlay rows in org B", async () => {
+    mockPost.mockResolvedValue({ id: "mem-new" });
+    const first = renderTab();
+    await screen.findByText("I am allergic to nuts");
+    fireEvent.click(screen.getByRole("button", { name: "Share with team" }));
+    await waitFor(() => expect(screen.getAllByText("Confirmed")).toHaveLength(2));
+    first.unmount();
+    mockOrg = "org_b";
+    renderTab();
+    await screen.findByText("Warehouse is in Leeds");
+    // Org B's server list is untouched: the private row is still private, one Confirmed.
+    expect(screen.getByRole("button", { name: "Share with team" })).toBeInTheDocument();
+    expect(screen.getAllByText("Confirmed")).toHaveLength(1);
   });
 });

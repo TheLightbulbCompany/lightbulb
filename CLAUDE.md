@@ -180,10 +180,13 @@ profiles are minted (#3056); the condition stays in `service-stack.ts` while
 Do not confuse this tag with the
 CloudWatch `service` dimension, the identical string in a different role.
 
-**Still open (human-gated):** the `isol8.co` Google Workspace retirement + human
-mailbox move to `thelightbulb.company` (including the AWS root-account email,
-SNS/Budgets subscribers, and the three `google#…@isol8.co` integration rows);
-the legal-entity paperwork and the Termly follow-ups.
+**Done:** the human mailbox move to `thelightbulb.company` — every team Clerk
+account's primary address is `@thelightbulb.company` (verified 2026-10-10;
+`@isol8.co` survives only as a secondary address, which never reaches a JWT).
+**Still open (human-gated):** the `isol8.co` Google Workspace retirement and its
+tails (the AWS root-account email, SNS/Budgets subscribers, the three
+`google#…@isol8.co` integration rows) unless already done — verify before
+relying on it; the legal-entity paperwork and the Termly follow-ups.
 
 ---
 
@@ -932,6 +935,9 @@ that will mislead you otherwise:
   `admin.dev.thelightbulb.company`, `admin.localhost:3000`; overridable via
   `NEXT_PUBLIC_ADMIN_HOSTS`) and 404s everywhere else. Allowlist lives in
   `apps/frontend/src/middleware.ts`.
+  The host gate is cosmetic: the backend's `require_platform_admin` is the
+  authority, and it admits only the Clerk user ids in `PLATFORM_ADMIN_USER_IDS`
+  (per env, `service-stack.ts`) — never an email domain.
 
 ### Source map (`src/`)
 

@@ -285,7 +285,7 @@ async def test_resolve_owner_falls_back_to_personal_mode_on_clerk_timeout(caplog
 # user is in an org. They use the same dependency_overrides pattern as
 # tests/unit/routers/test_admin_actions_writes.py — the ``app`` and
 # ``async_client`` fixtures from conftest.py provide a full FastAPI app with
-# auth shimmed to an @isol8.co admin.
+# auth shimmed to an allowlisted admin.
 #
 # Org-mode fixtures mock ``clerk_admin.list_user_organizations`` to return a
 # single org so ``resolve_admin_owner_id`` yields the org_id. Personal-mode
@@ -304,10 +304,10 @@ ORG_FIXTURE = {
 
 @pytest.fixture
 def admin_env(app):
-    """Caller has an @isol8.co email — require_platform_admin admits them."""
+    """Caller is on PLATFORM_ADMIN_USER_IDS — require_platform_admin admits them."""
     from core.auth import AuthContext, get_current_user
 
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_test_123", email="admin@isol8.co")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_platform_admin", email="admin@thelightbulb.company")
     try:
         yield
     finally:

@@ -34,7 +34,7 @@ import uuid
 
 import httpx
 
-from core.auth import is_org_owner_id, is_platform_admin_email
+from core.auth import is_org_owner_id, is_internal_email
 from core.config import settings
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.observability.metrics import put_metric
@@ -335,7 +335,7 @@ async def resolve_internal_owner(owner_id: str) -> bool:
         if not user_id:
             raise RuntimeError(f"run_analytics: org {owner_id} has no resolvable created_by")
     email = await clerk_admin.get_primary_email(user_id)
-    result = is_platform_admin_email(email)
+    result = is_internal_email(email)
     _internal_cache[owner_id] = (result, now)
     while len(_internal_cache) > _INTERNAL_CACHE_CAP:
         del _internal_cache[next(iter(_internal_cache))]

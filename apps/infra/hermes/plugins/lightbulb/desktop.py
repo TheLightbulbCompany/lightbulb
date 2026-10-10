@@ -327,7 +327,7 @@ def handle(args: dict, *, session_id: str = "", **_kwargs) -> str:
         with run_state(root, run_id) as state:
             ctx = state["ctx"]
             if (
-                ctx.get("family") not in {"room", "paperclip"}
+                ctx.get("family") not in {"room", "paperclip", "call"}
                 or ctx.get("sessionKey") != session_id
                 or state["stopped"]
             ):

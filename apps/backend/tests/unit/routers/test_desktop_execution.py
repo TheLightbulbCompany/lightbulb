@@ -205,6 +205,40 @@ async def test_real_room_authority_comes_from_human_trigger_and_current_membersh
             await service.authorize_run("user_1", "run_1", "agent_1", "room", active=True)
 
 
+async def test_a_spoken_runs_authority_is_its_verified_requester_and_nobody_else():
+    """A voice run (family "call") reaches the requester's own Mac only: the VOICERUN row's
+    requesterUserId, None for a Meet speaker or once another speaker steered the run."""
+    from core.repositories import messaging_repo
+
+    voice_run = {
+        "runId": "run_1",
+        "agentId": "agent_1",
+        "roomId": "room_1",
+        "speakerUserId": "user_1",
+        "requesterUserId": "user_1",
+    }
+    with (
+        patch.object(messaging_repo, "get_voice_run", AsyncMock(return_value=voice_run)),
+        patch.object(messaging_repo, "get_run", AsyncMock(return_value=None)),
+        patch.object(messaging_repo, "get_room", AsyncMock(return_value={"ownerId": "user_1"})),
+        patch.object(messaging_repo, "get_member", AsyncMock(return_value={"id": "user_1"})),
+        patch.object(messaging_repo, "has_foreign_members", AsyncMock(return_value=False)),
+    ):
+        assert await service.authorize_run("user_1", "run_1", "agent_1", "call", active=True) == {
+            **AUTH,
+            "family": "call",
+        }
+        voice_run["requesterUserId"] = None  # a Meet speaker, or a steer by someone else
+        with pytest.raises(service.DesktopError, match="run_member_authority_unavailable"):
+            await service.authorize_run("user_1", "run_1", "agent_1", "call", active=True)
+        voice_run.pop("requesterUserId")  # a row written before the field existed
+        with pytest.raises(service.DesktopError, match="run_member_authority_unavailable"):
+            await service.authorize_run("user_1", "run_1", "agent_1", "call", active=True)
+        voice_run.update(requesterUserId="user_1", agentId="agent_2")  # another agent's run
+        with pytest.raises(service.DesktopError, match="run_forbidden"):
+            await service.authorize_run("user_1", "run_1", "agent_1", "call", active=True)
+
+
 async def test_paperclip_rejects_forged_run_and_never_infers_member_authority():
     from types import SimpleNamespace
     from core.repositories.paperclip_repo import PaperclipRepo

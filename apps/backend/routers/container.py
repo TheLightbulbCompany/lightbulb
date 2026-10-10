@@ -668,7 +668,7 @@ _MAC_ID = r"^[A-Za-z0-9_-]{1,128}$"
 class MacRun(BaseModel):
     runId: str = Field(pattern=_MAC_ID)
     agentId: str = Field(pattern=_MAC_ID)
-    family: Literal["room", "paperclip"] = "room"
+    family: Literal["room", "paperclip", "call"] = "room"
 
 
 class MacAcquire(MacRun):

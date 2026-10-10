@@ -342,7 +342,7 @@ async def test_close_caps_reported_usage_at_the_budget():
 # ---- Option D: voice requests are runs on the room key ------------------------------------------
 
 WINDOW = {**OPEN_WINDOW, "companyId": "co-1", "roomName": "general", "deadline": 4102444800}
-ROOM_META = {"roomId": "room-1", "name": "general", "kind": "channel", "lastSeq": 7, "ownerId": "org_a"}
+ROOM_META = {"roomId": "room-1", "name": "general", "kind": "channel", "lastSeq": 7, "ownerId": "org_a", "revision": 3}
 MEMBERS = [
     {"kind": "agent", "id": "fin-1", "displayName": "Finance", "listenMode": "active"},
     {"kind": "agent", "id": "obs-1", "displayName": "Quiet", "listenMode": "observe"},
@@ -362,6 +362,8 @@ def run_env():
         patch.object(vc.messaging_repo, "get_voice_run", AsyncMock(return_value=None)),
         patch.object(vc.openclaw_work, "room_history", history),
         patch.object(vc.messaging, "human_display_name", AsyncMock(return_value="Bea")),
+        patch.object(vc.messaging, "human_emails", AsyncMock(return_value={"user_b": "bea@acme.test"})),
+        patch("core.services.local_sessions.live_sessions_for_room", AsyncMock(return_value=[])),
         patch.object(vc.container_repo, "get_by_owner_id", AsyncMock(return_value={"gateway_token": "gw"})),
         patch.object(vc.runtime_transport, "request", rt),
         patch.object(vc.settings, "PUBLIC_API_BASE", "https://api-dev.thelightbulb.company/"),
@@ -412,9 +414,25 @@ async def test_voice_run_is_a_run_on_the_room_key_that_names_its_call(run_env):
     for text in (req["input"], vc.TURN_NOTE):
         assert "room-1" not in text and "lightbulb-post" not in text and "--room" not in text
     vc.messaging_repo.put_voice_run.assert_awaited_once_with(
-        "org_a", "run-1", {"roomId": "room-1", "agentId": "fin-1", "speakerUserId": "user_b", "speakerName": "Bea"}
-    )
+        "org_a",
+        "run-1",
+        {"roomId": "room-1", "agentId": "fin-1", "speakerUserId": "user_b", "speakerName": "Bea",
+         "requesterUserId": "user_b"},
+    )  # fmt: skip
     assert out == {"runId": "run-1", "agentId": "fin-1", "steered": False}
+
+
+async def test_a_voice_run_carries_what_a_typed_turn_here_carries(run_env):
+    """One path (prod Meet 10-09): the room block, the speaker as sender, human handles and the live
+    sessions reach a voice run as they reach a typed turn (openclaw_work.build_ingress_body)."""
+    sessions = [{"sessionId": "s-1", "title": "fix deploy"}]
+    with patch("core.services.local_sessions.live_sessions_for_room", AsyncMock(return_value=sessions)):
+        await _dispatch()
+    req = run_env.await_args.kwargs["json_body"]["request"]
+    assert req["room"] == {"id": "room-1", "name": "general", "kind": "channel", "revision": 3}
+    assert req["sender"] == {"id": "user_b", "kind": "human", "displayName": "Bea"}
+    assert req["sessions"] == sessions
+    assert next(p for p in req["participants"] if p["id"] == "user_b").get("mentionHandle") == "bea"
 
 
 @pytest.mark.parametrize(
@@ -539,6 +557,8 @@ async def test_a_steer_by_another_speaker_lowers_the_runs_grant(run_env, steerer
     assert result["steered"] is True
     mint.assert_called_once_with("org_a", "room-1", "fin-1", "run-1", None)  # never a requester: only lowered
     assert run_env.await_args.kwargs["headers"]["X-Lightbulb-Local-Session-Token"] == "lowered"
+    # The row's verified requester drops with the grant: the Mac tool and room reads check it.
+    assert vc.messaging_repo.update_voice_run.await_args.args[2]["requesterUserId"] is None
 
 
 async def test_a_steer_by_the_runs_own_speaker_keeps_the_grant(run_env):

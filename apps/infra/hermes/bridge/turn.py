@@ -370,10 +370,28 @@ class _CallDeadline:
 
 
 def _voice_body(identity: dict, request: dict) -> dict:
-    """The room-turn body a voice run reads (agent identity, observed window, observe prompt)."""
+    """The room-turn body a voice run reads: the same room block, sender, roster, live sessions and
+    observed window a typed turn's body carries (the backend builds both with build_ingress_body)."""
     voice = request["voice"]
-    return {"room": {"id": identity["roomId"], "kind": voice.get("roomKind")}, "sender": voice.get("speaker") or {},
-            "participants": request.get("participants") or [], "recentHistory": request.get("recentHistory") or []}
+    room = request.get("room") or {"id": identity["roomId"], "kind": voice.get("roomKind")}
+    return {"room": room, "sender": request.get("sender") or voice.get("speaker") or {},
+            "participants": request.get("participants") or [], "sessions": request.get("sessions") or [],
+            "recentHistory": request.get("recentHistory") or []}
+
+
+def call_turn_context(identity: dict) -> dict:
+    """A spoken turn's plugin turn context. Keyed by the call key: the plugin's tools find it (and
+    the Mac tool's active turn) by the session id Hermes hands them, which is the call's own."""
+    return {"apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "agentId": identity["agentId"],
+            "runId": identity["runId"], "sessionKey": call_session_key(identity["agentId"], identity["callId"]),
+            "roomId": None, "voiceRoomId": identity["roomId"],
+            "localSessionToken": identity.get("localSessionToken"), "family": "call"}
+
+
+def _spoken_turn_input(body: dict, spoken: str) -> str:
+    """A typed turn's one-line turn context (sender, live sessions) before what was said."""
+    turn = {"sender": body.get("sender") or {}, "sessions": body.get("sessions") or [], "eventKind": "voice"}
+    return f"{TURN_CONTEXT_PREFIX}{json.dumps(turn, ensure_ascii=False, separators=(',', ':'))}\n{spoken}"
 
 
 def call_session_key(agent_id: str, call_id: str) -> str:
@@ -509,11 +527,7 @@ def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> t
         import run_agent  # noqa: F401
     except ImportError:
         pass
-    # Keyed by the call key, as _desktop_active_turn below: the plugin's tools find both by the
-    # session id Hermes hands them, which is the agent's own (see run_turn's turn_ctx).
-    ctx = {"apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "agentId": agent_id, "runId": run_id,
-           "sessionKey": call_key, "roomId": None, "voiceRoomId": room_id,
-           "localSessionToken": identity.get("localSessionToken"), "family": "call"}
+    ctx = call_turn_context(identity)
     body = _voice_body(identity, request)
     # The room turns' folder path, never filled or removed here: an observed row's "saved at" note
     # names it, and the room's next turn fills it (_observed_text).
@@ -524,46 +538,44 @@ def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> t
         # belongs to the turn holding the lock).
         if run_aborted(run_id):
             return "aborted", None, "", dict(ZERO_USAGE)
-        with sync.profile_lock(agent_id):
-            sync.ensure_profile(agent_id)
-            sync.normalize_profile_backends(agent_id)
-        browser_lease = browser_control.begin_turn(str(run_id), agent_id, None, "call")
-        logins = website_logins.prompt_scope(agent_id, None, None, lambda: run_aborted(run_id))
-        with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id, session_key), _desktop_active_turn(call_key, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx), _call_grant_scope(run_id, ctx):
+        # The room turn's own environment, keyed by the call's session id (the one Hermes hands
+        # the tools), plus the steer-lowered grant a call can get mid-run.
+        with _room_turn_env(agent_id, session_key, call_key, run_id, body, frames, ctx, "call"), _call_grant_scope(run_id, ctx):
+            agent = _construct_agent(agent_id, body, frames, call_key, **CALL_RUN_LIMITS)
+            # No compaction inside a spoken turn (67-103 s each, prod 10-07): Hermes's own
+            # per-agent switch, which every automatic trigger reads (turn_context_compaction.py:239,
+            # turn_preflight.py:89/289) and Hermes sets the same way on its review fork
+            # (background_review.py:843). A call's transcript is never compacted at all:
+            # CALL_HISTORY_TOKENS bounds what a very long call replays.
+            agent.compression_enabled = False
+            watch.agent = agent
+            queued_steers = attach_agent(run_id, agent)
+            if run_aborted(run_id):
+                return "aborted", None, "", dict(ZERO_USAGE)
+            text = _spoken_turn_input(body, request["input"])
+            if queued_steers:
+                text = f"{text}\n{queued_steers}"
+            # The room turn's own system prompt (who and where you are, the roster), with the
+            # spoken-turn note after it in place of chat's posting rules.
+            system = with_profile_agents_md(agent_id, f"{system_prompt(body, agent_id, spoken=True)}\n\n{request['instructions']}")
+            _carry_call_records(agent, session_key)
             try:
-                agent = _construct_agent(agent_id, body, frames, call_key, **CALL_RUN_LIMITS)
-                # No compaction inside a spoken turn (67-103 s each, prod 10-07): Hermes's own
-                # per-agent switch, which every automatic trigger reads (turn_context_compaction.py:239,
-                # turn_preflight.py:89/289) and Hermes sets the same way on its review fork
-                # (background_review.py:843). A call's transcript is never compacted at all:
-                # CALL_HISTORY_TOKENS bounds what a very long call replays.
-                agent.compression_enabled = False
-                watch.agent = agent
-                queued_steers = attach_agent(run_id, agent)
+                with watch:
+                    # The ROOM key: _converse binds it for async delegations and takes the
+                    # room-transcript path (observed rows, bounded history) on the call's agent.
+                    result = _converse(agent, agent_id, session_key, run_id, body, base, system, text, text,
+                                       history_budget=CALL_HISTORY_TOKENS)
+                _post_turn.agent = agent
+            except Exception:
                 if run_aborted(run_id):
-                    return "aborted", None, "", dict(ZERO_USAGE)
-                text = f"{request['input']}\n{queued_steers}" if queued_steers else request["input"]
-                _carry_call_records(agent, session_key)
-                try:
-                    with watch:
-                        # The ROOM key: _converse binds it for async delegations and takes the
-                        # room-transcript path (observed rows, bounded history) on the call's agent.
-                        result = _converse(agent, agent_id, session_key, run_id, body, base,
-                                           with_profile_agents_md(agent_id, request["instructions"]), text, text,
-                                           history_budget=CALL_HISTORY_TOKENS)
-                    _post_turn.agent = agent
-                except Exception:
-                    if run_aborted(run_id):
-                        return "aborted", None, "", _agent_usage(agent)
-                    if watch.timed_out:
-                        return "error", INTERRUPTED, "", _agent_usage(agent)
-                    raise
-                finally:
-                    # _converse was given the room key, which is never ended: end the call's own
-                    # session here, so Hermes's retention can age it out after the call.
-                    _end_unless_room(agent, agent_id, call_key)
+                    return "aborted", None, "", _agent_usage(agent)
+                if watch.timed_out:
+                    return "error", INTERRUPTED, "", _agent_usage(agent)
+                raise
             finally:
-                browser_control.release(browser_lease)
+                # _converse was given the room key, which is never ended: end the call's own
+                # session here, so Hermes's retention can age it out after the call.
+                _end_unless_room(agent, agent_id, call_key)
         usage = _agent_usage(agent)
         if run_aborted(run_id):
             return "aborted", None, "", usage
@@ -597,7 +609,13 @@ def run_call_turn(identity: dict, request: dict, reserved: bool = False) -> None
             sync.restore_root_auth()
             restore_profile(agent_id)
             RESTORED.add(agent_id)
-            outcome, error, output, usage = ("aborted", None, "", usage) if run_aborted(run_id) else _run_call(identity, request, frames)
+            # The Mac tool's run state, as run_turn starts it for a typed turn.
+            _start_desktop_turn(_profile_dir(agent_id), call_turn_context(identity))
+            try:
+                outcome, error, output, usage = ("aborted", None, "", usage) if run_aborted(run_id) else _run_call(identity, request, frames)
+            finally:
+                cancel_run_desktop(run_id)
+                _desktop_state_path(_profile_dir(agent_id), run_id).unlink(missing_ok=True)
         except Exception:  # noqa: BLE001 -- the class only, never prompt data
             outcome = "aborted" if run_aborted(run_id) else "error"
             log.error("call turn %s failed\n%s", run_id, traceback.format_exc())
@@ -1895,11 +1913,13 @@ def with_voice_notes(agent_id: str, system: str) -> str:
     )
 
 
-def system_prompt(body: dict, agent_id: str, media: list[str] | None = None) -> str:
+def system_prompt(body: dict, agent_id: str, media: list[str] | None = None, spoken: bool = False) -> str:
     """Only what is stable for this room goes here. Hermes splices system_message into the TOP
     of the system prompt, and providers cache a byte-identical prefix: one per-turn byte here
     (message id, sessions, a reordered roster) made every turn a full cache miss. Per-turn
-    fields ride in the user message instead (_turn_input). `media` is kept for callers."""
+    fields ride in the user message instead (_turn_input). `media` is kept for callers.
+    `spoken`: a voice turn, whose answer is spoken and never posted, so chat's posting rules
+    (MEDIA attachments, progress lines) are left out; the caller adds the spoken-turn note."""
     ctx = room_context(body, agent_id)
     room = ctx["room"]
     stable = {
@@ -1917,6 +1937,15 @@ def system_prompt(body: dict, agent_id: str, media: list[str] | None = None) -> 
         # paperclip_run (Task 21, fix round C3) carries no room either -- same "room #None"
         # bug the agent_mail branch already fixed, now generalised.
         identity = f"You are {name}, answering a Paperclip run trigger. Reply as yourself. {_repo_rule(agent_id)}"
+    elif spoken:
+        room = ctx["room"]
+        identity = (
+            f"You are {name} in the Lightbulb room #{room.get('name') or room.get('id')}, on a Live voice call "
+            "there. Reply as yourself; other participants are humans and AI teammates.\n"
+            f"Your shell starts in this conversation's own folder "
+            f"({conversation_dir(agent_id, _resolve_session_key(agent_id, body))}); files from earlier "
+            f"work are in your profile folder ({_profile_dir(agent_id)}). {_repo_rule(agent_id)}"
+        )
     else:
         room = ctx["room"]
         identity = (
@@ -3369,6 +3398,38 @@ def _converse(agent, agent_id: str, session_key: str, run_id: str | None, body: 
             reset_current_session_key(key_token)
 
 
+@contextlib.contextmanager
+def _room_turn_env(agent_id: str, session_key: str, hermes_key: str, run_id, body: dict, frames, ctx, family: str = "room"):
+    """THE environment of a room turn, typed or spoken (one path: a spoken turn used to rebuild
+    this by hand and missed what chat gained later -- the Mac tool, room logins, the browser
+    preview). Under the caller's turn lock: the profile refreshed, the room's browser and logins,
+    the profile's home, MCP bearers, secrets, the room's terminal, the Mac tool's active turn and
+    the plugin's turn context, keyed by `hermes_key` (the session id Hermes hands the tools: the
+    room key on a typed turn, the call's own key on a spoken one). Yields the browser lease."""
+    # Refresh BEFORE binding profile secrets/terminal policy and before filling config defaults.
+    with sync.profile_lock(agent_id):  # another conversation of this agent may be refreshing it
+        sync.ensure_profile(agent_id)
+        sync.normalize_profile_backends(agent_id)
+    # Normalize a legacy terminal.backend BEFORE any scope below installs (bug: first turn
+    # after an image roll). _terminal_scope's install_profile_terminal_scope snapshots
+    # config.yaml at INSTALL time; pin_profile_defaults does this same normalization, but
+    # only when _construct_agent calls it, by which point the scope below would already
+    # have installed against the stale value. See normalize_profile_backends's
+    # docstring. (Done above, under the profile lock.)
+    # Positional: family and room go with the Mac browser routes (use_browser). A runless turn's
+    # synthetic "browser:" run id is refused there on purpose: no Mac browser without a run.
+    room_id = (body.get("room") or {}).get("id")
+    browser_lease = browser_control.begin_turn(
+        str(run_id or ""), agent_id, getattr(frames, "browser_frame", None) if run_id else None, family, room_id,
+    )
+    logins = website_logins.prompt_scope(agent_id, room_id, turn_thread_root(body), lambda: run_aborted(run_id))
+    with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id, session_key), _desktop_active_turn(hermes_key, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
+        try:
+            yield browser_lease
+        finally:
+            browser_control.release(browser_lease)
+
+
 def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, str | None, str, dict]:
     session_key = _resolve_session_key(agent_id, body)
     try:
@@ -3398,56 +3459,31 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
         # check sees the same flag, so the outcome it reports is unchanged.
         if run_id and RUNS.get(run_id, {}).get("aborted"):
             return "aborted", None, "", ZERO_USAGE
-        # Refresh BEFORE binding profile secrets/terminal policy and before filling config defaults.
-        with sync.profile_lock(agent_id):  # another conversation of this agent may be refreshing it
-            sync.ensure_profile(agent_id)
-            sync.normalize_profile_backends(agent_id)
-        # Normalize a legacy terminal.backend BEFORE any scope below installs (bug: first turn
-        # after an image roll). _terminal_scope's install_profile_terminal_scope snapshots
-        # config.yaml at INSTALL time; pin_profile_defaults does this same normalization, but
-        # only when _construct_agent calls it, by which point the scope below would already
-        # have installed against the stale value. See normalize_profile_backends's
-        # docstring. (Done above, under the profile lock.)
-        # Positional: family and room go with the Mac browser routes (use_browser). A runless turn's
-        # synthetic "browser:" run id is refused there on purpose: no Mac browser without a run.
-        browser_lease = browser_control.begin_turn(
-            str(run_id or ""), agent_id, getattr(frames, "browser_frame", None) if run_id else None,
-            "room", (body.get("room") or {}).get("id"),
-        )
-        logins = website_logins.prompt_scope(agent_id, (body.get("room") or {}).get("id"), turn_thread_root(body),
-                                             lambda: run_aborted(run_id))
-        with _turn_folder(base), _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id, session_key), _desktop_active_turn(session_key, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, body.get("_turnContext")):
-            try:
-                media = sync.materialize_attachments(body, base)
-                # A follow-up's trigger message already had its turn: its attachments are not re-sent.
-                current_media = [] if body.get("followUp") else _current_message_media(body, media, base)
-                agent = _construct_agent(agent_id, body, frames, session_key)
-                queued_steers = attach_agent(run_id, agent)
-                if progress := _progress_poster(agent_id, body):
-                    # Set on the agent as Hermes's own gateway does (gateway/run_turn_runner.py).
-                    agent.interim_assistant_callback = progress
-                if run_aborted(run_id):  # stopped while the profile/MCP/agent were set up
-                    return "aborted", None, "", ZERO_USAGE
-                turn_text = _turn_input(body, current_media)
-                if queued_steers:
-                    turn_text = f"{turn_text}\n{queued_steers}"
-                system = with_profile_agents_md(agent_id, system_prompt(body, agent_id, media=current_media))
-                user_message = _message_content(turn_text, [] if body.get("followUp") else _message_image_paths(body, media, base))
-                message_id = None if body.get("followUp") else (body.get("message") or {}).get("messageId")
-                result = _converse(agent, agent_id, session_key, run_id, body, base, system, turn_text, user_message,
-                                   message_id)
-                _post_turn.agent = agent
-            finally:
-                browser_control.release(browser_lease)
-    usage = {**ZERO_USAGE,
-             # the model this agent actually ran on (profile_model), not the runtime-wide
-             # default -- usage_service prices per model ref, so the CEO's premium tier would
-             # otherwise be billed to the fleet's sonnet id.
-             "model": getattr(agent, "model", ""),
-             "inputTokens": int(getattr(agent, "session_input_tokens", 0) or 0),
-             "outputTokens": int(getattr(agent, "session_output_tokens", 0) or 0),
-             "cacheReadTokens": int(getattr(agent, "session_cache_read_tokens", 0) or 0),
-             "cacheWriteTokens": int(getattr(agent, "session_cache_write_tokens", 0) or 0)}
+        with _turn_folder(base), _room_turn_env(agent_id, session_key, session_key, run_id, body, frames,
+                                                body.get("_turnContext")):
+            media = sync.materialize_attachments(body, base)
+            # A follow-up's trigger message already had its turn: its attachments are not re-sent.
+            current_media = [] if body.get("followUp") else _current_message_media(body, media, base)
+            agent = _construct_agent(agent_id, body, frames, session_key)
+            queued_steers = attach_agent(run_id, agent)
+            if progress := _progress_poster(agent_id, body):
+                # Set on the agent as Hermes's own gateway does (gateway/run_turn_runner.py).
+                agent.interim_assistant_callback = progress
+            if run_aborted(run_id):  # stopped while the profile/MCP/agent were set up
+                return "aborted", None, "", ZERO_USAGE
+            turn_text = _turn_input(body, current_media)
+            if queued_steers:
+                turn_text = f"{turn_text}\n{queued_steers}"
+            system = with_profile_agents_md(agent_id, system_prompt(body, agent_id, media=current_media))
+            user_message = _message_content(turn_text, [] if body.get("followUp") else _message_image_paths(body, media, base))
+            message_id = None if body.get("followUp") else (body.get("message") or {}).get("messageId")
+            result = _converse(agent, agent_id, session_key, run_id, body, base, system, turn_text, user_message,
+                               message_id)
+            _post_turn.agent = agent
+    # the model this agent actually ran on (profile_model), not the runtime-wide default --
+    # usage_service prices per model ref, so the CEO's premium tier would otherwise be billed
+    # to the fleet's sonnet id.
+    usage = _agent_usage(agent)
     reply = result.get("final_response") or ""
     if result.get("interrupted") is True:  # not our abort (checked above): Hermes stopped it itself
         return "error", INTERRUPTED, "", usage

@@ -103,8 +103,9 @@ def _quiet_run(monkeypatch, *, delivered: bool, output: str = "Three tasks open;
     monkeypatch.setattr(turn.sync, "restore_root_auth", lambda: None)
     monkeypatch.setattr(turn.sync, "save_root_auth", lambda: None)
     monkeypatch.setattr(turn, "_post_backend", lambda path, body: posts.append((path, body)) or 200)
-    identity = {"runId": "run-1", "agentId": "agent-1", "roomId": ROOM, "sessionId": f"agent:agent-1:lightbulb:channel:{ROOM}", "family": "voice"}
+    identity = {"runId": "run-1", "agentId": "agent-1", "roomId": ROOM, "sessionId": f"agent:agent-1:lightbulb:channel:{ROOM}", "family": "voice", "callId": "ca11ca11-1111-4111-8111-111111111111"}
     request = {"voice": {"utterance": "what's on my board?"}, "frames": {"sink": "backend", "endpoint": EP}}
+    turn.register_call_run(identity)  # as server.py does before the turn starts
     turn.run_call_turn(identity, request, reserved=True)
     return posts
 

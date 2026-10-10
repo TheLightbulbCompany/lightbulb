@@ -40,11 +40,17 @@ def _message(**over):
     }
 
 
-def _fixture(monkeypatch, *, runs, steer_status=202, steer_error=None, run_open=True):
+STEER_HEADERS: list[dict] = []
+
+
+def _fixture(monkeypatch, *, runs, steer_status=202, steer_error=None, run_open=True, trigger_author=AUTHOR):
     created, ingress, steers, published = [], [], [], []
+    STEER_HEADERS.clear()
+    monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "k" * 32)
 
     async def fake_request(container, path, **kwargs):
         steers.append((path, kwargs["json_body"]))
+        STEER_HEADERS.append(kwargs.get("headers") or {})
         if steer_error:
             raise steer_error
         return MagicMock(status_code=steer_status)
@@ -66,6 +72,9 @@ def _fixture(monkeypatch, *, runs, steer_status=202, steer_error=None, run_open=
         AsyncMock(return_value={"gateway_token": "gw", "agentcore_runtime_arn": "arn:r1"}),
     )
     monkeypatch.setattr(work.messaging_repo, "get_member", AsyncMock(return_value=MEMBER))
+    monkeypatch.setattr(
+        work.messaging_repo, "get_message_by_id", AsyncMock(return_value={"messageId": FIRST, "author": trigger_author})
+    )
     monkeypatch.setattr(work.messaging_repo, "list_members", AsyncMock(return_value=[]))
     monkeypatch.setattr(work.messaging_repo, "list_open_runs_for_room", AsyncMock(return_value=runs))
     monkeypatch.setattr(work.messaging_repo, "workspace_id_for_meta", AsyncMock(return_value="ws"))
@@ -252,3 +261,25 @@ async def test_a_removed_member_is_never_steered(monkeypatch):
     _jev(monkeypatch)
     assert await worker._dispatch_message(META, MEMBER, _message(), "room_event") is False
     assert steers == [] and created == []
+
+
+@pytest.mark.asyncio
+async def test_a_steer_by_the_runs_own_requester_keeps_its_grant(monkeypatch):
+    worker, _created, _ingress, steers, _published = _fixture(monkeypatch, runs=[LIVE])
+    await worker._dispatch_message(META, MEMBER, _message(), "user_request")
+    assert len(steers) == 1 and "X-Lightbulb-Local-Session-Token" not in STEER_HEADERS[0]
+
+
+@pytest.mark.asyncio
+async def test_a_steer_by_another_person_lowers_the_runs_grant(monkeypatch):
+    """Codex #3997: Bea's follow-up steered Ada's run, which kept Ada's grant, so Bea could have the
+    agent read Ada's DMs (lightbulb_read_rooms) or drive her sessions. The steer now carries a grant
+    naming nobody, as a voice steer by another speaker does."""
+    from core.services import local_session_grants
+
+    worker, _created, _ingress, steers, _published = _fixture(monkeypatch, runs=[LIVE])
+    bea = {"kind": "human", "id": "user_2", "displayName": "Bea"}
+    await worker._dispatch_message(META, MEMBER, _message(author=bea), "user_request")
+    assert len(steers) == 1
+    lowered = local_session_grants.verify(STEER_HEADERS[0]["X-Lightbulb-Local-Session-Token"])
+    assert lowered.requester_id is None and lowered.room_id == ROOM and lowered.turn_id == FIRST

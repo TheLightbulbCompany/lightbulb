@@ -172,6 +172,9 @@ async def agent_reader(
     # The turn's room, re-checked on every read as a local-session read is: the agent still a member
     # (a removed agent's unexpired grant reads nothing), and no other org in the room to hear it.
     await local_sessions.require_caller(auth, auth.room_id)
+    # And the person still in it: someone who left or was removed is no longer who this turn acts for.
+    if await messaging_repo.get_member(auth.room_id, "human", auth.requester_id) is None:
+        raise ApiProblem("ROOM_FORBIDDEN", "The person who asked is no longer in this room.")
     return AuthContext(user_id=auth.requester_id, org_id=auth.owner_id)
 
 

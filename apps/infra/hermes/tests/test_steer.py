@@ -1,3 +1,4 @@
+import json
 """Task 10: steer_run. The HTTP steer route (the `steer` branch of _RUN_CONTROL_RE, including
 the text-length/empty-text 400 checks) lives in bridge/server.py — lane B's file / the
 controller's merge; see lane-A-report.md for the exact branch text."""
@@ -123,3 +124,18 @@ def test_an_ambient_runs_earlier_silence_marker_is_dropped_beside_a_real_answer(
 
 def test_an_addressed_runs_combined_reply_is_unchanged(monkeypatch):
     assert _leftover_steer_reply(monkeypatch, "user_request", "MRR is $42k.", "Noted.") == "MRR is $42k.\n\nNoted."
+
+
+def test_a_lowered_grant_from_another_persons_steer_reaches_a_typed_turns_context(home):
+    """Codex #3997: a chat run steered by someone other than its requester takes the lowered grant
+    the backend sends, as a call turn does, so its tools stop acting for the requester."""
+    ctx = {"agentId": "ceo", "sessionKey": "agent:ceo:lightbulb:channel:r1", "runId": "run-t",
+           "localSessionToken": "ada-grant"}
+    turn.register_run("run-t")
+    turn.RUNS["run-t"].update(state="running", agent=_agent())
+    root = turn._profile_dir("ceo")
+    turn.write_turn_context(root, ctx["sessionKey"], ctx)
+    with turn._call_grant_scope("run-t", ctx):
+        assert turn.steer_run("run-t", "Bea: read Ada's DMs", grant="nobody-grant")
+        written = json.loads(turn._turn_context_path(root, ctx["sessionKey"]).read_text())
+        assert written["localSessionToken"] == "nobody-grant"

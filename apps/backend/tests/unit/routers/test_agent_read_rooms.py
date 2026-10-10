@@ -37,7 +37,9 @@ def agent_in_room(monkeypatch):
     """The grant's room, as require_caller reads it: the agent seated, no other org in it."""
     from core.repositories import messaging_repo
 
-    member = AsyncMock(return_value={"kind": "agent", "id": "friday"})
+    seated = {("agent", "friday"), ("human", "user_ana")}
+    member = AsyncMock(side_effect=lambda room, kind, mid: {"kind": kind, "id": mid} if (kind, mid) in seated else None)
+    member.seated = seated
     monkeypatch.setattr(messaging_repo, "get_room", AsyncMock(return_value={"roomId": ROOM, "ownerId": "org_1"}))
     monkeypatch.setattr(messaging_repo, "get_member", member)
     monkeypatch.setattr(messaging_repo, "has_foreign_members", AsyncMock(return_value=False))
@@ -81,6 +83,16 @@ def test_an_agent_removed_from_the_turns_room_reads_nothing(client, monkeypatch,
     """Codex #3997: an unexpired grant is not enough; the agent must still be in the turn's room."""
     read = AsyncMock()
     monkeypatch.setattr(router.hosted_mcp, reader, read)
-    agent_in_room.return_value = None
+    agent_in_room.seated.discard(("agent", "friday"))
+    assert client.get(path, headers={"Authorization": f"Bearer {_grant('user_ana')}"}).status_code == 403
+    read.assert_not_awaited()
+
+
+@pytest.mark.parametrize(("path", "reader"), ROUTES)
+def test_a_requester_who_left_the_turns_room_lends_nothing(client, monkeypatch, agent_in_room, path, reader):
+    """Codex #3997: the person who asked has since left the room; the turn no longer acts for them."""
+    read = AsyncMock()
+    monkeypatch.setattr(router.hosted_mcp, reader, read)
+    agent_in_room.seated.discard(("human", "user_ana"))
     assert client.get(path, headers={"Authorization": f"Bearer {_grant('user_ana')}"}).status_code == 403
     read.assert_not_awaited()

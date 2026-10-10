@@ -9,7 +9,12 @@
 //! opening a window. Every action stays logged in the session / Activity as before.
 //!
 //! The store is `<app_data_dir>/desktop_permissions.json` (0600, atomic rename). A
-//! missing or corrupt file allows nothing: pairing writes it, Settings toggles edit it.
+//! missing or corrupt file allows nothing: the pairing dialog and Settings toggles write
+//! it through `desktop_permissions_set`. Those are web UI, and any script on the page can
+//! call the command too, so turning a switch ON needs a native "Allow" the page cannot
+//! draw or click. That is still consent once: it asks when the set widens (at pairing or a
+//! later Settings change), never during an agent operation. Turning things off asks nothing,
+//! and a pairing can only narrow what this store already allows.
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -86,29 +91,59 @@ fn now_iso() -> String {
     secs.to_string()
 }
 
-/// Pairing is the consent moment: persist what the person chose in the pairing
-/// dialog. Paperclip operations are part of "agents may work on this Mac".
+/// The page's pairing switches, limited to what this Mac already allows. Turning one on
+/// is `desktop_permissions_set`'s job (behind a native alert), never a pairing's.
+pub fn within_consent(
+    store: &Store,
+    p: &crate::pair_client::DesktopPermissions,
+) -> crate::pair_client::DesktopPermissions {
+    let on = store.consented;
+    crate::pair_client::DesktopPermissions {
+        screen: on && store.screen && p.screen,
+        shell: on && store.shell && p.shell,
+        browser: on && store.browser && p.browser,
+        files: on && store.files && p.files,
+    }
+}
+
+/// A pairing narrows the store to what was paired; it never turns anything on and never
+/// creates consent (the pairing dialog saved it through `desktop_permissions_set` first).
 pub fn record_from_pairing(
     app_data: &Path,
     permissions: Option<&crate::pair_client::DesktopPermissions>,
 ) -> Result<(), String> {
-    let Some(p) = permissions else {
+    let previous = load_from(app_data);
+    let Some(p) = permissions.filter(|_| previous.consented) else {
         return Ok(());
     };
-    let previous = load_from(app_data);
+    let p = within_consent(&previous, p);
     save_to(
         app_data,
         &Store {
-            consented: true,
             shell: p.shell,
             browser: p.browser,
             files: p.files,
             screen: p.screen,
-            // Keep an explicit Settings choice; a first pairing defaults it on.
-            paperclip: if previous.consented { previous.paperclip } else { true },
             updated_at: now_iso(),
+            ..previous
         },
     )
+}
+
+/// The capabilities `next` turns on that `previous` did not allow, in plain words for the
+/// native alert. A store without consent allows nothing, so all of `next` counts as new.
+pub fn newly_enabled(previous: &Store, next: &Store) -> Vec<&'static str> {
+    let was = |on: bool| previous.consented && on;
+    [
+        (next.shell && !was(previous.shell), "Run shell commands"),
+        (next.browser && !was(previous.browser), "Use a browser"),
+        (next.files && !was(previous.files), "Read and write files in approved folders"),
+        (next.screen && !was(previous.screen), "See your screen"),
+        (next.paperclip && !was(previous.paperclip), "Let Paperclip runs operate this Mac"),
+    ]
+    .into_iter()
+    .filter_map(|(new, label)| new.then_some(label))
+    .collect()
 }
 
 #[tauri::command]
@@ -117,8 +152,9 @@ pub fn desktop_permissions_get(app: tauri::AppHandle) -> Result<Store, String> {
 }
 
 /// Saving IS the consent. The webview passes the whole set; `consented` and the
-/// timestamp are set here, never trusted from IPC. Browser switched off also ends
-/// the agent Chrome's CDP channels and deletes its profile's sign-ins.
+/// timestamp are set here, never trusted from IPC. Anything turned on needs a native
+/// "Allow" first; Cancel saves nothing. Browser switched off also ends the agent
+/// Chrome's CDP channels and deletes its profile's sign-ins.
 #[tauri::command]
 pub async fn desktop_permissions_set(app: tauri::AppHandle, permissions: Store) -> Result<Store, String> {
     let store = Store {
@@ -128,6 +164,20 @@ pub async fn desktop_permissions_set(app: tauri::AppHandle, permissions: Store) 
     };
     let dir = app_data(&app)?;
     let previous = load_from(&dir);
+    let added = newly_enabled(&previous, &store);
+    if !added.is_empty()
+        && !crate::confirm_native(
+            &app,
+            "Allow agents on this Mac?",
+            format!(
+                "Lightbulb wants to let agents in your workspace:\n\n{}\n\nOnly allow this if you just chose it in Lightbulb.",
+                added.join("\n")
+            ),
+        )
+        .await
+    {
+        return Err(crate::DECLINED_ON_MAC.into());
+    }
     save_to(&dir, &store)?;
     if store.screen && !previous.screen {
         crate::screen::request_access(&dir);
@@ -369,17 +419,37 @@ mod tests {
     }
 
     #[test]
-    fn pairing_records_consent_and_keeps_an_explicit_paperclip_choice() {
+    fn a_pairing_only_narrows_and_never_creates_consent() {
         let dir = std::env::temp_dir().join(format!("lb-perm-{}", uuid::Uuid::new_v4()));
-        let web = crate::pair_client::DesktopPermissions { screen: false, shell: true, browser: true, files: false };
-        record_from_pairing(&dir, Some(&web)).unwrap();
-        let first = load_from(&dir);
-        assert!(first.consented && first.shell && first.browser && !first.files && !first.screen && first.paperclip);
-        save_to(&dir, &Store { paperclip: false, ..first.clone() }).unwrap();
-        record_from_pairing(&dir, Some(&web)).unwrap();
-        assert!(!load_from(&dir).paperclip, "a re-pair must not flip Paperclip back on");
+        let all = crate::pair_client::DesktopPermissions { screen: true, shell: true, browser: true, files: true };
+        record_from_pairing(&dir, Some(&all)).unwrap();
+        assert_eq!(load_from(&dir), Store::default(), "a pairing without saved consent grants nothing");
+        save_to(&dir, &Store { shell: false, paperclip: false, ..all_on() }).unwrap();
+        record_from_pairing(&dir, Some(&all)).unwrap();
+        let after = load_from(&dir);
+        assert!(!after.shell && !after.paperclip, "a pairing must not turn a switch back on");
+        let fewer = crate::pair_client::DesktopPermissions { files: false, ..all };
+        record_from_pairing(&dir, Some(&fewer)).unwrap();
+        assert!(!load_from(&dir).files && load_from(&dir).browser, "a pairing narrows");
         record_from_pairing(&dir, None).unwrap();
         assert!(load_from(&dir).consented, "no permissions in the pair request leaves the store alone");
+        assert!(!within_consent(&Store::default(), &all).shell);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_switches_turned_on_need_the_native_alert() {
+        let off = Store { consented: true, ..Store::default() };
+        let first = Store { shell: true, files: true, ..off.clone() };
+        assert_eq!(
+            newly_enabled(&Store::default(), &first),
+            ["Run shell commands", "Read and write files in approved folders"]
+        );
+        assert!(newly_enabled(&first, &Store { shell: false, ..first.clone() }).is_empty());
+        assert!(newly_enabled(&first, &first).is_empty());
+        assert_eq!(newly_enabled(&first, &Store { screen: true, ..first.clone() }), ["See your screen"]);
+        // A store without consent allows nothing, whatever its switches say.
+        let stale = Store { consented: false, ..all_on() };
+        assert_eq!(newly_enabled(&stale, &all_on()).len(), 5);
     }
 }

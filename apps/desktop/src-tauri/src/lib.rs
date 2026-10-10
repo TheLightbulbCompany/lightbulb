@@ -237,6 +237,10 @@ fn send_auth_token(
     // Only for the `lightbulb` command's "Shared with <workspace>" line.
     #[cfg(unix)]
     cli::set_workspace(workspace_id.zip(workspace_name));
+    // The page's switches can only narrow what this Mac already allows: turning one on is
+    // `desktop_permissions_set`, behind a native alert. Clamped here so the pair request,
+    // the persisted pair state and the local store all see the same set.
+    let permissions = permissions.map(|p| desktop_permissions::within_consent(&desktop_permissions::load(&app), &p));
     {
         // Cache the latest token for telemetry / diagnostic dumps. We do
         // NOT use this as the "did bootstrap already happen" sentinel
@@ -839,26 +843,38 @@ async fn local_mcp_set(app: tauri::AppHandle, servers: serde_json::Value) -> Res
     let servers = local_mcp::validate_servers(servers)?;
     let launches =
         local_mcp::launches_needing_confirmation(&local_mcp::list_servers(&dir)?, &servers);
-    if !launches.is_empty() && !confirm_local_mcp_launches(&app, &launches).await {
+    if !launches.is_empty()
+        && !confirm_native(
+            &app,
+            "Allow local MCP server?",
+            format!(
+                "Lightbulb wants to run these commands on this Mac every time it starts:\n\n{}\n\nOnly allow commands you recognise.",
+                launches.join("\n\n")
+            ),
+        )
+        .await
+    {
         return Err("local MCP change was not approved on this Mac".into());
     }
     local_mcp::set_servers(&dir, serde_json::Value::Object(servers))?;
     restart_node_host_subprocess_locked(&app).await
 }
 
-/// Native confirmation for new local MCP commands. Cancel is the FIRST button,
-/// so it is the default (Return) and Escape/close also land on it; only the
-/// explicit "Allow" button approves.
-async fn confirm_local_mcp_launches(app: &tauri::AppHandle, launches: &[String]) -> bool {
+/// What a command returns when the person chose Cancel on a native confirmation; the web
+/// matches "declined on this Mac" to say so calmly instead of showing an error.
+pub(crate) const DECLINED_ON_MAC: &str = "Not changed: declined on this Mac.";
+
+/// A native macOS alert for a change the PAGE asks for that widens what runs on this Mac
+/// (a local MCP command, a permission switch turned on, a folder added). The page cannot
+/// draw, fake or click it. Cancel is the FIRST button, so it is the default (Return) and
+/// Escape/close also land on it; only the explicit "Allow" button approves.
+pub(crate) async fn confirm_native(app: &tauri::AppHandle, title: &str, body: String) -> bool {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult};
     const ALLOW: &str = "Allow";
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
-        .message(format!(
-            "Lightbulb wants to run these commands on this Mac every time it starts:\n\n{}\n\nOnly allow commands you recognise.",
-            launches.join("\n\n")
-        ))
-        .title("Allow local MCP server?")
+        .message(body)
+        .title(title)
         .kind(MessageDialogKind::Warning)
         .buttons(MessageDialogButtons::OkCancelCustom("Cancel".into(), ALLOW.into()))
         .show_with_result(move |res| {
@@ -1224,10 +1240,26 @@ fn file_access_list_paths() -> Vec<String> {
 
 /// Adds `path` to the allowlist after canonicalizing it. Returns the
 /// canonical form. Idempotent. Errors if the path doesn't exist or
-/// isn't accessible.
+/// isn't accessible. A folder not yet approved needs a native "Allow"
+/// naming the exact canonical path: the page asking is a remote origin.
 #[tauri::command]
-fn file_access_add_path(path: String) -> Result<String, String> {
-    file_access::add_path(&path).map_err(|e| e.to_string())
+async fn file_access_add_path(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    let canonical = file_access::canonicalize(&path).map_err(|e| e.to_string())?;
+    let shown = canonical.to_string_lossy().to_string();
+    let approved = file_access::list_paths()
+        .iter()
+        .any(|p| std::path::Path::new(p) == canonical.as_path());
+    if !approved
+        && !confirm_native(
+            &app,
+            "Allow folder access?",
+            format!("Allow agents to read and write files in {shown}?"),
+        )
+        .await
+    {
+        return Err(DECLINED_ON_MAC.into());
+    }
+    file_access::add_path(&shown).map_err(|e| e.to_string())
 }
 
 /// Removes `path` from the allowlist (canonical match). Returns true if

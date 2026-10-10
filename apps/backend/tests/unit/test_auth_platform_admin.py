@@ -39,9 +39,9 @@ def test_empty_allowlist_admits_nobody(monkeypatch):
 
 
 def test_internal_email_tagging():
-    """Analytics-only tagging; the retired @isol8.co domain no longer counts."""
+    """Analytics-only tagging; @isol8.co still counts until the mailbox move."""
     assert is_internal_email("SOMEONE@THELIGHTBULB.COMPANY")
     assert is_internal_email("prasiddha@gmail.com")
-    assert not is_internal_email("someone@isol8.co")
+    assert is_internal_email("admin@isol8.co")
     assert not is_internal_email("attacker@evil-thelightbulb.company.example")
     assert not is_internal_email(None)

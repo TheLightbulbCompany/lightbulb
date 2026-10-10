@@ -357,7 +357,7 @@ def run_env():
     ps = [
         patch.object(vc.messaging_repo, "get_room", AsyncMock(return_value=ROOM_META)),
         patch.object(vc.messaging_repo, "list_members", AsyncMock(return_value=MEMBERS)),
-        patch.object(vc.messaging_repo, "put_voice_run", AsyncMock()),
+        patch.object(vc.messaging_repo, "put_voice_run", AsyncMock(return_value={})),
         patch.object(vc.messaging_repo, "update_voice_run", AsyncMock(return_value=True)),
         patch.object(vc.messaging_repo, "get_voice_run", AsyncMock(return_value=None)),
         patch.object(vc.openclaw_work, "room_history", history),
@@ -418,8 +418,20 @@ async def test_voice_run_is_a_run_on_the_room_key_that_names_its_call(run_env):
         "run-1",
         {"roomId": "room-1", "agentId": "fin-1", "speakerUserId": "user_b", "speakerName": "Bea",
          "requesterUserId": "user_b"},
+        once=frozenset({"requesterUserId"}),
     )  # fmt: skip
     assert out == {"runId": "run-1", "agentId": "fin-1", "steered": False}
+
+
+async def test_a_retry_after_a_lowering_steer_keeps_the_requester_lowered(run_env):
+    """Codex P1: a /turns retry of a run another speaker already steered must not restore the first
+    speaker's authority (the Mac tool, room reads). The row's requester is write-once; the grant is
+    minted for what the row holds."""
+    vc.messaging_repo.put_voice_run.return_value = {"runId": "run-1", "requesterUserId": None}
+    mint = MagicMock(return_value="grant")
+    with patch.object(vc.local_session_grants, "mint", mint):
+        await _dispatch()
+    mint.assert_called_once_with("org_a", "room-1", "fin-1", "run-1", None)
 
 
 async def test_a_voice_run_carries_what_a_typed_turn_here_carries(run_env):

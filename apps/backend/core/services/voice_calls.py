@@ -871,7 +871,10 @@ async def dispatch_voice_run(
         "requesterUserId": requester,
     }
     # An atomic SET of these fields: a /turns retry cannot drop a "don't post that" mark, whenever it lands.
-    await messaging_repo.put_voice_run(owner_id, run_id, fields)
+    # The requester is written once: a retry after another speaker's steer lowered it keeps it lowered,
+    # and the grant below is minted for what the row holds, never for a requester the steer took away.
+    row = await messaging_repo.put_voice_run(owner_id, run_id, fields, once=frozenset({"requesterUserId"}))
+    requester = row.get("requesterUserId") if "requesterUserId" in row else requester
     # The room grant a typed message here would get (openclaw_work), keyed on the voice run.
     try:
         grant = local_session_grants.mint(owner_id, room_id, agent_id, run_id, requester)

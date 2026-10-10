@@ -35,6 +35,19 @@ def _webhook_secrets(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _listing_matches_checkout(monkeypatch):
+    """Fulfillment checks session metadata against the listing row. Every
+    checkout in this file sells listing l1 v1 by seller s1 at 2000 cents."""
+    from core.repositories import marketplace_repo as _repo
+
+    monkeypatch.setattr(
+        _repo,
+        "get_listing",
+        AsyncMock(return_value={"listing_id": "l1", "version": 1, "seller_id": "s1", "price_cents": 2000}),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _not_a_company_account(monkeypatch):
     """`account.updated` now asks the billing GSI whether the account is a
     company account before taking the seller path. Unpatched that is a live

@@ -58,10 +58,13 @@ def _ddb_client():
 # ---------------------------------------------------------------------------
 
 
-async def get_listing(listing_id: str, version: int) -> dict | None:
+async def get_listing(listing_id: str, version: int, *, consistent: bool = False) -> dict | None:
     """Look up one listing row by (listing_id, version)."""
     table = _listings_table()
-    resp = await run_in_thread(table.get_item, Key={"listing_id": listing_id, "version": version})
+    kwargs: dict = {"Key": {"listing_id": listing_id, "version": version}}
+    if consistent:
+        kwargs["ConsistentRead"] = True
+    resp = await run_in_thread(table.get_item, **kwargs)
     return resp.get("Item")
 
 

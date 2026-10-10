@@ -483,6 +483,7 @@ async def _handle_organization_membership_deleted(
     from core.services.messaging import revoke_human_membership
 
     revocation_error: BaseException | None = None
+    still_current = None
     try:
         await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
         # Security boundary: every room key rotates before the private stream is
@@ -495,7 +496,6 @@ async def _handle_organization_membership_deleted(
         # never delays or fails this webhook; it re-checks the lifecycle epoch (the lease is
         # gone once this webhook completes) once, before touching any device; after that the conditional
         # device writes spare a re-pair.
-        still_current = None
         if lifecycle_event_id:
             from core.services.webhook_dedup import membership_revocation_current
 
@@ -561,7 +561,8 @@ async def _handle_organization_membership_deleted(
         from core.services.workspace_memory import delete_member_memory
 
         await _renew_member_lifecycle(org_id, user_id, lifecycle_claim_id)
-        await delete_member_memory(org_id, user_id)
+        # Its late tail re-checks the same epoch: a re-add before it runs keeps the new memories.
+        await delete_member_memory(org_id, user_id, still_gone=still_current)
     except MembershipLifecycleSuperseded:
         raise
     except Exception as exc:

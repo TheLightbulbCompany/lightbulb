@@ -28,6 +28,7 @@ not honoured).
 import asyncio
 import logging
 import re
+from collections.abc import Awaitable, Callable
 
 import boto3
 from botocore.config import Config
@@ -115,8 +116,28 @@ def _member_actors(client, owner_id: str, memory_id: str) -> list[str]:
     ]
 
 
-async def _tail(label: str, memory_id: str, namespaces: list[str], actors: list[str], resweep_after_s: float) -> None:
+async def _still_gone(label: str, check: Callable[[], Awaitable[bool]] | None) -> bool:
+    """False once the member has rejoined; a failing check also says False, so the tail keeps data."""
+    if check is None:
+        return True
+    try:
+        return await check()
+    except Exception:  # noqa: BLE001 — records never come back; fail safe
+        logger.warning("memory wipe: rejoin check failed for %s; tail skipped", label, exc_info=True)
+        return False
+
+
+async def _tail(
+    label: str,
+    memory_id: str,
+    namespaces: list[str],
+    actors: list[str],
+    resweep_after_s: float,
+    still_gone: Callable[[], Awaitable[bool]] | None = None,
+) -> None:
     client = _client()
+    if not await _still_gone(label, still_gone):
+        return
     for actor in actors:
         try:
             events = await run_in_thread(_delete_events, client, actor, memory_id)
@@ -124,6 +145,8 @@ async def _tail(label: str, memory_id: str, namespaces: list[str], actors: list[
         except Exception:  # noqa: BLE001 — a background tail; bounded by the event expiry
             logger.warning("memory wipe: event deletion failed for actor=%s", actor, exc_info=True)
     await asyncio.sleep(resweep_after_s)
+    if not await _still_gone(label, still_gone):
+        return
     try:
         late = await run_in_thread(_delete_records, client, label, memory_id, namespaces)
         if late:
@@ -133,14 +156,20 @@ async def _tail(label: str, memory_id: str, namespaces: list[str], actors: list[
 
 
 async def _wipe(
-    client, label: str, memory_id: str, namespaces: list[str], actors: list[str], resweep_after_s: float
+    client,
+    label: str,
+    memory_id: str,
+    namespaces: list[str],
+    actors: list[str],
+    resweep_after_s: float,
+    still_gone: Callable[[], Awaitable[bool]] | None = None,
 ) -> None:
     records = await run_in_thread(_delete_records, client, label, memory_id, namespaces)
     logger.info("memory wipe: deleted %d records for %s", records, label)
     # ponytail: in-process tail, lost if this backend task stops within ~RESWEEP_AFTER_S; events
     # then just expire, and a late record needs a retried wipe. Durable follow-up (SFN wait) if a
     # wipe audit ever demands it.
-    task = asyncio.create_task(_tail(label, memory_id, namespaces, actors, resweep_after_s))
+    task = asyncio.create_task(_tail(label, memory_id, namespaces, actors, resweep_after_s, still_gone))
     _tails.add(task)
     task.add_done_callback(_tails.discard)
 
@@ -159,13 +188,20 @@ async def delete_owner_memory(owner_id: str, *, resweep_after_s: float = RESWEEP
     await _wipe(client, f"owner={owner_id}", memory_id, namespaces, [owner_id, *members], resweep_after_s)
 
 
-async def delete_member_memory(owner_id: str, user_id: str, *, resweep_after_s: float = RESWEEP_AFTER_S) -> None:
+async def delete_member_memory(
+    owner_id: str,
+    user_id: str,
+    *,
+    resweep_after_s: float = RESWEEP_AFTER_S,
+    still_gone: Callable[[], Awaitable[bool]] | None = None,
+) -> None:
     """A member left the workspace: delete their private scope at once (no grace period), the
     same way as the owner wipe. Team memory is the workspace's and stays. No-op for an id that
-    can never have a private scope, and when the env has no memory."""
+    can never have a private scope, and when the env has no memory. The tail (events, late
+    re-sweep) runs only while ``still_gone`` says so: a re-add must keep its new memories."""
     owner_namespace(owner_id)
     memory_id = settings.AGENTCORE_MEMORY_ID
     if not memory_id or not _MEMBER_ID.fullmatch(user_id or ""):
         return
     actor = f"{owner_id}:{user_id}"
-    await _wipe(_client(), f"actor={actor}", memory_id, [f"/owners/{actor}/"], [actor], resweep_after_s)
+    await _wipe(_client(), f"actor={actor}", memory_id, [f"/owners/{actor}/"], [actor], resweep_after_s, still_gone)

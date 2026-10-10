@@ -150,7 +150,7 @@ async def test_membership_delete_wipes_the_members_private_memory_at_once(lifecy
     monkeypatch.setattr(webhooks, "close_paperclip_provisioning", AsyncMock())
 
     await webhooks._handle_organization_membership_deleted({"organization": {"id": "org_acme"}, "user_id": "user_a"})
-    wiped.assert_awaited_once_with("org_acme", "user_a")
+    wiped.assert_awaited_once_with("org_acme", "user_a", still_gone=None)
 
     # Records never expire: a failed wipe must not complete the event, but Paperclip still ran.
     provisioning = AsyncMock()

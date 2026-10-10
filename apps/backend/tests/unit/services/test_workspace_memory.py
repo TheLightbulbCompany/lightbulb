@@ -157,6 +157,25 @@ async def test_member_wipe_deletes_only_that_members_private_scope(monkeypatch, 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("verdict", [True, False, RuntimeError("ddb down")])
+async def test_member_tail_runs_only_while_the_member_is_still_gone(monkeypatch, configured, verdict):
+    fake = _scoped_client({"/owners/org_x:user_a/": ["a1"]}, actors=["org_x:user_a"])
+    monkeypatch.setattr(workspace_memory, "_client", lambda: fake)
+
+    async def check():
+        if isinstance(verdict, Exception):
+            raise verdict
+        return verdict
+
+    await workspace_memory.delete_member_memory("org_x", "user_a", resweep_after_s=0, still_gone=check)
+    await asyncio.gather(*workspace_memory._tails)
+
+    # The immediate delete always happens; the late re-sweep and event deletion only if still gone.
+    assert _deleted_records(fake) == (["a1", "a1"] if verdict is True else ["a1"])
+    assert bool(fake.delete_event.call_args_list) is (verdict is True)
+
+
+@pytest.mark.asyncio
 async def test_member_wipe_skips_ids_that_can_have_no_private_scope(monkeypatch, configured):
     monkeypatch.setattr(workspace_memory, "_client", lambda: pytest.fail("no AWS call"))
     for user_id in ("", "member", "agent-ceo", "user_a/../x", "user_a:b"):

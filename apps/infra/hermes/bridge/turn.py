@@ -262,16 +262,18 @@ def _replay_or_conflict(entry: dict, identity: dict, fingerprint: str) -> str:
     return "conflict"
 
 
-def register_call_run(identity: dict) -> bool:
+def register_call_run(identity: dict, grant: str | None = None) -> bool:
     """Register a call turn in the run registry (abort/attach use it). False = already registered
-    (a retried POST). No durable record: a call leaves nothing behind."""
+    (a retried POST). No durable record: a call leaves nothing behind. `grant` is the run's current
+    local-session grant (a steer by another speaker replaces it with a lowered one); it stays out of
+    `identity`, which the Paperclip paths persist."""
     with _RUNS_LOCK:
         if identity["runId"] in RUNS:
             return False
         RUNS[identity["runId"]] = {
             "state": "queued", "agent": None, "aborted": False, "outcome": None, "started": False,
             "kind": "call", "identity": dict(identity), "output": "", "error": None,
-            "usage": dict(ZERO_USAGE), "acceptedAt": time.time(),
+            "usage": dict(ZERO_USAGE), "acceptedAt": time.time(), **({"grant": grant} if grant else {}),
         }
     return True
 
@@ -379,6 +381,32 @@ def _voice_body(identity: dict, request: dict) -> dict:
 def call_session_key(agent_id: str, call_id: str) -> str:
     """One call's own Hermes transcript for this agent: the spoken turns of that call and nothing else."""
     return f"agent:{agent_id}:lightbulb:call:{call_id}"
+
+
+def verified_call_room_key(session_id: str) -> str | None:
+    """The ROOM session key of the live call turn running on this Hermes session, when a verified member asked
+    it: the run's current grant (a steer's lowered one included) names a requester. From this
+    process's run registry -- what the backend sent over the authenticated invoke -- never from a
+    file the agent's own shell can write. None for a Meet speaker, a lowered run, or no such run."""
+    with _RUNS_LOCK:
+        for entry in RUNS.values():
+            identity = entry.get("identity") or {}
+            if (entry.get("kind") == "call" and not entry.get("aborted") and entry.get("state") != "ended"
+                    and call_session_key(identity.get("agentId", ""), identity.get("callId", "")) == session_id):
+                token = entry.get("grant")
+                return identity.get("sessionId") if _grant_requester(token) else None
+    return None
+
+
+def _grant_requester(token) -> str | None:
+    """The requesterId claim of a local-session grant the backend minted (read, not verified: the
+    backend verifies it on every use; here it only narrows what this agent's own history returns)."""
+    try:
+        payload = str(token).split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        return claims.get("requesterId") or None
+    except (IndexError, ValueError, TypeError, AttributeError):
+        return None
 
 
 #: platform_message_id prefix of a call record: the one observed row a ROOM session gets per

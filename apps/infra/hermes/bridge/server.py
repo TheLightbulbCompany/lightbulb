@@ -203,12 +203,13 @@ def _handle_call_run(path: str, method: str, headers: dict, body) -> tuple[int, 
         identity, request = parsed
         if not turn.reserve_turn():
             return 503, {"error": "recycling"}
+        # The backend's local-session grant for this voice run, as the room ingress takes it; kept as
+        # the run's current grant too (turn.verified_call_room_key reads it there, a steer lowers it).
+        grant = _header(headers, "X-Lightbulb-Local-Session-Token")
         try:
-            if not turn.register_call_run(identity):
+            if not turn.register_call_run(identity, grant):
                 turn.release_turn()
                 return 200, {"run_id": identity["runId"], "status": "replayed"}
-            # The backend's local-session grant for this voice run, as the room ingress takes it.
-            grant = _header(headers, "X-Lightbulb-Local-Session-Token")
             threading.Thread(target=turn.run_call_turn,
                              args=(dict(identity, localSessionToken=grant), dict(request), True),
                              daemon=True, name=f"call-{identity['runId']}").start()

@@ -145,9 +145,10 @@ class _RecallDB:
         return {"Alice raise": "dm", "Room plan": "root"}.get(title)
 
 
-def _recall(monkeypatch):
+def _recall(monkeypatch, tmp_path=None):
     import types
     calls = []
+    monkeypatch.setattr(turn_context, "_home", lambda: tmp_path or pathlib.Path("/nonexistent"))
 
     def lineage(db, sid):
         while db.parents.get(sid):
@@ -176,6 +177,71 @@ def test_session_search_reaches_only_the_current_conversations_lineage(monkeypat
     assert kw["db"].resolve_session_by_title("Alice raise") is None
     assert kw["db"].resolve_session_by_title("Room plan") == "root"
     assert tool.session_search(session_id="root", db=db, current_session_id="child") == "hermes"
+
+
+ROOM_KEY = "agent:a1:lightbulb:channel:r1"
+CALL_KEY = "agent:a1:lightbulb:call:c1"
+
+
+class _CallRecallDB(_RecallDB):
+    """A call's own transcript, its room's (split by compression), and a DM."""
+    parents = {CALL_KEY: None, ROOM_KEY: None, "room-child": ROOM_KEY, "dm": None}
+
+    def search_messages(self, **_kw):
+        return [{"session_id": s, "id": i} for i, s in enumerate(["dm", CALL_KEY, ROOM_KEY, "room-child"])]
+
+
+def _grant(requester):
+    import base64
+    claims = base64.urlsafe_b64encode(json.dumps({"requesterId": requester}).encode()).decode().rstrip("=")
+    return f"h.{claims}.sig"
+
+
+def _call_run(monkeypatch, requester, lowered_to=False):
+    """A live call turn in the bridge's own run registry (what the backend sent over the invoke)."""
+    from bridge import turn
+    monkeypatch.setattr(turn, "RUNS", {})
+    identity = {"runId": "run-c", "agentId": "a1", "roomId": "r1", "sessionId": ROOM_KEY, "callId": "c1"}
+    turn.register_call_run(identity, _grant(requester))  # as server.py registers it, with the header's grant
+    if lowered_to is not False:
+        turn.RUNS["run-c"]["grant"] = _grant(lowered_to)  # a steer by another speaker
+
+
+@pytest.mark.parametrize(("requester", "lowered"), [(None, False), ("user_ana", None)],
+                         ids=["meet-guest", "steered-by-another-speaker"])
+def test_a_spoken_turn_nobody_verified_asked_keeps_to_the_call(monkeypatch, tmp_path, requester, lowered):
+    """Codex P1: a Meet speaker is not the room's member; their turn must not speak its history."""
+    _call_run(monkeypatch, requester, lowered)
+    tool, calls = _recall(monkeypatch, tmp_path)
+    tool.session_search(query="pricing", db=_CallRecallDB(), current_session_id=CALL_KEY)
+    assert [r["session_id"] for r in calls[0]["db"].search_messages()] == [CALL_KEY]
+
+
+def test_an_agent_cannot_widen_recall_by_rewriting_its_turn_context(monkeypatch, tmp_path):
+    """Codex P1: the turn context file is the agent's to write; recall never reads it."""
+    _call_run(monkeypatch, None)
+    turn_context.write(tmp_path, CALL_KEY, {"family": "call", "agentId": "a1", "voiceRoomId": "r1",
+                                            "localSessionToken": _grant("user_forged")})
+    tool, calls = _recall(monkeypatch, tmp_path)
+    tool.session_search(query="pricing", db=_CallRecallDB(), current_session_id=CALL_KEY)
+    assert [r["session_id"] for r in calls[0]["db"].search_messages()] == [CALL_KEY]
+
+
+def test_a_spoken_turn_recalls_its_rooms_history_as_chat_does(monkeypatch, tmp_path):
+    """Prod Meet 10-09: on a call, recall stopped at the call's own transcript. A spoken turn a
+    signed-in member asked belongs to its room: it reaches the room's lineage too, never another."""
+    _call_run(monkeypatch, "user_ana")
+    tool, calls = _recall(monkeypatch, tmp_path)
+    db = _CallRecallDB()
+    assert tool.session_search(query="pricing", db=db, current_session_id=CALL_KEY) == "hermes"
+    assert [r["session_id"] for r in calls[0]["db"].search_messages()] == [CALL_KEY, ROOM_KEY, "room-child"]
+    assert tool.session_search(session_id="room-child", db=db, current_session_id=CALL_KEY) == "hermes"
+    out = tool.session_search(session_id="dm", db=db, current_session_id=CALL_KEY)
+    assert json.loads(out)["error"] == lightbulb.RECALL_SCOPE
+    # A typed turn's own lineage only, as before.
+    calls.clear()
+    tool.session_search(query="pricing", db=db, current_session_id="room-child")
+    assert [r["session_id"] for r in calls[0]["db"].search_messages()] == [ROOM_KEY, "room-child"]
 
 
 @pytest.mark.parametrize("kw", [

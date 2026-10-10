@@ -290,29 +290,87 @@ fn validate(params: Value, home: &Path) -> Result<(Start, PathBuf, Vec<String>),
     Ok((start, folder, argv))
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct Open {
+    tool: String,
+    conversation_id: String,
+    start_id: String,
+}
+
+/// "Open in a terminal": the owner's own session that runs inside an app (Claude desktop, the Codex
+/// app, an IDE) as a held FORK of its conversation. Never a second writer on it: the app keeps its
+/// copy running, and two writers on one transcript fork it anyway (resume.rs).
+fn open_argv(program: &Path, tool: &str, conversation: &str) -> Vec<String> {
+    let program = program.to_string_lossy().into_owned();
+    if tool == "codex" {
+        // Root options before the subcommand, as resume.rs starts Codex.
+        vec![program, "--no-daemon".into(), "--sandbox".into(), "workspace-write".into(),
+            "--ask-for-approval".into(), "on-request".into(), "fork".into(), conversation.into()]
+    } else {
+        vec![program, "--resume".into(), conversation.into(), "--fork-session".into(),
+            "--permission-mode".into(), "manual".into()]
+    }
+}
+
+/// The installed tool, a UUID conversation (never readable as a flag), and the folder the
+/// conversation runs in from its own transcript, which must be inside an approved folder.
+fn validate_open(params: Value, home: &Path) -> Result<(String, PathBuf, Vec<String>), Failure> {
+    let invalid = || ("INVALID_REQUEST", "Malformed request.".to_string());
+    let open: Open = serde_json::from_value(params).map_err(|_| invalid())?;
+    let uuid = |s: &str| uuid::Uuid::parse_str(s).is_ok_and(|u| u.hyphenated().to_string() == s);
+    if !uuid(&open.conversation_id) || !uuid(&open.start_id) {
+        return Err(invalid());
+    }
+    let unavailable = || ("TOOL_UNAVAILABLE", format!("{} is not installed on this Mac.", open.tool));
+    if !tools(home).iter().any(|t| t["id"] == open.tool.as_str()) {
+        return Err(unavailable());
+    }
+    let program = crate::local_sessions::provider_program(home, &open.tool).ok_or_else(unavailable)?;
+    if open.tool == "codex" && !crate::cli::help_commands(&codex_help(&program)).iter().any(|c| c == "fork") {
+        return Err(("TOOL_UNAVAILABLE", "Update Codex on this Mac: this version cannot fork a conversation.".into()));
+    }
+    use crate::local_sessions::resume;
+    let folder = resume::folder(home, &resume::claude_config(home), &open.tool, &open.conversation_id)
+        .ok_or(("FOLDER_MISSING", "The folder this conversation runs in no longer exists.".into()))?;
+    let folder = resume::approved_folder(&folder, &approved_now())
+        .map_err(|code| (code, "That conversation's folder is not inside one of this Mac's approved folders.".into()))?;
+    let argv = open_argv(&program, &open.tool, &open.conversation_id);
+    Ok((open.start_id, folder, argv))
+}
+
 pub async fn start(
     app: tauri::AppHandle,
     params: Value,
     cancel: watch::Receiver<bool>,
 ) -> Result<Value, Failure> {
     let result = async {
-        let (start, folder, argv, scope) = prepare(&app, params, &cancel)?;
-        let argv = held_argv(&argv, Some((start.start_id.as_str(), scope.as_str())));
+        let (start_id, tool, folder, argv) = if params.get("conversationId").is_some() {
+            let tool = params["tool"].as_str().unwrap_or_default().to_owned();
+            let (start_id, folder, argv) = validate_open(params, &home())?;
+            (start_id, tool, folder, argv)
+        } else {
+            let (start, folder, argv) = validate(params, &home())?;
+            (start.start_id, start.tool, folder, argv)
+        };
+        let scope = shared_scope(&app, &cancel)?;
+        crate::log(&format!("[session-start] {start_id} {tool} in {}", folder.display()));
+        let argv = held_argv(&argv, Some((start_id.as_str(), scope.as_str())));
         let place = folder.file_name().map_or_else(|| folder.display().to_string(), |n| n.to_string_lossy().into_owned());
         start_held(folder, argv)
             .await
             .map_err(|e| ("LAUNCH_FAILED", format!("The session didn't start: {e}")))?;
         // Started from elsewhere with no window: tell the owner at this Mac (spec §5.2).
-        let tool = if start.tool == "codex" { "Codex" } else { "Claude Code" };
+        let label = if tool == "codex" { "Codex" } else { "Claude Code" };
         let _ = crate::notify::native_notify(
-            format!("{tool} started in {place}"),
+            format!("{label} started in {place}"),
             Some("End it from its panel in Lightbulb.".into()),
-            Some(format!("start-{}", start.start_id)),
+            Some(format!("start-{start_id}")),
             None,
             None,
         )
         .await;
-        Ok(json!({"started": true, "tool": start.tool}))
+        Ok(json!({"started": true, "tool": tool}))
     }
     .await;
     match &result {
@@ -322,22 +380,15 @@ pub async fn start(
     result
 }
 
-fn prepare(
-    app: &tauri::AppHandle,
-    params: Value,
-    cancel: &watch::Receiver<bool>,
-) -> Result<(Start, PathBuf, Vec<String>, String), Failure> {
-    let (start, folder, argv) = validate(params, &home())?;
-    crate::log(&format!("[session-start] {} {} in {}", start.start_id, start.tool, folder.display()));
+fn shared_scope(app: &tauri::AppHandle, cancel: &watch::Receiver<bool>) -> Result<String, Failure> {
     if !crate::local_sessions::enrollment::sharing_on(app) {
         return Err(("SHARING_OFF", "Turn on session sharing in the Lightbulb app on this Mac first.".into()));
     }
     if *cancel.borrow() {
         return Err(("CANCELLED", "The start was cancelled.".into()));
     }
-    let scope = crate::local_sessions::enrollment::launch_scope(app)
-        .map_err(|_| ("SHARING_OFF", "Turn on session sharing in Lightbulb on this Mac first.".to_string()))?;
-    Ok((start, folder, argv, scope))
+    crate::local_sessions::enrollment::launch_scope(app)
+        .map_err(|_| ("SHARING_OFF", "Turn on session sharing in Lightbulb on this Mac first.".to_string()))
 }
 
 /// Start `argv` in a new holder in `folder`: the one launcher for the New session view, a remote
@@ -648,6 +699,24 @@ mod tests {
             let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
             assert!(classic(&held_argv(&cli_argv(claude, "claude", &args), link)), "{args:?}");
             assert!(!classic(&held_argv(&cli_argv(codex, "codex", &args), link)), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn open_in_terminal_forks_the_conversation_as_plain_argv() {
+        let id = "11111111-2222-4333-8444-555555555555";
+        assert_eq!(open_argv(Path::new("/bin/claude"), "claude", id),
+            ["/bin/claude", "--resume", id, "--fork-session", "--permission-mode", "manual"]);
+        assert_eq!(open_argv(Path::new("/bin/codex"), "codex", id),
+            ["/bin/codex", "--no-daemon", "--sandbox", "workspace-write", "--ask-for-approval", "on-request", "fork", id]);
+        let home = tempfile::tempdir().unwrap();
+        let start = "6f1c1d52-0f7b-4c1e-9d38-2a6d8f3e7b10";
+        for bad in [
+            json!({"tool": "claude", "conversationId": "--dangerously-skip-permissions", "startId": start}),
+            json!({"tool": "claude", "conversationId": id, "startId": start, "folder": "/"}),
+            json!({"tool": "bash", "conversationId": id, "startId": start}),
+        ] {
+            assert!(validate_open(bad, home.path()).is_err());
         }
     }
 

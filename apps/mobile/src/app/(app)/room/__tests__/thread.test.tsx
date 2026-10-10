@@ -386,6 +386,24 @@ describe("thread screen", () => {
     );
   });
 
+  it("keeps a thread run's background subagents under its saved reply", async () => {
+    // Its own room: the shared history cache outlives a case, and this reply must not reach the next one.
+    mockRoomId = "room-delegate";
+    mockLive.messaging.listRooms.mockResolvedValue({ rooms: [{ ...mockRoom, roomId: mockRoomId }] });
+    await render(<Thread />);
+    await waitFor(() => expect(screen.getByText("first")).toBeTruthy());
+    const emit = (event: LiveEvent) => act(async () => { for (const handler of typingHandlers) handler(event); });
+    const frame = (body: Record<string, unknown>) => ({ type: "room.run.frame",
+      payload: { roomId: "room-delegate", agentId: "agent-1", runId: "run-t", threadRootMessageId: "m1", frame: body } } as LiveEvent);
+    await emit(frame({ type: "tool_start", runId: "run-t", tool: "delegate_task", toolCallId: "t1", args: {} }));
+    await emit(frame({ type: "tool_end", runId: "run-t", tool: "delegate_task", toolCallId: "t1", result: JSON.stringify({ delegation_id: "d-1" }) }));
+    const reply = mockMsg({ messageId: "m6", messageSeq: 6, text: "helpers started", threadRootMessageId: "m1", replyToMessageId: "m1", runId: "run-t", roomId: "room-delegate" });
+    await emit({ schemaVersion: 1, eventId: "e-6", type: "room.message.created", occurredAt: reply.createdAt, roomId: "room-delegate", messageSeq: 6, roomRevision: 1, payload: reply } as LiveEvent);
+    await emit(frame({ type: "run_ended", outcome: "done" }));
+    await waitFor(() => expect(screen.getByText("helpers started")).toBeTruthy());
+    expect(screen.getByText("Background subagents dispatched")).toBeTruthy();
+  });
+
   it("shows another member's typing line with the web's exact wording", async () => {
     await render(<Thread />);
     await waitFor(() => expect(screen.getByText("first")).toBeTruthy());

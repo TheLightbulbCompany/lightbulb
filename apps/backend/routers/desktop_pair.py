@@ -170,7 +170,10 @@ async def delete_device(
     device_id: str,
     ctx: AuthContext = Depends(get_current_user),
 ) -> None:
-    """Revoke a paired device and force-close its live WS session."""
+    """Revoke a paired device and force-close its live WS session.
+
+    Only the member who paired the device may unpair it; a workspace admin may unpair any.
+    Anyone else gets 404, so a device id never reveals whose Mac it is."""
     owner_id = resolve_owner_id(ctx)
 
     async def _force_close_device(target_device_id: str) -> bool:
@@ -181,11 +184,16 @@ async def delete_device(
         deleted = await ConnectionService().delete_relay_rows_for_device(owner_id, target_device_id)
         return deleted > 0
 
+    own = None if ctx.is_org_admin else ctx.user_id
+    if own is not None and not await container_repo.mark_paired_device_revoking(owner_id, device_id, user_id=own):
+        raise HTTPException(status_code=404, detail="Device not found")
+
     try:
         # Revoked at once for everything but one thing: from here every command resolution
         # refuses this pair, except the backend's own wipe of the Mac agent Chrome, which runs
         # before the trust record goes.
-        await container_repo.mark_paired_device_revoking(owner_id, device_id)
+        if own is None:
+            await container_repo.mark_paired_device_revoking(owner_id, device_id)
         # One budget: the route stays well inside API Gateway's 30 s.
         results = await asyncio.wait_for(
             asyncio.gather(mac_browser.clear_device(owner_id, device_id), return_exceptions=True),

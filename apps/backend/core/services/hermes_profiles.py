@@ -924,7 +924,7 @@ def delete_profile(owner_id: str, agent_id: str) -> None:
     client.delete_object(Bucket=bucket, Key=f"marketplace-installs/{owner_id}/{agent_id}.json")
 
 
-# ---- Task 13a: config.get/config.patch/config.set on a profile ---------------------------------
+# ---- Task 13a: config.get/config.patch on a profile --------------------------------------------
 # Spec §4.5: "Config is read once per AIAgent construction and cached on file mtime, so rewriting
 # profiles/<id>/config.yaml takes effect on the agent's next turn. No watcher, no restart." The
 # backend is the ONLY writer of a Hermes profile, so a hot patch is an S3 rewrite plus a revision
@@ -932,12 +932,12 @@ def delete_profile(owner_id: str, agent_id: str) -> None:
 #
 # M4-R49 audit (fix round 2 continuation): every sync-boto3 writer in this module reached from a
 # coroutine, and how it stays off the event loop --
-#   config_snapshot / patch_profile_config / set_profile_config -- one external caller each
+#   config_snapshot / patch_profile_config -- one external caller each
 #     (runtime_rpc.execute_sync), every call already wrapped in run_in_thread.
 #   read_profile_config -- no external caller; only used internally by patch_profile_config
 #     above, itself always thread-wrapped by ITS caller.
-#   _upload_config_yaml -- no external caller; only used internally by patch_profile_config/
-#     set_profile_config above, same coverage.
+#   _upload_config_yaml -- no external caller; only used internally by patch_profile_config
+#     above, same coverage.
 #   stage_codex_auth -- one external caller (container_auth.push_oauth_credential_to_container),
 #     already wrapped in run_in_thread.
 #   refresh_integrations -- fixed THIS round: awaited directly from routers/integrations.py and
@@ -967,7 +967,7 @@ def _shared_s3_client():
 
 def _s3_put(bucket: str, key: str, body: str) -> None:
     """Sync single-object PUT for the small, infrequent settings-mutation paths below
-    (``config.patch``/``config.set``, and Task 14's token-file writes) — each stays a pure sync
+    (``config.patch``, and Task 14's token-file writes) — each stays a pure sync
     function (matching its own tests); their one async caller, ``runtime_rpc.execute_sync``,
     wraps the call in ``core.dynamodb.run_in_thread`` so the blocking I/O here never touches the
     event loop directly. ``upload_profile`` above is the higher-fanout path (up to five objects
@@ -1231,15 +1231,6 @@ def patch_profile_config(owner_id: str, agent_id: str, patch: dict) -> dict:
     ``config.yaml`` yet is a provisioning defect, not something to paper over by merging the
     patch onto ``{}`` and uploading that as if it were the whole profile."""
     config = _deep_merge(read_profile_config(owner_id, agent_id, required=True), patch or {})
-    _upload_config_yaml(owner_id, agent_id, config)
-    return config
-
-
-def set_profile_config(owner_id: str, agent_id: str, config: dict) -> dict:
-    """``config.set`` — a full REPLACE, not a merge (unlike ``patch_profile_config``): a key
-    present in the stored config but absent from ``config`` does not survive. The caller is
-    responsible for handing over a complete profile shape."""
-    config = config or {}
     _upload_config_yaml(owner_id, agent_id, config)
     return config
 

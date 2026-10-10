@@ -55,16 +55,18 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 @pytest.fixture
 def admin_env(app):
-    """Caller has an @isol8.co email — require_platform_admin admits them.
+    """Caller is on PLATFORM_ADMIN_USER_IDS — require_platform_admin admits them.
 
     The fixture overrides get_current_user in app.dependency_overrides so the
-    require_platform_admin check sees an AuthContext with email
-    "admin@isol8.co". The teardown pops the override to keep fixtures from
+    require_platform_admin check sees an allowlisted user id
+    ("user_platform_admin"). The teardown pops the override to keep fixtures from
     leaking across tests (the async_client fixture also clears overrides on
     its own teardown, but we pop explicitly here as a safety net in case a
     test uses admin_env without async_client).
     """
-    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_test_123", email="admin@isol8.co")
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(
+        user_id="user_platform_admin", email="admin@thelightbulb.company"
+    )
     try:
         yield
     finally:
@@ -73,7 +75,7 @@ def admin_env(app):
 
 @pytest.fixture
 def non_admin_env(app):
-    """Caller's email does NOT end with @isol8.co — every admin endpoint 403s."""
+    """Caller is not on PLATFORM_ADMIN_USER_IDS — every admin endpoint 403s."""
     app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_test_123", email="user@example.com")
     try:
         yield
@@ -151,7 +153,7 @@ class TestContainerReprovision:
         kwargs = mock_audit_repo.await_args.kwargs
         assert kwargs["action"] == "container.reprovision"
         assert kwargs["target_user_id"] == "u_target"
-        assert kwargs["admin_user_id"] == "user_test_123"
+        assert kwargs["admin_user_id"] == "user_platform_admin"
 
     @pytest.mark.asyncio
     async def test_idempotent_within_window(self, async_client, admin_env):

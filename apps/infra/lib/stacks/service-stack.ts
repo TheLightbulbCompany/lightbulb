@@ -1501,6 +1501,26 @@ export class ServiceStack extends cdk.Stack {
       // existing receipts remain readable/cancellable in the backend.
       DESKTOP_EXECUTION_ENABLED: desktopOwner ? "true" : "false",
       DESKTOP_EXECUTION_OWNER_ALLOWLIST: desktopOwner,
+      // Platform admin (/admin, /ops, marketplace review, workspace wipe) is
+      // this reviewed list of Clerk USER IDS per env, never an email domain.
+      // Empty ⇒ nobody is admin. Comma-separated.
+      // Ids are per Clerk instance. Prod: Prasiddha (team + gmail accounts),
+      // Leo, Aden, admin@. Dev: Prasiddha (gmail), Aden, admin@ (Leo has no
+      // dev account). Read from the founder workspace 2026-10-10.
+      PLATFORM_ADMIN_USER_IDS:
+        env === "prod"
+          ? [
+              "user_3IROHYIZPPS1G7ISXhjsnnKBEMX",
+              "user_3HmnXQdFUk2pP2Zjw4HEGkefcNM",
+              "user_3J8t0Yp76auS131Lk9ov9YCc5We",
+              "user_3I8s15Ex1b9xin0keAJTMcoipm2",
+              "user_3H3vhcZzM4vaNCe17zs0XXIrTMW",
+            ].join(",")
+          : [
+              "user_3I4REo0WJ0GoGqQFN6gmKAN4Hqs",
+              "user_3JISO0QYSpiaupJII105uDWMApg",
+              "user_3IEMUT2a1z8za7m4lnFzpdZrccc",
+            ].join(","),
       WEBHOOK_DEDUP_TABLE: tableName(env, "webhook-event-dedup"),
       CORS_ORIGINS:
         env === "prod"
@@ -2352,9 +2372,8 @@ export class ServiceStack extends cdk.Stack {
     // Container definition
     taskDef.addContainer("backend", {
       image: ecs.ContainerImage.fromDockerImageAsset(backendImage),
-      // Run as root. The image's default USER is appuser; flipping the backend to it
-      // is a runtime-user change, not a deletion, so it stays out of this PR.
-      user: "0:0",
+      // Runs as the image's own non-root USER (appuser). Root was only ever needed to
+      // write the shared EFS mount, which is gone.
       portMappings: [{ containerPort: 8000 }],
       environment: {
         ...backendContainerEnvironment,

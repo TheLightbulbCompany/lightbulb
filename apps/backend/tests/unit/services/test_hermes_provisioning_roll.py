@@ -170,3 +170,23 @@ async def test_an_env_drift_rewrites_profiles_after_the_stop_without_respec(monk
     monkeypatch.setattr(hermes_provisioning, "write_profiles", _write)
     assert await hermes_provisioning.roll_runtime_image("org_a") == "updated"
     assert [c[0] for c in calls] == ["update", "ready", "health", "stop", "profiles"]
+
+
+@pytest.mark.asyncio
+async def test_a_lifecycle_change_on_the_same_image_updates_the_runtime(monkeypatch):
+    # IDLE_TIMEOUT_S moved 4 h -> 30 min: without this a live runtime on the current image kept 4 h forever.
+    calls = _wire(monkeypatch, current_image=IMAGE)
+    life = {"idleRuntimeSessionTimeout": 1800, "maxLifetime": 28800}
+    monkeypatch.setattr(
+        hermes_provisioning, "build_runtime_request_for_owner", lambda o, r, **kw: {"lifecycleConfiguration": life}
+    )
+    monkeypatch.setattr(
+        hermes_provisioning,
+        "_runtime_description",
+        lambda arn: {
+            "agentRuntimeArtifact": {"containerConfiguration": {"containerUri": IMAGE}},
+            "lifecycleConfiguration": {"idleRuntimeSessionTimeout": 14400, "maxLifetime": 28800},
+        },
+    )
+    assert await hermes_provisioning.roll_runtime_image("org_a") == "updated"
+    assert calls[0] == ("update", "arn:rt", {"lifecycleConfiguration": life})

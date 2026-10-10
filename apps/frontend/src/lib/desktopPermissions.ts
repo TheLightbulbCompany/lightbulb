@@ -102,9 +102,11 @@ export async function writeDesktopPermissionGrant(
 }
 
 /** A desktop command error for people: an older app rejects a command it lacks with
- *  Tauri's raw "Command … not found", which means "update the app". */
+ *  Tauri's raw "Command … not found", which means "update the app". Turning a switch on
+ *  or adding a folder asks on the Mac itself; Cancel there is a choice, not a failure. */
 export function desktopErrorMessage(error: unknown): string {
   const text = String(error instanceof Error ? error.message : error);
+  if (/declined on this Mac/i.test(text)) return "Not changed — you chose Cancel on your Mac.";
   return /command\b.*\bnot found|unknown command/i.test(text)
     ? "Update the Lightbulb desktop app, then reopen Settings."
     : text;

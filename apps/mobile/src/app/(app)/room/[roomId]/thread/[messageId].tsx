@@ -19,6 +19,7 @@ import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { TimelineSkeleton } from "../../../../../components/chat/TimelineSkeleton";
 import { ConversationHeader } from "../../../../../components/conversation/ConversationHeader";
 import { AVATAR_GUTTER, MetaText, WorkingBubble } from "../../../../../components/conversation/bubbles";
+import { SavedDelegations } from "../../../../../components/room/DelegateCard";
 import { MessageActionsSheet } from "../../../../../components/room/MessageActionsSheet";
 import { LocalMessageRows, MessageGroup } from "../../../../../components/room/MessageGroup";
 import { RoomBlockedState } from "../../../../../components/room/RoomBlockedState";
@@ -345,6 +346,7 @@ export default function ThreadScreen() {
                 members={members ?? []}
                 sessionCandidates={sessionCandidates}
               />
+              <SavedDelegations state={rooms.subagents} entry={rooms.delegationsByMessage.get(item.message.messageId)} />
               {placed.after.get(item.message.messageId)?.map((run) => (
                 <RunBlock
                   key={run.runId}

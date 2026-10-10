@@ -30,6 +30,19 @@ def _webhook_secrets(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _listing_matches_checkout(monkeypatch):
+    """Fulfillment checks session metadata against the listing row. Every
+    checkout in this file sells listing l1 v1 by seller s1 at 2000 cents."""
+    from core.repositories import marketplace_repo as _repo
+
+    monkeypatch.setattr(
+        _repo,
+        "get_listing",
+        AsyncMock(return_value={"listing_id": "l1", "version": 1, "seller_id": "s1", "price_cents": 2000}),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _no_existing_transfers(monkeypatch):
     """The flush adopts an existing Transfer for the purchase's group before
     creating one; default every test to "none found" so create-path
@@ -599,3 +612,122 @@ async def test_flush_adopts_existing_transfer_instead_of_creating(monkeypatch):
     mock_transfer.assert_not_awaited()
     assert mock_stamp.await_args.kwargs["transfer_id"] == "tr_orphaned"
     mock_totals.assert_awaited_once_with(seller_id="s1", transferred_cents=850)
+
+
+def _post_checkout_event(client, *, account=None, seller_id="s1", amount=2000):
+    from core.services.webhook_dedup import WebhookDedupResult
+
+    event = {
+        "id": "evt_guard",
+        "type": "checkout.session.completed",
+        "data": {
+            "object": {
+                "id": "cs_guard",
+                "payment_status": "paid",
+                "metadata": {"listing_id": "l1", "buyer_id": "b1", "seller_id": seller_id, "version": "1"},
+                "amount_total": amount,
+                "payment_intent": None,
+            }
+        },
+    }
+    if account:
+        event["account"] = account
+    with (
+        patch("routers.marketplace_purchases.stripe.Webhook.construct_event", return_value=event),
+        patch(
+            "routers.marketplace_purchases.webhook_dedup.record_event_or_skip",
+            new_callable=AsyncMock,
+            return_value=WebhookDedupResult.RECORDED,
+        ),
+        patch(
+            "routers.marketplace_purchases.marketplace_repo.transact_record_purchase_and_credit_seller",
+            new_callable=AsyncMock,
+        ) as mock_fulfil,
+        patch(
+            "routers.marketplace_purchases.marketplace_repo.get_payout_account",
+            new_callable=AsyncMock,
+            return_value={},
+        ),
+    ):
+        resp = client.post(
+            "/api/v1/marketplace/webhooks/stripe-marketplace",
+            headers={"stripe-signature": "test"},
+            content=b'{"id":"evt_guard"}',
+        )
+    assert resp.status_code == 200, resp.text
+    return mock_fulfil
+
+
+def test_checkout_from_connected_account_is_not_fulfilled(client):
+    """A Connect-signed checkout happened on a connected account's balance,
+    not the platform's: no purchase, no entitlement, no seller credit."""
+    assert not _post_checkout_event(client, account="acct_owner").await_count
+
+
+@pytest.mark.parametrize("seller_id,amount", [("s_other", 2000), ("s1", 1)])
+def test_checkout_not_matching_listing_is_not_fulfilled(client, seller_id, amount):
+    assert not _post_checkout_event(client, seller_id=seller_id, amount=amount).await_count
+
+
+def test_checkout_matching_listing_is_fulfilled(client):
+    assert _post_checkout_event(client).await_count == 1
+
+
+@patch("routers.marketplace_purchases.license_service.revoke", new_callable=AsyncMock)
+@patch("routers.marketplace_purchases.marketplace_repo.find_purchase_by_payment_intent", new_callable=AsyncMock)
+@patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip", new_callable=AsyncMock)
+@patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
+def test_refund_from_connected_account_is_ignored(mock_construct, mock_dedup, mock_find, mock_revoke, client):
+    from core.services.webhook_dedup import WebhookDedupResult
+
+    mock_dedup.return_value = WebhookDedupResult.RECORDED
+    mock_find.return_value = {"purchase_id": "cs_x", "buyer_id": "b1", "seller_id": "s1"}
+    mock_construct.return_value = {
+        "id": "evt_ref",
+        "type": "charge.refunded",
+        "account": "acct_owner",
+        "data": {"object": {"payment_intent": "pi_x", "refunded": True}},
+    }
+    resp = client.post(
+        "/api/v1/marketplace/webhooks/stripe-marketplace",
+        headers={"stripe-signature": "test"},
+        content=b'{"id":"evt_ref"}',
+    )
+    assert resp.status_code == 200, resp.text
+    mock_find.assert_not_awaited()
+    mock_revoke.assert_not_awaited()
+
+
+@patch("routers.marketplace_purchases.webhook_dedup.delete_event", new_callable=AsyncMock)
+@patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip", new_callable=AsyncMock)
+@patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
+def test_checkout_with_unreadable_listing_is_retried(mock_construct, mock_dedup, mock_delete, monkeypatch, client):
+    """A listing row not visible yet is not a mismatch: the dedup claim is
+    dropped and the delivery fails so Stripe redelivers it."""
+    from core.repositories import marketplace_repo as _repo
+    from core.services.webhook_dedup import WebhookDedupResult
+
+    get_listing = AsyncMock(return_value=None)
+    monkeypatch.setattr(_repo, "get_listing", get_listing)
+    mock_dedup.return_value = WebhookDedupResult.RECORDED
+    mock_construct.return_value = {
+        "id": "evt_missing",
+        "type": "checkout.session.completed",
+        "data": {
+            "object": {
+                "id": "cs_missing",
+                "payment_status": "paid",
+                "metadata": {"listing_id": "l1", "buyer_id": "b1", "seller_id": "s1", "version": "1"},
+                "amount_total": 2000,
+                "payment_intent": None,
+            }
+        },
+    }
+    resp = client.post(
+        "/api/v1/marketplace/webhooks/stripe-marketplace",
+        headers={"stripe-signature": "test"},
+        content=b'{"id":"evt_missing"}',
+    )
+    assert resp.status_code >= 500
+    mock_delete.assert_awaited_once_with(event_id="stripe-marketplace:evt_missing")
+    assert get_listing.await_args.kwargs == {"consistent": True}

@@ -32,6 +32,7 @@ from core.services import (
     link_preview,
     local_sessions,
     native_session_tools,
+    openclaw_work,
     session_chat,
     session_pickup,
     session_links,
@@ -156,6 +157,38 @@ async def local_session_invocation(request: Request) -> local_session_grants.Age
     return local_session_grants.verify(
         authorization.removeprefix("Bearer ") if authorization.startswith("Bearer ") else ""
     )
+
+
+async def agent_reader(
+    auth: local_session_grants.AgentInvocation = Depends(local_session_invocation),
+) -> AuthContext:
+    """An agent turn reads rooms as the person who asked it, with exactly that person's access (the
+    hosted MCP's find_rooms/read_messages). The person is the turn grant's requester, set by the
+    backend from the canonical trigger -- the human author of a typed message, the signed-in speaker
+    of a Live run -- never by the agent. No requester (a Meet speaker, a voice run another speaker
+    steered, a Paperclip run, an agent's message): nothing is readable, since every room is private
+    to its members."""
+    if not auth.requester_id or not auth.room_id:
+        raise ApiProblem("ROOM_FORBIDDEN", "No signed-in person asked for this, so no rooms can be read for it.")
+    # The turn's room, re-checked on every read as a local-session read is: the agent still a member
+    # (a removed agent's unexpired grant reads nothing), and no other org in the room to hear it.
+    await local_sessions.require_caller(auth, auth.room_id)
+    # And the person still in it: someone who left or was removed is no longer who this turn acts for.
+    if await messaging_repo.get_member(auth.room_id, "human", auth.requester_id) is None:
+        raise ApiProblem("ROOM_FORBIDDEN", "The person who asked is no longer in this room.")
+    return AuthContext(user_id=auth.requester_id, org_id=auth.owner_id)
+
+
+@router.get("/messaging/agent-read/rooms")
+async def agent_find_rooms(query: str = "", limit: int = 30, auth: AuthContext = Depends(agent_reader)):
+    return await hosted_mcp.rooms_for(auth, query, limit)
+
+
+@router.get("/messaging/agent-read/messages")
+async def agent_read_messages(
+    room_id: str, after_seq: int | None = None, limit: int = 25, auth: AuthContext = Depends(agent_reader)
+):
+    return await hosted_mcp.messages_for(auth, room_id, after_seq, limit)
 
 
 @router.get("/messaging/local-session-agent/resources", response_model=local_sessions.RoomResources)
@@ -1034,8 +1067,9 @@ async def _resolved_run(auth: AuthContext, run_id: str) -> tuple[str, dict]:
     return owner_id, row
 
 
-async def _run_control(owner_id: str, run_id: str, action: str, payload: dict) -> int | None:
-    """202 accepted, 404 not active, None when the owner has no addressable runtime."""
+async def _run_control(owner_id: str, run_id: str, action: str, payload: dict, grant: str | None = None) -> int | None:
+    """202 accepted, 404 not active, None when the owner has no addressable runtime. `grant`: a
+    steer's lowered local-session grant (openclaw_work.steer_grant)."""
     try:
         container = await container_rpc.running_container(owner_id)
     except ApiProblem:
@@ -1044,7 +1078,10 @@ async def _run_control(owner_id: str, run_id: str, action: str, payload: dict) -
         container,
         f"/plugins/lightbulb-channel/runs/{run_id}/{action}",
         json_body=payload,
-        headers={"Authorization": f"Bearer {container['gateway_token']}"},
+        headers={
+            "Authorization": f"Bearer {container['gateway_token']}",
+            **({"X-Lightbulb-Local-Session-Token": grant} if grant else {}),
+        },
         timeout_s=10.0,
     )
     return response.status_code
@@ -1121,7 +1158,12 @@ async def steer_run(run_id: str, request: SteerRunRequest, auth: AuthContext = D
         raise ApiProblem("RUN_NOT_ACTIVE", gate.get("message", "Steering is blocked."))
     await container_repo.touch_last_interactive(owner_id)
     try:
-        status = await _run_control(owner_id, run_id, "steer", {"text": request.text})
+        # Another member steering this run must not borrow its requester's access.
+        grant = await openclaw_work.steer_grant(owner_id, row, auth.user_id)
+    except (RuntimeError, ApiProblem, KeyError) as exc:
+        raise ApiProblem("RUNTIME_UNAVAILABLE", "Could not steer the run.", retryable=True, retry_after=3) from exc
+    try:
+        status = await _run_control(owner_id, run_id, "steer", {"text": request.text}, grant)
     except httpx.HTTPError as exc:
         raise ApiProblem("RUNTIME_UNAVAILABLE", "Could not steer the run.", retryable=True, retry_after=3) from exc
     if status == 202:

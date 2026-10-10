@@ -13,6 +13,8 @@ vi.mock("@/hooks/useRuntimeRpc", () => ({
   useRuntimeRpcMutation: () => mockMutation,
 }));
 vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
+const mockIsAdmin = vi.fn(() => true);
+vi.mock("@/hooks/useIsWorkspaceAdmin", () => ({ useIsWorkspaceAdmin: () => mockIsAdmin() }));
 
 function installedSkill(over: Record<string, unknown> = {}) {
   return {
@@ -36,6 +38,19 @@ describe("SkillsTab", () => {
     mockData.mockReset();
     mockMutate.mockReset();
     mockMutation.mockReset().mockResolvedValue({});
+    mockIsAdmin.mockReset().mockReturnValue(true);
+  });
+
+  it("shows a member no toggles, because only admins can change skills", () => {
+    mockIsAdmin.mockReturnValue(false);
+    mockData.mockReturnValue({
+      skills: [installedSkill(), installedSkill({ name: "web", skillKey: "web", disabled: true })],
+      disabledNames: ["web"],
+    });
+    render(<SkillsTab />);
+    expect(screen.getByText(/only admins can change skills/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^disable$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^install$/i })).toBeNull();
   });
 
   it("renders the skill store header from a skills.status report", () => {

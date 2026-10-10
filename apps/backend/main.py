@@ -741,22 +741,8 @@ app.add_middleware(HostDispatcherMiddleware)
 # Requires uvicorn >= 0.31 for ipaddress.ip_network matching in trusted_hosts
 # (older versions only do exact-string set membership).
 #
-# RESIDUAL CAVEAT (not fixed here, tracked as follow-up): in production, the
-# AWS ALB by default APPENDS the real client IP to any inbound XFF rather
-# than stripping it. The backend then sees `XFF: <attacker-spoofed>, <real>`
-# and uvicorn's middleware reads the LEFTMOST entry, which is the spoofed
-# one. So request.client.host (and audit-log source IPs derived from it) are
-# still attacker-influenced in production. The fix is one of:
-#   - enable XFF stripping at the ALB (AWS-side attribute / WAF rule), or
-#   - swap to a middleware that reads the rightmost XFF (trust N hops from
-#     the right).
-# The audit-log half of this gap is closed: audit rows now derive their IP
-# from core/services/admin_audit.extract_client_ip, which walks XFF from the
-# RIGHT skipping our own infrastructure hops (VPC CIDR / loopback) and takes
-# the first untrusted entry — the client hop API Gateway established — and
-# ignores the promoted request.client.host. Other request.client.host
-# consumers (rate-limit keys etc.) still see the leftmost hop until an
-# edge-side fix lands.
+# XFF is walked from the RIGHT (uvicorn >= 0.31): the client host is the first entry that is
+# not one of the trusted hosts below, so a caller-supplied leftmost XFF entry is never promoted.
 # Both per-env VPC CIDRs (network-stack.ts ENV_CONFIG): dev 10.0.0.0/16,
 # prod 10.2.0.0/16. The list previously carried only the dev CIDR, so in
 # prod the ALB peer was never trusted and X-Forwarded-Proto promotion

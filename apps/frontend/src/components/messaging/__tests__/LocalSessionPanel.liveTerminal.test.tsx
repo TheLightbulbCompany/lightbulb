@@ -444,3 +444,20 @@ it("gives up the terminal a viewer was watching when no kept screen is reported 
   expect(screen.getByText("The screen is gone: this session's terminal closed.")).toBeTruthy();
   vi.useRealTimers();
 });
+
+it("offers Open in a terminal on a running app session to its owner only", () => {
+  const app = { ...session, terminal: undefined, terminalReason: "app" as const };
+  const panel = (s: LocalSession, own: boolean) => render(<LocalSessionPanel session={s} ownerName="Alice" own={own} client={client as never} revision={0} onAccessLost={() => {}} />);
+  panel(app, true);
+  expect(screen.getByRole("button", { name: "Open in a terminal" })).toBeTruthy();
+  expect(screen.getByText("Opens this conversation in a live terminal on your Mac. The app keeps its copy.")).toBeTruthy();
+  cleanup();
+  panel(app, false);
+  expect(screen.queryByRole("button", { name: "Open in a terminal" })).toBeNull();
+  cleanup();
+  panel({ ...app, status: "ended" }, true);
+  expect(screen.queryByRole("button", { name: "Open in a terminal" })).toBeNull();
+  cleanup();
+  panel(session, true);
+  expect(screen.queryByRole("button", { name: "Open in a terminal" })).toBeNull();
+});

@@ -239,3 +239,60 @@ async def test_peer_hop_rederives_authority_and_refuses_other_commands(relay):
     )
     resolve.assert_awaited_with(OWNER, USER, "mac_1", "gen_1", "session.options.v1")
     assert session.calls[-1][0] == "session.options.v1"
+
+
+async def test_open_in_terminal_is_the_owners_alone_and_sends_only_the_conversation(relay, monkeypatch):
+    from core.auth import AuthContext
+
+    session, _, _ = relay
+    conversation = "11111111-2222-4333-8444-555555555555"
+    row = {
+        "humanUserId": USER,
+        "deviceId": "mac_1",
+        "provider": "claude",
+        "nativeConversationId": conversation,
+        "terminalReason": "app",
+    }
+    monkeypatch.setattr("core.services.local_sessions.authorize_session", AsyncMock(return_value=(row, {})))
+    monkeypatch.setattr(
+        start, "list_targets", AsyncMock(return_value={"devices": [{"deviceId": "mac_1", "generation": "gen_1"}]})
+    )
+    sid = "22222222-2222-4222-8222-222222222222"
+    with pytest.raises(DesktopError) as exc:
+        await start.open_in_terminal(AuthContext(user_id="user_bob", org_id=OWNER), sid, {"startId": START_ID})
+    assert exc.value.code == "desktop_forbidden"
+    with pytest.raises(DesktopError):
+        await start.open_in_terminal(AuthContext(user_id=USER, org_id=OWNER), sid, {"startId": START_ID, "folder": "/"})
+    monkeypatch.setitem(row, "terminalReason", "plain")
+    with pytest.raises(DesktopError) as exc:
+        await start.open_in_terminal(AuthContext(user_id=USER, org_id=OWNER), sid, {"startId": START_ID})
+    assert exc.value.code == "session_not_openable"
+    monkeypatch.setitem(row, "terminalReason", "app")
+    await start.open_in_terminal(AuthContext(user_id=USER, org_id=OWNER), sid, {"startId": START_ID})
+    await asyncio.gather(*start._background)
+    assert session.calls == [
+        ("session.start.v1", {"tool": "claude", "conversationId": conversation, "startId": START_ID}, start.START_MS)
+    ]
+
+
+async def test_an_older_mac_rejecting_open_says_to_update_the_app(relay, monkeypatch):
+    from core.auth import AuthContext
+
+    session, _, publisher = relay
+    session.result = {"ok": False, "error": {"code": "INVALID_REQUEST", "message": "Malformed request."}}
+    row = {
+        "humanUserId": USER,
+        "deviceId": "mac_1",
+        "provider": "claude",
+        "nativeConversationId": "11111111-2222-4333-8444-555555555555",
+        "terminalReason": "app",
+    }
+    monkeypatch.setattr("core.services.local_sessions.authorize_session", AsyncMock(return_value=(row, {})))
+    monkeypatch.setattr(
+        start, "list_targets", AsyncMock(return_value={"devices": [{"deviceId": "mac_1", "generation": "gen_1"}]})
+    )
+    sid = "22222222-2222-4222-8222-222222222222"
+    await start.open_in_terminal(AuthContext(user_id=USER, org_id=OWNER), sid, {"startId": START_ID})
+    await asyncio.gather(*start._background)
+    error = publisher.await_args.args[2]["payload"]["error"]
+    assert error["message"] == "Update the Lightbulb app on this Mac, then try again."

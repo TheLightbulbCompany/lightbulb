@@ -261,6 +261,19 @@ it("a Settings switch the Mac refused to save says so and shows what the Mac sti
   expect(screen.getByRole("switch", {name:"Shell"})).toBeChecked();
   expect(localStorage.getItem("isol8.desktop.permissions.v1")).toBeNull();
 });
+it("a switch turned on and cancelled on the Mac stays off and says so calmly", async () => {
+  invoke.mockImplementation(async (command) => {
+    if (command === "desktop_permissions_set") throw "Not changed: declined on this Mac.";
+    return command === "desktop_permissions_get"
+      ? {consented:true,shell:true,browser:true,files:false,screen:false,paperclip:true,updatedAt:"1"}
+      : undefined;
+  });
+  render(<DesktopPermissions />);
+  await userEvent.click(await screen.findByRole("switch", {name:"Files"}));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Not changed — you chose Cancel on your Mac.");
+  expect(screen.getByRole("switch", {name:"Files"})).not.toBeChecked();
+  expect(localStorage.getItem("isol8.desktop.permissions.v1")).toBeNull();
+});
 it("pairing does not close over a consent the Mac refused to save", async () => {
   invoke.mockImplementation(async (command) => {
     if (command === "desktop_permissions_set") throw "write desktop_permissions.json: Permission denied";

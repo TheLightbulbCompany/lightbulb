@@ -352,10 +352,11 @@ export default function LlmPanel() {
     live,
     statusLoaded ? "models.authStatus" : null,
   );
-  // Model catalog + owner default, from the runtime config snapshot.
+  // Model catalog + owner default, from the runtime config snapshot. Reading the
+  // config is admin-only on the backend, so a member never asks for it.
   const { data: configSnapshot } = useRuntimeRpc<unknown>(
     live,
-    statusLoaded ? "config.get" : null,
+    statusLoaded && !orgRestricted ? "config.get" : null,
   );
   const { data: managedCatalog } = useRuntimeRpc<unknown>(
     live,
@@ -478,7 +479,10 @@ export default function LlmPanel() {
 
   // Model catalog card -------------------------------------------------------
   let catalogCard: ReactNode;
-  if ((managed ? managedCatalog : configSnapshot) === undefined && groups.length === 0) {
+  if (restricted) {
+    // The provider card already says the admin manages this; there is no catalog to load.
+    catalogCard = null;
+  } else if ((managed ? managedCatalog : configSnapshot) === undefined && groups.length === 0) {
     catalogCard = (
       <Card>
         <Text style={styles.overline}>MODEL CATALOG</Text>

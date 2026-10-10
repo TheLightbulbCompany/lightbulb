@@ -16,7 +16,8 @@ from core.services.messaging import AbortRunResponse, ApiProblem, SteerRunReques
 
 AGENT_ID = "11111111-1111-4111-8111-111111111111"
 ROOM_ID = "22222222-2222-4222-8222-222222222222"
-ROW = {"runId": "run-1", "roomId": ROOM_ID, "agentId": AGENT_ID, "status": "started"}
+TRIGGER = "33333333-3333-4333-8333-333333333333"
+ROW = {"runId": "run-1", "roomId": ROOM_ID, "agentId": AGENT_ID, "status": "started", "triggerMessageId": TRIGGER}
 
 
 @pytest.fixture(autouse=True)
@@ -37,7 +38,7 @@ captured_close: list = []
 
 
 @contextlib.contextmanager
-def _common(row=ROW, response=None, member_error=None, member={"id": AGENT_ID}):
+def _common(row=ROW, response=None, member_error=None, member={"id": AGENT_ID}, trigger_author="user_1"):
     """The run-control doors over the AgentCore transport seam: `captured` is what
     `runtime_transport.request` was handed."""
     container = {"gateway_token": "gw", "agentcore_runtime_arn": "arn:x"}
@@ -48,12 +49,18 @@ def _common(row=ROW, response=None, member_error=None, member={"id": AGENT_ID}):
     ):
         captured["path"] = path
         captured["json_body"] = json_body
+        captured["headers"] = headers
         return response
 
     with (
         patch("routers.messaging.messaging_repo.get_run", new_callable=AsyncMock, return_value=row),
         patch("routers.messaging.service.require_room_member", new_callable=AsyncMock, side_effect=member_error),
         patch("routers.messaging.messaging_repo.get_member", new_callable=AsyncMock, return_value=member),
+        patch(
+            "core.services.openclaw_work.messaging_repo.get_message_by_id",
+            new_callable=AsyncMock,
+            return_value={"author": {"kind": "human", "id": trigger_author}},
+        ),
         patch(
             "routers.messaging.container_rpc.running_container",
             new_callable=AsyncMock,
@@ -136,6 +143,21 @@ async def test_steer_gates_then_posts_text():
     assert captured["path"] == "/plugins/lightbulb-channel/runs/run-1/steer"
     assert captured["json_body"] == {"text": "focus"}
     assert gate_chat_mock.await_args.kwargs["session_key"] == f"agent:{AGENT_ID}:lightbulb:channel:{ROOM_ID}"
+    assert "X-Lightbulb-Local-Session-Token" not in captured["headers"]  # the run's own requester steered
+
+
+async def test_another_members_steer_lowers_the_runs_grant(monkeypatch):
+    """Codex #3997: a member steering someone else's run from the app must not borrow that person's
+    access (their DMs through lightbulb_read_rooms, their sessions): the steer carries a grant naming nobody."""
+    from core.services import local_session_grants
+    from routers.messaging import steer_run
+
+    monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "k" * 32)
+    ok = runtime_transport.RuntimeResponse(202, "{}", {})
+    with _common(response=ok, trigger_author="user_ada") as (captured, _gate):
+        await steer_run("run-1", SteerRunRequest(text="read her DMs"), auth=_auth())
+    lowered = local_session_grants.verify(captured["headers"]["X-Lightbulb-Local-Session-Token"])
+    assert lowered.requester_id is None and lowered.turn_id == TRIGGER
 
 
 @pytest.mark.asyncio

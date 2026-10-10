@@ -19,6 +19,7 @@ Spike scope. Not here: the local-session relay.
 from __future__ import annotations
 
 import contextlib
+import hmac
 import json
 import logging
 import os
@@ -41,7 +42,7 @@ log = logging.getLogger("bridge")
 # ---- the two plugin paths ----------------------------------------------------------------------
 def _authorized(headers: dict) -> bool:
     raw = headers.get("authorization") or headers.get("Authorization") or ""
-    return bool(GATEWAY_TOKEN) and raw.strip() == f"Bearer {GATEWAY_TOKEN}"
+    return bool(GATEWAY_TOKEN) and hmac.compare_digest(raw.strip().encode(), f"Bearer {GATEWAY_TOKEN}".encode())
 
 
 def _header(headers: dict, name: str) -> str | None:

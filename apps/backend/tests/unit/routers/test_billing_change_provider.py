@@ -585,14 +585,16 @@ async def test_change_provider_keeps_chatgpt_choice_and_oauth_row_when_agentcore
 
 @pytest.mark.asyncio
 async def test_change_provider_clears_byo_key_when_leaving_byo(
-    async_client,
+    async_client_org_admin,
     reprovision,
 ):
     """Leaving byo_key must delete the matching api_keys row + Secrets
-    Manager secret. KeyService.delete_key handles both."""
+    Manager secret. KeyService.delete_key handles both. Keys are stored under
+    the workspace OWNER (org id), never the acting user — deleting under the
+    user id silently left the old key behind."""
     byo_account = {
-        "owner_id": "user_test_123",
-        "owner_type": "personal",
+        "owner_id": "org_test_456",
+        "owner_type": "org",
         "stripe_subscription_id": "sub_x",
         "subscription_status": "active",
         "provider_choice": "byo_key",
@@ -614,13 +616,13 @@ async def test_change_provider_clears_byo_key_when_leaving_byo(
             "core.services.key_service.KeyService",
             return_value=instance,
         ):
-            resp = await async_client.post(
+            resp = await async_client_org_admin.post(
                 "/api/v1/billing/provider",
                 json={"provider_choice": "openrouter_managed"},
             )
 
     assert resp.status_code == 200, resp.text
-    instance.delete_key.assert_awaited_once_with("user_test_123", "openai")
+    instance.delete_key.assert_awaited_once_with("org_test_456", "openai")
 
 
 @pytest.mark.asyncio

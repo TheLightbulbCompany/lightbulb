@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     # "audit" → log + metric on mismatch, never reject; "enforce" → reject.
     # Rollout: deploy in audit, confirm zero mismatches in CloudWatch, flip.
     CLERK_AZP_MODE: str = "audit"
+    # Clerk user ids granted platform admin (/admin, /ops, marketplace review,
+    # workspace wipe). Comma-separated, set per env by CDK (service-stack.ts).
+    # Empty ⇒ nobody is admin. Never derived from an email claim.
+    PLATFORM_ADMIN_USER_IDS: str = ""
 
     # DynamoDB
     DYNAMODB_TABLE_PREFIX: str = "lightbulb-dev-"
@@ -115,6 +119,11 @@ class Settings(BaseSettings):
     def clerk_authorized_parties_list(self) -> list[str]:
         """Parse CLERK_AUTHORIZED_PARTIES as comma-separated list."""
         return [p.strip() for p in self.CLERK_AUTHORIZED_PARTIES.split(",") if p.strip()]
+
+    @property
+    def platform_admin_user_ids(self) -> frozenset[str]:
+        """Parse PLATFORM_ADMIN_USER_IDS as a comma-separated set."""
+        return frozenset(u.strip() for u in self.PLATFORM_ADMIN_USER_IDS.split(",") if u.strip())
 
     # --- Workspace runtime networking ---
     # The VPC placement an owner's AgentCore runtime is created with

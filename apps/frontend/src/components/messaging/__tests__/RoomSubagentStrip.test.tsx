@@ -39,6 +39,29 @@ describe("RoomSubagentStrip", () => {
     expect(p.onStop).toHaveBeenCalledWith("a1", "sa-0");
   });
 
+  it("switching to another subagent clears the previous one's note and draft", async () => {
+    render(<RoomSubagentStrip {...props()} />);
+    fireEvent.click(screen.getByRole("button", { name: /Track 0/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    await waitFor(() => expect(screen.getByText("Stopping…")).toBeInTheDocument());
+    fireEvent.change(screen.getByRole("textbox", { name: "Steer Track 0" }), { target: { value: "half typed" } });
+    fireEvent.click(screen.getByRole("button", { name: /Track 1/ }));
+    expect(screen.queryByText("Stopping…")).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Steer Track 1" })).toHaveValue("");
+  });
+
+  it("a stopped child shows Stopped without Stopping…", async () => {
+    const p = props(mk(1));
+    const { rerender } = render(<RoomSubagentStrip {...p} />);
+    fireEvent.click(screen.getByRole("button", { name: /Track 0/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    await waitFor(() => expect(screen.getByText("Stopping…")).toBeInTheDocument());
+    rerender(<RoomSubagentStrip {...p} state={applySubagentEvent(p.state, "a1", "subagent.complete",
+      { subagent_id: "sa-0", goal: "Track 0", status: "interrupted" }, Date.now())} />);
+    expect(screen.getByText("Stopped")).toBeInTheDocument();
+    expect(screen.queryByText("Stopping…")).not.toBeInTheDocument();
+  });
+
   it("a finished subagent's steer shows the 404 copy", async () => {
     const p = { ...props(), onSteer: vi.fn().mockRejectedValue(new ApiError(404, { code: "SUBAGENT_NOT_FOUND" })) };
     render(<RoomSubagentStrip {...p} />);

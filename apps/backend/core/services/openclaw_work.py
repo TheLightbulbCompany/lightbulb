@@ -294,6 +294,27 @@ async def publish_delivery_changed(room_id: str, agent_id: str, seq: int) -> Non
     )
 
 
+async def steer_grant(owner_id: str, run: dict[str, Any], steerer_id: str | None) -> str | None:
+    """The grant a steer of `run` must carry: None when the steerer is the person the run acts for
+    (its trigger's human author, as its grant was minted), else a grant naming nobody, which the
+    bridge swaps in before the steer's text reaches the agent, so the steerer never borrows that
+    person's Claude Code sessions or the rooms they can read. Only ever lowers. Raises when it
+    cannot mint one: the caller must then not steer. Shared by every steer path (the worker's
+    follow-up steer, the client's explicit steer); voice runs lower in voice_calls.steer_voice_run."""
+    from core.services import local_session_grants
+
+    try:
+        trigger = await messaging_repo.get_message_by_id(run["roomId"], run.get("triggerMessageId") or "")
+    except Exception:
+        logger.warning("steer: trigger lookup failed; lowering the run's grant", exc_info=True)
+        trigger = None
+    author = (trigger or {}).get("author") or {}
+    requester = author.get("id") if author.get("kind") == "human" else None
+    if steerer_id is not None and steerer_id == requester:
+        return None
+    return local_session_grants.mint(owner_id, run["roomId"], run["agentId"], run["triggerMessageId"], None)
+
+
 class OpenClawWorkWorker:
     def __init__(self, *, sqs_client: Any | None = None, http_client: Any | None = None) -> None:
         self._sqs = sqs_client
@@ -758,13 +779,19 @@ class OpenClawWorkWorker:
             # line (an @mention into an ambient run) -- keeps the bare line: the person chose
             # that agent, and a hedged human answer must not silence it.
             text += AMBIENT_STEER_SUFFIX
+        headers = {"Authorization": f"Bearer {token}"}
+        try:
+            if lowered := await steer_grant(meta["ownerId"], run, author.get("id")):
+                headers["X-Lightbulb-Local-Session-Token"] = lowered
+        except (RuntimeError, ApiProblem, KeyError):
+            return False  # the grant cannot be lowered: the message gets a turn (and grant) of its own
         try:
             response = await runtime_transport.request(
                 container,
                 f"/plugins/lightbulb-channel/runs/{run['runId']}/steer",
                 method="POST",
                 json_body={"text": text, "messageId": message["messageId"]},
-                headers={"Authorization": f"Bearer {token}"},
+                headers=headers,
                 timeout_s=10.0,
             )
             steered = response.status_code == 202

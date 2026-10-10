@@ -33,13 +33,13 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 
 def _admit_test_user(app):
-    """Present an @isol8.co caller to the Clerk platform-admin gate."""
-    ctx = AuthContext(user_id="user_test_123", email="admin@isol8.co")
+    """Present an allowlisted caller to the Clerk platform-admin gate."""
+    ctx = AuthContext(user_id="user_platform_admin", email="admin@thelightbulb.company")
     app.dependency_overrides[get_current_user] = lambda: ctx
 
 
 def _deny_all_admins(app):
-    """Present a non-@isol8.co caller => 403 from the platform-admin gate."""
+    """Present a non-allowlisted caller => 403 from the platform-admin gate."""
     ctx = AuthContext(user_id="user_test_123", email="user@example.com")
     app.dependency_overrides[get_current_user] = lambda: ctx
 

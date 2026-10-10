@@ -932,6 +932,9 @@ that will mislead you otherwise:
   `admin.dev.thelightbulb.company`, `admin.localhost:3000`; overridable via
   `NEXT_PUBLIC_ADMIN_HOSTS`) and 404s everywhere else. Allowlist lives in
   `apps/frontend/src/middleware.ts`.
+  The host gate is cosmetic: the backend's `require_platform_admin` is the
+  authority, and it admits only the Clerk user ids in `PLATFORM_ADMIN_USER_IDS`
+  (per env, `service-stack.ts`) — never an email domain.
 
 ### Source map (`src/`)
 

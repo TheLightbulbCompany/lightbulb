@@ -1,60 +1,47 @@
-"""Tests for `require_platform_admin` — the @isol8.co email-domain gate.
+"""Tests for `require_platform_admin` — the per-env Clerk user-id allowlist.
 
-Policy: a caller is a platform admin iff the Clerk JWT's `email` claim ends
-with `@isol8.co` (case-insensitive). No env var, no allowlist — Clerk is the
-source of truth for who holds an @isol8.co email.
+Policy: a caller is a platform admin iff their Clerk user id is in
+`PLATFORM_ADMIN_USER_IDS`. The email claim grants nothing: a self-registered
+account on a team domain (dev's `+clerk_test` addresses) must be refused.
 """
 
 import pytest
 from fastapi import HTTPException
 
-from core.auth import AuthContext, is_platform_admin_email, require_platform_admin
+from core.auth import AuthContext, is_internal_email, require_platform_admin
+from core.config import settings
 
 
-def _make_auth(email: str | None) -> AuthContext:
-    return AuthContext(user_id="user_test", email=email)
+@pytest.fixture(autouse=True)
+def _allowlist(monkeypatch):
+    monkeypatch.setattr(settings, "PLATFORM_ADMIN_USER_IDS", "user_listed, user_other")
 
 
-def test_require_platform_admin_allows_isol8_email():
-    auth = _make_auth("prasiddha@isol8.co")
+def test_listed_user_id_passes():
+    auth = AuthContext(user_id="user_listed", email=None)
     assert require_platform_admin(auth) is auth
 
 
-def test_require_platform_admin_rejects_external_email():
-    auth = _make_auth("attacker@example.com")
+@pytest.mark.parametrize(
+    "email",
+    ["x+clerk_test@thelightbulb.company", "someone@isol8.co", "prasiddha@gmail.com", None],
+)
+def test_team_email_without_listed_id_is_refused(email):
     with pytest.raises(HTTPException) as exc:
-        require_platform_admin(auth)
+        require_platform_admin(AuthContext(user_id="user_self_registered", email=email))
     assert exc.value.status_code == 403
 
 
-def test_require_platform_admin_rejects_missing_email():
-    auth = _make_auth(None)
-    with pytest.raises(HTTPException) as exc:
-        require_platform_admin(auth)
-    assert exc.value.status_code == 403
+def test_empty_allowlist_admits_nobody(monkeypatch):
+    monkeypatch.setattr(settings, "PLATFORM_ADMIN_USER_IDS", "")
+    with pytest.raises(HTTPException):
+        require_platform_admin(AuthContext(user_id="user_listed", email="admin@thelightbulb.company"))
 
 
-def test_require_platform_admin_is_case_insensitive():
-    """Clerk may echo emails with mixed case; the gate must lowercase before comparing."""
-    auth = _make_auth("PRASIDDHA@ISOL8.CO")
-    assert require_platform_admin(auth) is auth
-
-
-def test_both_team_domains_are_accepted():
-    """A Clerk primary-email change lands on the next token mint (minutes) while
-    a code change needs a deploy — so the gate accepts the old AND the new team
-    domain across a mailbox move rather than locking admins out for that gap."""
-    assert is_platform_admin_email("someone@isol8.co")
-    assert is_platform_admin_email("someone@thelightbulb.company")
-    assert is_platform_admin_email("SOMEONE@THELIGHTBULB.COMPANY")
-
-
-def test_random_domain_is_still_rejected():
-    assert not is_platform_admin_email("attacker@example.com")
-    # Suffix matching must not be fooled by a lookalike domain.
-    assert not is_platform_admin_email("attacker@evil-thelightbulb.company.example")
-    assert not is_platform_admin_email(None)
-
-
-def test_extra_email_allowlist_still_applies():
-    assert is_platform_admin_email("prasiddha@gmail.com")
+def test_internal_email_tagging():
+    """Analytics-only tagging; the retired @isol8.co domain no longer counts."""
+    assert is_internal_email("SOMEONE@THELIGHTBULB.COMPANY")
+    assert is_internal_email("prasiddha@gmail.com")
+    assert not is_internal_email("someone@isol8.co")
+    assert not is_internal_email("attacker@evil-thelightbulb.company.example")
+    assert not is_internal_email(None)

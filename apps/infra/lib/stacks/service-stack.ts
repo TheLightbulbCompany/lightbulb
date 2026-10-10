@@ -1501,6 +1501,11 @@ export class ServiceStack extends cdk.Stack {
       // existing receipts remain readable/cancellable in the backend.
       DESKTOP_EXECUTION_ENABLED: desktopOwner ? "true" : "false",
       DESKTOP_EXECUTION_OWNER_ALLOWLIST: desktopOwner,
+      // Platform admin (/admin, /ops, marketplace review, workspace wipe) is
+      // this reviewed list of Clerk USER IDS per env, never an email domain.
+      // Empty ⇒ nobody is admin. Comma-separated.
+      // TODO(owner, before merge): fill both lists — ids are per Clerk instance.
+      PLATFORM_ADMIN_USER_IDS: env === "prod" ? "" : "",
       WEBHOOK_DEDUP_TABLE: tableName(env, "webhook-event-dedup"),
       CORS_ORIGINS:
         env === "prod"

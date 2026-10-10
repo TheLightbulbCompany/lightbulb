@@ -32,12 +32,12 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 def _admit_test_user(app, email: str = "admin@isol8.co"):
     """Override auth so the caller looks like an Isol8 team member."""
-    ctx = AuthContext(user_id="user_test_123", email=email)
+    ctx = AuthContext(user_id="user_platform_admin", email=email)
     app.dependency_overrides[get_current_user] = lambda: ctx
 
 
 def _deny_all_admins(app):
-    """Override auth so the caller has a non-@isol8.co email => 403."""
+    """Override auth so the caller is not on the admin allowlist => 403."""
     ctx = AuthContext(user_id="user_test_123", email="user@example.com")
     app.dependency_overrides[get_current_user] = lambda: ctx
 
@@ -48,8 +48,8 @@ def _deny_all_admins(app):
 
 
 class TestAdminAuthGate:
-    """The /admin/* surface returns 403 unless the caller's Clerk email
-    ends with @isol8.co."""
+    """The /admin/* surface returns 403 unless the caller.s Clerk
+    user id is on PLATFORM_ADMIN_USER_IDS."""
 
     @pytest.mark.asyncio
     async def test_admin_me_403_when_user_not_in_allowlist(self, async_client, app):
@@ -61,12 +61,12 @@ class TestAdminAuthGate:
 
     @pytest.mark.asyncio
     async def test_admin_me_200_for_allowlisted_user(self, async_client, app):
-        """@isol8.co email => 200 with profile."""
+        """Allowlisted user id => 200 with profile."""
         _admit_test_user(app)
         response = await async_client.get("/api/v1/admin/me")
         assert response.status_code == 200
         body = response.json()
-        assert body["user_id"] == "user_test_123"
+        assert body["user_id"] == "user_platform_admin"
         assert body["is_admin"] is True
         # `email` key is always present in the response shape (may be None when
         # the AuthContext didn't carry an email claim).

@@ -426,10 +426,15 @@ async def forward(relay, cid: str, body: dict) -> None:
 
         async def to_link() -> None:
             # The publicId stands in for the session's id and generation: a link viewer learns neither.
-            await publisher.publish_link_frames(
-                public,
-                make_live_event("workspace.session.screen", {**payload, "sessionId": public, "generation": public}),
-            )
+            # Nor the typist's user id: their name and colour only.
+            shown = {**payload, "sessionId": public, "generation": public}
+            if typist:
+                shown["typist"] = {
+                    "name": typist["name"],
+                    "color": _person_color(typist["userId"]),
+                    "forMs": typist["forMs"],
+                }
+            await publisher.publish_link_frames(public, make_live_event("workspace.session.screen", shown))
 
         # Each audience on its own, at the same time: neither publish waits on, or fails with, the
         # other, and the public one goes out as soon after the row was read as it can. Revocation
@@ -451,6 +456,16 @@ async def forward(relay, cid: str, body: dict) -> None:
 
 
 TYPIST_SHOWN_S = 4
+_PERSON_COLORS = ("cyan", "magenta", "green", "yellow", "blue", "blueBright")
+
+
+def _person_color(user: str) -> str:
+    """`personColor` in @lightbulb/shared (FNV-1a over the user id, the same palette order): the
+    colour a link viewer gets in place of the id. Keep the two in step."""
+    h = 0x811C9DC5
+    for ch in user:
+        h = ((h ^ ord(ch)) * 0x01000193) & 0xFFFFFFFF
+    return _PERSON_COLORS[h % len(_PERSON_COLORS)]
 
 
 async def _cursor_typist(row: dict, seats: list[dict], now: float) -> dict | None:

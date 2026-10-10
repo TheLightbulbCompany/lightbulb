@@ -89,6 +89,8 @@ it("a teammate's keys colour the cursor and name them for the frame's time; a fr
   act(() => { emit(typed({ userId: "user_3", name: "Aden", forMs: 4000 })); });
   await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
   expect(screen.queryByText("Aden typing")).toBeNull();
+  act(() => { emit(typed({ color: "cyan", name: "Aden", forMs: 4000 })); }); // a link viewer: the colour, never the id
+  expect(cursor()).toBe("rgb(1, 2, 3)");
   document.documentElement.style.removeProperty("--person-cyan");
 });
 

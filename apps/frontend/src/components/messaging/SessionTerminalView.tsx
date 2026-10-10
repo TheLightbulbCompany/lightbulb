@@ -223,10 +223,13 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     const showTypist = (who?: SessionScreen["typist"]) => {
       clearTimeout(typistTimer);
       if (who) typistTimer = setTimeout(showTypist, who.forMs);
-      if ((who?.userId ?? "") === shownTypist) return;
-      shownTypist = who?.userId ?? "";
       // The owner is never named (the backend sends nobody), so any id here is a teammate's colour.
-      const color = who ? `--person-${personColor(who.userId, "").replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}` : "";
+      // A link viewer gets the colour itself, never the id.
+      const hue = who ? who.color ?? personColor(who.userId ?? "", "") : "";
+      const shown = who ? `${hue}:${who.name}` : "";
+      if (shown === shownTypist) return;
+      shownTypist = shown;
+      const color = who ? `--person-${hue.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}` : "";
       setTypist(who ? { name: who.name, color } : null);
       if (term) term.options.theme = { ...theme, cursor: color ? token(color) : undefined };
     };

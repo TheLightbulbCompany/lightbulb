@@ -561,9 +561,10 @@ async def test_a_line_with_too_many_parts_is_one_request(decide):
     got = await route(decide, line, jev_says(kinds=["request"], whos=["forge"]))
     assert tasks(got) == [("forge", line, "fit")]
     assert "k1" not in decide.await_args.args[1]
-    # two agents named on such a line: each gets the whole line (nothing says whose part is whose)
+    # two agents named on such a line: the names still cut it, the asks after them are one part, and Jev says
+    # whose it is (both, here)
     named = f"Forge and Gauge, {line}"
-    both = await route(decide, named, jev_says(kinds=["request"], names=["addressed", "addressed"]))
+    both = await route(decide, named, jev_says(kinds=["request"], names=["addressed", "addressed"], asked=["everyone"]))
     assert [(a, by) for a, _, by in tasks(both)] == [("forge", "name"), ("gauge", "name")]
 
 
@@ -970,3 +971,18 @@ async def test_every_routed_line_logs_what_the_classifier_said(decide, caplog):
     assert "named=-" in labels and "amends=none:0.90" in labels  # the name as the classifier labelled it: nobody
     decision = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("voice route decision"))
     assert "outcome=routed" in decision and "('friday', 'name')" in decision and "'ack'" in decision
+
+
+async def test_a_long_turn_keeps_the_words_said_to_a_named_agent_after_the_name(decide):
+    """10-09 prod Meet, 5:06: a turn long enough to pass MAX_PARTS became ONE part that began before "Forge,
+    what are you working on?", so the words said to Forge were read from its first ("Fine. Um") and Forge was
+    asked nothing. The names still cut a line that has too many parts."""
+    line = (
+        "Fine. Um, so I will. So then we're good there. We're good on voice. We can do the docs. And the deck. "
+        "And the plan. And the emails. And the posts. Forge, what are you working on? You said no for it!"
+    )
+    assert len(parts(line)) > messaging.MAX_PARTS  # the overflow the prod turn hit
+    said = jev_says(kinds=["people", "people"], whos=[None, None], names=["addressed"], p=0.51)
+    got = tasks(await route(decide, line, said, humans=2))
+    assert [(a, by) for a, _, by in got] == [("forge", "name")]
+    assert got[0][1].startswith("what are you working on")

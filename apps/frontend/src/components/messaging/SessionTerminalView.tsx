@@ -220,7 +220,6 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     const theme = { background: token("--terminal-bg"), foreground: token("--terminal-fg") };
     let typistTimer: ReturnType<typeof setTimeout> | undefined;
     let shownTypist = "";
-    let typistAt = { epoch: -1, seq: -1 };
     const showTypist = (who?: SessionScreen["typist"]) => {
       clearTimeout(typistTimer);
       if (who) typistTimer = setTimeout(showTypist, who.forMs);
@@ -290,6 +289,8 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
       if (!term) { queued.push(...frames); return; }
       let over = false; // the picture started over in this batch: its snapshot puts a reader back
       for (const frame of frames) {
+        // The typist goes with the frame the screen draws: never a held, late or dropped one.
+        showTypist(frame.typist);
         // History is only ever written as a burst under its snapshot, and the burst is the whole picture:
         // a run this view already draws without it (`receiveScreen`) starts over there as a new run does.
         const fresh = frame.epoch !== drawn || (frame.kind === "history" && wrote !== "history");
@@ -361,11 +362,6 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
       if (event.type !== "workspace.session.screen") return;
       const frame = event.payload;
       if (frame.sessionId !== session.sessionId || frame.generation !== session.generation) return;
-      // Only a frame no older than the last one that set it: a late frame must not bring back a typist a newer one cleared.
-      if (frame.epoch > typistAt.epoch || (frame.epoch === typistAt.epoch && frame.seq >= typistAt.seq)) {
-        typistAt = { epoch: frame.epoch, seq: frame.seq };
-        showTypist(frame.typist);
-      }
       // A ping proves the picture is current only when it names the frame this view waits for:
       // one ahead of that means a frame was lost, and one with no screen yet proves nothing.
       const current = frame.kind === "ping" && order.synced && frame.epoch === order.epoch && frame.seq === order.next;

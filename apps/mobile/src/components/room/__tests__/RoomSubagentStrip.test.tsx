@@ -79,3 +79,18 @@ it("keeps the sheet open on a child that finished, with its final status and las
   await fireEvent.press(screen.getByLabelText("Stop"));
   expect(props.onStop).not.toHaveBeenCalled();
 });
+
+it("a stopped child shows Stopped without Stopping…", async () => {
+  const one = applySubagentEvent(EMPTY_ROOM_SUBAGENTS, "a1", "subagent.tool",
+    { subagent_id: "sa-0", goal: "Track 0", tool_name: "web_search", tool_preview: "q" }, Date.now());
+  const client = { subagentTail: jest.fn().mockResolvedValue({ subagentId: "sa-0", available: true, text: "line 2", truncated: false }) } as never;
+  const props = { roomId: "r1", agentName: () => "Forge", client, onSteer: jest.fn(), onStop: jest.fn().mockResolvedValue({ state: "stopping" }), onVisible: jest.fn() };
+  await render(<RoomSubagentStrip state={one} {...props} />);
+  await fireEvent.press(screen.getByLabelText(/Track 0/));
+  await fireEvent.press(screen.getByLabelText("Stop"));
+  await waitFor(() => expect(screen.getByText("Stopping…")).toBeTruthy());
+  const stopped = applySubagentEvent(one, "a1", "subagent.complete", { subagent_id: "sa-0", goal: "Track 0", status: "interrupted" }, Date.now());
+  await screen.rerender(<RoomSubagentStrip state={stopped} {...props} />);
+  expect(screen.getByText("Stopped")).toBeTruthy();
+  expect(screen.queryByText("Stopping…")).toBeNull();
+});

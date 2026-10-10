@@ -28,6 +28,7 @@ import math
 import os
 import re
 
+from huddle_agent.agent import sound_limit
 from huddle_agent import huddle as h_mod
 
 from .check import RIG_LINE, load_transcripts
@@ -97,6 +98,11 @@ def load(path: str, scenario: dict, rig: str | None = None) -> Recording:
                 fixed["silent_took"].append(proof.get("tookMs", 1000) / 1000)
             if e["outcome"] == "said":
                 fixed.setdefault("unit:" + e["text"], []).append(proof.get("loudMs", 0) / 1000)
+            elif e["outcome"] == "long":
+                # stopped at its sound limit, so it was longer than that: replayed just over it, it is stopped
+                # again, and its free retry (its own receipt, said) comes next
+                need = max(proof.get("loudMs", 0) / 1000, sound_limit(e["text"])) + 0.05
+                fixed.setdefault("unit:" + e["text"], []).append(need)
             if "leadMs" in proof and e["outcome"] in ("said", "cut") and proof.get("audioMs"):
                 fixed["lead"].append(proof["leadMs"] / 1000)  # every sentence whose audio began, said or cut
                 if e["outcome"] == "said":

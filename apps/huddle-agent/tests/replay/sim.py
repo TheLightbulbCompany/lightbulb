@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 
 from huddle_agent import huddle as h_mod
 from huddle_agent import record
+from huddle_agent.agent import sound_limit
 from huddle_agent.backend import BackendError
 from huddle_agent.huddle import Huddle, units
 
@@ -303,6 +304,7 @@ class Mouth:
         self._epoch, self._cut = 0, asyncio.Event()
         self.lag = sim.model.hear()  # one connection, one delay: its audio reaches the rig in the order sent
         self._opened, self._closed = sim.now(), None
+        self._long: str | None = None  # agent.py `_DrivenLive._long`: the unit stopped as long, free on its next try
 
     def _nothing(self, *a, **kw) -> None:  # it has no ears, and only an order makes it speak
         pass
@@ -356,23 +358,31 @@ class Mouth:
             lead = sim.now() - at
             # agent.py asks again before the first frame with sound in it: a person may have begun in the lead
             revoked = not cut and not h.may_say(self.agent_id, order, index)
+            long = False
             if revoked:
                 await asyncio.sleep(m.stop())
             elif not cut:
                 h.on_unit_audible(self.agent_id, order, index)  # the first frame with sound in it
                 sim.audio(self, True)
                 heard = sim.now()
-                cut = await self._wait(m.unit(unit))
+                # agent.py: sound past `sound_limit` stops the unit as long; its next try has no limit
+                need, limit = m.unit(unit), float("inf") if unit == self._long else sound_limit(unit)
+                cut = await self._wait(min(need, limit))
+                long = not cut and need > limit
                 if cut:
                     await asyncio.sleep(m.stop())
                 loud = sim.now() - heard
                 sim.audio(self, False)
                 # the model's trailing silence is still the unit: an interrupt inside it is a cut unit,
                 # though every word of it was heard
-                cut = cut or await self._wait(m.trailing())
+                cut = cut or (not long and await self._wait(m.trailing()))
             sound = sim.now() - at
             h.on_agent_state(self.agent_id, "listening")
-            outcome = "revoked" if revoked else "cut" if cut else "said"
+            outcome = "revoked" if revoked else "cut" if cut else "long" if long else "said"
+            if outcome == "long":
+                self._long = unit
+            elif outcome == "said":
+                self._long = None
         evidence = {
             "audioMs": round(sound * 1000), "loudMs": round(loud * 1000), "heardMs": round(loud * 1000),
             "leadMs": round(lead * 1000),

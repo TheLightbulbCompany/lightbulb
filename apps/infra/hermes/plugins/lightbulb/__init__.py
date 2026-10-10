@@ -432,7 +432,9 @@ def _scope_session_search() -> None:
 
     def session_search(query="", role_filter=None, limit=3, db=None, current_session_id=None,
                        session_id=None, around_message_id=None, window=5, sort=None, profile=None,
-                       detail="adaptive"):
+                       detail="adaptive", **hermes_args):
+        # **hermes_args: arguments a newer Hermes adds (`after`, prod 10-09: a TypeError cost a spoken turn
+        # two rounds) pass straight through; scope is the db, the lineage checks and profile, all fixed here.
         session_id = str(session_id).strip() if session_id else None
         if (db is None or not current_session_id or (profile and str(profile).strip())
                 or (session_id and "/" in session_id) or not (str(query or "").strip() or session_id)):
@@ -444,7 +446,7 @@ def _scope_session_search() -> None:
                              db=_LineageDB(db, roots, tool._resolve_lineage),
                              current_session_id=current_session_id, session_id=session_id,
                              around_message_id=around_message_id, window=window, sort=sort,
-                             profile=None, detail=detail)
+                             profile=None, detail=detail, **hermes_args)
 
     session_search.lightbulb_scoped = True
     tool.session_search = session_search

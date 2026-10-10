@@ -284,3 +284,10 @@ def test_read_rooms_refusals_reach_the_agent_as_plain_words(tmp_path, monkeypatc
 
     monkeypatch.setattr(lightbulb, "_call_sessions", refused)
     assert lightbulb._read_rooms({"action": "find"}, session_id=SESSION) == lightbulb.READ_ROOMS_REFUSED
+
+
+def test_session_search_passes_arguments_a_newer_hermes_adds(monkeypatch):
+    """Prod 10-09: Hermes's session_search gained `after`; the wrapper's fixed signature raised TypeError."""
+    tool, calls = _recall(monkeypatch)
+    assert tool.session_search(query="pricing", db=_RecallDB(), current_session_id="child", after="2026-10-01") == "hermes"
+    assert calls[0]["after"] == "2026-10-01" and calls[0]["profile"] is None

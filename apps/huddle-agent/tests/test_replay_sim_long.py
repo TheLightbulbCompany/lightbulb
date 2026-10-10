@@ -58,6 +58,9 @@ async def test_a_long_units_receipt_waits_for_its_stop(monkeypatch):
     h = SimpleNamespace(may_say=lambda *a: True, on_agent_state=lambda *a: None, on_unit_audible=lambda *a: None,
                         on_unit=lambda *a: None)
     mouth = sim_mod.Mouth(SimpleNamespace(model=model, h=h, now=time.monotonic, audio=lambda *a: None), "friday", 0)
-    began = time.monotonic()
+    audio, began = [], time.monotonic()
+    mouth.sim.audio = lambda _m, on: audio.append((on, time.monotonic() - began))
     assert await mouth._speak(1, 0, "A.") == "long"
     assert time.monotonic() - began >= 0.05 + 0.1  # the limit, then the stop
+    (_, on_at), (_, off_at) = audio
+    assert off_at - on_at < 0.1  # silent from the limit on: the stop's wait is not speech

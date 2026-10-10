@@ -369,10 +369,17 @@ class Mouth:
                 need, limit = m.unit(unit), float("inf") if unit == self._long else sound_limit(unit)
                 cut = await self._wait(min(need, limit))
                 long = not cut and need > limit
-                if cut or long:  # agent.py interrupts a long unit's generation too, and awaits it
+                if long:
+                    # agent.py: no frame reaches the track once the limit is crossed; then the generation is
+                    # interrupted and awaited before the receipt
+                    loud = sim.now() - heard
+                    sim.audio(self, False)
                     await asyncio.sleep(m.stop())
-                loud = sim.now() - heard
-                sim.audio(self, False)
+                else:
+                    if cut:
+                        await asyncio.sleep(m.stop())
+                    loud = sim.now() - heard
+                    sim.audio(self, False)
                 # the model's trailing silence is still the unit: an interrupt inside it is a cut unit,
                 # though every word of it was heard
                 cut = cut or (not long and await self._wait(m.trailing()))

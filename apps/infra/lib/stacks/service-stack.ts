@@ -2352,9 +2352,8 @@ export class ServiceStack extends cdk.Stack {
     // Container definition
     taskDef.addContainer("backend", {
       image: ecs.ContainerImage.fromDockerImageAsset(backendImage),
-      // Run as root. The image's default USER is appuser; flipping the backend to it
-      // is a runtime-user change, not a deletion, so it stays out of this PR.
-      user: "0:0",
+      // Runs as the image's own non-root USER (appuser). Root was only ever needed to
+      // write the shared EFS mount, which is gone.
       portMappings: [{ containerPort: 8000 }],
       environment: {
         ...backendContainerEnvironment,

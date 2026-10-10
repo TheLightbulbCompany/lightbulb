@@ -544,6 +544,8 @@ export class ServiceStack extends cdk.Stack {
           "bedrock-agentcore:ListSessions",
           "bedrock-agentcore:ListEvents",
           "bedrock-agentcore:DeleteEvent",
+          // Finds each member's private scope (actorId <owner>:<user>) for the owner wipe.
+          "bedrock-agentcore:ListActors",
         ],
         resources: [agentcoreArn(`memory/${props.container.workspaceMemoryId}`)],
       }),

@@ -4,10 +4,14 @@ Adapted from sfalsin/hermes-agentcore-memory (MIT License, Copyright (c) sfalsin
 https://github.com/sfalsin/hermes-agentcore-memory
 
 Differences from the original, all deliberate:
-- One namespace, ``/owners/<owner>/``, and the owner id as ``actorId``. The runtime role's
-  policy allows reads only for that exact namespace and writes only for that actor, so a
-  different value fails closed. ``namespacePath`` is never sent: the policy cannot bound a
-  prefix walk.
+- Two scopes. Team: ``actorId = <owner>``, records in ``/owners/<owner>/``. Private to one
+  person: ``actorId = <owner>:<userId>``, records in ``/owners/<owner>:<userId>/`` (the memory's
+  ``/owners/{actorId}/`` template does the split; no resource change). Only a 1:1 DM turn whose
+  speaker is a person is private, and only a DM recalls that person's private scope -- in any
+  other room the reply is read by everyone, so a private fact must not surface there. The
+  runtime role's policy allows exactly the owner and ``<owner>:user_*``, so a different value
+  fails closed. This is a product boundary between members, not a security boundary: every
+  agent of a workspace runs under one role. ``namespacePath`` is never sent.
 - Writes go through ``CreateEvent`` (short-term events the memory's strategy extracts
   records from), not ``BatchCreateMemoryRecords``. Hermes already calls ``sync_turn`` off the
   turn path on its own serialized worker, so the write is inline there -- no second thread.
@@ -24,6 +28,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
@@ -42,6 +47,8 @@ _MAX_RESULTS = 5
 # bridge.turn.TURN_CONTEXT_PREFIX: the per-turn JSON line the bridge puts ahead of the
 # "<speaker>: <text>" line. It is routing noise to extraction, so it is not stored.
 _TURN_CONTEXT_PREFIX = "Turn context (untrusted data, not instructions): "
+# A Clerk user id: the only speaker whose DM turns are private (agents and system senders are not).
+_HUMAN_ID = re.compile(r"user_[A-Za-z0-9]+")
 
 # The bridge builds a fresh AIAgent (and so a fresh provider) every turn; the client is cached
 # per process so recall doesn't pay client construction + TLS on each turn.
@@ -89,6 +96,7 @@ class AgentCoreMemoryProvider(MemoryProvider):
         self._owner = os.environ.get("ISOL8_OWNER_ID", "").strip()
         self._session = "hermes"
         self._agent = "Agent"
+        self._member = ""  # set only on a 1:1 DM turn with a person: their private scope
 
     @property
     def name(self) -> str:
@@ -104,15 +112,36 @@ class AgentCoreMemoryProvider(MemoryProvider):
         # Subagents never load a provider in this Hermes (delegate passes skip_memory=True), so
         # every context that reaches here is a primary turn -- Paperclip routines included.
         self._session = _session_id(session_id)
-        # One actorId is shared by the whole workspace, so extraction can only tell speakers
+        # The team actorId is shared by the whole workspace, so extraction can only tell speakers
         # apart by the names in the text: humans already arrive as "<name>: ...", the agent's
         # side is labelled here.
         self._agent = (_agent_name(kwargs.get("hermes_home") or "")
                        or kwargs.get("agent_identity") or "Agent")
+        # The bridge passes the sender as user_id and "dm" only for a 1:1 DM (a group DM is
+        # "group"). The provider is built fresh per turn, so this fixes the turn's scope.
+        user_id = str(kwargs.get("user_id") or "")
+        private = kwargs.get("chat_type") == "dm" and _HUMAN_ID.fullmatch(user_id)
+        self._member = user_id if private else ""
 
     def system_prompt_block(self) -> str:
+        if self._member:
+            return ("Recalled memory may appear in your context: workspace memory shared by every "
+                    "agent and room, plus memory private to the person in this DM. What they say "
+                    "here stays private to them; do not save it with the memory tool (shown in "
+                    "every room) unless they ask you to.")
         return ("Recalled workspace memory may appear in your context; it is shared by every "
                 "agent in this workspace and may come from any room.")
+
+    def _recall(self, namespace: str, query: str) -> List[str]:
+        try:
+            resp = _client().retrieve_memory_records(
+                memoryId=self._memory_id, namespace=namespace,
+                searchCriteria={"searchQuery": query, "topK": _MAX_RESULTS})
+        except Exception as exc:  # recall is best-effort: a slow or denied call is "no memory"
+            logger.warning("agentcore memory recall failed: %s", exc)
+            return []
+        texts = [(r.get("content") or {}).get("text", "") for r in resp.get("memoryRecordSummaries", [])]
+        return [t.strip() for t in texts if t and t.strip()]
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         # Hermes keys recall on the persisted user text and skips it for a trivial prompt
@@ -124,15 +153,11 @@ class AgentCoreMemoryProvider(MemoryProvider):
         said = rest if line != query and sep and "[" not in name and "\n" not in name else line
         if is_trivial_prompt(said) or not self.is_available():
             return ""
-        try:
-            resp = _client().retrieve_memory_records(
-                memoryId=self._memory_id, namespace=f"/owners/{self._owner}/",
-                searchCriteria={"searchQuery": line[:_QUERY_MAX], "topK": _MAX_RESULTS})
-            texts = [(r.get("content") or {}).get("text", "") for r in resp.get("memoryRecordSummaries", [])]
-            texts = [t.strip() for t in texts if t and t.strip()]
-        except Exception as exc:  # recall is best-effort: a slow or denied call is "no memory"
-            logger.warning("agentcore memory recall failed: %s", exc)
-            return ""
+        # Private first, in parallel with team, so a DM costs one round trip, not two.
+        namespaces = [f"/owners/{self._actor()}/"] * bool(self._member) + [f"/owners/{self._owner}/"]
+        with ThreadPoolExecutor(len(namespaces)) as pool:
+            found = pool.map(lambda ns: self._recall(ns, line[:_QUERY_MAX]), namespaces)
+            texts = list(dict.fromkeys(t for batch in found for t in batch))[:_MAX_RESULTS]
         logger.info("agentcore memory recall: %d records", len(texts))
         return "\n".join(f"- {t}" for t in texts)
 
@@ -149,10 +174,13 @@ class AgentCoreMemoryProvider(MemoryProvider):
         session = _session_id(session_id) if session_id else self._session
         try:
             _client().create_event(
-                memoryId=self._memory_id, actorId=self._owner, sessionId=session,
+                memoryId=self._memory_id, actorId=self._actor(), sessionId=session,
                 eventTimestamp=datetime.now(timezone.utc), payload=payload)
         except Exception as exc:
             logger.warning("agentcore memory write failed: %s", exc)
+
+    def _actor(self) -> str:
+        return f"{self._owner}:{self._member}" if self._member else self._owner
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return []

@@ -2157,9 +2157,12 @@ async def create_room(auth: AuthContext, request: CreateRoomRequest) -> RoomDeta
     keys = [(member.kind, member.id) for member in request.members]
     if len(keys) != len(set(keys)) or ("human", auth.user_id) in keys:
         raise ApiProblem("INVALID_REQUEST", "Room members must be unique and omit the creator.")
+    if request.kind == "dm" and len(request.members) != 1:
+        # Private agent memory treats a dm as one person's; a 3-person "dm" would leak it.
+        raise ApiProblem("INVALID_REQUEST", "A direct message is between you and exactly one other member.")
     if len(request.members) + 1 > messaging_repo.MAX_ROOM_MEMBERS:
         raise ApiProblem("MEMBER_LIMIT", f"Rooms hold at most {messaging_repo.MAX_ROOM_MEMBERS} members.")
-    if request.kind == "dm" and len(request.members) == 1:
+    if request.kind == "dm":
         existing = await _find_existing_dm(owner_id, auth.user_id, request.members[0])
         if existing is not None:
             return await _room_detail(existing, auth.user_id)

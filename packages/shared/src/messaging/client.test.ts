@@ -176,6 +176,18 @@ describe("messaging HTTP client", () => {
     }
   });
 
+  it("calls the subagent routes", async () => {
+    const { client, methods } = setup();
+    await client.listSubagents("r1");
+    await client.subagentTail("r1", "a1", "sa-1");
+    await client.steerSubagent("r1", "a1", "sa-1", "focus");
+    await client.stopSubagent("r1", "a1", "sa-1");
+    expect(methods.get).toHaveBeenCalledWith("/messaging/rooms/r1/subagents");
+    expect(methods.get).toHaveBeenCalledWith("/messaging/rooms/r1/agents/a1/subagents/sa-1/tail");
+    expect(methods.post).toHaveBeenCalledWith("/messaging/rooms/r1/agents/a1/subagents/sa-1/steer", { text: "focus" });
+    expect(methods.post).toHaveBeenCalledWith("/messaging/rooms/r1/agents/a1/subagents/sa-1/stop", {});
+  });
+
   it("uses exact mutation verbs, paths, and bodies without server-owned owner/author fields", async () => {
     const { client, methods } = setup();
     await client.updateRoom(roomId, { name: null });

@@ -135,6 +135,7 @@ const agentReply: CanonicalRoomMessage = {
   createdAt: "2026-06-11T10:05:00Z", runId: "run-9",
 };
 
+const mockListSubagents = jest.fn(async () => ({ subagents: [] }));
 const mockMarkRead = jest.fn(async () => ({ roomId: "room-1", lastReadSeq: 3 }));
 const mockMarkUnread = jest.fn(async () => ({ roomId: "room-1", lastReadSeq: 1 }));
 const mockSetMemberPrefs = jest.fn(async (roomId: string, prefs: Partial<RoomDetail>) => ({
@@ -168,7 +169,7 @@ const mockLive = {
     sendMessage: mockSendMessage,
     getRunStatus: jest.fn(async () => ({ runId: "r", state: "terminal" })),
     downloadAttachment: jest.fn(), attachmentUrl: jest.fn(), uploadAttachment: jest.fn(), markUnread: mockMarkUnread,
-    setTyping: mockSetTyping, abortRun: jest.fn(), steerRun: jest.fn(), createRoom: jest.fn(),
+    setTyping: mockSetTyping, abortRun: jest.fn(), steerRun: jest.fn(), listSubagents: mockListSubagents, subagentTail: jest.fn(), steerSubagent: jest.fn(), stopSubagent: jest.fn(), createRoom: jest.fn(),
     updateRoom: jest.fn(), upsertMember: jest.fn(), removeMember: jest.fn(),
     updateMessage: jest.fn(), setReaction: mockSetReaction, getLiveConfig: jest.fn(),
     setMemberPrefs: mockSetMemberPrefs, putSections: jest.fn(),
@@ -227,6 +228,7 @@ describe("conversation screen", () => {
     mockScope += 1;
     mockPush.mockClear();
     mockMarkRead.mockClear();
+    mockListSubagents.mockClear();
     mockSendMessage.mockClear();
     mockMarkUnread.mockClear();
     mockSetReaction.mockClear();
@@ -345,6 +347,7 @@ describe("conversation screen", () => {
     await act(async () => { await Promise.resolve(); });
     expect(mockMarkRead).not.toHaveBeenCalled();
     expect(getCurrentTarget()).toMatchObject({ roomId: null, threadId: null });
+    expect(mockListSubagents).not.toHaveBeenCalled();
   });
 
   // A peek is also not a subscription. Dismissing one leaves this route

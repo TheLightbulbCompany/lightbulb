@@ -9,8 +9,9 @@ import { useLiveEvents } from "@/hooks/useLiveEvents";
 export const pageVisible = () => document.visibilityState === "visible" && document.hasFocus();
 
 /** `roomVisible` false: something covers the room (a session in focus), so it must not auto-read.
- *  `autoSelect` false: a second room slot (a session's chat) that never picks a listed room on its own. */
-export function useRooms(initialAgentId?: string | null, subscribeToRoom = true, roomVisible = true, autoSelect = true) {
+ *  `autoSelect` false: a second room slot (a session's chat) that never picks a listed room on its own.
+ *  `subagents` true: the one room panel that shows the subagent strip (snapshot + poll are runtime invokes). */
+export function useRooms(initialAgentId?: string | null, subscribeToRoom = true, roomVisible = true, autoSelect = true, subagents = false) {
   const { isLoaded, userId, orgId } = useAuth();
   const live = useLiveEvents();
   // Both callbacks are []-stable so the shared hook's visibility effect
@@ -48,6 +49,6 @@ export function useRooms(initialAgentId?: string | null, subscribeToRoom = true,
   // contract (bounded history + older-page loading) that the runtime implements.
   return useSharedRooms(
     platform,
-    { initialAgentId, subscribeToRoom, autoSelect, boundedHistory: true } as Parameters<typeof useSharedRooms>[1],
+    { initialAgentId, subscribeToRoom, autoSelect, boundedHistory: true, subagents } as Parameters<typeof useSharedRooms>[1],
   ) as UseRoomsResult & { loadOlder: () => Promise<void> };
 }

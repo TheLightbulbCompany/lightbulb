@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useCallback, useEffect, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, type RoomDetail } from "@lightbulb/shared";
+import { ApiError, EMPTY_ROOM_SUBAGENTS, type RoomDetail } from "@lightbulb/shared";
 import type { RoomDirectoryProps } from "../RoomDirectory";
 import type { RoomPanelProps } from "../RoomPanel";
 import { RoomComposer } from "../RoomComposer";
@@ -78,7 +78,7 @@ const state = {
   directoryRoomDetails: new Map([[room.roomId, room]]),
   refreshRooms: vi.fn(), refreshRoom: vi.fn(), createRoom: vi.fn(), updateRoom: vi.fn(),
   upsertMember: vi.fn(), removeMember: vi.fn(), deleteRoom: vi.fn(), sendMessage: vi.fn(), reconcileSend: vi.fn(),
-  sendState: () => "idle", setTyping: vi.fn(), abortRun: vi.fn(), steerRun: vi.fn(),
+  sendState: () => "idle", setTyping: vi.fn(), abortRun: vi.fn(), steerRun: vi.fn(), subagents: EMPTY_ROOM_SUBAGENTS, refreshSubagents: vi.fn(), subagentsPollVisible: vi.fn(), steerSubagent: vi.fn(), stopSubagent: vi.fn(),
 };
 beforeEach(() => {
   vi.clearAllMocks();
@@ -129,7 +129,7 @@ it("feeds the directory and conversation from one selected-room owner", () => {
   const view = compose();
   // Every render (the first room-list load re-renders once to latch the
   // landing) asks the one provider-owned hook the same thing.
-  expect(mocks.rooms.mock.calls).toEqual(mocks.rooms.mock.calls.map(() => ["agent-friday", true, true]));
+  expect(mocks.rooms.mock.calls).toEqual(mocks.rooms.mock.calls.map(() => ["agent-friday", true, true, true, true]));
   expect(state.selectAgentDm).not.toHaveBeenCalled();
   expect(directory.currentRoomId).toBe(panel.roomId);
   expect(screen.getByRole("navigation", { name: "Conversations" })).toBeInTheDocument();
@@ -913,10 +913,10 @@ it("treats the room as hidden while a session covers it", async () => {
   act(() => directory.onSelectSession!("s1"));
   // Neither auto-read nor notification suppression: nothing of the room is on screen.
   expect(notifications.roomVisible).toBe(false);
-  expect(mocks.rooms).toHaveBeenLastCalledWith(undefined, true, false);
+  expect(mocks.rooms).toHaveBeenLastCalledWith(undefined, true, false, true, true);
   act(() => workspaceValue.closeSession());
   expect(notifications.roomVisible).toBe(true);
-  expect(mocks.rooms).toHaveBeenLastCalledWith(undefined, true, true);
+  expect(mocks.rooms).toHaveBeenLastCalledWith(undefined, true, true, true, true);
   // A notification for the covered room, clicked: "View" has to show the room.
   act(() => directory.onSelectSession!("s1"));
   act(() => notifications.onOpen("room-1", null));

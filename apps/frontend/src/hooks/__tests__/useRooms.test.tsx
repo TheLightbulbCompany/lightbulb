@@ -55,7 +55,7 @@ const messaging = {
   markRead: vi.fn(async () => ({ roomId: room.roomId, lastReadSeq: 1 })),
   markUnread: vi.fn(async () => ({ roomId: room.roomId, lastReadSeq: 0 })),
   setTyping: vi.fn(async () => undefined),
-  createRoom: vi.fn(), updateRoom: vi.fn(), upsertMember: vi.fn(), removeMember: vi.fn(), abortRun: vi.fn(), steerRun: vi.fn(), getLiveConfig: vi.fn(),
+  createRoom: vi.fn(), updateRoom: vi.fn(), upsertMember: vi.fn(), removeMember: vi.fn(), abortRun: vi.fn(), steerRun: vi.fn(), listSubagents: vi.fn().mockResolvedValue({ subagents: [] }), subagentTail: vi.fn(), steerSubagent: vi.fn(), stopSubagent: vi.fn(), getLiveConfig: vi.fn(),
   setMemberPrefs: vi.fn(), putSections: vi.fn(), leaveRoom: vi.fn(), setPin: vi.fn(),
   getRunStatus: vi.fn(async (): Promise<RunStatusResponse> => ({ runId: "run-1", state: "running" })),
 };

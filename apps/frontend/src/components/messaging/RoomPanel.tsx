@@ -6,6 +6,8 @@ import { ArrowLeft, Check, Circle, CircleAlert, Link, ListChecks, MessagesSquare
 import type { Components } from "react-markdown";
 import { LISTEN_MODE_LABELS, listenModeOptions, soleChannelOwner, type CreateMessageRequest, type ListenMode, type MemberPrefsRequest, type MemberRef, type UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
+import { DelegateCard } from "./DelegateCard";
+import { RoomSubagentStrip } from "./RoomSubagentStrip";
 import { QuietDisclosure } from "@/components/chat/QuietDisclosure";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -40,7 +42,7 @@ import { RoomMessageSearch } from "./RoomMessageSearch";
 import { RoomTasks } from "./RoomTasks";
 import { taskIdentifiers, useReferencedTasks } from "./MessageTaskCard";
 import { RoomTimeline, StickToBottom } from "./RoomTimeline";
-import { buildTimeline, collapseRuns, linkifyMentions, linkifySessionMentions, placeRuns, parseMentionHref, roomDisplayName, type LocalSession, type RoomRunView, type RoomSummary } from "@lightbulb/shared";
+import { buildTimeline, collapseRuns, delegationIdOf, linkifyMentions, linkifySessionMentions, placeRuns, parseMentionHref, roomDisplayName, type LocalSession, type MessagingClient, type RoomRunView, type RoomSubagents, type RoomSummary } from "@lightbulb/shared";
 import { TypingReveal } from "./TypingReveal";
 import { useAsyncAction } from "./useAsyncAction";
 import type {
@@ -108,6 +110,11 @@ export interface RoomPanelProps {
   onDeleteRoom?: () => Promise<void>;
   onSetArchived?: (archived: boolean) => Promise<void>;
   onAbortRun?: (runId: string) => void | Promise<unknown>;
+  subagents?: RoomSubagents;
+  messagingClient?: MessagingClient;
+  onSteerSubagent?: (agentId: string, subagentId: string, text: string) => Promise<unknown>;
+  onStopSubagent?: (agentId: string, subagentId: string) => Promise<unknown>;
+  onSubagentsVisible?: (visible: boolean) => void;
   onLinkToWork?: () => void;
   onDownloadAttachment?: (roomId: string, attachmentId: string) => Promise<Blob>;
   onAttachmentUrl?: (roomId: string, attachmentId: string) => Promise<{ url: string }>;
@@ -288,6 +295,11 @@ function RoomContent({
   onDeleteRoom,
   onSetArchived,
   onAbortRun,
+  subagents,
+  messagingClient,
+  onSteerSubagent,
+  onStopSubagent,
+  onSubagentsVisible,
   onLinkToWork,
   onDownloadAttachment,
   onAttachmentUrl,
@@ -694,6 +706,10 @@ function RoomContent({
         {/* No "What it did" wrapper: the trace folds itself to one line, and a
             disclosure around a disclosure put that line behind two clicks. */}
         {run.tools.length > 0 && <div className="room-run-trace"><ToolActivityTrace calls={run.tools} /></div>}
+        {subagents && run.tools.filter((t) => t.name === "delegate_task").map((t) => {
+          const delegationId = delegationIdOf(t.result);
+          return delegationId ? <DelegateCard key={t.id} state={subagents} agentId={run.agentId} delegationId={delegationId} agentLive={run.state === "running"} /> : null;
+        })}
       </div>;
     }
     const workState = run.state === "running" ? "working" : run.state === "aborted" ? "stopped" : run.state;
@@ -711,6 +727,10 @@ function RoomContent({
         {run.thinking && <QuietDisclosure label="Thinking" className="mb-1"><p className="room-wrap text-muted-foreground">{run.thinking}</p></QuietDisclosure>}
         {run.text && <MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{run.text}</MarkdownView>}
         {run.tools.length > 0 && <ToolActivityTrace calls={run.tools} />}
+        {subagents && run.tools.filter((t) => t.name === "delegate_task").map((t) => {
+          const delegationId = delegationIdOf(t.result);
+          return delegationId ? <DelegateCard key={t.id} state={subagents} agentId={run.agentId} delegationId={delegationId} agentLive={run.state === "running"} /> : null;
+        })}
         {run.state === "running" && <RunBrowserPreview agentName={agentName} run={run} />}
         {run.forcedStop && <p className="text-sm text-muted-foreground" role="status">Stopped (the agent may finish its current step)</p>}
       </div>
@@ -804,7 +824,10 @@ function RoomContent({
         </p>
         {canUnarchive && <Button type="button" size="sm" variant="outline" disabled={!actionable || messageActionPending}
           onClick={() => void runMessageAction(() => onSetArchived!(false), `The ${roomNoun} could not be unarchived.`)}>Unarchive {roomNoun}</Button>}
-      </div> : <RoomComposer {...composer} focusToken={focusToken} placeholderDrafts={showFirstReplies ? INCOMPLETE_FIRST_REPLIES : undefined}
+      </div> : <>{subagents && messagingClient && onSteerSubagent && onStopSubagent && onSubagentsVisible && <RoomSubagentStrip state={subagents} roomId={roomId}
+          agentName={(agentId) => participants.find((m) => m.kind === "agent" && m.id === agentId)?.displayName ?? "Agent"}
+          client={messagingClient} onSteer={onSteerSubagent} onStop={onStopSubagent} onVisible={onSubagentsVisible} />}
+        <RoomComposer {...composer} focusToken={focusToken} placeholderDrafts={showFirstReplies ? INCOMPLETE_FIRST_REPLIES : undefined}
         onSubmit={markSent(composer.onSubmit)}
         onRetry={composer.onRetry ? markSent(composer.onRetry) : undefined}
         onEditLast={onUpdateMessage ? () => {
@@ -812,7 +835,7 @@ function RoomContent({
           setEditTarget(own.length ? own[own.length - 1].messageId : null);
         } : undefined}
         disabled={!actionable || composer.disabled}
-        dropTargetRef={historyRef} />}
+        dropTargetRef={historyRef} /></>}
     </div>
     {dockSide(<>{showContext && !showDetail && <aside className="room-context" aria-label="Room details"
       onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setContextCollapsed(true); } }}>

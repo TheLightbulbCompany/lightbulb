@@ -162,6 +162,7 @@ API_ERROR_STATUS = {
     "ROOM_NOT_ARCHIVABLE": 409,
     "ROOM_NOT_DELETABLE": 409,
     "RUN_NOT_ACTIVE": 409,
+    "SUBAGENT_NOT_FOUND": 404,
     "RATE_LIMITED": 429,
     "RUNTIME_UNAVAILABLE": 503,
     "SEARCH_UNAVAILABLE": 503,
@@ -181,6 +182,7 @@ ROOM_LIVE_EVENT_TYPES = frozenset(
         "room.meeting.changed",
         "room.read.changed",
         "room.delivery.changed",
+        "room.subagent.event",
     }
 )
 USER_LIVE_EVENT_TYPES = frozenset(

@@ -1629,8 +1629,10 @@ class FramePublisher:
     final replace `chunk` resyncs the client either way. abort/steer never touch this object
     (they take _RUNS_LOCK)."""
 
-    def __init__(self, endpoint, channel, room_id, agent_id, run_id, thread_root, publish=None):
+    def __init__(self, endpoint, channel, room_id, agent_id, run_id, thread_root, publish=None, session_key=None):
         self._endpoint, self._channel = endpoint, channel
+        self._session_key = session_key
+        self._ended = False
         self._room_id, self._agent_id, self._run_id, self._thread_root = room_id, agent_id, run_id, thread_root
         self._publish = publish or publish_frame
         self._lock = threading.Lock()
@@ -1755,6 +1757,12 @@ class FramePublisher:
                    "result": [{"type": "text", "text": text[:TOOL_RESULT_CHARS]}]})
 
     def activity(self, event, tool_name=None, preview=None, args=None, **_kw) -> None:
+        if isinstance(event, str) and event.startswith("subagent."):
+            from bridge import subagents  # lazy: subagents imports this module
+
+            subagents.relay(self._session_key, event, tool_name, preview, _kw)
+            if self._ended:
+                return  # a background child outlived its turn: the run's channel is closed
         if event in _TOOL_PROGRESS_EVENTS:
             return
         self.emit({"type": "agent_activity", "activity": event, "title": tool_name or "",
@@ -1763,6 +1771,8 @@ class FramePublisher:
     def finished(self, outcome: str, text: str, error: str | None) -> None:
         """The closing sequence: a client that missed streaming still ends with the whole
         text (runs.ts:284-288), then done|error, run_ended, run_active:false."""
+        # First, so a background child's event racing this sequence cannot land on the closed run.
+        self._ended = True
         if outcome == "aborted":
             with self._lock:
                 self._queue = []  # deltas streamed after Stop are not shown
@@ -3836,7 +3846,7 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
     session_key = _resolve_session_key(agent_id, body)
     thread_root = turn_thread_root(body)
     frames = FramePublisher(run.get("frameEndpoint", ""), run.get("frameChannel", ""),
-                            room.get("id"), agent_id, run_id, thread_root)
+                            room.get("id"), agent_id, run_id, thread_root, session_key=session_key)
     if has_run:
         register_run(run_id)  # idempotent: a no-op if server.py already registered it pre-dispatch
         with _RUNS_LOCK:  # what _live_room_run finds a Paperclip wake's conversation by

@@ -2,10 +2,12 @@ import { SymbolView } from "expo-symbols";
 import {
   browsingSite,
   collapseRepeats,
+  delegationIdOf,
   frameText,
   resolveToolDisplay,
   toolRowLabel,
   type RoomRunView,
+  type RoomSubagents,
   type RunToolCall,
 } from "@lightbulb/shared";
 import { useCallback, useState } from "react";
@@ -26,6 +28,7 @@ import { Bubble, BubbleMeta, Chip, MetaText, WorkingBubble, AVATAR_GUTTER, BUBBL
 import { MessageMarkdown } from "../chat/MessageMarkdown";
 import { ToolPill } from "../chat/ToolPill";
 import { Avatar } from "./Avatar";
+import { DelegateCard } from "./DelegateCard";
 
 const STEER_FAILED = "This message could not be sent to the run.";
 const ABORT_FAILED = "This run could not be stopped.";
@@ -64,11 +67,13 @@ export function RunBlock({
   name,
   onAbort,
   onSteer,
+  subagents,
 }: {
   run: RoomRunView;
   name: string;
   onAbort?: () => Promise<unknown>;
   onSteer?: (text: string) => Promise<unknown>;
+  subagents?: RoomSubagents;
 }) {
   const palette = useChatPalette();
   const running = run.state === "running";
@@ -179,6 +184,16 @@ export function RunBlock({
                 />
               </View>
             ))
+          : null}
+        {subagents
+          ? run.tools
+              .filter((t) => t.name === "delegate_task")
+              .map((t) => {
+                const delegationId = delegationIdOf(t.result);
+                return delegationId ? (
+                  <DelegateCard key={t.id} state={subagents} agentId={run.agentId} delegationId={delegationId} agentLive={running} />
+                ) : null;
+              })
           : null}
         {running && (onAbort || onSteer) ? (
           <View style={styles.controls}>

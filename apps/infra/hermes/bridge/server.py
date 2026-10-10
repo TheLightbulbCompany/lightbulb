@@ -32,7 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import bridge
 from bridge import GATEWAY_TOKEN, HOOK_TOKEN, OWNER, PORT, STARTED, now
-from bridge import sync, turn, browser_control, followups, mcp_compat, recycle
+from bridge import sync, turn, browser_control, followups, mcp_compat, recycle, subagents
 
 logging.basicConfig(level=logging.INFO, format="[bridge] %(message)s", stream=sys.stdout)
 log = logging.getLogger("bridge")
@@ -396,6 +396,7 @@ def _health(params: dict, **_kwargs) -> dict:
 
 
 RPC_METHODS: dict = {"health": _health}
+RPC_METHODS.update(subagents.RPC_METHODS)
 
 
 def _browser_state(params: dict, **_kwargs) -> dict:

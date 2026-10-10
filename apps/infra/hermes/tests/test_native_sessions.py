@@ -157,6 +157,11 @@ def _voice_request(text="Aden (voice): hi", history=()):
             "recentHistory": list(history), "participants": f.ingress()["participants"]}
 
 
+def _spoken(text):
+    """What a spoken turn says: a typed turn's turn line (sender, live sessions), then the words."""
+    return turn._spoken_turn_input({"sender": {"id": "user_9", "name": "Aden"}}, text)
+
+
 def _run_call(text="Aden (voice): hi", history=(), run_id="run-call", call_id=CALL_ID, outcome="completed"):
     identity = {**CALL, "runId": run_id, "callId": call_id}
     turn.register_call_run(identity)
@@ -420,7 +425,7 @@ def test_a_call_turn_runs_on_the_calls_transcript_not_the_rooms(hermes, home):
     _run_call("Aden (voice): check payouts")
     assert built[-1].kw["session_id"] == built[-1].kw["gateway_session_key"] == CALL_KEY
     assert _said(built)["conversation_history"] is None  # nothing of the room's transcript is replayed
-    assert db.transcripts[CALL_KEY] == [{"role": "user", "content": "Aden (voice): check payouts"},
+    assert db.transcripts[CALL_KEY] == [{"role": "user", "content": _spoken("Aden (voice): check payouts")},
                                         {"role": "assistant", "content": "Payouts landed."}]
     # The room session got the record and no transcript rows.
     assert [r["role"] for r in db.transcripts[ROOM_KEY]] == ["user", "assistant", "user"]
@@ -432,7 +437,7 @@ def test_two_turns_of_one_call_share_a_transcript_and_the_next_call_does_not(her
     SCRIPT.extend([_persisting("Six agents."), _persisting("CEO, Engineering and four more."), _persisting("Fifty dollars.")])
     _run_call("Aden (voice): how many agents?", run_id="r1")
     _run_call("Aden (voice): and what are they called?", run_id="r2")
-    assert _said(built)["conversation_history"] == [{"role": "user", "content": "Aden (voice): how many agents?"},
+    assert _said(built)["conversation_history"] == [{"role": "user", "content": _spoken("Aden (voice): how many agents?")},
                                                      {"role": "assistant", "content": "Six agents."}]
     _run_call("Aden (voice): what does the plan cost?", run_id="r3", call_id=NEXT_CALL_ID)
     said = _said(built)
@@ -503,7 +508,7 @@ def test_a_late_steer_in_a_call_is_answered_in_the_same_run_and_record(hermes, h
                     "messages": [{"role": "user", "content": "x"}]},
                    {"api_calls": 1, "final_response": "Second."}])
     _run_call()
-    assert [c[0]["user_message"] for c in built[-1].calls] == ["Aden (voice): hi", "Aden (voice): and Y"]
+    assert [c[0]["user_message"] for c in built[-1].calls] == [_spoken("Aden (voice): hi"), "Aden (voice): and Y"]
     assert len(built) == 1 and built[0].kw["session_id"] == CALL_KEY  # one agent, one run, the call's transcript
     (record,) = _records(db)
     assert record["content"].endswith("I answered: First. Second.")
@@ -515,7 +520,7 @@ def test_the_rooms_recent_messages_still_reach_a_call_turn(hermes, home):
     SCRIPT.extend([_persisting("Noted."), _persisting("ok")])
     earlier = f.message(messageId="m1", messageSeq=1, author=ANA, text="the deploy is red")
     _run_call("Aden (voice): what's up?", history=[earlier])
-    assert _said(built)["user_message"] == _observed("[Ana|user_2]\nthe deploy is red") + "Aden (voice): what's up?"
+    assert _said(built)["user_message"] == _observed("[Ana|user_2]\nthe deploy is red") + _spoken("Aden (voice): what's up?")
     assert [r.get("message_id") for r in db.transcripts[CALL_KEY] if r.get("observed")] == ["m1"]
     _room_turn(earlier)
     # The room observes it for itself, once: the call's rows are not the room's.

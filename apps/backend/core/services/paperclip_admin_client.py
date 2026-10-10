@@ -96,6 +96,11 @@ import httpx
 
 from core.observability.metrics import put_metric
 
+# A Paperclip issue id is a UUID or an LB-12-style identifier (`_` admitted for test ids).
+# Pinning it keeps a percent-decoded `?`/`&`/`/` from rewriting the fixed upstream path an id
+# is interpolated into. The Teams BFF's `IssueId` path type and work_products both use this.
+ISSUE_ID_PATTERN = r"^[A-Za-z0-9_-]+$"
+
 
 def _emit_upstream_error(kind: str) -> None:
     """Best-effort ``paperclip.upstream.error{kind}`` emit for the W63 alarm.

@@ -998,11 +998,11 @@ async def change_provider(
         from core.services.key_service import KeyService
 
         try:
-            await KeyService().delete_key(clerk_user_id, current_byo)
+            await KeyService().delete_key(owner_id, current_byo)
         except Exception:
             logger.exception(
-                "change_provider: delete_key failed for clerk_user_id=%s provider=%s",
-                clerk_user_id,
+                "change_provider: delete_key failed for owner=%s provider=%s",
+                owner_id,
                 current_byo,
             )
 

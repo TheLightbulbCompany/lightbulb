@@ -140,6 +140,7 @@ class World:
                 "status": "READY",
                 "agentRuntimeArtifact": {"containerConfiguration": {"containerUri": IMAGE}},
                 "environmentVariables": dict(self.runtime_env),
+                "lifecycleConfiguration": (self.last_request or {}).get("lifecycleConfiguration"),
             }
 
         def _update(arn, req):

@@ -187,7 +187,7 @@ class TestWarmEstimate:
 
     def test_lifetime_caps_the_estimate(self):
         started = 1_000_000
-        now = started + MAX_LIFETIME_S - 3600  # an hour of lifetime left, four hours of idle
+        now = started + MAX_LIFETIME_S - IDLE_TIMEOUT_S // 2  # less lifetime left than one idle window
         assert rt._warm_until(now, started) == started + MAX_LIFETIME_S - rt.WARM_MARGIN_S
 
 

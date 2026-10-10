@@ -10,6 +10,7 @@
 
 import type { CanonicalRoomMessage, MessageAttachment, RoomLastMessage } from "../messaging/types";
 import { MESSAGE_ATTACHMENT_MAX_BYTES } from "../messaging/types";
+import { PERSON_COLORS, type PersonColor } from "../messaging/personColor";
 
 /** OpenClaw tool result content blocks — text blocks or image refs. Image
  *  data is replaced with `{ bytes, omitted: true }` by OpenClaw's sanitizer. */
@@ -127,6 +128,7 @@ export type LiveEventType =
   | "room.activity.changed"
   | "room.run.frame"
   | "room.browser.frame"
+  | "room.subagent.event"
   | "room.metadata.changed"
   | "workspace.sessions.changed"
   | "workspace.access.removed"
@@ -154,6 +156,7 @@ export const LIVE_EVENT_TYPES: ReadonlySet<string> = new Set<LiveEventType>([
   "room.activity.changed",
   "room.run.frame",
   "room.browser.frame",
+  "room.subagent.event",
   "room.metadata.changed",
   "workspace.sessions.changed",
   "workspace.access.removed",
@@ -230,6 +233,9 @@ const SESSION_ATTENTION_STATES = new Set<string>(["waiting", "finished", "join_r
 export type SessionScreen = {
   sessionId: string; generation: string; epoch: number; seq: number;
   cols: number; rows: number; kind: "snapshot" | "output" | "history" | "ping"; data: string;
+  /** The teammate who typed last, shown on the cursor for `forMs` (S8). Absent: the plain cursor.
+   *  Members get their `userId`; a link viewer gets only their `personColor` as `color`, never the id. */
+  typist?: { userId?: string; color?: PersonColor; name: string; forMs: number };
 };
 /** An admitted person started (or is still) typing into this owner's live session terminal. */
 export type SessionTyping = { sessionId: string; userId: string };
@@ -245,6 +251,11 @@ export type RoomActivityChanged = {
   expiresAt?: string;
 };
 export type RoomRunFrame = { roomId: string; agentId: string; runId: string; threadRootMessageId?: string | null; frame: ChatIncomingMessage };
+export type RoomSubagentEvent = {
+  roomId: string;
+  agentId: string;
+  events: { type: string; seq: number; payload: Record<string, unknown> }[];
+};
 /** A live JPEG of a run's own browser tab, or of a Mac-cast session, for people who cannot
  * have the one live view. `w`x`h` is the tab/screen's CSS size: clicks are sent in it. `tier`
  * distinguishes a Mac cast's sharp view frames (its own `/frames` sibling channel) from its
@@ -303,6 +314,7 @@ export type LiveEvent =
   | LiveEventEnvelope<"room.activity.changed", RoomActivityChanged>
   | LiveEventEnvelope<"room.run.frame", RoomRunFrame>
   | LiveEventEnvelope<"room.browser.frame", RoomBrowserFrame>
+  | LiveEventEnvelope<"room.subagent.event", RoomSubagentEvent>
   | LiveEventEnvelope<"room.metadata.changed", RoomMetadataChanged>
   | LiveEventEnvelope<"workspace.sessions.changed", { humanUserId: string; transcript?: true }>
   /** You were removed from this workspace: drop its live subscriptions (user channel only). */
@@ -421,7 +433,8 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
         && Number.isSafeInteger(payload.seq) && (payload.seq as number) >= 0
         && Number.isInteger(payload.cols) && (payload.cols as number) >= 1 && (payload.cols as number) <= 1000
         && Number.isInteger(payload.rows) && (payload.rows as number) >= 1 && (payload.rows as number) <= 500
-        && (payload.kind === "ping" ? payload.data === "" : SCREEN_KINDS.has(payload.kind as string) && text(payload.data));
+        && (payload.kind === "ping" ? payload.data === "" : SCREEN_KINDS.has(payload.kind as string) && text(payload.data))
+        && (payload.typist === undefined || (isObj(payload.typist) && (str(payload.typist.userId) || PERSON_COLORS.includes(payload.typist.color as never)) && str(payload.typist.name) && num(payload.typist.forMs)));
     case "workspace.session.typing":
       return str(payload.sessionId) && str(payload.userId);
     case "workspace.session.attention":
@@ -449,6 +462,9 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
       return str(payload.roomId) && str(payload.agentId) && str(payload.runId) && num(payload.seq)
         && str(payload.jpegBase64) && num(payload.w) && num(payload.h)
         && (payload.tier === undefined || payload.tier === "view" || payload.tier === "thumb");
+    case "room.subagent.event":
+      return str(payload.roomId) && str(payload.agentId) && Array.isArray(payload.events)
+        && payload.events.every((e: unknown) => isObj(e) && str(e.type) && typeof e.seq === "number" && isObj(e.payload));
     case "room.metadata.changed":
     case "room.access.removed":
       return str(payload.roomId) && num(payload.roomRevision);

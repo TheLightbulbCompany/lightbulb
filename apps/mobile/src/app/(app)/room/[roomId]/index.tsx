@@ -37,6 +37,7 @@ import { ConversationHeader } from "../../../../components/conversation/Conversa
 import { AVATAR_GUTTER, MetaText, WorkingBubble } from "../../../../components/conversation/bubbles";
 import { Avatar } from "../../../../components/room/Avatar";
 import { CatchUpSummary } from "../../../../components/room/CatchUpSummary";
+import { SavedDelegations } from "../../../../components/room/DelegateCard";
 import { MessageActionsSheet } from "../../../../components/room/MessageActionsSheet";
 import { LocalMessageRows, MessageGroup } from "../../../../components/room/MessageGroup";
 import { NoticeBanner } from "../../../../components/voice/NoticeBanner";
@@ -44,10 +45,12 @@ import { OnboardingBand } from "../../../../components/room/OnboardingBand";
 import { RoomBlockedState } from "../../../../components/room/RoomBlockedState";
 import { RoomComposer } from "../../../../components/room/RoomComposer";
 import { RoomHeaderActions } from "../../../../components/room/RoomHeaderActions";
+import { RoomSubagentStrip } from "../../../../components/room/RoomSubagentStrip";
 import { RunBlock } from "../../../../components/room/RunBlock";
 import { fonts, radii, spacing, useChatPalette } from "../../../../config/theme";
 import { claimRoomTarget } from "../../../../lib/activeAgent";
 import { hasNativeVoice } from "../../../../lib/webrtc";
+import { useLiveEvents } from "../../../../providers/live-events";
 import { useLive, useRoomLive } from "../../../../providers/live";
 import { JumpToLatest } from "../../../../components/conversation/JumpToLatest";
 import { usePushedScreenKeyboardOffset } from "../../../../lib/keyboardOffset";
@@ -114,7 +117,10 @@ function Conversation() {
       };
     }, [roomId, preview]),
   );
-  const rooms = useMobileRooms({ subscribeToRoom: focused, autoSelect: false, visible: focused, boundedHistory: true });
+  // `subagents`: the focused screen shows the strip, so only it snapshots and polls (a peek stays read-only) (the shared hook
+  // also refreshes on return to the foreground while the strip is visible).
+  const rooms = useMobileRooms({ subscribeToRoom: focused, autoSelect: false, visible: focused, boundedHistory: true, subagents: focused });
+  const { messaging } = useLiveEvents();
   // The room's own timeline drafts separately from each of its threads.
   const composerDraftKey = useDraftKey(roomId, null);
 
@@ -520,6 +526,7 @@ function Conversation() {
                   name={agentName(run.agentId)}
                   onAbort={() => rooms.abortRun(run.runId)}
                   onSteer={(text) => rooms.steerRun(run.runId, text)}
+                  subagents={rooms.subagents}
                 />
               ))}
               {typingText ? (
@@ -617,6 +624,7 @@ function Conversation() {
                   members={members ?? []}
                   sessionCandidates={sessionCandidates}
                 />
+                <SavedDelegations state={rooms.subagents} entry={rooms.delegationsByMessage.get(item.message.messageId)} />
                 {placed.after.get(item.message.messageId)?.map((run) => (
                   <RunBlock
                     key={run.runId}
@@ -624,6 +632,7 @@ function Conversation() {
                     name={agentName(run.agentId)}
                     onAbort={() => rooms.abortRun(run.runId)}
                     onSteer={(text) => rooms.steerRun(run.runId, text)}
+                    subagents={rooms.subagents}
                   />
                 ))}
               </View>
@@ -674,6 +683,16 @@ function Conversation() {
           {room.session ? "This session ended. Its chat is read-only." : "This channel is archived."}
         </Text>
       ) : (
+        <>
+        <RoomSubagentStrip
+          state={rooms.subagents}
+          roomId={roomId ?? ""}
+          agentName={agentName}
+          client={messaging}
+          onSteer={rooms.steerSubagent}
+          onStop={rooms.stopSubagent}
+          onVisible={rooms.subagentsPollVisible}
+        />
         <RoomComposer
           members={members ?? []}
           sessionTargets={sessionTargets}
@@ -688,6 +707,7 @@ function Conversation() {
           roomKind={room?.kind}
           runningAgentIds={runningAgentIds}
         />
+        </>
       )}
     </KeyboardAvoidingView>
   );

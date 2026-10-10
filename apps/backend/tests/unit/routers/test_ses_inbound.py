@@ -649,9 +649,15 @@ def test_dmarc_fail_is_dropped_and_deliver_not_called(client, monkeypatch):
     deliver_mock.assert_not_called()
 
 
-def test_missing_dmarc_falls_back_to_spf_and_dkim_both_fail_drops(client, monkeypatch):
-    """When SES surfaces no dmarc verdict at all, the fallback requires BOTH
-    spf and dkim to explicitly FAIL before dropping."""
+@pytest.mark.parametrize("dmarc", [None, "", "GRAY"])
+def test_missing_dmarc_falls_back_to_spf_and_dkim_both_fail_drops(client, monkeypatch, dmarc):
+    """When SES surfaces no dmarc verdict, the fallback requires BOTH spf and
+    dkim to explicitly FAIL before dropping. The Lambda always sends the key
+    ("" when SES ran no check) and SES says GRAY for a domain without a DMARC
+    record — both mean "no verdict", not "passed"."""
+    verdicts = {"spf": "FAIL", "dkim": "FAIL", "spam": "PASS", "virus": "PASS"}
+    if dmarc is not None:
+        verdicts["dmarc"] = dmarc
     _enable(monkeypatch)
     _dedup_recorded(monkeypatch)
     monkeypatch.setattr(ses_inbound, "get_by_address", AsyncMock(return_value=_row()))
@@ -659,10 +665,7 @@ def test_missing_dmarc_falls_back_to_spf_and_dkim_both_fail_drops(client, monkey
     deliver_mock = AsyncMock()
     monkeypatch.setattr(ses_inbound, "deliver_to_agent", deliver_mock)
 
-    resp = _post(
-        client,
-        _body(verdicts={"spf": "FAIL", "dkim": "FAIL", "spam": "PASS", "virus": "PASS"}),
-    )
+    resp = _post(client, _body(verdicts=verdicts))
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "dropped_failed_authentication"

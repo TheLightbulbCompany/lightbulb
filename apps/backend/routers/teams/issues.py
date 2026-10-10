@@ -19,6 +19,7 @@ from fastapi.responses import StreamingResponse
 # subclasses); isinstance-check against the base so it matches both.
 from starlette.datastructures import UploadFile
 
+from core.services.paperclip_admin_client import ISSUE_ID_PATTERN
 
 from . import agents as _agents
 from ._guards import require_trial_runway
@@ -38,10 +39,10 @@ from .schemas import (
 
 router = APIRouter()
 
-# Paperclip ids are UUIDs or LB-12-style identifiers (`_` admitted for test ids). Pinning keeps a
-# percent-decoded `?`/`&`/`/` in the path segment from rewriting the fixed
-# upstream path (e.g. `<id>%3Fmode=cancel%26` smuggling a query string).
-IssueId = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]+$")]
+# Paperclip ids are UUIDs or LB-12-style identifiers. Pinning keeps a percent-decoded
+# `?`/`&`/`/` in the path segment from rewriting the fixed upstream path (e.g.
+# `<id>%3Fmode=cancel%26` smuggling a query string).
+IssueId = Annotated[str, Path(pattern=ISSUE_ID_PATTERN)]
 _ctx = _agents._ctx
 
 

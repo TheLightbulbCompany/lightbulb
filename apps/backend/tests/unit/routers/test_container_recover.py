@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from core.services import trial_cap
+from core.services import provision_gate, trial_cap
 
 
 class TestContainerRecover:
@@ -40,11 +40,11 @@ class TestContainerRecover:
             yield mock_dispatch
 
     @pytest.fixture(autouse=True)
-    def mock_trial_cap(self):
-        """Recovering a stopped container is a WAKE, so it now checks the
-        free-tier daily cap (which reads billing_repo). Default it to "under the
-        cap" for the pre-existing tests; the guard tests below override it."""
-        with patch("core.services.trial_cap.trial_block_reason", new=AsyncMock(return_value=None)) as m:
+    def mock_gate(self):
+        """Recovering a stopped container is a WAKE, so it checks the provision gate
+        (which reads billing_repo). Default it to "clear" for the pre-existing tests;
+        the guard tests below override it."""
+        with patch("core.services.provision_gate.evaluate_provision_gate", new=AsyncMock(return_value=None)) as m:
             yield m
 
     # --- CONTAINER_DOWN: full re-provision ---
@@ -256,8 +256,8 @@ class TestContainerRecover:
         )
 
         with patch(
-            "core.services.trial_cap.trial_block_reason",
-            new=AsyncMock(return_value=trial_cap.DAILY_CAP),
+            "core.services.provision_gate.evaluate_provision_gate",
+            new=AsyncMock(return_value=provision_gate.gate_for_trial_reason(trial_cap.DAILY_CAP, "admin")),
         ):
             response = await async_client.post("/api/v1/container/recover")
 
@@ -280,13 +280,37 @@ class TestContainerRecover:
         )
 
         with patch(
-            "core.services.trial_cap.trial_block_reason",
-            new=AsyncMock(return_value=trial_cap.TRIAL_EXPIRED),
+            "core.services.provision_gate.evaluate_provision_gate",
+            new=AsyncMock(return_value=provision_gate.gate_for_trial_reason(trial_cap.TRIAL_EXPIRED, "admin")),
         ):
             response = await async_client.post("/api/v1/container/recover")
 
         assert response.status_code == 402
         assert response.json()["detail"]["blocked"]["code"] == "trial_expired"
+        mock_dispatch_provision.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_recover_applies_the_full_provision_gate_not_only_the_trial_check(
+        self, async_client, mock_container_repo, mock_call_gateway_rpc, mock_dispatch_provision, mock_gate
+    ):
+        """/provision and /retry refuse a canceled subscription; /recover only asked the
+        trial predicate, so a canceled workspace could reprovision itself through it."""
+        mock_container_repo.get_by_owner_id = AsyncMock(return_value={"owner_id": "user_test_123", "status": "stopped"})
+        mock_gate.return_value = provision_gate.Gate(
+            code="subscription_required",
+            title="Subscription not active",
+            message="Reactivate your subscription to start your container.",
+            action_label="Manage subscription",
+            action_href="/settings/billing",
+            action_admin_only=True,
+            owner_role="admin",
+        )
+
+        response = await async_client.post("/api/v1/container/recover")
+
+        assert response.status_code == 402
+        assert response.json()["detail"]["blocked"]["code"] == "subscription_required"
+        assert mock_gate.await_args.kwargs["actor_user_id"] == "user_test_123"
         mock_dispatch_provision.assert_not_called()
 
     @pytest.mark.asyncio
@@ -304,8 +328,8 @@ class TestContainerRecover:
         mock_container_repo.get_by_owner_id = AsyncMock(return_value={"owner_id": "user_test_123", "status": "running"})
 
         with patch(
-            "core.services.trial_cap.trial_block_reason",
-            new=AsyncMock(return_value=trial_cap.DAILY_CAP),
+            "core.services.provision_gate.evaluate_provision_gate",
+            new=AsyncMock(return_value=provision_gate.gate_for_trial_reason(trial_cap.DAILY_CAP, "admin")),
         ):
             response = await async_client.post("/api/v1/container/recover")
 

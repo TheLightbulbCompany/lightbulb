@@ -80,8 +80,9 @@ async def test_a_failing_hint_never_fails_the_typing_call():
 async def test_typing_wakes_the_room_owners_runtime_for_agents_that_can_answer():
     prewake = MagicMock()
     await _type(True, prewake=prewake)
-    # The ROOM's owner (a shared-channel guest types toward the host's agents); observe never runs.
-    prewake.assert_called_once_with("org_host", [{"id": "ceo", "name": "CEO"}, {"id": "eng", "name": "Eng"}])
+    # The ROOM's owner (a shared-channel guest types toward the host's agents); observe never runs;
+    # the room id lets the bridge compact that room's session while the person types.
+    prewake.assert_called_once_with("org_host", [{"id": "ceo", "name": "CEO"}, {"id": "eng", "name": "Eng"}], ROOM)
 
 
 @pytest.mark.asyncio

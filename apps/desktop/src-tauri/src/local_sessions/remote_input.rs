@@ -52,7 +52,7 @@ fn wrote(sid: &str, from_owner: bool, now: Instant) {
 }
 
 /// A teammate who typed: (user id, display name), from the frame's `actor`.
-pub(super) type Typist = (String, String);
+pub(crate) type Typist = (String, String);
 /// The teammate whose bytes last reached each session's holder.
 // ponytail: one entry per session a teammate typed into, kept until the app quits (a few hundred
 // bytes each). Prune with the mirror's end if that ever shows up in memory.
@@ -138,6 +138,31 @@ fn last_input_of(socket: &Path) -> Option<String> {
     (kind == HELLO).then(|| facts["lastInput"].as_str().map(str::to_owned)).flatten()
 }
 
+/// How long every Lightbulb view shows a teammate's colour and name on the cursor after their keys (S8).
+pub(crate) const CURSOR_FOR: Duration = Duration::from_secs(4);
+/// The teammate whose keys last reached each holder (by holder id), for the app panel's cursor.
+/// The owner's keys, and an unnamed teammate's, clear it.
+static CURSOR: Mutex<BTreeMap<String, (Typist, Instant)>> = Mutex::new(BTreeMap::new());
+
+fn cursor_typed(holder: &str, from_owner: bool, typist: Option<Typist>, now: Instant) {
+    if let Ok(mut map) = CURSOR.lock() {
+        match typist.filter(|_| !from_owner) {
+            Some(t) => map.insert(holder.to_owned(), (t, now)),
+            None => map.remove(holder),
+        };
+    }
+}
+
+/// The owner typed into `holder` from the app panel: the plain cursor, at once.
+pub(crate) fn owner_typed(holder: &str) {
+    cursor_typed(holder, true, None, Instant::now());
+}
+
+/// Who the panel's cursor names now, and since when; None after `CURSOR_FOR`.
+pub(crate) fn cursor_typist(holder: &str, now: Instant) -> Option<(Typist, Instant)> {
+    CURSOR.lock().ok()?.get(holder).filter(|(_, at)| now.saturating_duration_since(*at) < CURSOR_FOR).cloned()
+}
+
 /// Keys for the holder, whether the session's owner typed them, and the teammate who did.
 pub(super) type Typed = (Vec<u8>, bool, Option<Typist>);
 
@@ -181,9 +206,9 @@ fn write(sid: &str, generation: &str, ctl: &Ctl, inputs: &Receiver<Typed>) {
     write_with(sid, generation, ctl, inputs, attach)
 }
 
-fn write_with(sid: &str, generation: &str, ctl: &Ctl, inputs: &Receiver<Typed>, attach: impl Fn(&str, &str) -> Option<(UnixStream, bool)>) {
-    // The `type` client, and whether its holder takes OWNER_INPUT.
-    let mut conn: Option<(UnixStream, bool)> = None;
+fn write_with(sid: &str, generation: &str, ctl: &Ctl, inputs: &Receiver<Typed>, attach: impl Fn(&str, &str) -> Option<(UnixStream, bool, String)>) {
+    // The `type` client, whether its holder takes OWNER_INPUT, and the holder's id.
+    let mut conn: Option<(UnixStream, bool, String)> = None;
     let mut tried: Option<Instant> = None;
     let mut carry = Carry::default();
     while !ctl.stopped() {
@@ -200,7 +225,7 @@ fn write_with(sid: &str, generation: &str, ctl: &Ctl, inputs: &Receiver<Typed>, 
                 tried = Some(Instant::now());
                 conn = attach(sid, generation);
             }
-            let Some((c, origin)) = conn.as_mut() else { break };
+            let Some((c, origin, holder)) = conn.as_mut() else { break };
             // Sharing may have stopped since these keys were taken off the queue (the attach
             // above can wait two seconds): the last moment before they are recorded and written.
             if ctl.stopped() {
@@ -209,6 +234,7 @@ fn write_with(sid: &str, generation: &str, ctl: &Ctl, inputs: &Receiver<Typed>, 
             // Recorded first: a decide that reads it between the write and the record is refused.
             wrote(sid, from_owner, Instant::now());
             typed(sid, from_owner, typist.clone(), &keys, Instant::now());
+            cursor_typed(holder, from_owner, typist.clone(), Instant::now());
             // An older holder takes only INPUT, and reports no origin to mark.
             let kind = if from_owner && *origin { OWNER_INPUT } else { INPUT };
             if c.write_all(&encode(kind, &keys)).is_ok() {
@@ -219,14 +245,14 @@ fn write_with(sid: &str, generation: &str, ctl: &Ctl, inputs: &Receiver<Typed>, 
             tried = None;
         }
     }
-    if let Some((c, _)) = conn {
+    if let Some((c, ..)) = conn {
         let _ = c.shutdown(std::net::Shutdown::Both);
     }
 }
 
-/// A `type` client on the session's holder, only when its HELLO says it takes one, and whether
-/// it takes OWNER_INPUT.
-fn attach(sid: &str, generation: &str) -> Option<(UnixStream, bool)> {
+/// A `type` client on the session's holder, only when its HELLO says it takes one, whether it
+/// takes OWNER_INPUT, and the holder's id.
+fn attach(sid: &str, generation: &str) -> Option<(UnixStream, bool, String)> {
     let (holder, current) = screen::holder_for_session(sid, false)?;
     if current != generation || !holder.type_input {
         return None;
@@ -237,7 +263,7 @@ fn attach(sid: &str, generation: &str) -> Option<(UnixStream, bool)> {
     conn.write_all(&encode(HELLO, br#"{"role":"type"}"#)).ok()?;
     let (kind, facts) = read_frame(&mut conn).ok()?;
     let facts: Value = serde_json::from_slice(&facts).ok()?;
-    (kind == HELLO && facts["type"] == true).then_some((conn, facts["origin"] == true))
+    (kind == HELLO && facts["type"] == true).then_some((conn, facts["origin"] == true, holder.id))
 }
 
 /// Remote bytes minus probe replies and, with `band`, band keys, until nothing more goes:
@@ -440,13 +466,25 @@ mod tests {
         let holder = std::cell::RefCell::new(Some(holder));
         write_with("sid", "gen", &ctl, &rx, |_, _| {
             ctl.stop.store(true, SeqCst);
-            holder.borrow_mut().take().map(|conn| (conn, true))
+            holder.borrow_mut().take().map(|conn| (conn, true, "h".to_owned()))
         });
         let mut read = [0u8; 16];
         assert!(!matches!(peer.read(&mut read), Ok(n) if n > 0), "nothing reached the holder");
     }
     use serde_json::json;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn remote_input_the_panel_cursor_names_a_teammate_for_four_seconds_and_the_owner_clears_it() {
+        let (h, now) = ("holder-cursor", Instant::now());
+        let aden: Typist = ("user_a".into(), "Aden".into());
+        cursor_typed(h, false, Some(aden.clone()), now);
+        assert_eq!(cursor_typist(h, now + Duration::from_secs(3)), Some((aden.clone(), now)));
+        assert_eq!(cursor_typist(h, now + CURSOR_FOR), None, "plain again after four seconds");
+        cursor_typed(h, false, Some(aden), now);
+        owner_typed(h);
+        assert_eq!(cursor_typist(h, now), None, "the owner's keys clear it at once");
+    }
 
     #[test]
     fn remote_input_a_teammate_write_holds_band_decisions_for_two_seconds() {

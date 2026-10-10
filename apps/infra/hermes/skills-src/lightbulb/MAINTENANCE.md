@@ -16,7 +16,7 @@ stale text until it was deleted). Hermes tool names are anchored to its
 `CONFIGURABLE_TOOLSETS`
 (`terminal`, `file`, `web`, `memory`, `skills`, `browser`, `secrets`) plus our
 own plugin tools in `apps/infra/hermes/plugins/lightbulb/__init__.py`
-(`send_room_message`, `hire_suggestion`, `lightbulb_local_sessions` — its direct-or-ask
+(`send_room_message`, `hire_suggestion`, `lightbulb_read_rooms`, `lightbulb_local_sessions` — its direct-or-ask
 send rule is `agent_command` in `apps/backend/core/services/local_sessions.py`).
 
 MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
@@ -71,6 +71,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  core/services/website_logins.py; frontend WebsiteLoginsSection (Connections).
                                  Codes/CAPTCHA are browser-only (owner ruling 2026-10-07): the bridge's
                                  _code_prompt posts the line and watches the page; there is no code form.
+  - Background subagents .... references/surfaces.md ("Background subagents" row) <- core/services/subagents.py + packages/shared/src/messaging/subagents.ts
   - Members / join link ..... references/surfaces.md ("Members & join link" row)
                               <- routers/orgs.py (one link per workspace; admin-only mint/copy/revoke;
                                  open join as org:member); frontend WorkspaceMembersSection (Settings →
@@ -93,6 +94,10 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- apps/frontend/src/components/messaging/NewSessionButton.tsx;
                                  apps/desktop/src-tauri/src/session_start.rs;
                                  apps/mobile/src/app/(app)/session/new.tsx (still has the first message)
+  - Open in a terminal (owner only, app sessions, starts a forked copy) ... references/surfaces.md ("Open in a terminal" paragraph)
+                              <- apps/backend/core/services/desktop_session_start.py (open route);
+                                 apps/frontend/src/components/messaging/LocalSessionPanel.tsx;
+                                 apps/desktop/src-tauri/src/session_start.rs + resume.rs
   - Browser tool choice ..... SKILL.md ("references/surfaces.md § Browser" row, a pointer only) + references/surfaces.md
                               (Browser row: "Which tool", extensions, recording, downloads) +
                               references/platform-primitives.md (pointer)
@@ -136,6 +141,13 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  apps/backend/routers/desktop_execution.py;
                                  apps/backend/core/services/{desktop_execution,desktop_pair,connection_service}.py;
                                  apps/frontend/src/components/desktop/{DesktopPermissionsGate,NodeStatusPill}.tsx.
+  - Other rooms (read) ...... references/platform-primitives.md ("Other rooms") + SKILL.md (routing row,
+                              "A DM you read stays private" non-negotiable)
+                              <- apps/infra/hermes/plugins/lightbulb/__init__.py (lightbulb_read_rooms);
+                                 apps/backend/routers/messaging.py (agent_reader, /messaging/agent-read/*);
+                                 apps/backend/core/services/hosted_mcp.py (rooms_for, messages_for: the MCP's own reads);
+                                 apps/backend/core/services/local_session_grants.py (the requester);
+                                 apps/backend/core/services/local_sessions.py (require_caller).
   - Shared local sessions ... references/platform-primitives.md + references/surfaces.md
                               <- apps/infra/hermes/bridge/ + apps/infra/hermes/plugins/lightbulb/__init__.py
                                  (lightbulb_local_sessions); apps/backend/core/services/{local_session_grants,local_sessions,local_session_relay,openclaw_work}.py;

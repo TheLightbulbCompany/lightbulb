@@ -116,6 +116,23 @@ async def test_get_overview_runs_sources_in_parallel():
 
 
 @pytest.mark.asyncio
+async def test_get_overview_never_returns_container_tokens():
+    from core.services import admin_service
+
+    row = {"status": "running", "hook_token": "h-secret", "gateway_token": "g-secret"}
+    with (
+        patch("core.services.admin_service.clerk_admin.get_user", new=AsyncMock(return_value={"id": "u1"})),
+        patch("core.services.admin_service.container_repo.get_by_owner_id", new=AsyncMock(return_value=row)),
+        patch("core.services.admin_service.billing_repo.get_by_owner_id", new=AsyncMock(return_value=None)),
+        patch("core.services.admin_service.usage_repo.get_period_usage", new=AsyncMock(return_value=None)),
+    ):
+        result = await admin_service.get_overview("u1")
+
+    assert result["container"]["status"] == "running"
+    assert "token" not in str(result["container"])
+
+
+@pytest.mark.asyncio
 async def test_get_overview_isolates_slow_upstream_via_timeout(monkeypatch):
     """CEO P1: a stuck upstream returns {error: timeout}, others succeed."""
     monkeypatch.setattr("core.services.admin_service._PARALLEL_TIMEOUT_S", 0.05)

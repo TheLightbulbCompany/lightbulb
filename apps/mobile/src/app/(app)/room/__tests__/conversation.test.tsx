@@ -135,6 +135,7 @@ const agentReply: CanonicalRoomMessage = {
   createdAt: "2026-06-11T10:05:00Z", runId: "run-9",
 };
 
+const mockListSubagents = jest.fn(async () => ({ subagents: [] }));
 const mockMarkRead = jest.fn(async () => ({ roomId: "room-1", lastReadSeq: 3 }));
 const mockMarkUnread = jest.fn(async () => ({ roomId: "room-1", lastReadSeq: 1 }));
 const mockSetMemberPrefs = jest.fn(async (roomId: string, prefs: Partial<RoomDetail>) => ({
@@ -168,7 +169,7 @@ const mockLive = {
     sendMessage: mockSendMessage,
     getRunStatus: jest.fn(async () => ({ runId: "r", state: "terminal" })),
     downloadAttachment: jest.fn(), attachmentUrl: jest.fn(), uploadAttachment: jest.fn(), markUnread: mockMarkUnread,
-    setTyping: mockSetTyping, abortRun: jest.fn(), steerRun: jest.fn(), createRoom: jest.fn(),
+    setTyping: mockSetTyping, abortRun: jest.fn(), steerRun: jest.fn(), listSubagents: mockListSubagents, subagentTail: jest.fn(), steerSubagent: jest.fn(), stopSubagent: jest.fn(), createRoom: jest.fn(),
     updateRoom: jest.fn(), upsertMember: jest.fn(), removeMember: jest.fn(),
     updateMessage: jest.fn(), setReaction: mockSetReaction, getLiveConfig: jest.fn(),
     setMemberPrefs: mockSetMemberPrefs, putSections: jest.fn(),
@@ -227,6 +228,7 @@ describe("conversation screen", () => {
     mockScope += 1;
     mockPush.mockClear();
     mockMarkRead.mockClear();
+    mockListSubagents.mockClear();
     mockSendMessage.mockClear();
     mockMarkUnread.mockClear();
     mockSetReaction.mockClear();
@@ -345,6 +347,7 @@ describe("conversation screen", () => {
     await act(async () => { await Promise.resolve(); });
     expect(mockMarkRead).not.toHaveBeenCalled();
     expect(getCurrentTarget()).toMatchObject({ roomId: null, threadId: null });
+    expect(mockListSubagents).not.toHaveBeenCalled();
   });
 
   // A peek is also not a subscription. Dismissing one leaves this route
@@ -759,6 +762,20 @@ describe("conversation screen", () => {
     await render(<Conversation />);
     await fireEvent.press(await screen.findByLabelText("Friday, idle"));
     expect(mockPush).toHaveBeenCalledWith("/(app)/room/dm-friday/details");
+  });
+
+  it("keeps a run's background subagents under the saved reply once the run card is gone", async () => {
+    await render(<Conversation />);
+    await waitFor(() => expect(screen.getByText("second")).toBeTruthy());
+    const emit = (event: LiveEvent) => act(async () => { for (const handler of typingHandlers) handler(event); });
+    const frame = (body: Record<string, unknown>) => ({ type: "room.run.frame",
+      payload: { roomId: "room-1", agentId: "agent-1", runId: "run-9", threadRootMessageId: null, frame: body } } as LiveEvent);
+    await emit(frame({ type: "tool_start", runId: "run-9", tool: "delegate_task", toolCallId: "t1", args: {} }));
+    await emit(frame({ type: "tool_end", runId: "run-9", tool: "delegate_task", toolCallId: "t1", result: JSON.stringify({ delegation_id: "d-1" }) }));
+    await emit({ schemaVersion: 1, eventId: "e-9", type: "room.message.created", occurredAt: agentReply.createdAt, roomId: "room-1", messageSeq: 4, roomRevision: 1, payload: agentReply } as LiveEvent);
+    await emit(frame({ type: "run_ended", outcome: "done" }));
+    await waitFor(() => expect(screen.getByText("on it")).toBeTruthy());
+    expect(screen.getByText("Background subagents dispatched")).toBeTruthy();
   });
 
   it("shows Sent under my last message until someone answers, then Read by", async () => {

@@ -10,7 +10,8 @@ import useSWR, { useSWRConfig } from "swr";
 import { ApiError } from "../api/error";
 import type { LiveEvent } from "../live/types";
 import type { MessagingClient, RoomAttachmentInput } from "./client";
-import { applyRunFrame, declinedRun, lastSequence, mergeCanonicalMessages, shownRunText, type LiveRoomRun } from "./timeline";
+import { EMPTY_ROOM_SUBAGENTS, applySubagentEvent, delegationIdOf, liveSubagents, pruneFinishedSubagents, reconcileSubagentSnapshot, type RoomSubagents } from "./subagents";
+import { applyRunFrame, declinedRun, lastSequence, mergeCanonicalMessages, runView, shownRunText, type LiveRoomRun } from "./timeline";
 import type {
   ActiveRoomRun,
   CanonicalRoomMessage,
@@ -146,6 +147,9 @@ export interface UseRoomsOptions {
    * after. MUST be referentially stable.
    */
   persistence?: RoomsPersistence;
+  /** The one screen showing the subagent strip opts in to the snapshot hydrate, the 5 s poll and the
+   *  foreground refresh: each is a runtime invoke that extends its idle clock. Live events need none. */
+  subagents?: boolean;
 }
 
 /** What `RoomsPersistence` keeps for one `userId:orgId` scope. */
@@ -171,6 +175,26 @@ const SELECT_FAILED = "this conversation could not be opened";
 
 const failureMessage = (error: unknown, fallback: string): string =>
   error instanceof Error && error.message ? error.message : fallback;
+
+export interface MessageDelegations { agentId: string; delegationIds: string[] }
+
+// An ended run object never changes, so its delegation ids are read once, not on every frame of another run.
+const delegationIdsByRun = new WeakMap<LiveRoomRun, string[]>();
+const runDelegationIds = (run: LiveRoomRun): string[] => {
+  let ids = delegationIdsByRun.get(run);
+  if (!ids) {
+    ids = runView(run).tools.flatMap((t) => {
+      const id = t.name === "delegate_task" ? delegationIdOf(t.result) : null;
+      return id ? [id] : [];
+    });
+    delegationIdsByRun.set(run, ids);
+  }
+  return ids;
+};
+
+/** The saved message that carries this run's text: same runId, or the same agent with identical trimmed text. */
+const isRunReply = (message: CanonicalRoomMessage, run: LiveRoomRun): boolean => !message.progress && (message.runId === run.runId ||
+  (!!run.text.trim() && message.author.kind === "agent" && message.author.id === run.agentId && message.text.trim() === run.text.trim()));
 
 /**
  * What every `useRooms` under one SWR cache shares, for ONE scope at a time.
@@ -246,7 +270,7 @@ const contiguousSequence = (messages: readonly CanonicalRoomMessage[]) => {
 };
 
 export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {}) {
-  const { initialAgentId = null, subscribeToRoom = true, autoSelect = true, boundedHistory = false, persistence } = options;
+  const { initialAgentId = null, subscribeToRoom = true, autoSelect = true, boundedHistory = false, persistence, subagents: watchSubagents = false } = options;
   const { userId, orgId, live, isVisible, onVisibilityChange, uuid } = platform;
   const {
     messaging,
@@ -339,6 +363,12 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
   const [runs, setRuns] = useState(new Map<string, LiveRoomRun>());
   const runsRef = useRef(runs);
   runsRef.current = runs;
+  const [subagents, setSubagents] = useState<RoomSubagents>(EMPTY_ROOM_SUBAGENTS);
+  const subagentsRef = useRef(subagents);
+  subagentsRef.current = subagents;
+  const activeRoomIdRef = useRef(activeRoomId);
+  activeRoomIdRef.current = activeRoomId;
+  const subagentPoll = useRef({ visible: false, failures: 0, inFlight: false });
   const [receipts, setReceipts] = useState<RoomReceipts>(NO_RECEIPTS);
   const generation = useRef(0);
   const requestedAfter = useRef<number | null>(null);
@@ -413,6 +443,8 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     requests.current.clear();
     setTyping(new Map());
     setRuns(new Map());
+    setSubagents(EMPTY_ROOM_SUBAGENTS);
+    subagentPoll.current.failures = 0;
     setReceipts(NO_RECEIPTS);
     setAccessRemoved(false);
     setDeliveryOverride(null);
@@ -941,9 +973,18 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
       });
       return;
     }
+    if (event.type === "room.subagent.event" && event.payload.roomId === activeRoomId) {
+      const { agentId, events } = event.payload;
+      const now = Date.now();
+      setSubagents((s) => [...events].sort((a, b) => a.seq - b.seq)
+        .reduce((acc, e) => applySubagentEvent(acc, agentId, e.type, e.payload, now), s));
+      return;
+    }
     if (event.type === "room.run.frame" && event.payload.roomId === activeRoomId) {
       const payload = event.payload;
       const key = `${payload.roomId}:${payload.agentId}:${payload.runId}`;
+      // upstream's `message.start` boundary: a new turn clears that agent's finished subagents
+      if (payload.frame.type === "run_active" && payload.frame.active) setSubagents((s) => pruneFinishedSubagents(s, payload.agentId));
       setRuns((current) => {
         const previous = current.get(key);
         const next = applyRunFrame(previous, payload);
@@ -1309,8 +1350,7 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
    */
   const messagesById = useMemo(() => new Map(messages.map(message => [message.messageId, message])), [messages]);
   const visibleRuns = useMemo(() => [...runs.values()].flatMap((run) => {
-    const persisted = messages.some(message => !message.progress && (message.runId === run.runId ||
-      (run.text.trim() && message.author.kind === "agent" && message.author.id === run.agentId && message.text.trim() === run.text.trim())));
+    const persisted = messages.some(message => isRunReply(message, run));
     if (persisted && run.state !== "running") return [];
     if (declinedRun(run)) return [];
     // Keep activity/controls after an interim reply without painting that reply twice.
@@ -1323,7 +1363,70 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     if (!run.triggerMessageId || activeRoom?.kind === "dm") return [{ ...visible, threadRootMessageId: null }];
     return [{ ...visible, threadRootMessageId: trigger?.threadRootMessageId ?? run.triggerMessageId }];
   }), [runs, messages, messagesById, activeRoom?.kind]);
+  /**
+   * The background subagents an ended run started, keyed by the saved reply that replaced its
+   * card, so their DelegateCards stay under that message. Derived from the runs map, so it lives
+   * as long as the strip does: until the room changes or the page reloads.
+   *
+   * Identity-stable by value, like RoomPanel's settledKey: every streamed frame replaces `runs`,
+   * and a fresh Map here would re-render the whole history for a chunk of a live run.
+   */
+  const delegationsRef = useRef<{ key: string; map: ReadonlyMap<string, MessageDelegations> }>({ key: "", map: new Map() });
+  const delegationsByMessage = useMemo(() => {
+    const out = new Map<string, MessageDelegations>();
+    for (const run of runs.values()) {
+      if (run.state === "running") continue; // the live run card still shows its own
+      const ids = runDelegationIds(run);
+      const reply = ids.length ? [...messages].reverse().find((message) => isRunReply(message, run)) : undefined;
+      if (!reply) continue;
+      const entry = out.get(reply.messageId);
+      out.set(reply.messageId, { agentId: run.agentId, delegationIds: [...(entry?.delegationIds ?? []), ...ids] });
+    }
+    const key = [...out].map(([id, entry]) => `${id}:${entry.agentId}:${entry.delegationIds.join(",")}`).join("|");
+    if (key !== delegationsRef.current.key) delegationsRef.current = { key, map: out };
+    return delegationsRef.current.map;
+  }, [runs, messages]);
   const abortRun = useCallback((runId: string) => messaging.abortRun(runId), [messaging]);
+  const refreshSubagents = useCallback(async () => {
+    if (!activeRoomId) return;
+    const roomId = activeRoomId;
+    subagentPoll.current.inFlight = true;
+    try {
+      const { subagents: children } = await messaging.listSubagents(roomId);
+      subagentPoll.current.failures = 0;
+      if (roomId === activeRoomIdRef.current) setSubagents((s) => reconcileSubagentSnapshot(s, children, Date.now()));
+    } catch {
+      subagentPoll.current.failures += 1;
+    } finally {
+      subagentPoll.current.inFlight = false;
+    }
+  }, [activeRoomId, messaging]);
+
+  useEffect(() => { if (watchSubagents) void refreshSubagents(); }, [watchSubagents, refreshSubagents]); // hydrate once per room
+
+  // upstream's only polling: every 5 s while the strip is on screen and a row is live; 3 failures stop it until the page is visible again.
+  useEffect(() => {
+    if (!watchSubagents) return;
+    const id = setInterval(() => {
+      const p = subagentPoll.current;
+      if (!p.visible || p.inFlight || p.failures >= 3 || !liveSubagents(subagentsRef.current).length) return;
+      void refreshSubagents();
+    }, 5_000);
+    const unsubscribe = onVisibilityChange(() => {
+      const p = subagentPoll.current;
+      if (!p.visible || p.inFlight || !isVisible()) return;
+      p.failures = 0;
+      void refreshSubagents();
+    });
+    return () => { clearInterval(id); unsubscribe(); };
+  }, [watchSubagents, refreshSubagents, onVisibilityChange, isVisible]);
+
+  const subagentsPollVisible = useCallback((visible: boolean) => { subagentPoll.current.visible = visible; }, []);
+  const steerSubagent = useCallback((agentId: string, subagentId: string, text: string) =>
+    activeRoomId ? messaging.steerSubagent(activeRoomId, agentId, subagentId, text) : Promise.reject(new Error("No room selected.")), [activeRoomId, messaging]);
+  const stopSubagent = useCallback((agentId: string, subagentId: string) =>
+    activeRoomId ? messaging.stopSubagent(activeRoomId, agentId, subagentId) : Promise.reject(new Error("No room selected.")), [activeRoomId, messaging]);
+
   const steerRun = useCallback((runId: string, text: string) => messaging.steerRun(runId, { text }), [messaging]);
   const loadHistory = useCallback(() => {
     initialRequest.current += 1;
@@ -1397,5 +1500,11 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     setTyping: setRoomTyping,
     abortRun,
     steerRun,
+    subagents,
+    delegationsByMessage,
+    refreshSubagents,
+    steerSubagent,
+    stopSubagent,
+    subagentsPollVisible,
   };
 }

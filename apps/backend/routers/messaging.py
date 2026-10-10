@@ -32,11 +32,13 @@ from core.services import (
     link_preview,
     local_sessions,
     native_session_tools,
+    openclaw_work,
     session_chat,
     session_pickup,
     session_links,
     session_resume,
     session_screen,
+    subagents,
 )
 from core.services import local_session_grants
 from core.services import container_rpc, message_search, runtime_transport, voice_calls
@@ -155,6 +157,38 @@ async def local_session_invocation(request: Request) -> local_session_grants.Age
     return local_session_grants.verify(
         authorization.removeprefix("Bearer ") if authorization.startswith("Bearer ") else ""
     )
+
+
+async def agent_reader(
+    auth: local_session_grants.AgentInvocation = Depends(local_session_invocation),
+) -> AuthContext:
+    """An agent turn reads rooms as the person who asked it, with exactly that person's access (the
+    hosted MCP's find_rooms/read_messages). The person is the turn grant's requester, set by the
+    backend from the canonical trigger -- the human author of a typed message, the signed-in speaker
+    of a Live run -- never by the agent. No requester (a Meet speaker, a voice run another speaker
+    steered, a Paperclip run, an agent's message): nothing is readable, since every room is private
+    to its members."""
+    if not auth.requester_id or not auth.room_id:
+        raise ApiProblem("ROOM_FORBIDDEN", "No signed-in person asked for this, so no rooms can be read for it.")
+    # The turn's room, re-checked on every read as a local-session read is: the agent still a member
+    # (a removed agent's unexpired grant reads nothing), and no other org in the room to hear it.
+    await local_sessions.require_caller(auth, auth.room_id)
+    # And the person still in it: someone who left or was removed is no longer who this turn acts for.
+    if await messaging_repo.get_member(auth.room_id, "human", auth.requester_id) is None:
+        raise ApiProblem("ROOM_FORBIDDEN", "The person who asked is no longer in this room.")
+    return AuthContext(user_id=auth.requester_id, org_id=auth.owner_id)
+
+
+@router.get("/messaging/agent-read/rooms")
+async def agent_find_rooms(query: str = "", limit: int = 30, auth: AuthContext = Depends(agent_reader)):
+    return await hosted_mcp.rooms_for(auth, query, limit)
+
+
+@router.get("/messaging/agent-read/messages")
+async def agent_read_messages(
+    room_id: str, after_seq: int | None = None, limit: int = 25, auth: AuthContext = Depends(agent_reader)
+):
+    return await hosted_mcp.messages_for(auth, room_id, after_seq, limit)
 
 
 @router.get("/messaging/local-session-agent/resources", response_model=local_sessions.RoomResources)
@@ -1005,9 +1039,10 @@ async def typing(request: TypingRequest, auth: AuthContext = Depends(get_current
 
 async def _prewake_for_typing(meta: dict, room_id: str) -> None:
     """Wake the room OWNER's runtime (a shared-channel guest types toward the host's agents) and
-    restore the profile of every agent that could answer; ``observe`` agents never run. Without a
-    roomId: an off-path compaction started here would hold the turn lock against the message
-    being typed. Best effort: a failure costs only the cold start the wake would have hidden."""
+    restore the profile of every agent that could answer; ``observe`` agents never run. With the
+    roomId the bridge also compacts that room's session if it is near the threshold, while the
+    person is still typing; the typed turn stops it when it arrives (bridge _turn_arriving). Best
+    effort: a failure costs only the cold start the wake would have hidden."""
     try:
         team = [
             {"id": m["id"], "name": m.get("displayName") or "Agent"}
@@ -1018,7 +1053,7 @@ async def _prewake_for_typing(meta: dict, room_id: str) -> None:
         logger.info("typing prewake: member read failed", exc_info=True)
         return
     if team and not meta.get("archivedAt"):
-        voice_calls.prewake_owner(meta.get("ownerId") or "", team)
+        voice_calls.prewake_owner(meta.get("ownerId") or "", team, room_id)
 
 
 async def _resolved_run(auth: AuthContext, run_id: str) -> tuple[str, dict]:
@@ -1032,8 +1067,9 @@ async def _resolved_run(auth: AuthContext, run_id: str) -> tuple[str, dict]:
     return owner_id, row
 
 
-async def _run_control(owner_id: str, run_id: str, action: str, payload: dict) -> int | None:
-    """202 accepted, 404 not active, None when the owner has no addressable runtime."""
+async def _run_control(owner_id: str, run_id: str, action: str, payload: dict, grant: str | None = None) -> int | None:
+    """202 accepted, 404 not active, None when the owner has no addressable runtime. `grant`: a
+    steer's lowered local-session grant (openclaw_work.steer_grant)."""
     try:
         container = await container_rpc.running_container(owner_id)
     except ApiProblem:
@@ -1042,7 +1078,10 @@ async def _run_control(owner_id: str, run_id: str, action: str, payload: dict) -
         container,
         f"/plugins/lightbulb-channel/runs/{run_id}/{action}",
         json_body=payload,
-        headers={"Authorization": f"Bearer {container['gateway_token']}"},
+        headers={
+            "Authorization": f"Bearer {container['gateway_token']}",
+            **({"X-Lightbulb-Local-Session-Token": grant} if grant else {}),
+        },
         timeout_s=10.0,
     )
     return response.status_code
@@ -1119,7 +1158,12 @@ async def steer_run(run_id: str, request: SteerRunRequest, auth: AuthContext = D
         raise ApiProblem("RUN_NOT_ACTIVE", gate.get("message", "Steering is blocked."))
     await container_repo.touch_last_interactive(owner_id)
     try:
-        status = await _run_control(owner_id, run_id, "steer", {"text": request.text})
+        # Another member steering this run must not borrow its requester's access.
+        grant = await openclaw_work.steer_grant(owner_id, row, auth.user_id)
+    except (RuntimeError, ApiProblem, KeyError) as exc:
+        raise ApiProblem("RUNTIME_UNAVAILABLE", "Could not steer the run.", retryable=True, retry_after=3) from exc
+    try:
+        status = await _run_control(owner_id, run_id, "steer", {"text": request.text}, grant)
     except httpx.HTTPError as exc:
         raise ApiProblem("RUNTIME_UNAVAILABLE", "Could not steer the run.", retryable=True, retry_after=3) from exc
     if status == 202:
@@ -1127,6 +1171,58 @@ async def steer_run(run_id: str, request: SteerRunRequest, auth: AuthContext = D
     if status == 404:
         raise ApiProblem("RUN_NOT_ACTIVE", "Run is already terminal.")
     raise ApiProblem("RUNTIME_UNAVAILABLE", "The runtime is unavailable.", retryable=True, retry_after=3)
+
+
+async def _subagent_scope(auth: AuthContext, room_id: str, agent_id: str | None = None) -> str:
+    """Membership is checked from the caller's workspace; the subagents live in the ROOM owner's
+    runtime, so a guest in a shared/vendor room reaches that runtime, never their own."""
+    meta, _ = await service.require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
+    if agent_id is not None:
+        agent_id = service.validate_uuid(agent_id, label="agent ID")
+        if await messaging_repo.get_member(room_id, "agent", agent_id) is None:
+            raise ApiProblem("SUBAGENT_NOT_FOUND", "That agent is not in this room.")
+    return meta["ownerId"]
+
+
+async def _subagent_control_gate(auth: AuthContext, owner_id: str, room_id: str, agent_id: str) -> None:
+    gate = await chat_gate.gate_chat(
+        user_id=auth.user_id, owner_id=owner_id, session_key=subagents.session_key(room_id, agent_id)
+    )
+    if gate.get("blocked"):
+        raise ApiProblem("RUN_NOT_ACTIVE", gate.get("message", "This workspace cannot act on agents right now."))
+    await container_repo.touch_last_interactive(owner_id)
+
+
+@router.get("/messaging/rooms/{room_id}/subagents")
+async def list_room_subagents(room_id: str, auth: AuthContext = Depends(get_current_user)):
+    owner_id = await _subagent_scope(auth, room_id)
+    return await subagents.list_for_room(owner_id, room_id)
+
+
+@router.get("/messaging/rooms/{room_id}/agents/{agent_id}/subagents/{subagent_id}/tail")
+async def tail_subagent(room_id: str, agent_id: str, subagent_id: str, auth: AuthContext = Depends(get_current_user)):
+    owner_id = await _subagent_scope(auth, room_id, agent_id)
+    return await subagents.tail(owner_id, room_id, agent_id, subagent_id)
+
+
+@router.post("/messaging/rooms/{room_id}/agents/{agent_id}/subagents/{subagent_id}/steer")
+async def steer_subagent(
+    room_id: str,
+    agent_id: str,
+    subagent_id: str,
+    request: SteerRunRequest,
+    auth: AuthContext = Depends(get_current_user),
+):
+    owner_id = await _subagent_scope(auth, room_id, agent_id)
+    await _subagent_control_gate(auth, owner_id, room_id, agent_id)
+    return await subagents.steer(owner_id, room_id, agent_id, subagent_id, request.text)
+
+
+@router.post("/messaging/rooms/{room_id}/agents/{agent_id}/subagents/{subagent_id}/stop")
+async def stop_subagent(room_id: str, agent_id: str, subagent_id: str, auth: AuthContext = Depends(get_current_user)):
+    owner_id = await _subagent_scope(auth, room_id, agent_id)
+    await _subagent_control_gate(auth, owner_id, room_id, agent_id)
+    return await subagents.stop(owner_id, room_id, agent_id, subagent_id)
 
 
 @router.post(
@@ -1207,6 +1303,12 @@ async def recycle_runtime_session(owner_id: str, request: Request):
 async def post_usage_report(owner_id: str, body: UsageReportRequest, request: Request):
     await _require_hook_token(owner_id, request)
     return await service.handle_usage_report(owner_id, body)
+
+
+@router.post("/internal/messaging/subagents/{owner_id}/events")
+async def post_subagent_events(owner_id: str, body: subagents.SubagentEventsRequest, request: Request):
+    await _require_hook_token(owner_id, request)
+    return await subagents.publish_events(owner_id, body)
 
 
 class VoiceProfileRequest(ContractModel):

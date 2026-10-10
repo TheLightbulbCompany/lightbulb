@@ -10,15 +10,15 @@ on the domain in ``AGENT_EMAIL_DOMAIN`` runs two Lambda-action-adjacent steps:
 
 For each record this Lambda:
   - reads the raw MIME from S3 and parses it with the stdlib ``email``
-    package (no third-party MIME parser — this asset ships with
-    ``Code.fromAsset`` and no pip deps, so the Lambda runtime's bundled
-    boto3 is the only dependency),
+    package (the one pip dependency is ``dkimpy``, for per-signature DKIM
+    verification; boto3 comes from the Lambda runtime),
   - extracts SES's own SPF/DKIM/DMARC/spam/virus verdicts (SES's receipt
     pipeline has already run these scans by the time this Lambda sees the
     mail — they are authoritative, not best-effort), plus the two identities
     those flat verdicts do not carry, as FIRST-CLASS verdict fields:
-    ``dkim_domains`` (the ``d=`` tags of the message's DKIM signatures, and
-    only when SES itself reported ``dkimVerdict == PASS``) and ``spf_domain``
+    ``dkim_domains`` (the ``d=`` tags of the message's DKIM signatures that
+    each verify on their own, and only when SES reported ``dkimVerdict ==
+    PASS``) and ``spf_domain``
     (the domain of SES's recorded envelope sender). Neither is read out of a
     trustworthy-looking header: an attacker with a valid signature for their
     own domain can also paste a forged ``Authentication-Results`` into the
@@ -70,12 +70,13 @@ simply skipped (logged), not treated as an error.
 import json
 import logging
 import os
-import re
 import urllib.error
 import urllib.request
 from email import message_from_bytes, policy
 
 import boto3
+import dkim
+import dkim.dnsplug
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -131,38 +132,46 @@ def _get_secret(arn=None):
     return _SECRET_CACHE[arn]
 
 
-# A `DKIM-Signature` value is a `tag=value; …` list; the signing domain is its
-# `d=` tag. Anchored on the start of a tag (string start or a `;`) so a stray
-# "d=" inside another tag's value — the base64 in `b=`/`bh=` — cannot match.
-_DKIM_D_TAG_RE = re.compile(r"(?:^|;)\s*d\s*=\s*([^;\s]+)", re.IGNORECASE)
+# Signatures beyond this many are ignored: each one costs a DNS lookup, and
+# real mail carries one to three (the author's domain, an ESP, a list).
+_MAX_DKIM_SIGNATURES = 5
+_DKIM_DNS_TIMEOUT_SECONDS = 3
 
 
-def _dkim_signer_domains(msg, dkim_status):
-    """The `d=` signing domains of this message's own DKIM signatures.
+def _dkim_txt(name, timeout=_DKIM_DNS_TIMEOUT_SECONDS):
+    """DNS TXT lookup for a DKIM public key (a seam for the tests)."""
+    return dkim.dnsplug.get_txt(name, timeout=timeout)
 
-    Returned ONLY when SES reported ``dkimVerdict == PASS``: SES cryptograph-
-    ically verified a signature on this message, and a signature's `d=` tag is
-    itself covered by that signature, so it cannot be rewritten without
-    breaking it. That is why this is read off `DKIM-Signature` and NOT off
-    `Authentication-Results` — the latter is a plain header any sender can
-    paste (see the module docstring).
 
-    CONSERVATIVE, NOT PERFECT. SES's flat PASS says *at least one* signature
-    verified, not which one, so every signature's domain is forwarded and the
-    backend accepts alignment against any of them. An attacker who can get one
-    genuinely valid signature past SES could therefore attach a second,
-    unverified signature naming a domain they do not own. DMARC=PASS is the
-    strong path; this fallback exists only for senders SES gives no DMARC
-    verdict for, and it gates WAKING the agent, never storing the mail.
+def _dkim_signer_domains(raw_mime, dkim_status):
+    """The `d=` domains of this message's DKIM signatures that VERIFY.
+
+    Each `DKIM-Signature` is verified on its own (dkimpy, key fetched from
+    DNS), and only a signature that verifies contributes its domain. SES's
+    flat ``dkimVerdict`` says *at least one* signature passed, not which, so
+    forwarding every `d=` on its strength would let a sender with one valid
+    signature for their own domain add an unverified one naming any other.
+    SES's PASS is still required first, so mail SES rejected costs no DNS.
+
+    Read off `DKIM-Signature`, never `Authentication-Results` — the latter is
+    a plain header any sender can paste (see the module docstring).
     """
     if str(dkim_status or "").strip().upper() != "PASS":
         return []
+    try:
+        headers = dkim.DKIM(raw_mime).headers
+    except Exception:  # noqa: BLE001 - unparseable for DKIM: authenticates nothing, still delivered
+        return []
+    count = sum(1 for name, _ in headers if name.lower() == b"dkim-signature")
     domains = []
-    for raw in msg.get_all("DKIM-Signature") or []:
-        match = _DKIM_D_TAG_RE.search(str(raw))
-        if not match:
+    for idx in range(min(count, _MAX_DKIM_SIGNATURES)):
+        verifier = dkim.DKIM(raw_mime, timeout=_DKIM_DNS_TIMEOUT_SECONDS)
+        try:
+            if not verifier.verify(idx, dnsfunc=_dkim_txt):
+                continue
+        except Exception:  # noqa: BLE001 - a malformed signature or DNS failure just doesn't count
             continue
-        domain = match.group(1).strip().strip(".").lower()
+        domain = verifier.domain.decode("ascii", "replace").strip().strip(".").lower()
         if domain and domain not in domains:
             domains.append(domain)
     return domains
@@ -179,7 +188,7 @@ def _envelope_sender_domain(mail):
     return source.rsplit("@", 1)[-1].strip().strip(".") if source else ""
 
 
-def _extract_verdicts(receipt, msg, mail):
+def _extract_verdicts(receipt, raw_mime, mail):
     """Map SES's per-check verdict objects to a flat {name: status} dict, plus
     the two authenticated identities those flat verdicts do not carry.
 
@@ -200,7 +209,7 @@ def _extract_verdicts(receipt, msg, mail):
         # First-class identities for the backend's wake gate — derived from
         # SES's receipt + the signed `DKIM-Signature`, never from a header
         # the sender controls. See the two helpers above.
-        "dkim_domains": _dkim_signer_domains(msg, _status("dkimVerdict")),
+        "dkim_domains": _dkim_signer_domains(raw_mime, _status("dkimVerdict")),
         "spf_domain": _envelope_sender_domain(mail),
     }
 
@@ -323,7 +332,7 @@ def _build_payload(ses, raw_mime):
         "subject": subject,
         "text": text,
         "headers": headers,
-        "verdicts": _extract_verdicts(receipt, msg, mail),
+        "verdicts": _extract_verdicts(receipt, raw_mime, mail),
         "attachments": _process_attachments(msg, message_id),
         "calendar": calendar,
     }

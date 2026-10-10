@@ -70,7 +70,8 @@ def test_the_backend_grant_rides_into_the_call_turn(monkeypatch):
     monkeypatch.setattr(server.threading, "Thread", lambda target, args, **_k: SimpleNamespace(start=lambda: spawned.append(args)))
     assert server.handle_plugin("/internal/calls/v1/runs", "POST", {**AUTH, "X-Lightbulb-Local-Session-Token": "jwt"}, BODY)[0] == 202
     assert spawned[0][0] == {**IDENTITY, "localSessionToken": "jwt"}
-    assert turn.RUNS["run-1"]["identity"] == IDENTITY  # the grant is never registered with the run
+    assert turn.RUNS["run-1"]["identity"] == IDENTITY  # never in the identity (Paperclip persists those)
+    assert turn.RUNS["run-1"]["grant"] == "jwt"  # the run's current grant: verified_call_room_key reads it
 
 
 def test_stop_takes_the_same_identity():
@@ -227,8 +228,48 @@ def test_a_voice_run_gets_the_dm_environment_on_the_calls_transcript(env, home, 
     assert env["keys"] == [SESSION, ("reset", "tok")]  # compression keeps async delegations attached
     assert env["desktop"] == [(CALL_SESSION, "run-1")]  # found by the session id Hermes hands the plugin
     (convo,) = env["convos"]
-    assert convo["user_message"] == "Aden (voice): check payouts" and convo["system_message"] is None
-    assert env["agent"].ephemeral_system_prompt.startswith("speak briefly\n\nAGENTS.md")
+    # A typed turn's turn line (sender, live sessions) before what was said.
+    assert convo["user_message"] == f"{turn.TURN_CONTEXT_PREFIX}{{\"sender\":{json.dumps(SPEAKER, separators=(',', ':'))},\"sessions\":[],\"eventKind\":\"voice\"}}\nAden (voice): check payouts"
+    assert convo["system_message"] is None
+    # The room turn's own system prompt (who and where), the spoken-turn note after it, no chat posting rules.
+    system = env["agent"].ephemeral_system_prompt
+    assert system.startswith("You are ") and "on a Live voice call there" in system
+    assert "speak briefly\n\nAGENTS.md" in system and "MEDIA:" not in system and "progress" not in system
+
+
+def test_a_spoken_turn_gets_the_room_block_and_live_sessions_a_typed_turn_gets(env, home):
+    """One path (prod Meet 10-09: voice saw no sessions and no room name): what the backend sends a
+    typed turn reaches a spoken one -- the room block in the system prompt, the sessions in its turn line."""
+    room = {"id": ROOM, "name": "general", "kind": "channel", "revision": 3}
+    sessions = [{"sessionId": "s-1", "title": "fix the deploy", "state": "live"}]
+    turn.register_call_run(IDENTITY)
+    turn._run_call(IDENTITY, {**REQUEST, "room": room, "sessions": sessions}, _frames())
+    assert env["body"]["room"] == room and env["body"]["sessions"] == sessions
+    (convo,) = env["convos"]
+    assert '"sessions":[{"sessionId":"s-1"' in convo["user_message"]
+    assert "#general, on a Live voice call there" in env["agent"].ephemeral_system_prompt
+
+
+def test_a_spoken_turn_starts_the_mac_tools_turn_like_a_typed_one(home, monkeypatch):
+    """lightbulb_desktop answered "Turn stopped" on every call: nothing started its run state. Now
+    run_call_turn starts it (family "call", keyed by the call's session) and removes it after."""
+    seen = {}
+
+    def fake_call(identity, request, frames):
+        state = json.loads(turn._desktop_state_path(turn._profile_dir("agent-1"), "run-1").read_text())
+        seen.update(state["ctx"])
+        return "completed", None, "Done.", dict(turn.ZERO_USAGE)
+
+    monkeypatch.setattr(turn, "_run_call", fake_call)
+    monkeypatch.setattr(turn, "call_frame_publisher", lambda spec, identity, run_id: _frames())
+    for name in ("finish_run", "report_usage", "save_profile", "restore_profile", "_await_post_turn_writes", "_end_turn"):
+        monkeypatch.setattr(turn, name, lambda *a, **k: None)
+    monkeypatch.setattr(turn.sync, "restore_root_auth", lambda: None)
+    monkeypatch.setattr(turn.sync, "save_root_auth", lambda: None)
+    turn.register_call_run(IDENTITY)
+    turn.run_call_turn(IDENTITY, REQUEST, reserved=True)
+    assert seen["family"] == "call" and seen["sessionKey"] == CALL_SESSION and seen["runId"] == "run-1"
+    assert not turn._desktop_state_path(turn._profile_dir("agent-1"), "run-1").exists()
 
 
 def test_the_turn_context_names_the_voice_room(env, home, monkeypatch):

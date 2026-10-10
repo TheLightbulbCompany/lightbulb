@@ -32,14 +32,21 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _audit_rows():
+    """The per-user reads write an admin_actions row; keep that off DynamoDB."""
+    with patch("core.repositories.admin_actions_repo.create", new_callable=AsyncMock) as create:
+        yield create
+
+
 def _admit_test_user(app):
-    """Present an @isol8.co caller to the Clerk platform-admin gate."""
-    ctx = AuthContext(user_id="user_test_123", email="admin@isol8.co")
+    """Present an allowlisted caller to the Clerk platform-admin gate."""
+    ctx = AuthContext(user_id="user_platform_admin", email="admin@thelightbulb.company")
     app.dependency_overrides[get_current_user] = lambda: ctx
 
 
 def _deny_all_admins(app):
-    """Present a non-@isol8.co caller => 403 from the platform-admin gate."""
+    """Present a non-allowlisted caller => 403 from the platform-admin gate."""
     ctx = AuthContext(user_id="user_test_123", email="user@example.com")
     app.dependency_overrides[get_current_user] = lambda: ctx
 
@@ -177,11 +184,9 @@ class TestOverview:
 
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service.get_overview", new_callable=AsyncMock)
-    async def test_overview_writes_audit_row(self, mock_overview, async_client, app):
+    async def test_overview_writes_audit_row(self, mock_overview, async_client, app, _audit_rows):
         """Loading /admin/users/{id}/overview must persist an admin_actions
-        row tagged action starting with "user." and target_user_id from the
-        path. The test is loose: it accepts whichever audit mechanism the
-        endpoint uses, and only asserts the shape when one runs."""
+        row naming the read and the target user from the path."""
         _admit_test_user(app)
         mock_overview.return_value = {
             "identity": {"id": "user_abc"},
@@ -190,18 +195,12 @@ class TestOverview:
             "usage": None,
         }
 
-        with patch("core.repositories.admin_actions_repo.create", new_callable=AsyncMock) as mock_create:
-            res = await async_client.get("/api/v1/admin/users/user_abc/overview")
+        res = await async_client.get("/api/v1/admin/users/user_abc/overview")
 
         assert res.status_code == 200
-        if mock_create.await_count:
-            kwargs = mock_create.await_args.kwargs
-            # action label may be "user.view" or "user.overview.view" — accept
-            # any "user.view*" prefix so the test isn't over-specified.
-            action = kwargs.get("action") or (mock_create.await_args.args[0] if mock_create.await_args.args else "")
-            assert isinstance(action, str) and action.startswith("user.")
-            target = kwargs.get("target_user_id")
-            assert target == "user_abc"
+        kwargs = _audit_rows.await_args.kwargs
+        assert kwargs["action"] == "user.read.overview"
+        assert kwargs["target_user_id"] == "user_abc"
 
 
 # ---------------------------------------------------------------------------
@@ -557,8 +556,7 @@ class TestCloudWatchUrl:
         )
 
         assert res.status_code == 200
-        body = res.json()
-        assert body == {"url": "https://console.aws.amazon.com/cloudwatch/insights?foo=bar"}
+        assert res.json()["url"] == "https://console.aws.amazon.com/cloudwatch/insights?foo=bar"
 
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service.get_cloudwatch_url")

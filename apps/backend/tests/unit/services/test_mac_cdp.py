@@ -224,3 +224,10 @@ async def test_serve_starts_mac_live_and_its_end_does_not_close_the_door(monkeyp
     session.channel.queue.put_nowait(None)  # the Mac closes the channel normally
     await door
     assert socket.closes == [1000]
+
+
+def test_a_voice_runs_ticket_redeems_like_a_room_runs():
+    """A spoken turn (family "call") reaches its requester's Mac browser through the same door."""
+    call = ROOM | {"family": "call"}
+    claims = mac_cdp.redeem(mac_cdp.mint(target=TARGET, profile_id="p1", auth=call))
+    assert claims is not None and mac_cdp.auth_from_claims(claims) == call

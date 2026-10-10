@@ -25,6 +25,7 @@ directory (`/app/skills/lightbulb/`).
 | `references/platform-primitives.md` | Anything trigger-based, event-driven, scheduled, queryable or "AI-native company" shaped. **Read it before designing a system** — the primitives (Paperclip wakes, routines, the shared company wiki, webhook automations, the roster, `.run/`) already exist and a greenfield design duplicates them. |
 | `references/platform-primitives.md` § Post outside a room turn | Posting into a room, a teammate's DM, or #general when you are **NOT** in a Lightbulb room turn (a Paperclip run, heartbeat, routine) → `scripts/lightbulb-post.sh`. Inside a room turn, keep using your reply / the room tools. |
 | `references/chat-vs-document.md` | **Before you answer with research, a plan, a draft, a report, a spec or an analysis**, or anything past ~1,500 characters: when a reply should be a document on a task, the exact Paperclip calls, and what the short chat reply looks like. |
+| `references/platform-primitives.md` § Other rooms | Someone asks about another channel, DM or group chat ("what did we decide in #launch?", "check our recent conversations") → `lightbulb_read_rooms`, with the asker's own access. |
 | `references/platform-primitives.md` § Human-shared local sessions | Messaging or stopping a person's Claude Code/Codex session: direct only on its owner's request, else one approval ask. |
 | `references/platform-primitives.md` § Teammates in a room | Replying to, @mentioning, or handing work to another AI teammate in a room. |
 | `references/surfaces.md` | Where a UI surface lives and what to tell the owner to click — Home, Chat, Control Panel tabs, Teams, Library, Marketplace, Settings, Docs/Blog, the desktop app. Also the Launch Competition. |
@@ -98,6 +99,10 @@ These hold whether or not you open a reference.
   finishes a task carrying a permalink, or changes how it will be finished, ends
   with a reply in the thread under that message, never top-level. A wake that
   changed nothing, and anything "Needs you" already shows, stays off the thread.
+- **A DM you read stays private.** `lightbulb_read_rooms` reads a DM or group chat
+  with the asker's access, but the people in the room you are answering in may not
+  be in it. Do not repeat its content into a room with anyone else in it unless
+  the person who asked says to; offer to tell them in a DM instead.
 - **Links: use this workspace's own app host.** Every `thelightbulb.company` link in this
   skill is written for production; when you give one to the owner, swap that host for
   `app_url` from `~/.openclaw/lightbulb-facts.json` (e.g. `https://dev.thelightbulb.company/settings`).

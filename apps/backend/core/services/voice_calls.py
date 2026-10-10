@@ -818,6 +818,14 @@ async def dispatch_voice_run(
     # Conversation engine §3.4: the other asks of the same spoken turn, so this agent answers only its own.
     also = "\n".join((requests or [])[:8])
     asked = f"[Asked in the same breath; teammates are on these:\n{also}]\n\n" if also else ""
+    requester = _voice_requester(members, owner_id, speaker_id)
+    # What a typed turn here gets (openclaw_work.build_ingress_body): the room block, the roster with
+    # human handles, and the live local sessions (withheld for a room shared with another org).
+    from core.services import local_sessions
+
+    handled, sessions = await asyncio.gather(
+        messaging.human_emails(members), local_sessions.live_sessions_for_room(owner_id, room_id, members)
+    )
     body = {
         "identity": {
             "runId": run_id,
@@ -844,21 +852,32 @@ async def dispatch_voice_run(
                 "utterance": utterance,
             },
             "recentHistory": _voice_history(await openclaw_work.room_history(meta, int(meta.get("lastSeq") or 0) + 1)),
-            "participants": openclaw_work.ingress_participants(members),
+            "participants": openclaw_work.ingress_participants(messaging.with_human_handles(members, handled)),
+            "room": {"id": room_id, "name": meta.get("name"), "kind": meta["kind"], "revision": int(meta["revision"])},
+            "sender": {"id": speaker_id, "kind": "human" if requester else "guest", "displayName": name},
+            **({"sessions": sessions} if sessions else {}),
         },
     }
     history = body["request"]["recentHistory"]
     while history and messaging.json_body_size(body) > openclaw_work._INGRESS_MAX_BYTES:
         history.pop(0)
-    # Before the POST: the voice-profile route (C8) resolves the speaker from this row.
-    fields = {"roomId": room_id, "agentId": agent_id, "speakerUserId": speaker_id, "speakerName": name}
+    # Before the POST: the voice-profile route (C8) resolves the speaker from this row, and
+    # requesterUserId is the run's verified requester (the Mac tool's authority; None = nobody).
+    fields = {
+        "roomId": room_id,
+        "agentId": agent_id,
+        "speakerUserId": speaker_id,
+        "speakerName": name,
+        "requesterUserId": requester,
+    }
     # An atomic SET of these fields: a /turns retry cannot drop a "don't post that" mark, whenever it lands.
-    await messaging_repo.put_voice_run(owner_id, run_id, fields)
+    # The requester is written once: a retry after another speaker's steer lowered it keeps it lowered,
+    # and the grant below is minted for what the row holds, never for a requester the steer took away.
+    row = await messaging_repo.put_voice_run(owner_id, run_id, fields, once=frozenset({"requesterUserId"}))
+    requester = row.get("requesterUserId") if "requesterUserId" in row else requester
     # The room grant a typed message here would get (openclaw_work), keyed on the voice run.
     try:
-        grant = local_session_grants.mint(
-            owner_id, room_id, agent_id, run_id, _voice_requester(members, owner_id, speaker_id)
-        )
+        grant = local_session_grants.mint(owner_id, room_id, agent_id, run_id, requester)
     except (RuntimeError, messaging.ApiProblem):
         grant = None
         logger.warning("Voice local session invocation unavailable")
@@ -917,7 +936,10 @@ async def steer_voice_run(
         return None
     # The latest requester is who C8 checks: a guest's steer must not borrow the member's rights.
     # An atomic SET, not a whole-row put: a noPost mark landing after our read must survive.
-    await messaging_repo.update_voice_run(call["ownerId"], run_id, {"speakerUserId": speaker_id, "speakerName": name})
+    lowered = {"requesterUserId": None} if speaker_id != row.get("speakerUserId") else {}
+    await messaging_repo.update_voice_run(
+        call["ownerId"], run_id, {"speakerUserId": speaker_id, "speakerName": name, **lowered}
+    )
     return {"runId": run_id, "agentId": agent_id, "steered": True}
 
 

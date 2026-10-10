@@ -22,6 +22,7 @@ import logging
 import re
 import uuid
 
+from core.auth import AuthContext, resolve_owner_id
 from core.observability.product_analytics import capture_product_event
 from core.services.desktop_execution import DesktopError, submissions_enabled
 
@@ -257,17 +258,75 @@ async def start(owner_id: str, user_id: str, raw: dict, *, source: str = "remote
     target = await _target(owner_id, user_id, body["deviceId"], body["generation"], START_COMMAND)
     start_id = body["startId"]
     _audit(owner_id, user_id, start_id, body, "requested")
-    task = asyncio.create_task(_finish(owner_id, user_id, start_id, target, body, source))
+    params = {k: body[k] for k in ("tool", "folder", "model", "mode", "prompt")} | {"startId": start_id}
+    if body["effort"] is not None:
+        params["effort"] = body["effort"]
+    return _launch(owner_id, user_id, start_id, target, body, source, params)
+
+
+async def open_in_terminal(auth: AuthContext, session_id: str, raw: dict) -> dict:
+    """Open in a terminal: the owner's own session that runs inside an app (Claude desktop, the
+    Codex app, an IDE) opens as a held fork of its conversation on the Mac it runs on. The owner
+    only, never a teammate or an agent (the route takes a human Clerk session). The Mac picks the
+    folder from the conversation itself and refuses one outside its approved folders; the app's
+    own session keeps running."""
+    from core.services import local_sessions as sessions
+
+    if not isinstance(raw, dict) or set(raw) != {"startId"}:
+        raise DesktopError("invalid_request")
+    start_id = raw["startId"]
+    try:
+        if str(uuid.UUID(start_id)) != start_id:
+            raise ValueError
+    except (ValueError, TypeError, AttributeError):
+        raise DesktopError("invalid_request") from None
+    owner_id, user_id = resolve_owner_id(auth), auth.user_id
+    if not submissions_enabled(owner_id):
+        raise DesktopError("desktop_disabled", 503)
+    row, _ = await sessions.authorize_session(auth, None, session_id)
+    if row["humanUserId"] != user_id:
+        raise DesktopError("desktop_forbidden", 403)
+    conversation = row.get("nativeConversationId")
+    try:
+        valid = isinstance(conversation, str) and str(uuid.UUID(conversation)) == conversation
+    except ValueError:
+        valid = False
+    if (
+        not sessions.conversation_only(row)
+        or row.get("endedAt") is not None
+        or row["provider"] not in TOOLS
+        or not valid
+    ):
+        raise DesktopError("session_not_openable", 409)
+    devices = (await list_targets(owner_id, user_id))["devices"]
+    device = next((d for d in devices if d["deviceId"] == row["deviceId"]), None)
+    if device is None:
+        raise DesktopError("desktop_offline", 409)
+    target = await _target(owner_id, user_id, device["deviceId"], device["generation"], START_COMMAND)
+    body = {
+        "deviceId": device["deviceId"],
+        "tool": row["provider"],
+        "folder": None,
+        "model": None,
+        "mode": None,
+        "effort": None,
+    }
+    _audit(owner_id, user_id, start_id, body, "requested")
+    params = {"tool": row["provider"], "conversationId": conversation, "startId": start_id}
+    return _launch(owner_id, user_id, start_id, target, body, "open", params)
+
+
+def _launch(owner_id: str, user_id: str, start_id: str, target: dict, body: dict, source: str, params: dict) -> dict:
+    task = asyncio.create_task(_finish(owner_id, user_id, start_id, target, body, source, params))
     _background.add(task)
     task.add_done_callback(_background.discard)
     return {"startId": start_id}
 
 
-async def _finish(owner_id: str, user_id: str, start_id: str, target: dict, body: dict, source: str) -> None:
+async def _finish(
+    owner_id: str, user_id: str, start_id: str, target: dict, body: dict, source: str, params: dict
+) -> None:
     _capture_start(user_id, owner_id, start_id, body["tool"], source, "local_session_start_requested")
-    params = {k: body[k] for k in ("tool", "folder", "model", "mode", "prompt")} | {"startId": start_id}
-    if body["effort"] is not None:
-        params["effort"] = body["effort"]
     try:
         result = await _invoke(target, START_COMMAND, params, START_MS)
         ok = isinstance(result, dict) and result.get("ok") is True
@@ -279,6 +338,9 @@ async def _finish(owner_id: str, user_id: str, start_id: str, target: dict, body
                 "message": str(node_error.get("message") or "The Mac did not start the session.")[:300],
                 "retryable": False,
             }
+            # A Mac on a build from before Open in a terminal rejects the conversation-only payload.
+            if source == "open" and error["code"] == "INVALID_REQUEST" and error["message"] == "Malformed request.":
+                error["message"] = "Update the Lightbulb app on this Mac, then try again."
     except DesktopError as exc:
         ok, error = False, {"code": exc.code, "message": "Could not reach that Mac.", "retryable": True}
     except Exception:

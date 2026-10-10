@@ -5,7 +5,7 @@ import { useAuth } from "@clerk/nextjs";
 import { capture } from "@/lib/analytics";
 import { Info, MessageSquare, Send } from "lucide-react";
 import {
-  canControlSession, useSessionResume, mainEvents, pendingApproval, receiptChip, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionPlan, sessionStatus, sessionTitle, unavailableReason,
+  audienceLine, canControlSession, useSessionResume, mainEvents, pendingApproval, receiptChip, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionPlan, sessionStatus, sessionTitle, unavailableReason,
   conversationOnly, joinRequestView, pickupRequestLine, pickupStatus, sessionScreenNotice, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionJoinRequest, useSessionOutbox,
   type LocalSession, type SessionControlClient, type SessionSource,
 } from "@lightbulb/shared";
@@ -14,13 +14,14 @@ import { NativeSessionTranscript, ReceiptChip, type Person } from "./NativeSessi
 import { SessionApprovalCard } from "./SessionControls";
 import { SessionTerminalView, type SessionFrames } from "./SessionTerminalView";
 import { useOptionalLiveEvents } from "@/hooks/useLiveEvents";
-import { useLocalTerminal } from "./localTerminal";
+import { useLocalAudience, useLocalTerminal } from "./localTerminal";
 import { toBase64 } from "./sessionInput";
 import { SessionDetails, type SessionDetailsTab } from "./SessionDetails";
 import { canPickUp, SessionPickup } from "./SessionPickup";
 import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import type { PickupClient } from "./useSessionPickup";
 import { ResumeDelivery, SessionResume } from "./SessionResume";
+import { useApi } from "@/lib/api";
 
 /** Older history pages read per session for the plan and changed-files summaries: 20 pages is 1,000 events,
  *  under the history window's 2,000-row cap, so reading back never evicts the newest events. A longer
@@ -103,6 +104,8 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     placed.current = session.sessionId;
     box.scrollTop = 0; box.scrollLeft = 0;
   };
+  // The owner's own terminal on this Mac says who watches as the web terminal view does (`audienceLine`).
+  const audience = audienceLine(useLocalAudience(local === "local", session.sessionId, session.generation));
   const canWatch = local === "none" && !!onEvent && !!client.watchLocalSession;
   const liveEvents = useOptionalLiveEvents();
   const framesChannel = liveEvents?.sessionFramesChannel(session.sessionId) ?? null;
@@ -287,9 +290,11 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     </div>}
     {typing.length > 0 && <p role="status" className="text-sm text-muted-foreground">{typing.join(", ")} {typing.length === 1 ? "is" : "are"} typing</p>}
     {local !== "none"
-      ? <div ref={slot} className="local-session-terminal" role="region" aria-label="Session terminal" />
+      ? <>{audience && <div className="session-terminal-size local-session-audience"><span className="session-terminal-hint">{audience}</span></div>}
+        <div ref={slot} className="local-session-terminal" role="region" aria-label="Session terminal" /></>
       : <>
-      {convoEmpty ? endedPanel : convo ? <>{session.status === "ended" && endedLine}{session.status === "offline" && offlinePanel}<p className="session-ended-line" role="note">{notice.title} {notice.body}</p></>
+      {convoEmpty ? endedPanel : convo ? <>{session.status === "ended" && endedLine}{session.status === "offline" && offlinePanel}<p className="session-ended-line" role="note">{notice.title} {notice.body}</p>
+        {own && running && <OpenInTerminal sessionId={session.sessionId} onEvent={onEvent} />}</>
         : session.status === "ended" ? (endedScreen || keptWatching ? endedLine : endedPanel) : session.status === "offline" ? offlinePanel : notStarted ? noticePanel : null}
       {watchRemote && <div className="session-terminal-slot" onScrollCapture={endedScreen ? openAtTop : undefined}><SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} frames={frames} onLive={setScreenLive} onCanType={setTermCanType} kept={endedScreen}
         admitted={running && control && session.shared !== false && !(session.inputPaused && !own)}
@@ -339,6 +344,33 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     <SessionDetails open={details !== null} onOpenChange={open => { if (!open) setDetails(null); }} onClosed={() => opener.current?.focus()} tab={tab} onTab={setTab}
       session={session} ownerName={ownerName} own={own} client={client} events={main} onMessageOwner={onMessageOwner} nameOf={personName} />
   </>;
+}
+
+/** The owner's own app session (Claude desktop, the Codex app, an IDE), forked into a live held terminal on their
+ *  Mac. The server and the Mac refuse anyone else; the app's own session keeps running. */
+function OpenInTerminal({ sessionId, onEvent }: { sessionId: string; onEvent?: SessionSource["onEvent"] }) {
+  const api = useApi();
+  const [open, setOpen] = useState<{ startId: string; phase: "opening" | "opened" | "failed"; error?: string } | null>(null);
+  useEffect(() => {
+    if (!onEvent || open?.phase !== "opening") return;
+    return onEvent((event) => {
+      if (event.type !== "runtime.operation.changed" || event.payload.operationId !== open.startId) return;
+      setOpen(o => o && (event.payload.state === "succeeded" ? { ...o, phase: "opened" }
+        : event.payload.state === "failed" ? { ...o, phase: "failed", error: event.payload.error?.message } : o));
+    });
+  }, [onEvent, open]);
+  const start = async () => {
+    const startId = crypto.randomUUID();
+    setOpen({ startId, phase: "opening" });
+    try { await api.post(`/desktop-sessions/open/${sessionId}`, { startId }); }
+    catch { setOpen({ startId, phase: "failed", error: "Your Mac did not answer. Check that Lightbulb is open on it." }); }
+  };
+  return <div className="local-session-actions">
+    <Button type="button" variant="outline" size="sm" disabled={open?.phase === "opening"} onClick={() => void start()}>
+      {open?.phase === "opening" ? "Opening…" : "Open in a terminal"}</Button>
+    <p role="status" className="text-sm text-muted-foreground">{open?.phase === "opened" ? "Opened. It is in your sessions as a new terminal session."
+      : open?.phase === "failed" ? open.error ?? "It did not open." : "Opens this conversation in a live terminal on your Mac. The app keeps its copy."}</p>
+  </div>;
 }
 
 /** The owner answers "Ask to join" / "Ask to pick up" in the session itself, where a request's notification lands. */

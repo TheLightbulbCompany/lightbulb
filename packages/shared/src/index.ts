@@ -53,13 +53,14 @@ export type { ApiCallOptions, ApiMethods } from "./api/client";
 export { accumulateStreamText } from "./live/streamText";
 export { AppSyncEventsClient, framesChannelFor } from "./live/appsyncEvents";
 export { useLiveEvents } from "./live/useLiveEvents";
-export type { CallTurnFrame, ChatIncomingMessage, LiveEvent, LiveEventOf, MessagePush, RoomActivityChanged, RoomBrowserFrame, SessionAttention, SessionScreen, SessionTyping } from "./live/types";
+export type { CallTurnFrame, ChatIncomingMessage, LiveEvent, LiveEventOf, MessagePush, RoomActivityChanged, RoomBrowserFrame, RoomSubagentEvent, SessionAttention, SessionScreen, SessionTyping } from "./live/types";
 export { applyRoomActivity, pruneRoomActivity, roomLiveLine, typingLine } from "./messaging/roomActivity";
 export type { RoomActivity } from "./messaging/roomActivity";
 export { createMessagingClient } from "./messaging/client";
+export { useSubagentTail } from "./messaging/useSubagentTail";
 export { PERSON_COLORS, personColor } from "./messaging/personColor";
 export type { PersonColor } from "./messaging/personColor";
-export type { RoomAttachmentInput } from "./messaging/client";
+export type { MessagingClient, RoomAttachmentInput, SubagentTail } from "./messaging/client";
 export { wrapSelection } from "./messaging/composerText";
 export type { MarkdownStyle } from "./messaging/composerText";
 export { canChangeListenMode, LISTEN_MODE_LABELS, listenModeOptions, respondHint, soleChannelOwner } from "./messaging/respondHint";
@@ -134,6 +135,7 @@ export {
 export type { DocumentLink, DocumentPreview } from "./messaging/documentLinks";
 export { ROOMS_SNAPSHOT_VERSION, useRooms } from "./messaging/useRooms";
 export type {
+  MessageDelegations,
   OptimisticRoomMessage,
   RoomReceipts,
   RoomsLiveSource,
@@ -229,7 +231,7 @@ export type { AvatarRing, ChatEntry, MergeChatsOptions } from "./messaging/chatL
 export { lastOwnMessageId, readState, readStateLabel, UNPROMPTED_LABEL, unpromptedLabel } from "./messaging/readState";
 export type { ReadState } from "./messaging/readState";
 export { AUTO_CHECK_INTERVAL_MS, COMMAND_MAX_BYTES, pendingPrompt, receiptChip, useSessionCommand, usePendingPrompt, useSessionOutbox, type SessionReceiptChip } from "./messaging/useSessionCommand";
-export { APPROVAL_MODE_LABEL, ASK_AGAIN_AFTER_MS, joinRequestView, auditLine, COMMIT_AND_PR_INSTRUCTION, canControlSession, canResumeSession, pickupRequestLine, pickupSource, pickupStatus, resumeStatus, sessionFacts, sessionFooter, usageLine, useSessionApproval, useSessionAudit, useSessionJoinRequest, useSessionResume, useTeamControl, useUsageSharing, withAuditNotices } from "./messaging/sessionControls";
+export { APPROVAL_MODE_LABEL, ASK_AGAIN_AFTER_MS, audienceLine, joinRequestView, auditLine, COMMIT_AND_PR_INSTRUCTION, canControlSession, canResumeSession, pickupRequestLine, pickupSource, pickupStatus, resumeStatus, sessionFacts, sessionFooter, usageLine, useSessionApproval, useSessionAudit, useSessionJoinRequest, useSessionResume, useTeamControl, useUsageSharing, withAuditNotices } from "./messaging/sessionControls";
 export type { ApprovalAnswer, PrivateSendApproval, SessionControlClient, SessionResumeFlow } from "./messaging/sessionControls";
 export type { SessionCommandAttempt } from "./messaging/useSessionCommand";
 export type {
@@ -314,3 +316,14 @@ export {
 export type { ContentBlock, HistoryMessage } from "./chat/history";
 export { sessionIdFromKey } from "./chat/sessionKey";
 export * from "./voice/words";
+export {
+  EMPTY_ROOM_SUBAGENTS,
+  applySubagentEvent,
+  liveSubagents,
+  pruneFinishedSubagents,
+  reconcileSubagentSnapshot,
+  subagentActivity,
+  isSubagentGone,
+  delegationIdOf,
+} from "./messaging/subagents";
+export type { RoomSubagents, SubagentProgress, SubagentStatus } from "./messaging/subagents";

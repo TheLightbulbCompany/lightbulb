@@ -57,6 +57,8 @@ dev-dependencies = [
     "pre-commit>=3.0.0",
     "moto[dynamodb]>=5.1.22",
     "hypothesis>=6.100.0",
+    # apps/infra/lambda/ses-inbound's tests run in this env (backend.yml).
+    "dkimpy==1.1.8",
 ]
 
 [tool.ruff]

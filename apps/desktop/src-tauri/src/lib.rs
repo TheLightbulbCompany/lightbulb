@@ -237,6 +237,10 @@ fn send_auth_token(
     // Only for the `lightbulb` command's "Shared with <workspace>" line.
     #[cfg(unix)]
     cli::set_workspace(workspace_id.zip(workspace_name));
+    // The page's switches can only narrow what this Mac already allows: turning one on is
+    // `desktop_permissions_set`, behind a native alert. Clamped here so the pair request,
+    // the persisted pair state and the local store all see the same set.
+    let permissions = permissions.map(|p| desktop_permissions::within_consent(&desktop_permissions::load(&app), &p));
     {
         // Cache the latest token for telemetry / diagnostic dumps. We do
         // NOT use this as the "did bootstrap already happen" sentinel
@@ -823,14 +827,64 @@ async fn local_mcp_list(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
 /// restart would let two concurrent calls interleave their RMW of
 /// `openclaw.json` and silently drop one update — last writer wins on a value
 /// it read before the other's write.
+///
+/// Any server whose command line is new or changed needs a native "yes" first:
+/// the node host runs it on every launch, and the page that calls this is a
+/// remote origin, so it must not be able to install a local executable on its
+/// own. This is a configuration change by the page, not an agent operation, so
+/// the consent-once-at-pairing grants do not cover it.
 #[tauri::command]
 async fn local_mcp_set(app: tauri::AppHandle, servers: serde_json::Value) -> Result<(), String> {
     let state = app
         .try_state::<AuthState>()
         .ok_or_else(|| "AuthState not managed".to_string())?;
     let _serialized = state.node_host_mutation.lock().await;
-    local_mcp::set_servers(&openclaw_state_dir(&app)?, servers)?;
+    let dir = openclaw_state_dir(&app)?;
+    let servers = local_mcp::validate_servers(servers)?;
+    let launches =
+        local_mcp::launches_needing_confirmation(&local_mcp::list_servers(&dir)?, &servers);
+    if !launches.is_empty()
+        && !confirm_native(
+            &app,
+            "Allow local MCP server?",
+            format!(
+                "Lightbulb wants to run these commands on this Mac every time it starts:\n\n{}\n\nOnly allow commands you recognise.",
+                launches.join("\n\n")
+            ),
+        )
+        .await
+    {
+        return Err("local MCP change was not approved on this Mac".into());
+    }
+    local_mcp::set_servers(&dir, serde_json::Value::Object(servers))?;
     restart_node_host_subprocess_locked(&app).await
+}
+
+/// What a command returns when the person chose Cancel on a native confirmation; the web
+/// matches "declined on this Mac" to say so calmly instead of showing an error.
+pub(crate) const DECLINED_ON_MAC: &str = "Not changed: declined on this Mac.";
+
+/// A native macOS alert for a change the PAGE asks for that widens what runs on this Mac
+/// (a local MCP command, a permission switch turned on, a folder added). The page cannot
+/// draw, fake or click it. Fail-closed: only `Custom("Allow")` approves. Allow is the
+/// first button, because an alert that ends any other way (Escape, abort) reads as the
+/// SECOND button: rfd 0.16 maps any other NSAlert return to `Cancel`
+/// (`backend/macos/message_dialog.rs`), and tauri-plugin-dialog 2.8.1 maps that `Cancel`
+/// to `Custom(<second label>)` (`desktop.rs`). With Cancel first, such an ending read as
+/// Allow. Return pressing Allow is standard macOS; a page cannot press keys in this alert.
+pub(crate) async fn confirm_native(app: &tauri::AppHandle, title: &str, body: String) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult};
+    const ALLOW: &str = "Allow";
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .message(body)
+        .title(title)
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(ALLOW.into(), "Cancel".into()))
+        .show_with_result(move |res| {
+            let _ = tx.send(matches!(res, MessageDialogResult::Custom(ref s) if s == ALLOW));
+        });
+    rx.await.unwrap_or(false)
 }
 
 /// Remove one server. `false` (and no restart) if it wasn't there.
@@ -1190,10 +1244,26 @@ fn file_access_list_paths() -> Vec<String> {
 
 /// Adds `path` to the allowlist after canonicalizing it. Returns the
 /// canonical form. Idempotent. Errors if the path doesn't exist or
-/// isn't accessible.
+/// isn't accessible. A folder not yet approved needs a native "Allow"
+/// naming the exact canonical path: the page asking is a remote origin.
 #[tauri::command]
-fn file_access_add_path(path: String) -> Result<String, String> {
-    file_access::add_path(&path).map_err(|e| e.to_string())
+async fn file_access_add_path(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    let canonical = file_access::canonicalize(&path).map_err(|e| e.to_string())?;
+    let shown = canonical.to_string_lossy().to_string();
+    let approved = file_access::list_paths()
+        .iter()
+        .any(|p| std::path::Path::new(p) == canonical.as_path());
+    if !approved
+        && !confirm_native(
+            &app,
+            "Allow folder access?",
+            format!("Allow agents to read and write files in {shown}?"),
+        )
+        .await
+    {
+        return Err(DECLINED_ON_MAC.into());
+    }
+    file_access::add_path(&shown).map_err(|e| e.to_string())
 }
 
 /// Removes `path` from the allowlist (canonical match). Returns true if
@@ -1855,6 +1925,7 @@ end tell"#,
         .invoke_handler(tauri::generate_handler![
             local_sessions::enrollment::local_sessions_auth,
             local_sessions::enrollment::local_sessions_status,
+            local_sessions::enrollment::local_session_audience,
             local_sessions::enrollment::local_sessions_set,
             local_sessions::enrollment::local_sessions_repair,
             local_sessions::enrollment::local_sessions_revoke,

@@ -1865,7 +1865,7 @@ jobs:
           node-version: "20"
           cache: pnpm
       - name: Install Vercel CLI
-        run: npm install -g vercel
+        run: npm install -g vercel@63.1.0
       - name: Pull Vercel Settings
         run: vercel pull --yes --token=$VERCEL_TOKEN
         env:
@@ -1916,7 +1916,7 @@ jobs:
           node-version: "20"
           cache: pnpm
       - name: Install Vercel CLI
-        run: npm install -g vercel
+        run: npm install -g vercel@63.1.0
       - name: Pull Vercel Settings
         run: vercel pull --yes --token=$VERCEL_TOKEN
         env:
@@ -2687,7 +2687,7 @@ jobs:
           node-version: "20"
           cache: pnpm
       - name: Install Vercel CLI
-        run: npm install -g vercel
+        run: npm install -g vercel@63.1.0
       - name: Pull Vercel Settings
         run: vercel pull --yes --environment=production --token=$VERCEL_TOKEN
         env:
@@ -2770,7 +2770,7 @@ jobs:
           node-version: "20"
           cache: pnpm
       - name: Install Vercel CLI
-        run: npm install -g vercel
+        run: npm install -g vercel@63.1.0
       - name: Pull Vercel Settings
         run: vercel pull --yes --environment=production --token=$VERCEL_TOKEN
         env:

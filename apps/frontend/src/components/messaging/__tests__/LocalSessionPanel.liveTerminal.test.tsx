@@ -184,6 +184,18 @@ it("still probes this Mac's holder for an offline session, and never for a runni
   }
 });
 
+it("says who watches over the owner's own terminal on this Mac, from the app, as the web terminal does", async () => {
+  const invoke = vi.fn(async (command: string) => command === "terminal_panel" ? { live: true } : { watching: 1, viaLink: 2 });
+  (window as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke } };
+  try {
+    render(<LocalSessionPanel session={session} ownerName="Alice" own client={client as never} revision={0} onAccessLost={() => {}} onEvent={() => () => {}} />);
+    expect(await screen.findByText("1 watching · 2 via link")).toBeTruthy();
+    expect(invoke).toHaveBeenCalledWith("local_session_audience", { sessionId: "s", generation: "g1" });
+  } finally {
+    delete (window as { __TAURI__?: unknown }).__TAURI__;
+  }
+});
+
 it("reads the origin's history for a moved session that has had no turn of its own", async () => {
   const listLocalSessionEvents = vi.fn(async () => ({ events: [], nextAfterSeq: null }));
   const getLocalSession = vi.fn(async () => ({ ...session, sessionId: "origin", status: "ended", latestEventSeq: 120 }));
@@ -431,4 +443,21 @@ it("gives up the terminal a viewer was watching when no kept screen is reported 
   expect(screen.queryByRole("region", { name: "Live terminal (view only)" })).toBeNull();
   expect(screen.getByText("The screen is gone: this session's terminal closed.")).toBeTruthy();
   vi.useRealTimers();
+});
+
+it("offers Open in a terminal on a running app session to its owner only", () => {
+  const app = { ...session, terminal: undefined, terminalReason: "app" as const };
+  const panel = (s: LocalSession, own: boolean) => render(<LocalSessionPanel session={s} ownerName="Alice" own={own} client={client as never} revision={0} onAccessLost={() => {}} />);
+  panel(app, true);
+  expect(screen.getByRole("button", { name: "Open in a terminal" })).toBeTruthy();
+  expect(screen.getByText("Opens this conversation in a live terminal on your Mac. The app keeps its copy.")).toBeTruthy();
+  cleanup();
+  panel(app, false);
+  expect(screen.queryByRole("button", { name: "Open in a terminal" })).toBeNull();
+  cleanup();
+  panel({ ...app, status: "ended" }, true);
+  expect(screen.queryByRole("button", { name: "Open in a terminal" })).toBeNull();
+  cleanup();
+  panel(session, true);
+  expect(screen.queryByRole("button", { name: "Open in a terminal" })).toBeNull();
 });

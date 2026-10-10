@@ -24,7 +24,7 @@ from pydantic import BaseModel
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.repositories import billing_repo, container_repo, integrations_repo, slack_installs_repo
-from core.services import account_wipe, company_stripe, slack_install_service
+from core.services import account_wipe, company_stripe, slack_install_service, website_logins
 from core.services.credentials import integration_secret_store
 from core.services.owner_facts import write_owner_facts
 from routers import connections
@@ -149,6 +149,24 @@ async def revoke_all(body: RevokeAllBody, auth: Annotated[AuthContext, Depends(g
             slack_failed = True
     if slack_failed:
         failed.append("slack")
+
+    # 2d. Saved website logins: each one's password is a credential copy we hold. Same as
+    # above: a failure is reported and the rest of the kill switch still runs.
+    try:
+        logins = await website_logins.list_logins(owner_id)
+    except Exception:  # noqa: BLE001 — report it, keep going
+        logger.exception("company_policy: revoke-all could not list website logins owner_id=%s", owner_id)
+        logins = []
+        failed.append("website_logins")
+    for login in logins:
+        try:
+            if await website_logins.delete_login(owner_id, login["id"], actor=auth.user_id):
+                revoked.append(f"website_login:{login['id']}")
+        except Exception:  # noqa: BLE001 — one bad login must not spare the rest
+            logger.exception(
+                "company_policy: revoke-all could not delete website login %s owner_id=%s", login["id"], owner_id
+            )
+            failed.append(f"website_login:{login['id']}")
 
     # 3. Stripe Connect: the disconnect route's service path — sever the
     # platform link and unbind. The owner's account itself is untouched.

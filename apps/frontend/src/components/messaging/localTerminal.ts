@@ -39,6 +39,24 @@ export async function startLocalTerminal(params: Record<string, unknown>): Promi
   return (await invoke("terminal_start", { params })) as { holderId: string };
 }
 
+/** How many people watch this run, as the web terminal's `watch` answers it, while its terminal is
+ *  on this Mac (`on`). The desktop app reads the presence its band draws: no request leaves the Mac. */
+export function useLocalAudience(on: boolean, sessionId: string, generation: string): unknown {
+  const key = `${sessionId}:${generation}`;
+  const [counts, setCounts] = useState<{ key: string; value: unknown } | null>(null);
+  useEffect(() => {
+    const invoke = bridge();
+    if (!on || !invoke) return;
+    let live = true;
+    const read = () => void invoke("local_session_audience", { sessionId, generation }).then((value) => { if (live) setCounts({ key, value }); }, () => {});
+    read();
+    // ponytail: a poll of an in-app read; an event from the app when presence changes, if 5 s ever shows.
+    const timer = setInterval(read, 5000);
+    return () => { live = false; clearInterval(timer); };
+  }, [on, key, sessionId, generation]);
+  return on && counts?.key === key ? counts.value : undefined;
+}
+
 export type LocalTerminal = "checking" | "local" | "none";
 /** How often the panel's place is re-read: it moves when the content above it changes height. */
 const TRACK_MS = 250;

@@ -830,13 +830,19 @@ async def authorize_run(owner_id: str, run_id: str, agent_id: str, family: str, 
             "agentId": agent_id,
             "family": family,
         }
-    if family != "room":
+    if family == "room":
+        run = await messaging_repo.get_run(owner_id, run_id)
+        if not run or run.get("ownerId") != owner_id or run.get("runId") != run_id or run.get("agentId") != agent_id:
+            raise DesktopError("run_forbidden", 403)
+        if active and run.get("status") not in {"dispatched", "started"}:
+            raise DesktopError("run_not_active", 403)
+    elif family == "call":
+        # A spoken turn: the VOICERUN row the backend wrote at dispatch (expired = not active).
+        run = await messaging_repo.get_voice_run(owner_id, run_id)
+        if not run or run.get("runId") != run_id or run.get("agentId") != agent_id:
+            raise DesktopError("run_forbidden", 403)
+    else:
         raise DesktopError("unsupported_run_family", 403)
-    run = await messaging_repo.get_run(owner_id, run_id)
-    if not run or run.get("ownerId") != owner_id or run.get("runId") != run_id or run.get("agentId") != agent_id:
-        raise DesktopError("run_forbidden", 403)
-    if active and run.get("status") not in {"dispatched", "started"}:
-        raise DesktopError("run_not_active", 403)
     room_id = run.get("roomId")
     if not isinstance(room_id, str) or not _ID.fullmatch(room_id):
         raise DesktopError("run_forbidden", 403)
@@ -848,19 +854,26 @@ async def authorize_run(owner_id: str, run_id: str, agent_id: str, family: str, 
         or await messaging_repo.has_foreign_members(room_id, owner_id)
     ):
         raise DesktopError("run_forbidden", 403)
-    message = await messaging_repo.get_message_by_id(room_id, run.get("triggerMessageId", ""))
-    author = (message or {}).get("author", {})
-    member_id = author.get("id")
-    # A human's plain channel message that Jev routed to this agent (room_event) is
-    # as much that human's request as an @mention: authority is the trigger's
-    # human author, and discovery only ever offers that author's own Mac.
-    if (
-        run.get("eventKind") not in {"user_request", "room_event"}
-        or author.get("kind") != "human"
-        or not isinstance(member_id, str)
-        or not _ID.fullmatch(member_id)
-    ):
-        raise DesktopError("run_member_authority_unavailable", 403)
+    if family == "call":
+        # The run's verified requester (voice_calls: the seated member who spoke; nobody for a Meet
+        # speaker or once another speaker steered the run), so only that person's own Mac.
+        member_id = run.get("requesterUserId")
+        if not isinstance(member_id, str) or not _ID.fullmatch(member_id):
+            raise DesktopError("run_member_authority_unavailable", 403)
+    else:
+        message = await messaging_repo.get_message_by_id(room_id, run.get("triggerMessageId", ""))
+        author = (message or {}).get("author", {})
+        member_id = author.get("id")
+        # A human's plain channel message that Jev routed to this agent (room_event) is
+        # as much that human's request as an @mention: authority is the trigger's
+        # human author, and discovery only ever offers that author's own Mac.
+        if (
+            run.get("eventKind") not in {"user_request", "room_event"}
+            or author.get("kind") != "human"
+            or not isinstance(member_id, str)
+            or not _ID.fullmatch(member_id)
+        ):
+            raise DesktopError("run_member_authority_unavailable", 403)
     member = await messaging_repo.get_member(room_id, "human", member_id)
     if not member or messaging_repo.member_home(member, owner_id) != owner_id:
         raise DesktopError("run_forbidden", 403)

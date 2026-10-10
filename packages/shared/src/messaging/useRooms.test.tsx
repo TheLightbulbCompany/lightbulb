@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SWRConfig } from "swr";
 import type { ReactNode } from "react";
@@ -39,7 +39,7 @@ const messaging = {
   getRunStatus: vi.fn<(runId: string) => Promise<RunStatusResponse>>(async () => ({ runId: "run-1", state: "terminal" })),
   markUnread: vi.fn(), sendMessage: vi.fn(), setTyping: vi.fn(), createRoom: vi.fn(),
   updateRoom: vi.fn(), upsertMember: vi.fn(), removeMember: vi.fn(), abortRun: vi.fn(),
-  steerRun: vi.fn(), updateMessage: vi.fn(), setReaction: vi.fn(), downloadAttachment: vi.fn(),
+  steerRun: vi.fn(), listSubagents: vi.fn().mockResolvedValue({ subagents: [] }), subagentTail: vi.fn(), steerSubagent: vi.fn(), stopSubagent: vi.fn(), updateMessage: vi.fn(), setReaction: vi.fn(), downloadAttachment: vi.fn(),
   getLiveConfig: vi.fn(),
   setMemberPrefs: vi.fn(), putSections: vi.fn(), leaveRoom: vi.fn(), deleteRoom: vi.fn(), setPin: vi.fn(),
 };
@@ -948,6 +948,40 @@ describe("runs already in progress when the room opens", () => {
     expect(result.current.runs).toHaveLength(0);
   });
 
+  it("keeps the delegations of a run its saved reply replaced, until the room changes", async () => {
+    const other: RoomDetail = { ...room, roomId: "room-2", name: "Second", deliveryKey: "key-2" };
+    messaging.listRooms.mockResolvedValue({ rooms: [room, other], sections: [] });
+    messaging.getRoom.mockImplementation(async (id: string) => (id === other.roomId ? other : withRun()));
+    messaging.listMessages.mockResolvedValue({ messages: [message, { ...message, messageId: "reply", messageSeq: 2, runId: RUN,
+      author: { kind: "agent", id: AGENT, displayName: "Forge" }, text: "Started two helpers." }], nextAfterSeq: null });
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.runs).toHaveLength(1));
+    act(() => { for (const handler of handlers) {
+      handler(frame({ type: "tool_start", runId: RUN, tool: "delegate_task", toolCallId: "t1", args: {} }));
+      handler(frame({ type: "tool_end", runId: RUN, tool: "delegate_task", toolCallId: "t1", result: JSON.stringify({ delegation_id: "d-1" }) }));
+    } });
+    expect(result.current.delegationsByMessage.size).toBe(0); // the live run card still shows it
+    act(() => { for (const handler of handlers) handler(frame({ type: "run_ended", outcome: "done" })); });
+    expect(result.current.runs).toHaveLength(0);
+    expect(result.current.delegationsByMessage.get("reply")).toEqual({ agentId: AGENT, delegationIds: ["d-1"] });
+
+    await act(async () => { result.current.selectRoom(other.roomId); });
+    expect(result.current.delegationsByMessage.size).toBe(0);
+  });
+
+  it("keeps delegationsByMessage the same Map while a live run streams", async () => {
+    messaging.getRoom.mockResolvedValue(withRun());
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.runs).toHaveLength(1));
+    const before = result.current.delegationsByMessage;
+    act(() => { for (const handler of handlers) handler(frame({ type: "chunk", runId: RUN, content: "Working" })); });
+    act(() => { for (const handler of handlers) handler(frame({ type: "chunk", runId: RUN, content: "Working on it" })); });
+    expect(result.current.runs[0].text).toBe("Working on it");
+    expect(result.current.delegationsByMessage).toBe(before);
+  });
+
   it("never retires the run card for a progress line", async () => {
     messaging.getRoom.mockResolvedValue(withRun());
     messaging.listMessages.mockResolvedValue({ messages: [message, { ...message, messageId: "progress", messageSeq: 2, runId: RUN, progress: true,
@@ -1098,5 +1132,126 @@ describe("read and delivery receipts", () => {
 
     expect(result.current.receipts.agentReads.get("agent-1")?.has("m-live")).toBe(true);
     expect(result.current.receipts.agentDeliveries.get("agent-1")).toBe(3);
+  });
+});
+
+describe("background subagents", () => {
+  const sub = (type: string, seq: number, payload: Record<string, unknown>) => ({ type, seq, payload });
+  const emit = (event: LiveEvent) => act(() => { for (const handler of handlers) handler(event); });
+
+  it("room.subagent.event for the active room fills subagents; run_active prunes that agent's finished rows", async () => {
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.messages).toHaveLength(1));
+    emit({ type: "room.subagent.event", payload: { roomId: room.roomId, agentId: "a1", events: [
+      sub("subagent.start", 1, { subagent_id: "sa-1", goal: "Map" }),
+      sub("subagent.complete", 2, { subagent_id: "sa-2", goal: "Done", status: "completed" }),
+    ] } } as LiveEvent);
+    expect(result.current.subagents.items.map((i) => i.id)).toEqual(["sa-1", "sa-2"]);
+    emit({ type: "room.run.frame", payload: { roomId: room.roomId, agentId: "a1", runId: "run-x", threadRootMessageId: null,
+      frame: { type: "run_active", active: true } } } as LiveEvent);
+    expect(result.current.subagents.items.map((i) => i.id)).toEqual(["sa-1"]);
+  });
+
+  it("snapshots on room open, polls every 5 s only while visible with a live row, and stops after 3 failures", async () => {
+    vi.useFakeTimers();
+    try {
+      messaging.listSubagents.mockResolvedValue({ subagents: [{ subagent_id: "sa-1", agent_id: "a1", goal: "g", status: "running" }] });
+      const { result } = renderHook(() => useRooms(platform(), { subagents: true }), { wrapper });
+      act(() => result.current.selectRoom(room.roomId));
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      expect(messaging.listSubagents).toHaveBeenCalledTimes(1);
+      await act(() => vi.advanceTimersByTimeAsync(10_000));
+      expect(messaging.listSubagents).toHaveBeenCalledTimes(1);
+      act(() => result.current.subagentsPollVisible(true));
+      await act(() => vi.advanceTimersByTimeAsync(5_000));
+      expect(messaging.listSubagents).toHaveBeenCalledTimes(2);
+      messaging.listSubagents.mockRejectedValue(new Error("503"));
+      await act(() => vi.advanceTimersByTimeAsync(20_000));
+      expect(messaging.listSubagents).toHaveBeenCalledTimes(5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("takes no snapshot until the subagents option turns on, and none again after it turns off", async () => {
+    vi.useFakeTimers();
+    try {
+      messaging.listSubagents.mockResolvedValue({ subagents: [] });
+      const { result, rerender } = renderHook(({ on }) => useRooms(platform(), { subagents: on }), { wrapper, initialProps: { on: false } });
+      act(() => result.current.selectRoom(room.roomId));
+      await act(() => vi.advanceTimersByTimeAsync(10_000));
+      expect(messaging.listSubagents).not.toHaveBeenCalled();
+      rerender({ on: true });
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      expect(messaging.listSubagents).toHaveBeenCalledTimes(1);
+      rerender({ on: false });
+      act(() => result.current.subagentsPollVisible(true));
+      await act(() => vi.advanceTimersByTimeAsync(10_000));
+      expect(messaging.listSubagents).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("skips a poll tick while the previous snapshot is still in flight", async () => {
+    vi.useFakeTimers();
+    try {
+      messaging.listSubagents.mockResolvedValue({ subagents: [{ subagent_id: "sa-1", agent_id: "a1", goal: "g", status: "running" }] });
+      const { result } = renderHook(() => useRooms(platform(), { subagents: true }), { wrapper });
+      act(() => result.current.selectRoom(room.roomId));
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      act(() => result.current.subagentsPollVisible(true));
+      messaging.listSubagents.mockImplementation(() => new Promise(() => {})); // never answers
+      await act(() => vi.advanceTimersByTimeAsync(5_000));
+      expect(messaging.listSubagents).toHaveBeenCalledTimes(2);
+      await act(() => vi.advanceTimersByTimeAsync(15_000));
+      expect(messaging.listSubagents).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("an instance that did not opt in never asks the runtime for a snapshot", async () => {
+    cleanup(); // an earlier opted-in hook would answer the same events
+    vi.useFakeTimers();
+    try {
+      messaging.listSubagents.mockResolvedValue({ subagents: [{ subagent_id: "sa-1", agent_id: "a1", goal: "g", status: "running" }] });
+      const { result } = renderHook(() => useRooms(platform()), { wrapper });
+      act(() => result.current.selectRoom(room.roomId));
+      act(() => result.current.subagentsPollVisible(true));
+      emit({ type: "room.subagent.event", payload: { roomId: room.roomId, agentId: "a1", events: [
+        sub("subagent.start", 1, { subagent_id: "sa-1", goal: "Map" }),
+      ] } } as LiveEvent);
+      await act(() => vi.advanceTimersByTimeAsync(20_000));
+      act(() => { for (const listener of visibilityListeners) listener(); });
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      expect(messaging.listSubagents).not.toHaveBeenCalled();
+      expect(result.current.subagents.items.map((i) => i.id)).toEqual(["sa-1"]); // live events still apply
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("becoming visible again refreshes only while the strip is visible, and resets the failure stop", async () => {
+    cleanup(); // earlier hooks in this file are never unmounted and would answer the same visibility change
+    messaging.listSubagents.mockResolvedValue({ subagents: [] });
+    const { result } = renderHook(() => useRooms(platform(), { subagents: true }), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(messaging.listSubagents).toHaveBeenCalled());
+    await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+    const settled = messaging.listSubagents.mock.calls.length;
+    const regain = () => act(() => { for (const listener of visibilityListeners) listener(); });
+    regain();
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(messaging.listSubagents).toHaveBeenCalledTimes(settled);
+    act(() => result.current.subagentsPollVisible(true));
+    visible = false;
+    regain(); // a visibility LOSS is not a refresh
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(messaging.listSubagents).toHaveBeenCalledTimes(settled);
+    visible = true;
+    regain();
+    await waitFor(() => expect(messaging.listSubagents).toHaveBeenCalledTimes(settled + 1));
   });
 });

@@ -1,4 +1,6 @@
 import * as path from "path";
+import * as fs from "fs";
+import { execSync } from "child_process";
 import * as cdk from "aws-cdk-lib";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
@@ -444,14 +446,41 @@ export class SesInboundStack extends cdk.Stack {
       : undefined;
 
     // -------------------------------------------------------------------------
-    // The ses-inbound ingest Lambda. Stdlib-only (requirements.txt is empty)
-    // so a plain Code.fromAsset needs no bundling. Non-VPC — it only talks to
-    // S3, Secrets Manager, and the backend's public HTTPS endpoint.
+    // The ses-inbound ingest Lambda. Its one dependency is dkimpy (pure
+    // Python, + dnspython) so each DKIM signature is verified on its own.
+    // Non-VPC — it talks to S3, Secrets Manager, public DNS (DKIM keys), and
+    // the backend's public HTTPS endpoint.
     // -------------------------------------------------------------------------
+    const sesInboundSrc = path.join(__dirname, "..", "..", "lambda", "ses-inbound");
     this.ingestFunction = new lambda.Function(this, "SesIngestFunction", {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: "index.handler",
-      code: lambda.Code.fromAsset(path.join(__dirname, "..", "..", "lambda", "ses-inbound")),
+      code: lambda.Code.fromAsset(sesInboundSrc, {
+        bundling: {
+          image: lambda.Runtime.PYTHON_3_12.bundlingImage,
+          command: ["bash", "-c", "pip install -r requirements.txt -t /asset-output && cp -au . /asset-output"],
+          local: {
+            // Pure-Python wheels, so the host's pip resolves the same files
+            // the 3.12 image would — no platform pins needed.
+            tryBundle(outputDir: string): boolean {
+              try {
+                execSync(`pip3 install -r ${sesInboundSrc}/requirements.txt -t ${outputDir} -q`, { stdio: "inherit" });
+                for (const f of fs.readdirSync(sesInboundSrc)) {
+                  // Files only: pytest leaves a __pycache__/ dir here and
+                  // copyFileSync throws EISDIR on it (see api-stack.ts).
+                  const src = path.join(sesInboundSrc, f);
+                  if (fs.statSync(src).isFile()) {
+                    fs.copyFileSync(src, path.join(outputDir, f));
+                  }
+                }
+                return true;
+              } catch {
+                return false;
+              }
+            },
+          },
+        },
+      }),
       timeout: cdk.Duration.seconds(30),
       memorySize: 256,
       environment: {

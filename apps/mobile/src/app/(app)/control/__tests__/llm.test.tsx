@@ -5,10 +5,15 @@ import { render, screen } from "@testing-library/react-native";
 // that used to sit under the balance is gone.
 
 let mockAccountFixture: Record<string, unknown> | Error;
+let mockMembership: { role: string } | null = null;
+const mockRpcMethods: (string | null)[] = [];
 
 jest.mock("@clerk/expo", () => ({
   useAuth: () => ({ getToken: jest.fn(async () => "tok") }),
-  useOrganization: () => ({ organization: null, membership: null }),
+  useOrganization: () => ({
+    organization: mockMembership ? { id: "org_a" } : null,
+    membership: mockMembership,
+  }),
 }));
 
 jest.mock("expo-router", () => {
@@ -36,10 +41,29 @@ jest.mock("@lightbulb/shared", () => ({
     },
   }),
   useStatusLoaded: () => true,
-  useRuntimeRpc: () => ({ data: undefined }),
+  useRuntimeRpc: (_live: unknown, method: string | null) => {
+    mockRpcMethods.push(method);
+    return { data: undefined };
+  },
 }));
 
 import LlmPanel from "../llm";
+
+describe("LlmPanel for a workspace member", () => {
+  afterEach(() => {
+    mockMembership = null;
+    mockRpcMethods.length = 0;
+  });
+
+  it("never reads the admin-only config and shows the admin-managed state, not a skeleton", async () => {
+    mockMembership = { role: "org:member" };
+    mockAccountFixture = { provider_choice: "openrouter_managed" };
+    await render(<LlmPanel />);
+    expect(await screen.findByText(/managed by your organization admin/i)).toBeTruthy();
+    expect(mockRpcMethods).not.toContain("config.get");
+    expect(screen.queryByText("MODEL CATALOG")).toBeNull();
+  });
+});
 
 describe("LlmPanel workspace credits", () => {
   it("shows the balance with no top-up call to action", async () => {

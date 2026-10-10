@@ -1422,6 +1422,17 @@ async def test_a_turns_retry_cannot_drop_a_no_post_mark(table):
 
 
 @pytest.mark.asyncio
+async def test_a_turns_retry_cannot_restore_a_requester_a_steer_lowered(table):
+    """Codex #3995: the requester is written once; a lowered None stays None on a retry."""
+    once = frozenset({"requesterUserId"})
+    row = await repo.put_voice_run(OWNER, "run-1", {"roomId": "r", "requesterUserId": "user_a"}, once=once)
+    assert row["requesterUserId"] == "user_a"
+    assert await repo.update_voice_run(OWNER, "run-1", {"requesterUserId": None})  # another speaker steered
+    row = await repo.put_voice_run(OWNER, "run-1", {"roomId": "r", "requesterUserId": "user_a"}, once=once)
+    assert row["requesterUserId"] is None and (await repo.get_voice_run(OWNER, "run-1"))["requesterUserId"] is None
+
+
+@pytest.mark.asyncio
 async def test_a_no_post_mark_refuses_the_late_answer_inside_its_own_transaction(table):
     """Codex #3663: the mark may land after the caller's read. The condition rides the message's transaction."""
     room_id, _ = await _room()

@@ -76,6 +76,8 @@ async def provision_container(
     auth: AuthContext = Depends(get_current_user),
 ):
     owner_id = resolve_owner_id(auth)
+    if auth.is_org_context:
+        require_org_admin(auth)
     owner_type = get_owner_type(auth)
 
     existing = await container_repo.get_by_owner_id(owner_id)
@@ -110,6 +112,8 @@ async def redeploy_container(
     auth: AuthContext = Depends(get_current_user),
 ):
     owner_id = resolve_owner_id(auth)
+    if auth.is_org_context:
+        require_org_admin(auth)
     owner_type = get_owner_type(auth)
 
     container = await container_repo.get_by_owner_id(owner_id)

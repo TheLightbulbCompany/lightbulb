@@ -19,6 +19,7 @@ Spike scope. Not here: the local-session relay.
 from __future__ import annotations
 
 import contextlib
+import hmac
 import json
 import logging
 import os
@@ -32,7 +33,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import bridge
 from bridge import GATEWAY_TOKEN, HOOK_TOKEN, OWNER, PORT, STARTED, now
-from bridge import sync, turn, browser_control, followups, mcp_compat, recycle
+from bridge import sync, turn, browser_control, followups, mcp_compat, recycle, subagents
 
 logging.basicConfig(level=logging.INFO, format="[bridge] %(message)s", stream=sys.stdout)
 log = logging.getLogger("bridge")
@@ -41,7 +42,7 @@ log = logging.getLogger("bridge")
 # ---- the two plugin paths ----------------------------------------------------------------------
 def _authorized(headers: dict) -> bool:
     raw = headers.get("authorization") or headers.get("Authorization") or ""
-    return bool(GATEWAY_TOKEN) and raw.strip() == f"Bearer {GATEWAY_TOKEN}"
+    return bool(GATEWAY_TOKEN) and hmac.compare_digest(raw.strip().encode(), f"Bearer {GATEWAY_TOKEN}".encode())
 
 
 def _header(headers: dict, name: str) -> str | None:
@@ -203,12 +204,13 @@ def _handle_call_run(path: str, method: str, headers: dict, body) -> tuple[int, 
         identity, request = parsed
         if not turn.reserve_turn():
             return 503, {"error": "recycling"}
+        # The backend's local-session grant for this voice run, as the room ingress takes it; kept as
+        # the run's current grant too (turn.verified_call_room_key reads it there, a steer lowers it).
+        grant = _header(headers, "X-Lightbulb-Local-Session-Token")
         try:
-            if not turn.register_call_run(identity):
+            if not turn.register_call_run(identity, grant):
                 turn.release_turn()
                 return 200, {"run_id": identity["runId"], "status": "replayed"}
-            # The backend's local-session grant for this voice run, as the room ingress takes it.
-            grant = _header(headers, "X-Lightbulb-Local-Session-Token")
             threading.Thread(target=turn.run_call_turn,
                              args=(dict(identity, localSessionToken=grant), dict(request), True),
                              daemon=True, name=f"call-{identity['runId']}").start()
@@ -396,6 +398,7 @@ def _health(params: dict, **_kwargs) -> dict:
 
 
 RPC_METHODS: dict = {"health": _health}
+RPC_METHODS.update(subagents.RPC_METHODS)
 
 
 def _browser_state(params: dict, **_kwargs) -> dict:

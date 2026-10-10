@@ -352,7 +352,7 @@ async fn ensure_mod(claude: &Path, home: &Path) {
         .join("local-sessions");
     // Before the list: a plugin that is listed can still hold a file an older app wrote, and
     // Claude then refuses it. The app does this same sync at launch, but may not have run yet.
-    let _ = plugin::write_files(&state);
+    let root = plugin::write_files(&state);
     let listed = tokio::time::timeout(
         Duration::from_secs(15),
         tokio::process::Command::new(claude)
@@ -366,6 +366,11 @@ async fn ensure_mod(claude: &Path, home: &Path) {
     if listed
         .is_ok_and(|o| o.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains(plugin::ID)))
     {
+        // Listed is not current: Claude may still hold a cached copy from an older app.
+        if let Ok(root) = root {
+            let claude = claude.to_owned();
+            let _ = tokio::task::spawn_blocking(move || plugin::refresh(&claude, &root)).await;
+        }
         return;
     }
     if let Err(e) = plugin::install_now(&state, home) {
@@ -825,5 +830,28 @@ mod tests {
         ensure_mod(&claude, home.path()).await;
         assert!(!stale.exists());
         assert!(plugin.join("mod/hooks.json").is_file());
+    }
+
+    #[tokio::test]
+    async fn continue_refreshes_claudes_copy_when_the_listed_plugin_is_an_older_version() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let plugin = home
+            .path()
+            .join("Library/Application Support")
+            .join(crate::KEYCHAIN_SERVICE)
+            .join("local-sessions/claude-mods/lightbulb");
+        let claude = home.path().join("claude");
+        std::fs::write(
+            &claude,
+            "#!/bin/sh\necho \"$*\" >> \"$0.log\"\ncase \"$*\" in\n\"plugin list --json\") cat \"$0.list\";;\n\"plugin list\") echo lightbulb@lightbulb;;\nesac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let listed = json!([{"id": "lightbulb@lightbulb", "version": "unknown", "readFromFolder": plugin}]);
+        std::fs::write(home.path().join("claude.list"), listed.to_string()).unwrap();
+        ensure_mod(&claude, home.path()).await;
+        let log = std::fs::read_to_string(home.path().join("claude.log")).unwrap();
+        assert_eq!(log, "plugin list\nplugin list --json\nplugin update lightbulb@lightbulb\n");
     }
 }

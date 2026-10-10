@@ -395,7 +395,7 @@ async def test_disabled_when_write_key_unset(monkeypatch):
 
 async def test_is_internal_personal_owner_uses_clerk_primary_email_and_caches():
     with patch.object(
-        run_analytics.clerk_admin, "get_primary_email", AsyncMock(return_value="eng@isol8.co")
+        run_analytics.clerk_admin, "get_primary_email", AsyncMock(return_value="eng@thelightbulb.company")
     ) as mock_email:
         assert await run_analytics._is_internal_owner("user_a") is True
         assert await run_analytics._is_internal_owner("user_a") is True
@@ -408,7 +408,7 @@ async def test_is_internal_personal_owner_uses_clerk_primary_email_and_caches():
 async def test_is_internal_ttl_expiry_refetches(monkeypatch):
     monkeypatch.setattr(run_analytics, "_INTERNAL_TTL_S", 0.0)
     with patch.object(
-        run_analytics.clerk_admin, "get_primary_email", AsyncMock(return_value="eng@isol8.co")
+        run_analytics.clerk_admin, "get_primary_email", AsyncMock(return_value="eng@thelightbulb.company")
     ) as mock_email:
         await run_analytics._is_internal_owner("user_a")
         await run_analytics._is_internal_owner("user_a")
@@ -437,7 +437,7 @@ async def test_is_internal_org_owner_resolves_via_clerk_created_by():
             run_analytics.clerk_admin, "get_organization", AsyncMock(return_value={"created_by": "user_founder"})
         ) as mock_org,
         patch.object(
-            run_analytics.clerk_admin, "get_primary_email", AsyncMock(return_value="founder@isol8.co")
+            run_analytics.clerk_admin, "get_primary_email", AsyncMock(return_value="founder@thelightbulb.company")
         ) as mock_email,
     ):
         assert await run_analytics._is_internal_owner("org_abc") is True

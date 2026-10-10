@@ -200,6 +200,8 @@ export function MessagingWorkspaceProvider({
     defaultAgentId && freshLanding === false ? initialAgentId ?? defaultAgentId : initialAgentId,
     (subscribeToRoom || observeRuns) && !sessionChatOpen,
     roomVisible,
+    true,
+    true, // this instance feeds RoomPanel's subagent strip
   );
   const observedLanding = rooms.roomsLoading || rooms.roomsError ? null : landingFor(rooms.rooms);
   if (freshLanding === null && observedLanding !== null) setLanding({ scope, fresh: observedLanding });
@@ -920,6 +922,12 @@ export function MessagingWorkspaceProvider({
     openAddPeople: addPeopleRoomId !== null && addPeopleRoomId === rooms.activeRoomId,
     onAddPeopleOpened: () => setAddPeopleRoomId(null),
     onAbortRun: (runId) => rooms.abortRun(runId),
+    subagents: rooms.subagents,
+    delegationsByMessage: rooms.delegationsByMessage,
+    messagingClient: rooms.resourceSource.client,
+    onSteerSubagent: rooms.steerSubagent,
+    onStopSubagent: rooms.stopSubagent,
+    onSubagentsVisible: rooms.subagentsPollVisible,
     onLinkToWork: () => openPanel("teams-issues", {}, { pushUrl: true }),
     onDownloadAttachment: rooms.downloadAttachment,
     onAttachmentUrl: rooms.attachmentUrl,

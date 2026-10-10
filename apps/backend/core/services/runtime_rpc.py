@@ -12,7 +12,7 @@ from typing import Any
 import botocore.exceptions
 import httpx
 
-from core.auth import AuthContext, resolve_owner_id
+from core.auth import AuthContext, require_org_admin, resolve_owner_id
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.observability.metrics import put_metric
@@ -67,7 +67,6 @@ _PROXY_ALLOWED_METHODS = frozenset(
         "agents.update",
         "config.get",
         "config.patch",
-        "config.set",
         "health",
         "models.authStatus",
         "models.list",
@@ -81,21 +80,23 @@ _MUTATING_METHODS = frozenset(
         "agents.delete",
         "agents.update",
         "config.patch",
-        "config.set",
     }
 )
+# The profile config carries owner-level settings and secrets references (MCP servers, the
+# auxiliary base_url), so reading or writing it is admin-only -- the same gate as the REST twin,
+# routers/config.py. agents.* stay open to members, matching routers/teams/agents.py.
+_ADMIN_METHODS = frozenset({"config.get", "config.patch"})
 _PAPERCLIP_MIRROR_MAX_ATTEMPTS = 3
 _RPC_TIMEOUT_S = 30.0
 #: M4-R1 (Task 13a): served from the profile in S3 + the Paperclip roster, never forwarded to
 #: the runtime.
-_HERMES_PROFILE_METHODS = frozenset({"config.get", "config.patch", "config.set", "agents.list"})
+_HERMES_PROFILE_METHODS = frozenset({"config.get", "config.patch", "agents.list"})
 # A mutating method that lands here invalidates the named resource for every
 # open frontend tab (the prior per-connection `*.changed` broadcast is gone).
 _INVALIDATES = {
     "agents.create": "agents",
     "agents.update": "agents",
     "agents.delete": "agents",
-    "config.set": "config",
     "config.patch": "config",
 }
 
@@ -149,9 +150,7 @@ async def config_patch_roster(owner_id: str, patch: dict[str, Any], base_hash: s
     profile to CAS against: the patch fans out to EVERY roster profile, gated on the SAME map
     hash ``config.get`` (no ``agentId``) returns. A single-profile hash could never match what
     these clients actually hold as their ``baseHash`` — they only ever read it from the
-    no-``agentId`` ``config.get``. ``config.set`` has no such fan-out (see the caller): zero real
-    callers, and a whole-document replace across N profiles would clobber per-profile
-    differences.
+    no-``agentId`` ``config.get``.
 
     # ponytail: not transactional — one profile's PUT failing mid-loop leaves a partial write.
     Unhandled here per the controller's own ruling (parked): unlike ``refresh_integrations``,
@@ -306,6 +305,8 @@ async def execute(
     owner_id = resolve_owner_id(auth)
     params = dict(request.params)
     _guard_method(request.method)
+    if request.method in _ADMIN_METHODS:
+        require_org_admin(auth)
     if request.method in _MUTATING_METHODS:
         # Clear a racing idle-stop claim before any durable or external effect.
         await container_repo.touch_last_interactive(owner_id)
@@ -401,7 +402,7 @@ async def execute_sync(
         # S3, not behind a live gateway socket — the backend is the ONLY writer of a profile
         # (spec §4.5), so these are served/rewritten here with no microVM wake for a settings
         # read. config.get NEVER returns .env content (it reads config.yaml alone).
-        # config.set/config.patch bump .revision on write, and the bridge re-pulls before the
+        # config.patch bumps .revision on write, and the bridge re-pulls before the
         # agent's next turn (Task 13b).
         #
         # The wire shape below is what the REAL browser clients already call and read (the
@@ -422,37 +423,28 @@ async def execute_sync(
             config, config_hash = await run_in_thread(hermes_profiles.config_snapshot, owner_id, agent_id)
             return {"config": config, "hash": config_hash}
         if not has_agent_id:
-            if method == "config.set":
-                # Zero real callers send config.set with no agentId, and a whole-document
-                # replace fanned out over N profiles would clobber per-profile differences.
-                raise ApiProblem("INVALID_REQUEST", "Agent ID is required.")
             # M4-R48: config.patch with no agentId is BOTH real callers' actual shape
             # (useConfigPatch.ts, PluginsTab.tsx) — roster-wide fan-out, not a 400.
             patch = await _expand_agentcore_config_patch(owner_id, _config_patch_dict(params))
             result = await config_patch_roster(owner_id, patch, params.get("baseHash"))
             await _invalidate(owner_id, method)
             return result
-        if method == "config.set":
-            result = await run_in_thread(
-                hermes_profiles.set_profile_config, owner_id, agent_id, params.get("config") or {}
-            )
-        else:
-            patch = await _expand_agentcore_config_patch(owner_id, _config_patch_dict(params))
-            base_hash = params.get("baseHash")
-            if base_hash is not None:
-                _current, current_hash = await run_in_thread(hermes_profiles.config_snapshot, owner_id, agent_id)
-                if base_hash != current_hash:
-                    # C2: same stale-config shape the ECS path answers via
-                    # _normalize_gateway_error — an upstreamCode plus a message, INVALID_REQUEST.
-                    raise ApiProblem(
-                        "INVALID_REQUEST",
-                        "The config changed since you last loaded it. Refresh and try again.",
-                        details={"method": method, "upstreamCode": "CONFIG_STALE"},
-                    )
-            if not patch:
-                # Nothing to write — no upload, no .revision bump (M4-R43).
-                return {"ok": True}
-            result = await run_in_thread(hermes_profiles.patch_profile_config, owner_id, agent_id, patch)
+        patch = await _expand_agentcore_config_patch(owner_id, _config_patch_dict(params))
+        base_hash = params.get("baseHash")
+        if base_hash is not None:
+            _current, current_hash = await run_in_thread(hermes_profiles.config_snapshot, owner_id, agent_id)
+            if base_hash != current_hash:
+                # C2: same stale-config shape the ECS path answers via
+                # _normalize_gateway_error — an upstreamCode plus a message, INVALID_REQUEST.
+                raise ApiProblem(
+                    "INVALID_REQUEST",
+                    "The config changed since you last loaded it. Refresh and try again.",
+                    details={"method": method, "upstreamCode": "CONFIG_STALE"},
+                )
+        if not patch:
+            # Nothing to write — no upload, no .revision bump (M4-R43).
+            return {"ok": True}
+        result = await run_in_thread(hermes_profiles.patch_profile_config, owner_id, agent_id, patch)
         await _invalidate(owner_id, method)
         return result
     try:

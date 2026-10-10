@@ -145,9 +145,10 @@ class _RecallDB:
         return {"Alice raise": "dm", "Room plan": "root"}.get(title)
 
 
-def _recall(monkeypatch):
+def _recall(monkeypatch, tmp_path=None):
     import types
     calls = []
+    monkeypatch.setattr(turn_context, "_home", lambda: tmp_path or pathlib.Path("/nonexistent"))
 
     def lineage(db, sid):
         while db.parents.get(sid):
@@ -178,6 +179,71 @@ def test_session_search_reaches_only_the_current_conversations_lineage(monkeypat
     assert tool.session_search(session_id="root", db=db, current_session_id="child") == "hermes"
 
 
+ROOM_KEY = "agent:a1:lightbulb:channel:r1"
+CALL_KEY = "agent:a1:lightbulb:call:c1"
+
+
+class _CallRecallDB(_RecallDB):
+    """A call's own transcript, its room's (split by compression), and a DM."""
+    parents = {CALL_KEY: None, ROOM_KEY: None, "room-child": ROOM_KEY, "dm": None}
+
+    def search_messages(self, **_kw):
+        return [{"session_id": s, "id": i} for i, s in enumerate(["dm", CALL_KEY, ROOM_KEY, "room-child"])]
+
+
+def _grant(requester):
+    import base64
+    claims = base64.urlsafe_b64encode(json.dumps({"requesterId": requester}).encode()).decode().rstrip("=")
+    return f"h.{claims}.sig"
+
+
+def _call_run(monkeypatch, requester, lowered_to=False):
+    """A live call turn in the bridge's own run registry (what the backend sent over the invoke)."""
+    from bridge import turn
+    monkeypatch.setattr(turn, "RUNS", {})
+    identity = {"runId": "run-c", "agentId": "a1", "roomId": "r1", "sessionId": ROOM_KEY, "callId": "c1"}
+    turn.register_call_run(identity, _grant(requester))  # as server.py registers it, with the header's grant
+    if lowered_to is not False:
+        turn.RUNS["run-c"]["grant"] = _grant(lowered_to)  # a steer by another speaker
+
+
+@pytest.mark.parametrize(("requester", "lowered"), [(None, False), ("user_ana", None)],
+                         ids=["meet-guest", "steered-by-another-speaker"])
+def test_a_spoken_turn_nobody_verified_asked_keeps_to_the_call(monkeypatch, tmp_path, requester, lowered):
+    """Codex P1: a Meet speaker is not the room's member; their turn must not speak its history."""
+    _call_run(monkeypatch, requester, lowered)
+    tool, calls = _recall(monkeypatch, tmp_path)
+    tool.session_search(query="pricing", db=_CallRecallDB(), current_session_id=CALL_KEY)
+    assert [r["session_id"] for r in calls[0]["db"].search_messages()] == [CALL_KEY]
+
+
+def test_an_agent_cannot_widen_recall_by_rewriting_its_turn_context(monkeypatch, tmp_path):
+    """Codex P1: the turn context file is the agent's to write; recall never reads it."""
+    _call_run(monkeypatch, None)
+    turn_context.write(tmp_path, CALL_KEY, {"family": "call", "agentId": "a1", "voiceRoomId": "r1",
+                                            "localSessionToken": _grant("user_forged")})
+    tool, calls = _recall(monkeypatch, tmp_path)
+    tool.session_search(query="pricing", db=_CallRecallDB(), current_session_id=CALL_KEY)
+    assert [r["session_id"] for r in calls[0]["db"].search_messages()] == [CALL_KEY]
+
+
+def test_a_spoken_turn_recalls_its_rooms_history_as_chat_does(monkeypatch, tmp_path):
+    """Prod Meet 10-09: on a call, recall stopped at the call's own transcript. A spoken turn a
+    signed-in member asked belongs to its room: it reaches the room's lineage too, never another."""
+    _call_run(monkeypatch, "user_ana")
+    tool, calls = _recall(monkeypatch, tmp_path)
+    db = _CallRecallDB()
+    assert tool.session_search(query="pricing", db=db, current_session_id=CALL_KEY) == "hermes"
+    assert [r["session_id"] for r in calls[0]["db"].search_messages()] == [CALL_KEY, ROOM_KEY, "room-child"]
+    assert tool.session_search(session_id="room-child", db=db, current_session_id=CALL_KEY) == "hermes"
+    out = tool.session_search(session_id="dm", db=db, current_session_id=CALL_KEY)
+    assert json.loads(out)["error"] == lightbulb.RECALL_SCOPE
+    # A typed turn's own lineage only, as before.
+    calls.clear()
+    tool.session_search(query="pricing", db=db, current_session_id="room-child")
+    assert [r["session_id"] for r in calls[0]["db"].search_messages()] == [ROOM_KEY, "room-child"]
+
+
 @pytest.mark.parametrize("kw", [
     {"session_id": "dm"},                      # another conversation, by id
     {"query": "x", "profile": "engineering"},  # another agent's state.db
@@ -189,3 +255,39 @@ def test_session_search_refuses_anything_outside_it(monkeypatch, kw):
     tool, calls = _recall(monkeypatch)
     out = tool.session_search(**{"db": _RecallDB(), "current_session_id": "child", **kw})
     assert json.loads(out) == {"success": False, "error": lightbulb.RECALL_SCOPE} and calls == []
+
+
+# ---- lightbulb_read_rooms: other rooms with the asker's access ------------------------------------
+def test_read_rooms_reads_through_the_turns_grant(tmp_path, monkeypatch):
+    """The MCP's find_rooms/read_messages for an agent turn: the turn's grant, never an agent-chosen person."""
+    monkeypatch.setattr(turn_context, "_home", lambda: tmp_path)
+    ctx(tmp_path)
+    calls = []
+    monkeypatch.setattr(lightbulb, "_call_sessions", lambda method, url, token: calls.append((method, url, token)) or {"rooms": []})
+    assert json.loads(lightbulb._read_rooms({"action": "find", "query": "launch"}, session_id=SESSION)) == {"rooms": []}
+    lightbulb._read_rooms({"action": "read", "roomId": OTHER_ROOM, "afterSeq": 4}, session_id=SESSION)
+    assert calls == [
+        ("GET", "https://api.invalid/api/v1/messaging/agent-read/rooms?query=launch&limit=30", "jwt"),
+        ("GET", f"https://api.invalid/api/v1/messaging/agent-read/messages?room_id={OTHER_ROOM}&limit=25&after_seq=4", "jwt"),
+    ]
+
+
+def test_read_rooms_refusals_reach_the_agent_as_plain_words(tmp_path, monkeypatch):
+    import urllib.error
+    monkeypatch.setattr(turn_context, "_home", lambda: tmp_path)
+    assert lightbulb._read_rooms({"action": "find"}, session_id=SESSION) == lightbulb.NO_TURN  # no turn here
+    ctx(tmp_path)
+    assert "Invalid roomId" in lightbulb._read_rooms({"action": "read", "roomId": "general"}, session_id=SESSION)
+
+    def refused(*_a):
+        raise urllib.error.HTTPError("u", 403, "forbidden", None, None)
+
+    monkeypatch.setattr(lightbulb, "_call_sessions", refused)
+    assert lightbulb._read_rooms({"action": "find"}, session_id=SESSION) == lightbulb.READ_ROOMS_REFUSED
+
+
+def test_session_search_passes_arguments_a_newer_hermes_adds(monkeypatch):
+    """Prod 10-09: Hermes's session_search gained `after`; the wrapper's fixed signature raised TypeError."""
+    tool, calls = _recall(monkeypatch)
+    assert tool.session_search(query="pricing", db=_RecallDB(), current_session_id="child", after="2026-10-01") == "hermes"
+    assert calls[0]["after"] == "2026-10-01" and calls[0]["profile"] is None

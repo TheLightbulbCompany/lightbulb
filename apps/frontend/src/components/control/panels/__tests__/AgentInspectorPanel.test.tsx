@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { SWRConfig } from "swr";
 import { AgentInspectorPanel } from "../AgentInspectorPanel";
 
@@ -20,6 +20,10 @@ vi.mock("../AgentInstructionsTab", () => ({
   AgentInstructionsTab: ({ agentId }: { agentId: string }) => (
     <div data-testid="instructions-tab">instructions:{agentId}</div>
   ),
+}));
+
+vi.mock("../AgentMemoryTab", () => ({
+  AgentMemoryTab: () => <div data-testid="memory-tab">memory</div>,
 }));
 
 // The Schedule tab mounts the Teams RoutinesPanel scoped to the inspected
@@ -143,10 +147,10 @@ describe("AgentInspectorPanel", () => {
     expect(screen.getByRole("tab", { name: "Schedule" })).toBeInTheDocument();
   });
 
-  it("orders the tabs Overview·Dashboard·Runs·Instructions·Tools·Schedule", () => {
+  it("orders the tabs Overview·Dashboard·Runs·Instructions·Memory·Tools·Schedule", () => {
     renderInspector();
     const labels = screen.getAllByRole("tab").map((t) => t.textContent);
-    expect(labels).toEqual(["Overview", "Dashboard", "Runs", "Instructions", "Tools", "Schedule"]);
+    expect(labels).toEqual(["Overview", "Dashboard", "Runs", "Instructions", "Memory", "Tools", "Schedule"]);
   });
 
   it("mounts the Instructions tab with the ?agent id when selected", () => {
@@ -188,6 +192,16 @@ describe("AgentInspectorPanel", () => {
     inspectorTabParam = "bogus";
     renderInspector();
     expect(screen.getByTestId("overview-tab")).toHaveTextContent("overview:agent_42");
+  });
+
+  it("mounts the Memory tab on click and via initialTab", () => {
+    renderInspector();
+    fireEvent.click(screen.getByRole("tab", { name: "Memory" }));
+    expect(screen.getByTestId("memory-tab")).toBeInTheDocument();
+    cleanup();
+    inspectorTabParam = "memory";
+    renderInspector();
+    expect(screen.getByTestId("memory-tab")).toBeInTheDocument();
   });
 
   it("switches the mounted tab when a tab is clicked", () => {

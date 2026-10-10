@@ -149,20 +149,33 @@ class TestAgentCoreProfileBranch:
         self._put(s3, "AGENTS.md", b"# Agents\n")
         self._put(s3, "SOUL.md", b"# Ada\n")
         self._put(s3, "memories/USER.md", b"# Owner\n")
+        self._put(s3, "memories/MEMORY.md", b"- likes tea\n")
         self._put(s3, "config.yaml", b"model: {}\n")  # backend-owned, never a config-tab row
 
         result = await list_config_files(agent_id=AGENT_ID, auth=_auth())
 
-        assert [f["path"] for f in result["files"]] == ["AGENTS.md", "SOUL.md", "USER.md"]
-        assert result["files"][1]["size"] == len(b"# Ada\n")
+        assert [f["path"] for f in result["files"]] == ["AGENTS.md", "MEMORY.md", "SOUL.md", "USER.md"]
+        assert result["files"][2]["size"] == len(b"# Ada\n")
 
     @pytest.mark.asyncio
-    async def test_config_names_with_no_settled_hermes_path_are_refused_not_silently_written(self, s3):
-        """MEMORY.md/TOOLS.md: a write with nowhere real to land is the defect this
+    async def test_memory_md_is_the_agents_own_notes_file(self, s3):
+        """MEMORY.md maps to memories/MEMORY.md, where Hermes's memory tool reads and writes."""
+        from routers.workspace_files import WriteFileRequest, write_workspace_file
+
+        await write_workspace_file(
+            agent_id=AGENT_ID,
+            body=WriteFileRequest(path="MEMORY.md", content="- likes tea\n", tab="config"),
+            auth=_auth(),
+        )
+        assert self._get(s3, "memories/MEMORY.md") == b"- likes tea\n"
+
+    @pytest.mark.asyncio
+    async def test_config_names_with_no_hermes_reader_are_refused_not_silently_written(self, s3):
+        """TOOLS.md: a write with nowhere real to land is the defect this
         branch exists to kill, so it is a 422, never a green save."""
         from routers.workspace_files import WriteFileRequest, write_workspace_file
 
-        for name in ("MEMORY.md", "TOOLS.md"):
+        for name in ("TOOLS.md",):
             with pytest.raises(HTTPException) as exc:
                 await write_workspace_file(
                     agent_id=AGENT_ID,

@@ -6,13 +6,13 @@ import { useConfigFile } from "@/hooks/useWorkspaceFiles";
 import { useApi } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-// The inspector exposes only the identity files, not the full
-// CONFIG_ALLOWLIST (MEMORY/TOOLS/HEARTBEAT/AGENTS live elsewhere). No
+// The inspector exposes the identity files plus the agent's own notes
+// (MEMORY.md), not the full CONFIG_ALLOWLIST (TOOLS/HEARTBEAT/AGENTS live elsewhere). No
 // IDENTITY.md: on Hermes an agent's one identity document is SOUL.md, and the
 // backend refuses an IDENTITY.md save with a 422 (`workspace_files.py`). Both
 // are config-tab writes — saveWorkspaceFile(..., "config") creates them on
 // first save when they don't exist on disk yet.
-const IDENTITY_FILES = ["SOUL.md", "USER.md"] as const;
+const IDENTITY_FILES = ["SOUL.md", "USER.md", "MEMORY.md"] as const;
 type IdentityFile = (typeof IDENTITY_FILES)[number];
 
 interface AgentInstructionsTabProps {
@@ -80,6 +80,12 @@ export function AgentInstructionsTab({ agentId }: AgentInstructionsTabProps) {
           </button>
         ))}
       </div>
+
+      {selectedFile === "MEMORY.md" ? (
+        <p className="mb-2 text-xs text-[var(--fg-mute)]">
+          Notes this agent saved for itself. Every room sees them.
+        </p>
+      ) : null}
 
       <p className="text-caption text-[var(--midnight-muted)] mb-3">
         Changes apply on the agent&apos;s next session.

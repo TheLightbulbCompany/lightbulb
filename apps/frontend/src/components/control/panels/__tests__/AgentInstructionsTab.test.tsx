@@ -87,6 +87,16 @@ describe("AgentInstructionsTab", () => {
     expect(screen.getByTestId("viewer-path")).toHaveTextContent("USER.md");
   });
 
+  it("reads MEMORY.md and explains it when selected", () => {
+    render(<AgentInstructionsTab agentId="agent_42" />);
+    expect(screen.queryByText(/notes this agent saved/i)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "MEMORY.md" }));
+    expect(lastReadPath).toBe("MEMORY.md");
+    expect(
+      screen.getByText("Notes this agent saved for itself. Every room sees them."),
+    ).toBeInTheDocument();
+  });
+
   it("saves via saveWorkspaceFile(agentId, path, content, 'config')", async () => {
     render(<AgentInstructionsTab agentId="agent_42" />);
     fireEvent.click(screen.getByRole("button", { name: "SOUL.md" }));

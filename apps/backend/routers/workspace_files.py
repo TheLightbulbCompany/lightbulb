@@ -46,13 +46,14 @@ MAX_WRITE_SIZE = 10 * 1024 * 1024  # 10 MB
 #: CONFIG_ALLOWLIST name from its workspace tree on the grounds that the config tab has them.
 #: ``HEARTBEAT.md`` is the agent's own heartbeat checklist, read by the paperclip skill on every
 #: timer wake (``core.services.heartbeat_checklist``); only an org admin may save it.
-#: TOOLS.md has no Hermes reader at all, and MEMORY.md has no settled path yet
-#: (the migration copies it to the profile ROOT, Hermes reads ``memories/MEMORY.md`` -- task-10
-#: scan open question 2); mapping either would mean writing where nothing reads, which is the
-#: very defect this branch exists to kill, so they are refused instead.
+#: ``MEMORY.md`` is Hermes's own agent-notes store (``tools/memory_tool.py`` ``_path_for``:
+#: ``memories/MEMORY.md``), written by the agent and shown in its prompt in every room, so people
+#: can read and clear it here (memory-scopes D7). TOOLS.md has no Hermes reader at all, so it is
+#: refused.
 _AGENTCORE_CONFIG_PATHS = {
     "SOUL.md": "SOUL.md",
     "USER.md": "memories/USER.md",
+    "MEMORY.md": "memories/MEMORY.md",
     "AGENTS.md": "AGENTS.md",
     "HEARTBEAT.md": "HEARTBEAT.md",
 }

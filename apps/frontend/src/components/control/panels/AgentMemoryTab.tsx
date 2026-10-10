@@ -10,6 +10,32 @@ interface MemoryList { private: Memory[]; team: Memory[]; truncated: boolean }
 
 const BTN = "text-xs font-medium text-[var(--link)] hover:underline disabled:opacity-50";
 
+// A new record is listed by GET /memory only ~60 s after it is written, so a share/confirm/delete
+// is held in this module-level overlay (survives unmount) and merged into every fetched list.
+// Any revalidation is then safe. The endpoint is per viewer, so nothing else keys it.
+const HOLD_MS = 90_000;
+const added = new Map<string, { row: Memory; until: number }>();
+const removed = new Map<string, number>();
+
+/** Test seam: clear the overlay between tests. */
+export function resetMemoryOverlay() {
+  added.clear();
+  removed.clear();
+}
+
+function overlay(d: MemoryList): MemoryList {
+  const now = Date.now();
+  for (const [k, v] of added) if (v.until < now) added.delete(k);
+  for (const [k, until] of removed) if (until < now) removed.delete(k);
+  const keep = (m: Memory) => !removed.has(m.id) && !added.has(m.id);
+  const rows = [...added.values()].map((v) => v.row);
+  return {
+    ...d,
+    private: d.private.filter(keep),
+    team: [...rows, ...d.team.filter(keep)],
+  };
+}
+
 /**
  * What this workspace's agents remember (memory-scopes phases 2-4). Memory is per WORKSPACE,
  * not per agent (D1): "Only you" is the viewer's private scope (their 1:1 DMs with agents),
@@ -17,34 +43,45 @@ const BTN = "text-xs font-medium text-[var(--link)] hover:underline disabled:opa
  */
 export function AgentMemoryTab() {
   const api = useApi();
-  const { data, error, isLoading, mutate } = useSWR<MemoryList>(
+  const { data: raw, error, isLoading, mutate } = useSWR<MemoryList>(
     "/memory",
     () => api.get("/memory") as Promise<MemoryList>,
     { shouldRetryOnError: false },
   );
-  const [busy, setBusy] = useState<string | null>(null);
+  const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
   const [err, setErr] = useState<string | null>(null);
+  const [, bump] = useState(0);
+  const data = raw ? overlay(raw) : undefined;
 
-  // After a call, show the new state at once and revalidate later: a new record is listed only
-  // ~60 s after it is written, so an immediate refetch would drop the row we just added.
-  // ponytail: a refetch inside that minute (focus) can still drop it; upgrade = keep a pending overlay.
   async function act(
     id: string,
     run: () => Promise<unknown>,
-    next: (d: MemoryList, res: { id?: string }) => MemoryList,
-    delayed = false,
+    apply: (res: { id?: string }) => void,
+    revalidate = false,
   ) {
-    setBusy(id);
+    setBusy((b) => new Set(b).add(id));
     setErr(null);
     try {
-      const res = (await run()) as { id?: string };
-      if (data) await mutate(next(data, res), { revalidate: !delayed });
-      if (delayed) window.setTimeout(() => void mutate(), 65_000);
+      apply((await run()) as { id?: string });
+      bump((n) => n + 1);
+      if (revalidate) void mutate();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Something went wrong");
     } finally {
-      setBusy(null);
+      setBusy((b) => {
+        const n = new Set(b);
+        n.delete(id);
+        return n;
+      });
     }
+  }
+
+  // Put a confirmed team row in the overlay; the old record (if its id changed) stays hidden.
+  function hold(old: Memory, newId: string | undefined) {
+    const until = Date.now() + HOLD_MS;
+    const id = newId ?? old.id;
+    if (id !== old.id) removed.set(old.id, until);
+    added.set(id, { row: { ...old, id, confirmed: true }, until });
   }
 
   function row(m: Memory, scope: "private" | "team") {
@@ -55,28 +92,20 @@ export function AgentMemoryTab() {
           <span>{new Date(m.createdAt).toLocaleDateString()}</span>
           {m.confirmed ? <span className="text-[var(--live)]">Confirmed</span> : null}
           {scope === "private" ? (
-            <button type="button" className={BTN} disabled={busy === m.id}
-              onClick={() => act(m.id, () => api.post(`/memory/${m.id}/share`, {}), (d, r) => ({
-                ...d,
-                private: d.private.filter((x) => x.id !== m.id),
-                team: [{ ...m, id: r.id ?? m.id, confirmed: true }, ...d.team],
-              }), true)}>Share with team</button>
+            <button type="button" className={BTN} disabled={busy.has(m.id)}
+              onClick={() => act(m.id, () => api.post(`/memory/${m.id}/share`, {}), (r) => hold(m, r.id))}>Share with team</button>
           ) : null}
           {scope === "team" && !m.confirmed ? (
-            <button type="button" className={BTN} disabled={busy === m.id}
-              onClick={() => act(m.id, () => api.post(`/memory/${m.id}/confirm`, {}), (d, r) => ({
-                ...d,
-                team: d.team.map((x) => (x.id === m.id ? { ...x, id: r.id ?? m.id, confirmed: true } : x)),
-              }), true)}>Confirm</button>
+            <button type="button" className={BTN} disabled={busy.has(m.id)}
+              onClick={() => act(m.id, () => api.post(`/memory/${m.id}/confirm`, {}), (r) => hold(m, r.id))}>Confirm</button>
           ) : null}
-          <button type="button" className={BTN} disabled={busy === m.id}
+          <button type="button" className={BTN} disabled={busy.has(m.id)}
             onClick={() => {
               if (window.confirm("Delete this memory? Agents will no longer recall it.")) {
-                void act(m.id, () => api.del(`/memory/${m.id}`), (d) => ({
-                  ...d,
-                  private: d.private.filter((x) => x.id !== m.id),
-                  team: d.team.filter((x) => x.id !== m.id),
-                }));
+                void act(m.id, () => api.del(`/memory/${m.id}`), () => {
+                  removed.set(m.id, Date.now() + HOLD_MS);
+                  added.delete(m.id);
+                }, true);
               }
             }}>Delete</button>
         </div>

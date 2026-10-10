@@ -9,7 +9,7 @@ vi.mock("@/lib/api", () => ({
   useApi: () => ({ get: mockGet, del: mockDel, post: mockPost }),
 }));
 
-import { AgentMemoryTab } from "../AgentMemoryTab";
+import { AgentMemoryTab, resetMemoryOverlay } from "../AgentMemoryTab";
 
 const LIST = {
   private: [{ id: "mem-p", text: "I am allergic to nuts", createdAt: "2026-10-02T00:00:00+00:00", confirmed: false }],
@@ -28,6 +28,7 @@ const renderTab = () =>
   );
 
 beforeEach(() => {
+  resetMemoryOverlay();
   mockGet.mockReset().mockResolvedValue(LIST);
   mockDel.mockReset().mockResolvedValue(undefined);
   mockPost.mockReset();
@@ -112,5 +113,50 @@ describe("AgentMemoryTab", () => {
     await screen.findByText("I am allergic to nuts");
     fireEvent.click(screen.getAllByRole("button", { name: "Delete" })[0]);
     expect(await screen.findByRole("alert")).toHaveTextContent("boom");
+  });
+
+  it("keeps a shared row through a revalidation that still returns the old lists", async () => {
+    mockPost.mockResolvedValue({ id: "mem-new" });
+    renderTab();
+    await screen.findByText("I am allergic to nuts");
+    fireEvent.click(screen.getByRole("button", { name: "Share with team" }));
+    await waitFor(() => expect(screen.getAllByText("Confirmed")).toHaveLength(2));
+    // A delete revalidates; the mocked GET still returns the OLD lists.
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    fireEvent.click(screen.getAllByRole("button", { name: "Delete" })[2]);
+    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+    expect(screen.getAllByText("I am allergic to nuts")).toHaveLength(1);
+    expect(screen.getAllByText("Confirmed")).toHaveLength(2);
+  });
+
+  it("keeps the overlay across unmount and remount", async () => {
+    mockPost.mockResolvedValue({ id: "mem-new" });
+    const first = renderTab();
+    await screen.findByText("I am allergic to nuts");
+    fireEvent.click(screen.getByRole("button", { name: "Share with team" }));
+    await waitFor(() => expect(screen.getAllByText("Confirmed")).toHaveLength(2));
+    first.unmount();
+    renderTab();
+    await screen.findByText("Warehouse is in Leeds");
+    expect(screen.getAllByText("Confirmed")).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: "Share with team" })).not.toBeInTheDocument();
+  });
+
+  it("keeps two concurrent actions", async () => {
+    let releaseShare: (v: { id: string }) => void = () => {};
+    mockPost.mockImplementation((url: string) =>
+      url.endsWith("/share")
+        ? new Promise((r) => { releaseShare = r; })
+        : Promise.resolve({ id: "mem-new2" }),
+    );
+    renderTab();
+    await screen.findByText("I am allergic to nuts");
+    fireEvent.click(screen.getByRole("button", { name: "Share with team" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(screen.getAllByText("Confirmed")).toHaveLength(2));
+    expect(screen.getByRole("button", { name: "Share with team" })).toBeDisabled();
+    releaseShare({ id: "mem-new" });
+    await waitFor(() => expect(screen.getAllByText("Confirmed")).toHaveLength(3));
+    expect(screen.queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument();
   });
 });

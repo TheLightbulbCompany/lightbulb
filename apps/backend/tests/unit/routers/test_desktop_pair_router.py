@@ -25,6 +25,10 @@ def _no_mac_clear(monkeypatch):
     monkeypatch.setattr(clerk_admin, "get_user", AsyncMock(return_value=None))  # no Clerk calls
 
 
+def _ctx(role=None, user="user_alice"):
+    return AuthContext(user_id=user, org_id="org_1", org_role=role)
+
+
 @pytest.fixture
 def desktop_auth_ctx() -> AuthContext:
     return AuthContext(user_id="user_alice", org_id="org_test", email="alice@example.com")
@@ -157,7 +161,10 @@ def test_post_desktop_pair_returns_409_when_the_device_belongs_to_another_member
 
 
 def test_delete_device_204(desktop_client):
-    with patch("routers.desktop_pair.revoke_desktop_device", AsyncMock(return_value=True)) as revoke:
+    with (
+        patch("routers.desktop_pair.revoke_desktop_device", AsyncMock(return_value=True)) as revoke,
+        patch("routers.desktop_pair.container_repo.mark_paired_device_revoking", AsyncMock(return_value=True)),
+    ):
         response = desktop_client.delete(
             "/api/v1/desktop/devices/dev_abc",
             headers={"Authorization": "Bearer test"},
@@ -179,8 +186,9 @@ async def test_unpair_marks_revoking_before_the_clear_and_revokes_even_if_it_fai
 
     events = []
 
-    async def mark(owner, device):
+    async def mark(owner, device, **kw):
         events.append(("revoking", device))
+        return True
 
     async def clear(owner, device):
         events.append(("clear", device))
@@ -193,7 +201,7 @@ async def test_unpair_marks_revoking_before_the_clear_and_revokes_even_if_it_fai
     monkeypatch.setattr(desktop_pair.mac_browser, "clear_device", clear)
     monkeypatch.setattr(desktop_pair, "revoke_desktop_device", revoke)
     monkeypatch.setattr(desktop_pair, "resolve_owner_id", lambda ctx: "org_1")
-    await desktop_pair.delete_device("mac-1", ctx=object())
+    await desktop_pair.delete_device("mac-1", ctx=_ctx())
     assert events == [("revoking", "mac-1"), ("clear", "mac-1"), ("revoke", "mac-1")]
 
 
@@ -206,11 +214,11 @@ async def test_delete_device_clears_only_the_mac_agent_chrome(monkeypatch):
         events.append(("mac", owner, device))
         return True
 
-    monkeypatch.setattr(desktop_pair.container_repo, "mark_paired_device_revoking", AsyncMock())
+    monkeypatch.setattr(desktop_pair.container_repo, "mark_paired_device_revoking", AsyncMock(return_value=True))
     monkeypatch.setattr(desktop_pair.mac_browser, "clear_device", mac_clear)
     monkeypatch.setattr(desktop_pair, "revoke_desktop_device", AsyncMock())
     monkeypatch.setattr(desktop_pair, "resolve_owner_id", lambda ctx: "org_1")
-    await desktop_pair.delete_device("mac-1", ctx=object())
+    await desktop_pair.delete_device("mac-1", ctx=_ctx())
     assert events == [("mac", "org_1", "mac-1")]
     assert not hasattr(desktop_pair, "desktop_browser_state")  # the legacy profile clear is gone
 
@@ -229,3 +237,50 @@ def test_pair_names_the_device_after_the_members_first_name(desktop_client, monk
             json={"tauriMacPubKey": "x", "cliPubKey": "y"},
         )
     assert pair.await_args.kwargs["display_name_base"] == "Prasiddhascript"
+
+
+class _Devices:
+    """Fake paired_devices map with the same ownership fence as the repo's conditional write."""
+
+    def __init__(self):
+        self.paired = {"mac-1": "user_alice"}
+
+    async def mark(self, owner, device, *, user_id=None):
+        return device in self.paired and user_id in (None, self.paired[device])
+
+    async def revoke(self, **kw):
+        self.paired.pop(kw["device_id"], None)
+
+
+def _wire(monkeypatch):
+    from routers import desktop_pair
+
+    d = _Devices()
+    clear = AsyncMock()
+    monkeypatch.setattr(desktop_pair.container_repo, "mark_paired_device_revoking", d.mark)
+    monkeypatch.setattr(desktop_pair.mac_browser, "clear_device", clear)
+    monkeypatch.setattr(desktop_pair, "revoke_desktop_device", d.revoke)
+    return desktop_pair, d, clear
+
+
+async def test_another_member_cannot_unpair_a_device_they_did_not_pair(monkeypatch):
+    from fastapi import HTTPException
+
+    desktop_pair, d, clear = _wire(monkeypatch)
+    with pytest.raises(HTTPException) as e:
+        await desktop_pair.delete_device("mac-1", ctx=_ctx(user="user_bob"))
+    assert e.value.status_code == 404
+    assert "mac-1" in d.paired
+    clear.assert_not_awaited()
+
+
+async def test_the_member_who_paired_it_can_unpair_it(monkeypatch):
+    desktop_pair, d, _ = _wire(monkeypatch)
+    await desktop_pair.delete_device("mac-1", ctx=_ctx())
+    assert "mac-1" not in d.paired
+
+
+async def test_an_org_admin_can_unpair_any_device(monkeypatch):
+    desktop_pair, d, _ = _wire(monkeypatch)
+    await desktop_pair.delete_device("mac-1", ctx=_ctx("org:admin", "user_boss"))
+    assert "mac-1" not in d.paired

@@ -193,6 +193,7 @@ async def test_chat_never_steers_into_a_voice_run(monkeypatch):
         # put_voice_run is one atomic SET (UpdateItem), so a retry cannot drop another writer's fields
         fields = {name: ExpressionAttributeValues[f":v{key[2:]}"] for key, name in ExpressionAttributeNames.items()}
         rows.append({**Key, **fields})
+        return {"Attributes": rows[-1]}  # as DynamoDB answers ReturnValues="ALL_NEW"
 
     table.update_item.side_effect = upsert
     monkeypatch.setattr(work.messaging_repo, "_table", lambda: table)

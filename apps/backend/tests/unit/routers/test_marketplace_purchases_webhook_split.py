@@ -696,3 +696,38 @@ def test_refund_from_connected_account_is_ignored(mock_construct, mock_dedup, mo
     assert resp.status_code == 200, resp.text
     mock_find.assert_not_awaited()
     mock_revoke.assert_not_awaited()
+
+
+@patch("routers.marketplace_purchases.webhook_dedup.delete_event", new_callable=AsyncMock)
+@patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip", new_callable=AsyncMock)
+@patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
+def test_checkout_with_unreadable_listing_is_retried(mock_construct, mock_dedup, mock_delete, monkeypatch, client):
+    """A listing row not visible yet is not a mismatch: the dedup claim is
+    dropped and the delivery fails so Stripe redelivers it."""
+    from core.repositories import marketplace_repo as _repo
+    from core.services.webhook_dedup import WebhookDedupResult
+
+    get_listing = AsyncMock(return_value=None)
+    monkeypatch.setattr(_repo, "get_listing", get_listing)
+    mock_dedup.return_value = WebhookDedupResult.RECORDED
+    mock_construct.return_value = {
+        "id": "evt_missing",
+        "type": "checkout.session.completed",
+        "data": {
+            "object": {
+                "id": "cs_missing",
+                "payment_status": "paid",
+                "metadata": {"listing_id": "l1", "buyer_id": "b1", "seller_id": "s1", "version": "1"},
+                "amount_total": 2000,
+                "payment_intent": None,
+            }
+        },
+    }
+    resp = client.post(
+        "/api/v1/marketplace/webhooks/stripe-marketplace",
+        headers={"stripe-signature": "test"},
+        content=b'{"id":"evt_missing"}',
+    )
+    assert resp.status_code >= 500
+    mock_delete.assert_awaited_once_with(event_id="stripe-marketplace:evt_missing")
+    assert get_listing.await_args.kwargs == {"consistent": True}

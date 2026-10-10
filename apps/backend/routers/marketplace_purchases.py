@@ -294,8 +294,15 @@ async def _handle_checkout_completed(session: dict) -> None:
     # against the listing row before crediting anyone: the seller must be the
     # listing's seller and the buyer must have paid its price. A published
     # row's price is immutable, so a mismatch is never a legitimate sale.
-    listing = await marketplace_repo.get_listing(listing_id, version)
-    if not listing or listing.get("seller_id") != seller_id or int(listing.get("price_cents", -1)) != amount:
+    #
+    # Strongly consistent, and a MISSING row is retryable, not a mismatch: a
+    # checkout can complete moments after its listing version is written, and
+    # acking that delivery would leave a paid buyer with no entitlement. The
+    # raise rolls back the dedup row so Stripe redelivers.
+    listing = await marketplace_repo.get_listing(listing_id, version, consistent=True)
+    if not listing:
+        raise HTTPException(status_code=503, detail="listing not readable yet; retry")
+    if listing.get("seller_id") != seller_id or int(listing.get("price_cents", -1)) != amount:
         logger.warning(
             "marketplace checkout %s does not match listing %s v%s; not fulfilled",
             session.get("id"),

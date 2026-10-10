@@ -294,6 +294,27 @@ async def publish_delivery_changed(room_id: str, agent_id: str, seq: int) -> Non
     )
 
 
+async def steer_grant(owner_id: str, run: dict[str, Any], steerer_id: str | None) -> str | None:
+    """The grant a steer of `run` must carry: None when the steerer is the person the run acts for
+    (its trigger's human author, as its grant was minted), else a grant naming nobody, which the
+    bridge swaps in before the steer's text reaches the agent, so the steerer never borrows that
+    person's Claude Code sessions or the rooms they can read. Only ever lowers. Raises when it
+    cannot mint one: the caller must then not steer. Shared by every steer path (the worker's
+    follow-up steer, the client's explicit steer); voice runs lower in voice_calls.steer_voice_run."""
+    from core.services import local_session_grants
+
+    try:
+        trigger = await messaging_repo.get_message_by_id(run["roomId"], run.get("triggerMessageId") or "")
+    except Exception:
+        logger.warning("steer: trigger lookup failed; lowering the run's grant", exc_info=True)
+        trigger = None
+    author = (trigger or {}).get("author") or {}
+    requester = author.get("id") if author.get("kind") == "human" else None
+    if steerer_id is not None and steerer_id == requester:
+        return None
+    return local_session_grants.mint(owner_id, run["roomId"], run["agentId"], run["triggerMessageId"], None)
+
+
 class OpenClawWorkWorker:
     def __init__(self, *, sqs_client: Any | None = None, http_client: Any | None = None) -> None:
         self._sqs = sqs_client
@@ -705,18 +726,6 @@ class OpenClawWorkWorker:
             # Effect-once on the plugin makes a retry safe; the ledger row is reused.
             raise WorkRetry(f"plugin ingress {type(exc).__name__}") from exc
 
-    @staticmethod
-    async def _run_requester(room_id: str, run: dict[str, Any]) -> str | None:
-        """Who a room run acts for: its trigger's human author, as its grant was minted (None for an
-        agent's message, or when the trigger cannot be read -- which then lowers, never raises)."""
-        try:
-            message = await messaging_repo.get_message_by_id(room_id, run.get("triggerMessageId") or "")
-        except Exception:
-            logger.warning("steer: trigger lookup failed; lowering the run's grant", exc_info=True)
-            return None
-        author = (message or {}).get("author") or {}
-        return author.get("id") if author.get("kind") == "human" else None
-
     async def _steer_live_run(
         self,
         meta: dict[str, Any],
@@ -770,19 +779,12 @@ class OpenClawWorkWorker:
             # line (an @mention into an ambient run) -- keeps the bare line: the person chose
             # that agent, and a hedged human answer must not silence it.
             text += AMBIENT_STEER_SUFFIX
-        from core.services import local_session_grants
-
         headers = {"Authorization": f"Bearer {token}"}
-        if author.get("id") != await self._run_requester(meta["roomId"], run):
-            # Someone other than the person the run acts for: the run's local-session grant (their
-            # Claude Code sessions, the rooms they can read) drops to nobody before this text reaches
-            # the agent, as a voice run's does (voice_calls.steer_voice_run). Only ever lowered.
-            try:
-                headers["X-Lightbulb-Local-Session-Token"] = local_session_grants.mint(
-                    meta["ownerId"], meta["roomId"], member["id"], run["triggerMessageId"], None
-                )
-            except (RuntimeError, ApiProblem, KeyError):
-                return False  # the grant cannot be lowered: the message gets a turn (and grant) of its own
+        try:
+            if lowered := await steer_grant(meta["ownerId"], run, author.get("id")):
+                headers["X-Lightbulb-Local-Session-Token"] = lowered
+        except (RuntimeError, ApiProblem, KeyError):
+            return False  # the grant cannot be lowered: the message gets a turn (and grant) of its own
         try:
             response = await runtime_transport.request(
                 container,

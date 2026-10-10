@@ -32,6 +32,7 @@ from core.services import (
     link_preview,
     local_sessions,
     native_session_tools,
+    openclaw_work,
     session_chat,
     session_pickup,
     session_links,
@@ -1066,8 +1067,9 @@ async def _resolved_run(auth: AuthContext, run_id: str) -> tuple[str, dict]:
     return owner_id, row
 
 
-async def _run_control(owner_id: str, run_id: str, action: str, payload: dict) -> int | None:
-    """202 accepted, 404 not active, None when the owner has no addressable runtime."""
+async def _run_control(owner_id: str, run_id: str, action: str, payload: dict, grant: str | None = None) -> int | None:
+    """202 accepted, 404 not active, None when the owner has no addressable runtime. `grant`: a
+    steer's lowered local-session grant (openclaw_work.steer_grant)."""
     try:
         container = await container_rpc.running_container(owner_id)
     except ApiProblem:
@@ -1076,7 +1078,10 @@ async def _run_control(owner_id: str, run_id: str, action: str, payload: dict) -
         container,
         f"/plugins/lightbulb-channel/runs/{run_id}/{action}",
         json_body=payload,
-        headers={"Authorization": f"Bearer {container['gateway_token']}"},
+        headers={
+            "Authorization": f"Bearer {container['gateway_token']}",
+            **({"X-Lightbulb-Local-Session-Token": grant} if grant else {}),
+        },
         timeout_s=10.0,
     )
     return response.status_code
@@ -1153,7 +1158,12 @@ async def steer_run(run_id: str, request: SteerRunRequest, auth: AuthContext = D
         raise ApiProblem("RUN_NOT_ACTIVE", gate.get("message", "Steering is blocked."))
     await container_repo.touch_last_interactive(owner_id)
     try:
-        status = await _run_control(owner_id, run_id, "steer", {"text": request.text})
+        # Another member steering this run must not borrow its requester's access.
+        grant = await openclaw_work.steer_grant(owner_id, row, auth.user_id)
+    except (RuntimeError, ApiProblem, KeyError) as exc:
+        raise ApiProblem("RUNTIME_UNAVAILABLE", "Could not steer the run.", retryable=True, retry_after=3) from exc
+    try:
+        status = await _run_control(owner_id, run_id, "steer", {"text": request.text}, grant)
     except httpx.HTTPError as exc:
         raise ApiProblem("RUNTIME_UNAVAILABLE", "Could not steer the run.", retryable=True, retry_after=3) from exc
     if status == 202:

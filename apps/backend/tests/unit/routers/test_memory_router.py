@@ -1,0 +1,61 @@
+"""/api/v1/memory -- a person reviews what the workspace's agents remember."""
+
+import os
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from fastapi.testclient import TestClient
+
+os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
+
+from core.auth import AuthContext, get_current_user  # noqa: E402
+from main import app  # noqa: E402
+from routers import memory as mod  # noqa: E402
+
+RID = "mem-" + "a1" * 20
+
+
+@pytest.fixture
+def member():
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(
+        user_id="user_me", org_id="org_a", org_role="org:member"
+    )
+    yield TestClient(app)
+    app.dependency_overrides.clear()
+
+
+def test_get_lists_for_the_caller_only(member):
+    lst = AsyncMock(return_value={"private": [], "team": [], "truncated": False})
+    with patch.object(mod.workspace_memory, "list_memories", lst):
+        assert member.get("/api/v1/memory").json() == {"private": [], "team": [], "truncated": False}
+    lst.assert_awaited_once_with("org_a", "user_me")
+
+
+def test_delete_is_204_and_passes_auth_ids(member):
+    rm = AsyncMock()
+    with patch.object(mod.workspace_memory, "delete_memory", rm):
+        assert member.delete(f"/api/v1/memory/{RID}").status_code == 204
+    rm.assert_awaited_once_with("org_a", "user_me", RID)
+
+
+@pytest.mark.parametrize("bad", ["x", "mem-short", "mem-" + "a" * 60, "mem-" + "a/" * 20])
+def test_malformed_id_is_404_without_an_aws_call(member, bad):
+    rm = AsyncMock()
+    with patch.object(mod.workspace_memory, "delete_memory", rm):
+        assert member.delete(f"/api/v1/memory/{bad}").status_code == 404
+    rm.assert_not_awaited()
+
+
+def test_lookup_error_is_404_runtime_error_is_502(member):
+    with patch.object(mod.workspace_memory, "delete_memory", AsyncMock(side_effect=LookupError("x"))):
+        assert member.delete(f"/api/v1/memory/{RID}").status_code == 404
+    with patch.object(mod.workspace_memory, "delete_memory", AsyncMock(side_effect=RuntimeError("x"))):
+        assert member.delete(f"/api/v1/memory/{RID}").status_code == 502
+
+
+def test_personal_caller_is_refused():
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_me", org_id=None, org_role=None)
+    try:
+        assert TestClient(app).get("/api/v1/memory").status_code == 409
+    finally:
+        app.dependency_overrides.clear()

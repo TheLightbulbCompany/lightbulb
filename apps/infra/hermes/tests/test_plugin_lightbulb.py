@@ -145,9 +145,10 @@ class _RecallDB:
         return {"Alice raise": "dm", "Room plan": "root"}.get(title)
 
 
-def _recall(monkeypatch):
+def _recall(monkeypatch, tmp_path=None):
     import types
     calls = []
+    monkeypatch.setattr(turn_context, "_home", lambda: tmp_path or pathlib.Path("/nonexistent"))
 
     def lineage(db, sid):
         while db.parents.get(sid):
@@ -176,6 +177,35 @@ def test_session_search_reaches_only_the_current_conversations_lineage(monkeypat
     assert kw["db"].resolve_session_by_title("Alice raise") is None
     assert kw["db"].resolve_session_by_title("Room plan") == "root"
     assert tool.session_search(session_id="root", db=db, current_session_id="child") == "hermes"
+
+
+ROOM_KEY = "agent:a1:lightbulb:channel:r1"
+CALL_KEY = "agent:a1:lightbulb:call:c1"
+
+
+class _CallRecallDB(_RecallDB):
+    """A call's own transcript, its room's (split by compression), and a DM."""
+    parents = {CALL_KEY: None, ROOM_KEY: None, "room-child": ROOM_KEY, "dm": None}
+
+    def search_messages(self, **_kw):
+        return [{"session_id": s, "id": i} for i, s in enumerate(["dm", CALL_KEY, ROOM_KEY, "room-child"])]
+
+
+def test_a_spoken_turn_recalls_its_rooms_history_as_chat_does(monkeypatch, tmp_path):
+    """Prod Meet 10-09: on a call, recall stopped at the call's own transcript. A spoken turn belongs
+    to its room: it reaches the room's lineage too, and still never another conversation."""
+    turn_context.write(tmp_path, CALL_KEY, {"family": "call", "agentId": "a1", "voiceRoomId": "r1"})
+    tool, calls = _recall(monkeypatch, tmp_path)
+    db = _CallRecallDB()
+    assert tool.session_search(query="pricing", db=db, current_session_id=CALL_KEY) == "hermes"
+    assert [r["session_id"] for r in calls[0]["db"].search_messages()] == [CALL_KEY, ROOM_KEY, "room-child"]
+    assert tool.session_search(session_id="room-child", db=db, current_session_id=CALL_KEY) == "hermes"
+    out = tool.session_search(session_id="dm", db=db, current_session_id=CALL_KEY)
+    assert json.loads(out)["error"] == lightbulb.RECALL_SCOPE
+    # A typed turn's own lineage only, as before: a room never reaches a call's transcript this way.
+    calls.clear()
+    tool.session_search(query="pricing", db=db, current_session_id="room-child")
+    assert [r["session_id"] for r in calls[0]["db"].search_messages()] == [ROOM_KEY, "room-child"]
 
 
 @pytest.mark.parametrize("kw", [

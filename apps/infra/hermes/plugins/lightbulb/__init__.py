@@ -325,28 +325,40 @@ def _log_memory_full(tool_name: str = "", result=None, **_kw) -> None:
 # from (around the deliveryKey rotation that cuts their live access). Hermes has no option for
 # this, so the plugin narrows the tool to the lineage of the session it is called from: the
 # room's own compacted or compression-split history (Hermes already hides the live part, which is
-# in context). Cross-conversation recall needs a product ruling first.
+# in context). A spoken turn runs on its call's own transcript but belongs to its room, so it also
+# reaches that room's lineage: recall on a call is recall in the room, as in chat (one code path,
+# 10-09). Cross-conversation recall needs a product ruling first.
 RECALL_SCOPE = ("In Lightbulb, session_search reaches only this conversation's own earlier "
                 "history. Other rooms, DMs, calls, mail threads and other agents' sessions are "
                 "private to the people in them.")
 
 
 class _LineageDB:
-    """A SessionDB whose FTS and title lookups answer only from one lineage."""
+    """A SessionDB whose FTS and title lookups answer only from the given lineages."""
 
-    def __init__(self, db, root: str, lineage) -> None:
-        self._db, self._root, self._lineage = db, root, lineage
+    def __init__(self, db, roots: set, lineage) -> None:
+        self._db, self._roots, self._lineage = db, roots, lineage
 
     def __getattr__(self, name):
         return getattr(self._db, name)
 
     def search_messages(self, *args, **kwargs):
         return [r for r in self._db.search_messages(*args, **kwargs)
-                if self._lineage(self._db, r["session_id"]) == self._root]
+                if self._lineage(self._db, r["session_id"]) in self._roots]
 
     def resolve_session_by_title(self, title):
         sid = self._db.resolve_session_by_title(title)
-        return sid if sid and self._lineage(self._db, sid) == self._root else None
+        return sid if sid and self._lineage(self._db, sid) in self._roots else None
+
+
+def _recall_roots(tool, db, current_session_id: str) -> set:
+    """The lineages a turn may recall: its own, and on a spoken turn its room's (the call's turn
+    context names the room; the room's Hermes session is keyed like any room turn's)."""
+    roots = {tool._resolve_lineage(db, current_session_id)}
+    ctx = turn_context.read(current_session_id) or {}
+    if ctx.get("family") == "call" and ctx.get("voiceRoomId") and ctx.get("agentId"):
+        roots.add(tool._resolve_lineage(db, f"agent:{ctx['agentId']}:lightbulb:channel:{ctx['voiceRoomId']}"))
+    return roots
 
 
 def _scope_session_search() -> None:
@@ -368,11 +380,11 @@ def _scope_session_search() -> None:
         if (db is None or not current_session_id or (profile and str(profile).strip())
                 or (session_id and "/" in session_id) or not (str(query or "").strip() or session_id)):
             return tool.tool_error(RECALL_SCOPE, success=False)  # browse lists every conversation
-        root = tool._resolve_lineage(db, current_session_id)
-        if session_id and tool._resolve_lineage(db, session_id) != root:
+        roots = _recall_roots(tool, db, current_session_id)
+        if session_id and tool._resolve_lineage(db, session_id) not in roots:
             return tool.tool_error(RECALL_SCOPE, success=False)
         return hermes_search(query=query, role_filter=role_filter, limit=limit,
-                             db=_LineageDB(db, root, tool._resolve_lineage),
+                             db=_LineageDB(db, roots, tool._resolve_lineage),
                              current_session_id=current_session_id, session_id=session_id,
                              around_message_id=around_message_id, window=window, sort=sort,
                              profile=None, detail=detail)

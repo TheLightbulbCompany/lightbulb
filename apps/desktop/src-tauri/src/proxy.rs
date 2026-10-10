@@ -33,6 +33,7 @@ use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
+use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::log;
@@ -137,10 +138,22 @@ async fn handle_connection(
     client_id: String,
     jwt_provider: JwtProvider,
 ) -> Result<(), String> {
-    let sub_ws = match tokio_tungstenite::accept_async(stream).await {
+    // Only the node-host child may dial this socket. A browser page can reach loopback too,
+    // and a browser ALWAYS sends Origin on a WebSocket handshake; the child (Node `ws`, no
+    // `origin` option) never does. Refuse any handshake that carries one.
+    let no_browser = |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
+        if req.headers().contains_key("origin") {
+            return Err(tokio_tungstenite::tungstenite::http::Response::builder()
+                .status(403)
+                .body(None)
+                .unwrap());
+        }
+        Ok(resp)
+    };
+    let sub_ws = match tokio_tungstenite::accept_hdr_async(stream, no_browser).await {
         Ok(ws) => ws,
         Err(e) => {
-            log(&format!("[proxy] downstream accept_async failed from {peer}: {e}"));
+            log(&format!("[proxy] downstream accept_hdr_async failed from {peer}: {e}"));
             return Err(format!("sub-side accept: {e}"));
         }
     };
@@ -242,4 +255,27 @@ async fn handle_connection(
         _ = up_to_sub => {}
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    #[tokio::test]
+    async fn a_handshake_with_an_origin_header_is_refused() {
+        let proxy = start_proxy("ws://127.0.0.1:9/".into(), "c".into(), Arc::new(String::new))
+            .await
+            .unwrap();
+        let url = format!("ws://127.0.0.1:{}/", proxy.local_port());
+
+        let mut req = url.as_str().into_client_request().unwrap();
+        req.headers_mut().insert("origin", "https://evil.example".parse().unwrap());
+        let err = tokio_tungstenite::connect_async(req).await.unwrap_err();
+        assert!(err.to_string().contains("403"), "{err}");
+
+        // The node-host child sends no Origin and is still admitted.
+        assert!(tokio_tungstenite::connect_async(url.as_str()).await.is_ok());
+        proxy.shutdown().await;
+    }
 }

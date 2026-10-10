@@ -91,8 +91,8 @@ async def test_a_failing_receipt_never_raises():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("issue_id", ["../companies/x", "iss_1"])
-async def test_a_non_uuid_issue_id_skips_before_any_paperclip_call(issue_id):
+@pytest.mark.parametrize("issue_id", ["../companies/x", "x?mode=cancel&", "a/b"])
+async def test_a_path_shaped_issue_id_skips_before_any_paperclip_call(issue_id):
     admin = _admin()
     with _patched(admin):
         out = await mod.register("org_a", type="artifact", provider="posthog", title="t", issue_id=issue_id)
@@ -109,3 +109,13 @@ async def test_an_issue_in_another_company_gets_no_receipt():
         out = await mod.register("org_a", type="artifact", provider="posthog", title="t", issue_id=ISSUE)
     assert out is None
     admin.create_issue_work_product.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_identifier_style_issue_id_in_the_owners_company_gets_its_receipt():
+    admin = _admin()
+    admin.get_issue = AsyncMock(return_value={"id": ISSUE, "identifier": "LB-12", "companyId": "comp_1"})
+    with _patched(admin):
+        out = await mod.register("org_a", type="artifact", provider="posthog", title="t", issue_id="LB-12")
+    assert out == "wp_1"
+    assert admin.create_issue_work_product.await_args.kwargs["issue_id"] == "LB-12"

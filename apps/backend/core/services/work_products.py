@@ -12,10 +12,10 @@ Company resolution + bootstrap-admin session mirror ``board_cards``.
 from __future__ import annotations
 
 import logging
-import uuid
+import re
 
 from core.repositories.paperclip_repo import PaperclipRepo
-from core.services.paperclip_admin_client import shared_admin_client
+from core.services.paperclip_admin_client import ISSUE_ID_PATTERN, shared_admin_client
 from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.paperclip_openclaw_pairing import resolve_company_id_for_owner
 
@@ -41,11 +41,8 @@ async def register(
                 "work_products: no issue_id for owner_id=%s provider=%s — skipping receipt", owner_id, provider
             )
             return None
-        try:
-            # Canonical form only: the id lands in an upstream URL path.
-            issue_id = str(uuid.UUID(issue_id))
-        except ValueError:
-            logger.warning("work_products: issue_id is not a UUID for owner_id=%s — skipping receipt", owner_id)
+        if not re.fullmatch(ISSUE_ID_PATTERN, issue_id):
+            logger.warning("work_products: malformed issue_id for owner_id=%s — skipping receipt", owner_id)
             return None
         repo = PaperclipRepo(table_name="paperclip-companies")
         company_id = await resolve_company_id_for_owner(owner_id=owner_id, repo=repo)

@@ -94,7 +94,8 @@ function Detail({ item, roomId, client, onSteer, onStop }: {
           <Text style={[styles.buttonText, { color: palette.fg }]} maxFontSizeMultiplier={1.3}>Stop</Text>
         </Pressable>
       </View>
-      {note ? <Text accessibilityRole="alert" style={[styles.note, { color: palette.fgSoft }]}>{note}</Text> : null}
+      {/* Once the child ends its final status above says it all: no "Stopping…" beside "Stopped". */}
+      {note && live ? <Text accessibilityRole="alert" style={[styles.note, { color: palette.fgSoft }]}>{note}</Text> : null}
       <ScrollView style={[styles.tail, { backgroundColor: palette.raised }]}>
         <Text selectable style={[styles.mono, { color: palette.fgSoft }]}>
           {tail?.available ? tail.text : (!live && item.summary) || "No transcript yet."}

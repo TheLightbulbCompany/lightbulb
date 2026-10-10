@@ -37,6 +37,7 @@ import { ConversationHeader } from "../../../../components/conversation/Conversa
 import { AVATAR_GUTTER, MetaText, WorkingBubble } from "../../../../components/conversation/bubbles";
 import { Avatar } from "../../../../components/room/Avatar";
 import { CatchUpSummary } from "../../../../components/room/CatchUpSummary";
+import { SavedDelegations } from "../../../../components/room/DelegateCard";
 import { MessageActionsSheet } from "../../../../components/room/MessageActionsSheet";
 import { LocalMessageRows, MessageGroup } from "../../../../components/room/MessageGroup";
 import { NoticeBanner } from "../../../../components/voice/NoticeBanner";
@@ -623,6 +624,7 @@ function Conversation() {
                   members={members ?? []}
                   sessionCandidates={sessionCandidates}
                 />
+                <SavedDelegations state={rooms.subagents} entry={rooms.delegationsByMessage.get(item.message.messageId)} />
                 {placed.after.get(item.message.messageId)?.map((run) => (
                   <RunBlock
                     key={run.runId}

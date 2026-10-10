@@ -135,6 +135,7 @@ export {
 export type { DocumentLink, DocumentPreview } from "./messaging/documentLinks";
 export { ROOMS_SNAPSHOT_VERSION, useRooms } from "./messaging/useRooms";
 export type {
+  MessageDelegations,
   OptimisticRoomMessage,
   RoomReceipts,
   RoomsLiveSource,

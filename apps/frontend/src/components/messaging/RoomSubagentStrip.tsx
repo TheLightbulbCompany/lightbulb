@@ -47,7 +47,8 @@ function Detail({ item, roomId, client, onSteer, onStop }: {
       <button type="submit" disabled={off || !text.trim()}>Steer</button>
       <button type="button" disabled={off} onClick={() => run(() => onStop(item.agentId, item.id), "Stopping…")}>Stop</button>
     </form>
-    {note && <p className="room-subagent-note" role="status">{note}</p>}
+    {/* Once the child ends its final status above says it all: no "Stopping…" beside "Stopped". */}
+    {note && live && <p className="room-subagent-note" role="status">{note}</p>}
     <pre className="room-subagent-tail">{tail?.available ? tail.text : (!live && item.summary) || "No transcript yet."}</pre>
   </div>;
 }
@@ -82,7 +83,7 @@ export function RoomSubagentStrip({ state, roomId, agentName, client, onSteer, o
         <span className="room-subagent-meta">{sessionClock(now - item.startedAt, true)}</span>
       </button>)}
       {!all && live.length > PREVIEW && <button type="button" className="room-subagent-row room-subagent-more" onClick={() => setAll(true)}>+{live.length - PREVIEW} more</button>}
-      {pickedItem && <Detail item={pickedItem} roomId={roomId} client={client} onSteer={onSteer} onStop={onStop} />}
+      {pickedItem && <Detail key={pickedItem.id} item={pickedItem} roomId={roomId} client={client} onSteer={onSteer} onStop={onStop} />}
     </>}
   </div>;
 }

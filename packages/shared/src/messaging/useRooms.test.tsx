@@ -948,6 +948,40 @@ describe("runs already in progress when the room opens", () => {
     expect(result.current.runs).toHaveLength(0);
   });
 
+  it("keeps the delegations of a run its saved reply replaced, until the room changes", async () => {
+    const other: RoomDetail = { ...room, roomId: "room-2", name: "Second", deliveryKey: "key-2" };
+    messaging.listRooms.mockResolvedValue({ rooms: [room, other], sections: [] });
+    messaging.getRoom.mockImplementation(async (id: string) => (id === other.roomId ? other : withRun()));
+    messaging.listMessages.mockResolvedValue({ messages: [message, { ...message, messageId: "reply", messageSeq: 2, runId: RUN,
+      author: { kind: "agent", id: AGENT, displayName: "Forge" }, text: "Started two helpers." }], nextAfterSeq: null });
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.runs).toHaveLength(1));
+    act(() => { for (const handler of handlers) {
+      handler(frame({ type: "tool_start", runId: RUN, tool: "delegate_task", toolCallId: "t1", args: {} }));
+      handler(frame({ type: "tool_end", runId: RUN, tool: "delegate_task", toolCallId: "t1", result: JSON.stringify({ delegation_id: "d-1" }) }));
+    } });
+    expect(result.current.delegationsByMessage.size).toBe(0); // the live run card still shows it
+    act(() => { for (const handler of handlers) handler(frame({ type: "run_ended", outcome: "done" })); });
+    expect(result.current.runs).toHaveLength(0);
+    expect(result.current.delegationsByMessage.get("reply")).toEqual({ agentId: AGENT, delegationIds: ["d-1"] });
+
+    await act(async () => { result.current.selectRoom(other.roomId); });
+    expect(result.current.delegationsByMessage.size).toBe(0);
+  });
+
+  it("keeps delegationsByMessage the same Map while a live run streams", async () => {
+    messaging.getRoom.mockResolvedValue(withRun());
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    act(() => result.current.selectRoom(room.roomId));
+    await waitFor(() => expect(result.current.runs).toHaveLength(1));
+    const before = result.current.delegationsByMessage;
+    act(() => { for (const handler of handlers) handler(frame({ type: "chunk", runId: RUN, content: "Working" })); });
+    act(() => { for (const handler of handlers) handler(frame({ type: "chunk", runId: RUN, content: "Working on it" })); });
+    expect(result.current.runs[0].text).toBe("Working on it");
+    expect(result.current.delegationsByMessage).toBe(before);
+  });
+
   it("never retires the run card for a progress line", async () => {
     messaging.getRoom.mockResolvedValue(withRun());
     messaging.listMessages.mockResolvedValue({ messages: [message, { ...message, messageId: "progress", messageSeq: 2, runId: RUN, progress: true,

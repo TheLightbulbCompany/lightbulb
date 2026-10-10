@@ -5,9 +5,8 @@
 //! `.mcp.json` (on a Mac the stdio `lightbulb` shim in native_mcp.rs is the server) and its
 //! session-sharing skill (enrollment.rs copies it to ~/.claude/skills and ~/.codex/skills), so a
 //! Mac never gets a second server or a second copy of that skill. The share skill
-//! (`/lightbulb:share`) comes only from here. Claude reads a folder marketplace
-//! from the folder itself, so an app update rewrites the files and the next session loads them.
-//! Never fatal: the mod is an addition to sharing, not part of it.
+//! (`/lightbulb:share`) comes only from here. Never fatal: the mod is an addition to sharing,
+//! not part of it.
 //!
 //! The plugin was `lightbulb-sessions` until 2026-10-07. The marketplace's `renames` map moves an
 //! old install to `lightbulb@lightbulb` (checked against Claude Code 2.1.293: after the new files
@@ -15,10 +14,43 @@
 //!
 //! Checked against Claude Code 2.1.292 (2026-10-07): a repeat `plugin install` answers "already
 //! installed ... it loads in place from <folder>, so edits there take effect at the next session
-//! start or /reload-plugins". So no version bump is needed for a changed file to load. A Claude
-//! session already running keeps the mod it started with.
+//! start or /reload-plugins". That holds for a terminal session only. Claude also keeps its own
+//! copy at the install's `installPath` (~/.claude/plugins/cache/lightbulb/lightbulb/<version>),
+//! and a session the Claude desktop app starts (entrypoint `claude-desktop`) loaded that copy: on
+//! 2026-10-09 it showed the band of 2026-10-07 and had no `/lightbulb:share`. A repeat
+//! `plugin install` never refreshes that copy; `plugin update` does. So the marketplace entry
+//! carries `version()`, a hash of the bundled files, and after the install the app runs
+//! `plugin update` when the version Claude recorded differs. A Claude session already running
+//! keeps the mod it started with.
 
 use super::*;
+
+/// A short hash of every bundled file: it changes when, and only when, a file changes.
+pub(crate) fn version() -> String {
+    use sha2::Digest as _;
+    let mut hash = sha2::Sha256::new();
+    for (rel, text) in FILES {
+        hash.update(rel.as_bytes());
+        hash.update([0u8]);
+        hash.update(text.as_bytes());
+        hash.update([0u8]);
+    }
+    hash.finalize().iter().take(6).map(|b| format!("{b:02x}")).collect()
+}
+
+/// The text the app writes for `rel`: the bundled text, except that the marketplace entry gains
+/// `version()`. The bundled marketplace.json stays unversioned, because the public marketplace
+/// (packages/claude-plugin) lets Claude version its plugin by commit.
+fn contents(rel: &str, text: &'static str) -> std::borrow::Cow<'static, str> {
+    if rel != ".claude-plugin/marketplace.json" {
+        return text.into();
+    }
+    let Ok(mut market) = serde_json::from_str::<serde_json::Value>(text) else { return text.into() };
+    for entry in market["plugins"].as_array_mut().into_iter().flatten() {
+        entry["version"] = version().into();
+    }
+    serde_json::to_string_pretty(&market).map_or(text.into(), |s| (s + "\n").into())
+}
 
 pub(crate) const FILES: &[(&str, &str)] = &[
     (".claude-plugin/marketplace.json", include_str!("../../../../../packages/claude-plugin/.claude-plugin/marketplace.json")),
@@ -38,8 +70,9 @@ pub(crate) fn write_files(state_dir: &Path) -> Result<PathBuf> {
     for (rel, text) in FILES {
         let path = root.join(rel);
         fs::create_dir_all(path.parent().ok_or("plugin path")?).map_err(|_| "plugin directory unavailable")?;
-        if fs::read_to_string(&path).ok().as_deref() != Some(*text) {
-            fs::write(&path, text).map_err(|_| "plugin write failed")?;
+        let text = contents(rel, *text);
+        if fs::read_to_string(&path).ok().as_deref() != Some(&*text) {
+            fs::write(&path, &*text).map_err(|_| "plugin write failed")?;
         }
     }
     let socket = enrollment::hook_path().with_file_name("mod.sock");
@@ -93,11 +126,19 @@ fn commands(root: &Path, on: bool) -> Vec<Vec<String>> {
 /// match counts: a list that fails or does not parse leaves the plugin in place. That costs little
 /// when it is ours, because the mod shows nothing once sharing is off (the app removes the socket).
 fn ours(list: &[u8], root: &Path) -> bool {
-    serde_json::from_slice::<Vec<serde_json::Value>>(list).is_ok_and(|list| {
-        list.iter().any(|p| {
-            p["id"] == ID && p["readFromFolder"].as_str().is_some_and(|f| Path::new(f).starts_with(root))
-        })
+    our_entry(list, root).is_some()
+}
+
+fn our_entry(list: &[u8], root: &Path) -> Option<serde_json::Value> {
+    serde_json::from_slice::<Vec<serde_json::Value>>(list).ok()?.into_iter().find(|p| {
+        p["id"] == ID && p["readFromFolder"].as_str().is_some_and(|f| Path::new(f).starts_with(root))
     })
+}
+
+/// Whether Claude's cached copy of the app's plugin is older than the files the app wrote: the
+/// version `claude plugin list --json` records is not `version()`.
+fn stale(list: &[u8], root: &Path) -> bool {
+    our_entry(list, root).is_some_and(|p| p["version"] != version().as_str())
 }
 
 /// Whether `claude plugin marketplace list --json` holds the public marketplace
@@ -135,10 +176,17 @@ fn run_all(home: PathBuf, root: &Path, cmds: Vec<Vec<String>>) {
             transport::relay_log("lightbulb plugin: left in place, it is not the app's copy");
             continue;
         }
-        match std::process::Command::new(&claude).args(&args).stdin(std::process::Stdio::null()).output() {
+        let step = |args: &[&str]| match run(args) {
             Ok(out) if out.status.success() => {}
             Ok(out) => transport::relay_log(&format!("lightbulb plugin: {} exited {}", args.join(" "), out.status)),
             Err(_) => transport::relay_log(&format!("lightbulb plugin: {} did not start", args.join(" "))),
+        };
+        step(&args.iter().map(String::as_str).collect::<Vec<_>>());
+        // After the install: refresh Claude's cached copy (see the module comment).
+        if args[1] == "install"
+            && run(&["plugin", "list", "--json"]).is_ok_and(|o| o.status.success() && stale(&o.stdout, root))
+        {
+            step(&["plugin", "update", ID]);
         }
     }
 }
@@ -240,7 +288,7 @@ mod tests {
         assert!(!stale.exists(), "two hooks modules: Claude Code refuses the plugin");
         assert!(!stale_dir.exists(), "a folder left empty goes too");
         for (rel, text) in FILES {
-            assert_eq!(std::fs::read_to_string(root.join(rel)).unwrap(), *text, "{rel}");
+            assert_eq!(std::fs::read_to_string(root.join(rel)).unwrap(), contents(rel, *text), "{rel}");
         }
         assert!(std::fs::read_to_string(root.join("lightbulb/socket")).unwrap().trim().ends_with("/mod.sock"));
         for f in &kept {
@@ -249,6 +297,61 @@ mod tests {
         assert!(root.join("lightbulb/.mcp.json").is_file(), "outside the source folders");
         assert!(std::fs::symlink_metadata(&live).is_ok(), "a socket is not a regular file");
         assert!(std::fs::symlink_metadata(&link).is_ok(), "a symlink is left alone");
+    }
+
+    #[test]
+    fn plugin_the_marketplace_entry_carries_the_files_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = write_files(dir.path()).unwrap();
+        let text = std::fs::read_to_string(root.join(".claude-plugin/marketplace.json")).unwrap();
+        let market: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(market["plugins"][0]["name"], "lightbulb");
+        assert_eq!(market["plugins"][0]["source"], "./lightbulb");
+        assert_eq!(market["plugins"][0]["version"], version().as_str());
+        assert_eq!(market["renames"]["lightbulb-sessions"], "lightbulb");
+        assert_eq!(version().len(), 12);
+        assert_eq!(version(), version(), "stable for the same files");
+    }
+
+    /// A fake `claude` that logs its arguments and answers `plugin list --json` with `version`.
+    fn run_with_listed_version(listed: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().join("state/claude-mods");
+        let bin = home.path().join(".local/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let claude = bin.join("claude");
+        std::fs::write(
+            &claude,
+            "#!/bin/sh\necho \"$*\" >> \"$0.log\"\n[ \"$*\" = \"plugin list --json\" ] && cat \"$0.list\"\nexit 0\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let entry = serde_json::json!([{"id": ID, "version": listed, "readFromFolder": root.join("lightbulb")}]);
+        std::fs::write(bin.join("claude.list"), entry.to_string()).unwrap();
+        run_all(home.path().to_owned(), &root, commands(&root, true));
+        std::fs::read_to_string(bin.join("claude.log")).unwrap()
+    }
+
+    #[test]
+    fn plugin_install_refreshes_claudes_copy_only_when_the_version_changed() {
+        let log = run_with_listed_version("unknown");
+        assert!(log.contains("plugin install lightbulb@lightbulb\n"), "{log}");
+        assert!(log.ends_with("plugin list --json\nplugin update lightbulb@lightbulb\n"), "{log}");
+
+        let log = run_with_listed_version(&version());
+        assert!(log.contains("plugin install lightbulb@lightbulb\n"), "{log}");
+        assert!(!log.contains("plugin update"), "{log}");
+    }
+
+    #[test]
+    fn plugin_stale_only_for_the_apps_own_copy() {
+        let root = Path::new("/state/claude-mods");
+        let at = |f: &str, v: &str| format!(r#"[{{"id":"lightbulb@lightbulb","version":"{v}","readFromFolder":"{f}"}}]"#).into_bytes();
+        assert!(stale(&at("/state/claude-mods/lightbulb", "unknown"), root));
+        assert!(!stale(&at("/state/claude-mods/lightbulb", &version()), root));
+        assert!(!stale(&at("/elsewhere/lightbulb", "unknown"), root), "not the app's to update");
+        assert!(!stale(b"not json", root));
     }
 
     #[test]

@@ -77,6 +77,10 @@ pub struct Model {
     /// The first bytes of a character the last read ended inside, on that region's last row: not
     /// fed yet, since whether it wraps there (and scrolls the region) depends on its width.
     carry: Vec<u8>,
+    /// How many of the lines above the screen `scrolled` has already handed out.
+    taken: usize,
+    /// `ESC[3J` dropped the lines above since `scrolled` last ran.
+    erased: bool,
 }
 /// Where a byte stream stands between its control sequences, as far as `Model::process` reads it.
 #[derive(Clone, Copy, PartialEq)]
@@ -393,7 +397,7 @@ impl Model {
     pub fn new(rows: u16, cols: u16) -> Self {
         Self { parser: vt100::Parser::new(rows, cols, SCROLLBACK), tail: Vec::new(), left_alternate: None, partial_csi: Vec::new(),
             last_output: None, typed: None, resting: None, ending: false, classic: false, shown_again: 0,
-            codex: false, at: At::Ground, csi: Vec::new(), region: None, carry: Vec::new() }
+            codex: false, at: At::Ground, csi: Vec::new(), region: None, carry: Vec::new(), taken: 0, erased: false }
     }
 
     /// The provider is Codex in its inline mode.
@@ -604,6 +608,48 @@ impl Model {
         parser.process(&self.snapshot());
         self.parser = parser;
         self.region = None;
+        self.erased = true;
+    }
+
+    pub fn screen(&self) -> &vt100::Screen {
+        self.parser.screen()
+    }
+
+    /// Rows that left the top of the normal screen since the last call, oldest first (each one row
+    /// of `rows_formatted`), and whether ESC[3J dropped the lines above since then (the count
+    /// restarts). The relay pushes them into viewers' scrollback before each diff.
+    // ponytail: more than SCROLLBACK - taken rows between two calls lose the oldest; the parser is
+    // rebuilt at half the cap so the count never saturates (which also empties what `history`
+    // can give, so only a model that is not the holder's calls this). Not while a Codex region
+    // is set (the rebuild loses DECSTBM, the same ceiling as `erase_saved`).
+    pub fn scrolled(&mut self) -> (bool, Vec<Vec<u8>>) {
+        let erased = std::mem::take(&mut self.erased);
+        if erased {
+            self.taken = 0;
+        }
+        if self.parser.screen().alternate_screen() {
+            return (erased, vec![]);
+        }
+        let (rows_n, cols) = self.size();
+        let screen = self.parser.screen_mut();
+        screen.set_scrollback(usize::MAX);
+        let above = screen.scrollback();
+        let rows: Vec<Vec<u8>> = (1..=above.saturating_sub(self.taken))
+            .rev()
+            .filter_map(|back| {
+                screen.set_scrollback(back);
+                screen.rows_formatted(0, cols).next()
+            })
+            .collect();
+        screen.set_scrollback(0);
+        self.taken = above;
+        if above >= SCROLLBACK / 2 && self.region.is_none() {
+            let mut parser = vt100::Parser::new(rows_n, cols, SCROLLBACK);
+            parser.process(&self.snapshot());
+            self.parser = parser;
+            self.taken = 0;
+        }
+        (erased, rows)
     }
 
     /// The lines above the screen, oldest first, as bytes for an empty terminal: they end up in
@@ -1551,5 +1597,43 @@ mod tests {
         assert_eq!(model.end(Instant::now()), None);
         assert_eq!(model.starts_over(), None);
         assert_eq!(lines(&mut late_joiner(&mut model, 1 << 20)), kept);
+    }
+
+    #[test]
+    fn scrolled_returns_the_rows_that_left_the_top_oldest_first() {
+        let mut m = Model::new(3, 10);
+        let _ = m.feed(b"a\r\nb\r\nc");
+        assert_eq!(m.scrolled(), (false, vec![]));
+        let _ = m.feed(b"\r\nd\r\ne");
+        let (erased, rows) = m.scrolled();
+        assert!(!erased);
+        assert_eq!(rows.iter().map(|r| String::from_utf8_lossy(r).trim_end().to_string()).collect::<Vec<_>>(), vec!["a", "b"]);
+        assert_eq!(m.scrolled(), (false, vec![]));
+    }
+
+    #[test]
+    fn scrolled_keeps_a_codex_region_row_and_reports_an_erase() {
+        let mut m = Model::new(3, 10);
+        m.inline_codex();
+        let _ = m.feed(b"a\r\nb\r\nc\x1b[1;2r\x1b[2;1H\r\nX\x1b[r");
+        let (_, rows) = m.scrolled();
+        assert_eq!(String::from_utf8_lossy(&rows[0]).trim_end(), "a");
+        let _ = m.feed(b"\x1b[3J");
+        assert!(m.scrolled().0);
+    }
+
+    #[test]
+    fn scrolled_counts_past_the_scrollback_cap() {
+        // Twice the cap, 2000 lines between calls: every line that left the screen, in order.
+        let mut m = Model::new(3, 10);
+        let mut got = Vec::new();
+        for round in 0..5 {
+            for i in round * 2000..(round + 1) * 2000 {
+                let _ = m.feed(format!("{i}\r\n").as_bytes());
+            }
+            got.extend(m.scrolled().1.iter().map(|r| String::from_utf8_lossy(r).trim_end().to_string()));
+        }
+        // (The screen keeps the last two lines and the blank row under them.)
+        assert!(got == (0..9998).map(|i| i.to_string()).collect::<Vec<_>>(), "{} rows, first {:?}", got.len(), got.first());
     }
 }

@@ -55,6 +55,9 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   participants?: readonly Person[];
   onMessageOwner?: () => void;
 }) {
+  // Not compiled: it reads the clock and a ref during render on purpose (the screen-due timer, the kept
+  // terminal), which the React Compiler would memoize stale.
+  "use no memo";
   // The history feeds the plan, the changed files, the pending prompt and the approval reason, and an app
   // session's conversation. The relay throttles hints with no trailing edge, so a quiet poll while busy keeps those current.
   const busy = session.status === "busy";
@@ -94,6 +97,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     const timer = setTimeout(() => redraw(n => n + 1), left);
     return () => clearTimeout(timer);
   }, [screenDueAt]);
+  // eslint-disable-next-line react-hooks/purity -- not compiled ("use no memo"); the timer above redraws
   const screenDue = Date.now() < screenDueAt;
   // The terminal view follows its last row, which in a kept picture can be a blank part of the screen: its
   // first scroll goes back to the top left instead, and after that the reader's scrolling is their own.

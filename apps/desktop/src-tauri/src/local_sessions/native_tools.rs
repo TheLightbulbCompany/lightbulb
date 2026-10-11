@@ -98,6 +98,13 @@ struct Source {
     item_id: Option<String>,
 }
 
+/// Read by the agent that called the tool: it says what to do next, not only what failed.
+const SOURCE_UNIDENTIFIED: &str = "source_unidentified: the local Lightbulb tools could not match this \
+    conversation to one shared session on this Mac. This happens in the Codex or Claude app, in IDE \
+    sessions, when the session is set to Only me, or when the Lightbulb Mac app does not recognise \
+    this app version. Use the \"lightbulb-hosted\" MCP server instead \
+    (https://api.thelightbulb.company/mcp, sign in with OAuth). It works without a local session.";
+
 fn resolve_source(scope: &Path, peer: u32, meta: &Value) -> Result<Source> {
     let parent = parent(peer)?;
     let thread = meta["threadId"]
@@ -157,7 +164,10 @@ fn resolve_source(scope: &Path, peer: u32, meta: &Value) -> Result<Source> {
     }
     match found.len() {
         1 => Ok(found.remove(0)),
-        _ => Err("source_ambiguous: this tool needs one verified native session".into()),
+        0 => Err(SOURCE_UNIDENTIFIED.into()),
+        _ => Err("source_ambiguous: more than one shared session on this Mac matches this tool call; \
+            restart this session's MCP server, or use the \"lightbulb-hosted\" MCP server"
+            .into()),
     }
 }
 
@@ -405,6 +415,8 @@ mod tests {
         assert_eq!(source.unwrap(), "session-a", "no holder needed to be this session's MCP source");
         assert!(stopping, "a stop the relay loop has not applied yet already counts");
         assert!(stopped.is_err(), "a session that is not shared reads and sends nothing through its tools");
+        let unidentified = stopped.unwrap_err().to_string();
+        assert!(unidentified.starts_with("source_unidentified:") && unidentified.contains("https://api.thelightbulb.company/mcp"));
     }
 
     #[test]

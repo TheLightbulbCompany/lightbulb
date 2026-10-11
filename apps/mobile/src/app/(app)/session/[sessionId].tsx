@@ -42,7 +42,7 @@ const BOTTOM_SLACK = 80;
 function sessionWhere(session: LocalSession, own: boolean, ownerName: string): string {
   const mac = own ? "your Mac" : `${ownerName}’s Mac`;
   if (session.status === "offline") return `${mac[0].toUpperCase()}${mac.slice(1)} is offline`;
-  const why = endedWhy(session, mac);
+  const why = endedWhy(session, mac, "’");
   if (why) return `Ended · ${why}`;
   if (session.status === "ended" && session.endedAt) return `Ended · ${relativeTime(Date.parse(session.endedAt))}`;
   return `${sessionStatus[session.status]} on ${mac}`;

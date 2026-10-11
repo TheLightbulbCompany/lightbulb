@@ -7,6 +7,7 @@ const base = { capabilities: { sendMode: "queue" }, controlUnavailableReason: nu
 describe("endedWhy", () => {
   it("names a login-session restart and nothing else", () => {
     expect(endedWhy({ status: "ended", endedReason: "login-session-ended" }, "your Mac")).toBe("your Mac's login session restarted");
+    expect(endedWhy({ status: "ended", endedReason: "login-session-ended" }, "Leo’s Mac", "’")).toBe("Leo’s Mac’s login session restarted");
     expect(endedWhy({ status: "ended", endedReason: "exited" }, "your Mac")).toBeNull();
     expect(endedWhy({ status: "idle", endedReason: "login-session-ended" }, "your Mac")).toBeNull();
   });

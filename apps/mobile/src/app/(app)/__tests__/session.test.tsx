@@ -342,7 +342,7 @@ describe("session screen", () => {
     it("names a login-session restart in the header", async () => {
       get.mockResolvedValue({ ...base, status: "ended", endedReason: "login-session-ended" });
       await render(<SessionScreen />);
-      expect(screen.getByText(/Ended · .*login session restarted/)).toBeTruthy();
+      expect(screen.getByText("Ended · your Mac’s login session restarted")).toBeTruthy();
     });
 
     it("stops after three failures and lets the person retry", async () => {

@@ -560,6 +560,28 @@ struct Relayed {
     model: Model,
     shown: vt100::Parser,
     fed: bool,
+    /// Since when the provider is inside a synchronized update (DEC mode 2026: `ESC[?2026h` ...
+    /// `ESC[?2026l`, Codex draws with it): its screen is half drawn until the update ends.
+    sync: Option<Instant>,
+    /// The last bytes fed, for a mode 2026 sequence split across two reads.
+    sync_tail: Vec<u8>,
+    /// Since when a tick has waited because it would blank cells the viewers show.
+    erasing: Option<Instant>,
+}
+
+/// The longest a synchronized update holds the viewers' screen: a provider that never ends one
+/// must not freeze them.
+const SYNC_CAP: Duration = Duration::from_millis(250);
+/// The longest a tick that would blank cells waits for their repaint (a provider without mode
+/// 2026 that erases in one read and draws again in the next, 2026-10-11).
+const ERASE_CAP: Duration = Duration::from_millis(150);
+const SYNC_ON: &[u8] = b"\x1b[?2026h";
+const SYNC_OFF: &[u8] = b"\x1b[?2026l";
+
+/// Cells with something in them.
+fn filled(screen: &vt100::Screen) -> usize {
+    let (rows, cols) = screen.size();
+    (0..rows).flat_map(|r| (0..cols).map(move |c| (r, c))).filter(|&(r, c)| screen.cell(r, c).is_some_and(|cell| cell.has_contents())).count()
 }
 
 impl Relayed {
@@ -570,11 +592,43 @@ impl Relayed {
         let _ = model.scrolled();
         let mut shown = vt100::Parser::new(rows, cols, 0);
         shown.process(screen);
-        Self { model, shown, fed: false }
+        Self { model, shown, fed: false, sync: None, sync_tail: vec![], erasing: None }
     }
     fn feed(&mut self, bytes: &[u8]) {
         let _ = self.model.feed(bytes);
         self.fed = true;
+        // ponytail: only the plain forms; `ESC[?2026;...h` with other modes is not seen (no provider sends one).
+        let hay = [self.sync_tail.as_slice(), bytes].concat();
+        let last = |needle: &[u8]| hay.windows(needle.len()).rposition(|w| w == needle);
+        match (last(SYNC_ON), last(SYNC_OFF)) {
+            (Some(on), Some(off)) if on > off => self.sync = Some(Instant::now()),
+            (Some(_), None) => {
+                self.sync.get_or_insert_with(Instant::now);
+            }
+            (_, Some(_)) => self.sync = None,
+            _ => {}
+        }
+        // (Shorter than a whole sequence, so one is never found twice.)
+        self.sync_tail = hay[hay.len().saturating_sub(SYNC_ON.len() - 1)..].to_vec();
+    }
+    /// Whether a tick now shows the viewers a whole picture: not inside a synchronized update, and
+    /// not an erase whose repaint may still come (each for its cap at most).
+    // ponytail: "an erase" is fewer filled cells than the viewers have, so a scroll that brings in
+    // blank rows or a deleted character also waits, ERASE_CAP at most; a per-cell check after the
+    // rows are pushed is the upgrade if that delay ever shows.
+    fn ready(&mut self, now: Instant) -> bool {
+        if !self.fed {
+            return true;
+        }
+        if self.sync.is_some_and(|at| now.duration_since(at) < SYNC_CAP) {
+            return false;
+        }
+        let (model, shown) = (self.model.screen(), self.shown.screen());
+        if model.alternate_screen() != shown.alternate_screen() || filled(model) >= filled(shown) {
+            self.erasing = None;
+            return true;
+        }
+        now.duration_since(*self.erasing.get_or_insert(now)) >= ERASE_CAP
     }
     /// Bytes that turn every viewer's terminal into the model's: the screen switch, rows that left
     /// the top pushed into their scrollback (written on row 1, then scrolled from the bottom), then
@@ -583,6 +637,7 @@ impl Relayed {
         if !std::mem::take(&mut self.fed) {
             return vec![];
         }
+        self.erasing = None;
         let mut out = Vec::new();
         let alt = self.model.screen().alternate_screen();
         if alt != self.shown.screen().alternate_screen() {
@@ -1010,7 +1065,9 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
             ctl.snapshot.store(true, SeqCst);
         }
         // Only with room: a tick that waits merges into the next one, never queues behind it.
-        if last_tick.elapsed() >= TICK && leaving.is_none() && out.backlog.is_empty() && !out.stale && out.budget.left() > 0.0 {
+        // And only on a whole picture (`Relayed::ready`): never half a redraw.
+        if last_tick.elapsed() >= TICK && leaving.is_none() && out.backlog.is_empty() && !out.stale && out.budget.left() > 0.0
+            && relayed.as_mut().is_none_or(|r| r.ready(Instant::now())) {
             last_tick = Instant::now();
             if send_changes(&mut relayed, &mut out, size) {
                 last_ping = Instant::now();
@@ -2056,6 +2113,60 @@ mod tests {
         assert_eq!(holder.asked.len(), 1);
         assert_eq!(shape[..3], [("snapshot".into(), 120), ("output".into(), 120), ("snapshot".into(), 90)]);
         assert!(shape.len() > 3 && shape[3..].iter().all(|(kind, cols)| kind == "ping" && *cols == 90), "{shape:?}");
+    }
+
+    /// Feeds `reads` to a relay after its first screen, each `gap` after the last, and returns every
+    /// frame it sent with when.
+    fn relay_of(first: &[u8], reads: &[&[u8]], gap: Duration, lease: Duration) -> Vec<(Duration, Value)> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send((SNAPSHOT, with_offset(0, first))).unwrap();
+        let reads: Vec<Vec<u8>> = reads.iter().map(|r| r.to_vec()).collect();
+        let feeder = tx.clone();
+        std::thread::spawn(move || {
+            for read in reads {
+                std::thread::sleep(gap);
+                let _ = feeder.send((OUTPUT, with_offset(0, &read)));
+            }
+        });
+        let _keep = tx;
+        let sent = std::cell::RefCell::new(vec![]);
+        let started = Instant::now();
+        pump(&rx, &mut Vec::<u8>::new(), ("sid", "gen"), (40, 5), &leased(lease), &|f| { sent.borrow_mut().push((started.elapsed(), f)); true },
+            Budget::new(), &|_| None).unwrap();
+        sent.into_inner()
+    }
+
+    /// Every screen a viewer of `sent` showed, one per frame.
+    fn screens_of(sent: &[(Duration, Value)]) -> Vec<String> {
+        let frames: Vec<Value> = sent.iter().map(|(_, f)| f.clone()).collect();
+        (1..=frames.len()).map(|n| viewer(&frames[..n], (40, 5)).screen().contents()).collect()
+    }
+
+    /// Codex review of #4035: an erase in one read and its repaint in a later one (more than a tick
+    /// apart) showed every viewer the blank screen in between.
+    #[test]
+    fn an_erase_and_its_repaint_in_reads_a_tick_apart_never_show_the_blank_screen() {
+        let sent = relay_of(b"line one\r\nline two", &[b"\x1b[H\x1b[2J", b"line one\r\nline TWO"], Duration::from_millis(100), Duration::from_millis(600));
+        let screens = screens_of(&sent);
+        assert!(screens.iter().all(|s| s.starts_with("line one")), "{screens:?}");
+        assert_eq!(screens.last().unwrap(), "line one\nline TWO");
+    }
+
+    #[test]
+    fn a_synchronized_update_split_across_reads_goes_out_whole() {
+        let reads: [&[u8]; 3] = [b"\x1b[?20", b"26h\x1b[H\x1b[2Jhalf drawn and more", b"\x1b[H\x1b[2Jthe whole picture\x1b[?2026l"];
+        let sent = relay_of(b"a\r\nb", &reads, Duration::from_millis(80), Duration::from_millis(700));
+        let screens = screens_of(&sent);
+        assert!(screens.iter().all(|s| !s.contains("half drawn")), "{screens:?}");
+        assert_eq!(screens.last().unwrap(), "the whole picture");
+    }
+
+    #[test]
+    fn a_synchronized_update_that_never_ends_still_goes_out_after_its_cap() {
+        let sent = relay_of(b"a", &[b"\x1b[?2026hpartial"], Duration::from_millis(10), Duration::from_millis(700));
+        let (at, _) = sent.iter().find(|(_, f)| f["kind"] == "output").expect("the update goes out");
+        assert!(*at >= SYNC_CAP, "{at:?}");
+        assert!(screens_of(&sent).last().unwrap().contains("partial"));
     }
 
     /// Review focus 3: a tick with no room in the relay queue waits and merges into the next one.

@@ -2014,6 +2014,27 @@ async def test_ended_frame_marks_row_ended_idempotently_and_hints(transport):
 
 
 @pytest.mark.asyncio
+async def test_ended_frame_reports_login_session_ended(transport):
+    """A Mac that found a holder older than its login session ends it with that reason, and the
+    row and the public session carry it."""
+    with patch("time.time", return_value=10000):
+        sid = await start(transport)
+    frame = {
+        **fixture("session-ended"),
+        "sessionId": sid,
+        "generation": "generation-1",
+        "endedAt": 10005,
+        "reason": "login-session-ended",
+    }
+    with patch("time.time", return_value=10006):
+        await relay(transport).handle_message("conn-1", frame)
+    row = await repo.get_session(OWNER, sid)
+    assert row["status"] == "ended"
+    assert row["endedReason"] == "login-session-ended"
+    assert (await service.get_session(BOB, sid)).ended_reason == "login-session-ended"
+
+
+@pytest.mark.asyncio
 async def test_local_session_analytics_tracks_verified_generation_once_without_content(transport):
     with patch("core.services.local_session_relay.capture_product_event") as capture:
         sid = await start(transport)

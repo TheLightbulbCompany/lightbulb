@@ -282,8 +282,8 @@ while no frame has arrived it says "Connecting…", and after 30 s of silence "R
 **Let teammates control this session** is on can type straight into it,
 including answering the tool's own prompts; others watch read-only and see a "Watching · Ask to join" line. There is no message
 box under a live terminal. Setting the session to **Only me** or removing someone cuts their
-input at once, and so does leaving the workspace; the owner sees "<name> is
-typing". You never get the screen or keyboard: you cannot watch or type into a
+input at once, and so does leaving the workspace; while a teammate types, every view shows
+"<name> typing" and the cursor in their colour. You never get the screen or keyboard: you cannot watch or type into a
 person's terminal. You read the session's structured record with
 `lightbulb_local_sessions` instead. A session started with `lightbulb claude` in
 a terminal shows in the owner's panel too, at that terminal's size; both can type.

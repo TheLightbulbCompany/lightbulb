@@ -174,7 +174,7 @@ class Ended(ContractModel):
     generation: sessions.OpaqueId
     # "on-purpose": the Mac saw its person end it (the provider's own exit, or End on its holder).
     # Sent only once FEATURES lists endedOnPurpose; an older desktop says "exited" for those too.
-    reason: Literal["exited", "process-exited", "on-purpose"]
+    reason: sessions.EndedReason
     ended_at: int = Field(ge=0)
     # The holder keeps the final screen (spec §5.4). Sent only once FEATURES lists endedScreens.
     screen: bool = False

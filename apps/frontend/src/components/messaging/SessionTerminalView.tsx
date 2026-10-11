@@ -370,8 +370,8 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
         stale = setTimeout(() => { setLive(false); onLive(false); }, STALE_AFTER_MS);
       }
       if (current) { setLive(true); onLive(true); }
-      // A ping ahead of the frame this view waits for: a diff was lost and a quiet relay sends no more, so ask for a fresh picture.
-      const gap = frame.kind === "ping" && order.synced && frame.epoch === order.epoch && frame.seq > order.next;
+      // A ping after the Mac sent frames (seq > 0) that this view's picture lacks (none yet, another run, or a frame lost): a quiet relay sends no more, so ask for a fresh picture.
+      const gap = frame.kind === "ping" && frame.seq > 0 && (!order.synced || frame.epoch !== order.epoch || frame.seq > order.next);
       const step = receiveScreen(order, frame);
       order = step.order;
       apply(step.write);

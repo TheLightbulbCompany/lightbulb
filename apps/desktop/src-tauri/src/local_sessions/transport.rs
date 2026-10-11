@@ -83,7 +83,6 @@ impl Rpc {
 /// checks the envelope size before validating, so the byte budget bites first.
 const HEARTBEAT_SESSIONS_MAX: usize = 24;
 
-/// One discovery pass: the captured sessions, and every conversation the Claude listing named.
 /// One discovery pass: the sessions, the listed conversations, and the holders born before this
 /// login session (`holder::manager::stranded`).
 type Discovered = (Vec<NativeSession>, BTreeSet<String>, Vec<crate::holder::manager::HolderInfo>);
@@ -2652,7 +2651,7 @@ fn persist_changed(dir: &Path, key: &str, mirror: &mut Mirror, before: &Value) -
 fn registration(mirror: &Mirror) -> Value {
     let mut body = json!({"type":"local.session.register", "session":{"provider":mirror.native.provider,
         "profileFingerprint":mirror.native.profile,"nativeConversationId":mirror.native.conversation,"generation":mirror.generation,
-        "providerVersion":mirror.native.version,"status":mirror.native.status,"activeTurnId":mirror.native.active_turn,"controlUnavailableReason":mirror.native.restriction,
+        "providerVersion":mirror.native.version,"status":mirror.native.status,"activeTurnId":mirror.native.active_turn,"controlUnavailableReason":mirror.native.control_unavailable_reason(),
         "title":mirror.native.title,"cwdName":mirror.native.cwd_name,"holderId":mirror.native.holder,
         "workspace":mirror.workspace.summary()}});
     if let Some(previous) = &mirror.previous_generation {
@@ -2871,7 +2870,7 @@ fn device_heartbeats_with_controls(
     }) {
         let entry = json!({"sessionId":m.session_id,"generation":m.generation,
             "status":m.native.status,"activeTurnId":m.native.active_turn,
-            "controlUnavailableReason":m.native.restriction,
+            "controlUnavailableReason":m.native.control_unavailable_reason(),
             "title":m.native.title,"cwdName":m.native.cwd_name,
             "lastAssistantMessage":m.native.last_assistant_message,
             "workspace":m.workspace.summary()});
@@ -3502,6 +3501,66 @@ pub(super) mod tests {
         mirror.pending = None;
         assert!(mirror.next_batch().unwrap().is_none());
         assert_eq!(due(&mirrors), None);
+    }
+
+    #[test]
+    fn local_sessions_a_codex_off_its_daemon_offers_no_send() {
+        // It is refused on the Mac (`command`), so the relay is told it has no input connection:
+        // the backend then grants it no send mode and the clients offer no composer.
+        let mut mirror = test_mirror("5eed000e-0000-4000-8000-00000000000e", "gen-1");
+        mirror.session_id = Some(SID.into());
+        mirror.native.app = false;
+        mirror.native.process.executable = "/opt/homebrew/bin/codex".into();
+        assert_eq!(mirror.native.terminal_reason(), Some("no-daemon"));
+        assert_eq!(registration(&mirror)["session"]["controlUnavailableReason"], "endpoint-unavailable");
+        let key = native_key(&mirror.native);
+        let beats = |m: &Mirror| device_heartbeats(&BTreeMap::from([(key.clone(), m.clone())]), &BTreeSet::from([key.clone()]), false).unwrap();
+        assert_eq!(beats(&mirror)[0]["sessions"][0]["controlUnavailableReason"], "endpoint-unavailable");
+        // A plain `claude` takes sends through its inbox socket: nothing withdrawn.
+        mirror.native.provider = "claude".into();
+        assert_eq!(registration(&mirror)["session"]["controlUnavailableReason"], Value::Null);
+        assert_eq!(beats(&mirror)[0]["sessions"][0]["controlUnavailableReason"], Value::Null);
+        // Its own restriction still wins.
+        mirror.native.provider = "codex".into();
+        mirror.native.restriction = Some("history-gap".into());
+        assert_eq!(registration(&mirror)["session"]["controlUnavailableReason"], "history-gap");
+    }
+
+    #[test]
+    fn local_sessions_a_registered_session_resumed_in_a_plain_terminal_is_shared_and_ends_under_its_own_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = test_host(dir.path(), vec![]);
+        let mut native = test_native("5eed0009-0000-4000-8000-000000000009");
+        native.app = false;
+        native.holder = Some("ab12cd34".into());
+        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
+        let key = native_key(&native);
+        // Shared and registered at G1; its end is never told (the Mac was offline).
+        let known = host.mirrors[&key].generation.clone();
+        let mirror = host.mirrors.get_mut(&key).unwrap();
+        mirror.session_id = Some("5eed0009-5e55-4000-8000-000000000009".into());
+        mirror.registration.acknowledged = Some(known.clone());
+        host.end_session(&key, "exited").unwrap();
+        // Resumed with plain `codex`: a new process, no holder. Shared as its conversation now
+        // (owner ruling 2026-10-11), so it is a resume like any other: its run registers.
+        let mut child = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let mut resumed = native.clone();
+        resumed.process = process(child.id()).unwrap();
+        resumed.holder = None;
+        resumed.status = "busy".into();
+        let observed = host.observe(vec![resumed], &BTreeSet::new());
+        child.kill().unwrap();
+        child.wait().unwrap();
+        observed.unwrap();
+        let mirror = &host.mirrors[&key];
+        let current = mirror.generation.clone();
+        assert!(mirror.ended_at.is_none() && !mirror.withheld() && current != known && !mirror.resume_registration_pending, "the successor path");
+        assert_eq!(registration_due(&host.mirrors, &BTreeSet::new(), &BTreeMap::new()), Some(key.clone()), "its run registers");
+        // Then it exits: its end is told under its own generation, not rewound to the one before.
+        host.end_session(&key, "exited").unwrap();
+        let (_, frame) = host.ended_frame(&mut BTreeSet::new()).unwrap().expect("its end is told");
+        assert_eq!(frame["generation"].as_str(), Some(current.as_str()));
+        assert_eq!(frame["reason"], "exited");
     }
 
     #[tokio::test]
@@ -4201,6 +4260,8 @@ pub(super) mod tests {
     fn local_sessions_a_holder_born_before_the_login_session_ends_with_that_reason_first() {
         let dir = tempfile::tempdir().unwrap();
         let mut mirror = test_mirror(SID, "generation-1");
+        // Claude: a held Codex's end waits to learn how its provider left (`awaits_exit`).
+        mirror.native.provider = "claude".into();
         mirror.native.holder = Some("5717a4ed".into());
         let key = native_key(&mirror.native);
         let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
@@ -4217,6 +4278,10 @@ pub(super) mod tests {
         // The END the app sent marks the holder asked; the frame still names the login session.
         crate::holder::manager::end_asked_now("5717a4ed");
         assert_eq!(super::super::session_states::end_reason(&host.mirrors[&key]), "login-session-ended");
+        // The one ended frame says so too.
+        host.mirrors.get_mut(&key).unwrap().session_id = Some(SID.into());
+        let (_, frame) = host.ended_frame(&mut BTreeSet::new()).unwrap().expect("its end is told");
+        assert_eq!(frame["reason"], "login-session-ended");
         crate::holder::manager::end_asked_forget("5717a4ed");
     }
 

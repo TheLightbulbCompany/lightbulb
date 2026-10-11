@@ -171,7 +171,11 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn login_session_started_before_this_process() {
-        let login = login_session_start().expect("a loginwindow for this user");
+        // A CI runner's user may have no GUI login (no loginwindow): nothing to compare then.
+        let Some(login) = login_session_start() else {
+            eprintln!("skipped: no loginwindow for this user (no GUI login session)");
+            return;
+        };
         let me = read(std::process::id()).expect("own identity");
         assert!(login <= me.birth_micros, "login {login} after this process {}", me.birth_micros);
         assert!(login > 1_600_000_000_000_000, "µs since the epoch");

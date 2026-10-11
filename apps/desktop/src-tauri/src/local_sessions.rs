@@ -1037,6 +1037,13 @@ impl NativeSession {
             _ => "unknown",
         })
     }
+
+    /// Why the workspace may not control this session, as the relay reads it. A Codex off its
+    /// shared daemon takes no send (`codex queue` would make the daemon a second writer), so it
+    /// says its input connection is unavailable and the relay grants it no send mode.
+    fn control_unavailable_reason(&self) -> Option<&str> {
+        self.restriction.as_deref().or((self.terminal_reason() == Some("no-daemon")).then_some("endpoint-unavailable"))
+    }
 }
 
 async fn native_output(program: &Path, args: &[&str]) -> Result<String> {

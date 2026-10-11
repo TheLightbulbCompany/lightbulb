@@ -106,3 +106,96 @@ async def test_a_failed_delete_raises(fake):
     }
     with pytest.raises(RuntimeError):
         await wm.delete_memory("org_a", "user_me", "mem-1")
+
+
+def _created(fake, new_id="mem-new"):
+    fake.batch_create_memory_records.return_value = {
+        "successfulRecords": [{"memoryRecordId": new_id, "status": "SUCCEEDED"}],
+        "failedRecords": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_share_copies_a_private_fact_into_team_prefixed_then_deletes_it(fake):
+    fake.get_memory_record.return_value = {"memoryRecord": _rec("mem-p", PRIV, "Leeds", T0)}
+    _created(fake)
+    assert await wm.share_memory("org_a", "user_me", "mem-p") == "mem-new"
+    kw = fake.batch_create_memory_records.call_args.kwargs
+    (rec,) = kw["records"]
+    assert (
+        rec["namespaces"] == [TEAM]
+        and rec["content"] == {"text": wm.CONFIRMED_PREFIX + "Leeds"}
+        and rec["timestamp"] == T0
+    )
+    assert rec["memoryStrategyId"] == "workspace_facts-x" and "metadata" not in rec
+    assert kw["clientToken"] == rec["requestIdentifier"] and len(rec["requestIdentifier"]) == 64
+    fake.batch_delete_memory_records.assert_called_once_with(memoryId="mem-1", records=[{"memoryRecordId": "mem-p"}])
+
+
+@pytest.mark.asyncio
+async def test_a_retried_share_reuses_the_same_token(fake):
+    fake.get_memory_record.return_value = {"memoryRecord": _rec("mem-p", PRIV)}
+    _created(fake)
+    fake.batch_delete_memory_records.side_effect = [
+        {"successfulRecords": [], "failedRecords": [{"memoryRecordId": "mem-p"}]},
+        {"successfulRecords": [], "failedRecords": []},
+    ]
+    with pytest.raises(RuntimeError):
+        await wm.share_memory("org_a", "user_me", "mem-p")
+    await wm.share_memory("org_a", "user_me", "mem-p")
+    tokens = [c.kwargs["clientToken"] for c in fake.batch_create_memory_records.call_args_list]
+    assert tokens[0] == tokens[1]
+
+
+@pytest.mark.asyncio
+async def test_share_refuses_a_team_or_foreign_record(fake):
+    for ns in (TEAM, "/owners/org_a:user_other/"):
+        fake.get_memory_record.return_value = {"memoryRecord": _rec("mem-p", ns)}
+        with pytest.raises(LookupError):
+            await wm.share_memory("org_a", "user_me", "mem-p")
+    fake.batch_create_memory_records.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_copy_never_deletes_the_original(fake):
+    fake.get_memory_record.return_value = {"memoryRecord": _rec("mem-p", PRIV)}
+    fake.batch_create_memory_records.return_value = {
+        "successfulRecords": [],
+        "failedRecords": [{"requestIdentifier": "x"}],
+    }
+    with pytest.raises(RuntimeError):
+        await wm.share_memory("org_a", "user_me", "mem-p")
+    fake.batch_delete_memory_records.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_confirm_replaces_a_team_fact_with_a_prefixed_copy(fake):
+    fake.get_memory_record.return_value = {"memoryRecord": _rec("mem-t", TEAM, "Ships on Tuesdays")}
+    _created(fake, "mem-c")
+    assert await wm.confirm_memory("org_a", "user_me", "mem-t") == "mem-c"
+    (rec,) = fake.batch_create_memory_records.call_args.kwargs["records"]
+    assert rec["content"] == {"text": wm.CONFIRMED_PREFIX + "Ships on Tuesdays"} and "metadata" not in rec
+    fake.batch_delete_memory_records.assert_called_once_with(memoryId="mem-1", records=[{"memoryRecordId": "mem-t"}])
+
+
+@pytest.mark.asyncio
+async def test_sharing_never_double_prefixes(fake):
+    fake.get_memory_record.return_value = {"memoryRecord": _rec("mem-p", PRIV, wm.CONFIRMED_PREFIX + "Leeds")}
+    _created(fake)
+    await wm.share_memory("org_a", "user_me", "mem-p")
+    (rec,) = fake.batch_create_memory_records.call_args.kwargs["records"]
+    assert rec["content"]["text"] == wm.CONFIRMED_PREFIX + "Leeds"
+
+
+@pytest.mark.asyncio
+async def test_confirm_is_a_no_op_on_a_confirmed_fact(fake):
+    fake.get_memory_record.return_value = {"memoryRecord": _rec("mem-t", TEAM, wm.CONFIRMED_PREFIX + "Leeds")}
+    assert await wm.confirm_memory("org_a", "user_me", "mem-t") == "mem-t"
+    fake.batch_create_memory_records.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_confirm_refuses_a_private_record(fake):
+    fake.get_memory_record.return_value = {"memoryRecord": _rec("mem-p", PRIV)}
+    with pytest.raises(LookupError):
+        await wm.confirm_memory("org_a", "user_me", "mem-p")

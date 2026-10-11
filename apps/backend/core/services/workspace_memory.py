@@ -27,6 +27,7 @@ not honoured).
 """
 
 import asyncio
+import hashlib
 import logging
 import re
 from collections.abc import Awaitable, Callable
@@ -305,3 +306,61 @@ async def delete_memory(owner_id: str, user_id: str, record_id: str) -> None:
         _delete_one(client, memory_id, record_id)
 
     await run_in_thread(run)
+
+
+def _vouched_copy(client, memory_id: str, rec: dict, team: str) -> str:
+    """Copy ``rec`` into the team scope with ``CONFIRMED_PREFIX`` on its text, then delete the
+    original. Share and Confirm are this one act (decisions D4-D6). The token is derived from the
+    source record, so a retry after a failed delete replays the same create instead of a new one.
+    No ``metadata`` key: AgentCore drops custom record metadata (spike S2)."""
+    token = hashlib.sha256(f"{rec['memoryRecordId']}>{team}".encode()).hexdigest()
+    text = (rec.get("content") or {}).get("text", "")
+    if not text.startswith(CONFIRMED_PREFIX):
+        text = CONFIRMED_PREFIX + text
+    try:
+        resp = client.batch_create_memory_records(
+            memoryId=memory_id,
+            clientToken=token,
+            records=[
+                {
+                    "requestIdentifier": token,
+                    "namespaces": [team],
+                    "content": {"text": text},
+                    "timestamp": rec["createdAt"],
+                    "memoryStrategyId": rec["memoryStrategyId"],
+                }
+            ],
+        )
+    except ClientError as exc:
+        raise RuntimeError(f"memory copy failed for {rec['memoryRecordId']}") from exc
+    done = resp.get("successfulRecords") or []
+    if resp.get("failedRecords") or not done:
+        raise RuntimeError(f"memory copy failed for {rec['memoryRecordId']}")
+    _delete_one(client, memory_id, rec["memoryRecordId"])
+    return done[0]["memoryRecordId"]
+
+
+async def _vouch(owner_id: str, user_id: str, record_id: str, *, from_private: bool) -> str:
+    private, team = _scopes(owner_id, user_id)
+    memory_id = settings.AGENTCORE_MEMORY_ID
+    if not memory_id:
+        raise LookupError(record_id)
+
+    def run() -> str:
+        client = _client()
+        rec = _owned(client, memory_id, record_id, (private,) if from_private else (team,))
+        if not from_private and (rec.get("content") or {}).get("text", "").startswith(CONFIRMED_PREFIX):
+            return record_id
+        return _vouched_copy(client, memory_id, rec, team)
+
+    return await run_in_thread(run)
+
+
+async def share_memory(owner_id: str, user_id: str, record_id: str) -> str:
+    """Phase 3: a person moves one of THEIR private facts to the team. Agents never call this."""
+    return await _vouch(owner_id, user_id, record_id, from_private=True)
+
+
+async def confirm_memory(owner_id: str, user_id: str, record_id: str) -> str:
+    """Phase 4: a person confirms a team fact; agents then recall it as confirmed."""
+    return await _vouch(owner_id, user_id, record_id, from_private=False)

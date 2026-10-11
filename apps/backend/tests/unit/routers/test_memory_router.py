@@ -91,3 +91,12 @@ def test_delete_aws_throttling_is_a_fixed_502(member, monkeypatch):
     monkeypatch.setattr(wm.settings, "AGENTCORE_MEMORY_ID", "mem-1", raising=False)
     r = member.delete(f"/api/v1/memory/{RID}")
     assert r.status_code == 502 and "secret" not in r.text
+
+
+@pytest.mark.parametrize("action,fn", [("share", "share_memory"), ("confirm", "confirm_memory")])
+def test_share_and_confirm_return_the_team_id(member, action, fn):
+    call = AsyncMock(return_value="mem-" + "b" * 40)
+    with patch.object(mod.workspace_memory, fn, call):
+        resp = member.post(f"/api/v1/memory/{RID}/{action}")
+    assert resp.status_code == 200 and resp.json() == {"id": "mem-" + "b" * 40}
+    call.assert_awaited_once_with("org_a", "user_me", RID)

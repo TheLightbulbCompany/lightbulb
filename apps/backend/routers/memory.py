@@ -44,3 +44,15 @@ async def list_memory(auth: AuthContext = Depends(get_current_user)) -> dict:
 async def delete_memory(record_id: str, auth: AuthContext = Depends(get_current_user)) -> Response:
     await _act(workspace_memory.delete_memory, auth, record_id)
     return Response(status_code=204)
+
+
+@router.post("/{record_id}/share")
+async def share_memory(record_id: str, auth: AuthContext = Depends(get_current_user)) -> dict:
+    """Phase 3: one of the caller's private facts becomes a confirmed team fact."""
+    return {"id": await _act(workspace_memory.share_memory, auth, record_id)}
+
+
+@router.post("/{record_id}/confirm")
+async def confirm_memory(record_id: str, auth: AuthContext = Depends(get_current_user)) -> dict:
+    """Phase 4: a person vouches for a team fact (any member: D2)."""
+    return {"id": await _act(workspace_memory.confirm_memory, auth, record_id)}

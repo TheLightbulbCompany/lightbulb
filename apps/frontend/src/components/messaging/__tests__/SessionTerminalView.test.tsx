@@ -207,6 +207,22 @@ it("a view that drew frames before it asked starts over with the history its own
   spy.mockRestore();
 });
 
+it("asks for a fresh picture once when a ping shows a lost diff, and not for a ping that is on time", async () => {
+  vi.useFakeTimers();
+  let emit: (e: LiveEvent) => void = () => {};
+  const watch = vi.fn(async () => undefined);
+  render(<SessionTerminalView session={{ sessionId: "s1", generation: "g1" }} onEvent={(h) => { emit = h; return () => {}; }} watch={watch} onLive={vi.fn()} />);
+  await act(async () => { await vi.dynamicImportSettled(); });
+  act(() => { emit(screenEvent("s1", "snapshot", 0)); emit(screenEvent("s1", "output", 1, 1, btoa("a"))); });
+  watch.mockClear();
+  act(() => { emit(screenEvent("s1", "ping", 2)); });
+  expect(watch).not.toHaveBeenCalled();
+  act(() => { emit(screenEvent("s1", "ping", 3)); }); // seq 2 was lost
+  expect(watch.mock.calls).toEqual([["s1", true]]);
+  act(() => { vi.advanceTimersByTime(10_000); emit(screenEvent("s1", "ping", 3)); });
+  expect(watch).toHaveBeenCalledTimes(1);
+});
+
 it("asks for the kept picture once when the session it was watching ends, and draws it in place", async () => {
   // The backend refuses the watch (409) between the end and the Mac's report of the kept screen, and drops
   // the Mac's frames; a renewal after that is no new viewer, so nothing sent the kept picture (prod 2026-10-07).

@@ -370,10 +370,12 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
         stale = setTimeout(() => { setLive(false); onLive(false); }, STALE_AFTER_MS);
       }
       if (current) { setLive(true); onLive(true); }
+      // A ping ahead of the frame this view waits for: a diff was lost and a quiet relay sends no more, so ask for a fresh picture.
+      const gap = frame.kind === "ping" && order.synced && frame.epoch === order.epoch && frame.seq > order.next;
       const step = receiveScreen(order, frame);
       order = step.order;
       apply(step.write);
-      repair(step.lost);
+      repair(step.lost || gap);
       if (!snapshotWaits(order)) { clearTimeout(settle); settle = undefined; }
       else settle ??= setTimeout(() => { settle = undefined; const late = settleScreen(order); order = late.order; apply(late.write); repair(late.lost); }, SNAPSHOT_WAIT_MS);
     });

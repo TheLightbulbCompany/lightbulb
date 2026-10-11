@@ -189,7 +189,13 @@ export function AgentInspectorPanel({
                 >
                   Organization
                 </h3>
-                <AgentOrgControls agent={orgAgent} agents={rosterAgents} onUpdated={refresh} />
+                <AgentOrgControls
+                  agent={orgAgent}
+                  agents={rosterAgents}
+                  onUpdated={async () => {
+                    await refresh();
+                  }}
+                />
               </section>
             ) : null}
           </>

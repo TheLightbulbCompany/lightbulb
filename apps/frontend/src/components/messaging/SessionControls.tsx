@@ -53,7 +53,7 @@ export function SessionApprovalCard({ session, client, own, ownerName }: {
     {!allowed ? <p className="text-muted-foreground">Waiting on {where} approval{privateSend ? "." : " in the terminal."}</p> : <>
       {!canApprove && <p className="text-muted-foreground">{privateSend
         ? failedFor === detailKey ? "Could not load the exact message. Retry, or approve on your Mac." : "Loading the exact message…"
-        : <>Approve this in the terminal on {where} Mac: Lightbulb can&apos;t show all of it. You can still deny it here.</>}</p>}
+        : <>Lightbulb shows only part of this call. Approve it on {where} Mac; you can deny it here.</>}</p>}
       {privateSend && !shown && failedFor === detailKey && <Button size="sm" variant="outline" onClick={() => { setFailedFor(null); setRetry(value => value + 1); }}>Retry loading message</Button>}
       {denying ? <form className="mt-2 flex flex-col gap-2" onSubmit={event => { event.preventDefault(); void answer({ decision: "deny", reason }); }}>
         <label htmlFor={reasonId}>Tell Claude why (optional)</label>

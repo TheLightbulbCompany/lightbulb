@@ -626,9 +626,10 @@ impl Model {
     /// restarts). The relay pushes them into viewers' scrollback before each diff.
     // ponytail: more than SCROLLBACK - taken rows between two calls lose the oldest; the parser is
     // rebuilt at half the cap so the count never saturates (which also empties what `history`
-    // can give, so only a model that is not the holder's calls this). Not while a Codex region
-    // is set (the rebuild loses DECSTBM, the same ceiling as `erase_saved`; also any region not
-    // anchored at row 1, and the saved cursor, which `region` does not track).
+    // can give, so only a model that is not the holder's calls this). A Codex region is set again
+    // after the rebuild (Codex review of #4035: skipping the rebuild while one was set saturated
+    // the count, and no later row reached a viewer). Lost there: any region not anchored at row 1,
+    // and the saved cursor, which `region` does not track.
     pub fn scrolled(&mut self) -> (bool, Vec<Vec<u8>>) {
         let erased = std::mem::take(&mut self.erased);
         if erased {
@@ -652,9 +653,14 @@ impl Model {
         self.taken = above;
         // (Only between sequences and characters: a new parser would print the rest of one as
         // text. Else at a later call; the other half of the cap is the room for that.)
-        if above >= SCROLLBACK / 2 && self.region.is_none() && self.at == At::Ground && self.carry.is_empty() && !mid_char(&self.tail) {
+        if above >= SCROLLBACK / 2 && self.at == At::Ground && self.carry.is_empty() && !mid_char(&self.tail) {
             let mut parser = vt100::Parser::new(rows_n, cols, SCROLLBACK);
             parser.process(&self.snapshot());
+            if let Some(bottom) = self.region {
+                // DECSTBM homes the cursor: put it back.
+                let (row, col) = self.parser.screen().cursor_position();
+                parser.process(format!("\x1b[1;{}r\x1b[{};{}H", bottom + 1, row + 1, col + 1).as_bytes());
+            }
             self.parser = parser;
             self.taken = 0;
         }
@@ -1644,6 +1650,26 @@ mod tests {
         }
         // (The screen keeps the last two lines and the blank row under them.)
         assert!(got == (0..9998).map(|i| i.to_string()).collect::<Vec<_>>(), "{} rows, first {:?}", got.len(), got.first());
+    }
+
+    /// Codex review of #4035: with Codex's region set the whole time, the count stopped at the cap
+    /// and no later row reached a viewer.
+    #[test]
+    fn scrolled_counts_past_the_cap_while_a_codex_region_stays_set() {
+        let mut m = Model::new(6, 10);
+        m.inline_codex();
+        let _ = m.feed(b"\x1b[1;4r\x1b[4;1H");
+        let mut got = Vec::new();
+        for round in 0..4 {
+            for i in round * 1600..(round + 1) * 1600 {
+                let _ = m.feed(format!("\r\n{i}").as_bytes());
+            }
+            got.extend(m.scrolled().1.iter().map(|r| String::from_utf8_lossy(r).trim_end().to_string()));
+        }
+        // (The region's four blank rows leave first; it keeps the last four lines.)
+        let want: Vec<String> = std::iter::repeat_n(String::new(), 4).chain((0..6396).map(|i| i.to_string())).collect();
+        assert!(got == want, "{} rows, last {:?}", got.len(), got.last());
+        assert_eq!(m.screen().contents(), "6396\n6397\n6398\n6399", "the region is still set: the rows under it stay blank");
     }
 
     #[test]

@@ -34,7 +34,7 @@ from collections.abc import Awaitable, Callable
 
 import boto3
 from botocore.config import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, ParamValidationError
 
 from core.config import settings
 from core.dynamodb import run_in_thread
@@ -216,6 +216,7 @@ _LIST_CAP = 200
 # The only confirmation mark AgentCore keeps (custom record metadata is dropped, spike S2). Written
 # only by the backend's vouched copy; agents see it in recall as part of the fact text.
 CONFIRMED_PREFIX = "Confirmed by a person: "
+_MAX_TEXT = 16000  # AgentCore's MemoryContentTextString max length
 
 
 def _scopes(owner_id: str, user_id: str) -> tuple[str, str]:
@@ -317,6 +318,8 @@ def _vouched_copy(client, memory_id: str, rec: dict, team: str) -> str:
     text = (rec.get("content") or {}).get("text", "")
     if not text.startswith(CONFIRMED_PREFIX):
         text = CONFIRMED_PREFIX + text
+    if len(text) > _MAX_TEXT:
+        raise ValueError("memory too long to share or confirm")
     try:
         resp = client.batch_create_memory_records(
             memoryId=memory_id,
@@ -331,7 +334,7 @@ def _vouched_copy(client, memory_id: str, rec: dict, team: str) -> str:
                 }
             ],
         )
-    except ClientError as exc:
+    except (ClientError, ParamValidationError) as exc:
         raise RuntimeError(f"memory copy failed for {rec['memoryRecordId']}") from exc
     done = resp.get("successfulRecords") or []
     if resp.get("failedRecords") or not done or done[0].get("status") != "SUCCEEDED":

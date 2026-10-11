@@ -211,3 +211,13 @@ async def test_confirm_refuses_a_private_record(fake):
     fake.get_memory_record.return_value = {"memoryRecord": _rec("mem-p", PRIV)}
     with pytest.raises(LookupError):
         await wm.confirm_memory("org_a", "user_me", "mem-p")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fn,ns,action", [("share_memory", PRIV, "share"), ("confirm_memory", TEAM, "confirm")])
+async def test_too_long_to_prefix_is_refused_without_copy_or_delete(fake, fn, ns, action):
+    fake.get_memory_record.return_value = {"memoryRecord": _rec("mem-p", ns, "x" * 15990)}
+    with pytest.raises(ValueError):
+        await getattr(wm, fn)("org_a", "user_me", "mem-p")
+    fake.batch_create_memory_records.assert_not_called()
+    fake.batch_delete_memory_records.assert_not_called()

@@ -100,3 +100,10 @@ def test_share_and_confirm_return_the_team_id(member, action, fn):
         resp = member.post(f"/api/v1/memory/{RID}/{action}")
     assert resp.status_code == 200 and resp.json() == {"id": "mem-" + "b" * 40}
     call.assert_awaited_once_with("org_a", "user_me", RID)
+
+
+@pytest.mark.parametrize("action,fn", [("share", "share_memory"), ("confirm", "confirm_memory")])
+def test_share_and_confirm_422_when_too_long(member, action, fn):
+    with patch.object(mod.workspace_memory, fn, AsyncMock(side_effect=ValueError("x"))):
+        resp = member.post(f"/api/v1/memory/{RID}/{action}")
+    assert resp.status_code == 422 and resp.json()["detail"] == "This memory is too long to share or confirm."

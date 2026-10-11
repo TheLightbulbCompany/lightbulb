@@ -46,13 +46,20 @@ async def delete_memory(record_id: str, auth: AuthContext = Depends(get_current_
     return Response(status_code=204)
 
 
+async def _vouch(fn: Callable[..., Awaitable], auth: AuthContext, record_id: str) -> dict:
+    try:
+        return {"id": await _act(fn, auth, record_id)}
+    except ValueError:
+        raise HTTPException(status_code=422, detail="This memory is too long to share or confirm.") from None
+
+
 @router.post("/{record_id}/share")
 async def share_memory(record_id: str, auth: AuthContext = Depends(get_current_user)) -> dict:
     """Phase 3: one of the caller's private facts becomes a confirmed team fact."""
-    return {"id": await _act(workspace_memory.share_memory, auth, record_id)}
+    return await _vouch(workspace_memory.share_memory, auth, record_id)
 
 
 @router.post("/{record_id}/confirm")
 async def confirm_memory(record_id: str, auth: AuthContext = Depends(get_current_user)) -> dict:
     """Phase 4: a person vouches for a team fact (any member: D2)."""
-    return {"id": await _act(workspace_memory.confirm_memory, auth, record_id)}
+    return await _vouch(workspace_memory.confirm_memory, auth, record_id)

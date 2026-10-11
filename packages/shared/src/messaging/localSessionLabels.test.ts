@@ -1,8 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { canSendToSession, markSessionsSeen, sendBlockedReason, SESSION_ARCHIVE_AFTER_MS, sessionArchived, sessionHistory, sessionLabel, sessionLive, sessionMatches, sessionStatus, sessionTitle, sessionToolName, sessionUnread, workspaceSections } from "./localSessionLabels";
+import { canSendToSession, endedWhy, markSessionsSeen, sendBlockedReason, SESSION_ARCHIVE_AFTER_MS, sessionArchived, sessionHistory, sessionLabel, sessionLive, sessionMatches, sessionStatus, sessionTitle, sessionToolName, sessionUnread, workspaceSections } from "./localSessionLabels";
 import type { LocalSession } from "./types";
 
 const base = { capabilities: { sendMode: "queue" }, controlUnavailableReason: null, capabilitiesVerified: true } as unknown as LocalSession;
+
+describe("endedWhy", () => {
+  it("names a login-session restart and nothing else", () => {
+    expect(endedWhy({ status: "ended", endedReason: "login-session-ended" }, "your Mac")).toBe("your Mac's login session restarted");
+    expect(endedWhy({ status: "ended", endedReason: "exited" }, "your Mac")).toBeNull();
+    expect(endedWhy({ status: "idle", endedReason: "login-session-ended" }, "your Mac")).toBeNull();
+  });
+});
 
 describe("session labels", () => {
   it("splits the tool name from the title, falling back to the raw id for an unknown tool", () => {

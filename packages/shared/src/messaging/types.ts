@@ -406,6 +406,8 @@ export interface LocalSession {
   cwdName?: string | null;
   lastEventAt?: string | null;
   endedAt?: string | null;
+  /** Why it ended, on an ended row only. "login-session-ended": the Mac's login session restarted under it. */
+  endedReason?: "exited" | "process-exited" | "on-purpose" | "login-session-ended" | null;
   lastAssistantMessage?: string | null;
   /** False while its owner has it on Only me; only they can see it then. Absent means shared. */
   shared?: boolean;

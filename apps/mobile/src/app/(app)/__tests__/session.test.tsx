@@ -339,6 +339,12 @@ describe("session screen", () => {
       expect(screen.getByText("Fix relay")).toBeTruthy();
     });
 
+    it("names a login-session restart in the header", async () => {
+      get.mockResolvedValue({ ...base, status: "ended", endedReason: "login-session-ended" });
+      await render(<SessionScreen />);
+      expect(screen.getByText(/Ended · .*login session restarted/)).toBeTruthy();
+    });
+
     it("stops after three failures and lets the person retry", async () => {
       get.mockRejectedValue(new TypeError("network"));
       await render(<SessionScreen />);

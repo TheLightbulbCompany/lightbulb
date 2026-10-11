@@ -27,8 +27,10 @@ curl -sS -m 10 --unix-socket "/private/tmp/lightbulb-sessions-$(id -u)/mod.sock"
   -d "{\"sessionId\":\"${CODEX_THREAD_ID:-}\"}"
 ```
 
-`"waiting":true` means it is shared but shows nothing until it has a live terminal: in
-Claude Code the user presses ← once, in Codex the user starts it with `lightbulb codex`.
+`"shared":true` means the session is shared now. A session with no live terminal shares its
+conversation; the user does not have to do anything more. (Older Macs may answer
+`"waiting":true`: the user then presses ← once in Claude Code, or starts Codex with
+`lightbulb codex`.)
 `unknown_session` means Lightbulb does not see this session (yet). If curl cannot
 connect, the Lightbulb app is not running or session sharing is off on this Mac.
 

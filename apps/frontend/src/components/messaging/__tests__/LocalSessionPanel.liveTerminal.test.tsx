@@ -282,6 +282,13 @@ it("shows no transcript while a held session's terminal has no frame yet", () =>
   expect(document.querySelector(".session-status-line")!.textContent).not.toMatch(/Transcript/);
 });
 
+it("says the login session restarted and offers Resume", async () => {
+  const props = { ownerName: "Alice", own: true, client: { ...client, resumeLocalSession: vi.fn() } as never, revision: 0, onAccessLost: () => {} };
+  render(<LocalSessionPanel {...props} session={{ ...session, status: "ended", latestEventSeq: 3, resumable: true, endedReason: "login-session-ended" }} />);
+  expect(document.querySelector(".session-state-title, .session-ended-line")?.textContent).toBe("Ended · your Mac's login session restarted");
+  expect(await screen.findByRole("button", { name: /^Resume/ })).toBeTruthy();
+});
+
 const textEvent = (seq: number) => ({ seq, kind: "text", role: "user", text: `t${seq}` });
 const change = { seq: 3, kind: "tool", role: "assistant", itemId: "c1", tool: { name: "FileChange", status: "completed", result: { "a.ts": { type: "add", content: "x\n" } } } };
 

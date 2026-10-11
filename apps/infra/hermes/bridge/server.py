@@ -669,8 +669,9 @@ RPC_METHODS["skills.status"] = _skills_status
 
 def _profile_warm(params: dict, **_kwargs) -> dict:
     """Pull one agent's profile from S3 now, off the request thread, so the turn that follows
-    (a Live summon, typically) finds it restored. The backend fires this for every agent in the
-    room when someone goes Live; a second call for a restored agent is a no-op.
+    (a Live summon, typically) finds it restored and the agent's first build done (turn.warm_agent).
+    The backend fires this for every agent in the room when someone goes Live; a second call for a
+    restored agent is a no-op.
 
     With a ``roomId`` the agent's session for that room is then compacted if it is near Hermes's
     threshold (turn.compact_session): a spoken turn never compacts, so this is where it happens
@@ -688,10 +689,13 @@ def _profile_warm(params: dict, **_kwargs) -> dict:
             log.warning("profile.warm failed for %s", agent_id, exc_info=True)
             return
         # Counted as a turn: a roll or the recycle waits for it, and none starts under their hold.
-        if isinstance(room_id, str) and turn.reserve_turn():
+        if turn.reserve_turn():
             try:
                 turn.RESTORED.add(agent_id)  # the SIGTERM save covers what the compaction wrote
-                turn.compact_session(agent_id, turn.lightbulb_session_key(agent_id, room_id))
+                # The agent's first build (plugins, MCP), so the first spoken turn starts thinking at once.
+                turn.warm_agent(agent_id)
+                if isinstance(room_id, str):
+                    turn.compact_session(agent_id, turn.lightbulb_session_key(agent_id, room_id))
             finally:
                 turn.release_turn()
 

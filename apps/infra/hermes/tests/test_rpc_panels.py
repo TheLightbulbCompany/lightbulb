@@ -312,3 +312,47 @@ def test_profile_warm_restores_the_agent_off_the_request_thread(home, monkeypatc
     assert status == 200 and body == {"ok": True, "payload": {"warming": True}}
     assert done.wait(2) and seen == ["ceo"]
     assert call("profile.warm", {"agentId": "stranger"})[1]["ok"] is False
+
+
+def test_profile_warm_also_does_the_agents_first_build(home, monkeypatch):
+    """Prod 10-09: a spoken turn's first agent build took ~7.6 s (plugin discovery, MCP connects) after the
+    request. Going Live warms it ~25 s before: the restore, then turn.warm_agent, counted as a turn."""
+    import threading
+
+    from bridge import turn
+
+    (home / "profiles" / "ceo").mkdir(parents=True)
+    done, order = threading.Event(), []
+    monkeypatch.setattr(sync, "restore_profile", lambda agent_id: order.append("restore") or 0.0)
+    monkeypatch.setattr(sync, "ensure_profile", lambda agent_id: None)
+    monkeypatch.setattr(turn, "warm_agent", lambda agent_id: order.append(("warm", agent_id)) or done.set())
+    assert call("profile.warm", {"agentId": "ceo"})[0] == 200
+    assert done.wait(2) and order == ["restore", ("warm", "ceo")]
+
+
+def test_warm_agent_discovers_plugins_and_connects_mcp_in_the_agents_own_scope(home, monkeypatch):
+    import contextlib
+    import sys
+    import types
+
+    from bridge import turn
+
+    seen = []
+    monkeypatch.setitem(sys.modules, "run_agent", types.ModuleType("run_agent"))
+    plugins = types.ModuleType("hermes_cli.plugins")
+    plugins.discover_plugins = lambda: seen.append(("plugins", tuple(scope)))
+    monkeypatch.setitem(sys.modules, "hermes_cli", types.ModuleType("hermes_cli"))
+    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", plugins)
+    scope = []
+
+    @contextlib.contextmanager
+    def scoped(name):
+        scope.append(name)
+        yield
+        scope.remove(name)
+
+    monkeypatch.setattr(turn, "_hermes_home_scope", lambda a: scoped(f"home:{a}"))
+    monkeypatch.setattr(turn, "_secret_scope", lambda a: scoped(f"secrets:{a}"))
+    monkeypatch.setattr(turn, "_mcp_session", lambda a: (seen.append(("mcp", tuple(scope))), scoped("mcp"))[1])
+    turn.warm_agent("ceo")
+    assert seen[0] == ("plugins", ("home:ceo", "secrets:ceo")) and seen[1][0] == "mcp" and "home:ceo" in seen[1][1]

@@ -1404,6 +1404,31 @@ def _mcp_session(agent_id: str):
             _MCP_USERS[agent_id] -= 1
 
 
+def warm_agent(agent_id: str) -> None:
+    """Pay now what an agent's first turn in this process pays before its first model call: Hermes's
+    plugin discovery for the profile's home (once per home, `hermes_cli.plugins`) and its MCP servers'
+    connections (kept per agent, `_mcp_session`). The backend asks for this as a call opens
+    (voice_calls.prewake_owner -> profile.warm), about 25 s before the first request: in the 10-09 prod
+    Meet the first spoken turn spent ~7.6 s here before thinking. Never raises: the turn builds what
+    is still missing. Called with the profile restored."""
+    try:
+        import run_agent  # noqa: F401 -- the priming import _run_turn_in does, outside the home scope
+    except ImportError:
+        return
+    try:
+        with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id):
+            try:
+                from hermes_cli.plugins import discover_plugins
+
+                discover_plugins()
+            except ImportError:
+                pass
+            with _mcp_session(agent_id):
+                pass
+    except Exception:  # noqa: BLE001 -- a warm-up must never cost the turn it is for
+        log.warning("warm_agent failed for %s", agent_id, exc_info=True)
+
+
 def _discover_mcp(agent_id: str, alone: bool = True) -> None:
     """Connect this profile's ``mcp_servers`` and register their tools before AIAgent is built.
 

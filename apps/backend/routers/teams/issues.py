@@ -361,8 +361,8 @@ async def delete_issue_watchdog(issue_id: CompanyIssueId, ctx: TeamsContext = De
     )
 
 
-async def _require_company_issue(issue_id: str, ctx: TeamsContext) -> None:
-    """404 unless ``issue_id`` belongs to the caller's workspace company.
+async def _require_company_issue(issue_id: str, ctx: TeamsContext) -> dict:
+    """The issue, or 404 unless ``issue_id`` belongs to the caller's workspace company.
 
     Paperclip authorizes by the member's session, and a Paperclip user can hold
     memberships in more than one company — so the session alone does not pin an
@@ -371,6 +371,7 @@ async def _require_company_issue(issue_id: str, ctx: TeamsContext) -> None:
     issue = await _agents._admin().get_issue(issue_id=issue_id, session_cookie=ctx.session_cookie)
     if not isinstance(issue, dict) or issue.get("companyId") != ctx.company_id:
         raise HTTPException(status_code=404, detail="Issue not found")
+    return issue
 
 
 @router.post("/issues/{issue_id}/scheduled-retry/retry-now")

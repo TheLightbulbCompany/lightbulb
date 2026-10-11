@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 
 import httpx
 from botocore.exceptions import ClientError
+from fastapi import HTTPException
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.auth.middleware.auth_context import get_access_token
@@ -23,7 +24,7 @@ from core.auth import AuthContext
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.repositories import messaging_repo
-from core.services import clerk_admin, local_sessions, messaging, native_session_tools
+from core.services import clerk_admin, local_sessions, messaging, native_session_tools, task_board
 
 logger = logging.getLogger(__name__)
 
@@ -247,6 +248,34 @@ async def find_sessions(query: str = "", limit: int = 30) -> dict:
 async def read_messages(room_id: str, after_seq: int | None = None, limit: int = 25) -> dict:
     """Read the latest page or continue after a message sequence in a room or DM."""
     return await messages_for(_caller(), room_id, after_seq, limit)
+
+
+async def _board(call):
+    """FastMCP hides any non-ToolError text, so a refused board call says why."""
+    try:
+        return await call
+    except HTTPException as exc:
+        raise ToolError(f"{exc.status_code}: {exc.detail}") from exc
+
+
+@mcp.tool()
+async def find_tasks(query: str = "", status: str = "", assignee: str = "", limit: int = 25) -> dict:
+    """Find tasks on this workspace's task board. Open tasks (backlog, todo, in_progress, in_review, blocked) unless status names others (comma-separated; also done, cancelled). assignee is an agent name. Newest-updated first."""
+    return await _board(task_board.find_tasks(_caller(), query, status, assignee, limit))
+
+
+@mcp.tool()
+async def read_task(task: str, comments: int = 10) -> dict:
+    """Read one task by identifier (e.g. ISOA-123) or id: title, status, priority, assignee, full description, blockers, and its latest comments."""
+    return await _board(task_board.read_task(_caller(), task, comments))
+
+
+@mcp.tool()
+async def update_task(
+    task: str, status: str | None = None, priority: str | None = None, append_note: str | None = None
+) -> dict:
+    """Change a task's status (backlog, todo, in_progress, in_review, blocked, done, cancelled) or priority (critical, high, medium, low), and/or append a dated note to the end of its description. This tool posts no comment: a task comment wakes the assigned agent and starts a paid run, so it is not offered here."""
+    return await _board(task_board.update_task(_caller(WRITE_SCOPE), task, status, priority, append_note))
 
 
 _CLIENTS = {

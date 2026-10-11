@@ -74,13 +74,18 @@ Check whether the timeout also happens at concurrency 50
 - To start a separate conversation, use the `lightbulb` MCP tools.
   `find_rooms` lists rooms and DMs you can reach with their members;
   `find_sessions` lists shared sessions (the one marked `isThisSession` is
-  you; never message it); `read_messages` reads a room. Use `send_message`
+  you; never message it); `read_messages` reads a room's latest page, or continues after `after_seq`. Use `send_message`
   with exactly one of `room_id`, `person_id` (a member id) or `session_id`,
   the text and a new UUID `request_id`; use `message_receipt` to check delivery.
   Messages post as the session. Report the receipt's actual state; do not
   call a pending or queued message delivered. A message posts as this verified session, never as the owner, and these
   tools cannot answer permission prompts. A native-session reply chain stops
   after two hops.
+- The same server manages the workspace task board: `find_tasks` (open tasks
+  unless `status` says otherwise), `read_task` (by identifier such as
+  `ISOA-123`) and `update_task` (status, priority, or a dated note appended to
+  the description). These act as your user. There is deliberately no comment
+  tool: a task comment wakes the assigned agent and starts a paid run.
 - The `lightbulb` server has two forms: the Mac app's local server (above) and
   the hosted server at `api.thelightbulb.company/mcp` (signed in with OAuth).
   The tools and arguments are the same. On the hosted server, a message is

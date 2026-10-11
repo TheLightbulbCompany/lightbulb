@@ -598,6 +598,8 @@ impl Relayed {
             out.extend_from_slice(b"\x1b[3J");
         }
         let height = self.model.size().0;
+        // (A row a long line wrapped onto lands in their scrollback as a line of its own: a resize
+        // reflows it apart from the line it came from.)
         for row in rows {
             out.extend_from_slice(b"\x1b[r\x1b[m\x1b[1;1H\x1b[2K");
             out.extend_from_slice(&row);

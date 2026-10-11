@@ -375,6 +375,12 @@ fn char_len(lead: u8) -> usize {
     }
 }
 
+/// Whether `bytes` end inside a UTF-8 character.
+fn mid_char(bytes: &[u8]) -> bool {
+    let last = &bytes[bytes.len().saturating_sub(4)..];
+    last.iter().rposition(|b| b & 0xc0 != 0x80).is_some_and(|at| last[at] >= 0xc0 && char_len(last[at]) > last.len() - at)
+}
+
 /// Whether the character `ch` (all its bytes) goes to the next row when written at column `col`
 /// of `cols`: vt100's own rule (`Screen::text`), with its own width for that character.
 fn wraps(ch: &[u8], col: u16, cols: u16) -> bool {
@@ -621,7 +627,8 @@ impl Model {
     // ponytail: more than SCROLLBACK - taken rows between two calls lose the oldest; the parser is
     // rebuilt at half the cap so the count never saturates (which also empties what `history`
     // can give, so only a model that is not the holder's calls this). Not while a Codex region
-    // is set (the rebuild loses DECSTBM, the same ceiling as `erase_saved`).
+    // is set (the rebuild loses DECSTBM, the same ceiling as `erase_saved`; also any region not
+    // anchored at row 1, and the saved cursor, which `region` does not track).
     pub fn scrolled(&mut self) -> (bool, Vec<Vec<u8>>) {
         let erased = std::mem::take(&mut self.erased);
         if erased {
@@ -643,7 +650,9 @@ impl Model {
             .collect();
         screen.set_scrollback(0);
         self.taken = above;
-        if above >= SCROLLBACK / 2 && self.region.is_none() {
+        // (Only between sequences and characters: a new parser would print the rest of one as
+        // text. Else at a later call; the other half of the cap is the room for that.)
+        if above >= SCROLLBACK / 2 && self.region.is_none() && self.at == At::Ground && self.carry.is_empty() && !mid_char(&self.tail) {
             let mut parser = vt100::Parser::new(rows_n, cols, SCROLLBACK);
             parser.process(&self.snapshot());
             self.parser = parser;
@@ -1635,5 +1644,23 @@ mod tests {
         }
         // (The screen keeps the last two lines and the blank row under them.)
         assert!(got == (0..9998).map(|i| i.to_string()).collect::<Vec<_>>(), "{} rows, first {:?}", got.len(), got.first());
+    }
+
+    #[test]
+    fn scrolled_waits_for_the_end_of_a_sequence_or_a_character_to_start_over() {
+        for (first, rest) in [(&b"\x1b[3"[..], &b"1mX"[..]), (b"\xc3", b"\xa9X")] {
+            let mut m = Model::new(3, 10);
+            for i in 0..2600 {
+                let _ = m.feed(format!("{i}\r\n").as_bytes());
+            }
+            let _ = m.feed(first);
+            let _ = m.scrolled();
+            assert!(m.taken > 0, "no new parser inside {first:?}");
+            let _ = m.feed(rest);
+            let shown = m.screen().contents();
+            assert!(shown.ends_with("\nX") || shown.ends_with("\néX"), "{shown:?}");
+            let _ = m.scrolled();
+            assert_eq!(m.taken, 0, "a new parser once it ended");
+        }
     }
 }

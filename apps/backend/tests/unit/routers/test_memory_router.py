@@ -59,3 +59,35 @@ def test_personal_caller_is_refused():
         assert TestClient(app).get("/api/v1/memory").status_code == 409
     finally:
         app.dependency_overrides.clear()
+
+
+def _denied(op, code):
+    from botocore.exceptions import ClientError
+
+    return ClientError({"Error": {"Code": code, "Message": "secret aws text"}}, op)
+
+
+def test_get_aws_access_denied_is_a_fixed_502(member, monkeypatch):
+    from unittest.mock import MagicMock
+
+    from core.services import workspace_memory as wm
+
+    client = MagicMock()
+    client.list_memory_records.side_effect = _denied("ListMemoryRecords", "AccessDeniedException")
+    monkeypatch.setattr(wm, "_client", lambda: client)
+    monkeypatch.setattr(wm.settings, "AGENTCORE_MEMORY_ID", "mem-1", raising=False)
+    r = member.get("/api/v1/memory")
+    assert r.status_code == 502 and "secret" not in r.text
+
+
+def test_delete_aws_throttling_is_a_fixed_502(member, monkeypatch):
+    from unittest.mock import MagicMock
+
+    from core.services import workspace_memory as wm
+
+    client = MagicMock()
+    client.get_memory_record.side_effect = _denied("GetMemoryRecord", "ThrottlingException")
+    monkeypatch.setattr(wm, "_client", lambda: client)
+    monkeypatch.setattr(wm.settings, "AGENTCORE_MEMORY_ID", "mem-1", raising=False)
+    r = member.delete(f"/api/v1/memory/{RID}")
+    assert r.status_code == 502 and "secret" not in r.text

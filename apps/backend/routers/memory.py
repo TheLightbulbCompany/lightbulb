@@ -31,7 +31,13 @@ async def _act(fn: Callable[..., Awaitable], auth: AuthContext, record_id: str):
 
 @router.get("")
 async def list_memory(auth: AuthContext = Depends(get_current_user)) -> dict:
-    return await workspace_memory.list_memories(resolve_owner_id(auth), auth.user_id)
+    owner_id = resolve_owner_id(auth)
+    try:
+        return await workspace_memory.list_memories(owner_id, auth.user_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="memory not found") from None
+    except RuntimeError:
+        raise HTTPException(status_code=502, detail="memory service failed; try again") from None
 
 
 @router.delete("/{record_id}", status_code=204)

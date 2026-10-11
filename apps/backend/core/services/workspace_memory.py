@@ -2,7 +2,8 @@
 
 Runtimes read and write it themselves (the image's ``agentcore`` memory provider, under the
 per-owner ``owner-memory`` inline policy -- ``bedrock_aip.ensure_owner_memory_policy``). The
-backend only ever DELETES from it. Two scopes per workspace:
+backend never searches it: it wipes, and it lets a person review (list, delete, share, confirm)
+their own private scope and the team scope (``routers/memory.py``). Two scopes per workspace:
 
 - team: records in ``/owners/<owner>/``, events under ``actorId = <owner>``;
 - private to one member (their 1:1 DMs with agents): records in ``/owners/<owner>:<user>/``,
@@ -239,9 +240,12 @@ def _list_scope(client, memory_id: str, ns: str) -> tuple[list[dict], bool]:
     # namespace is a PREFIX: keep only records whose namespace IS ns.
     rows, token = [], None
     while True:
-        resp = client.list_memory_records(
-            memoryId=memory_id, namespace=ns, maxResults=100, **({"nextToken": token} if token else {})
-        )
+        try:
+            resp = client.list_memory_records(
+                memoryId=memory_id, namespace=ns, maxResults=100, **({"nextToken": token} if token else {})
+            )
+        except ClientError as exc:
+            raise RuntimeError("memory list failed") from exc
         rows += [r for r in resp.get("memoryRecordSummaries", []) if r.get("namespaces") == [ns]]
         token = resp.get("nextToken")
         if not token or len(rows) >= _LIST_CAP:
@@ -256,14 +260,17 @@ def _owned(client, memory_id: str, record_id: str, allowed: tuple[str, ...]) -> 
     except ClientError as exc:
         if exc.response["Error"]["Code"] in ("ResourceNotFoundException", "ValidationException"):
             raise LookupError(record_id) from exc
-        raise
+        raise RuntimeError("memory lookup failed") from exc
     if len(rec.get("namespaces") or []) != 1 or rec["namespaces"][0] not in allowed:
         raise LookupError(record_id)
     return rec
 
 
 def _delete_one(client, memory_id: str, record_id: str) -> None:
-    resp = client.batch_delete_memory_records(memoryId=memory_id, records=[{"memoryRecordId": record_id}])
+    try:
+        resp = client.batch_delete_memory_records(memoryId=memory_id, records=[{"memoryRecordId": record_id}])
+    except ClientError as exc:
+        raise RuntimeError(f"memory delete failed for {record_id}") from exc
     if resp.get("failedRecords"):
         raise RuntimeError(f"memory delete failed for {record_id}")
 

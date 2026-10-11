@@ -7,7 +7,7 @@ import "@xterm/xterm/css/xterm.css";
 import { createInputQueue, dropMouseReports, dropProbeReplies, SHIFT_ENTER } from "./sessionInput";
 
 const WATCH_EVERY_MS = 15_000;
-/** A snapshot or a ping comes at least every 10 s; this long with no frame, or only pings that do not match the screen it has, and the picture is frozen, so it says Reconnecting. */
+/** A diff or a ping comes at least every 10 s; this long with no frame, or only pings that do not match the screen it has, and the picture is frozen, so it says Reconnecting. */
 const STALE_AFTER_MS = 30_000;
 /** A viewer that lost frames asks the Mac for its lines again at most this often: each ask is a history burst out of the session's budget. */
 const REPAIR_EVERY_MS = 30_000;
@@ -288,7 +288,8 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     const apply = (frames: SessionScreen[]) => {
       if (!term) { queued.push(...frames); return; }
       let over = false; // the picture started over in this batch: its snapshot puts a reader back
-      for (const frame of frames) {
+      for (let i = 0; i < frames.length; i += 1) {
+        const frame = frames[i];
         // The typist goes with the frame the screen draws: never a held, late or dropped one.
         showTypist(frame.typist);
         // History is only ever written as a burst under its snapshot, and the burst is the whole picture:
@@ -319,8 +320,16 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
         wrote = frame.kind; sized = size;
         let bytes = decode(frame.data);
         if (frame.kind === "snapshot") {
-          const redraw = new Uint8Array(CLEAR.length + bytes.length); redraw.set(CLEAR); redraw.set(bytes, CLEAR.length);
-          bytes = redraw; setLive(true); setSeen(true); onLive(true);
+          // Its other parts follow it in this batch (`receiveScreen` holds it until they are here; a
+          // settled one may lack some): one picture, one write, so the clear never paints alone.
+          const parts = [CLEAR, bytes];
+          while (i + 1 < frames.length && frames[i + 1].epoch === frame.epoch
+            && frames[i + 1].seq === frame.seq + parts.length - 1 && frames[i + 1].seq < frame.seq + (frame.parts ?? 1)) {
+            i += 1; parts.push(decode(frames[i].data));
+          }
+          bytes = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+          parts.reduce((at, p) => (bytes.set(p, at), at + p.length), 0);
+          setLive(true); setSeen(true); onLive(true);
         }
         const t = term;
         // Only the snapshot of a picture that started over: the 30 s resync moves nobody.

@@ -251,7 +251,7 @@ fn tools() -> Value {
          "inputSchema":search, "annotations":read},
         {"name":"find_sessions","description":"Find shared Claude Code and Codex sessions. This session is marked isThisSession; never message it.",
          "inputSchema":search, "annotations":read},
-        {"name":"read_messages","description":"Read a room's messages in order, starting after after_seq.",
+        {"name":"read_messages","description":"Read a room's latest messages, or continue in order after after_seq.",
          "inputSchema":{"type":"object","properties":{"room_id":{"type":"string"},"after_seq":{"type":"integer","minimum":0},
            "limit":{"type":"integer","minimum":1,"maximum":100}},"required":["room_id"],"additionalProperties":false},
          "annotations":read},
@@ -262,8 +262,38 @@ fn tools() -> Value {
          "annotations":{"readOnlyHint":false,"destructiveHint":true,"openWorldHint":false}},
         {"name":"message_receipt","description":"Check delivery of a send_message from this session by request_id.",
          "inputSchema":{"type":"object","properties":{"request_id":{"type":"string"}},"required":["request_id"],"additionalProperties":false},
-         "annotations":read}
+         "annotations":read},
+        {"name":"find_tasks","description":"Find tasks on the workspace task board, newest-updated first. Open tasks (backlog, todo, in_progress, in_review, blocked) unless status names others (comma-separated; also done, cancelled). assignee is an agent name.",
+         "inputSchema":{"type":"object","properties":{"query":{"type":"string"},"status":{"type":"string"},"assignee":{"type":"string"},
+           "limit":{"type":"integer","minimum":1,"maximum":100}},"additionalProperties":false},
+         "annotations":read},
+        {"name":"read_task","description":"Read one task by identifier (e.g. ISOA-123) or id: status, priority, assignee, full description, blockers and latest comments.",
+         "inputSchema":{"type":"object","properties":{"task":{"type":"string"},"comments":{"type":"integer","minimum":0,"maximum":50}},
+           "required":["task"],"additionalProperties":false},
+         "annotations":read},
+        {"name":"update_task","description":"Change a task's status (backlog, todo, in_progress, in_review, blocked, done, cancelled) or priority (critical, high, medium, low), and/or append a dated note to its description. Posts no comment: a task comment wakes the assigned agent and starts a paid run.",
+         "inputSchema":{"type":"object","properties":{"task":{"type":"string"},"status":{"type":"string"},"priority":{"type":"string"},
+           "append_note":{"type":"string"}},"required":["task"],"additionalProperties":false},
+         "annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}}
     ]})
+}
+
+/// Lightbulb tools whose arguments and results stay out of the shared
+/// transcript: destinations, request ids, message bodies and task contents.
+/// Public and internal names; one list for the Claude and Codex scrubbers.
+pub(super) const PRIVATE_TOOLS: &[&str] = &[
+    "send", "receipt", "send_message", "message_receipt", "read_messages", "find_tasks", "read_task", "update_task",
+];
+
+pub(super) fn private_tool(name: &str) -> bool {
+    PRIVATE_TOOLS.contains(&name)
+}
+
+/// A Claude tool name (`mcp__lightbulb__read_task`) for one of `PRIVATE_TOOLS`.
+pub(super) fn private_call(tool: &str) -> bool {
+    tool.strip_prefix("mcp__lightbulb__")
+        .or_else(|| tool.strip_prefix(&format!("mcp__{LEGACY_SERVER_NAME}__")))
+        .is_some_and(private_tool)
 }
 
 /// A path- and query-safe id: the Mac puts it in a URL.
@@ -287,6 +317,17 @@ pub(super) fn internal(name: &str, args: &Value) -> Option<(&'static str, Value)
         }
         "read_messages" if only(&["room_id", "after_seq", "limit"]) && args.get("room_id").is_some_and(id_ok)
             && opt_num("after_seq") && opt_num("limit") => Some(("read_messages", Value::Object(args.clone()))),
+        "find_tasks" if only(&["query", "status", "assignee", "limit"]) && opt_str("query") && opt_str("status")
+            && opt_str("assignee") && opt_num("limit") => Some(("find_tasks", Value::Object(args.clone()))),
+        "read_task" if only(&["task", "comments"]) && args.get("task").is_some_and(id_ok) && opt_num("comments") => {
+            Some(("read_task", Value::Object(args.clone())))
+        }
+        "update_task" if only(&["task", "status", "priority", "append_note"]) && args.get("task").is_some_and(id_ok)
+            && opt_str("status") && opt_str("priority")
+            && args.get("append_note").is_none_or(|v| v.as_str().is_some_and(|s| s.len() <= 4000)) =>
+        {
+            Some(("update_task", Value::Object(args.clone())))
+        }
         "send_message" if only(&["room_id", "person_id", "session_id", "text", "request_id", "reply_to_message_id"])
             && args.get("reply_to_message_id").is_none_or(Value::is_null) =>
         {
@@ -385,7 +426,7 @@ fn handle(request: &Value) -> Option<Value> {
                     Ok(mut reply) => {
                         let is_error = reply["ok"] != true;
                         // Marks results the shared transcript must not show.
-                        if matches!(name, "send" | "receipt" | "read_messages") {
+                        if private_tool(name) {
                             reply["_lightbulbNativeSessionTool"] = json!(name);
                         }
                         json!({"content":[{"type":"text","text":reply.to_string()}], "isError":is_error})
@@ -472,12 +513,14 @@ mod tests {
     }
 
     #[test]
-    fn exactly_the_five_tools_and_only_send_is_destructive() {
+    fn exactly_the_eight_tools_and_only_send_is_destructive() {
         let listed = tools();
         let names: Vec<_> = listed["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["find_rooms", "find_sessions", "read_messages", "send_message", "message_receipt"]);
+        assert_eq!(names, ["find_rooms", "find_sessions", "read_messages", "send_message", "message_receipt",
+            "find_tasks", "read_task", "update_task"]);
         for tool in listed["tools"].as_array().unwrap() {
-            assert_eq!(tool["annotations"]["readOnlyHint"], tool["name"] != "send_message");
+            let writes = tool["name"] == "send_message" || tool["name"] == "update_task";
+            assert_eq!(tool["annotations"]["readOnlyHint"], !writes);
             assert_eq!(tool["annotations"]["destructiveHint"], tool["name"] == "send_message");
             assert_eq!(tool["annotations"]["openWorldHint"], false);
         }
@@ -505,6 +548,13 @@ mod tests {
         assert!(internal("find_rooms", &json!({})).is_some());
         assert!(internal("find_sessions", &json!({"query":"x","limit":"all"})).is_none());
         assert!(internal("list_targets", &json!({})).is_none());
+        assert!(internal("read_messages", &json!({"room_id":"r1"})).is_some(), "after_seq is optional: the latest page");
+        assert_eq!(internal("find_tasks", &json!({})), Some(("find_tasks", json!({}))));
+        assert!(internal("read_task", &json!({"task":"ISOA-1","comments":5})).is_some());
+        assert!(internal("read_task", &json!({"task":"../agents"})).is_none());
+        let update = json!({"task":"ISOA-1","status":"done","append_note":"shipped"});
+        assert_eq!(internal("update_task", &update), Some(("update_task", update.clone())));
+        assert!(internal("update_task", &json!({"task":"ISOA-1","comment":"hi"})).is_none(), "no comment posting");
 
         let mut hook = json!({"tool_name":"mcp__lightbulb__send_message","tool_input":{"room_id":"x1","text":"hi","request_id":r}});
         canonical_hook(&mut hook);

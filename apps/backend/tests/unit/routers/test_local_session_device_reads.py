@@ -66,5 +66,41 @@ def test_device_human_guards_no_write_route():
             yield from deps(dep)
 
     guarded = [route for route in router.router.routes if router.device_human in set(deps(route.dependant))]
-    assert len(guarded) == len(ROUTES)
-    assert all(route.methods == {"GET"} for route in guarded)
+    assert len(guarded) == len(ROUTES) + len(TASK_ROUTES)
+    writes = [route.path for route in guarded if route.methods != {"GET"}]
+    # The one device-token write here: a task-board update, through the Teams PATCH as the human.
+    assert writes == ["/local-sessions/device/tasks/{task}"]
+
+
+TASK_ROUTES = [
+    ("GET", "/api/v1/local-sessions/device/tasks?status=done", "find_tasks", None),
+    ("GET", "/api/v1/local-sessions/device/tasks/ISOA-1?comments=3", "read_task", None),
+    ("PATCH", "/api/v1/local-sessions/device/tasks/ISOA-1", "update_task", {"status": "done", "append_note": "x"}),
+]
+
+
+@pytest.mark.parametrize(("method", "path", "tool", "body"), TASK_ROUTES)
+def test_task_board_routes_act_as_the_enrolled_human(client, monkeypatch, method, path, tool, body):
+    monkeypatch.setattr(router.local_sessions, "_enrolled", AsyncMock(return_value={"enabled": True}))
+    call = AsyncMock(return_value={"ok": tool})
+    monkeypatch.setattr(router.task_board, tool, call)
+    response = client.request(method, path, json=body, headers={"Authorization": "Bearer device"})
+    assert response.status_code == 200 and response.json() == {"ok": tool}
+    auth = call.await_args.args[0]
+    assert (auth.user_id, auth.org_id) == ("user_mac", "org_1")
+    if tool == "update_task":
+        assert call.await_args.args[1:] == ("ISOA-1", "done", None, "x")
+    machine_auth.verify_upgrade.return_value = None  # unpaired: refused before any board call
+    call.reset_mock()
+    assert client.request(method, path, json=body, headers={"Authorization": "Bearer device"}).status_code == 403
+    call.assert_not_awaited()
+
+
+def test_task_update_refuses_unknown_fields(client, monkeypatch):
+    monkeypatch.setattr(router.local_sessions, "_enrolled", AsyncMock(return_value={"enabled": True}))
+    monkeypatch.setattr(router.task_board, "update_task", AsyncMock())
+    response = client.patch(
+        "/api/v1/local-sessions/device/tasks/ISOA-1", json={"comment": "hi"}, headers={"Authorization": "Bearer device"}
+    )
+    assert response.status_code == 422
+    router.task_board.update_task.assert_not_awaited()

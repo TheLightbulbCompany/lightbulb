@@ -263,7 +263,7 @@ async fn answer(
         )
         .map_err(|_| "device authentication unavailable")?;
         let tool = request["tool"].as_str().unwrap_or("");
-        if matches!(tool, "find_rooms" | "find_sessions" | "read_messages") {
+        if matches!(tool, "find_rooms" | "find_sessions" | "read_messages" | "find_tasks" | "read_task" | "update_task") {
             return read(&client, &token, tool, &request["arguments"], &source.session_id).await;
         }
         // This route only prepares a private intent. An older backend returns
@@ -318,22 +318,33 @@ async fn answer(
     }
 }
 
-/// Reads run as the enrolled human through the device-token routes; the
-/// session itself is only the caller `find_sessions` marks.
+/// Reads (and the task-board update) run as the enrolled human through the
+/// device-token routes; the session itself is only the caller `find_sessions` marks.
 async fn read(client: &reqwest::Client, token: &str, tool: &str, args: &Value, own: &str) -> Result<Value> {
     let base = format!("{}/api/v1/local-sessions/device", crate::LIGHTBULB_API_BASE.trim_end_matches('/'));
     let param = |key: &str| args.get(key).filter(|v| !v.is_null()).map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_owned));
-    let (url, query) = match tool {
-        // `native_mcp::internal` admitted only a path-safe room id.
-        "read_messages" => (
-            format!("{base}/rooms/{}/messages", args["room_id"].as_str().unwrap_or("")),
-            [("after_seq", param("after_seq")), ("limit", param("limit"))],
-        ),
-        "find_rooms" => (format!("{base}/rooms"), [("query", param("query")), ("limit", param("limit"))]),
-        _ => (format!("{base}/sessions"), [("query", param("query")), ("limit", param("limit"))]),
+    let keys: &[&str] = match tool {
+        "read_messages" => &["after_seq", "limit"],
+        "find_tasks" => &["query", "status", "assignee", "limit"],
+        "read_task" => &["comments"],
+        "update_task" => &[],
+        _ => &["query", "limit"],
     };
-    let query: Vec<(&str, String)> = query.into_iter().filter_map(|(k, v)| v.map(|v| (k, v))).collect();
-    let response = client.get(url).bearer_auth(token).query(&query).send().await
+    let query: Vec<(&str, String)> = keys.iter().filter_map(|&k| param(k).map(|v| (k, v))).collect();
+    // `native_mcp::internal` admitted only a path-safe room/task id and these keys.
+    let request = match tool {
+        "read_messages" => client.get(format!("{base}/rooms/{}/messages", args["room_id"].as_str().unwrap_or(""))),
+        "find_rooms" => client.get(format!("{base}/rooms")),
+        "find_tasks" => client.get(format!("{base}/tasks")),
+        "read_task" => client.get(format!("{base}/tasks/{}", args["task"].as_str().unwrap_or(""))),
+        "update_task" => {
+            let mut body = args.clone();
+            body.as_object_mut().map(|b| b.remove("task"));
+            client.patch(format!("{base}/tasks/{}", args["task"].as_str().unwrap_or(""))).json(&body)
+        }
+        _ => client.get(format!("{base}/sessions")),
+    };
+    let response = request.bearer_auth(token).query(&query).send().await
         .map_err(|_| "Lightbulb unavailable")?;
     let ok = response.status().is_success();
     let mut data: Value = response.json().await.map_err(|_| "invalid Lightbulb response")?;

@@ -15,7 +15,7 @@ from typing import Annotated, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Path, Query, Request, Response, UploadFile
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from core.observability.metrics import put_metric
 from core.observability.session_analytics import capture_session_event
@@ -39,6 +39,7 @@ from core.services import (
     session_resume,
     session_screen,
     subagents,
+    task_board,
 )
 from core.services import local_session_grants
 from core.services import container_rpc, message_search, runtime_transport, voice_calls
@@ -125,7 +126,9 @@ async def native_session_decision(
 
 
 async def device_human(device=Depends(native_session_device)) -> AuthContext:
-    """The paired Mac's enrolled human. Read routes only. The one device-token write is native-session-decisions (owner approval 2026-10-04), fenced in native_session_tools.decide."""
+    """The paired Mac's enrolled human. Read routes, plus one write: the task-board update (owner request
+    2026-10-11), which goes through the Teams PATCH as that human. (native-session-decisions is the other
+    device-token write, fenced in native_session_tools.decide.)"""
     await local_sessions._enrolled(device.owner_id, device.user_id, device.device_id)
     return AuthContext(user_id=device.user_id, org_id=device.org_id or None)
 
@@ -150,6 +153,30 @@ async def device_find_sessions(query: str = "", limit: int = 30, auth: AuthConte
 @router.get("/local-sessions/device/receipt")
 async def device_message_receipt(room_id: str, request_id: uuid.UUID, auth: AuthContext = Depends(device_human)):
     return await hosted_mcp.receipt_for(auth, room_id, request_id)
+
+
+@router.get("/local-sessions/device/tasks")
+async def device_find_tasks(
+    query: str = "", status: str = "", assignee: str = "", limit: int = 25, auth: AuthContext = Depends(device_human)
+):
+    return await task_board.find_tasks(auth, query, status, assignee, limit)
+
+
+@router.get("/local-sessions/device/tasks/{task}")
+async def device_read_task(task: str, comments: int = 10, auth: AuthContext = Depends(device_human)):
+    return await task_board.read_task(auth, task, comments)
+
+
+class DeviceTaskUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: str | None = None
+    priority: str | None = None
+    append_note: str | None = None
+
+
+@router.patch("/local-sessions/device/tasks/{task}")
+async def device_update_task(task: str, body: DeviceTaskUpdate, auth: AuthContext = Depends(device_human)):
+    return await task_board.update_task(auth, task, body.status, body.priority, body.append_note)
 
 
 async def local_session_invocation(request: Request) -> local_session_grants.AgentInvocation:

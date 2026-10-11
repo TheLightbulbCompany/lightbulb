@@ -480,6 +480,28 @@ def test_a_ping_carries_no_data_and_other_kinds_are_refused():
             session_screen.Screen.model_validate({**golden, **bad})
 
 
+def test_screen_frame_accepts_parts_on_a_snapshot_only():
+    golden = fixture("session-screen")
+    session_screen.Screen.model_validate({**golden, "kind": "snapshot", "parts": 3})
+    with pytest.raises(ValidationError):
+        session_screen.Screen.model_validate({**golden, "kind": "output", "parts": 2})
+    with pytest.raises(ValidationError):
+        session_screen.Screen.model_validate({**golden, "kind": "snapshot", "parts": 1})
+
+
+@pytest.mark.asyncio
+async def test_forwarded_frame_publishes_parts_only_when_sent(transport):
+    sid = await start(transport)
+    await messaging_repo.ensure_user_stream(OWNER, BOB.user_id)
+    await session_screen.watch(BOB, sid)
+    transport[4].clear()
+    await session_screen.forward(relay(transport), "conn-1", frame(sid))
+    await session_screen.forward(relay(transport), "conn-1", frame(sid, kind="snapshot", parts=3))
+    published = await _published(transport)
+    assert "parts" not in published[0][1]["payload"]
+    assert published[1][1]["payload"]["parts"] == 3
+
+
 @pytest.mark.asyncio
 async def test_a_watched_session_that_registers_again_is_told_on_its_own_ack(transport, monkeypatch):
     """After a reconnect the Mac learned who watches only from its first heartbeat ack, after

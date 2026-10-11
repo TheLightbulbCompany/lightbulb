@@ -32,6 +32,29 @@ function feed(frames: SessionScreen[], order: ScreenOrder = NEW_SCREEN) {
   return { order, written };
 }
 
+const s = (seq: number, parts: number, epoch = 1) => ({ ...f(seq, "snapshot", epoch), parts });
+
+it("writes a snapshot and its parts together, once all are here", () => {
+  let order = NEW_SCREEN;
+  let step = receiveScreen(order, s(0, 2)); order = step.order;
+  expect(names(step.write)).toEqual([]); expect(snapshotWaits(order)).toBe(true);
+  step = receiveScreen(order, f(1));
+  expect(names(step.write)).toEqual(["s0", "o1"]);
+});
+it("holds an in-sync multi-part snapshot and writes it with its parts", () => {
+  expect(feed([f(0, "snapshot"), s(1, 3), f(2), f(3)]).written).toEqual(["s0", "s1", "o2", "o3"]);
+});
+it("a new run's multi-part snapshot waits for its parts too", () => {
+  expect(feed([f(0, "snapshot"), s(0, 2, 2), f(1, "output", 2)]).written).toEqual(["s0", "s0", "o1"]);
+});
+it("a part that never comes is settled after the wait with what is here", () => {
+  let order = NEW_SCREEN;
+  order = receiveScreen(order, s(0, 3)).order;
+  order = receiveScreen(order, f(1)).order;
+  const late = settleScreen(order);
+  expect(names(late.write)).toEqual(["s0", "o1"]);
+});
+
 it("writes nothing before a snapshot, then everything in seq order", () => {
   expect(feed([f(5), f(3, "snapshot"), f(4)]).written).toEqual(["s3", "o4", "o5"]);
 });

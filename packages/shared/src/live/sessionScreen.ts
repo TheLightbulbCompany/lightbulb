@@ -57,7 +57,7 @@ export function receiveScreen(order: ScreenOrder, frame: SessionScreen): Step {
   let step = receive(order, frame);
   for (;;) {
     // A held snapshot's turn: everything below it is here now.
-    const ready = heldSnapshots(step.order).find((s) => !missing(step.order, s));
+    const ready = heldSnapshots(step.order).find((s) => !waits(step.order, s));
     if (!ready) return step;
     const drawn = draw(step.order, ready);
     step = { order: drawn.order, write: [...step.write, ...drawn.write], lost: step.lost || drawn.lost };
@@ -74,7 +74,7 @@ export function settleScreen(order: ScreenOrder): Step {
 }
 
 function heldSnapshots(order: ScreenOrder) {
-  return order.held.filter((f) => f.kind === "snapshot" && f.epoch === order.epoch).sort((a, b) => a.seq - b.seq);
+  return order.held.filter((f) => f.kind === "snapshot" && f.epoch >= order.epoch).sort((a, b) => a.seq - b.seq);
 }
 
 /** Whether a frame below `snapshot` in the run this viewer draws in sync has not arrived. */
@@ -85,6 +85,15 @@ function missing(order: ScreenOrder, snapshot: SessionScreen) {
   for (let seq = order.next; seq < snapshot.seq; seq += 1) if (!here.has(seq)) return true;
   return false;
 }
+
+/** A snapshot whose later parts (`SessionScreen.parts`) are not all held: written alone, its first
+ *  part clears the screen and the rest paint later, the flash this field exists to end. */
+function partial(order: ScreenOrder, snapshot: SessionScreen) {
+  const here = new Set(order.held.filter((f) => f.epoch === snapshot.epoch).map((f) => f.seq));
+  for (let seq = snapshot.seq + 1; seq < snapshot.seq + (snapshot.parts ?? 1); seq += 1) if (!here.has(seq)) return true;
+  return false;
+}
+const waits = (order: ScreenOrder, s: SessionScreen) => missing(order, s) || partial(order, s);
 
 function draw(order: ScreenOrder, frame: SessionScreen): Step {
   const same = frame.epoch === order.epoch;
@@ -118,7 +127,8 @@ function receive(order: ScreenOrder, frame: SessionScreen): Step {
     if (old) return { order, write: [] };
     const held = order.held.some((f) => f.epoch === frame.epoch && f.seq === frame.seq) ? order.held : [...order.held, frame];
     // Held like output ahead of a gap; with no room left to hold it, written now.
-    return missing(order, frame) && held.length <= HELD ? { order: { ...order, held }, write: [] } : draw(order, frame);
+    const next = { ...order, held };
+    return waits(next, frame) && held.length <= HELD ? { order: next, write: [] } : draw(order, frame);
   }
   if (order.synced && frame.epoch === order.epoch) {
     if (frame.seq < order.next) return frame.kind === "history" ? late(order, frame) : { order, write: [] };

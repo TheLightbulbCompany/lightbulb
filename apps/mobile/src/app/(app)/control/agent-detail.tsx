@@ -29,6 +29,7 @@ import {
 } from "@lightbulb/shared";
 
 import { AgentMonogram } from "../../../components/control/AgentMonogram";
+import { MemoriesCard } from "../../../components/control/MemoriesCard";
 import { usePulse } from "../../../components/chat/usePulse";
 import { chatPalette, colors, fonts, radii, spacing, type ChatPalette } from "../../../config/theme";
 import {
@@ -494,6 +495,9 @@ export default function AgentDetail() {
           </View>
         </>
       ) : null}
+
+      <Text style={styles.sectionLabel}>MEMORY</Text>
+      <MemoriesCard api={api} />
 
       {/* Voice */}
       <Text style={styles.sectionLabel}>VOICE</Text>

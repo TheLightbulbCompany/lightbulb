@@ -147,6 +147,10 @@ fn awaits_exit_if(mirror: &Mirror, end: &impl Fn(&str) -> Option<u64>, now_ms: u
 fn end_reason_if<'a>(reads: bool, mirror: &'a Mirror, asked: &impl Fn(&str) -> Option<u64>, left: &impl Fn(&str) -> Option<u64>) -> &'a str {
     let on_purpose = super::lifecycle::ON_PURPOSE;
     let stored = mirror.ended_reason.as_deref().unwrap_or("exited");
+    // The app's own END of a stranded holder marks it asked; that is not a person's End.
+    if stored == super::lifecycle::LOGIN_SESSION_ENDED {
+        return stored;
+    }
     let holder = mirror.native.holder.as_deref();
     let ended_as_asked = [holder, mirror.session_id.as_deref()]
         .into_iter()
@@ -472,6 +476,18 @@ mod tests {
         plain.ended_reason = Some("process-exited".into());
         assert_eq!(end_reason_if(true, &plain, &|id: &str| (id == SID).then_some(100)), "on-purpose", "End");
         assert_eq!(end_reason_if(true, &plain, &asked), "process-exited", "another session's End");
+    }
+
+    #[test]
+    fn a_session_ended_for_its_login_session_says_so_though_the_app_asked_its_holder_to_end() {
+        // The stranded END asks the holder in the same second the end is recorded; that ask is the
+        // app's, not a person's, so the end is not on purpose.
+        let asked = |id: &str| (id == "h1").then_some(100);
+        let left = |id: &str| (id == "h1").then_some(100_500);
+        let mut stranded = ended("h1", 100, SID);
+        stranded.native.provider = "codex".into();
+        stranded.ended_reason = Some("login-session-ended".into());
+        assert_eq!(end_reason_if(true, &stranded, &asked, &left), "login-session-ended");
     }
 
     #[test]

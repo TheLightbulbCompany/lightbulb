@@ -84,7 +84,9 @@ impl Rpc {
 const HEARTBEAT_SESSIONS_MAX: usize = 24;
 
 /// One discovery pass: the captured sessions, and every conversation the Claude listing named.
-type Discovered = (Vec<NativeSession>, BTreeSet<String>);
+/// One discovery pass: the sessions, the listed conversations, and the holders born before this
+/// login session (`holder::manager::stranded`).
+type Discovered = (Vec<NativeSession>, BTreeSet<String>, Vec<crate::holder::manager::HolderInfo>);
 
 pub(super) struct Host {
     workspace_at: Instant,
@@ -1004,6 +1006,30 @@ impl Host {
         Ok(())
     }
 
+    /// A holder born before this login session ends as a person's End would: its reason is
+    /// recorded first, so the provider's own exit (hook or pid) cannot claim the end as "exited";
+    /// END then keeps the holder's last picture and the row offers Resume.
+    fn end_stranded(&mut self, stranded: Vec<crate::holder::manager::HolderInfo>) -> Result<()> {
+        for holder in stranded {
+            let keys: Vec<String> = self
+                .mirrors
+                .iter()
+                .filter(|(_, m)| {
+                    m.ended_at.is_none()
+                        && m.deferred_end_reason.is_none()
+                        && m.native.holder.as_deref() == Some(holder.id.as_str())
+                })
+                .map(|(k, _)| k.clone())
+                .collect();
+            for key in keys {
+                self.end_session(&key, super::lifecycle::LOGIN_SESSION_ENDED)?;
+            }
+            // END blocks up to 2 s per holder: off the host thread.
+            std::thread::spawn(move || crate::holder::manager::end(&holder));
+        }
+        Ok(())
+    }
+
     fn finish_deferred_end(&mut self, key: &str) -> Result<()> {
         let reason = {
             let Some(mirror) = self.mirrors.get_mut(key) else {
@@ -1212,7 +1238,11 @@ impl Host {
         loop {
             tokio::select! {
                 result=&mut remote=>return result,
-                update=updates.recv()=>{let (update, listed) = update.ok_or("discovery stopped")?; self.observe(update, &listed)?;}
+                update=updates.recv()=>{
+                    let (update, listed, stranded) = update.ok_or("discovery stopped")?;
+                    self.observe(update, &listed)?;
+                    self.end_stranded(stranded)?;
+                }
             }
         }
     }
@@ -1333,9 +1363,15 @@ impl Host {
                     }
                 }
                 // Every session is tracked; this names the held ones (rulings 2026-10-04).
-                let holders = tokio::task::spawn_blocking(crate::holder::manager::list)
-                    .await
-                    .unwrap_or_default();
+                // One process table for both: the list and which of it is stranded.
+                let (holders, stranded) = tokio::task::spawn_blocking(|| {
+                    let holders = crate::holder::manager::list();
+                    let stranded = crate::holder::manager::stranded(&holders);
+                    (holders, stranded)
+                })
+                .await
+                .unwrap_or_default();
+                // All holders, stranded ones too: `native.holder` stays set until they end.
                 track(&mut found, &holders);
                 let (conversations, running) = listed.unwrap_or_default();
                 super::screen::reap_attach(&holders, claude_ok.then_some(&running));
@@ -1348,7 +1384,7 @@ impl Host {
                 }
                 // Every provider failed: this pass proves nothing. Keep the state we
                 // have -- an empty listing would otherwise read as "all quiet".
-                if failures.len() < providers && tx.send((found, conversations)).await.is_err() {
+                if failures.len() < providers && tx.send((found, conversations, stranded)).await.is_err() {
                     break;
                 }
                 last_failures = failures;
@@ -1766,11 +1802,12 @@ impl Host {
                 },
                 update = updates.recv() => {
                     arm = laps.woke("discovery update");
-                    let Some((update, listed)) = update else {return Err("discovery stopped".into());};
+                    let Some((update, listed, stranded)) = update else {return Err("discovery stopped".into());};
                     for key in self.observe(update, &listed)? {
                         registered.remove(&key);
                         recovering_ended.remove(&key);
                     }
+                    self.end_stranded(stranded)?;
                 },
                 Some(frame) = screens.recv() => {
                     arm = laps.woke("screen frame");
@@ -4140,6 +4177,29 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn local_sessions_a_holder_born_before_the_login_session_ends_with_that_reason_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(SID, "generation-1");
+        mirror.native.holder = Some("5717a4ed".into());
+        let key = native_key(&mirror.native);
+        let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
+        // Never pid 0 or 1: a failed END stops the holder, which signals its process group.
+        let holder = crate::holder::manager::HolderInfo { id: "5717a4ed".into(), socket: dir.path().join("none.sock"),
+            pid: 2_147_483_000, provider_pid: 2_147_483_001, argv: vec![], cwd: dir.path().into(), watch: true, type_input: true };
+        host.end_stranded(vec![holder]).unwrap();
+        assert_eq!(host.mirrors[&key].ended_reason.as_deref(), Some("login-session-ended"));
+        assert_eq!(host.ended_pending, vec![key.clone()]);
+        // The provider's own exit, reported next (hook or pid), cannot relabel it.
+        host.end_session(&key, "exited").unwrap();
+        assert_eq!(host.mirrors[&key].ended_reason.as_deref(), Some("login-session-ended"));
+        assert_eq!(host.ended_pending, vec![key.clone()]);
+        // The END the app sent marks the holder asked; the frame still names the login session.
+        crate::holder::manager::end_asked_now("5717a4ed");
+        assert_eq!(super::super::session_states::end_reason(&host.mirrors[&key]), "login-session-ended");
+        crate::holder::manager::end_asked_forget("5717a4ed");
+    }
+
+    #[test]
     fn local_sessions_dead_pid_ends_within_one_tick_and_is_reaped_after_a_day() {
         let dir = tempfile::tempdir().unwrap();
         let mut native = test_native(SID);
@@ -5116,10 +5176,10 @@ pub(super) mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let (recovered, offline) = tokio::sync::oneshot::channel();
         let producer = tokio::spawn(async move {
-            tx.send((vec![], BTreeSet::new())).await.unwrap();
-            tx.send((vec![], BTreeSet::new())).await.unwrap();
-            tx.send((vec![native], BTreeSet::new())).await.unwrap();
-            tx.send((vec![], BTreeSet::new())).await.unwrap();
+            tx.send((vec![], BTreeSet::new(), vec![])).await.unwrap();
+            tx.send((vec![], BTreeSet::new(), vec![])).await.unwrap();
+            tx.send((vec![native], BTreeSet::new(), vec![])).await.unwrap();
+            tx.send((vec![], BTreeSet::new(), vec![])).await.unwrap();
             // Wait until the exited-session pass is consumed, not just queued.
             let permit = tx.reserve().await.unwrap();
             drop(permit);
@@ -5598,7 +5658,7 @@ pub(super) mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         // The same session under a new process: discovery parks it as a
         // successor while registration is frozen.
-        tx.send((vec![native], BTreeSet::new())).await.unwrap();
+        tx.send((vec![native], BTreeSet::new(), vec![])).await.unwrap();
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
             .await
             .unwrap();
@@ -6745,7 +6805,7 @@ pub(super) mod tests {
             // is news the relay has not heard.
             let mut resumed = test_native(SID);
             resumed.process.pid = 2_147_483_000; // and this one is already gone
-            tx.send((vec![resumed], BTreeSet::new())).await.unwrap();
+            tx.send((vec![resumed], BTreeSet::new(), vec![])).await.unwrap();
             // It may register before the liveness tick finds that pid dead; either
             // order ends with the second end on the wire.
             let second = loop {
@@ -7091,7 +7151,7 @@ pub(super) mod tests {
             // Still unacknowledged: resume the session and let its new process die.
             let mut resumed = test_native(SID);
             resumed.process.pid = 2_147_483_000;
-            tx.send((vec![resumed], BTreeSet::new())).await.unwrap();
+            tx.send((vec![resumed], BTreeSet::new(), vec![])).await.unwrap();
             let mut tick = tokio::time::interval(Duration::from_millis(20));
             tokio::time::timeout(Duration::from_secs(3), async {
                 loop {

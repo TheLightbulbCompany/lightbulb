@@ -15,6 +15,15 @@ test("a screen frame carries one session's terminal bytes and nothing else", () 
   }
 });
 
+it("accepts parts on a snapshot only, and old frames without it", () => {
+  const ev = (extra: object) => ({ schemaVersion: 1, eventId: "scr-2", type: "workspace.session.screen", occurredAt: "2026-10-03T00:00:00Z",
+    payload: { sessionId: "s", generation: "g", epoch: 1, seq: 0, cols: 80, rows: 24, kind: "snapshot", data: "", ...extra } });
+  expect(parseLiveEvent(ev({}))).not.toBeNull();
+  expect(parseLiveEvent(ev({ parts: 3 }))).not.toBeNull();
+  expect(parseLiveEvent(ev({ kind: "output", parts: 2 }))).toBeNull();
+  expect(parseLiveEvent(ev({ parts: 1 }))).toBeNull();
+});
+
 const f = (seq: number, kind: SessionScreen["kind"] = "output", epoch = 1): SessionScreen =>
   ({ sessionId: "s", generation: "g", epoch, seq, cols: 80, rows: 24, kind, data: "" });
 function feed(frames: SessionScreen[], order: ScreenOrder = NEW_SCREEN) {

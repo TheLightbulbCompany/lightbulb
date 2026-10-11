@@ -50,18 +50,6 @@ it("shows Watching · Ask to join, and no text box, under a live terminal for a 
   expect(screen.getByRole("button", { name: "Ask to join" })).toBeTruthy();
 });
 
-it("shows who is typing into the owner's session for 6 s after the last event", async () => {
-  vi.useFakeTimers();
-  let emit: (e: LiveEvent) => void = () => {};
-  render(<LocalSessionPanel session={session} ownerName="Alice" own client={client as never} revision={0} onAccessLost={() => {}} nameOf={(id) => (id === "bob" ? "Bob" : "?")}
-    onEvent={(h) => { emit = h; return () => {}; }} />);
-  act(() => { emit({ schemaVersion: 1, eventId: "t1", type: "workspace.session.typing", occurredAt: "now", payload: { sessionId: "s", userId: "bob" } } as LiveEvent); });
-  expect(screen.getByText("Bob is typing")).toBeTruthy();
-  await act(async () => { await vi.advanceTimersByTimeAsync(6_001); });
-  expect(screen.queryByText("Bob is typing")).toBeNull();
-  vi.useRealTimers();
-});
-
 it("never labels the status line as a transcript, and shows the ended and offline panels", () => {
   const props = { ownerName: "Alice", client: client as never, revision: 0, onAccessLost: () => {} };
   const ended = render(<LocalSessionPanel {...props} own={false} session={{ ...session, status: "ended", latestEventSeq: 3, endedAt: new Date(Date.now() - 3600_000).toISOString() }} />);

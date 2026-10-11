@@ -208,7 +208,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  Requested / declined line); SessionDetails.tsx (People you let in, Remove).
   - Session live terminal ... references/surfaces.md ("Live terminal" paragraph)
                               <- apps/frontend/src/components/messaging/{LocalSessionPanel,SessionTerminalView}.tsx
-                                 (terminal in the panel, ended/offline/notice panels, no transcript, "<name> is typing", read-only for
+                                 (terminal in the panel, ended/offline/notice panels, no transcript, "<name> typing" + typist cursor, read-only for
                                  non-admitted); core/services/local_sessions.py (may_control / allowedSenders gate on input);
                                  core/services/session_screen.py (type_into / watch: active-membership fence);
                                  apps/desktop/src-tauri/src/holder/{run,panel}.rs (the panel joins a `lightbulb claude` terminal;

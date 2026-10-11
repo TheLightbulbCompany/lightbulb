@@ -55,6 +55,9 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   participants?: readonly Person[];
   onMessageOwner?: () => void;
 }) {
+  // Not compiled: it reads the clock and a ref during render on purpose (the screen-due timer, the kept
+  // terminal), which the React Compiler would memoize stale.
+  "use no memo";
   // The history feeds the plan, the changed files, the pending prompt and the approval reason, and an app
   // session's conversation. The relay throttles hints with no trailing edge, so a quiet poll while busy keeps those current.
   const busy = session.status === "busy";
@@ -94,6 +97,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
     const timer = setTimeout(() => redraw(n => n + 1), left);
     return () => clearTimeout(timer);
   }, [screenDueAt]);
+  // eslint-disable-next-line react-hooks/purity -- not compiled ("use no memo"); the timer above redraws
   const screenDue = Date.now() < screenDueAt;
   // The terminal view follows its last row, which in a kept picture can be a blank part of the screen: its
   // first scroll goes back to the top left instead, and after that the reader's scrolling is their own.
@@ -160,22 +164,6 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const control = canControlSession(session, own, userId);
   // A live terminal is the only input: no message box under it. A viewer who cannot type keeps the Ask to join line.
   const terminalLive = local === "local" || liveTerminal;
-  // "<Name> is typing": the owner sees who is typing into the live terminal for ~6 s after each event.
-  const [typers, setTypers] = useState<Record<string, number>>({});
-  useEffect(() => {
-    if (!onEvent) return;
-    const timers = new Set<ReturnType<typeof setTimeout>>();
-    const off = onEvent((event) => {
-      if (event.type !== "workspace.session.typing" || event.payload.sessionId !== session.sessionId || event.payload.userId === userId) return;
-      const who = event.payload.userId;
-      const at = Date.now();
-      setTypers((t) => ({ ...t, [who]: at }));
-      const timer = setTimeout(() => { timers.delete(timer); setTypers((t) => { if (t[who] !== at) return t; const { [who]: _gone, ...rest } = t; return rest; }); }, 6000);
-      timers.add(timer);
-    });
-    return () => { off(); timers.forEach(clearTimeout); };
-  }, [onEvent, session.sessionId, userId]);
-  const typing = Object.keys(typers).map(personName);
   const resume = useSessionResume(client, session, { own, userId, ownerName, nameOf: personName, uuid: () => crypto.randomUUID() });
   const join = useSessionJoinRequest(client, session);
   const askPickup = useSessionJoinRequest(client, session, "pickup");
@@ -288,7 +276,6 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
         ? <p className="text-sm">Answer it in the live terminal below.</p>
         : own ? <p className="text-sm">Answer it in your terminal; this prompt can&apos;t be answered from here.</p> : messageOwner}
     </div>}
-    {typing.length > 0 && <p role="status" className="text-sm text-muted-foreground">{typing.join(", ")} {typing.length === 1 ? "is" : "are"} typing</p>}
     {local !== "none"
       ? <>{audience && <div className="session-terminal-size local-session-audience"><span className="session-terminal-hint">{audience}</span></div>}
         <div ref={slot} className="local-session-terminal" role="region" aria-label="Session terminal" /></>

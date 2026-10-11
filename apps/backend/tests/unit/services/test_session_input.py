@@ -75,10 +75,6 @@ def typed_rows(db, sid):
     )["Items"]
 
 
-def typing_events(transport):
-    return [e for e in (_json.loads(h["events"][0]) for h in transport[4]) if e["type"] == "workspace.session.typing"]
-
-
 async def refused(code, transport, auth, sid, b=None):
     with pytest.raises(ApiProblem) as problem:
         await session_screen.type_into(auth, sid, b or body())
@@ -292,25 +288,6 @@ async def test_one_audit_row_per_burst_with_byte_counts_and_no_content(transport
     monkeypatch.setattr(session_screen, "_clock", lambda: now + 20)
     await session_screen.type_into(BOB, sid, body())
     assert len(typed_rows(db, sid)) == 2
-
-
-@pytest.mark.asyncio
-async def test_the_owner_hears_is_typing_once_per_burst(transport, monkeypatch):
-    sid = await start(transport)
-    await capable(transport, sid)
-    await admit(sid)
-    await messaging_repo.ensure_user_stream(OWNER, ALICE.user_id)
-    now = time.time()
-    monkeypatch.setattr(session_screen, "_clock", lambda: now)
-    transport[4].clear()
-    await session_screen.type_into(BOB, sid, body())
-    monkeypatch.setattr(session_screen, "_clock", lambda: now + 1)
-    await session_screen.type_into(BOB, sid, body())
-    events = typing_events(transport)
-    assert [e["payload"] for e in events] == [{"sessionId": sid, "userId": BOB.user_id}]
-    monkeypatch.setattr(session_screen, "_clock", lambda: now + 6)  # still typing: a refresh
-    await session_screen.type_into(BOB, sid, body())
-    assert len(typing_events(transport)) == 2
 
 
 @pytest.mark.asyncio

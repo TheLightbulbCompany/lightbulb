@@ -155,7 +155,9 @@ jobs:
         # stale keychain can linger and make create-keychain fail. Pre-delete it.
         security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
         security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-        security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+        # No -l: the runner is a laptop, and a lid close mid-build would lock this
+        # keychain and fail codesign with errSecInternalComponent.
+        security set-keychain-settings -ut 21600 "$KEYCHAIN_PATH"
         security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
         security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" \
           -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"

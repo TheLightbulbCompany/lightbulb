@@ -1039,6 +1039,7 @@ class Huddle:
                         "text": x.text,
                         "at": x.at,
                         "to": x.to,
+                        **({"ready": x.ready} if x.ready else {}),
                     }
                     for x in part
                 ]
@@ -3249,9 +3250,11 @@ class Huddle:
         (`_audible`): that goes on the record marked as a piece (CUT_MARK). The unit was not said."""
         v = self._floor_voice(agent_id)
         own = self._voice if self._voice and self._voice.agent_id == agent_id else None  # also while it closes
+        ready = 0.0  # an answer's first sentence: when that answer was ready (its utterance was owed)
         if own and mouth(own.speaker):
             if not interrupted:
-                self._unit_said(agent_id, text, order, index)
+                u = self._unit_said(agent_id, text, order, index)
+                ready = u.at if u is not None and u.kind == "answer" and u.cursor == 1 else 0.0
         elif v:
             self._answer_message(v, text, interrupted)
         if heard is not None:
@@ -3261,8 +3264,11 @@ class Huddle:
         elif interrupted and (mouth(own.speaker) if own else self.setting == "meeting"):
             return  # a mouth's unit that never played (revoked, silent): nothing was said
         to = self._with(v) if v else ""
+        now = self._clock()
+        if ready:
+            emit_metric("live.answer.wait", now - ready, "Seconds", {"setting": self.setting})
         self._transcript.add_agent(
-            agent_id, self._agent_name(agent_id), text, at=self._clock(), to=to
+            agent_id, self._agent_name(agent_id), text, at=now, to=to, ready=ready
         )
         # D §9: the floor-holder asking a present person by name hands them the floor for HANDOFF_SECONDS
         target = addressed_by_name(text, self._people) if v else None
@@ -3274,7 +3280,9 @@ class Huddle:
         if self._repoint(v, target):
             v.handoff = (back, self._clock() + HANDOFF_SECONDS)
 
-    def _unit_said(self, agent_id: str, text: str, order: int | None = None, index: int | None = None) -> None:
+    def _unit_said(
+        self, agent_id: str, text: str, order: int | None = None, index: int | None = None
+    ) -> Utterance | None:
         """A mouth said one unit to its end: the cursor of the utterance waiting for it moves. At the end it is
         delivered, and only then (10-07 rig: an answer cut after two words was taken for said). The person
         it was for has now heard the agent: they are talking with it, and a question it ended on is theirs
@@ -3292,7 +3300,7 @@ class Huddle:
             None,
         )
         if u is None:
-            return  # of an utterance since called off
+            return None  # of an utterance since called off
         u.cursor, u.tries = u.cursor + 1, 0
         # Verified playback is the exchange going on: it is refreshed here, unit by unit, read straight from
         # the record. (10-08 rig: looked up after a long answer's last unit, the exchange had just been
@@ -3300,7 +3308,7 @@ class Huddle:
         if (e := self._engaged.get(((u.audience, u.label), agent_id))) is not None:
             e.at = self._clock()
         if u.cursor < len(u.units):
-            return
+            return u
         self._ledger.remove(u)
         u.state = "delivered"
         if u.kind == "answer":
@@ -3316,6 +3324,7 @@ class Huddle:
                 e.expects = "answer" if self._owes(e) else "nothing"
         self._sync_state()
         self._pump()  # what waited behind it starts
+        return u
 
     def _end_handoff(self, v: _Voice) -> bool:
         """Return the floor to who had it. False when they left or the session died on the way."""

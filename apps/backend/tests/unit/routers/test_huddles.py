@@ -822,6 +822,32 @@ def test_transcript_batches_are_logged_for_debugging(client, caplog):
     assert "[1 @1790972630] Pulse → Prasiddha: Going well." in record.getMessage()
 
 
+def test_an_answers_wait_to_be_heard_is_logged(client, caplog):
+    """The worker's ready -> heard wait (10-09 Meet: ~19 s, unseen) reaches the log, never the room."""
+    line = {
+        "mark": 3,
+        "kind": "agent",
+        "name": "Friday",
+        "text": "17 items.",
+        "at": 1790972630.0,
+        "ready": 1790972611.5,
+    }
+    with (
+        caplog.at_level("INFO", logger="routers.huddles"),
+        patch.object(
+            mod.messaging_repo,
+            "get_room",
+            AsyncMock(return_value={"ownerId": "org_a", "meeting": {"status": "in_call"}}),
+        ),
+        patch.object(mod.meeting_notes, "on_transcript", AsyncMock()) as notes,
+    ):
+        body = {"ownerId": "org_a", "roomToken": RT, "huddleId": "h1", "lines": [line]}
+        assert client.post(TRANSCRIPT, json=body, headers=W).status_code == 200
+    record = next(r for r in caplog.records if "live transcript" in r.getMessage())
+    assert "[3 @1790972630 waited 18.5s] Friday: 17 items." in record.getMessage()
+    assert "ready" not in notes.await_args.args[1][0]  # the room's transcript.txt never shows it
+
+
 def test_a_meeting_rooms_chunks_reach_the_notes_with_the_final_flag(client):
     line = {"mark": 7, "kind": "person", "name": "Pat", "text": "Ship it", "at": 1.0, "to": ""}
     body = {"ownerId": "org_a", "roomToken": RT, "huddleId": "h1", "lines": [line]}

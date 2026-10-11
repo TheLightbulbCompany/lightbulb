@@ -812,3 +812,33 @@ async def test_two_steers_of_a_turns_row_in_flight_make_one_replacement_row():
     backend.steer_gate.set()
     await settle(h)
     assert len([r for r in h._requests.items if r.status == "queued"]) == 1, "one replacement"
+
+
+async def test_an_answers_line_carries_when_it_was_ready_so_the_wait_to_be_heard_is_on_the_record():
+    """10-09 prod Meet: ~19 s between Friday's answer being ready and being heard, invisible (the worker's own
+    logs are not ours). Its spoken line now carries the ready time; the backend logs the wait."""
+    h, backend, lives, clock = await asked()
+    (row,) = h._requests.items
+    ready = clock.t
+    answer(h, row.run_id, "forge", "Three PRs are open.")
+    clock.t += 7.5
+    spoken(h, lives[0])
+    said = [x for x in h._transcript._lines if x.kind == "agent" and x.text == "Three PRs are open."]
+    assert said and said[-1].ready == ready and said[-1].at - said[-1].ready == 7.5
+    ack = [x for x in h._transcript._lines if x.kind == "agent" and x.text != "Three PRs are open."]
+    assert all(x.ready == 0.0 for x in ack), "an acknowledgement opens no answer"
+
+
+async def test_an_acknowledgement_said_after_the_answer_is_ready_does_not_take_its_ready_time():
+    """Codex P2 on #4026: the answer was ready while the acknowledgement still played. The ready time is the
+    answer's own (its utterance), never the agent's next line."""
+    h, backend, lives, clock = await asked(acked=False)  # the acknowledgement is not said yet
+    (row,) = h._requests.items
+    ready = clock.t
+    answer(h, row.run_id, "forge", "Three PRs are open.")
+    spoken(h, lives[0])  # the acknowledgement, said after the answer was ready
+    await pause(h, clock, h_mod.MEET_QUIET_S + 0.1)  # the room is quiet: the answer goes out
+    spoken(h, lives[0])
+    lines = [x for x in h._transcript._lines if x.kind == "agent"]
+    assert [x.ready for x in lines if x.text != "Three PRs are open."] == [0.0] * (len(lines) - 1)
+    assert [x.ready for x in lines if x.text == "Three PRs are open."] == [ready]

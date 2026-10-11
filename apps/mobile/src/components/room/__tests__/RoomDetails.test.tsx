@@ -163,7 +163,11 @@ describe("RoomDetails", () => {
     const nameInput = await screen.findByLabelText("Channel name");
     await waitFor(() => expect(nameInput.props.value).toBe("Launch"));
     fireEvent.changeText(nameInput, "  Roadmap  ");
-    await fireEvent.press(screen.getByLabelText("Save"));
+    await waitFor(() => {
+      expect(screen.getByLabelText("Channel name").props.value).toBe("  Roadmap  ");
+      expect(screen.getByLabelText("Save")).toBeEnabled();
+    });
+    fireEvent.press(screen.getByLabelText("Save"));
 
     await waitFor(() => expect(renameRoom).toHaveBeenCalledWith("Roadmap"));
   });

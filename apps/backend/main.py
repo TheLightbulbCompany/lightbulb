@@ -1032,6 +1032,11 @@ from routers import company_slug  # noqa: E402
 app.include_router(company_context.router, prefix="/api/v1/company", tags=["company-context"])
 app.include_router(company_slug.router, prefix="/api/v1/company", tags=["company-slug"])
 
+# A person reviews (lists, deletes) what the workspace's agents remember.
+from routers import memory as memory_router  # noqa: E402
+
+app.include_router(memory_router.router, prefix="/api/v1/memory", tags=["memory"])
+
 # Marketplace admin (Plan 2) — moderation queue, approve/reject, takedown.
 from routers import marketplace_admin  # noqa: E402
 

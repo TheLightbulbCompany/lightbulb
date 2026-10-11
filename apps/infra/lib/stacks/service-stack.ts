@@ -533,8 +533,8 @@ export class ServiceStack extends cdk.Stack {
     );
 
     // Workspace memory wipe (account_wipe / DELETE /debug/user-data -> workspace_memory.
-    // delete_owner_memory). The backend never reads or writes memory content itself; runtimes do,
-    // under their per-owner `owner-memory` policy.
+    // delete_owner_memory). The backend never SEARCHES memory; runtimes recall under their per-owner
+    // `owner-memory` policy.
     agentCorePolicy.addStatements(
       new iam.PolicyStatement({
         sid: "AgentCoreMemoryWipe",
@@ -547,6 +547,19 @@ export class ServiceStack extends cdk.Stack {
           // Finds each member's private scope (actorId <owner>:<user>) for the owner wipe.
           "bedrock-agentcore:ListActors",
         ],
+        resources: [agentcoreArn(`memory/${props.container.workspaceMemoryId}`)],
+      }),
+    );
+
+    // Memory review (routers/memory.py -> workspace_memory): the backend lists a viewer's two
+    // namespaces, reads ONE record to prove it sits in the viewer's own scope before any delete
+    // or copy (BatchDelete/BatchCreate take bare ids), and writes the vouched team copy that
+    // "Share with team" / "Confirm" produce. Runtimes stay denied every record write, so only this
+    // role can mark a fact confirmed. Still no RetrieveMemoryRecords: the backend never searches.
+    agentCorePolicy.addStatements(
+      new iam.PolicyStatement({
+        sid: "AgentCoreMemoryReview",
+        actions: ["bedrock-agentcore:GetMemoryRecord", "bedrock-agentcore:BatchCreateMemoryRecords"],
         resources: [agentcoreArn(`memory/${props.container.workspaceMemoryId}`)],
       }),
     );

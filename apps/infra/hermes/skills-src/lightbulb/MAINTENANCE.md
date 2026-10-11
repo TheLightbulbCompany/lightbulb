@@ -66,6 +66,12 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  namespace for every agent); bridge/sync.py normalize_profile_backends
                                  (on only while AGENTCORE_MEMORY_ID is set); ~2 min = the memory
                                  strategy's async extraction lag, not a code constant.
+                              Scopes + review: DM = private to that person (phase 1), other rooms = team;
+                                 "Confirmed by a person:" <- core/services/workspace_memory.CONFIRMED_PREFIX;
+                                 people review/delete/Share <- routers/memory.py, frontend AgentMemoryTab
+                                 (Inspect agent -> Memory tab, references/surfaces.md "Control Panel" row), mobile
+                                 MemoriesCard; the agent cannot delete (no tool), MEMORY.md is editable in
+                                 AgentInstructionsTab.
   - Website sign-ins .......... references/boundaries.md ("Type a website password" row; names the web AND iPhone doors) + references/surfaces.md (Browser row)
                               <- apps/infra/hermes/bridge/website_logins.py (vault store + ask callbacks);
                                  core/services/website_logins.py; frontend WebsiteLoginsSection (Connections).

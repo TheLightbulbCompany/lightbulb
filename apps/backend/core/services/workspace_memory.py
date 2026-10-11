@@ -2,7 +2,8 @@
 
 Runtimes read and write it themselves (the image's ``agentcore`` memory provider, under the
 per-owner ``owner-memory`` inline policy -- ``bedrock_aip.ensure_owner_memory_policy``). The
-backend only ever DELETES from it. Two scopes per workspace:
+backend never searches it: it wipes, and it lets a person review (list, delete, share, confirm)
+their own private scope and the team scope (``routers/memory.py``). Two scopes per workspace:
 
 - team: records in ``/owners/<owner>/``, events under ``actorId = <owner>``;
 - private to one member (their 1:1 DMs with agents): records in ``/owners/<owner>:<user>/``,
@@ -26,12 +27,14 @@ not honoured).
 """
 
 import asyncio
+import hashlib
 import logging
 import re
 from collections.abc import Awaitable, Callable
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError, ParamValidationError
 
 from core.config import settings
 from core.dynamodb import run_in_thread
@@ -205,3 +208,162 @@ async def delete_member_memory(
         return
     actor = f"{owner_id}:{user_id}"
     await _wipe(_client(), f"actor={actor}", memory_id, [f"/owners/{actor}/"], [actor], resweep_after_s, still_gone)
+
+
+# ponytail: per-scope cap, newest-first after the cap; add a cursor when a workspace hits it.
+_LIST_CAP = 200
+
+# The only confirmation mark AgentCore keeps (custom record metadata is dropped, spike S2). Written
+# only by the backend's vouched copy; agents see it in recall as part of the fact text.
+CONFIRMED_PREFIX = "Confirmed by a person: "
+_MAX_TEXT = 16000  # AgentCore's MemoryContentTextString max length
+
+
+def _scopes(owner_id: str, user_id: str) -> tuple[str, str]:
+    """(private, team) for this viewer. Both derive from auth, never from the client."""
+    team = owner_namespace(owner_id)
+    if not _MEMBER_ID.fullmatch(user_id or ""):
+        raise LookupError("no private memory scope for this caller")
+    return f"/owners/{owner_id}:{user_id}/", team
+
+
+def _view(r: dict) -> dict:
+    text = (r.get("content") or {}).get("text", "")
+    confirmed = text.startswith(CONFIRMED_PREFIX)
+    return {
+        "id": r["memoryRecordId"],
+        "text": text.removeprefix(CONFIRMED_PREFIX),
+        "createdAt": r["createdAt"].isoformat(),
+        "confirmed": confirmed,
+    }
+
+
+def _list_scope(client, memory_id: str, ns: str) -> tuple[list[dict], bool]:
+    # namespace is a PREFIX: keep only records whose namespace IS ns.
+    rows, token = [], None
+    while True:
+        try:
+            resp = client.list_memory_records(
+                memoryId=memory_id, namespace=ns, maxResults=100, **({"nextToken": token} if token else {})
+            )
+        except ClientError as exc:
+            raise RuntimeError("memory list failed") from exc
+        rows += [r for r in resp.get("memoryRecordSummaries", []) if r.get("namespaces") == [ns]]
+        token = resp.get("nextToken")
+        if not token or len(rows) >= _LIST_CAP:
+            return rows[:_LIST_CAP], bool(token) or len(rows) > _LIST_CAP
+
+
+def _owned(client, memory_id: str, record_id: str, allowed: tuple[str, ...]) -> dict:
+    """The record, only if it sits in exactly one of ``allowed``. Batch writes take bare ids and
+    this role reaches every tenant, so the id alone is never trusted."""
+    try:
+        rec = client.get_memory_record(memoryId=memory_id, memoryRecordId=record_id)["memoryRecord"]
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] in ("ResourceNotFoundException", "ValidationException"):
+            raise LookupError(record_id) from exc
+        raise RuntimeError("memory lookup failed") from exc
+    if len(rec.get("namespaces") or []) != 1 or rec["namespaces"][0] not in allowed:
+        raise LookupError(record_id)
+    return rec
+
+
+def _delete_one(client, memory_id: str, record_id: str) -> None:
+    try:
+        resp = client.batch_delete_memory_records(memoryId=memory_id, records=[{"memoryRecordId": record_id}])
+    except ClientError as exc:
+        raise RuntimeError(f"memory delete failed for {record_id}") from exc
+    if resp.get("failedRecords"):
+        raise RuntimeError(f"memory delete failed for {record_id}")
+
+
+async def list_memories(owner_id: str, user_id: str) -> dict:
+    private, team = _scopes(owner_id, user_id)
+    memory_id = settings.AGENTCORE_MEMORY_ID
+    if not memory_id:
+        return {"private": [], "team": [], "truncated": False}
+
+    def run() -> dict:
+        client, out, truncated = _client(), {}, False
+        for key, ns in (("private", private), ("team", team)):
+            rows, more = _list_scope(client, memory_id, ns)
+            truncated |= more
+            out[key] = [_view(r) for r in sorted(rows, key=lambda r: r["createdAt"], reverse=True)]
+        return {**out, "truncated": truncated}
+
+    return await run_in_thread(run)
+
+
+async def delete_memory(owner_id: str, user_id: str, record_id: str) -> None:
+    """Delete one fact from the viewer's private scope or the team scope (any member: D2)."""
+    scopes = _scopes(owner_id, user_id)
+    memory_id = settings.AGENTCORE_MEMORY_ID
+    if not memory_id:
+        raise LookupError(record_id)
+
+    def run() -> None:
+        client = _client()
+        _owned(client, memory_id, record_id, scopes)
+        _delete_one(client, memory_id, record_id)
+
+    await run_in_thread(run)
+
+
+def _vouched_copy(client, memory_id: str, rec: dict, team: str) -> str:
+    """Copy ``rec`` into the team scope with ``CONFIRMED_PREFIX`` on its text, then delete the
+    original. Share and Confirm are this one act (decisions D4-D6). The token is derived from the
+    source record, so a retry after a failed delete replays the same create instead of a new one.
+    No ``metadata`` key: AgentCore drops custom record metadata (spike S2)."""
+    token = hashlib.sha256(f"{rec['memoryRecordId']}>{team}".encode()).hexdigest()
+    text = (rec.get("content") or {}).get("text", "")
+    if not text.startswith(CONFIRMED_PREFIX):
+        text = CONFIRMED_PREFIX + text
+    if len(text) > _MAX_TEXT:
+        raise ValueError("memory too long to share or confirm")
+    try:
+        resp = client.batch_create_memory_records(
+            memoryId=memory_id,
+            clientToken=token,
+            records=[
+                {
+                    "requestIdentifier": token,
+                    "namespaces": [team],
+                    "content": {"text": text},
+                    "timestamp": rec["createdAt"],
+                    "memoryStrategyId": rec["memoryStrategyId"],
+                }
+            ],
+        )
+    except (ClientError, ParamValidationError) as exc:
+        raise RuntimeError(f"memory copy failed for {rec['memoryRecordId']}") from exc
+    done = resp.get("successfulRecords") or []
+    if resp.get("failedRecords") or not done or done[0].get("status") != "SUCCEEDED":
+        raise RuntimeError(f"memory copy failed for {rec['memoryRecordId']}")
+    _delete_one(client, memory_id, rec["memoryRecordId"])
+    return done[0]["memoryRecordId"]
+
+
+async def _vouch(owner_id: str, user_id: str, record_id: str, *, from_private: bool) -> str:
+    private, team = _scopes(owner_id, user_id)
+    memory_id = settings.AGENTCORE_MEMORY_ID
+    if not memory_id:
+        raise LookupError(record_id)
+
+    def run() -> str:
+        client = _client()
+        rec = _owned(client, memory_id, record_id, (private,) if from_private else (team,))
+        if not from_private and (rec.get("content") or {}).get("text", "").startswith(CONFIRMED_PREFIX):
+            return record_id
+        return _vouched_copy(client, memory_id, rec, team)
+
+    return await run_in_thread(run)
+
+
+async def share_memory(owner_id: str, user_id: str, record_id: str) -> str:
+    """Phase 3: a person moves one of THEIR private facts to the team. Agents never call this."""
+    return await _vouch(owner_id, user_id, record_id, from_private=True)
+
+
+async def confirm_memory(owner_id: str, user_id: str, record_id: str) -> str:
+    """Phase 4: a person confirms a team fact; agents then recall it as confirmed."""
+    return await _vouch(owner_id, user_id, record_id, from_private=False)

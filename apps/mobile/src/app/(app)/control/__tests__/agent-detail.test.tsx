@@ -10,6 +10,7 @@ jest.mock("expo-router", () => ({
   Stack: { Screen: () => null },
   useLocalSearchParams: () => ({ agentId: "forge" }),
 }));
+jest.mock("../../../../components/control/MemoriesCard", () => ({ MemoriesCard: () => null }));
 jest.mock("../../../../providers/live-events", () => ({ useLiveEvents: () => ({}) }));
 jest.mock("@lightbulb/shared", () => ({
   ...jest.requireActual("@lightbulb/shared"),

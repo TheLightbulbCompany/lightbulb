@@ -490,7 +490,6 @@ INPUT_BURST_CALLS = 40
 INPUT_BYTES_PER_MINUTE = 64 * 1024
 TYPED_BURST_GAP_S = 10
 TYPED_TTL_S = 30 * 24 * 3600
-TYPING_REPUBLISH_S = 5
 
 
 class SessionInput(ContractModel):
@@ -517,7 +516,6 @@ class _Typist:
     spent: int = 0
     burst: int = 0  # this person's current burst start (its audit row), 0 = none yet
     last: float = 0.0  # their last accepted call
-    told: float = 0.0  # when the owner last heard "is typing"
 
 
 # ponytail: per backend task, so N tasks allow N x (20 calls/s, 64 KiB/min) per (session, person),
@@ -636,13 +634,3 @@ async def type_into(auth: AuthContext, session_id: str, body: SessionInput) -> N
         sent = False
     if not sent:
         raise sessions.ApiProblem("LOCAL_SESSION_OFFLINE", "The desktop session is offline.", retryable=True)
-    if user != row["humanUserId"] and (new_burst or now - typist.told >= TYPING_REPUBLISH_S):
-        typist.told = now
-        try:
-            await live_events.get_live_event_publisher().publish_user(
-                row["ownerId"],
-                row["humanUserId"],
-                make_live_event("workspace.session.typing", {"sessionId": sid, "userId": user}),
-            )
-        except Exception as exc:  # noqa: BLE001 -- the label is a courtesy; the keys already went
-            logger.info("session typing notice failed error=%s", type(exc).__name__)

@@ -675,9 +675,8 @@ fn display_if_path(text: &str, cwd: Option<&str>, home: Option<&str>) -> String 
 /// question with its options. Shared with `lifecycle::build_datagram`, so a
 /// waiting session reads the same way live as it does in the transcript.
 pub(super) fn summary(name: &str, input: &Value, cwd: Option<&str>, home: Option<&str>) -> String {
-    if matches!(name, "mcp__lightbulb_native_sessions__send" | "mcp__lightbulb_native_sessions__receipt"
-        | "mcp__lightbulb__send_message" | "mcp__lightbulb__message_receipt") {
-        return "Lightbulb message".into();
+    if super::native_mcp::private_call(name) {
+        return if name.ends_with("_task") || name.ends_with("_tasks") { "Lightbulb task" } else { "Lightbulb message" }.into();
     }
     let first = |keys: &[&str]| keys.iter().find_map(|k| input[*k].as_str()).unwrap_or("");
     match name {
@@ -731,8 +730,7 @@ pub(super) fn summary(name: &str, input: &Value, cwd: Option<&str>, home: Option
 }
 
 fn tool_input(name: &str, input: &Value, cwd: Option<&str>, home: Option<&str>) -> Value {
-    if matches!(name, "mcp__lightbulb_native_sessions__send" | "mcp__lightbulb_native_sessions__receipt"
-        | "mcp__lightbulb__send_message" | "mcp__lightbulb__message_receipt") {
+    if super::native_mcp::private_call(name) {
         return json!({});
     }
     let pick = |keys: &[&str]| -> Value {
@@ -822,9 +820,9 @@ fn tool_result(block: &Value, row: &Value, ts: Option<&str>, id: Option<&str>) -
     };
     // Native MCP replies may carry private destinations, request IDs or owner
     // reasons. The result row has no tool name, so the MCP wrapper marks its
-    // send/receipt/read_messages replies; the destination check covers older wrappers.
+    // private replies (native_mcp::PRIVATE_TOOLS); the destination check covers older wrappers.
     let content = if serde_json::from_str::<Value>(&content).is_ok_and(|value|
-        matches!(value["_lightbulbNativeSessionTool"].as_str(), Some("send" | "receipt" | "read_messages"))
+        value["_lightbulbNativeSessionTool"].as_str().is_some_and(super::native_mcp::private_tool)
             || (value["ok"].is_boolean() && value["data"].get("destination").is_some())) {
         "Lightbulb message result".to_owned()
     } else {
@@ -1773,6 +1771,21 @@ mod tests {
             assert_eq!(result[0]["text"], "Lightbulb message result");
             assert!(!result[0].to_string().contains("private-request"));
             assert!(!result[0].to_string().contains("owner secret"));
+        }
+        for (tool, input) in [
+            ("find_tasks", json!({"query":"secret project"})),
+            ("read_task", json!({"task":"ISOA-9"})),
+            ("update_task", json!({"task":"ISOA-9","append_note":"secret note"})),
+        ] {
+            let call = json!({"type":"assistant","sessionId":"s","version":"2.1.269","uuid":"a3",
+                "message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_3","name":format!("mcp__lightbulb__{tool}"),"input":input}]}});
+            let event = normalize("s", &call).unwrap();
+            assert_eq!((event[0]["text"].as_str(), &event[0]["tool"]["input"]), (Some("Lightbulb task"), &json!({})));
+            let content = json!({"_lightbulbNativeSessionTool":tool,"ok":true,"data":{"description":"secret note"}});
+            let reply = json!({"type":"user","sessionId":"s","version":"2.1.269","uuid":"u3",
+                "toolUseResult":{},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_3","content":content.to_string()}]}});
+            let result = normalize("s", &reply).unwrap();
+            assert!(!result[0].to_string().contains("secret"), "{tool} result stays out of the transcript");
         }
         let unrelated = json!({"type":"user","sessionId":"s","version":"2.1.269","uuid":"u2",
             "toolUseResult":{},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"other_tool","content":"{\"ok\":true,\"data\":{\"value\":1}}"}]}});

@@ -87,3 +87,21 @@ async def test_hosted_update_needs_the_write_scope_and_explains_refusals(admin, 
     with pytest.raises(ToolError, match="404"):
         await hosted_mcp.update_task("OTHR-1", status="done")
     assert scopes == [hosted_mcp.WRITE_SCOPE]
+
+
+@pytest.mark.asyncio
+async def test_a_concurrent_description_edit_is_kept(admin):
+    reads = iter([OURS])  # the edit lands between the first read and the re-read
+    admin.get_issue.side_effect = lambda issue_id, session_cookie: next(
+        reads, {**OURS, "description": "Do the thing. Edited."}
+    )
+    await task_board.update_task(AUTH, "ISOA-1", append_note="Mine.")
+    body = admin.patch_issue.await_args.kwargs["body"]
+    assert body["description"].startswith("Do the thing. Edited.\n\n---\n**Note ")
+    admin.patch_issue.reset_mock()
+    edits = iter(range(100))
+    admin.get_issue.side_effect = lambda issue_id, session_cookie: {**OURS, "description": f"v{next(edits)}"}
+    with pytest.raises(HTTPException) as exc:
+        await task_board.update_task(AUTH, "ISOA-1", append_note="Mine.")
+    assert exc.value.status_code == 409
+    admin.patch_issue.assert_not_awaited()

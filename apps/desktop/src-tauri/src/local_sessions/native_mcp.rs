@@ -278,6 +278,24 @@ fn tools() -> Value {
     ]})
 }
 
+/// Lightbulb tools whose arguments and results stay out of the shared
+/// transcript: destinations, request ids, message bodies and task contents.
+/// Public and internal names; one list for the Claude and Codex scrubbers.
+pub(super) const PRIVATE_TOOLS: &[&str] = &[
+    "send", "receipt", "send_message", "message_receipt", "read_messages", "find_tasks", "read_task", "update_task",
+];
+
+pub(super) fn private_tool(name: &str) -> bool {
+    PRIVATE_TOOLS.contains(&name)
+}
+
+/// A Claude tool name (`mcp__lightbulb__read_task`) for one of `PRIVATE_TOOLS`.
+pub(super) fn private_call(tool: &str) -> bool {
+    tool.strip_prefix("mcp__lightbulb__")
+        .or_else(|| tool.strip_prefix(&format!("mcp__{LEGACY_SERVER_NAME}__")))
+        .is_some_and(private_tool)
+}
+
 /// A path- and query-safe id: the Mac puts it in a URL.
 fn id_ok(v: &Value) -> bool {
     v.as_str().is_some_and(|s| {
@@ -408,7 +426,7 @@ fn handle(request: &Value) -> Option<Value> {
                     Ok(mut reply) => {
                         let is_error = reply["ok"] != true;
                         // Marks results the shared transcript must not show.
-                        if matches!(name, "send" | "receipt" | "read_messages" | "find_tasks" | "read_task" | "update_task") {
+                        if private_tool(name) {
                             reply["_lightbulbNativeSessionTool"] = json!(name);
                         }
                         json!({"content":[{"type":"text","text":reply.to_string()}], "isError":is_error})

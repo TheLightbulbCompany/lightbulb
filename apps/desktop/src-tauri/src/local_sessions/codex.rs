@@ -762,11 +762,8 @@ fn item(item: &Value, ts: Option<&str>) -> Option<Value> {
             e
         }
         "McpToolCall" => {
-            let private_send = matches!(
-                (item["server"].as_str(), item["tool"].as_str()),
-                (Some("lightbulb_native_sessions"), Some("send" | "receipt"))
-                    | (Some("lightbulb"), Some("send_message" | "message_receipt" | "read_messages"))
-            );
+            let private_send = matches!(item["server"].as_str(), Some("lightbulb_native_sessions" | "lightbulb"))
+                && item["tool"].as_str().is_some_and(super::native_mcp::private_tool);
             let label = format!(
                 "{}.{}",
                 item["server"].as_str().unwrap_or(""),
@@ -1475,6 +1472,12 @@ mod tests {
             "result":{"content":[{"type":"text","text":"person:private"}],"isError":false}}))).unwrap();
         assert!(!receipt[0].to_string().contains("person:private"));
         assert!(!receipt[0].to_string().contains("private-request"));
+        for tool in ["find_tasks", "read_task", "update_task"] {
+            let task = normalize("s", &ev(json!({"type":"McpToolCall","id":"m4","server":"lightbulb","tool":tool,
+                "arguments":{"task":"ISOA-9","append_note":"secret note"},"status":"completed",
+                "result":{"content":[{"type":"text","text":"secret description"}],"isError":false}}))).unwrap();
+            assert!(!task[0].to_string().contains("secret"), "{tool} call and result stay out of the transcript");
+        }
         let code_mode = json!({"type":"response_item","payload":{"type":"custom_tool_call",
             "name":"exec","input":"tools.mcp__lightbulb_native_sessions__send({text:'secret text'})"}});
         assert!(normalize("s", &code_mode).unwrap().is_empty(), "Code Mode source stays out of the shared transcript");

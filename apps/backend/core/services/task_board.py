@@ -20,6 +20,7 @@ OPEN_STATUSES = ("backlog", "todo", "in_progress", "in_review", "blocked")
 STATUSES = (*OPEN_STATUSES, "done", "cancelled")
 PRIORITIES = ("critical", "high", "medium", "low")
 NOTE_MAX = 4000
+APPEND_ATTEMPTS = 3
 
 
 class _NoCookieJar:
@@ -155,21 +156,30 @@ async def update_task(
     if status is None and priority is None and not note:
         raise HTTPException(status_code=422, detail="Nothing to change: give status, priority or append_note.")
     ctx = await _context(auth)
-    issue = await _issue(task, ctx)
     names = await _agent_names(ctx)
-    changes: dict = {}
-    if status is not None:
-        changes["status"] = status
-    if priority is not None:
-        changes["priority"] = priority
-    if note:
-        # ponytail: read-modify-write; an edit landing between this read and the PATCH is lost.
-        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        current = (issue.get("description") or "").rstrip()
-        changes["description"] = f"{current}\n\n---\n**Note {stamp}:** {note}".lstrip()
-    try:
-        body = PatchIssueBody(**changes)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="The description would be too long to save.") from exc
-    updated = await teams_issues.patch_issue(issue["id"], body, ctx)
-    return _summary(updated if isinstance(updated, dict) and updated.get("id") else {**issue, **changes}, names)
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Paperclip's PATCH has no precondition (no If-Match), so an appended note re-reads the
+    # description just before writing and rebuilds on a change, rather than overwriting an edit.
+    # ponytail: a write landing between the re-read and the PATCH is still lost; a precondition
+    # upstream would close it.
+    for _ in range(APPEND_ATTEMPTS):
+        issue = await _issue(task, ctx)
+        changes: dict = {}
+        if status is not None:
+            changes["status"] = status
+        if priority is not None:
+            changes["priority"] = priority
+        if note:
+            current = (issue.get("description") or "").rstrip()
+            changes["description"] = f"{current}\n\n---\n**Note {stamp}:** {note}".lstrip()
+        try:
+            body = PatchIssueBody(**changes)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="The description would be too long to save.") from exc
+        if note and (await _issue(task, ctx)).get("description") != issue.get("description"):
+            continue
+        updated = await teams_issues.patch_issue(issue["id"], body, ctx)
+        return _summary(updated if isinstance(updated, dict) and updated.get("id") else {**issue, **changes}, names)
+    raise HTTPException(
+        status_code=409, detail="The task's description kept changing while the note was added. Nothing was saved."
+    )

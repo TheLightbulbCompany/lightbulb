@@ -42,10 +42,17 @@ it("writes a snapshot and its parts together, once all are here", () => {
   expect(names(step.write)).toEqual(["s0", "o1"]);
 });
 it("holds an in-sync multi-part snapshot and writes it with its parts", () => {
+  expect(feed([f(0, "snapshot"), s(1, 3), f(2)]).written).toEqual(["s0"]);
   expect(feed([f(0, "snapshot"), s(1, 3), f(2), f(3)]).written).toEqual(["s0", "s1", "o2", "o3"]);
 });
 it("a new run's multi-part snapshot waits for its parts too", () => {
+  expect(feed([f(0, "snapshot"), s(0, 2, 2)]).written).toEqual(["s0"]);
   expect(feed([f(0, "snapshot"), s(0, 2, 2), f(1, "output", 2)]).written).toEqual(["s0", "s0", "o1"]);
+});
+it("settling picks the newest run's waiting snapshot, not an older run's held behind a gap", () => {
+  const { order } = feed([f(0, "snapshot"), f(5, "snapshot"), s(0, 2, 2)]);
+  const late = settleScreen(order);
+  expect(late.write.map((w) => `${w.epoch}:${w.kind[0]}${w.seq}`)).toEqual(["2:s0"]);
 });
 it("a part that never comes is settled after the wait with what is here", () => {
   let order = NEW_SCREEN;

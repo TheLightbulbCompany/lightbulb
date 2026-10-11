@@ -74,7 +74,7 @@ export function settleScreen(order: ScreenOrder): Step {
 }
 
 function heldSnapshots(order: ScreenOrder) {
-  return order.held.filter((f) => f.kind === "snapshot" && f.epoch >= order.epoch).sort((a, b) => a.seq - b.seq);
+  return order.held.filter((f) => f.kind === "snapshot" && f.epoch >= order.epoch).sort((a, b) => a.epoch - b.epoch || a.seq - b.seq);
 }
 
 /** Whether a frame below `snapshot` in the run this viewer draws in sync has not arrived. */

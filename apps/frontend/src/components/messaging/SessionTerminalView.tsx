@@ -332,7 +332,7 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
           setLive(true); setSeen(true); onLive(true);
         }
         const t = term;
-        // Only the snapshot of a picture that started over: the 30 s resync moves nobody.
+        // Only the snapshot of a picture that started over: a resync redraw moves nobody.
         const back = frame.kind === "snapshot" && over;
         if (back) over = false;
         term.write(bytes, !back ? fit : () => {

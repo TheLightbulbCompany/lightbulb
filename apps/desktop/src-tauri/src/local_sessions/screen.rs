@@ -1,15 +1,17 @@
 //! The live terminal relay (spec §5.2, §5.5; rulings 2026-10-03 §4). While the backend's heartbeat
 //! ack lists a held session as watched, attach to its holder as a `watch` client and send
-//! `local.session.screen` frames on the relay socket: the holder's snapshot first, then output in
-//! chunks of at most 11 KiB raw (base64 plus envelope fits the 16 KiB relay frame), each with the
-//! terminal's size; what is above the holder's screen as `history` frames before the snapshot of a new or
-//! grown viewer set; a fresh snapshot after a resize and after a lost frame (at most one a second);
-//! and every 10 s a snapshot when output went out since the last one or none was asked for in
-//! 30 s (a viewer that lost its first screen is never left without one), else a `ping` (spec §5.2).
-//! Nothing is sent while nobody watches. Output the relay queue has no room for, or that is past
-//! the backend's budget (2 MiB raw a minute), waits here and goes out in order when there is room
-//! (`Out::flush`): a snapshot is only the screen, so output replaced by one never reaches a viewer's
-//! scrollback. Only more than BACKLOG of it waiting is dropped, and a snapshot follows.
+//! `local.session.screen` frames on the relay socket, each with the terminal's size: what is above
+//! the holder's screen as `history` frames before the snapshot of a new or grown viewer set; the
+//! holder's snapshot; then every 50 ms (`TICK`) only what changed on the screen since (`Relayed`): the
+//! rows that scrolled off the top, pushed into the viewers' scrollback in order, then the changed
+//! cells, never a clear (so a viewer never sees an erase before its rewrite). A whole snapshot goes
+//! again only for a new viewer, after a resize and after a lost frame (at most one a second); one
+//! that does not fit a frame (11 KiB raw: base64 plus envelope fits the 16 KiB relay frame) is sent
+//! in parts, its first frame saying how many (`parts`). A quiet screen sends a `ping` every 10 s.
+//! Nothing is sent while nobody watches. A tick with no room in the relay queue or the backend's
+//! budget (2 MiB raw a minute) waits and merges into the next one; output already handed to `Out`
+//! waits there and goes out in order (`Out::flush`). Only more than BACKLOG of it waiting is
+//! dropped, and a snapshot follows.
 //! A `local.session.watch` nudge from the backend starts a relay at once (a new viewer sees the
 //! screen in about a second, not at the next ack); the acks still keep it going and stop it.
 //! A Claude background session's terminal comes from an attach holder this module starts on demand
@@ -32,11 +34,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
 const CHUNK: usize = 11 * 1024;
-const FLUSH: Duration = Duration::from_millis(200);
-const SNAPSHOT_EVERY: Duration = Duration::from_secs(10);
-/// A quiet relay still redraws this often: pings alone never give a screen to a viewer whose
-/// first snapshot was lost, or who mounted again without the backend saying so.
-const RESYNC: Duration = Duration::from_secs(30);
+/// A quiet relay pings this often.
+const PING_EVERY: Duration = Duration::from_secs(10);
 /// A relay no heartbeat ack has renewed for this long stops (its relay socket is down).
 const LEASE: Duration = Duration::from_secs(30);
 const TICK: Duration = Duration::from_millis(50);
@@ -93,10 +92,8 @@ pub(super) struct Ctl {
     snapshot: AtomicBool,
     /// The viewer set grew (an ack's `since` moved, or a nudge): history, then a snapshot.
     history: AtomicBool,
-    /// How often a relay's viewers hear from it (SNAPSHOT_EVERY; tests shorten it).
+    /// How often a quiet relay pings (PING_EVERY; tests shorten it).
     beat: Duration,
-    /// The longest a quiet relay goes without a snapshot (RESYNC; tests shorten it).
-    resync: Duration,
     /// LEAVE_HOLD; tests shorten it.
     leave_hold: Duration,
     pub(super) stop: AtomicBool,
@@ -114,7 +111,7 @@ pub(super) struct Ctl {
 impl Ctl {
     pub(super) fn new(since: u64) -> Self {
         Self { since: AtomicU64::new(since), epoch: AtomicU64::new(0), typist: Mutex::new(None), snapshot: AtomicBool::new(false),
-            history: AtomicBool::new(false), beat: SNAPSHOT_EVERY, resync: RESYNC, leave_hold: LEAVE_HOLD, stop: AtomicBool::new(false),
+            history: AtomicBool::new(false), beat: PING_EVERY, leave_hold: LEAVE_HOLD, stop: AtomicBool::new(false),
             until: Mutex::new(Instant::now() + LEASE), keep: Mutex::new(Instant::now()), holder: Mutex::new(None), lines: AtomicBool::new(false) }
     }
     fn renew(&self) {
@@ -559,14 +556,12 @@ impl Budget {
 /// The session's screen as the holder draws it (`model`) and as every viewer has it (`shown`).
 /// The diff between them is what a tick sends: never a clear, so a viewer never sees an erase
 /// without its rewrite (the flash the raw byte stream showed, 2026-10-11).
-#[allow(dead_code)] // wired into pump in the next task
 struct Relayed {
     model: Model,
     shown: vt100::Parser,
     fed: bool,
 }
 
-#[allow(dead_code)] // wired into pump in the next task
 impl Relayed {
     fn seed(screen: &[u8], (cols, rows): (u16, u16)) -> Self {
         let mut model = Model::new(rows, cols);
@@ -624,8 +619,6 @@ struct Out<'a> {
     backlog: std::collections::VecDeque<((u16, u16), Vec<u8>)>,
     /// A frame was lost since the last snapshot: viewers wait for the next one, so output is waste.
     stale: bool,
-    /// Output went out since the last snapshot: the beat redraws (it heals frames lost past this Mac) instead of pinging.
-    dirty: bool,
 }
 
 impl Out<'_> {
@@ -633,8 +626,9 @@ impl Out<'_> {
     /// repaired with a snapshot, which is the screen only, and the lines that output scrolled off
     /// the top would never reach a viewer's scrollback. A snapshot goes when no output waits (it is
     /// the screen after that output) and may overdraw the budget: it ends a gap, and the next
-    /// request waits for the budget to be back above zero. One that cannot go is asked for again.
-    fn emit(&mut self, kind: &str, bytes: &[u8], size: (u16, u16)) {
+    /// request waits for the budget to be back above zero. One that cannot go is asked for again,
+    /// and false says so (the viewers' screen is not that snapshot).
+    fn emit(&mut self, kind: &str, bytes: &[u8], size: (u16, u16)) -> bool {
         if kind != "snapshot" {
             // (After a loss viewers wait for the snapshot: output until then is in it.)
             if !self.stale && !bytes.is_empty() {
@@ -644,12 +638,12 @@ impl Out<'_> {
                 }
                 self.flush();
             }
-            return;
+            return true;
         }
         self.flush();
         if !self.backlog.is_empty() {
             self.ctl.snapshot.store(true, SeqCst);
-            return;
+            return false;
         }
         let mut seq = self.seq;
         for (i, frame) in frames_for(self.ids, self.epoch, &mut seq, size, kind, bytes).into_iter().enumerate() {
@@ -660,7 +654,7 @@ impl Out<'_> {
             if i == 0 {
                 // None of it went: no place in the order is taken, and viewers miss nothing.
                 self.ctl.snapshot.store(true, SeqCst);
-                return;
+                return false;
             }
             // The rest of a snapshot is output after its first frame: it waits like any other.
             self.backlog.push_back((size, bytes[i * CHUNK..].to_vec()));
@@ -669,7 +663,7 @@ impl Out<'_> {
         let waits = self.backlog.front().map_or(0, |(_, held)| held.len());
         self.budget.take(bytes.len() - waits, true);
         self.stale = false;
-        self.dirty = false;
+        true
     }
     /// Sends the waiting output in order, as far as the budget and the relay queue take it now. A
     /// chunk that does not go keeps its place and takes no seq, so viewers see no gap: the output is
@@ -688,7 +682,6 @@ impl Out<'_> {
             }
             self.budget.take(len, true);
             self.seq = seq;
-            self.dirty = true;
             held.drain(..len);
             if held.is_empty() {
                 self.backlog.pop_front();
@@ -839,7 +832,7 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
         ctl: &Ctl, send: &dyn Fn(Value) -> bool, budget: Budget, history: &dyn Fn(usize) -> Option<Vec<u8>>) -> Result<(), String> {
     let epoch = next_epoch(&LAST_EPOCH, SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64));
     ctl.epoch.store(epoch, SeqCst);
-    let mut out = Out { ids, epoch, seq: 0, ctl, send, budget, backlog: Default::default(), stale: false, dirty: false };
+    let mut out = Out { ids, epoch, seq: 0, ctl, send, budget, backlog: Default::default(), stale: false };
     // A holder that keeps its lines is asked for them on this connection (review of #3912). It is one
     // event loop and answers in order, with the screen right behind the lines: every OUTPUT that
     // reaches this relay before that answer is of bytes the lines and the screen already show, and
@@ -856,19 +849,20 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
     if !keeps {
         out.history(history, size);
     }
-    let mut pending: Vec<u8> = Vec::new();
-    let mut held_since: Option<Instant> = None;
+    // The holder's screen and the viewers', from the last snapshot sent: each tick sends the
+    // difference. None before the first snapshot, and from a resize or an exit until the next
+    // (output meanwhile is in that snapshot).
+    let mut relayed: Option<Relayed> = None;
+    let mut last_tick = Instant::now();
+    let mut last_ping = Instant::now();
     // The holder sends a watch client its first snapshot unasked; a request may follow at once
     // (a resize, a lost frame).
     let mut last_snapshot = Instant::now().checked_sub(SNAPSHOT_GAP).unwrap_or_else(Instant::now);
-    // Viewers hear from the relay every `beat`: a snapshot when output went out since the last one
-    // (it heals frames lost past this Mac) or none was asked for in `resync` (a viewer with no
-    // screen gets one), else a ping.
-    let mut last_beat = Instant::now();
     // The provider exited. An attach holder closes next; a session's own holder stays.
     let mut exited = false;
-    // Since when `pending` starts with a leave of the alternate screen (LEAVE_HOLD): held until
-    // the provider exits (dropped: the kept snapshot is the picture) or the hold is over (sent).
+    // Since when the provider is off the alternate screen it was on (LEAVE_HOLD): no tick until it
+    // exits (what it printed on its way out never goes; the kept snapshot is the picture) or the
+    // hold is over (a snapshot then).
     let mut leaving: Option<Instant> = None;
     loop {
         if ctl.stopped() {
@@ -879,7 +873,7 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
             asked_lines = None;
             ctl.snapshot.store(true, SeqCst);
         }
-        // (Not while output is held, as for a snapshot.)
+        // (Not while a leave is held, as for a snapshot.)
         if keeps && leaving.is_none() && ctl.history.swap(false, SeqCst) {
             let room = out.budget.room();
             if out.stale {
@@ -899,13 +893,13 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
         }
         if !keeps && ctl.history.swap(false, SeqCst) {
             // A holder with no lines of its own: its output log's tail, read on another connection
-            // (`manager::history`). What waits here is older than that tail's end and goes first.
+            // (`manager::history`). What the viewers were not sent yet is older than that tail's end
+            // and goes first.
             // ponytail: output this relay has not read yet may be in that tail and is then drawn
             // twice by a new viewer; exact only with the log's offsets. No held Claude Code or
             // Codex session takes this path.
-            if leaving.is_none() && !pending.is_empty() {
-                out.emit("output", &std::mem::take(&mut pending), size);
-                held_since = None;
+            if leaving.is_none() {
+                send_changes(&mut relayed, &mut out, size);
             }
             if out.history(history, size) {
                 ctl.snapshot.store(true, SeqCst);
@@ -916,11 +910,13 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
                 ctl.history.store(true, SeqCst);
             }
         }
-        if last_beat.elapsed() >= ctl.beat {
-            last_beat = Instant::now();
-            if out.dirty || last_snapshot.elapsed() >= ctl.resync { ctl.snapshot.store(true, SeqCst) } else { out.ping(size) }
+        // Proof of life on a quiet screen; never a redraw (a lost frame is repaired by the
+        // viewer's own request, `SNAPSHOT_GAP`).
+        if last_ping.elapsed() >= ctl.beat {
+            last_ping = Instant::now();
+            out.ping(size);
         }
-        // Not while output is held: a snapshot taken now would show the lines being held back.
+        // Not while a leave is held: a snapshot taken now would show what is held back.
         if ctl.snapshot.load(SeqCst) && leaving.is_none() && last_snapshot.elapsed() >= SNAPSHOT_GAP && out.budget.left() > 0.0 {
             ctl.snapshot.store(false, SeqCst);
             match to_holder.write_all(&encode(SNAPSHOT, b"")) {
@@ -933,70 +929,58 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
             Ok((SNAPSHOT, _)) if asked_lines.is_some() => {}
             Ok((HISTORY, lines)) if asked_lines.is_some() => {
                 asked_lines = None;
-                // As before a snapshot: the output that was waiting goes first (the lines and the
-                // screen behind them show it already); what follows a leave of the alternate
-                // screen stays dropped.
-                if leaving.take().is_none() && !pending.is_empty() {
-                    out.emit("output", &pending, size);
-                }
-                pending.clear();
-                held_since = None;
-                if out.lines(&lines, size) {
-                    // The holder sends the screen behind its lines itself; one from before that did
-                    // not is asked for it.
-                    ctl.snapshot.store(true, SeqCst);
-                    last_snapshot = Instant::now().checked_sub(SNAPSHOT_GAP).unwrap_or_else(Instant::now);
+                // As before a snapshot: what the viewers were not sent yet goes first (the lines and
+                // the screen behind them show it already). After a leave of the alternate screen
+                // nothing goes: the screen the holder sends right behind its lines is the picture.
+                if leaving.take().is_none() {
+                    send_changes(&mut relayed, &mut out, size);
                 } else {
+                    relayed = None;
+                }
+                if !out.lines(&lines, size) {
                     ctl.history.store(true, SeqCst);
                 }
             }
             Ok((SNAPSHOT, payload)) => {
                 let (_, screen) = split_offset(&payload).ok_or("bad snapshot")?;
-                // The snapshot shows the output that was waiting, but only as a screen: a viewer draws
-                // it over its own, and the lines that output scrolled off the top never reach its
-                // scrollback. So the output goes first (prod 2026-10-08: each beat that fell inside
-                // FLUSH of a Codex block cost a viewer that block's 19 rows). What follows a leave of
-                // the alternate screen stays dropped: the provider's way out, never a viewer's lines.
-                if leaving.take().is_none() && !pending.is_empty() {
-                    out.emit("output", &pending, size);
+                // A snapshot is only the screen: rows the output before it pushed off the top reach
+                // a viewer's scrollback only in a tick, so that goes first (prod 2026-10-08: a
+                // snapshot that overtook a Codex block cost a viewer its 19 rows). After a leave of
+                // the alternate screen nothing does: the provider's way out, never a viewer's lines.
+                if leaving.take().is_none() {
+                    send_changes(&mut relayed, &mut out, size);
                 }
-                pending.clear();
-                held_since = None;
-                out.emit("snapshot", screen, size);
+                if out.emit("snapshot", screen, size) {
+                    relayed = Some(Relayed::seed(screen, size));
+                }
             }
             Ok((OUTPUT, payload)) => {
-                let had = pending.len();
-                pending.extend_from_slice(split_offset(&payload).ok_or("bad output")?.1);
-                held_since.get_or_insert_with(Instant::now);
-                if leaving.is_none() {
-                    // A little before the new bytes too: the sequence can be split across two reads.
-                    // ponytail: one split across two sends (200 ms apart) is missed; carry a tail if a provider ever does that.
-                    let from = had.saturating_sub(32);
-                    if let Some(cut) = crate::holder::model::alternate_leaves(&pending[from..], 0).first().map(|cut| from + cut) {
-                        if cut > 0 {
-                            out.emit("output", &pending.drain(..cut).collect::<Vec<u8>>(), size);
-                        }
+                let bytes = split_offset(&payload).ok_or("bad output")?.1;
+                if let Some(r) = relayed.as_mut() {
+                    let was = r.model.screen().alternate_screen();
+                    r.feed(bytes);
+                    if was && !r.model.screen().alternate_screen() && leaving.is_none() {
                         leaving = Some(Instant::now());
                     }
                 }
             }
             Ok((RESIZE, payload)) if payload.len() == 4 => {
-                leaving = None;
-                if !pending.is_empty() {
-                    out.emit("output", &std::mem::take(&mut pending), size);
-                    held_since = None;
+                // What changed goes at the old size; the new size starts from a snapshot.
+                if leaving.take().is_none() {
+                    send_changes(&mut relayed, &mut out, size);
                 }
+                relayed = None;
                 size = (u16::from_be_bytes([payload[0], payload[1]]), u16::from_be_bytes([payload[2], payload[3]]));
                 ctl.snapshot.store(true, SeqCst);
+                last_snapshot = Instant::now().checked_sub(SNAPSHOT_GAP).unwrap_or_else(Instant::now);
             }
             Ok((EXIT, payload)) => {
-                if leaving.take().is_some() {
-                    // What the provider printed on its way out (Claude Code: the resume lines).
-                    pending.clear();
-                } else if !pending.is_empty() {
-                    out.emit("output", &std::mem::take(&mut pending), size);
+                // After a leave: what the provider printed on its way out (Claude Code: the resume
+                // lines) never goes.
+                if leaving.take().is_none() {
+                    send_changes(&mut relayed, &mut out, size);
                 }
-                held_since = None;
+                relayed = None;
                 // The holder's final picture is its next snapshot: ask now, on this connection.
                 // A relay started after the end depends on the index.
                 exited = true;
@@ -1019,28 +1003,49 @@ fn pump(frames: &Receiver<(u8, Vec<u8>)>, to_holder: &mut impl Write, ids: (&str
             Err(RecvTimeoutError::Disconnected) if exited => return Ok(()),
             Err(RecvTimeoutError::Disconnected) => return Err("the holder closed".into()),
         }
-        // More than a chunk after the leave is no exit either.
-        if pending.len() >= CHUNK || leaving.is_some_and(|at| at.elapsed() >= ctl.leave_hold) {
+        if leaving.is_some_and(|at| at.elapsed() >= ctl.leave_hold) {
+            // No exit followed: the screen it left for is the picture.
             leaving = None;
+            relayed = None;
+            ctl.snapshot.store(true, SeqCst);
         }
-        if leaving.is_none() && (pending.len() >= CHUNK || held_since.is_some_and(|at| at.elapsed() >= FLUSH)) {
-            out.emit("output", &std::mem::take(&mut pending), size);
-            held_since = None;
+        // Only with room: a tick that waits merges into the next one, never queues behind it.
+        if last_tick.elapsed() >= TICK && leaving.is_none() && out.backlog.is_empty() && !out.stale && out.budget.left() > 0.0 {
+            last_tick = Instant::now();
+            if send_changes(&mut relayed, &mut out, size) {
+                last_ping = Instant::now();
+            }
         }
     }
 }
 
-/// A snapshot that does not fit one frame continues as "output" frames with the next seqs; history stays "history".
+/// Sends what changed on the session's screen since the viewers' last frame; true when anything had.
+fn send_changes(relayed: &mut Option<Relayed>, out: &mut Out, size: (u16, u16)) -> bool {
+    let Some(bytes) = relayed.as_mut().map(Relayed::tick).filter(|bytes| !bytes.is_empty()) else { return false };
+    out.emit("output", &bytes, size);
+    true
+}
+
+/// The backend's cap on a snapshot's `parts`.
+const MAX_PARTS: usize = 16;
+
+/// A snapshot that does not fit one frame continues as "output" frames with the next seqs, its first
+/// frame saying how many there are (`parts`, so a viewer paints it whole; more than MAX_PARTS go
+/// unmarked and the viewer paints what came after a wait); history stays "history".
 fn frames_for(ids: (&str, &str), epoch: u64, seq: &mut u64, size: (u16, u16), kind: &str, bytes: &[u8]) -> Vec<Value> {
     let chunks: Vec<&[u8]> = if bytes.is_empty() { vec![&[]] } else { bytes.chunks(CHUNK).collect() };
+    let parts = chunks.len();
     chunks
         .into_iter()
         .enumerate()
         .map(|(i, chunk)| {
-            let frame = json!({"type": "local.session.screen", "sessionId": ids.0, "generation": ids.1,
+            let mut frame = json!({"type": "local.session.screen", "sessionId": ids.0, "generation": ids.1,
                 "epoch": epoch, "seq": *seq, "cols": size.0, "rows": size.1,
                 "kind": if i == 0 || kind == "history" { kind } else { "output" },
                 "data": base64::engine::general_purpose::STANDARD.encode(chunk)});
+            if i == 0 && kind == "snapshot" && (2..=MAX_PARTS).contains(&parts) {
+                frame["parts"] = parts.into();
+            }
             *seq += 1;
             frame
         })
@@ -1067,22 +1072,33 @@ mod tests {
     #[test]
     fn screen_frames_have_the_golden_shape_split_at_11_kib_and_fit_a_relay_frame() {
         let generation = "g".repeat(64);
+        let ids = ("aaaabbbb-cccc-4ddd-8eee-ffff00001111", generation.as_str());
         let mut seq = 7;
-        let frames = frames_for(("aaaabbbb-cccc-4ddd-8eee-ffff00001111", &generation), 1_760_000_000_000, &mut seq,
-            (120, 40), "snapshot", &vec![0xffu8; 30 * 1024]);
+        let frames = frames_for(ids, 1_760_000_000_000, &mut seq, (120, 40), "snapshot", &vec![0xffu8; 30 * 1024]);
         assert_eq!(frames.iter().map(|f| f["kind"].as_str().unwrap()).collect::<Vec<_>>(), ["snapshot", "output", "output"]);
         assert_eq!(frames.iter().map(|f| f["seq"].as_u64().unwrap()).collect::<Vec<_>>(), [7, 8, 9]);
         assert_eq!(seq, 10);
+        assert_eq!(frames[0]["parts"], 3, "a snapshot in parts says how many");
         let golden: Value = serde_json::from_str(GOLDEN).unwrap();
         let keys = |v: &Value| v.as_object().unwrap().keys().cloned().collect::<BTreeSet<_>>();
-        for f in &frames {
-            assert_eq!(keys(f), keys(&golden));
+        for (i, f) in frames.iter().enumerate() {
+            let mut want = keys(&golden);
+            if i == 0 {
+                want.insert("parts".into());
+            }
+            assert_eq!(keys(f), want, "`parts` on the snapshot's head only");
             assert!(super::super::ascii_wire_len(f).unwrap() <= 16384);
         }
+        // One frame, history, or more parts than the backend takes: the golden shape exactly.
+        let one = frames_for(ids, 1, &mut 0, (120, 40), "snapshot", b"x");
+        let history = frames_for(ids, 1, &mut 0, (120, 40), "history", &vec![b'h'; 30 * 1024]);
+        let many = frames_for(ids, 1, &mut 0, (120, 40), "snapshot", &vec![b's'; (MAX_PARTS + 1) * CHUNK]);
+        assert_eq!(many.len(), MAX_PARTS + 1);
+        assert!(one.iter().chain(&history).chain(&many).all(|f| keys(f) == keys(&golden)));
     }
 
     #[test]
-    fn screen_relay_sends_the_snapshot_then_output_in_order_and_asks_again_after_a_resize() {
+    fn screen_relay_sends_the_snapshot_then_the_changes_in_order_and_asks_again_after_a_resize() {
         let (tx, rx) = std::sync::mpsc::channel();
         tx.send((SNAPSHOT, with_offset(0, b"\x1b[Hscreen"))).unwrap();
         tx.send((OUTPUT, with_offset(9, &vec![b'a'; 12 * 1024]))).unwrap();
@@ -1094,9 +1110,14 @@ mod tests {
         let mut to_holder = vec![];
         pump(&rx, &mut to_holder, ("sid", "gen"), (120, 40), &Ctl::new(0), &|f| { sent.borrow_mut().push(f); true }, Budget::new(), &|_| None).unwrap();
         let sent = sent.into_inner();
-        let shape: Vec<(String, u64)> = sent.iter().map(|f| (f["kind"].as_str().unwrap().into(), f["cols"].as_u64().unwrap())).collect();
-        assert_eq!(shape, [("snapshot".into(), 120), ("output".into(), 120), ("output".into(), 120), ("output".into(), 90)]);
-        assert_eq!(sent.iter().map(|f| f["seq"].as_u64().unwrap()).collect::<Vec<_>>(), [0, 1, 2, 3]);
+        assert_eq!(sent[0]["kind"], "snapshot");
+        assert!(sent.len() > 1 && sent[1..].iter().all(|f| f["kind"] == "output" && f["cols"] == 120),
+            "the changes go at the size they were made at; the new size waits for its snapshot");
+        assert_eq!(sent.iter().map(|f| f["seq"].as_u64().unwrap()).collect::<Vec<_>>(), (0..sent.len() as u64).collect::<Vec<_>>());
+        let mut raw = vt100::Parser::new(40, 120, 0);
+        raw.process(b"\x1b[Hscreen");
+        raw.process(&vec![b'a'; 12 * 1024]);
+        assert_eq!(viewer(&sent, (120, 40)).screen().contents(), raw.screen().contents());
         assert!(to_holder.windows(5).any(|w| w == encode(SNAPSHOT, b"").as_slice()), "a resize asks for a fresh screen");
     }
 
@@ -1123,10 +1144,11 @@ mod tests {
         // Prod 2026-10-07: a viewer read "Resume this session with: claude --resume ..." as the
         // session's picture for 7 s. What the provider prints after it leaves the alternate screen
         // on its way out never goes to a viewer: the picture before it stays, then the kept one.
-        assert_eq!(sent.iter().map(|f| f["kind"].as_str().unwrap()).collect::<Vec<_>>(), ["snapshot", "output", "snapshot"]);
+        // (The reads before the leave change only modes; a tick that fell between them would send those.)
+        let snapshots: Vec<&Value> = sent.iter().filter(|f| f["kind"] == "snapshot").collect();
+        assert_eq!((snapshots.len(), sent[0]["kind"].as_str()), (2, Some("snapshot")));
         assert!(sent.iter().all(|f| !has(&data(f), b"Resume this session") && !has(&data(f), b"\x1b[?1049l")));
-        assert_eq!(data(&sent[1]), [CLAUDE_EXIT_READS[0], CLAUDE_EXIT_READS[1], b"\x1b[?1004l"].concat(), "what came before the leave is live output");
-        assert_eq!(data(&sent[2]), b"the conversation", "the viewer is left on the final picture");
+        assert_eq!(data(sent.last().unwrap()), b"the conversation", "the viewer is left on the final picture");
         assert_eq!(holder.asked.len(), 1);
         assert!(holder.asked[0] - started < Duration::from_millis(500), "asked at the exit, not a beat later");
         assert!(started.elapsed() >= Duration::from_millis(1400), "the relay left at the exit; a new one may find no screen indexed yet");
@@ -1136,7 +1158,7 @@ mod tests {
     }
 
     #[test]
-    fn screen_relay_sends_what_follows_a_leave_of_the_alternate_screen_when_no_exit_does() {
+    fn screen_relay_sends_a_snapshot_after_a_leave_of_the_alternate_screen_when_no_exit_follows() {
         // A full-screen program that closed mid-session (an editor, a pager): the session runs on,
         // and its normal screen is the picture. Late by the hold, never lost.
         let (tx, rx) = std::sync::mpsc::channel();
@@ -1144,30 +1166,29 @@ mod tests {
         tx.send((OUTPUT, with_offset(14, b"saved\x1b[?10"))).unwrap();
         tx.send((OUTPUT, with_offset(26, b"49l$ back at the prompt"))).unwrap();
         let ctl = Ctl { leave_hold: Duration::from_millis(600), ..leased(Duration::from_millis(1500)) };
+        let mut holder = Answering { tx, answer: vec![(SNAPSHOT, with_offset(49, b"$ back at the prompt"))], asked: vec![] };
         let sent = std::cell::RefCell::new(vec![]);
         let started = Instant::now();
-        let _keep = tx;
-        pump(&rx, &mut Vec::<u8>::new(), ("sid", "gen"), (80, 24), &ctl, &|f| { sent.borrow_mut().push((started.elapsed(), f)); true }, Budget::new(), &|_| None).unwrap();
+        pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|f| { sent.borrow_mut().push((started.elapsed(), f)); true }, Budget::new(), &|_| None).unwrap();
         let sent = sent.into_inner();
-        let data = |f: &Value| base64::engine::general_purpose::STANDARD.decode(f["data"].as_str().unwrap()).unwrap();
-        assert_eq!(sent.iter().map(|(_, f)| f["kind"].as_str().unwrap()).collect::<Vec<_>>(), ["snapshot", "output", "output"]);
-        assert_eq!(data(&sent[1].1), b"saved", "a leave split across two reads is still found");
-        assert_eq!(data(&sent[2].1), b"\x1b[?1049l$ back at the prompt");
-        assert!(sent[1].0 < Duration::from_millis(500) && sent[2].0 >= Duration::from_millis(550), "held for the hold, then sent: {:?}", sent[2].0);
+        assert_eq!(sent.iter().map(|(_, f)| f["kind"].as_str().unwrap()).collect::<Vec<_>>(), ["snapshot", "snapshot"], "a leave split across two reads is still found");
+        assert_eq!(data(&sent[1].1), b"$ back at the prompt");
+        assert_eq!(holder.asked.len(), 1);
+        assert!(holder.asked[0] - started >= Duration::from_millis(550) && sent[1].0 < Duration::from_millis(1100), "held for the hold, then asked: {:?}", sent[1].0);
     }
 
     /// Prod 2026-10-08, a held Codex session, 101 `/status` blocks: twice a viewer lost one block's
-    /// 19 rows, each time where the 10 s beat's snapshot reached the relay inside FLUSH of the block's
-    /// output. Codex writes finished lines above its prompt through a scroll region, so a terminal
-    /// keeps them only when it is fed the bytes: the snapshot is the screen after them.
+    /// 19 rows, each time where a snapshot reached the relay before the block's output had gone.
+    /// Codex writes finished lines above its prompt through a scroll region, so a terminal keeps
+    /// them only when they are pushed into it: the snapshot is the screen after them.
     #[test]
-    fn output_waiting_when_a_snapshot_comes_is_sent_before_it() {
+    fn rows_pushed_off_the_top_before_a_snapshot_go_before_it() {
         // Codex's `insert_history`: region above the prompt, to its last row, lines, region off, prompt.
         let block = b"\x1b[1;25r\x1b[25;1H\r\n/status\r\n  Session: 01a1\r\n  Context window: 97% left\x1b[r\x1b[27;1H> ";
         let (tx, rx) = std::sync::mpsc::channel();
         tx.send((SNAPSHOT, with_offset(0, b"screen"))).unwrap();
         tx.send((OUTPUT, with_offset(6, block))).unwrap();
-        // The beat's snapshot, in the same tick as the output: nothing was flushed yet.
+        // A snapshot in the same tick as the output: nothing was ticked yet.
         tx.send((SNAPSHOT, with_offset(6 + block.len() as u64, b"screen after the block"))).unwrap();
         tx.send((OUTPUT, with_offset(6 + block.len() as u64, b"next"))).unwrap();
         tx.send((EXIT, b"{}".to_vec())).unwrap();
@@ -1175,10 +1196,20 @@ mod tests {
         let sent = std::cell::RefCell::new(vec![]);
         pump(&rx, &mut Vec::<u8>::new(), ("sid", "gen"), (100, 30), &Ctl::new(0), &|f| { sent.borrow_mut().push(f); true }, Budget::new(), &|_| None).unwrap();
         let sent = sent.into_inner();
-        let data = |f: &Value| base64::engine::general_purpose::STANDARD.decode(f["data"].as_str().unwrap()).unwrap();
-        assert_eq!(kinds(&sent)[..4], [("snapshot".into(), 0), ("output".into(), 1), ("snapshot".into(), 2), ("output".into(), 3)]);
-        assert_eq!(data(&sent[1]), block, "every byte the holder sent before the snapshot, in order");
-        assert_eq!((data(&sent[2]), data(&sent[3])), (b"screen after the block".to_vec(), b"next".to_vec()));
+        assert_eq!(kinds(&sent), [("snapshot".into(), 0), ("output".into(), 1), ("snapshot".into(), 2), ("output".into(), 3)]);
+        assert_eq!(data(&sent[2]), b"screen after the block");
+        // The viewer before that snapshot: the screen the bytes make, and the rows they scrolled
+        // off the top of the region in its scrollback, oldest first (a terminal fed the bytes
+        // keeps them there too; vt100 does not for a region, so it is no reference for that).
+        let mut v = viewer(&sent[..2], (100, 30));
+        let mut raw = vt100::Parser::new(30, 100, 0);
+        raw.process(b"screen");
+        raw.process(block);
+        assert_eq!(v.screen().contents(), raw.screen().contents());
+        v.screen_mut().set_scrollback(usize::MAX);
+        assert_eq!(v.screen().scrollback(), 3, "the three rows the block's line feeds scrolled off");
+        assert_eq!(v.screen().rows(0, 100).next().unwrap(), "screen");
+        assert!(has(&data(&sent[3]), b"next"));
     }
 
     /// A holder that answers every snapshot request with `answer` and notes when it was asked.
@@ -1232,19 +1263,22 @@ mod tests {
         tx.send((OUTPUT, with_offset(4196, b"more"))).unwrap();
         let ctl = leased(Duration::from_millis(3000));
         let mut holder = Answering { tx, answer: vec![(SNAPSHOT, with_offset(4200, b"fresh"))], asked: vec![] };
-        // Empty, refilling 2000 bytes a second: the snapshot overdraws it to -4096, so the 104
-        // bytes of output fit after about 2.1 s.
+        // Empty, refilling 2000 bytes a second: the snapshot overdraws it to -4096, so the change
+        // goes after about 2.1 s.
         let budget = Budget { tokens: 0.0, cap: 64.0 * 1024.0, per_s: 2000.0, at: Instant::now() };
         let sent = std::cell::RefCell::new(vec![]);
         let started = Instant::now();
         pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|f| { sent.borrow_mut().push((started.elapsed(), f)); true }, budget, &|_| None).unwrap();
         let sent = sent.into_inner();
-        let shape: Vec<(String, u64)> = sent.iter().map(|(_, f)| (f["kind"].as_str().unwrap().into(), f["seq"].as_u64().unwrap())).collect();
+        let frames: Vec<Value> = sent.iter().map(|(_, f)| f.clone()).collect();
         // Before: seq 1 was skipped, "more" never went, and a snapshot repaired the gap, so the
         // lines that output scrolled off the top were in no viewer's scrollback.
-        assert_eq!(shape, [("snapshot".into(), 0), ("output".into(), 1)]);
-        let data = base64::engine::general_purpose::STANDARD.decode(sent[1].1["data"].as_str().unwrap()).unwrap();
-        assert_eq!(data, [vec![b'a'; 100], b"more".to_vec()].concat(), "every byte, in order");
+        assert_eq!(kinds(&frames), [("snapshot".into(), 0), ("output".into(), 1)]);
+        let mut raw = vt100::Parser::new(24, 80, 0);
+        raw.process(&vec![b's'; 4096]);
+        raw.process(&vec![b'a'; 100]);
+        raw.process(b"more");
+        assert_eq!(viewer(&frames, (80, 24)).screen().contents(), raw.screen().contents(), "every change, in one frame");
         assert!(sent[1].0 >= Duration::from_millis(1800), "sent once the budget was back: {:?}", sent[1].0);
         assert!(holder.asked.is_empty(), "nothing was lost, so nothing is repaired");
     }
@@ -1258,7 +1292,7 @@ mod tests {
         let room = std::cell::Cell::new(false);
         let sent = std::cell::RefCell::new(vec![]);
         let send = |f: Value| room.get() && { sent.borrow_mut().push(f); true };
-        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget: Budget::new(), backlog: Default::default(), stale: false, dirty: false };
+        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget: Budget::new(), backlog: Default::default(), stale: false };
         let data = |f: &Value| base64::engine::general_purpose::STANDARD.decode(f["data"].as_str().unwrap()).unwrap();
         // The connection loop is stalled: nothing finds room.
         out.emit("output", b"block 1, ", (100, 30));
@@ -1291,7 +1325,7 @@ mod tests {
         let sent = std::cell::RefCell::new(vec![]);
         // Room for the first frame, none for the second, then room again.
         let send = |f: Value| { calls.set(calls.get() + 1); calls.get() != 2 && { sent.borrow_mut().push(f); true } };
-        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget: Budget::new(), backlog: Default::default(), stale: false, dirty: false };
+        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget: Budget::new(), backlog: Default::default(), stale: false };
         let screen: Vec<u8> = (0..2 * CHUNK + 5).map(|i| (i % 251) as u8).collect();
         out.emit("snapshot", &screen, (120, 40));
         out.emit("output", b"after", (120, 40));
@@ -1304,7 +1338,7 @@ mod tests {
     #[test]
     fn more_output_than_may_wait_is_given_up_with_a_gap_and_a_snapshot_follows() {
         let ctl = Ctl::new(0);
-        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 4, ctl: &ctl, send: &|_| false, budget: Budget::new(), backlog: Default::default(), stale: false, dirty: false };
+        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 4, ctl: &ctl, send: &|_| false, budget: Budget::new(), backlog: Default::default(), stale: false };
         out.emit("output", &vec![b'x'; BACKLOG], (80, 24));
         assert!(!out.stale && out.seq == 4 && !ctl.snapshot.load(SeqCst), "this much still waits");
         out.emit("output", b"y", (80, 24));
@@ -1324,7 +1358,7 @@ mod tests {
         let sent = std::cell::RefCell::new(vec![]);
         // The queue is full for the first three tries.
         let send = |f: Value| { calls.set(calls.get() + 1); calls.get() > 3 && { sent.borrow_mut().push(f); true } };
-        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget: Budget::new(), backlog: Default::default(), stale: false, dirty: false };
+        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget: Budget::new(), backlog: Default::default(), stale: false };
         out.emit("output", b"waiting", (80, 24));
         assert!(sent.borrow().is_empty() && !out.backlog.is_empty());
         // A viewer arrives.
@@ -1341,7 +1375,7 @@ mod tests {
         let send = |f: Value| room.get() && { sent.borrow_mut().push(f); true };
         let asked = std::cell::Cell::new(0);
         let fetch = |_: usize| { asked.set(asked.get() + 1); Some(b"lines".to_vec()) };
-        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget: Budget::new(), backlog: Default::default(), stale: false, dirty: false };
+        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget: Budget::new(), backlog: Default::default(), stale: false };
         out.emit("output", b"waiting", (80, 24));
         // The queue stays full: the viewer is not held longer than PACE.
         let started = Instant::now();
@@ -1367,7 +1401,7 @@ mod tests {
             let sent = std::cell::RefCell::new(vec![]);
             // No room for output yet (the budget is short, or the queue just filled).
             let send = |f: Value| (room.get() || f["kind"] != "output") && { sent.borrow_mut().push(f); true };
-            let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 7, ctl: &ctl, send: &send, budget: Budget::new(), backlog: Default::default(), stale: false, dirty: false };
+            let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 7, ctl: &ctl, send: &send, budget: Budget::new(), backlog: Default::default(), stale: false };
             out.emit("output", b"last lines", (80, 24));
             // EXIT with `startOver`, as `pump` takes it; then the holder's kept picture.
             out.start_over(&|_| above.clone(), (80, 24), 5);
@@ -1439,16 +1473,19 @@ mod tests {
         pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|f| { sent.borrow_mut().push(f); true }, Budget::new(),
             &|_| panic!("a holder that keeps its lines is never asked on another connection")).unwrap();
         let sent = sent.into_inner();
-        let data = |f: &Value| String::from_utf8(base64::engine::general_purpose::STANDARD.decode(f["data"].as_str().unwrap()).unwrap()).unwrap();
-        let drawn: Vec<(String, String)> = sent.iter().filter(|f| f["kind"] != "ping").map(|f| (f["kind"].as_str().unwrap().to_owned(), data(f))).collect();
+        let text = |f: &Value| String::from_utf8(data(f)).unwrap();
+        let drawn: Vec<(String, String)> = sent.iter().filter(|f| f["kind"] != "ping").map(|f| (f["kind"].as_str().unwrap().to_owned(), text(f))).collect();
         let frame = |kind: &str, text: &str| (kind.to_owned(), text.to_owned());
-        assert_eq!(drawn, [
+        // Block one reached the relay before any screen did: no viewer has a screen to change, and
+        // the lines and the screen behind them show it. Block two changes the screen they have.
+        assert!(drawn[2].0 == "output" && drawn[2].1.contains("block two"), "{drawn:?}");
+        assert_eq!([&drawn[..2], &drawn[3..]].concat(), [
             // Not "first screen": it is older than the lines asked for, and the one behind them is the picture.
-            frame("output", "block one"), frame("history", "lines with block one\r\n"), frame("snapshot", "screen one"), frame("snapshot", "asked screen"),
-            frame("output", "block two"), frame("history", "lines with block two\r\n"), frame("snapshot", "screen two"), frame("snapshot", "asked screen"),
+            frame("history", "lines with block one\r\n"), frame("snapshot", "screen one"),
+            frame("history", "lines with block two\r\n"), frame("snapshot", "screen two"),
         ]);
-        assert_eq!(sent.iter().map(|f| f["seq"].as_u64().unwrap()).collect::<Vec<_>>(), (0..8).collect::<Vec<_>>(), "one run, no gap");
-        assert_eq!(holder.asked.iter().map(|(kind, _)| *kind).collect::<Vec<_>>(), [HISTORY, SNAPSHOT, HISTORY, SNAPSHOT]);
+        assert_eq!(sent.iter().map(|f| f["seq"].as_u64().unwrap()).collect::<Vec<_>>(), (0..5).collect::<Vec<_>>(), "one run, no gap");
+        assert_eq!(holder.asked.iter().map(|(kind, _)| *kind).collect::<Vec<_>>(), [HISTORY, HISTORY], "the screen behind the lines is the picture: none is asked for");
         assert_eq!(holder.asked[0].1, (BURST - HISTORY_RESERVE) as u64, "asked for what the budget has room for");
     }
 
@@ -1495,7 +1532,7 @@ mod tests {
         let sent = std::cell::RefCell::new(vec![]);
         let send = |f: Value| { sent.borrow_mut().push(f); true };
         let budget = Budget { tokens: (HISTORY_RESERVE + 20) as f64, cap: BURST as f64, per_s: 0.0, at: Instant::now() };
-        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget, backlog: Default::default(), stale: false, dirty: false };
+        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget, backlog: Default::default(), stale: false };
         assert!(out.lines(&all, (80, 24)));
         let data = base64::engine::general_purpose::STANDARD.decode(sent.borrow()[0]["data"].as_str().unwrap()).unwrap();
         assert_eq!(data, b"four\x1b[m\r\n\n\n\n", "the last line whole, not the last 20 bytes");
@@ -1738,6 +1775,14 @@ mod tests {
         assert!(matched(vec![holder("aaaa0001")], "aaaa0003").is_none(), "a gone holder has no terminal");
     }
 
+    fn data(f: &Value) -> Vec<u8> {
+        base64::engine::general_purpose::STANDARD.decode(f["data"].as_str().unwrap()).unwrap()
+    }
+
+    fn has(hay: &[u8], needle: &[u8]) -> bool {
+        hay.windows(needle.len()).any(|w| w == needle)
+    }
+
     fn kinds(sent: &[Value]) -> Vec<(String, u64)> {
         sent.iter().map(|f| (f["kind"].as_str().unwrap().into(), f["seq"].as_u64().unwrap())).collect()
     }
@@ -1816,16 +1861,15 @@ mod tests {
     }
 
     #[test]
-    fn a_quiet_relay_pings_instead_of_redrawing_and_output_brings_the_snapshot_back() {
+    fn a_quiet_relay_only_pings_and_output_never_asks_for_a_snapshot() {
         let run = |output: bool| {
             let (tx, rx) = std::sync::mpsc::channel();
             tx.send((SNAPSHOT, with_offset(0, b"screen"))).unwrap();
             if output {
                 tx.send((OUTPUT, with_offset(6, b"x"))).unwrap();
             }
-            // The busy run's output goes out at FLUSH (200 ms): well before the first beat.
-            let mut ctl = leased(Duration::from_millis(2600));
-            ctl.beat = Duration::from_millis(800);
+            let mut ctl = leased(Duration::from_millis(1300));
+            ctl.beat = Duration::from_millis(300);
             let mut holder = Answering { tx, answer: vec![(SNAPSHOT, with_offset(7, b"screen"))], asked: vec![] };
             let sent = std::cell::RefCell::new(vec![]);
             pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|f| { sent.borrow_mut().push(f); true }, Budget::new(), &|_| None).unwrap();
@@ -1834,28 +1878,11 @@ mod tests {
         let (quiet, asked) = run(false);
         assert_eq!(asked, 0, "a quiet screen is never redrawn");
         assert_eq!(quiet[0], ("snapshot".into(), 0));
-        assert!(quiet.len() >= 3 && quiet[1..].iter().all(|k| *k == ("ping".into(), 1)), "{quiet:?}");
+        assert!(quiet.len() >= 4 && quiet[1..].iter().all(|k| *k == ("ping".into(), 1)), "{quiet:?}");
         let (busy, asked) = run(true);
-        assert_eq!(asked, 1);
-        assert_eq!(busy[..4], [("snapshot".into(), 0), ("output".into(), 1), ("snapshot".into(), 2), ("ping".into(), 3)]);
-    }
-
-    #[test]
-    fn a_quiet_relay_still_redraws_once_no_snapshot_was_asked_for_in_its_resync() {
-        let (tx, rx) = std::sync::mpsc::channel();
-        tx.send((SNAPSHOT, with_offset(0, b"screen"))).unwrap();
-        // Beats at 0.5, 1.0, 1.5 and 2.0 s. The last request counts as 1 s before the start, so
-        // the second beat is the first one `resync` after it.
-        let mut ctl = leased(Duration::from_millis(2300));
-        ctl.beat = Duration::from_millis(500);
-        ctl.resync = Duration::from_millis(1700);
-        let mut holder = Answering { tx, answer: vec![(SNAPSHOT, with_offset(6, b"screen"))], asked: vec![] };
-        let sent = std::cell::RefCell::new(vec![]);
-        pump(&rx, &mut holder, ("sid", "gen"), (80, 24), &ctl, &|f| { sent.borrow_mut().push(f); true }, Budget::new(), &|_| None).unwrap();
-        let sent = kinds(&sent.into_inner());
-        assert_eq!(holder.asked.len(), 1, "one redraw, pings between: {sent:?}");
-        assert_eq!(sent[..3], [("snapshot".into(), 0), ("ping".into(), 1), ("snapshot".into(), 1)]);
-        assert!(sent.len() > 3 && sent[3..].iter().all(|k| *k == ("ping".into(), 2)), "{sent:?}");
+        assert_eq!(asked, 0, "output is the change itself: nothing to redraw");
+        assert_eq!(busy[..2], [("snapshot".into(), 0), ("output".into(), 1)]);
+        assert!(busy.len() >= 4 && busy[2..].iter().all(|k| *k == ("ping".into(), 2)), "{busy:?}");
     }
 
     #[test]
@@ -1864,7 +1891,7 @@ mod tests {
         let calls = std::cell::Cell::new(0);
         let sent = std::cell::RefCell::new(vec![]);
         let send = |f: Value| { calls.set(calls.get() + 1); calls.get() % 2 == 0 && { sent.borrow_mut().push(f); true } };
-        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget: Budget::new(), backlog: Default::default(), stale: false, dirty: false };
+        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget: Budget::new(), backlog: Default::default(), stale: false };
         out.history(&|_| Some(vec![b'h'; 3 * CHUNK]), (80, 24));
         assert_eq!(kinds(&sent.borrow()), [("history".into(), 0), ("history".into(), 1), ("history".into(), 2)]);
         assert!(!out.stale, "a full queue for a moment is not a lost frame");
@@ -1875,7 +1902,7 @@ mod tests {
         let ctl = Ctl::new(0);
         let sent = std::cell::RefCell::new(vec![]);
         let send = |f: Value| { sent.borrow_mut().push(f); true };
-        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget: Budget::new(), backlog: Default::default(), stale: false, dirty: false };
+        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &send, budget: Budget::new(), backlog: Default::default(), stale: false };
         out.history(&|_| Some(vec![]), (80, 24));
         out.history(&|_| None, (80, 24));
         assert_eq!(kinds(&sent.borrow()), [("history".into(), 0)], "the viewer hears it has all there is; no answer says nothing");
@@ -1885,7 +1912,7 @@ mod tests {
     #[test]
     fn a_history_burst_that_never_finds_room_is_lost_within_its_pace() {
         let ctl = Ctl::new(0);
-        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &|_| false, budget: Budget::new(), backlog: Default::default(), stale: false, dirty: false };
+        let mut out = Out { ids: ("sid", "gen"), epoch: 1, seq: 0, ctl: &ctl, send: &|_| false, budget: Budget::new(), backlog: Default::default(), stale: false };
         let started = Instant::now();
         out.history(&|_| Some(vec![b'h'; 3 * CHUNK]), (80, 24));
         assert!(started.elapsed() < PACE + Duration::from_millis(500));
@@ -1939,5 +1966,128 @@ mod tests {
         let v = viewer_of(snap, &[tick], (10, 3));
         assert!(v.screen().alternate_screen());
         assert_eq!(v.screen().contents().trim(), "ALT");
+    }
+
+    #[test]
+    fn leaving_the_alternate_screen_in_a_tick_switches_the_viewers_back() {
+        let snap = b"home\x1b[?1049h\x1b[HALT";
+        let mut r = Relayed::seed(snap, (10, 3));
+        r.feed(b"\x1b[?1049l");
+        let tick = r.tick();
+        assert!(tick.starts_with(b"\x1b[?1049l"));
+        let v = viewer_of(snap, &[tick], (10, 3));
+        assert!(!v.screen().alternate_screen());
+        assert_eq!(v.screen().contents().trim(), "home");
+    }
+
+    #[test]
+    fn an_erase_of_the_lines_above_reaches_the_viewers_in_a_tick() {
+        let snap = b"a\r\nb\r\nc\r\nd";
+        let mut r = Relayed::seed(snap, (10, 3));
+        r.feed(b"\x1b[3J");
+        assert!(has(&r.tick(), b"\x1b[3J"));
+    }
+
+    /// Every frame `sent` drawn into one viewer's terminal, as the web viewer draws them.
+    fn viewer(sent: &[Value], (cols, rows): (u16, u16)) -> vt100::Parser {
+        let mut t = vt100::Parser::new(rows, cols, 1000);
+        for f in sent {
+            match f["kind"].as_str().unwrap() {
+                "snapshot" => {
+                    t.process(b"\x1b[?1049l\x1b[r\x1b[2J\x1b[H");
+                    t.process(&data(f));
+                }
+                "output" => t.process(&data(f)),
+                _ => {}
+            }
+        }
+        t
+    }
+
+    #[test]
+    fn the_relay_sends_only_the_cells_an_erase_and_rewrite_changed() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send((SNAPSHOT, with_offset(0, b"\x1b[H\x1b[Jline one\r\nspinner 1"))).unwrap();
+        tx.send((OUTPUT, with_offset(0, b"\x1b[2;1H\x1b[2Kspinner 2"))).unwrap();
+        let _keep = tx;
+        let sent = std::cell::RefCell::new(vec![]);
+        pump(&rx, &mut Vec::<u8>::new(), ("sid", "gen"), (40, 5), &leased(Duration::from_millis(400)), &|f| { sent.borrow_mut().push(f); true },
+            Budget::new(), &|_| None).unwrap();
+        let sent = sent.into_inner();
+        assert_eq!(kinds(&sent)[..2], [("snapshot".into(), 0), ("output".into(), 1)]);
+        assert!(sent[2..].iter().all(|f| f["kind"] == "ping"));
+        let change = data(&sent[1]);
+        assert!(change.len() < 24, "{change:?}");
+        for clear in [&b"\x1b[J"[..], b"\x1b[2J", b"\x1b[2K"] {
+            assert!(!has(&change, clear), "{change:?}");
+        }
+        assert_eq!(viewer(&sent, (40, 5)).screen().contents(), "line one\nspinner 2");
+    }
+
+    #[test]
+    fn rows_that_scroll_off_reach_the_viewers_scrollback_through_the_relay_in_order() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send((SNAPSHOT, with_offset(0, b"a\r\nb\r\nc"))).unwrap();
+        tx.send((OUTPUT, with_offset(0, b"\r\nd\r\ne"))).unwrap();
+        let _keep = tx;
+        let sent = std::cell::RefCell::new(vec![]);
+        pump(&rx, &mut Vec::<u8>::new(), ("sid", "gen"), (10, 3), &leased(Duration::from_millis(300)), &|f| { sent.borrow_mut().push(f); true },
+            Budget::new(), &|_| None).unwrap();
+        let mut v = viewer(&sent.into_inner(), (10, 3));
+        assert_eq!(v.screen().contents(), "c\nd\ne");
+        v.screen_mut().set_scrollback(2);
+        assert_eq!(v.screen().rows(0, 10).next().unwrap(), "a");
+        v.screen_mut().set_scrollback(1);
+        assert_eq!(v.screen().rows(0, 10).next().unwrap(), "b");
+    }
+
+    #[test]
+    fn a_resize_sends_one_snapshot_at_the_new_size() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send((SNAPSHOT, with_offset(0, b"screen"))).unwrap();
+        tx.send((OUTPUT, with_offset(6, b"x"))).unwrap();
+        tx.send((RESIZE, vec![0, 90, 0, 30])).unwrap();
+        let mut holder = Answering { tx, answer: vec![(SNAPSHOT, with_offset(7, b"fresh"))], asked: vec![] };
+        let mut ctl = leased(Duration::from_millis(800));
+        ctl.beat = Duration::from_millis(200);
+        let sent = std::cell::RefCell::new(vec![]);
+        pump(&rx, &mut holder, ("sid", "gen"), (120, 40), &ctl, &|f| { sent.borrow_mut().push(f); true }, Budget::new(), &|_| None).unwrap();
+        let shape: Vec<(String, u64)> = sent.into_inner().iter().map(|f| (f["kind"].as_str().unwrap().into(), f["cols"].as_u64().unwrap())).collect();
+        assert_eq!(holder.asked.len(), 1);
+        assert_eq!(shape[..3], [("snapshot".into(), 120), ("output".into(), 120), ("snapshot".into(), 90)]);
+        assert!(shape.len() > 3 && shape[3..].iter().all(|(kind, cols)| kind == "ping" && *cols == 90), "{shape:?}");
+    }
+
+    /// Review focus 3: a tick with no room in the relay queue waits and merges into the next one.
+    /// Nothing queues up behind it, and nothing is lost (which used to cost a snapshot).
+    #[test]
+    fn ticks_with_no_room_merge_into_the_next_and_no_frame_is_lost() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send((SNAPSHOT, with_offset(0, b"0"))).unwrap();
+        let feeder = tx.clone();
+        std::thread::spawn(move || {
+            for i in 1..=20 {
+                std::thread::sleep(Duration::from_millis(20));
+                let _ = feeder.send((OUTPUT, with_offset(0, format!("\r\n{i}").as_bytes())));
+            }
+        });
+        let mut holder = Answering { tx, answer: vec![(SNAPSHOT, with_offset(0, b"asked"))], asked: vec![] };
+        let sent = std::cell::RefCell::new(vec![]);
+        let started = Instant::now();
+        // The relay queue is full for the first 300 ms.
+        let send = |f: Value| (f["kind"] != "output" || started.elapsed() >= Duration::from_millis(300)) && { sent.borrow_mut().push(f); true };
+        pump(&rx, &mut holder, ("sid", "gen"), (10, 5), &leased(Duration::from_millis(1000)), &send, Budget::new(), &|_| None).unwrap();
+        let sent = sent.into_inner();
+        assert!(holder.asked.is_empty(), "nothing was lost, so nothing is repaired");
+        let drawn: Vec<Value> = sent.into_iter().filter(|f| f["kind"] != "ping").collect();
+        assert_eq!(drawn.iter().map(|f| f["seq"].as_u64().unwrap()).collect::<Vec<_>>(), (0..drawn.len() as u64).collect::<Vec<_>>(), "no gap");
+        // 20 changes over 400 ms, 6 ticks of them with no room: those merge.
+        assert!(drawn.len() <= 6, "{} frames", drawn.len());
+        let mut v = viewer(&drawn, (10, 5));
+        assert_eq!(v.screen().contents(), "16\n17\n18\n19\n20");
+        for back in 1..=16 {
+            v.screen_mut().set_scrollback(back);
+            assert_eq!(v.screen().rows(0, 10).next().unwrap(), (16 - back).to_string(), "{back} rows back");
+        }
     }
 }

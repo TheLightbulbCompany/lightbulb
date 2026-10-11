@@ -66,7 +66,7 @@ export function SessionApprovalCard({ session, client, allowed, own, ownerName }
               {privateSend ? failedFor === detailKey
                 ? "Could not load the exact message. Retry, or approve on your Mac."
                 : "Loading the exact message…"
-                : `Approve this in the terminal on ${where} Mac: Lightbulb cannot show all of it. You can deny it here.`}
+                : `Lightbulb shows only part of this call. Approve it on ${where} Mac; you can deny it here.`}
             </Text>
           )}
           {privateSend && !shown && failedFor === detailKey && <ApprovalButton label="Retry loading message" onPress={() => { setFailedFor(null); setRetry(value => value + 1); }} disabled={busy} />}

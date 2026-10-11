@@ -37,6 +37,7 @@ it("keeps a prompt it cannot show whole deny-only, and offers only suggested mod
   const c = client();
   const { rerender } = render(<SessionApprovalCard session={session({ pendingApproval: { ...pendingApproval, modes: [], exact: false } })} client={c} own ownerName="You" />);
   expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+  expect(screen.getByText("Lightbulb shows only part of this call. Approve it on your Mac; you can deny it here.")).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Deny…" }));
   await userEvent.type(screen.getByLabelText(/Tell Claude why/), "not on main");
   await userEvent.click(screen.getByRole("button", { name: "Deny" }));

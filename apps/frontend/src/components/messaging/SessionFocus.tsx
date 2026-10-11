@@ -30,7 +30,7 @@ export function sessionChatLayout(panelWidth: number, viewportWidth: number): Se
   return panelWidth - CHAT_WIDTH >= TERMINAL_MIN_WIDTH ? "push" : "overlay";
 }
 /** The session's body: the live terminal's own box, or what stands in for it. */
-const SESSION_BODY = ".session-terminal-scroll, .session-terminal-wait, .local-session-terminal, .session-state-panel";
+const SESSION_BODY = ".session-terminal-scroll, .session-terminal-wait, .local-session-terminal, .session-state-panel, .local-session-history";
 
 /**
  * A session its owner ended on purpose leaves every list (owner ruling 2026-10-08) but stays readable by id:

@@ -688,7 +688,7 @@ describe("session screen", () => {
     await render(<SessionScreen />);
     expect(await screen.findByText("command is redacted")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
-    expect(screen.getByText("Approve this in the terminal on your Mac: Lightbulb cannot show all of it. You can deny it here.")).toBeTruthy();
+    expect(screen.getByText("Lightbulb shows only part of this call. Approve it on your Mac; you can deny it here.")).toBeTruthy();
     await fireEvent.press(screen.getByRole("button", { name: "Deny…" }));
     await fireEvent.changeText(screen.getByLabelText("Reason for denial"), "Needs review");
     await fireEvent.press(screen.getByRole("button", { name: "Deny" }));

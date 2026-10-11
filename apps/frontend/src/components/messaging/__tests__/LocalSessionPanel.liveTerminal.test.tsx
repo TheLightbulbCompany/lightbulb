@@ -81,32 +81,31 @@ it("says to answer in the live terminal only while the terminal accepts typing",
   typing.canType = true;
 });
 
-// A terminal session with no terminal reached the workspace from an older Mac app: a short notice, never its conversation.
-it("gives a terminal session with no terminal a short notice with no steps, and never its conversation", async () => {
+// A running session with no terminal shows its conversation under one hint line, as the phone does.
+it("shows the conversation, not a wall, for a plain session", async () => {
   client.watchLocalSession.mockClear();
-  client.listLocalSessionEvents.mockResolvedValueOnce({ events: [{ seq: 1, truncated: false, kind: "text", role: "assistant", text: "All good." }], nextAfterSeq: null } as never);
+  client.listLocalSessionEvents.mockResolvedValueOnce({ events: [
+    { seq: 1, truncated: false, kind: "text", role: "user", text: "fix it" },
+    { seq: 2, truncated: false, kind: "text", role: "assistant", text: "Done." }], nextAfterSeq: null } as never);
   const onMessageOwner = vi.fn();
   const props = { ownerName: "Alice", client: client as never, revision: 0, onAccessLost: () => {}, onEvent: () => () => {}, onMessageOwner };
-  const words = () => [...document.querySelectorAll(".session-state-panel p")].map(p => p.textContent);
-  const mine = render(<LocalSessionPanel {...props} own session={{ ...session, terminal: undefined, status: "busy", latestEventSeq: 1 }} />);
-  expect(words()).toEqual(["This session's screen is not shared.", "Lightbulb cannot show this session's screen. Teammates still see its status and what it changed."]);
-  await waitFor(() => expect(client.listLocalSessionEvents).toHaveBeenCalled());
-  expect(screen.queryByText("All good.")).toBeNull();
-  expect(screen.queryByRole("log")).toBeNull();
-  expect(screen.queryByRole("region", { name: /Live terminal/ })).toBeNull();
+  const plain = { ...session, terminal: undefined, terminalReason: "plain" as const, status: "busy" as const, latestEventSeq: 2 };
+  const mine = render(<LocalSessionPanel {...props} own session={plain} />);
+  expect(await screen.findByRole("region", { name: "Native session history" })).toBeTruthy();
+  expect(await screen.findByText("fix it")).toBeTruthy();
+  expect(await screen.findByText("Done.")).toBeTruthy();
   expect(client.watchLocalSession).not.toHaveBeenCalled();
+  expect(screen.queryByText(/not started through Lightbulb/)).toBeNull();
+  expect(document.querySelector(".session-state-panel")).toBeNull();
+  expect(document.querySelector(".session-live-hint")!.textContent).toMatch(/^Press ← in its terminal to share this one live/);
   expect(screen.getByRole("textbox", { name: /send to/i })).toBeTruthy();
   mine.unmount();
-  for (const variant of [{ provider: "codex" as const, terminalReason: "no-daemon" as const }, { terminalReason: "plain" as const }, {}]) {
-    const theirs = render(<LocalSessionPanel {...props} own={false} session={{ ...session, terminal: undefined, ...variant }} />);
-    expect(words()).toEqual(["Alice is working in this session, but its screen is not shared.", "You can still follow its status and what it changed."]);
-    theirs.unmount();
-  }
-  render(<LocalSessionPanel {...props} own={false} session={{ ...session, terminal: undefined }} />);
-  // One Message button, in the panel, not a second one under it.
-  const message = screen.getByRole("button", { name: "Message Alice" });
-  expect(message.closest(".session-state-panel")).not.toBeNull();
-  fireEvent.click(message);
+  const codex = render(<LocalSessionPanel {...props} own session={{ ...plain, provider: "codex", terminalReason: "no-daemon" }} />);
+  expect(document.querySelector(".session-live-hint")!.textContent).toBe("Start it again with lightbulb codex to share its screen.");
+  codex.unmount();
+  render(<LocalSessionPanel {...props} own={false} session={plain} />);
+  expect(document.querySelector(".session-live-hint")!.textContent).toBe("Ask Alice to press ← in their terminal.");
+  fireEvent.click(screen.getByRole("button", { name: "Message Alice" }));
   expect(onMessageOwner).toHaveBeenCalled();
 });
 

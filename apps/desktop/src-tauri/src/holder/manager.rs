@@ -426,9 +426,44 @@ pub fn stop_ended() {
     }
 }
 
+/// Holders born before this login session: their provider lost the login's services (DNS, the
+/// keychain, `id -un`) for good while it still reports Idle (proved 2026-10-11). Attach holders are
+/// views onto a provider's own daemon, not sessions; ended ones are already kept pictures.
+pub fn stranded(holders: &[HolderInfo]) -> Vec<HolderInfo> {
+    let Some(login) = super::identity::login_session_start() else { return vec![] };
+    stranded_at(holders, login, |pid| super::identity::read(pid).map(|me| me.birth_micros))
+        .into_iter()
+        .filter(|h| !is_ended(h))
+        .collect()
+}
+
+/// `stranded` without the I/O: `login` and each pid's birth in µs. An unknown birth is not stranded.
+pub fn stranded_at(holders: &[HolderInfo], login: u64, birth: impl Fn(u32) -> Option<u64>) -> Vec<HolderInfo> {
+    holders
+        .iter()
+        .filter(|h| attach_job(h).is_none() && birth(h.pid).is_some_and(|b| b < login))
+        .cloned()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stranded_skips_attach_holders_and_ended_ones_and_keeps_the_old() {
+        // Never pid 0 or 1: `stop(pid)` signals a process group.
+        let old = HolderInfo { id: "old00001".into(), socket: "/x/old00001.sock".into(), pid: 2_147_483_000, provider_pid: 2_147_483_001,
+            argv: vec!["/bin/sh".into(), "-c".into(), "exec claude".into()], cwd: "/".into(), watch: true, type_input: true };
+        // A real attach holder's argv: a view onto the provider's daemon, not a session.
+        let attach = HolderInfo { id: "attach01".into(), argv: attach_argv(Path::new("/usr/local/bin/claude"), "ab12cd34"), ..old.clone() };
+        assert!(attach_job(&attach).is_some());
+        let young = HolderInfo { id: "young001".into(), pid: 2_147_483_002, ..old.clone() };
+        let unknown = HolderInfo { id: "gone0001".into(), pid: 2_147_483_003, ..old.clone() };
+        let birth = |pid: u32| match pid { 2_147_483_002 => Some(2_000), 2_147_483_003 => None, _ => Some(500) };
+        let got = stranded_at(&[old.clone(), attach, young, unknown], 1_000, birth);
+        assert_eq!(got.iter().map(|h| h.id.as_str()).collect::<Vec<_>>(), vec![old.id.as_str()]);
+    }
 
     #[cfg(target_os = "macos")]
     #[test]

@@ -10,7 +10,8 @@ their own private scope and the team scope (``routers/memory.py``). Two scopes p
   events under ``actorId = <owner>:<user>``.
 
 Owner ids never contain ``:`` (``owner_namespace`` refuses one), so ``<owner>:`` can only name
-this owner's members. Records are listed by ``namespace``, never ``namespacePath``.
+this owner's members. Records are listed by exact ``namespace``; only the owner wipe's member
+scan uses ``namespacePath``.
 
 A wipe deletes the RECORDS in the caller's request and raises if any fail -- they never expire,
 so a silent miss would outlive the wipe. The events (one per turn, possibly thousands) and a late
@@ -20,10 +21,10 @@ Deletes are eventually consistent (~22 s). Empty session/actor shells stay liste
 events would have expired; AgentCore has no API to delete them and they carry no content.
 
 The owner wipe finds member scopes two ways, because neither alone is complete: a
-``namespace`` prefix list of ``/owners/<owner>:user_`` (the API documents ``namespace`` as a
-prefix; it reaches a member whose events already expired, which ``ListActors`` cannot), and
-``ListActors`` (the events, plus each listed member's exact namespace in case the prefix is
-not honoured).
+``namespacePath="/owners/"`` scan (it reaches a member whose events already expired, which
+``ListActors`` cannot), and ``ListActors`` (the events, plus each listed member's namespace).
+``namespace`` is NOT a prefix in practice, whatever the API docs say: on dev (2026-10-11)
+``/owners/<owner>:user_`` and ``/owners/`` both listed nothing while private records existed.
 """
 
 import asyncio
@@ -76,7 +77,7 @@ def _pages(call, key: str, **kwargs) -> list:
 
 
 def _delete_records(client, label: str, memory_id: str, namespaces: list[str]) -> int:
-    # dict.fromkeys: the owner wipe's namespaces overlap (prefix + exact), so ids repeat.
+    # dict.fromkeys: the owner wipe's namespaces overlap (scan + ListActors), so ids repeat.
     record_ids = list(
         dict.fromkeys(
             r["memoryRecordId"]
@@ -117,6 +118,20 @@ def _member_actors(client, owner_id: str, memory_id: str) -> list[str]:
         for a in _pages(client.list_actors, "actorSummaries", memoryId=memory_id)
         if a["actorId"].startswith(prefix)
     ]
+
+
+def _member_namespaces(client, owner_id: str, memory_id: str) -> list[str]:
+    """Every ``/owners/<owner>:<user>/`` that holds a record, found by scanning ``/owners/``.
+    ponytail: env-wide scan per owner wipe; page by owner if the env grows past a few 10k records."""
+    prefix = f"/owners/{owner_id}:"
+    found = (
+        ns
+        for r in _pages(
+            client.list_memory_records, "memoryRecordSummaries", memoryId=memory_id, namespacePath="/owners/"
+        )
+        for ns in r.get("namespaces") or []
+    )
+    return sorted({ns for ns in found if ns.startswith(prefix)})
 
 
 async def _still_gone(label: str, check: Callable[[], Awaitable[bool]] | None) -> bool:
@@ -187,7 +202,8 @@ async def delete_owner_memory(owner_id: str, *, resweep_after_s: float = RESWEEP
         return
     client = _client()
     members = await run_in_thread(_member_actors, client, owner_id, memory_id)
-    namespaces = [team, f"/owners/{owner_id}:user_", *(f"/owners/{a}/" for a in members)]
+    scanned = await run_in_thread(_member_namespaces, client, owner_id, memory_id)
+    namespaces = list(dict.fromkeys([team, *scanned, *(f"/owners/{a}/" for a in members)]))
     await _wipe(client, f"owner={owner_id}", memory_id, namespaces, [owner_id, *members], resweep_after_s)
 
 

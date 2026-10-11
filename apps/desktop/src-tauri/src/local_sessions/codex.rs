@@ -11,10 +11,15 @@ use tokio_tungstenite::{client_async, tungstenite::Message, WebSocketStream};
 /// way.
 const ACCEPTED_SOURCES: [&str; 2] = ["cli", "vscode"];
 
-/// The Desktop app's originator. Newer terminal TUIs also write
-/// `source: "vscode"`, with `originator: "codex-tui"`; see `accepted_app_source`.
-/// These values keep the VS Code extension's rollouts out of this mirror.
-const ACCEPTED_APP_ORIGINATORS: [&str; 1] = ["Codex Desktop"];
+/// The Desktop app's originators: `codex_work_desktop` is what newer app builds
+/// write for a conversation. Newer terminal TUIs also write `source: "vscode"`,
+/// with `originator: "codex-tui"`; see `accepted_app_source`. These values keep
+/// the VS Code extension's rollouts out of this mirror.
+const ACCEPTED_APP_ORIGINATORS: [&str; 2] = ["Codex Desktop", "codex_work_desktop"];
+
+fn app_originator(payload: &Value) -> bool {
+    payload["originator"].as_str().is_some_and(|o| ACCEPTED_APP_ORIGINATORS.contains(&o))
+}
 
 /// Runtimes whose *paginated* rollout grammar this parser was verified
 /// against. A `"legacy"` rollout carries none of the `item_completed` rows
@@ -43,10 +48,23 @@ fn accepted_app_source(source: &str, payload: &Value) -> bool {
     if source != "vscode" {
         return true;
     }
-    let originator = payload["originator"].as_str().unwrap_or("");
-    ACCEPTED_APP_ORIGINATORS.contains(&originator)
-        || (originator == "codex-tui"
+    app_originator(payload)
+        || (payload["originator"] == "codex-tui"
             && payload["cli_version"].as_str().is_some_and(|v| v == "0.157.1" || at_least(v, [0, 159, 2])))
+}
+
+/// The ChatGPT app ships its bundled codex as a prerelease (`0.162.0-alpha.17.2`).
+/// Accepted only for that bundle, whose file `capture` identifies by path and inode
+/// before running it for its version: the bundle is the app's own, so its
+/// prerelease is the shipped app. A terminal or daemon prerelease stays refused, and
+/// so does any suffix other than `alpha.N[.N]` (`0.160.1-custom`).
+fn desktop_prerelease(version: &str) -> bool {
+    let Some((core, pre)) = version.split_once('-') else { return false };
+    let Some(numbers) = pre.strip_prefix("alpha.") else { return false };
+    let parts: Vec<&str> = numbers.split('.').collect();
+    at_least(core, [0, 159, 2])
+        && (1..=2).contains(&parts.len())
+        && parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
 fn desktop_program_in(resources: &Path, running: Option<&Path>) -> Option<PathBuf> {
@@ -155,11 +173,17 @@ fn accepted_history_mode(source: &str, payload: &Value) -> bool {
     }
 }
 
-fn from_rollout(
+fn from_rollout(root: &Path, process: Process, path: &Path, version: &str) -> Result<NativeSession> {
+    from_writer(root, process, path, version, false)
+}
+
+/// `desktop_bundle`: the writer is the ChatGPT app's own bundled codex (see `desktop_prerelease`).
+fn from_writer(
     root: &Path,
     process: Process,
     path: &Path,
     version: &str,
+    desktop_bundle: bool,
 ) -> Result<NativeSession> {
     let path = confined_path(root, path)?;
     let mut reader = BufReader::new(secure_file(&path)?.take(65536));
@@ -189,11 +213,11 @@ fn from_rollout(
     // cli_version. The writer is verified separately against the exact installed
     // bundle inode; a supported paginated header is not its current runtime version.
     let desktop_upgrade = source == "vscode"
-        && row["payload"]["originator"] == "Codex Desktop"
+        && app_originator(&row["payload"])
         && row["payload"]["history_mode"] == "paginated"
-        && at_least(version, [0, 159, 2]);
-    let verified = accepted_version(reported) && accepted_version(version)
-        && (reported == version || desktop_upgrade);
+        && (at_least(version, [0, 159, 2]) || (desktop_bundle && desktop_prerelease(version)));
+    let verified = accepted_version(reported)
+        && (desktop_upgrade || (accepted_version(version) && reported == version));
     let (status, active_turn, title) = tail_state(&path);
     let title = root.parent().and_then(|codex| thread_name(&codex.join("session_index.jsonl"), conversation)).or(title);
     Ok(NativeSession {
@@ -220,7 +244,7 @@ fn from_rollout(
         forked_from: None,
         // The header says who wrote it: the app's own conversations, never a TUI (the app's
         // bundled CLI run in a terminal writes `cli`).
-        app: source == "vscode" && row["payload"]["originator"] == "Codex Desktop",
+        app: source == "vscode" && app_originator(&row["payload"]),
     })
 }
 
@@ -292,6 +316,8 @@ pub(super) async fn capture(home: &Path, program: &Path, pid: u32) -> Result<Vec
     // yield one session.
     paths.sort();
     paths.dedup();
+    let desktop_bundle = daemon_release(home, &execution).is_none()
+        && desktop_program_in(Path::new(DESKTOP_RESOURCES), Some(&execution.executable)).is_some();
     let version = match daemon_release(home, &execution) {
         Some((path, version)) => named_release_version(&execution, &path, &version).await,
         None => {
@@ -305,7 +331,7 @@ pub(super) async fn capture(home: &Path, program: &Path, pid: u32) -> Result<Vec
     let mut found = Vec::with_capacity(paths.len());
     let mut refusal = None;
     for path in &paths {
-        match from_rollout(&root, execution.clone(), path, &version) {
+        match from_writer(&root, execution.clone(), path, &version, desktop_bundle) {
             Ok(mut session) => {
                 if let Some((path, inode)) = &control {
                     session.socket = Some(path.clone());
@@ -1831,6 +1857,28 @@ mod tests {
         fs::remove_file(&new).unwrap();
         std::os::unix::fs::symlink(&old, &new).unwrap();
         assert_eq!(desktop_program_in(resources, Some(&new)), None, "never execute an unexpected symlink");
+    }
+
+    #[test]
+    fn local_sessions_codex_app_work_threads_and_bundled_prerelease_are_mirrored() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let path = root.join("rollout-work.jsonl");
+        fs::write(&path, format!("{}\n", json!({"type":"session_meta","payload":{
+            "id":"work", "source":"vscode", "originator":"codex_work_desktop",
+            "cli_version":"0.160.1", "history_mode":"paginated"}}))).unwrap();
+        let process = Process { pid: 42, birth_micros: 123, executable: "/app/codex".into() };
+        let work = from_writer(&root, process.clone(), &path, "0.162.0-alpha.17.2", true).unwrap();
+        assert!(work.app);
+        assert_eq!((work.restriction, work.version.as_str()), (None, "0.162.0-alpha.17.2"));
+        assert_eq!(from_rollout(&root, process.clone(), &path, "0.160.1").unwrap().restriction, None);
+        // A prerelease is the app's only when the bundle wrote it; no other suffix is.
+        assert_eq!(from_rollout(&root, process.clone(), &path, "0.162.0-alpha.17.2").unwrap().restriction.as_deref(), Some("runtime-unverified"));
+        for refused in ["0.160.1-custom", "0.158.0-alpha.1", "0.162.0-alpha.", "0.162.0-alpha.1.2.3", "0.162.0-beta.1"] {
+            assert_eq!(from_writer(&root, process.clone(), &path, refused, true).unwrap().restriction.as_deref(), Some("runtime-unverified"), "{refused}");
+        }
+        assert!(normalize("work", &json!({"type":"session_meta","payload":{"id":"work","source":"vscode",
+            "originator":"codex_work_desktop","cli_version":"0.160.1","history_mode":"paginated"}})).unwrap().is_empty());
     }
 
     #[test]

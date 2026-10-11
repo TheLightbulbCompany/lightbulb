@@ -1,9 +1,18 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { type RoomDetail, type RoomMember } from "@lightbulb/shared";
+import type { ReactNode } from "react";
 import { Alert } from "react-native";
 
 const mockPush = jest.fn();
 jest.mock("expo-router", () => ({ router: { push: (href: string) => mockPush(href) } }));
+
+jest.mock("../../ui/BottomSheet", () => {
+  const { View } = require("react-native");
+  return {
+    BottomSheet: ({ visible, children }: { visible: boolean; children: ReactNode }) =>
+      visible ? <View>{children}</View> : null,
+  };
+});
 
 import { RoomDetails } from "../RoomDetails";
 

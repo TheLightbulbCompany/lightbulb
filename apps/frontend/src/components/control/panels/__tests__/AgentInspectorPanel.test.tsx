@@ -7,8 +7,17 @@ import { AgentInspectorPanel } from "../AgentInspectorPanel";
 // them so we can assert which one is mounted without dragging their gateway /
 // billing deps into the sandbox.
 vi.mock("../AgentOverviewTab", () => ({
-  AgentOverviewTab: ({ agentId }: { agentId: string }) => (
-    <div data-testid="overview-tab">overview:{agentId}</div>
+  AgentOverviewTab: ({
+    agentId,
+    onAgentUpdated,
+  }: {
+    agentId: string;
+    onAgentUpdated: () => void;
+  }) => (
+    <div data-testid="overview-tab">
+      overview:{agentId}
+      <button type="button" onClick={onAgentUpdated}>refresh agent</button>
+    </div>
   ),
 }));
 vi.mock("../AgentToolsTab", () => ({
@@ -162,6 +171,13 @@ describe("AgentInspectorPanel", () => {
     renderInspector();
     expect(screen.getByTestId("overview-tab")).toHaveTextContent("overview:agent_42");
     expect(screen.queryByTestId("tools-tab")).not.toBeInTheDocument();
+  });
+
+  it("refreshes the roster after an overview mutation", () => {
+    refreshSpy.mockClear();
+    renderInspector();
+    fireEvent.click(screen.getByRole("button", { name: "refresh agent" }));
+    expect(refreshSpy).toHaveBeenCalledTimes(1);
   });
 
   it("opens a real tab when ?inspectorTab deep-links in", () => {

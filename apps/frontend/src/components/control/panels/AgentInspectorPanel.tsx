@@ -173,7 +173,11 @@ export function AgentInspectorPanel({
       >
         {activeTab === "overview" ? (
           <>
-            <AgentOverviewTab agentId={inspectedAgentId} agent={agent} />
+            <AgentOverviewTab
+              agentId={inspectedAgentId}
+              agent={agent}
+              onAgentUpdated={refresh}
+            />
             {orgAgent ? (
               <section
                 className="mt-6 border-t border-[var(--edge)] pt-6"

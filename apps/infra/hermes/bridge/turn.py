@@ -3298,6 +3298,37 @@ def compact_after_turn(agent_id: str, session_key: str) -> threading.Thread | No
     return thread
 
 
+# ---- private DM: no shared notes ---------------------------------------------------------------
+# Hermes's built-in memory tool writes memories/USER.md and MEMORY.md, which Hermes puts in the
+# prompt of EVERY session of the agent -- so a fact one person told the agent in their 1:1 DM was
+# recited to another person in theirs (dev 10-10: a locker code). In a private DM the AgentCore
+# provider already keeps what the person says in their own scope, so an add/replace there is
+# refused (remove still works: it can only take shared text out). Same predicate as the
+# provider's (plugins/memory/agentcore initialize): chat_type "dm" and a person (Clerk user id)
+# speaking. Set on every agent construction; Hermes copies ContextVars into its tool workers and
+# into the post-turn background-review fork (propagate_context_to_thread), which shares this
+# agent's memory store and would otherwise save the same fact on its own.
+_PRIVATE_DM: contextvars.ContextVar[bool] = contextvars.ContextVar("lightbulb_private_dm", default=False)
+_PERSON_ID = re.compile(r"user_[A-Za-z0-9]+")
+PRIVATE_DM_NOTES = ("Not saved: this is a private DM. What this person tells you here is already "
+                    "remembered privately and automatically, for them only. Shared notes are only for "
+                    "things said in shared rooms. You can tell them you will remember it.")
+
+
+def memory_pre_tool_call(tool_name: str = "", args: dict | None = None, **_kw):
+    """Hermes pre_tool_call hook (registered by the lightbulb plugin): refuse a shared-notes write
+    in a private DM turn."""
+    if tool_name != "memory" or not _PRIVATE_DM.get():
+        return None
+    args = args if isinstance(args, dict) else {}
+    ops = args.get("operations")
+    actions = [op.get("action") for op in ops if isinstance(op, dict)] if isinstance(ops, list) and ops \
+        else [args.get("action")]
+    if any(action in ("add", "replace") for action in actions):
+        return {"action": "block", "message": PRIVATE_DM_NOTES}
+    return None
+
+
 def _construct_agent(agent_id: str, body: dict, frames, session_key: str, **limits):
     """The one place that builds a real Hermes AIAgent. Home-scoping is the CALLER's job now
     (_run_hermes's `_hermes_home_scope`, held across construction AND run_conversation — see
@@ -3316,6 +3347,9 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str, **limi
     config = pin_profile_defaults(agent_id)
     model, provider = profile_model(config)  # the profile's tier, not the runtime-wide one
     room = body.get("room") or {}
+    user_id = str((body.get("sender") or {}).get("id", ""))
+    chat_type = "dm" if room.get("kind") == "dm" else "group"
+    _PRIVATE_DM.set(chat_type == "dm" and bool(_PERSON_ID.fullmatch(user_id)))
     callbacks = {}
     if frames is not None:
         # stream_delta_callback / reasoning_callback are the per-token text streams (Task 11).
@@ -3342,9 +3376,9 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str, **limi
         "session_id": _session_tip(db, session_key) if db is not None else session_key,
         "session_db": db,
         "platform": "lightbulb",
-        "user_id": str((body.get("sender") or {}).get("id", "")),
+        "user_id": user_id,
         "chat_id": str(room.get("id", "")),
-        "chat_type": "dm" if room.get("kind") == "dm" else "group",
+        "chat_type": chat_type,
         "gateway_session_key": session_key,
         "enabled_toolsets": enabled_toolsets,
         "disabled_toolsets": disabled_toolsets,

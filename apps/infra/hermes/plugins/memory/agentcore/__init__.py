@@ -127,8 +127,9 @@ class AgentCoreMemoryProvider(MemoryProvider):
         if self._member:
             return ("Recalled memory may appear in your context: workspace memory shared by every "
                     "agent and room, plus memory private to the person in this DM. What they say "
-                    "here stays private to them; do not save it with the memory tool (shown in "
-                    "every room) unless they ask you to.")
+                    "here stays private to them and is remembered automatically, so the memory "
+                    "tool cannot save in this DM (its notes are shown in every room); if they ask "
+                    "you to remember something, just confirm that you will.")
         return ("Recalled workspace memory may appear in your context; it is shared by every "
                 "agent in this workspace and may come from any room.")
 

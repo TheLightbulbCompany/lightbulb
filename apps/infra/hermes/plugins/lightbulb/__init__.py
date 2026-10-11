@@ -456,7 +456,10 @@ def register(ctx) -> None:
     """Register all Lightbulb tools and redaction patterns with the Hermes context."""
     _register_redaction_default()
     _scope_session_search()
+    from bridge import turn
+
     ctx.register_hook("pre_tool_call", browser_control.pre_tool_call)
+    ctx.register_hook("pre_tool_call", turn.memory_pre_tool_call)  # no shared notes from a private DM
     ctx.register_hook("post_tool_call", browser_control.post_tool_call)
     ctx.register_hook("post_tool_call", _log_memory_full)
     ctx.register_hook("transform_tool_result", website_logins.transform_tool_result)

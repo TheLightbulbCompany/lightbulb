@@ -229,7 +229,7 @@ export function RoomDetails({
       {renameRoom ? (
         <RoomRenameSheet
           visible={sheet === "rename"}
-          roomName={room.name ?? roomDisplayName(room)}
+          roomName={room.name ?? roomDisplayName(room, room.members)}
           onRename={renameRoom}
           onClose={() => setSheet(null)}
         />

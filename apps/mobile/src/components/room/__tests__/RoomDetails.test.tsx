@@ -146,6 +146,22 @@ describe("RoomDetails", () => {
     await waitFor(() => expect(props.removeMember).toHaveBeenCalledWith({ kind: "human", id: "user-b" }));
   });
 
+  it("lets channel admins rename a channel and trims the submitted name", async () => {
+    const renameRoom = jest.fn(async () => {});
+    await setup(room({}, "admin"), { renameRoom });
+
+    await fireEvent.press(screen.getByText("Rename channel"));
+    fireEvent.changeText(screen.getByLabelText("Channel name"), "  Roadmap  ");
+    await fireEvent.press(screen.getByLabelText("Save"));
+
+    await waitFor(() => expect(renameRoom).toHaveBeenCalledWith("Roadmap"));
+  });
+
+  it("does not offer channel rename to a member without permission", async () => {
+    await setup(room({}, "member"), { renameRoom: jest.fn(async () => {}) });
+    expect(screen.queryByText("Rename channel")).toBeNull();
+  });
+
   it("lets any group chat member search for and add an eligible workspace person", async () => {
     const props = await setup(room({ kind: "group-dm", name: null }), {
       candidates: [

@@ -185,7 +185,7 @@ export function AgentInspectorPanel({
                 >
                   Organization
                 </h3>
-                <AgentOrgControls agent={orgAgent} agents={rosterAgents} />
+                <AgentOrgControls agent={orgAgent} agents={rosterAgents} onUpdated={refresh} />
               </section>
             ) : null}
           </>

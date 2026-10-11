@@ -34,6 +34,18 @@ export function useAgentMutations() {
     [patch, revalidate],
   );
 
+  const rename = useCallback(
+    async (agentId: string, name: string) => {
+      const trimmed = name.trim();
+      if (!trimmed) throw new Error("Enter a name.");
+      if (trimmed.length > 80) throw new Error("Agent names must be 80 characters or fewer.");
+      if (/\p{C}/u.test(trimmed)) throw new Error("Agent names cannot contain control characters.");
+      await patch(`/agents/${agentId}`, { name: trimmed });
+      revalidate(agentId);
+    },
+    [patch, revalidate],
+  );
+
   const pause = useCallback(
     async (agentId: string) => {
       await post(`/agents/${agentId}/pause`, {});
@@ -89,5 +101,5 @@ export function useAgentMutations() {
     [del, mutate],
   );
 
-  return { setReportsTo, pause, resume, resetSession, clearError, remove };
+  return { setReportsTo, rename, pause, resume, resetSession, clearError, remove };
 }

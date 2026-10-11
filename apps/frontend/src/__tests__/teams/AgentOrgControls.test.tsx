@@ -9,8 +9,9 @@ const resume = vi.fn();
 const resetSession = vi.fn();
 const clearError = vi.fn();
 const remove = vi.fn();
+const rename = vi.fn();
 vi.mock("@/components/teams/agents/hooks/useAgentMutations", () => ({
-  useAgentMutations: () => ({ setReportsTo, pause, resume, resetSession, clearError, remove }),
+  useAgentMutations: () => ({ setReportsTo, rename, pause, resume, resetSession, clearError, remove }),
 }));
 
 import { AgentOrgControls } from "@/components/teams/agents/AgentOrgControls";
@@ -28,6 +29,7 @@ beforeEach(() => {
   resetSession.mockReset();
   clearError.mockReset();
   remove.mockReset();
+  rename.mockReset();
 });
 
 describe("AgentOrgControls", () => {
@@ -52,6 +54,35 @@ describe("AgentOrgControls", () => {
     // Bob picks Friday as manager.
     fireEvent.change(screen.getByLabelText(/reports to/i), { target: { value: "f" } });
     await waitFor(() => expect(setReportsTo).toHaveBeenCalledWith("b", "f"));
+  });
+
+  it("renames an agent and refreshes display-name consumers", async () => {
+    rename.mockResolvedValue(undefined);
+    const onUpdated = vi.fn();
+    render(<AgentOrgControls agent={BOB} agents={AGENTS} onUpdated={onUpdated} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Rename agent" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Agent name" }), {
+      target: { value: "  Research Lead  " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(rename).toHaveBeenCalledWith("b", "  Research Lead  "));
+    expect(onUpdated).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("textbox", { name: "Agent name" })).not.toBeInTheDocument();
+  });
+
+  it("rejects a duplicate display name without calling the API", () => {
+    render(<AgentOrgControls agent={BOB} agents={AGENTS} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Rename agent" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Agent name" }), {
+      target: { value: " friday " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(screen.getByRole("alert")).toHaveTextContent("already uses that name");
+    expect(rename).not.toHaveBeenCalled();
   });
 
   it("shows Pause and calls pause for a running agent", async () => {

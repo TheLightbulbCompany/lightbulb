@@ -13,10 +13,14 @@ def _fake_client(record_pages: list[tuple[list[str], bool]], sessions: dict[str,
     """``record_pages``: (ids, has_next) per ListMemoryRecords call, in order. ``sessions``: event
     pages per session."""
     fake = MagicMock()
-    fake.list_memory_records.side_effect = [
+    pages_left = [
         {"memoryRecordSummaries": [{"memoryRecordId": r} for r in page], **({"nextToken": "n"} if nxt else {})}
         for page, nxt in record_pages
     ]
+    # The owner wipe's member scan (namespacePath) finds no member scope here.
+    fake.list_memory_records.side_effect = lambda **kw: (
+        {"memoryRecordSummaries": []} if "namespacePath" in kw else pages_left.pop(0)
+    )
     fake.batch_delete_memory_records.return_value = {"successfulRecords": [], "failedRecords": []}
     fake.list_sessions.return_value = {"sessionSummaries": [{"sessionId": s} for s in sessions]}
     pages = {sid: list(ps) for sid, ps in sessions.items()}
@@ -40,9 +44,8 @@ def configured(monkeypatch):
 async def test_wipe_deletes_records_now_and_events_plus_late_records_in_the_tail(monkeypatch, configured):
     records = [f"r{i}" for i in range(250)]
     fake = _fake_client(
-        # first pass: team in two pages, member prefix empty; the late re-sweep finds one record
-        # extraction produced afterwards
-        [(records[:125], True), (records[125:], False), ([], False), (["late"], False), ([], False)],
+        # first pass: team in two pages; the late re-sweep finds one record extraction produced afterwards
+        [(records[:125], True), (records[125:], False), (["late"], False)],
         {"s1": [["e1", "e2"], ["e3"]], "s2": [["e4"]]},
     )
     monkeypatch.setattr(workspace_memory, "_client", lambda: fake)
@@ -53,9 +56,9 @@ async def test_wipe_deletes_records_now_and_events_plus_late_records_in_the_tail
     await asyncio.gather(*workspace_memory._tails)
 
     for call in fake.list_memory_records.call_args_list:
-        # Team namespace, then the member-scope prefix; never namespacePath.
-        assert call.kwargs["namespace"] in ("/owners/org_x/", "/owners/org_x:user_")
-        assert "namespacePath" not in call.kwargs
+        # The team namespace, plus one member scan of /owners/.
+        assert call.kwargs.get("namespace", "/owners/org_x/") == "/owners/org_x/"
+        assert call.kwargs.get("namespacePath", "/owners/") == "/owners/"
     chunks = [c.kwargs["records"] for c in fake.batch_delete_memory_records.call_args_list]
     assert [len(c) for c in chunks] == [100, 100, 50, 1]
     assert [r["memoryRecordId"] for c in chunks for r in c] == [*records, "late"]
@@ -69,7 +72,7 @@ async def test_wipe_deletes_records_now_and_events_plus_late_records_in_the_tail
 @pytest.mark.asyncio
 async def test_a_record_that_fails_to_delete_fails_the_wipe(monkeypatch, configured):
     """Records never expire: a partial delete must say 'retry me', not report success."""
-    fake = _fake_client([(["r1", "r2"], False), ([], False)], {})
+    fake = _fake_client([(["r1", "r2"], False)], {})
     fake.batch_delete_memory_records.return_value = {"successfulRecords": [], "failedRecords": [{"id": "r2"}]}
     monkeypatch.setattr(workspace_memory, "_client", lambda: fake)
     with pytest.raises(RuntimeError, match="1 of 2 records"):
@@ -92,14 +95,19 @@ async def test_wipe_refuses_an_owner_id_that_would_widen_the_namespace(monkeypat
 
 
 def _scoped_client(records_by_ns: dict[str, list[str]], actors: list[str]) -> MagicMock:
-    """Records per namespace (a prefix list returns every namespace that starts with it, as the
-    API documents), one session with one event per actor."""
+    """Records per namespace as dev AgentCore answers (2026-10-11): ``namespace`` matches exactly
+    (a trailing slash aside), ``namespacePath`` returns everything under it. One session with one
+    event per actor."""
     fake = MagicMock()
-    fake.list_memory_records.side_effect = lambda **kw: {
-        "memoryRecordSummaries": [
-            {"memoryRecordId": r} for ns, ids in records_by_ns.items() if ns.startswith(kw["namespace"]) for r in ids
-        ]
-    }
+
+    def _list(**kw):
+        if "namespacePath" in kw:
+            hits = [(ns, ids) for ns, ids in records_by_ns.items() if ns.startswith(kw["namespacePath"])]
+        else:
+            hits = [(ns, ids) for ns, ids in records_by_ns.items() if ns.rstrip("/") == kw["namespace"].rstrip("/")]
+        return {"memoryRecordSummaries": [{"memoryRecordId": r, "namespaces": [ns]} for ns, ids in hits for r in ids]}
+
+    fake.list_memory_records.side_effect = _list
     fake.batch_delete_memory_records.return_value = {"failedRecords": []}
     fake.list_actors.return_value = {"actorSummaries": [{"actorId": a} for a in actors]}
     fake.list_sessions.return_value = {"sessionSummaries": [{"sessionId": "s"}]}
@@ -113,7 +121,7 @@ def _deleted_records(fake) -> list[str]:
 
 @pytest.mark.asyncio
 async def test_owner_wipe_also_deletes_every_member_scope_and_nothing_of_a_prefix_neighbour(monkeypatch, configured):
-    """Member scopes come from the namespace prefix (reaches a member whose events already
+    """Member scopes come from the /owners/ scan (reaches a member whose events already
     expired, so ListActors no longer lists them) and from ListActors (their events, plus the exact
     namespace); an id seen twice is deleted once. org_xy shares the text prefix and is untouched."""
     fake = _scoped_client(

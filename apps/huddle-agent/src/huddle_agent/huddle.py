@@ -657,6 +657,9 @@ class Huddle:
         self._runs = Runs(self, clock)
         # agent -> [(run_id, request, answer, at, speaker)]
         self._news: dict[str, list[tuple[str, str, str, float, str | None]]] = {}
+        # When each agent's oldest unspoken answer was ready: its next said line carries it (`on_agent_said`), so
+        # the call's transcript log shows how long a ready answer waited to be heard (10-09 Meet: ~19 s, unseen)
+        self._ready_at: dict[str, float] = {}
         # understanding §4.8: agent -> (news a person cut off mid-announcement, who cut it, when); posted once their
         # words are handled, dropped by a "don't post that" or a stop said over it
         self._cut_off: dict[str, tuple[list, str, float]] = {}
@@ -1039,6 +1042,7 @@ class Huddle:
                         "text": x.text,
                         "at": x.at,
                         "to": x.to,
+                        **({"ready": x.ready} if x.ready else {}),
                     }
                     for x in part
                 ]
@@ -2947,6 +2951,8 @@ class Huddle:
         its room's transcript.txt: no lines there."""
         if r.status in ENDED and r.routed:  # an unrouted strip row was never created (live.request.created)
             emit_metric("live.request.ended", 1, "Count", {"status": r.status})
+        if r.status == "ready" and r.routed:
+            self._ready_at.setdefault(r.agent, self._clock())
         if r.routed and self.setting != "meeting":
             line = f"[request {r.id} {self._agent_name(r.agent)} {r.status}] {r.task[:LINE_CHARS]}"
             self._transcript.add_note(line, at=self._clock())
@@ -3261,8 +3267,11 @@ class Huddle:
         elif interrupted and (mouth(own.speaker) if own else self.setting == "meeting"):
             return  # a mouth's unit that never played (revoked, silent): nothing was said
         to = self._with(v) if v else ""
+        now, ready = self._clock(), self._ready_at.pop(agent_id, 0.0)
+        if ready:
+            emit_metric("live.answer.wait", now - ready, "Seconds", {"setting": self.setting})
         self._transcript.add_agent(
-            agent_id, self._agent_name(agent_id), text, at=self._clock(), to=to
+            agent_id, self._agent_name(agent_id), text, at=now, to=to, ready=ready
         )
         # D §9: the floor-holder asking a present person by name hands them the floor for HANDOFF_SECONDS
         target = addressed_by_name(text, self._people) if v else None

@@ -26,6 +26,7 @@ class Line:
     mark: int  # position in the whole huddle; stable across trims
     at: float = 0.0  # when it was said (epoch seconds)
     to: str = ""  # an agent line: the person its voice was pinned to
+    ready: float = 0.0  # an agent line: when the answer it opens was ready (epoch seconds; 0 = not an answer)
 
 
 class Transcript:
@@ -37,11 +38,11 @@ class Transcript:
         self._next = 0
 
     def _add(
-        self, kind: str, who: str, name: str, text: str, at: float, to: str = ""
+        self, kind: str, who: str, name: str, text: str, at: float, to: str = "", ready: float = 0.0
     ) -> int:
         mark, self._next = self._next, self._next + 1
         self._lines.append(
-            Line(kind, who, name, " ".join(text.splitlines()), mark, at, to)
+            Line(kind, who, name, " ".join(text.splitlines()), mark, at, to, ready)
         )  # one line each
         while (
             self.max_chars
@@ -55,9 +56,9 @@ class Transcript:
         return self._add("person", identity, name, text, at)
 
     def add_agent(
-        self, agent_id: str, name: str, text: str, at: float = 0.0, to: str = ""
+        self, agent_id: str, name: str, text: str, at: float = 0.0, to: str = "", ready: float = 0.0
     ) -> int:
-        return self._add("agent", agent_id, name, text, at, to)
+        return self._add("agent", agent_id, name, text, at, to, ready)
 
     def add_note(self, text: str, at: float = 0.0) -> int:
         """A request row's change (understanding §5.3): only the backend's transcript log sees it."""

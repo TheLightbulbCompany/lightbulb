@@ -140,6 +140,7 @@ class TranscriptLine(BaseModel):
     text: str = Field(max_length=4000)
     at: float = 0.0
     to: str = Field(default="", max_length=200)
+    ready: float = 0.0  # an agent line: when the answer it opens was ready (the worker's ready -> heard wait)
 
 
 class TranscriptBody(BaseModel):
@@ -371,9 +372,11 @@ async def transcript(room_id: str, body: TranscriptBody):
     _require_room_token(body.roomToken, room_id, body.ownerId)
     meta = await messaging_repo.get_room(room_id) or {}
     if meta.get("meeting") and meta.get("ownerId") == body.ownerId:
-        await meeting_notes.on_transcript(room_id, [x.model_dump() for x in body.lines], body.final)
+        await meeting_notes.on_transcript(room_id, [x.model_dump(exclude={"ready"}) for x in body.lines], body.final)
     rendered = "\n".join(
-        f"[{x.mark} @{int(x.at)}] {x.name}{' → ' + x.to if x.to else ''}: {x.text}" for x in body.lines
+        f"[{x.mark} @{int(x.at)}{f' waited {x.at - x.ready:.1f}s' if x.ready else ''}] "
+        f"{x.name}{' → ' + x.to if x.to else ''}: {x.text}"
+        for x in body.lines
     )
     logger.info("live transcript room=%s huddle=%s owner=%s\n%s", room_id, body.huddleId, body.ownerId, rendered)
     put_metric("voice.huddle.transcript_lines", len(body.lines))

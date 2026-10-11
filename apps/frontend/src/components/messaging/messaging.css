@@ -151,6 +151,11 @@
 /* The desktop app draws the live terminal over this box, in a webview of its own. */
 .local-session-terminal { flex: 1; min-height: 240px; background: var(--terminal-bg); }
 .local-session-audience { background: var(--terminal-bg); padding: 6px 8px 0; }
+.local-session-scroll { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.session-live-hint { padding: 6px 16px; }
+.native-session-shimmer { height: 2px; margin-bottom: 8px; background: linear-gradient(90deg, transparent, var(--muted-foreground), transparent); background-size: 50% 100%; background-repeat: no-repeat; animation: native-session-shimmer 1.2s linear infinite; opacity: .5; }
+@keyframes native-session-shimmer { from { background-position: -50% 0; } to { background-position: 150% 0; } }
+@media (prefers-reduced-motion: reduce) { .native-session-shimmer { animation: none; } }
 .local-session-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 /* Waiting on the owner's terminal: impossible to miss, but no remote approve. */
 .local-session-waiting { display: grid; gap: 4px; justify-items: start; margin: 8px 16px 0; padding: 10px 12px; border: 1px solid var(--warn); border-radius: 6px; background: color-mix(in srgb, var(--warn) 8%, var(--background)); color: var(--foreground); }

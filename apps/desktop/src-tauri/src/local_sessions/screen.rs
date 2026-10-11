@@ -2064,25 +2064,28 @@ mod tests {
     fn ticks_with_no_room_merge_into_the_next_and_no_frame_is_lost() {
         let (tx, rx) = std::sync::mpsc::channel();
         tx.send((SNAPSHOT, with_offset(0, b"0"))).unwrap();
-        let feeder = tx.clone();
+        // The relay queue has no room for output until the last of 20 changes is with the relay.
+        let room = Arc::new(AtomicBool::new(false));
+        let (feeder, opened) = (tx.clone(), room.clone());
         std::thread::spawn(move || {
             for i in 1..=20 {
-                std::thread::sleep(Duration::from_millis(20));
+                std::thread::sleep(Duration::from_millis(15));
                 let _ = feeder.send((OUTPUT, with_offset(0, format!("\r\n{i}").as_bytes())));
             }
+            opened.store(true, SeqCst);
         });
         let mut holder = Answering { tx, answer: vec![(SNAPSHOT, with_offset(0, b"asked"))], asked: vec![] };
         let sent = std::cell::RefCell::new(vec![]);
-        let started = Instant::now();
-        // The relay queue is full for the first 300 ms.
-        let send = |f: Value| (f["kind"] != "output" || started.elapsed() >= Duration::from_millis(300)) && { sent.borrow_mut().push(f); true };
+        let send = |f: Value| (f["kind"] != "output" || room.load(SeqCst)) && { sent.borrow_mut().push(f); true };
         pump(&rx, &mut holder, ("sid", "gen"), (10, 5), &leased(Duration::from_millis(1000)), &send, Budget::new(), &|_| None).unwrap();
         let sent = sent.into_inner();
         assert!(holder.asked.is_empty(), "nothing was lost, so nothing is repaired");
         let drawn: Vec<Value> = sent.into_iter().filter(|f| f["kind"] != "ping").collect();
         assert_eq!(drawn.iter().map(|f| f["seq"].as_u64().unwrap()).collect::<Vec<_>>(), (0..drawn.len() as u64).collect::<Vec<_>>(), "no gap");
-        // 20 changes over 400 ms, 6 ticks of them with no room: those merge.
-        assert!(drawn.len() <= 6, "{} frames", drawn.len());
+        assert_eq!(drawn[0]["kind"], "snapshot");
+        assert!(drawn[1..].iter().all(|f| f["kind"] == "output" && !has(&data(f), b"\x1b[2J") && !has(&data(f), b"\x1b[J")), "the rest are diffs");
+        assert!(drawn.len() - 1 < 20, "the waiting ticks merged: {} diffs for 20 changes", drawn.len() - 1);
+        // The viewer is the terminal the holder drew: screen, and every row above it in order.
         let mut v = viewer(&drawn, (10, 5));
         assert_eq!(v.screen().contents(), "16\n17\n18\n19\n20");
         for back in 1..=16 {

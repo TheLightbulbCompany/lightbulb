@@ -500,11 +500,9 @@ impl Host {
                     let returned_claude = native.provider == "claude"
                         && native.job.is_none()
                         && claude::still_registered(&self.home, native.process.pid, &native.conversation);
-                    // A Codex thread that is idle again and withheld as it is NOW (not shared, or
-                    // still in a terminal this Mac cannot show) stays ended: reviving it only
-                    // defers its end behind an upload and a register it never makes. One resumed
-                    // under a holder is judged by that, not by the run that ended.
-                    if native.provider == "codex" && native.status == "idle" && (!mirror.shared || native.awaits_terminal()) {
+                    // A Codex thread that is idle again and not shared stays ended: reviving it
+                    // only defers its end behind an upload and a register it never makes.
+                    if native.provider == "codex" && native.status == "idle" && !mirror.shared {
                         continue;
                     }
                     if mirror.native.process == native.process {
@@ -2281,6 +2279,12 @@ impl Host {
             *why = "this session's process is not its own to end";
             return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
         }
+        // A Codex off its shared daemon (`codex --no-daemon`) owns its thread alone: `codex queue`
+        // would hand the thread to the daemon, a second writer. Nothing delivers to it.
+        if cmd.kind == "send" && native.terminal_reason() == Some("no-daemon") {
+            *why = "no delivery path to a Codex off its shared daemon";
+            return journal.reconcile(&cmd.session_id, &cmd.request_id, &cmd.expected_generation);
+        }
         let mut socket = if native.provider == "claude" && cmd.kind != "end" {
             match claude::connect(&native).await {
                 Ok(socket) => Some(socket),
@@ -3444,38 +3448,6 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn local_sessions_a_registered_session_resumed_in_a_plain_terminal_ends_under_the_generation_the_relay_knows() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut host = test_host(dir.path(), vec![]);
-        let mut native = test_native("5eed0009-0000-4000-8000-000000000009");
-        native.app = false;
-        native.holder = Some("ab12cd34".into());
-        host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
-        let key = native_key(&native);
-        // Shared and registered at G1; its end is never told (the Mac was offline).
-        let known = host.mirrors[&key].generation.clone();
-        let mirror = host.mirrors.get_mut(&key).unwrap();
-        mirror.session_id = Some("5eed0009-5e55-4000-8000-000000000009".into());
-        mirror.registration.acknowledged = Some(known.clone());
-        host.end_session(&key, "exited").unwrap();
-        // Resumed with plain `codex`: a new process, no holder, so withheld. Then it exits.
-        let mut child = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
-        let mut resumed = native.clone();
-        resumed.process = process(child.id()).unwrap();
-        resumed.holder = None;
-        resumed.status = "busy".into();
-        let observed = host.observe(vec![resumed], &BTreeSet::new());
-        child.kill().unwrap();
-        child.wait().unwrap();
-        observed.unwrap();
-        let mirror = &host.mirrors[&key];
-        assert!(mirror.ended_at.is_none() && mirror.withheld() && mirror.generation != known && !mirror.resume_registration_pending, "the successor path");
-        host.end_session(&key, "exited").unwrap();
-        let (_, frame) = host.ended_frame(&mut BTreeSet::new()).unwrap().expect("its end is told");
-        assert_eq!(frame["generation"].as_str(), Some(known.as_str()));
-    }
-
-    #[test]
     fn local_sessions_the_workspace_s_pause_and_the_band_s_stop_are_one_switch() {
         let dir = tempfile::tempdir().unwrap();
         let sid = "5eed000a-5e55-4000-8000-00000000000a";
@@ -3512,7 +3484,56 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn local_sessions_a_shared_generation_drains_before_its_plain_successor_is_withheld() {
+    fn local_sessions_a_shared_plain_claude_registers_and_uploads_its_conversation() {
+        // Owner ruling 2026-10-11: a session with no live terminal is still shared, as its conversation.
+        let mut mirror = test_mirror("5eed000c-0000-4000-8000-00000000000c", "gen-1");
+        mirror.native.provider = "claude".into();
+        mirror.native.app = false;
+        assert_eq!(mirror.native.terminal_reason(), Some("plain"));
+        mirror.queue.push(json!({"kind":"text"}));
+        let mut mirrors = BTreeMap::from([("plain".to_string(), mirror)]);
+        let due = |mirrors: &BTreeMap<String, Mirror>| registration_due_with_recovery(mirrors, &BTreeSet::new(), &BTreeMap::new(), &BTreeSet::new());
+        assert_eq!(due(&mirrors), Some("plain".to_string()), "it registers");
+        mirrors.get_mut("plain").unwrap().session_id = Some("5eed000c-5e55-4000-8000-00000000000c".into()); // registered
+        assert!(mirrors.get_mut("plain").unwrap().next_batch().unwrap().is_some(), "and uploads");
+        // Only its person's: nothing leaves this Mac.
+        let mirror = mirrors.get_mut("plain").unwrap();
+        mirror.shared = false;
+        mirror.pending = None;
+        assert!(mirror.next_batch().unwrap().is_none());
+        assert_eq!(due(&mirrors), None);
+    }
+
+    #[tokio::test]
+    async fn local_sessions_a_send_to_a_codex_off_its_daemon_is_refused_not_queued_on_the_daemon() {
+        fn unchanged(_: PathBuf, native: NativeSession) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<NativeSession>> + Send>> {
+            Box::pin(async move { Ok(native) })
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        // A `codex` that records any call: `codex queue` would hand the thread to the shared daemon,
+        // a second writer beside the TUI that owns it.
+        let bin = dir.path().join("codex");
+        fs::write(&bin, "#!/bin/sh\necho \"$@\" > \"$0.args\"\n").unwrap();
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut mirror = test_mirror("5eed000d-0000-4000-8000-00000000000d", "g1");
+        mirror.session_id = Some(SID.into());
+        mirror.native.app = false;
+        mirror.native.process.executable = bin.clone();
+        assert_eq!(mirror.native.terminal_reason(), Some("no-daemon"));
+        let mut host = test_host(dir.path(), vec![("no-daemon", mirror)]);
+        host.verify = unchanged;
+        let at = epoch_secs();
+        let anchor = ClockAnchor { server: at, round_trip: 0.0, at: Instant::now(), wall: SystemTime::now() };
+        let send = parse_command(&json!({"command":{"requestId":"r1","expectedGeneration":"g1","kind":"send","text":"hello",
+            "expectedTurnId":null,"sessionId":SID,"roomId":"","actorUserId":"alice","commandSeq":1,"state":"dispatched",
+            "createdAt":at,"deliverBy":at + 30,"held":false,"providerMessageId":null}}), "alice").unwrap();
+        assert_eq!(host.command(&send, Some(&anchor)).await.unwrap().outcome, "rejected");
+        assert!(!dir.path().join("codex.args").exists(), "nothing was queued");
+    }
+
+    #[test]
+    fn local_sessions_a_shared_generation_drains_before_its_plain_successor_takes_over() {
         let mut mirror = test_mirror("5eed000b-0000-4000-8000-00000000000b", "gen-1");
         mirror.native.app = false;
         mirror.native.holder = Some("ab12cd34".into());
@@ -3528,7 +3549,7 @@ pub(super) mod tests {
         mirror.queue.clear();
         mirror.pending = None;
         assert!(mirror.advance());
-        assert!(mirror.withheld(), "promoted: a plain terminal uploads nothing");
+        assert!(!mirror.withheld(), "promoted: a plain terminal shares its conversation (owner ruling 2026-10-11)");
     }
 
     #[test]
@@ -3536,11 +3557,11 @@ pub(super) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut host = test_host(dir.path(), vec![]); // "Share every new session" is on
         let mut native = test_native("5eed0008-0000-4000-8000-000000000008");
-        native.app = false; // a plain terminal: shared, and withheld until it has a live one
+        native.app = false; // a plain terminal: shared as its conversation
         native.status = "idle".into();
         host.observe(vec![native.clone()], &BTreeSet::new()).unwrap();
         let key = native_key(&native);
-        assert!(host.mirrors[&key].shared && host.mirrors[&key].withheld());
+        assert!(host.mirrors[&key].shared && !host.mirrors[&key].withheld());
         host.end_session(&key, "exited").unwrap();
         // Resumed (or picked up) with Lightbulb: a new process under a holder, idle when seen.
         let mut child = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();

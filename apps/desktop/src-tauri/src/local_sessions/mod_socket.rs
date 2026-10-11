@@ -26,9 +26,6 @@ pub(super) struct Caller {
 pub(super) enum Band {
     /// Shared and registered.
     Shared(Caller),
-    /// Shared, in a terminal this Mac cannot show yet (a plain `claude`): nothing of it is
-    /// uploaded until ← moves it to a live one.
-    Waiting,
     /// Only its person's: nothing of it leaves this Mac.
     OnlyYou,
     /// Its person stopped sharing it and nothing leaves this Mac any more, but the workspace
@@ -70,9 +67,6 @@ fn resolve(scope: &Path, pid: u32) -> Option<Band> {
         .filter_map(|(key, mirror)| {
             if !mirror.shared {
                 return Some(if mirror.stop_owed && mirror.session_id.is_some() { Band::Stopping } else { Band::OnlyYou });
-            }
-            if mirror.withheld() {
-                return Some(Band::Waiting);
             }
             Some(Band::Shared(Caller {
                 key,
@@ -248,14 +242,15 @@ async fn answer(mut socket: UnixStream, scope: PathBuf, enrollment: Enrollment, 
         }
         // The whole session, from its start: nothing of it was read while it was not shared.
         super::transport::ask_share(&key, true);
-        // `waiting`: it runs in a terminal this Mac cannot show; nothing is uploaded until it can.
-        return reply(&mut socket, "200 OK", &json!({"shared": true, "waiting": mirror.native.awaits_terminal()})).await;
+        // `waiting` is always false now: a session with no live terminal is shared as its
+        // conversation (owner ruling 2026-10-11). Kept for plugins that still read it.
+        return reply(&mut socket, "200 OK", &json!({"shared": true, "waiting": false})).await;
     }
     let caller = match band {
         Some(Band::Shared(caller)) => caller,
-        // Not shared, or shared and not live yet: the band says which, and there is nothing to decide.
+        // Not shared (or stopping): the band says which, and there is nothing to decide.
         Some(local) if route == ("GET", "/v1/state") => {
-            return reply(&mut socket, "200 OK", &json!({"shared": matches!(local, Band::Waiting), "stopping": matches!(local, Band::Stopping)})).await;
+            return reply(&mut socket, "200 OK", &json!({"shared": false, "stopping": matches!(local, Band::Stopping)})).await;
         }
         _ => return reply(&mut socket, "404 Not Found", &json!({"error":"not_shared"})).await,
     };
@@ -398,10 +393,10 @@ mod tests {
         let Some(Band::Shared(caller)) = resolve(scope.path(), std::process::id()) else { panic!("the shared band") };
         assert_eq!((caller.session_id.as_str(), caller.generation.as_str(), caller.key.as_str()), ("session-a", "gen-1", key.as_str()));
         assert!(!caller.approval_waiting);
-        // Shared, in a terminal this Mac cannot show: the band says how to go live.
+        // Shared, in a terminal this Mac cannot show: shared as its conversation, with no terminal.
         mirror.native.app = false;
         mirror.persist(&path).unwrap();
-        assert!(matches!(resolve(scope.path(), std::process::id()), Some(Band::Waiting)));
+        assert!(matches!(resolve(scope.path(), std::process::id()), Some(Band::Shared(c)) if c.terminal.is_none()));
         // Only its person's: registered before or never, the band offers Share to Lightbulb.
         mirror.shared = false;
         mirror.session_id = None;

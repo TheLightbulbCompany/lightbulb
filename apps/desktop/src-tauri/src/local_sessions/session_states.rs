@@ -713,18 +713,18 @@ mod tests {
     fn a_running_session_without_a_terminal_says_why() {
         let mut m = test_mirror("thread-1", "gen-1"); // Codex, no holder, no job
         assert_eq!(m.native.terminal_reason(), Some("app"), "in an app: no terminal at all");
-        assert!(!m.native.awaits_terminal() && !m.withheld(), "so a shared one is shared as its conversation");
+        assert!(!m.withheld(), "so a shared one is shared as its conversation");
         m.native.app = false;
         m.native.process.executable = "/opt/homebrew/bin/codex".into();
         assert_eq!(m.native.terminal_reason(), Some("no-daemon"));
-        assert!(m.withheld(), "shared, in a terminal this Mac cannot show: nothing is uploaded");
+        assert!(!m.withheld(), "shared, in a terminal this Mac cannot show: shared as its conversation (owner ruling 2026-10-11)");
         // The ChatGPT app's bundled CLI, run in a terminal: a terminal Codex like any other.
         m.native.process.executable = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex".into();
         assert_eq!(m.native.terminal_reason(), Some("no-daemon"));
-        assert!(m.withheld(), "never shared as its conversation");
+        assert!(!m.withheld(), "shared as its conversation");
         m.native.provider = "claude".into();
         assert_eq!(m.native.terminal_reason(), Some("plain"));
-        assert!(m.withheld(), "a plain `claude` is never a transcript");
+        assert!(!m.withheld(), "a plain `claude` is shared as its conversation");
         m.native.job = Some("8ed71738".into());
         assert_eq!(m.native.terminal_reason(), None, "attach");
         assert!(!m.withheld(), "← made it live");

@@ -18,6 +18,7 @@
 use super::transport::relay_log;
 use super::{Mirror, NativeSession};
 use crate::holder::manager::{self, HolderInfo};
+use crate::holder::model::Model;
 use crate::holder::protocol::{encode, read_frame, split_offset, with_offset, EXIT, HELLO, HISTORY, OUTPUT, RESIZE, SNAPSHOT};
 use base64::Engine;
 use serde_json::{json, Value};
@@ -552,6 +553,61 @@ impl Budget {
     /// Bytes a history burst may use now: what is left above the reserve, at most BURST.
     fn room(&mut self) -> usize {
         (self.left() - HISTORY_RESERVE as f64).clamp(0.0, BURST as f64) as usize
+    }
+}
+
+/// The session's screen as the holder draws it (`model`) and as every viewer has it (`shown`).
+/// The diff between them is what a tick sends: never a clear, so a viewer never sees an erase
+/// without its rewrite (the flash the raw byte stream showed, 2026-10-11).
+#[allow(dead_code)] // wired into pump in the next task
+struct Relayed {
+    model: Model,
+    shown: vt100::Parser,
+    fed: bool,
+}
+
+#[allow(dead_code)] // wired into pump in the next task
+impl Relayed {
+    fn seed(screen: &[u8], (cols, rows): (u16, u16)) -> Self {
+        let mut model = Model::new(rows, cols);
+        model.inline_codex(); // ESC[3J drops the lines above, as it does in the viewers' terminals
+        let _ = model.feed(screen);
+        let _ = model.scrolled();
+        let mut shown = vt100::Parser::new(rows, cols, 0);
+        shown.process(screen);
+        Self { model, shown, fed: false }
+    }
+    fn feed(&mut self, bytes: &[u8]) {
+        let _ = self.model.feed(bytes);
+        self.fed = true;
+    }
+    /// Bytes that turn every viewer's terminal into the model's: the screen switch, rows that left
+    /// the top pushed into their scrollback (written on row 1, then scrolled from the bottom), then
+    /// only the changed cells. Empty when nothing was fed.
+    fn tick(&mut self) -> Vec<u8> {
+        if !std::mem::take(&mut self.fed) {
+            return vec![];
+        }
+        let mut out = Vec::new();
+        let alt = self.model.screen().alternate_screen();
+        if alt != self.shown.screen().alternate_screen() {
+            out.extend_from_slice(if alt { b"\x1b[?1049h" } else { b"\x1b[?1049l" });
+        }
+        let (erased, rows) = self.model.scrolled();
+        if erased {
+            out.extend_from_slice(b"\x1b[3J");
+        }
+        let height = self.model.size().0;
+        for row in rows {
+            out.extend_from_slice(b"\x1b[r\x1b[m\x1b[1;1H\x1b[2K");
+            out.extend_from_slice(&row);
+            out.extend_from_slice(format!("\x1b[m\x1b[{height};1H\n").as_bytes());
+        }
+        self.shown.process(&out);
+        let diff = self.model.screen().state_diff(self.shown.screen());
+        self.shown.process(&diff);
+        out.extend(diff);
+        out
     }
 }
 
@@ -1832,5 +1888,54 @@ mod tests {
         out.history(&|_| Some(vec![b'h'; 3 * CHUNK]), (80, 24));
         assert!(started.elapsed() < PACE + Duration::from_millis(500));
         assert!(out.stale && ctl.snapshot.load(SeqCst) && out.seq == 3, "lost: viewers skip to the next snapshot");
+    }
+
+    fn viewer_of(snapshot: &[u8], ticks: &[Vec<u8>], (cols, rows): (u16, u16)) -> vt100::Parser {
+        let mut t = vt100::Parser::new(rows, cols, 1000);
+        t.process(b"\x1b[?1049l\x1b[r\x1b[2J\x1b[H");
+        t.process(snapshot);
+        for b in ticks {
+            t.process(b);
+        }
+        t
+    }
+
+    #[test]
+    fn a_tick_sends_only_the_cells_an_erase_and_rewrite_changed() {
+        let snap = b"\x1b[H\x1b[Jline one\r\nspinner 1";
+        let mut r = Relayed::seed(snap, (40, 5));
+        r.feed(b"\x1b[2;1H\x1b[2Kspinner 2");
+        let tick = r.tick();
+        assert!(!tick.is_empty() && tick.len() < 24, "{tick:?}");
+        for clear in [&b"\x1b[J"[..], b"\x1b[2J", b"\x1b[2K"] {
+            assert!(!tick.windows(clear.len()).any(|w| w == clear));
+        }
+        assert_eq!(viewer_of(snap, &[tick], (40, 5)).screen().contents(), "line one\nspinner 2");
+        assert!(r.tick().is_empty());
+    }
+
+    #[test]
+    fn rows_that_scroll_off_between_ticks_reach_the_viewers_scrollback_in_order() {
+        let snap = b"a\r\nb\r\nc";
+        let mut r = Relayed::seed(snap, (10, 3));
+        r.feed(b"\r\nd\r\ne");
+        let mut v = viewer_of(snap, &[r.tick()], (10, 3));
+        assert_eq!(v.screen().contents(), "c\nd\ne");
+        v.screen_mut().set_scrollback(2);
+        assert_eq!(v.screen().rows(0, 10).next().unwrap(), "a");
+        v.screen_mut().set_scrollback(1);
+        assert_eq!(v.screen().rows(0, 10).next().unwrap(), "b");
+    }
+
+    #[test]
+    fn entering_the_alternate_screen_in_a_tick_switches_the_viewers_too() {
+        let snap = b"home";
+        let mut r = Relayed::seed(snap, (10, 3));
+        r.feed(b"\x1b[?1049h\x1b[HALT");
+        let tick = r.tick();
+        assert!(tick.starts_with(b"\x1b[?1049h"));
+        let v = viewer_of(snap, &[tick], (10, 3));
+        assert!(v.screen().alternate_screen());
+        assert_eq!(v.screen().contents().trim(), "ALT");
     }
 }

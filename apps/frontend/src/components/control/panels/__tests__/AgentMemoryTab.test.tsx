@@ -107,7 +107,7 @@ describe("AgentMemoryTab", () => {
   it("shows the truncation note", async () => {
     mockGet.mockResolvedValue({ ...LIST, truncated: true });
     renderTab();
-    expect(await screen.findByText("Showing the newest 200.")).toBeInTheDocument();
+    expect(await screen.findByText("Showing 200 of them.")).toBeInTheDocument();
   });
 
   it("shows a failed delete in an alert", async () => {
@@ -179,5 +179,29 @@ describe("AgentMemoryTab", () => {
     // Org B's server list is untouched: the private row is still private, one Confirmed.
     expect(screen.getByRole("button", { name: "Share with team" })).toBeInTheDocument();
     expect(screen.getAllByText("Confirmed")).toHaveLength(1);
+  });
+
+  it("refetches once at HOLD_MS after a share and renders the updated server lists", async () => {
+    mockPost.mockResolvedValue({ id: "mem-new" });
+    renderTab();
+    await screen.findByText("I am allergic to nuts");
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "Share with team" }));
+      await waitFor(() => expect(screen.getAllByText("Confirmed")).toHaveLength(2));
+      expect(mockGet).toHaveBeenCalledTimes(1);
+      mockGet.mockResolvedValue({
+        ...LIST,
+        private: [],
+        team: [{ id: "mem-new", text: "I am allergic to nuts", createdAt: "2026-10-02T00:00:00+00:00", confirmed: true }, ...LIST.team],
+      });
+      await vi.advanceTimersByTimeAsync(90_001);
+      await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(screen.getAllByText("I am allergic to nuts")).toHaveLength(1));
+      expect(screen.getAllByText("Confirmed")).toHaveLength(2);
+      expect(screen.queryByRole("button", { name: "Share with team" })).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

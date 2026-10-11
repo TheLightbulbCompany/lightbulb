@@ -1,5 +1,5 @@
 import { useAuth } from "@clerk/expo";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
 import type { createApiClient } from "@lightbulb/shared";
 
@@ -51,12 +51,16 @@ export function MemoriesCard({ api }: { api: ApiClient }) {
     }
   }, [api]);
   useEffect(() => void load(), [load]);
+  // One refetch at HOLD_MS after each successful action: the overlay expires then, and the server list is current by now.
+  const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  useEffect(() => () => timers.current.forEach(clearTimeout), []);
 
   async function act(id: string, run: () => Promise<unknown>, apply: (res: { id?: string }) => void) {
     setBusy((b) => new Set(b).add(id));
     try {
       apply((await run()) as { id?: string });
       bump((n) => n + 1);
+      timers.current.push(setTimeout(() => void load(), HOLD_MS));
     } catch (e) {
       Alert.alert("Couldn’t update memory", e instanceof Error ? e.message : "Something went wrong");
     } finally {
@@ -133,7 +137,7 @@ export function MemoriesCard({ api }: { api: ApiClient }) {
       <Text style={styles.note}>Shared by every agent in this workspace.</Text>
       {section("ONLY YOU", "From your direct messages with agents.", data.private, "private")}
       {section("TEAM", "Every member and every agent can recall these.", data.team, "team")}
-      {data.truncated ? <Text style={styles.note}>Showing the newest 200.</Text> : null}
+      {data.truncated ? <Text style={styles.note}>Showing 200 of them.</Text> : null}
     </View>
   );
 }

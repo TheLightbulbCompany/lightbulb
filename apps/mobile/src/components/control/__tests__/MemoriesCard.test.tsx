@@ -78,6 +78,30 @@ it("Confirm shows Confirmed and drops the button, without refetching", async () 
   expect(get).toHaveBeenCalledTimes(1);
 });
 
+it("refetches once at HOLD_MS after a share and renders the updated server lists", async () => {
+  post.mockResolvedValue({ id: "mem-new" });
+  await render(<MemoriesCard api={api} />);
+  await screen.findByText("I like tea");
+  jest.useFakeTimers(); // after the first load, so only the post-action timer is faked
+  try {
+    await fireEvent.press(screen.getByLabelText("Share with team"));
+    await waitFor(() => expect(post).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByLabelText("Share with team")).toBeNull());
+    expect(get).toHaveBeenCalledTimes(1);
+    get.mockResolvedValue({
+      ...LIST,
+      private: [],
+      team: [{ id: "mem-new", text: "I like tea", createdAt: "2026-10-01", confirmed: true }, ...LIST.team],
+    });
+    await jest.advanceTimersByTimeAsync(90_001);
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getAllByText("I like tea")).toHaveLength(1));
+    expect(screen.getAllByText("Confirmed")).toHaveLength(2);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
 it("a refetch inside the lag window keeps the shared fact (overlay)", async () => {
   post.mockResolvedValue({ id: "mem-new" });
   const { unmount } = await render(<MemoriesCard api={api} />);

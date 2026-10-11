@@ -334,7 +334,7 @@ def _vouched_copy(client, memory_id: str, rec: dict, team: str) -> str:
     except ClientError as exc:
         raise RuntimeError(f"memory copy failed for {rec['memoryRecordId']}") from exc
     done = resp.get("successfulRecords") or []
-    if resp.get("failedRecords") or not done:
+    if resp.get("failedRecords") or not done or done[0].get("status") != "SUCCEEDED":
         raise RuntimeError(f"memory copy failed for {rec['memoryRecordId']}")
     _delete_one(client, memory_id, rec["memoryRecordId"])
     return done[0]["memoryRecordId"]

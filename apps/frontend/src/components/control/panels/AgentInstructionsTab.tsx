@@ -22,7 +22,7 @@ interface AgentInstructionsTabProps {
 /**
  * Instructions tab (increment 3 of the unified-nav migration).
  *
- * Edits the agent's identity files (SOUL/USER) in place. Reuses the
+ * Edits the agent's identity files (SOUL/USER/MEMORY) in place. Reuses the
  * existing config-file read (`useConfigFile`, which synthesizes an empty
  * editable buffer on 404 so an un-seeded file opens blank + savable) and the
  * shared `FileContentViewer` editor — saves flow through the already-existing

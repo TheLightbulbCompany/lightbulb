@@ -169,6 +169,18 @@ async def test_a_failed_copy_never_deletes_the_original(fake):
 
 
 @pytest.mark.asyncio
+async def test_a_copy_not_succeeded_never_deletes_the_original(fake):
+    fake.get_memory_record.return_value = {"memoryRecord": _rec("mem-p", PRIV)}
+    fake.batch_create_memory_records.return_value = {
+        "successfulRecords": [{"memoryRecordId": "mem-new", "status": "FAILED"}],
+        "failedRecords": [],
+    }
+    with pytest.raises(RuntimeError):
+        await wm.share_memory("org_a", "user_me", "mem-p")
+    fake.batch_delete_memory_records.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_confirm_replaces_a_team_fact_with_a_prefixed_copy(fake):
     fake.get_memory_record.return_value = {"memoryRecord": _rec("mem-t", TEAM, "Ships on Tuesdays")}
     _created(fake, "mem-c")

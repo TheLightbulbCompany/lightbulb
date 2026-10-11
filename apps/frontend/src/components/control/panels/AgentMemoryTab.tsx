@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import useSWR from "swr";
 
@@ -56,6 +56,9 @@ export function AgentMemoryTab() {
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
   const [err, setErr] = useState<string | null>(null);
   const [, bump] = useState(0);
+  // One refetch at HOLD_MS after each successful action: the overlay expires then, and the server list is current by now.
+  const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  useEffect(() => () => timers.current.forEach(clearTimeout), []);
   const data = raw ? overlay(raw, scope) : undefined;
 
   async function act(
@@ -69,6 +72,7 @@ export function AgentMemoryTab() {
     try {
       apply((await run()) as { id?: string });
       bump((n) => n + 1);
+      timers.current.push(setTimeout(() => void mutate(), HOLD_MS));
       if (revalidate) void mutate();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Something went wrong");
@@ -137,7 +141,7 @@ export function AgentMemoryTab() {
       {err ? <p role="alert" className="mt-2 text-xs text-[var(--alert)]">{err}</p> : null}
       {section("Only you", "From your direct messages with agents. Only you and the agents in those messages see these.", data.private, "private")}
       {section("Team", "Every member and every agent can recall these.", data.team, "team")}
-      {data.truncated ? <p className="mt-2 text-xs text-[var(--fg-mute)]">Showing the newest 200.</p> : null}
+      {data.truncated ? <p className="mt-2 text-xs text-[var(--fg-mute)]">Showing 200 of them.</p> : null}
     </div>
   );
 }

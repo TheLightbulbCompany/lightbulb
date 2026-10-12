@@ -1163,7 +1163,7 @@ def _understood(
     requests: list[dict] = []
     for p in asks:
         text = task(mine[p["index"]])
-        owners = [by_name[n] for n in (p["asked"] or ()) if n in by_name]
+        owners = [a for n, a in by_name.items() if n in (p["asked"] or ())]  # named order; a set has none
         if not owners and not messaging._ANYONE.search(p["text"]):
             if len(named) == 1 and (after_name or where[p["index"]] > name_at):
                 # One agent is addressed: what follows its name is asked of it, and so is what comes before
@@ -1205,7 +1205,9 @@ def _understood(
             out[kind[p["index"]]].append(row["id"])
         else:
             # No request can be told: its agent stops talking. A task nobody identified is never aborted.
-            out["quiet"] += [by_name[n] for n in p["asked"] or () if n in by_name] or [a for _, a in named] or [None]
+            out["quiet"] += (
+                [a for n, a in by_name.items() if n in (p["asked"] or ())] or [a for _, a in named] or [None]
+            )
     out["cancel"] = list(dict.fromkeys(out["cancel"]))
     out["hush"] = [i for i in dict.fromkeys(out["hush"]) if i not in out["cancel"]]  # withdrawn outright
     amended = target(addressing.get("amends"))

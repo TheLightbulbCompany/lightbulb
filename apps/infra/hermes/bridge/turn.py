@@ -3488,7 +3488,8 @@ def _turn_folder(base: Path):
 
 
 def _converse(agent, agent_id: str, session_key: str, run_id: str | None, body: dict, base: Path, system: str,
-              turn_text: str, user_message, message_id: str | None = None, history_budget: int | None = None) -> dict:
+              turn_text: str, user_message, message_id: str | None = None, history_budget: int | None = None,
+              bind_key: str | None = None) -> dict:
     """One turn's conversation on `session_key` -- a room turn's and a voice run's alike: a room
     key runs on its own transcript plus what it observes from `body["recentHistory"]`, and a
     steer that lands too late is answered in the same run."""
@@ -3497,7 +3498,7 @@ def _converse(agent, agent_id: str, session_key: str, run_id: str | None, body: 
     # drain could no longer route the completion. Bind the room's key, as the gateway does.
     try:
         from tools.approval_context import reset_current_session_key, set_current_session_key
-        key_token = set_current_session_key(session_key)
+        key_token = set_current_session_key(bind_key or session_key)
     except ImportError:
         reset_current_session_key = key_token = None
     try:
@@ -3580,6 +3581,10 @@ def _room_turn_env(agent_id: str, session_key: str, hermes_key: str, run_id, bod
             browser_control.release(browser_lease)
 
 
+#: Set on a side turn's body: the room conversation it runs beside (its sessionKey is its own).
+ROOM_KEY_FIELD = "_roomSessionKey"
+
+
 def side_session_key(agent_id: str, run_id: str) -> str:
     """A typed turn's own Hermes session when its room was busy (_side_session)."""
     return f"agent:{agent_id}:lightbulb:side:{run_id}"
@@ -3605,19 +3610,14 @@ def _side_session(agent_id: str, session_key: str, run_id: str | None) -> bool:
 
 
 def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, str | None, str, dict]:
-    session_key = _resolve_session_key(agent_id, body)
-    run_id = (body.get("run") or {}).get("runId")
-    # The room's key stays the run's own (run events, steers, delegations, usage); a side turn's
-    # Hermes session, lock, folder and shell are its own.
-    hermes_key = side_session_key(agent_id, run_id) if _side_session(agent_id, session_key, run_id) else session_key
+    # A side turn (run_turn chose it) runs its Hermes session, lock, folder and shell on its own
+    # key; the room's key still gives it the room's window as observed rows.
+    hermes_key = _resolve_session_key(agent_id, body)
+    session_key = body.get(ROOM_KEY_FIELD) or hermes_key
     side = hermes_key != session_key
+    run_id = (body.get("run") or {}).get("runId")
     if side:
-        log.info("turn %s runs beside its busy room in %s", run_id, hermes_key)
-        body = {**body, "sessionKey": hermes_key}  # the prompt names the side's own folder
         base = base.with_name(f"{base.name}.{run_id}")  # its attachments, removed after it
-        ctx = body.get("_turnContext")
-        if ctx:  # the plugin finds its turn context by the session id Hermes hands it
-            body["_turnContext"] = {**ctx, "sessionKey": hermes_key}
     try:
         # Priming import, deliberately OUTSIDE _hermes_home_scope below: run_agent.py:94
         # freezes its own _hermes_home at first import, so the FIRST time this process ever
@@ -3668,9 +3668,10 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
             message_id = None if body.get("followUp") else (body.get("message") or {}).get("messageId")
             try:
                 # The ROOM key, as for a call: the room's window reaches a side turn as observed
-                # rows, and its async delegations report back to the room.
+                # rows. Its async delegations are its own (bound to its key), so the long job's stay
+                # the long job's, and a side turn's still report back to the room through LAST_TURN.
                 result = _converse(agent, agent_id, session_key, run_id, body, base, system, turn_text, user_message,
-                                   message_id)
+                                   message_id, bind_key=hermes_key)
             finally:
                 if side:  # one turn's session: ended so Hermes's retention ages it out
                     _end_unless_room(agent, agent_id, hermes_key)
@@ -4109,13 +4110,24 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
             sync.restore_root_auth()
             restore_profile(agent_id)
             RESTORED.add(agent_id)
+            # Behind a long job in its room this turn runs beside it (_side_session), decided before
+            # anything below is keyed: the turn context, the Mac tool's ledger and the delegation
+            # bookkeeping are the side session's. Run events, usage and steers keep the room's key.
+            hermes_key = session_key
+            if has_run and _side_session(agent_id, session_key, run_id):
+                hermes_key = side_session_key(agent_id, run_id)
+                log.info("turn %s runs beside its busy room in %s", run_id, hermes_key)
+                body = {**body, "sessionKey": hermes_key, ROOM_KEY_FIELD: session_key}
+                with _RUNS_LOCK:  # a Paperclip wake steers into the room's own turn, never this one
+                    if run_id in RUNS:
+                        RUNS[run_id]["sessionKey"] = hermes_key
             # Fix round (Critical 1): the file is keyed by ctx["sessionKey"], which must equal the
             # session_id _construct_agent hands the AIAgent (both this function's `session_key`) --
             # the plugin's tool handler reads it back by the session_id Hermes gives it.
             turn_ctx = {
                 "apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "roomId": room.get("id"),
                 "agentId": agent_id, "runId": run_id, "eventId": body.get("eventId"),
-                "threadRootMessageId": thread_root, "sessionKey": session_key,
+                "threadRootMessageId": thread_root, "sessionKey": hermes_key,
                 "localSessionToken": local_session_token,
                 "family": "room" if has_run else "unavailable",
             }
@@ -4133,7 +4145,7 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
                         outcome, error_kind, reply, usage = _run_hermes(agent_id, body, frames)
                     finally:
                         if has_run:
-                            _remember_turn(session_key, {
+                            _remember_turn(hermes_key, {
                                 "roomId": room.get("id"), "agentId": agent_id,
                                 "triggerMessageId": msg.get("messageId"), "eventKind": body.get("eventKind")})
                     if has_run and RUNS.get(run_id, {}).get("aborted"):

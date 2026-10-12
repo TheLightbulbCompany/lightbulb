@@ -684,29 +684,26 @@ def test_a_turn_behind_a_long_job_runs_in_its_own_session_with_the_rooms_window(
     _acquired, built, dbs = hermes
     db = _room_db(dbs)
     SCRIPT.append(_persisting("MRR is $4k."))
-    with turn._turn_lock("ceo", ROOM_KEY):  # a job that took the room 31 s ago
-        turn._lock_since[("ceo", ROOM_KEY)] = turn.time.monotonic() - 31
-        body = _room_turn(f.message(messageSeq=9, text="earlier"))
-        turn._lock_since.clear()
     side = turn.side_session_key("ceo", RUN_ID)
+    with turn._turn_lock("ceo", ROOM_KEY):  # the room's long job still holds it
+        # What run_turn hands a turn it moved beside its busy room (_side_session).
+        body = _room_turn(f.message(messageSeq=9, text="earlier"), sessionKey=side, **{turn.ROOM_KEY_FIELD: ROOM_KEY})
     assert built[-1].kw["session_id"] == side
     assert "earlier" in _said(built)["user_message"]  # the room's recent window, as observed rows
     assert ROOM_KEY not in db.transcripts  # the room's own transcript is untouched
     assert not turn._turn_lock("ceo", side).locked()
-    assert "sessionKey" not in body
 
 
-def test_a_turn_behind_a_short_job_waits_for_the_room(hermes, home, monkeypatch):
-    _acquired, built, dbs = hermes
-    _room_db(dbs)
-    SCRIPT.append(_persisting("ok"))
+def test_a_turn_behind_a_short_job_waits_for_the_room_and_a_long_one_does_not(monkeypatch):
     room = turn._turn_lock("ceo", ROOM_KEY)
     room.acquire()
     turn._lock_since[("ceo", ROOM_KEY)] = turn.time.monotonic()  # the job ahead just started
-    real_sleep = turn.time.sleep
-    monkeypatch.setattr(turn.time, "sleep", lambda s: (room.locked() and room.release(), real_sleep(0)))
-    _room_turn()
-    assert built[-1].kw["session_id"] == ROOM_KEY
+    monkeypatch.setattr(turn.time, "sleep", lambda _s: room.release())  # it finishes while we wait
+    assert turn._side_session("ceo", ROOM_KEY, RUN_ID) is False
+    with room:
+        turn._lock_since[("ceo", ROOM_KEY)] = turn.time.monotonic() - 31
+        assert turn._side_session("ceo", ROOM_KEY, RUN_ID) is True
+    assert turn._side_session("ceo", turn.call_session_key("ceo", CALL_ID), RUN_ID) is False  # rooms only
 
 
 def test_the_long_job_clock_starts_when_the_job_has_a_turn_slot(monkeypatch):

@@ -856,6 +856,12 @@ app.include_router(ses_inbound.router, prefix="/api/v1/webhooks", tags=["webhook
 # push notifications). Bearer-secret auth; disabled when the secret is unset.
 app.include_router(paperclip_events.router, prefix="/api/v1/webhooks", tags=["webhooks"])
 
+# Machine-only customer lifecycle feed + idempotent send ledger. Uses the
+# Paperclip service bearer credential and never impersonates an admin user.
+from routers import lifecycle_operations  # noqa: E402
+
+app.include_router(lifecycle_operations.router, prefix="/api/v1/lifecycle", tags=["lifecycle"])
+
 # WebSocket routes (API Gateway WebSocket -> HTTP POST)
 app.include_router(websocket_chat.router, prefix="/api/v1/ws")
 

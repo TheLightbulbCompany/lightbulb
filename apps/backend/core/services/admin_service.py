@@ -212,10 +212,22 @@ async def list_users(*, q: str = "", limit: int = 50, cursor: str | None = None)
         rows.append(
             {
                 "clerk_id": uid,
+                "customer_id": uid,
+                "workspace_id": owner_id,
                 "email": primary_email,
+                "first_name": u.get("first_name"),
                 "created_at": u.get("created_at"),
+                "signup_at": u.get("created_at"),
                 "last_sign_in_at": u.get("last_sign_in_at"),
+                "last_activity_at": container.get("updated_at") or u.get("last_sign_in_at"),
+                "activation": {
+                    "workspace_created_at": container.get("created_at"),
+                    "workspace_ready_at": container.get("onboarded_at"),
+                },
+                "plan": billing.get("plan") or billing.get("plan_id") or "free",
+                "trial_ends_at": billing.get("trial_ends_at"),
                 "banned": u.get("banned", False),
+                "account_status": "banned" if u.get("banned", False) else "active",
                 "container_status": container.get("status", "none"),
                 "subscription_status": billing.get("subscription_status"),
                 "org": org_by_uid.get(uid),

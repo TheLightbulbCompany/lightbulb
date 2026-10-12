@@ -184,12 +184,17 @@ fn kept_value(v: &str, quoted: bool) -> bool {
         || matches!(lower.as_str(), "changeme" | "string" | "str" | "number" | "int" | "bool"
             | "boolean" | "any" | "null" | "none" | "nil" | "true" | "false" | "undefined" | "[redacted]")
         || (v.starts_with('<') && v.ends_with('>'))
-        || v.starts_with("${")
         || v.starts_with("{{")
-        || v.strip_prefix('$').is_some_and(|name| {
-            name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        })
+        // An unquoted environment reference (`$NAME`, `${NAME}`; the pattern stops before `}`).
+        // Quoted, or any other shape, it may be the secret itself (`"$Pa55word"`).
+        || (!quoted
+            && v.strip_prefix("${")
+                .map(|rest| rest.strip_suffix('}').unwrap_or(rest))
+                .or_else(|| v.strip_prefix('$'))
+                .is_some_and(|name| {
+                    name.chars().next().is_some_and(|c| c.is_ascii_uppercase() || c == '_')
+                        && name.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+                }))
         // Code, not a literal: a call, an index, or a dotted reference (`os.environ`, `self.token`).
         || (!quoted
             && (v.contains(['(', '[', '<'])
@@ -1584,6 +1589,11 @@ struct WaitingPrompt {
     /// `approvalInput`. `held.full` says it IS the raw call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     input: Option<Value>,
+    /// A row with `full: true` and its input actually went to the relay. Allow
+    /// rides on this, not on `held.full`: a row downgraded for size, or sent to
+    /// a relay without `approvalInput`, showed nobody the whole call.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    shipped_full: bool,
 }
 
 impl WaitingPrompt {
@@ -3424,7 +3434,17 @@ mod tests {
             let clean = redact(&text);
             assert!(!clean.contains(secret) && clean.contains(&format!("{name}[redacted]")), "{clean}");
         }
-        // A variable reference or code is not a credential.
+        // A quoted or mixed-case `$` value may be the secret itself.
+        for (text, secret) in [
+            (r#"{"password": "$Pa55word"}"#, "$Pa55word"),
+            ("password: $Secret1", "$Secret1"),
+            ("TOKEN='${API_TOKEN}'", "${API_TOKEN}"),
+            ("api_key=${lower_case}", "${lower_case"),
+        ] {
+            let clean = redact(text);
+            assert!(!clean.contains(secret) && clean.contains("[redacted]"), "{clean}");
+        }
+        // An unquoted env reference or code is not a credential.
         for kept in ["-H \"Authorization: Bearer $TOKEN\"", "authorization = request.headers.get(\"a\")", "X_API_KEY=$X_API_KEY"] {
             assert_eq!(redact(kept), kept);
         }

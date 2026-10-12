@@ -924,6 +924,7 @@ impl Host {
                     held: held.as_ref().map(|(held, _, _)| held.clone()),
                     private_send: held.as_ref().and_then(|(_, private, _)| private.clone()),
                     input: held.and_then(|(_, _, input)| input),
+                    shipped_full: false,
                 };
                 let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
                 let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
@@ -956,6 +957,7 @@ impl Host {
                     unheld.held = None;
                     unheld.private_send = None;
                     unheld.input = None;
+                    unheld.shipped_full = false;
                     mirror.waiting = Some(unheld.clone());
                     mirror.queue.push(approval_row("", &unheld));
                     persist_changed(&self.dir, &key, mirror, &before)?;
@@ -1906,6 +1908,9 @@ impl Host {
                             }
                             if !relay_reads_approval_input && mirror.pending.as_ref().is_some_and(carries_approval_input) {
                                 mirror.pending = None;
+                                if let Some(waiting) = mirror.waiting.as_mut() {
+                                    waiting.shipped_full = false;
+                                }
                             }
                             let first_id = mirror.session_id.is_none();
                             mirror.session_id = Some(sid.into());
@@ -2436,8 +2441,7 @@ impl Host {
         let held = mirror
             .waiting
             .as_ref()
-            .and_then(|w| w.held.clone())
-            .filter(|held| answerable(held, cmd));
+            .and_then(|w| w.held.clone().filter(|held| answerable(held, w.shipped_full, cmd)));
         let live = mirror.generation == cmd.expected_generation
             && mirror.registration.successor.is_none()
             && mirror.ended_at.is_none()
@@ -2485,7 +2489,7 @@ impl Host {
 }
 
 /// Does this command answer exactly this held prompt, with an option it offered?
-fn answerable(held: &approval::Held, cmd: &Command) -> bool {
+fn answerable(held: &approval::Held, shipped_full: bool, cmd: &Command) -> bool {
     // A person's decision only: an agent never answers a permission prompt.
     cmd.actor.is_none()
         && cmd.actor_user_id.as_deref().is_some_and(|u| !u.is_empty())
@@ -2493,7 +2497,7 @@ fn answerable(held: &approval::Held, cmd: &Command) -> bool {
         && cmd.input_digest.as_deref() == Some(held.input_digest.as_str())
         && match cmd.decision.as_deref() {
             // `full`: the viewer was shown the whole call, and the digest names it.
-            Some("allow") => (held.exact || held.full) && cmd.mode.as_ref().is_none_or(|m| held.modes.contains(m)),
+            Some("allow") => (held.exact || (held.full && shipped_full)) && cmd.mode.as_ref().is_none_or(|m| held.modes.contains(m)),
             Some("deny") => cmd.mode.is_none(),
             _ => false,
         }
@@ -3026,14 +3030,26 @@ fn attach_approval_input(mirror: &mut Mirror, mut batch: Value) -> Value {
     } else if over(&batch) {
         batch["events"][at]["tool"]["input"].as_object_mut().unwrap().remove("full");
     }
+    let shipped = batch["events"].as_array().is_some_and(|events| {
+        events.iter().any(|event| {
+            event["itemId"] == held.id
+                && event["tool"]["input"]["full"] == true
+                && event["tool"]["input"].get("input").is_some()
+        })
+    });
+    if let Some(waiting) = mirror.waiting.as_mut() {
+        waiting.shipped_full = shipped;
+    }
     mirror.pending = Some(batch.clone());
     batch
 }
 
 fn carries_approval_input(batch: &Value) -> bool {
-    batch["events"]
-        .as_array()
-        .is_some_and(|events| events.iter().any(|event| event["tool"]["input"].get("full").is_some()))
+    batch["events"].as_array().is_some_and(|events| {
+        events
+            .iter()
+            .any(|event| event["lifecycle"] == "approval_pending" && event["tool"]["input"].get("full").is_some())
+    })
 }
 
 fn wire_batch(mut batch: Value) -> Value {
@@ -4279,6 +4295,7 @@ pub(super) mod tests {
             }),
             private_send: None,
             input: None,
+            shipped_full: false,
         });
         let key = native_key(&mirror.native);
         let mut host = test_host(dir.path(), vec![(&key, mirror)]);
@@ -4921,6 +4938,7 @@ pub(super) mod tests {
             }),
             private_send: None,
             input: None,
+            shipped_full: false,
         });
         host.apply_hook(&lifecycle::HookEvent {
             notification_type: Some("permission_prompt".into()),
@@ -4942,7 +4960,7 @@ pub(super) mod tests {
         let prompt = WaitingPrompt { id: None, tool: Some("Edit".into()), summary: "Edit a.rs".into(),
             held: Some(approval::Held { id: id.clone(), input_digest: approval::digest(&input), reply: String::new(),
                 exact: false, modes: vec![], full: true }),
-            private_send: None, input: Some(input.clone()) };
+            private_send: None, input: Some(input.clone()), shipped_full: false };
         let row = approval_row("", &prompt);
         assert!(row["tool"]["input"].get("full").is_none() && row["tool"]["input"].get("input").is_none(),
             "the queued row is exactly today's: an older relay never sees the new keys");
@@ -4950,6 +4968,7 @@ pub(super) mod tests {
         let batch = |events: Vec<Value>| json!({"type":"local.session.events","sessionId":SID,"generation":"gen-1",
             "batchId":"batch-1","afterSeq":0,"events":events});
         let wire = attach_approval_input(&mut mirror, batch(vec![row.clone()]));
+        assert!(mirror.waiting.as_ref().unwrap().shipped_full, "what was shipped is what may be allowed");
         assert_eq!(wire["events"][0]["tool"]["input"]["full"], true);
         assert_eq!(wire["events"][0]["tool"]["input"]["input"], input);
         assert!(carries_approval_input(&wire) && carries_approval_input(mirror.pending.as_ref().unwrap()));
@@ -4966,6 +4985,9 @@ pub(super) mod tests {
         let wire = attach_approval_input(&mut mirror, batch(vec![row.clone()]));
         assert_eq!(wire["events"][0]["tool"]["input"]["full"], false);
         assert!(wire["events"][0]["tool"]["input"].get("input").is_none());
+        assert!(!mirror.waiting.as_ref().unwrap().shipped_full, "downgraded for size: deny-only");
+        // Only an approval row's `full` marks a batch as needing the feature.
+        assert!(!carries_approval_input(&batch(vec![json!({"kind":"tool","tool":{"input":{"full":true}}})])));
         assert!(ascii_wire_len(&wire_batch(wire)).unwrap() <= 16384);
     }
 
@@ -5011,7 +5033,7 @@ pub(super) mod tests {
         let prompt = WaitingPrompt { id: None, tool: Some("mcp__lightbulb_native_sessions__send".into()),
             summary: "Lightbulb message".into(), held: Some(approval::Held {
                 id: id.clone(), input_digest: digest, reply: String::new(), exact: true, modes: vec![], full: false,
-            }), private_send: Some(detail.clone()), input: None };
+            }), private_send: Some(detail.clone()), input: None, shipped_full: false };
         mirror.waiting = Some(prompt.clone());
         let batch = json!({"type":"local.session.events","sessionId":SID,"generation":"gen-1",
             "batchId":"batch-1","afterSeq":0,"events":[approval_row("", &prompt)]});
@@ -5157,27 +5179,31 @@ pub(super) mod tests {
             exact: true,
             modes: vec!["acceptEdits".into()], full: false,
         };
-        assert!(answerable(&held, &cmd));
-        assert!(!answerable(&approval::Held { exact: false, ..held.clone() }, &cmd), "inexact is deny-only");
-        assert!(answerable(&approval::Held { exact: false, full: true, ..held.clone() }, &cmd), "shown whole");
+        assert!(answerable(&held, true, &cmd));
+        assert!(!answerable(&approval::Held { exact: false, ..held.clone() }, true, &cmd), "inexact is deny-only");
+        assert!(answerable(&approval::Held { exact: false, full: true, ..held.clone() }, true, &cmd), "shown whole");
+        assert!(
+            !answerable(&approval::Held { exact: false, full: true, ..held.clone() }, false, &cmd),
+            "full on the Mac, but the row that shipped was not: deny-only"
+        );
         // The held id names one prompt and so its tool: an answer for prompt A, same input
         // digest and all, never allows prompt B.
         let other = approval::Held { id: format!("appr-{}", uuid::Uuid::new_v4().simple()), full: true, ..held.clone() };
-        assert!(!answerable(&other, &cmd));
-        assert!(!answerable(&approval::Held { input_digest: "e".repeat(64), ..held.clone() }, &cmd));
+        assert!(!answerable(&other, true, &cmd));
+        assert!(!answerable(&approval::Held { input_digest: "e".repeat(64), ..held.clone() }, true, &cmd));
         let mut deny = cmd.clone();
         deny.decision = Some("deny".into());
-        assert!(answerable(&approval::Held { exact: false, ..held.clone() }, &deny));
+        assert!(answerable(&approval::Held { exact: false, ..held.clone() }, true, &deny));
         let mut widened = cmd.clone();
         widened.mode = Some("plan".into());
-        assert!(!answerable(&held, &widened), "only a mode the prompt offered");
+        assert!(!answerable(&held, true, &widened), "only a mode the prompt offered");
         let mut agent: Command = serde_json::from_value(json!({"requestId":"r2","expectedGeneration":"g1","kind":"approve",
             "approvalId":held.id,"decision":"allow","inputDigest":held.input_digest,"expectedTurnId":null,"text":null,
             "sessionId":"s","roomId":"room","actor":{"kind":"agent","id":"a1"},"invocationExpiresAt":2000,
             "commandSeq":2,"state":"dispatched","createdAt":1000,"deliverBy":1030,"held":false,"providerMessageId":null})).unwrap();
-        assert!(!answerable(&held, &agent), "an agent never answers a prompt");
+        assert!(!answerable(&held, true, &agent), "an agent never answers a prompt");
         agent.actor = None;
-        assert!(!answerable(&held, &agent), "nor does a command with no person behind it");
+        assert!(!answerable(&held, true, &agent), "nor does a command with no person behind it");
         // A send serializes exactly as before approvals existed: its journal hash is stable.
         let send = json!({"type":"local.session.command","command":{"requestId":"r1","expectedGeneration":"g1","kind":"send","text":"hello",
             "expectedTurnId":null,"sessionId":"s1","roomId":"","actorUserId":"alice","commandSeq":1,"state":"dispatched","createdAt":100,"deliverBy":130,"held":false,"providerMessageId":null}});

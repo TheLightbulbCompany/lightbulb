@@ -709,6 +709,12 @@ mod tests {
         let (s, full) = shown_input("Write", &json!({"file_path": "/x", "content": "ghp_abcdefghijklmnopqrstuvwxyz0123456789"}));
         assert!(!full);
         assert!(s["content"].as_str().unwrap().contains("[redacted]"));
+        for content in [r#"{"password": "$Pa55word"}"#, "password: $Secret1\n"] {
+            let (s, full) = shown_input("Write", &json!({"file_path": "/x/config", "content": content}));
+            assert!(!full, "a quoted or mixed-case `$` secret is redacted: {s}");
+            assert!(s["content"].as_str().unwrap().contains("[redacted]"));
+        }
+        assert!(shown_input("Bash", &json!({"command": "curl -H \"Authorization: Bearer $TOKEN\" https://a"})).1);
         let (_, full) = shown_input("Write", &json!({"content": "x".repeat(20 * 1024)}));
         assert!(!full, "cut");
         let (_, full) = shown_input("Write", &json!({"content": "\u{e9}".repeat(2 * 1024)}));

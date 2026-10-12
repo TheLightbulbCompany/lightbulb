@@ -71,6 +71,7 @@ static ENDED: LazyLock<Mutex<VecDeque<String>>> = LazyLock::new(Default::default
 const ENDED_KEEP: usize = 64;
 /// A client that connects and says nothing gets this long to send its request.
 const REQUEST_WAIT: Duration = Duration::from_secs(5);
+const HEAD_CAP: usize = 8192;
 
 /// A connection's lease as the Mac sees it: commands pass while it is held; after idle the first
 /// command asks for it back (`Wake`) and it and those after it wait (`Hold`) for the answer.
@@ -206,11 +207,48 @@ pub async fn serve(app: tauri::AppHandle) {
     }
 }
 
+/// Peek (never consume) until the request head is complete: a split TCP read must not be judged half-sent.
+/// None when the head is not complete in time or outgrows `HEAD_CAP`.
+async fn peek_head(stream: &TcpStream) -> Option<String> {
+    let mut head = [0u8; HEAD_CAP];
+    tokio::time::timeout(REQUEST_WAIT, async {
+        loop {
+            let n = stream.peek(&mut head).await.ok()?;
+            match head_state(&head[..n]) {
+                Head::Complete => return Some(String::from_utf8_lossy(&head[..n]).to_string()),
+                Head::TooBig => return None,
+                // peek returns at once while the bytes are unchanged, so pace it
+                Head::Partial if n == 0 => return None, // closed
+                Head::Partial => tokio::time::sleep(Duration::from_millis(10)).await,
+            }
+        }
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+#[derive(Debug, PartialEq)]
+enum Head {
+    Partial,
+    Complete,
+    TooBig,
+}
+
+fn head_state(bytes: &[u8]) -> Head {
+    if bytes.windows(4).any(|w| w == b"\r\n\r\n") {
+        Head::Complete
+    } else if bytes.len() >= HEAD_CAP {
+        Head::TooBig
+    } else {
+        Head::Partial
+    }
+}
+
 async fn connection(app: tauri::AppHandle, mut stream: TcpStream) {
     let (Ok(local), Ok(peer)) = (stream.local_addr(), stream.peer_addr()) else { return };
-    let mut head = [0u8; 4096];
-    let Ok(Ok(n)) = tokio::time::timeout(REQUEST_WAIT, stream.peek(&mut head)).await else { return };
-    let request = String::from_utf8_lossy(&head[..n]).to_string();
+    let Some(request) = peek_head(&stream).await else { return };
+    let mut head = [0u8; HEAD_CAP];
     let path = request.split_whitespace().nth(1).unwrap_or("").to_string();
     if !path.starts_with("/devtools/browser/") {
         let (status, body) = if allowed_host(&request) { http_response(&path) } else { (403, "{}".into()) };
@@ -778,6 +816,32 @@ mod tests {
         assert!(on_event(&channels, "browser.cdp.leased", &json!({"channel": "t1", "ok": true})), "claimed too");
         assert!(channels.open_local("t2", "p", tokio::sync::mpsc::channel(1).0).is_ok(), "no run channel took a slot for t1");
         assert!(!channels.end_local("t1"), "nothing open for t1");
+    }
+
+    #[test]
+    fn a_request_head_is_judged_only_when_whole() {
+        assert_eq!(head_state(b"GET /json/version HTTP/1.1\r\n"), Head::Partial);
+        assert_eq!(head_state(b"GET /json/version HTTP/1.1\r\nHost: 127.0.0.1:39222\r\n\r\n"), Head::Complete);
+        assert_eq!(head_state(&[b'a'; HEAD_CAP]), Head::TooBig);
+    }
+
+    #[tokio::test]
+    async fn a_head_split_across_writes_is_read_whole_and_left_unconsumed() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = tokio::spawn(async move {
+            let mut c = TcpStream::connect(addr).await.unwrap();
+            c.write_all(b"GET /json/version HTTP/1.1\r\n").await.unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            c.write_all(b"Host: 127.0.0.1:39222\r\n\r\n").await.unwrap();
+            c
+        });
+        let (mut s, _) = listener.accept().await.unwrap();
+        let head = peek_head(&s).await.unwrap();
+        assert!(allowed_host(&head));
+        let mut buf = [0u8; HEAD_CAP];
+        assert_eq!(s.read(&mut buf).await.unwrap(), head.len(), "peek consumed nothing");
+        drop(client.await.unwrap());
     }
 
     #[test]

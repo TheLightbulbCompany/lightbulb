@@ -10,6 +10,15 @@ mod mod_socket;
 pub(crate) mod plugin;
 mod presence;
 pub use native_mcp::serve_mcp;
+
+/// The shared session a browser connection comes from (session_browser), or why not.
+pub(crate) fn shared_session_for(scope: &Path, ancestors: &[u32]) -> Result<String> {
+    native_tools::session_of_ancestors(scope, ancestors)
+}
+
+pub(crate) fn session_still_shared(scope: &Path, session_id: &str) -> bool {
+    native_tools::mirror_live(scope, session_id)
+}
 pub(crate) mod snapshot;
 pub(crate) mod remote_input;
 pub(crate) mod resume;

@@ -22,6 +22,7 @@ pub mod screen;
 mod session_continue;
 mod session_pickup;
 mod session_start;
+mod session_browser;
 mod shell_integration;
 pub mod desktop_permissions;
 pub mod subprocess;

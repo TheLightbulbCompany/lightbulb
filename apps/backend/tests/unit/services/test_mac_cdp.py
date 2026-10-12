@@ -231,3 +231,19 @@ def test_a_voice_runs_ticket_redeems_like_a_room_runs():
     call = ROOM | {"family": "call"}
     claims = mac_cdp.redeem(mac_cdp.mint(target=TARGET, profile_id="p1", auth=call))
     assert claims is not None and mac_cdp.auth_from_claims(claims) == call
+
+
+SESSION = {
+    "ownerId": "org_1",
+    "memberId": "user_1",
+    "runId": "session-11111111-1111-4111-8111-111111111111",
+    "agentId": "session",
+    "family": "session",
+    "roomId": "",
+}
+
+
+def test_a_session_runs_ticket_round_trips():
+    claims = mac_cdp.redeem(mac_cdp.mint(target=TARGET, profile_id="p1", auth=SESSION))
+    assert claims["family"] == "session" and claims["use"] == "agent"
+    assert mac_cdp.auth_from_claims(claims) == SESSION

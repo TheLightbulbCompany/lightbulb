@@ -1054,3 +1054,19 @@ async def test_revoke_member_soon_spares_a_re_pair_and_a_superseded_delete(monke
     await _drain_revocations()
     cleared.assert_not_awaited()
     assert "revoking" not in rows["org_w1"]["paired_devices"]["cli_1"]
+
+
+SESSION = {
+    "ownerId": OWNER,
+    "memberId": MEMBER,
+    "runId": "session-11111111-1111-4111-8111-111111111111",
+    "agentId": "session",
+    "family": "session",
+    "roomId": "",
+}
+
+
+async def test_a_session_acquires_its_requesters_mac_and_learns_the_profile_id(h):
+    out = await mac_browser.acquire(SESSION, None)
+    assert out["deviceId"] == NATIVE and out["profileId"] == "prof1"
+    assert h.row["leases"] == {SESSION["runId"]: int(NOW + mac_browser.LEASE_SECONDS)}

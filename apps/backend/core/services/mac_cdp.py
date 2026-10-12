@@ -101,7 +101,7 @@ def _well_formed(claims) -> bool:
         return False
     return (
         claims["use"] == "agent"
-        and claims["family"] in {"room", "paperclip", "call"}
+        and claims["family"] in {"room", "paperclip", "call", "session"}
         and valid_auth(auth_from_claims(claims))
     )
 

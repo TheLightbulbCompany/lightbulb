@@ -830,6 +830,40 @@ async def authorize_run(owner_id: str, run_id: str, agent_id: str, family: str, 
             "agentId": agent_id,
             "family": family,
         }
+    if family == "session":
+        # A shared Claude Code or Codex session's browser (spec 2026-10-11): its own person, read
+        # off its row. An ended session keeps it, so the release's save passes the door's re-check.
+        from core.repositories import local_sessions_repo
+        from core.services.session_browser import AGENT_ID, session_of
+
+        sid = session_of(run_id)
+        row = await local_sessions_repo.get_session(owner_id, sid) if sid else None
+        member_id = (row or {}).get("humanUserId")
+        if (
+            agent_id != AGENT_ID
+            or not row
+            or row.get("ownerId") != owner_id
+            or row.get("unshared")
+            or row.get("removedAt") is not None
+            or not isinstance(member_id, str)
+            or not _ID.fullmatch(member_id)
+        ):
+            raise DesktopError("run_forbidden", 403)
+        if owner_id != member_id:
+            from core.services.clerk_admin import list_organization_members
+
+            if not owner_id.startswith("org_") or not any(
+                m.get("user_id") == member_id for m in await list_organization_members(owner_id)
+            ):
+                raise DesktopError("run_forbidden", 403)
+        return {
+            "ownerId": owner_id,
+            "memberId": member_id,
+            "runId": run_id,
+            "agentId": agent_id,
+            "family": family,
+            "roomId": "",
+        }
     if family == "room":
         run = await messaging_repo.get_run(owner_id, run_id)
         if not run or run.get("ownerId") != owner_id or run.get("runId") != run_id or run.get("agentId") != agent_id:

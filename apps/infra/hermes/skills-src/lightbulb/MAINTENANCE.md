@@ -104,6 +104,11 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- apps/backend/core/services/desktop_session_start.py (open route);
                                  apps/frontend/src/components/messaging/LocalSessionPanel.tsx;
                                  apps/desktop/src-tauri/src/session_start.rs + resume.rs
+  - Session browser (shared Claude/Codex sessions browse in the Lightbulb browser) ... references/surfaces.md ("Session browser" paragraph)
+                              <- apps/desktop/src-tauri/src/session_browser.rs (port 39222, peer process, offers);
+                                 apps/desktop/src-tauri/src/local_sessions/native_mcp.rs (lightbulb-browser entry);
+                                 apps/backend/core/services/session_browser.py (lease, sync, refusals);
+                                 packages/claude-plugin/lightbulb/skills/lightbulb-session-sharing/SKILL.md ("Browsing")
   - Browser tool choice ..... SKILL.md ("references/surfaces.md § Browser" row, a pointer only) + references/surfaces.md
                               (Browser row: "Which tool", extensions, recording, downloads) +
                               references/platform-primitives.md (pointer)

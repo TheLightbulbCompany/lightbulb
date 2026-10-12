@@ -120,6 +120,19 @@ the whole session, including what it did meanwhile. A session with a live termin
 You still read the structured record with
 `lightbulb_local_sessions`.
 
+**Session browser** (desktop app on the session's Mac, sharing on): a shared Claude Code or
+Codex session browses with its `lightbulb-browser` tools in that Mac's "Lightbulb agent"
+Chrome, with the workspace's sign-ins, exactly as a run does after `lightbulb_desktop
+use_browser`. A session that is not shared is refused ("Share this session to use the
+Lightbulb browser"). Its sign-ins load when it starts browsing and save five minutes after its
+last browser command and when the session ends; its next command after such a pause waits a
+few seconds while they load again (anything signed into in that window meanwhile is saved
+first, not lost). It shares the Mac's four browser connections with agent runs. Only a Codex
+CLI started on its own gets it: the Codex app, or one Codex process that serves several
+conversations (its shared background service), is refused with "More than one session runs in
+this process ... so the Lightbulb browser cannot tell which one is asking"; the person can
+start Codex with `--no-daemon`.
+
 **New session** (web and desktop): a small form with no first message. The person picks
 **Claude Code** or **Codex**, an approved folder and, optionally, the model and mode, then presses
 **Start**. The terminal opens on the tool's own start screen, where they can type anything,

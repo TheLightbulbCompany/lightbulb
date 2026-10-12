@@ -1564,7 +1564,8 @@ fn unsendable(original: &Value) -> Value {
 /// survive one of the two showing up without a tool-use id.
 ///
 /// `summary` is the REDACTED reason: a command line can hold a token, and this
-/// is persisted to disk.
+/// is persisted to disk. `exact` (on `held`) is the legacy flag that the summary
+/// is the whole call; `full` that `input` is.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct WaitingPrompt {
     #[serde(default)]
@@ -1578,6 +1579,11 @@ struct WaitingPrompt {
     held: Option<approval::Held>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     private_send: Option<Value>,
+    /// The held prompt's whole input (bounded, redacted), read from the hook's
+    /// private side file and digest-checked; shipped only to a relay that reads
+    /// `approvalInput`. `held.full` says it IS the raw call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    input: Option<Value>,
 }
 
 impl WaitingPrompt {

@@ -887,10 +887,21 @@ impl Host {
                             && approval::acknowledge(&held.reply, &held.id)
                     })
                     .map(|mut held| {
-                        let private_send = (event.tool_name.as_deref()
-                            == Some("mcp__lightbulb_native_sessions__send"))
-                        .then(|| approval::read_private_send(&held))
-                        .flatten();
+                        let tool = event.tool_name.as_deref().unwrap_or("");
+                        let native_send = tool == "mcp__lightbulb_native_sessions__send";
+                        // The hook's private side file: the whole (bounded, redacted) input,
+                        // or a native send's exact message. Never the datagram.
+                        let file = approval::read_held_input(&held);
+                        let private_send = file
+                            .as_ref()
+                            .filter(|_| native_send)
+                            .and_then(|value| approval::private_send(value, &held));
+                        let (input, full) = file
+                            .as_ref()
+                            .filter(|_| !native_send)
+                            .map(|value| approval::held_input(tool, value, &held))
+                            .unwrap_or((None, false));
+                        held.full = full;
                         // Exact only if the reader gets the summary it was judged on: a
                         // datagram that dropped it for size shows nothing, so deny-only.
                         held.exact &= event
@@ -902,7 +913,7 @@ impl Host {
                         {
                             held.exact &= private_send.is_some();
                         }
-                        (held, private_send)
+                        (held, private_send, input)
                     });
                 let prompt = WaitingPrompt {
                     id: event.tool_use_id.clone(),
@@ -910,8 +921,9 @@ impl Host {
                     // Trimmed like `waiting_reason` trims it, so two hooks whose
                     // padding differs still name one prompt.
                     summary: redact(event.waiting_text.as_deref().unwrap_or("").trim()),
-                    held: held.as_ref().map(|(held, _)| held.clone()),
-                    private_send: held.and_then(|(_, private)| private),
+                    held: held.as_ref().map(|(held, _, _)| held.clone()),
+                    private_send: held.as_ref().and_then(|(_, private, _)| private.clone()),
+                    input: held.and_then(|(_, _, input)| input),
                 };
                 let mirror = self.mirrors.get_mut(&key).ok_or("missing local session")?;
                 let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
@@ -943,6 +955,7 @@ impl Host {
                     let before = serde_json::to_value(&*mirror).map_err(|e| e.to_string())?;
                     unheld.held = None;
                     unheld.private_send = None;
+                    unheld.input = None;
                     mirror.waiting = Some(unheld.clone());
                     mirror.queue.push(approval_row("", &unheld));
                     persist_changed(&self.dir, &key, mirror, &before)?;
@@ -1550,6 +1563,7 @@ impl Host {
         let mut relay_reads_stats = false;
         let mut relay_reads_controls = false;
         let mut relay_reads_private_approval = false;
+        let mut relay_reads_approval_input = false;
         let mut relay_reads_live_terminal = false;
         let mut relay_reads_remote_input = false;
         let mut relay_reads_terminal = false;
@@ -1721,8 +1735,13 @@ impl Host {
                         }
                     };
                     let batch = batch.map(|events| {
-                        if relay_reads_private_approval {
+                        let events = if relay_reads_private_approval {
                             attach_private_send(mirror, events)
+                        } else {
+                            events
+                        };
+                        if relay_reads_approval_input {
+                            attach_approval_input(mirror, events)
                         } else {
                             events
                         }
@@ -1843,6 +1862,7 @@ impl Host {
                             relay_reads_stats = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "sessionStats"));
                             relay_reads_controls = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "nativeControlCapabilities"));
                             relay_reads_private_approval = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "privateSendApproval"));
+                            relay_reads_approval_input = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "approvalInput"));
                             relay_reads_live_terminal = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "liveTerminal"));
                             relay_reads_remote_input = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "remoteInput"));
                             relay_reads_terminal = body["features"].as_array().is_some_and(|f| f.iter().any(|x| x == "sessionTerminal"));
@@ -1882,6 +1902,9 @@ impl Host {
                                 mirror.resync(after);
                             }
                             if !relay_reads_private_approval && mirror.pending.as_ref().is_some_and(|batch| batch.get("privateApproval").is_some()) {
+                                mirror.pending = None;
+                            }
+                            if !relay_reads_approval_input && mirror.pending.as_ref().is_some_and(carries_approval_input) {
                                 mirror.pending = None;
                             }
                             let first_id = mirror.session_id.is_none();
@@ -2469,7 +2492,8 @@ fn answerable(held: &approval::Held, cmd: &Command) -> bool {
         && cmd.approval_id.as_deref() == Some(held.id.as_str())
         && cmd.input_digest.as_deref() == Some(held.input_digest.as_str())
         && match cmd.decision.as_deref() {
-            Some("allow") => held.exact && cmd.mode.as_ref().is_none_or(|m| held.modes.contains(m)),
+            // `full`: the viewer was shown the whole call, and the digest names it.
+            Some("allow") => (held.exact || held.full) && cmd.mode.as_ref().is_none_or(|m| held.modes.contains(m)),
             Some("deny") => cmd.mode.is_none(),
             _ => false,
         }
@@ -2959,6 +2983,57 @@ fn attach_private_send(mirror: &mut Mirror, mut batch: Value) -> Value {
     }
     mirror.pending = Some(batch.clone());
     batch
+}
+
+/// A relay that reads `approvalInput` gets the held prompt's row with the input it may be
+/// allowed on (`full`). A row that would not fit drops `input` and is not `full`; failing that,
+/// it goes alone in the next batch, and failing that it is exactly today's row.
+fn attach_approval_input(mirror: &mut Mirror, mut batch: Value) -> Value {
+    let Some(waiting) = mirror.waiting.as_ref() else {
+        return batch;
+    };
+    let Some(held) = waiting.held.as_ref() else {
+        return batch;
+    };
+    let Some(at) = batch["events"].as_array().and_then(|events| {
+        events.iter().position(|event| {
+            event["lifecycle"] == "approval_pending"
+                && event["itemId"] == held.id
+                && event["tool"]["input"].is_object()
+                && event["tool"]["input"].get("full").is_none()
+        })
+    }) else {
+        return batch;
+    };
+    let over = |batch: &Value| ascii_wire_len(&wire_batch(batch.clone())).map_or(true, |len| len > 16384);
+    {
+        let row = &mut batch["events"][at]["tool"]["input"];
+        row["full"] = json!(held.full && waiting.input.is_some());
+        if let Some(input) = &waiting.input {
+            row["input"] = input.clone();
+        }
+    }
+    if over(&batch) {
+        batch["events"].as_array_mut().unwrap().truncate(at + 1);
+    }
+    if over(&batch) {
+        let row = batch["events"][at]["tool"]["input"].as_object_mut().unwrap();
+        row.remove("input");
+        row.insert("full".into(), json!(false));
+    }
+    if over(&batch) && at > 0 {
+        batch["events"].as_array_mut().unwrap().truncate(at);
+    } else if over(&batch) {
+        batch["events"][at]["tool"]["input"].as_object_mut().unwrap().remove("full");
+    }
+    mirror.pending = Some(batch.clone());
+    batch
+}
+
+fn carries_approval_input(batch: &Value) -> bool {
+    batch["events"]
+        .as_array()
+        .is_some_and(|events| events.iter().any(|event| event["tool"]["input"].get("full").is_some()))
 }
 
 fn wire_batch(mut batch: Value) -> Value {
@@ -4200,9 +4275,10 @@ pub(super) mod tests {
                 input_digest: "d".repeat(64),
                 reply: String::new(),
                 exact: true,
-                modes: vec![],
+                modes: vec![], full: false,
             }),
             private_send: None,
+            input: None,
         });
         let key = native_key(&mirror.native);
         let mut host = test_host(dir.path(), vec![(&key, mirror)]);
@@ -4841,9 +4917,10 @@ pub(super) mod tests {
             summary: "list_targets {}".into(),
             held: Some(approval::Held {
                 id: id.clone(), input_digest: "d".repeat(64), reply: String::new(),
-                exact: true, modes: vec![],
+                exact: true, modes: vec![], full: false,
             }),
             private_send: None,
+            input: None,
         });
         host.apply_hook(&lifecycle::HookEvent {
             notification_type: Some("permission_prompt".into()),
@@ -4858,6 +4935,73 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn local_sessions_held_input_rides_only_a_relay_that_reads_it_and_only_if_it_fits() {
+        let mut mirror = test_mirror(SID, "gen-1");
+        let id = format!("appr-{}", uuid::Uuid::new_v4().simple());
+        let input = json!({"file_path":"/w/a.rs","old_string":"a","new_string":"b"});
+        let prompt = WaitingPrompt { id: None, tool: Some("Edit".into()), summary: "Edit a.rs".into(),
+            held: Some(approval::Held { id: id.clone(), input_digest: approval::digest(&input), reply: String::new(),
+                exact: false, modes: vec![], full: true }),
+            private_send: None, input: Some(input.clone()) };
+        let row = approval_row("", &prompt);
+        assert!(row["tool"]["input"].get("full").is_none() && row["tool"]["input"].get("input").is_none(),
+            "the queued row is exactly today's: an older relay never sees the new keys");
+        mirror.waiting = Some(prompt.clone());
+        let batch = |events: Vec<Value>| json!({"type":"local.session.events","sessionId":SID,"generation":"gen-1",
+            "batchId":"batch-1","afterSeq":0,"events":events});
+        let wire = attach_approval_input(&mut mirror, batch(vec![row.clone()]));
+        assert_eq!(wire["events"][0]["tool"]["input"]["full"], true);
+        assert_eq!(wire["events"][0]["tool"]["input"]["input"], input);
+        assert!(carries_approval_input(&wire) && carries_approval_input(mirror.pending.as_ref().unwrap()));
+        // Not the whole call: shipped to look at, not `full`.
+        let mut partial = prompt.clone();
+        partial.held.as_mut().unwrap().full = false;
+        mirror.waiting = Some(partial);
+        let wire = attach_approval_input(&mut mirror, batch(vec![row.clone()]));
+        assert_eq!(wire["events"][0]["tool"]["input"]["full"], false);
+        assert_eq!(wire["events"][0]["tool"]["input"]["input"], input);
+        // Too big for the frame (non-ASCII counts 6x): `input` goes, `full` is false, the rest is sent.
+        let huge = json!({"content": "\u{e9}".repeat(4 * 1024)});
+        mirror.waiting = Some(WaitingPrompt { input: Some(huge), ..prompt.clone() });
+        let wire = attach_approval_input(&mut mirror, batch(vec![row.clone()]));
+        assert_eq!(wire["events"][0]["tool"]["input"]["full"], false);
+        assert!(wire["events"][0]["tool"]["input"].get("input").is_none());
+        assert!(ascii_wire_len(&wire_batch(wire)).unwrap() <= 16384);
+    }
+
+    /// The hook's side file reaches the waiting prompt; the app re-checks `full` against the digest.
+    #[test]
+    fn local_sessions_held_prompt_reads_its_input_from_the_private_side_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = test_host(dir.path(), vec![(SID, test_mirror(SID, "gen-1"))]);
+        let key = host.mirrors.keys().next().unwrap().clone();
+        let hooks = enrollment::hook_path().parent().unwrap().to_path_buf();
+        private_dir(&hooks).unwrap();
+        for (shown_digest_ok, expect_full) in [(true, true), (false, false)] {
+            let id = format!("appr-{}", uuid::Uuid::new_v4().simple());
+            let reply = hooks.join(format!("{id}.sock"));
+            let _hook_side = std::os::unix::net::UnixDatagram::bind(&reply).unwrap();
+            let raw = json!({"command":"make\nmake test"});
+            let shown = if shown_digest_ok { raw.clone() } else { json!({"command":"make"}) };
+            let held = approval::Held { id: id.clone(), input_digest: approval::digest(&raw),
+                reply: reply.to_string_lossy().into_owned(), exact: false, modes: vec![], full: true };
+            private_write(&hooks.join(format!("{id}.json")),
+                &json!({"approvalId":id,"inputDigest":held.input_digest,"input":shown})).unwrap();
+            host.apply_hook(&lifecycle::HookEvent {
+                tool_name: Some("Bash".into()),
+                waiting_text: Some("make".into()),
+                held: Some(held),
+                ..hook(lifecycle::Provider::Codex, "PermissionRequest", SID)
+            }).unwrap();
+            let waiting = host.mirrors[&key].waiting.clone().unwrap();
+            assert_eq!(waiting.input, Some(shown));
+            assert_eq!(waiting.held.unwrap().full, expect_full);
+            assert!(!hooks.join(format!("{id}.json")).exists(), "read once");
+            let _ = fs::remove_file(&reply);
+        }
+    }
+
+    #[test]
     fn local_sessions_private_send_approval_stays_outside_shared_events() {
         let mut mirror = test_mirror(SID, "gen-1");
         let id = format!("appr-{}", uuid::Uuid::new_v4().simple());
@@ -4866,8 +5010,8 @@ pub(super) mod tests {
             "text":"private body","requestId":uuid::Uuid::new_v4().to_string()});
         let prompt = WaitingPrompt { id: None, tool: Some("mcp__lightbulb_native_sessions__send".into()),
             summary: "Lightbulb message".into(), held: Some(approval::Held {
-                id: id.clone(), input_digest: digest, reply: String::new(), exact: true, modes: vec![],
-            }), private_send: Some(detail.clone()) };
+                id: id.clone(), input_digest: digest, reply: String::new(), exact: true, modes: vec![], full: false,
+            }), private_send: Some(detail.clone()), input: None };
         mirror.waiting = Some(prompt.clone());
         let batch = json!({"type":"local.session.events","sessionId":SID,"generation":"gen-1",
             "batchId":"batch-1","afterSeq":0,"events":[approval_row("", &prompt)]});
@@ -4893,7 +5037,7 @@ pub(super) mod tests {
             input_digest: "d".repeat(64),
             reply: reply.to_string_lossy().into_owned(),
             exact: true,
-            modes: vec![],
+            modes: vec![], full: false,
         };
         let event = lifecycle::HookEvent {
             tool_name: Some("Bash".into()),
@@ -4941,7 +5085,7 @@ pub(super) mod tests {
         let id = format!("appr-{}", uuid::Uuid::new_v4().simple());
         let reply = hooks.join(format!("{id}.sock"));
         let _hook_side = std::os::unix::net::UnixDatagram::bind(&reply).unwrap();
-        let held = approval::Held { id: id.clone(), input_digest: "d".repeat(64), reply: reply.to_string_lossy().into_owned(), exact: true, modes: vec![] };
+        let held = approval::Held { id: id.clone(), input_digest: "d".repeat(64), reply: reply.to_string_lossy().into_owned(), exact: true, modes: vec![], full: false };
         host.apply_hook(&lifecycle::HookEvent {
             tool_name: Some("Bash".into()),
             waiting_text: Some("ls".into()),
@@ -5011,10 +5155,15 @@ pub(super) mod tests {
             input_digest: cmd.input_digest.clone().unwrap(),
             reply: String::new(),
             exact: true,
-            modes: vec!["acceptEdits".into()],
+            modes: vec!["acceptEdits".into()], full: false,
         };
         assert!(answerable(&held, &cmd));
         assert!(!answerable(&approval::Held { exact: false, ..held.clone() }, &cmd), "inexact is deny-only");
+        assert!(answerable(&approval::Held { exact: false, full: true, ..held.clone() }, &cmd), "shown whole");
+        // The held id names one prompt and so its tool: an answer for prompt A, same input
+        // digest and all, never allows prompt B.
+        let other = approval::Held { id: format!("appr-{}", uuid::Uuid::new_v4().simple()), full: true, ..held.clone() };
+        assert!(!answerable(&other, &cmd));
         assert!(!answerable(&approval::Held { input_digest: "e".repeat(64), ..held.clone() }, &cmd));
         let mut deny = cmd.clone();
         deny.decision = Some("deny".into());

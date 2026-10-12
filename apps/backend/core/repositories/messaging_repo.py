@@ -2604,7 +2604,11 @@ async def put_meeting_notes_request(owner_id: str, message_id: str, fields: dict
         "pk": owner_pk(owner_id), "sk": meeting_notes_sk(message_id), **fields,
         "expiresAt": int(time.time()) + MEETING_NOTES_TTL_S,
     }  # fmt: skip
-    await run_in_thread(_table().put_item, Item=item)
+    try:  # first write wins: a retried dispatch must not clear a mail claim already taken
+        await run_in_thread(_table().put_item, Item=item, ConditionExpression="attribute_not_exists(pk)")
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
 
 
 async def get_meeting_notes_request(owner_id: str, message_id: str) -> dict | None:

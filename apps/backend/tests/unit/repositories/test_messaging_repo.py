@@ -1471,3 +1471,5 @@ async def test_a_meeting_notes_mail_is_claimed_once(table):
     assert (await repo.get_meeting_notes_request("owner_1", "msg-1"))["roomId"] == "r1"
     assert await repo.claim_meeting_notes_mail("owner_1", "msg-1")
     assert not await repo.claim_meeting_notes_mail("owner_1", "msg-1")
+    await repo.put_meeting_notes_request("owner_1", "msg-1", {"roomId": "r1", "occurrence": 1790972400})  # a retry
+    assert not await repo.claim_meeting_notes_mail("owner_1", "msg-1")

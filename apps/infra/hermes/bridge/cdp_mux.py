@@ -420,8 +420,11 @@ async def _send(state: _State, method: str, params: dict | None = None, session:
 
 async def _cast(upstream: str, key: str, sink, ttl: float, resend: bool) -> None:
     state = _ups(upstream)
-    state.want[key] = (sink, asyncio.get_running_loop().time() + ttl)
     live = state.casts.get(key)
+    if ttl <= 0 and live is None:  # a stop for a cast that is not running: start nothing
+        state.want.pop(key, None)
+        return
+    state.want[key] = (sink, asyncio.get_running_loop().time() + ttl)
     if live is not None:
         live.resend = live.resend or resend
         live.changed.set()  # wakes the loop to read the new deadline
@@ -480,6 +483,9 @@ async def _cast_loop(state: _State, cast: _Cast) -> None:
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(cast.changed.wait(), deadline - loop.time())
             cast.changed.clear()
+            sink, deadline = state.want.get(cast.key, (None, 0.0))
+            if sink is None or loop.time() >= deadline:
+                return  # stopped while waiting (a ttl 0): not one more frame
             frame = cast.latest
             if frame is None or (frame is cast.sent and not cast.resend) or len(frame[0]) > MAX_FRAME_B64:
                 continue

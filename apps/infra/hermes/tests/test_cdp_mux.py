@@ -245,6 +245,20 @@ def test_cast_stops_when_nobody_asks_again_and_when_the_run_ends(chrome):
     assert chrome.seen.count("Target.detachFromTarget") == 2
 
 
+def test_a_ttl_0_stops_a_live_cast_without_one_more_frame_and_starts_none(chrome):
+    frames = []
+    a = Client("run-a")
+    a.call("Target.getTargets")
+    cdp_mux.cast("run-a", frames.append, ttl=5)
+    assert _wait(lambda: len(frames) == 2)
+    cdp_mux.cast("run-a", frames.append, ttl=0, resend=True)
+    assert _wait(lambda: not cdp_mux._run(_casting("run-a")))
+    assert len(frames) == 2, "the stop's resend publishes nothing"
+    cdp_mux.cast("run-a", frames.append, ttl=0)
+    assert not _wait(lambda: cdp_mux._run(_casting("run-a")), timeout=0.3)
+    assert len(chrome.casting) == 1, "a stop never starts a cast"
+
+
 async def _casting(run_id):
     return cdp_mux.key_for(run_id) in cdp_mux.S.casts
 

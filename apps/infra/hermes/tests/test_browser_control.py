@@ -923,6 +923,8 @@ def test_a_browser_tab_beat_casts_only_that_sessions_tab(clean):
     assert browser_control.session_frames(SESSION_RUN, 45) == 1
     assert clean["casts"] == [(SESSION_RUN, sink, 45, True)]
     assert browser_control.session_frames("session-other", 45) == 0
+    assert browser_control.session_frames(SESSION_RUN, 0) == 1
+    assert clean["casts"][-1][2] == 0, "a ttl 0 reaches the cast: it stops"
 
 
 def test_the_session_sink_publishes_an_image_on_the_sessions_own_channel(monkeypatch):
@@ -938,6 +940,21 @@ def test_the_session_sink_publishes_an_image_on_the_sessions_own_channel(monkeyp
     assert {**event["payload"], "seq": 0} == {"sessionId": SESSION_ID, "kind": "image", "data": "/9j/", "w": 480, "h": 300, "seq": 0}
     assert event["payload"]["seq"] > 1_700_000_000_000, "epoch ms: a restarted cast never goes backwards"
     assert browser_control._session_sink(SESSION_RUN, FRAMES["frameEndpoint"], "/ws/ws-1/session-frames/other") is None
+
+
+def test_the_session_sink_publishes_at_most_two_frames_a_second(monkeypatch):
+    from bridge import turn
+
+    clock, slept, sent = [100.0], [], []
+    monkeypatch.setattr(browser_control.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(browser_control.time, "sleep", lambda s: slept.append(s) or clock.__setitem__(0, clock[0] + s))
+    monkeypatch.setattr(turn, "publish_frame", lambda *args: sent.append(clock[0]) or 200)
+    sink = browser_control._session_sink(SESSION_RUN, FRAMES["frameEndpoint"], FRAMES["frameChannel"])
+    frame = {"seq": 1, "jpegBase64": "/9j/", "w": 480, "h": 300}
+    sink(frame)
+    clock[0] += 0.1
+    sink(frame)  # 0.1 s after the last: waits out the rest of the half second
+    assert slept == [pytest.approx(0.4)] and sent == [100.0, pytest.approx(100.5)]
 
 
 def test_a_second_attach_takes_the_run_over_and_the_old_door_ending_leaves_it(monkeypatch, clean):

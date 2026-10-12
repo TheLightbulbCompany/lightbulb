@@ -420,7 +420,7 @@ def _browser_frames(params: dict, **_kwargs) -> dict:
     """A live-frame watcher's heartbeat (backend, while an agent browses); with a session's `runId`,
     that session's Browser tab only."""
     params = params or {}
-    ttl = float(params.get("ttl") or browser_control.FRAMES_TTL_S)
+    ttl = float(browser_control.FRAMES_TTL_S if params.get("ttl") is None else params["ttl"])  # 0 stops a cast
     if params.get("runId"):
         return {"ok": True, "payload": {"runs": browser_control.session_frames(str(params["runId"]), ttl)}}
     return {"ok": True, "payload": {"runs": browser_control.frames_wanted(ttl)}}

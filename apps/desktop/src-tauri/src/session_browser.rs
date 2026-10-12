@@ -67,6 +67,13 @@ enum Upstream {
 }
 
 impl Upstream {
+    /// The relay is open on this side: say so first (the backend's `cdp_accept` waits for
+    /// `opened`), before any command goes up on the same socket.
+    async fn relay(out: &EventSender, channels: &Channels, id: &str) -> Result<Upstream, ()> {
+        out.send("browser.cdp.opened", json!({"channel": id})).await.map_err(|_| ())?;
+        Ok(Upstream::Relay(out.clone(), channels.clone()))
+    }
+
     async fn send(&self, id: &str, text: String) -> Result<(), ()> {
         match self {
             Upstream::Chrome(tx) => tx.send(text).await.map_err(|_| ()),
@@ -391,7 +398,10 @@ async fn run(app: tauri::AppHandle, ws: Ws, session: String) {
         tokio::select! {
             answer = &mut decided => match answer {
                 Ok(Ok(Decision::Chrome(tx))) => break Upstream::Chrome(tx),
-                Ok(Ok(Decision::Relay)) => break Upstream::Relay(out.clone(), channels.clone()),
+                Ok(Ok(Decision::Relay)) => match Upstream::relay(&out, &channels, &id).await {
+                    Ok(up) => break up,
+                    Err(()) => return ended(&channels, &id, Some("CLOSED")),
+                },
                 Ok(Ok(Decision::Refused(message))) => return refuse_split(sink, stream, early, &message).await,
                 _ => {
                     ended(&channels, &id, Some("TIMEOUT"));
@@ -883,6 +893,20 @@ mod tests {
         assert_eq!(client.recv().await.as_deref(), Some("{\"id\":1,\"result\":{}}"));
         assert!(on_event(&channels, "browser.cdp.close", &json!({"channel": "r1", "code": "CLOSED"})));
         assert!(client.recv().await.is_none(), "the backend closed it: the connection ends");
+    }
+
+    #[tokio::test]
+    async fn a_relay_says_opened_before_its_first_command() {
+        let (channels, mut rx) = crate::agent_chrome::test_channels();
+        let up = Upstream::relay(&channels.out(), &channels, "r7").await.unwrap();
+        up.send("r7", "{\"id\":1}".into()).await.unwrap();
+        let mut next = || {
+            let Ok(Message::Text(text)) = rx.try_recv() else { panic!("a frame") };
+            let v: Value = serde_json::from_str(&text).unwrap();
+            (v["event"].as_str().map(String::from), v["payload"]["channel"].as_str().map(String::from))
+        };
+        assert_eq!(next(), (Some("browser.cdp.opened".into()), Some("r7".into())));
+        assert_eq!(next().0.as_deref(), Some("browser.cdp.frame"));
     }
 
     #[tokio::test]

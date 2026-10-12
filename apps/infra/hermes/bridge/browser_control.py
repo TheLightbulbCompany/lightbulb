@@ -71,6 +71,7 @@ NO_REFS = ("browser_cdp", "browser_dialog", "computer_use")
 SNAPSHOTS = ("browser_snapshot", "browser_navigate")
 #: Cast frames this long after the last "someone is watching frames" (watchers beat every ~20 s).
 FRAMES_TTL_S = 45.0
+SESSION_FRAME_INTERVAL_S = 0.5  # a shared session's cloud thumbs: <= 2 fps
 UNAVAILABLE = "Browser control is unavailable for this turn."
 #: One Mac sync (all its steps) including the synced report; and a Mac run's whole release.
 #: Inside the backend's CLAIM_SECONDS (180): the steps share it, so the sync ends before the claim.
@@ -647,9 +648,17 @@ def _session_sink(run: str, endpoint, channel):
     if not (isinstance(endpoint, str) and endpoint.startswith("https://") and isinstance(channel, str)
             and channel.startswith("/ws/") and channel.endswith(f"/session-frames/{sid}")):
         return None
+    last = [float("-inf")]
 
     def publish(frame: dict) -> None:
         from bridge import turn  # it imports this module
+
+        # At most one per SESSION_FRAME_INTERVAL_S: these go straight to AppSync, past the backend's
+        # session frames budget. Waiting here (off the loop) holds the cast, whose latest frame wins.
+        wait = last[0] + SESSION_FRAME_INTERVAL_S - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        last[0] = time.monotonic()
 
         turn.publish_frame(endpoint, channel, {
             "schemaVersion": 1, "eventId": str(uuid.uuid4()), "type": "workspace.session.screen", "occurredAt": turn.now(),
@@ -661,7 +670,8 @@ def _session_sink(run: str, endpoint, channel):
 
 def session_frames(run_id: str, ttl: float) -> int:
     """A Browser tab's beat for a session browsing the cloud: cast its tab for ``ttl`` more seconds
-    and resend the latest frame. 0 when it is not browsing here. Room runs' casts are untouched."""
+    and resend the latest frame (``ttl`` 0: stop it now). 0 when it is not browsing here. Room runs'
+    casts are untouched."""
     with _LOCK:
         sink = _SESSION_SINKS.get(run_id)
     if sink is None:

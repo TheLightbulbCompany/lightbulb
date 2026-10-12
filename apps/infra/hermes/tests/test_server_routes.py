@@ -39,9 +39,12 @@ def test_browser_state_with_a_door_runs_the_mac_checkpoint(monkeypatch):
 
 def test_browser_attach_and_a_sessions_frames_beat(monkeypatch):
     monkeypatch.setattr(server.browser_control, "attach_session", lambda params: {"status": "attached"})
-    monkeypatch.setattr(server.browser_control, "session_frames", lambda run, ttl: 1)
+    ttls = []
+    monkeypatch.setattr(server.browser_control, "session_frames", lambda run, ttl: ttls.append(ttl) or 1)
     rpc = "/plugins/lightbulb-channel/rpc"
     assert server.handle_plugin(rpc, "POST", AUTH, {"method": "browser.attach", "params": {"runId": "x"}}) == \
         (200, {"ok": True, "payload": {"status": "attached"}})
     assert server.handle_plugin(rpc, "POST", AUTH, {"method": "browser.frames", "params": {"runId": "session-x", "ttl": 45}}) == \
         (200, {"ok": True, "payload": {"runs": 1}})
+    server.handle_plugin(rpc, "POST", AUTH, {"method": "browser.frames", "params": {"runId": "session-x", "ttl": 0}})
+    assert ttls == [45, 0], "a ttl 0 stops the cast; it is not the default"

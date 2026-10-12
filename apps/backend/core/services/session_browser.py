@@ -438,7 +438,14 @@ async def _attach_until(auth: dict, params) -> bool:
 
 async def _attach(auth: dict, target: dict) -> None:
     """Hand the runtime a door to the session's channel: a fresh single-use ticket per attempt (one
-    lives 60 s). cloud_unavailable if the cloud browser does not take it."""
+    lives 60 s). The runtime is woken first (`health`): a cold one answers its first invoke after
+    ~55 s and its bridge refreshes for up to 20 s more, so a ticket minted before the wake would be
+    stale when the door is dialed. cloud_unavailable if the runtime or the cloud browser does not take it."""
+    try:
+        await container_rpc.call(auth["ownerId"], "health", {})
+    except Exception as exc:  # noqa: BLE001 -- the class only
+        logger.warning("session browser wake failed owner=%s error=%s", auth["ownerId"], type(exc).__name__)
+        raise _err("cloud_unavailable") from None
     workspace = await store.ensure_workspace_id(auth["ownerId"])
 
     def params() -> dict:
@@ -454,16 +461,33 @@ async def _attach(auth: dict, target: dict) -> None:
         raise _err("cloud_unavailable")
 
 
+async def _stop_cast(owner: str, run: str) -> None:
+    """Stop the runtime's cast of the session's tab now (`browser.frames` with ttl 0): its frames go
+    straight from the runtime to AppSync, so nothing here can drop one. Never raises."""
+    try:
+        await container_rpc.call(owner, "browser.frames", {"runId": run, "ttl": 0})
+    except Exception as exc:  # noqa: BLE001 -- the class only; the cast lapses by its TTL anyway
+        logger.info("session browser stop-cast failed owner=%s error=%s", owner, type(exc).__name__)
+
+
 async def _watch_cloud(owner: str, session_id: str, run: str) -> None:
     """While someone has the Browser tab open, ask the runtime to cast the session's tab every
-    SET_EVERY_S (`browser.frames` with its run); the cast stops by itself after."""
+    SET_EVERY_S (`browser.frames` with its run); the cast stops by itself after. Once the session
+    is not shared (unshared, ended, removed) the cast is stopped at once and so is this."""
     while True:
         try:
             row = await repo.get_session(owner, session_id)
-            if _live_shared(row) and _clock() - float(row.get("browserWatchedAt") or 0) < mac_live.WANTED_S:
-                await container_rpc.call(owner, "browser.frames", {"runId": run, "ttl": mac_live.WANTED_S})
-        except Exception as exc:  # noqa: BLE001 -- the next beat tries again
-            logger.info("session browser frames ask failed owner=%s error=%s", owner, type(exc).__name__)
+        except Exception as exc:  # noqa: BLE001 -- a DynamoDB blip: the next beat tries again
+            logger.info("session browser watch read failed owner=%s error=%s", owner, type(exc).__name__)
+        else:
+            if not _live_shared(row):
+                await _stop_cast(owner, run)
+                return
+            if _clock() - float(row.get("browserWatchedAt") or 0) < mac_live.WANTED_S:
+                try:
+                    await container_rpc.call(owner, "browser.frames", {"runId": run, "ttl": mac_live.WANTED_S})
+                except Exception as exc:  # noqa: BLE001 -- the next beat tries again
+                    logger.info("session browser frames ask failed owner=%s error=%s", owner, type(exc).__name__)
         await asyncio.sleep(mac_live.SET_EVERY_S)
 
 
@@ -481,7 +505,11 @@ async def _hold_cloud(auth: dict, device: str, node, channel) -> None:
             signal = await _signal(channel)
             if signal == "closed":
                 return
-            await shared_row(owner, user, device, sid)
+            try:
+                await shared_row(owner, user, device, sid)
+            except DesktopError:
+                await _stop_cast(owner, auth["runId"])  # no frame of an unshared session goes out
+                raise
             if signal == "active":
                 ok = await _attach_until(auth, lambda: {"runId": auth["runId"], "renew": True})
                 node.cdp_leased(channel, ok, *(() if ok else ("cloud_unavailable", CLOUD_MESSAGE)))
@@ -503,10 +531,13 @@ async def _serve_cloud(auth: dict, device: str, node, channel) -> None:
     try:
         await _attach(auth, target)
         deadline = _clock() + DOOR_WAIT_S
-        while key in _relays:  # the door claims the channel and accepts it; announce only then
+        while key in _relays:  # the door claims the channel ...
             if _clock() >= deadline:
                 raise _err("cloud_unavailable")
             await asyncio.sleep(0.1)
+        # ... and opens it on the Mac (its cdp_accept); announce only then. A refused or timed-out
+        # open ends the channel, which raises CdpClosed here.
+        await asyncio.shield(channel.opened)
         await _mark_open(owner, user, sid, "cloud", announce=True)
         try:
             await _hold_cloud(auth, device, node, channel)
@@ -536,14 +567,23 @@ def cloud_events(events: list[dict]) -> list[dict]:
 
 async def cloud_input(row: dict, events: list[dict]) -> None:
     """A person's input on a session browsing the cloud: into its cast tab, as the cloud's own watcher
-    input (it counts as a person's input there too). After idle the cast's lease has lapsed, so renew
-    it first (one try: a cloud still starting answers the person's 409 rather than holding the request)."""
-    try:
-        await container_rpc.call(row["ownerId"], "browser.attach", {"runId": run_id(row["sessionId"]), "renew": True})
-    except Exception as exc:  # noqa: BLE001 -- send_input below says "not casting" if it did not take
-        logger.info("session browser input renew failed owner=%s error=%s", row["ownerId"], type(exc).__name__)
+    input (it counts as a person's input there too). After idle the cast's lease has lapsed and the
+    input answers "not casting": then renew it once and retry (a cloud still starting answers the
+    person's 409 rather than holding the request)."""
+    owner, run = row["ownerId"], run_id(row["sessionId"])
+    renewed = False
     for event in cloud_events(events):
-        await browser_control.send_input(row["ownerId"], {"runId": run_id(row["sessionId"]), **event})
+        try:
+            await browser_control.send_input(owner, {"runId": run, **event})
+        except browser_control.BrowserError as exc:
+            if renewed or str(exc) != browser_control.NOT_CASTING:
+                raise
+            renewed = True
+            try:
+                await container_rpc.call(owner, "browser.attach", {"runId": run, "renew": True})
+            except Exception as rpc_exc:  # noqa: BLE001 -- the retry below answers "not casting"
+                logger.info("session browser input renew failed owner=%s error=%s", owner, type(rpc_exc).__name__)
+            await browser_control.send_input(owner, {"runId": run, **event})
 
 
 async def serve(owner: str, user: str, device: str, node, channel, session_id: str, mac_browser_on: bool) -> None:

@@ -239,6 +239,10 @@ export type SessionScreen = {
    *  Members get their `userId`; a link viewer gets only their `personColor` as `color`, never the id. */
   typist?: { userId?: string; color?: PersonColor; name: string; forMs: number };
 };
+/** A shared session's browser tab as a 480 px JPEG (spec 2026-10-11 §3), on the session's frames
+ *  channel: `data` is base64, `w`x`h` the tab's CSS size (viewer input is in those pixels), `seq`
+ *  orders frames. Frames flow only while someone has the Browser tab open; nothing stores them. */
+export type SessionBrowserFrame = { sessionId: string; kind: "image"; data: string; w: number; h: number; seq: number };
 /** An admitted person started (or is still) typing into this owner's live session terminal. */
 export type SessionTyping = { sessionId: string; userId: string };
 export type RoomTypingChanged = { roomId: string; userId: string; displayName: string; expiresAt: string };
@@ -322,7 +326,7 @@ export type LiveEvent =
   /** You were removed from this workspace: drop its live subscriptions (user channel only). */
   | LiveEventEnvelope<"workspace.access.removed", { workspaceId: string }>
   | LiveEventEnvelope<"workspace.session.attention", SessionAttention>
-  | LiveEventEnvelope<"workspace.session.screen", SessionScreen>
+  | LiveEventEnvelope<"workspace.session.screen", SessionScreen | SessionBrowserFrame>
   | LiveEventEnvelope<"workspace.session.typing", SessionTyping>
   | LiveEventEnvelope<"room.member.updated", RoomMemberUpdated>
   | LiveEventEnvelope<"room.subscription.rotated", RoomSubscriptionRotated>
@@ -430,6 +434,10 @@ function payloadValid(type: LiveEventType, payload: unknown): boolean {
       return str(payload.humanUserId) && (payload.transcript === undefined || payload.transcript === true)
         && Object.keys(payload).every((key) => key === "humanUserId" || key === "transcript");
     case "workspace.session.screen":
+      if (payload.kind === "image") {
+        return str(payload.sessionId) && str(payload.data) && num(payload.w) && num(payload.h)
+          && Number.isSafeInteger(payload.seq) && (payload.seq as number) >= 0;
+      }
       return str(payload.sessionId) && str(payload.generation)
         && Number.isSafeInteger(payload.epoch) && (payload.epoch as number) >= 0
         && Number.isSafeInteger(payload.seq) && (payload.seq as number) >= 0

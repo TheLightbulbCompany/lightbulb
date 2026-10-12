@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { NativeSessionTranscript, ReceiptChip, type Person } from "./NativeSessionTranscript";
 import { SessionApprovalCard } from "./SessionControls";
 import { SessionTerminalView, type SessionFrames } from "./SessionTerminalView";
+import { SessionBrowserTab, showsBrowserTab } from "./SessionBrowserTab";
 import { useOptionalLiveEvents } from "@/hooks/useLiveEvents";
 import { useLocalAudience, useLocalTerminal } from "./localTerminal";
 import { toBase64 } from "./sessionInput";
@@ -135,6 +136,12 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const keptWatching = canWatch && screenDue && watched.current === session.sessionId;
   const watchRemote = (canWatch && hasTerminal && (running || endedScreen)) || keptWatching;
   useEffect(() => { watched.current = watchRemote ? session.sessionId : ""; }, [watchRemote, session.sessionId]);
+  // Terminal | Browser while the session has a browser connection open (spec 2026-10-11).
+  // The session the Browser tab was picked for: another session, or no tab, reads as Terminal.
+  const [browserFor, setBrowserFor] = useState<string | null>(null);
+  const browserTab = showsBrowserTab(session, local === "none" && !!onEvent);
+  if (!browserTab && browserFor !== null) setBrowserFor(null);
+  const showBrowser = browserTab && browserFor === session.sessionId;
   const [screenLive, setScreenLive] = useState(false);
   // False once the terminal is read-only for this viewer (the Mac refused input): the message box is the way to send then.
   const [termCanType, setTermCanType] = useState(true);
@@ -325,7 +332,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       {convoEmpty ? endedPanel : convo ? <>{session.status === "ended" && endedLine}{session.status === "offline" && offlinePanel}<p className="session-ended-line" role="note">{notice.title} {notice.body}</p>
         {own && running && <OpenInTerminal sessionId={session.sessionId} onEvent={onEvent} />}</>
         : session.status === "ended" ? (endedScreen || keptWatching ? endedLine : endedPanel) : session.status === "offline" ? offlinePanel : null}
-      {conversation && !convo && <>{hint}<div className="local-session-scroll">
+      {conversation && !convo && !showBrowser && <>{hint}<div className="local-session-scroll">
         <div ref={scroller} className="room-context-body local-session-history" role="region" aria-label="Native session history" tabIndex={0} onScroll={onScroll}>
           <div ref={content}>
             {history.loading && <div className="native-session-shimmer" role="status" aria-label="Loading session history" />}
@@ -334,16 +341,21 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
           </div>
         </div>
       </div></>}
-      {watchRemote && <div className="session-terminal-slot" onScrollCapture={endedScreen ? openAtTop : undefined}><SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} frames={frames} onLive={setScreenLive} onCanType={setTermCanType} kept={endedScreen}
+      {browserTab && <div className="session-view-tabs" role="tablist" aria-label="Session view">
+        <button type="button" role="tab" aria-selected={!showBrowser} onClick={() => setBrowserFor(null)}>{hasTerminal ? "Terminal" : "Conversation"}</button>
+        <button type="button" role="tab" aria-selected={showBrowser} onClick={() => setBrowserFor(session.sessionId)}>Browser</button>
+      </div>}
+      {showBrowser && <SessionBrowserTab sessionId={session.sessionId} frames={frames} canType={control && running && session.shared !== false && !(session.inputPaused && !own)} />}
+      {watchRemote && <div className="session-terminal-slot" hidden={showBrowser} onScrollCapture={endedScreen ? openAtTop : undefined}><SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} frames={frames} onLive={setScreenLive} onCanType={setTermCanType} kept={endedScreen}
         admitted={running && control && session.shared !== false && !(session.inputPaused && !own)}
         input={client.sendLocalSessionInput ? (bytes, epoch) => client.sendLocalSessionInput!(session.sessionId, toBase64(bytes), epoch) : undefined} /></div>}
       {terminalLive && control && !own && session.inputPaused && <p className="text-sm text-muted-foreground">Paused while {ownerName} answers a request to join.</p>}
-      {liveTerminal && <div className="local-session-feedback">{feedback}</div>}
+      {liveTerminal && !showBrowser && <div className="local-session-feedback">{feedback}</div>}
       {/* One child in a reversed column: the browser keeps the newest row in view as the conversation grows. */}
-      {convo && !convoEmpty ? <div className="local-session-feedback local-session-conversation" role="log" aria-label="Session conversation"><div>{feedback}</div></div>
+      {showBrowser ? null : convo && !convoEmpty ? <div className="local-session-feedback local-session-conversation" role="log" aria-label="Session conversation"><div>{feedback}</div></div>
         : !liveTerminal && !conversation && (session.status !== "ended" || !!pendingText || queuedOutbox.length > 0) && <div className="local-session-feedback">{feedback}</div>}
     </>}
-    {session.status === "ended" ? <SessionResume flow={resume} own={own} ownerName={ownerName} /> : terminalLive && control && (local === "local" || termCanType || (!own && session.inputPaused)) ? null : control ? <form className="room-composer local-session-composer native-session-composer" onSubmit={event => { event.preventDefault(); atBottomRef.current = true; command.send(text); }}>
+    {session.status === "ended" ? <SessionResume flow={resume} own={own} ownerName={ownerName} /> : showBrowser ? null : terminalLive && control && (local === "local" || termCanType || (!own && session.inputPaused)) ? null : control ? <form className="room-composer local-session-composer native-session-composer" onSubmit={event => { event.preventDefault(); atBottomRef.current = true; command.send(text); }}>
       <label htmlFor={id} className="sr-only">Send to {target}</label>
       <div className="native-session-prompt-row"><span className="native-session-glyph" aria-hidden="true">{glyph}</span>
         <textarea id={id} className="room-input" rows={2} value={text} disabled={!command.canSend || command.locked} onChange={event => setText(event.target.value)}

@@ -259,3 +259,23 @@ async def test_cast_set_failure_ends_quietly(env):
     await _spin()
     assert task.done() and task.exception() is None
     assert mac_live._live == {}
+
+
+async def test_a_session_entry_delivers_only_to_people_who_may_type(monkeypatch):
+    from core.services import session_browser
+
+    session, channel = FakeSession(), FakeChannel()
+    allowed = {"user_1"}
+
+    async def may_type(owner, user, run):
+        return user in allowed
+
+    monkeypatch.setattr(session_browser, "may_type", may_type)
+    move = [{"type": "move", "x": 1.0, "y": 1.0}]
+    with mac_live.live(OWNER, "session-x", session, channel):
+        await mac_live.input(OWNER, "user_1", "session-x", move)
+        with pytest.raises(PermissionError):
+            await mac_live.input(OWNER, "user_2", "session-x", move)
+    assert session.inputs == [move]
+    with pytest.raises(LookupError):
+        await mac_live.input(OWNER, "user_1", "session-x", move)

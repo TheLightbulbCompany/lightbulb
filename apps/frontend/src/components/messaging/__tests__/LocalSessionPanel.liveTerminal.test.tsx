@@ -18,6 +18,11 @@ vi.mock("../SessionTerminalView", async () => {
   } };
 });
 
+vi.mock("../SessionBrowserTab", async importOriginal => ({
+  ...await importOriginal<typeof import("../SessionBrowserTab")>(),
+  SessionBrowserTab: ({ canType }: { canType: boolean }) => <div role="region" aria-label="Session browser">{canType ? "typing" : "read-only"}</div>,
+}));
+
 const session: LocalSession = { sessionId: "s", deviceId: "mac", humanUserId: "alice", provider: "claude", terminal: "held", generation: "g1", status: "idle", providerVersion: "test", activeTurnId: null, capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true, latestEventSeq: 0, controlUnavailableReason: null };
 const client = { listLocalSessionEvents: vi.fn(async () => ({ events: [], nextAfterSeq: null })), submitLocalSessionCommand: vi.fn(), getLocalSession: vi.fn(), listWorkspaceSessions: vi.fn(), setLocalSessionSharing: vi.fn(), watchLocalSession: vi.fn(async () => undefined), sendLocalSessionInput: vi.fn() };
 const below = (a: HTMLElement, b: HTMLElement) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
@@ -454,4 +459,18 @@ it("offers Open in a terminal on a running app session to its owner only", () =>
   cleanup();
   panel(session, true);
   expect(screen.queryByRole("button", { name: "Open in a terminal" })).toBeNull();
+});
+
+it("keeps the Browser tab read-only while the owner has paused others' input, and resets to Terminal when browsing stops", async () => {
+  const props = { ownerName: "Alice", own: false, client: { ...client, requestLocalSessionJoin: vi.fn() } as never, revision: 0, onAccessLost: () => {}, onEvent: () => () => {} };
+  const browsing = { ...session, browser: "mac", teamControl: true } as LocalSession;
+  const view = render(<LocalSessionPanel {...props} session={browsing} />);
+  await screen.findByRole("region", { name: "Live terminal (view only)" });
+  fireEvent.click(screen.getByRole("tab", { name: "Browser" }));
+  expect((await screen.findByRole("region", { name: "Session browser" })).textContent).toBe("typing");
+  view.rerender(<LocalSessionPanel {...props} session={{ ...browsing, inputPaused: true }} />);
+  expect(screen.getByRole("region", { name: "Session browser" }).textContent).toBe("read-only");
+  view.rerender(<LocalSessionPanel {...props} session={{ ...browsing, browser: null }} />);
+  view.rerender(<LocalSessionPanel {...props} session={browsing} />);
+  expect(screen.queryByRole("region", { name: "Session browser" })).toBeNull();
 });

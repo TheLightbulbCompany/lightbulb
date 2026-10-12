@@ -396,3 +396,45 @@ describe("BrowserFrameView on a Mac tab", () => {
     expect(post).toHaveBeenCalledWith("/browser/viewing", { frames: true });
   });
 });
+
+describe("BrowserFrameView on a shared session's browser", () => {
+  function image(sessionId: string, seq: number, data = `jpeg${seq}`): void {
+    const event = { schemaVersion: 1, eventId: `${sessionId}-${seq}`, type: "workspace.session.screen", occurredAt: "now",
+      payload: { sessionId, kind: "image", data, w: 1000, h: 500, seq } } as LiveEvent;
+    act(() => handlers.forEach((handler) => handler(event)));
+  }
+
+  it("beats the session, shows its newest image only, and takes no input without canType", () => {
+    render(<BrowserFrameView session={{ sessionId: "s1", canType: false }} />);
+    expect(post).toHaveBeenCalledWith("/messaging/sessions/s1/browser/viewing", {});
+    expect(claimFrames).not.toHaveBeenCalled();
+    image("s2", 9);
+    frame("s1", 3); // a room frame never shows here
+    expect(screen.queryByRole("img")).toBeNull();
+    image("s1", 5);
+    image("s1", 4);
+    expect(picture().src).toContain("jpeg5");
+    fireEvent.pointerDown(picture(), { button: 0, clientX: 1, clientY: 1, pointerId: 1 });
+    expect(post).not.toHaveBeenCalledWith(expect.stringContaining("/browser/input"), expect.anything());
+  });
+
+  it("someone who may type sends Mac-shaped input to the session's route", async () => {
+    render(<BrowserFrameView session={{ sessionId: "s1", canType: true }} />);
+    image("s1", 1);
+    fireEvent.pointerDown(picture(), { button: 0, clientX: 1, clientY: 1, pointerId: 1 });
+    await act(async () => { await Promise.resolve(); });
+    expect(post).toHaveBeenCalledWith("/messaging/sessions/s1/browser/input",
+      { events: [expect.objectContaining({ type: "down", button: "left", clicks: 1 })] });
+  });
+
+  it("offers the text field only to someone who may type, labelled for the page", () => {
+    const { unmount } = render(<BrowserFrameView session={{ sessionId: "s1", canType: false }} />);
+    image("s1", 1);
+    expect(screen.queryByRole("textbox")).toBeNull();
+    unmount();
+    render(<BrowserFrameView session={{ sessionId: "s1", canType: true }} />);
+    image("s1", 1);
+    expect(screen.getByRole("textbox", { name: "Type into the page" })).toBeTruthy();
+    expect(picture().alt).toBe("The session's browser tab, live");
+  });
+});

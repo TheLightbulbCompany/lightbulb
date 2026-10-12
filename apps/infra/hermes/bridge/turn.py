@@ -3438,8 +3438,9 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str, **limi
                      "stream_delta_callback": frames.delta, "reasoning_callback": frames.thinking}
     enabled_toolsets, disabled_toolsets = profile_toolsets()
     db = _session_db(agent_id)
-    # A state.db failure fails a room turn and a call turn: both run on their stored transcript.
-    if db is None and (ROOM_SESSION_RE.match(session_key) or ":lightbulb:call:" in session_key):
+    # A state.db failure fails a room, call or side turn: each runs on its stored transcript.
+    if db is None and (ROOM_SESSION_RE.match(session_key) or ":lightbulb:call:" in session_key
+                       or ":lightbulb:side:" in session_key):
         raise RuntimeError(f"state.db unavailable for {agent_id}")
     agent = AIAgent(**{
         "model": model,

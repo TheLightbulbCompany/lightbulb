@@ -338,6 +338,8 @@ def test_a_room_turn_without_a_session_db_fails(hermes, home, monkeypatch):
     monkeypatch.delitem(sys.modules, "hermes_state_registry", raising=False)
     with pytest.raises(RuntimeError, match="state.db unavailable"):
         turn._construct_agent("ceo", f.ingress(), None, turn.lightbulb_session_key("ceo", f.ROOM))
+    with pytest.raises(RuntimeError, match="state.db unavailable"):  # nor beside one, in a side session
+        turn._construct_agent("ceo", f.ingress(), None, turn.side_session_key("ceo", "run-1"))
 
 
 def test_a_raising_run_still_ends_a_non_room_session(hermes, home):

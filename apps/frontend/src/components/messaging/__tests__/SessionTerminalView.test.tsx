@@ -233,9 +233,21 @@ describe("a ping that shows the Mac sent a picture this view lacks", () => {
     watch.mockClear();
     return { emit: (e: LiveEvent) => act(() => emit(e)), watch };
   };
-  it("asks when no frame ever arrived", async () => {
+  it("asks when no frame ever arrived, once its own fresh ask had time to bring one", async () => {
+    // Prod 2026-10-11: a ping during the join's own ask cost every viewer a second history burst.
     const { emit, watch } = await mount();
-    emit(screenEvent("s1", "ping", 2));
+    emit(screenEvent("s1", "ping", 3));
+    expect(watch).not.toHaveBeenCalled();
+    act(() => { vi.advanceTimersByTime(5_400); });
+    emit(screenEvent("s1", "ping", 3));
+    expect(watch.mock.calls).toEqual([["s1", true]]);
+  });
+  it("after the join's snapshot, a later ahead ping still asks", async () => {
+    const { emit, watch } = await mount();
+    emit(screenEvent("s1", "ping", 3));
+    emit(screenEvent("s1", "snapshot", 0)); emit(screenEvent("s1", "output", 1, 1, btoa("a")));
+    expect(watch).not.toHaveBeenCalled();
+    emit(screenEvent("s1", "ping", 4));
     expect(watch.mock.calls).toEqual([["s1", true]]);
   });
   it("does not ask for a ping before the Mac sent anything", async () => {

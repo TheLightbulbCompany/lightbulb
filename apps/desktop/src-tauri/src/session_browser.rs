@@ -5,7 +5,9 @@
 //! browser WebSocket. A connection is identified by its peer process, walked up to one shared
 //! session (anything else is refused with `NOT_SHARED` or the ambiguity message), and offered to the
 //! backend (`browser.cdp.offer`). The backend answers `browser.cdp.open` (an `agent_chrome` channel
-//! whose Chrome side is this connection) or `browser.cdp.close` with the message the client is shown.
+//! whose Chrome side is this connection; with `relay: true`, the workspace's cloud browser, whose
+//! frames ride the node socket as `browser.cdp.frame` both ways) or `browser.cdp.close` with the
+//! message the client is shown.
 //! The socket stays open for the client's whole connection. 300 s after its last command this sends
 //! `browser.cdp.idle` (the backend releases the lease, saving); the next command is held, with any
 //! that follow, while `browser.cdp.active` re-acquires it, and runs once `browser.cdp.leased` says
@@ -53,7 +55,27 @@ type Ws = tokio_tungstenite::WebSocketStream<TcpStream>;
 
 pub(crate) enum Decision {
     Chrome(mpsc::Sender<String>),
+    /// The workspace's cloud browser: the backend joins this channel to the runtime's door.
+    Relay,
     Refused(String),
+}
+
+/// Where a connection's commands go: this Mac's agent Chrome, or up the node socket to the cloud.
+enum Upstream {
+    Chrome(mpsc::Sender<String>),
+    Relay(EventSender),
+}
+
+impl Upstream {
+    async fn send(&self, id: &str, text: String) -> Result<(), ()> {
+        match self {
+            Upstream::Chrome(tx) => tx.send(text).await.map_err(|_| ()),
+            Upstream::Relay(out) => {
+                let frame = crate::agent_chrome::envelope(id, &text).map_err(|_| ())?;
+                out.send_text(frame).await.map_err(|_| ())
+            }
+        }
+    }
 }
 
 struct Pending {
@@ -65,6 +87,8 @@ struct Pending {
 static PENDING: LazyLock<Mutex<HashMap<String, Pending>>> = LazyLock::new(Default::default);
 /// Open connections, by channel: where the backend's lease answers go.
 static OPEN: LazyLock<Mutex<HashMap<String, mpsc::Sender<Result<(), String>>>>> = LazyLock::new(Default::default);
+/// Relayed connections, by channel: where the backend's frames for it go (its client).
+static RELAYS: LazyLock<Mutex<HashMap<String, mpsc::Sender<String>>>> = LazyLock::new(Default::default);
 /// Channels this Mac ended, newest last: a late `open` or `leased` for one is claimed and closed,
 /// never left to open a run's channel for a connection that is gone.
 static ENDED: LazyLock<Mutex<VecDeque<String>>> = LazyLock::new(Default::default);
@@ -299,10 +323,11 @@ async fn still_shared(app: &tauri::AppHandle, session: &str) -> bool {
 }
 
 /// This Mac is done with a channel: forget it, remember it ended, and release whatever the backend
-/// holds for it. `code` is sent when no Chrome channel was open to close (None: nothing to tell).
+/// holds for it. `code` is sent when no Chrome channel or relay was open to close (None: nothing to tell).
 fn ended(channels: &Channels, id: &str, code: Option<&'static str>) {
     lock(&PENDING).remove(id);
     lock(&OPEN).remove(id);
+    let relayed = lock(&RELAYS).remove(id).is_some();
     {
         let mut ended = lock(&ENDED);
         if ended.len() >= ENDED_KEEP {
@@ -310,7 +335,9 @@ fn ended(channels: &Channels, id: &str, code: Option<&'static str>) {
         }
         ended.push_back(id.to_string());
     }
-    if !channels.end_local(id) {
+    if relayed {
+        channels.send_close(id, "CLOSED");
+    } else if !channels.end_local(id) {
         if let Some(code) = code {
             channels.send_close(id, code);
         }
@@ -358,7 +385,8 @@ async fn run(app: tauri::AppHandle, ws: Ws, session: String) {
     let upstream = loop {
         tokio::select! {
             answer = &mut decided => match answer {
-                Ok(Ok(Decision::Chrome(tx))) => break tx,
+                Ok(Ok(Decision::Chrome(tx))) => break Upstream::Chrome(tx),
+                Ok(Ok(Decision::Relay)) => break Upstream::Relay(out.clone()),
                 Ok(Ok(Decision::Refused(message))) => return refuse_split(sink, stream, early, &message).await,
                 _ => {
                     ended(&channels, &id, Some("TIMEOUT"));
@@ -384,7 +412,7 @@ async fn run(app: tauri::AppHandle, ws: Ws, session: String) {
     lock(&OPEN).insert(id.clone(), leased);
     let mut open = true;
     for text in early {
-        open = open && upstream.send(text).await.is_ok();
+        open = open && upstream.send(&id, text).await.is_ok();
     }
     let mut gate = Gate::default();
     let far = || tokio::time::Instant::now() + Duration::from_secs(365 * 24 * 3600);
@@ -399,7 +427,7 @@ async fn run(app: tauri::AppHandle, ws: Ws, session: String) {
                 Some(Ok(Message::Text(text))) => {
                     idle.as_mut().reset(tokio::time::Instant::now() + IDLE_RELEASE);
                     match gate.command(text.to_string()) {
-                        Step::Forward(text) => open = upstream.send(text).await.is_ok(),
+                        Step::Forward(text) => open = upstream.send(&id, text).await.is_ok(),
                         Step::Wake => {
                             wake.as_mut().reset(tokio::time::Instant::now() + OFFER_WAIT);
                             open = out.send("browser.cdp.active", json!({"channel": id})).await.is_ok();
@@ -413,14 +441,14 @@ async fn run(app: tauri::AppHandle, ws: Ws, session: String) {
             },
             text = from_upstream.recv() => match text {
                 Some(text) => open = sink.send(Message::Text(text.into())).await.is_ok(),
-                None => open = false, // the channel ended: Chrome quit, Browser off, or the backend closed it
+                None => open = false, // the channel ended: Chrome quit, Browser off, the backend closed it, or a relay stalled
             },
             Some(answer) = answers.recv() => {
                 wake.as_mut().reset(far());
                 match answer {
                     Ok(()) => {
                         for text in gate.leased(true) {
-                            open = open && upstream.send(text).await.is_ok();
+                            open = open && upstream.send(&id, text).await.is_ok();
                         }
                     }
                     Err(message) => open = answer_all(&mut sink, gate.leased(false), &message).await,
@@ -496,6 +524,11 @@ pub(crate) fn on_event(channels: &Channels, event: &str, payload: &Value) -> boo
     match event {
         "browser.cdp.open" => {
             let Some(pending) = lock(&PENDING).remove(id) else { return late(channels, id) };
+            if payload.get("relay").and_then(Value::as_bool) == Some(true) {
+                lock(&RELAYS).insert(id.to_string(), pending.to_client);
+                let _ = pending.decide.send(Decision::Relay);
+                return true;
+            }
             let profile = payload.get("profileId").and_then(Value::as_str).unwrap_or("");
             let decision = match channels.open_local(id, profile, pending.to_client) {
                 Ok(tx) => {
@@ -513,8 +546,18 @@ pub(crate) fn on_event(channels: &Channels, event: &str, payload: &Value) -> boo
             let _ = pending.decide.send(decision);
             true
         }
+        "browser.cdp.frame" => {
+            let client = lock(&RELAYS).get(id).cloned();
+            let Some(client) = client else { return false };
+            let data = payload.get("data").and_then(Value::as_str).unwrap_or("");
+            // A stalled client: its relay ends here and at the backend (the Chrome path's rule).
+            if client.try_send(data.to_string()).is_err() && lock(&RELAYS).remove(id).is_some() {
+                channels.send_close(id, "OVERFLOW");
+            }
+            true
+        }
         "browser.cdp.close" => {
-            let Some(pending) = lock(&PENDING).remove(id) else { return false };
+            let Some(pending) = lock(&PENDING).remove(id) else { return lock(&RELAYS).remove(id).is_some() };
             let message = payload.get("message").and_then(Value::as_str).map(clean).filter(|m| !m.is_empty());
             let _ = pending.decide.send(Decision::Refused(message.unwrap_or_else(|| refusal("").into())));
             true
@@ -816,6 +859,51 @@ mod tests {
         assert!(on_event(&channels, "browser.cdp.leased", &json!({"channel": "t1", "ok": true})), "claimed too");
         assert!(channels.open_local("t2", "p", tokio::sync::mpsc::channel(1).0).is_ok(), "no run channel took a slot for t1");
         assert!(!channels.end_local("t1"), "nothing open for t1");
+    }
+
+    #[tokio::test]
+    async fn a_cloud_answer_relays_the_session_through_the_node_socket() {
+        let (channels, _rx) = crate::agent_chrome::test_channels();
+        let (to_client, mut client) = mpsc::channel(8);
+        let (decide, decided) = oneshot::channel();
+        lock(&PENDING).insert("r1".into(), Pending { to_client, decide });
+        assert!(on_event(&channels, "browser.cdp.open", &json!({"channel": "r1", "relay": true})));
+        assert!(matches!(decided.await, Ok(Decision::Relay)));
+        assert!(!channels.end_local("r1"), "no Chrome channel was opened");
+        assert!(on_event(&channels, "browser.cdp.frame", &json!({"channel": "r1", "data": "{\"id\":1,\"result\":{}}"})));
+        assert_eq!(client.recv().await.as_deref(), Some("{\"id\":1,\"result\":{}}"));
+        assert!(on_event(&channels, "browser.cdp.close", &json!({"channel": "r1", "code": "CLOSED"})));
+        assert!(client.recv().await.is_none(), "the backend closed it: the connection ends");
+    }
+
+    #[tokio::test]
+    async fn a_relayed_command_goes_up_as_a_cdp_frame() {
+        let (channels, mut rx) = crate::agent_chrome::test_channels();
+        Upstream::Relay(channels.out()).send("r2", "{\"id\":1}".into()).await.unwrap();
+        let Some(Message::Text(text)) = rx.recv().await else { panic!("a frame") };
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!((v["event"].as_str(), v["payload"]["channel"].as_str(), v["payload"]["data"].as_str()),
+            (Some("browser.cdp.frame"), Some("r2"), Some("{\"id\":1}")));
+    }
+
+    #[tokio::test]
+    async fn a_relay_the_mac_ends_or_cannot_feed_is_closed_at_the_backend() {
+        let (channels, mut rx) = crate::agent_chrome::test_channels();
+        let code = |m: Option<Message>| {
+            let Some(Message::Text(text)) = m else { panic!() };
+            let v: Value = serde_json::from_str(&text).unwrap();
+            (v["event"].as_str().map(String::from), v["payload"]["code"].as_str().map(String::from))
+        };
+        let wait = Duration::from_secs(1);
+        lock(&RELAYS).insert("r3".into(), mpsc::channel(1).0);
+        ended(&channels, "r3", None);
+        assert_eq!(code(tokio::time::timeout(wait, rx.recv()).await.unwrap()), (Some("browser.cdp.close".into()), Some("CLOSED".into())));
+        let (to_client, _client) = mpsc::channel(1);
+        lock(&RELAYS).insert("r4".into(), to_client);
+        assert!(on_event(&channels, "browser.cdp.frame", &json!({"channel": "r4", "data": "a"})));
+        assert!(on_event(&channels, "browser.cdp.frame", &json!({"channel": "r4", "data": "b"})), "a stalled client");
+        assert_eq!(code(tokio::time::timeout(wait, rx.recv()).await.unwrap()).1.as_deref(), Some("OVERFLOW"));
+        assert!(!lock(&RELAYS).contains_key("r4"), "its connection ends");
     }
 
     #[test]

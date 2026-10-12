@@ -789,8 +789,14 @@ def submissions_enabled(owner_id: str) -> bool:
     ).split(",")
 
 
-async def authorize_run(owner_id: str, run_id: str, agent_id: str, family: str, *, active: bool) -> dict:
-    """Derive device-member authority from canonical provenance, never caller member IDs."""
+async def authorize_run(
+    owner_id: str, run_id: str, agent_id: str, family: str, *, active: bool, allow_session: bool = False
+) -> dict:
+    """Derive device-member authority from canonical provenance, never caller member IDs.
+
+    `session` is the backend's own family (session_browser, the mac_cdp door): it names a teammate's
+    session by id, so a caller-chosen family from a hook token must never reach it.
+    """
     from core.repositories import messaging_repo
 
     if any(not isinstance(v, str) or not _ID.fullmatch(v) for v in (owner_id, run_id, agent_id)):
@@ -830,11 +836,11 @@ async def authorize_run(owner_id: str, run_id: str, agent_id: str, family: str, 
             "agentId": agent_id,
             "family": family,
         }
-    if family == "session":
+    if family == "session" and allow_session:
         # A shared Claude Code or Codex session's browser (spec 2026-10-11): its own person, read
         # off its row. An ended session keeps it, so the release's save passes the door's re-check.
         from core.repositories import local_sessions_repo
-        from core.services.session_browser import AGENT_ID, session_of
+        from core.services.session_browser import AGENT_ID, auth_for, session_of
 
         sid = session_of(run_id)
         row = await local_sessions_repo.get_session(owner_id, sid) if sid else None
@@ -856,14 +862,7 @@ async def authorize_run(owner_id: str, run_id: str, agent_id: str, family: str, 
                 m.get("user_id") == member_id for m in await list_organization_members(owner_id)
             ):
                 raise DesktopError("run_forbidden", 403)
-        return {
-            "ownerId": owner_id,
-            "memberId": member_id,
-            "runId": run_id,
-            "agentId": agent_id,
-            "family": family,
-            "roomId": "",
-        }
+        return auth_for(owner_id, member_id, sid)
     if family == "room":
         run = await messaging_repo.get_run(owner_id, run_id)
         if not run or run.get("ownerId") != owner_id or run.get("runId") != run_id or run.get("agentId") != agent_id:
@@ -876,7 +875,7 @@ async def authorize_run(owner_id: str, run_id: str, agent_id: str, family: str, 
         if not run or run.get("runId") != run_id or run.get("agentId") != agent_id:
             raise DesktopError("run_forbidden", 403)
     else:
-        raise DesktopError("unsupported_run_family", 403)
+        raise DesktopError("run_forbidden" if family == "session" else "unsupported_run_family", 403)
     room_id = run.get("roomId")
     if not isinstance(room_id, str) or not _ID.fullmatch(room_id):
         raise DesktopError("run_forbidden", 403)
@@ -929,7 +928,9 @@ async def authorize_run(owner_id: str, run_id: str, agent_id: str, family: str, 
 
 
 async def _reauthorize(auth):
-    current = await authorize_run(auth["ownerId"], auth["runId"], auth["agentId"], auth["family"], active=True)
+    current = await authorize_run(
+        auth["ownerId"], auth["runId"], auth["agentId"], auth["family"], active=True, allow_session=True
+    )
     if current != auth:
         raise DesktopError("run_forbidden", 403)
 

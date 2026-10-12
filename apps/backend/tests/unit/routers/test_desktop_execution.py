@@ -299,3 +299,27 @@ async def test_public_submit_rejects_bypass_fields_and_internal_caller_addresses
             assert response.status_code == 400
             response = await client.post("/api/v1/desktop-execution/operations", content=b"x" * 16385, headers=HEADERS)
             assert response.status_code == 413
+
+
+SESSION_RUN = "session-11111111-1111-4111-8111-111111111111"
+
+
+async def test_a_hook_token_cannot_claim_the_session_family(app):
+    session_auth = AUTH | {"runId": SESSION_RUN, "agentId": "session", "family": "session", "roomId": ""}
+    with (
+        patch.object(routes.container_repo, "get_by_owner_id", AsyncMock(return_value={"hook_token": "hook"})),
+        patch.object(routes.settings, "WS_INTERNAL_SECRET", "internal"),
+    ):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get(
+                "/api/v1/desktop-execution/devices",
+                headers=HEADERS
+                | {"X-Desktop-Run": SESSION_RUN, "X-Desktop-Agent": "session", "X-Desktop-Run-Family": "session"},
+            )
+            assert response.status_code == 403
+            response = await client.post(
+                "/api/v1/desktop-execution/internal",
+                headers={"x-lightbulb-ws-internal": "internal"},
+                json={"action": "cancel", "auth": session_auth, "receiptId": "r"},
+            )
+            assert response.status_code == 403

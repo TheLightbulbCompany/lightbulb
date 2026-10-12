@@ -935,7 +935,8 @@ async fn handle_message(text: &str, invoke_tx: &InvokeSender, cdp_in: &CdpSender
             let event = event.as_str();
             if matches!(
                 event,
-                "browser.cdp.open" | "browser.cdp.frame" | "browser.cdp.close" | "browser.cast.set" | "browser.cast.input"
+                "browser.cdp.open" | "browser.cdp.frame" | "browser.cdp.close" | "browser.cdp.leased"
+                    | "browser.cast.set" | "browser.cast.input"
             ) {
                 if let Some(payload) = frame.get_mut("payload").map(Value::take) {
                     let _ = cdp_in.send((event.to_string(), payload)).await;
@@ -1241,7 +1242,7 @@ mod handshake_tests {
         let (invoke_tx, mut invoke_rx) = mpsc::channel(32);
         let (cdp_tx, mut cdp_rx) = mpsc::channel(8);
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
-        for event in ["browser.cdp.open", "browser.cdp.frame", "browser.cdp.close", "browser.cast.set", "browser.cast.input"] {
+        for event in ["browser.cdp.open", "browser.cdp.frame", "browser.cdp.close", "browser.cdp.leased", "browser.cast.set", "browser.cast.input"] {
             let text = json!({"type": "event", "event": event, "payload": {"channel": "c1", "data": "{}"}}).to_string();
             handle_message(&text, &invoke_tx, &cdp_tx, &pending).await;
             let (got, payload) = cdp_rx.try_recv().unwrap();

@@ -89,7 +89,10 @@ pub async fn run(
     let cdp_chrome = chrome.clone();
     let cdp_task = tokio::spawn(async move {
         while let Some((event, payload)) = cdp_events.recv().await {
-            cdp_chrome.on_event(&event, &payload);
+            // A shared session's offered channel first (session_browser), then the runs' own.
+            if !crate::session_browser::on_event(&cdp_chrome, &event, &payload) {
+                cdp_chrome.on_event(&event, &payload);
+            }
         }
     });
     let mut jobs = FuturesUnordered::new();

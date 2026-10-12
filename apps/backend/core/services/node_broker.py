@@ -426,6 +426,8 @@ class NodeSession:
 
     async def cdp_accept(self, channel: CdpChannel, payload: dict) -> None:
         """Open `channel` on the Mac (`browser.cdp.open` carrying `payload`) and wait for `opened`."""
+        if channel.closed.is_set():  # the client went during acquire/sync: nothing to open
+            raise CdpClosed(channel.close_code or "CLOSED")
         if self.cdp_out.full():
             self.cdp_close(channel, "CAPACITY")
             raise NodeCapacity()

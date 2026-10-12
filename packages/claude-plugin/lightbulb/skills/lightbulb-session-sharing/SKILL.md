@@ -24,10 +24,12 @@ needs Node.js). They drive the Mac's "Lightbulb agent" Chrome window, which has 
 sign-ins; never your user's everyday Chrome. New pages open in a background window: nothing
 comes to the front.
 If a tool fails with "Share this session to use the Lightbulb browser", this session is
-not shared; tell your user, and do not look for another browser. "This Mac's browser is
+not shared; tell your user, and do not look for another browser. Once the session is shared,
+the tools work again after the `lightbulb-browser` MCP server is restarted (`/mcp` in Claude
+Code). "This Mac's browser is
 busy" means four connections are already open; try again shortly. After five minutes
 without a browser command the workspace's sign-ins are saved and the browser is let go; your
-next browser command takes a few seconds longer while they load again. The tabs you had open
+next browser command takes up to a minute or two longer while they load again. The tabs you had open
 stay as they were. Only a Codex CLI started on its own gets the browser: if Codex runs in the
 Codex app or on its shared background service, the tool fails with "More than one session runs
 in this process ... cannot tell which one is asking"; your user can start Codex with

@@ -110,7 +110,10 @@ async def _mark_open(owner: str, human: str, session_id: str, where: str | None,
         )
     except ClientError as exc:
         if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
+            logger.warning("session browser mark failed error=%s", type(exc).__name__)
+        return
+    except Exception as exc:  # noqa: BLE001 - the mark is UI-only; it never closes a working connection
+        logger.warning("session browser mark failed error=%s", type(exc).__name__)
         return
     if announce:
         from core.services import local_session_relay  # it imports local_sessions

@@ -797,6 +797,19 @@ async def test_an_offer_past_the_channel_cap_is_refused_busy():
     assert "f" * 32 not in session.cdp
 
 
+async def test_accept_on_an_already_closed_channel_raises_and_opens_nothing():
+    session = node_broker.NodeSession("mac1", {"browser.cdp.v1"})
+    session.on_offer = lambda *args: None
+    _offer(session)
+    channel = session.cdp[OFFER]
+    session.cdp_close(channel, "GONE")
+    _out(session)
+    with pytest.raises(node_broker.CdpClosed) as err:
+        await session.cdp_accept(channel, {"profileId": "p1"})
+    assert err.value.code == "GONE"
+    assert _out(session) == []
+
+
 async def test_accept_opens_the_offered_channel_and_waits_for_opened():
     session = node_broker.NodeSession("mac1", {"browser.cdp.v1"})
     session.on_offer = lambda *args: None

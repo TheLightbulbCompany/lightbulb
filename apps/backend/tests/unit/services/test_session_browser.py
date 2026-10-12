@@ -404,3 +404,23 @@ async def test_a_refused_renewal_drops_the_lease_so_the_next_command_reacquires(
     _closed_by_mac(node)
     await asyncio.wait_for(served, 2)
     assert env.calls.count(("release", "g1")) == 1, "only the re-acquired lease is released"
+
+
+async def test_a_failed_open_mark_never_closes_the_connection(monkeypatch):
+    from botocore.exceptions import ClientError
+
+    async def throttled(*args, **kwargs):
+        raise ClientError({"Error": {"Code": "ThrottlingException"}}, "UpdateItem")
+
+    monkeypatch.setattr(session_browser.store, "run_in_thread", throttled)
+    monkeypatch.setattr(session_browser.store, "_table", lambda: AsyncMock())
+    await session_browser._mark_open(OWNER, MEMBER, SID, "mac", announce=True)  # does not raise
+
+
+async def test_a_client_gone_during_acquire_releases_and_opens_nothing(env):
+    node, channel = _offered()
+    node.cdp_close(channel, "CLOSED")
+    _out(node)
+    await asyncio.wait_for(session_browser.serve(OWNER, MEMBER, DEVICE, node, channel, SID, True), 2)
+    assert [f for f in _out(node) if f["event"] == "browser.cdp.open"] == []
+    assert ("release", "g1") in env.calls

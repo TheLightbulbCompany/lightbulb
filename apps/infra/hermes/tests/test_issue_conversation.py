@@ -390,3 +390,18 @@ def test_a_wake_joins_the_live_side_turn_that_took_its_issue(routed, monkeypatch
     assert side_agent.seen and room_job.seen == []
     turn.finish_run("side-run", "completed")
     worker.join(2)
+
+
+def test_a_wake_for_an_issue_a_call_took_waits_for_that_calls_turn(routed, monkeypatch):
+    call = turn.call_session_key(AGENT, "call-1")
+    _bind(origin=call)
+    monkeypatch.setattr(turn, "_room_member", lambda key: True)
+    lock = turn._turn_lock(AGENT, call)
+    lock.acquire()  # the spoken turn that took the issue is still running
+    worker = threading.Thread(target=lambda: turn._route_paperclip_run(IDENTITY, REQUEST))
+    worker.start()
+    worker.join(0.2)
+    assert worker.is_alive() and routed == {}  # not beside the turn that took the issue
+    lock.release()
+    worker.join(2)
+    assert routed["conversation"] == ROOM_KEY

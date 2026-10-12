@@ -3994,6 +3994,13 @@ def _route_paperclip_run(identity: dict, request: dict) -> tuple[str, str | None
         # A call or side session took the issue: its wake joins THAT session while it runs (a side
         # turn takes steers; a call does not), never the room's own turn, whose job is another one.
         origin = _issue_origin(agent_id, issue_id)
+        if origin and ":lightbulb:call:" in origin:
+            # A spoken turn takes no wake (the agent would talk about it on the call): wait for the
+            # call's current turn, which holds the call's lock, then run in the room conversation,
+            # as when a call held the room's lock. Never alongside the turn that took the issue.
+            with _turn_lock(agent_id, origin):
+                pass
+            origin = None
         live = _live_room_run(origin or conversation)  # a live room run is itself proof of membership
         steer = f"{BOUND_WAKE_STEER.format(issue=issue_id, run=run_id)}\n\n{request['input']}"
         # The wake's text is no person's request: the room run's grant drops to the Paperclip run's

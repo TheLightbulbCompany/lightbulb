@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import logging
 import uuid
@@ -25,7 +26,7 @@ from websockets.exceptions import ConnectionClosed
 
 from core.observability.metrics import put_metric
 from core.repositories import container_repo
-from core.services import desktop_pair, machine_auth, node_broker, relay_hooks
+from core.services import desktop_pair, machine_auth, node_broker, relay_hooks, session_browser
 from core.services.connection_service import ConnectionService
 
 logger = logging.getLogger(__name__)
@@ -264,6 +265,8 @@ async def _serve_node_protocol(
     device_id = identity.device_id or ""
     allowed = declared & await desktop_pair.declared_commands_for(identity.owner_id, device_id)
     session = node_broker.NodeSession(device_id, allowed)
+    # A shared Claude Code or Codex session on this Mac asks for a browser (spec 2026-10-11).
+    session.on_offer = functools.partial(session_browser.start, identity.owner_id, identity.user_id, device_id, session)
     key = (identity.owner_id, device_id)
     # Registered only once hello-ok has actually gone out -- a send failure right here must
     # not leave a session live that the client was never told is ready (fix round 1, item 7).

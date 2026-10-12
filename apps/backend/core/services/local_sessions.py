@@ -299,6 +299,9 @@ class LocalSession(ContractModel):
     forked_from: OpaqueId | None = None
     # False while the owner has paused sharing this one session: only they can see it.
     shared: bool = True
+    # Where this running session's browser connection is open now (spec 2026-10-11): the Browser
+    # tab beside its terminal shows while it is set. None: no open connection.
+    browser: Literal["mac", "cloud"] | None = None
     # Owner opt-in: workspace members may use this session's controls (off by default, cleared on end).
     team_control: bool = False
     # People the owner let in one by one ("Ask to join"): they may use the controls too. Cleared on end.
@@ -708,6 +711,14 @@ def screen_available(row: dict, now: int | None = None) -> bool:
     return int(row.get("screenUntil") or 0) > (int(time.time()) if now is None else now)
 
 
+def browser_open(row: dict, now: int | None = None) -> Literal["mac", "cloud"] | None:
+    """Where the session's browser connection is open, while session_browser keeps renewing it."""
+    opened = row.get("browserOpen") or {}
+    if int(opened.get("until") or 0) <= (int(time.time()) if now is None else now):
+        return None
+    return opened.get("where") if opened.get("where") in ("mac", "cloud") else None
+
+
 def ended_empty(provider: str, status: str, event_seq: int, control_unavailable_reason: str | None) -> bool:
     """A Claude Code session that ended before its first message: Claude writes a transcript only
     on that message, so there is nothing to show or resume (`claude --resume` answers "No
@@ -810,6 +821,7 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     reason = public.pop("terminalReason", None)
     # A session inside an app never had a terminal: ended or offline, its panel is still its conversation.
     live = public["status"] not in ("ended", "offline")
+    public["browser"] = browser_open(row) if live else None
     if public["terminal"] is None and reason and (live or reason not in ("plain", "no-daemon")):
         public["terminalReason"] = reason
     if not row["capabilitiesVerified"]:
@@ -1024,6 +1036,9 @@ async def register_session(owner_id: str, user_id: str, device_id: str, registra
                     "pickupEpoch",
                     "pickedUpFrom",
                     "displayTitle",
+                    # The session's open browser connection and its chosen place (session_browser).
+                    "browserOpen",
+                    "browserPlace",
                 )
                 if previous and key in previous
             },

@@ -323,3 +323,31 @@ async def test_a_hook_token_cannot_claim_the_session_family(app):
                 json={"action": "cancel", "auth": session_auth, "receiptId": "r"},
             )
             assert response.status_code == 403
+
+
+async def test_only_a_forwarded_mac_lease_carries_a_session_run(app):
+    from core.repositories import local_sessions_repo
+    from core.services import mac_browser
+
+    session_auth = AUTH | {"runId": SESSION_RUN, "agentId": "session", "family": "session", "roomId": ""}
+    row = {"ownerId": "user_1", "humanUserId": "user_1"}
+    acquire = AsyncMock(return_value={"status": "starting"})
+    with (
+        patch.object(routes.settings, "WS_INTERNAL_SECRET", "internal"),
+        patch.object(local_sessions_repo, "get_session", AsyncMock(return_value=row)),
+        patch.object(mac_browser, "acquire", acquire),
+    ):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/api/v1/desktop-execution/internal",
+                headers={"x-lightbulb-ws-internal": "internal"},
+                json={"action": "mac_acquire", "auth": session_auth, "request": {"deviceId": "mac1"}},
+            )
+            assert response.status_code == 200 and response.json() == {"status": "starting"}
+            assert acquire.await_args.args[0] == session_auth
+            response = await client.post(
+                "/api/v1/desktop-execution/internal",
+                headers={"x-lightbulb-ws-internal": "internal"},
+                json={"action": "status", "auth": session_auth, "receiptId": "r"},
+            )
+            assert response.status_code == 403

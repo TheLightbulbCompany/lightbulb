@@ -161,8 +161,15 @@ async def internal(request: Request):
             allowed |= {"artifactIndex", "artifactOffset"}
         if set(body) != allowed:
             raise service.DesktopError("invalid_request")
+        # A session run is the backend's own (session_browser): only mac_browser's forward to the
+        # Mac's owning task carries one here.
         current = await service.authorize_run(
-            auth["ownerId"], auth["runId"], auth["agentId"], auth["family"], active=action in {"admit"} | _MAC_ACTIONS
+            auth["ownerId"],
+            auth["runId"],
+            auth["agentId"],
+            auth["family"],
+            active=action in {"admit"} | _MAC_ACTIONS,
+            allow_session=action in _MAC_ACTIONS,
         )
         if current != auth:
             raise service.DesktopError("run_forbidden", 403)

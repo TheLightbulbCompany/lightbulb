@@ -47,6 +47,7 @@ _tasks: set[asyncio.Task] = set()
 # One sign-in sync at a time per session upstream (two channels of one session, or a closing save
 # racing the next load). A lock lives while someone holds or waits on it.
 _sync_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
+_relays: dict[tuple[str, str], object] = {}  # (owner, run) -> the offered channel its door relays
 
 
 def run_id(session_id: str) -> str:
@@ -57,6 +58,12 @@ def session_of(run: object) -> str | None:
     """The session id of a `session-<id>` run, else None."""
     sid = run[len(RUN_PREFIX) :] if isinstance(run, str) and run.startswith(RUN_PREFIX) else ""
     return sid if _SID.fullmatch(sid) else None
+
+
+def relay(claims: dict):
+    """The door's half (mac_cdp, `use: "session"`): the channel this ticket's session offered, keyed by
+    its own workspace and run, so another workspace's ticket never finds it."""
+    return _relays.get((claims["ownerId"], claims["runId"]))
 
 
 def auth_for(owner: str, member: str, session_id: str) -> dict:

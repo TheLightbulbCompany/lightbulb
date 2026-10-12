@@ -64,16 +64,17 @@ def _cipher() -> Fernet:
     return Fernet(base64.urlsafe_b64encode(hashlib.sha256(("mac-cdp-ticket-v1:" + secret).encode()).digest()))
 
 
-def mint(*, target: dict, profile_id: str, auth: dict) -> str:
+def mint(*, target: dict, profile_id: str, auth: dict, use: str = "agent") -> str:
     """`target` is the NATIVE device's resolve_desktop_target() dict; `auth` is exactly what
     authorize_run returned. Room `memberId` is the run's human (== the pairer); Paperclip's is ""
-    and is re-derived from the pairing on every check."""
+    and is re-derived from the pairing on every check. `use` "session": a shared session's relay
+    to the cloud browser (session_browser): the door joins the runtime to the channel its Mac offered."""
     if not valid_auth(auth) or auth["ownerId"] != target["ownerId"]:
         raise ValueError("mac-cdp ticket auth invalid")
     now = int(_clock())
     claims = {
         "purpose": PURPOSE,
-        "use": "agent",
+        "use": use,
         "ownerId": target["ownerId"],
         "deviceId": target["deviceId"],
         "generation": target["generation"],
@@ -99,11 +100,11 @@ def _well_formed(claims) -> bool:
         return False
     if claims["purpose"] != PURPOSE or not all(claims[k] for k in ("ownerId", "deviceId", "generation", "profileId")):
         return False
+    use, family = claims["use"], claims["family"]
     return (
-        claims["use"] == "agent"
-        and claims["family"] in {"room", "paperclip", "call", "session"}
-        and valid_auth(auth_from_claims(claims))
-    )
+        (use == "agent" and family in {"room", "paperclip", "call", "session"})
+        or (use == "session" and family == "session")
+    ) and valid_auth(auth_from_claims(claims))
 
 
 def redeem(ticket: str) -> dict:
@@ -140,8 +141,8 @@ def auth_from_claims(claims: dict) -> dict:
 
 
 async def check(claims: dict) -> dict:
-    """Re-resolve the native target, the run, and that the Mac's profile still holds this
-    workspace's sign-ins. Raises DesktopError."""
+    """Re-resolve the native target, the run, and (not for a relay) that the Mac's profile still
+    holds this workspace's sign-ins. Raises DesktopError."""
     owner = claims["ownerId"]
     if not desktop_execution.submissions_enabled(owner):
         raise DesktopError("desktop_disabled", 403)
@@ -151,15 +152,19 @@ async def check(claims: dict) -> dict:
         if auth["family"] == "paperclip"
         else auth["memberId"]
     )
+    relay = claims["use"] == "session"
     try:
+        # A relay to the cloud browser drives nothing on the Mac: no browser grant, no profile.
         target = await connection_service.resolve_desktop_target(
-            owner, member, claims["deviceId"], claims["generation"], CDP_COMMAND
+            owner, member, claims["deviceId"], claims["generation"], None if relay else CDP_COMMAND
         )
     except connection_service.DesktopTargetError as exc:
         raise DesktopError(exc.code, 409 if exc.code == "desktop_generation_stale" else 403) from None
     if target["taskAddress"] != claims["address"]:
         raise DesktopError("desktop_task_moved", 409)
     await desktop_execution._reauthorize(auth)
+    if relay:
+        return target
     from core.services import mac_browser  # it imports this module
 
     await mac_browser.check_holder(owner, claims["deviceId"], claims["profileId"])
@@ -260,7 +265,16 @@ async def serve(websocket, ticket: str) -> None:
         from core.services import mac_browser
 
         try:
-            channel = await session.cdp_open(claims["profileId"], await mac_browser.notice(claims))
+            if claims["use"] == "session":
+                from core.services import session_browser  # it imports this module
+
+                channel = session_browser.relay(claims)
+                if channel is None:
+                    _meter("lost")
+                    return await _close(websocket, 4404)
+                await session.cdp_accept(channel, {"relay": True})
+            else:
+                channel = await session.cdp_open(claims["profileId"], await mac_browser.notice(claims))
         except CdpClosed as exc:
             _meter("refused")
             return await _close(websocket, 4502, exc.code)

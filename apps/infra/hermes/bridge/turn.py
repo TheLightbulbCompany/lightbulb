@@ -469,6 +469,36 @@ def _call_record(agent_id: str, body: dict, request: dict, reply: str, result: d
     return _observed_text({"author": {"id": agent_id}, "text": text}, names, base)
 
 
+#: Call records waiting for their room's turn lock: (agent id, room key) -> [(run id, content)].
+#: ponytail: in memory, so a record still waiting when this process ends is lost (it is a
+#: reminder of the call, not the call: its transcript keeps every word). Persist it if that bites.
+_PENDING_CALL_RECORDS: dict[tuple[str, str], list[tuple[str, str]]] = {}
+_PENDING_CALL_RECORDS_LOCK = threading.Lock()
+
+
+def _queue_call_record(agent, agent_id: str, room_key: str, run_id: str, content: str) -> None:
+    """A call runs under its OWN turn lock, so the room may be mid-turn: appending a row to its
+    transcript then would land between that turn's user message and its reply. The record waits
+    for the room's lock instead: written now when the room is free, else by the room's next turn
+    (_flush_call_records under its lock) or the next call answer that finds it free."""
+    with _PENDING_CALL_RECORDS_LOCK:
+        _PENDING_CALL_RECORDS.setdefault((agent_id, room_key), []).append((run_id, content))
+    lock = _turn_lock(agent_id, room_key)
+    if lock.acquire(blocking=False):
+        try:
+            _flush_call_records(agent, agent_id, room_key)
+        finally:
+            lock.release()
+
+
+def _flush_call_records(agent, agent_id: str, room_key: str) -> None:
+    """Under the room's turn lock: write the call records waiting for it, oldest first."""
+    with _PENDING_CALL_RECORDS_LOCK:
+        records = _PENDING_CALL_RECORDS.pop((agent_id, room_key), [])
+    for run_id, content in records:
+        _record_call_exchange(agent, room_key, run_id, content)
+
+
 def _record_call_exchange(agent, room_key: str, run_id: str, content: str) -> None:
     """Append one observed row to the ROOM session for an answered spoken turn, so chat remembers
     the call without holding its transcript. The caller holds the room's turn lock. Once per run:
@@ -495,7 +525,7 @@ def _record_call_exchange(agent, room_key: str, run_id: str, content: str) -> No
         log.warning("could not record the call exchange in %s", room_key, exc_info=True)
 
 
-def _carry_call_records(agent, room_key: str) -> None:
+def _carry_call_records(agent, agent_id: str, room_key: str) -> None:
     """A new call's transcript starts with the room session's newest call records, so "as I said on
     the last call" holds. Only while the call's session is empty: later turns have them already.
     They count as held rows, so a first turn that also observes room messages gets OBSERVED_GAP
@@ -507,6 +537,9 @@ def _carry_call_records(agent, room_key: str) -> None:
             return
         records = [m for m in db.get_messages_as_conversation(_session_tip(db, room_key))
                    if m.get("observed") and str(m.get("message_id") or "").startswith(CALL_RECORD_ID)]
+        with _PENDING_CALL_RECORDS_LOCK:  # and those still waiting for a busy room (_queue_call_record)
+            waiting = list(_PENDING_CALL_RECORDS.get((agent_id, room_key), []))
+        records += [{"content": c, "message_id": f"{CALL_RECORD_ID}{r}"} for r, c in waiting]
         for m in records[-CALL_RECORDS_CARRIED:]:
             db.append_message(session_id=sid, role="user", content=m["content"], platform_message_id=m["message_id"], observed=True)
     except Exception:  # noqa: BLE001 -- as _observe_room
@@ -543,12 +576,13 @@ def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> t
     """A voice request: a run on the CALL's own Hermes transcript (call_session_key), with the
     environment a DM turn gets (the profile's own secrets, no Paperclip overlay, MCP, terminal,
     logins, the lightbulb plugin's turn context). The room's recent messages reach it as observed
-    rows (recentHistory), like a room turn's. Everything that serialises or scopes the
-    conversation stays on the ROOM key: the turn lock and slot, the terminal scope, the bound
-    session key for async delegations, steers and usage. The room session gets one observed row
-    per answered turn (_record_call_exchange) and nothing else: a call no longer replays the
-    room's history or grows it by a transcript (prod 10-08: a compaction every second spoken turn).
-    Nothing is posted to the room."""
+    rows (recentHistory), like a room turn's. A call is its own conversation: its turn lock,
+    working folder and terminal are the CALL's, so a long spoken job never holds up the room's
+    chat, notes or wakes for this agent (10-09: a 21-minute voice job queued everything behind
+    it). What stays on the ROOM key: the bound session key for async delegations (their results
+    land in the room), steers and usage. The room session gets one observed row per answered turn
+    (_queue_call_record) and nothing else: a call no longer replays the room's history or grows it
+    by a transcript (prod 10-08: a compaction every second spoken turn). Nothing is posted to the room."""
     agent_id, run_id, session_key, room_id = identity["agentId"], identity["runId"], identity["sessionId"], identity["roomId"]
     call_key = call_session_key(agent_id, identity["callId"])
     try:
@@ -561,14 +595,14 @@ def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> t
     # names it, and the room's next turn fills it (_observed_text).
     base = sync.turn_media_root() / f"{agent_id}.{room_id}"
     watch = _CallDeadline(frames)
-    with _voice_turn_lock(agent_id, session_key, run_id, on_wait=lambda: frames.emit({"type": "run_queued"})):
+    with _voice_turn_lock(agent_id, call_key, run_id, on_wait=lambda: frames.emit({"type": "run_queued"})):
         # A run stopped while queued gets no lock: nothing below may run (the context file
         # belongs to the turn holding the lock).
         if run_aborted(run_id):
             return "aborted", None, "", dict(ZERO_USAGE)
-        # The room turn's own environment, keyed by the call's session id (the one Hermes hands
-        # the tools), plus the steer-lowered grant a call can get mid-run.
-        with _room_turn_env(agent_id, session_key, call_key, run_id, body, frames, ctx, "call"), _call_grant_scope(run_id, ctx):
+        # The room turn's own environment on the call's key (its own folder and shell), plus the
+        # steer-lowered grant a call can get mid-run.
+        with _room_turn_env(agent_id, call_key, call_key, run_id, body, frames, ctx, "call"), _call_grant_scope(run_id, ctx):
             agent = _construct_agent(agent_id, body, frames, call_key, **CALL_RUN_LIMITS)
             # No compaction inside a spoken turn (67-103 s each, prod 10-07): Hermes's own
             # per-agent switch, which every automatic trigger reads (turn_context_compaction.py:239,
@@ -586,7 +620,7 @@ def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> t
             # The room turn's own system prompt (who and where you are, the roster), with the
             # spoken-turn note after it in place of chat's posting rules.
             system = with_profile_agents_md(agent_id, f"{system_prompt(body, agent_id, spoken=True)}\n\n{request['instructions']}")
-            _carry_call_records(agent, session_key)
+            _carry_call_records(agent, agent_id, session_key)
             try:
                 with watch:
                     # The ROOM key: _converse binds it for async delegations and takes the
@@ -617,9 +651,9 @@ def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> t
             return "error", "model_unavailable", "", usage
         if not reply:
             return "error", "empty_response", "", usage
-        # Still under the room's turn lock. Only an answered turn is recorded: a stopped or failed
-        # one said nothing to the room's people, and its own rows stay in the call's transcript.
-        _record_call_exchange(agent, session_key, run_id, _call_record(agent_id, body, request, reply, result, base))
+        # Only an answered turn is recorded: a stopped or failed one said nothing to the room's
+        # people, and its own rows stay in the call's transcript.
+        _queue_call_record(agent, agent_id, session_key, run_id, _call_record(agent_id, body, request, reply, result, base))
         return "completed", None, reply, usage
 
 
@@ -3565,6 +3599,7 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
             # A follow-up's trigger message already had its turn: its attachments are not re-sent.
             current_media = [] if body.get("followUp") else _current_message_media(body, media, base)
             agent = _construct_agent(agent_id, body, frames, session_key)
+            _flush_call_records(agent, agent_id, session_key)  # calls answered while this room was busy
             queued_steers = attach_agent(run_id, agent)
             if progress := _progress_poster(agent_id, body):
                 # Set on the agent as Hermes's own gateway does (gateway/run_turn_runner.py).

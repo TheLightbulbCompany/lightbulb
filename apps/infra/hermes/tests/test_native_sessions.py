@@ -485,6 +485,24 @@ def test_the_next_room_turn_reads_the_call_record_as_observed_context(hermes, ho
     assert "Aden asked: check payouts\nI answered: Payouts landed." in said["user_message"]
 
 
+def test_a_call_answered_while_the_room_is_busy_records_it_at_the_rooms_next_turn(hermes, home):
+    """A call holds its own lock, never the room's: the room may be mid-turn, so the record waits
+    and the room's next turn writes it before reading its history. A new call carries it meanwhile."""
+    _acquired, built, dbs = hermes
+    db = _room_db(dbs)
+    SCRIPT.extend([_persisting("Payouts landed."), _persisting("Still there."), _persisting("ok")])
+    room = turn._turn_lock("ceo", ROOM_KEY)
+    with room:  # a long chat turn holds the room
+        _run_call("Aden (voice): check payouts")  # runs at once: it does not wait for the room
+        assert _records(db) == []
+        _run_call("Aden (voice): and now?", run_id="r2", call_id=NEXT_CALL_ID)
+        assert [r["message_id"] for r in _records(db, NEXT_CALL_KEY)] == ["call:run-call"]
+    _room_turn()
+    assert [r["message_id"] for r in _records(db)] == ["call:run-call", "call:r2"]
+    assert "I answered: Payouts landed." in _said(built)["user_message"]
+    assert not turn._PENDING_CALL_RECORDS
+
+
 @pytest.mark.parametrize("result, outcome", [
     ({"api_calls": 1, "failed": True, "final_response": ""}, "error"),
     ({"api_calls": 1, "final_response": "", "interrupted": True}, "error"),
@@ -498,7 +516,7 @@ def test_a_turn_that_gave_no_answer_leaves_no_room_record(hermes, home, result, 
     SCRIPT.append(stop if result == "stop" else result)
     _run_call(outcome=outcome)
     assert _records(db) == []
-    assert not turn._turn_lock("ceo", ROOM_KEY).locked()
+    assert not turn._turn_lock("ceo", ROOM_KEY).locked() and not turn._turn_lock("ceo", CALL_KEY).locked()
 
 
 def test_a_late_steer_in_a_call_is_answered_in_the_same_run_and_record(hermes, home):

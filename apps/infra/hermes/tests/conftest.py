@@ -56,10 +56,12 @@ def _clear_run_registry():
     more abort-leaving-state tests, purely from alphabetical test-file execution order)."""
     from bridge import turn
     turn.RUNS.clear()
+    turn._PENDING_CALL_RECORDS.clear()
     with turn._busy_lock:
         turn._busy = 0
     yield
     turn.RUNS.clear()
+    turn._PENDING_CALL_RECORDS.clear()
     with turn._busy_lock:
         turn._busy = 0
 

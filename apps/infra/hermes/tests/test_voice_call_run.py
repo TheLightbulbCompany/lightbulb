@@ -210,7 +210,8 @@ def _frames():
 
 
 def test_a_voice_run_gets_the_dm_environment_on_the_calls_transcript(env, home, monkeypatch):
-    """The Hermes session is the call's; what serialises and scopes the conversation is the room's."""
+    """A call is its own conversation: its Hermes session, turn lock and work folder are the call's,
+    so the room's chat never waits behind it; async delegations stay bound to the room."""
     monkeypatch.setattr(turn, "with_profile_agents_md", lambda _a, system: f"{system}\n\nAGENTS.md")
     scopes, real_terminal = [], turn._terminal_scope
     monkeypatch.setattr(turn, "_terminal_scope", lambda a, key: scopes.append(key) or real_terminal(a, key))
@@ -221,7 +222,7 @@ def test_a_voice_run_gets_the_dm_environment_on_the_calls_transcript(env, home, 
     assert turn._run_call(IDENTITY, REQUEST, _frames())[0::2] == ("completed", "It landed.")
     assert env["overlay"] is None and env["family"] == "call"
     assert env["session"] == CALL_SESSION
-    assert scopes == [SESSION] and locks == [(True, False)]  # the room's work folder and turn lock
+    assert scopes == [CALL_SESSION] and locks == [(False, True)]  # the call's own work folder and turn lock
     # No step cap, and no post-turn review fork after a spoken turn.
     assert env["limits"] == {"reasoning_config": {"enabled": True, "effort": "low"}, "skip_background_review": True}
     assert env["body"]["room"] == {"id": ROOM, "kind": "channel"} and env["body"]["sender"] == SPEAKER
@@ -235,6 +236,7 @@ def test_a_voice_run_gets_the_dm_environment_on_the_calls_transcript(env, home, 
     system = env["agent"].ephemeral_system_prompt
     assert system.startswith("You are ") and "on a Live voice call there" in system
     assert "speak briefly\n\nAGENTS.md" in system and "MEDIA:" not in system and "progress" not in system
+    assert f"({turn.conversation_dir('agent-1', CALL_SESSION)})" in system  # the folder its shell really starts in
 
 
 def test_a_spoken_turn_gets_the_room_block_and_live_sessions_a_typed_turn_gets(env, home):

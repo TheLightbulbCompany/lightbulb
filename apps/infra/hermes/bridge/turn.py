@@ -376,7 +376,9 @@ def _voice_body(identity: dict, request: dict) -> dict:
     observed window a typed turn's body carries (the backend builds both with build_ingress_body)."""
     voice = request["voice"]
     room = request.get("room") or {"id": identity["roomId"], "kind": voice.get("roomKind")}
-    return {"room": room, "sender": request.get("sender") or voice.get("speaker") or {},
+    # The call's own key: the prompt's "your shell starts in" folder is the call's (_resolve_session_key).
+    return {"sessionKey": call_session_key(identity["agentId"], identity["callId"]),
+            "room": room, "sender": request.get("sender") or voice.get("speaker") or {},
             "participants": request.get("participants") or [], "sessions": request.get("sessions") or [],
             "recentHistory": request.get("recentHistory") or []}
 

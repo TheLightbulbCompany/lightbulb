@@ -236,6 +236,7 @@ def test_a_voice_run_gets_the_dm_environment_on_the_calls_transcript(env, home, 
     system = env["agent"].ephemeral_system_prompt
     assert system.startswith("You are ") and "on a Live voice call there" in system
     assert "speak briefly\n\nAGENTS.md" in system and "MEDIA:" not in system and "progress" not in system
+    assert f"({turn.conversation_dir('agent-1', CALL_SESSION)})" in system  # the folder its shell really starts in
 
 
 def test_a_spoken_turn_gets_the_room_block_and_live_sessions_a_typed_turn_gets(env, home):

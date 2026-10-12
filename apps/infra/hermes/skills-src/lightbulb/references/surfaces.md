@@ -134,6 +134,10 @@ CLI started on its own gets it: the Codex app, or one Codex process that serves 
 conversations (its shared background service), is refused with "More than one session runs in
 this process ... so the Lightbulb browser cannot tell which one is asking"; the person can
 start Codex with `--no-daemon`.
+People watching the session see a **Browser** tab beside its terminal while it browses; those
+who may type into the session may also click and type there. While the session's person has
+paused others' input (a request to join), the browser is read-only too. Frames flow only while
+someone has that tab open, and nothing is recorded.
 
 **New session** (web and desktop): a small form with no first message. The person picks
 **Claude Code** or **Codex**, an approved folder and, optionally, the model and mode, then presses

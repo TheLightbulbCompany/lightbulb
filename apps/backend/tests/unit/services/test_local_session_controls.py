@@ -136,6 +136,7 @@ async def test_an_approval_lands_only_on_the_exact_open_prompt(transport):
         "inputDigest": DIGEST,
         "exact": True,
         "modes": [],
+        "full": False,
     }
     for index, (wrong, match) in enumerate(
         (
@@ -231,6 +232,68 @@ async def test_a_prompt_the_approver_cannot_see_whole_is_deny_only(transport):
     receipt = await service.submit_command(ALICE, None, sid, approve(decision="deny", text="not on main"))
     assert receipt.decision == "deny"
     assert (await actions(sid))[-1] == ("deny", ALICE.user_id)
+
+
+FULL_INPUT = {"command": "ls\nls"}
+
+
+def full_prompt(**changes):
+    return {
+        **APPROVAL,
+        "tool": {
+            **APPROVAL["tool"],
+            "input": {**APPROVAL["tool"]["input"], "exact": False, "full": True, "input": FULL_INPUT, **changes},
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_full_prompt_is_allowed_only_with_the_digest_of_what_was_shown(transport):
+    sid = await start(transport)
+    await waiting(transport, sid, full_prompt())
+    public = (await service.get_session(BOB, sid)).model_dump(by_alias=True)
+    assert public["pendingApproval"]["input"] == FULL_INPUT and public["pendingApproval"]["full"] is True
+    for index, shown in enumerate((None, "e" * 64)):
+        with pytest.raises(ApiProblem, match="terminal") as refused:
+            await service.submit_command(ALICE, None, sid, approve(requestId=f"bad-{index}", shownDigest=shown))
+        assert refused.value.error.code == "LOCAL_SESSION_UNSUPPORTED"
+    receipt = await service.submit_command(ALICE, None, sid, approve(shownDigest=DIGEST))
+    assert receipt.decision == "allow"
+    # The digest is the backend's check alone: the Mac's Command is deny_unknown_fields.
+    assert "shownDigest" not in receipt.model_dump(by_alias=True)
+    stored = await repo.get_command(OWNER, sid, "approve-1")
+    assert "shownDigest" not in stored and stored["approvalShownDigest"] == DIGEST
+    assert "shownDigest" not in (await service.get_command(ALICE, None, sid, "approve-1")).model_dump(by_alias=True)
+    await relay(transport).dispatch_session(OWNER, sid)
+    command = transport[3][-1][1]["command"]
+    assert command["kind"] == "approve" and command["inputDigest"] == DIGEST
+    assert not {"shownDigest", "approvalShownDigest"} & set(command)
+    assert (await repo.get_command(OWNER, sid, "approve-1"))["state"] == "dispatched"
+
+
+@pytest.mark.asyncio
+async def test_a_shown_digest_never_unlocks_a_prompt_that_is_not_full(transport):
+    sid = await start(transport)
+    await waiting(transport, sid, full_prompt(full=False))
+    with pytest.raises(ApiProblem, match="terminal"):
+        await service.submit_command(ALICE, None, sid, approve(shownDigest=DIGEST))
+    # A deny never needs it.
+    assert (await service.submit_command(ALICE, None, sid, approve(decision="deny"))).decision == "deny"
+
+
+def test_a_shown_digest_belongs_to_approve_only():
+    with pytest.raises(ValueError):
+        service.LocalSessionCommand(requestId="r", expectedGeneration="g", kind="send", text="x", shownDigest=DIGEST)
+    assert "shownDigest" not in approve().model_dump(by_alias=True)
+
+
+def test_a_pending_approval_carries_its_input():
+    event = service.LocalSessionEventBody.model_validate
+    found = pending_approval([event(full_prompt())])
+    assert found["input"] == FULL_INPUT and found["full"] is True
+    # An older Mac's prompt keeps its wire: no input, not full.
+    legacy = pending_approval([event(APPROVAL)])
+    assert "input" not in legacy and legacy["full"] is False
 
 
 @pytest.mark.asyncio

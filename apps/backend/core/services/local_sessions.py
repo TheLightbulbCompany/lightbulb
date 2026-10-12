@@ -179,6 +179,15 @@ class PendingApproval(ContractModel):
     input_digest: Digest
     exact: bool = False
     modes: list[ApprovalMode] = Field(default_factory=list, max_length=3)
+    # ``exact`` is never widened (old clients gate Allow on it alone). ``full`` says ``input`` IS
+    # the raw call (uncut, unredacted; ``input_digest`` is its digest), so a viewer who was shown
+    # all of it may allow -- naming that digest as ``shownDigest``. The 16 KiB envelope caps it.
+    full: bool = False
+    input: dict[str, Any] | None = None
+
+    @model_serializer(mode="wrap")
+    def wire(self, handler, info):
+        return _drop_none(self, handler(self), info, ("input",))
 
 
 class PrivateSendApproval(ContractModel):
@@ -483,7 +492,7 @@ class LocalSessionEventPage(ContractModel):
 
 #: Optional command fields added after the wire froze: absent on the wire, never null, so a send
 #: stays byte-identical for desktops (and request hashes) that predate them.
-_APPROVAL_FIELDS = ("approval_id", "decision", "mode", "input_digest")
+_APPROVAL_FIELDS = ("approval_id", "decision", "mode", "input_digest", "shown_digest")
 
 
 class LocalSessionCommand(ContractModel):
@@ -496,6 +505,10 @@ class LocalSessionCommand(ContractModel):
     decision: Literal["allow", "deny"] | None = None
     mode: ApprovalMode | None = None
     input_digest: Digest | None = None
+    # The client's digest of the whole call it displayed. Kept off the wire and off the stored
+    # command's public keys (it is stored as ``approvalShownDigest``): the Mac's Command is
+    # deny_unknown_fields.
+    shown_digest: Digest | None = None
 
     @model_validator(mode="after")
     def validate_command(self):
@@ -1602,7 +1615,9 @@ def _require_pending_approval(row: dict, request: LocalSessionCommand) -> None:
         ):
             raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "This private send can only be approved in the terminal.")
         return
-    if request.decision == "allow" and not pending.get("exact"):
+    if request.decision == "allow" and not (
+        pending.get("exact") or (pending.get("full") and request.shown_digest == pending["inputDigest"])
+    ):
         raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "This prompt can only be approved in the terminal.")
     if request.mode is not None and request.mode not in pending.get("modes", []):
         raise ApiProblem("LOCAL_SESSION_UNSUPPORTED", "That option is not offered for this prompt.")
@@ -1651,7 +1666,7 @@ async def submit_command(
             or source_session_id
         ):
             raise ApiProblem("INVALID_REQUEST", "Only a direct human follow-up can replace an offline send.")
-    payload = request.model_dump(by_alias=True)
+    payload = request.model_dump(by_alias=True, exclude={"shown_digest"})
     author = (
         {"actor": {"kind": "session", "id": source_session_id}, "invocationExpiresAt": int(time.time()) + 30}
         if source_session_id
@@ -1766,6 +1781,9 @@ async def submit_command(
             raise ApiProblem("LOCAL_SESSION_QUEUE_FULL", "This session has too many waiting follow-ups.")
         receipt = {
             **payload,
+            # Backend-only: dispatch re-runs the approval check. No model field names this key,
+            # so no ``_public`` projection (receipt, outbox, the Mac's envelope) can carry it.
+            **({"approvalShownDigest": request.shown_digest} if request.shown_digest else {}),
             "pk": repo.session_pk(owner, session_id),
             "sk": f"COMMAND#{request.request_id}",
             "sessionId": session_id,

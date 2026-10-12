@@ -159,6 +159,43 @@ fn looks_secret(word: &str) -> bool {
         || (["sk_live_", "sk_test_", "rk_live_", "rk_test_", "whsec_"].iter().any(|p| word.starts_with(p))
             && word.len() >= 20)
         || (word.starts_with("AIza") && word.len() == 39 && tail_ok(&word[4..]))
+        || looks_jwt(word)
+}
+
+/// A JWT: `eyJ…` header, then payload and signature, base64url, dot-separated. Caught as a word,
+/// so a dotted value an assignment keeps as code (`token = eyJ….eyJ….sig`) is still redacted.
+fn looks_jwt(word: &str) -> bool {
+    let parts: Vec<&str> = word.split('.').collect();
+    word.starts_with("eyJ")
+        && word.len() >= 20
+        && parts.len() == 3
+        && parts[..2].iter().all(|p| !p.is_empty())
+        && parts
+            .iter()
+            .all(|p| p.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')))
+}
+
+/// A value an assignment leaves as written: empty, a number, a type or placeholder word, a
+/// template or variable reference, or (unquoted) code.
+fn kept_value(v: &str, quoted: bool) -> bool {
+    let lower = v.to_ascii_lowercase();
+    v.is_empty()
+        || v.chars().all(|c| c.is_ascii_digit())
+        || matches!(lower.as_str(), "changeme" | "string" | "str" | "number" | "int" | "bool"
+            | "boolean" | "any" | "null" | "none" | "nil" | "true" | "false" | "undefined" | "[redacted]")
+        || (v.starts_with('<') && v.ends_with('>'))
+        || v.starts_with("${")
+        || v.starts_with("{{")
+        || v.strip_prefix('$').is_some_and(|name| {
+            name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+        // Code, not a literal: a call, an index, or a dotted reference (`os.environ`, `self.token`).
+        || (!quoted
+            && (v.contains(['(', '[', '<'])
+                || v.split('.').count() > 1
+                    && v.split('.').all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+                    && !v.chars().next().is_some_and(|c| c.is_ascii_digit())))
 }
 
 /// `NAME=value`, `NAME: value` and `"NAME": "value"` where the name says it holds a secret
@@ -167,7 +204,7 @@ fn looks_secret(word: &str) -> bool {
 fn redact_assignments(text: &str) -> String {
     static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(concat!(
-            r#"(?i)\b(?P<name>[a-z0-9_.-]*(?:password|passwd|secret|token|api_key|apikey|private_key|access_key|client_secret|database_url|dsn)[a-z0-9_.-]*)"#,
+            r#"(?i)\b(?P<name>[a-z0-9_.-]*(?:password|passwd|secret|token|api[-_]?key|private[-_]?key|access[-_]?key|database_url|dsn)[a-z0-9_.-]*)"#,
             r#"(?P<sep>["']?[ \t]*(?::=|[:=])[ \t]*)"#,
             r#"(?:"(?P<dq>[^"\n]*)"|'(?P<sq>[^'\n]*)'|(?P<bare>[^\s"',;}=][^\s"',;}]*))"#,
         ))
@@ -180,27 +217,33 @@ fn redact_assignments(text: &str) -> String {
             (_, _, Some(v)) => (v, false),
             _ => return all.to_owned(),
         };
-        let v = value.as_str();
-        let lower = v.to_ascii_lowercase();
-        let keep = v.is_empty()
-            || v.chars().all(|c| c.is_ascii_digit())
-            || matches!(lower.as_str(), "changeme" | "string" | "str" | "number" | "int" | "bool"
-                | "boolean" | "any" | "null" | "none" | "nil" | "true" | "false" | "undefined" | "[redacted]")
-            || (v.starts_with('<') && v.ends_with('>'))
-            || v.starts_with("${")
-            || v.starts_with("{{")
-            // Code, not a literal: a call, an index, or a dotted reference (`os.environ`, `self.token`).
-            || (!quoted
-                && (v.contains(['(', '[', '<'])
-                    || v.split('.').count() > 1
-                        && v.split('.').all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
-                        && !v.chars().next().is_some_and(|c| c.is_ascii_digit())));
+        let keep = kept_value(value.as_str(), quoted);
         if keep {
             return all.to_owned();
         }
         let start = value.start() - c.get(0).unwrap().start();
         let end = value.end() - c.get(0).unwrap().start();
         format!("{}[redacted]{}", &all[..start], &all[end..])
+    })
+    .into_owned()
+}
+
+/// `Authorization: <scheme> <credential>` (and `Proxy-Authorization`), in a header, a curl flag or
+/// JSON: the credential becomes "[redacted]" whatever the scheme (`Basic`, `Token`, `Digest`, …).
+fn redact_authorization(text: &str) -> String {
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(concat!(
+            r#"(?i)\b(?P<head>(?:proxy-)?authorization["']?[ \t]*[:=][ \t]*(?P<q>["']?)(?:[a-z]+[ \t]+)?)"#,
+            r#"(?P<value>[^\s"',;}]+)"#,
+        ))
+        .expect("authorization pattern")
+    });
+    RE.replace_all(text, |c: &regex::Captures| {
+        if kept_value(&c["value"], !c["q"].is_empty()) {
+            c[0].to_owned()
+        } else {
+            format!("{}[redacted]", &c["head"])
+        }
     })
     .into_owned()
 }
@@ -238,7 +281,7 @@ pub(crate) fn redact(text: &str) -> String {
         });
         *previous = std::mem::take(word);
     }
-    let text = redact_assignments(&redact_pem(text));
+    let text = redact_authorization(&redact_assignments(&redact_pem(text)));
     let mut out = String::with_capacity(text.len());
     let (mut word, mut previous) = (String::new(), String::new());
     for c in text.chars() {
@@ -3349,6 +3392,34 @@ mod tests {
             "const token = getToken(req);\nlet password: string;\nkey = os.environ[\"API_KEY\"]\ntoken = self.token\nif token == expected:",
             "The token expires after an hour, so refresh the access token before each secret rotation.",
         ] {
+            assert_eq!(redact(kept), kept);
+        }
+    }
+
+    #[test]
+    fn local_sessions_redact_catches_jwts_and_hyphenated_auth_headers() {
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
+        let jwt_plain = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.abcDEF123";
+        // A dotted value is kept as code (`self.token`) unless it is a JWT.
+        for text in [format!("token = {jwt_plain}"), format!("x {jwt} y"), format!("ID_TOKEN={jwt}")] {
+            let clean = redact(&text);
+            assert!(!clean.contains("eyJzdWIi"), "{clean}");
+        }
+        assert_eq!(redact("token = self.token.value"), "token = self.token.value");
+        let secret = "abcd1234efgh5678";
+        for (text, name) in [
+            (format!("curl -H 'x-api-key: {secret}' https://a"), "x-api-key: "),
+            (format!("api-key: {secret}"), "api-key: "),
+            (format!("-H \"Authorization: Basic {secret}\""), "Authorization: Basic "),
+            (format!("authorization: Token {secret}"), "authorization: Token "),
+            (format!("{{\"Authorization\": \"Digest {secret}\"}}"), "\"Authorization\": \"Digest "),
+            (format!("Proxy-Authorization: {secret}"), "Proxy-Authorization: "),
+        ] {
+            let clean = redact(&text);
+            assert!(!clean.contains(secret) && clean.contains(&format!("{name}[redacted]")), "{clean}");
+        }
+        // A variable reference or code is not a credential.
+        for kept in ["-H \"Authorization: Bearer $TOKEN\"", "authorization = request.headers.get(\"a\")", "X_API_KEY=$X_API_KEY"] {
             assert_eq!(redact(kept), kept);
         }
     }

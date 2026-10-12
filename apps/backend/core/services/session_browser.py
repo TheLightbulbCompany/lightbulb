@@ -1,4 +1,4 @@
-"""A shared Claude Code or Codex session's browser (spec docs/superpowers/specs/2026-10-11-session-browser-design.md).
+"""A shared Claude Code or Codex session's browser on its Mac (PRs #4046, #4051, #4053).
 
 The Mac app identifies a CDP connection on its loopback port as one shared session and offers it
 (`browser.cdp.offer`, node_broker). This runs on the task holding that Mac's socket. The session

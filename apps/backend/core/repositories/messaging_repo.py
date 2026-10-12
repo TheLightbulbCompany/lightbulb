@@ -2588,8 +2588,10 @@ async def update_voice_run(owner_id: str, run_id: str, fields: dict[str, Any]) -
         raise
 
 
-#: A meeting's "write the notes" request message -> its meeting room and occurrence, so the notes
-#: agent's reply can be mailed (meeting_notes.on_agent_reply). Kept a day longer than any notes run.
+#: A meeting's "write the notes" request message -> everything its after-meeting mail needs (the
+#: meeting room, occurrence, where the request sits, and a snapshot of the meeting), so the mail no
+#: longer depends on the live meeting record, which a recurring series rewrites when it advances.
+#: Its own once-only markers live here too. Kept a day longer than any notes run.
 MEETING_NOTES_TTL_S = 2 * 86400
 
 
@@ -2597,10 +2599,10 @@ def meeting_notes_sk(message_id: str) -> str:
     return f"MEETNOTES#{message_id}"
 
 
-async def put_meeting_notes_request(owner_id: str, message_id: str, room_id: str, occurrence: Any) -> None:
+async def put_meeting_notes_request(owner_id: str, message_id: str, fields: dict[str, Any]) -> None:
     item = {
-        "pk": owner_pk(owner_id), "sk": meeting_notes_sk(message_id), "roomId": room_id,
-        "occurrence": occurrence, "expiresAt": int(time.time()) + MEETING_NOTES_TTL_S,
+        "pk": owner_pk(owner_id), "sk": meeting_notes_sk(message_id), **fields,
+        "expiresAt": int(time.time()) + MEETING_NOTES_TTL_S,
     }  # fmt: skip
     await run_in_thread(_table().put_item, Item=item)
 
@@ -2608,6 +2610,23 @@ async def put_meeting_notes_request(owner_id: str, message_id: str, room_id: str
 async def get_meeting_notes_request(owner_id: str, message_id: str) -> dict | None:
     row = await _get(owner_pk(owner_id), meeting_notes_sk(message_id))
     return row if row and int(row.get("expiresAt", 0)) > time.time() else None
+
+
+async def claim_meeting_notes_mail(owner_id: str, message_id: str) -> bool:
+    """True once per notes request: the mail is attempted at most once (a lost mail beats a double)."""
+    try:
+        await run_in_thread(
+            _table().update_item,
+            Key={"pk": owner_pk(owner_id), "sk": meeting_notes_sk(message_id)},
+            UpdateExpression="SET mailAttemptedAt = :now",
+            ConditionExpression="attribute_exists(pk) AND attribute_not_exists(mailAttemptedAt)",
+            ExpressionAttributeValues={":now": int(time.time())},
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+    return True
 
 
 async def get_voice_run(owner_id: str, run_id: str) -> dict | None:

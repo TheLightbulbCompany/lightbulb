@@ -38,7 +38,7 @@ def env(monkeypatch):
     m = SimpleNamespace(
         meta=meta,
         store=MagicMock(return_value=attachment),
-        line=AsyncMock(return_value={"messageId": "msg-1"}),
+        line=AsyncMock(return_value={"messageId": "msg-1", "messageSeq": 7}),
         send=AsyncMock(return_value="<id@ses>"),
         row={"address": "agents@acme.thelightbulb.company"},
         sleep=AsyncMock(),
@@ -50,12 +50,22 @@ def env(monkeypatch):
         advance=AsyncMock(),
         metric=MagicMock(),
         requests={},
+        posted=[],
     )
 
-    async def put_request(owner_id, message_id, room_id, occurrence):
-        m.requests[message_id] = {"roomId": room_id, "occurrence": occurrence}
+    async def put_request(owner_id, message_id, fields):
+        m.requests[message_id] = dict(fields)
+
+    async def claim_mail(owner_id, message_id):
+        request = m.requests.get(message_id)
+        if request is None or request.get("mailAttemptedAt"):
+            return False
+        request["mailAttemptedAt"] = 1
+        return True
 
     monkeypatch.setattr(mod.messaging_repo, "put_meeting_notes_request", put_request)
+    monkeypatch.setattr(mod.messaging_repo, "claim_meeting_notes_mail", claim_mail)
+    monkeypatch.setattr(mod.messaging_repo, "list_messages", AsyncMock(side_effect=lambda *_a: (m.posted, None)))
     monkeypatch.setattr(
         mod.messaging_repo, "get_meeting_notes_request", AsyncMock(side_effect=lambda _o, mid: m.requests.get(mid))
     )
@@ -132,7 +142,10 @@ async def test_on_ended_dispatches_exactly_one_notes_run(env):
     assert kwargs["dispatch_targets"] == [{"agentId": CEO, "eventKind": "user_request"}]
     assert env.meta["meeting"]["notesRunId"] == mod.messaging_repo.run_id_for(CEO, "msg-1")
     env.send.assert_not_awaited()  # the mail waits for the notes themselves
-    assert env.requests["msg-1"] == {"roomId": ROOM, "occurrence": 1790972400}
+    assert env.requests["msg-1"] == {
+        "roomId": ROOM, "occurrence": 1790972400, "targetRoomId": DEFAULT, "agentId": CEO, "triggerSeq": 7,
+        "meeting": {"title": "Weekly sync", "organizer": "pat@acme.com", "transcriptAttachedAt": 1},
+    }  # fmt: skip
     env.sleep.assert_not_awaited()
     await mod.on_agent_reply("org_1", DEFAULT, "msg-1", NOTES, False)
     env.send.assert_awaited_once()
@@ -205,7 +218,7 @@ async def test_a_failed_or_ambiguous_send_is_never_retried_by_a_later_webhook(en
     env.meta["meeting"]["transcriptAttachedAt"] = 1
     env.send.return_value = None  # send_ses_email's non-raising failure: it may still have gone
     await ended_and_noted(env)
-    assert "notesMailedAt" not in env.meta["meeting"] and env.meta["meeting"]["notesMailAttemptedAt"]
+    assert "notesMailedAt" not in env.meta["meeting"] and env.requests["msg-1"]["mailAttemptedAt"]
     await mod.on_agent_reply("org_1", DEFAULT, "msg-1", NOTES, False)  # a replayed reply
     assert not mod.owed(env.meta["meeting"])
     env.send.return_value = "<id@ses>"
@@ -216,12 +229,20 @@ async def test_a_failed_or_ambiguous_send_is_never_retried_by_a_later_webhook(en
 
 
 async def test_two_end_paths_racing_send_once(env):
-    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    env.members.return_value = [{"kind": "human", "id": "user_1"}]  # no notes run: the meeting's marker guards
     stale = {**env.meta["meeting"]}  # the second path read the meeting before the first marked it
-    await ended_and_noted(env)
+    await mod.on_ended(ROOM)
     env.send.assert_awaited_once()
     assert await mod._mail_organizer("org_1", ROOM, DEFAULT, stale, "Weekly sync", stale["startAt"]) is None
     env.send.assert_awaited_once()  # the guarded marker write refused it
+
+
+async def test_the_reply_and_the_run_end_send_once(env):
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    await ended_and_noted(env)
+    await mod.on_notes_run_ended("org_1", {"triggerMessageId": "msg-1", "outcome": "completed"})
+    await mod.on_notes_run_ended("org_1", {"triggerMessageId": "msg-1", "outcome": "error"})
+    env.send.assert_awaited_once()
 
 
 async def test_a_pre_send_skip_is_done_without_an_attempted_marker(env):
@@ -246,6 +267,7 @@ async def test_a_spent_daily_cap_sends_nothing_and_is_not_retried(env):
     env.send.assert_not_awaited()
     assert env.meta["meeting"]["notesMailedAt"]  # a deliberate non-send: done
     env.release.assert_not_awaited()
+    await mod.on_notes_run_ended("org_1", {"triggerMessageId": "msg-1", "outcome": "completed"})
     await mod.on_agent_reply("org_1", DEFAULT, "msg-1", NOTES, False)
     env.cap.assert_awaited_once()
 
@@ -507,12 +529,37 @@ async def test_only_the_notes_agents_own_final_reply_is_mailed(env):
 async def test_a_notes_run_that_fails_still_mails_once_and_says_so(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
     await mod.on_ended(ROOM)
-    await mod.on_notes_run_ended("org_1", "msg-1", "completed")  # a completed run mails from its reply
+    await mod.on_notes_run_ended("org_1", {"triggerMessageId": "other-msg", "outcome": "error"})  # not a notes run
     env.send.assert_not_awaited()
-    await mod.on_notes_run_ended("org_1", "msg-1", "error")
+    await mod.on_notes_run_ended("org_1", {"triggerMessageId": "msg-1", "outcome": "error"})
     kw = env.send.await_args.kwargs
     assert kw["subject"] == "Transcript: Weekly sync"
     assert kw["body_text"].startswith("Weekly sync ended. The notes could not be written this time.")
     assert f"https://flickmeon.ai/chat?room={DEFAULT}" in kw["body_text"]
-    await mod.on_notes_run_ended("org_1", "msg-1", "aborted")
+    await mod.on_notes_run_ended("org_1", {"triggerMessageId": "msg-1", "outcome": "aborted"})
     env.send.assert_awaited_once()
+
+
+async def test_a_reply_that_beat_its_request_record_is_mailed_when_the_run_ends(env):
+    """The agent answered before _notes recorded the request: on_agent_reply found nothing, so the
+    run's end reads the agent's final reply from the room."""
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    await mod.on_ended(ROOM)
+    env.posted[:] = [
+        {"author": {"id": CEO}, "replyToMessageId": "msg-1", "text": "Reading it now.", "progress": True},
+        {"author": {"id": "someone"}, "replyToMessageId": "msg-1", "text": "Not the notes."},
+        {"author": {"id": CEO}, "replyToMessageId": "msg-1", "text": NOTES},
+    ]
+    await mod.on_notes_run_ended("org_1", {"triggerMessageId": "msg-1", "outcome": "completed"})
+    kw = env.send.await_args.kwargs
+    assert kw["subject"] == "Notes: Weekly sync" and kw["body_text"].startswith(NOTES)
+
+
+async def test_a_recurring_series_that_advanced_still_gets_its_notes_mailed(env):
+    env.meta["meeting"].update(transcriptAttachedAt=1, invitedBy="ada@acme.com")
+    await mod.on_ended(ROOM)
+    env.meta["meeting"] = {"title": "Next week", "startAt": 1791577200, "status": "scheduled"}  # advance()
+    await mod.on_agent_reply("org_1", DEFAULT, "msg-1", NOTES, False)
+    kw = env.send.await_args.kwargs
+    assert kw["to"] == "ada@acme.com" and kw["subject"] == "Notes: Weekly sync"
+    assert "notesMailedAt" not in env.meta["meeting"]  # never written onto the next occurrence

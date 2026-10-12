@@ -318,6 +318,10 @@ class Screen(ContractModel):
     # history: the holder's recent output, before a snapshot, for viewers with no screen yet;
     # ping: no data, proves a quiet stream is alive (spec §5.2).
     kind: Literal["snapshot", "output", "history", "ping"]
+    # A snapshot over MAX_RAW_BYTES: this many consecutive seqs from this one make the picture
+    # (the rest are "output"). The viewer writes them in one write. Old Macs omit it. <=16 = the
+    # viewer's HELD.
+    parts: int | None = Field(default=None, ge=2, le=16)
     data: str = Field(max_length=4 * ((MAX_RAW_BYTES + 2) // 3))
 
     @field_validator("data")
@@ -333,6 +337,8 @@ class Screen(ContractModel):
     def _ping_is_empty(self) -> Screen:
         if self.kind == "ping" and self.data:
             raise ValueError("a ping carries no data")
+        if self.parts is not None and self.kind != "snapshot":
+            raise ValueError("only a snapshot has parts")
         return self
 
 
@@ -359,8 +365,8 @@ async def forward(relay, cid: str, body: dict) -> None:
     """One `local.session.screen` frame from a Mac to the people watching that session.
 
     Never answers and never raises: the Mac waits for no reply, and an error frame would end
-    its relay connection. A dropped frame costs a viewer the wait for the next snapshot: at most
-    10 s while the screen prints, at most 30 s (the Mac's resync) once it is quiet.
+    its relay connection. Snapshots come on join, resize and loss; a quiet Mac pings. There is no
+    periodic redraw, so a dropped frame costs a viewer the wait for the next snapshot.
     Checks the row like any session frame; never writes it, nor anything else. One AppSync
     publish per frame, whatever the number of viewers."""
     try:
@@ -414,7 +420,7 @@ async def forward(relay, cid: str, body: dict) -> None:
         if not _spend(sid, size, now):
             put_metric("session.screen.frame.dropped")
             return
-        payload = frame.model_dump(mode="json", by_alias=True, exclude={"type"})
+        payload = frame.model_dump(mode="json", by_alias=True, exclude={"type"}, exclude_none=True)
         typist = await _cursor_typist(row, seats, now)
         if typist:
             payload["typist"] = typist

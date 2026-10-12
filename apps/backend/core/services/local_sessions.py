@@ -28,6 +28,9 @@ from core.services.local_session_grants import AgentInvocation
 STATUSES = Literal["idle", "busy", "waiting-approval", "unknown", "offline", "ended"]
 # Why a running session has no live terminal, as its Mac says (spec 2026-10-07 §5.1).
 TerminalReason = Literal["plain", "no-daemon", "app", "sdk", "unknown"]
+# Why an ended session ended. "login-session-ended": the Mac found the holder older than its
+# loginwindow (its provider lost DNS and the keychain for good while still reporting Idle).
+EndedReason = Literal["exited", "process-exited", "on-purpose", "login-session-ended"]
 # What a device may claim. `offline` is the backend's verdict on a lapsed lease and
 # `ended` is written by the ended frame; neither is ever a status the device reports.
 INPUT_STATUSES = Literal["idle", "busy", "waiting-approval", "unknown"]
@@ -256,6 +259,7 @@ class LocalSession(ContractModel):
     cwd_name: Annotated[str, Field(max_length=128)] | None = None
     last_event_at: str | None = None
     ended_at: str | None = None
+    ended_reason: EndedReason | None = None
     last_assistant_message: Annotated[str, Field(max_length=300)] | None = None
     # Only its own human sees the exact remote start that opened this native run.
     start_id: OpaqueId | None = None
@@ -780,6 +784,9 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
         public["wasHeld"] = True
     if public["status"] == "ended" and row.get("endedReason") == ENDED_ON_PURPOSE:
         public["endedOnPurpose"] = True
+    # Re-registering pops endedReason (relay); a row that is not ended never shows a stale one.
+    if row.get("endedAt") is None:
+        public.pop("endedReason", None)
     reason = public.pop("terminalReason", None)
     # A session inside an app never had a terminal: ended or offline, its panel is still its conversation.
     live = public["status"] not in ("ended", "offline")

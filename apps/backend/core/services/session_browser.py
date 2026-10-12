@@ -49,9 +49,10 @@ AGENT_ID = "session"
 NOT_SHARED = "Share this session to use the Lightbulb browser"
 CLOUD_MESSAGE = "The workspace's cloud browser isn't available right now. Try again in a minute."
 MESSAGES = {"not_shared": NOT_SHARED, "cloud_unavailable": CLOUD_MESSAGE}
-# The Mac waits 150 s for the answer: the last attempt starts before this and an invoke is capped
-# at 90 s (container_rpc), so even the cloud's answer lands inside it.
-OFFER_BUDGET_S = 60
+# The Mac waits 150 s for the answer: the last attempt starts before this and an invoke can take
+# 90 s (container_rpc's floor), so the worst case is 55 + 90 = 145 s, inside it with 5 s to spare.
+OFFER_BUDGET_S = 55
+DOOR_WAIT_S = 15  # the runtime dials the door right after "attached"
 POLL_S = 2
 RENEW_SECONDS = 120  # < mac_browser.LEASE_SECONDS
 OPEN_SECONDS = 2 * RENEW_SECONDS
@@ -501,6 +502,11 @@ async def _serve_cloud(auth: dict, device: str, node, channel) -> None:
     _relays[key] = channel
     try:
         await _attach(auth, target)
+        deadline = _clock() + DOOR_WAIT_S
+        while key in _relays:  # the door claims the channel and accepts it; announce only then
+            if _clock() >= deadline:
+                raise _err("cloud_unavailable")
+            await asyncio.sleep(0.1)
         await _mark_open(owner, user, sid, "cloud", announce=True)
         try:
             await _hold_cloud(auth, device, node, channel)
@@ -513,7 +519,7 @@ async def _serve_cloud(auth: dict, device: str, node, channel) -> None:
 
 def cloud_events(events: list[dict]) -> list[dict]:
     """The Mac's input shape -> the cloud cast's (bridge cdp_mux.dispatch): a press and release is one
-    click at the release; moves are dropped. ponytail: no cloud drags; add a pointer API there if wanted."""
+    click at the release; moves are dropped; wheel is vertical only (the cast reads deltaY alone). ponytail: no cloud drags; add a pointer API there if wanted."""
     out = []
     for event in events:
         kind = event["type"]
@@ -530,7 +536,12 @@ def cloud_events(events: list[dict]) -> list[dict]:
 
 async def cloud_input(row: dict, events: list[dict]) -> None:
     """A person's input on a session browsing the cloud: into its cast tab, as the cloud's own watcher
-    input (it counts as a person's input there too)."""
+    input (it counts as a person's input there too). After idle the cast's lease has lapsed, so renew
+    it first (one try: a cloud still starting answers the person's 409 rather than holding the request)."""
+    try:
+        await container_rpc.call(row["ownerId"], "browser.attach", {"runId": run_id(row["sessionId"]), "renew": True})
+    except Exception as exc:  # noqa: BLE001 -- send_input below says "not casting" if it did not take
+        logger.info("session browser input renew failed owner=%s error=%s", row["ownerId"], type(exc).__name__)
     for event in cloud_events(events):
         await browser_control.send_input(row["ownerId"], {"runId": run_id(row["sessionId"]), **event})
 

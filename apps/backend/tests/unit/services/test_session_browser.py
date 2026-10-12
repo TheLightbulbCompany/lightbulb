@@ -301,7 +301,7 @@ async def test_a_starting_mac_is_polled_inside_the_offer_budget(env, monkeypatch
 async def test_a_mac_without_the_cdp_command_goes_to_the_cloud(env, cloud):
     node, channel = _offered(commands=("browser.cast.v1",))
     served = asyncio.create_task(session_browser.serve(OWNER, MEMBER, DEVICE, node, channel, SID, True))
-    await _relayed(env)
+    await _relayed(env, cloud, channel)
     assert not any(call[0] == "acquire" for call in env.calls)
     _closed_by_mac(node)
     await asyncio.wait_for(served, 2)
@@ -638,17 +638,24 @@ def cloud(env, monkeypatch):
     session_browser._relays.clear()
 
 
-async def _relayed(env):
-    """The cloud is attached and the session's channel waits for its door."""
-    await _until(lambda: (OWNER, RUN) in session_browser._relays and ("open", "cloud") in env.calls)
+async def _relayed(env, seen, channel):
+    """The cloud is attached and the session's channel waits for its door; the door then joins it."""
+    await _until(
+        lambda: (
+            (OWNER, RUN) in session_browser._relays
+            and any(m == "browser.attach" and "doorUrl" in (p or {}) for m, p in seen)
+        )
+    )
+    assert ("open", "cloud") not in env.calls, "not announced before a door has the channel"
+    assert session_browser.relay({"ownerId": OWNER, "runId": RUN}) is channel
+    await _until(lambda: ("open", "cloud") in env.calls)
 
 
 async def test_browser_off_routes_the_session_to_the_cloud_browser(env, cloud):
     node, channel = _offered()
     served = asyncio.create_task(session_browser.serve(OWNER, MEMBER, DEVICE, node, channel, SID, False))
-    await _relayed(env)
-    assert session_browser.relay({"ownerId": OWNER, "runId": RUN}) is channel, "the door joins the channel"
-    assert session_browser.relay({"ownerId": OWNER, "runId": RUN}) is None, "one door only"
+    await _relayed(env, cloud, channel)
+    assert session_browser.relay({"ownerId": OWNER, "runId": RUN}) is None, "one door only: _relayed already joined it"
     attaches = [params for method, params in cloud if method == "browser.attach" and "doorUrl" in params]
     assert len(attaches) == 2 and attaches[0]["doorUrl"] != attaches[1]["doorUrl"], "a fresh ticket each time"
     assert attaches[1]["doorUrl"].startswith("ws://10.0.3.7:8000/api/v1/internal/mac-cdp/")
@@ -664,7 +671,7 @@ async def test_browser_off_routes_the_session_to_the_cloud_browser(env, cloud):
 async def test_after_idle_the_next_command_waits_for_the_bridge_to_renew(env, cloud):
     node, channel = _offered()
     served = asyncio.create_task(session_browser.serve(OWNER, MEMBER, DEVICE, node, channel, SID, False))
-    await _relayed(env)
+    await _relayed(env, cloud, channel)
     _signal(node, "idle")
     _signal(node, "active")
     assert (await _next(node, "browser.cdp.leased"))["payload"] == {"channel": CHANNEL, "ok": True}
@@ -677,7 +684,7 @@ async def test_a_session_set_to_cloud_goes_there_with_browser_on(env, cloud):
     env.row["browserPlace"] = "cloud"
     node, channel = _offered()
     served = asyncio.create_task(session_browser.serve(OWNER, MEMBER, DEVICE, node, channel, SID, True))
-    await _relayed(env)
+    await _relayed(env, cloud, channel)
     assert any(method == "browser.attach" for method, _ in cloud)
     _closed_by_mac(node)
     await asyncio.wait_for(served, 2)
@@ -703,7 +710,7 @@ async def test_a_cloud_that_does_not_start_is_cloud_unavailable(env, cloud, monk
 async def test_unsharing_a_session_on_the_cloud_closes_its_door(env, cloud):
     node, channel = _offered()
     served = asyncio.create_task(session_browser.serve(OWNER, MEMBER, DEVICE, node, channel, SID, False))
-    await _relayed(env)
+    await _relayed(env, cloud, channel)
     env.row["unshared"] = True
     await asyncio.wait_for(served, 2)
     assert channel.closed.is_set(), "the door's pump ends with the channel"
@@ -736,3 +743,23 @@ def test_cloud_input_is_the_cloud_casts_own_shape():
         {"type": "key", "key": "Enter"},
         {"type": "text", "text": "hi"},
     ]
+
+
+async def test_a_door_that_never_joins_is_cloud_unavailable(env, cloud, monkeypatch):
+    monkeypatch.setattr(session_browser, "DOOR_WAIT_S", 0.05)
+    node, channel = _offered()
+    await session_browser.serve(OWNER, MEMBER, DEVICE, node, channel, SID, False)
+    assert _out(node)[-1]["payload"]["code"] == "cloud_unavailable"
+    assert ("open", "cloud") not in env.calls
+
+
+async def test_cloud_input_renews_the_cast_first(cloud, monkeypatch):
+    row = {"ownerId": OWNER, "sessionId": SID}
+    sent = []
+
+    async def send(owner, event):
+        sent.append(event)
+
+    monkeypatch.setattr(session_browser.browser_control, "send_input", send)
+    await session_browser.cloud_input(row, [{"type": "wheel", "x": 1.0, "y": 1.0, "deltaY": 5.0}])
+    assert cloud[0] == ("browser.attach", {"runId": RUN, "renew": True}) and len(sent) == 1

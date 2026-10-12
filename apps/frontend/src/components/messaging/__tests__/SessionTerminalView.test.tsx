@@ -441,6 +441,36 @@ it("writes history under the first snapshot, keeps it when later snapshots redra
   expect(hooks.resets).toBe(2);
 });
 
+const part = (e: LiveEvent, parts: number) => ({ ...e, payload: { ...e.payload, parts } }) as LiveEvent;
+
+it("writes a two-part snapshot once, after its second part", async () => {
+  const { emit } = await mountView();
+  emit(part(screenEvent("s1", "snapshot", 0, 1, btoa("top,")), 2));
+  expect(writes).toHaveLength(0);
+  emit(screenEvent("s1", "output", 1, 1, btoa("bottom")));
+  expect(writes).toHaveLength(1);
+  expect(hooks.did).toEqual(["reset", "top,bottom"]);
+});
+it("a same-run resync snapshot repaints without a reset", async () => {
+  const { emit } = await mountView();
+  emit(part(screenEvent("s1", "snapshot", 0, 1, btoa("top,")), 2)); emit(screenEvent("s1", "output", 1, 1, btoa("bottom")));
+  emit(part(screenEvent("s1", "snapshot", 2, 1, btoa("top2,")), 2)); emit(screenEvent("s1", "output", 3, 1, btoa("bottom2")));
+  expect(hooks.resets).toBe(1); expect(writes).toHaveLength(2);
+});
+it("a new run's two-part snapshot resets exactly once, before its single write", async () => {
+  const { emit } = await mountView();
+  emit(screenEvent("s1", "snapshot", 0, 1, btoa("x")));
+  hooks.later = []; hooks.did = [];
+  emit(part(screenEvent("s1", "snapshot", 0, 2, btoa("a")), 2)); emit(screenEvent("s1", "output", 1, 2, btoa("b")));
+  drain();
+  expect(hooks.did).toEqual(["reset", "ab"]);
+});
+it("an old Mac's split snapshot is written as it always was", async () => {
+  const { emit } = await mountView();
+  emit(screenEvent("s1", "snapshot", 0, 1, btoa("top,"))); emit(screenEvent("s1", "output", 1, 1, btoa("bottom")));
+  expect(hooks.did).toEqual(["reset", "top,", "bottom"]);
+});
+
 it("history that arrives after its snapshot is written: the terminal starts over with it, then the screen again", async () => {
   // Prod 2026-10-08: the Mac sends the burst, then the snapshot, each as its own request; when the
   // snapshot came first the view showed 30 rows with no scrollback (about half of all opens).

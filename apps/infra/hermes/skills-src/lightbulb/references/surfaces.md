@@ -106,17 +106,18 @@ in Settings); while it is on, a plain `claude` or `codex` typed in a new termina
 through Lightbulb.
 A running session shows its live terminal when Lightbulb started it, when it is a Claude Code
 background session, or when it is a plain Codex session (Codex's own background service runs
-it, and Lightbulb opens one more Codex terminal on the same conversation). A shared session in
-a plain terminal with no live terminal yet is not in the workspace at all until it has one: its
-own Claude Code terminal tells its person to press the left arrow key (←) once, and a Codex
-session started with `--no-daemon` is started again with `lightbulb codex`. A session that runs
+it, and Lightbulb opens one more Codex terminal on the same conversation). A running session with no live
+terminal (a plain `claude`, or `codex --no-daemon`) shows its conversation (transcript, message
+box and approvals) to workspace members on the web, in the desktop app and on the phone, under a
+one-line hint: its own Claude Code terminal tells its person to press the left arrow key (←) once
+to make it live, and a Codex session started with `--no-daemon` is started again with
+`lightbulb codex`. The public link stays terminal-only. A session that runs
 inside the Claude or Codex app, or an editor, has no terminal: people read its conversation
 instead, under the line "This session runs inside an app, so there is no terminal to show. This
 is its conversation." Its person can also stop sharing from the workspace (**Who can see this**
 → **Only me**); that and the terminal's **Stop sharing** are one switch, and sharing again shares
-the whole session, including what it did meanwhile. For a session in a terminal, people on the
-web and in the desktop app see the live terminal and never a transcript; the phone shows a
-session's history as a list. You still read the structured record with
+the whole session, including what it did meanwhile. A session with a live terminal shows that terminal and no transcript.
+You still read the structured record with
 `lightbulb_local_sessions`.
 
 **New session** (web and desktop): a small form with no first message. The person picks

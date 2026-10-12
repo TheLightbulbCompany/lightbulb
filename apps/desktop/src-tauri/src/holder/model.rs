@@ -77,6 +77,10 @@ pub struct Model {
     /// The first bytes of a character the last read ended inside, on that region's last row: not
     /// fed yet, since whether it wraps there (and scrolls the region) depends on its width.
     carry: Vec<u8>,
+    /// How many of the lines above the screen `scrolled` has already handed out.
+    taken: usize,
+    /// `ESC[3J` dropped the lines above since `scrolled` last ran.
+    erased: bool,
 }
 /// Where a byte stream stands between its control sequences, as far as `Model::process` reads it.
 #[derive(Clone, Copy, PartialEq)]
@@ -371,6 +375,12 @@ fn char_len(lead: u8) -> usize {
     }
 }
 
+/// Whether `bytes` end inside a UTF-8 character.
+fn mid_char(bytes: &[u8]) -> bool {
+    let last = &bytes[bytes.len().saturating_sub(4)..];
+    last.iter().rposition(|b| b & 0xc0 != 0x80).is_some_and(|at| last[at] >= 0xc0 && char_len(last[at]) > last.len() - at)
+}
+
 /// Whether the character `ch` (all its bytes) goes to the next row when written at column `col`
 /// of `cols`: vt100's own rule (`Screen::text`), with its own width for that character.
 fn wraps(ch: &[u8], col: u16, cols: u16) -> bool {
@@ -393,7 +403,7 @@ impl Model {
     pub fn new(rows: u16, cols: u16) -> Self {
         Self { parser: vt100::Parser::new(rows, cols, SCROLLBACK), tail: Vec::new(), left_alternate: None, partial_csi: Vec::new(),
             last_output: None, typed: None, resting: None, ending: false, classic: false, shown_again: 0,
-            codex: false, at: At::Ground, csi: Vec::new(), region: None, carry: Vec::new() }
+            codex: false, at: At::Ground, csi: Vec::new(), region: None, carry: Vec::new(), taken: 0, erased: false }
     }
 
     /// The provider is Codex in its inline mode.
@@ -604,6 +614,57 @@ impl Model {
         parser.process(&self.snapshot());
         self.parser = parser;
         self.region = None;
+        self.erased = true;
+    }
+
+    pub fn screen(&self) -> &vt100::Screen {
+        self.parser.screen()
+    }
+
+    /// Rows that left the top of the normal screen since the last call, oldest first (each one row
+    /// of `rows_formatted`), and whether ESC[3J dropped the lines above since then (the count
+    /// restarts). The relay pushes them into viewers' scrollback before each diff.
+    // ponytail: more than SCROLLBACK - taken rows between two calls lose the oldest; the parser is
+    // rebuilt at half the cap so the count never saturates (which also empties what `history`
+    // can give, so only a model that is not the holder's calls this). A Codex region is set again
+    // after the rebuild (Codex review of #4035: skipping the rebuild while one was set saturated
+    // the count, and no later row reached a viewer). Lost there: any region not anchored at row 1,
+    // and the saved cursor, which `region` does not track.
+    pub fn scrolled(&mut self) -> (bool, Vec<Vec<u8>>) {
+        let erased = std::mem::take(&mut self.erased);
+        if erased {
+            self.taken = 0;
+        }
+        if self.parser.screen().alternate_screen() {
+            return (erased, vec![]);
+        }
+        let (rows_n, cols) = self.size();
+        let screen = self.parser.screen_mut();
+        screen.set_scrollback(usize::MAX);
+        let above = screen.scrollback();
+        let rows: Vec<Vec<u8>> = (1..=above.saturating_sub(self.taken))
+            .rev()
+            .filter_map(|back| {
+                screen.set_scrollback(back);
+                screen.rows_formatted(0, cols).next()
+            })
+            .collect();
+        screen.set_scrollback(0);
+        self.taken = above;
+        // (Only between sequences and characters: a new parser would print the rest of one as
+        // text. Else at a later call; the other half of the cap is the room for that.)
+        if above >= SCROLLBACK / 2 && self.at == At::Ground && self.carry.is_empty() && !mid_char(&self.tail) {
+            let mut parser = vt100::Parser::new(rows_n, cols, SCROLLBACK);
+            parser.process(&self.snapshot());
+            if let Some(bottom) = self.region {
+                // DECSTBM homes the cursor: put it back.
+                let (row, col) = self.parser.screen().cursor_position();
+                parser.process(format!("\x1b[1;{}r\x1b[{};{}H", bottom + 1, row + 1, col + 1).as_bytes());
+            }
+            self.parser = parser;
+            self.taken = 0;
+        }
+        (erased, rows)
     }
 
     /// The lines above the screen, oldest first, as bytes for an empty terminal: they end up in
@@ -1551,5 +1612,81 @@ mod tests {
         assert_eq!(model.end(Instant::now()), None);
         assert_eq!(model.starts_over(), None);
         assert_eq!(lines(&mut late_joiner(&mut model, 1 << 20)), kept);
+    }
+
+    #[test]
+    fn scrolled_returns_the_rows_that_left_the_top_oldest_first() {
+        let mut m = Model::new(3, 10);
+        let _ = m.feed(b"a\r\nb\r\nc");
+        assert_eq!(m.scrolled(), (false, vec![]));
+        let _ = m.feed(b"\r\nd\r\ne");
+        let (erased, rows) = m.scrolled();
+        assert!(!erased);
+        assert_eq!(rows.iter().map(|r| String::from_utf8_lossy(r).trim_end().to_string()).collect::<Vec<_>>(), vec!["a", "b"]);
+        assert_eq!(m.scrolled(), (false, vec![]));
+    }
+
+    #[test]
+    fn scrolled_keeps_a_codex_region_row_and_reports_an_erase() {
+        let mut m = Model::new(3, 10);
+        m.inline_codex();
+        let _ = m.feed(b"a\r\nb\r\nc\x1b[1;2r\x1b[2;1H\r\nX\x1b[r");
+        let (_, rows) = m.scrolled();
+        assert_eq!(String::from_utf8_lossy(&rows[0]).trim_end(), "a");
+        let _ = m.feed(b"\x1b[3J");
+        assert!(m.scrolled().0);
+    }
+
+    #[test]
+    fn scrolled_counts_past_the_scrollback_cap() {
+        // Twice the cap, 2000 lines between calls: every line that left the screen, in order.
+        let mut m = Model::new(3, 10);
+        let mut got = Vec::new();
+        for round in 0..5 {
+            for i in round * 2000..(round + 1) * 2000 {
+                let _ = m.feed(format!("{i}\r\n").as_bytes());
+            }
+            got.extend(m.scrolled().1.iter().map(|r| String::from_utf8_lossy(r).trim_end().to_string()));
+        }
+        // (The screen keeps the last two lines and the blank row under them.)
+        assert!(got == (0..9998).map(|i| i.to_string()).collect::<Vec<_>>(), "{} rows, first {:?}", got.len(), got.first());
+    }
+
+    /// Codex review of #4035: with Codex's region set the whole time, the count stopped at the cap
+    /// and no later row reached a viewer.
+    #[test]
+    fn scrolled_counts_past_the_cap_while_a_codex_region_stays_set() {
+        let mut m = Model::new(6, 10);
+        m.inline_codex();
+        let _ = m.feed(b"\x1b[1;4r\x1b[4;1H");
+        let mut got = Vec::new();
+        for round in 0..4 {
+            for i in round * 1600..(round + 1) * 1600 {
+                let _ = m.feed(format!("\r\n{i}").as_bytes());
+            }
+            got.extend(m.scrolled().1.iter().map(|r| String::from_utf8_lossy(r).trim_end().to_string()));
+        }
+        // (The region's four blank rows leave first; it keeps the last four lines.)
+        let want: Vec<String> = std::iter::repeat_n(String::new(), 4).chain((0..6396).map(|i| i.to_string())).collect();
+        assert!(got == want, "{} rows, last {:?}", got.len(), got.last());
+        assert_eq!(m.screen().contents(), "6396\n6397\n6398\n6399", "the region is still set: the rows under it stay blank");
+    }
+
+    #[test]
+    fn scrolled_waits_for_the_end_of_a_sequence_or_a_character_to_start_over() {
+        for (first, rest) in [(&b"\x1b[3"[..], &b"1mX"[..]), (b"\xc3", b"\xa9X")] {
+            let mut m = Model::new(3, 10);
+            for i in 0..2600 {
+                let _ = m.feed(format!("{i}\r\n").as_bytes());
+            }
+            let _ = m.feed(first);
+            let _ = m.scrolled();
+            assert!(m.taken > 0, "no new parser inside {first:?}");
+            let _ = m.feed(rest);
+            let shown = m.screen().contents();
+            assert!(shown.ends_with("\nX") || shown.ends_with("\néX"), "{shown:?}");
+            let _ = m.scrolled();
+            assert_eq!(m.taken, 0, "a new parser once it ended");
+        }
     }
 }

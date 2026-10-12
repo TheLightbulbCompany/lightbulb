@@ -207,6 +207,58 @@ it("a view that drew frames before it asked starts over with the history its own
   spy.mockRestore();
 });
 
+it("asks for a fresh picture once when a ping shows a lost diff, and not for a ping that is on time", async () => {
+  vi.useFakeTimers();
+  let emit: (e: LiveEvent) => void = () => {};
+  const watch = vi.fn(async () => undefined);
+  render(<SessionTerminalView session={{ sessionId: "s1", generation: "g1" }} onEvent={(h) => { emit = h; return () => {}; }} watch={watch} onLive={vi.fn()} />);
+  await act(async () => { await vi.dynamicImportSettled(); });
+  act(() => { emit(screenEvent("s1", "snapshot", 0)); emit(screenEvent("s1", "output", 1, 1, btoa("a"))); });
+  watch.mockClear();
+  act(() => { emit(screenEvent("s1", "ping", 2)); });
+  expect(watch).not.toHaveBeenCalled();
+  act(() => { emit(screenEvent("s1", "ping", 3)); }); // seq 2 was lost
+  expect(watch.mock.calls).toEqual([["s1", true]]);
+  act(() => { vi.advanceTimersByTime(10_000); emit(screenEvent("s1", "ping", 3)); });
+  expect(watch).toHaveBeenCalledTimes(1);
+});
+
+describe("a ping that shows the Mac sent a picture this view lacks", () => {
+  const mount = async () => {
+    vi.useFakeTimers();
+    let emit: (e: LiveEvent) => void = () => {};
+    const watch = vi.fn(async () => undefined);
+    render(<SessionTerminalView session={{ sessionId: "s1", generation: "g1" }} onEvent={(h) => { emit = h; return () => {}; }} watch={watch} onLive={vi.fn()} />);
+    await act(async () => { await vi.dynamicImportSettled(); });
+    watch.mockClear();
+    return { emit: (e: LiveEvent) => act(() => emit(e)), watch };
+  };
+  it("asks when no frame ever arrived", async () => {
+    const { emit, watch } = await mount();
+    emit(screenEvent("s1", "ping", 2));
+    expect(watch.mock.calls).toEqual([["s1", true]]);
+  });
+  it("does not ask for a ping before the Mac sent anything", async () => {
+    const { emit, watch } = await mount();
+    emit(screenEvent("s1", "ping", 0));
+    expect(watch).not.toHaveBeenCalled();
+  });
+  it("does not ask for a late ping from an older run", async () => {
+    const { emit, watch } = await mount();
+    emit(screenEvent("s1", "snapshot", 0, 2));
+    emit(screenEvent("s1", "ping", 5, 1));
+    expect(watch).not.toHaveBeenCalled();
+  });
+  it("asks when the ping is for a newer run than the picture", async () => {
+    const { emit, watch } = await mount();
+    emit(screenEvent("s1", "snapshot", 0)); emit(screenEvent("s1", "output", 1, 1, btoa("a")));
+    emit(screenEvent("s1", "ping", 2));
+    expect(watch).not.toHaveBeenCalled();
+    emit(screenEvent("s1", "ping", 1, 2));
+    expect(watch.mock.calls).toEqual([["s1", true]]);
+  });
+});
+
 it("asks for the kept picture once when the session it was watching ends, and draws it in place", async () => {
   // The backend refuses the watch (409) between the end and the Mac's report of the kept screen, and drops
   // the Mac's frames; a renewal after that is no new viewer, so nothing sent the kept picture (prod 2026-10-07).

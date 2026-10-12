@@ -97,6 +97,10 @@ MAC_ACQUIRE_MIN_S = 8.0
 MAC_BUSY = "This Mac's browser is busy; try again shortly."
 COMPUTER_USE_MAC = "computer_use works on the cloud browser's screen only; on a Mac use the browser_* tools."
 _ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
+#: A backend ticketed Mac door (mac_cdp.door_url): ws://<task>/api/v1/internal/mac-cdp/<ticket>.
+_DOOR = re.compile(r"ws://[A-Za-z0-9.:-]+/api/v1/internal/mac-cdp/[A-Za-z0-9_=-]+")
+#: A named Mac upstream, ``mac:<device>:<run>``.
+_MAC_UPSTREAM = re.compile(r"mac:[A-Za-z0-9_-]{1,128}:[A-Za-z0-9_-]{1,128}")
 
 _LOCK = threading.Lock()
 _LEASE: dict = {}                    # {"generation", "cdpUrl"} while the bridge holds the lease
@@ -308,6 +312,23 @@ def _refresh_mac(state: dict, deadline: float, mac: dict) -> bool:
     return True
 
 
+def _mac_steps(url: str, steps: list, deadline: float) -> tuple[bool, str | None]:
+    """Each step through ``browser_state.checkpoint`` on ``url`` (a loopback client on a Mac pipe), in
+    order, stopping at the first failure: (all ran, the last step's action). Never logs a URL or a step."""
+    kind = None
+    for step in steps:
+        kind = step.get("action") if isinstance(step, dict) else None
+        left = deadline - time.monotonic()
+        if kind is None or left <= 0:
+            return False, kind
+        try:
+            browser_state.checkpoint({**step, "source": "mac", "cdpUrl": url}, budget_s=left)
+        except Exception as exc:  # noqa: BLE001 -- the class only
+            log.warning("mac browser sync failed: %s", type(exc).__name__)
+            return False, kind
+    return True, kind
+
+
 def _run_mac_sync(state: dict, sync: dict, deadline: float | None = None) -> bool:
     """The one sync engine: each step through ``browser_state.checkpoint`` over a loopback client
     on the run's own Mac pipe, in order, stopping at the first failure; then ``mac/synced``.
@@ -318,18 +339,10 @@ def _run_mac_sync(state: dict, sync: dict, deadline: float | None = None) -> boo
     if name is None:  # deselected before this thread ran: the claim lapses on the backend
         return False
     device = mac["deviceId"]
-    ok, kind = True, None
     try:
-        url = cdp_mux.url_for(key, upstream=name)
-        for step in sync.get("steps") or []:
-            kind = step.get("action") if isinstance(step, dict) else None
-            left = deadline - time.monotonic()
-            if kind is None or left <= 0:
-                ok = False
-                break
-            browser_state.checkpoint({**step, "source": "mac", "cdpUrl": url}, budget_s=left)
-    except Exception as exc:  # noqa: BLE001
-        ok = False
+        ok, kind = _mac_steps(cdp_mux.url_for(key, upstream=name), sync.get("steps") or [], deadline)
+    except Exception as exc:  # noqa: BLE001 -- the mux did not start
+        ok, kind = False, None
         log.warning("mac browser sync failed: %s", type(exc).__name__)
     finally:
         with contextlib.suppress(Exception):
@@ -342,6 +355,28 @@ def _run_mac_sync(state: dict, sync: dict, deadline: float | None = None) -> boo
             body["roomId"] = state["roomId"]
     _post_mac("mac/synced", body, timeout=max(MAC_SYNCED_MIN_S, min(20.0, deadline - time.monotonic())))
     return ok
+
+
+def mac_checkpoint(params: dict) -> dict:
+    """``browser.state`` with a ``doorUrl`` (spec 2026-10-11, spike 3): the backend's own sign-in sync
+    for a shared Claude Code or Codex session's Mac browser. Points the named upstream at the ticketed
+    door, runs the steps over one loopback client on it, then forgets the upstream. Same engine as a
+    run's own sync; raises ValueError for anything but a backend door."""
+    door, upstream, steps = params.get("doorUrl"), params.get("upstream"), params.get("steps")
+    if (not (isinstance(door, str) and _DOOR.fullmatch(door))
+            or not (isinstance(upstream, str) and _MAC_UPSTREAM.fullmatch(upstream))
+            or not isinstance(steps, list) or not steps):
+        raise ValueError("invalid Mac checkpoint")
+    key = f"sync:{upstream}"
+    try:
+        cdp_mux.set_upstream(door, str(params.get("generation") or ""), upstream=upstream)
+        ok, _ = _mac_steps(cdp_mux.url_for(key, upstream=upstream), steps, time.monotonic() + MAC_SYNC_BUDGET_S)
+    finally:
+        with contextlib.suppress(Exception):
+            cdp_mux.close_run(key, upstream)
+        with contextlib.suppress(Exception):
+            cdp_mux.drop(upstream)
+    return {"ok": ok}
 
 
 def _forget_mac(state: dict) -> None:

@@ -26,3 +26,12 @@ def test_the_default_s3_prefix_stays_inside_the_owner_grant():
     # "hermes/<owner>" default was outside it; only the runtime env override hid that.
     import bridge
     assert bridge.default_s3_prefix("org_test") == "org_test/hermes"
+
+
+def test_browser_state_with_a_door_runs_the_mac_checkpoint(monkeypatch):
+    seen = []
+    monkeypatch.setattr(server.browser_control, "mac_checkpoint", lambda params: seen.append(params) or {"ok": True})
+    params = {"doorUrl": "ws://x/api/v1/internal/mac-cdp/t", "steps": [{"action": "load"}]}
+    code, obj = server.handle_plugin("/plugins/lightbulb-channel/rpc", "POST", AUTH,
+                                     {"method": "browser.state", "params": params})
+    assert (code, obj) == (200, {"ok": True, "payload": {"ok": True}}) and seen == [params]

@@ -402,8 +402,11 @@ RPC_METHODS.update(subagents.RPC_METHODS)
 
 
 def _browser_state(params: dict, **_kwargs) -> dict:
-    """Checkpoint through the isolated state helper; never return its URL or exception text."""
+    """Checkpoint through the isolated state helper; never return its URL or exception text. A
+    ``doorUrl`` is the backend's own Mac sync for a shared session (browser_control.mac_checkpoint)."""
     try:
+        if (params or {}).get("doorUrl"):
+            return {"ok": True, "payload": browser_control.mac_checkpoint(params)}
         from bridge import browser_state
         return {"ok": True, "payload": browser_state.checkpoint(params)}
     except Exception:

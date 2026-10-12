@@ -636,6 +636,7 @@ def cloud(env, monkeypatch):
     monkeypatch.setattr(session_browser.container_rpc, "call", rpc)
     yield seen
     session_browser._relays.clear()
+    session_browser._cloud.clear()
 
 
 async def _relayed(env, seen, node, channel):
@@ -723,6 +724,42 @@ async def test_unsharing_a_session_on_the_cloud_closes_its_door(env, cloud):
     assert channel.closed.is_set(), "the door's pump ends with the channel"
     assert _out(node)[-1]["payload"]["code"] == "not_shared"
     assert (OWNER, RUN) not in session_browser._relays, "no door can join it afterwards"
+
+
+def _offer_another(node, channel_id):
+    node.resolve(
+        {
+            "type": "event",
+            "event": "browser.cdp.offer",
+            "payload": {"channel": channel_id, "sessionId": SID, "macBrowser": True},
+        }
+    )
+    return node.cdp[channel_id]
+
+
+async def test_one_cloud_connection_per_session_a_second_is_refused_never_overwritten(env, cloud):
+    node, first = _offered()
+    served = asyncio.create_task(session_browser.serve(OWNER, MEMBER, DEVICE, node, first, SID, False))
+    await _until(lambda: (OWNER, RUN) in session_browser._relays)
+    second = _offer_another(node, "d" * 32)
+    await asyncio.wait_for(session_browser.serve(OWNER, MEMBER, DEVICE, node, second, SID, False), 2)
+    assert _out(node)[-1]["payload"] == {
+        "channel": "d" * 32,
+        "code": "cloud_busy",
+        "message": session_browser.CLOUD_BUSY,
+    }
+    await _relayed(env, cloud, node, first)  # the first door claims the first channel
+    _closed_by_mac(node)
+    await asyncio.wait_for(served, 2)
+    assert (OWNER, RUN) not in session_browser._cloud
+
+    env.calls.clear()
+    cloud.clear()
+    third = _offer_another(node, "e" * 32)
+    served = asyncio.create_task(session_browser.serve(OWNER, MEMBER, DEVICE, node, third, SID, False))
+    await _relayed(env, cloud, node, third)  # once the first closed, a new offer works
+    node.resolve({"type": "event", "event": "browser.cdp.close", "payload": {"channel": "e" * 32, "code": "CLOSED"}})
+    await asyncio.wait_for(served, 2)
 
 
 def test_another_workspaces_ticket_never_finds_the_relay():

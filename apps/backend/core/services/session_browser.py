@@ -48,7 +48,8 @@ RUN_PREFIX = "session-"
 AGENT_ID = "session"
 NOT_SHARED = "Share this session to use the Lightbulb browser"
 CLOUD_MESSAGE = "The workspace's cloud browser isn't available right now. Try again in a minute."
-MESSAGES = {"not_shared": NOT_SHARED, "cloud_unavailable": CLOUD_MESSAGE}
+CLOUD_BUSY = "This session already has a cloud browser connection; close it first."
+MESSAGES = {"not_shared": NOT_SHARED, "cloud_unavailable": CLOUD_MESSAGE, "cloud_busy": CLOUD_BUSY}
 # The Mac waits 150 s for the answer: the last attempt starts before this and an invoke can take
 # 90 s (container_rpc's floor), so the worst case is 55 + 90 = 145 s, inside it with 5 s to spare.
 OFFER_BUDGET_S = 55
@@ -64,6 +65,9 @@ _tasks: set[asyncio.Task] = set()
 # racing the next load). A lock lives while someone holds or waits on it.
 _sync_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
 _relays: dict[tuple[str, str], object] = {}  # (owner, run) -> the offered channel its door will relay
+# (owner, run) -> its one cloud channel, from the offer to its close. The bridge runs a session as ONE
+# run, so the cloud path takes one CDP connection per session; a second is refused, never overwritten.
+_cloud: dict[tuple[str, str], object] = {}
 
 
 def run_id(session_id: str) -> str:
@@ -527,7 +531,9 @@ async def _serve_cloud(auth: dict, device: str, node, channel) -> None:
     owner, user, sid = auth["ownerId"], auth["memberId"], session_of(auth["runId"])
     target = await _native_target(auth, device, node)
     key = (owner, auth["runId"])
-    _relays[key] = channel
+    if key in _cloud:  # no await between this check and the claim below
+        raise _err("cloud_busy")
+    _cloud[key] = _relays[key] = channel
     try:
         await _attach(auth, target)
         deadline = _clock() + DOOR_WAIT_S
@@ -546,6 +552,8 @@ async def _serve_cloud(auth: dict, device: str, node, channel) -> None:
     finally:
         if _relays.get(key) is channel:  # no door took it
             del _relays[key]
+        if _cloud.get(key) is channel:
+            del _cloud[key]
 
 
 def cloud_events(events: list[dict]) -> list[dict]:

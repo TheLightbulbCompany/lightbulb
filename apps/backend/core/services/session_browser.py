@@ -25,10 +25,10 @@ import weakref
 from botocore.exceptions import ClientError
 
 from core.repositories import local_sessions_repo as repo, messaging_repo as store
-from core.services import container_rpc, local_sessions, mac_browser
+from core.services import container_rpc, live_events, local_sessions, mac_browser, mac_live, session_screen
 from core.services.desktop_execution import DesktopError
-from core.services.messaging import ApiProblem
-from core.services.node_broker import CDP_COMMAND, CdpClosed, NodeCapacity
+from core.services.messaging import ApiProblem, make_live_event
+from core.services.node_broker import CDP_COMMAND, CdpClosed, CommandNotAllowed, NodeCapacity
 
 logger = logging.getLogger(__name__)
 
@@ -204,7 +204,7 @@ async def _renew(auth: dict, device: str, leased: dict) -> None:
         await _sync(auth, device, answer)
 
 
-async def _hold_mac(auth: dict, device: str, node, channel, leased: dict) -> None:
+async def _lease_loop(auth: dict, device: str, node, channel, leased: dict) -> None:
     """While the Mac has the channel open (the whole client connection). Each signal, and every
     RENEW_SECONDS, re-checks that the session is shared (DesktopError ends the connection) and renews
     the `browserOpen` mark. Leased: renew the lease, running any sync it hands back. `idle` (the Mac's
@@ -237,6 +237,118 @@ async def _hold_mac(auth: dict, device: str, node, channel, leased: dict) -> Non
         elif signal is None and leased["generation"]:
             await _renew(auth, device, leased)
         await _mark_open(owner, user, sid, "mac", announce=False)
+
+
+async def _hold_mac(auth: dict, device: str, node, channel, leased: dict) -> None:
+    """While the Mac has the channel open (the whole client connection): frames while watched and
+    watcher input, idle or not (the tab stays); and the lease loop."""
+    owner, sid = auth["ownerId"], session_of(auth["runId"])
+    side = (
+        [asyncio.create_task(_watch_mac(owner, sid, node, channel)), asyncio.create_task(_publish(owner, sid, channel))]
+        if node.can_cast
+        else []
+    )
+    try:
+        with mac_live.live(owner, auth["runId"], node, channel):
+            await _lease_loop(auth, device, node, channel, leased)
+    finally:
+        for task in side:
+            task.cancel()
+            task.add_done_callback(lambda t: t.cancelled() or t.exception())
+
+
+async def _open_row(auth, session_id: str, *, owner_only: bool) -> dict:
+    """The session's row for a person still in the workspace who may read it (`owner_only`: may type
+    into it, `may_control`), while its browser is open."""
+    row, _ = await local_sessions.authorize_session(auth, None, session_id, owner_only=owner_only)
+    await session_screen._still_a_member(row, auth.user_id)
+    if local_sessions.browser_open(row) is None:
+        raise ApiProblem("LOCAL_SESSION_OFFLINE", "This session's browser is not open.")
+    return row
+
+
+async def watch(auth, session_id: str) -> None:
+    """The Browser tab's ~20 s beat: this session's browser frames for the next mac_live.WANTED_S.
+    Any member who may read the session; frames are stored nowhere."""
+    row = await _open_row(auth, session_id, owner_only=False)
+    await store.run_in_thread(
+        store._table().update_item,
+        Key={"pk": repo.session_pk(row["ownerId"], row["sessionId"]), "sk": "META"},
+        UpdateExpression="SET browserWatchedAt = :now",
+        ConditionExpression="attribute_exists(pk)",
+        ExpressionAttributeValues={":now": int(_clock())},
+    )
+
+
+async def input_target(auth, session_id: str) -> dict:
+    """The session a person drives the browser of: they may type into it, are still in the
+    workspace, and its browser is open."""
+    return await _open_row(auth, session_id, owner_only=True)
+
+
+async def may_type(owner: str, user: str, run: str) -> bool:
+    """Re-checked where the Mac's socket is (mac_live.input): this person may still type into it."""
+    sid = session_of(run)
+    row = await repo.get_session(owner, sid) if sid else None
+    if not row or row.get("unshared") or not local_sessions.may_control(row, user):
+        return False
+    try:
+        await session_screen._still_a_member(row, user)
+    except ApiProblem:
+        return False
+    return True
+
+
+async def _watch_mac(owner: str, session_id: str, node, channel) -> None:
+    """The thumb-tier cast while someone has the Browser tab open, re-set every SET_EVERY_S so the
+    Mac's 15 s TTL keeps it alive; off otherwise (mac_live's rhythm). Never the view tier: a 480 px
+    frame fits the session frames budget."""
+    sent, sent_at = False, 0.0
+    while True:
+        try:
+            row = await repo.get_session(owner, session_id)
+        except Exception as exc:  # noqa: BLE001 -- a DynamoDB blip: keep the last state
+            logger.warning("session browser watch read failed owner=%s error=%s", owner, type(exc).__name__)
+        else:
+            now = _clock()
+            want = bool(row) and now - float((row or {}).get("browserWatchedAt") or 0) < mac_live.WANTED_S
+            if want != sent or (want and now - sent_at >= mac_live.SET_EVERY_S):
+                try:
+                    node.cast_set(channel, False, want)
+                    sent, sent_at = want, now
+                except NodeCapacity:
+                    pass  # the node socket is backed up: next tick
+                except (CdpClosed, CommandNotAllowed):
+                    return
+        await asyncio.sleep(mac_live.FRAME_POLL_S)
+
+
+async def _publish(owner: str, session_id: str, channel) -> None:
+    """Each cast frame to the session's frames channel, `workspace.session.screen` kind "image",
+    within the session frames budget (its own key). Stored nowhere."""
+    publisher = live_events.get_live_event_publisher()
+    workspace = await store.ensure_workspace_id(owner)
+    while True:
+        await channel.cast_ready.wait()
+        channel.cast_ready.clear()  # clear, THEN pop (node_broker's consumer contract)
+        frame = channel.cast.pop("thumb", None)
+        channel.cast.pop("view", None)
+        if frame is None or not session_screen._spend(
+            f"{session_id}#browser", len(frame["jpegBase64"]) * 3 // 4, _clock()
+        ):
+            continue
+        payload = {
+            "sessionId": session_id,
+            "kind": "image",
+            "data": frame["jpegBase64"],
+            "w": frame["w"],
+            "h": frame["h"],
+            "seq": frame["seq"],
+        }
+        try:
+            await publisher.publish_session_frames(workspace, make_live_event("workspace.session.screen", payload))
+        except Exception as exc:  # noqa: BLE001 -- skip it; the next frame follows
+            logger.info("session browser frame dropped owner=%s error=%s", owner, type(exc).__name__)
 
 
 async def _serve_mac(auth: dict, device: str, node, channel, leased: dict) -> None:

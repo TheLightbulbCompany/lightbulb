@@ -73,6 +73,8 @@ def env(monkeypatch):
     monkeypatch.setattr(mac_browser, "synced", synced)
     monkeypatch.setattr(session_browser.container_rpc, "call", rpc)
     monkeypatch.setattr(session_browser, "_mark_open", mark)
+    monkeypatch.setattr(session_browser.store, "ensure_workspace_id", AsyncMock(return_value="ws-1"))
+    monkeypatch.setattr(session_browser.live_events, "get_live_event_publisher", lambda: None)
     return env
 
 
@@ -424,3 +426,65 @@ async def test_a_client_gone_during_acquire_releases_and_opens_nothing(env):
     await asyncio.wait_for(session_browser.serve(OWNER, MEMBER, DEVICE, node, channel, SID, True), 2)
     assert [f for f in _out(node) if f["event"] == "browser.cdp.open"] == []
     assert ("release", "g1") in env.calls
+
+
+class FakeNode:
+    def __init__(self):
+        self.sets = []
+
+    def cast_set(self, channel, view, thumb):
+        self.sets.append((view, thumb))
+
+
+class FakeCastChannel:
+    def __init__(self):
+        self.cast, self.cast_ready = {}, asyncio.Event()
+
+
+async def test_frames_flow_only_while_someone_watches(env, monkeypatch):
+    now = {"t": 1_000_000.0}
+    monkeypatch.setattr(session_browser, "_clock", lambda: now["t"])
+    monkeypatch.setattr(session_browser.mac_live, "FRAME_POLL_S", 0.01)
+    node = FakeNode()
+    watching = asyncio.create_task(session_browser._watch_mac(OWNER, SID, node, object()))
+    await asyncio.sleep(0.05)
+    assert node.sets == [], "nobody watches: no cast"
+    env.row["browserWatchedAt"] = now["t"]
+    await asyncio.sleep(0.05)
+    assert node.sets == [(False, True)], "the thumb tier only"
+    now["t"] += session_browser.mac_live.WANTED_S
+    await asyncio.sleep(0.05)
+    assert node.sets[-1] == (False, False)
+    watching.cancel()
+
+
+async def test_a_cast_frame_goes_to_the_session_frames_channel_as_an_image(monkeypatch):
+    published = []
+
+    class Publisher:
+        async def publish_session_frames(self, workspace, event):
+            published.append((workspace, event))
+
+    monkeypatch.setattr(session_browser.live_events, "get_live_event_publisher", lambda: Publisher())
+    monkeypatch.setattr(session_browser.store, "ensure_workspace_id", AsyncMock(return_value="ws-1"))
+    session_browser.session_screen._spent.clear()
+    channel = FakeCastChannel()
+    publishing = asyncio.create_task(session_browser._publish(OWNER, SID, channel))
+    channel.cast["thumb"] = {"jpegBase64": "/9j/4AAQ", "w": 1280, "h": 800, "seq": 7}
+    channel.cast_ready.set()
+    await asyncio.sleep(0.01)
+    publishing.cancel()
+    ((workspace, event),) = published
+    assert workspace == "ws-1" and event["type"] == "workspace.session.screen"
+    assert event["payload"] == {"sessionId": SID, "kind": "image", "data": "/9j/4AAQ", "w": 1280, "h": 800, "seq": 7}
+
+
+async def test_only_people_who_may_type_into_the_session_may_drive_its_browser(env, monkeypatch):
+    monkeypatch.setattr(session_browser.session_screen, "_still_a_member", AsyncMock())
+    assert await session_browser.may_type(OWNER, MEMBER, RUN), "its own person"
+    assert not await session_browser.may_type(OWNER, "user_2", RUN), "a watcher"
+    env.row["allowedSenders"] = ["user_2"]
+    assert await session_browser.may_type(OWNER, "user_2", RUN), "let in by its person"
+    env.row["unshared"] = True
+    assert not await session_browser.may_type(OWNER, MEMBER, RUN)
+    assert not await session_browser.may_type(OWNER, MEMBER, "r1"), "not a session run"

@@ -5,7 +5,7 @@ One `run` per room-run CDP channel (started by `mac_cdp.serve`). Its canonical r
 viewer heartbeats across channel reconnects and turns them into `browser.cast.set`, re-sent every `SET_EVERY_S` while wanted
 so the Mac's own TTL keeps it alive, and publishes each tier's latest frame: view frames on the
 room's `frames` sibling channel, thumbs on the room channel. `input` routes a viewer's input to
-the live run's channel.
+the live run's channel, or to a shared session's browser (`live`, held by session_browser).
 
 Never log a frame or a payload: owner ids and exception class names only.
 """
@@ -13,6 +13,7 @@ Never log a frame or a payload: owner ids and exception class names only.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from typing import Annotated, Literal
@@ -128,44 +129,61 @@ async def _publish(claims: dict, channel) -> None:
                 logger.warning("mac live publish failed owner=%s error=%s", claims["ownerId"], type(exc).__name__)
 
 
+@contextlib.contextmanager
+def live(owner: str, run_id: str, session, channel, room_id: str | None = None):
+    """`run_id`'s live channel on this task while the block runs: where `input` delivers. A room run's
+    (`room_id`), or a shared session's browser (None: session_browser.may_type decides who types)."""
+    key, entry = (owner, run_id), (session, channel, room_id)
+    _live[key] = entry
+    try:
+        yield
+    finally:
+        if _live.get(key) is entry:
+            del _live[key]
+
+
 async def run(claims: dict, session, channel) -> None:
     """Until the channel closes; room runs on a cast-capable Mac only."""
     if claims.get("family") != "room" or not claims.get("roomId") or not session.can_cast:
         return
-    key = (claims["ownerId"], claims["runId"])
-    entry = (session, channel, claims["roomId"])  # the door's room, never a caller's
-    _live[key] = entry
     tasks = {
         asyncio.create_task(_watch(claims["ownerId"], claims["runId"], session, channel)),
         asyncio.create_task(_publish(claims, channel)),
         asyncio.create_task(channel.closed.wait()),
     }
-    try:
-        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-    finally:
-        for task in tasks:  # not awaited, as in mac_cdp.serve; the callback retrieves any exception
-            task.cancel()
-            task.add_done_callback(lambda t: t.cancelled() or t.exception())
-        if _live.get(key) is entry:
-            del _live[key]
+    # The door's room, never a caller's.
+    with live(claims["ownerId"], claims["runId"], session, channel, claims["roomId"]):
+        try:
+            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for task in tasks:  # not awaited, as in mac_cdp.serve; the callback retrieves any exception
+                task.cancel()
+                task.add_done_callback(lambda t: t.cancelled() or t.exception())
 
 
 async def input(owner: str, user: str, run_id: str, events: list[dict], *, viewer_owner: str | None = None) -> None:  # noqa: A001 — the spec's name
-    """Only a current human member of the run's room (who can see its frames) may drive it.
-    A guest's membership is keyed under their own workspace, while the channel belongs to
-    the room owner's workspace.
+    """Only a current human member of the run's room (who can see its frames) may drive it; for a
+    shared session's browser (an entry with no room), only a person who may type into the session.
+    A guest's membership is keyed under their own workspace, while the channel belongs to the room
+    owner's workspace.
 
-    Raises LookupError when the run has no live channel on this task, PermissionError when
-    `user` is not in the run's room, otherwise whatever `cast_input` raises
-    (CommandNotAllowed / CdpClosed / NodeCapacity)."""
-    live = _live.get((owner, run_id))
-    if live is None:
+    Raises LookupError when the run has no live channel on this task, PermissionError when `user`
+    may not drive it, otherwise whatever `cast_input` raises (CommandNotAllowed / CdpClosed /
+    NodeCapacity)."""
+    entry = _live.get((owner, run_id))
+    if entry is None:
         raise LookupError(run_id)
-    session, channel, room_id = live
-    try:
-        await require_room_member(viewer_owner or owner, user, room_id)
-    except ApiProblem:
-        raise PermissionError(run_id) from None
+    session, channel, room_id = entry
+    if room_id is None:
+        from core.services import session_browser  # it imports this module
+
+        if not await session_browser.may_type(owner, user, run_id):
+            raise PermissionError(run_id)
+    else:
+        try:
+            await require_room_member(viewer_owner or owner, user, room_id)
+        except ApiProblem:
+            raise PermissionError(run_id) from None
     session.cast_input(channel, events)
 
 

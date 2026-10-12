@@ -31,12 +31,14 @@ from core.services import (
     hosted_mcp,
     link_preview,
     local_sessions,
+    mac_live,
     native_session_tools,
     openclaw_work,
     session_chat,
     session_pickup,
     session_links,
     session_resume,
+    session_browser,
     session_screen,
     subagents,
     task_board,
@@ -372,6 +374,34 @@ async def type_into_local_session(
 ):
     """An admitted person types into a running session's live terminal (owner ruling 2026-10-03)."""
     await session_screen.type_into(auth, session_id, body)
+
+
+class SessionBrowserInput(ContractModel):
+    events: mac_live.MacInputEvents
+
+
+@router.post("/messaging/sessions/{session_id}/browser/viewing", status_code=204)
+async def watch_session_browser(session_id: str, auth: AuthContext = Depends(get_human_session)):
+    """The Browser tab beats every 20 s while it is open: the session's browser frames keep coming."""
+    await session_browser.watch(auth, session_id)
+
+
+@router.post("/messaging/sessions/{session_id}/browser/input", status_code=204)
+async def session_browser_input(
+    session_id: str, body: SessionBrowserInput, auth: AuthContext = Depends(get_human_session)
+):
+    """Clicks and keys on a shared session's browser, from a person who may type into the session,
+    in /browser/mac/input's shape, delivered where its Mac's socket is."""
+    from routers import container
+
+    row = await session_browser.input_target(auth, session_id)
+    await container.route_mac_input(
+        row["ownerId"],
+        auth.user_id,
+        row["deviceId"],
+        session_browser.run_id(row["sessionId"]),
+        mac_live.dump_events(body.events),
+    )
 
 
 @router.post("/messaging/sessions/{session_id}/chat", response_model=RoomDetail)

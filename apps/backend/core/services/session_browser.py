@@ -358,6 +358,9 @@ async def _publish(owner: str, session_id: str, channel) -> None:
             "seq": frame["seq"],
         }
         try:
+            # right before the publish: a thumb pending across an unshare/end/remove is dropped
+            if not _live_shared(await repo.get_session(owner, session_id)):
+                continue
             workspace = workspace or await store.ensure_workspace_id(owner)
             await publisher.publish_session_frames(workspace, make_live_event("workspace.session.screen", payload))
         except Exception as exc:  # noqa: BLE001 -- skip it; the next frame follows

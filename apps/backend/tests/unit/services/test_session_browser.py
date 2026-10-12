@@ -458,7 +458,7 @@ async def test_frames_flow_only_while_someone_watches(env, monkeypatch):
     watching.cancel()
 
 
-async def test_a_cast_frame_goes_to_the_session_frames_channel_as_an_image(monkeypatch):
+async def test_a_cast_frame_goes_to_the_session_frames_channel_as_an_image(env, monkeypatch):
     published = []
 
     class Publisher:
@@ -572,7 +572,7 @@ async def test_the_hold_ending_stops_its_frames_and_input(env, monkeypatch):
     assert cancelled == [SID, SID]
 
 
-async def test_a_failed_workspace_read_does_not_stop_frames(monkeypatch):
+async def test_a_failed_workspace_read_does_not_stop_frames(env, monkeypatch):
     published = []
 
     class Publisher:
@@ -592,3 +592,22 @@ async def test_a_failed_workspace_read_does_not_stop_frames(monkeypatch):
         await asyncio.sleep(0.01)
     publishing.cancel()
     assert published == ["ws-1"], "the first frame is dropped, the task survives and the next goes out"
+
+
+async def test_a_pending_frame_is_dropped_once_the_session_is_unshared(env, monkeypatch):
+    published = []
+
+    class Publisher:
+        async def publish_session_frames(self, workspace, event):
+            published.append(event)
+
+    monkeypatch.setattr(session_browser.live_events, "get_live_event_publisher", lambda: Publisher())
+    session_browser.session_screen._spent.clear()
+    channel = FakeCastChannel()
+    env.row["unshared"] = True
+    publishing = asyncio.create_task(session_browser._publish(OWNER, SID, channel))
+    channel.cast["thumb"] = {"jpegBase64": "/9j/4AAQ", "w": 1280, "h": 800, "seq": 1}
+    channel.cast_ready.set()
+    await asyncio.sleep(0.01)
+    publishing.cancel()
+    assert published == []

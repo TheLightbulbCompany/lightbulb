@@ -212,12 +212,14 @@ fn from_writer(
     // A Desktop app upgrade resumes the same rollout and keeps its creation-time
     // cli_version. The writer is verified separately against the exact installed
     // bundle inode; a supported paginated header is not its current runtime version.
-    let desktop_upgrade = source == "vscode"
+    let app_header = source == "vscode"
         && app_originator(&row["payload"])
-        && row["payload"]["history_mode"] == "paginated"
+        && row["payload"]["history_mode"] == "paginated";
+    let desktop_upgrade = app_header
         && (at_least(version, [0, 159, 2]) || (desktop_bundle && desktop_prerelease(version)));
-    let verified = accepted_version(reported)
-        && (desktop_upgrade || (accepted_version(version) && reported == version));
+    // A conversation the bundle started carries the bundle's prerelease in its header too.
+    let header = accepted_version(reported) || (desktop_bundle && app_header && desktop_prerelease(reported));
+    let verified = header && (desktop_upgrade || (accepted_version(version) && reported == version));
     let (status, active_turn, title) = tail_state(&path);
     let title = root.parent().and_then(|codex| thread_name(&codex.join("session_index.jsonl"), conversation)).or(title);
     Ok(NativeSession {
@@ -938,6 +940,13 @@ fn plan_update(payload: &Value, ts: Option<&str>) -> Option<Value> {
     Some(e)
 }
 
+/// `capture` already verified this rollout's writer; an app header may name the
+/// bundle's prerelease (see `desktop_prerelease`).
+fn accepted_header_version(source: &str, payload: &Value) -> bool {
+    let version = payload["cli_version"].as_str().unwrap_or("");
+    accepted_version(version) || (source == "vscode" && app_originator(payload) && desktop_prerelease(version))
+}
+
 pub(super) fn normalize(session: &str, row: &Value) -> Result<Vec<Value>> {
     if row.get("channel").is_some() || row.get("phase").is_some() {
         return Ok(vec![]);
@@ -945,7 +954,7 @@ pub(super) fn normalize(session: &str, row: &Value) -> Result<Vec<Value>> {
     let meta_source = row["payload"]["source"].as_str().unwrap_or("");
     if row["type"] == "session_meta"
         && (row["payload"]["id"] != session
-            || !accepted_version(row["payload"]["cli_version"].as_str().unwrap_or(""))
+            || !accepted_header_version(meta_source, &row["payload"])
             || !accepted_app_source(meta_source, &row["payload"])
             || !accepted_history_mode(meta_source, &row["payload"]))
     {
@@ -1882,6 +1891,31 @@ mod tests {
         }
         assert!(normalize("work", &json!({"type":"session_meta","payload":{"id":"work","source":"vscode",
             "originator":"codex_work_desktop","cli_version":"0.160.1","history_mode":"paginated"}})).unwrap().is_empty());
+    }
+
+    #[test]
+    fn local_sessions_codex_app_conversation_started_by_the_bundled_prerelease_is_verified() {
+        // Live shape, 2026-10-11: a new app conversation's header names the bundle's prerelease.
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let path = root.join("rollout-new.jsonl");
+        let meta = json!({"type":"session_meta","payload":{"id":"new", "source":"vscode",
+            "originator":"codex_work_desktop", "cli_version":"0.162.0-alpha.17.2", "history_mode":"paginated"}});
+        fs::write(&path, format!("{meta}\n")).unwrap();
+        let process = Process { pid: 42, birth_micros: 123, executable: "/app/codex".into() };
+        let new = from_writer(&root, process.clone(), &path, "0.162.0-alpha.17.2", true).unwrap();
+        assert_eq!((new.restriction, new.version.as_str()), (None, "0.162.0-alpha.17.2"));
+        assert!(normalize("new", &meta).unwrap().is_empty());
+        // Not the bundle, not an app header, or not an alpha: still unverified.
+        assert_eq!(from_writer(&root, process.clone(), &path, "0.162.0-alpha.17.2", false).unwrap().restriction.as_deref(), Some("runtime-unverified"));
+        let tui = json!({"type":"session_meta","payload":{"id":"new", "source":"vscode",
+            "originator":"codex-tui", "cli_version":"0.162.0-alpha.17.2", "history_mode":"paginated"}});
+        assert!(normalize("new", &tui).is_err());
+        let custom = json!({"type":"session_meta","payload":{"id":"new", "source":"vscode",
+            "originator":"codex_work_desktop", "cli_version":"0.160.1-custom", "history_mode":"paginated"}});
+        fs::write(&path, format!("{custom}\n")).unwrap();
+        assert_eq!(from_writer(&root, process, &path, "0.162.0-alpha.17.2", true).unwrap().restriction.as_deref(), Some("runtime-unverified"));
+        assert!(normalize("new", &custom).is_err());
     }
 
     #[test]

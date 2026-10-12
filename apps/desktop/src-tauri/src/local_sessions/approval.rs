@@ -197,11 +197,18 @@ fn visible(v: &Value) -> bool {
 
 /// What a remote approver is shown, and whether it is the whole raw call (then its digest equals
 /// `digest(raw)` and a client that hashes what it displayed can prove it saw all of it). A call
-/// that names a secret anywhere (`SECRET_NAMES`, in a key or a value) is never full: `redact` is a
+/// that names a secret anywhere (`SECRET_NAMES`, a whole `auth` segment, in a key or a value) or
+/// carries URL userinfo (`scheme://user:pw@`) is never full: `redact` is a
 /// backstop, so a call that touches credentials is approved at the terminal.
 pub(crate) fn shown_input(tool: &str, raw: &Value) -> (Value, bool) {
     static NAMED: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(&format!("(?i){}", super::SECRET_NAMES)).expect("secret names")
+        regex::Regex::new(&format!(
+            r"(?i){}|{}(?-i:h(?:$|[^a-z0-9])|H(?:$|[^A-Za-z0-9]))|{}",
+            super::SECRET_NAMES,
+            super::AUTH_START,
+            super::URL_USERINFO,
+        ))
+        .expect("secret names")
     });
     if tool.starts_with("mcp__lightbulb") {
         return (json!({}), false); // private paths keep their own rules
@@ -722,11 +729,14 @@ mod tests {
             assert!(s["content"].as_str().unwrap().contains("[redacted]"));
         }
         // A call that names a secret is approved at the terminal, even when nothing was redacted.
-        for kept in ["Authorization: Bearer $TOKEN", "X_API_KEY=$X_API_KEY", "echo $OAUTH", "cat ~/.cookies"] {
+        for kept in ["Authorization: Bearer $TOKEN", "X_API_KEY=$X_API_KEY", "echo $AUTH", "cat ~/.cookies"] {
             let (s, full) = shown_input("Bash", &json!({"command": kept}));
             assert!(!full && s["command"] == kept, "{kept}");
         }
         assert!(!shown_input("Bash", &json!({"command": "ls", "Token": 1})).1, "keys are checked too");
+        let (s, full) = shown_input("Bash", &json!({"command": "git push https://bob:pw@host/r"}));
+        assert!(!full && s["command"] == "git push https://bob:[redacted]@host/r", "userinfo");
+        assert!(shown_input("Bash", &json!({"command": "echo author oauth OAuth authentic AUTHOR https://host/a:b@c"})).1);
         for leak in super::super::tests::LEAKS {
             let (s, full) = shown_input("Write", &json!({"file_path": "/x/config", "content": leak}));
             assert!(!full && !s.to_string().contains("hunter2"), "{s}");

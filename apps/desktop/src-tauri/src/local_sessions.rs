@@ -175,12 +175,21 @@ fn looks_jwt(word: &str) -> bool {
             .all(|p| p.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')))
 }
 
-/// The secret-bearing names (a regex alternation, matched case-insensitively). A line where one
-/// is followed by `=`, `:`, `:=` or `=>` is redacted from the separator on (`redact_lines`), and
-/// `approval::shown_input` never calls an input that mentions one anywhere `full`. `auth` covers
-/// `authorization`/`proxy-authorization`; `cookie` covers `set-cookie`.
+/// The secret-bearing names (a regex alternation, matched case-insensitively anywhere in a name).
+/// A line where one is followed by `=`, `:`, `:=` or `=>` is redacted from the separator on
+/// (`redact_lines`), and `approval::shown_input` never calls an input that mentions one `full`.
+/// `authorization` covers `proxy-authorization`; `cookie` covers `set-cookie`. `auth` is
+/// `AUTH_NAME`: it counts only as a whole name segment.
 pub(crate) const SECRET_NAMES: &str =
-    "password|passwd|secret|token|api[-_]?key|private[-_]?key|access[-_]?key|database_url|dsn|credential|auth|cookie";
+    "password|passwd|secret|token|api[-_]?key|private[-_]?key|access[-_]?key|database_url|dsn|credential|authorization|cookie";
+
+/// `auth` as a whole name segment (split at non-alphanumerics and at a lower-to-upper camelCase
+/// step): `auth`, `X-Auth`, `AUTH_KEY`, `authToken`, `basicAuth` -- not `author`, `oauth`, `OAuth`,
+/// `authentic`, `AUTHOR`. The start consumes the character before it; the end is the caller's.
+const AUTH_START: &str = r"(?-i:(?:^|[^A-Za-z0-9])[aA]|[a-z0-9]A)[uU][tT]";
+
+/// `scheme://user:password@` -- the password part. Greedy to the last `@` before a `/` or space.
+pub(crate) const URL_USERINFO: &str = r"(?P<head>[A-Za-z][A-Za-z0-9+.-]*://[^\s:/@]*:)[^\s/]+@";
 
 /// The quote a line leaves open, so a value that opens one is redacted to where it closes.
 #[derive(Clone, Copy, PartialEq)]
@@ -224,32 +233,42 @@ fn scan_quotes(line: &str, mut q: Quote) -> Quote {
 /// The most lines one secret line's value is assumed to run on for.
 const MAX_CONTINUATION: usize = 200;
 
-/// Line-level redaction. On a line where a secret name (`SECRET_NAMES`, optionally quoted, inside
-/// a longer name like `DB_PASSWORD` or `X-Api-Key`) is followed by `=`, `:`, `:=` or `=>`, everything
+/// Line-level redaction. On a line where a secret name (`SECRET_NAMES` or `AUTH_START`, inside a
+/// longer name like `DB_PASSWORD` or `X-Api-Key`, optionally closed by a quote and/or `]` as in
+/// `cfg["password"]`) is followed by `=`, `:`, `:=` or `=>`, or is a `--name value` flag, everything
 /// after the separator becomes "[redacted]" -- unless it is exactly an unquoted all-caps env
 /// reference (`$NAME`, `${NAME}`, optionally after `Bearer `, optionally before one `;`/`,`), or
 /// empty. No other value is kept: code, placeholders and templates are redacted too (accepted).
-/// The value may run on, so the following lines are redacted too while they are blank or more
-/// indented than the secret line (YAML block scalars with any header, plain-scalar continuations,
-/// list-item keys, a Python body), while a quote the line opened is still open, or after a line
-/// ending in `\` -- at most `MAX_CONTINUATION` lines. One pass over lines, O(n).
+/// The value may run on, so the following lines are redacted too: while blank or more indented
+/// than the secret line when the value is YAML-shaped (empty, a block header with any tag, anchor,
+/// modifier or comment, or a line with no `(`, `{`, `)`), while a quote opened after the separator
+/// is still open, or after a line ending in `\` -- at most `MAX_CONTINUATION` lines. One pass, O(n).
 fn redact_lines(text: &str) -> String {
     static KEY: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(&format!(r#"(?i)(?:{SECRET_NAMES})[a-z0-9_.-]*["']?[ \t]*(?:=>|:=|=|:)"#))
-            .expect("secret line pattern")
+        // `name` [closing quote/bracket] separator, or a `--name value` flag. After `auth` comes a
+        // camelCase step, a `_ . -` and more name, or nothing (then the separator).
+        let tail = r"(?:(?-i:h[A-Z]|[hH][_.\-])[a-z0-9_.-]*|[hH])";
+        regex::Regex::new(&format!(
+            r#"(?i)(?:(?:{SECRET_NAMES})[a-z0-9_.-]*|{AUTH_START}{tail})["']?\]?[ \t]*(?:=>|:=|=|:)|--(?:[a-z0-9_.-]*?(?:{SECRET_NAMES})[a-z0-9_.-]*|(?:[a-z0-9_.-]*[_.\-])?[aA][uU][tT]{tail})[ \t]+"#
+        ))
+        .expect("secret line pattern")
+    });
+    static YAML: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        // Empty, a comment, a tag or anchor, a `|`/`>` block header: the value is on the next lines.
+        regex::Regex::new(r"^(?:[!&][^ \t]*[ \t]*)*(?:[|>][-+0-9]*)?[ \t]*(?:#.*)?$").expect("yaml header")
     });
     static KEEP: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(r"^(?:Bearer[ \t]+)?(?:\$[A-Z_][A-Z0-9_]*|\$\{[A-Z_][A-Z0-9_]*\})$").expect("env pattern")
     });
     let mut out = String::with_capacity(text.len());
     // The last secret line's indent, the quote it left open, its trailing `\`, and lines left.
-    let (mut block, mut quote, mut backslash, mut left) = (0usize, Quote::None, false, 0usize);
+    let (mut block, mut quote, mut backslash, mut left) = (None::<usize>, Quote::None, false, 0usize);
     for line in text.split_inclusive('\n') {
         let body = line.trim_end_matches(['\n', '\r']);
         let eol = &line[body.len()..];
         let indent = body.len() - body.trim_start_matches([' ', '\t']).len();
         let blank = body.trim().is_empty();
-        if left > 0 && (quote != Quote::None || backslash || blank || indent > block) {
+        if left > 0 && (quote != Quote::None || backslash || block.is_some_and(|k| blank || indent > k)) {
             left -= 1;
             quote = scan_quotes(body, quote);
             backslash = body.ends_with('\\');
@@ -272,7 +291,11 @@ fn redact_lines(text: &str) -> String {
             out.push_str(line);
             continue;
         }
-        (block, quote, backslash, left) = (indent, scan_quotes(body, Quote::None), body.ends_with('\\'), MAX_CONTINUATION);
+        // Indented lines continue only a YAML-shaped value, not a `fn f(token: &str) {` body; a
+        // quote counts from the separator on, so an apostrophe before the name opens nothing.
+        let yaml = YAML.is_match(value) || !body.contains(['(', '{', ')']);
+        (block, quote, backslash, left) =
+            (yaml.then_some(indent), scan_quotes(rest, Quote::None), body.ends_with('\\'), MAX_CONTINUATION);
         if value.is_empty() {
             out.push_str(line);
             continue;
@@ -304,14 +327,16 @@ fn redact_pem(text: &str) -> String {
     out
 }
 
-/// Credential-shaped text becomes "[redacted]": PEM blocks, secret-named lines and what follows
-/// them (`redact_lines`), then provider-key-shaped words, JWTs and a long word after `Bearer`.
-/// A backstop, never a guarantee. Known misses: a secret under a name outside `SECRET_NAMES`
-/// (`pass=`, `pwd=`, `key=`), a name split or encoded (`pass%77ord=`, `"pass" "word":`), a value with
-/// no name at all (`mysql -phunter2`, `curl -u bob:hunter2`, `https://bob:hunter2@host`, a bare
-/// argument), and a value that runs on past `MAX_CONTINUATION` lines or onto a line no more indented
-/// than its name with no open quote or `\`. Approvals add `shown_input`'s name check on top, so a
-/// call that names a secret is never `full`; a nameless secret in an approval still can be.
+/// Credential-shaped text becomes "[redacted]": PEM blocks, URL userinfo passwords, secret-named
+/// lines and what follows them (`redact_lines`), then provider-key-shaped words, JWTs and a long word
+/// after `Bearer`. A backstop, never a guarantee. Known ceiling: a secret under a name outside
+/// `SECRET_NAMES` (`pass=`, `pwd=`, `key=` -- deliberately not added), a name split or encoded
+/// (`pass%77ord=`), a value with no name at all (`curl -u bob:hunter2`, `mysql -phunter2`, a bare
+/// argument), XML (`<password>hunter2</password>`), a YAML list at the key's own indent
+/// (`password:\n- hunter2`), and a value that runs on past `MAX_CONTINUATION` lines or onto a line
+/// no more indented than its name with no open quote or `\`. Approvals add `shown_input`'s check on
+/// top, so a call that names a secret or carries URL userinfo is never `full`; a nameless secret in
+/// an approval still can be.
 pub(crate) fn redact(text: &str) -> String {
     fn flush(word: &mut String, previous: &mut String, out: &mut String) {
         if word.is_empty() {
@@ -325,7 +350,10 @@ pub(crate) fn redact(text: &str) -> String {
         });
         *previous = std::mem::take(word);
     }
-    let text = redact_lines(&redact_pem(text));
+    static USERINFO: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(URL_USERINFO).expect("userinfo pattern"));
+    let text = redact_pem(text);
+    let text = redact_lines(&USERINFO.replace_all(&text, "${head}[redacted]@"));
     let mut out = String::with_capacity(text.len());
     let (mut word, mut previous) = (String::new(), String::new());
     for c in text.chars() {
@@ -3448,6 +3476,22 @@ mod tests {
         "password=${PREFIX}hunter2",
         "api_key: \"$hunter2\"",
         "Authorization: Bearer $TOKEN hunter2",
+        "say \"x token: \"abc\nhunter2\"\n",
+        "cfg[\"password\"] = \"hunter2\"",
+        "headers['Authorization'] = 'Basic hunter2'",
+        "env[DB_PASSWORD]=hunter2",
+        "cli --token hunter2 --verbose",
+        "cli --password=hunter2",
+        "cli --db-password hunter2",
+        "cli --auth hunter2",
+        "auth: hunter2",
+        "X-Auth: hunter2",
+        "authToken = hunter2",
+        "basicAuth: hunter2",
+        "AUTH_KEY=hunter2",
+        "oauth_token=hunter2",
+        "git clone https://bob:hunter2@github.com/a/b",
+        "see postgres://u:p@ss:hunter2@db/app for details",
     ];
 
     #[test]
@@ -3509,6 +3553,25 @@ mod tests {
         for text in [format!("x {jwt} y"), format!("ID_TOKEN={jwt}")] {
             assert!(!redact(&text).contains("eyJzdWIi"));
         }
+        // A quote counts from the separator: an apostrophe before the name opens nothing.
+        assert_eq!(redact("# the user's token: abc\nnext line"), "# the user's token: [redacted]\nnext line");
+        // Indented lines continue a YAML-shaped value only, not a function body.
+        for (text, clean) in [
+            ("fn f(token: &str) {\n    body();\n}", "fn f(token: [redacted]\n    body();\n}"),
+            ("def f(token: str):\n    return 1", "def f(token: [redacted]\n    return 1"),
+            ("password: !!binary |\n  aGk=\nnext: 1", "password: [redacted]\n  [redacted]\nnext: 1"),
+            ("password: # c\n  hunter2\nnext: 1", "password: [redacted]\n  [redacted]\nnext: 1"),
+            ("token: x\n  y", "token: [redacted]\n  [redacted]"),
+        ] {
+            assert_eq!(redact(text), clean);
+        }
+        // `auth` only as a whole name segment.
+        for kept in ["author: Jane", "Author = x", "AUTHOR=x", "oauth: x", "OAuth: x", "authentic = 1", "--author me"] {
+            assert_eq!(redact(kept), kept);
+        }
+        // URL userinfo: the password goes, the user and host stay.
+        assert_eq!(redact("git clone https://bob:p@ss@host/x"), "git clone https://bob:[redacted]@host/x");
+        assert_eq!(redact("https://host/a:b@c"), "https://host/a:b@c");
         // The continuation stops at a line no more indented than the name, or after 200 lines.
         assert_eq!(redact("password: x\n  y\nuser: bob"), "password: [redacted]\n  [redacted]\nuser: bob");
         let open = format!("password = \"x\n{}after", "line\n".repeat(MAX_CONTINUATION));

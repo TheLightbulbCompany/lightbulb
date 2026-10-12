@@ -659,6 +659,52 @@ export function inputDiff(name: string, input: unknown): DiffLine[] {
   return [];
 }
 
+/**
+ * How an approval card draws a call's input. A friendly view exists only when it
+ * renders EVERY key of the input (an allow is bound to the hash of all of it);
+ * any other key, or a value of an unexpected type, falls back to the whole JSON.
+ */
+export type ApprovalInputView =
+  | { kind: "json"; text: string }
+  /** `notes`: description, background, timeout; `outsideSandbox`: dangerouslyDisableSandbox is true. */
+  | { kind: "bash"; command: string; outsideSandbox: boolean; notes: string[] }
+  /** One entry per edit (Write is one all-"+" edit); `everyOccurrence` is that edit's replace_all. */
+  | { kind: "edit"; path: string; edits: { lines: DiffLine[]; everyOccurrence: boolean }[] };
+
+const plain = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+const onlyKeys = (o: Record<string, unknown>, keys: readonly string[]) => Object.keys(o).every(k => keys.includes(k));
+const isOpt = (v: unknown, type: "string" | "boolean" | "number") => v === undefined || typeof v === type;
+const isStr = (v: unknown): v is string => typeof v === "string";
+const lined = (text: string, mark: "+" | "-"): DiffLine[] => text.split("\n").map(t => ({ n: null, mark, text: t }));
+const editOf = (e: Record<string, unknown>) => ({ lines: [...lined(e.old_string as string, "-"), ...lined(e.new_string as string, "+")], everyOccurrence: e.replace_all === true });
+const isEdit = (e: unknown): e is Record<string, unknown> => plain(e) && onlyKeys(e, ["old_string", "new_string", "replace_all"])
+  && isStr(e.old_string) && isStr(e.new_string) && isOpt(e.replace_all, "boolean");
+
+export function approvalInputView(tool: string, input: Record<string, unknown>): ApprovalInputView {
+  const i = input;
+  if (tool === "Bash" && onlyKeys(i, ["command", "description", "run_in_background", "timeout", "dangerouslyDisableSandbox"])
+    && isStr(i.command) && isOpt(i.description, "string") && isOpt(i.run_in_background, "boolean") && isOpt(i.timeout, "number")
+    && isOpt(i.dangerouslyDisableSandbox, "boolean")) {
+    const notes = [
+      isStr(i.description) ? `Description: ${i.description}` : "",
+      i.run_in_background === true ? "Runs in the background" : "",
+      typeof i.timeout === "number" ? `Timeout: ${i.timeout} ms` : "",
+    ].filter(Boolean);
+    return { kind: "bash", command: i.command, outsideSandbox: i.dangerouslyDisableSandbox === true, notes };
+  }
+  if (tool === "Edit" && onlyKeys(i, ["file_path", "old_string", "new_string", "replace_all"]) && isStr(i.file_path)
+    && isStr(i.old_string) && isStr(i.new_string) && isOpt(i.replace_all, "boolean")) {
+    return { kind: "edit", path: i.file_path, edits: [editOf(i)] };
+  }
+  if (tool === "MultiEdit" && onlyKeys(i, ["file_path", "edits"]) && isStr(i.file_path) && Array.isArray(i.edits) && i.edits.every(isEdit)) {
+    return { kind: "edit", path: i.file_path, edits: i.edits.map(editOf) };
+  }
+  if (tool === "Write" && onlyKeys(i, ["file_path", "content"]) && isStr(i.file_path) && isStr(i.content)) {
+    return { kind: "edit", path: i.file_path, edits: [{ lines: lined(i.content, "+"), everyOccurrence: false }] };
+  }
+  return { kind: "json", text: JSON.stringify(input, null, 2) };
+}
+
 const sortKeys = (v: unknown): unknown => Array.isArray(v) ? v.map(sortKeys)
   : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map(k => [k, sortKeys((v as Record<string, unknown>)[k])])) : v;
 /** Compact JSON with keys sorted at every level: what the Mac digests (`lifecycle::canonical` + serde_json compact). */

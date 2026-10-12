@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildRows, canonicalJson, groupRows, inputDiff, lifecycleLabel, mainEvents, numberedDiff, sessionSubagents, subagentElapsedMs, subagentLabel, subagentState, subagentStatus, subagentStrip, subagentTags, backgroundWaiting, thinkingLabel, toolActivity, toolHeader, toolRowView, type TranscriptRow, pendingApproval } from "./localSessionTranscript";
+import { approvalInputView, buildRows, canonicalJson, groupRows, inputDiff, lifecycleLabel, mainEvents, numberedDiff, sessionSubagents, subagentElapsedMs, subagentLabel, subagentState, subagentStatus, subagentStrip, subagentTags, backgroundWaiting, thinkingLabel, toolActivity, toolHeader, toolRowView, type TranscriptRow, pendingApproval } from "./localSessionTranscript";
 import type { LocalSessionEvent } from "./types";
 
 const ev = (seq: number, e: Omit<LocalSessionEvent, "seq" | "truncated"> & { truncated?: boolean }): LocalSessionEvent => ({ seq, truncated: false, ...e });
@@ -540,5 +540,30 @@ describe("canonicalJson", () => {
     const bytes = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonicalJson({ description: "d", command: "ls" })));
     const hex = Array.from(new Uint8Array(bytes), b => b.toString(16).padStart(2, "0")).join("");
     expect(hex).toBe("b1ff34673e7684fa23bbcb26c95bae8dbdb6490caa1455565e88a5b55200813e");
+  });
+});
+
+describe("approvalInputView", () => {
+  it("draws a friendly view only when it renders every key, else the whole JSON", () => {
+    expect(approvalInputView("Bash", { command: "ls", extra: 1 })).toEqual({ kind: "json", text: JSON.stringify({ command: "ls", extra: 1 }, null, 2) });
+    expect(approvalInputView("Edit", { file_path: "/x", old_string: "a", new_string: "b", mode: "x" }).kind).toBe("json");
+    expect(approvalInputView("Write", { file_path: "/x", content: 3 }).kind).toBe("json");
+    expect(approvalInputView("MultiEdit", { file_path: "/x", edits: [{ old_string: "a", new_string: "b", extra: true }] }).kind).toBe("json");
+    expect(approvalInputView("Bash", { command: "ls", timeout: "soon" }).kind).toBe("json");
+    expect(approvalInputView("Read", { file_path: "/x" }).kind).toBe("json");
+  });
+
+  it("a Bash view shows every flag, and running outside the sandbox stands apart", () => {
+    expect(approvalInputView("Bash", { command: "make", description: "build", run_in_background: true, timeout: 5000, dangerouslyDisableSandbox: true }))
+      .toEqual({ kind: "bash", command: "make", outsideSandbox: true, notes: ["Description: build", "Runs in the background", "Timeout: 5000 ms"] });
+  });
+
+  it("a MultiEdit view keeps each edit apart with its own replace_all", () => {
+    const view = approvalInputView("MultiEdit", { file_path: "/x", edits: [{ old_string: "a", new_string: "b" }, { old_string: "c", new_string: "d", replace_all: true }] });
+    expect(view).toEqual({ kind: "edit", path: "/x", edits: [
+      { lines: [{ n: null, mark: "-", text: "a" }, { n: null, mark: "+", text: "b" }], everyOccurrence: false },
+      { lines: [{ n: null, mark: "-", text: "c" }, { n: null, mark: "+", text: "d" }], everyOccurrence: true },
+    ] });
+    expect(approvalInputView("Write", { file_path: "/x", content: "y" })).toEqual({ kind: "edit", path: "/x", edits: [{ lines: [{ n: null, mark: "+", text: "y" }], everyOccurrence: false }] });
   });
 });

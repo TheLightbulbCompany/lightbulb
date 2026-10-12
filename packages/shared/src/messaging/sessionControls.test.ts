@@ -148,6 +148,15 @@ describe("useShownInputMatches", () => {
     await act(async () => resolve("abc"));
     expect(result.current).toBe(true);
   });
+  it("a new input under the same prompt reads false until it is hashed", async () => {
+    let resolve: (hex: string) => void = () => undefined;
+    const sha = vi.fn(() => new Promise<string>(r => { resolve = r; }));
+    const { result, rerender } = renderHook(({ p }) => useShownInputMatches(p, sha), { initialProps: { p: pending } });
+    await act(async () => resolve("abc"));
+    expect(result.current).toBe(true);
+    rerender({ p: { ...pending, input: { command: "rm -rf /" } } });
+    expect(result.current).toBe(false);
+  });
   it("is false on a mismatch, a hash failure, or a prompt that is not full", async () => {
     const other = vi.fn(async () => "def");
     const mismatch = renderHook(() => useShownInputMatches(pending, other));

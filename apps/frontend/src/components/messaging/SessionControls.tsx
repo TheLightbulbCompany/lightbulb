@@ -3,7 +3,7 @@
 import { useEffect, useId, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { ShieldCheck } from "lucide-react";
-import { APPROVAL_MODE_LABEL, canControlSession, inputDiff, useSessionApproval, useShownInputMatches, type LocalSession, type PrivateSendApproval, type SessionControlClient } from "@lightbulb/shared";
+import { APPROVAL_MODE_LABEL, approvalInputView, canControlSession, useSessionApproval, useShownInputMatches, type LocalSession, type PrivateSendApproval, type SessionControlClient } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Diff } from "./NativeSessionTranscript";
 
@@ -13,17 +13,24 @@ async function sha256Hex(text: string): Promise<string> {
   return Array.from(new Uint8Array(bytes), b => b.toString(16).padStart(2, "0")).join("");
 }
 
-const EDIT_TOOLS = new Set(["Edit", "MultiEdit", "Write"]);
-
-/** The call as the Mac shipped it: a command, an edit's diff, or the input itself. */
+/** The call as the Mac shipped it, every key of it: a command and its flags, each edit apart, or the whole JSON. */
 function CallInput({ tool, input }: { tool: string; input: Record<string, unknown> }) {
   const pre = "my-2 max-h-72 overflow-y-auto whitespace-pre-wrap break-all rounded bg-muted p-2 font-mono text-xs";
-  if (tool === "Bash" && typeof input.command === "string") return <pre className={pre}>{input.command}</pre>;
-  if (EDIT_TOOLS.has(tool)) return <div className="my-2 text-xs">
-    {typeof input.file_path === "string" && <p className="font-mono">{input.file_path}{input.replace_all === true ? " (every occurrence)" : ""}</p>}
-    <Diff lines={inputDiff(tool, input)} truncated={false} />
+  const view = approvalInputView(tool, input);
+  if (view.kind === "json") return <pre className={pre}>{view.text}</pre>;
+  if (view.kind === "bash") return <div className="my-2 text-xs">
+    {view.outsideSandbox && <p className="font-medium text-warn">Runs outside the sandbox</p>}
+    <pre className={pre}>{view.command}</pre>
+    {view.notes.map(note => <p key={note} className="text-muted-foreground">{note}</p>)}
   </div>;
-  return <pre className={pre}>{JSON.stringify(input, null, 2)}</pre>;
+  return <div className="my-2 text-xs">
+    <p className="font-mono">{view.path}</p>
+    {view.edits.map((edit, i) => <div key={i} className={i ? "mt-2 border-t pt-2" : ""}>
+      {view.edits.length > 1 && <p className="font-medium">Edit {i + 1} of {view.edits.length}</p>}
+      {edit.everyOccurrence && <p className="font-medium">Replaces every occurrence</p>}
+      <Diff lines={edit.lines} truncated={false} />
+    </div>)}
+  </div>;
 }
 
 type Client = SessionControlClient;

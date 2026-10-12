@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react-native";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { LocalSession, SessionControlClient } from "@lightbulb/shared";
 
 import { SessionApprovalCard } from "../SessionApprovalCard";
@@ -39,4 +39,26 @@ it("stays deny-only when what is shown does not hash to the prompt's digest", as
   await render(<SessionApprovalCard session={session({ ...base, full: true, input: { content: "x" }, tool: "Write" })} client={client()} allowed own ownerName="Leo" />);
   expect(await screen.findByText("Lightbulb shows only part of this call. Approve it on your Mac; you can deny it here.")).toBeTruthy();
   expect(screen.queryByLabelText("Approve")).toBeNull();
+});
+
+it("shows a Bash call's flags, and that it runs outside the sandbox, before allowing it", async () => {
+  const input = { command: "make deploy", run_in_background: true, dangerouslyDisableSandbox: true };
+  await render(<SessionApprovalCard session={session({ ...base, tool: "Bash", full: true, input })} client={client()} allowed own ownerName="Leo" />);
+  expect(screen.getByText("Runs outside the sandbox")).toBeTruthy();
+  expect(screen.getByText("Runs in the background")).toBeTruthy();
+  expect(await screen.findByLabelText("Approve")).toBeTruthy();
+});
+
+it("shows the whole JSON for a key no friendly view draws, and allows it only on a digest match", async () => {
+  const input = { command: "ls", sneaky: "yes" };
+  mockDigest.mockClear();
+  mockDigest.mockResolvedValueOnce("other");
+  const first = await render(<SessionApprovalCard session={session({ ...base, tool: "Bash", full: true, input })} client={client()} allowed own ownerName="Leo" />);
+  expect(screen.getByText(JSON.stringify(input, null, 2))).toBeTruthy();
+  await waitFor(() => expect(mockDigest).toHaveBeenCalledTimes(1));
+  expect(screen.queryByLabelText("Approve")).toBeNull();
+  await first.unmount();
+  await render(<SessionApprovalCard session={session({ ...base, tool: "Bash", full: true, input })} client={client()} allowed own ownerName="Leo" />);
+  expect(screen.getByText(JSON.stringify(input, null, 2))).toBeTruthy();
+  expect(await screen.findByLabelText("Approve")).toBeTruthy();
 });

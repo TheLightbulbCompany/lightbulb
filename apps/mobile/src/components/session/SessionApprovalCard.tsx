@@ -1,5 +1,5 @@
 import {
-  APPROVAL_MODE_LABEL, inputDiff, useSessionApproval, useShownInputMatches,
+  APPROVAL_MODE_LABEL, approvalInputView, useSessionApproval, useShownInputMatches,
   type LocalSession, type PrivateSendApproval, type SessionControlClient,
 } from "@lightbulb/shared";
 import { CryptoDigestAlgorithm, digestStringAsync, randomUUID } from "expo-crypto";
@@ -11,30 +11,37 @@ import { fonts, radii, spacing, useChatPalette } from "../../config/theme";
 /** Hex SHA-256, the digest the Mac binds an approval to. */
 const sha256Hex = (text: string) => digestStringAsync(CryptoDigestAlgorithm.SHA256, text);
 
-const EDIT_TOOLS = new Set(["Edit", "MultiEdit", "Write"]);
-
-/** The call as the Mac shipped it: a command, an edit's diff, or the input itself. */
+/** The call as the Mac shipped it, every key of it: a command and its flags, each edit apart, or the whole JSON. */
 function CallInput({ tool, input }: { tool: string; input: Record<string, unknown> }) {
   const palette = useChatPalette();
   const box = [styles.summary, { backgroundColor: palette.raised }];
-  if (tool === "Bash" && typeof input.command === "string") {
-    return <Text selectable style={[...box, { color: palette.fg }]}>{input.command}</Text>;
-  }
-  if (EDIT_TOOLS.has(tool)) {
+  const view = approvalInputView(tool, input);
+  if (view.kind === "json") return <Text selectable style={[...box, { color: palette.fg }]}>{view.text}</Text>;
+  if (view.kind === "bash") {
     return (
       <View style={box}>
-        {typeof input.file_path === "string" && (
-          <Text selectable style={[styles.privateLine, { color: palette.fg }]}>{input.file_path}{input.replace_all === true ? " (every occurrence)" : ""}</Text>
-        )}
-        <ScrollView style={styles.privateBody} accessibilityLabel="Change">
-          {inputDiff(tool, input).map((line, i) => (
-            <Text key={i} selectable style={[styles.privateLine, { color: line.mark === "+" ? palette.live : palette.alert }]}>{line.mark + line.text}</Text>
-          ))}
-        </ScrollView>
+        {view.outsideSandbox && <Text style={[styles.privateLine, styles.strong, { color: palette.alert }]}>Runs outside the sandbox</Text>}
+        <Text selectable style={[styles.privateLine, { color: palette.fg }]}>{view.command}</Text>
+        {view.notes.map((note) => <Text key={note} selectable style={[styles.note, { color: palette.fgSoft }]}>{note}</Text>)}
       </View>
     );
   }
-  return <Text selectable style={[...box, { color: palette.fg }]}>{JSON.stringify(input, null, 2)}</Text>;
+  return (
+    <View style={box}>
+      <Text selectable style={[styles.privateLine, { color: palette.fg }]}>{view.path}</Text>
+      <ScrollView style={styles.privateBody} accessibilityLabel="Change">
+        {view.edits.map((edit, i) => (
+          <View key={i} style={i ? [styles.editBreak, { borderTopColor: palette.edge }] : undefined}>
+            {view.edits.length > 1 && <Text style={[styles.note, styles.strong, { color: palette.fg }]}>Edit {i + 1} of {view.edits.length}</Text>}
+            {edit.everyOccurrence && <Text style={[styles.note, styles.strong, { color: palette.fg }]}>Replaces every occurrence</Text>}
+            {edit.lines.map((line, j) => (
+              <Text key={j} selectable style={[styles.privateLine, { color: line.mark === "+" ? palette.live : palette.alert }]}>{line.mark + line.text}</Text>
+            ))}
+          </View>
+        ))}
+      </ScrollView>
+    </View>
+  );
 }
 
 /** Claude's own permission prompt, held on the Mac and answerable here. */
@@ -163,6 +170,8 @@ const styles = StyleSheet.create({
   privateBody: { maxHeight: 220 },
   privateLine: { fontFamily: fonts.mono, fontSize: 12, lineHeight: 17 },
   note: { fontFamily: fonts.sans, fontSize: 12, lineHeight: 17 },
+  strong: { fontFamily: fonts.sansSemiBold },
+  editBreak: { borderTopWidth: StyleSheet.hairlineWidth, marginTop: spacing.sm, paddingTop: spacing.sm },
   input: { borderWidth: 1, borderRadius: radii.md, minHeight: 44, paddingHorizontal: spacing.sm, fontFamily: fonts.sans, fontSize: 14 },
   actions: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
   button: { minHeight: 44, paddingHorizontal: spacing.md, borderWidth: 1, borderRadius: radii.md, justifyContent: "center" },

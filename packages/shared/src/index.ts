@@ -199,6 +199,7 @@ export {
   groupRows,
   numberedDiff,
   inputDiff,
+  approvalInputView,
   canonicalJson,
   pendingApproval,
   thinkingLabel,
@@ -208,6 +209,7 @@ export {
   toolRowView,
 } from "./messaging/localSessionTranscript";
 export type {
+  ApprovalInputView,
   DiffLine,
   LocalSessionProvider,
   SessionSubagent,

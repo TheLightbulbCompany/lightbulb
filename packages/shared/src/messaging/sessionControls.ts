@@ -331,16 +331,17 @@ export function useShownInputMatches(pending: LocalSessionPendingApproval | unde
   const input = pending?.full ? pending.input : undefined;
   const expected = pending?.inputDigest;
   const key = input && expected ? `${pending?.approvalId}:${expected}` : null;
-  const [matched, setMatched] = useState<string | null>(null);
+  // Bound to the exact input object hashed: a new input reads false until it is hashed too.
+  const [matched, setMatched] = useState<{ key: string; input: Record<string, unknown> } | null>(null);
   useEffect(() => {
     if (!key || !input) return;
     let active = true;
     void sha256Hex(canonicalJson(input))
-      .then(hex => { if (active) setMatched(hex === expected ? key : null); })
+      .then(hex => { if (active) setMatched(hex === expected ? { key, input } : null); })
       .catch(() => { if (active) setMatched(null); });
     return () => { active = false; };
   }, [key, input, expected, sha256Hex]);
-  return key !== null && matched === key;
+  return key !== null && matched?.key === key && matched.input === input;
 }
 
 /** The owner's toggle, with the server's answer as the truth. */

@@ -4157,13 +4157,17 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
                     # No ambient gate (it was a Bedrock call per room event): the backend (Jev) picks
                     # who takes a room_event, so every turn that arrives runs. An older backend that
                     # sends no `routing` gets what the gate did whenever it could not answer: dispatch.
+                    remembered = {"roomId": room.get("id"), "agentId": agent_id,
+                                  "triggerMessageId": msg.get("messageId"), "eventKind": body.get("eventKind")}
+                    if has_run and hermes_key != session_key:
+                        # A side session is brand new: a delegation it starts may finish before the
+                        # turn does, and the drain drops a completion whose session has no turn.
+                        LAST_TURN[hermes_key] = remembered
                     try:
                         outcome, error_kind, reply, usage = _run_hermes(agent_id, body, frames)
                     finally:
                         if has_run:
-                            _remember_turn(hermes_key, {
-                                "roomId": room.get("id"), "agentId": agent_id,
-                                "triggerMessageId": msg.get("messageId"), "eventKind": body.get("eventKind")})
+                            _remember_turn(hermes_key, remembered)
                     if has_run and RUNS.get(run_id, {}).get("aborted"):
                         # Interrupted mid-flight (agent.interrupt() from a concurrent
                         # abort_run call): the tokens were spent, so `usage` stays what

@@ -111,7 +111,7 @@ def test_a_turn_behind_a_long_job_is_keyed_to_its_side_session_before_anything_i
     monkeypatch.setattr(turn, "LAST_TURN", {})
     monkeypatch.setattr(turn, "_start_desktop_turn", lambda _p, ctx: seen.update(desktop=ctx["sessionKey"]))
     monkeypatch.setattr(turn, "_run_hermes", lambda _a, body, _f: (
-        seen.update(body=body), ("completed", None, "ok", dict(turn.ZERO_USAGE)))[1])
+        seen.update(body=body, during=dict(turn.LAST_TURN)), ("completed", None, "ok", dict(turn.ZERO_USAGE)))[1])
     with turn._turn_lock("ceo", room_key):
         turn._lock_since[("ceo", room_key)] = turn.time.monotonic() - 31
         turn.run_turn("ceo", f.ingress(run={"runId": "run-side", "workspaceId": f.ROOM,
@@ -120,5 +120,6 @@ def test_a_turn_behind_a_long_job_is_keyed_to_its_side_session_before_anything_i
     assert seen["desktop"] == side and seen["body"]["sessionKey"] == side
     assert seen["body"][turn.ROOM_KEY_FIELD] == room_key
     assert side in turn.LAST_TURN and room_key not in turn.LAST_TURN
+    assert side in seen["during"]  # registered before it ran: a delegation finishing mid-turn is routed
     ended = [b for _p, b in posted if b.get("type") == "run.ended"]
     assert ended[0]["sessionKey"] == room_key  # the backend still knows the run by its room

@@ -196,7 +196,10 @@ def url_for(run_id: str, upstream: str = CLOUD) -> str:
 
 def set_upstream(url: str, generation, upstream: str = CLOUD) -> None:
     """The backend's latest signed URL for ``upstream``. A new generation is a new session (or a
-    revoked connection): drop the old upstream and every client on it."""
+    revoked connection): drop the old upstream and every client on it. On the cloud, a new
+    generation for the SAME AWS session (the signed URL's path names it; only the signature
+    differs) is a re-claimed lease, not a new browser: its tabs are alive, so the upstream and
+    its clients stay (a shared session's relay resumes after an idle lease expired)."""
     _run(_set_upstream(url, generation, upstream))
 
 
@@ -319,6 +322,8 @@ async def _register(key: str, upstream: str) -> None:
 async def _set_upstream(url: str, generation, upstream: str) -> None:
     state = _ups(upstream)
     changed = state.generation is not None and generation != state.generation
+    if changed and not state.named and urlparse(url)._replace(query="") == urlparse(state.url)._replace(query=""):
+        changed = False  # same AWS session, lease re-claimed: if AWS did revoke the socket, _pump resets
     state.url, state.generation = url, generation
     if changed:
         await _drop_upstream(state)
@@ -420,8 +425,11 @@ async def _send(state: _State, method: str, params: dict | None = None, session:
 
 async def _cast(upstream: str, key: str, sink, ttl: float, resend: bool) -> None:
     state = _ups(upstream)
-    state.want[key] = (sink, asyncio.get_running_loop().time() + ttl)
     live = state.casts.get(key)
+    if ttl <= 0 and live is None:  # a stop for a cast that is not running: start nothing
+        state.want.pop(key, None)
+        return
+    state.want[key] = (sink, asyncio.get_running_loop().time() + ttl)
     if live is not None:
         live.resend = live.resend or resend
         live.changed.set()  # wakes the loop to read the new deadline
@@ -480,6 +488,9 @@ async def _cast_loop(state: _State, cast: _Cast) -> None:
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(cast.changed.wait(), deadline - loop.time())
             cast.changed.clear()
+            sink, deadline = state.want.get(cast.key, (None, 0.0))
+            if sink is None or loop.time() >= deadline:
+                return  # stopped while waiting (a ttl 0): not one more frame
             frame = cast.latest
             if frame is None or (frame is cast.sent and not cast.resend) or len(frame[0]) > MAX_FRAME_B64:
                 continue

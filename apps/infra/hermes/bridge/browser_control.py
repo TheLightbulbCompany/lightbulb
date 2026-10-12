@@ -71,6 +71,7 @@ NO_REFS = ("browser_cdp", "browser_dialog", "computer_use")
 SNAPSHOTS = ("browser_snapshot", "browser_navigate")
 #: Cast frames this long after the last "someone is watching frames" (watchers beat every ~20 s).
 FRAMES_TTL_S = 45.0
+SESSION_FRAME_INTERVAL_S = 0.5  # a shared session's cloud thumbs: <= 2 fps
 UNAVAILABLE = "Browser control is unavailable for this turn."
 #: One Mac sync (all its steps) including the synced report; and a Mac run's whole release.
 #: Inside the backend's CLAIM_SECONDS (180): the steps share it, so the sync ends before the claim.
@@ -101,12 +102,20 @@ _ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _DOOR = re.compile(r"ws://[A-Za-z0-9.:-]+/api/v1/internal/mac-cdp/[A-Za-z0-9_=-]+")
 #: A named Mac upstream, ``mac:<device>:<run>``.
 _MAC_UPSTREAM = re.compile(r"mac:[A-Za-z0-9_-]{1,128}:[A-Za-z0-9_-]{1,128}")
+#: A shared Claude Code or Codex session's run (backend session_browser.run_id).
+_SESSION_RUN = re.compile(r"session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+#: Who holds the bridge's lease on a session's behalf (the panel names no agent for it).
+AGENT_SESSION = "session"
+#: Renew the bridge's lease this often while a session's commands flow (the backend's lease is 300 s).
+SESSION_RENEW_S = 120.0
 
 _LOCK = threading.Lock()
 _LEASE: dict = {}                    # {"generation", "cdpUrl"} while the bridge holds the lease
 _BROWSING: dict[str, set] = {}       # run id -> its Hermes task ids, for runs that browsed and have not ended
 _timer: threading.Timer | None = None
 _SINKS: dict = {}                    # run id -> publish(frame) to its room, for browsing CLOUD runs with one
+_SESSION_SINKS: dict = {}            # session run id -> publish(frame) to its session frames channel
+_PUMPS: dict = {}                    # session run id -> its current door pump ({"outer": door socket})
 _MAC_STATES: dict = {}               # run id -> its turn state, while it has a Mac selected (for Stop)
 _frames_until = 0.0                  # epoch: someone wants live frames until then
 _TURN: ContextVar[dict | None] = ContextVar("browser_control", default=None)
@@ -533,6 +542,142 @@ def frames_wanted(ttl: float = FRAMES_TTL_S) -> int:
 def dispatch_input(event: dict) -> None:
     """A watcher's click/wheel/key/text, on the run's cast tab (LookupError: not cast)."""
     cdp_mux.dispatch(event.get("runId") or None, event)
+
+
+def attach_session(params: dict) -> dict:
+    """``browser.attach`` (spec 2026-10-11, cloud): a shared Claude Code or Codex session browses the
+    workspace's cloud browser as one more run, in its own tabs. The backend hands a single-use
+    ticketed door carrying the session's CDP from its Mac; this dials it and pumps it into the run's
+    own loopback endpoint until either side closes. "starting" while the cloud browser starts: the
+    backend asks again with a fresh ticket."""
+    run, door = params.get("runId"), params.get("doorUrl")
+    renew = params.get("renew") is True
+    if not (isinstance(run, str) and _SESSION_RUN.fullmatch(run)) or not (renew or (isinstance(door, str) and _DOOR.fullmatch(door))):
+        raise ValueError("invalid browser attach")
+    if renew:  # after idle: the door still pumps; only the lease may have lapsed
+        with _LOCK:
+            pumped = run in _BROWSING
+        if not pumped:
+            return {"status": "unavailable"}
+    state = begin_turn(run, AGENT_SESSION, family="session")
+    try:
+        ready = _refresh(state)
+    finally:
+        _TURN.set(None)
+    if not ready:
+        return {"status": "starting" if state.get("starting") else "unavailable"}
+    if renew:
+        return {"status": "attached"}
+    sink = _session_sink(run, params.get("frameEndpoint"), params.get("frameChannel"))
+    pump: dict = {"outer": None}
+    with _LOCK:
+        _BROWSING.setdefault(run, set())  # the bridge's lease and grace timer cover it
+        if sink is not None:
+            _SESSION_SINKS[run] = sink
+        old, _PUMPS[run] = _PUMPS.get(run), pump  # a fresh door takes over: the old pump ends quietly
+    if old and old["outer"] is not None:
+        with contextlib.suppress(Exception):
+            old["outer"].close()
+    _start_pump(run, door, pump)
+    return {"status": "attached"}
+
+
+def _start_pump(run: str, door: str, pump: dict) -> None:
+    threading.Thread(target=_pump_door, args=(run, door, pump), name="session-door", daemon=True).start()
+
+
+def _renew_session_lease() -> None:
+    """Renew the bridge's lease for a session, adopting a new generation the way _refresh does."""
+    result = _post("acquire", {"runId": LEASE_ID, "agentId": AGENT_SESSION})
+    if result and result.get("cdpUrl") and result.get("generation") is not None:
+        cdp_mux.set_upstream(result["cdpUrl"], result["generation"])
+        with _LOCK:
+            _LEASE.update(generation=result["generation"], cdpUrl=result["cdpUrl"])
+
+
+def _pump_door(run: str, door: str, pump: dict) -> None:
+    """The door <-> the run's loopback endpoint, both ways, until either side closes; the bridge's
+    lease is renewed every SESSION_RENEW_S while commands flow Mac -> cloud (a receive-only session
+    is kept by the backend's ``active`` re-attach). Then, unless a newer door took the run over
+    (``_PUMPS``), the run ends: its tabs close and the lease's grace timer saves the browser once
+    nothing else browses."""
+    from websockets.sync.client import connect
+
+    renewed = [time.monotonic()]
+
+    def copy(source, target, renew: bool) -> None:
+        with contextlib.suppress(Exception):  # either side closing ends the pump
+            for message in source:
+                target.send(message)
+                if renew and time.monotonic() - renewed[0] >= SESSION_RENEW_S:
+                    renewed[0] = time.monotonic()
+                    threading.Thread(target=_renew_session_lease, daemon=True).start()
+        for ws in (source, target):
+            with contextlib.suppress(Exception):
+                ws.close()
+
+    try:
+        with connect(door, max_size=None, open_timeout=10) as outer:
+            with _LOCK:
+                current = _PUMPS.get(run) is pump
+                pump["outer"] = outer
+            if not current:  # taken over while dialling
+                return
+            with connect(cdp_mux.url_for(run), max_size=None, open_timeout=10) as inner:
+                back = threading.Thread(target=copy, args=(inner, outer, False), name="session-door-back", daemon=True)
+                back.start()
+                copy(outer, inner, True)
+                back.join(5)
+    except Exception as exc:  # noqa: BLE001 -- the class only: the door URL is a capability
+        log.info("session door ended: %s", type(exc).__name__)
+    finally:
+        with _LOCK:
+            current = _PUMPS.get(run) is pump
+            if current:
+                _PUMPS.pop(run)
+                _SESSION_SINKS.pop(run, None)
+        if current:
+            _end_run(run)
+
+
+def _session_sink(run: str, endpoint, channel):
+    """publish(frame) of the session's tab to its own frames channel, as `workspace.session.screen`
+    kind "image" (the Mac path's shape; seq in epoch ms like a Mac cast, so a restarted cast never goes
+    backwards). None unless `channel` is that session's frames channel."""
+    sid = run.removeprefix("session-")
+    if not (isinstance(endpoint, str) and endpoint.startswith("https://") and isinstance(channel, str)
+            and channel.startswith("/ws/") and channel.endswith(f"/session-frames/{sid}")):
+        return None
+    last = [float("-inf")]
+
+    def publish(frame: dict) -> None:
+        from bridge import turn  # it imports this module
+
+        # At most one per SESSION_FRAME_INTERVAL_S: these go straight to AppSync, past the backend's
+        # session frames budget. Waiting here (off the loop) holds the cast, whose latest frame wins.
+        wait = last[0] + SESSION_FRAME_INTERVAL_S - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        last[0] = time.monotonic()
+
+        turn.publish_frame(endpoint, channel, {
+            "schemaVersion": 1, "eventId": str(uuid.uuid4()), "type": "workspace.session.screen", "occurredAt": turn.now(),
+            "payload": {"sessionId": sid, "kind": "image", "data": frame["jpegBase64"], "w": frame["w"], "h": frame["h"],
+                        "seq": time.time_ns() // 1_000_000}})
+
+    return publish
+
+
+def session_frames(run_id: str, ttl: float) -> int:
+    """A Browser tab's beat for a session browsing the cloud: cast its tab for ``ttl`` more seconds
+    and resend the latest frame (``ttl`` 0: stop it now). 0 when it is not browsing here. Room runs'
+    casts are untouched."""
+    with _LOCK:
+        sink = _SESSION_SINKS.get(run_id)
+    if sink is None:
+        return 0
+    cdp_mux.cast(run_id, sink, min(max(ttl, 0.0), 120.0), True)
+    return 1
 
 
 def _end_run(run_id: str, upstream: str | None = None) -> None:

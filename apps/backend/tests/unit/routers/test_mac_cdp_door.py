@@ -260,3 +260,42 @@ def test_door_paperclip_open_carries_the_owner_notice(mac, monkeypatch):
         ws.send_text("one")
         assert ws.receive_text() == "echo:one"
     assert mac.notices == ["Friday is using your Mac's browser for a team task."]
+
+
+SESSION = {
+    "ownerId": "org_1",
+    "memberId": "user_1",
+    "runId": "session-11111111-1111-4111-8111-111111111111",
+    "agentId": "session",
+    "family": "session",
+    "roomId": "",
+}
+
+
+def test_a_session_ticket_relays_the_offered_channel_to_the_runtime(mac, monkeypatch):
+    from core.services import session_browser
+
+    accepted, made = [], {}
+
+    async def cdp_accept(channel, payload):
+        accepted.append(payload)
+
+    mac.cdp_accept = cdp_accept
+    monkeypatch.setattr(
+        session_browser,
+        "relay",
+        lambda claims: made.setdefault("channel", FakeChannel()) if claims["runId"] == SESSION["runId"] else None,
+    )
+    url = "/api/v1/internal/mac-cdp/" + mac_cdp.mint(target=TARGET, profile_id="cloud", auth=SESSION, use="session")
+    with _client().websocket_connect(url) as ws:
+        ws.send_text('{"id":1,"method":"Target.getTargets"}')
+        assert ws.receive_text() == 'echo:{"id":1,"method":"Target.getTargets"}'
+    assert accepted == [{"relay": True}] and mac.opened_with == [], "the Mac's Chrome is never opened"
+
+
+def test_a_session_ticket_with_no_offered_channel_closes_4404(mac, monkeypatch):
+    from core.services import session_browser
+
+    monkeypatch.setattr(session_browser, "relay", lambda claims: None)
+    url = "/api/v1/internal/mac-cdp/" + mac_cdp.mint(target=TARGET, profile_id="cloud", auth=SESSION, use="session")
+    assert _closed_with(url)[0] == 4404

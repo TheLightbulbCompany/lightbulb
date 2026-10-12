@@ -797,6 +797,23 @@ async def test_an_offer_past_the_channel_cap_is_refused_busy():
     assert "f" * 32 not in session.cdp
 
 
+async def test_a_relayed_offer_opens_when_the_mac_says_opened_and_then_carries_its_frames():
+    session = node_broker.NodeSession("mac1", {"browser.cdp.v1"})
+    session.on_offer = lambda *args: None
+    _offer(session, mac=False)
+    channel = session.cdp[OFFER]
+    accepted = asyncio.create_task(session.cdp_accept(channel, {"relay": True}))
+    await asyncio.sleep(0)
+    assert _out(session) == [
+        {"type": "event", "event": "browser.cdp.open", "payload": {"channel": OFFER, "nodeId": "mac1", "relay": True}}
+    ]
+    assert not accepted.done()  # waits for the Mac's opened (the desktop relay sends it)
+    session.resolve(_mac("opened", channel=OFFER))
+    await asyncio.wait_for(accepted, 1)
+    session.resolve(_mac("frame", channel=OFFER, data='{"id":1}'))
+    assert channel.inbound.get_nowait() == '{"id":1}'
+
+
 async def test_accept_on_an_already_closed_channel_raises_and_opens_nothing():
     session = node_broker.NodeSession("mac1", {"browser.cdp.v1"})
     session.on_offer = lambda *args: None

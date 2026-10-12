@@ -168,14 +168,22 @@ def test_close_run_closes_its_tabs_and_clients_only(chrome):
         a.call("Target.getTargets")
 
 
-def test_a_new_generation_drops_every_client(chrome):
+def test_a_new_generation_on_a_new_session_drops_every_client(chrome):
     a = Client("run-a")
     a.call("Target.getTargets")
-    cdp_mux.set_upstream(chrome.url, "g2")
+    cdp_mux.set_upstream(chrome.url.replace("/automation", "/s2/automation"), "g2")  # the browser restarted
     with pytest.raises(ConnectionClosed):
         a.call("Target.getTargets")
     assert Client("run-a").call("Target.getTargets")[0]["result"]  # reconnects on the next client
     assert chrome.connects == 2
+
+
+def test_a_new_generation_on_the_same_cloud_session_keeps_its_clients(chrome):
+    a = Client("run-a")
+    a.call("Target.getTargets")
+    cdp_mux.set_upstream(chrome.url + "?X-Amz-Signature=new", "g2")  # re-signed, re-claimed lease
+    assert a.call("Target.getTargets")[0]["result"]
+    assert chrome.connects == 1 and cdp_mux.S.generation == "g2"
 
 
 def test_an_unknown_run_is_refused(chrome):
@@ -243,6 +251,20 @@ def test_cast_stops_when_nobody_asks_again_and_when_the_run_ends(chrome):
     cdp_mux.close_run("run-b")
     assert _wait(lambda: not cdp_mux._run(_casting("run-b")))
     assert chrome.seen.count("Target.detachFromTarget") == 2
+
+
+def test_a_ttl_0_stops_a_live_cast_without_one_more_frame_and_starts_none(chrome):
+    frames = []
+    a = Client("run-a")
+    a.call("Target.getTargets")
+    cdp_mux.cast("run-a", frames.append, ttl=5)
+    assert _wait(lambda: len(frames) == 2)
+    cdp_mux.cast("run-a", frames.append, ttl=0, resend=True)
+    assert _wait(lambda: not cdp_mux._run(_casting("run-a")))
+    assert len(frames) == 2, "the stop's resend publishes nothing"
+    cdp_mux.cast("run-a", frames.append, ttl=0)
+    assert not _wait(lambda: cdp_mux._run(_casting("run-a")), timeout=0.3)
+    assert len(chrome.casting) == 1, "a stop never starts a cast"
 
 
 async def _casting(run_id):

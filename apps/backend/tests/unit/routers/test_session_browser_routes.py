@@ -86,3 +86,19 @@ def test_a_refusal_where_the_mac_is_speaks_of_the_session_not_a_room(client, mon
     response = client.post(f"/api/v1/messaging/sessions/{SID}/browser/input", json={"events": [CLICK]})
     assert response.status_code == 403
     assert response.json()["detail"]["code"] == "session_forbidden"
+
+
+def test_input_on_a_cloud_browser_goes_to_the_cloud_cast(client, monkeypatch):
+    monkeypatch.setattr(
+        router.local_sessions,
+        "authorize_session",
+        AsyncMock(return_value=({**ROW, "browserOpen": {"where": "cloud", "until": 2**40}}, {})),
+    )
+    sent = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(router.session_browser.browser_control, "send_input", sent)
+    up = {"type": "up", "x": 10, "y": 20, "button": "left", "clicks": 1}
+    response = client.post(f"/api/v1/messaging/sessions/{SID}/browser/input", json={"events": [CLICK, up]})
+    assert response.status_code == 204
+    sent.assert_awaited_once_with(
+        "org_1", {"runId": f"session-{SID}", "type": "click", "x": 10.0, "y": 20.0, "button": "left"}
+    )

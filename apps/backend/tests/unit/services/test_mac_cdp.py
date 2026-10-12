@@ -247,3 +247,29 @@ def test_a_session_runs_ticket_round_trips():
     claims = mac_cdp.redeem(mac_cdp.mint(target=TARGET, profile_id="p1", auth=SESSION))
     assert claims["family"] == "session" and claims["use"] == "agent"
     assert mac_cdp.auth_from_claims(claims) == SESSION
+
+
+def test_a_relay_ticket_is_for_the_session_family_only():
+    claims = mac_cdp.redeem(mac_cdp.mint(target=TARGET, profile_id="cloud", auth=SESSION, use="session"))
+    assert claims["use"] == "session" and mac_cdp.auth_from_claims(claims) == SESSION
+    with pytest.raises(ValueError):
+        mac_cdp.mint(target=TARGET, profile_id="cloud", auth=ROOM, use="session")
+
+
+async def test_a_relay_needs_no_browser_grant_and_no_mac_profile(monkeypatch):
+    seen = {}
+
+    async def resolve(owner, member, device, generation, command):
+        seen["command"] = command
+        return TARGET
+
+    monkeypatch.setattr(mac_cdp.connection_service, "resolve_desktop_target", resolve)
+    monkeypatch.setattr(mac_cdp.desktop_execution, "submissions_enabled", lambda owner: True)
+    monkeypatch.setattr(mac_cdp.desktop_execution, "_reauthorize", AsyncMock())
+    from core.services import mac_browser
+
+    monkeypatch.setattr(
+        mac_browser, "check_holder", AsyncMock(side_effect=AssertionError("no Mac profile is involved"))
+    )
+    claims = mac_cdp.redeem(mac_cdp.mint(target=TARGET, profile_id="cloud", auth=SESSION, use="session"))
+    assert await mac_cdp.check(claims) == TARGET and seen["command"] is None

@@ -575,9 +575,14 @@ describe("hidden characters in an approval's input", () => {
     expect(hasHiddenChars({ edits: [{ old_string: "a\u200Bb" }] })).toBe(true);
     expect(hasHiddenChars({ ["k\uFEFF"]: "v" })).toBe(true);
     expect(hasHiddenChars({ command: "\u0007" })).toBe(true);
+    expect(hasHiddenChars({ command: "a b" })).toBe(false);
+    for (const c of ["\u00A0", "\u2000", "\u200A", "\u202F", "\u205F", "\u3000", "\u2028", "\u2029"]) {
+      expect(hasHiddenChars({ command: `rm${c}-rf` })).toBe(true);
+    }
   });
   it("turn the view into the whole JSON with each one spelled out", () => {
     const view = approvalInputView("Bash", { command: "echo \u202Egnp.exe" });
     expect(view).toEqual({ kind: "json", text: '{\n  "command": "echo \\u202Egnp.exe"\n}' });
+    expect(approvalInputView("Bash", { command: "rm\u00A0-rf x" })).toEqual({ kind: "json", text: '{\n  "command": "rm\\u00A0-rf x"\n}' });
   });
 });

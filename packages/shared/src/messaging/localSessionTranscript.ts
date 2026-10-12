@@ -680,9 +680,14 @@ const editOf = (e: Record<string, unknown>) => ({ lines: [...lined(e.old_string 
 const isEdit = (e: unknown): e is Record<string, unknown> => plain(e) && onlyKeys(e, ["old_string", "new_string", "replace_all"])
   && isStr(e.old_string) && isStr(e.new_string) && isOpt(e.replace_all, "boolean");
 
-/** Control and format characters (bidi overrides, zero-width, BOM, …) other than \n and \t: they can make text display in another order than it runs. */
-const HIDDEN = /(?![\n\t])[\p{Cc}\p{Cf}]/u;
-const HIDDEN_ALL = /(?![\n\t])[\p{Cc}\p{Cf}]/gu;
+/**
+ * Characters that can make text display other than it runs: control and format
+ * characters (bidi overrides, zero-width, BOM, …) other than \n and \t, line and
+ * paragraph separators, and every space but U+0020 (a no-break space looks like
+ * a space but is a word character to bash). The Mac never marks such a call full.
+ */
+const HIDDEN = /(?![\n\t ])[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Zs}]/u;
+const HIDDEN_ALL = new RegExp(HIDDEN.source, "gu");
 
 /** Whether any string in `value` (key or leaf) carries a hidden character; such a call is never allowed remotely (the Mac never marks it full either). */
 export function hasHiddenChars(value: unknown): boolean {

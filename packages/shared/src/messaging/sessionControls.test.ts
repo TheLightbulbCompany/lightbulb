@@ -170,5 +170,8 @@ describe("useShownInputMatches", () => {
     const hidden = renderHook(() => useShownInputMatches({ ...pending, input: { command: "ls \u202E" } }, async () => "abc"));
     await act(async () => undefined);
     expect(hidden.result.current).toBe(false);
+    const nbsp = renderHook(() => useShownInputMatches({ ...pending, input: { command: "rm\u00A0-rf x" } }, async () => "abc"));
+    await act(async () => undefined);
+    expect(nbsp.result.current).toBe(false);
   });
 });

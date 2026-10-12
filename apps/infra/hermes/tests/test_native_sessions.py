@@ -338,6 +338,8 @@ def test_a_room_turn_without_a_session_db_fails(hermes, home, monkeypatch):
     monkeypatch.delitem(sys.modules, "hermes_state_registry", raising=False)
     with pytest.raises(RuntimeError, match="state.db unavailable"):
         turn._construct_agent("ceo", f.ingress(), None, turn.lightbulb_session_key("ceo", f.ROOM))
+    with pytest.raises(RuntimeError, match="state.db unavailable"):  # nor beside one, in a side session
+        turn._construct_agent("ceo", f.ingress(), None, turn.side_session_key("ceo", "run-1"))
 
 
 def test_a_raising_run_still_ends_a_non_room_session(hermes, home):
@@ -674,3 +676,53 @@ def test_a_curator_that_is_not_due_runs_nothing(curator, monkeypatch):
     turn._busy_add(1)
     turn._end_turn()
     assert runs == []
+
+
+# ---- a typed turn behind a long job in its room runs beside it ----------------------------------
+RUN_ID = "22222222-2222-4222-8222-222222222222"  # factories.ingress's run
+
+
+def test_a_turn_behind_a_long_job_runs_in_its_own_session_with_the_rooms_window(hermes, home):
+    _acquired, built, dbs = hermes
+    db = _room_db(dbs)
+    SCRIPT.append(_persisting("MRR is $4k."))
+    side = turn.side_session_key("ceo", RUN_ID)
+    with turn._turn_lock("ceo", ROOM_KEY):  # the room's long job still holds it
+        # What run_turn hands a turn it moved beside its busy room (_side_session).
+        body = _room_turn(f.message(messageSeq=9, text="earlier"), sessionKey=side, **{turn.ROOM_KEY_FIELD: ROOM_KEY})
+    assert built[-1].kw["session_id"] == side
+    assert "earlier" in _said(built)["user_message"]  # the room's recent window, as observed rows
+    assert ROOM_KEY not in db.transcripts  # the room's own transcript is untouched
+    assert not turn._turn_lock("ceo", side).locked()
+
+
+def test_a_turn_behind_a_short_job_waits_for_the_room_and_a_long_one_does_not(monkeypatch):
+    room = turn._turn_lock("ceo", ROOM_KEY)
+    room.acquire()
+    turn._lock_since[("ceo", ROOM_KEY)] = turn.time.monotonic()  # the job ahead just started
+    monkeypatch.setattr(turn.time, "sleep", lambda _s: room.release())  # it finishes while we wait
+    assert turn._side_session("ceo", ROOM_KEY, RUN_ID) is False
+    with room:
+        turn._lock_since[("ceo", ROOM_KEY)] = turn.time.monotonic() - 31
+        assert turn._side_session("ceo", ROOM_KEY, RUN_ID) is True
+    assert turn._side_session("ceo", turn.call_session_key("ceo", CALL_ID), RUN_ID) is False  # rooms only
+
+
+def test_the_long_job_clock_starts_when_the_job_has_a_turn_slot(monkeypatch):
+    """A turn holding its room's lock while it waits for a microVM-wide slot has started nothing."""
+    monkeypatch.setattr(turn, "_turn_slots", turn.threading.BoundedSemaphore(1))
+    turn._turn_slots.acquire()  # every slot busy
+    started = turn.threading.Event()
+
+    def queued():
+        with turn._waiting_turn_lock("ceo", ROOM_KEY, None):
+            started.set()
+
+    thread = turn.threading.Thread(target=queued)
+    thread.start()
+    while not turn._turn_lock("ceo", ROOM_KEY).locked():
+        turn.time.sleep(0.01)
+    assert ("ceo", ROOM_KEY) not in turn._lock_since  # holds the room, waits for a slot
+    turn._turn_slots.release()
+    thread.join(5)
+    assert started.is_set() and ("ceo", ROOM_KEY) not in turn._lock_since  # released with the lock

@@ -446,8 +446,10 @@ fail_http() {
 # conversation creates, updates or checks out an issue, this records that the
 # issue belongs to that conversation, and the bridge lands Paperclip's later
 # wakes for it there instead of in a fresh session that redoes the work. Only
-# a room conversation (HERMES_SESSION_KEY is a room key) records; an issue
-# that goes done/cancelled drops its record.
+# a room conversation records; an issue that goes done/cancelled drops its
+# record. The room is LIGHTBULB_ROOM_SESSION_KEY when the bridge set it (a call,
+# or a turn that ran beside its busy room in its own session), else
+# HERMES_SESSION_KEY.
 #
 # The record must exist BEFORE any write that can wake the assignee, or the
 # wake can reach the bridge first and start a separate session. So an issue
@@ -458,8 +460,12 @@ ROOM_SESSION_RE='^agent:[^:]+:lightbulb:channel:[0-9a-f-]{36}$'
 ISSUE_ID_RE='^[A-Za-z0-9-]{1,128}$'
 UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 
+room_session_key() {
+  printf '%s' "${LIGHTBULB_ROOM_SESSION_KEY:-${HERMES_SESSION_KEY:-}}"
+}
+
 in_room_conversation() {
-  [[ -n "${HERMES_HOME:-}" && "${HERMES_SESSION_KEY:-}" =~ $ROOM_SESSION_RE ]]
+  [[ -n "${HERMES_HOME:-}" && "$(room_session_key)" =~ $ROOM_SESSION_RE ]]
 }
 
 binding_path() {
@@ -473,8 +479,10 @@ write_binding() {
   local path
   path="$(binding_path "$1")"
   if ! { mkdir -p "${path%/*}" \
-         && jq -nc --arg key "$HERMES_SESSION_KEY" --argjson at "$(date +%s)" \
-              '{sessionKey: $key, boundAt: $at}' >"$path"; }; then
+         && jq -nc --arg key "$(room_session_key)" --arg origin "${HERMES_SESSION_KEY:-}" \
+              --argjson at "$(date +%s)" \
+              '{sessionKey: $key, boundAt: $at} + (if $origin != $key then {origin: $origin} else {} end)' \
+              >"$path"; }; then
     printf 'note: could not record this issue for this conversation\n' >&2
   fi
   return 0

@@ -74,10 +74,11 @@ def test_a_turn_aborted_while_queued_never_runs(home, posted, monkeypatch):
 
     monkeypatch.setattr(turn, "_construct_agent",
                         lambda *args: SimpleNamespace(run_conversation=run_conversation))
-    # Seeing the second call into the lock proves the queued turn is past run_turn's own
-    # pre-lock abort check and can only be blocked on _turn_lock.
-    real = turn._waiting_turn_lock
-    monkeypatch.setattr(turn, "_waiting_turn_lock", lambda *a: (queued.set() if ran else None, real(*a))[1])
+    # Seeing the second turn start waiting for its room proves it is past run_turn's own
+    # pre-lock abort check: it waits first to see whether the room's job is long (_side_session),
+    # then on _turn_lock, and a stop must end either wait.
+    real = turn._side_session
+    monkeypatch.setattr(turn, "_side_session", lambda *a: (queued.set() if ran else None, real(*a))[1])
 
     def start(run_id):
         thread = threading.Thread(target=turn.run_turn, args=(
@@ -101,3 +102,24 @@ def test_a_turn_aborted_while_queued_never_runs(home, posted, monkeypatch):
     assert ended["run-queued"]["outcome"] == "aborted"
     assert ended["run-queued"]["usage"] == turn.ZERO_USAGE
     assert ended["run-first"]["outcome"] == "completed"
+
+
+def test_a_turn_behind_a_long_job_is_keyed_to_its_side_session_before_anything_is_set_up(home, posted, monkeypatch):
+    """Decided in run_turn, before the turn context, the Mac tool's ledger and the delegation
+    bookkeeping exist: each is the side session's, so the long job keeps its own delegations."""
+    room_key, seen = turn._resolve_session_key("ceo", f.ingress()), {}
+    monkeypatch.setattr(turn, "LAST_TURN", {})
+    monkeypatch.setattr(turn, "_start_desktop_turn", lambda _p, ctx: seen.update(desktop=ctx["sessionKey"]))
+    monkeypatch.setattr(turn, "_run_hermes", lambda _a, body, _f: (
+        seen.update(body=body, during=dict(turn.LAST_TURN)), ("completed", None, "ok", dict(turn.ZERO_USAGE)))[1])
+    with turn._turn_lock("ceo", room_key):
+        turn._lock_since[("ceo", room_key)] = turn.time.monotonic() - 31
+        turn.run_turn("ceo", f.ingress(run={"runId": "run-side", "workspaceId": f.ROOM,
+                                             "frameChannel": "", "frameEndpoint": ""}))
+    side = turn.side_session_key("ceo", "run-side")
+    assert seen["desktop"] == side and seen["body"]["sessionKey"] == side
+    assert seen["body"][turn.ROOM_KEY_FIELD] == room_key
+    assert side in turn.LAST_TURN and room_key not in turn.LAST_TURN
+    assert side in seen["during"]  # registered before it ran: a delegation finishing mid-turn is routed
+    ended = [b for _p, b in posted if b.get("type") == "run.ended"]
+    assert ended[0]["sessionKey"] == room_key  # the backend still knows the run by its room

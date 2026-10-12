@@ -604,7 +604,7 @@ def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> t
             return "aborted", None, "", dict(ZERO_USAGE)
         # The room turn's own environment on the call's key (its own folder and shell), plus the
         # steer-lowered grant a call can get mid-run.
-        with _room_turn_env(agent_id, call_key, call_key, run_id, body, frames, ctx, "call"), _call_grant_scope(run_id, ctx):
+        with _room_turn_env(agent_id, session_key, call_key, run_id, body, frames, ctx, "call"), _call_grant_scope(run_id, ctx):
             agent = _construct_agent(agent_id, body, frames, call_key, **CALL_RUN_LIMITS)
             # No compaction inside a spoken turn (67-103 s each, prod 10-07): Hermes's own
             # per-agent switch, which every automatic trigger reads (turn_context_compaction.py:239,
@@ -2867,6 +2867,13 @@ _turn_slots = threading.BoundedSemaphore(MAX_CONCURRENT_TURNS)
 _compaction_slots = threading.BoundedSemaphore(max(1, MAX_CONCURRENT_TURNS - 1))
 
 
+#: When the turn holding each conversation's lock took it (_waiting_turn_lock).
+_lock_since: dict[tuple[str, str], float] = {}
+#: A typed turn waits at most this long behind its room's running job, then runs beside it in a
+#: side session (_side_session): a quick back-and-forth keeps its context, a long job blocks no one.
+SIDE_SESSION_AFTER_S = 30.0
+
+
 def _turn_lock(agent_id: str, session_key: str) -> threading.Lock:
     # ponytail: entries are never evicted -- one small Lock per conversation this process has
     # seen, bounded by the microVM's 8 h lifetime.
@@ -2907,11 +2914,15 @@ def _waiting_turn_lock(agent_id: str, session_key: str, run_id: str | None, on_w
         if not _acquire_unless_aborted(_turn_slots, run_id, once):
             yield
             return
+        # Once it has a slot: a turn still waiting for one has started nothing, so it is not a
+        # long job a newer message should run beside (_side_session).
+        _lock_since[(agent_id, session_key)] = time.monotonic()
         try:
             yield
         finally:
             _turn_slots.release()
     finally:
+        _lock_since.pop((agent_id, session_key), None)
         lock.release()
 
 
@@ -3427,8 +3438,9 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str, **limi
                      "stream_delta_callback": frames.delta, "reasoning_callback": frames.thinking}
     enabled_toolsets, disabled_toolsets = profile_toolsets()
     db = _session_db(agent_id)
-    # A state.db failure fails a room turn and a call turn: both run on their stored transcript.
-    if db is None and (ROOM_SESSION_RE.match(session_key) or ":lightbulb:call:" in session_key):
+    # A state.db failure fails a room, call or side turn: each runs on its stored transcript.
+    if db is None and (ROOM_SESSION_RE.match(session_key) or ":lightbulb:call:" in session_key
+                       or ":lightbulb:side:" in session_key):
         raise RuntimeError(f"state.db unavailable for {agent_id}")
     agent = AIAgent(**{
         "model": model,
@@ -3477,7 +3489,8 @@ def _turn_folder(base: Path):
 
 
 def _converse(agent, agent_id: str, session_key: str, run_id: str | None, body: dict, base: Path, system: str,
-              turn_text: str, user_message, message_id: str | None = None, history_budget: int | None = None) -> dict:
+              turn_text: str, user_message, message_id: str | None = None, history_budget: int | None = None,
+              bind_key: str | None = None) -> dict:
     """One turn's conversation on `session_key` -- a room turn's and a voice run's alike: a room
     key runs on its own transcript plus what it observes from `body["recentHistory"]`, and a
     steer that lands too late is answered in the same run."""
@@ -3486,7 +3499,7 @@ def _converse(agent, agent_id: str, session_key: str, run_id: str | None, body: 
     # drain could no longer route the completion. Bind the room's key, as the gateway does.
     try:
         from tools.approval_context import reset_current_session_key, set_current_session_key
-        key_token = set_current_session_key(session_key)
+        key_token = set_current_session_key(bind_key or session_key)
     except ImportError:
         reset_current_session_key = key_token = None
     try:
@@ -3538,8 +3551,10 @@ def _room_turn_env(agent_id: str, session_key: str, hermes_key: str, run_id, bod
     this by hand and missed what chat gained later -- the Mac tool, room logins, the browser
     preview). Under the caller's turn lock: the profile refreshed, the room's browser and logins,
     the profile's home, MCP bearers, secrets, the room's terminal, the Mac tool's active turn and
-    the plugin's turn context, keyed by `hermes_key` (the session id Hermes hands the tools: the
-    room key on a typed turn, the call's own key on a spoken one). Yields the browser lease."""
+    the plugin's turn context, keyed by `hermes_key` (the session id Hermes hands the tools, and
+    the shell's: the room key on a typed turn, the call's or side session's own key otherwise).
+    `session_key` is the room's own, given to the shell as LIGHTBULB_ROOM_SESSION_KEY. Yields the
+    browser lease."""
     # Refresh BEFORE binding profile secrets/terminal policy and before filling config defaults.
     with sync.profile_lock(agent_id):  # another conversation of this agent may be refreshing it
         sync.ensure_profile(agent_id)
@@ -3557,15 +3572,53 @@ def _room_turn_env(agent_id: str, session_key: str, hermes_key: str, run_id, bod
         str(run_id or ""), agent_id, getattr(frames, "browser_frame", None) if run_id else None, family, room_id,
     )
     logins = website_logins.prompt_scope(agent_id, room_id, turn_thread_root(body), lambda: run_aborted(run_id))
-    with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id, session_key), _desktop_active_turn(hermes_key, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
+    # The room's own key reaches the shell beside the session's: paperclip-api.sh binds an issue to
+    # the ROOM conversation even from a call or a side session, so its wakes land in the room.
+    room_env = {"LIGHTBULB_ROOM_SESSION_KEY": session_key} if ROOM_SESSION_RE.match(session_key) else None
+    with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id, room_env), _terminal_scope(agent_id, hermes_key), _desktop_active_turn(hermes_key, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
         try:
             yield browser_lease
         finally:
             browser_control.release(browser_lease)
 
 
+#: Set on a side turn's body: the room conversation it runs beside (its sessionKey is its own).
+ROOM_KEY_FIELD = "_roomSessionKey"
+
+
+def side_session_key(agent_id: str, run_id: str) -> str:
+    """A typed turn's own Hermes session when its room was busy (_side_session)."""
+    return f"agent:{agent_id}:lightbulb:side:{run_id}"
+
+
+def _side_session(agent_id: str, session_key: str, run_id: str | None) -> bool:
+    """True when this typed room turn should not wait for its room: the turn holding the room's lock
+    has run SIDE_SESSION_AFTER_S or more, so this one runs beside it in its own session (Hermes's
+    /bg model: unrelated work never queues behind a long job). Waits while the holder is younger.
+    Announced like a room turn, so a compaction holding the lock stands down instead.
+    ponytail: the room can be taken again between "free" and this turn's own acquire; it then
+    waits behind that turn like any queued turn. Re-check in the lock wait if that bites."""
+    if not run_id or not ROOM_SESSION_RE.match(session_key):
+        return False
+    lock, key = _turn_lock(agent_id, session_key), (agent_id, session_key)
+    with _turn_arriving(agent_id, session_key, everywhere=False):
+        while lock.locked() and not run_aborted(run_id):
+            since = _lock_since.get(key)
+            if since is not None and time.monotonic() - since >= SIDE_SESSION_AFTER_S:
+                return True
+            time.sleep(0.5)
+    return False
+
+
 def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, str | None, str, dict]:
-    session_key = _resolve_session_key(agent_id, body)
+    # A side turn (run_turn chose it) runs its Hermes session, lock, folder and shell on its own
+    # key; the room's key still gives it the room's window as observed rows.
+    hermes_key = _resolve_session_key(agent_id, body)
+    session_key = body.get(ROOM_KEY_FIELD) or hermes_key
+    side = hermes_key != session_key
+    run_id = (body.get("run") or {}).get("runId")
+    if side:
+        base = base.with_name(f"{base.name}.{run_id}")  # its attachments, removed after it
     try:
         # Priming import, deliberately OUTSIDE _hermes_home_scope below: run_agent.py:94
         # freezes its own _hermes_home at first import, so the FIRST time this process ever
@@ -3581,11 +3634,10 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
     # _turn_lock: this agent's other rooms queue here instead of sharing its working tree
     # (Hazard 1). Taken AFTER run_turn has posted run.started and launched the heartbeat, so a
     # queued turn keeps heartbeating and the backend sweeper does not close it as never-started.
-    run_id = (body.get("run") or {}).get("runId")
     # A room turn announces itself, so an off-path compaction of this conversation (started when
     # the last turn ended, or when the person began typing) stops instead of making it wait.
-    lock = (_announced_turn_lock(agent_id, session_key, run_id, everywhere=False) if ROOM_SESSION_RE.match(session_key)
-            else _waiting_turn_lock(agent_id, session_key, run_id))
+    lock = (_announced_turn_lock(agent_id, session_key, run_id, everywhere=False) if not side and ROOM_SESSION_RE.match(session_key)
+            else _waiting_turn_lock(agent_id, hermes_key, run_id))
     with lock:
         # Queueing widens the abort window run_turn's own pre-dispatch check covers: a stop that
         # lands while this turn waits has no agent to interrupt yet, so without this the turn
@@ -3595,13 +3647,14 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
             return "aborted", None, "", ZERO_USAGE
         # The grant scope as on a spoken turn: a steer by someone other than the requester lowers it.
         ctx = body.get("_turnContext")
-        with _turn_folder(base), _room_turn_env(agent_id, session_key, session_key, run_id, body, frames, ctx), \
+        with _turn_folder(base), _room_turn_env(agent_id, session_key, hermes_key, run_id, body, frames, ctx), \
                 (_call_grant_scope(run_id, ctx) if run_id and ctx else contextlib.nullcontext()):
             media = sync.materialize_attachments(body, base)
             # A follow-up's trigger message already had its turn: its attachments are not re-sent.
             current_media = [] if body.get("followUp") else _current_message_media(body, media, base)
-            agent = _construct_agent(agent_id, body, frames, session_key)
-            _flush_call_records(agent, agent_id, session_key)  # calls answered while this room was busy
+            agent = _construct_agent(agent_id, body, frames, hermes_key)
+            if not side:  # only under the room's own lock
+                _flush_call_records(agent, agent_id, session_key)  # calls answered while this room was busy
             queued_steers = attach_agent(run_id, agent)
             if progress := _progress_poster(agent_id, body):
                 # Set on the agent as Hermes's own gateway does (gateway/run_turn_runner.py).
@@ -3614,8 +3667,15 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
             system = with_profile_agents_md(agent_id, system_prompt(body, agent_id, media=current_media))
             user_message = _message_content(turn_text, [] if body.get("followUp") else _message_image_paths(body, media, base))
             message_id = None if body.get("followUp") else (body.get("message") or {}).get("messageId")
-            result = _converse(agent, agent_id, session_key, run_id, body, base, system, turn_text, user_message,
-                               message_id)
+            try:
+                # The ROOM key, as for a call: the room's window reaches a side turn as observed
+                # rows. Its async delegations are its own (bound to its key), so the long job's stay
+                # the long job's, and a side turn's still report back to the room through LAST_TURN.
+                result = _converse(agent, agent_id, session_key, run_id, body, base, system, turn_text, user_message,
+                                   message_id, bind_key=hermes_key)
+            finally:
+                if side:  # one turn's session: ended so Hermes's retention ages it out
+                    _end_unless_room(agent, agent_id, hermes_key)
             _post_turn.agent = agent
     # the model this agent actually ran on (profile_model), not the runtime-wide default --
     # usage_service prices per model ref, so the CEO's premium tier would otherwise be billed
@@ -3836,6 +3896,18 @@ def issue_conversation(agent_id: str, issue_id: str | None) -> str | None:
     return key
 
 
+def _issue_origin(agent_id: str, issue_id: str) -> str | None:
+    """The call or side session that bound `issue_id` to its room (the helper's `origin`), or None
+    when the room's own turn did. Only this agent's own call or side keys are accepted: the
+    agent's shell can write the file."""
+    try:
+        origin = json.loads(_issue_binding_path(agent_id, issue_id).read_text(encoding="utf-8")).get("origin")
+    except (OSError, ValueError, AttributeError):
+        return None
+    pattern = rf"agent:{re.escape(agent_id)}:lightbulb:(call|side):[A-Za-z0-9._-]{{1,128}}"
+    return origin if isinstance(origin, str) and re.fullmatch(pattern, origin) else None
+
+
 def _live_room_run(session_key: str) -> str | None:
     """A room run of this conversation that still takes steers: the running one, else a queued one."""
     with _RUNS_LOCK:
@@ -3912,14 +3984,24 @@ def _run_paperclip_session(identity: dict, request: dict, conversation: str | No
 
 def _route_paperclip_run(identity: dict, request: dict) -> tuple[str, str | None, str, dict]:
     """A Paperclip run for an issue a room conversation owns joins that conversation: steered into
-    its live turn, else run as a turn of its own in it. Anything else -- no binding, the agent no
+    its live turn (or into the live side turn that took the issue), else run as a turn of its own in it. Anything else -- no binding, the agent no
     longer in the room, the backend unable to say -- runs in the issue's own session as before."""
     agent_id, run_id, issue_id = identity["agentId"], identity["runId"], identity.get("issueId")
     conversation = issue_conversation(agent_id, issue_id)
     if conversation is None:
         return _run_paperclip_session(identity, request, None)
     with _issue_run_published(agent_id, issue_id, run_id):
-        live = _live_room_run(conversation)  # a live room run is itself proof of membership
+        # A call or side session took the issue: its wake joins THAT session while it runs (a side
+        # turn takes steers; a call does not), never the room's own turn, whose job is another one.
+        origin = _issue_origin(agent_id, issue_id)
+        if origin and ":lightbulb:call:" in origin:
+            # A spoken turn takes no wake (the agent would talk about it on the call): wait for the
+            # call's current turn, which holds the call's lock, then run in the room conversation,
+            # as when a call held the room's lock. Never alongside the turn that took the issue.
+            with _turn_lock(agent_id, origin):
+                pass
+            origin = None
+        live = _live_room_run(origin or conversation)  # a live room run is itself proof of membership
         steer = f"{BOUND_WAKE_STEER.format(issue=issue_id, run=run_id)}\n\n{request['input']}"
         # The wake's text is no person's request: the room run's grant drops to the Paperclip run's
         # own (it names no requester) or to none, as a steer by anyone but the requester does.
@@ -4051,13 +4133,24 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
             sync.restore_root_auth()
             restore_profile(agent_id)
             RESTORED.add(agent_id)
+            # Behind a long job in its room this turn runs beside it (_side_session), decided before
+            # anything below is keyed: the turn context, the Mac tool's ledger and the delegation
+            # bookkeeping are the side session's. Run events, usage and steers keep the room's key.
+            hermes_key = session_key
+            if has_run and _side_session(agent_id, session_key, run_id):
+                hermes_key = side_session_key(agent_id, run_id)
+                log.info("turn %s runs beside its busy room in %s", run_id, hermes_key)
+                body = {**body, "sessionKey": hermes_key, ROOM_KEY_FIELD: session_key}
+                with _RUNS_LOCK:  # a Paperclip wake steers into the room's own turn, never this one
+                    if run_id in RUNS:
+                        RUNS[run_id]["sessionKey"] = hermes_key
             # Fix round (Critical 1): the file is keyed by ctx["sessionKey"], which must equal the
             # session_id _construct_agent hands the AIAgent (both this function's `session_key`) --
             # the plugin's tool handler reads it back by the session_id Hermes gives it.
             turn_ctx = {
                 "apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "roomId": room.get("id"),
                 "agentId": agent_id, "runId": run_id, "eventId": body.get("eventId"),
-                "threadRootMessageId": thread_root, "sessionKey": session_key,
+                "threadRootMessageId": thread_root, "sessionKey": hermes_key,
                 "localSessionToken": local_session_token,
                 "family": "room" if has_run else "unavailable",
             }
@@ -4071,13 +4164,17 @@ def run_turn(agent_id: str, body: dict, local_session_token: str | None = None, 
                     # No ambient gate (it was a Bedrock call per room event): the backend (Jev) picks
                     # who takes a room_event, so every turn that arrives runs. An older backend that
                     # sends no `routing` gets what the gate did whenever it could not answer: dispatch.
+                    remembered = {"roomId": room.get("id"), "agentId": agent_id,
+                                  "triggerMessageId": msg.get("messageId"), "eventKind": body.get("eventKind")}
+                    if has_run and hermes_key != session_key:
+                        # A side session is brand new: a delegation it starts may finish before the
+                        # turn does, and the drain drops a completion whose session has no turn.
+                        LAST_TURN[hermes_key] = remembered
                     try:
                         outcome, error_kind, reply, usage = _run_hermes(agent_id, body, frames)
                     finally:
                         if has_run:
-                            _remember_turn(session_key, {
-                                "roomId": room.get("id"), "agentId": agent_id,
-                                "triggerMessageId": msg.get("messageId"), "eventKind": body.get("eventKind")})
+                            _remember_turn(hermes_key, remembered)
                     if has_run and RUNS.get(run_id, {}).get("aborted"):
                         # Interrupted mid-flight (agent.interrupt() from a concurrent
                         # abort_run call): the tokens were spent, so `usage` stays what

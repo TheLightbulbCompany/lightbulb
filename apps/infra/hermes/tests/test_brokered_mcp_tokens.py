@@ -59,7 +59,7 @@ def test_hermes_turn_installs_brokered_bearer_only_in_its_secret_scope(monkeypat
         "_brokered_mcp_scope",
         lambda overlay: seen.update(overlay=overlay) or nullcontext(),
     )
-    monkeypatch.setattr(turn, "_secret_scope", lambda agent_id: seen.update(agent_id=agent_id) or nullcontext())
+    monkeypatch.setattr(turn, "_secret_scope", lambda agent_id, _overlay=None: seen.update(agent_id=agent_id) or nullcontext())
 
     class _Agent:
         model = "test"

@@ -48,6 +48,7 @@ RUN_PREFIX = "session-"
 AGENT_ID = "session"
 NOT_SHARED = "Share this session to use the Lightbulb browser"
 PLACES = ("mac", "cloud")
+PLACE_NOTE = "Applies to the session's next browser connection. To move an open one now, restart the lightbulb-browser MCP server (/mcp in Claude Code)."
 CLOUD_MESSAGE = "The workspace's cloud browser isn't available right now. Try again in a minute."
 CLOUD_BUSY = "This session already has a cloud browser connection; close it first."
 MESSAGES = {"not_shared": NOT_SHARED, "cloud_unavailable": CLOUD_MESSAGE, "cloud_busy": CLOUD_BUSY}
@@ -149,15 +150,15 @@ async def set_place(owner: str, session_id: str, where: str) -> dict:
         if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
             raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.") from None
         raise
-    return {"sessionId": session_id, "browser": where}
+    return {"sessionId": session_id, "browser": where, "note": PLACE_NOTE}
 
 
 async def place_from_mac(owner: str, user: str, device: str, session_id: str, where: str) -> dict:
     """The Mac's own `lightbulb` MCP: the session the Mac proved is calling, shared and running."""
     try:
         await shared_row(owner, user, device, session_id)
-    except DesktopError as exc:
-        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", exc.message or NOT_SHARED) from None
+    except DesktopError:
+        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", NOT_SHARED) from None
     return await set_place(owner, session_id, where)
 
 

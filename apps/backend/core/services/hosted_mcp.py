@@ -281,11 +281,13 @@ async def update_task(
 
 @mcp.tool()
 async def use_browser(where: Literal["mac", "cloud"], session_id: str) -> dict:
-    """Choose where a shared Claude Code or Codex session browses with its lightbulb-browser tools: "mac" (its Mac's Lightbulb agent Chrome, the default) or "cloud" (the workspace's cloud browser). Its next browser connection goes there; one already open stays where it is. session_id comes from find_sessions; only people who may control that session can move it."""
+    """Choose where a shared Claude Code or Codex session browses with its lightbulb-browser tools: "mac" (its Mac's Lightbulb agent Chrome, the default) or "cloud" (the workspace's cloud browser). Its next browser connection goes there; one already open stays where it is: to move an open one now, restart the lightbulb-browser MCP server (`/mcp` in Claude Code). session_id comes from find_sessions; only people who may control that session can move it."""
     auth = _caller(WRITE_SCOPE)
     try:
         sid = messaging.validate_uuid(session_id, label="session ID")
         row, _ = await local_sessions.authorize_session(auth, None, sid, owner_only=True)
+        if not session_browser._live_shared(row):
+            raise messaging.ApiProblem("LOCAL_SESSION_FORBIDDEN", session_browser.NOT_SHARED)
         return await session_browser.set_place(row["ownerId"], row["sessionId"], where)
     except messaging.ApiProblem as exc:
         # FastMCP hides any other exception's text, so the client would never learn why.

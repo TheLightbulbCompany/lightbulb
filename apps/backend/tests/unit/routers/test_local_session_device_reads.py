@@ -122,5 +122,6 @@ def test_the_macs_use_browser_moves_its_own_shared_session(client, monkeypatch):
     assert response.status_code == 200 and response.json() == {"sessionId": SESSION, "browser": "cloud"}
     shared.assert_awaited_once_with("org_1", "user_mac", "dev_1", SESSION)
     shared.side_effect = DesktopError("not_shared", 403, "Share this session to use the Lightbulb browser")
-    assert client.post(path, json={"where": "mac"}, headers={"Authorization": "Bearer device"}).status_code == 403
+    refused = client.post(path, json={"where": "mac"}, headers={"Authorization": "Bearer device"})
+    assert refused.status_code == 403 and "Share this session to use the Lightbulb browser" in refused.text
     assert client.post(path, json={"where": "laptop"}, headers={"Authorization": "Bearer device"}).status_code == 422

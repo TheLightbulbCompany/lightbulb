@@ -949,7 +949,12 @@ async def test_use_browser_sets_where_the_next_connection_goes(monkeypatch):
 
     monkeypatch.setattr(session_browser.store, "run_in_thread", run_in_thread)
     monkeypatch.setattr(session_browser.store, "_table", lambda: SimpleNamespace(update_item=None))
-    assert await session_browser.set_place(OWNER, SID, "cloud") == {"sessionId": SID, "browser": "cloud"}
+    assert await session_browser.set_place(OWNER, SID, "cloud") == {
+        "sessionId": SID,
+        "browser": "cloud",
+        "note": session_browser.PLACE_NOTE,
+    }
+    assert "restart the lightbulb-browser MCP server" in session_browser.PLACE_NOTE
     assert updates[0]["UpdateExpression"] == "SET browserPlace = :w"
     assert updates[0]["ExpressionAttributeValues"] == {":w": "cloud"}
     with pytest.raises(ApiProblem):

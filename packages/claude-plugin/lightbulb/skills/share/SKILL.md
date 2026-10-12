@@ -25,10 +25,12 @@ to set, so in the Codex app the id can be empty.
 
 Tell your user what the answer says. Do not guess.
 
-- `{"shared":true,"waiting":false}`: the session is shared with their workspace now.
-- `{"shared":true,"waiting":true}`: the session is shared, but its workspace sees nothing
-  until it has a live terminal. In Claude Code, the user presses the left arrow key (←) once
-  in this terminal. In Codex, the user starts the session with `lightbulb codex`.
+- `{"shared":true,"waiting":false}`: the session is shared with their workspace now. This is
+  the answer for every session, also one with no live terminal: its conversation is shared.
+- `{"shared":true,"waiting":true}`: only an older Lightbulb app sends this. The session is
+  shared, but its workspace sees nothing until it has a live terminal. In Claude Code, the
+  user presses the left arrow key (←) once in this terminal. In Codex, the user starts the
+  session with `lightbulb codex`.
 - `unknown_session`: Lightbulb does not see this session yet. Wait a few seconds and run the
   command once more. If the answer is the same in the Codex app, the app could not tell which
   session this is: say so, and tell the user to start the session with `lightbulb codex`.

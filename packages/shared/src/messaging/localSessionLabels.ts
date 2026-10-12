@@ -21,6 +21,10 @@ export const sessionStatus: Record<LocalSession["status"], string> = {
   idle: "Idle", busy: "Working", "waiting-approval": "Waiting for input", unknown: "Status unavailable", offline: "Offline", ended: "Ended",
 };
 
+/** Why an ended session ended, when it is not the ordinary leave. `mac` is "your Mac" or "Leo's Mac"; the phone passes its curly ’ as `apostrophe`. */
+export const endedWhy = (s: Pick<LocalSession, "status" | "endedReason">, mac: string, apostrophe = "'"): string | null =>
+  s.status === "ended" && s.endedReason === "login-session-ended" ? `${mac}${apostrophe}s login session restarted` : null;
+
 /** List/sidebar ordering, shared by web and mobile: busy → waiting on the owner → idle-ish → gone. */
 const SESSION_STATUS_RANK: Record<LocalSession["status"], number> = { busy: 0, "waiting-approval": 1, idle: 2, unknown: 2, offline: 3, ended: 3 };
 

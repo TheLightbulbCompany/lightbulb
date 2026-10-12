@@ -349,6 +349,9 @@ fn waiting_reason(event: &HookEvent) -> Option<String> {
 /// A mirror's end reason for a session its person ended on purpose. On the wire only for a relay
 /// that lists `endedOnPurpose` (`session_states::end_reason`).
 pub(crate) const ON_PURPOSE: &str = "on-purpose";
+/// The app ended a held session whose holder is older than this macOS login session
+/// (`holder::manager::stranded`): its provider had lost DNS and the keychain for good.
+pub(crate) const LOGIN_SESSION_ENDED: &str = "login-session-ended";
 
 /// Map one hook event to the status/lifecycle transition the transport
 /// applies (Task 11).

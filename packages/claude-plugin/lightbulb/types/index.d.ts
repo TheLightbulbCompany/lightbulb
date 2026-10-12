@@ -17,7 +17,8 @@ export type SessionState = {
 }
 
 /** A session on a Mac that shares sessions, with nothing in the workspace to show: not shared
- *  (only its person's), or shared and waiting for a live terminal (a plain `claude`). */
+ *  (only its person's), or stopping. A shared session with no live terminal (a plain `claude`) is
+ *  shared as its conversation; only an app from before 2026-10-11 still says `shared` here. */
 export type Local = { shared: boolean; /** Stopped on this Mac; the workspace has not taken the stop yet. */ stopping?: boolean }
 
 declare module 'claude-code' {

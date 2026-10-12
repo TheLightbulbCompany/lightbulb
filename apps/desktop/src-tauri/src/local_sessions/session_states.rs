@@ -147,6 +147,10 @@ fn awaits_exit_if(mirror: &Mirror, end: &impl Fn(&str) -> Option<u64>, now_ms: u
 fn end_reason_if<'a>(reads: bool, mirror: &'a Mirror, asked: &impl Fn(&str) -> Option<u64>, left: &impl Fn(&str) -> Option<u64>) -> &'a str {
     let on_purpose = super::lifecycle::ON_PURPOSE;
     let stored = mirror.ended_reason.as_deref().unwrap_or("exited");
+    // The app's own END of a stranded holder marks it asked; that is not a person's End.
+    if stored == super::lifecycle::LOGIN_SESSION_ENDED {
+        return stored;
+    }
     let holder = mirror.native.holder.as_deref();
     let ended_as_asked = [holder, mirror.session_id.as_deref()]
         .into_iter()
@@ -475,6 +479,18 @@ mod tests {
     }
 
     #[test]
+    fn a_session_ended_for_its_login_session_says_so_though_the_app_asked_its_holder_to_end() {
+        // The stranded END asks the holder in the same second the end is recorded; that ask is the
+        // app's, not a person's, so the end is not on purpose.
+        let asked = |id: &str| (id == "h1").then_some(100);
+        let left = |id: &str| (id == "h1").then_some(100_500);
+        let mut stranded = ended("h1", 100, SID);
+        stranded.native.provider = "codex".into();
+        stranded.ended_reason = Some("login-session-ended".into());
+        assert_eq!(end_reason_if(true, &stranded, &asked, &left), "login-session-ended");
+    }
+
+    #[test]
     fn a_held_codex_that_quit_by_itself_ended_on_purpose_and_its_end_waits_to_learn_that() {
         let none = |_: &str| None;
         // Its holder's provider left with status 0 at 100.5 s.
@@ -697,18 +713,18 @@ mod tests {
     fn a_running_session_without_a_terminal_says_why() {
         let mut m = test_mirror("thread-1", "gen-1"); // Codex, no holder, no job
         assert_eq!(m.native.terminal_reason(), Some("app"), "in an app: no terminal at all");
-        assert!(!m.native.awaits_terminal() && !m.withheld(), "so a shared one is shared as its conversation");
+        assert!(!m.withheld(), "so a shared one is shared as its conversation");
         m.native.app = false;
         m.native.process.executable = "/opt/homebrew/bin/codex".into();
         assert_eq!(m.native.terminal_reason(), Some("no-daemon"));
-        assert!(m.withheld(), "shared, in a terminal this Mac cannot show: nothing is uploaded");
+        assert!(!m.withheld(), "shared, in a terminal this Mac cannot show: shared as its conversation (owner ruling 2026-10-11)");
         // The ChatGPT app's bundled CLI, run in a terminal: a terminal Codex like any other.
         m.native.process.executable = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex".into();
         assert_eq!(m.native.terminal_reason(), Some("no-daemon"));
-        assert!(m.withheld(), "never shared as its conversation");
+        assert!(!m.withheld(), "shared as its conversation");
         m.native.provider = "claude".into();
         assert_eq!(m.native.terminal_reason(), Some("plain"));
-        assert!(m.withheld(), "a plain `claude` is never a transcript");
+        assert!(!m.withheld(), "a plain `claude` is shared as its conversation");
         m.native.job = Some("8ed71738".into());
         assert_eq!(m.native.terminal_reason(), None, "attach");
         assert!(!m.withheld(), "← made it live");

@@ -11,7 +11,7 @@ type Problem = { text: string; about: Decision }
 const problem = atom({ plugin: 'lightbulb', key: 'error' } as const, null as Problem | null)
 // Where this session was continued from, read once from the marker `lightbulb continue` wrote.
 const continued = atom({ plugin: 'lightbulb', key: 'continued' } as const, null as Continued | null)
-// Not shared, or shared and waiting for a live terminal; and what the app said to a refused Share.
+// Not shared (or stopping; an app from before 2026-10-11 may say shared-and-waiting); and what the app said to a refused Share.
 const local = atom({ plugin: 'lightbulb', key: 'local' } as const, null as Local | null)
 const shareError = atom({ plugin: 'lightbulb', key: 'shareError' } as const, null as string | null)
 const NO_APP = 'Lightbulb is not sharing on this Mac. Open the Lightbulb app and turn on session sharing.'

@@ -1038,10 +1038,11 @@ impl NativeSession {
         })
     }
 
-    /// It runs in a terminal that this Mac cannot show live yet. Nothing of it is uploaded
-    /// meanwhile (no transcripts, owner ruling 2026-10-08): it is shared once it is live.
-    fn awaits_terminal(&self) -> bool {
-        matches!(self.terminal_reason(), Some("plain" | "no-daemon"))
+    /// Why the workspace may not control this session, as the relay reads it. A Codex off its
+    /// shared daemon takes no send (`codex queue` would make the daemon a second writer), so it
+    /// says its input connection is unavailable and the relay grants it no send mode.
+    fn control_unavailable_reason(&self) -> Option<&str> {
+        self.restriction.as_deref().or((self.terminal_reason() == Some("no-daemon")).then_some("endpoint-unavailable"))
     }
 }
 
@@ -1673,14 +1674,13 @@ impl Mirror {
         true
     }
     /// Nothing of this session leaves the Mac and nothing from the workspace reaches it: it is
-    /// not shared, or it is and has no live terminal to show yet. The one predicate behind every
-    /// door: register, upload, heartbeat, terminal frames, final screen, commands, approvals,
-    /// typed input, the session's own tools. The mirror keeps reading nothing meanwhile, so a
-    /// session shared later is shared whole, from its start.
-    // The terminal wait is the promoted process's alone: while a new process waits in
-    // `successor`, the generation before it still drains what it had already shared.
+    /// not shared. The one predicate behind every door: register, upload, heartbeat, terminal
+    /// frames, final screen, commands, approvals, typed input, the session's own tools. The
+    /// mirror keeps reading nothing meanwhile, so a session shared later is shared whole, from
+    /// its start. A shared session with no live terminal (a plain `claude`, `codex --no-daemon`)
+    /// is shared as its conversation (owner ruling 2026-10-11, reversing 2026-10-08).
     fn withheld(&self) -> bool {
-        !self.shared || self.native.awaits_terminal()
+        !self.shared
     }
     fn next_batch(&mut self) -> Result<Option<Value>> {
         // The upload point itself: nothing is read from the transcript or sent while withheld.

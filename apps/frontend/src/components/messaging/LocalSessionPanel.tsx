@@ -7,7 +7,7 @@ import { isDesktopApp } from "@/lib/desktopNotify";
 import { capture } from "@/lib/analytics";
 import { Info, MessageSquare, Send } from "lucide-react";
 import {
-  audienceLine, canControlSession, useSessionResume, mainEvents, pendingApproval, receiptChip, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionPlan, sessionStatus, sessionTitle, unavailableReason,
+  audienceLine, canControlSession, endedWhy, useSessionResume, mainEvents, pendingApproval, receiptChip, sendBlockedReason, sessionChanges, sessionFooter, sessionLabel, sessionPlan, sessionStatus, sessionTitle, unavailableReason,
   conversationOnly, joinRequestView, pickupRequestLine, pickupStatus, sessionScreenNotice, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionJoinRequest, useSessionOutbox,
   type LocalSession, type SessionControlClient, type SessionSource,
 } from "@lightbulb/shared";
@@ -248,11 +248,12 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   // (Its first events can reach the server up to a minute after the end: the history read, not the cached row, has the last word.)
   const convoEmpty = convo && session.status === "ended" && session.latestEventSeq === 0 && history.events.length === 0;
   const endedAt = session.endedAt ? <time dateTime={session.endedAt} title={new Date(session.endedAt).toLocaleString()}>{timeAgo(session.endedAt)}</time> : null;
+  const why = endedWhy(session, own ? "your Mac" : `${ownerName}'s Mac`);
   const endedPanel = <div className="session-state-panel" role="status">
-    <p className="session-state-title">{screenDue && !endedEmpty ? "Ended just now" : endedAt ? <>Ended {endedAt}</> : "Ended"}</p>
+    <p className="session-state-title">{why ? `Ended · ${why}` : screenDue && !endedEmpty ? "Ended just now" : endedAt ? <>Ended {endedAt}</> : "Ended"}</p>
     {(endedEmpty || !screenDue) && <p>{endedEmpty || convoEmpty ? "This session ended before anything was sent." : "The screen is gone: this session's terminal closed."}</p>}
   </div>;
-  const endedLine = <p className="session-ended-line" role="status">{endedAt ? <>Ended · {endedAt}</> : "Ended"}</p>;
+  const endedLine = <p className="session-ended-line" role="status">{why ? `Ended · ${why}` : endedAt ? <>Ended · {endedAt}</> : "Ended"}</p>;
   const offlinePanel = <div className="session-state-panel" data-compact={convo || undefined} role="status">
     <p className="session-state-title">{own ? "Your Mac is offline" : `${ownerName}'s Mac is offline`}</p>
     {session.lastEventAt && <p>Last seen {timeAgo(session.lastEventAt)}</p>}

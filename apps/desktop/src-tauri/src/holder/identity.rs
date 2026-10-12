@@ -51,6 +51,38 @@ pub(crate) fn read(pid: u32) -> Option<Identity> {
     }
 }
 
+/// When this user's loginwindow started (µs since the epoch): the current macOS login session's
+/// start. A raw read: loginwindow's real uid is root, so `read` (own processes only) refuses it.
+/// Filtered by effective uid so fast user switching finds this user's loginwindow, not another's.
+pub(crate) fn login_session_start() -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        let n = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+        let mut pids = vec![0 as libc::pid_t; n.max(0) as usize + 64];
+        let bytes = (pids.len() * std::mem::size_of::<libc::pid_t>()) as i32;
+        let n = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+        pids.truncate(n.max(0) as usize);
+        let me = unsafe { libc::geteuid() };
+        pids.into_iter()
+            .filter_map(|pid| {
+                let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+                let size = std::mem::size_of_val(&info) as i32;
+                let ok = unsafe {
+                    libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&mut info as *mut libc::proc_bsdinfo).cast(), size)
+                } == size;
+                let comm = unsafe { std::ffi::CStr::from_ptr(info.pbi_comm.as_ptr()) };
+                (ok && info.pbi_uid == me && comm.to_bytes() == b"loginwindow")
+                    .then(|| info.pbi_start_tvsec.checked_mul(1_000_000)?.checked_add(info.pbi_start_tvusec))
+                    .flatten()
+            })
+            .max()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
 /// The socket's actual peer, not a PID asserted in HELLO.
 pub(crate) fn peer(socket: &UnixStream) -> Option<Identity> {
     #[cfg(target_os = "macos")]
@@ -134,6 +166,19 @@ mod tests {
                 birth_micros: 100,
             },
         )
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn login_session_started_before_this_process() {
+        // A CI runner's user may have no GUI login (no loginwindow): nothing to compare then.
+        let Some(login) = login_session_start() else {
+            eprintln!("skipped: no loginwindow for this user (no GUI login session)");
+            return;
+        };
+        let me = read(std::process::id()).expect("own identity");
+        assert!(login <= me.birth_micros, "login {login} after this process {}", me.birth_micros);
+        assert!(login > 1_600_000_000_000_000, "µs since the epoch");
     }
 
     #[test]

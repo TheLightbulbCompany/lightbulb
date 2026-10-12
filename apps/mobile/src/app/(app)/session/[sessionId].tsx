@@ -1,7 +1,7 @@
 import { useAuth } from "@clerk/expo";
 import { SymbolView } from "expo-symbols";
 import {
-  ApiError, buildRows, canControlSession, groupRows, mainEvents, pendingApproval, receiptChip, sessionLabel, sessionRingState, sessionStatus, sessionTitle, sessionViewKey, sessionScreenNotice, unavailableReason, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionOutbox, useSessionResume, useWorkspaceSessions,
+  ApiError, buildRows, canControlSession, endedWhy, groupRows, mainEvents, pendingApproval, receiptChip, sessionLabel, sessionRingState, sessionStatus, sessionTitle, sessionViewKey, sessionScreenNotice, unavailableReason, useHistorySource, useLocalSessionHistory, usePendingPrompt, useSessionCommand, useSessionOutbox, useSessionResume, useWorkspaceSessions,
   type LocalSession, type SessionControlClient, type SessionSource, type TranscriptItem,
 } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
@@ -42,6 +42,8 @@ const BOTTOM_SLACK = 80;
 function sessionWhere(session: LocalSession, own: boolean, ownerName: string): string {
   const mac = own ? "your Mac" : `${ownerName}’s Mac`;
   if (session.status === "offline") return `${mac[0].toUpperCase()}${mac.slice(1)} is offline`;
+  const why = endedWhy(session, mac, "’");
+  if (why) return `Ended · ${why}`;
   if (session.status === "ended" && session.endedAt) return `Ended · ${relativeTime(Date.parse(session.endedAt))}`;
   return `${sessionStatus[session.status]} on ${mac}`;
 }

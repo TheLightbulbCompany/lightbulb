@@ -742,8 +742,16 @@ fn tool_input(name: &str, input: &Value, cwd: Option<&str>, home: Option<&str>) 
     };
     match name {
         "Bash" => pick(&["command", "description"]),
-        "Read" | "Write" | "Edit" | "NotebookEdit" => {
-            let mut v = pick(&["file_path", "notebook_path"]);
+        // The whole edit travels (bounded and redacted later), so a viewer draws its diff while
+        // it runs; the lengths stay for the overview's one-line summary.
+        "Read" | "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => {
+            let mut v = pick(match name {
+                "Read" => &["file_path", "offset", "limit"][..],
+                "Write" => &["file_path", "content"],
+                "Edit" => &["file_path", "old_string", "new_string", "replace_all"],
+                "MultiEdit" => &["file_path", "edits"],
+                _ => &["notebook_path", "cell_id", "edit_mode", "new_source"],
+            });
             for key in ["file_path", "notebook_path"] {
                 if let Some(p) = v.get(key).and_then(Value::as_str).map(str::to_owned) {
                     v[key] = json!(display_path(&p, cwd, home));
@@ -773,15 +781,18 @@ fn tool_input(name: &str, input: &Value, cwd: Option<&str>, home: Option<&str>) 
         // The task list (2.1.2xx) replaced TodoWrite; the viewer rebuilds it as a checklist.
         "TaskCreate" => pick(&["subject", "activeForm"]),
         "TaskUpdate" => pick(&["taskId", "status", "subject", "activeForm"]),
-        _ => input
-            .as_object()
-            .and_then(|o| {
-                o.iter().find_map(|(k, v)| {
-                    v.as_str()
-                        .map(|s| json!({k: display_if_path(s, cwd, home)}))
-                })
-            })
-            .unwrap_or(json!({})),
+        // Any other tool (MCP included) carries its whole input; top-level paths read short.
+        _ => match input {
+            Value::Object(o) => Value::Object(
+                o.iter()
+                    .map(|(k, v)| {
+                        let v = v.as_str().map_or_else(|| v.clone(), |s| json!(display_if_path(s, cwd, home)));
+                        (k.clone(), v)
+                    })
+                    .collect(),
+            ),
+            _ => json!({}),
+        },
     }
 }
 
@@ -2125,6 +2136,58 @@ mod tests {
             events[0]["truncated"], true,
             "a shrunken tool.result must not claim to be complete"
         );
+    }
+
+    /// One row through the public entry point, which fits every tool event to the wire frame.
+    fn normalize_one(row: Value) -> Value {
+        let mut row = row;
+        let base = json!({"sessionId":"s","version":"2.1.269","uuid":"u1","cwd":"/Users/a"});
+        row.as_object_mut().unwrap().extend(base.as_object().unwrap().clone());
+        crate::local_sessions::normalize_public_message("claude", "s", &row).unwrap().remove(0)
+    }
+
+    fn call(name: &str, input: Value) -> Value {
+        normalize_one(json!({"type":"assistant","message":{"role":"assistant","content":[
+            {"type":"tool_use","id":"t1","name":name,"input":input}]}}))
+    }
+
+    #[test]
+    fn local_sessions_claude_edit_calls_carry_their_old_and_new_text() {
+        let e = call("Edit", json!({"file_path":"/Users/a/p/x.ts","old_string":"a\nb","new_string":"a\nc"}));
+        assert_eq!(e["tool"]["input"]["old_string"], "a\nb");
+        assert_eq!(e["tool"]["input"]["new_string"], "a\nc");
+        assert_eq!(e["tool"]["input"]["file_path"], "p/x.ts");
+        assert_eq!((e["tool"]["input"]["oldLength"].as_u64(), e["tool"]["input"]["newLength"].as_u64()), (Some(3), Some(3)));
+        let multi = call("MultiEdit", json!({"file_path":"/Users/a/p/x.ts","edits":[{"old_string":"a","new_string":"b"}]}));
+        assert_eq!(multi["tool"]["input"]["edits"][0]["new_string"], "b");
+        let nb = call("NotebookEdit", json!({"notebook_path":"/Users/a/n.ipynb","cell_id":"c1","edit_mode":"replace","new_source":"print(1)"}));
+        assert_eq!((nb["tool"]["input"]["notebook_path"].as_str(), nb["tool"]["input"]["new_source"].as_str()), (Some("n.ipynb"), Some("print(1)")));
+        let mcp = call("mcp__x__do", json!({"a":1,"b":"two"}));
+        assert_eq!(mcp["tool"]["input"], json!({"a":1,"b":"two"}));
+    }
+
+    #[test]
+    fn local_sessions_claude_secrets_in_a_call_are_redacted_and_a_huge_write_is_truncated() {
+        let e = call("Write", json!({"file_path":"/Users/a/p/.env","content":"TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789"}));
+        assert!(e["tool"]["input"]["content"].as_str().unwrap().contains("[redacted]"));
+        assert_eq!(e["tool"]["input"]["contentLines"], 1);
+        let big = call("Write", json!({"file_path":"/Users/a/p/big","content":"x".repeat(50 * 1024)}));
+        assert_eq!(big["truncated"], true);
+        assert!(crate::local_sessions::ascii_wire_len(&big).unwrap() <= 16384);
+    }
+
+    #[test]
+    fn local_sessions_claude_every_tool_event_fits_the_wire_frame() {
+        let wide = "é漢".repeat(4 * 1024);
+        let edit = call("Edit", json!({"file_path":"/Users/a/p/x","old_string":wide,"new_string":wide}));
+        let bash = normalize_one(json!({"type":"user","toolUseResult":{"stdout":"漢".repeat(64 * 1024),"stderr":"y".repeat(64 * 1024),"interrupted":false},
+            "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ü".repeat(12 * 1024),"is_error":false}]}}));
+        for e in [&edit, &bash] {
+            assert_eq!(e["truncated"], true);
+            assert!(crate::local_sessions::ascii_wire_len(e).unwrap() <= 16384, "{}", crate::local_sessions::ascii_wire_len(e).unwrap());
+        }
+        let small = call("Edit", json!({"file_path":"/Users/a/p/x","old_string":"a","new_string":"b"}));
+        assert_eq!(small["truncated"], false);
     }
 
     #[test]

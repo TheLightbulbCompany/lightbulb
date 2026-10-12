@@ -47,10 +47,40 @@ pub fn normalize_public_message(provider: &str, session: &str, row: &Value) -> R
         "codex" => codex::normalize(session, row),
         _ => Err("unsupported provider".into()),
     }
+    .map(|mut events| {
+        events.iter_mut().filter(|e| e.get("tool").is_some()).for_each(fit_tool);
+        events
+    })
+}
+
+/// A tool event must fit one 16 KiB wire frame with batch overhead: halve the larger of its
+/// input and result until it does, marking the event truncated; the text (a preview, already
+/// bounded) is cut only once both are small. Every part reaches nothing within a bounded number
+/// of rounds, so the loop always ends under the limit.
+pub(crate) fn fit_tool(e: &mut Value) {
+    const FIT: usize = 15 * 1024;
+    let size = |v: &Value| ascii_wire_len(v).unwrap_or(usize::MAX);
+    let mut cap = MAX_TOOL_RESULT;
+    for _ in 0..16 {
+        if size(e) <= FIT {
+            return;
+        }
+        cap = (cap / 2).max(32);
+        let (input, result, text) = (size(&e["tool"]["input"]), size(&e["tool"]["result"]), size(&e["text"]));
+        if input.max(result) <= 1024 && text > input.max(result) {
+            let (cut, _) = bounded(e["text"].as_str().unwrap_or(""), cap);
+            e["text"] = json!(format!("{cut}…"));
+        } else {
+            let key = if input >= result { "input" } else { "result" };
+            let (v, _) = bound_json(e["tool"][key].take(), cap);
+            e["tool"][key] = v;
+        }
+        e["truncated"] = json!(true);
+    }
 }
 
 pub(crate) const MAX_TEXT: usize = 12 * 1024;
-pub(crate) const MAX_TOOL_INPUT: usize = 4 * 1024;
+pub(crate) const MAX_TOOL_INPUT: usize = 8 * 1024;
 pub(crate) const MAX_TOOL_RESULT: usize = 12 * 1024;
 pub(crate) const PREVIEW_LINES: usize = 20;
 // One native JSONL row may contain duplicated command output or private compaction data.
@@ -1957,7 +1987,7 @@ impl Mirror {
     }
 }
 
-fn ascii_wire_len(value: &Value) -> Result<usize> {
+pub(crate) fn ascii_wire_len(value: &Value) -> Result<usize> {
     // The backend uses json.dumps(ensure_ascii=True); count surrogate pairs too.
     Ok(serde_json::to_string(value)
         .map_err(|e| e.to_string())?

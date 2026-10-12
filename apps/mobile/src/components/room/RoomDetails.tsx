@@ -19,6 +19,7 @@ import { Alert, Pressable, Text as RNText, useColorScheme, View } from "react-na
 import { chatPalette, fonts, spacing } from "../../config/theme";
 import { PickerSheet } from "../teams/PickerSheet";
 import { GroupedList } from "../ui/GroupedList";
+import { RoomRenameSheet } from "./RoomRenameSheet";
 
 const MENU = [pickerStyle("menu")];
 
@@ -36,6 +37,7 @@ export interface RoomDetailsProps {
   /** Leaves and navigates away; rejects on failure. */
   leaveRoom: () => Promise<unknown>;
   setArchived: (archived: boolean) => Promise<unknown>;
+  renameRoom?: (name: string) => Promise<void>;
 }
 
 /**
@@ -52,6 +54,7 @@ export function RoomDetails({
   initialAddPeopleOpen = false,
   leaveRoom,
   setArchived,
+  renameRoom,
 }: RoomDetailsProps) {
   const scheme = useColorScheme() === "dark" ? "dark" : "light";
   const palette = chatPalette[scheme];
@@ -75,7 +78,7 @@ export function RoomDetails({
   const [error, setError] = useState<string | null>(null);
   // Keep URL-driven opening behind the same permission predicate as the
   // details button; a hand-edited query string must not reveal the picker.
-  const [sheet, setSheet] = useState<"add" | "remove" | null>(initialAddPeopleOpen && canAdd ? "add" : null);
+  const [sheet, setSheet] = useState<"add" | "remove" | "rename" | null>(initialAddPeopleOpen && canAdd ? "add" : null);
   const removable = canManageMembers
     ? room.members.filter((m) => m.role !== "owner" && !((room.shared || managed) && m.kind === "human"))
     : [];
@@ -85,6 +88,7 @@ export function RoomDetails({
   // in it may not leave; never the shared room.
   const canLeave = !room.shared && !managed && (room.kind === "group-dm" || (isChannel && !!viewer && !soleChannelOwner(room, currentUserId)));
   const canArchive = !room.shared && !managed && !room.isDefault && (room.kind === "group-dm" || (isChannel && isAdmin));
+  const canRename = Boolean(renameRoom && !room.shared && !managed && (room.kind === "group-dm" || (isChannel && isAdmin)));
 
   const run = (action: () => Promise<unknown>, fallback: string) => {
     setError(null);
@@ -150,10 +154,11 @@ export function RoomDetails({
           })}
         </Section>
 
-        {canAdd || removable.length > 0 || canArchive || canLeave || error ? (
+        {canAdd || removable.length > 0 || canRename || canArchive || canLeave || error ? (
           <Section footer={error ? <Text modifiers={ERROR}>{error}</Text> : undefined}>
             {canAdd ? <Button label={isChannel ? "Add members" : "Add people"} onPress={() => setSheet("add")} /> : null}
             {removable.length > 0 ? <Button label="Remove members" onPress={() => setSheet("remove")} /> : null}
+            {canRename ? <Button label={`Rename ${noun}`} onPress={() => setSheet("rename")} /> : null}
             {canArchive ? (
               <Button
                 label={room.archivedAt ? `Unarchive ${noun}` : `Archive ${noun}`}
@@ -221,6 +226,14 @@ export function RoomDetails({
         }}
         onClose={() => setSheet(null)}
       />
+      {renameRoom ? (
+        <RoomRenameSheet
+          visible={sheet === "rename"}
+          roomName={room.name ?? roomDisplayName(room, room.members)}
+          onRename={renameRoom}
+          onClose={() => setSheet(null)}
+        />
+      ) : null}
     </View>
   );
 }

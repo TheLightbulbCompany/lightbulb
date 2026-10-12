@@ -1,7 +1,7 @@
 // apps/frontend/src/components/teams/agents/AgentOrgControls.tsx
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { CompanyAgent } from "@/components/teams/shared/types";
 import { EditorialButton } from "@/components/teams/shell";
 import { ReportsToPicker } from "@/components/teams/agents/ReportsToPicker";
@@ -25,16 +25,22 @@ export function AgentOrgControls({
   agent,
   agents,
   onDeleted,
+  onUpdated,
 }: {
   agent: CompanyAgent;
   agents: CompanyAgent[];
   /** Called after a successful delete so the host view can navigate away —
    *  remove() clears the agent's detail cache. */
   onDeleted?: () => void;
+  /** Refresh non-Teams caches so the new display name appears immediately. */
+  onUpdated?: () => void | Promise<void>;
 }) {
-  const { setReportsTo, pause, resume, resetSession, clearError, remove } =
+  const { setReportsTo, rename, pause, resume, resetSession, clearError, remove } =
     useAgentMutations();
   const [busy, setBusy] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [draftName, setDraftName] = useState(agent.name);
+  const [renameError, setRenameError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   const paused = agent.status === "paused";
@@ -51,6 +57,29 @@ export function AgentOrgControls({
   const marketplaceLabel = agent.marketplace
     ? `${agent.marketplace.slug} v${agent.marketplace.version} · ${agent.marketplace.seller}`
     : null;
+
+  useEffect(() => {
+    if (!renaming) setDraftName(agent.name);
+  }, [agent.name, renaming]);
+
+  const saveName = async () => {
+    const trimmed = draftName.trim();
+    if (agents.some((other) => other.id !== agent.id && other.name.trim().toLocaleLowerCase() === trimmed.toLocaleLowerCase())) {
+      setRenameError("Another agent already uses that name.");
+      return;
+    }
+    setBusy(true);
+    setRenameError(null);
+    try {
+      await rename(agent.id, draftName);
+      setRenaming(false);
+      await onUpdated?.();
+    } catch (error) {
+      setRenameError(error instanceof Error ? error.message : "Could not rename this agent. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const run = useCallback(async (fn: () => Promise<void>) => {
     setBusy(true);
@@ -73,6 +102,57 @@ export function AgentOrgControls({
             {marketplaceLabel}
           </span>
         ) : null}
+      </section>
+
+      <section className="editorial-card p-4 flex flex-col gap-2">
+        <h3 className="font-editorial-serif text-base">Display name</h3>
+        <p className="text-xs text-[var(--midnight-muted)]">
+          Renaming keeps this agent&apos;s history, routing, integrations, and permissions.
+        </p>
+        {renaming ? (
+          <form
+            className="flex min-w-0 flex-wrap items-center gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void saveName();
+            }}
+          >
+            <label htmlFor={`agent-name-${agent.id}`} className="sr-only">Agent name</label>
+            <input
+              id={`agent-name-${agent.id}`}
+              aria-label="Agent name"
+              value={draftName}
+              onChange={(event) => setDraftName(event.target.value)}
+              disabled={busy}
+              maxLength={80}
+              autoFocus
+              className="min-w-[12rem] flex-1 rounded border border-[var(--edge)] bg-[var(--paper)] px-3 py-2 text-sm"
+            />
+            <EditorialButton size="sm" disabled={busy} type="submit">
+              {busy ? "Saving…" : "Save"}
+            </EditorialButton>
+            <EditorialButton
+              variant="secondary"
+              size="sm"
+              disabled={busy}
+              type="button"
+              onClick={() => {
+                setRenaming(false);
+                setDraftName(agent.name);
+                setRenameError(null);
+              }}
+            >
+              Cancel
+            </EditorialButton>
+          </form>
+        ) : (
+          <div>
+            <EditorialButton variant="secondary" size="sm" onClick={() => setRenaming(true)}>
+              Rename agent
+            </EditorialButton>
+          </div>
+        )}
+        {renameError ? <p role="alert" className="text-xs text-[var(--err)]">{renameError}</p> : null}
       </section>
 
       {/* Reporting line — editable here */}

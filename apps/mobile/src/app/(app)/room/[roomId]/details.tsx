@@ -73,6 +73,9 @@ export default function RoomDetailsScreen() {
         router.dismiss(2);
       }}
       setArchived={(archived) => rooms.updateRoom({ archived })}
+      renameRoom={async (name) => {
+        await rooms.updateRoom({ name });
+      }}
     />
   );
 }

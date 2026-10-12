@@ -175,7 +175,11 @@ export function AgentInspectorPanel({
       >
         {activeTab === "overview" ? (
           <>
-            <AgentOverviewTab agentId={inspectedAgentId} agent={agent} />
+            <AgentOverviewTab
+              agentId={inspectedAgentId}
+              agent={agent}
+              onAgentUpdated={refresh}
+            />
             {orgAgent ? (
               <section
                 className="mt-6 border-t border-[var(--edge)] pt-6"
@@ -187,7 +191,13 @@ export function AgentInspectorPanel({
                 >
                   Organization
                 </h3>
-                <AgentOrgControls agent={orgAgent} agents={rosterAgents} />
+                <AgentOrgControls
+                  agent={orgAgent}
+                  agents={rosterAgents}
+                  onUpdated={async () => {
+                    await refresh();
+                  }}
+                />
               </section>
             ) : null}
           </>

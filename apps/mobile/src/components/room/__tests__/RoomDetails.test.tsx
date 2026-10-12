@@ -1,9 +1,18 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { type RoomDetail, type RoomMember } from "@lightbulb/shared";
+import type { ReactNode } from "react";
 import { Alert } from "react-native";
 
 const mockPush = jest.fn();
 jest.mock("expo-router", () => ({ router: { push: (href: string) => mockPush(href) } }));
+
+jest.mock("../../ui/BottomSheet", () => {
+  const { View } = require("react-native");
+  return {
+    BottomSheet: ({ visible, children }: { visible: boolean; children: ReactNode }) =>
+      visible ? <View>{children}</View> : null,
+  };
+});
 
 import { RoomDetails } from "../RoomDetails";
 
@@ -144,6 +153,28 @@ describe("RoomDetails", () => {
     await fireEvent.press(screen.getByLabelText("Bob"));
     await act(async () => confirmAlert(alert));
     await waitFor(() => expect(props.removeMember).toHaveBeenCalledWith({ kind: "human", id: "user-b" }));
+  });
+
+  it("lets channel admins rename a channel and trims the submitted name", async () => {
+    const renameRoom = jest.fn(async () => {});
+    await setup(room({}, "admin"), { renameRoom });
+
+    await fireEvent.press(screen.getByText("Rename channel"));
+    const nameInput = await screen.findByLabelText("Channel name");
+    await waitFor(() => expect(nameInput.props.value).toBe("Launch"));
+    fireEvent.changeText(nameInput, "  Roadmap  ");
+    await waitFor(() => {
+      expect(screen.getByLabelText("Channel name").props.value).toBe("  Roadmap  ");
+      expect(screen.getByLabelText("Save")).toBeEnabled();
+    });
+    fireEvent.press(screen.getByLabelText("Save"));
+
+    await waitFor(() => expect(renameRoom).toHaveBeenCalledWith("Roadmap"));
+  });
+
+  it("does not offer channel rename to a member without permission", async () => {
+    await setup(room({}, "member"), { renameRoom: jest.fn(async () => {}) });
+    expect(screen.queryByText("Rename channel")).toBeNull();
   });
 
   it("lets any group chat member search for and add an eligible workspace person", async () => {

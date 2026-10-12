@@ -92,10 +92,11 @@ def env(monkeypatch):
 NOTES = "Decisions: ship the beta Friday. Open: pricing. Tasks filed: ISOA-1 (Pat), ISOA-2 (Ada)."
 
 
-async def ended_and_noted(env, room=DEFAULT, notes=NOTES):
+async def ended_and_noted(env, notes=NOTES):
     """The call ends, then the notes agent's reply to the notes request (msg-1) arrives."""
     await mod.on_ended(ROOM)
-    await mod.on_agent_reply("org_1", room, "msg-1", notes, False)
+    writer = (env.requests.get("msg-1") or {}).get("agentId", CEO)
+    await mod.on_agent_reply("org_1", writer, "msg-1", notes, False)
 
 
 def _line(mark, name, text, at):
@@ -147,7 +148,7 @@ async def test_on_ended_dispatches_exactly_one_notes_run(env):
         "meeting": {"title": "Weekly sync", "organizer": "pat@acme.com", "transcriptAttachedAt": 1},
     }  # fmt: skip
     env.sleep.assert_not_awaited()
-    await mod.on_agent_reply("org_1", DEFAULT, "msg-1", NOTES, False)
+    await mod.on_agent_reply("org_1", CEO, "msg-1", NOTES, False)
     env.send.assert_awaited_once()
     assert env.send.await_args.kwargs["body_text"].startswith(NOTES)
 
@@ -219,7 +220,7 @@ async def test_a_failed_or_ambiguous_send_is_never_retried_by_a_later_webhook(en
     env.send.return_value = None  # send_ses_email's non-raising failure: it may still have gone
     await ended_and_noted(env)
     assert "notesMailedAt" not in env.meta["meeting"] and env.requests["msg-1"]["mailAttemptedAt"]
-    await mod.on_agent_reply("org_1", DEFAULT, "msg-1", NOTES, False)  # a replayed reply
+    await mod.on_agent_reply("org_1", CEO, "msg-1", NOTES, False)  # a replayed reply
     assert not mod.owed(env.meta["meeting"])
     env.send.return_value = "<id@ses>"
     await mod.on_ended(ROOM)  # the terminal webhook's redelivery: nothing more
@@ -268,7 +269,7 @@ async def test_a_spent_daily_cap_sends_nothing_and_is_not_retried(env):
     assert env.meta["meeting"]["notesMailedAt"]  # a deliberate non-send: done
     env.release.assert_not_awaited()
     await mod.on_notes_run_ended("org_1", {"triggerMessageId": "msg-1", "outcome": "completed"})
-    await mod.on_agent_reply("org_1", DEFAULT, "msg-1", NOTES, False)
+    await mod.on_agent_reply("org_1", CEO, "msg-1", NOTES, False)
     env.cap.assert_awaited_once()
 
 
@@ -375,7 +376,7 @@ def legacy(env, monkeypatch):
 
 
 async def test_with_nowhere_visible_the_mail_carries_the_notes_and_the_transcript_and_no_link(legacy):
-    await ended_and_noted(legacy, room=ROOM)
+    await ended_and_noted(legacy)
     kw = legacy.send.await_args.kwargs
     assert kw["subject"] == "Notes: Weekly sync"
     assert kw["body_text"] == f"{NOTES}\n\nTranscript:\n\n[20:23] Pat: Hi all\n"
@@ -393,21 +394,21 @@ async def test_the_mail_that_carries_the_transcript_also_says_when_no_notes_were
 
 async def test_a_long_transcript_is_cut_and_says_so(legacy):
     legacy.load.return_value = (None, b"x" * 300_000)
-    await ended_and_noted(legacy, room=ROOM)
+    await ended_and_noted(legacy)
     body = legacy.send.await_args.kwargs["body_text"]
     assert body.endswith("x" * 10 + "… (truncated)") and body.count("x") == 200_000
 
 
 async def test_without_a_transcript_the_mail_says_none_was_captured(legacy):
     legacy.meta["meeting"].pop("transcriptId")
-    await ended_and_noted(legacy, room=ROOM)
+    await ended_and_noted(legacy)
     assert legacy.send.await_args.kwargs["body_text"].endswith("No transcript was captured.")
     assert legacy.send.await_args.kwargs["subject"] == "Notes: Weekly sync"
 
 
 async def test_the_mail_reads_the_transcript_from_the_room_it_was_stored_for(legacy):
     legacy.meta["meeting"]["transcriptRoomId"] = "stored-room"
-    await ended_and_noted(legacy, room=ROOM)
+    await ended_and_noted(legacy)
     legacy.load.assert_called_once_with("org_1", "stored-room", "att-1")
 
 
@@ -442,7 +443,7 @@ async def test_a_failed_notes_line_is_retried_and_the_mail_goes_once(env):
     await mod.on_ended(ROOM)
     assert env.line.await_count == 2 and env.meta["meeting"]["notesRunId"]
     env.send.assert_not_awaited()  # the mail waits for the notes
-    await mod.on_agent_reply("org_1", DEFAULT, "msg-1", NOTES, False)
+    await mod.on_agent_reply("org_1", CEO, "msg-1", NOTES, False)
     env.send.assert_awaited_once()
     assert env.meta["meeting"]["notesMailedAt"]
     env.sleep.assert_awaited_once_with(10)
@@ -478,7 +479,7 @@ async def test_an_ambiguous_send_is_never_repeated_in_one_end_path(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
     env.send.return_value = None  # failed or timed out: it may have gone
     await ended_and_noted(env)
-    await mod.on_agent_reply("org_1", DEFAULT, "msg-1", NOTES, False)  # a replayed reply
+    await mod.on_agent_reply("org_1", CEO, "msg-1", NOTES, False)  # a replayed reply
     env.send.assert_awaited_once()
     assert "notesMailedAt" not in env.meta["meeting"]
     env.advance.assert_awaited_once_with(ROOM)
@@ -518,11 +519,12 @@ async def test_unsaid_answers_reach_the_mail_when_no_notes_were_written(legacy):
 async def test_only_the_notes_agents_own_final_reply_is_mailed(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
     await mod.on_ended(ROOM)
-    await mod.on_agent_reply("org_1", DEFAULT, "msg-1", "Reading the transcript now.", True)  # progress
-    await mod.on_agent_reply("org_1", DEFAULT, "other-msg", "Unrelated answer.", False)  # another request
-    await mod.on_agent_reply("org_1", DEFAULT, None, "Top-level post.", False)
+    await mod.on_agent_reply("org_1", CEO, "msg-1", "Reading the transcript now.", True)  # progress
+    await mod.on_agent_reply("org_1", CEO, "other-msg", "Unrelated answer.", False)  # another request
+    await mod.on_agent_reply("org_1", CEO, None, "Top-level post.", False)
+    await mod.on_agent_reply("org_1", "another-agent", "msg-1", "Not the notes.", False)  # not the writer
     env.send.assert_not_awaited()
-    await mod.on_agent_reply("org_1", DEFAULT, "msg-1", NOTES, False)
+    await mod.on_agent_reply("org_1", CEO, "msg-1", NOTES, False)
     env.send.assert_awaited_once()
 
 
@@ -559,7 +561,7 @@ async def test_a_recurring_series_that_advanced_still_gets_its_notes_mailed(env)
     env.meta["meeting"].update(transcriptAttachedAt=1, invitedBy="ada@acme.com")
     await mod.on_ended(ROOM)
     env.meta["meeting"] = {"title": "Next week", "startAt": 1791577200, "status": "scheduled"}  # advance()
-    await mod.on_agent_reply("org_1", DEFAULT, "msg-1", NOTES, False)
+    await mod.on_agent_reply("org_1", CEO, "msg-1", NOTES, False)
     kw = env.send.await_args.kwargs
     assert kw["to"] == "ada@acme.com" and kw["subject"] == "Notes: Weekly sync"
     assert "notesMailedAt" not in env.meta["meeting"]  # never written onto the next occurrence

@@ -325,15 +325,16 @@ async def _mail_organizer(
 _MAIL_FIELDS = ("title", "invitedBy", "organizer", "transcriptId", "transcriptRoomId", "transcriptAttachedAt")
 
 
-async def on_agent_reply(owner_id: str, room_id: str, reply_to: str | None, text: str, progress: bool) -> None:
+async def on_agent_reply(owner_id: str, agent_id: str, reply_to: str | None, text: str, progress: bool) -> None:
     """An agent's reply to a meeting's "write the notes" request: those are the notes, and the
     organizer's mail carries them (10-09: the only mail was the raw transcript, sent before the notes
-    existed). A progress line is not the reply. Never raises: the reply is already stored."""
+    existed). Only the agent the request was dispatched to writes them; a progress line is not the
+    reply. Never raises: the reply is already stored."""
     if progress or not reply_to or not text.strip():
         return
     try:
         request = await messaging_repo.get_meeting_notes_request(owner_id, reply_to)
-        if request is not None:
+        if request is not None and request.get("agentId") == agent_id:
             await _mail_notes(owner_id, reply_to, request, notes=text)
     except Exception:  # noqa: BLE001
         put_metric("meeting.notes.mail_failed")

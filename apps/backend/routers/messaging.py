@@ -1265,7 +1265,7 @@ async def post_agent_message(owner_id: str, body: AgentMessageRequest, request: 
 
     await meeting_notes.on_agent_reply(
         owner_id,
-        str(body.room_id),
+        str(body.agent_id),
         str(body.reply_to_message_id) if body.reply_to_message_id else None,
         body.text,
         body.progress,

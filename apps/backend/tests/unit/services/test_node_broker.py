@@ -741,3 +741,119 @@ async def test_cdp_open_carries_a_paperclip_notice():
     plain = asyncio.create_task(session.cdp_open("prof-1"))
     assert "notice" not in (await session.next_outbound())["payload"]
     plain.cancel()
+
+
+SID = "11111111-1111-4111-8111-111111111111"
+OFFER = "a" * 32
+
+
+def _offer(session, cid=OFFER, sid=SID, mac=True):
+    session.resolve(
+        {
+            "type": "event",
+            "event": "browser.cdp.offer",
+            "payload": {"channel": cid, "sessionId": sid, "macBrowser": mac},
+        }
+    )
+
+
+def _out(session):
+    frames = []
+    while not session.cdp_out.empty():
+        frames.append(session.cdp_out.get_nowait())
+    return frames
+
+
+async def test_an_offer_registers_the_macs_channel_and_hands_it_to_the_relay():
+    session = node_broker.NodeSession("mac1", {"browser.cdp.v1"})
+    seen = []
+    session.on_offer = lambda channel, sid, mac: seen.append((channel.id, sid, mac))
+    _offer(session)
+    _offer(session)  # a replay changes nothing
+    assert seen == [(OFFER, SID, True)] and session.cdp[OFFER].id == OFFER
+
+
+@pytest.mark.parametrize(("cid", "sid"), [("../x", SID), (OFFER, "not-a-session"), (OFFER.upper(), SID)])
+async def test_a_malformed_offer_is_ignored(cid, sid):
+    session = node_broker.NodeSession("mac1", {"browser.cdp.v1"})
+    session.on_offer = lambda *args: pytest.fail("offered")
+    _offer(session, cid=cid, sid=sid)
+    assert session.cdp == {} and _out(session) == []
+
+
+async def test_an_offer_past_the_channel_cap_is_refused_busy():
+    session = node_broker.NodeSession("mac1", {"browser.cdp.v1"})
+    session.on_offer = lambda *args: None
+    for i in range(node_broker.MAX_CDP_CHANNELS):
+        _offer(session, cid=f"{i:032x}")
+    _offer(session, cid="f" * 32)
+    assert _out(session) == [
+        {
+            "type": "event",
+            "event": "browser.cdp.close",
+            "payload": {"channel": "f" * 32, "code": "mac_browser_busy", "message": node_broker.BUSY_MESSAGE},
+        }
+    ]
+    assert "f" * 32 not in session.cdp
+
+
+async def test_accept_opens_the_offered_channel_and_waits_for_opened():
+    session = node_broker.NodeSession("mac1", {"browser.cdp.v1"})
+    session.on_offer = lambda *args: None
+    _offer(session)
+    accepted = asyncio.create_task(session.cdp_accept(session.cdp[OFFER], {"profileId": "p1"}))
+    await asyncio.sleep(0)
+    assert _out(session) == [
+        {
+            "type": "event",
+            "event": "browser.cdp.open",
+            "payload": {"channel": OFFER, "nodeId": "mac1", "profileId": "p1"},
+        }
+    ]
+    session.resolve({"type": "event", "event": "browser.cdp.opened", "payload": {"channel": OFFER}})
+    await asyncio.wait_for(accepted, 1)
+
+
+async def test_a_local_channels_cdp_frames_are_never_queued():
+    session = node_broker.NodeSession("mac1", {"browser.cdp.v1"})
+    session.on_offer = lambda *args: None
+    _offer(session)
+    channel = session.cdp[OFFER]
+    channel.local = True
+    session.resolve({"type": "event", "event": "browser.cdp.frame", "payload": {"channel": OFFER, "data": "{}"}})
+    assert channel.inbound.empty() and OFFER in session.cdp
+
+
+async def test_a_close_can_carry_the_message_a_session_is_shown():
+    session = node_broker.NodeSession("mac1", {"browser.cdp.v1"})
+    session.on_offer = lambda *args: None
+    _offer(session)
+    session.cdp_close(session.cdp[OFFER], "not_shared", "Share this session to use the Lightbulb browser")
+    assert _out(session)[-1]["payload"] == {
+        "channel": OFFER,
+        "code": "not_shared",
+        "message": "Share this session to use the Lightbulb browser",
+    }
+
+
+async def test_idle_and_active_reach_the_channels_holder_and_a_close_wakes_it():
+    session = node_broker.NodeSession("mac1", {"browser.cdp.v1"})
+    session.on_offer = lambda *args: None
+    _offer(session)
+    channel = session.cdp[OFFER]
+    for kind in ("idle", "active"):
+        session.resolve({"type": "event", "event": f"browser.cdp.{kind}", "payload": {"channel": OFFER}})
+    session.resolve({"type": "event", "event": "browser.cdp.close", "payload": {"channel": OFFER, "code": "CLOSED"}})
+    assert [channel.signals.get_nowait() for _ in range(3)] == ["idle", "active", "closed"]
+
+
+async def test_leased_answers_the_mac_with_the_code_when_it_failed():
+    session = node_broker.NodeSession("mac1", {"browser.cdp.v1"})
+    session.on_offer = lambda *args: None
+    _offer(session)
+    session.cdp_leased(session.cdp[OFFER], True)
+    session.cdp_leased(session.cdp[OFFER], False, "mac_browser_busy", node_broker.BUSY_MESSAGE)
+    assert [f["payload"] for f in _out(session)] == [
+        {"channel": OFFER, "ok": True},
+        {"channel": OFFER, "ok": False, "code": "mac_browser_busy", "message": node_broker.BUSY_MESSAGE},
+    ]

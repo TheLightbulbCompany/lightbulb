@@ -447,3 +447,76 @@ def test_cdp_command_is_listed_but_not_submittable():
     with pytest.raises(execution.DesktopError) as err:
         execution.validate_request(REQUEST | {"command": "browser.cdp.v1"})
     assert err.value.code == "unsupported_command"
+
+
+SESSION_SID = "11111111-1111-4111-8111-111111111111"
+SESSION_RUN = f"session-{SESSION_SID}"
+
+
+@pytest.fixture
+def session_row(monkeypatch):
+    from core.repositories import local_sessions_repo
+    from core.services import clerk_admin
+
+    row = {"ownerId": "org_1", "sessionId": SESSION_SID, "humanUserId": "user_1", "deviceId": "mac1"}
+
+    async def get_session(owner, sid):
+        return dict(row) if (owner, sid) == ("org_1", SESSION_SID) else None
+
+    async def members(org):
+        return [{"user_id": "user_1"}]
+
+    monkeypatch.setattr(local_sessions_repo, "get_session", get_session)
+    monkeypatch.setattr(clerk_admin, "list_organization_members", members)
+    return row
+
+
+async def test_a_shared_session_is_its_own_persons_run(session_row):
+    auth = await execution.authorize_run("org_1", SESSION_RUN, "session", "session", active=True, allow_session=True)
+    assert auth == {
+        "ownerId": "org_1",
+        "memberId": "user_1",
+        "runId": SESSION_RUN,
+        "agentId": "session",
+        "family": "session",
+        "roomId": "",
+    }
+    assert execution.valid_auth(auth)
+
+
+async def test_an_ended_session_keeps_its_authority_so_its_save_runs(session_row):
+    session_row["endedAt"] = 1
+    assert (await execution.authorize_run("org_1", SESSION_RUN, "session", "session", active=True, allow_session=True))[
+        "memberId"
+    ] == "user_1"
+
+
+@pytest.mark.parametrize("change", [{"unshared": True}, {"removedAt": 1}, {"ownerId": "org_2"}])
+async def test_an_unshared_or_removed_session_has_no_run(session_row, change):
+    session_row.update(change)
+    with pytest.raises(execution.DesktopError) as err:
+        await execution.authorize_run("org_1", SESSION_RUN, "session", "session", active=True, allow_session=True)
+    assert err.value.code == "run_forbidden"
+
+
+async def test_a_session_run_needs_its_own_agent_id_and_a_member(session_row, monkeypatch):
+    from core.services import clerk_admin
+
+    for run, agent in ((SESSION_RUN, "a1"), ("session-not-a-uuid", "session")):
+        with pytest.raises(execution.DesktopError) as err:
+            await execution.authorize_run("org_1", run, agent, "session", active=True, allow_session=True)
+        assert err.value.code == "run_forbidden"
+
+    async def nobody(org):
+        return []
+
+    monkeypatch.setattr(clerk_admin, "list_organization_members", nobody)
+    with pytest.raises(execution.DesktopError) as err:
+        await execution.authorize_run("org_1", SESSION_RUN, "session", "session", active=True, allow_session=True)
+    assert err.value.code == "run_forbidden"
+
+
+async def test_the_session_family_is_refused_unless_the_backend_asks_for_it(session_row):
+    with pytest.raises(execution.DesktopError) as err:
+        await execution.authorize_run("org_1", SESSION_RUN, "session", "session", active=True)
+    assert err.value.code == "run_forbidden"

@@ -299,3 +299,55 @@ async def test_public_submit_rejects_bypass_fields_and_internal_caller_addresses
             assert response.status_code == 400
             response = await client.post("/api/v1/desktop-execution/operations", content=b"x" * 16385, headers=HEADERS)
             assert response.status_code == 413
+
+
+SESSION_RUN = "session-11111111-1111-4111-8111-111111111111"
+
+
+async def test_a_hook_token_cannot_claim_the_session_family(app):
+    session_auth = AUTH | {"runId": SESSION_RUN, "agentId": "session", "family": "session", "roomId": ""}
+    with (
+        patch.object(routes.container_repo, "get_by_owner_id", AsyncMock(return_value={"hook_token": "hook"})),
+        patch.object(routes.settings, "WS_INTERNAL_SECRET", "internal"),
+    ):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get(
+                "/api/v1/desktop-execution/devices",
+                headers=HEADERS
+                | {"X-Desktop-Run": SESSION_RUN, "X-Desktop-Agent": "session", "X-Desktop-Run-Family": "session"},
+            )
+            assert response.status_code == 403
+            response = await client.post(
+                "/api/v1/desktop-execution/internal",
+                headers={"x-lightbulb-ws-internal": "internal"},
+                json={"action": "cancel", "auth": session_auth, "receiptId": "r"},
+            )
+            assert response.status_code == 403
+
+
+async def test_only_a_forwarded_mac_lease_carries_a_session_run(app):
+    from core.repositories import local_sessions_repo
+    from core.services import mac_browser
+
+    session_auth = AUTH | {"runId": SESSION_RUN, "agentId": "session", "family": "session", "roomId": ""}
+    row = {"ownerId": "user_1", "humanUserId": "user_1"}
+    acquire = AsyncMock(return_value={"status": "starting"})
+    with (
+        patch.object(routes.settings, "WS_INTERNAL_SECRET", "internal"),
+        patch.object(local_sessions_repo, "get_session", AsyncMock(return_value=row)),
+        patch.object(mac_browser, "acquire", acquire),
+    ):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/api/v1/desktop-execution/internal",
+                headers={"x-lightbulb-ws-internal": "internal"},
+                json={"action": "mac_acquire", "auth": session_auth, "request": {"deviceId": "mac1"}},
+            )
+            assert response.status_code == 200 and response.json() == {"status": "starting"}
+            assert acquire.await_args.args[0] == session_auth
+            response = await client.post(
+                "/api/v1/desktop-execution/internal",
+                headers={"x-lightbulb-ws-internal": "internal"},
+                json={"action": "status", "auth": session_auth, "receiptId": "r"},
+            )
+            assert response.status_code == 403

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import re
@@ -39,7 +40,14 @@ CDP_INBOUND_QUEUE = 256
 CDP_OPEN_TIMEOUT_S = 15
 CDP_INBOUND_BYTES = 64 * 1024 * 1024  # queued Mac->backend frame bytes per channel; over it closes OVERFLOW
 CDP_SEND_BYTES = 64 * 1024 * 1024  # queued backend->Mac CDP frame bytes (cdp_out); over it is NodeCapacity
-CDP_EVENTS = ("browser.cdp.opened", "browser.cdp.frame", "browser.cdp.close", "browser.cast.frame")
+CDP_EVENTS = (
+    "browser.cdp.opened", "browser.cdp.frame", "browser.cdp.close", "browser.cast.frame",
+    "browser.cdp.offer", "browser.cdp.idle", "browser.cdp.active",
+)  # fmt: skip
+#: A full Mac's refusal, as a session's CDP client reads it (mac_browser.MESSAGES uses the same text).
+BUSY_MESSAGE = "This Mac's browser is busy; try again shortly."
+_OFFER_ID = re.compile(r"[0-9a-f]{32}")
+_SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 CAST_COMMAND = "browser.cast.v1"
 MAX_FRAME_B64 = 200_000  # bytes of one browser.cast.frame's jpegBase64 string
 
@@ -192,8 +200,8 @@ class CdpChannel:
     """One raw CDP connection to the Mac's Chrome, multiplexed over the node socket as
     `browser.cdp.*` events (spec §4.2)."""
 
-    def __init__(self) -> None:
-        self.id = str(uuid.uuid4())
+    def __init__(self, channel_id: str | None = None) -> None:
+        self.id = channel_id or str(uuid.uuid4())
         self.inbound: _ByteQueue = _ByteQueue(CDP_INBOUND_QUEUE)
         self.closed = asyncio.Event()
         self.opened: asyncio.Future = asyncio.get_running_loop().create_future()
@@ -202,6 +210,12 @@ class CdpChannel:
         # Consumer contract: clear this event, THEN pop both `cast` slots — clearing first means a
         # frame that lands mid-drain re-sets it, so the next wait wakes again instead of losing it.
         self.cast_ready = asyncio.Event()
+        #: A shared session's Mac-path channel (session_browser): the Mac serves its CDP to the
+        #: session's own client, so none of its CDP frames is ever ours to queue.
+        self.local = False
+        #: A shared session's lease signals for its holder (session_browser): "idle" (300 s with no
+        #: command), "active" (a command is held until `cdp_leased`), "closed".
+        self.signals: asyncio.Queue = asyncio.Queue(8)
 
     def _end(self, code: str) -> None:
         if self.close_code is None:
@@ -210,6 +224,8 @@ class CdpChannel:
             self.opened.set_exception(CdpClosed(self.close_code))
             self.opened.exception()  # retrieved: nobody may be awaiting a channel that already opened/timed out
         self.closed.set()
+        with contextlib.suppress(asyncio.QueueFull):
+            self.signals.put_nowait("closed")
 
     async def next(self) -> str | None:
         """The next frame from the Mac, or None once the channel is closed and drained."""
@@ -266,6 +282,9 @@ class NodeSession:
         self.generation = ""
         self.catalog_version = str(uuid.uuid4())
         self.catalog: list[dict] = []
+        #: (channel, sessionId, macBrowser) for a `browser.cdp.offer`; the relay wires it to
+        #: session_browser.start. None: offers are ignored (the Mac gives up after its wait).
+        self.on_offer = None
 
     async def next_outbound(self) -> dict:
         """The relay writer's next frame: the CDP lane first, but after CDP_BURST CDP frames in a
@@ -402,12 +421,21 @@ class NodeSession:
             raise NodeCapacity()
         channel = CdpChannel()
         self.cdp[channel.id] = channel
+        await self.cdp_accept(channel, {"profileId": profile_id} | ({"notice": notice[:200]} if notice else {}))
+        return channel
+
+    async def cdp_accept(self, channel: CdpChannel, payload: dict) -> None:
+        """Open `channel` on the Mac (`browser.cdp.open` carrying `payload`) and wait for `opened`."""
+        if channel.closed.is_set():  # the client went during acquire/sync: nothing to open
+            raise CdpClosed(channel.close_code or "CLOSED")
+        if self.cdp_out.full():
+            self.cdp_close(channel, "CAPACITY")
+            raise NodeCapacity()
         self.cdp_out.put_nowait(
             {
                 "type": "event",
                 "event": "browser.cdp.open",
-                "payload": {"channel": channel.id, "nodeId": self.node_id, "profileId": profile_id}
-                | ({"notice": notice[:200]} if notice else {}),
+                "payload": {"channel": channel.id, "nodeId": self.node_id, **payload},
             }
         )
         try:
@@ -418,7 +446,6 @@ class NodeSession:
         except asyncio.CancelledError:
             self.cdp_close(channel)
             raise
-        return channel
 
     def cdp_send(self, channel: CdpChannel, data: str) -> None:
         if len(data.encode()) > MAX_CDP_FRAME:
@@ -431,14 +458,24 @@ class NodeSession:
             {"type": "event", "event": "browser.cdp.frame", "payload": {"channel": channel.id, "data": data}}
         )
 
-    def cdp_close(self, channel: CdpChannel, code: str = "CLOSED") -> None:
-        """Idempotent. Never touches `inbound`: this runs inside the relay reader, which must not raise."""
+    def cdp_close(self, channel: CdpChannel, code: str = "CLOSED", message: str | None = None) -> None:
+        """Idempotent. Never touches `inbound`: this runs inside the relay reader, which must not raise.
+        `message`: what a shared session's own CDP client is shown (its refusal)."""
         if self.cdp.pop(channel.id, None) is channel and not self.cdp_out.full():
             # A full lane drops the close; the Mac closes its side when the socket or Chrome ends.
-            self.cdp_out.put_nowait(
-                {"type": "event", "event": "browser.cdp.close", "payload": {"channel": channel.id, "code": code}}
-            )
+            payload = {"channel": channel.id, "code": code} | ({"message": message[:300]} if message else {})
+            self.cdp_out.put_nowait({"type": "event", "event": "browser.cdp.close", "payload": payload})
         channel._end(code)
+
+    def cdp_leased(self, channel: CdpChannel, ok: bool, code: str | None = None, message: str | None = None) -> None:
+        """Answer a session channel's `active`: its lease is back (`ok`), or why not. The Mac forwards
+        the commands it held, or answers each with the code. A full lane drops it; the Mac gives up
+        after its own wait."""
+        payload = {"channel": channel.id, "ok": ok} | (
+            {"code": code, "message": (message or "")[:300]} if not ok else {}
+        )
+        if not self.cdp_out.full():
+            self.cdp_out.put_nowait({"type": "event", "event": "browser.cdp.leased", "payload": payload})
 
     @property
     def can_cast(self) -> bool:
@@ -501,6 +538,10 @@ class NodeSession:
 
     def _cdp_event(self, frame: dict) -> None:
         payload = frame.get("payload")
+        if frame["event"] == "browser.cdp.offer":
+            if isinstance(payload, dict):
+                self._offer(payload)
+            return
         channel = self.cdp.get(str(payload.get("channel") or "")) if isinstance(payload, dict) else None
         if channel is None:
             return
@@ -508,7 +549,12 @@ class NodeSession:
         if event == "browser.cdp.opened":
             if not channel.opened.done():
                 channel.opened.set_result(None)
+        elif event in ("browser.cdp.idle", "browser.cdp.active"):
+            with contextlib.suppress(asyncio.QueueFull):
+                channel.signals.put_nowait(event.rsplit(".", 1)[1])
         elif event == "browser.cdp.frame":
+            if channel.local:
+                return  # the Mac serves this channel's CDP itself
             data = payload.get("data")
             if not isinstance(data, str) or len(data.encode()) > MAX_CDP_FRAME:
                 self.cdp_close(channel, "TOO_LARGE")
@@ -526,6 +572,22 @@ class NodeSession:
             self.cdp.pop(channel.id, None)
             code = payload.get("code")
             channel._end(code if isinstance(code, str) and _CLOSE_CODE.fullmatch(code) else "CLOSED")
+
+    def _offer(self, payload: dict) -> None:
+        """A shared Claude Code or Codex session on this Mac asks for a browser (spec 2026-10-11)."""
+        cid, sid = payload.get("channel"), payload.get("sessionId")
+        if (
+            not (isinstance(cid, str) and _OFFER_ID.fullmatch(cid))
+            or not (isinstance(sid, str) and _SESSION_ID.fullmatch(sid))
+            or cid in self.cdp
+            or self.on_offer is None
+        ):
+            return
+        channel = self.cdp[cid] = CdpChannel(cid)
+        if len(self.cdp) > MAX_CDP_CHANNELS:
+            self.cdp_close(channel, "mac_browser_busy", BUSY_MESSAGE)
+            return
+        self.on_offer(channel, sid, payload.get("macBrowser") is True)
 
     def _drop_queued(self, invoke_id: str) -> bool:
         retained = []

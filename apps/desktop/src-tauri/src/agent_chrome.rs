@@ -409,7 +409,16 @@ fn reply(msg: &Value, body: (&str, Value)) -> String {
 ///
 /// Also returns the parsed `(method, sessionId)` so a caller tracking the channel's current tab
 /// (`Channels::route_backend`) never has to parse the message a second time.
+#[cfg(test)]
 pub fn filter(raw: &str, downloads: &Path) -> (Filtered, Option<String>, Option<String>) {
+    filter_for(raw, downloads, false)
+}
+
+/// `session`: a shared Claude Code or Codex session's channel (session_browser). Its new tabs open in
+/// a new background window, not a background tab: in a background tab requestAnimationFrame never
+/// fires, so Playwright's click times out; a background window stays "visible" and the front app is
+/// unchanged (spike 2026-10-11). Runs keep today's background tab.
+pub fn filter_for(raw: &str, downloads: &Path, session: bool) -> (Filtered, Option<String>, Option<String>) {
     let Ok(mut msg) = serde_json::from_str::<Value>(raw) else {
         return (Filtered::Pass(raw.to_string()), None, None);
     };
@@ -434,9 +443,9 @@ pub fn filter(raw: &str, downloads: &Path) -> (Filtered, Option<String>, Option<
                 ),
             }
         } else if method == "Target.createTarget" && msg.get("params").is_some_and(Value::is_object) {
-            // A background tab in the agent window: never a new window in front of the person.
+            // A background tab (a run) or a background window (a session): never in front of the person.
             msg["params"]["background"] = json!(true);
-            msg["params"]["newWindow"] = json!(false);
+            msg["params"]["newWindow"] = json!(session);
             Filtered::Pass(msg.to_string())
         } else if method == "Browser.setDownloadBehavior" || method == "Page.setDownloadBehavior" {
             if !msg.get("params").is_some_and(Value::is_object) {
@@ -591,6 +600,16 @@ struct Entry {
     /// The targets those created: never `current`, so the live view does not flip through the
     /// sync tab's page per saved site.
     hidden: HashSet<String>,
+    /// A shared session's channel: Chrome's side goes to this sender (the session's own CDP client
+    /// on this Mac's loopback port), never up the node socket.
+    local: Option<mpsc::Sender<String>>,
+}
+
+impl Entry {
+    fn new(tx: mpsc::Sender<String>, task: tokio::task::JoinHandle<()>, local: Option<mpsc::Sender<String>>) -> Self {
+        Self { tx, task: Some(task), sessions: HashMap::new(), current: None, url: None,
+            hidden_pending: HashSet::new(), hidden: HashSet::new(), local }
+    }
 }
 
 #[derive(Default)]
@@ -690,7 +709,7 @@ impl Channels {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn send_close(&self, channel: &str, code: &'static str) {
+    pub(crate) fn send_close(&self, channel: &str, code: &'static str) {
         let out = self.out.clone();
         let payload = json!({"channel": channel, "code": code});
         tokio::spawn(async move {
@@ -743,7 +762,7 @@ impl Channels {
         }
         self.hooks.epoch.fetch_add(1, Ordering::SeqCst);
         let task = tokio::spawn(self.clone().run(id.to_string(), profile_id, rx));
-        inner.channels.insert(id.to_string(), Entry { tx, task: Some(task), sessions: HashMap::new(), current: None, url: None, hidden_pending: HashSet::new(), hidden: HashSet::new() });
+        inner.channels.insert(id.to_string(), Entry::new(tx, task, None));
         drop(inner);
         if let Some(notice) = payload.get("notice").and_then(Value::as_str) {
             let text: String = notice.chars().filter(|c| !c.is_control()).take(200).collect();
@@ -751,6 +770,39 @@ impl Channels {
                 (self.hooks.notify)(text, None);
             }
         }
+    }
+
+    /// A shared Claude Code or Codex session's channel (session_browser): the same Chrome, filter and
+    /// casts as a run's, but Chrome's side goes to `to_client`. Err(BROWSER_OFF | CAPACITY) at once.
+    pub(crate) fn open_local(&self, id: &str, profile_id: &str, to_client: mpsc::Sender<String>) -> Result<mpsc::Sender<String>, &'static str> {
+        if !(self.hooks.browser_on)() {
+            return Err("BROWSER_OFF");
+        }
+        let mut inner = self.lock();
+        if inner.channels.contains_key(id) || inner.channels.len() >= MAX_CHANNELS {
+            return Err("CAPACITY");
+        }
+        let (tx, rx) = mpsc::channel(1024);
+        if inner.channels.is_empty() {
+            inner.awake = (self.hooks.stay_awake)();
+        }
+        self.hooks.epoch.fetch_add(1, Ordering::SeqCst);
+        let task = tokio::spawn(self.clone().run(id.to_string(), profile_id.to_string(), rx));
+        inner.channels.insert(id.to_string(), Entry::new(tx.clone(), task, Some(to_client)));
+        Ok(tx)
+    }
+
+    /// The session's connection ended here: close its channel and tell the backend, which releases.
+    pub(crate) fn end_local(&self, id: &str) -> bool {
+        let open = self.remove(id);
+        if open {
+            self.send_close(id, "CLOSED");
+        }
+        open
+    }
+
+    pub(crate) fn out(&self) -> EventSender {
+        self.out.clone()
     }
 
     /// Drop a channel (aborting its task unless it is the caller). True if it was open.
@@ -927,7 +979,8 @@ impl Channels {
 
     /// A backend frame through the filter: where it goes next.
     fn route_backend(&self, channel: &str, data: &str) -> Route {
-        let (filtered, method, session_id) = filter(data, &self.hooks.downloads);
+        let session = self.lock().channels.get(channel).is_some_and(|e| e.local.is_some());
+        let (filtered, method, session_id) = filter_for(data, &self.hooks.downloads, session);
         if let (Some(method), Some(session_id)) = (method.as_deref(), session_id.as_deref()) {
             self.note_command(channel, method, session_id);
         }
@@ -961,21 +1014,19 @@ impl Channels {
         }
     }
 
-    /// `Lightbulb.humanInput` frames for every open channel, at most once a second, unless
+    /// `Lightbulb.humanInput` frames for every open run channel, at most once a second, unless
     /// agent (or viewer-injected) input just passed.
     fn human_input_events(&self, now: Instant, at: u64) -> Vec<String> {
         let mut inner = self.lock();
         let recent = |t: Option<Instant>| t.is_some_and(|t| now.saturating_duration_since(t) < AGENT_INPUT_WINDOW);
-        if recent(inner.last_agent_input) || recent(inner.last_human_sent) || inner.channels.is_empty() {
+        // A session's client is not an agent run: it has nothing to yield.
+        let ids: Vec<String> = inner.channels.iter().filter(|(_, e)| e.local.is_none()).map(|(id, _)| id.clone()).collect();
+        if recent(inner.last_agent_input) || recent(inner.last_human_sent) || ids.is_empty() {
             return Vec::new();
         }
         inner.last_human_sent = Some(now);
         let data = json!({"method": "Lightbulb.humanInput", "params": {"at": at}}).to_string();
-        inner
-            .channels
-            .keys()
-            .map(|id| event_text("browser.cdp.frame", json!({"channel": id, "data": data})))
-            .collect()
+        ids.into_iter().map(|id| event_text("browser.cdp.frame", json!({"channel": id, "data": data}))).collect()
     }
 
     async fn human_input(&self) {
@@ -1000,7 +1051,7 @@ impl Channels {
         {
             let inner = self.lock();
             let recent = inner.viewer_sent.get(channel).is_some_and(|t| now.saturating_duration_since(*t) < AGENT_INPUT_WINDOW);
-            if recent || !inner.channels.contains_key(channel) {
+            if recent || !inner.channels.get(channel).is_some_and(|e| e.local.is_none()) {
                 return;
             }
         }
@@ -1019,6 +1070,7 @@ impl Channels {
     }
 
     async fn pump(&self, id: &str, profile_id: &str, rx: &mut mpsc::Receiver<String>) -> &'static str {
+        let local = self.lock().channels.get(id).and_then(|e| e.local.clone());
         let endpoint = match (self.hooks.ensure)().await {
             Ok(e) => e,
             Err((code, message)) => {
@@ -1046,10 +1098,7 @@ impl Channels {
                 msg = from_chrome.next() => match msg {
                     Some(Ok(Message::Text(text))) => {
                         self.note_target_event(id, text.as_str());
-                        match envelope(id, text.as_str()) {
-                            Ok(frame) => if self.out.send_text(frame).await.is_err() { return "CLOSED" },
-                            Err(code) => return code,
-                        }
+                        if let Err(code) = self.deliver(id, local.as_ref(), text.to_string()).await { return code }
                     }
                     Some(Ok(_)) => {}
                     _ => return "CLOSED",
@@ -1058,12 +1107,21 @@ impl Channels {
                     None => return "CLOSED",
                     Some(data) => match self.route_backend(id, &data) {
                         Route::Chrome(text) => if to_chrome.send(Message::Text(text.into())).await.is_err() { return "CLOSED" },
-                        Route::Backend(text) => match envelope(id, &text) {
-                            Ok(frame) => if self.out.send_text(frame).await.is_err() { return "CLOSED" },
-                            Err(code) => return code,
-                        },
+                        Route::Backend(text) => if let Err(code) = self.deliver(id, local.as_ref(), text).await { return code },
                     },
                 },
+            }
+        }
+    }
+
+    /// Chrome's text (or an answer the filter gave) to whoever drives the channel: a session's own
+    /// client, else the backend as a `browser.cdp.frame`.
+    async fn deliver(&self, id: &str, local: Option<&mpsc::Sender<String>>, text: String) -> Result<(), &'static str> {
+        match local {
+            Some(client) => client.send(text).await.map_err(|_| "CLOSED"),
+            None => {
+                let frame = envelope(id, &text)?;
+                self.out.send_text(frame).await.map_err(|_| "CLOSED")
             }
         }
     }
@@ -1555,7 +1613,7 @@ mod tests {
     // ---- Channels with fake side effects -----------------------------------------------
 
     #[derive(Default)]
-    struct Counts {
+    pub(super) struct Counts {
         notified: AtomicUsize,
         tags: Mutex<Vec<Option<String>>>,
         awake: Arc<AtomicUsize>,
@@ -1572,7 +1630,7 @@ mod tests {
         }
     }
 
-    fn fake(idle: Duration) -> (Channels, Arc<Counts>, mpsc::Receiver<Message>) {
+    pub(super) fn fake(idle: Duration) -> (Channels, Arc<Counts>, mpsc::Receiver<Message>) {
         fake_with_epoch(idle, Arc::default())
     }
 
@@ -2000,4 +2058,72 @@ mod tests {
         assert!(ch.lock().casts.is_empty());
         ch.on_event("browser.cast.input", &json!({"channel": "nope", "events": []}));
     }
+
+    fn local(ch: &Channels, id: &str) -> (Result<mpsc::Sender<String>, &'static str>, mpsc::Receiver<String>) {
+        let (tx, rx) = mpsc::channel(8);
+        (ch.open_local(id, "p", tx), rx)
+    }
+
+    #[test]
+    fn a_session_channel_opens_new_tabs_in_a_background_window() {
+        let raw = call("Target.createTarget", json!({"url": "https://a.com"}));
+        let Filtered::Pass(out) = filter_for(&raw, &dl(), true).0 else { panic!() };
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!((v["params"]["background"].clone(), v["params"]["newWindow"].clone()), (json!(true), json!(true)));
+        // chrome-devtools-mcp resize_page: answered, never run (already in SWALLOWED).
+        assert!(matches!(filter_for(&call("Browser.setContentsSize", json!({})), &dl(), true).0, Filtered::Answer(_)));
+    }
+
+    #[tokio::test]
+    async fn a_fifth_channel_local_or_not_is_capacity() {
+        let (ch, _, _rx) = fake(Duration::from_secs(600));
+        for id in ["a", "b", "c"] {
+            open(&ch, id);
+        }
+        let (first, _c1) = local(&ch, "s1");
+        assert!(first.is_ok());
+        let (fifth, _c2) = local(&ch, "s2");
+        assert_eq!(fifth.err(), Some("CAPACITY"));
+    }
+
+    #[tokio::test]
+    async fn a_session_channel_never_gets_the_runs_human_input_signal() {
+        let (ch, _, mut rx) = fake(Duration::from_secs(600));
+        open(&ch, "a");
+        let (_tx, _client) = local(&ch, "s1");
+        let events = ch.human_input_events(Instant::now(), 1);
+        assert_eq!(events.len(), 1, "only the run's channel");
+        assert!(events[0].contains("\"channel\":\"a\""));
+        ch.human_input_now("s1");
+        assert!(next_frame(&mut rx).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn chromes_side_of_a_session_channel_goes_to_its_client_not_the_backend() {
+        let (ch, _, mut rx) = fake(Duration::from_secs(600));
+        let (client_tx, mut client) = mpsc::channel(8);
+        ch.deliver("s1", Some(&client_tx), "{\"id\":1,\"result\":{}}".into()).await.unwrap();
+        assert_eq!(client.recv().await.as_deref(), Some("{\"id\":1,\"result\":{}}"));
+        assert!(next_frame(&mut rx).await.is_none(), "nothing up the node socket");
+        ch.deliver("r1", None, "{}".into()).await.unwrap();
+        assert_eq!(next_frame(&mut rx).await.unwrap()["event"], "browser.cdp.frame");
+    }
+
+    #[tokio::test]
+    async fn ending_a_session_channel_tells_the_backend_once() {
+        let (ch, _, mut rx) = fake(Duration::from_secs(600));
+        let (_tx, _client) = local(&ch, "s1");
+        assert!(ch.end_local("s1"));
+        let v = next_frame(&mut rx).await.expect("a close");
+        assert_eq!((v["event"].as_str(), v["payload"]["channel"].as_str(), v["payload"]["code"].as_str()),
+            (Some("browser.cdp.close"), Some("s1"), Some("CLOSED")));
+        assert!(!ch.end_local("s1"));
+        assert!(next_frame(&mut rx).await.is_none());
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_channels() -> (Channels, mpsc::Receiver<Message>) {
+    let (channels, _, rx) = tests::fake(Duration::from_secs(600));
+    (channels, rx)
 }

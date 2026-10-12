@@ -31,31 +31,39 @@ fn cli_home(command: &mut Command, home: &Path) {
     }
 }
 
-fn configured(home: &Path, cli: &Path, provider: &str, name: &str) -> io::Result<Option<String>> {
-    let doc = if provider == "claude" {
-        let path = home.join(".claude.json");
-        match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice::<Value>(&bytes).map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidData, "Claude MCP config invalid")
-            })?,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+/// The session browser's MCP entry (spec 2026-10-11): Google's chrome-devtools-mcp attached to this
+/// Mac's session-browser port. We write no browser tools of our own.
+pub(super) const BROWSER_SERVER_NAME: &str = "lightbulb-browser";
+
+pub(super) fn browser_command() -> Vec<String> {
+    vec!["npx".into(), "-y".into(), "chrome-devtools-mcp@latest".into(), "--browserUrl".into(),
+        format!("http://127.0.0.1:{}", crate::session_browser::PORT)]
+}
+
+/// The MCP server entry `name` as the provider stores it (`{command, args}`); Null when absent.
+fn entry(home: &Path, cli: &Path, provider: &str, name: &str) -> io::Result<Value> {
+    if provider == "claude" {
+        let doc = match std::fs::read(home.join(".claude.json")) {
+            Ok(bytes) => serde_json::from_slice::<Value>(&bytes)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Claude MCP config invalid"))?,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Value::Null),
             Err(e) => return Err(e),
-        }
-    } else {
-        let mut command = Command::new(cli);
-        cli_home(&mut command, home);
-        let output = command.args(["mcp", "get", name, "--json"]).output()?;
-        if !output.status.success() {
-            return Ok(None);
-        }
-        serde_json::from_slice::<Value>(&output.stdout)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Codex MCP config invalid"))?
-    };
-    let entry = if provider == "claude" {
-        &doc["mcpServers"][name]
-    } else {
-        &doc["transport"]
-    };
+        };
+        return Ok(doc["mcpServers"][name].clone());
+    }
+    let mut command = Command::new(cli);
+    cli_home(&mut command, home);
+    let output = command.args(["mcp", "get", name, "--json"]).output()?;
+    if !output.status.success() {
+        return Ok(Value::Null);
+    }
+    let doc = serde_json::from_slice::<Value>(&output.stdout)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Codex MCP config invalid"))?;
+    Ok(doc["transport"].clone())
+}
+
+fn configured(home: &Path, cli: &Path, provider: &str, name: &str) -> io::Result<Option<String>> {
+    let entry = entry(home, cli, provider, name)?;
     if entry.is_null() {
         return Ok(None);
     }
@@ -71,7 +79,7 @@ fn configured(home: &Path, cli: &Path, provider: &str, name: &str) -> io::Result
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "MCP server command invalid"))
 }
 
-fn change(home: &Path, cli: &Path, provider: &str, verb: &str, name: &str, executable: &Path) -> io::Result<()> {
+fn change(home: &Path, cli: &Path, provider: &str, verb: &str, name: &str, line: &[&std::ffi::OsStr]) -> io::Result<()> {
     let mut command = Command::new(cli);
     cli_home(&mut command, home);
     if provider == "claude" {
@@ -80,12 +88,38 @@ fn change(home: &Path, cli: &Path, provider: &str, verb: &str, name: &str, execu
         command.args(["mcp", verb, name]);
     }
     if verb == "add" {
-        command.arg("--").arg(executable).arg("session-mcp");
+        command.arg("--").args(line);
     }
     if command.output()?.status.success() {
         Ok(())
     } else {
         Err(io::Error::other("native MCP config change failed"))
+    }
+}
+
+/// `lightbulb-browser`: added while sharing is on, removed (only if it is ours) when it goes off.
+/// A server of that name that is not ours is left alone and reported.
+fn configure_browser(home: &Path, cli: &Path, provider: &str, enabled: bool, notes: &mut Vec<String>) {
+    let ours = browser_command();
+    let Ok(current) = entry(home, cli, provider, BROWSER_SERVER_NAME) else {
+        return notes.push(format!("{provider} MCP settings are unavailable"));
+    };
+    let is_ours = current["command"].as_str() == Some(ours[0].as_str()) && current["args"] == json!(&ours[1..]);
+    if !enabled {
+        if is_ours && change(home, cli, provider, "remove", BROWSER_SERVER_NAME, &[]).is_err() {
+            notes.push(format!("{provider} {BROWSER_SERVER_NAME} could not be removed"));
+        }
+        return;
+    }
+    if is_ours {
+        return;
+    }
+    if !current.is_null() {
+        return notes.push(format!("{provider} already has a {BROWSER_SERVER_NAME} server that is not Lightbulb's; it was left as it is"));
+    }
+    let line: Vec<&std::ffi::OsStr> = ours.iter().map(std::ffi::OsStr::new).collect();
+    if change(home, cli, provider, "add", BROWSER_SERVER_NAME, &line).is_err() {
+        notes.push(format!("{provider} {BROWSER_SERVER_NAME} could not be installed"));
     }
 }
 
@@ -185,14 +219,16 @@ pub(super) fn configure(home: &Path, executable: &Path, enabled: bool) -> Vec<St
         let Some(cli) = super::provider_program(home, provider) else {
             continue;
         };
+        configure_browser(home, &cli, provider, enabled, &mut notes);
+        let ours_line = [executable.as_os_str(), std::ffi::OsStr::new("session-mcp")];
         // Any `session-mcp` under the old name is ours, whatever path it named.
         if let Ok(Some(_)) = configured(home, &cli, provider, LEGACY_SERVER_NAME) {
-            let _ = change(home, &cli, provider, "remove", LEGACY_SERVER_NAME, executable);
+            let _ = change(home, &cli, provider, "remove", LEGACY_SERVER_NAME, &[]);
         }
         let current = configured(home, &cli, provider, SERVER_NAME);
         let ours = matches!(&current, Ok(Some(c)) if *c == executable.to_string_lossy());
         if !enabled {
-            if ours && change(home, &cli, provider, "remove", SERVER_NAME, executable).is_err() {
+            if ours && change(home, &cli, provider, "remove", SERVER_NAME, &[]).is_err() {
                 notes.push(format!("{provider} native tools could not be removed"));
             }
             continue;
@@ -209,11 +245,11 @@ pub(super) fn configure(home: &Path, executable: &Path, enabled: bool) -> Vec<St
                 continue;
             }
         };
-        if (stale || foreign) && change(home, &cli, provider, "remove", SERVER_NAME, executable).is_err() {
+        if (stale || foreign) && change(home, &cli, provider, "remove", SERVER_NAME, &[]).is_err() {
             notes.push(format!("{provider} has a different {SERVER_NAME} server that could not be replaced"));
             continue;
         }
-        if !ours && change(home, &cli, provider, "add", SERVER_NAME, executable).is_err() {
+        if !ours && change(home, &cli, provider, "add", SERVER_NAME, &ours_line).is_err() {
             notes.push(format!("{provider} native tools could not be installed"));
             continue;
         }
@@ -601,6 +637,45 @@ json.dump(doc, open(p, "w"))
         // Disable removes what it wrote and restores nothing.
         configure(h, exe, false);
         assert_eq!(status(h, exe, "claude"), "missing");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sharing_on_adds_the_browser_entry_and_off_removes_only_ours() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        let bin = h.join(".local/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        // A fake `claude` CLI that edits ~/.claude.json the way `claude mcp` does.
+        let fake = bin.join("claude");
+        std::fs::write(&fake, r#"#!/usr/bin/env python3
+import json, os, sys
+p = os.path.join(os.environ["HOME"], ".claude.json")
+doc = json.load(open(p)) if os.path.exists(p) else {}
+servers = doc.setdefault("mcpServers", {})
+a = sys.argv[1:]
+if a[:2] == ["mcp", "remove"]: servers.pop(a[-1], None)
+elif a[:2] == ["mcp", "add"]: servers[a[4]] = {"command": a[6], "args": a[7:]}
+json.dump(doc, open(p, "w"))
+"#).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if super::super::provider_program(h, "claude") != std::fs::canonicalize(&fake).ok() {
+            return; // like enable_replaces above: provider discovery may not look in this temp home
+        }
+        let exe = Path::new("/Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop");
+        let servers = || serde_json::from_str::<Value>(&std::fs::read_to_string(h.join(".claude.json")).unwrap()).unwrap()["mcpServers"].clone();
+        configure(h, exe, true);
+        assert_eq!(servers()[BROWSER_SERVER_NAME], json!({"command": "npx",
+            "args": ["-y", "chrome-devtools-mcp@latest", "--browserUrl", "http://127.0.0.1:39222"]}));
+        configure(h, exe, false);
+        assert!(servers()[BROWSER_SERVER_NAME].is_null());
+        std::fs::write(h.join(".claude.json"), json!({"mcpServers": {BROWSER_SERVER_NAME: {"command": "/bin/other", "args": []}}}).to_string()).unwrap();
+        let notes = configure(h, exe, true);
+        assert!(notes.iter().any(|n| n.contains("not Lightbulb's")), "{notes:?}");
+        assert_eq!(servers()[BROWSER_SERVER_NAME]["command"], "/bin/other");
+        configure(h, exe, false);
+        assert_eq!(servers()[BROWSER_SERVER_NAME]["command"], "/bin/other", "someone else's is never removed");
     }
 
     #[test]

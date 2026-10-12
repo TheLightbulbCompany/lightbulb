@@ -22,6 +22,7 @@ pub mod screen;
 mod session_continue;
 mod session_pickup;
 mod session_start;
+mod session_browser;
 mod shell_integration;
 pub mod desktop_permissions;
 pub mod subprocess;
@@ -1981,6 +1982,8 @@ end tell"#,
             }
             // Uploads staged before the last quit (the idle quit may never have run).
             let _ = std::fs::remove_dir_all(agent_chrome::downloads_dir().join(agent_chrome::UPLOADS));
+            // The Lightbulb browser port for shared Claude Code and Codex sessions (spec 2026-10-11).
+            tauri::async_runtime::spawn(session_browser::serve(app.handle().clone()));
 
             // Force-register flickmeon:// with this running binary's path so
             // macOS LaunchServices dispatches deep links here. Without

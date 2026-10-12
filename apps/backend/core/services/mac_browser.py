@@ -29,7 +29,7 @@ from core.observability.metrics import put_metric
 from core.repositories import container_repo
 from core.services import browser_control, desktop_execution, mac_cdp, task_address
 from core.services.desktop_execution import DesktopError
-from core.services.node_broker import CAST_COMMAND
+from core.services.node_broker import BUSY_MESSAGE, CAST_COMMAND
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ MESSAGES = {
     # Unpaired, or its member removed from the workspace.
     "browser_access_ended": "Browser access on that Mac was turned off.",
     # A channel cap or byte budget on the Mac's socket (the door's 4503).
-    "mac_browser_busy": "This Mac's browser is busy; try again shortly.",
+    "mac_browser_busy": BUSY_MESSAGE,
     "chrome_missing": "Google Chrome isn't installed on that Mac. Install it there, or use the cloud browser.",
     "chrome_start_failed": "Chrome on that Mac didn't start. Try again in a moment.",
     "browser_profile_held_by_another_workspace": (
@@ -753,6 +753,8 @@ async def acquire(
         "cdpUrl": mac_cdp.door_url(target, mac_cdp.mint(target=target, profile_id=profile_id, auth=auth)),
         "deviceName": await _device_name(owner, native),
         "humanInputAt": 0,
+        # The profile this lease is for: a shared session's channel opens on it (session_browser).
+        "profileId": profile_id,
         "sync": decided["sync"],
     }
 

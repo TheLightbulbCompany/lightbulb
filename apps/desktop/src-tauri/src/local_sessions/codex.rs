@@ -100,6 +100,23 @@ pub(super) fn daemon_release(home: &Path, execution: &Process) -> Option<(PathBu
     (meta.is_file() && meta.mode() & 0o022 == 0).then(|| (path, version.to_owned()))
 }
 
+/// The process can serve more than one conversation at once, so one of them cannot be told from
+/// another by process: the Codex app's own, Codex's shared app-server daemon, or the ChatGPT app's
+/// bundled codex.
+pub(super) fn serves_many(session: &NativeSession) -> bool {
+    serves_many_in(session, std::env::var_os("HOME").as_deref().map(Path::new))
+}
+
+/// A REFUSAL check, so deliberately loose: no mode, symlink or version validation, which would
+/// let an odd install read as a single-conversation TUI. Any app bundle, or any path under the
+/// managed daemon's directory, counts.
+fn serves_many_in(session: &NativeSession, home: Option<&Path>) -> bool {
+    let exe = &session.process.executable;
+    session.app
+        || home.is_none_or(|home| exe.starts_with(home.join(".codex/packages/app-server-daemon")))
+        || exe.components().any(|part| part.as_os_str().to_str().is_some_and(|name| name.ends_with(".app")))
+}
+
 pub(super) fn daemon_program(home: &Path, execution: &Process) -> Option<PathBuf> {
     daemon_release(home, execution).map(|(path, _)| path)
 }
@@ -1228,6 +1245,21 @@ pub(super) fn configure_hooks(home: &Path, executable: &Path, enabled: bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn serves_many_is_loose_about_apps_and_the_daemon_directory() {
+        let mut session = super::super::transport::tests::test_mirror("33333333-3333-4333-8333-333333333333", "g").native;
+        session.app = false;
+        let home = Path::new("/Users/u");
+        let mut at = |exe: &str| {
+            session.process.executable = PathBuf::from(exe);
+            serves_many_in(&session, Some(home))
+        };
+        assert!(at("/Applications/Codex.app/Contents/Resources/codex"));
+        // Group-writable or oddly named release: the strict trust checks would reject it.
+        assert!(at("/Users/u/.codex/packages/app-server-daemon/releases/odd-dir/bin/codex"));
+        assert!(!at("/opt/homebrew/bin/codex"));
+    }
 
     #[tokio::test]
     async fn local_sessions_codex_control_uses_websocket_on_unix_socket() {

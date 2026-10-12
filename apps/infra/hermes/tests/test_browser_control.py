@@ -820,3 +820,35 @@ def test_stop_during_a_refresh_never_raises(monkeypatch, clean):
     assert browser_control._upstream_of(state) == browser_control.cdp_mux.CLOUD
     assert browser_control.show() is False
     assert browser_control._run_mac_sync(state, {"syncId": "x", "steps": [{"action": "save"}]}) is False
+
+
+SESSION_UP = "mac:mac-1:session-11111111-1111-4111-8111-111111111111"
+
+
+def test_mac_checkpoint_runs_the_steps_on_the_door_then_forgets_it(monkeypatch, clean):
+    ran = _checkpoints(monkeypatch)
+    params = {"doorUrl": DOOR, "generation": "g1", "upstream": SESSION_UP,
+              "steps": [{"action": "save"}, {"action": "load"}]}
+    assert browser_control.mac_checkpoint(params) == {"ok": True}
+    assert clean["upstream"] == [(DOOR, "g1", SESSION_UP)]
+    assert [p["cdpUrl"] for p in ran] == [f"ws://mux/{SESSION_UP}/sync:{SESSION_UP}"] * 2
+    assert [(p["action"], p["source"]) for p in ran] == [("save", "mac"), ("load", "mac")]
+    assert (f"sync:{SESSION_UP}", SESSION_UP) in clean["closed"] and clean["dropped"] == [SESSION_UP]
+
+
+def test_mac_checkpoint_stops_at_a_failed_step_and_still_forgets_the_door(monkeypatch, clean):
+    ran = _checkpoints(monkeypatch, fail="save")
+    params = {"doorUrl": DOOR, "generation": "g1", "upstream": SESSION_UP,
+              "steps": [{"action": "save"}, {"action": "load"}]}
+    assert browser_control.mac_checkpoint(params) == {"ok": False}
+    assert [p["action"] for p in ran] == ["save"]
+    assert clean["dropped"] == [SESSION_UP]
+
+
+@pytest.mark.parametrize("bad", [{"doorUrl": "wss://evil.example/x"}, {"doorUrl": "ws://a/api/v1/other/t"},
+                                 {"upstream": "cloud"}, {"steps": []}])
+def test_mac_checkpoint_refuses_anything_but_a_backend_door(clean, bad):
+    params = {"doorUrl": DOOR, "generation": "g1", "upstream": SESSION_UP, "steps": [{"action": "load"}]} | bad
+    with pytest.raises(ValueError):
+        browser_control.mac_checkpoint(params)
+    assert clean["upstream"] == []

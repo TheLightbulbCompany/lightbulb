@@ -21,13 +21,14 @@ RUN = {"runId": "r1", "agentId": "a1", "family": "room"}
 def api(monkeypatch):
     from routers import container, desktop_execution as desktop_router
 
-    state = {"ended": False, "authorized": []}
+    state = {"ended": False, "authorized": [], "allow_session": []}
 
     async def get_row(owner, consistent=False):
         return {"hook_token": "hook-good"}
 
-    async def authorize_run(owner, run_id, agent_id, family, *, active):
+    async def authorize_run(owner, run_id, agent_id, family, *, active, allow_session=False):
         state["authorized"].append(active)
+        state["allow_session"].append(allow_session)
         if state["ended"] and active:
             raise DesktopError("run_not_active", 403)
         return ROOM
@@ -120,6 +121,7 @@ def test_internal_mac_acquire_reauthorizes_active(api):
     response = _internal(client, body)
     assert response.status_code == 200 and response.json() == {"name": "acquire"}
     assert state["authorized"] == [True]
+    assert state["allow_session"] == [True]  # the /internal route authorizes Mac actions with allow_session
     mac_browser.acquire.assert_awaited_once_with(ROOM, "mac1", forwarded=True, budget_s=25)
     _internal(client, body | {"request": {"deviceId": "mac1", "budgetS": 19.5}})
     assert mac_browser.acquire.await_args.kwargs == {"forwarded": True, "budget_s": 19.5}

@@ -2594,3 +2594,20 @@ async def test_hints_for_one_person_coalesce_while_a_fan_out_is_running(monkeypa
     await asyncio.gather(*list(relay._hint_tasks))
     assert len(calls) == 2  # exactly one follow-up carried the coalesced hints
     assert "org_1" not in {k[0] for k in relay._hint_running}
+
+
+@pytest.mark.asyncio
+async def test_an_open_session_browser_shows_until_its_lease_and_survives_reregistration(transport):
+    sid = await start(transport)
+    table = messaging_repo._table()
+    table.update_item(
+        Key={"pk": repo.session_pk(OWNER, sid), "sk": "META"},
+        UpdateExpression="SET browserOpen = :b, browserPlace = :p",
+        ExpressionAttributeValues={":b": {"where": "mac", "until": int(time.time()) + 60}, ":p": "cloud"},
+    )
+    row = await repo.get_session(OWNER, sid)
+    assert service._session_public(row, ALICE.user_id).browser == "mac"
+    await relay(transport).handle_message("conn-1", registration())
+    row = await repo.get_session(OWNER, sid)
+    assert row["browserOpen"]["where"] == "mac" and row["browserPlace"] == "cloud"
+    assert service.browser_open(row, now=int(time.time()) + 61) is None

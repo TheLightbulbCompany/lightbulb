@@ -498,6 +498,11 @@ pub(crate) fn launch_scope(app: &tauri::AppHandle) -> Result<String> {
     }
     Ok(scope_key(&enrollment))
 }
+
+/// The dir of this Mac's shared-session mirrors (native_tools reads it), while sharing is on.
+pub(crate) fn session_scope(app: &tauri::AppHandle) -> Result<PathBuf> {
+    Ok(state_dir(app)?.join(launch_scope(app)?))
+}
 fn state_dir(app: &tauri::AppHandle) -> Result<PathBuf> {
     let app_dir = app
         .path()

@@ -11,6 +11,8 @@ const WATCH_EVERY_MS = 15_000;
 const STALE_AFTER_MS = 30_000;
 /** A viewer that lost frames asks the Mac for its lines again at most this often: each ask is a history burst out of the session's budget. */
 const REPAIR_EVERY_MS = 30_000;
+// How long a view's own fresh ask has to bring its snapshot before a ping may ask again.
+const FRESH_ASK_WAIT_MS = SNAPSHOT_WAIT_MS + 5_000;
 const decode = (data: string) => Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
 /** Clears the visible screen only: xterm's erase never pushes it into scrollback, so history stays.
  *  First it leaves the alternate screen and drops the scroll region, so modes the last screen set
@@ -106,6 +108,9 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
   const asked = useRef("");
   const watchNow = useRef(watch);
   watchNow.current = watch;
+  // When this view's own fresh ask went out; 0 once a snapshot came. Until then the view has no
+  // picture, so every ping looks ahead of it: a repair from one would cost a second history burst.
+  const freshAskAt = useRef(0);
   // The backend refused a new viewer: this session is full (LOCAL_SESSION_VIEWERS_FULL), with its message.
   const [full, setFull] = useState<string | null>(null);
   // While people watch on the "Anyone with the link" page: how many, and how many teammates. Never who.
@@ -178,6 +183,7 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     const start = (fresh: boolean) => {
       clearInterval(timer);
       ping(fresh);
+      if (fresh) freshAskAt.current = Date.now();
       asked.current = screenKey;
       setWatching(true);
       timer = setInterval(() => { if (!refused) ping(false); }, WATCH_EVERY_MS);
@@ -381,10 +387,12 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
       if (current) { setLive(true); onLive(true); }
       // A ping after the Mac sent frames (seq > 0) that this view's picture lacks (none yet, another run, or a frame lost): a quiet relay sends no more, so ask for a fresh picture.
       const gap = frame.kind === "ping" && frame.seq > 0 && (!order.synced || frame.epoch > order.epoch || (frame.epoch === order.epoch && frame.seq > order.next));
+      if (frame.kind === "snapshot") freshAskAt.current = 0;
+      const waiting = Date.now() - freshAskAt.current < FRESH_ASK_WAIT_MS;
       const step = receiveScreen(order, frame);
       order = step.order;
       apply(step.write);
-      repair(step.lost || gap);
+      repair(step.lost || (gap && !waiting));
       if (!snapshotWaits(order)) { clearTimeout(settle); settle = undefined; }
       else settle ??= setTimeout(() => { settle = undefined; const late = settleScreen(order); order = late.order; apply(late.write); repair(late.lost); }, SNAPSHOT_WAIT_MS);
     });

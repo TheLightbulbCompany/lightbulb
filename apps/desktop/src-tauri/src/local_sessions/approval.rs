@@ -709,7 +709,8 @@ mod tests {
         let (s, full) = shown_input("Write", &json!({"file_path": "/x", "content": "ghp_abcdefghijklmnopqrstuvwxyz0123456789"}));
         assert!(!full);
         assert!(s["content"].as_str().unwrap().contains("[redacted]"));
-        for content in [r#"{"password": "$Pa55word"}"#, "password: $Secret1\n", "PASSWORD=${PREFIX}hunter2\n", "password=hunter2(\n"] {
+        for content in [r#"{"password": "$Pa55word"}"#, "password: $Secret1\n", "PASSWORD=${PREFIX}hunter2\n", "password=hunter2(\n",
+            "password=f(x)hunter2\n", "password: |\n  hunter2\n", r#"{"password": "abc\"hunter2"}"#] {
             let (s, full) = shown_input("Write", &json!({"file_path": "/x/config", "content": content}));
             assert!(!full, "a quoted or mixed-case `$` secret is redacted: {s}");
             assert!(s["content"].as_str().unwrap().contains("[redacted]"));

@@ -175,105 +175,115 @@ fn looks_jwt(word: &str) -> bool {
             .all(|p| p.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')))
 }
 
-/// A value an assignment leaves as written. The WHOLE value must be exactly one of these forms,
-/// anchored at both ends; anything else under a secret-named key is redacted:
-/// - empty, all digits, or a type/placeholder word (`changeme`, `string`, `null`, …);
-/// - a whole `<...>` or `{{...}}` placeholder;
-/// - unquoted only: an env reference `$NAME` / `${NAME}` (NAME = `[A-Z_][A-Z0-9_]*`);
-/// - unquoted only: code -- a dotted reference (`self.token`, `os.environ`) or a call/index on a
-///   name (`getToken(req)`, `secrets[0]`) whose every part is a short identifier. A literal
-///   cannot hide in it: each part is at most 40 identifier characters and is not itself
-///   credential-shaped.
+/// The secret-bearing names an assignment value is redacted under.
+const SECRET_NAME: &str =
+    r"[a-z0-9_.-]*(?:password|passwd|secret|token|api[-_]?key|private[-_]?key|access[-_]?key|database_url|dsn)[a-z0-9_.-]*";
+
+/// A value an assignment leaves as written. Only when the WHOLE value is one of: empty, all
+/// digits, a placeholder word, a whole `<...>` or `{{...}}`, or (unquoted) an all-caps env
+/// reference `$NAME` / `${NAME}`. Everything else -- code included -- is redacted.
 fn kept_value(v: &str, quoted: bool) -> bool {
     static ENV: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(r"^(?:\$[A-Z_][A-Z0-9_]*|\$\{[A-Z_][A-Z0-9_]*\})$").expect("env pattern")
     });
-    static CODE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        const ID: &str = r"[A-Za-z_][A-Za-z0-9_]{0,39}";
-        regex::Regex::new(&format!(
-            r"^{ID}(?:\.{ID})*(?:\((?:{ID}(?:\.{ID})*)?\)|\[(?:{ID}(?:\.{ID})*|[0-9]+)\])*$"
-        ))
-        .expect("code pattern")
-    });
     let lower = v.to_ascii_lowercase();
-    let code = || {
-        CODE.is_match(v)
-            && (v.contains('.') || v.contains(['(', '[']))
-            && !v
-                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-                .any(looks_secret)
-    };
     v.is_empty()
         || v.chars().all(|c| c.is_ascii_digit())
         || matches!(lower.as_str(), "changeme" | "string" | "str" | "number" | "int" | "bool"
             | "boolean" | "any" | "null" | "none" | "nil" | "true" | "false" | "undefined" | "[redacted]")
         || (v.len() > 2 && v.starts_with('<') && v.ends_with('>') && !v[1..v.len() - 1].contains(['<', '>']))
         || (v.len() > 4 && v.starts_with("{{") && v.ends_with("}}"))
-        || (!quoted && (ENV.is_match(v) || code()))
+        || (!quoted && ENV.is_match(v))
 }
 
-/// An unquoted value runs to its terminator; a trailing `}` it does not open closes the
-/// surrounding JSON/brace instead and is not part of it. Returns the value's length.
+/// The length of an unquoted value: to its terminator, less any trailing `}` it did not open
+/// (that one closes the surrounding JSON). One that reaches `(` or `[` was matched to the end of
+/// its line and is never kept. O(n).
 fn value_len(v: &str) -> usize {
+    if v.contains(['(', '[']) {
+        return v.len();
+    }
+    let opens = v.matches('{').count();
+    let mut closes = v.matches('}').count();
     let mut end = v.len();
-    while v[..end].ends_with('}') && v[..end].matches('}').count() > v[..end].matches('{').count() {
+    while closes > opens && v[..end].ends_with('}') {
         end -= 1;
+        closes -= 1;
     }
     end
 }
 
-/// How much of an unquoted value to keep or redact. One that opens `(` or `[` was matched to the
-/// end of its line (an argument can be a quoted literal); it is kept only if its call/index part,
-/// closed, is code by `kept_value`. Otherwise the whole rest of the line is redacted.
-fn bare_extent(v: &str, quoted: bool) -> (usize, bool) {
-    let Some(open) = v.find(['(', '[']) else {
-        let end = value_len(v);
-        return (end, kept_value(&v[..end], quoted));
-    };
-    let mut depth = 0i32;
-    for (i, c) in v.char_indices().skip_while(|(i, _)| *i < open) {
-        depth += match c {
-            '(' | '[' => 1,
-            ')' | ']' => -1,
-            _ => 0,
-        };
-        if depth == 0 && !v[i + 1..].starts_with(['(', '[']) {
-            let end = i + 1;
-            return if kept_value(&v[..end], quoted) { (end, true) } else { (v.len(), false) };
-        }
-    }
-    (v.len(), false)
-}
-
 /// `NAME=value`, `NAME: value` and `"NAME": "value"` where the name says it holds a secret
 /// (a `.env`, `~/.aws/credentials`, a JSON config): the value becomes "[redacted]", the name
-/// stays so the reader sees what it was. Placeholders and code-shaped values stay.
+/// stays so the reader sees what it was. One linear pass; each match is decided once.
 fn redact_assignments(text: &str) -> String {
     static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(concat!(
-            r#"(?i)\b(?P<name>[a-z0-9_.-]*(?:password|passwd|secret|token|api[-_]?key|private[-_]?key|access[-_]?key|database_url|dsn)[a-z0-9_.-]*)"#,
+        regex::Regex::new(&format!(
+            "{}{}{}",
+            format_args!(r#"(?i)\b(?P<name>{SECRET_NAME})"#),
             r#"(?P<sep>["']?[ \t]*(?::=|[:=])[ \t]*)"#,
-            r#"(?:"(?P<dq>[^"\n]*)"|'(?P<sq>[^'\n]*)'|(?P<bare>[^\s"',;=(\[][^\s"',;(\[]*(?:[(\[][^\n]*)?))"#,
+            // Quoted (escapes inside), an unterminated quote (to the end of the line), or bare;
+            // a bare value that reaches `(`/`[` runs to the end of the line.
+            r#"(?:"(?P<dq>(?:[^"\\\n]|\\.)*)"|'(?P<sq>(?:[^'\\\n]|\\.)*)'|["'](?P<open>[^\n]*)|(?P<bare>[^\s"',;=(\[][^\s"',;(\[]*(?:[(\[][^\n]*)?))"#,
         ))
         .expect("assignment pattern")
     });
     RE.replace_all(text, |c: &regex::Captures| {
         let all = &c[0];
-        let (value, quoted) = match (c.name("dq"), c.name("sq"), c.name("bare")) {
-            (Some(v), _, _) | (_, Some(v), _) => (v, true),
-            (_, _, Some(v)) => (v, false),
-            _ => return all.to_owned(),
+        let base = c.get(0).unwrap().start();
+        let (value, len, keep) = if let Some(v) = c.name("dq").or(c.name("sq")) {
+            (v, v.len(), kept_value(v.as_str(), true))
+        } else if let Some(v) = c.name("open") {
+            (v, v.len(), false)
+        } else if let Some(v) = c.name("bare") {
+            let len = value_len(v.as_str());
+            (v, len, kept_value(&v.as_str()[..len], false))
+        } else {
+            return all.to_owned();
         };
-        let start = value.start() - c.get(0).unwrap().start();
-        let (len, keep) = if quoted { (value.len(), kept_value(value.as_str(), true)) } else { bare_extent(value.as_str(), false) };
-        let end = start + len;
         if keep {
-            // A kept call's match ran to the end of its line: the rest is scanned on its own.
-            return format!("{}{}", &all[..end], redact_assignments(&all[end..]));
+            return all.to_owned();
         }
-        format!("{}[redacted]{}", &all[..start], &all[end..])
+        let start = value.start() - base;
+        format!("{}[redacted]{}", &all[..start], &all[start + len..])
     })
     .into_owned()
+}
+
+/// A YAML block scalar under a secret name (`password: |`, `key: >-`): every following line that
+/// is blank or more indented than the key is the value, and is redacted. One pass over lines.
+fn redact_yaml_blocks(text: &str) -> String {
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(&format!(r#"(?i)^(?P<indent>[ \t]*)["']?{SECRET_NAME}["']?[ \t]*:[ \t]*[|>][-+0-9]*[ \t]*$"#))
+            .expect("yaml block pattern")
+    });
+    if !text.contains(['|', '>']) {
+        return text.to_owned();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut block: Option<usize> = None;
+    for line in text.split_inclusive('\n') {
+        let body = line.trim_end_matches(['\n', '\r']);
+        let indent = body.len() - body.trim_start_matches([' ', '\t']).len();
+        if let Some(key_indent) = block {
+            if body.trim().is_empty() {
+                out.push_str(line);
+                continue;
+            }
+            if indent > key_indent {
+                out.push_str(&body[..indent]);
+                out.push_str("[redacted]");
+                out.push_str(&line[body.len()..]);
+                continue;
+            }
+            block = None;
+        }
+        if let Some(c) = RE.captures(body) {
+            block = Some(c["indent"].len());
+        }
+        out.push_str(line);
+    }
+    out
 }
 
 /// `Authorization: <scheme> <credential>` (and `Proxy-Authorization`), in a header, a curl flag or
@@ -288,9 +298,9 @@ fn redact_authorization(text: &str) -> String {
     });
     RE.replace_all(text, |c: &regex::Captures| {
         let value = &c["value"];
-        let (end, keep) = bare_extent(value, !c["q"].is_empty());
-        if keep {
-            format!("{}{}{}", &c["head"], &value[..end], redact_authorization(&value[end..]))
+        let end = value_len(value);
+        if kept_value(&value[..end], !c["q"].is_empty()) {
+            c[0].to_owned()
         } else {
             format!("{}[redacted]{}", &c["head"], &value[end..])
         }
@@ -331,7 +341,7 @@ pub(crate) fn redact(text: &str) -> String {
         });
         *previous = std::mem::take(word);
     }
-    let text = redact_authorization(&redact_assignments(&redact_pem(text)));
+    let text = redact_authorization(&redact_assignments(&redact_yaml_blocks(&redact_pem(text))));
     let mut out = String::with_capacity(text.len());
     let (mut word, mut previous) = (String::new(), String::new());
     for c in text.chars() {
@@ -3447,10 +3457,12 @@ mod tests {
         }
         assert!(redact(&text).contains("DB_PASSWORD=[redacted]"), "the name stays");
         assert_eq!(redact(json_cfg), r#"{"client_secret": "[redacted]", "api_key": '[redacted]'}"#);
-        // Placeholders, code and prose stay as written.
+        // Placeholders and prose stay as written. Code under a secret name does not (accepted).
+        assert_eq!(redact("const token = getToken(req);"), "const token = [redacted]");
+        assert_eq!(redact("token = self.token"), "token = [redacted]");
         for kept in [
             "API_KEY=\nTOKEN=changeme\nSECRET=<your-secret>\nPASSWORD=${DB_PASSWORD}\nmax_tokens: 4096",
-            "const token = getToken(req);\nlet password: string;\nkey = os.environ[\"API_KEY\"]\ntoken = self.token\nif token == expected:",
+            "let password: string;\nkey = os.environ[\"API_KEY\"]\nif token == expected:",
             "The token expires after an hour, so refresh the access token before each secret rotation.",
         ] {
             assert_eq!(redact(kept), kept);
@@ -3461,12 +3473,11 @@ mod tests {
     fn local_sessions_redact_catches_jwts_and_hyphenated_auth_headers() {
         let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
         let jwt_plain = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.abcDEF123";
-        // A dotted value is kept as code (`self.token`) unless it is a JWT.
+        // A JWT anywhere is a word the word pass catches.
         for text in [format!("token = {jwt_plain}"), format!("x {jwt} y"), format!("ID_TOKEN={jwt}")] {
             let clean = redact(&text);
             assert!(!clean.contains("eyJzdWIi"), "{clean}");
         }
-        assert_eq!(redact("token = self.token.value"), "token = self.token.value");
         let secret = "abcd1234efgh5678";
         for (text, name) in [
             (format!("curl -H 'x-api-key: {secret}' https://a"), "x-api-key: "),
@@ -3495,15 +3506,38 @@ mod tests {
             let clean = redact(text);
             assert!(!clean.contains(secret) && clean.contains("[redacted]"), "{clean}");
         }
-        // An unquoted env reference or code is not a credential.
-        // A call with a quoted argument may hold the literal: the rest of the line goes.
-        assert_eq!(redact("authorization = request.headers.get(\"a\")"), "authorization = [redacted]");
-        assert_eq!(redact("password = decrypt(\"hunter2\") # x"), "password = [redacted]");
-        assert_eq!(redact("token = f(x); password=hunter2"), "token = f(x); password=[redacted]");
-        for kept in ["-H \"Authorization: Bearer $TOKEN\"", "X_API_KEY=$X_API_KEY", "password = getPassword(user.id);",
-            "{\"api_key\": ${API_KEY}}", "token = secrets[0]", "password = cfg.db.password", "TOKEN=\"{{ secrets.TOKEN }}\""] {
+        // A value that reaches `(` or `[` is redacted to the end of its line: no code is read.
+        for (text, clean) in [
+            ("authorization = request.headers.get(\"a\")", "authorization = [redacted]"),
+            ("password = decrypt(\"hunter2\") # x", "password = [redacted]"),
+            ("token = f(x); password=hunter2", "token = [redacted]"),
+            ("password=f(x)hunter2", "password=[redacted]"),
+            ("Authorization: Basic f(x)abc123", "Authorization: Basic [redacted]"),
+            ("token = secrets[0]", "token = [redacted]"),
+            // .env: a dotted value is a passphrase, not a reference.
+            ("DB_PASSWORD=correct.horse.battery", "DB_PASSWORD=[redacted]"),
+            // An escaped quote is inside the value; an unterminated quote runs to the line end.
+            (r#"{"password": "abc\"hunter2"}"#, r#"{"password": "[redacted]"}"#),
+            ("PASSWORD='abc\\' rest", "PASSWORD='[redacted]"),
+            ("{\"api_key\": hunter}", "{\"api_key\": [redacted]}"),
+        ] {
+            assert_eq!(redact(text), clean);
+        }
+        // YAML block scalars: the more-indented lines are the value.
+        assert_eq!(
+            redact("db:\n  password: |\n    hunter2\n\n    more\n  user: bob\nkey: >-\n  x\n"),
+            "db:\n  password: [redacted]\n    [redacted]\n\n    [redacted]\n  user: bob\nkey: >-\n  x\n"
+        );
+        assert_eq!(redact("private_key: >-\n  abc\nnext: 1"), "private_key: [redacted]\n  [redacted]\nnext: 1");
+        for kept in ["-H \"Authorization: Bearer $TOKEN\"", "X_API_KEY=$X_API_KEY", "{\"api_key\": ${API_KEY}}",
+            "TOKEN=\"{{ secrets.TOKEN }}\""] {
             assert_eq!(redact(kept), kept);
         }
+        // Linear: no recursion, no quadratic trims.
+        let started = std::time::Instant::now();
+        assert_eq!(redact(&format!("token=a{}", "}".repeat(10_000))), format!("token=[redacted]{}", "}".repeat(10_000)));
+        assert_eq!(redact(&"dsn=f()".repeat(100_000)), "dsn=[redacted]");
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
     }
 
     #[test]

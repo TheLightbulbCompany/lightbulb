@@ -4,7 +4,7 @@
 
 **Goal:** A shared Claude Code or Codex session browses with the workspace's sign-ins in a Lightbulb browser (its Mac's "Lightbulb agent" Chrome, or the workspace cloud browser), and the people watching the session see and drive that browser from a Browser tab beside its terminal.
 
-**Architecture:** The desktop app serves one fixed loopback CDP port. A connection is identified by its peer process (libproc), walked up to one shared session, and offered to the backend over the node socket (`browser.cdp.offer`). The backend (`core/services/session_browser.py`, on the task holding that Mac's socket) treats the session as run `session-<sessionId>`: on the Mac it takes a `mac_browser` lease and has the runtime run the sign-in sync over the existing ticketed `mac_cdp` door, then tells the Mac to open an `agent_chrome` channel whose Chrome side is the session's own client; on the cloud it mints a `use: "session"` door ticket and the bridge (`browser.attach`) pumps that door into its own `cdp_mux` as one more run. Frames go to the session's existing frames channel as a new `image` kind while someone watches; people who may type into the session drive it through `/browser/mac/input`'s delivery.
+**Architecture:** The desktop app serves one fixed loopback CDP port. A connection is identified by its peer process (libproc), walked up to one shared session, and offered to the backend over the node socket (`browser.cdp.offer`). The CDP socket stays open for the life of the client's connection. The backend (`core/services/session_browser.py`, on the task holding that Mac's socket) treats the session as run `session-<sessionId>`: on the Mac it takes a `mac_browser` lease and has the runtime run the sign-in sync over the existing ticketed `mac_cdp` door, then tells the Mac to open an `agent_chrome` channel whose Chrome side is the session's own client; on the cloud it mints a `use: "session"` door ticket and the bridge (`browser.attach`) pumps that door into its own `cdp_mux` as one more run. After 300 s without a command the app says `browser.cdp.idle` and the backend releases (and saves); the next command makes the app say `browser.cdp.active` and hold that command until the backend answers `browser.cdp.leased`. Frames go to the session's existing frames channel as a new `image` kind while someone watches; people who may type into the session drive it through `/browser/mac/input`'s delivery.
 
 **Tech Stack:** Rust (Tauri 2 desktop: tokio, tokio-tungstenite, libc), Python 3 / FastAPI / DynamoDB (backend), Python bridge in the Hermes image (websockets, cdp_mux), Next.js 16 + React 19 + vitest (frontend), `@lightbulb/shared` TypeScript.
 
@@ -19,7 +19,7 @@
 - No capability restrictions in the agent Chrome (owner ruling 2026-09-29). Only plumbing/UX filters: no focus stealing, background tabs/windows, downloads to `~/Downloads/Lightbulb agent`.
 - Error codes, verbatim: `not_shared`, `browser_profile_held_by_another_workspace`, `mac_browser_busy`, `cloud_unavailable`.
 - `MAX_CHANNELS` = 4 per Mac (desktop `agent_chrome::MAX_CHANNELS` and backend `node_broker.MAX_CDP_CHANNELS`).
-- Lease: renewed while the session's browser connection is open; released 300 s after its last command or when the session ends; release saves sign-ins.
+- Lease: the CDP socket stays open for the life of the client's connection. The lease is renewed every 120 s while the session is active; released (and saved) 300 s after its last command (`browser.cdp.idle`) or when the session ends or its socket closes; re-acquired (with its load) before the first command after idle runs (`browser.cdp.active` → `browser.cdp.leased`).
 - Run id is `session-<sessionId>`; the bridge's Mac upstream is `mac:<deviceId>:session-<sessionId>`.
 - Never log a ticket, a door URL, a cookie, a frame or page content: owner ids and exception class names only.
 - Ponytail: reuse the existing machinery (mac_browser, mac_cdp, cdp_mux, agent_chrome, agent_cast, session-frames rail, mac_live input delivery). No new event bus, no feature flags, no compatibility shims.
@@ -32,7 +32,7 @@
 
 ## Review Focus
 
-1. **chrome-devtools-mcp after its socket closes** (the 300 s idle close, `use_browser`, a backend refusal on renewal): a person expects the next browser tool call to reconnect and work. The reconnect itself is chrome-devtools-mcp's (it re-runs `puppeteer.connect` when its browser is disconnected), so it is pinned by the M1 acceptance check 4 and the M4 acceptance check 2; Task 5's `ending_a_session_channel_tells_the_backend_once` pins that a closed connection leaves no channel or lease behind for the next one to trip on.
+1. **A command arrives while the lease is being re-acquired after idle** (and more follow it before the answer): a person expects them to wait, then run in the order sent, with no reconnect; if the re-acquire fails, each held command gets a CDP error naming the code (e.g. `browser_profile_held_by_another_workspace: …`), and the next command tries again. Pinned by Task 7 (`Gate` tests: hold, order, failure, overflow, a late answer), Task 4 (`idle` releases and saves; `active` re-acquires with `[save, load]` and answers `leased`; a failed re-acquire answers the code and keeps the connection).
 2. **A loopback client that is not a shared session** (a web page, another local program, an Only-me session): a person expects a refusal that says why, never a browser. Pinned by Task 6 (`peer_pid`/ancestors), Task 7 (`no_browser` refuses an `Origin`, `refuse` answers in CDP error form).
 3. **Two shared Codex conversations served by one Codex process** (the Codex app, or one Codex service for several conversations): the peer process cannot tell them apart; a person expects a clear refusal, never the wrong session's browser. Pinned by Task 6's ambiguity test.
 4. **The session ends or stops being shared while its browser is open:** a person expects the connection to close and the sign-ins made so far to be kept. Pinned by Task 3 (an ended session's run still has authority, so its release save runs) and Task 4's unshare test.
@@ -48,19 +48,21 @@ These could not be read off the code or the spec. Each is a choice, with its rea
 4. **`npx -y chrome-devtools-mcp@latest --browserUrl http://127.0.0.1:39222`**, Google's documented install line; the spike did not record a version to pin.
 5. **Ancestor walk via `proc_pidinfo(PROC_PIDTBSDINFO).pbi_ppid`** (the existing `holder::identity::read`), not `sysctl KERN_PROC_PID`: the same kernel fact, already in the codebase, own-user processes only.
 6. **`socket_fdinfo` read at fixed byte offsets.** `libc` has `proc_pidfdinfo` but not the struct; the `libproc` crate needs bindgen at build time. The offsets (`soi_kind` 256, `insi_fport` 264, `insi_lport` 268, size 792) are pinned by a live self-test on a real loopback socket.
-7. **The Mac closes a session's connection 300 s after its last command**; chrome-devtools-mcp reconnects on its next tool call (Review Focus 1). The backend cannot see Mac-local CDP traffic, so "renewed while traffic flows" is "renewed while the channel is open", which the idle close bounds.
-8. **The backend drives the Mac sync, the runtime runs it, the app only proxies** (spike 3): `container_rpc` `browser.state` with a `doorUrl` reuses `browser_state.checkpoint` over a named `cdp_mux` upstream. The bridge already runs Mac syncs this way for its own runs.
-9. **A session-family run keeps authority after its session ends** (only unshared, removed or a departed member are refused), so the release's save still passes the door's re-check.
-10. **Frames: `workspace.session.screen` with `kind: "image"`, the thumb tier only** (480 px JPEG, at most 2 a second, ~10 KB), budgeted per session under `<sid>#browser`. No desktop capability flag: the only Macs that receive a session channel's `browser.cast.set` are those that sent `browser.cdp.offer`, and old web/iOS clients already drop an unknown kind (`parseLiveEvent` rejects it).
-11. **Watch demand is `browserWatchedAt` on the session META row**, stamped by the Browser tab every 20 s; frames are wanted while it is younger than `mac_live.WANTED_S` (45 s), re-set every `SET_EVERY_S` (10 s), as for room runs.
-12. **Mac-path input reuses `/browser/mac/input`'s delivery** (`mac_live._live`, `deliver_mac_input`, the peer route); a session entry has no room and re-checks `may_control` where the socket is. Cloud input maps the same event shape onto the cloud cast's `click`/`wheel`/`key`/`text` (`browser_control.send_input`). The human-input tag: on the cloud a watcher's input counts as a person's input, as today; on the Mac the per-channel `Lightbulb.humanInput` is not sent to a session channel (its client, chrome-devtools-mcp, has no yield to make), while the Mac's own watch hook keeps telling agent runs on that Chrome.
-13. **`browserOpen {where, until}` on the META row drives the Browser tab** (`LocalSession.browser`), renewed with the lease; it and `browserPlace` survive re-registration.
-14. **Cloud STARTING is retried by the backend, not the app:** each `browser.attach` gets a fresh single-use ticket (tickets live 60 s); the Mac waits up to 150 s for an answer.
-15. **The runtime is kept awake by a `health` invoke every 120 s** while a session browses the cloud (AgentCore parks a microVM with no invokes; the door is outbound and does not count).
-16. **The hosted `use_browser` takes a `session_id`:** the hosted MCP is account-scoped and cannot know which session calls it; only people who may control that session can move it. The Mac's native `use_browser` derives the session and also closes its open connection so the next one follows at once.
-17. **The desktop-execution gate applies to both paths** (`DESKTOP_EXECUTION_ENABLED` + allowlist): `mac_browser.acquire` and the `mac_cdp` door already check it. Error `desktop_disabled`.
-18. **Web and desktop only.** The iPhone app gets no Browser tab in this version; "Anyone with the link" viewers get no browser frames.
-19. **Browser off routes to the cloud** using the offer's `macBrowser` flag (the Mac's own `desktop_permissions.browser`) and the node's declared `browser.cdp.v1`; M1, before the cloud path exists, refuses it with `browser_off`.
+7. **Idle is the app's count, release is the backend's.** The backend cannot see Mac-local CDP traffic, so the app keeps the last-command time per connection and sends `browser.cdp.idle` at 300 s; the backend releases the lease (the last one out saves). The socket and the agent Chrome channel stay open (pages, tabs and the client's CDP sessions survive). The next command is held: the app sends `browser.cdp.active`, the backend re-acquires and runs any sync, then answers `browser.cdp.leased {ok, code?, message?}`; the app forwards the held commands in order, or answers each with a CDP error `"<code>: <message>"`. The app gives up after 150 s with "The Lightbulb browser did not answer; try again" (a late `ok` still makes the connection active, since the backend then holds the lease). At most 256 commands are held; more get an error.
+8. **A re-acquire cannot clobber sign-ins made on the Mac since the last save.** For this workspace's own profile with a merge base, `mac_browser._decide` (lines 567-592) hands a run that holds no live lease `[save, load]`, never a bare `[load]`: the save exports the Mac and merges it three-way against `base_key` (`browser_state._merge_three`: per cookie domain and localStorage origin, the Mac's version wins where it changed since the base, else the workspace save's), publishes it, and only then does the load (`cookies clear`, then load) restore that merged save. So a sign-in a person made in the "Lightbulb agent" window while the session was idle is saved before the load. A bare `[load]` (or `[base]`) happens only when the profile is not this workspace's yet (fresh or wiped), where nothing of the workspace's is there to lose. When another run holds a live lease, the re-acquire gets no sync at all and browses the profile as that run left it. The only gap is the seconds between the save's export and the load: the session's own commands are held for all of it, so only a person typing in the agent window in those seconds could lose a change.
+9. **The backend drives the Mac sync, the runtime runs it, the app only proxies** (spike 3): `container_rpc` `browser.state` with a `doorUrl` reuses `browser_state.checkpoint` over a named `cdp_mux` upstream. The bridge already runs Mac syncs this way for its own runs.
+10. **A session-family run keeps authority after its session ends** (only unshared, removed or a departed member are refused), so the release's save still passes the door's re-check.
+11. **Frames: `workspace.session.screen` with `kind: "image"`, the thumb tier only** (480 px JPEG, at most 2 a second, ~10 KB), budgeted per session under `<sid>#browser`. No desktop capability flag: the only Macs that receive a session channel's `browser.cast.set` are those that sent `browser.cdp.offer`, and old web/iOS clients already drop an unknown kind (`parseLiveEvent` rejects it).
+12. **Watch demand is `browserWatchedAt` on the session META row**, stamped by the Browser tab every 20 s; frames are wanted while it is younger than `mac_live.WANTED_S` (45 s), re-set every `SET_EVERY_S` (10 s), as for room runs.
+13. **Mac-path input reuses `/browser/mac/input`'s delivery** (`mac_live._live`, `deliver_mac_input`, the peer route); a session entry has no room and re-checks `may_control` where the socket is. Cloud input maps the same event shape onto the cloud cast's `click`/`wheel`/`key`/`text` (`browser_control.send_input`). The human-input tag: on the cloud a watcher's input counts as a person's input, as today; on the Mac the per-channel `Lightbulb.humanInput` is not sent to a session channel (its client, chrome-devtools-mcp, has no yield to make), while the Mac's own watch hook keeps telling agent runs on that Chrome.
+14. **`browserOpen {where, until}` on the META row drives the Browser tab** (`LocalSession.browser`), renewed every 120 s while the connection is open (idle or not: the tab and its frames stay); it and `browserPlace` survive re-registration.
+15. **Cloud STARTING is retried by the backend, not the app:** each `browser.attach` gets a fresh single-use ticket (tickets live 60 s); the Mac waits up to 150 s for an answer.
+16. **The runtime is kept awake by a `health` invoke every 120 s** while a session browses the cloud (AgentCore parks a microVM with no invokes; the door is outbound and does not count).
+17. **The hosted `use_browser` takes a `session_id`:** the hosted MCP is account-scoped and cannot know which session calls it; only people who may control that session can move it. The Mac's native `use_browser` derives the session itself. Neither closes an open connection: the place applies to the session's next connection, as the spec says (a client's CDP state cannot move between two browsers). The tool says so, and how to switch now (restart the `lightbulb-browser` MCP server, `/mcp` in Claude Code).
+18. **The cloud's idle is the shared browser's own.** The cloud browser is the bridge's lease on behalf of every run, and the bridge renews it only while commands flow, so `idle` changes nothing there: the shared browser saves itself as it does today (autosave after agents stop, release after the last run). `active` makes the backend ask the bridge to renew (`browser.attach {runId, renew: true}`) before the held commands run. If the cloud browser was stopped meanwhile (30 minutes with nobody using or watching it), its one automation connection is gone with every client on it, so the bridge's door pump ends and the session's connection closes with `cloud_unavailable`: on the cloud, a long idle can still end the connection (the Mac path never does).
+19. **The desktop-execution gate applies to both paths** (`DESKTOP_EXECUTION_ENABLED` + allowlist): `mac_browser.acquire` and the `mac_cdp` door already check it. Error `desktop_disabled`.
+20. **Web and desktop only.** The iPhone app gets no Browser tab in this version; "Anyone with the link" viewers get no browser frames.
+21. **Browser off routes to the cloud** using the offer's `macBrowser` flag (the Mac's own `desktop_permissions.browser`) and the node's declared `browser.cdp.v1`; M1, before the cloud path exists, refuses it with `browser_off`.
 
 ## File Structure
 
@@ -69,13 +71,14 @@ These could not be read off the code or the spec. Each is a choice, with its rea
 | `apps/desktop/src-tauri/src/session_browser.rs` (new) | Loopback port, peer pid + ancestors, offers, decisions, relay | M1, M3, M4 |
 | `apps/desktop/src-tauri/src/agent_chrome.rs` | Local (session) channels: `open_local`, `end_local`, `filter_for`, no human-input signal for them | M1 |
 | `apps/desktop/src-tauri/src/node_invoke.rs` | Route backend CDP events to `session_browser::on_event` first | M1 |
+| `apps/desktop/src-tauri/src/node_client.rs` | Pass `browser.cdp.leased` to the CDP lane | M1 |
 | `apps/desktop/src-tauri/src/lib.rs` | `mod session_browser;` and start `serve` at setup | M1 |
 | `apps/desktop/src-tauri/src/local_sessions/native_tools.rs` | `live_mirrors`, `session_of_ancestors`, `use_browser` route | M1, M4 |
 | `apps/desktop/src-tauri/src/local_sessions.rs` | `shared_session_for`, `session_still_shared` | M1 |
 | `apps/desktop/src-tauri/src/local_sessions/enrollment.rs` | `session_scope` | M1 |
 | `apps/desktop/src-tauri/src/local_sessions/native_mcp.rs` | `lightbulb-browser` entry; `use_browser` tool | M1, M4 |
 | `apps/backend/core/services/session_browser.py` (new) | Offer → lease → sync → open → hold → release; frames; input; cloud; place | M1–M4 |
-| `apps/backend/core/services/node_broker.py` | `browser.cdp.offer`, `cdp_accept`, local channels, close message | M1 |
+| `apps/backend/core/services/node_broker.py` | `browser.cdp.offer`/`idle`/`active`, `cdp_accept`, `cdp_leased`, local channels, close message | M1 |
 | `apps/backend/core/services/desktop_execution.py` | `session` run family authority | M1 |
 | `apps/backend/core/services/mac_cdp.py` | `session` family; `use: "session"` door | M1, M3 |
 | `apps/backend/core/services/mac_browser.py` | `acquire` answers `profileId` | M1 |
@@ -280,14 +283,14 @@ git add apps/infra/hermes/bridge/browser_control.py apps/infra/hermes/bridge/ser
 git commit -m "feat(bridge): browser.state runs a backend Mac door's sign-in sync"
 ```
 
-### Task 2: Backend — `browser.cdp.offer` in the node protocol
+### Task 2: Backend — `browser.cdp.offer`, `idle`, `active` and `leased` in the node protocol
 
 **Files:**
-- Modify: `apps/backend/core/services/node_broker.py` (`CDP_EVENTS` line 42; `CdpChannel.__init__` lines 195-204; `NodeSession.__init__` lines 256-268; `cdp_open` lines 397-421; `cdp_close` lines 434-441; `_cdp_event` lines 502-528)
+- Modify: `apps/backend/core/services/node_broker.py` (`CDP_EVENTS` line 42; `CdpChannel.__init__` lines 195-204; `CdpChannel._end` lines 206-212; `NodeSession.__init__` lines 256-268; `cdp_open` lines 397-421; `cdp_close` lines 434-441; `_cdp_event` lines 502-528)
 - Test: `apps/backend/tests/unit/services/test_node_broker.py`
 
 **Interfaces:**
-- Produces: `node_broker.BUSY_MESSAGE: str`; `CdpChannel(channel_id: str | None = None)` with `.local: bool`; `NodeSession.on_offer: Callable[[CdpChannel, str, bool], None] | None`; `async NodeSession.cdp_accept(channel, payload: dict) -> None` (raises `CdpClosed`, `NodeCapacity`); `NodeSession.cdp_close(channel, code="CLOSED", message: str | None = None)`. Used by Tasks 4, 11, 15.
+- Produces: `node_broker.BUSY_MESSAGE: str`; `CdpChannel(channel_id: str | None = None)` with `.local: bool`; `NodeSession.on_offer: Callable[[CdpChannel, str, bool], None] | None`; `async NodeSession.cdp_accept(channel, payload: dict) -> None` (raises `CdpClosed`, `NodeCapacity`); `NodeSession.cdp_close(channel, code="CLOSED", message: str | None = None)`; `CdpChannel.signals: asyncio.Queue[str]` carrying `"idle"`, `"active"` (from the Mac) and `"closed"`; `NodeSession.cdp_leased(channel, ok: bool, code: str | None = None, message: str | None = None)` sending `browser.cdp.leased {channel, ok, code?, message?}`. Used by Tasks 4, 11, 15, 16.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -367,11 +370,34 @@ async def test_a_close_can_carry_the_message_a_session_is_shown():
     session.cdp_close(session.cdp[OFFER], "not_shared", "Share this session to use the Lightbulb browser.")
     assert _out(session)[-1]["payload"] == {"channel": OFFER, "code": "not_shared",
                                             "message": "Share this session to use the Lightbulb browser."}
+
+
+async def test_idle_and_active_reach_the_channels_holder_and_a_close_wakes_it():
+    session = node_broker.NodeSession("mac1", {"browser.cdp.v1"})
+    session.on_offer = lambda *args: None
+    _offer(session)
+    channel = session.cdp[OFFER]
+    for kind in ("idle", "active"):
+        session.resolve({"type": "event", "event": f"browser.cdp.{kind}", "payload": {"channel": OFFER}})
+    session.resolve({"type": "event", "event": "browser.cdp.close", "payload": {"channel": OFFER, "code": "CLOSED"}})
+    assert [channel.signals.get_nowait() for _ in range(3)] == ["idle", "active", "closed"]
+
+
+async def test_leased_answers_the_mac_with_the_code_when_it_failed():
+    session = node_broker.NodeSession("mac1", {"browser.cdp.v1"})
+    session.on_offer = lambda *args: None
+    _offer(session)
+    session.cdp_leased(session.cdp[OFFER], True)
+    session.cdp_leased(session.cdp[OFFER], False, "mac_browser_busy", node_broker.BUSY_MESSAGE)
+    assert [f["payload"] for f in _out(session)] == [
+        {"channel": OFFER, "ok": True},
+        {"channel": OFFER, "ok": False, "code": "mac_browser_busy", "message": node_broker.BUSY_MESSAGE},
+    ]
 ```
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `cd apps/backend && uv run pytest tests/unit/services/test_node_broker.py -v -k "offer or accept or local_channel or carry"`
+Run: `cd apps/backend && uv run pytest tests/unit/services/test_node_broker.py -v -k "offer or accept or local_channel or carry or idle or leased"`
 Expected: FAIL (`AttributeError: ... has no attribute 'on_offer'` / `BUSY_MESSAGE`).
 
 - [ ] **Step 3: Implement**
@@ -380,7 +406,8 @@ Expected: FAIL (`AttributeError: ... has no attribute 'on_offer'` / `BUSY_MESSAG
 
 ```python
 CDP_EVENTS = (
-    "browser.cdp.opened", "browser.cdp.frame", "browser.cdp.close", "browser.cast.frame", "browser.cdp.offer",
+    "browser.cdp.opened", "browser.cdp.frame", "browser.cdp.close", "browser.cast.frame",
+    "browser.cdp.offer", "browser.cdp.idle", "browser.cdp.active",
 )  # fmt: skip
 #: A full Mac's refusal, as a session's CDP client reads it (mac_browser.MESSAGES uses the same text).
 BUSY_MESSAGE = "This Mac's browser is busy; try again shortly."
@@ -406,7 +433,26 @@ _SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
         #: A shared session's Mac-path channel (session_browser): the Mac serves its CDP to the
         #: session's own client, so none of its CDP frames is ever ours to queue.
         self.local = False
+        #: A shared session's lease signals for its holder (session_browser): "idle" (300 s with no
+        #: command), "active" (a command is held until `cdp_leased`), "closed".
+        self.signals: asyncio.Queue = asyncio.Queue(8)
 ```
+
+`CdpChannel._end` wakes that holder:
+
+```python
+    def _end(self, code: str) -> None:
+        if self.close_code is None:
+            self.close_code = code
+        if not self.opened.done():
+            self.opened.set_exception(CdpClosed(self.close_code))
+            self.opened.exception()  # retrieved: nobody may be awaiting a channel that already opened/timed out
+        self.closed.set()
+        with contextlib.suppress(asyncio.QueueFull):
+            self.signals.put_nowait("closed")
+```
+
+(add `import contextlib`).
 
 `NodeSession.__init__` — add after `self.catalog: list[dict] = []`:
 
@@ -459,6 +505,14 @@ Replace `cdp_close`:
             payload = {"channel": channel.id, "code": code} | ({"message": message[:300]} if message else {})
             self.cdp_out.put_nowait({"type": "event", "event": "browser.cdp.close", "payload": payload})
         channel._end(code)
+
+    def cdp_leased(self, channel: CdpChannel, ok: bool, code: str | None = None, message: str | None = None) -> None:
+        """Answer a session channel's `active`: its lease is back (`ok`), or why not. The Mac forwards
+        the commands it held, or answers each with the code. A full lane drops it; the Mac gives up
+        after its own wait."""
+        payload = {"channel": channel.id, "ok": ok} | ({"code": code, "message": (message or "")[:300]} if not ok else {})
+        if not self.cdp_out.full():
+            self.cdp_out.put_nowait({"type": "event", "event": "browser.cdp.leased", "payload": payload})
 ```
 
 In `_cdp_event`, handle the offer before the channel lookup, and drop a local channel's frames:
@@ -477,6 +531,9 @@ In `_cdp_event`, handle the offer before the channel lookup, and drop a local ch
         if event == "browser.cdp.opened":
             if not channel.opened.done():
                 channel.opened.set_result(None)
+        elif event in ("browser.cdp.idle", "browser.cdp.active"):
+            with contextlib.suppress(asyncio.QueueFull):
+                channel.signals.put_nowait(event.rsplit(".", 1)[1])
         elif event == "browser.cdp.frame":
             if channel.local:
                 return  # the Mac serves this channel's CDP itself
@@ -745,7 +802,7 @@ git add apps/backend/core/services/session_browser.py apps/backend/core/services
 git commit -m "feat(sessions): a shared session's browser is a run of its own person"
 ```
 
-### Task 4: Backend — offer → lease → sync → open → hold → release
+### Task 4: Backend — offer → lease → sync → open → hold (idle/active) → release
 
 **Files:**
 - Modify: `apps/backend/core/services/session_browser.py`
@@ -754,8 +811,8 @@ git commit -m "feat(sessions): a shared session's browser is a run of its own pe
 - Test: `apps/backend/tests/unit/services/test_session_browser.py` (new), `apps/backend/tests/unit/services/test_local_session_relay.py`
 
 **Interfaces:**
-- Consumes: Task 2 (`cdp_accept`, `cdp_close(..., message)`, `on_offer`, `.local`), Task 3 (`auth_for`, `session_of`, `acquire`'s `profileId`), Task 1 (RPC `browser.state` with a door).
-- Produces: `session_browser.NOT_SHARED`, `MESSAGES`, `start(owner, user, device, node, channel, session_id, mac_browser_on)`, `async serve(...)`, `async shared_row(owner, user, device, session_id) -> dict`, `_mark_open(owner, human, session_id, where, *, announce)`, `_serve_mac`, `_hold_mac`, `_release`, `_sync`; `local_sessions.browser_open(row, now=None) -> "mac" | "cloud" | None`; `LocalSession.browser`.
+- Consumes: Task 2 (`cdp_accept`, `cdp_close(..., message)`, `cdp_leased`, `.signals`, `on_offer`, `.local`), Task 3 (`auth_for`, `session_of`, `acquire`'s `profileId`), Task 1 (RPC `browser.state` with a door).
+- Produces: `session_browser.NOT_SHARED`, `MESSAGES`, `start(owner, user, device, node, channel, session_id, mac_browser_on)`, `async serve(...)`, `async shared_row(owner, user, device, session_id) -> dict`, `_mark_open(owner, human, session_id, where, *, announce)`, `_serve_mac`, `_hold_mac(auth, device, node, channel, leased: dict)`, `_acquire`, `_release`, `_sync`; `local_sessions.browser_open(row, now=None) -> "mac" | "cloud" | None`; `LocalSession.browser`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -866,6 +923,28 @@ def _closed_by_mac(node):
     node.resolve({"type": "event", "event": "browser.cdp.close", "payload": {"channel": CHANNEL, "code": "CLOSED"}})
 
 
+def _signal(node, kind):
+    node.resolve({"type": "event", "event": f"browser.cdp.{kind}", "payload": {"channel": CHANNEL}})
+
+
+async def _next(node, event):
+    """The next frame of `event` the backend sends the Mac (waits up to 2 s)."""
+    for _ in range(200):
+        for frame in _out(node):
+            if frame["event"] == event:
+                return frame
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"no {event}")
+
+
+async def _until(condition):
+    for _ in range(200):
+        if condition():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("never happened")
+
+
 async def test_a_shared_session_gets_the_mac_with_the_workspace_sign_ins_then_saves_on_close(env):
     node, channel = _offered()
     served = asyncio.create_task(session_browser.serve(OWNER, MEMBER, DEVICE, node, channel, SID, True))
@@ -880,6 +959,54 @@ async def test_a_shared_session_gets_the_mac_with_the_workspace_sign_ins_then_sa
     await asyncio.wait_for(served, 2)
     assert env.calls[-4:] == [("open", None), ("release", "g1"), ("rpc", "browser.state", UPSTREAM, ["save"]),
                               ("synced", "L2", True)]
+
+
+async def test_idle_releases_and_saves_and_the_next_command_reacquires_before_it_runs(env):
+    node, channel = _offered()
+    served = asyncio.create_task(session_browser.serve(OWNER, MEMBER, DEVICE, node, channel, SID, True))
+    await _play_mac(node)
+    _signal(node, "idle")
+    await _until(lambda: ("release", "g1") in env.calls)
+    assert ("rpc", "browser.state", UPSTREAM, ["save"]) in env.calls, "the idle release saves"
+    assert CHANNEL in node.cdp, "the connection stays open"
+    calls = len(env.calls)
+    await asyncio.sleep(0.12)
+    assert ("acquire", RUN, DEVICE) not in env.calls[calls:], "no renewals while idle"
+    env.acquired = [_answer({"syncId": "L3", "steps": [{"action": "save"}, {"action": "load"}]})]
+    _signal(node, "active")
+    assert (await _next(node, "browser.cdp.leased"))["payload"] == {"channel": CHANNEL, "ok": True}
+    assert ("rpc", "browser.state", UPSTREAM, ["save", "load"]) in env.calls, "saved before it loads"
+    _closed_by_mac(node)
+    await asyncio.wait_for(served, 2)
+    assert env.calls.count(("release", "g1")) == 2, "the idle release and the closing one"
+
+
+async def test_a_failed_reacquire_answers_the_held_commands_code_and_keeps_the_connection(env):
+    node, channel = _offered()
+    served = asyncio.create_task(session_browser.serve(OWNER, MEMBER, DEVICE, node, channel, SID, True))
+    await _play_mac(node)
+    _signal(node, "idle")
+    await _until(lambda: ("release", "g1") in env.calls)
+    held = "This Mac's agent browser holds the sign-ins of the Acme workspace."
+    env.acquired = DesktopError("browser_profile_held_by_another_workspace", 409, held)
+    _signal(node, "active")
+    assert (await _next(node, "browser.cdp.leased"))["payload"] == {
+        "channel": CHANNEL, "ok": False, "code": "browser_profile_held_by_another_workspace", "message": held}
+    assert CHANNEL in node.cdp, "the next command tries again"
+    _closed_by_mac(node)
+    await asyncio.wait_for(served, 2)
+    assert env.calls.count(("release", "g1")) == 1, "nothing held, nothing released at the close"
+
+
+async def test_an_active_that_never_lost_its_lease_is_answered_at_once(env):
+    node, channel = _offered()
+    served = asyncio.create_task(session_browser.serve(OWNER, MEMBER, DEVICE, node, channel, SID, True))
+    await _play_mac(node)
+    _signal(node, "active")  # a command after a short idle the Mac counted, but the lease is still held
+    assert (await _next(node, "browser.cdp.leased"))["payload"] == {"channel": CHANNEL, "ok": True}
+    assert not any(call[0] == "release" for call in env.calls)
+    _closed_by_mac(node)
+    await asyncio.wait_for(served, 2)
 
 
 async def test_an_unshared_session_is_refused_with_not_shared(env):
@@ -1026,10 +1153,12 @@ The Mac app identifies a CDP connection on its loopback port as one shared sessi
 is a run, `session-<sessionId>`, of its own person: it takes a `mac_browser` lease (first owner
 wins; the first lease in loads the workspace sign-ins, the last one out saves them), the runtime
 runs those sync steps over the ticketed Mac door (`browser.state` with a door, spike 3), and then
-the Mac opens the channel on its own agent Chrome for the session's client. The lease is renewed
-while the channel is open; the Mac closes it 300 s after the session's last command, or when the
-session ends or stops being shared. Never log a ticket, a URL or a frame: owner ids and exception
-class names only.
+the Mac opens the channel on its own agent Chrome for the session's client. The channel stays open
+for the client's whole connection. While active the lease is renewed; 300 s after the last command
+the Mac says `idle` and the lease is released (saving); the next command is held on the Mac while
+`active` re-acquires it (loading), then `cdp_leased` lets it through. The session ending, or its
+socket closing, releases. Never log a ticket, a URL or a frame: owner ids and exception class names
+only.
 """
 
 from __future__ import annotations
@@ -1161,25 +1290,50 @@ async def _release(auth: dict, device: str, generation: str) -> None:
         logger.warning("session browser release failed owner=%s error=%s", auth["ownerId"], type(exc).__name__)
 
 
-async def _hold_mac(auth: dict, device: str, node, channel) -> None:
-    """While the Mac has the channel open: every RENEW_SECONDS re-check the session is shared, renew
-    the lease (running any sync it hands back) and the `browserOpen` mark. DesktopError ends it."""
+async def _hold_mac(auth: dict, device: str, node, channel, leased: dict) -> None:
+    """While the Mac has the channel open (the whole client connection). Each signal, and every
+    RENEW_SECONDS, re-checks that the session is shared (DesktopError ends the connection) and renews
+    the `browserOpen` mark. Leased: renew the lease, running any sync it hands back. `idle` (the Mac's
+    300 s with no command): release it, which saves. `active` (the Mac holds a command): re-acquire
+    with its sync (Decision 8: a `[save, load]`, so the Mac's own changes are saved before the load),
+    then answer `cdp_leased`; a refusal answers its code and the connection stays, idle.
+    `leased["generation"]` is the lease held now (None: released)."""
     owner, user, sid = auth["ownerId"], auth["memberId"], session_of(auth["runId"])
     while True:
-        with contextlib.suppress(asyncio.TimeoutError):
-            await asyncio.wait_for(channel.closed.wait(), RENEW_SECONDS)
-        if channel.closed.is_set():
+        try:
+            signal = await asyncio.wait_for(channel.signals.get(), RENEW_SECONDS)
+        except asyncio.TimeoutError:
+            signal = None
+        if signal == "closed" or channel.closed.is_set():
             return
         await shared_row(owner, user, device, sid)
-        answer = await mac_browser.acquire(auth, device)
-        if isinstance(answer, dict) and answer.get("sync"):
-            await _sync(auth, device, answer)
+        if signal == "idle" and leased["generation"]:
+            generation, leased["generation"] = leased["generation"], None
+            await _release(auth, device, generation)
+        elif signal == "active" and leased["generation"]:
+            node.cdp_leased(channel, True)  # the lease never went: nothing to wait for
+        elif signal == "active":
+            try:
+                answer = await _acquire(auth, device, _clock() + OFFER_BUDGET_S)
+                if answer.get("sync"):
+                    await _sync(auth, device, answer)
+            except DesktopError as exc:
+                exc = mac_browser._with_message(exc)
+                node.cdp_leased(channel, False, exc.code, exc.message)
+            else:
+                leased["generation"] = answer["generation"]
+                node.cdp_leased(channel, True)
+        elif signal is None and leased["generation"]:
+            answer = await mac_browser.acquire(auth, device)
+            if isinstance(answer, dict) and answer.get("sync"):
+                await _sync(auth, device, answer)
         await _mark_open(owner, user, sid, "mac", announce=False)
 
 
 async def _serve_mac(auth: dict, device: str, node, channel) -> None:
     owner, user, sid = auth["ownerId"], auth["memberId"], session_of(auth["runId"])
     answer = await _acquire(auth, device, _clock() + OFFER_BUDGET_S)
+    leased = {"generation": answer["generation"]}
     try:
         if answer.get("sync"):
             await _sync(auth, device, answer)
@@ -1187,11 +1341,12 @@ async def _serve_mac(auth: dict, device: str, node, channel) -> None:
         await node.cdp_accept(channel, {"profileId": answer["profileId"]})
         await _mark_open(owner, user, sid, "mac", announce=True)
         try:
-            await _hold_mac(auth, device, node, channel)
+            await _hold_mac(auth, device, node, channel, leased)
         finally:
             await _mark_open(owner, user, sid, None, announce=True)
     finally:
-        await _release(auth, device, answer["generation"])
+        if leased["generation"]:  # idle already released it
+            await _release(auth, device, leased["generation"])
 
 
 async def serve(owner: str, user: str, device: str, node, channel, session_id: str, mac_browser_on: bool) -> None:
@@ -1777,12 +1932,13 @@ git commit -m "feat(desktop): name the shared session behind a loopback browser 
 **Files:**
 - Modify: `apps/desktop/src-tauri/src/session_browser.rs` (server, offers, `on_event`)
 - Modify: `apps/desktop/src-tauri/src/node_invoke.rs:89-93` (route CDP events through `session_browser::on_event`)
+- Modify: `apps/desktop/src-tauri/src/node_client.rs:936-939` (`browser.cdp.leased` joins the CDP lane) and its test at line 1244
 - Modify: `apps/desktop/src-tauri/src/lib.rs` (setup, after the uploads cleanup near line 1983: start `serve`)
 - Test: `session_browser.rs` `mod tests`
 
 **Interfaces:**
 - Consumes: Task 5 (`open_local`, `end_local`, `out`, `send_close`, `test_channels`), Task 6 (`peer_pid`, `ancestors`, `NOT_SHARED`, `shared_session_for`, `session_still_shared`, `session_scope`), `crate::with_agent_chrome_channels`.
-- Produces: `session_browser::PORT: u16 = 39222`, `IDLE_CLOSE`, `serve(app)`, `on_event(&Channels, &str, &Value) -> bool`, `http_response(path) -> (u16, String)`; node event `browser.cdp.offer {channel, sessionId, macBrowser}`. Used by Tasks 8, 17, 20.
+- Produces: `session_browser::PORT: u16 = 39222`, `IDLE_RELEASE`, `serve(app)`, `on_event(&Channels, &str, &Value) -> bool`, `http_response(path) -> (u16, String)`, `Gate` (the per-connection idle/hold state), `cdp_error(text, message) -> Option<String>`; node events `browser.cdp.offer {channel, sessionId, macBrowser}`, `browser.cdp.idle {channel}`, `browser.cdp.active {channel}`; handles `browser.cdp.leased {channel, ok, code?, message?}`. Used by Tasks 8, 17.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1868,6 +2024,64 @@ Add to `session_browser.rs` `mod tests`:
         assert_eq!((v["payload"]["channel"].as_str(), v["payload"]["code"].as_str()), (Some("o3"), Some("CAPACITY")));
     }
 
+    #[test]
+    fn an_idle_connection_holds_the_next_commands_in_order_until_the_lease_is_back() {
+        let mut gate = Gate::default();
+        assert!(matches!(gate.command("a".into()), Step::Forward(t) if t == "a"));
+        gate.went_idle();
+        assert!(!gate.active());
+        assert!(matches!(gate.command("b".into()), Step::Wake), "the first command after idle asks for the lease");
+        assert!(matches!(gate.command("c".into()), Step::Hold), "later ones wait behind it");
+        assert_eq!(gate.leased(true), ["b", "c"], "then all run, in the order sent");
+        assert!(gate.active());
+        assert!(matches!(gate.command("d".into()), Step::Forward(t) if t == "d"));
+    }
+
+    #[test]
+    fn a_refused_reacquire_returns_the_held_commands_and_the_next_one_tries_again() {
+        let mut gate = Gate::default();
+        gate.went_idle();
+        gate.command("b".into());
+        assert_eq!(gate.leased(false), ["b"]);
+        assert!(!gate.active(), "still idle");
+        assert!(matches!(gate.command("c".into()), Step::Wake));
+        assert_eq!(gate.leased(true), ["c"]);
+        assert!(gate.leased(true).is_empty(), "a late second answer has nothing to run");
+    }
+
+    #[test]
+    fn too_many_held_commands_overflow() {
+        let mut gate = Gate::default();
+        gate.went_idle();
+        gate.command("0".into());
+        for i in 1..MAX_EARLY {
+            assert!(matches!(gate.command(i.to_string()), Step::Hold));
+        }
+        assert!(matches!(gate.command("x".into()), Step::Overflow(t) if t == "x"));
+    }
+
+    #[test]
+    fn a_held_command_that_cannot_run_reads_the_code() {
+        let reply = cdp_error(r#"{"id":7,"sessionId":"S","method":"Page.navigate"}"#, "mac_browser_busy: This Mac's browser is busy; try again shortly.").unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&reply).unwrap(),
+            json!({"id": 7, "error": {"code": -32000, "message": "mac_browser_busy: This Mac's browser is busy; try again shortly."}}));
+        assert_eq!(cdp_error("{\"method\":\"Target.attachedToTarget\"}", "x"), None, "an event has nothing to answer");
+    }
+
+    #[tokio::test]
+    async fn the_backends_lease_answer_reaches_its_connection() {
+        let (channels, _rx) = crate::agent_chrome::test_channels();
+        let (leased, mut answers) = mpsc::channel(4);
+        lock(&OPEN).insert("l1".into(), Open { session: "session-l".into(), stop: Arc::new(Notify::new()), leased });
+        assert!(on_event(&channels, "browser.cdp.leased", &json!({"channel": "l1", "ok": true})));
+        assert_eq!(answers.recv().await, Some(Ok(())));
+        assert!(on_event(&channels, "browser.cdp.leased", &json!({"channel": "l1", "ok": false,
+            "code": "browser_profile_held_by_another_workspace", "message": "Held by Acme.\u{7}"})));
+        assert_eq!(answers.recv().await, Some(Err("browser_profile_held_by_another_workspace: Held by Acme.".into())));
+        lock(&OPEN).remove("l1");
+        assert!(!on_event(&channels, "browser.cdp.leased", &json!({"channel": "l1", "ok": true})), "not ours any more");
+    }
+
     #[tokio::test]
     async fn a_taken_port_is_reported_and_nothing_is_served() {
         let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1897,8 +2111,12 @@ Replace the module doc and add, in `session_browser.rs` (above the peer-pid code
 //! session (anything else is refused with `NOT_SHARED`), and offered to the backend
 //! (`browser.cdp.offer`). The backend answers `browser.cdp.open` (an `agent_chrome` channel whose
 //! Chrome side is this connection) or `browser.cdp.close` with the message the client is shown.
-//! A connection closes 300 s after its last command, when its session ends or stops being shared,
-//! and when Browser is switched off. The person's everyday Chrome is never involved.
+//! The socket stays open for the client's whole connection. 300 s after its last command this sends
+//! `browser.cdp.idle` (the backend releases the lease, saving); the next command is held, with any
+//! that follow, while `browser.cdp.active` re-acquires it, and runs once `browser.cdp.leased` says
+//! so (or each gets a CDP error naming the code). A connection closes only when its client leaves,
+//! its session ends or stops being shared, or Browser is switched off. The person's everyday Chrome
+//! is never involved.
 
 use crate::agent_chrome::Channels;
 use crate::node_client::EventSender;
@@ -1918,11 +2136,15 @@ use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::Message;
 
 pub(crate) const PORT: u16 = 39222;
-pub(crate) const IDLE_CLOSE: Duration = Duration::from_secs(300);
-/// The backend's answer: it may wake the runtime (~55 s cold) and run a sign-in sync first.
+/// No command for this long: the backend releases the session's lease (and saves its sign-ins).
+pub(crate) const IDLE_RELEASE: Duration = Duration::from_secs(300);
+/// The backend's answer to an offer or an `active`: it may wake the runtime (~55 s cold) and run a
+/// sign-in sync first.
 const OFFER_WAIT: Duration = Duration::from_secs(150);
-/// Commands a client sends before the answer, held (and answered with the refusal if refused).
+/// Commands held before an answer (the offer's, or a re-acquire's); more are answered with an error.
 const MAX_EARLY: usize = 256;
+const NO_ANSWER: &str = "The Lightbulb browser did not answer; try again";
+const OVERFLOW: &str = "Too many commands while the Lightbulb browser loads; try again";
 const LIVE_CHECK: Duration = Duration::from_secs(30);
 const WS_PATH: &str = "/devtools/browser/lightbulb";
 const NOT_CONNECTED: &str = "Lightbulb on this Mac is not connected to its workspace yet";
@@ -1941,8 +2163,76 @@ struct Pending {
 
 /// Offers awaiting the backend's answer, by channel.
 static PENDING: LazyLock<Mutex<HashMap<String, Pending>>> = LazyLock::new(Default::default);
-/// Open connections: channel -> (session, its stop).
-static OPEN: LazyLock<Mutex<HashMap<String, (String, Arc<Notify>)>>> = LazyLock::new(Default::default);
+/// An open connection: its session, its stop, and where the backend's lease answers go.
+struct Open {
+    session: String,
+    stop: Arc<Notify>,
+    leased: mpsc::Sender<Result<(), String>>,
+}
+
+/// Open connections, by channel.
+static OPEN: LazyLock<Mutex<HashMap<String, Open>>> = LazyLock::new(Default::default);
+
+/// A connection's lease as the Mac sees it: commands pass while it is held; after idle the first
+/// command asks for it back (`Wake`) and it and those after it wait (`Hold`) for the answer.
+#[derive(Default)]
+struct Gate {
+    idle: bool,
+    waking: bool,
+    held: Vec<String>,
+}
+
+enum Step {
+    Forward(String),
+    Wake,
+    Hold,
+    Overflow(String),
+}
+
+impl Gate {
+    fn command(&mut self, text: String) -> Step {
+        if self.waking {
+            if self.held.len() >= MAX_EARLY {
+                return Step::Overflow(text);
+            }
+            self.held.push(text);
+            return Step::Hold;
+        }
+        if self.idle {
+            (self.idle, self.waking) = (false, true);
+            self.held.push(text);
+            return Step::Wake;
+        }
+        Step::Forward(text)
+    }
+
+    fn active(&self) -> bool {
+        !self.idle && !self.waking
+    }
+
+    fn waking(&self) -> bool {
+        self.waking
+    }
+
+    fn went_idle(&mut self) {
+        self.idle = true;
+    }
+
+    /// The backend's answer: the held commands, in order, to run (`ok`) or to refuse. A late `ok`
+    /// after the Mac gave up still makes it active: the backend holds the lease then.
+    fn leased(&mut self, ok: bool) -> Vec<String> {
+        (self.waking, self.idle) = (false, !ok);
+        std::mem::take(&mut self.held)
+    }
+}
+
+/// A command's CDP error answer (an event has none).
+fn cdp_error(text: &str, message: &str) -> Option<String> {
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|v| v.get("id").cloned())
+        .map(|id| json!({"id": id, "error": {"code": -32000, "message": message}}).to_string())
+}
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -2108,21 +2398,42 @@ async fn run(app: tauri::AppHandle, ws: Ws, session: String) {
         }
     };
     let stop = Arc::new(Notify::new());
-    lock(&OPEN).insert(id.clone(), (session.clone(), stop.clone()));
+    let (leased, mut answers) = mpsc::channel::<Result<(), String>>(4);
+    lock(&OPEN).insert(id.clone(), Open { session: session.clone(), stop: stop.clone(), leased });
     let mut open = true;
     for text in early {
         open = open && upstream.send(text).await.is_ok();
     }
-    let idle = tokio::time::sleep(IDLE_CLOSE);
-    tokio::pin!(idle);
+    let mut gate = Gate::default();
+    let far = || tokio::time::Instant::now() + Duration::from_secs(365 * 24 * 3600);
+    let idle = tokio::time::sleep(IDLE_RELEASE);
+    let wake = tokio::time::sleep_until(far());
+    tokio::pin!(idle, wake);
     let mut check = tokio::time::interval(LIVE_CHECK);
     check.tick().await;
+    // Held commands that cannot run get the CDP error; `open` stays as it is.
+    async fn answer_all(sink: &mut SplitSink<Ws, Message>, texts: Vec<String>, message: &str) -> bool {
+        for reply in texts.iter().filter_map(|text| cdp_error(text, message)) {
+            if sink.send(Message::Text(reply.into())).await.is_err() {
+                return false;
+            }
+        }
+        true
+    }
     while open {
         tokio::select! {
             msg = stream.next() => match msg {
                 Some(Ok(Message::Text(text))) => {
-                    idle.as_mut().reset(tokio::time::Instant::now() + IDLE_CLOSE);
-                    open = upstream.send(text.to_string()).await.is_ok();
+                    idle.as_mut().reset(tokio::time::Instant::now() + IDLE_RELEASE);
+                    match gate.command(text.to_string()) {
+                        Step::Forward(text) => open = upstream.send(text).await.is_ok(),
+                        Step::Wake => {
+                            wake.as_mut().reset(tokio::time::Instant::now() + OFFER_WAIT);
+                            open = out.send("browser.cdp.active", json!({"channel": id})).await.is_ok();
+                        }
+                        Step::Hold => {}
+                        Step::Overflow(text) => open = answer_all(&mut sink, vec![text], OVERFLOW).await,
+                    }
                 }
                 Some(Ok(Message::Close(_))) | Some(Err(_)) | None => open = false,
                 Some(Ok(_)) => {}
@@ -2131,7 +2442,27 @@ async fn run(app: tauri::AppHandle, ws: Ws, session: String) {
                 Some(text) => open = sink.send(Message::Text(text.into())).await.is_ok(),
                 None => open = false, // the channel ended: Chrome quit, Browser off, or the backend closed it
             },
-            _ = &mut idle => open = false,
+            Some(answer) = answers.recv() => {
+                wake.as_mut().reset(far());
+                match answer {
+                    Ok(()) => {
+                        for text in gate.leased(true) {
+                            open = open && upstream.send(text).await.is_ok();
+                        }
+                    }
+                    Err(message) => open = answer_all(&mut sink, gate.leased(false), &message).await,
+                }
+                idle.as_mut().reset(tokio::time::Instant::now() + IDLE_RELEASE);
+            }
+            _ = &mut wake, if gate.waking() => {
+                wake.as_mut().reset(far());
+                open = answer_all(&mut sink, gate.leased(false), NO_ANSWER).await;
+            }
+            _ = &mut idle, if gate.active() => {
+                // The lease goes back (and the sign-ins are saved); the socket and Chrome stay.
+                gate.went_idle();
+                open = out.send("browser.cdp.idle", json!({"channel": id})).await.is_ok();
+            }
             _ = check.tick() => open = still_shared(&app, &session).await,
             _ = stop.notified() => open = false,
         }
@@ -2149,12 +2480,7 @@ async fn refuse(ws: Ws, early: Vec<String>, message: &str) {
 /// Tell a refused client why, in CDP's own error shape (puppeteer and Playwright surface the
 /// message), for the commands it already sent and those of the next second; then close.
 async fn refuse_split(mut sink: SplitSink<Ws, Message>, mut stream: SplitStream<Ws>, early: Vec<String>, message: &str) {
-    let answer = |text: &str| {
-        serde_json::from_str::<Value>(text)
-            .ok()
-            .and_then(|v| v.get("id").cloned())
-            .map(|id| json!({"id": id, "error": {"code": -32000, "message": message}}).to_string())
-    };
+    let answer = |text: &str| cdp_error(text, message);
     for reply in early.iter().filter_map(|text| answer(text)) {
         let _ = sink.send(Message::Text(reply.into())).await;
     }
@@ -2207,6 +2533,18 @@ pub(crate) fn on_event(channels: &Channels, event: &str, payload: &Value) -> boo
             let _ = pending.decide.send(Decision::Refused(message.unwrap_or_else(|| refusal("").into())));
             true
         }
+        "browser.cdp.leased" => {
+            let Some(leased) = lock(&OPEN).get(id).map(|open| open.leased.clone()) else { return false };
+            let answer = if payload.get("ok").and_then(Value::as_bool) == Some(true) {
+                Ok(())
+            } else {
+                let code = payload.get("code").and_then(Value::as_str).map(clean).unwrap_or_default();
+                let message = payload.get("message").and_then(Value::as_str).map(clean).unwrap_or_default();
+                Err(format!("{code}: {message}"))
+            };
+            let _ = leased.try_send(answer);
+            true
+        }
         _ => false,
     }
 }
@@ -2225,6 +2563,18 @@ pub(crate) fn on_event(channels: &Channels, event: &str, payload: &Value) -> boo
     });
 ```
 
+`node_client.rs` `handle_message` (line 936-939): the backend's lease answer rides the CDP lane like the other `browser.*` events:
+
+```rust
+            if matches!(
+                event,
+                "browser.cdp.open" | "browser.cdp.frame" | "browser.cdp.close" | "browser.cdp.leased"
+                    | "browser.cast.set" | "browser.cast.input"
+            ) {
+```
+
+and its test `handle_message_routes_cdp_events_to_their_own_lane` (line 1244) lists `"browser.cdp.leased"` among the events it sends.
+
 `lib.rs` setup — after `let _ = std::fs::remove_dir_all(agent_chrome::downloads_dir().join(agent_chrome::UPLOADS));`:
 
 ```rust
@@ -2234,14 +2584,14 @@ pub(crate) fn on_event(channels: &Channels, event: &str, payload: &Value) -> boo
 
 - [ ] **Step 4: Run the tests**
 
-Run: `cd apps/desktop/src-tauri && cargo test session_browser agent_chrome node_invoke`
+Run: `cd apps/desktop/src-tauri && cargo test session_browser agent_chrome node_invoke node_client`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/desktop/src-tauri/src/session_browser.rs apps/desktop/src-tauri/src/node_invoke.rs apps/desktop/src-tauri/src/lib.rs
-git commit -m "feat(desktop): a loopback CDP port that offers a shared session's connection to the workspace"
+git add apps/desktop/src-tauri/src/session_browser.rs apps/desktop/src-tauri/src/node_invoke.rs apps/desktop/src-tauri/src/node_client.rs apps/desktop/src-tauri/src/lib.rs
+git commit -m "feat(desktop): a loopback CDP port that offers a shared session's connection and holds it through idle"
 ```
 
 ### Task 8: Desktop — the `lightbulb-browser` MCP entry
@@ -2451,7 +2801,9 @@ everyday Chrome. New pages open in a background window: nothing comes to the fro
 If a tool fails with "Share this session to use the Lightbulb browser", this session is
 not shared; tell your user, and do not look for another browser. "This Mac's browser is
 busy" means four connections are already open; try again shortly. After five minutes
-without a browser command the connection closes; the next tool call opens it again.
+without a browser command the workspace's sign-ins are saved and the browser is let go; your
+next browser command takes a few seconds longer while they load again. The tabs you had open
+stay as they were.
 ```
 
 - [ ] **Step 2: Write the surfaces paragraph**
@@ -2461,9 +2813,10 @@ without a browser command the connection closes; the next tool call opens it aga
 Codex session browses with its `lightbulb-browser` tools in that Mac's "Lightbulb agent"
 Chrome, with the workspace's sign-ins, exactly as a run does after `lightbulb_desktop
 use_browser`. A session that is not shared is refused ("Share this session to use the
-Lightbulb browser"). Its sign-ins load when it starts browsing and save when it stops (five
-minutes after its last command, or when the session ends). It shares the Mac's four browser
-connections with agent runs.
+Lightbulb browser"). Its sign-ins load when it starts browsing and save five minutes after its
+last browser command and when the session ends; its next command after such a pause waits a
+few seconds while they load again (anything signed into in that window meanwhile is saved
+first, not lost). It shares the Mac's four browser connections with agent runs.
 ```
 
 - [ ] **Step 3: Add the MAINTENANCE anchor**
@@ -2516,10 +2869,11 @@ Expected: CI green. Wait for Codex's review on all four surfaces (CLAUDE.md "Cod
 1. `curl -s http://127.0.0.1:39222/json/version` → JSON with `webSocketDebuggerUrl` `ws://127.0.0.1:39222/devtools/browser/lightbulb`.
 2. `claude mcp get lightbulb-browser` and `codex mcp get lightbulb-browser` → the npx command line.
 3. In a shared Claude Code session: "Use lightbulb-browser to open https://example.com and take a snapshot." The page opens in the "Lightbulb agent" window in the background; the front app stays in front. A site the workspace is signed into in the cloud browser shows signed in.
-4. Leave it idle for 5 minutes; ask for another snapshot: it reconnects and works (Review Focus 1).
-5. Set the session to Only me; ask again: the tool error contains "Share this session to use the Lightbulb browser".
-6. Same as 3 in a shared Codex CLI session.
-7. End the session; within a minute the backend log shows `mac_browser.sync` `save` `ok` for the owner.
+4. Leave it idle for 5 minutes: the backend log shows `mac_browser.sync` `save` `ok` for the owner and the Mac log shows the session's `browser.cdp.idle`. Sign in to some site in the "Lightbulb agent" window meanwhile. Then ask for another snapshot: it waits a few seconds (`browser.cdp.active`, a `[save, load]` sync), works on the same tab with no new offer in the Mac log, and the site is still signed in (Review Focus 1, Decision 8).
+5. While it is re-acquiring (ask for two navigations in one message right after the idle), both run, in order.
+6. Set the session to Only me; within 30 s the connection closes; ask again: the tool error contains "Share this session to use the Lightbulb browser".
+7. Same as 3 in a shared Codex CLI session.
+8. End the session; within a minute the backend log shows `mac_browser.sync` `save` `ok` for the owner.
 
 Record the results on the PR.
 
@@ -2962,12 +3316,12 @@ async def _publish(owner: str, session_id: str, channel) -> None:
             logger.info("session browser frame dropped owner=%s error=%s", owner, type(exc).__name__)
 ```
 
-`_hold_mac` runs them beside its renewals and registers the channel for input:
+`_hold_mac` runs them beside its loop and registers the channel for input (the loop from Task 4, unchanged, moves inside):
 
 ```python
-async def _hold_mac(auth: dict, device: str, node, channel) -> None:
-    """While the Mac has the channel open: frames while watched, watcher input, and every
-    RENEW_SECONDS the shared re-check and the lease renewal. DesktopError ends it."""
+async def _hold_mac(auth: dict, device: str, node, channel, leased: dict) -> None:
+    """While the Mac has the channel open (the whole client connection): frames while watched and
+    watcher input, idle or not (the tab stays); and the lease loop of Task 4."""
     owner, user, sid = auth["ownerId"], auth["memberId"], session_of(auth["runId"])
     side = (
         [asyncio.create_task(_watch_mac(owner, sid, node, channel)), asyncio.create_task(_publish(owner, sid, channel))]
@@ -2976,21 +3330,14 @@ async def _hold_mac(auth: dict, device: str, node, channel) -> None:
     )
     try:
         with mac_live.live(owner, auth["runId"], node, channel):
-            while True:
-                with contextlib.suppress(asyncio.TimeoutError):
-                    await asyncio.wait_for(channel.closed.wait(), RENEW_SECONDS)
-                if channel.closed.is_set():
-                    return
-                await shared_row(owner, user, device, sid)
-                answer = await mac_browser.acquire(auth, device)
-                if isinstance(answer, dict) and answer.get("sync"):
-                    await _sync(auth, device, answer)
-                await _mark_open(owner, user, sid, "mac", announce=False)
+            await _lease_loop(auth, device, node, channel, leased)
     finally:
         for task in side:
             task.cancel()
             task.add_done_callback(lambda t: t.cancelled() or t.exception())
 ```
+
+where `_lease_loop(auth, device, node, channel, leased)` is Task 4's `_hold_mac` body, renamed, docstring and all.
 
 `routers/messaging.py` — add `mac_live` and `session_browser` to the `from core.services import (...)` block, and after `type_into_local_session`:
 
@@ -3340,7 +3687,7 @@ Watch CI with `gh run watch <id> --repo TheLightbulbCompany/lightbulb --exit-sta
 1. While the session browses, the teammate's session view shows Terminal | Browser; the Browser tab shows the page within a few seconds.
 2. With the tab closed for 15 s, the Mac's log shows `[agent-cast] channel …: cast stopped (ttl)`.
 3. A teammate the owner let in (Ask to join) clicks a link in the Browser tab: the page follows. A teammate who was not let in gets no response (the route answers 403).
-4. When the session's connection closes (5 minutes idle), the Browser tab disappears.
+4. After 5 minutes idle the Browser tab stays (the connection and its tab stay open); when the session ends, it disappears.
 
 ---
 
@@ -3357,7 +3704,7 @@ Branch: `feat/session-browser-cloud` in `.claude/worktrees/session-browser-cloud
 
 **Interfaces:**
 - Consumes: `_refresh`, `begin_turn`, `_TURN`, `_BROWSING`, `_end_run`, `_post`, `LEASE_ID`, `cdp_mux.url_for`, `cdp_mux.cast`, `turn.publish_frame`, `turn.now`.
-- Produces: RPC `browser.attach {runId, doorUrl, frameEndpoint, frameChannel}` → `{"status": "attached" | "starting" | "unavailable"}`; RPC `browser.frames {runId, ttl}` casts only that session's tab. Used by Task 16.
+- Produces: RPC `browser.attach {runId, doorUrl, frameEndpoint, frameChannel}` → `{"status": "attached" | "starting" | "unavailable"}`; `browser.attach {runId, renew: true}` (after idle, before the held commands run) renews the bridge's lease for a session whose door is still pumped, same answers; RPC `browser.frames {runId, ttl}` casts only that session's tab. Used by Task 16.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3389,6 +3736,17 @@ def test_attach_answers_starting_while_the_cloud_browser_starts(monkeypatch, cle
     monkeypatch.setattr(browser_control, "_start_pump", lambda run, door: pytest.fail("pumped"))
     assert browser_control.attach_session({"runId": SESSION_RUN, "doorUrl": DOOR, **FRAMES}) == {"status": "starting"}
     assert SESSION_RUN not in browser_control._BROWSING
+
+
+def test_renew_takes_the_lease_back_for_a_pumped_session_only(monkeypatch, clean):
+    posted = []
+    monkeypatch.setattr(browser_control, "_post", lambda path, body, timeout=20.0: posted.append(body) or
+                        {"generation": "g1", "cdpUrl": URL})
+    assert browser_control.attach_session({"runId": SESSION_RUN, "renew": True}) == {"status": "unavailable"}
+    assert posted == [], "no pump, nothing to renew"
+    browser_control._BROWSING[SESSION_RUN] = set()
+    assert browser_control.attach_session({"runId": SESSION_RUN, "renew": True}) == {"status": "attached"}
+    assert posted == [{"runId": "bridge", "agentId": "session"}]
 
 
 @pytest.mark.parametrize("bad", [{"runId": "run-1"}, {"doorUrl": "wss://evil.example/x"}])
@@ -3481,8 +3839,14 @@ def attach_session(params: dict) -> dict:
     own loopback endpoint until either side closes. "starting" while the cloud browser starts: the
     backend asks again with a fresh ticket."""
     run, door = params.get("runId"), params.get("doorUrl")
-    if not (isinstance(run, str) and _SESSION_RUN.fullmatch(run)) or not (isinstance(door, str) and _DOOR.fullmatch(door)):
+    renew = params.get("renew") is True
+    if not (isinstance(run, str) and _SESSION_RUN.fullmatch(run)) or not (renew or (isinstance(door, str) and _DOOR.fullmatch(door))):
         raise ValueError("invalid browser attach")
+    if renew:  # after idle: the door still pumps; only the lease may have lapsed
+        with _LOCK:
+            pumped = run in _BROWSING
+        if not pumped:
+            return {"status": "unavailable"}
     state = begin_turn(run, AGENT_SESSION, family="session")
     try:
         ready = _refresh(state)
@@ -3490,6 +3854,8 @@ def attach_session(params: dict) -> dict:
         _TURN.set(None)
     if not ready:
         return {"status": "starting" if state.get("starting") else "unavailable"}
+    if renew:
+        return {"status": "attached"}
     sink = _session_sink(run, params.get("frameEndpoint"), params.get("frameChannel"))
     with _LOCK:
         _BROWSING.setdefault(run, set())  # the bridge's lease and grace timer cover it
@@ -3831,7 +4197,9 @@ def cloud(env, monkeypatch):
 
     async def rpc(owner, method, params=None, *, timeout_s=30.0):
         seen.append((method, params))
-        return answers.pop(0) if method == "browser.attach" else {"ok": True}
+        if method == "browser.attach":
+            return answers.pop(0) if answers else {"status": "attached"}  # a renew after idle
+        return {"ok": True}
 
     monkeypatch.setattr(session_browser.container_rpc, "call", rpc)
     return seen
@@ -3849,7 +4217,7 @@ async def test_browser_off_routes_the_session_to_the_cloud_browser(env, cloud):
     served = asyncio.create_task(session_browser.serve(OWNER, MEMBER, DEVICE, node, channel, SID, False))
     await _relayed(env)
     assert session_browser.relay({"ownerId": OWNER, "runId": RUN}) is channel
-    attaches = [params for method, params in cloud if method == "browser.attach"]
+    attaches = [params for method, params in cloud if method == "browser.attach" and "doorUrl" in params]
     assert len(attaches) == 2 and attaches[0]["doorUrl"] != attaches[1]["doorUrl"], "a fresh ticket each time"
     assert attaches[1]["doorUrl"].startswith("ws://10.0.3.7:8000/api/v1/internal/mac-cdp/")
     assert (attaches[1]["runId"], attaches[1]["frameChannel"]) == (RUN, f"/ws/ws-1/session-frames/{SID}")
@@ -3858,6 +4226,18 @@ async def test_browser_off_routes_the_session_to_the_cloud_browser(env, cloud):
     await asyncio.wait_for(served, 2)
     assert session_browser.relay({"ownerId": OWNER, "runId": RUN}) is None
     assert env.calls[-1] == ("open", None)
+
+
+async def test_after_idle_the_next_command_waits_for_the_bridge_to_renew(env, cloud):
+    node, channel = _offered()
+    served = asyncio.create_task(session_browser.serve(OWNER, MEMBER, DEVICE, node, channel, SID, False))
+    await _relayed(env)
+    _signal(node, "idle")
+    _signal(node, "active")
+    assert (await _next(node, "browser.cdp.leased"))["payload"] == {"channel": CHANNEL, "ok": True}
+    assert ("browser.attach", {"runId": RUN, "renew": True}) in cloud
+    _closed_by_mac(node)
+    await asyncio.wait_for(served, 2)
 
 
 async def test_a_session_set_to_cloud_goes_there_with_browser_on(env, cloud):
@@ -4003,21 +4383,47 @@ async def _watch_cloud(owner: str, session_id: str, run: str) -> None:
         await asyncio.sleep(mac_live.SET_EVERY_S)
 
 
-async def _hold_cloud(auth: dict, device: str, channel) -> None:
-    """While the door relays: every RENEW_SECONDS re-check the session is shared, keep the runtime
-    awake (AgentCore parks a microVM no invoke reaches; the door is outbound and does not count) and
-    renew the `browserOpen` mark. The bridge renews its own lease while commands flow."""
+async def _renew_cloud(auth: dict) -> bool:
+    """`browser.attach {renew}` until the bridge holds the lease again (polling while the cloud
+    browser starts), within OFFER_BUDGET_S."""
+    deadline = _clock() + OFFER_BUDGET_S
+    while True:
+        try:
+            answer = await container_rpc.call(auth["ownerId"], "browser.attach", {"runId": auth["runId"], "renew": True}, timeout_s=30)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("session browser renew failed owner=%s error=%s", auth["ownerId"], type(exc).__name__)
+            return False
+        status = answer.get("status") if isinstance(answer, dict) else None
+        if status == "attached":
+            return True
+        if status != "starting" or _clock() + POLL_S >= deadline:
+            return False
+        await asyncio.sleep(POLL_S)
+
+
+async def _hold_cloud(auth: dict, device: str, node, channel) -> None:
+    """While the door relays (the whole client connection): each signal, and every RENEW_SECONDS,
+    re-checks that the session is shared, keeps the runtime awake (AgentCore parks a microVM no invoke
+    reaches; the door is outbound and does not count) and renews the `browserOpen` mark. `idle`
+    changes nothing here (Decision 18: the shared browser saves itself, and the bridge renews its lease
+    only while commands flow); `active` renews the bridge's lease before the held commands run."""
     owner, user, sid = auth["ownerId"], auth["memberId"], session_of(auth["runId"])
     watcher = asyncio.create_task(_watch_cloud(owner, sid, auth["runId"]))
     try:
         while True:
-            with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(channel.closed.wait(), RENEW_SECONDS)
-            if channel.closed.is_set():
+            try:
+                signal = await asyncio.wait_for(channel.signals.get(), RENEW_SECONDS)
+            except asyncio.TimeoutError:
+                signal = None
+            if signal == "closed" or channel.closed.is_set():
                 return
             await shared_row(owner, user, device, sid)
-            with contextlib.suppress(Exception):
-                await container_rpc.call(owner, "health", {}, timeout_s=10)
+            if signal == "active":
+                ok = await _renew_cloud(auth)
+                node.cdp_leased(channel, ok, *(() if ok else ("cloud_unavailable", CLOUD_MESSAGE)))
+            elif signal is None:
+                with contextlib.suppress(Exception):
+                    await container_rpc.call(owner, "health", {}, timeout_s=10)
             await _mark_open(owner, user, sid, "cloud", announce=False)
     finally:
         watcher.cancel()
@@ -4032,7 +4438,7 @@ async def _serve_cloud(auth: dict, device: str, node, channel) -> None:
         await _attach(auth, target)
         await _mark_open(owner, user, sid, "cloud", announce=True)
         try:
-            await _hold_cloud(auth, device, channel)
+            await _hold_cloud(auth, device, node, channel)
         finally:
             await _mark_open(owner, user, sid, None, announce=True)
     finally:
@@ -4210,11 +4616,11 @@ In `run`, the decision becomes an `Upstream`, and the end of the connection is t
             // ... the early-command branch, unchanged
         }
     };
-    // ...
-    for text in early {
-        open = open && upstream.send(&id, text).await.is_ok();
-    }
-    // ... in the loop: `open = upstream.send(&id, text.to_string()).await.is_ok();`
+    // Every other `upstream.send(text)` of Task 7's loop takes the channel id now, unchanged
+    // otherwise: the early commands, `Step::Forward`, and the held commands of an `Ok` lease answer:
+    //     open = open && upstream.send(&id, text).await.is_ok();
+    //     Step::Forward(text) => open = upstream.send(&id, text).await.is_ok(),
+    // (a relay's idle/active ride the same Gate: the backend answers `leased` for the cloud too)
     // after the loop:
     lock(&OPEN).remove(&id);
     match upstream {
@@ -4291,7 +4697,7 @@ After CI and Codex: merge; ship the Hermes image (dev pin, prod pin, `roll_herme
 
 1. Switch Browser off in the founder's Mac Settings. In a shared Claude Code session: "Use lightbulb-browser to open https://example.com and take a snapshot." It works; the workspace's Browser panel shows a new tab with example.com; the Mac's agent Chrome is not opened.
 2. The Browser tab in a teammate's session view shows the cloud page; a click from a let-in teammate lands.
-3. After 5 minutes idle the connection closes; ~30 s later the backend log shows the cloud browser's save for the owner.
+3. After 5 minutes idle the next command waits a moment (`browser.attach` renew in the backend log) and works on the same tab, with no reconnect. (Left idle past 30 minutes with nobody watching, the cloud browser stops and the connection closes with `cloud_unavailable`: Decision 18.)
 4. Switch Browser back on: the next connection opens on the Mac again.
 
 ---
@@ -4464,12 +4870,11 @@ git commit -m "feat(sessions): use_browser sets where a shared session browses n
 **Files:**
 - Modify: `apps/desktop/src-tauri/src/local_sessions/native_mcp.rs` (`tools` lines 245-279; `internal` lines 309-351; the eight-tools test lines 515-527)
 - Modify: `apps/desktop/src-tauri/src/local_sessions/native_tools.rs` (`answer`, after the `read` dispatch at line 266)
-- Modify: `apps/desktop/src-tauri/src/session_browser.rs` (`close_session`)
-- Test: `native_mcp.rs` and `session_browser.rs` `mod tests`
+- Test: `native_mcp.rs` `mod tests`
 
 **Interfaces:**
-- Consumes: Task 19's device route; Task 7's `OPEN`.
-- Produces: MCP tool `use_browser {where: "mac" | "cloud"}`; `session_browser::close_session(session_id)`.
+- Consumes: Task 19's device route.
+- Produces: MCP tool `use_browser {where: "mac" | "cloud"}`, applied to the session's next connection (Decision 17).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -4498,33 +4903,17 @@ In `native_mcp.rs`, replace `exactly_the_eight_tools_and_only_send_is_destructiv
     }
 ```
 
-In `session_browser.rs` `mod tests`:
-
-```rust
-    #[tokio::test]
-    async fn use_browser_ends_only_that_sessions_connections() {
-        let (a, b) = (Arc::new(Notify::new()), Arc::new(Notify::new()));
-        lock(&OPEN).insert("x1".into(), ("session-a".into(), a.clone()));
-        lock(&OPEN).insert("x2".into(), ("session-b".into(), b.clone()));
-        close_session("session-a");
-        assert!(tokio::time::timeout(Duration::from_millis(50), a.notified()).await.is_ok());
-        assert!(tokio::time::timeout(Duration::from_millis(50), b.notified()).await.is_err());
-        lock(&OPEN).remove("x1");
-        lock(&OPEN).remove("x2");
-    }
-```
-
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `cd apps/desktop/src-tauri && cargo test native_mcp session_browser`
-Expected: FAIL (nine tools expected; `close_session` not found).
+Run: `cd apps/desktop/src-tauri && cargo test native_mcp`
+Expected: FAIL (nine tools expected; `use_browser` not mapped).
 
 - [ ] **Step 3: Implement**
 
 `native_mcp.rs` `tools()` — append to the list:
 
 ```rust
-        {"name":"use_browser","description":"Choose where this session's lightbulb-browser tools browse: \"mac\" (this Mac's Lightbulb agent Chrome, the default) or \"cloud\" (the workspace's cloud browser). The next browser tool call reconnects there.",
+        {"name":"use_browser","description":"Choose where this session's lightbulb-browser tools browse: \"mac\" (this Mac's Lightbulb agent Chrome, the default) or \"cloud\" (the workspace's cloud browser). It applies to this session's next browser connection: to switch now, restart the lightbulb-browser MCP server (/mcp in Claude Code).",
          "inputSchema":{"type":"object","properties":{"where":{"type":"string","enum":["mac","cloud"]}},"required":["where"],"additionalProperties":false},
          "annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}}
 ```
@@ -4554,37 +4943,22 @@ Expected: FAIL (nine tools expected; `close_session` not found).
                 .map_err(|_| "Lightbulb unavailable")?;
             let ok = response.status().is_success();
             let data: Value = response.json().await.map_err(|_| "invalid Lightbulb response")?;
-            if ok {
-                // The next connection follows the new place: end the open one now.
-                crate::session_browser::close_session(&source.session_id);
-            }
+            // The open connection stays where it is (its pages and CDP sessions live there): the
+            // session's next connection follows the new place (Decision 17).
             return Ok(json!({"ok": ok, "data": data}));
         }
 ```
 
-`session_browser.rs`:
-
-```rust
-/// `use_browser` moved this session's browser: end its open connections, so the next one follows.
-pub(crate) fn close_session(session_id: &str) {
-    for (session, stop) in lock(&OPEN).values() {
-        if session == session_id {
-            stop.notify_one();
-        }
-    }
-}
-```
-
 - [ ] **Step 4: Run the tests**
 
-Run: `cd apps/desktop/src-tauri && cargo test native_mcp session_browser native_tools`
+Run: `cd apps/desktop/src-tauri && cargo test native_mcp native_tools`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/desktop/src-tauri/src/local_sessions/native_mcp.rs apps/desktop/src-tauri/src/local_sessions/native_tools.rs apps/desktop/src-tauri/src/session_browser.rs
-git commit -m "feat(desktop): use_browser on the Mac's lightbulb MCP moves a session's browser"
+git add apps/desktop/src-tauri/src/local_sessions/native_mcp.rs apps/desktop/src-tauri/src/local_sessions/native_tools.rs
+git commit -m "feat(desktop): use_browser on the Mac's lightbulb MCP sets where a session browses next"
 ```
 
 ### Task 21: Docs, delete the planning docs, PR and prod acceptance for M4
@@ -4597,17 +4971,19 @@ git commit -m "feat(desktop): use_browser on the Mac's lightbulb MCP moves a ses
 - [ ] **Step 1: Docs** — append to the skill's "## Browsing":
 
 ```markdown
-`use_browser` (the `lightbulb` MCP) chooses where: `"mac"` (the default) or `"cloud"`. Your
-next browser tool call reconnects there. Use it when your user asks, or when a site needs
-the other browser's sign-in.
+`use_browser` (the `lightbulb` MCP) chooses where: `"mac"` (the default) or `"cloud"`. It
+applies to your next browser connection; the one already open stays where it is, with its
+tabs. To switch now, ask your user to restart the `lightbulb-browser` MCP server (`/mcp` in
+Claude Code). Use it when your user asks, or when a site needs the other browser's sign-in.
 ```
 
 to the surfaces paragraph:
 
 ```markdown
-A session moves between the two with its `lightbulb` MCP's `use_browser` (`mac` or `cloud`); a
-person who may control the session can do the same through the hosted MCP's `use_browser`
-with its `session_id`.
+A session chooses between the two with its `lightbulb` MCP's `use_browser` (`mac` or `cloud`);
+a person who may control the session can do the same through the hosted MCP's `use_browser`
+with its `session_id`. It applies to the session's next browser connection (restarting its
+`lightbulb-browser` MCP server); an open connection stays where it is.
 ```
 
 and to the anchor: `native_mcp.rs + native_tools.rs (use_browser); apps/backend/core/services/hosted_mcp.py (use_browser); routers/messaging.py (/local-sessions/device/sessions/{id}/browser-place)`.
@@ -4629,7 +5005,7 @@ git push -u origin feat/session-browser-switch
 gh pr create --repo TheLightbulbCompany/lightbulb --base main --title "feat(sessions): use_browser switches a shared session between the Mac and the cloud browser (M4)" --body-file /dev/stdin <<'BODY'
 Milestone M4, the last of the session browser (spec and plan deleted here; this PR and #M1-#M3 are the record).
 
-- `use_browser {where: "mac" | "cloud"}` on the Mac's `lightbulb` MCP (the session the Mac proves) and on the hosted MCP (`session_id`, people who may control it). Kept per session; the next connection follows; the Mac ends the open one at once.
+- `use_browser {where: "mac" | "cloud"}` on the Mac's `lightbulb` MCP (the session the Mac proves) and on the hosted MCP (`session_id`, people who may control it). Kept per session; the session's next connection follows (an open one keeps its pages where they are).
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
@@ -4641,7 +5017,7 @@ After CI and Codex: merge; promote the backend; build the desktop app.
 
 - [ ] **Step 4: Prod acceptance**
 
-1. In a shared Claude Code session with Browser on: "Use use_browser cloud, then open https://example.com with lightbulb-browser." The page opens in the workspace cloud browser, not the Mac's.
-2. "Use use_browser mac, then take a snapshot." It reconnects on the Mac's agent Chrome.
+1. In a shared Claude Code session with Browser on and its browser connection open: "Use use_browser cloud, then open https://example.com with lightbulb-browser." It still opens on the Mac (the open connection stays). Restart the `lightbulb-browser` server (`/mcp`), ask again: it opens in the workspace cloud browser.
+2. "Use use_browser mac", restart the server, take a snapshot: it is on the Mac's agent Chrome again.
 3. Same for a shared Codex CLI session.
 4. From another Claude Code with the hosted MCP signed in as a teammate the owner let in: `use_browser` with that session's id switches it; as a teammate not let in, it answers `LOCAL_SESSION_FORBIDDEN`.

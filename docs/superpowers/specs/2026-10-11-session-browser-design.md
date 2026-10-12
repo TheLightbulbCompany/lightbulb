@@ -43,7 +43,7 @@ Later, not in this version: an agent continues in the exact tab another agent le
   sessions list.
   - A connection that is not from a shared session is refused, and the refusal reaches Claude
     Code as an error message.
-  - Spike first: getting the peer pid of a loopback TCP connection on macOS (see Spikes).
+  - The method is libproc (spike 1).
 - **Each session is a run.** A session is a "run" with id `session:<sessionId>`, so it uses the
   existing lease and sign-in machinery.
   - The lease is renewed while CDP traffic flows.
@@ -63,8 +63,8 @@ The session's place is `mac` (the default) or `cloud`.
 
   On the backend, `mac_browser.py` gets a lease for `session:<id>`. The first lease loads
   sign-ins and the last lease out saves them, exactly as for Hermes runs. The difference is that
-  the load/save steps are driven by the app rather than by the bridge. Spike: where the
-  load/save engine runs (see Spikes).
+  the load/save steps are driven by the app rather than by the bridge. The runtime runs
+  the load/save steps (spike 3).
 - **`cloud`.** The app dials the backend's machine relay with a session-scoped request.
   - The backend wakes the runtime and hands the bridge a single-use ticket.
   - The bridge dials back to a backend door, mirroring `mac_cdp.py` in reverse.
@@ -103,20 +103,59 @@ The session's place is `mac` (the default) or `cloud`.
 | `mac_browser_busy` | All 4 Mac channels are in use. |
 | `cloud_unavailable` | No cloud browser, or the runtime could not be woken. |
 
-## Spikes before the plan
+## Spike results (2026-10-11, throwaway scripts, not kept)
 
-1. **Peer pid of a loopback TCP connection on macOS.** Options: `proc_pidfdinfo` scan, or
-   `lsof -i` by port pair. Fallback: a per-session token in the MCP entry's environment. Measure
-   cost per connect.
-2. **chrome-devtools-mcp against a proxy.** Does it attach through our port to an existing
-   Chrome without launching one? Do its tools work through the `agent_chrome.rs` filter (for
-   example `Target.createTarget` forced to the background)?
-3. **Sign-in load/save without a bridge run on the Mac path.** Can the app run the
-   `browser_state.py` steps itself, or must the backend ask the runtime to run them over a
-   cloud-side pipe as today? Pick the one with no second engine.
-4. **Cloud reverse door.** The bridge dials back to the backend on demand. Confirm that a woken
-   runtime can be told to dial within the 90 s invoke budget, and measure the added latency per
-   CDP command.
+1. **Peer process of a loopback TCP connection.**
+   - **Method:** libproc socket matching (`proc_listpids` → `PROC_PIDLISTFDS` →
+     `PROC_PIDFDSOCKETINFO`, matching our port pair), then a parent-pid walk with
+     `sysctl KERN_PROC_PID`.
+   - **Results:**
+     - correct in 20/20 tries
+     - median 0.3 ms, about 40 ms worst case over all of the user's processes
+     - no root needed
+     - a grandchild client (npx → node) walks up to the `claude` process
+   - **Do this:** look up once per accepted connection. If the process is not found, deny.
+   - **Do not:** use `lsof`. It takes 63 ms and also returns the listener itself.
+2. **chrome-devtools-mcp and Playwright MCP through a proxy.** Both attach without launching a
+   Chrome of their own. They use only `GET /json/version` (with and without a trailing slash)
+   plus the browser WebSocket, with flattened sessions. Two filter changes are needed for
+   **session channels**:
+   - **Open new tabs in a new window.** `Target.createTarget` must be forced to
+     `{newWindow: true, background: true}`. In a background tab `requestAnimationFrame` never
+     fires, so Playwright's click times out. A background window stays "visible" and the front
+     app is unchanged (measured). Hermes channels keep today's behaviour unless a later test
+     shows the same need.
+   - **Also swallow `Browser.setContentsSize`.** chrome-devtools-mcp `resize_page` uses it.
+   - **Fixed-port collision.** The port must fail loudly when another program already holds it:
+     another automation Chrome on this Mac held port 9333.
+3. **Sign-in load/save: one engine.**
+   - **Where it runs:** the backend asks the runtime, over `container_rpc`, to run the existing
+     `browser_state.checkpoint` steps against the Mac through the existing ticketed
+     `mac_cdp` door. This extends the bridge's `browser.state` RPC with a Mac source (upstream
+     `mac:<device>:session:<id>`).
+   - **What the desktop app does:** it only proxies. It has no sync engine.
+   - **Blockers to widen for a `session` family:**
+     - `mac_cdp._well_formed`
+     - `desktop_execution.AUTH_FIELDS` / `valid_auth` / `_reauthorize`
+     - `desktop_execution._ID`, which has no `:`
+   - **Opening the channel:** the Mac app opens the channel with a new node-socket event
+     (`browser.cdp.offer {channel, sessionId}`). Today only the backend opens channels.
+4. **Cloud path.**
+   - **How the session connects:**
+     1. The backend task that holds the Mac's node socket mints a `use: "session"` ticket.
+     2. A new RPC, `browser.attach {doorUrl, runId}`, makes the bridge dial that door.
+     3. The bridge pumps the door into its own loopback mux as run `session:<id>`, in its own
+        tabs. This is about 30 lines in the bridge, and `cdp_mux` itself is unchanged.
+   - **Lease:** the run joins `_BROWSING`, so the bridge's shared lease and grace timer cover it.
+   - **Cold starts:** a cold start can outlast the 90 s invoke budget, so `browser.attach`
+     answers STARTING and the app retries.
+5. **Live frames.**
+   - **Where they go:** an `image` kind is added to the session screen rail
+     (`/ws/<ws>/session-frames/<sid>`). That rail already has session-keyed authorization,
+     viewer heartbeats and a byte budget. A 480 px JPEG of about 10 KB fits one frame.
+     `mac_live.py`'s room claim is left alone.
+   - **Old desktops:** they drop the connection on an unknown frame kind (`_nudge`), so the new
+     kind is gated on a desktop capability.
 
 ## Tests
 

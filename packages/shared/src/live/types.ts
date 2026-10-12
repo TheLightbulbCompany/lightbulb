@@ -239,7 +239,7 @@ export type SessionScreen = {
    *  Members get their `userId`; a link viewer gets only their `personColor` as `color`, never the id. */
   typist?: { userId?: string; color?: PersonColor; name: string; forMs: number };
 };
-/** A shared session's browser tab as a 480 px JPEG (spec 2026-10-11 §3), on the session's frames
+/** A shared session's browser tab as a 480 px JPEG, on the session's frames
  *  channel: `data` is base64, `w`x`h` the tab's CSS size (viewer input is in those pixels), `seq`
  *  orders frames. Frames flow only while someone has the Browser tab open; nothing stores them. */
 export type SessionBrowserFrame = { sessionId: string; kind: "image"; data: string; w: number; h: number; seq: number };

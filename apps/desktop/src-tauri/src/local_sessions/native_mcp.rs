@@ -31,7 +31,7 @@ fn cli_home(command: &mut Command, home: &Path) {
     }
 }
 
-/// The session browser's MCP entry (spec 2026-10-11): Google's chrome-devtools-mcp attached to this
+/// The session browser's MCP entry: Google's chrome-devtools-mcp attached to this
 /// Mac's session-browser port. We write no browser tools of our own.
 pub(super) const BROWSER_SERVER_NAME: &str = "lightbulb-browser";
 

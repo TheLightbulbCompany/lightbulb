@@ -330,7 +330,7 @@ async fn answer(
             let ok = response.status().is_success();
             let data: Value = response.json().await.map_err(|_| "invalid Lightbulb response")?;
             // The open connection stays where it is (its pages and CDP sessions live there): the
-            // session's next connection follows the new place (Decision 17).
+            // session's next connection follows the new place.
             return Ok(json!({"ok": ok, "data": data}));
         }
         // This route only prepares a private intent. An older backend returns

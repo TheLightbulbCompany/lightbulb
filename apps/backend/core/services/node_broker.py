@@ -574,7 +574,7 @@ class NodeSession:
             channel._end(code if isinstance(code, str) and _CLOSE_CODE.fullmatch(code) else "CLOSED")
 
     def _offer(self, payload: dict) -> None:
-        """A shared Claude Code or Codex session on this Mac asks for a browser (spec 2026-10-11)."""
+        """A shared Claude Code or Codex session on this Mac asks for a browser."""
         cid, sid = payload.get("channel"), payload.get("sessionId")
         if (
             not (isinstance(cid, str) and _OFFER_ID.fullmatch(cid))

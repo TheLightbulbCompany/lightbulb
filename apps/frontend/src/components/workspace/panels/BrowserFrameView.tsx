@@ -109,7 +109,7 @@ function useMacInput(runId: string | undefined, deviceId: string | undefined, ro
       if (current.busy || !current.queue.length || (!session && (!run || !device))) return;
       const events = current.queue.splice(0, MAX_INPUT_EVENTS);
       current.busy = true;
-      // A shared session's browser takes the same events on its own route (spec 2026-10-11).
+      // A shared session's browser takes the same events on its own route.
       const sent = session
         ? api.post(`/messaging/sessions/${encodeURIComponent(session)}/browser/input`, { events })
         : api.post("/browser/mac/input", { runId: run, deviceId: device, ...(room && { roomId: room }), events });
@@ -176,7 +176,7 @@ export function BrowserFrameView({
   empty?: React.ReactNode;
   /** Offered when the live view's one slot may be free: mounts the live view here. */
   onTakeControl?: () => void;
-  /** A shared Claude Code or Codex session's browser (spec 2026-10-11): frames from the session's
+  /** A shared Claude Code or Codex session's browser: frames from the session's
    * frames channel (the caller holds that claim), the beat to the session, and with `canType` the
    * Mac's input shape to the session's own input route; read-only without it. */
   session?: { sessionId: string; canType: boolean };

@@ -837,7 +837,7 @@ async def authorize_run(
             "family": family,
         }
     if family == "session" and allow_session:
-        # A shared Claude Code or Codex session's browser (spec 2026-10-11): its own person, read
+        # A shared Claude Code or Codex session's browser: its own person, read
         # off its row. An ended session keeps it, so the release's save passes the door's re-check.
         from core.repositories import local_sessions_repo
         from core.services.session_browser import AGENT_ID, auth_for, session_of

@@ -367,7 +367,7 @@ def _run_mac_sync(state: dict, sync: dict, deadline: float | None = None) -> boo
 
 
 def mac_checkpoint(params: dict) -> dict:
-    """``browser.state`` with a ``doorUrl`` (spec 2026-10-11, spike 3): the backend's own sign-in sync
+    """``browser.state`` with a ``doorUrl``: the backend's own sign-in sync
     for a shared Claude Code or Codex session's Mac browser. Points the named upstream at the ticketed
     door, runs the steps over one loopback client on it, then forgets the upstream. Same engine as a
     run's own sync; raises ValueError for anything but a backend door."""
@@ -545,7 +545,7 @@ def dispatch_input(event: dict) -> None:
 
 
 def attach_session(params: dict) -> dict:
-    """``browser.attach`` (spec 2026-10-11, cloud): a shared Claude Code or Codex session browses the
+    """``browser.attach``: a shared Claude Code or Codex session browses the
     workspace's cloud browser as one more run, in its own tabs. The backend hands a single-use
     ticketed door carrying the session's CDP from its Mac; this dials it and pumps it into the run's
     own loopback endpoint until either side closes. "starting" while the cloud browser starts: the

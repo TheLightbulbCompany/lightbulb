@@ -299,7 +299,7 @@ class LocalSession(ContractModel):
     forked_from: OpaqueId | None = None
     # False while the owner has paused sharing this one session: only they can see it.
     shared: bool = True
-    # Where this running session's browser connection is open now (spec 2026-10-11): the Browser
+    # Where this running session's browser connection is open now: the Browser
     # tab beside its terminal shows while it is set. None: no open connection.
     browser: Literal["mac", "cloud"] | None = None
     # Owner opt-in: workspace members may use this session's controls (off by default, cleared on end).

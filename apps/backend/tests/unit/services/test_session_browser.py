@@ -1,4 +1,4 @@
-"""A shared session's browser (spec 2026-10-11): offer -> lease -> sync -> open -> hold -> release."""
+"""A shared session's browser: offer -> lease -> sync -> open -> hold -> release."""
 
 import asyncio
 import copy

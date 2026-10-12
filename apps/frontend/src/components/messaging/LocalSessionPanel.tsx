@@ -136,7 +136,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const keptWatching = canWatch && screenDue && watched.current === session.sessionId;
   const watchRemote = (canWatch && hasTerminal && (running || endedScreen)) || keptWatching;
   useEffect(() => { watched.current = watchRemote ? session.sessionId : ""; }, [watchRemote, session.sessionId]);
-  // Terminal | Browser while the session has a browser connection open (spec 2026-10-11).
+  // Terminal | Browser while the session has a browser connection open.
   // The session the Browser tab was picked for: another session, or no tab, reads as Terminal.
   const [browserFor, setBrowserFor] = useState<string | null>(null);
   const browserTab = showsBrowserTab(session, local === "none" && !!onEvent);

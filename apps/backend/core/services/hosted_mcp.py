@@ -286,7 +286,7 @@ async def use_browser(where: Literal["mac", "cloud"], session_id: str) -> dict:
     try:
         sid = messaging.validate_uuid(session_id, label="session ID")
         row, _ = await local_sessions.authorize_session(auth, None, sid, owner_only=True)
-        if not session_browser._live_shared(row):
+        if not session_browser.live_shared(row):
             raise messaging.ApiProblem("LOCAL_SESSION_FORBIDDEN", session_browser.NOT_SHARED)
         return await session_browser.set_place(row["ownerId"], row["sessionId"], where)
     except messaging.ApiProblem as exc:

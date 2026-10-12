@@ -1,12 +1,41 @@
 import {
-  APPROVAL_MODE_LABEL, useSessionApproval,
+  APPROVAL_MODE_LABEL, inputDiff, useSessionApproval, useShownInputMatches,
   type LocalSession, type PrivateSendApproval, type SessionControlClient,
 } from "@lightbulb/shared";
-import { randomUUID } from "expo-crypto";
+import { CryptoDigestAlgorithm, digestStringAsync, randomUUID } from "expo-crypto";
 import { useEffect, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { fonts, radii, spacing, useChatPalette } from "../../config/theme";
+
+/** Hex SHA-256, the digest the Mac binds an approval to. */
+const sha256Hex = (text: string) => digestStringAsync(CryptoDigestAlgorithm.SHA256, text);
+
+const EDIT_TOOLS = new Set(["Edit", "MultiEdit", "Write"]);
+
+/** The call as the Mac shipped it: a command, an edit's diff, or the input itself. */
+function CallInput({ tool, input }: { tool: string; input: Record<string, unknown> }) {
+  const palette = useChatPalette();
+  const box = [styles.summary, { backgroundColor: palette.raised }];
+  if (tool === "Bash" && typeof input.command === "string") {
+    return <Text selectable style={[...box, { color: palette.fg }]}>{input.command}</Text>;
+  }
+  if (EDIT_TOOLS.has(tool)) {
+    return (
+      <View style={box}>
+        {typeof input.file_path === "string" && (
+          <Text selectable style={[styles.privateLine, { color: palette.fg }]}>{input.file_path}{input.replace_all === true ? " (every occurrence)" : ""}</Text>
+        )}
+        <ScrollView style={styles.privateBody} accessibilityLabel="Change">
+          {inputDiff(tool, input).map((line, i) => (
+            <Text key={i} selectable style={[styles.privateLine, { color: line.mark === "+" ? palette.live : palette.alert }]}>{line.mark + line.text}</Text>
+          ))}
+        </ScrollView>
+      </View>
+    );
+  }
+  return <Text selectable style={[...box, { color: palette.fg }]}>{JSON.stringify(input, null, 2)}</Text>;
+}
 
 /** Claude's own permission prompt, held on the Mac and answerable here. */
 export function SessionApprovalCard({ session, client, allowed, own, ownerName }: {
@@ -17,7 +46,8 @@ export function SessionApprovalCard({ session, client, allowed, own, ownerName }
   ownerName: string;
 }) {
   const palette = useChatPalette();
-  const { pending, answer, state } = useSessionApproval(client, session, randomUUID);
+  const { pending, answer, state } = useSessionApproval(client, session, randomUUID, sha256Hex);
+  const digestOk = useShownInputMatches(session.pendingApproval, sha256Hex);
   const [denyingFor, setDenyingFor] = useState<string | null>(null);
   const [reason, setReason] = useState("");
   const [detail, setDetail] = useState<PrivateSendApproval | null>(null);
@@ -41,13 +71,13 @@ export function SessionApprovalCard({ session, client, allowed, own, ownerName }
   const busy = current?.status === "sending" || current?.status === "sent";
   const denying = denyingFor === pending.approvalId;
   const shown = own && privateSend && detail?.approvalId === pending.approvalId && detail.inputDigest === pending.inputDigest ? detail : null;
-  const canApprove = privateSend ? !!shown : pending.exact;
+  const canApprove = privateSend ? !!shown : pending.exact || (pending.full === true && digestOk);
   const canAnswer = allowed && (!privateSend || own);
   const where = own ? "your" : `${ownerName}’s`;
   return (
     <View style={[styles.card, { backgroundColor: palette.surface, borderColor: palette.alert }]} accessibilityLabel="Claude permission prompt">
       <Text style={[styles.title, { color: palette.fg }]}>Claude wants to use {pending.tool}</Text>
-      {pending.summary ? (
+      {pending.input && !privateSend ? <CallInput tool={pending.tool} input={pending.input} /> : pending.summary ? (
         <Text selectable style={[styles.summary, { backgroundColor: palette.raised, color: palette.fg }]}>{pending.summary}</Text>
       ) : null}
       {shown && <View style={[styles.summary, { backgroundColor: palette.raised }]}>

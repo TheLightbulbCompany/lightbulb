@@ -100,6 +100,15 @@ pub(super) fn daemon_release(home: &Path, execution: &Process) -> Option<(PathBu
     (meta.is_file() && meta.mode() & 0o022 == 0).then(|| (path, version.to_owned()))
 }
 
+/// The process can serve more than one conversation at once, so one of them cannot be told from
+/// another by process: the Codex app's own, Codex's shared app-server daemon, or the ChatGPT app's
+/// bundled codex.
+pub(super) fn serves_many(session: &NativeSession) -> bool {
+    session.app
+        || std::env::var_os("HOME").is_none_or(|home| daemon_release(Path::new(&home), &session.process).is_some())
+        || desktop_program_in(Path::new(DESKTOP_RESOURCES), Some(&session.process.executable)).is_some()
+}
+
 pub(super) fn daemon_program(home: &Path, execution: &Process) -> Option<PathBuf> {
     daemon_release(home, execution).map(|(path, _)| path)
 }

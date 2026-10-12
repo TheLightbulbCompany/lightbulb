@@ -37,7 +37,7 @@ def _bind(key=ROOM_KEY, issue=ISSUE, bound_at=None):
 
 
 # ---- the helper records the binding and carries the attached run id ---------------------------
-def _helper(tmp_path, args, *, session_key=ROOM_KEY, responses=None, run_id=None, stdin="", ok=True):
+def _helper(tmp_path, args, *, session_key=ROOM_KEY, responses=None, run_id=None, stdin="", ok=True, room_key=None):
     """Run paperclip-api.sh against a fake curl. `responses` is one [status, body] per request, in
     order (the last repeats). Each recorded call says whether ISSUE's binding existed WHEN that
     request was sent -- the property that keeps a wake from overtaking the binding."""
@@ -64,6 +64,9 @@ def _helper(tmp_path, args, *, session_key=ROOM_KEY, responses=None, run_id=None
            "HERMES_HOME": str(tmp_path / "profile"), "HERMES_SESSION_KEY": session_key,
            "RESPONSES": json.dumps(responses or [[200, {"id": ISSUE, "status": "in_progress"}]])}
     env.pop("PAPERCLIP_RUN_ID", None)
+    env.pop("LIGHTBULB_ROOM_SESSION_KEY", None)
+    if room_key:
+        env["LIGHTBULB_ROOM_SESSION_KEY"] = room_key
     if run_id:
         env["PAPERCLIP_RUN_ID"] = run_id
     if calls.exists():
@@ -339,3 +342,12 @@ def test_a_turn_in_the_room_conversation_uses_its_lock_transcript_and_folder(mon
     assert seen["run"]["system_message"] is None and seen["system"].startswith(REQUEST["instructions"]) and "/.run/<repo>" in seen["system"]
     assert seen["run"]["conversation_history"] == [{"role": "user", "content": "fix the bug"}]
     assert seen["run"]["user_message"].endswith(REQUEST["input"]) and "Nothing you write in this turn is posted to the room" in seen["run"]["user_message"]
+
+
+@helper
+def test_a_call_or_side_session_binds_the_issue_to_its_room(tmp_path):
+    """The shell runs on the call's or side session's own key; the bridge names the room beside it."""
+    side = f"agent:{AGENT}:lightbulb:side:run-1"
+    calls = _helper(tmp_path, ["checkout", ISSUE], session_key=side, room_key=ROOM_KEY)
+    assert calls[0]["bound"] is True
+    assert json.loads(_binding(tmp_path).read_text())["sessionKey"] == ROOM_KEY

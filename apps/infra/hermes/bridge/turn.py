@@ -604,7 +604,7 @@ def _run_call(identity: dict, request: dict, frames: "VoiceFramePublisher") -> t
             return "aborted", None, "", dict(ZERO_USAGE)
         # The room turn's own environment on the call's key (its own folder and shell), plus the
         # steer-lowered grant a call can get mid-run.
-        with _room_turn_env(agent_id, call_key, call_key, run_id, body, frames, ctx, "call"), _call_grant_scope(run_id, ctx):
+        with _room_turn_env(agent_id, session_key, call_key, run_id, body, frames, ctx, "call"), _call_grant_scope(run_id, ctx):
             agent = _construct_agent(agent_id, body, frames, call_key, **CALL_RUN_LIMITS)
             # No compaction inside a spoken turn (67-103 s each, prod 10-07): Hermes's own
             # per-agent switch, which every automatic trigger reads (turn_context_compaction.py:239,
@@ -3549,8 +3549,10 @@ def _room_turn_env(agent_id: str, session_key: str, hermes_key: str, run_id, bod
     this by hand and missed what chat gained later -- the Mac tool, room logins, the browser
     preview). Under the caller's turn lock: the profile refreshed, the room's browser and logins,
     the profile's home, MCP bearers, secrets, the room's terminal, the Mac tool's active turn and
-    the plugin's turn context, keyed by `hermes_key` (the session id Hermes hands the tools: the
-    room key on a typed turn, the call's own key on a spoken one). Yields the browser lease."""
+    the plugin's turn context, keyed by `hermes_key` (the session id Hermes hands the tools, and
+    the shell's: the room key on a typed turn, the call's or side session's own key otherwise).
+    `session_key` is the room's own, given to the shell as LIGHTBULB_ROOM_SESSION_KEY. Yields the
+    browser lease."""
     # Refresh BEFORE binding profile secrets/terminal policy and before filling config defaults.
     with sync.profile_lock(agent_id):  # another conversation of this agent may be refreshing it
         sync.ensure_profile(agent_id)
@@ -3568,7 +3570,10 @@ def _room_turn_env(agent_id: str, session_key: str, hermes_key: str, run_id, bod
         str(run_id or ""), agent_id, getattr(frames, "browser_frame", None) if run_id else None, family, room_id,
     )
     logins = website_logins.prompt_scope(agent_id, room_id, turn_thread_root(body), lambda: run_aborted(run_id))
-    with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id), _terminal_scope(agent_id, session_key), _desktop_active_turn(hermes_key, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
+    # The room's own key reaches the shell beside the session's: paperclip-api.sh binds an issue to
+    # the ROOM conversation even from a call or a side session, so its wakes land in the room.
+    room_env = {"LIGHTBULB_ROOM_SESSION_KEY": session_key} if ROOM_SESSION_RE.match(session_key) else None
+    with _hermes_home_scope(agent_id), _brokered_mcp_scope(runtime_mcp_env(agent_id)), _secret_scope(agent_id, room_env), _terminal_scope(agent_id, hermes_key), _desktop_active_turn(hermes_key, run_id), _mcp_session(agent_id), logins, _turn_context_file(agent_id, ctx):
         try:
             yield browser_lease
         finally:
@@ -3641,7 +3646,7 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
             return "aborted", None, "", ZERO_USAGE
         # The grant scope as on a spoken turn: a steer by someone other than the requester lowers it.
         ctx = body.get("_turnContext")
-        with _turn_folder(base), _room_turn_env(agent_id, hermes_key, hermes_key, run_id, body, frames, ctx), \
+        with _turn_folder(base), _room_turn_env(agent_id, session_key, hermes_key, run_id, body, frames, ctx), \
                 (_call_grant_scope(run_id, ctx) if run_id and ctx else contextlib.nullcontext()):
             media = sync.materialize_attachments(body, base)
             # A follow-up's trigger message already had its turn: its attachments are not re-sent.

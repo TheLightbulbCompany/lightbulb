@@ -99,7 +99,7 @@ def test_hermes_normalizes_profile_backends_before_construction(monkeypatch):
     monkeypatch.setattr(turn.sync, "ensure_profile", lambda _agent: None)
     monkeypatch.setattr(turn.sync, "normalize_profile_backends", lambda _agent: order.append("normalize"))
     monkeypatch.setattr(turn, "_terminal_scope", lambda _agent, _key: nullcontext())
-    monkeypatch.setattr(turn, "_secret_scope", lambda _agent: nullcontext())
+    monkeypatch.setattr(turn, "_secret_scope", lambda _agent, _overlay=None: nullcontext())
     monkeypatch.setattr(turn, "_hermes_home_scope", lambda _agent: nullcontext())
 
     def construct(*_args, **_kwargs):

@@ -565,3 +565,11 @@ async def test_a_recurring_series_that_advanced_still_gets_its_notes_mailed(env)
     kw = env.send.await_args.kwargs
     assert kw["to"] == "ada@acme.com" and kw["subject"] == "Notes: Weekly sync"
     assert "notesMailedAt" not in env.meta["meeting"]  # never written onto the next occurrence
+
+
+async def test_a_failed_notes_run_of_an_advanced_series_still_mails_the_unsaid_answers(env):
+    env.meta["meeting"].update(transcriptAttachedAt=1, unsaid=UNSAID)
+    await mod.on_ended(ROOM)
+    env.meta["meeting"] = {"title": "Next week", "startAt": 1791577200, "status": "scheduled"}  # advance()
+    await mod.on_notes_run_ended("org_1", {"triggerMessageId": "msg-1", "outcome": "error"})
+    assert env.send.await_args.kwargs["body_text"].endswith(_SAID)

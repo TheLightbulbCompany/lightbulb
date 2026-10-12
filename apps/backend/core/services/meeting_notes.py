@@ -322,7 +322,9 @@ async def _mail_organizer(
 
 
 #: What a notes run's mail reads from the meeting, snapshotted when the run is dispatched.
-_MAIL_FIELDS = ("title", "invitedBy", "organizer", "transcriptId", "transcriptRoomId", "transcriptAttachedAt")
+_MAIL_FIELDS = (
+    "title", "invitedBy", "organizer", "transcriptId", "transcriptRoomId", "transcriptAttachedAt", "unsaid",
+)  # fmt: skip
 
 
 async def on_agent_reply(owner_id: str, agent_id: str, reply_to: str | None, text: str, progress: bool) -> None:

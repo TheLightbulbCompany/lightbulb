@@ -36,7 +36,10 @@ def owed(meeting: dict) -> bool:
     held = meeting.get("status") in ("ended", "bot_failed") and meeting.get("inCallAt")
     # An attempted mail is done: a send that failed or timed out may have delivered, and a
     # duplicate is worse than a lost mail.
-    return bool(held) and not (meeting.get("notesMailedAt") or meeting.get("notesMailAttemptedAt"))
+    # A dispatched notes run mails with its reply (on_agent_reply / on_notes_run_ended).
+    return bool(held) and not (
+        meeting.get("notesMailedAt") or meeting.get("notesMailAttemptedAt") or meeting.get("notesRunId")
+    )
 
 
 def _render(lines: list[dict]) -> str:
@@ -181,7 +184,18 @@ async def _notes(room_id: str, meta: dict, occurrence) -> None:
             )
             if message:
                 run_id = messaging_repo.run_id_for(writer, message["messageId"])
+                # The mail waits for the notes themselves (on_agent_reply) or the run's end
+                # (on_notes_run_ended). What it reads travels with the request: a recurring series
+                # rewrites the meeting record as it advances, before the notes come back.
+                snapshot = {k: meeting[k] for k in _MAIL_FIELDS if meeting.get(k) is not None}
+                await messaging_repo.put_meeting_notes_request(owner_id, message["messageId"], {
+                    "roomId": room_id, "occurrence": occurrence, "targetRoomId": target, "agentId": writer,
+                    "triggerSeq": message.get("messageSeq"), "meeting": snapshot,
+                })  # fmt: skip
                 await meeting_invites._patch_meeting(room_id, {"notesRunId": run_id}, when=this_occurrence)
+                return
+    if meeting.get("notesRunId"):
+        return  # its notes run was dispatched: the mail goes with its reply
     mailed = await _mail_organizer(owner_id, room_id, target, meeting, title, occurrence)
     if mailed is None:
         return  # already attempted (here or by another end path), or the occurrence moved on
@@ -221,18 +235,33 @@ async def _transcript_text(owner_id: str, room_id: str, meeting: dict) -> str | 
 
 
 async def _mail_organizer(
-    owner_id: str, room_id: str, target: str, meeting: dict, title: str, occurrence
+    owner_id: str,
+    room_id: str,
+    target: str,
+    meeting: dict,
+    title: str,
+    occurrence,
+    notes: str | None = None,
+    notes_failed: bool = False,
+    claim=None,
 ) -> bool | None:
-    """True when the notes are done: mailed, or deliberately not (no address, no organizer, a paused
+    """The one mail after a meeting. ``notes``: the notes agent's own reply (its decisions, open
+    questions and the tasks it filed), which IS the mail, with the room linked for the transcript;
+    ``notes_failed``: its run ended without them. Neither: a meeting with no notes run (no
+    transcript, no agent). True when the notes are done: mailed, or deliberately not (no address, no organizer, a paused
     row, the owner's daily mail cap spent). False is a failed or ambiguous send and None a send
     that is not ours to make; neither is ever retried, because ``notesMailAttemptedAt`` is written
     before the send (at most once per occurrence: a lost mail beats a duplicate). With a default room the mail links to it; without one
     (``target`` is the hidden meeting room itself) nobody can open the room, so the transcript
-    travels in the mail."""
+    travels in the mail. ``claim``: a notes run's own once-only marker (its request row), used in
+    place of the meeting's, which a recurring series has rewritten by the time the notes come back."""
     # The member whose invite made or last updated the meeting: the ICS ORGANIZER is sender-written
     # and may be an outside host. Records from before ``invitedBy`` fall back to it.
     organizer = meeting.get("invitedBy") or meeting.get("organizer")
-    if meeting.get("notesMailAttemptedAt"):
+    if claim is not None:  # first: every outcome below, a skip included, is the one answer
+        if not await claim():
+            return None
+    elif meeting.get("notesMailAttemptedAt"):
         return None
     address = await agent_email.team_address(owner_id)
     if not address or not organizer:
@@ -245,7 +274,15 @@ async def _mail_organizer(
     name = " ".join(title.split())
     link = f"{settings.FRONTEND_URL.rstrip('/')}/chat?room={target}"
     no_notes = meeting.get("notesSkipped") == "no_agent"
-    if target != room_id and no_notes:
+    if notes or notes_failed:
+        subject = f"Notes: {name}" if notes else f"Transcript: {name}"
+        body = notes.strip() if notes else f"{name} ended. The notes could not be written this time."
+        if target != room_id:
+            body += f"\n\nThe transcript and everything said on the call: {link}"
+        else:  # nothing the organizer can open: the transcript travels in the mail
+            transcript = await _transcript_text(owner_id, target, meeting)
+            body += "\n\nTranscript:\n\n" + (transcript or "No transcript was captured.")
+    elif target != room_id and no_notes:
         subject = f"Transcript: {name}"
         body = f"The transcript is in your Lightbulb room: {link}\n\n{_NO_NOTES}"
     elif target != room_id and meeting.get("transcriptAttachedAt"):
@@ -260,16 +297,18 @@ async def _mail_organizer(
         body = f"Your Lightbulb agents joined {name}.\n\n" + (transcript or "No transcript was captured.")
         if no_notes:
             body += f"\n\n{_NO_NOTES}"
-    body += _unsaid_text(meeting)
+    if not notes:  # the notes run was handed these answers and works them into the notes itself
+        body += _unsaid_text(meeting)
     # Durable and before the send: a raise or a timeout may still have delivered it. The guard
     # refuses a moved occurrence and a marker another end path wrote first, so only one sends.
-    marked = await meeting_invites._patch_meeting(
-        room_id,
-        {"notesMailAttemptedAt": int(time.time())},
-        when=lambda m: m.get("startAt") == occurrence and not m.get("notesMailAttemptedAt"),
-    )
-    if marked is None:
-        return None
+    if claim is None:
+        marked = await meeting_invites._patch_meeting(
+            room_id,
+            {"notesMailAttemptedAt": int(time.time())},
+            when=lambda m: m.get("startAt") == occurrence and not m.get("notesMailAttemptedAt"),
+        )
+        if marked is None:
+            return None
     sent = await ses_email.send_ses_email(
         from_addr=await agent_email.public_for(address),
         to=organizer,
@@ -280,3 +319,75 @@ async def _mail_organizer(
         tenant_name=await agent_mail_tenant.ensure_tenant(owner_id),
     )
     return sent is not None
+
+
+#: What a notes run's mail reads from the meeting, snapshotted when the run is dispatched.
+_MAIL_FIELDS = (
+    "title", "invitedBy", "organizer", "transcriptId", "transcriptRoomId", "transcriptAttachedAt", "unsaid",
+)  # fmt: skip
+
+
+async def on_agent_reply(owner_id: str, agent_id: str, reply_to: str | None, text: str, progress: bool) -> None:
+    """An agent's reply to a meeting's "write the notes" request: those are the notes, and the
+    organizer's mail carries them (10-09: the only mail was the raw transcript, sent before the notes
+    existed). Only the agent the request was dispatched to writes them; a progress line is not the
+    reply. Never raises: the reply is already stored."""
+    if progress or not reply_to or not text.strip():
+        return
+    try:
+        request = await messaging_repo.get_meeting_notes_request(owner_id, reply_to)
+        if request is not None and request.get("agentId") == agent_id:
+            await _mail_notes(owner_id, reply_to, request, notes=text)
+    except Exception:  # noqa: BLE001
+        put_metric("meeting.notes.mail_failed")
+        logger.warning("meeting notes mail failed for reply to %s", reply_to, exc_info=True)
+
+
+async def on_notes_run_ended(owner_id: str, row: dict) -> None:
+    """Every path that closes a run calls this. A notes run whose mail has not gone sends it now:
+    the notes it posted (a reply can land before the request is recorded), or, with none, one mail
+    saying the notes could not be written. Never raises: the run is already closed."""
+    trigger = row.get("triggerMessageId")
+    if not trigger:
+        return
+    try:
+        request = await messaging_repo.get_meeting_notes_request(owner_id, trigger)
+        if request is None or request.get("mailAttemptedAt"):
+            return
+        notes = await _posted_notes(request, trigger) if row.get("outcome") == "completed" else None
+        await _mail_notes(owner_id, trigger, request, notes=notes)
+    except Exception:  # noqa: BLE001
+        put_metric("meeting.notes.mail_failed")
+        logger.warning("meeting notes end-of-run mail failed for %s", trigger, exc_info=True)
+
+
+async def _posted_notes(request: dict, trigger: str) -> str | None:
+    """The notes agent's final reply to the request, read from the room just after it."""
+    seq = request.get("triggerSeq")
+    if seq is None:
+        return None
+    rows, _ = await messaging_repo.list_messages(request["targetRoomId"], int(seq), 100)
+    replies = [
+        r.get("text") or "" for r in rows
+        if (r.get("author") or {}).get("id") == request.get("agentId")
+        and r.get("replyToMessageId") == trigger and r.get("progress") is not True
+    ]  # fmt: skip
+    return next((t for t in reversed(replies) if t.strip()), None)
+
+
+async def _mail_notes(owner_id: str, message_id: str, request: dict, notes: str | None) -> None:
+    room_id, occurrence = request["roomId"], request.get("occurrence")
+    meeting = request.get("meeting") or {}
+    target = request.get("targetRoomId") or await meeting_invites.output_room(owner_id, room_id)
+
+    async def claim() -> bool:
+        return await messaging_repo.claim_meeting_notes_mail(owner_id, message_id)
+
+    mailed = await _mail_organizer(
+        owner_id, room_id, target, meeting, meeting.get("title") or "Meeting", occurrence,
+        notes=notes, notes_failed=notes is None, claim=claim,
+    )  # fmt: skip
+    if mailed:  # the live record too, while it is still this occurrence
+        await meeting_invites._patch_meeting(
+            room_id, {"notesMailedAt": int(time.time())}, when=lambda m: m.get("startAt") == occurrence
+        )

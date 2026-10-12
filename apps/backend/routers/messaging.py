@@ -1259,7 +1259,18 @@ async def stop_subagent(room_id: str, agent_id: str, subagent_id: str, auth: Aut
 )
 async def post_agent_message(owner_id: str, body: AgentMessageRequest, request: Request):
     await _require_hook_token(owner_id, request)
-    return await service.create_agent_message(owner_id, body)
+    receipt = await service.create_agent_message(owner_id, body)
+    # A meeting notes agent's reply is the meeting's notes: they are mailed to its organizer.
+    from core.services import meeting_notes
+
+    await meeting_notes.on_agent_reply(
+        owner_id,
+        str(body.agent_id),
+        str(body.reply_to_message_id) if body.reply_to_message_id else None,
+        body.text,
+        body.progress,
+    )
+    return receipt
 
 
 @router.post(

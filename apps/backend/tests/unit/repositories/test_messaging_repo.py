@@ -1463,3 +1463,13 @@ async def test_a_no_post_mark_refuses_the_late_answer_inside_its_own_transaction
     assert await repo.update_voice_run(OWNER, "run-1", {"noPost": True})
     with pytest.raises(repo.ExtraConditionFailed):
         await late("run-1", "c")
+
+
+async def test_a_meeting_notes_mail_is_claimed_once(table):
+    assert not await repo.claim_meeting_notes_mail("owner_1", "msg-1")  # no request: nothing to mail
+    await repo.put_meeting_notes_request("owner_1", "msg-1", {"roomId": "r1", "occurrence": 1790972400})
+    assert (await repo.get_meeting_notes_request("owner_1", "msg-1"))["roomId"] == "r1"
+    assert await repo.claim_meeting_notes_mail("owner_1", "msg-1")
+    assert not await repo.claim_meeting_notes_mail("owner_1", "msg-1")
+    await repo.put_meeting_notes_request("owner_1", "msg-1", {"roomId": "r1", "occurrence": 1790972400})  # a retry
+    assert not await repo.claim_meeting_notes_mail("owner_1", "msg-1")

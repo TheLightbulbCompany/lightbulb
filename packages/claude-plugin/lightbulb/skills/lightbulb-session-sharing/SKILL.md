@@ -34,6 +34,9 @@ stay as they were. Only a Codex CLI started on its own gets the browser: if Code
 Codex app or on its shared background service, the tool fails with "More than one session runs
 in this process ... cannot tell which one is asking"; your user can start Codex with
 `--no-daemon`.
+When browser access is off on the Mac, the same tools drive the workspace's cloud browser
+instead, in a tab of their own; "The workspace's cloud browser isn't available right now. Try
+again in a minute." means it could not start, so try again in a minute.
 
 ## When your user asks to share this session
 

@@ -108,6 +108,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- apps/desktop/src-tauri/src/session_browser.rs (port 39222, peer process, offers);
                                  apps/desktop/src-tauri/src/local_sessions/native_mcp.rs (lightbulb-browser entry);
                                  apps/backend/core/services/session_browser.py (lease, sync, refusals);
+                                 apps/infra/hermes/bridge/browser_control.py (attach_session: the cloud path); apps/backend/core/services/mac_cdp.py (use "session" door);
                                  packages/claude-plugin/lightbulb/skills/lightbulb-session-sharing/SKILL.md ("Browsing");
                                  apps/frontend/src/components/messaging/SessionBrowserTab.tsx + LocalSessionPanel.tsx (the tab);
                                  BrowserFrameView.tsx (session mode); routes /messaging/sessions/{id}/browser/{viewing,input}

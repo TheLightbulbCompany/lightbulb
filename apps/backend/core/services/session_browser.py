@@ -71,6 +71,11 @@ def auth_for(owner: str, member: str, session_id: str) -> dict:
     }
 
 
+def _live_shared(row: dict | None) -> bool:
+    """The session is still shared and running: its browser may be shown and driven."""
+    return bool(row) and not row.get("unshared") and row.get("endedAt") is None and row.get("removedAt") is None
+
+
 def _err(code: str, status: int = 409) -> DesktopError:
     return DesktopError(code, status, MESSAGES.get(code) or mac_browser.MESSAGES.get(code, mac_browser.GENERIC_MESSAGE))
 
@@ -261,6 +266,8 @@ async def _open_row(auth, session_id: str, *, owner_only: bool) -> dict:
     """The session's row for a person still in the workspace who may read it (`owner_only`: may type
     into it, `may_control`), while its browser is open."""
     row, _ = await local_sessions.authorize_session(auth, None, session_id, owner_only=owner_only)
+    if not _live_shared(row):  # its own person included: an unshared browser is shown to nobody
+        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", NOT_SHARED)
     await session_screen._still_a_member(row, auth.user_id)
     if local_sessions.browser_open(row) is None:
         raise ApiProblem("LOCAL_SESSION_OFFLINE", "This session's browser is not open.")
@@ -271,13 +278,18 @@ async def watch(auth, session_id: str) -> None:
     """The Browser tab's ~20 s beat: this session's browser frames for the next mac_live.WANTED_S.
     Any member who may read the session; frames are stored nowhere."""
     row = await _open_row(auth, session_id, owner_only=False)
-    await store.run_in_thread(
-        store._table().update_item,
-        Key={"pk": repo.session_pk(row["ownerId"], row["sessionId"]), "sk": "META"},
-        UpdateExpression="SET browserWatchedAt = :now",
-        ConditionExpression="attribute_exists(pk)",
-        ExpressionAttributeValues={":now": int(_clock())},
-    )
+    try:
+        await store.run_in_thread(
+            store._table().update_item,
+            Key={"pk": repo.session_pk(row["ownerId"], row["sessionId"]), "sk": "META"},
+            UpdateExpression="SET browserWatchedAt = :now",
+            ConditionExpression="attribute_exists(pk)",
+            ExpressionAttributeValues={":now": int(_clock())},
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.") from None
 
 
 async def input_target(auth, session_id: str) -> dict:
@@ -290,7 +302,7 @@ async def may_type(owner: str, user: str, run: str) -> bool:
     """Re-checked where the Mac's socket is (mac_live.input): this person may still type into it."""
     sid = session_of(run)
     row = await repo.get_session(owner, sid) if sid else None
-    if not row or row.get("unshared") or not local_sessions.may_control(row, user):
+    if not _live_shared(row) or not local_sessions.may_control(row, user):
         return False
     try:
         await session_screen._still_a_member(row, user)
@@ -311,7 +323,7 @@ async def _watch_mac(owner: str, session_id: str, node, channel) -> None:
             logger.warning("session browser watch read failed owner=%s error=%s", owner, type(exc).__name__)
         else:
             now = _clock()
-            want = bool(row) and now - float((row or {}).get("browserWatchedAt") or 0) < mac_live.WANTED_S
+            want = _live_shared(row) and now - float(row.get("browserWatchedAt") or 0) < mac_live.WANTED_S
             if want != sent or (want and now - sent_at >= mac_live.SET_EVERY_S):
                 try:
                     node.cast_set(channel, False, want)

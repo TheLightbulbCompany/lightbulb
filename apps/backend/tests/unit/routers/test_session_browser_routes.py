@@ -78,3 +78,11 @@ def test_a_closed_browser_takes_no_input_and_no_watch(client, monkeypatch):
     )
     assert client.post(f"/api/v1/messaging/sessions/{SID}/browser/input", json={"events": [CLICK]}).status_code == 409
     assert client.post(f"/api/v1/messaging/sessions/{SID}/browser/viewing").status_code == 409
+
+
+def test_a_refusal_where_the_mac_is_speaks_of_the_session_not_a_room(client, monkeypatch):
+    monkeypatch.setattr(router.local_sessions, "authorize_session", AsyncMock(return_value=(dict(ROW), {})))
+    monkeypatch.setattr(container.mac_live, "input", AsyncMock(side_effect=PermissionError("run")))
+    response = client.post(f"/api/v1/messaging/sessions/{SID}/browser/input", json={"events": [CLICK]})
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "session_forbidden"

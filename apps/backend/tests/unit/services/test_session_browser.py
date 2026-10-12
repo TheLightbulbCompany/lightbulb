@@ -488,3 +488,85 @@ async def test_only_people_who_may_type_into_the_session_may_drive_its_browser(e
     env.row["unshared"] = True
     assert not await session_browser.may_type(OWNER, MEMBER, RUN)
     assert not await session_browser.may_type(OWNER, MEMBER, "r1"), "not a session run"
+
+
+async def test_a_session_that_stops_being_shared_stops_its_frames_at_once(env, monkeypatch):
+    now = {"t": 1_000_000.0}
+    monkeypatch.setattr(session_browser, "_clock", lambda: now["t"])
+    monkeypatch.setattr(session_browser.mac_live, "FRAME_POLL_S", 0.01)
+    node = FakeNode()
+    env.row["browserWatchedAt"] = now["t"]
+    watching = asyncio.create_task(session_browser._watch_mac(OWNER, SID, node, object()))
+    await asyncio.sleep(0.05)
+    assert node.sets == [(False, True)]
+    env.row["unshared"] = True
+    await asyncio.sleep(0.05)
+    assert node.sets[-1] == (False, False), "the stamp is still fresh, the session is not shared"
+    watching.cancel()
+
+
+def _auth(user):
+    from core.auth import AuthContext
+
+    return AuthContext(user_id=user, org_id=OWNER)
+
+
+OPEN = {"browserOpen": {"where": "mac", "until": 2**40}}
+
+
+@pytest.mark.parametrize("change", [{"unshared": True}, {"endedAt": 1}, {"removedAt": 1}])
+async def test_nobody_watches_or_drives_a_browser_that_is_not_shared_its_own_person_included(env, monkeypatch, change):
+    from core.services.messaging import ApiProblem
+
+    row = {**env.row, **OPEN, **change}
+    monkeypatch.setattr(session_browser.local_sessions, "authorize_session", AsyncMock(return_value=(row, {})))
+    for call in (session_browser.watch, session_browser.input_target):
+        with pytest.raises(ApiProblem) as refused:
+            await call(_auth(MEMBER), SID)
+        assert refused.value.error.code == "LOCAL_SESSION_FORBIDDEN"
+    env.row.update(change)
+    assert not await session_browser.may_type(OWNER, MEMBER, RUN)
+
+
+async def test_a_watch_on_a_row_deleted_meanwhile_reads_as_gone(env, monkeypatch):
+    from botocore.exceptions import ClientError
+
+    from core.services.messaging import ApiProblem
+
+    monkeypatch.setattr(
+        session_browser.local_sessions, "authorize_session", AsyncMock(return_value=({**env.row, **OPEN}, {}))
+    )
+
+    class Table:
+        def update_item(self, **kwargs):
+            raise ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
+
+    monkeypatch.setattr(session_browser.store, "_table", lambda: Table())
+    monkeypatch.setattr(session_browser.store, "run_in_thread", lambda fn, **kw: asyncio.to_thread(fn, **kw))
+    with pytest.raises(ApiProblem) as gone:
+        await session_browser.watch(_auth(MEMBER), SID)
+    assert gone.value.error.code == "LOCAL_SESSION_NOT_FOUND"
+
+
+async def test_the_hold_ending_stops_its_frames_and_input(env, monkeypatch):
+    node, channel = _offered()
+    cancelled, seen = [], []
+
+    async def side(*args):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.append(args[1])
+
+    async def lease_loop(auth, device, node, channel, leased):
+        await asyncio.sleep(0)  # the side tasks start
+        seen.append(dict(session_browser.mac_live._live))
+
+    monkeypatch.setattr(session_browser, "_watch_mac", side)
+    monkeypatch.setattr(session_browser, "_publish", side)
+    monkeypatch.setattr(session_browser, "_lease_loop", lease_loop)
+    await session_browser._hold_mac(session_browser.auth_for(OWNER, MEMBER, SID), DEVICE, node, channel, {})
+    await asyncio.sleep(0)
+    assert (OWNER, RUN) in seen[0]
+    assert (OWNER, RUN) not in session_browser.mac_live._live
+    assert cancelled == [SID, SID]

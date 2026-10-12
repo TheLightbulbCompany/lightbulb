@@ -348,6 +348,10 @@ class BrowserMacInput(BaseModel):
 _MAC_NOT_LIVE = {"code": "mac_view_not_live", "message": "That page isn't live on the Mac any more."}
 # Messaging's ROOM_FORBIDDEN, lowercased like this route's other codes.
 _MAC_ROOM_FORBIDDEN = {"code": "room_forbidden", "message": "Only people in this room can use its browser."}
+_SESSION_FORBIDDEN = {
+    "code": "session_forbidden",
+    "message": "Only people who may type into this session can use its browser.",
+}
 MAC_INPUT_PATH = "/api/v1/desktop-execution/internal/mac-input"
 
 
@@ -369,15 +373,17 @@ async def deliver_mac_input(
     owner_id: str, user_id: str, run_id: str, events: list[dict], *, viewer_owner: str | None = None
 ) -> None:
     """Hand input to the run's live channel on THIS task (also the peer route's delivery)."""
-    from core.services import mac_browser
+    from core.services import mac_browser, session_browser
     from core.services.node_broker import CdpClosed, CommandNotAllowed, NodeCapacity
 
     try:
         await mac_live.input(owner_id, user_id, run_id, events, viewer_owner=viewer_owner)
     except (LookupError, CdpClosed):
         raise HTTPException(409, detail=_MAC_NOT_LIVE) from None
-    except PermissionError:  # not a current member of the run's room
-        raise HTTPException(403, detail=_MAC_ROOM_FORBIDDEN) from None
+    except PermissionError:  # not a current member of the run's room, or may not type into the session
+        raise HTTPException(
+            403, detail=_SESSION_FORBIDDEN if session_browser.session_of(run_id) else _MAC_ROOM_FORBIDDEN
+        ) from None
     except CommandNotAllowed:
         code = "desktop_update_required"
         raise HTTPException(409, detail={"code": code, "message": mac_browser.MESSAGES[code]}) from None

@@ -395,12 +395,17 @@ async def session_browser_input(
     from routers import container
 
     row = await session_browser.input_target(auth, session_id)
+    events = mac_live.dump_events(body.events)
+    if local_sessions.browser_open(row) == "cloud":
+        from core.services.browser_control import BrowserError
+
+        try:
+            await session_browser.cloud_input(row, events)
+        except BrowserError as exc:
+            raise HTTPException(409, detail={"code": "browser_not_casting", "message": str(exc)}) from None
+        return
     await container.route_mac_input(
-        row["ownerId"],
-        auth.user_id,
-        row["deviceId"],
-        session_browser.run_id(row["sessionId"]),
-        mac_live.dump_events(body.events),
+        row["ownerId"], auth.user_id, row["deviceId"], session_browser.run_id(row["sessionId"]), events
     )
 
 

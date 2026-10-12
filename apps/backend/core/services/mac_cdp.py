@@ -71,6 +71,8 @@ def mint(*, target: dict, profile_id: str, auth: dict, use: str = "agent") -> st
     to the cloud browser (session_browser): the door joins the runtime to the channel its Mac offered."""
     if not valid_auth(auth) or auth["ownerId"] != target["ownerId"]:
         raise ValueError("mac-cdp ticket auth invalid")
+    if use == "session" and auth["family"] != "session":
+        raise ValueError("mac-cdp relay ticket is for a session run only")
     now = int(_clock())
     claims = {
         "purpose": PURPOSE,

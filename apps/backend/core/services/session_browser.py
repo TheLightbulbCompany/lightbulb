@@ -9,8 +9,10 @@ the Mac opens the channel on its own agent Chrome for the session's client. The 
 for the client's whole connection. While active the lease is renewed; 300 s after the last command
 the Mac says `idle` and the lease is released (saving); the next command is held on the Mac while
 `active` re-acquires it (loading), then `cdp_leased` lets it through. The session ending, or its
-socket closing, releases. Never log a ticket, a URL or a frame: owner ids and exception class names
-only.
+socket closing, releases. When the Mac's Browser is off, or the session chose the cloud, the channel
+is relayed instead: a `use: "session"` door (mac_cdp) joins it to the runtime, which pumps it into
+the workspace's cloud browser (`browser.attach`). Never log a ticket, a URL or a frame: owner ids and
+exception class names only.
 """
 
 from __future__ import annotations
@@ -24,8 +26,18 @@ import weakref
 
 from botocore.exceptions import ClientError
 
+from core.config import settings
 from core.repositories import local_sessions_repo as repo, messaging_repo as store
-from core.services import container_rpc, live_events, local_sessions, mac_browser, mac_live, session_screen
+from core.services import (
+    browser_control,
+    container_rpc,
+    live_events,
+    local_sessions,
+    mac_browser,
+    mac_cdp,
+    mac_live,
+    session_screen,
+)
 from core.services.desktop_execution import DesktopError
 from core.services.messaging import ApiProblem, make_live_event
 from core.services.node_broker import CDP_COMMAND, CdpClosed, CommandNotAllowed, NodeCapacity
@@ -35,8 +47,11 @@ logger = logging.getLogger(__name__)
 RUN_PREFIX = "session-"
 AGENT_ID = "session"
 NOT_SHARED = "Share this session to use the Lightbulb browser"
-MESSAGES = {"not_shared": NOT_SHARED}
-OFFER_BUDGET_S = 60  # the Mac waits 150 s for the answer
+CLOUD_MESSAGE = "The workspace's cloud browser isn't available right now. Try again in a minute."
+MESSAGES = {"not_shared": NOT_SHARED, "cloud_unavailable": CLOUD_MESSAGE}
+# The Mac waits 150 s for the answer: the last attempt starts before this and an invoke is capped
+# at 90 s (container_rpc), so even the cloud's answer lands inside it.
+OFFER_BUDGET_S = 60
 POLL_S = 2
 RENEW_SECONDS = 120  # < mac_browser.LEASE_SECONDS
 OPEN_SECONDS = 2 * RENEW_SECONDS
@@ -47,7 +62,7 @@ _tasks: set[asyncio.Task] = set()
 # One sign-in sync at a time per session upstream (two channels of one session, or a closing save
 # racing the next load). A lock lives while someone holds or waits on it.
 _sync_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
-_relays: dict[tuple[str, str], object] = {}  # (owner, run) -> the offered channel its door relays
+_relays: dict[tuple[str, str], object] = {}  # (owner, run) -> the offered channel its door will relay
 
 
 def run_id(session_id: str) -> str:
@@ -62,8 +77,9 @@ def session_of(run: object) -> str | None:
 
 def relay(claims: dict):
     """The door's half (mac_cdp, `use: "session"`): the channel this ticket's session offered, keyed by
-    its own workspace and run, so another workspace's ticket never finds it."""
-    return _relays.get((claims["ownerId"], claims["runId"]))
+    its own workspace and run, so another workspace's ticket never finds it. Single claim: the first
+    door takes it, so two doors can never join one channel."""
+    return _relays.pop((claims["ownerId"], claims["runId"]), None)
 
 
 def auth_for(owner: str, member: str, session_id: str) -> dict:
@@ -389,6 +405,136 @@ async def _serve_mac(auth: dict, device: str, node, channel, leased: dict) -> No
         await _mark_open(owner, user, sid, None, announce=True)
 
 
+async def _native_target(auth: dict, device: str, node) -> dict:
+    """The Mac's live socket here, with no browser grant needed: a relay drives nothing on the Mac."""
+    from core.services import connection_service
+
+    try:
+        return await connection_service.resolve_desktop_target(
+            auth["ownerId"], auth["memberId"], device, node.generation, None
+        )
+    except connection_service.DesktopTargetError:
+        raise _err("cloud_unavailable") from None
+
+
+async def _attach_until(auth: dict, params) -> bool:
+    """`browser.attach` until it answers "attached" (True), polling while the cloud browser starts
+    (`params()` is called per attempt), within OFFER_BUDGET_S; False on any other answer or error."""
+    deadline = _clock() + OFFER_BUDGET_S
+    while True:
+        try:
+            answer = await container_rpc.call(auth["ownerId"], "browser.attach", params())
+        except Exception as exc:  # noqa: BLE001 -- the runtime did not answer; the class only
+            logger.warning("session browser attach failed owner=%s error=%s", auth["ownerId"], type(exc).__name__)
+            return False
+        status = answer.get("status") if isinstance(answer, dict) else None
+        if status == "attached":
+            return True
+        if status != "starting" or _clock() + POLL_S >= deadline:
+            return False
+        await asyncio.sleep(POLL_S)
+
+
+async def _attach(auth: dict, target: dict) -> None:
+    """Hand the runtime a door to the session's channel: a fresh single-use ticket per attempt (one
+    lives 60 s). cloud_unavailable if the cloud browser does not take it."""
+    workspace = await store.ensure_workspace_id(auth["ownerId"])
+
+    def params() -> dict:
+        ticket = mac_cdp.mint(target=target, profile_id="cloud", auth=auth, use="session")
+        return {
+            "runId": auth["runId"],
+            "doorUrl": mac_cdp.door_url(target, ticket),
+            "frameEndpoint": settings.APPSYNC_EVENTS_HTTP_ENDPOINT,
+            "frameChannel": f"/ws/{workspace}/session-frames/{session_of(auth['runId'])}",
+        }
+
+    if not await _attach_until(auth, params):
+        raise _err("cloud_unavailable")
+
+
+async def _watch_cloud(owner: str, session_id: str, run: str) -> None:
+    """While someone has the Browser tab open, ask the runtime to cast the session's tab every
+    SET_EVERY_S (`browser.frames` with its run); the cast stops by itself after."""
+    while True:
+        try:
+            row = await repo.get_session(owner, session_id)
+            if _live_shared(row) and _clock() - float(row.get("browserWatchedAt") or 0) < mac_live.WANTED_S:
+                await container_rpc.call(owner, "browser.frames", {"runId": run, "ttl": mac_live.WANTED_S})
+        except Exception as exc:  # noqa: BLE001 -- the next beat tries again
+            logger.info("session browser frames ask failed owner=%s error=%s", owner, type(exc).__name__)
+        await asyncio.sleep(mac_live.SET_EVERY_S)
+
+
+async def _hold_cloud(auth: dict, device: str, node, channel) -> None:
+    """While the door relays (the whole client connection): each signal, and every RENEW_SECONDS,
+    re-checks that the session is shared (DesktopError ends the connection, and with it the door)
+    and renews the `browserOpen` mark; the timer also keeps the runtime awake (`health`: AgentCore
+    parks a microVM no invoke reaches, and the door is outbound). `idle` changes nothing here (the
+    cloud browser saves itself; the bridge renews its lease only while commands flow); `active`
+    renews the bridge's lease before the held commands run."""
+    owner, user, sid = auth["ownerId"], auth["memberId"], session_of(auth["runId"])
+    watcher = asyncio.create_task(_watch_cloud(owner, sid, auth["runId"]))
+    try:
+        while True:
+            signal = await _signal(channel)
+            if signal == "closed":
+                return
+            await shared_row(owner, user, device, sid)
+            if signal == "active":
+                ok = await _attach_until(auth, lambda: {"runId": auth["runId"], "renew": True})
+                node.cdp_leased(channel, ok, *(() if ok else ("cloud_unavailable", CLOUD_MESSAGE)))
+            elif signal is None:
+                try:
+                    await container_rpc.call(owner, "health", {})
+                except Exception as exc:  # noqa: BLE001 -- the next tick tries again
+                    logger.info("session browser keep-awake failed owner=%s error=%s", owner, type(exc).__name__)
+            await _mark_open(owner, user, sid, "cloud", announce=False)
+    finally:
+        watcher.cancel()
+
+
+async def _serve_cloud(auth: dict, device: str, node, channel) -> None:
+    owner, user, sid = auth["ownerId"], auth["memberId"], session_of(auth["runId"])
+    target = await _native_target(auth, device, node)
+    key = (owner, auth["runId"])
+    _relays[key] = channel
+    try:
+        await _attach(auth, target)
+        await _mark_open(owner, user, sid, "cloud", announce=True)
+        try:
+            await _hold_cloud(auth, device, node, channel)
+        finally:
+            await _mark_open(owner, user, sid, None, announce=True)
+    finally:
+        if _relays.get(key) is channel:  # no door took it
+            del _relays[key]
+
+
+def cloud_events(events: list[dict]) -> list[dict]:
+    """The Mac's input shape -> the cloud cast's (bridge cdp_mux.dispatch): a press and release is one
+    click at the release; moves are dropped. ponytail: no cloud drags; add a pointer API there if wanted."""
+    out = []
+    for event in events:
+        kind = event["type"]
+        if kind == "up":
+            out.append({"type": "click", "x": event["x"], "y": event["y"], "button": event.get("button", "left")})
+        elif kind == "wheel":
+            out.append({"type": "wheel", "x": event["x"], "y": event["y"], "deltaY": event["deltaY"]})
+        elif kind == "key":
+            out.append({"type": "key", "key": event["key"]})
+        elif kind in ("text", "paste"):
+            out.append({"type": "text", "text": event["text"]})
+    return out
+
+
+async def cloud_input(row: dict, events: list[dict]) -> None:
+    """A person's input on a session browsing the cloud: into its cast tab, as the cloud's own watcher
+    input (it counts as a person's input there too)."""
+    for event in cloud_events(events):
+        await browser_control.send_input(row["ownerId"], {"runId": run_id(row["sessionId"]), **event})
+
+
 async def serve(owner: str, user: str, device: str, node, channel, session_id: str, mac_browser_on: bool) -> None:
     """One offered channel, from the offer to its close. Never raises; every offer ends in
     `cdp_accept` or `cdp_close`, and a refusal reaches the session's own CDP client as the close's
@@ -397,10 +543,11 @@ async def serve(owner: str, user: str, device: str, node, channel, session_id: s
     auth = auth_for(owner, user, session_id)
     leased: dict = {"generation": None}
     try:
-        await shared_row(owner, user, device, session_id)
-        if not mac_browser_on or CDP_COMMAND not in node.commands:
-            raise _err("browser_off")
-        await _serve_mac(auth, device, node, channel, leased)
+        row = await shared_row(owner, user, device, session_id)
+        if mac_browser_on and CDP_COMMAND in node.commands and row.get("browserPlace") != "cloud":
+            await _serve_mac(auth, device, node, channel, leased)
+        else:
+            await _serve_cloud(auth, device, node, channel)
     except DesktopError as exc:
         exc = mac_browser._with_message(exc)
         node.cdp_close(channel, exc.code, exc.message)

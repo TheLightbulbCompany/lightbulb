@@ -252,8 +252,8 @@ def test_a_session_runs_ticket_round_trips():
 def test_a_relay_ticket_is_for_the_session_family_only():
     claims = mac_cdp.redeem(mac_cdp.mint(target=TARGET, profile_id="cloud", auth=SESSION, use="session"))
     assert claims["use"] == "session" and mac_cdp.auth_from_claims(claims) == SESSION
-    with pytest.raises(mac_cdp.TicketError):
-        mac_cdp.redeem(mac_cdp.mint(target=TARGET, profile_id="cloud", auth=ROOM, use="session"))
+    with pytest.raises(ValueError):
+        mac_cdp.mint(target=TARGET, profile_id="cloud", auth=ROOM, use="session")
 
 
 async def test_a_relay_needs_no_browser_grant_and_no_mac_profile(monkeypatch):

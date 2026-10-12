@@ -674,3 +674,36 @@ def test_a_curator_that_is_not_due_runs_nothing(curator, monkeypatch):
     turn._busy_add(1)
     turn._end_turn()
     assert runs == []
+
+
+# ---- a typed turn behind a long job in its room runs beside it ----------------------------------
+RUN_ID = "22222222-2222-4222-8222-222222222222"  # factories.ingress's run
+
+
+def test_a_turn_behind_a_long_job_runs_in_its_own_session_with_the_rooms_window(hermes, home):
+    _acquired, built, dbs = hermes
+    db = _room_db(dbs)
+    SCRIPT.append(_persisting("MRR is $4k."))
+    with turn._turn_lock("ceo", ROOM_KEY):  # a job that took the room 31 s ago
+        turn._lock_since[("ceo", ROOM_KEY)] = turn.time.monotonic() - 31
+        body = _room_turn(f.message(messageSeq=9, text="earlier"))
+        turn._lock_since.clear()
+    side = turn.side_session_key("ceo", RUN_ID)
+    assert built[-1].kw["session_id"] == side
+    assert "earlier" in _said(built)["user_message"]  # the room's recent window, as observed rows
+    assert ROOM_KEY not in db.transcripts  # the room's own transcript is untouched
+    assert not turn._turn_lock("ceo", side).locked()
+    assert "sessionKey" not in body
+
+
+def test_a_turn_behind_a_short_job_waits_for_the_room(hermes, home, monkeypatch):
+    _acquired, built, dbs = hermes
+    _room_db(dbs)
+    SCRIPT.append(_persisting("ok"))
+    room = turn._turn_lock("ceo", ROOM_KEY)
+    room.acquire()
+    turn._lock_since[("ceo", ROOM_KEY)] = turn.time.monotonic()  # the job ahead just started
+    real_sleep = turn.time.sleep
+    monkeypatch.setattr(turn.time, "sleep", lambda s: (room.locked() and room.release(), real_sleep(0)))
+    _room_turn()
+    assert built[-1].kw["session_id"] == ROOM_KEY

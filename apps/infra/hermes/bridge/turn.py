@@ -2867,6 +2867,13 @@ _turn_slots = threading.BoundedSemaphore(MAX_CONCURRENT_TURNS)
 _compaction_slots = threading.BoundedSemaphore(max(1, MAX_CONCURRENT_TURNS - 1))
 
 
+#: When the turn holding each conversation's lock took it (_waiting_turn_lock).
+_lock_since: dict[tuple[str, str], float] = {}
+#: A typed turn waits at most this long behind its room's running job, then runs beside it in a
+#: side session (_side_session): a quick back-and-forth keeps its context, a long job blocks no one.
+SIDE_SESSION_AFTER_S = 30.0
+
+
 def _turn_lock(agent_id: str, session_key: str) -> threading.Lock:
     # ponytail: entries are never evicted -- one small Lock per conversation this process has
     # seen, bounded by the microVM's 8 h lifetime.
@@ -2903,6 +2910,7 @@ def _waiting_turn_lock(agent_id: str, session_key: str, run_id: str | None, on_w
     if not _acquire_unless_aborted(lock, run_id, once):
         yield
         return
+    _lock_since[(agent_id, session_key)] = time.monotonic()
     try:
         if not _acquire_unless_aborted(_turn_slots, run_id, once):
             yield
@@ -2912,6 +2920,7 @@ def _waiting_turn_lock(agent_id: str, session_key: str, run_id: str | None, on_w
         finally:
             _turn_slots.release()
     finally:
+        _lock_since.pop((agent_id, session_key), None)
         lock.release()
 
 
@@ -3564,8 +3573,44 @@ def _room_turn_env(agent_id: str, session_key: str, hermes_key: str, run_id, bod
             browser_control.release(browser_lease)
 
 
+def side_session_key(agent_id: str, run_id: str) -> str:
+    """A typed turn's own Hermes session when its room was busy (_side_session)."""
+    return f"agent:{agent_id}:lightbulb:side:{run_id}"
+
+
+def _side_session(agent_id: str, session_key: str, run_id: str | None) -> bool:
+    """True when this typed room turn should not wait for its room: the turn holding the room's lock
+    has run SIDE_SESSION_AFTER_S or more, so this one runs beside it in its own session (Hermes's
+    /bg model: unrelated work never queues behind a long job). Waits while the holder is younger.
+    Announced like a room turn, so a compaction holding the lock stands down instead.
+    ponytail: the room can be taken again between "free" and this turn's own acquire; it then
+    waits behind that turn like any queued turn. Re-check in the lock wait if that bites."""
+    if not run_id or not ROOM_SESSION_RE.match(session_key):
+        return False
+    lock, key = _turn_lock(agent_id, session_key), (agent_id, session_key)
+    with _turn_arriving(agent_id, session_key, everywhere=False):
+        while lock.locked() and not run_aborted(run_id):
+            since = _lock_since.get(key)
+            if since is not None and time.monotonic() - since >= SIDE_SESSION_AFTER_S:
+                return True
+            time.sleep(0.5)
+    return False
+
+
 def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, str | None, str, dict]:
     session_key = _resolve_session_key(agent_id, body)
+    run_id = (body.get("run") or {}).get("runId")
+    # The room's key stays the run's own (run events, steers, delegations, usage); a side turn's
+    # Hermes session, lock, folder and shell are its own.
+    hermes_key = side_session_key(agent_id, run_id) if _side_session(agent_id, session_key, run_id) else session_key
+    side = hermes_key != session_key
+    if side:
+        log.info("turn %s runs beside its busy room in %s", run_id, hermes_key)
+        body = {**body, "sessionKey": hermes_key}  # the prompt names the side's own folder
+        base = base.with_name(f"{base.name}.{run_id}")  # its attachments, removed after it
+        ctx = body.get("_turnContext")
+        if ctx:  # the plugin finds its turn context by the session id Hermes hands it
+            body["_turnContext"] = {**ctx, "sessionKey": hermes_key}
     try:
         # Priming import, deliberately OUTSIDE _hermes_home_scope below: run_agent.py:94
         # freezes its own _hermes_home at first import, so the FIRST time this process ever
@@ -3581,11 +3626,10 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
     # _turn_lock: this agent's other rooms queue here instead of sharing its working tree
     # (Hazard 1). Taken AFTER run_turn has posted run.started and launched the heartbeat, so a
     # queued turn keeps heartbeating and the backend sweeper does not close it as never-started.
-    run_id = (body.get("run") or {}).get("runId")
     # A room turn announces itself, so an off-path compaction of this conversation (started when
     # the last turn ended, or when the person began typing) stops instead of making it wait.
-    lock = (_announced_turn_lock(agent_id, session_key, run_id, everywhere=False) if ROOM_SESSION_RE.match(session_key)
-            else _waiting_turn_lock(agent_id, session_key, run_id))
+    lock = (_announced_turn_lock(agent_id, session_key, run_id, everywhere=False) if not side and ROOM_SESSION_RE.match(session_key)
+            else _waiting_turn_lock(agent_id, hermes_key, run_id))
     with lock:
         # Queueing widens the abort window run_turn's own pre-dispatch check covers: a stop that
         # lands while this turn waits has no agent to interrupt yet, so without this the turn
@@ -3595,13 +3639,14 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
             return "aborted", None, "", ZERO_USAGE
         # The grant scope as on a spoken turn: a steer by someone other than the requester lowers it.
         ctx = body.get("_turnContext")
-        with _turn_folder(base), _room_turn_env(agent_id, session_key, session_key, run_id, body, frames, ctx), \
+        with _turn_folder(base), _room_turn_env(agent_id, hermes_key, hermes_key, run_id, body, frames, ctx), \
                 (_call_grant_scope(run_id, ctx) if run_id and ctx else contextlib.nullcontext()):
             media = sync.materialize_attachments(body, base)
             # A follow-up's trigger message already had its turn: its attachments are not re-sent.
             current_media = [] if body.get("followUp") else _current_message_media(body, media, base)
-            agent = _construct_agent(agent_id, body, frames, session_key)
-            _flush_call_records(agent, agent_id, session_key)  # calls answered while this room was busy
+            agent = _construct_agent(agent_id, body, frames, hermes_key)
+            if not side:  # only under the room's own lock
+                _flush_call_records(agent, agent_id, session_key)  # calls answered while this room was busy
             queued_steers = attach_agent(run_id, agent)
             if progress := _progress_poster(agent_id, body):
                 # Set on the agent as Hermes's own gateway does (gateway/run_turn_runner.py).
@@ -3614,8 +3659,14 @@ def _run_turn_in(agent_id: str, body: dict, frames, base: Path) -> tuple[str, st
             system = with_profile_agents_md(agent_id, system_prompt(body, agent_id, media=current_media))
             user_message = _message_content(turn_text, [] if body.get("followUp") else _message_image_paths(body, media, base))
             message_id = None if body.get("followUp") else (body.get("message") or {}).get("messageId")
-            result = _converse(agent, agent_id, session_key, run_id, body, base, system, turn_text, user_message,
-                               message_id)
+            try:
+                # The ROOM key, as for a call: the room's window reaches a side turn as observed
+                # rows, and its async delegations report back to the room.
+                result = _converse(agent, agent_id, session_key, run_id, body, base, system, turn_text, user_message,
+                                   message_id)
+            finally:
+                if side:  # one turn's session: ended so Hermes's retention ages it out
+                    _end_unless_room(agent, agent_id, hermes_key)
             _post_turn.agent = agent
     # the model this agent actually ran on (profile_model), not the runtime-wide default --
     # usage_service prices per model ref, so the CEO's premium tier would otherwise be billed

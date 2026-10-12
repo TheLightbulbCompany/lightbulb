@@ -57,11 +57,13 @@ def _clear_run_registry():
     from bridge import turn
     turn.RUNS.clear()
     turn._PENDING_CALL_RECORDS.clear()
+    turn._lock_since.clear()
     with turn._busy_lock:
         turn._busy = 0
     yield
     turn.RUNS.clear()
     turn._PENDING_CALL_RECORDS.clear()
+    turn._lock_since.clear()
     with turn._busy_lock:
         turn._busy = 0
 

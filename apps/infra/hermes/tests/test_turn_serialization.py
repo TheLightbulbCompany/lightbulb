@@ -74,10 +74,11 @@ def test_a_turn_aborted_while_queued_never_runs(home, posted, monkeypatch):
 
     monkeypatch.setattr(turn, "_construct_agent",
                         lambda *args: SimpleNamespace(run_conversation=run_conversation))
-    # Seeing the second call into the lock proves the queued turn is past run_turn's own
-    # pre-lock abort check and can only be blocked on _turn_lock.
-    real = turn._waiting_turn_lock
-    monkeypatch.setattr(turn, "_waiting_turn_lock", lambda *a: (queued.set() if ran else None, real(*a))[1])
+    # Seeing the second turn start waiting for its room proves it is past run_turn's own
+    # pre-lock abort check: it waits first to see whether the room's job is long (_side_session),
+    # then on _turn_lock, and a stop must end either wait.
+    real = turn._side_session
+    monkeypatch.setattr(turn, "_side_session", lambda *a: (queued.set() if ran else None, real(*a))[1])
 
     def start(run_id):
         thread = threading.Thread(target=turn.run_turn, args=(

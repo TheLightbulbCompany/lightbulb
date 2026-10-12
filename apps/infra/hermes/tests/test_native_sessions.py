@@ -707,3 +707,23 @@ def test_a_turn_behind_a_short_job_waits_for_the_room(hermes, home, monkeypatch)
     monkeypatch.setattr(turn.time, "sleep", lambda s: (room.locked() and room.release(), real_sleep(0)))
     _room_turn()
     assert built[-1].kw["session_id"] == ROOM_KEY
+
+
+def test_the_long_job_clock_starts_when_the_job_has_a_turn_slot(monkeypatch):
+    """A turn holding its room's lock while it waits for a microVM-wide slot has started nothing."""
+    monkeypatch.setattr(turn, "_turn_slots", turn.threading.BoundedSemaphore(1))
+    turn._turn_slots.acquire()  # every slot busy
+    started = turn.threading.Event()
+
+    def queued():
+        with turn._waiting_turn_lock("ceo", ROOM_KEY, None):
+            started.set()
+
+    thread = turn.threading.Thread(target=queued)
+    thread.start()
+    while not turn._turn_lock("ceo", ROOM_KEY).locked():
+        turn.time.sleep(0.01)
+    assert ("ceo", ROOM_KEY) not in turn._lock_since  # holds the room, waits for a slot
+    turn._turn_slots.release()
+    thread.join(5)
+    assert started.is_set() and ("ceo", ROOM_KEY) not in turn._lock_since  # released with the lock

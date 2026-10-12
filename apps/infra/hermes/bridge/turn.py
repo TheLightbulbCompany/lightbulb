@@ -2910,11 +2910,13 @@ def _waiting_turn_lock(agent_id: str, session_key: str, run_id: str | None, on_w
     if not _acquire_unless_aborted(lock, run_id, once):
         yield
         return
-    _lock_since[(agent_id, session_key)] = time.monotonic()
     try:
         if not _acquire_unless_aborted(_turn_slots, run_id, once):
             yield
             return
+        # Once it has a slot: a turn still waiting for one has started nothing, so it is not a
+        # long job a newer message should run beside (_side_session).
+        _lock_since[(agent_id, session_key)] = time.monotonic()
         try:
             yield
         finally:

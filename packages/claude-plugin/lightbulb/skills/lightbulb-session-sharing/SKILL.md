@@ -38,6 +38,10 @@ When browser access is off on the Mac, the same tools drive the workspace's clou
 instead, in a tab of their own; "The workspace's cloud browser isn't available right now. Try
 again in a minute." means it could not start, so try again in a minute; "This session already
 has a cloud browser connection" means close the one you have open first.
+`use_browser` (the `lightbulb` MCP) chooses where: `"mac"` (the default) or `"cloud"`. It
+applies to your next browser connection; the one already open stays where it is, with its
+tabs. To switch now, ask your user to restart the `lightbulb-browser` MCP server (`/mcp` in
+Claude Code). Use it when your user asks, or when a site needs the other browser's sign-in.
 
 ## When your user asks to share this session
 

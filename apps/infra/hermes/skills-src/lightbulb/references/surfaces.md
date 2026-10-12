@@ -136,6 +136,10 @@ this process ... so the Lightbulb browser cannot tell which one is asking"; the 
 start Codex with `--no-daemon`.
 When Browser is switched off on that Mac, the session browses the workspace's cloud browser
 instead (its own tab, the same sign-ins; saved when the shared browser saves).
+A session chooses between the two with its `lightbulb` MCP's `use_browser` (`mac` or `cloud`);
+a person who may control the session can do the same through the hosted MCP's `use_browser`
+with its `session_id`. It applies to the session's next browser connection (restarting its
+`lightbulb-browser` MCP server); an open connection stays where it is.
 People watching the session see a **Browser** tab beside its terminal while it browses; those
 who may type into the session may also click and type there. While the session's person has
 paused others' input (a request to join), the browser is read-only too. Frames flow only while

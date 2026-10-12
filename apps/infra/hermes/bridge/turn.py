@@ -3896,6 +3896,18 @@ def issue_conversation(agent_id: str, issue_id: str | None) -> str | None:
     return key
 
 
+def _issue_origin(agent_id: str, issue_id: str) -> str | None:
+    """The call or side session that bound `issue_id` to its room (the helper's `origin`), or None
+    when the room's own turn did. Only this agent's own call or side keys are accepted: the
+    agent's shell can write the file."""
+    try:
+        origin = json.loads(_issue_binding_path(agent_id, issue_id).read_text(encoding="utf-8")).get("origin")
+    except (OSError, ValueError, AttributeError):
+        return None
+    pattern = rf"agent:{re.escape(agent_id)}:lightbulb:(call|side):[A-Za-z0-9._-]{{1,128}}"
+    return origin if isinstance(origin, str) and re.fullmatch(pattern, origin) else None
+
+
 def _live_room_run(session_key: str) -> str | None:
     """A room run of this conversation that still takes steers: the running one, else a queued one."""
     with _RUNS_LOCK:
@@ -3972,14 +3984,17 @@ def _run_paperclip_session(identity: dict, request: dict, conversation: str | No
 
 def _route_paperclip_run(identity: dict, request: dict) -> tuple[str, str | None, str, dict]:
     """A Paperclip run for an issue a room conversation owns joins that conversation: steered into
-    its live turn, else run as a turn of its own in it. Anything else -- no binding, the agent no
+    its live turn (or into the live side turn that took the issue), else run as a turn of its own in it. Anything else -- no binding, the agent no
     longer in the room, the backend unable to say -- runs in the issue's own session as before."""
     agent_id, run_id, issue_id = identity["agentId"], identity["runId"], identity.get("issueId")
     conversation = issue_conversation(agent_id, issue_id)
     if conversation is None:
         return _run_paperclip_session(identity, request, None)
     with _issue_run_published(agent_id, issue_id, run_id):
-        live = _live_room_run(conversation)  # a live room run is itself proof of membership
+        # A call or side session took the issue: its wake joins THAT session while it runs (a side
+        # turn takes steers; a call does not), never the room's own turn, whose job is another one.
+        origin = _issue_origin(agent_id, issue_id)
+        live = _live_room_run(origin or conversation)  # a live room run is itself proof of membership
         steer = f"{BOUND_WAKE_STEER.format(issue=issue_id, run=run_id)}\n\n{request['input']}"
         # The wake's text is no person's request: the room run's grant drops to the Paperclip run's
         # own (it names no requester) or to none, as a steer by anyone but the requester does.

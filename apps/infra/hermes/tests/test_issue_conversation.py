@@ -29,10 +29,11 @@ REQUEST = {"input": "Wake: issue assigned", "instructions": "Follow the wake.", 
 SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "skills-src/paperclip/scripts/paperclip-api.sh"
 
 
-def _bind(key=ROOM_KEY, issue=ISSUE, bound_at=None):
+def _bind(key=ROOM_KEY, issue=ISSUE, bound_at=None, origin=None):
     path = turn._issue_binding_path(AGENT, issue)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"sessionKey": key, "boundAt": time.time() if bound_at is None else bound_at}))
+    path.write_text(json.dumps({"sessionKey": key, "boundAt": time.time() if bound_at is None else bound_at,
+                                **({"origin": origin} if origin else {})}))
     return path
 
 
@@ -350,4 +351,42 @@ def test_a_call_or_side_session_binds_the_issue_to_its_room(tmp_path):
     side = f"agent:{AGENT}:lightbulb:side:run-1"
     calls = _helper(tmp_path, ["checkout", ISSUE], session_key=side, room_key=ROOM_KEY)
     assert calls[0]["bound"] is True
-    assert json.loads(_binding(tmp_path).read_text())["sessionKey"] == ROOM_KEY
+    assert json.loads(_binding(tmp_path).read_text()) == {
+        "sessionKey": ROOM_KEY, "origin": side, "boundAt": json.loads(_binding(tmp_path).read_text())["boundAt"]}
+    _helper(tmp_path, ["checkout", ISSUE])  # the room's own turn: no origin
+    assert "origin" not in json.loads(_binding(tmp_path).read_text())
+
+
+def test_a_wake_for_an_issue_a_side_turn_took_never_steers_the_rooms_other_job(routed, monkeypatch):
+    """Bound from a side turn while the room's own turn ran a long, unrelated job: the wake joins
+    the side turn while it is live, and otherwise runs as its own turn in the room conversation."""
+    side = turn.side_session_key(AGENT, "side-run")
+    _bind(origin=side)
+    monkeypatch.setattr(turn, "_room_member", lambda key: True)
+    room_job = _live_room_turn()  # the room's long, unrelated job
+    assert turn._route_paperclip_run(IDENTITY, REQUEST)[0] == "completed"
+    assert room_job.seen == [] and routed["conversation"] == ROOM_KEY
+    assert turn._issue_origin(AGENT, ISSUE) == side
+    _bind(origin=f"agent:someone-else:lightbulb:side:x")  # not this agent's own: ignored
+    assert turn._issue_origin(AGENT, ISSUE) is None
+
+
+def test_a_wake_joins_the_live_side_turn_that_took_its_issue(routed, monkeypatch):
+    side = turn.side_session_key(AGENT, "side-run")
+    _bind(origin=side)
+    monkeypatch.setattr(turn, "ROOM_RUN_POLL_S", 0.01)
+    room_job = _live_room_turn()
+    turn.register_run("side-run")
+    turn.RUNS["side-run"]["sessionKey"] = side
+    side_agent = SimpleNamespace(seen=[])
+    side_agent.steer = lambda text: (side_agent.seen.append(text), True)[1]
+    turn.attach_agent("side-run", side_agent)
+    worker = threading.Thread(target=lambda: turn._route_paperclip_run(IDENTITY, REQUEST))
+    worker.start()
+    for _ in range(200):
+        if side_agent.seen:
+            break
+        time.sleep(0.01)
+    assert side_agent.seen and room_job.seen == []
+    turn.finish_run("side-run", "completed")
+    worker.join(2)

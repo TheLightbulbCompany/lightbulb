@@ -479,8 +479,10 @@ write_binding() {
   local path
   path="$(binding_path "$1")"
   if ! { mkdir -p "${path%/*}" \
-         && jq -nc --arg key "$(room_session_key)" --argjson at "$(date +%s)" \
-              '{sessionKey: $key, boundAt: $at}' >"$path"; }; then
+         && jq -nc --arg key "$(room_session_key)" --arg origin "${HERMES_SESSION_KEY:-}" \
+              --argjson at "$(date +%s)" \
+              '{sessionKey: $key, boundAt: $at} + (if $origin != $key then {origin: $origin} else {} end)' \
+              >"$path"; }; then
     printf 'note: could not record this issue for this conversation\n' >&2
   fi
   return 0

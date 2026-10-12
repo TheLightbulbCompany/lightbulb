@@ -62,3 +62,13 @@ it("shows the whole JSON for a key no friendly view draws, and allows it only on
   expect(screen.getByText(JSON.stringify(input, null, 2))).toBeTruthy();
   expect(await screen.findByLabelText("Approve")).toBeTruthy();
 });
+
+it("keeps a call with hidden characters deny-only and spells them out", async () => {
+  mockDigest.mockClear();
+  const input = { command: "echo \u202Egnp.exe" };
+  await render(<SessionApprovalCard session={session({ ...base, tool: "Bash", full: true, input })} client={client()} allowed own ownerName="Leo" />);
+  expect(screen.getByText('{\n  "command": "echo \\u202Egnp.exe"\n}')).toBeTruthy();
+  expect(screen.getByText("Lightbulb shows only part of this call. Approve it on your Mac; you can deny it here.")).toBeTruthy();
+  expect(mockDigest).not.toHaveBeenCalled();
+  expect(screen.queryByLabelText("Approve")).toBeNull();
+});

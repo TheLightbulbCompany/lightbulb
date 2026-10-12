@@ -12,7 +12,7 @@ import type {
   PrivateSendApproval,
 } from "./types";
 import type { createMessagingClient } from "./client";
-import { canonicalJson } from "./localSessionTranscript";
+import { canonicalJson, hasHiddenChars } from "./localSessionTranscript";
 import { AUTO_CHECK_INTERVAL_MS, receiptChip, type SessionCommandAttempt, type SessionReceiptChip } from "./useSessionCommand";
 
 type Client = Pick<ReturnType<typeof createMessagingClient>,
@@ -328,7 +328,8 @@ export function useSessionApproval(client: Pick<Client, "submitLocalSessionComma
  * known and false on any mismatch or error (fails closed).
  */
 export function useShownInputMatches(pending: LocalSessionPendingApproval | undefined, sha256Hex: (text: string) => Promise<string>): boolean {
-  const input = pending?.full ? pending.input : undefined;
+  // A call with hidden characters is deny-only: what is drawn may not be what runs.
+  const input = pending?.full && !hasHiddenChars(pending.input) ? pending.input : undefined;
   const expected = pending?.inputDigest;
   const key = input && expected ? `${pending?.approvalId}:${expected}` : null;
   // Bound to the exact input object hashed: a new input reads false until it is hashed too.

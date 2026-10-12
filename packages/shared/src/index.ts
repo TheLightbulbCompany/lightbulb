@@ -200,6 +200,7 @@ export {
   numberedDiff,
   inputDiff,
   approvalInputView,
+  hasHiddenChars,
   canonicalJson,
   pendingApproval,
   thinkingLabel,

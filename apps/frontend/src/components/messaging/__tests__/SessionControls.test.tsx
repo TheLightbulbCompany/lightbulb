@@ -130,3 +130,11 @@ it("shows the whole JSON for a key no friendly view draws, and allows it only on
   rerender(<SessionApprovalCard session={session({ pendingApproval: { ...pendingApproval, modes: [], exact: false, full: true, inputDigest: sha(input), input } })} client={client()} own ownerName="You" />);
   expect(await screen.findByRole("button", { name: "Approve" })).toBeInTheDocument();
 });
+
+it("keeps a call with hidden characters deny-only and spells them out", () => {
+  const input = { command: "echo \u202Egnp.exe" };
+  render(<SessionApprovalCard session={session({ pendingApproval: { ...pendingApproval, modes: [], exact: false, full: true, inputDigest: sha(input), input } })} client={client()} own ownerName="You" />);
+  expect(screen.getByText((_, element) => element?.tagName === "PRE" && element.textContent === '{\n  "command": "echo \\u202Egnp.exe"\n}')).toBeInTheDocument();
+  expect(screen.getByText("Lightbulb shows only part of this call. Approve it on your Mac; you can deny it here.")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+});

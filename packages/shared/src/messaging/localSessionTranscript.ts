@@ -680,8 +680,23 @@ const editOf = (e: Record<string, unknown>) => ({ lines: [...lined(e.old_string 
 const isEdit = (e: unknown): e is Record<string, unknown> => plain(e) && onlyKeys(e, ["old_string", "new_string", "replace_all"])
   && isStr(e.old_string) && isStr(e.new_string) && isOpt(e.replace_all, "boolean");
 
+/** Control and format characters (bidi overrides, zero-width, BOM, …) other than \n and \t: they can make text display in another order than it runs. */
+const HIDDEN = /(?![\n\t])[\p{Cc}\p{Cf}]/u;
+const HIDDEN_ALL = /(?![\n\t])[\p{Cc}\p{Cf}]/gu;
+
+/** Whether any string in `value` (key or leaf) carries a hidden character; such a call is never allowed remotely (the Mac never marks it full either). */
+export function hasHiddenChars(value: unknown): boolean {
+  if (typeof value === "string") return HIDDEN.test(value);
+  if (Array.isArray(value)) return value.some(hasHiddenChars);
+  return plain(value) && Object.entries(value).some(([k, v]) => HIDDEN.test(k) || hasHiddenChars(v));
+}
+
+const escapeHidden = (text: string) => text.replace(HIDDEN_ALL, c => Array.from({ length: c.length }, (_, i) => `\\u${c.charCodeAt(i).toString(16).toUpperCase().padStart(4, "0")}`).join(""));
+
 export function approvalInputView(tool: string, input: Record<string, unknown>): ApprovalInputView {
   const i = input;
+  // Hidden characters: the whole JSON with each one spelled out, never a friendly view.
+  if (hasHiddenChars(input)) return { kind: "json", text: escapeHidden(JSON.stringify(input, null, 2)) };
   if (tool === "Bash" && onlyKeys(i, ["command", "description", "run_in_background", "timeout", "dangerouslyDisableSandbox"])
     && isStr(i.command) && isOpt(i.description, "string") && isOpt(i.run_in_background, "boolean") && isOpt(i.timeout, "number")
     && isOpt(i.dangerouslyDisableSandbox, "boolean")) {

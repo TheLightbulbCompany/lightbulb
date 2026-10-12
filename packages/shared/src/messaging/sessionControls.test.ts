@@ -167,5 +167,8 @@ describe("useShownInputMatches", () => {
     expect(mismatch.result.current).toBe(false);
     expect(failed.result.current).toBe(false);
     expect(partial.result.current).toBe(false);
+    const hidden = renderHook(() => useShownInputMatches({ ...pending, input: { command: "ls \u202E" } }, async () => "abc"));
+    await act(async () => undefined);
+    expect(hidden.result.current).toBe(false);
   });
 });

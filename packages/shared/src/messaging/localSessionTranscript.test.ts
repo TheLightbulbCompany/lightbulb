@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { approvalInputView, buildRows, canonicalJson, groupRows, inputDiff, lifecycleLabel, mainEvents, numberedDiff, sessionSubagents, subagentElapsedMs, subagentLabel, subagentState, subagentStatus, subagentStrip, subagentTags, backgroundWaiting, thinkingLabel, toolActivity, toolHeader, toolRowView, type TranscriptRow, pendingApproval } from "./localSessionTranscript";
+import { approvalInputView, buildRows, hasHiddenChars, canonicalJson, groupRows, inputDiff, lifecycleLabel, mainEvents, numberedDiff, sessionSubagents, subagentElapsedMs, subagentLabel, subagentState, subagentStatus, subagentStrip, subagentTags, backgroundWaiting, thinkingLabel, toolActivity, toolHeader, toolRowView, type TranscriptRow, pendingApproval } from "./localSessionTranscript";
 import type { LocalSessionEvent } from "./types";
 
 const ev = (seq: number, e: Omit<LocalSessionEvent, "seq" | "truncated"> & { truncated?: boolean }): LocalSessionEvent => ({ seq, truncated: false, ...e });
@@ -565,5 +565,19 @@ describe("approvalInputView", () => {
       { lines: [{ n: null, mark: "-", text: "c" }, { n: null, mark: "+", text: "d" }], everyOccurrence: true },
     ] });
     expect(approvalInputView("Write", { file_path: "/x", content: "y" })).toEqual({ kind: "edit", path: "/x", edits: [{ lines: [{ n: null, mark: "+", text: "y" }], everyOccurrence: false }] });
+  });
+});
+
+describe("hidden characters in an approval's input", () => {
+  it("are found in any string, key or leaf, but not in newlines or tabs", () => {
+    expect(hasHiddenChars({ command: "ls\n\tx" })).toBe(false);
+    expect(hasHiddenChars({ command: "echo \u202Eabc" })).toBe(true);
+    expect(hasHiddenChars({ edits: [{ old_string: "a\u200Bb" }] })).toBe(true);
+    expect(hasHiddenChars({ ["k\uFEFF"]: "v" })).toBe(true);
+    expect(hasHiddenChars({ command: "\u0007" })).toBe(true);
+  });
+  it("turn the view into the whole JSON with each one spelled out", () => {
+    const view = approvalInputView("Bash", { command: "echo \u202Egnp.exe" });
+    expect(view).toEqual({ kind: "json", text: '{\n  "command": "echo \\u202Egnp.exe"\n}' });
   });
 });

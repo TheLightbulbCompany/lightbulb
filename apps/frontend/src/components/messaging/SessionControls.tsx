@@ -21,10 +21,10 @@ function CallInput({ tool, input }: { tool: string; input: Record<string, unknow
   if (view.kind === "bash") return <div className="my-2 text-xs">
     {view.outsideSandbox && <p className="font-medium text-warn">Runs outside the sandbox</p>}
     <pre className={pre}>{view.command}</pre>
-    {view.notes.map(note => <p key={note} className="text-muted-foreground">{note}</p>)}
+    {view.notes.map(note => <p key={note} className="whitespace-pre-wrap break-all text-muted-foreground">{note}</p>)}
   </div>;
   return <div className="my-2 text-xs">
-    <p className="font-mono">{view.path}</p>
+    <p className="whitespace-pre-wrap break-all font-mono">{view.path}</p>
     {view.edits.map((edit, i) => <div key={i} className={i ? "mt-2 border-t pt-2" : ""}>
       {view.edits.length > 1 && <p className="font-medium">Edit {i + 1} of {view.edits.length}</p>}
       {edit.everyOccurrence && <p className="font-medium">Replaces every occurrence</p>}

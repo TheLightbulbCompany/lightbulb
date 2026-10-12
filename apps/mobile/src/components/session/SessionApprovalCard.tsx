@@ -16,13 +16,21 @@ function CallInput({ tool, input }: { tool: string; input: Record<string, unknow
   const palette = useChatPalette();
   const box = [styles.summary, { backgroundColor: palette.raised }];
   const view = approvalInputView(tool, input);
-  if (view.kind === "json") return <Text selectable style={[...box, { color: palette.fg }]}>{view.text}</Text>;
+  if (view.kind === "json") {
+    return (
+      <ScrollView style={[...box, styles.privateBody]} accessibilityLabel="Call">
+        <Text selectable style={[styles.privateLine, { color: palette.fg }]}>{view.text}</Text>
+      </ScrollView>
+    );
+  }
   if (view.kind === "bash") {
     return (
       <View style={box}>
         {view.outsideSandbox && <Text style={[styles.privateLine, styles.strong, { color: palette.alert }]}>Runs outside the sandbox</Text>}
-        <Text selectable style={[styles.privateLine, { color: palette.fg }]}>{view.command}</Text>
-        {view.notes.map((note) => <Text key={note} selectable style={[styles.note, { color: palette.fgSoft }]}>{note}</Text>)}
+        <ScrollView style={styles.privateBody} accessibilityLabel="Command">
+          <Text selectable style={[styles.privateLine, { color: palette.fg }]}>{view.command}</Text>
+          {view.notes.map((note) => <Text key={note} selectable style={[styles.note, { color: palette.fgSoft }]}>{note}</Text>)}
+        </ScrollView>
       </View>
     );
   }

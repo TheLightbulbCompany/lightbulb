@@ -695,6 +695,12 @@ button.native-session-panel-row:hover .native-session-panel-activity { color: va
 
 /* The terminal view's own box in the panel's column: it adds no layout of its own (LocalSessionPanel reads its scroll events). */
 .session-terminal-slot { display: contents; }
+/* `display: contents` beats the hidden attribute's UA rule: say it again for the slot. */
+.session-terminal-slot[hidden] { display: none; }
+/* Terminal | Browser above a shared session's view while it browses (spec 2026-10-11). */
+.session-view-tabs { display: flex; flex: none; gap: 4px; padding: 4px 12px; border-bottom: 1px solid var(--border); }
+.session-view-tabs button { padding: 2px 8px; border-radius: 6px; font-size: 13px; color: var(--fg-soft); }
+.session-view-tabs button[aria-selected="true"] { background: var(--plane-raised); color: var(--fg); }
 /* Ended · <time> above an ended session's final screen (spec 2026-10-07 §5.4). */
 .session-ended-line { flex: none; margin: 0; padding: 6px 12px; font-size: 13px; color: var(--fg-mute); }
 

@@ -60,15 +60,36 @@ export function useBrowserFrame(runId?: string, prefer?: "view"): RoomBrowserFra
   return !view || (other && other.seq >= view.seq) ? other : view;
 }
 
+/** The latest frame of a shared session's browser (`workspace.session.screen`, kind "image", on the
+ * session's frames channel), in the room frame's shape; newest seq wins. */
+export function useSessionBrowserFrame(sessionId?: string): RoomBrowserFrame | null {
+  const { onEvent } = useLiveEvents();
+  const [held, setHeld] = useState<{ sessionId?: string; frame: RoomBrowserFrame | null }>({ sessionId, frame: null });
+  useEffect(() => {
+    if (!sessionId) return undefined;
+    return onEvent((event) => {
+      if (event.type !== "workspace.session.screen" || event.payload.kind !== "image" || event.payload.sessionId !== sessionId) return;
+      const { data, w, h, seq } = event.payload;
+      setHeld((current) => {
+        const kept = current.sessionId === sessionId ? current.frame : null;
+        return kept && kept.seq >= seq ? current
+          : { sessionId, frame: { roomId: "", agentId: "", runId: sessionId, seq, jpegBase64: data, w, h } };
+      });
+    });
+  }, [onEvent, sessionId]);
+  return held.sessionId === sessionId ? held.frame : null;
+}
+
 type MacEvent = { type: string; deltaY?: number } & Record<string, unknown>;
 
 /** A Mac tab's input queue: one request in flight; whatever arrives meanwhile waits, with runs
  * of `move`s coalesced to the last and runs of `wheel`s summed, and goes ≤32 at a time, in order. */
-function useMacInput(runId: string | undefined, deviceId: string | undefined, roomId: string | undefined, onResult: (error: string | null) => void) {
+function useMacInput(runId: string | undefined, deviceId: string | undefined, roomId: string | undefined,
+  onResult: (error: string | null) => void, sessionId?: string) {
   const api = useApi();
   // The target lives beside the queue, so a request settling after a switch pumps the NEW run's
   // queue to the new run; `gen` fences the old request's rejection off the new queue.
-  const state = useRef<{ queue: MacEvent[]; busy: boolean; runId?: string; deviceId?: string; roomId?: string; gen: number }>(
+  const state = useRef<{ queue: MacEvent[]; busy: boolean; runId?: string; deviceId?: string; roomId?: string; sessionId?: string; gen: number }>(
     { queue: [], busy: false, gen: 0 },
   );
   // Input queued for one run/Mac never reaches another.
@@ -78,16 +99,21 @@ function useMacInput(runId: string | undefined, deviceId: string | undefined, ro
     current.runId = runId;
     current.deviceId = deviceId;
     current.roomId = roomId;
+    current.sessionId = sessionId;
     current.gen += 1;
-  }, [runId, deviceId, roomId]);
+  }, [runId, deviceId, roomId, sessionId]);
   const pump = useCallback(() => {
     const next = () => {
       const current = state.current;
-      const { runId: run, deviceId: device, roomId: room, gen } = current;
-      if (current.busy || !current.queue.length || !run || !device) return;
+      const { runId: run, deviceId: device, roomId: room, sessionId: session, gen } = current;
+      if (current.busy || !current.queue.length || (!session && (!run || !device))) return;
       const events = current.queue.splice(0, MAX_INPUT_EVENTS);
       current.busy = true;
-      void (api.post("/browser/mac/input", { runId: run, deviceId: device, ...(room && { roomId: room }), events }) as Promise<unknown>).then(
+      // A shared session's browser takes the same events on its own route (spec 2026-10-11).
+      const sent = session
+        ? api.post(`/messaging/sessions/${encodeURIComponent(session)}/browser/input`, { events })
+        : api.post("/browser/mac/input", { runId: run, deviceId: device, ...(room && { roomId: room }), events });
+      void (sent as Promise<unknown>).then(
         () => { if (current.gen === gen) onResult(null); },
         (reason: unknown) => {
           if (current.gen !== gen) return; // a refusal for a run nobody is watching any more
@@ -133,7 +159,7 @@ function chunks(text: string): string[] {
 }
 
 export function BrowserFrameView({
-  runId, interactive = false, mac, prefer, onTakeControl, empty, heartbeat = "/browser/viewing", heartbeatBody,
+  runId, interactive = false, mac, session, prefer, onTakeControl, empty, heartbeat = "/browser/viewing", heartbeatBody,
 }: {
   runId?: string;
   /** Where the "someone is watching frames" beat goes: the cloud browser's viewing heartbeat
@@ -150,14 +176,22 @@ export function BrowserFrameView({
   empty?: React.ReactNode;
   /** Offered when the live view's one slot may be free: mounts the live view here. */
   onTakeControl?: () => void;
+  /** A shared Claude Code or Codex session's browser (spec 2026-10-11): frames from the session's
+   * frames channel (the caller holds that claim), the beat to the session, and with `canType` the
+   * Mac's input shape to the session's own input route; read-only without it. */
+  session?: { sessionId: string; canType: boolean };
 }): React.ReactElement {
   const api = useApi();
   const { claimFrames } = useLiveEvents();
-  const frame = useBrowserFrame(runId, prefer);
+  const roomFrame = useBrowserFrame(session ? undefined : runId, prefer);
+  const sessionFrame = useSessionBrowserFrame(session?.sessionId);
+  // A session never shows a room's frames.
+  const frame = session ? sessionFrame : roomFrame;
   const [error, setError] = useState<string | null>(null);
   const isMac = !!mac;
-  const live = interactive || isMac;
-  const macSend = useMacInput(runId, mac?.deviceId, mac?.roomId, setError);
+  const macLike = isMac || !!session?.canType;
+  const live = interactive || macLike;
+  const macSend = useMacInput(runId, mac?.deviceId, mac?.roomId, setError, session?.sessionId);
   /** The button held on the Mac (`down` false once its up, or a cancel, went out) and the last
    * press, for counting double and triple clicks ourselves: pointer events carry no click count. */
   const held = useRef<{ button: (typeof BUTTONS)[number]; clicks: number; down: boolean; t: number; x: number; y: number }>(
@@ -183,10 +217,10 @@ export function BrowserFrameView({
     composing.current = false;
     compositionEcho.current = null;
     if (macEditor.current) macEditor.current.value = "";
-  }, [runId, deviceId, mac?.roomId]);
+  }, [runId, deviceId, mac?.roomId, session?.sessionId]);
 
-  const beatPath = isMac ? "/browser/frames" : heartbeat;
-  const beatBody = JSON.stringify(isMac ? { runId, deviceId, tier: "view", roomId: mac?.roomId } : heartbeatBody ?? { frames: true });
+  const beatPath = session ? `/messaging/sessions/${encodeURIComponent(session.sessionId)}/browser/viewing` : isMac ? "/browser/frames" : heartbeat;
+  const beatBody = JSON.stringify(session ? {} : isMac ? { runId, deviceId, tier: "view", roomId: mac?.roomId } : heartbeatBody ?? { frames: true });
   useEffect(() => {
     if (!beatPath) return;
     const beat = () => void api.post(beatPath, JSON.parse(beatBody)).catch(() => undefined);
@@ -198,7 +232,7 @@ export function BrowserFrameView({
   useEffect(() => (isMac ? claimFrames() : undefined), [isMac, claimFrames]);
 
   const send = useCallback((event: Record<string, unknown>) => {
-    if (isMac) {
+    if (macLike) {
       macSend(event as MacEvent);
       return;
     }
@@ -208,18 +242,18 @@ export function BrowserFrameView({
       () => setError(null),
       (reason: unknown) => setError(reason instanceof Error ? reason.message : "That didn't reach the page."),
     );
-  }, [api, isMac, macSend]);
+  }, [api, macLike, macSend]);
 
   const flush = useCallback(() => {
     const batch = pending.current;
     if (batch.timer) clearTimeout(batch.timer);
     batch.timer = null;
-    if (batch.text && isMac) chunks(batch.text).forEach((text) => send({ type: "text", text }));
+    if (batch.text && macLike) chunks(batch.text).forEach((text) => send({ type: "text", text }));
     else if (batch.text) send({ type: "text", text: batch.text });
     if (batch.deltaY) send({ type: "wheel", x: batch.x, y: batch.y, deltaY: Math.max(-5000, Math.min(5000, batch.deltaY)) });
     batch.text = "";
     batch.deltaY = 0;
-  }, [send, isMac]);
+  }, [send, macLike]);
   const later = () => {
     pending.current.timer ??= setTimeout(flush, INPUT_BATCH_MS);
   };
@@ -330,7 +364,8 @@ export function BrowserFrameView({
     onPaste: macPaste,
   };
 
-  const input = !frame ? {} : isMac ? macInput : interactive ? {
+  // No input onto a frame without a size: its pixels cannot be mapped.
+  const input = !frame || !(frame.w > 0 && frame.h > 0) ? {} : macLike ? macInput : interactive ? {
     tabIndex: 0,
     onClick: (event: React.MouseEvent<HTMLImageElement>) => {
       event.currentTarget.focus();
@@ -368,7 +403,7 @@ export function BrowserFrameView({
           src={`data:image/jpeg;base64,${frame.jpegBase64}`}
           alt="The agent's browser tab, live"
           draggable={false}
-          className={`h-full w-full select-none object-contain ${isMac ? "touch-none " : ""}${live ? "cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-[var(--bulb)]" : ""}`}
+          className={`h-full w-full select-none object-contain ${macLike ? "touch-none " : ""}${live ? "cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-[var(--bulb)]" : ""}`}
           {...input}
         />
       ) : (

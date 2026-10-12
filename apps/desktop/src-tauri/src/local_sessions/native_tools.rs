@@ -315,6 +315,24 @@ async fn answer(
         if matches!(tool, "find_rooms" | "find_sessions" | "read_messages" | "find_tasks" | "read_task" | "update_task") {
             return read(&client, &token, tool, &request["arguments"], &source.session_id).await;
         }
+        if tool == "use_browser" {
+            let response = client
+                .post(format!(
+                    "{}/api/v1/local-sessions/device/sessions/{}/browser-place",
+                    crate::LIGHTBULB_API_BASE.trim_end_matches('/'),
+                    source.session_id,
+                ))
+                .bearer_auth(&token)
+                .json(&request["arguments"])
+                .send()
+                .await
+                .map_err(|_| "Lightbulb unavailable")?;
+            let ok = response.status().is_success();
+            let data: Value = response.json().await.map_err(|_| "invalid Lightbulb response")?;
+            // The open connection stays where it is (its pages and CDP sessions live there): the
+            // session's next connection follows the new place (Decision 17).
+            return Ok(json!({"ok": ok, "data": data}));
+        }
         // This route only prepares a private intent. An older backend returns
         // 404 here, which is safe; it must never fall through to immediate send.
         let route = if request["tool"] == "send" {

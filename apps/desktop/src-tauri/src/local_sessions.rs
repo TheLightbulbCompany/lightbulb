@@ -58,11 +58,10 @@ pub fn normalize_public_message(provider: &str, session: &str, row: &Value) -> R
 /// bounded) is cut only once both are small. Every part reaches nothing within a bounded number
 /// of rounds, so the loop always ends under the limit.
 pub(crate) fn fit_tool(e: &mut Value) {
-    const FIT: usize = 15 * 1024;
     let size = |v: &Value| ascii_wire_len(v).unwrap_or(usize::MAX);
     let mut cap = MAX_TOOL_RESULT;
     for _ in 0..16 {
-        if size(e) <= FIT {
+        if size(e) <= TOOL_EVENT_WIRE {
             return;
         }
         cap = (cap / 2).max(32);
@@ -82,6 +81,8 @@ pub(crate) fn fit_tool(e: &mut Value) {
 pub(crate) const MAX_TEXT: usize = 12 * 1024;
 pub(crate) const MAX_TOOL_INPUT: usize = 8 * 1024;
 pub(crate) const MAX_TOOL_RESULT: usize = 12 * 1024;
+/// The ASCII-wire size one tool event may reach, leaving batch overhead under the 16 KiB frame.
+pub(crate) const TOOL_EVENT_WIRE: usize = 15_000;
 pub(crate) const PREVIEW_LINES: usize = 20;
 // One native JSONL row may contain duplicated command output or private compaction data.
 pub const MAX_JSONL_ROW: usize = 4 * 1024 * 1024;
@@ -155,6 +156,53 @@ fn looks_secret(word: &str) -> bool {
             && word.len() >= 30)
         || ((word.starts_with("xoxb-") || word.starts_with("xoxp-") || word.starts_with("xoxa-"))
             && word.len() >= 20)
+        || (["sk_live_", "sk_test_", "rk_live_", "rk_test_", "whsec_"].iter().any(|p| word.starts_with(p))
+            && word.len() >= 20)
+        || (word.starts_with("AIza") && word.len() == 39 && tail_ok(&word[4..]))
+}
+
+/// `NAME=value`, `NAME: value` and `"NAME": "value"` where the name says it holds a secret
+/// (a `.env`, `~/.aws/credentials`, a JSON config): the value becomes "[redacted]", the name
+/// stays so the reader sees what it was. Placeholders and code-shaped values stay.
+fn redact_assignments(text: &str) -> String {
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(concat!(
+            r#"(?i)\b(?P<name>[a-z0-9_.-]*(?:password|passwd|secret|token|api_key|apikey|private_key|access_key|client_secret|database_url|dsn)[a-z0-9_.-]*)"#,
+            r#"(?P<sep>["']?[ \t]*(?::=|[:=])[ \t]*)"#,
+            r#"(?:"(?P<dq>[^"\n]*)"|'(?P<sq>[^'\n]*)'|(?P<bare>[^\s"',;}=][^\s"',;}]*))"#,
+        ))
+        .expect("assignment pattern")
+    });
+    RE.replace_all(text, |c: &regex::Captures| {
+        let all = &c[0];
+        let (value, quoted) = match (c.name("dq"), c.name("sq"), c.name("bare")) {
+            (Some(v), _, _) | (_, Some(v), _) => (v, true),
+            (_, _, Some(v)) => (v, false),
+            _ => return all.to_owned(),
+        };
+        let v = value.as_str();
+        let lower = v.to_ascii_lowercase();
+        let keep = v.is_empty()
+            || v.chars().all(|c| c.is_ascii_digit())
+            || matches!(lower.as_str(), "changeme" | "string" | "str" | "number" | "int" | "bool"
+                | "boolean" | "any" | "null" | "none" | "nil" | "true" | "false" | "undefined" | "[redacted]")
+            || (v.starts_with('<') && v.ends_with('>'))
+            || v.starts_with("${")
+            || v.starts_with("{{")
+            // Code, not a literal: a call, an index, or a dotted reference (`os.environ`, `self.token`).
+            || (!quoted
+                && (v.contains(['(', '[', '<'])
+                    || v.split('.').count() > 1
+                        && v.split('.').all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+                        && !v.chars().next().is_some_and(|c| c.is_ascii_digit())));
+        if keep {
+            return all.to_owned();
+        }
+        let start = value.start() - c.get(0).unwrap().start();
+        let end = value.end() - c.get(0).unwrap().start();
+        format!("{}[redacted]{}", &all[..start], &all[end..])
+    })
+    .into_owned()
 }
 
 fn redact_pem(text: &str) -> String {
@@ -190,7 +238,7 @@ pub(crate) fn redact(text: &str) -> String {
         });
         *previous = std::mem::take(word);
     }
-    let text = redact_pem(text);
+    let text = redact_assignments(&redact_pem(text));
     let mut out = String::with_capacity(text.len());
     let (mut word, mut previous) = (String::new(), String::new());
     for c in text.chars() {
@@ -1370,7 +1418,7 @@ fn split_text(event: &Value) -> Vec<Value> {
         // of a non-ASCII char, so a CJK result can still build an event that never fits
         // alone. Shrink the assembled event against the wire itself.
         let mut budget = 8192;
-        while budget >= 64 && ascii_wire_len(&single).is_ok_and(|wire| wire > 15_000) {
+        while budget >= 64 && ascii_wire_len(&single).is_ok_and(|wire| wire > TOOL_EVENT_WIRE) {
             budget /= 2;
             single["text"] = json!(bounded(single["text"].as_str().unwrap_or(""), budget).0);
             if let Some(result) = single.pointer_mut("/tool/result") {
@@ -3268,6 +3316,41 @@ mod tests {
             .acknowledge(batch["batchId"].as_str().unwrap(), 1)
             .unwrap();
         assert!(mirror.queue.is_empty());
+    }
+
+    #[test]
+    fn local_sessions_redact_catches_provider_keys_and_secret_assignments() {
+        let aws = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+        let leaked = [
+            "sk_live_abcdefghijklmnopqrstuvwx",
+            "rk_test_abcdefghijklmnopqrstuvwx",
+            "whsec_abcdefghijklmnopqrstuvwx",
+            "sk-ant-api03-abcdefghijklmnopqrstuvwxyz",
+            "AIzaSyA1234567890abcdefghijklmnopqrstuv",
+            aws,
+            "hunter2pass",
+            "postgres://u:pw@db.internal/app",
+        ];
+        let text = format!(
+            "STRIPE={}\nR={}\nW={}\nA={}\nG={}\naws_secret_access_key = {}\nDB_PASSWORD=hunter2pass\nDATABASE_URL=postgres://u:pw@db.internal/app\n",
+            leaked[0], leaked[1], leaked[2], leaked[3], leaked[4], aws
+        );
+        let json_cfg = r#"{"client_secret": "hunter2pass", "api_key": 'hunter2pass'}"#;
+        for clean in [redact(&text), redact(&format!("export DB_PASSWORD=hunter2pass && curl -H x {}", leaked[0])), redact(json_cfg)] {
+            for secret in leaked {
+                assert!(!clean.contains(secret), "{secret} leaked in {clean}");
+            }
+        }
+        assert!(redact(&text).contains("DB_PASSWORD=[redacted]"), "the name stays");
+        assert_eq!(redact(json_cfg), r#"{"client_secret": "[redacted]", "api_key": '[redacted]'}"#);
+        // Placeholders, code and prose stay as written.
+        for kept in [
+            "API_KEY=\nTOKEN=changeme\nSECRET=<your-secret>\nPASSWORD=${DB_PASSWORD}\nmax_tokens: 4096",
+            "const token = getToken(req);\nlet password: string;\nkey = os.environ[\"API_KEY\"]\ntoken = self.token\nif token == expected:",
+            "The token expires after an hour, so refresh the access token before each secret rotation.",
+        ] {
+            assert_eq!(redact(kept), kept);
+        }
     }
 
     #[test]

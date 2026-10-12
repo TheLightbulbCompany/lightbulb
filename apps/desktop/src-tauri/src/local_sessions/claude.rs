@@ -2177,6 +2177,30 @@ mod tests {
     }
 
     #[test]
+    fn local_sessions_claude_env_files_and_commands_lose_their_secrets() {
+        let secrets = [
+            "sk_live_abcdefghijklmnopqrstuvwx",
+            "whsec_abcdefghijklmnopqrstuvwx",
+            "AIzaSyA1234567890abcdefghijklmnopqrstuv",
+            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            "hunter2pass",
+        ];
+        let env = format!(
+            "STRIPE_KEY={}\nSTRIPE_WEBHOOK={}\nMAPS={}\naws_secret_access_key={}\nDB_PASSWORD=hunter2pass\n",
+            secrets[0], secrets[1], secrets[2], secrets[3]
+        );
+        let write = call("Write", json!({"file_path":"/Users/a/p/.env","content":env}));
+        let bash = call("Bash", json!({"command":format!("export {} && ./deploy", env.trim().replace('\n', " "))}));
+        for e in [&write, &bash] {
+            let wire = e.to_string();
+            for secret in secrets {
+                assert!(!wire.contains(secret), "{secret} leaked: {wire}");
+            }
+        }
+        assert!(write["tool"]["input"]["content"].as_str().unwrap().contains("DB_PASSWORD=[redacted]"));
+    }
+
+    #[test]
     fn local_sessions_claude_every_tool_event_fits_the_wire_frame() {
         let wide = "é漢".repeat(4 * 1024);
         let edit = call("Edit", json!({"file_path":"/Users/a/p/x","old_string":wide,"new_string":wide}));

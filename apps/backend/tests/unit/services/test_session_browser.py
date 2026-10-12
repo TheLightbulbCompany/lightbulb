@@ -570,3 +570,25 @@ async def test_the_hold_ending_stops_its_frames_and_input(env, monkeypatch):
     assert (OWNER, RUN) in seen[0]
     assert (OWNER, RUN) not in session_browser.mac_live._live
     assert cancelled == [SID, SID]
+
+
+async def test_a_failed_workspace_read_does_not_stop_frames(monkeypatch):
+    published = []
+
+    class Publisher:
+        async def publish_session_frames(self, workspace, event):
+            published.append(workspace)
+
+    monkeypatch.setattr(session_browser.live_events, "get_live_event_publisher", lambda: Publisher())
+    monkeypatch.setattr(
+        session_browser.store, "ensure_workspace_id", AsyncMock(side_effect=[RuntimeError("ddb"), "ws-1", "ws-1"])
+    )
+    session_browser.session_screen._spent.clear()
+    channel = FakeCastChannel()
+    publishing = asyncio.create_task(session_browser._publish(OWNER, SID, channel))
+    for seq in (1, 2):
+        channel.cast["thumb"] = {"jpegBase64": "/9j/4AAQ", "w": 1280, "h": 800, "seq": seq}
+        channel.cast_ready.set()
+        await asyncio.sleep(0.01)
+    publishing.cancel()
+    assert published == ["ws-1"], "the first frame is dropped, the task survives and the next goes out"

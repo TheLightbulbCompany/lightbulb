@@ -426,4 +426,15 @@ describe("BrowserFrameView on a shared session's browser", () => {
     expect(post).toHaveBeenCalledWith("/messaging/sessions/s1/browser/input",
       { events: [expect.objectContaining({ type: "down", button: "left", clicks: 1 })] });
   });
+
+  it("offers the text field only to someone who may type, labelled for the page", () => {
+    const { unmount } = render(<BrowserFrameView session={{ sessionId: "s1", canType: false }} />);
+    image("s1", 1);
+    expect(screen.queryByRole("textbox")).toBeNull();
+    unmount();
+    render(<BrowserFrameView session={{ sessionId: "s1", canType: true }} />);
+    image("s1", 1);
+    expect(screen.getByRole("textbox", { name: "Type into the page" })).toBeTruthy();
+    expect(picture().alt).toBe("The session's browser tab, live");
+  });
 });

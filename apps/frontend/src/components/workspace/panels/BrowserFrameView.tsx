@@ -401,7 +401,7 @@ export function BrowserFrameView({
         // eslint-disable-next-line @next/next/no-img-element -- a live data: URL, never optimisable
         <img
           src={`data:image/jpeg;base64,${frame.jpegBase64}`}
-          alt="The agent's browser tab, live"
+          alt={session ? "The session's browser tab, live" : "The agent's browser tab, live"}
           draggable={false}
           className={`h-full w-full select-none object-contain ${macLike ? "touch-none " : ""}${live ? "cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-[var(--bulb)]" : ""}`}
           {...input}
@@ -409,8 +409,9 @@ export function BrowserFrameView({
       ) : (
         empty ?? <p role="status" className="text-sm text-[var(--midnight-muted)]">Waiting for the agent&apos;s page…</p>
       )}
-      {isMac && frame && (
-        <input key={`${runId}:${deviceId}`} ref={macEditor} type="text" aria-label="Type on Mac" placeholder="Type on Mac"
+      {macLike && frame && (
+        <input key={`${runId ?? session?.sessionId}:${deviceId}`} ref={macEditor} type="text"
+          aria-label={session ? "Type into the page" : "Type on Mac"} placeholder={session ? "Type into the page" : "Type on Mac"}
           autoComplete="off" autoCapitalize="off" spellCheck={false}
           className="absolute right-2 top-2 z-10 w-36 rounded-md border border-[var(--edge)] bg-[var(--cream)] px-2 py-1 text-sm text-[var(--midnight)]"
           onKeyDown={(event) => macKeyDown(event, true)} onPaste={macPaste}

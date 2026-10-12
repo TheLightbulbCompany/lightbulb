@@ -339,7 +339,7 @@ async def _publish(owner: str, session_id: str, channel) -> None:
     """Each cast frame to the session's frames channel, `workspace.session.screen` kind "image",
     within the session frames budget (its own key). Stored nowhere."""
     publisher = live_events.get_live_event_publisher()
-    workspace = await store.ensure_workspace_id(owner)
+    workspace = None
     while True:
         await channel.cast_ready.wait()
         channel.cast_ready.clear()  # clear, THEN pop (node_broker's consumer contract)
@@ -358,6 +358,7 @@ async def _publish(owner: str, session_id: str, channel) -> None:
             "seq": frame["seq"],
         }
         try:
+            workspace = workspace or await store.ensure_workspace_id(owner)
             await publisher.publish_session_frames(workspace, make_live_event("workspace.session.screen", payload))
         except Exception as exc:  # noqa: BLE001 -- skip it; the next frame follows
             logger.info("session browser frame dropped owner=%s error=%s", owner, type(exc).__name__)

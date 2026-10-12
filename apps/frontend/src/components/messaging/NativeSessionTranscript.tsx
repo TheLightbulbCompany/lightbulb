@@ -19,7 +19,7 @@ type SubagentName = (id: string) => string | undefined;
 const DIFF_LINES = 12;
 
 /** A diff the way both terminals print it: the line number, the mark, the line. */
-function Diff({ lines, truncated }: { lines: readonly DiffLine[]; truncated: boolean }) {
+export function Diff({ lines, truncated }: { lines: readonly DiffLine[]; truncated: boolean }) {
   const width = String(lines.reduce((max, line) => Math.max(max, line.n ?? 0), 0)).length;
   return <pre className="native-session-output native-session-diff" style={{ ["--diff-digits" as string]: width }}>
     {lines.map((line, i) => <span key={i} className="native-session-diff-line" data-diff={line.mark === "+" ? "add" : line.mark === "-" ? "del" : "ctx"}>

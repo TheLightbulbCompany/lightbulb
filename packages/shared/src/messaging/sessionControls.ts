@@ -8,9 +8,11 @@ import type {
   LocalSessionApprovalMode,
   LocalSessionAuditEntry,
   LocalSessionEvent,
+  LocalSessionPendingApproval,
   PrivateSendApproval,
 } from "./types";
 import type { createMessagingClient } from "./client";
+import { canonicalJson, hasHiddenChars } from "./localSessionTranscript";
 import { AUTO_CHECK_INTERVAL_MS, receiptChip, type SessionCommandAttempt, type SessionReceiptChip } from "./useSessionCommand";
 
 type Client = Pick<ReturnType<typeof createMessagingClient>,
@@ -281,7 +283,12 @@ export type ApprovalAnswer = { decision: "allow" | "deny"; mode?: LocalSessionAp
  * Answer the prompt a session holds, once. The request id is minted per prompt
  * and answer, so a retry of the same click is idempotent and never a second answer.
  */
-export function useSessionApproval(client: Pick<Client, "submitLocalSessionCommand">, session: LocalSession, uuid: () => string) {
+/**
+ * `sha256Hex` hashes what a `full` prompt showed: an allow names that digest
+ * (`shownDigest`) so the backend admits it only if the viewer saw the whole call.
+ */
+export function useSessionApproval(client: Pick<Client, "submitLocalSessionCommand">, session: LocalSession, uuid: () => string,
+  sha256Hex: (text: string) => Promise<string>) {
   const [state, setState] = useState<{ approvalId: string; status: "sending" | "sent" | "failed"; error?: string } | null>(null);
   const ids = useRef(new Map<string, string>());
   const pending = session.pendingApproval;
@@ -293,10 +300,11 @@ export function useSessionApproval(client: Pick<Client, "submitLocalSessionComma
     ids.current.set(key, requestId);
     setState({ approvalId: pending.approvalId, status: "sending" });
     try {
+      const shownDigest = decision === "allow" && pending.full && pending.input ? await sha256Hex(canonicalJson(pending.input)) : "";
       const receipt = await client.submitLocalSessionCommand(session.sessionId, {
         requestId, expectedGeneration: session.generation, kind: "approve", approvalId: pending.approvalId,
         inputDigest: pending.inputDigest, decision, ...(mode ? { mode } : {}),
-        ...(text ? { text } : {}),
+        ...(text ? { text } : {}), ...(shownDigest ? { shownDigest } : {}),
       });
       // Admitted is not delivered: a prompt answered in the terminal first comes back rejected.
       setState(receipt.state === "rejected"
@@ -309,9 +317,32 @@ export function useSessionApproval(client: Pick<Client, "submitLocalSessionComma
         : e instanceof ApiError && e.status === 403 ? "You can no longer control this session."
           : "Could not send the answer. Try again." });
     }
-  }, [client, pending, session.sessionId, session.generation, uuid]);
+  }, [client, pending, session.sessionId, session.generation, uuid, sha256Hex]);
   const current = state && pending && state.approvalId === pending.approvalId ? state : null;
   return { pending, answer, state: current };
+}
+
+/**
+ * Whether a `full` prompt's input hashes to the digest the Mac bound it to:
+ * the gate for allowing a non-exact call remotely. False until the hash is
+ * known and false on any mismatch or error (fails closed).
+ */
+export function useShownInputMatches(pending: LocalSessionPendingApproval | undefined, sha256Hex: (text: string) => Promise<string>): boolean {
+  // A call with hidden characters is deny-only: what is drawn may not be what runs.
+  const input = pending?.full && !hasHiddenChars(pending.input) ? pending.input : undefined;
+  const expected = pending?.inputDigest;
+  const key = input && expected ? `${pending?.approvalId}:${expected}` : null;
+  // Bound to the exact input object hashed: a new input reads false until it is hashed too.
+  const [matched, setMatched] = useState<{ key: string; input: Record<string, unknown> } | null>(null);
+  useEffect(() => {
+    if (!key || !input) return;
+    let active = true;
+    void sha256Hex(canonicalJson(input))
+      .then(hex => { if (active) setMatched(hex === expected ? { key, input } : null); })
+      .catch(() => { if (active) setMatched(null); });
+    return () => { active = false; };
+  }, [key, input, expected, sha256Hex]);
+  return key !== null && matched?.key === key && matched.input === input;
 }
 
 /** The owner's toggle, with the server's answer as the truth. */

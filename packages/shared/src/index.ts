@@ -198,6 +198,10 @@ export {
   subagentLabel,
   groupRows,
   numberedDiff,
+  inputDiff,
+  approvalInputView,
+  hasHiddenChars,
+  canonicalJson,
   pendingApproval,
   thinkingLabel,
   toolActivity,
@@ -206,6 +210,7 @@ export {
   toolRowView,
 } from "./messaging/localSessionTranscript";
 export type {
+  ApprovalInputView,
   DiffLine,
   LocalSessionProvider,
   SessionSubagent,
@@ -231,7 +236,7 @@ export type { AvatarRing, ChatEntry, MergeChatsOptions } from "./messaging/chatL
 export { lastOwnMessageId, readState, readStateLabel, UNPROMPTED_LABEL, unpromptedLabel } from "./messaging/readState";
 export type { ReadState } from "./messaging/readState";
 export { AUTO_CHECK_INTERVAL_MS, COMMAND_MAX_BYTES, pendingPrompt, receiptChip, useSessionCommand, usePendingPrompt, useSessionOutbox, type SessionReceiptChip } from "./messaging/useSessionCommand";
-export { APPROVAL_MODE_LABEL, ASK_AGAIN_AFTER_MS, audienceLine, joinRequestView, auditLine, COMMIT_AND_PR_INSTRUCTION, canControlSession, canResumeSession, pickupRequestLine, pickupSource, pickupStatus, resumeStatus, sessionFacts, sessionFooter, usageLine, useSessionApproval, useSessionAudit, useSessionJoinRequest, useSessionResume, useTeamControl, useUsageSharing, withAuditNotices } from "./messaging/sessionControls";
+export { APPROVAL_MODE_LABEL, ASK_AGAIN_AFTER_MS, audienceLine, joinRequestView, auditLine, COMMIT_AND_PR_INSTRUCTION, canControlSession, canResumeSession, pickupRequestLine, pickupSource, pickupStatus, resumeStatus, sessionFacts, sessionFooter, usageLine, useSessionApproval, useSessionAudit, useSessionJoinRequest, useSessionResume, useShownInputMatches, useTeamControl, useUsageSharing, withAuditNotices } from "./messaging/sessionControls";
 export type { ApprovalAnswer, PrivateSendApproval, SessionControlClient, SessionResumeFlow } from "./messaging/sessionControls";
 export type { SessionCommandAttempt } from "./messaging/useSessionCommand";
 export type {

@@ -1,7 +1,8 @@
+import { createHash } from "node:crypto";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
-import type { LocalSession, SessionControlClient } from "@lightbulb/shared";
+import { canonicalJson, type LocalSession, type SessionControlClient } from "@lightbulb/shared";
 import { SessionApprovalCard } from "../SessionControls";
 
 const pendingApproval = {
@@ -79,4 +80,61 @@ it("lets the owner retry a failed private detail load", async () => {
   expect(await screen.findByText("send this")).toBeInTheDocument();
   expect(c.getPrivateSendApproval).toHaveBeenCalledTimes(2);
   expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
+});
+
+// Hashed outside the component: sorted keys, compact, as the Mac digests the call.
+const editInput = { file_path: "/Users/me/src/x.ts", old_string: "a", new_string: "b" };
+const editDigest = createHash("sha256").update('{"file_path":"/Users/me/src/x.ts","new_string":"b","old_string":"a"}').digest("hex");
+const fullEdit = { ...pendingApproval, tool: "Edit", summary: "src/x.ts", inputDigest: editDigest, exact: false, full: true, modes: [], input: editInput };
+const diffText = (container: HTMLElement) => Array.from(container.querySelectorAll(".native-session-diff-line"), l => l.textContent);
+
+it("shows an edit's diff and allows it when the digest of what is shown matches", async () => {
+  const c = client();
+  const { container } = render(<SessionApprovalCard session={session({ pendingApproval: fullEdit })} client={c} own ownerName="You" />);
+  expect(diffText(container)).toEqual(["-a\n", "+b\n"]);
+  expect(screen.getByText("/Users/me/src/x.ts")).toBeInTheDocument();
+  await userEvent.click(await screen.findByRole("button", { name: "Approve" }));
+  expect(c.submitLocalSessionCommand).toHaveBeenCalledWith("s1", expect.objectContaining({ kind: "approve", decision: "allow", inputDigest: editDigest, shownDigest: editDigest }));
+});
+
+it("stays deny-only when the shown input does not hash to the prompt's digest", async () => {
+  render(<SessionApprovalCard session={session({ pendingApproval: { ...fullEdit, inputDigest: "e".repeat(64) } })} client={client()} own ownerName="You" />);
+  expect(await screen.findByText("Lightbulb shows only part of this call. Approve it on your Mac; you can deny it here.")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+});
+
+it("a call that is not full stays deny-only with the partial copy", () => {
+  render(<SessionApprovalCard session={session({ pendingApproval: { ...pendingApproval, exact: false, full: false, modes: [], input: { command: "git push …" } }, teamControl: true })} client={client()} own={false} ownerName="Leo" />);
+  expect(screen.getByText("git push …")).toBeInTheDocument();
+  expect(screen.getByText("Lightbulb shows only part of this call. Approve it on Leo's Mac; you can deny it here.")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+});
+
+const sha = (input: object) => createHash("sha256").update(canonicalJson(input)).digest("hex");
+
+it("shows a Bash call's flags, and that it runs outside the sandbox, before allowing it", async () => {
+  const input = { command: "make deploy", description: "ship", dangerouslyDisableSandbox: true };
+  render(<SessionApprovalCard session={session({ pendingApproval: { ...pendingApproval, modes: [], exact: false, full: true, inputDigest: sha(input), input } })} client={client()} own ownerName="You" />);
+  expect(screen.getByText("Runs outside the sandbox")).toBeInTheDocument();
+  expect(screen.getByText("Description: ship")).toBeInTheDocument();
+  expect(await screen.findByRole("button", { name: "Approve" })).toBeInTheDocument();
+});
+
+it("shows the whole JSON for a key no friendly view draws, and allows it only on a digest match", async () => {
+  const input = { command: "ls", sneaky: "yes" };
+  const json = (_: string, element: Element | null) => element?.tagName === "PRE" && element.textContent === JSON.stringify(input, null, 2);
+  const { rerender } = render(<SessionApprovalCard session={session({ pendingApproval: { ...pendingApproval, modes: [], exact: false, full: true, inputDigest: "e".repeat(64), input } })} client={client()} own ownerName="You" />);
+  expect(screen.getByText(json)).toBeInTheDocument();
+  expect(await screen.findByText("Lightbulb shows only part of this call. Approve it on your Mac; you can deny it here.")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+  rerender(<SessionApprovalCard session={session({ pendingApproval: { ...pendingApproval, modes: [], exact: false, full: true, inputDigest: sha(input), input } })} client={client()} own ownerName="You" />);
+  expect(await screen.findByRole("button", { name: "Approve" })).toBeInTheDocument();
+});
+
+it("keeps a call with hidden characters deny-only and spells them out", () => {
+  const input = { command: "echo \u202Egnp.exe" };
+  render(<SessionApprovalCard session={session({ pendingApproval: { ...pendingApproval, modes: [], exact: false, full: true, inputDigest: sha(input), input } })} client={client()} own ownerName="You" />);
+  expect(screen.getByText((_, element) => element?.tagName === "PRE" && element.textContent === '{\n  "command": "echo \\u202Egnp.exe"\n}')).toBeInTheDocument();
+  expect(screen.getByText("Lightbulb shows only part of this call. Approve it on your Mac; you can deny it here.")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
 });

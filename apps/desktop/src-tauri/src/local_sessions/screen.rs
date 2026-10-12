@@ -601,8 +601,9 @@ impl Relayed {
         let hay = [self.sync_tail.as_slice(), bytes].concat();
         let last = |needle: &[u8]| hay.windows(needle.len()).rposition(|w| w == needle);
         match (last(SYNC_ON), last(SYNC_OFF)) {
-            (Some(on), Some(off)) if on > off => self.sync = Some(Instant::now()),
-            (Some(_), None) => {
+            // (A block opened behind one that closed keeps the clock: back-to-back blocks, as Codex
+            // streams them, still tick every SYNC_CAP.)
+            (Some(on), off) if off.is_none_or(|off| on > off) => {
                 self.sync.get_or_insert_with(Instant::now);
             }
             (_, Some(_)) => self.sync = None,
@@ -638,6 +639,10 @@ impl Relayed {
             return vec![];
         }
         self.erasing = None;
+        // A block still open is held again from now: the viewers were just updated.
+        if self.sync.is_some() {
+            self.sync = Some(Instant::now());
+        }
         let mut out = Vec::new();
         let alt = self.model.screen().alternate_screen();
         if alt != self.shown.screen().alternate_screen() {
@@ -2143,22 +2148,63 @@ mod tests {
     }
 
     /// Codex review of #4035: an erase in one read and its repaint in a later one (more than a tick
-    /// apart) showed every viewer the blank screen in between.
+    /// apart) showed every viewer the blank screen in between. (Time is given, not waited for.)
     #[test]
-    fn an_erase_and_its_repaint_in_reads_a_tick_apart_never_show_the_blank_screen() {
-        let sent = relay_of(b"line one\r\nline two", &[b"\x1b[H\x1b[2J", b"line one\r\nline TWO"], Duration::from_millis(100), Duration::from_millis(600));
-        let screens = screens_of(&sent);
-        assert!(screens.iter().all(|s| s.starts_with("line one")), "{screens:?}");
-        assert_eq!(screens.last().unwrap(), "line one\nline TWO");
+    fn an_erase_waits_for_its_repaint_and_goes_out_after_its_cap_without_one() {
+        let snap = b"line one\r\nline two";
+        let mut r = Relayed::seed(snap, (40, 5));
+        r.feed(b"\x1b[H\x1b[2J");
+        let t = Instant::now();
+        assert!(!r.ready(t) && !r.ready(t + ERASE_CAP - Duration::from_millis(1)), "the erase waits");
+        r.feed(b"line one\r\nline TWO");
+        assert!(r.ready(t + Duration::from_millis(1)), "the repaint goes at once");
+        assert_eq!(viewer_of(snap, &[r.tick()], (40, 5)).screen().contents(), "line one\nline TWO", "never the blank screen");
+        // No repaint: the erase goes once its cap is over.
+        r.feed(b"\x1b[H\x1b[2J");
+        let t = Instant::now();
+        assert!(!r.ready(t));
+        assert!(r.ready(t + ERASE_CAP));
     }
 
     #[test]
-    fn a_synchronized_update_split_across_reads_goes_out_whole() {
-        let reads: [&[u8]; 3] = [b"\x1b[?20", b"26h\x1b[H\x1b[2Jhalf drawn and more", b"\x1b[H\x1b[2Jthe whole picture\x1b[?2026l"];
-        let sent = relay_of(b"a\r\nb", &reads, Duration::from_millis(80), Duration::from_millis(700));
-        let screens = screens_of(&sent);
-        assert!(screens.iter().all(|s| !s.contains("half drawn")), "{screens:?}");
-        assert_eq!(screens.last().unwrap(), "the whole picture");
+    fn a_synchronized_update_split_across_reads_waits_for_its_end() {
+        let snap = b"a\r\nb";
+        let mut r = Relayed::seed(snap, (40, 5));
+        r.feed(b"\x1b[?20");
+        r.feed(b"26h\x1b[H\x1b[2Jhalf drawn and more");
+        let t = Instant::now();
+        assert!(!r.ready(t + Duration::from_millis(100)), "half drawn: held");
+        r.feed(b"\x1b[H\x1b[2Jthe whole picture\x1b[?2026l");
+        assert!(r.ready(t + Duration::from_millis(100)));
+        assert_eq!(viewer_of(snap, &[r.tick()], (40, 5)).screen().contents(), "the whole picture");
+    }
+
+    /// Re-review of #4035: each new block restarted the cap, so back-to-back blocks held viewers for good.
+    #[test]
+    fn back_to_back_synchronized_updates_keep_the_cap_from_the_first() {
+        let mut r = Relayed::seed(b"a", (40, 5));
+        r.feed(b"\x1b[?2026hone");
+        let t = Instant::now();
+        std::thread::sleep(Duration::from_millis(20));
+        r.feed(b"\x1b[?2026l\x1b[?2026htwo");
+        assert!(r.ready(t + SYNC_CAP), "a tick by SYNC_CAP after the first block opened");
+        let _ = r.tick();
+        // The block still open is held again from that tick, and only from it.
+        let t = Instant::now();
+        r.feed(b"\x1b[?2026l\x1b[?2026hthree");
+        assert!(!r.ready(t + Duration::from_millis(100)) && r.ready(t + SYNC_CAP));
+    }
+
+    /// The same through the relay: a block every 80 ms, each read ending inside the next one.
+    #[test]
+    fn a_relay_streaming_back_to_back_synchronized_updates_still_ticks() {
+        let reads: Vec<Vec<u8>> = (0..10).map(|i| format!("\x1b[?2026l\x1b[?2026h\x1b[Hframe {i}").into_bytes()).collect();
+        let reads: Vec<&[u8]> = reads.iter().map(Vec::as_slice).collect();
+        let sent = relay_of(b"a", &reads, Duration::from_millis(80), Duration::from_millis(1000));
+        let outputs: Vec<Duration> = sent.iter().filter(|(_, f)| f["kind"] == "output").map(|(at, _)| *at).collect();
+        // (The first block opens at about 80 ms; a tick may be up to one TICK past its cap.)
+        assert!(outputs.first().is_some_and(|at| *at < Duration::from_millis(80) + SYNC_CAP + Duration::from_millis(250)), "{outputs:?}");
+        assert!(outputs.len() >= 2, "one about every SYNC_CAP: {outputs:?}");
     }
 
     #[test]

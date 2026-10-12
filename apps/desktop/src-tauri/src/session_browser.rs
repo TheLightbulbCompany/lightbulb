@@ -63,15 +63,20 @@ pub(crate) enum Decision {
 /// Where a connection's commands go: this Mac's agent Chrome, or up the node socket to the cloud.
 enum Upstream {
     Chrome(mpsc::Sender<String>),
-    Relay(EventSender),
+    Relay(EventSender, Channels),
 }
 
 impl Upstream {
     async fn send(&self, id: &str, text: String) -> Result<(), ()> {
         match self {
             Upstream::Chrome(tx) => tx.send(text).await.map_err(|_| ()),
-            Upstream::Relay(out) => {
-                let frame = crate::agent_chrome::envelope(id, &text).map_err(|_| ())?;
+            Upstream::Relay(out, channels) => {
+                let frame = crate::agent_chrome::envelope(id, &text).map_err(|code| {
+                    // Oversized: tell the backend why (not the generic CLOSED ended() would send).
+                    if lock(&RELAYS).remove(id).is_some() {
+                        channels.send_close(id, code);
+                    }
+                })?;
                 out.send_text(frame).await.map_err(|_| ())
             }
         }
@@ -386,7 +391,7 @@ async fn run(app: tauri::AppHandle, ws: Ws, session: String) {
         tokio::select! {
             answer = &mut decided => match answer {
                 Ok(Ok(Decision::Chrome(tx))) => break Upstream::Chrome(tx),
-                Ok(Ok(Decision::Relay)) => break Upstream::Relay(out.clone()),
+                Ok(Ok(Decision::Relay)) => break Upstream::Relay(out.clone(), channels.clone()),
                 Ok(Ok(Decision::Refused(message))) => return refuse_split(sink, stream, early, &message).await,
                 _ => {
                     ended(&channels, &id, Some("TIMEOUT"));
@@ -526,6 +531,10 @@ pub(crate) fn on_event(channels: &Channels, event: &str, payload: &Value) -> boo
             let Some(pending) = lock(&PENDING).remove(id) else { return late(channels, id) };
             if payload.get("relay").and_then(Value::as_bool) == Some(true) {
                 lock(&RELAYS).insert(id.to_string(), pending.to_client);
+                // The connection gave up while this opened: ended() may have missed it (as the Chrome branch).
+                if is_ended(id) {
+                    lock(&RELAYS).remove(id);
+                }
                 let _ = pending.decide.send(Decision::Relay);
                 return true;
             }
@@ -879,11 +888,34 @@ mod tests {
     #[tokio::test]
     async fn a_relayed_command_goes_up_as_a_cdp_frame() {
         let (channels, mut rx) = crate::agent_chrome::test_channels();
-        Upstream::Relay(channels.out()).send("r2", "{\"id\":1}".into()).await.unwrap();
+        Upstream::Relay(channels.out(), channels.clone()).send("r2", "{\"id\":1}".into()).await.unwrap();
         let Some(Message::Text(text)) = rx.recv().await else { panic!("a frame") };
         let v: Value = serde_json::from_str(&text).unwrap();
         assert_eq!((v["event"].as_str(), v["payload"]["channel"].as_str(), v["payload"]["data"].as_str()),
             (Some("browser.cdp.frame"), Some("r2"), Some("{\"id\":1}")));
+    }
+
+    #[tokio::test]
+    async fn an_oversized_relayed_command_closes_the_channel_too_large() {
+        let (channels, mut rx) = crate::agent_chrome::test_channels();
+        lock(&RELAYS).insert("r5".into(), mpsc::channel(1).0);
+        let up = Upstream::Relay(channels.out(), channels.clone());
+        assert!(up.send("r5", "x".repeat(17 * 1024 * 1024)).await.is_err());
+        let Some(Message::Text(text)) = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await.unwrap() else { panic!() };
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["payload"]["code"].as_str(), Some("TOO_LARGE"));
+        assert!(!lock(&RELAYS).contains_key("r5"));
+    }
+
+    #[tokio::test]
+    async fn an_open_for_a_connection_that_already_left_is_not_kept() {
+        let (channels, _rx) = crate::agent_chrome::test_channels();
+        let (to_client, _client) = mpsc::channel(1);
+        let (decide, _decided) = oneshot::channel();
+        lock(&PENDING).insert("r6".into(), Pending { to_client, decide });
+        lock(&ENDED).push_back("r6".into());
+        assert!(on_event(&channels, "browser.cdp.open", &json!({"channel": "r6", "relay": true})));
+        assert!(!lock(&RELAYS).contains_key("r6"));
     }
 
     #[tokio::test]

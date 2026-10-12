@@ -374,7 +374,7 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
       apply(queued.splice(0));
     });
     const off = onEvent((event) => {
-      if (event.type !== "workspace.session.screen") return;
+      if (event.type !== "workspace.session.screen" || event.payload.kind === "image") return; // the Browser tab's
       const frame = event.payload;
       if (frame.sessionId !== session.sessionId || frame.generation !== session.generation) return;
       // A ping proves the picture is current only when it names the frame this view waits for:

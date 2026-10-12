@@ -269,3 +269,12 @@ it("a torn viewer keeps repair history that comes after its snapshot, however la
   expect(never.order.torn).toBe(true);
   expect(receiveScreen(never.order, f(49, "snapshot")).lost).toBe(true);
 });
+
+test("a session browser frame is an image kind on the same channel, and only a well-formed one passes", () => {
+  const event = { schemaVersion: 1, eventId: "img-1", type: "workspace.session.screen", occurredAt: "2026-10-11T00:00:00Z",
+    payload: { sessionId: "s1", kind: "image", data: "/9j/4AAQ", w: 1280, h: 800, seq: 1760000000000 } };
+  expect(parseLiveEvent(event)).toEqual(event);
+  for (const bad of [{ data: "" }, { w: "1280" }, { h: Number.NaN }, { seq: -1 }, { sessionId: "" }]) {
+    expect(parseLiveEvent({ ...event, payload: { ...event.payload, ...bad } })).toBeNull();
+  }
+});

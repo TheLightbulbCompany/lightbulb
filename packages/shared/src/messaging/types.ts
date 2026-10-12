@@ -523,6 +523,10 @@ export interface LocalSessionPendingApproval {
   inputDigest: string;
   /** False when what is shown is not all of it (a cut or redacted command): deny-only here. */
   exact: boolean;
+  /** The Mac shipped the WHOLE raw call in `input` (uncut, unredacted): a viewer who saw all of it may allow it with `shownDigest`. Absent from an older Mac. */
+  full?: boolean;
+  /** The tool call's input as the Mac shipped it; whole only when `full`. */
+  input?: Record<string, unknown>;
   /** Session-scoped mode switches the tool itself offered with this prompt. */
   modes: LocalSessionApprovalMode[];
 }
@@ -607,7 +611,9 @@ export type LocalSessionCommand = {
   expectedGeneration: string;
   expectedTurnId?: string | null;
 } & ({ kind: "send"; text: string } | { kind: "interrupt"; text?: never } | { kind: "end"; text?: never; expectedTurnId?: never }
-  | { kind: "approve"; approvalId: string; decision: "allow" | "deny"; inputDigest: string; mode?: LocalSessionApprovalMode; text?: string });
+  | { kind: "approve"; approvalId: string; decision: "allow" | "deny"; inputDigest: string; mode?: LocalSessionApprovalMode; text?: string;
+      /** Allow only: SHA-256 of canonicalJson of the input this viewer was shown (a `full` approval). */
+      shownDigest?: string });
 
 export type LocalSessionCommandReceipt = {
   requestId: string;

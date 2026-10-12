@@ -648,6 +648,22 @@ export function numberedDiff(result: unknown): DiffLine[] {
   });
 }
 
+/** The diff a call's own input shows before (or without) its result: Edit/MultiEdit old→new, Write's content. */
+export function inputDiff(name: string, input: unknown): DiffLine[] {
+  const i = rec(input);
+  const side = (text: unknown, mark: "+" | "-"): DiffLine[] => typeof text === "string" ? text.split("\n").map(t => ({ n: null, mark, text: t })) : [];
+  const pair = (o: unknown, n: unknown) => [...side(o, "-"), ...side(n, "+")];
+  if (name === "Edit") return pair(i.old_string, i.new_string);
+  if (name === "MultiEdit" && Array.isArray(i.edits)) return i.edits.flatMap(e => pair(rec(e).old_string, rec(e).new_string));
+  if (name === "Write") return side(i.content, "+");
+  return [];
+}
+
+const sortKeys = (v: unknown): unknown => Array.isArray(v) ? v.map(sortKeys)
+  : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map(k => [k, sortKeys((v as Record<string, unknown>)[k])])) : v;
+/** Compact JSON with keys sorted at every level: what the Mac digests (`lifecycle::canonical` + serde_json compact). */
+export const canonicalJson = (v: unknown): string => JSON.stringify(sortKeys(v));
+
 const tally = (lines: readonly DiffLine[]) => ({
   added: lines.filter(l => l.mark === "+").length,
   removed: lines.filter(l => l.mark === "-").length,
@@ -698,8 +714,10 @@ export interface ToolRowView {
 export function toolRowView(row: ToolTranscriptRow): ToolRowView {
   const status = row.result?.tool?.status ?? row.call.tool?.status ?? "running";
   const resultPayload = row.result?.tool?.result ?? row.call.tool?.result;
-  const diff = diffLines(resultPayload).map(stripAnsi);
-  const numbered = numberedDiff(resultPayload);
+  const resultNumbered = numberedDiff(resultPayload);
+  // A running call (or one whose result carries no patch) shows the diff its own input describes.
+  const numbered = resultNumbered.length ? resultNumbered : inputDiff(row.call.tool?.name ?? "", row.call.tool?.input);
+  const diff = resultNumbered.length ? diffLines(resultPayload).map(stripAnsi) : numbered.map(l => l.mark + l.text);
   // tool.lines is set exactly when `text` is an output preview (Claude
   // tool_result rows and Codex CommandExecution); it's absent when `text` is
   // a label (McpToolCall, FileChange, SubAgentActivity, ...) — so a label
@@ -726,7 +744,7 @@ export function toolRowView(row: ToolTranscriptRow): ToolRowView {
   const total = counted != null && fromEnd ? Math.max(counted, lines.length) : counted;
   const more = full && total != null ? Math.max(0, total - shownLines) : 0;
   const showOutput = more === 0 && full.length > preview.length;
-  return { status, preview, full, diff, numbered, summary: editSummary(row, numbered), more, showOutput, truncated };
+  return { status, preview, full, diff, numbered, summary: editSummary(row, resultNumbered), more, showOutput, truncated };
 }
 
 function formatMs(text: string): string {

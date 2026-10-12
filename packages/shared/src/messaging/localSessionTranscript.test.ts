@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildRows, groupRows, lifecycleLabel, mainEvents, numberedDiff, sessionSubagents, subagentElapsedMs, subagentLabel, subagentState, subagentStatus, subagentStrip, subagentTags, backgroundWaiting, thinkingLabel, toolActivity, toolHeader, toolRowView, type TranscriptRow, pendingApproval } from "./localSessionTranscript";
+import { buildRows, canonicalJson, groupRows, inputDiff, lifecycleLabel, mainEvents, numberedDiff, sessionSubagents, subagentElapsedMs, subagentLabel, subagentState, subagentStatus, subagentStrip, subagentTags, backgroundWaiting, thinkingLabel, toolActivity, toolHeader, toolRowView, type TranscriptRow, pendingApproval } from "./localSessionTranscript";
 import type { LocalSessionEvent } from "./types";
 
 const ev = (seq: number, e: Omit<LocalSessionEvent, "seq" | "truncated"> & { truncated?: boolean }): LocalSessionEvent => ({ seq, truncated: false, ...e });
@@ -511,5 +511,34 @@ describe("the panel above the prompt", () => {
     ];
     expect(backgroundWaiting(sessionSubagents(bg), "idle", T0 + 90_000)).toBe(1);
     expect(backgroundWaiting(sessionSubagents(bg), "idle", T0 + 3_600_000)).toBe(0);
+  });
+});
+
+describe("inputDiff", () => {
+  it("shows an edit's old and new lines, a write's content, nothing for bash", () => {
+    expect(inputDiff("Edit", { old_string: "a\nb", new_string: "a\nc" }).map(l => l.mark + l.text)).toEqual(["-a", "-b", "+a", "+c"]);
+    expect(inputDiff("MultiEdit", { edits: [{ old_string: "x", new_string: "y" }, { old_string: "p", new_string: "q" }] }).map(l => l.mark + l.text)).toEqual(["-x", "+y", "-p", "+q"]);
+    expect(inputDiff("Write", { content: "x" }).map(l => l.mark + l.text)).toEqual(["+x"]);
+    expect(inputDiff("Bash", { command: "ls" })).toEqual([]);
+  });
+
+  it("a running edit shows its input's diff; the result's patch replaces it once it lands", () => {
+    const call = ev(1, { kind: "tool", role: "assistant", text: "src/app.ts", itemId: "t9", tool: { name: "Edit", status: "running", input: { old_string: "OLD", new_string: "NEW" } } });
+    const running = toolRowView(tool([call]));
+    expect(running.numbered.map(l => l.mark + l.text)).toEqual(["-OLD", "+NEW"]);
+    expect(running.diff).toEqual(["-OLD", "+NEW"]);
+    const done = toolRowView(tool([call, ev(2, { kind: "tool", role: "tool", text: "src/app.ts", parentId: "t9", tool: { name: "result", status: "done", result: { structuredPatch: [{ oldStart: 4, newStart: 4, lines: ["-OLD", "+NEW", " CTX"] }] } } })]));
+    expect(done.numbered.map(l => `${l.n}${l.mark}${l.text}`)).toEqual(["4-OLD", "4+NEW", "5 CTX"]);
+  });
+});
+
+describe("canonicalJson", () => {
+  it("sorts keys at every level, compact, as the Mac digests it", async () => {
+    expect(canonicalJson({ description: "d", command: "ls" })).toBe('{"command":"ls","description":"d"}');
+    expect(canonicalJson({ b: null, a: [{ y: "é", x: 1 }] })).toBe('{"a":[{"x":1,"y":"é"}],"b":null}');
+    // Vector computed outside JS: printf '%s' '{"command":"ls","description":"d"}' | shasum -a 256
+    const bytes = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonicalJson({ description: "d", command: "ls" })));
+    const hex = Array.from(new Uint8Array(bytes), b => b.toString(16).padStart(2, "0")).join("");
+    expect(hex).toBe("b1ff34673e7684fa23bbcb26c95bae8dbdb6490caa1455565e88a5b55200813e");
   });
 });

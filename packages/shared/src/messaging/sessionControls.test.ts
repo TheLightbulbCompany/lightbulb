@@ -1,7 +1,9 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 
-import { auditLine, canControlSession, sessionFacts, usageLine, withAuditNotices } from "./sessionControls";
-import type { LocalSession, LocalSessionAuditEntry, LocalSessionEvent } from "./types";
+import { auditLine, canControlSession, useSessionApproval, useShownInputMatches, sessionFacts, usageLine, withAuditNotices } from "./sessionControls";
+import type { LocalSession, LocalSessionAuditEntry, LocalSessionCommandReceipt, LocalSessionEvent } from "./types";
 
 const names: Record<string, string> = { user_aden: "Aden", user_owner: "Prasiddha" };
 const nameOf = (id: string) => names[id] ?? "Teammate";
@@ -107,5 +109,54 @@ describe("usageLine", () => {
     expect(usageLine({ inputTokens: 1200, outputTokens: 340, cacheReadTokens: 90000, cacheWriteTokens: 800 })).toBe("1.2k in · 340 out · 90.8k cached");
     expect(usageLine({ inputTokens: 3, outputTokens: 2_500_000, cacheReadTokens: 0, cacheWriteTokens: 0 })).toBe("3 in · 2.5M out");
     expect(usageLine(undefined)).toBeNull();
+  });
+});
+
+describe("useSessionApproval", () => {
+  const pending = { approvalId: "a1", tool: "Bash", summary: "ls", inputDigest: "abc", exact: false, full: true, modes: [], input: { command: "ls" } };
+  const mount = (p: object) => {
+    const submit = vi.fn<(id: string, command: object) => Promise<LocalSessionCommandReceipt>>(async () => ({ state: "dispatched" }) as LocalSessionCommandReceipt);
+    const sha = vi.fn(async () => "abc");
+    const { result } = renderHook(() => useSessionApproval({ submitLocalSessionCommand: submit }, session({ sessionId: "s1", generation: "g1", pendingApproval: p } as Partial<LocalSession>), () => "r1", sha));
+    return { result, submit, sha };
+  };
+
+  it("a full approval sends the digest of what was shown; a deny does not", async () => {
+    const { result, submit, sha } = mount(pending);
+    await act(() => result.current.answer({ decision: "allow" }));
+    expect(sha).toHaveBeenCalledWith('{"command":"ls"}');
+    expect(submit).toHaveBeenLastCalledWith("s1", expect.objectContaining({ kind: "approve", decision: "allow", shownDigest: "abc" }));
+    await act(() => result.current.answer({ decision: "deny" }));
+    expect(submit.mock.calls[1][1]).not.toHaveProperty("shownDigest");
+  });
+
+  it("an approval from an older Mac (no full) sends no digest", async () => {
+    const { result, submit, sha } = mount({ ...pending, full: undefined, input: undefined, exact: true });
+    await act(() => result.current.answer({ decision: "allow" }));
+    expect(sha).not.toHaveBeenCalled();
+    expect(submit.mock.calls[0][1]).not.toHaveProperty("shownDigest");
+  });
+});
+
+describe("useShownInputMatches", () => {
+  const pending = { approvalId: "a1", tool: "Bash", summary: "ls", inputDigest: "abc", exact: false, full: true, modes: [], input: { command: "ls" } };
+  it("is false until the hash of what is shown is known, then true only on a match", async () => {
+    let resolve: (hex: string) => void = () => undefined;
+    const sha = vi.fn(() => new Promise<string>(r => { resolve = r; }));
+    const { result } = renderHook(() => useShownInputMatches(pending, sha));
+    expect(result.current).toBe(false);
+    await act(async () => resolve("abc"));
+    expect(result.current).toBe(true);
+  });
+  it("is false on a mismatch, a hash failure, or a prompt that is not full", async () => {
+    const other = vi.fn(async () => "def");
+    const mismatch = renderHook(() => useShownInputMatches(pending, other));
+    const failed = renderHook(() => useShownInputMatches(pending, async () => { throw new Error("no subtle"); }));
+    const partial = renderHook(() => useShownInputMatches({ ...pending, full: false }, async () => "abc"));
+    await waitFor(() => expect(other).toHaveBeenCalled());
+    await act(async () => undefined);
+    expect(mismatch.result.current).toBe(false);
+    expect(failed.result.current).toBe(false);
+    expect(partial.result.current).toBe(false);
   });
 });

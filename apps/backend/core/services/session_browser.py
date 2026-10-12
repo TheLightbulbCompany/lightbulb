@@ -57,6 +57,10 @@ DOOR_WAIT_S = 15  # the runtime dials the door right after "attached"
 POLL_S = 2
 RENEW_SECONDS = 120  # < mac_browser.LEASE_SECONDS
 OPEN_SECONDS = 2 * RENEW_SECONDS
+# A cloud session holds the bridge's lease this long after the Mac's `idle`: renewing before the lease
+# lapses keeps the cloud generation (a lapsed one re-claims, which revokes the relay's connection). An
+# idle AWS browser bills only its CPU; past this the lease lapses and the browser's idle stop applies.
+CLOUD_IDLE_HOLD_S = 30 * 60
 SYNC_TIMEOUT_S = 150  # the bridge caps one Mac sync at 120 s (MAC_SYNC_BUDGET_S)
 _SID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 _clock = time.time
@@ -498,11 +502,14 @@ async def _watch_cloud(owner: str, session_id: str, run: str) -> None:
 async def _hold_cloud(auth: dict, device: str, node, channel) -> None:
     """While the door relays (the whole client connection): each signal, and every RENEW_SECONDS,
     re-checks that the session is shared (DesktopError ends the connection, and with it the door)
-    and renews the `browserOpen` mark; the timer also keeps the runtime awake (`health`: AgentCore
-    parks a microVM no invoke reaches, and the door is outbound). `idle` changes nothing here (the
-    cloud browser saves itself; the bridge renews its lease only while commands flow); `active`
-    renews the bridge's lease before the held commands run."""
+    and renews the `browserOpen` mark. The timer renews the bridge's lease (`browser.attach` renew,
+    which also keeps the runtime awake: AgentCore parks a microVM no invoke reaches, and the door is
+    outbound) until CLOUD_IDLE_HOLD_S after the Mac's `idle`, then only wakes it (`health`). Renewing
+    before the lease lapses keeps the generation, so the relay's connection survives the quiet.
+    `active` ends the quiet and renews the lease before the held commands run."""
     owner, user, sid = auth["ownerId"], auth["memberId"], session_of(auth["runId"])
+    renew = lambda: {"runId": auth["runId"], "renew": True}  # noqa: E731
+    quiet_since: float | None = None  # the Mac's last `idle`, None while commands flow
     watcher = asyncio.create_task(_watch_cloud(owner, sid, auth["runId"]))
     try:
         while True:
@@ -515,8 +522,14 @@ async def _hold_cloud(auth: dict, device: str, node, channel) -> None:
                 await _stop_cast(owner, auth["runId"])  # no frame of an unshared session goes out
                 raise
             if signal == "active":
-                ok = await _attach_until(auth, lambda: {"runId": auth["runId"], "renew": True})
+                quiet_since = None
+                ok = await _attach_until(auth, renew)
                 node.cdp_leased(channel, ok, *(() if ok else ("cloud_unavailable", CLOUD_MESSAGE)))
+            elif signal == "idle":
+                quiet_since = _clock() if quiet_since is None else quiet_since
+            elif signal is None and (quiet_since is None or _clock() - quiet_since < CLOUD_IDLE_HOLD_S):
+                if not await _attach_until(auth, renew):
+                    logger.info("session browser cloud renew failed owner=%s", owner)
             elif signal is None:
                 try:
                     await container_rpc.call(owner, "health", {})

@@ -688,6 +688,52 @@ async def test_after_idle_the_next_command_waits_for_the_bridge_to_renew(env, cl
     await asyncio.wait_for(served, 2)
 
 
+def _renews(seen):
+    return sum(1 for m, p in seen if m == "browser.attach" and p == {"runId": RUN, "renew": True})
+
+
+async def test_an_idle_cloud_session_keeps_renewing_its_lease_for_30_minutes_then_rests(env, cloud, monkeypatch):
+    """Renewing before the 300 s lease lapses keeps the cloud generation (browser_control._claim's
+    own-lease branch); a lapse would re-claim and revoke the relay's connection."""
+    now = {"t": 1000.0}
+    monkeypatch.setattr(session_browser, "_clock", lambda: now["t"])
+    node, channel = _offered()
+    served = asyncio.create_task(session_browser.serve(OWNER, MEMBER, DEVICE, node, channel, SID, False))
+    await _relayed(env, cloud, node, channel)
+    marks = env.calls.count(("open", "cloud"))
+    _signal(node, "idle")
+    await _until(lambda: env.calls.count(("open", "cloud")) > marks)  # the idle was taken at t=1000
+    now["t"] += 29 * 60  # still inside the hold: the timer keeps renewing
+    start = _renews(cloud)
+    await _until(lambda: _renews(cloud) >= start + 3)
+    assert sum(1 for m, p in cloud if m == "browser.attach" and "doorUrl" in p) == 2, "never a fresh attach"
+    now["t"] += 2 * 60  # 31 idle minutes: renewals stop, the runtime is still woken
+    await asyncio.sleep(0.12)  # let a renew already in flight land
+    stopped, health = _renews(cloud), cloud.count(("health", {}))
+    await _until(lambda: cloud.count(("health", {})) >= health + 2)
+    assert _renews(cloud) == stopped
+    _closed_by_mac(node)
+    await asyncio.wait_for(served, 2)
+
+
+async def test_an_active_after_a_short_idle_answers_at_once_on_the_held_lease(env, cloud, monkeypatch):
+    now = {"t": 1000.0}
+    monkeypatch.setattr(session_browser, "_clock", lambda: now["t"])
+    node, channel = _offered()
+    served = asyncio.create_task(session_browser.serve(OWNER, MEMBER, DEVICE, node, channel, SID, False))
+    await _relayed(env, cloud, node, channel)
+    _signal(node, "idle")
+    now["t"] += 5 * 60
+    _signal(node, "active")
+    assert (await _next(node, "browser.cdp.leased"))["payload"] == {"channel": CHANNEL, "ok": True}
+    assert sum(1 for m, p in cloud if m == "browser.attach" and "doorUrl" in p) == 2, "no re-attach"
+    now["t"] += 60 * 60  # active again: the quiet clock restarted, so renewals continue
+    start = _renews(cloud)
+    await _until(lambda: _renews(cloud) >= start + 2)
+    _closed_by_mac(node)
+    await asyncio.wait_for(served, 2)
+
+
 async def test_a_session_set_to_cloud_goes_there_with_browser_on(env, cloud):
     env.row["browserPlace"] = "cloud"
     node, channel = _offered()

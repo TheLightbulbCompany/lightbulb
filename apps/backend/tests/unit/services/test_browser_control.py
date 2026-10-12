@@ -154,6 +154,7 @@ async def test_agent_starts_once_and_renews_same_generation(workspace, monkeypat
     second = await control.acquire_agent("org_browser", "run")
     assert first["generation"] == second["generation"]
     client.start_browser_session.assert_called_once()
+    control._stream.assert_awaited_once()  # a renewal before expiry never re-streams (no revoke)
     with pytest.raises(control.BrowserError, match="Another agent run"):
         await control.acquire_agent("org_browser", "other-run")
 

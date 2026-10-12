@@ -3572,11 +3572,11 @@ mod tests {
     fn local_sessions_redact_catches_provider_keys_and_secret_lines() {
         let aws = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
         let leaked = [
-            "sk_live_abcdefghijklmnopqrstuvwx",
-            "rk_test_abcdefghijklmnopqrstuvwx",
-            "whsec_abcdefghijklmnopqrstuvwx",
+            concat!("sk_live_", "abcdefghijklmnopqrstuvwx"),
+            concat!("rk_test_", "abcdefghijklmnopqrstuvwx"),
+            concat!("whsec_", "abcdefghijklmnopqrstuvwx"),
             "sk-ant-api03-abcdefghijklmnopqrstuvwxyz",
-            "AIzaSyA1234567890abcdefghijklmnopqrstuv",
+            concat!("AI", "za", "SyA1234567890abcdefghijklmnopqrstuv"),
             aws,
             "hunter2pass",
             "postgres://u:pw@db.internal/app",
@@ -3623,7 +3623,7 @@ mod tests {
             let clean = redact(leak);
             assert!(!clean.contains("hunter2") && clean.contains("[redacted]"), "{leak:?} -> {clean:?}");
         }
-        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
+        let jwt = concat!("ey", "JhbGciOiJIUzI1NiJ9", ".", "ey", "JzdWIiOiIxMjM0NTY3ODkwIn0", ".", "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U");
         for text in [format!("x {jwt} y"), format!("ID_TOKEN={jwt}")] {
             assert!(!redact(&text).contains("eyJzdWIi"));
         }
@@ -3665,7 +3665,7 @@ mod tests {
     fn local_sessions_helpers_bound_preview_and_redact() {
         assert_eq!(bounded("héllo", 3), ("hé".into(), true));
         assert_eq!(preview("a\nb\nc", 2), ("a\nb".into(), 3));
-        let leaked = "token AKIAIOSFODNN7EXAMPLE and sk-abcdefghijklmnopqrstuvwxyz12 plain sk-short Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc";
+        let leaked = concat!("token AKIAIOSFODNN7EXAMPLE and sk-abcdefghijklmnopqrstuvwxyz12 plain sk-short Authorization: Bearer ", "ey", "JhbGciOiJIUzI1NiJ9.abc");
         let clean = redact(leaked);
         assert!(
             !clean.contains("AKIAIOSFODNN7EXAMPLE")

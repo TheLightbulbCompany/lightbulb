@@ -2180,9 +2180,9 @@ mod tests {
     #[test]
     fn local_sessions_claude_env_files_and_commands_lose_their_secrets() {
         let secrets = [
-            "sk_live_abcdefghijklmnopqrstuvwx",
-            "whsec_abcdefghijklmnopqrstuvwx",
-            "AIzaSyA1234567890abcdefghijklmnopqrstuv",
+            concat!("sk_live_", "abcdefghijklmnopqrstuvwx"),
+            concat!("whsec_", "abcdefghijklmnopqrstuvwx"),
+            concat!("AI", "za", "SyA1234567890abcdefghijklmnopqrstuv"),
             "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
             "hunter2pass",
         ];

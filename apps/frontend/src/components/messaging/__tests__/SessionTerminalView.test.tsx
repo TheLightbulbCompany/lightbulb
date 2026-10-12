@@ -243,6 +243,12 @@ describe("a ping that shows the Mac sent a picture this view lacks", () => {
     emit(screenEvent("s1", "ping", 0));
     expect(watch).not.toHaveBeenCalled();
   });
+  it("does not ask for a late ping from an older run", async () => {
+    const { emit, watch } = await mount();
+    emit(screenEvent("s1", "snapshot", 0, 2));
+    emit(screenEvent("s1", "ping", 5, 1));
+    expect(watch).not.toHaveBeenCalled();
+  });
   it("asks when the ping is for a newer run than the picture", async () => {
     const { emit, watch } = await mount();
     emit(screenEvent("s1", "snapshot", 0)); emit(screenEvent("s1", "output", 1, 1, btoa("a")));

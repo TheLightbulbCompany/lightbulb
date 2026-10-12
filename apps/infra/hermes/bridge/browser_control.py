@@ -114,6 +114,7 @@ _BROWSING: dict[str, set] = {}       # run id -> its Hermes task ids, for runs t
 _timer: threading.Timer | None = None
 _SINKS: dict = {}                    # run id -> publish(frame) to its room, for browsing CLOUD runs with one
 _SESSION_SINKS: dict = {}            # session run id -> publish(frame) to its session frames channel
+_PUMPS: dict = {}                    # session run id -> its current door pump ({"outer": door socket})
 _MAC_STATES: dict = {}               # run id -> its turn state, while it has a Mac selected (for Stop)
 _frames_until = 0.0                  # epoch: someone wants live frames until then
 _TURN: ContextVar[dict | None] = ContextVar("browser_control", default=None)
@@ -567,54 +568,75 @@ def attach_session(params: dict) -> dict:
     if renew:
         return {"status": "attached"}
     sink = _session_sink(run, params.get("frameEndpoint"), params.get("frameChannel"))
+    pump: dict = {"outer": None}
     with _LOCK:
         _BROWSING.setdefault(run, set())  # the bridge's lease and grace timer cover it
         if sink is not None:
             _SESSION_SINKS[run] = sink
-    _start_pump(run, door)
+        old, _PUMPS[run] = _PUMPS.get(run), pump  # a fresh door takes over: the old pump ends quietly
+    if old and old["outer"] is not None:
+        with contextlib.suppress(Exception):
+            old["outer"].close()
+    _start_pump(run, door, pump)
     return {"status": "attached"}
 
 
-def _start_pump(run: str, door: str) -> None:
-    threading.Thread(target=_pump_door, args=(run, door), name="session-door", daemon=True).start()
+def _start_pump(run: str, door: str, pump: dict) -> None:
+    threading.Thread(target=_pump_door, args=(run, door, pump), name="session-door", daemon=True).start()
 
 
-def _pump_door(run: str, door: str) -> None:
+def _renew_session_lease() -> None:
+    """Renew the bridge's lease for a session, adopting a new generation the way _refresh does."""
+    result = _post("acquire", {"runId": LEASE_ID, "agentId": AGENT_SESSION})
+    if result and result.get("cdpUrl") and result.get("generation") is not None:
+        cdp_mux.set_upstream(result["cdpUrl"], result["generation"])
+        with _LOCK:
+            _LEASE.update(generation=result["generation"], cdpUrl=result["cdpUrl"])
+
+
+def _pump_door(run: str, door: str, pump: dict) -> None:
     """The door <-> the run's loopback endpoint, both ways, until either side closes; the bridge's
-    lease is renewed every SESSION_RENEW_S while commands flow. Then the run ends: its tabs close and
-    the lease's grace timer saves the browser once nothing else browses."""
+    lease is renewed every SESSION_RENEW_S while commands flow Mac -> cloud (a receive-only session
+    is kept by the backend's ``active`` re-attach). Then, unless a newer door took the run over
+    (``_PUMPS``), the run ends: its tabs close and the lease's grace timer saves the browser once
+    nothing else browses."""
     from websockets.sync.client import connect
 
     renewed = [time.monotonic()]
 
     def copy(source, target, renew: bool) -> None:
-        try:
+        with contextlib.suppress(Exception):  # either side closing ends the pump
             for message in source:
                 target.send(message)
                 if renew and time.monotonic() - renewed[0] >= SESSION_RENEW_S:
                     renewed[0] = time.monotonic()
-                    threading.Thread(target=_post, args=("acquire", {"runId": LEASE_ID, "agentId": AGENT_SESSION}),
-                                     daemon=True).start()
-        except Exception:  # noqa: BLE001 -- either side closing ends the pump
-            pass
-        finally:
-            for ws in (source, target):
-                with contextlib.suppress(Exception):
-                    ws.close()
+                    threading.Thread(target=_renew_session_lease, daemon=True).start()
+        for ws in (source, target):
+            with contextlib.suppress(Exception):
+                ws.close()
 
     try:
-        with connect(door, max_size=None, open_timeout=10) as outer, \
-                connect(cdp_mux.url_for(run), max_size=None, open_timeout=10) as inner:
-            back = threading.Thread(target=copy, args=(inner, outer, False), name="session-door-back", daemon=True)
-            back.start()
-            copy(outer, inner, True)
-            back.join(5)
+        with connect(door, max_size=None, open_timeout=10) as outer:
+            with _LOCK:
+                current = _PUMPS.get(run) is pump
+                pump["outer"] = outer
+            if not current:  # taken over while dialling
+                return
+            with connect(cdp_mux.url_for(run), max_size=None, open_timeout=10) as inner:
+                back = threading.Thread(target=copy, args=(inner, outer, False), name="session-door-back", daemon=True)
+                back.start()
+                copy(outer, inner, True)
+                back.join(5)
     except Exception as exc:  # noqa: BLE001 -- the class only: the door URL is a capability
         log.info("session door ended: %s", type(exc).__name__)
     finally:
         with _LOCK:
-            _SESSION_SINKS.pop(run, None)
-        _end_run(run)
+            current = _PUMPS.get(run) is pump
+            if current:
+                _PUMPS.pop(run)
+                _SESSION_SINKS.pop(run, None)
+        if current:
+            _end_run(run)
 
 
 def _session_sink(run: str, endpoint, channel):

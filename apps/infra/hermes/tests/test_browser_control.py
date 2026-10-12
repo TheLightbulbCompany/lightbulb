@@ -16,6 +16,7 @@ def clean(monkeypatch):
     monkeypatch.setattr(browser_control, "_timer", None)
     monkeypatch.setattr(browser_control, "_SINKS", {})
     monkeypatch.setattr(browser_control, "_SESSION_SINKS", {})
+    monkeypatch.setattr(browser_control, "_PUMPS", {})
     monkeypatch.setattr(browser_control, "_frames_until", 0.0)
     monkeypatch.setattr(browser_control, "_MAC_STATES", {})
     mux = {"upstream": [], "closed": [], "disconnects": 0, "casts": [], "dropped": [], "shown": [],
@@ -866,7 +867,7 @@ def test_attach_joins_the_session_to_the_bridges_lease_and_pumps_its_door(monkey
     monkeypatch.setattr(browser_control, "_post", lambda path, body, timeout=20.0: posted.append(body) or
                         {"generation": "g1", "cdpUrl": URL})
     pumped = []
-    monkeypatch.setattr(browser_control, "_start_pump", lambda run, door: pumped.append((run, door)))
+    monkeypatch.setattr(browser_control, "_start_pump", lambda run, door, pump: pumped.append((run, door)))
     assert browser_control.attach_session({"runId": SESSION_RUN, "doorUrl": DOOR, **FRAMES}) == {"status": "attached"}
     assert posted == [{"runId": "bridge", "agentId": "session"}], "the bridge's one lease, not a per-session one"
     assert SESSION_RUN in browser_control._BROWSING and SESSION_RUN in browser_control._SESSION_SINKS
@@ -877,7 +878,7 @@ def test_attach_joins_the_session_to_the_bridges_lease_and_pumps_its_door(monkey
 def test_attach_answers_starting_while_the_cloud_browser_starts(monkeypatch, clean):
     monkeypatch.setattr(browser_control, "HOOK_BUDGET_S", 0)
     monkeypatch.setattr(browser_control, "_post", lambda path, body, timeout=20.0: {"status": "starting"})
-    monkeypatch.setattr(browser_control, "_start_pump", lambda run, door: pytest.fail("pumped"))
+    monkeypatch.setattr(browser_control, "_start_pump", lambda run, door, pump: pytest.fail("pumped"))
     assert browser_control.attach_session({"runId": SESSION_RUN, "doorUrl": DOOR, **FRAMES}) == {"status": "starting"}
     assert SESSION_RUN not in browser_control._BROWSING
 
@@ -900,7 +901,7 @@ def test_attach_refuses_anything_but_a_session_run_and_a_backend_door(clean, bad
 
 
 def test_a_door_that_will_not_connect_ends_the_session_run(monkeypatch, clean):
-    import websockets.sync.client as client
+    from websockets.sync import client
 
     def refuse(*args, **kwargs):
         raise OSError("refused")
@@ -908,13 +909,16 @@ def test_a_door_that_will_not_connect_ends_the_session_run(monkeypatch, clean):
     monkeypatch.setattr(client, "connect", refuse)
     browser_control._BROWSING[SESSION_RUN] = set()
     browser_control._SESSION_SINKS[SESSION_RUN] = print
-    browser_control._pump_door(SESSION_RUN, DOOR)
+    pump = browser_control._PUMPS[SESSION_RUN] = {"outer": None}
+    browser_control._pump_door(SESSION_RUN, DOOR, pump)
     assert SESSION_RUN not in browser_control._BROWSING and SESSION_RUN not in browser_control._SESSION_SINKS
     assert SESSION_RUN in clean["closed"]
 
 
 def test_a_browser_tab_beat_casts_only_that_sessions_tab(clean):
-    sink = lambda frame: None  # noqa: E731
+    def sink(frame):
+        return None
+
     browser_control._SESSION_SINKS[SESSION_RUN] = sink
     assert browser_control.session_frames(SESSION_RUN, 45) == 1
     assert clean["casts"] == [(SESSION_RUN, sink, 45, True)]
@@ -934,3 +938,46 @@ def test_the_session_sink_publishes_an_image_on_the_sessions_own_channel(monkeyp
     assert {**event["payload"], "seq": 0} == {"sessionId": SESSION_ID, "kind": "image", "data": "/9j/", "w": 480, "h": 300, "seq": 0}
     assert event["payload"]["seq"] > 1_700_000_000_000, "epoch ms: a restarted cast never goes backwards"
     assert browser_control._session_sink(SESSION_RUN, FRAMES["frameEndpoint"], "/ws/ws-1/session-frames/other") is None
+
+
+def test_a_second_attach_takes_the_run_over_and_the_old_door_ending_leaves_it(monkeypatch, clean):
+    from websockets.sync import client
+
+    class Door:
+        def __init__(self):
+            self.closed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def __iter__(self):
+            return iter(())
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(browser_control, "_post", lambda path, body, timeout=20.0: {"generation": "g1", "cdpUrl": URL})
+    pumps = []
+    monkeypatch.setattr(browser_control, "_start_pump", lambda run, door, pump: pumps.append(pump))
+    attach = {"runId": SESSION_RUN, "doorUrl": DOOR, **FRAMES}
+    assert browser_control.attach_session(attach) == {"status": "attached"}
+    first = pumps[0]
+    first["outer"] = old_door = Door()
+    assert browser_control.attach_session(attach) == {"status": "attached"}
+    assert old_door.closed, "the old pump's door is closed so it ends"
+    monkeypatch.setattr(client, "connect", lambda *args, **kwargs: Door())
+    browser_control._pump_door(SESSION_RUN, DOOR, first)  # the old pump ends
+    assert SESSION_RUN in browser_control._BROWSING and SESSION_RUN in browser_control._SESSION_SINKS
+    assert browser_control._PUMPS[SESSION_RUN] is pumps[1] and clean["closed"] == []
+    browser_control._pump_door(SESSION_RUN, DOOR, pumps[1])  # the current one ends the run
+    assert SESSION_RUN not in browser_control._BROWSING and SESSION_RUN not in browser_control._PUMPS
+    assert clean["closed"] == [SESSION_RUN]
+
+
+def test_the_pumps_lease_renew_adopts_a_new_generation(monkeypatch, clean):
+    monkeypatch.setattr(browser_control, "_post", lambda path, body, timeout=20.0: {"generation": "g2", "cdpUrl": URL})
+    browser_control._renew_session_lease()
+    assert clean["upstream"] == [(URL, "g2")] and browser_control._LEASE["generation"] == "g2"

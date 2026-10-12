@@ -185,6 +185,13 @@ class PendingApproval(ContractModel):
     full: bool = False
     input: dict[str, Any] | None = None
 
+    @model_validator(mode="after")
+    def full_needs_input(self):
+        # A viewer cannot have been shown a call the prompt does not carry: it stays deny-only.
+        if not self.input:
+            self.full = False
+        return self
+
     @model_serializer(mode="wrap")
     def wire(self, handler, info):
         return _drop_none(self, handler(self), info, ("input",))

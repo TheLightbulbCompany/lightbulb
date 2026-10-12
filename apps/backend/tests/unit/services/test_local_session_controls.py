@@ -281,6 +281,32 @@ async def test_a_shown_digest_never_unlocks_a_prompt_that_is_not_full(transport)
     assert (await service.submit_command(ALICE, None, sid, approve(decision="deny"))).decision == "deny"
 
 
+@pytest.mark.asyncio
+async def test_a_full_flag_without_the_call_stays_deny_only(transport):
+    sid = await start(transport)
+    for index, empty in enumerate(({"input": None}, {"input": {}})):
+        prompt = full_prompt(**empty)
+        if empty["input"] is None:
+            del prompt["tool"]["input"]["input"]
+        await waiting(transport, sid, prompt, seq=index)
+        assert (await service.get_session(BOB, sid)).model_dump(by_alias=True)["pendingApproval"]["full"] is False
+        with pytest.raises(ApiProblem, match="terminal"):
+            await service.submit_command(ALICE, None, sid, approve(requestId=f"bad-{index}", shownDigest=DIGEST))
+
+
+@pytest.mark.asyncio
+async def test_dispatch_refuses_a_full_allow_stored_without_its_shown_digest(transport):
+    sid = await start(transport)
+    await waiting(transport, sid, full_prompt())
+    await service.submit_command(ALICE, None, sid, approve(shownDigest=DIGEST))
+    stored = await repo.get_command(OWNER, sid, "approve-1")
+    stripped = {k: v for k, v in stored.items() if k != "approvalShownDigest"}
+    await repo.replace_command(stored, {**stripped, "revision": "r-stripped"})
+    await relay(transport).dispatch_session(OWNER, sid)
+    assert transport[3] == []
+    assert (await repo.get_command(OWNER, sid, "approve-1"))["state"] == "rejected"
+
+
 def test_a_shown_digest_belongs_to_approve_only():
     with pytest.raises(ValueError):
         service.LocalSessionCommand(requestId="r", expectedGeneration="g", kind="send", text="x", shownDigest=DIGEST)

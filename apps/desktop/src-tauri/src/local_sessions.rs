@@ -47,11 +47,42 @@ pub fn normalize_public_message(provider: &str, session: &str, row: &Value) -> R
         "codex" => codex::normalize(session, row),
         _ => Err("unsupported provider".into()),
     }
+    .map(|mut events| {
+        events.iter_mut().filter(|e| e.get("tool").is_some()).for_each(fit_tool);
+        events
+    })
+}
+
+/// A tool event must fit one 16 KiB wire frame with batch overhead: halve the larger of its
+/// input and result until it does, marking the event truncated; the text (a preview, already
+/// bounded) is cut only once both are small. Every part reaches nothing within a bounded number
+/// of rounds, so the loop always ends under the limit.
+pub(crate) fn fit_tool(e: &mut Value) {
+    let size = |v: &Value| ascii_wire_len(v).unwrap_or(usize::MAX);
+    let mut cap = MAX_TOOL_RESULT;
+    for _ in 0..16 {
+        if size(e) <= TOOL_EVENT_WIRE {
+            return;
+        }
+        cap = (cap / 2).max(32);
+        let (input, result, text) = (size(&e["tool"]["input"]), size(&e["tool"]["result"]), size(&e["text"]));
+        if input.max(result) <= 1024 && text > input.max(result) {
+            let (cut, _) = bounded(e["text"].as_str().unwrap_or(""), cap);
+            e["text"] = json!(format!("{cut}…"));
+        } else {
+            let key = if input >= result { "input" } else { "result" };
+            let (v, _) = bound_json(e["tool"][key].take(), cap);
+            e["tool"][key] = v;
+        }
+        e["truncated"] = json!(true);
+    }
 }
 
 pub(crate) const MAX_TEXT: usize = 12 * 1024;
-pub(crate) const MAX_TOOL_INPUT: usize = 4 * 1024;
+pub(crate) const MAX_TOOL_INPUT: usize = 8 * 1024;
 pub(crate) const MAX_TOOL_RESULT: usize = 12 * 1024;
+/// The ASCII-wire size one tool event may reach, leaving batch overhead under the 16 KiB frame.
+pub(crate) const TOOL_EVENT_WIRE: usize = 15_000;
 pub(crate) const PREVIEW_LINES: usize = 20;
 // One native JSONL row may contain duplicated command output or private compaction data.
 pub const MAX_JSONL_ROW: usize = 4 * 1024 * 1024;
@@ -125,6 +156,174 @@ fn looks_secret(word: &str) -> bool {
             && word.len() >= 30)
         || ((word.starts_with("xoxb-") || word.starts_with("xoxp-") || word.starts_with("xoxa-"))
             && word.len() >= 20)
+        || (["sk_live_", "sk_test_", "rk_live_", "rk_test_", "whsec_"].iter().any(|p| word.starts_with(p))
+            && word.len() >= 20)
+        || (word.starts_with("AIza") && word.len() == 39 && tail_ok(&word[4..]))
+        || looks_jwt(word)
+}
+
+/// A JWT: `eyJ…` header, then payload and signature, base64url, dot-separated. Caught as a word,
+/// so a dotted value an assignment keeps as code (`token = eyJ….eyJ….sig`) is still redacted.
+fn looks_jwt(word: &str) -> bool {
+    let parts: Vec<&str> = word.split('.').collect();
+    word.starts_with("eyJ")
+        && word.len() >= 20
+        && parts.len() == 3
+        && parts[..2].iter().all(|p| !p.is_empty())
+        && parts
+            .iter()
+            .all(|p| p.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')))
+}
+
+/// The secret-bearing names (a regex alternation, matched case-insensitively anywhere in a name).
+/// A line where one is followed by `=`, `:`, `:=` or `=>` is redacted from the separator on
+/// (`redact_lines`), and `approval::shown_input` never calls an input that mentions one `full`.
+/// `authorization` covers `proxy-authorization`; `cookie` covers `set-cookie`. `auth` is
+/// `AUTH_NAME`: it counts only as a whole name segment.
+pub(crate) const SECRET_NAMES: &str =
+    "password|passwd|secret|token|api[-_]?key|private[-_]?key|access[-_]?key|database_url|dsn|credential|authorization|cookie";
+
+/// `auth` as a whole name segment (split at non-alphanumerics and at a lower-to-upper camelCase
+/// step): `auth`, `X-Auth`, `AUTH_KEY`, `authToken`, `basicAuth` -- not `author`, `oauth`, `OAuth`,
+/// `authentic`, `AUTHOR`. The start consumes the character before it; the end is the caller's.
+const AUTH_START: &str = r"(?-i:(?:^|[^A-Za-z0-9])[aA]|[a-z0-9]A)[uU][tT]";
+
+/// `scheme://user:password@` -- the password part. Greedy to the last `@` before a `/` or space.
+pub(crate) const URL_USERINFO: &str = r"(?P<head>[A-Za-z][A-Za-z0-9+.-]*://[^\s:/@]*:)[^\s/]+@";
+
+/// Whether `text` names a secret anywhere: a `SECRET_NAMES` term or a whole `auth` segment.
+pub(crate) fn names_secret(text: &str) -> bool {
+    static NAMED: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(&format!(
+            r"(?i){SECRET_NAMES}|{AUTH_START}(?-i:h(?:$|[^a-z0-9])|H(?:$|[^A-Za-z0-9]))"
+        ))
+        .expect("secret names")
+    });
+    NAMED.is_match(text)
+}
+
+/// Exactly an unquoted all-caps env reference (`$NAME`, `${NAME}`), optionally after `Bearer `.
+fn env_ref(value: &str) -> bool {
+    static KEEP: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"^(?:Bearer[ \t]+)?(?:\$[A-Z_][A-Z0-9_]*|\$\{[A-Z_][A-Z0-9_]*\})$").expect("env pattern")
+    });
+    KEEP.is_match(value)
+}
+
+/// The quote a line leaves open, so a value that opens one is redacted to where it closes.
+#[derive(Clone, Copy, PartialEq)]
+enum Quote {
+    None,
+    One(u8),
+    Three(u8),
+}
+
+/// The quote state after `line`, starting from `q`. A backslash skips the next byte, which can only
+/// keep a quote open longer (more redaction), never close one early. O(n).
+fn scan_quotes(line: &str, mut q: Quote) -> Quote {
+    let b = line.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        match q {
+            Quote::None if matches!(c, b'"' | b'\'') && b[i..].starts_with(&[c, c, c]) => {
+                q = Quote::Three(c);
+                i += 3;
+                continue;
+            }
+            Quote::None if matches!(c, b'"' | b'\'' | b'`') => q = Quote::One(c),
+            Quote::One(_) | Quote::Three(_) if c == b'\\' => {
+                i += 2;
+                continue;
+            }
+            Quote::One(o) if c == o => q = Quote::None,
+            Quote::Three(o) if b[i..].starts_with(&[o, o, o]) => {
+                q = Quote::None;
+                i += 3;
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    q
+}
+
+/// The most lines one secret line's value is assumed to run on for.
+const MAX_CONTINUATION: usize = 200;
+
+/// Line-level redaction. On a line where a secret name (`SECRET_NAMES` or `AUTH_START`, inside a
+/// longer name like `DB_PASSWORD` or `X-Api-Key`, optionally closed by a quote and/or `]` as in
+/// `cfg["password"]`) is followed by `=`, `:`, `:=` or `=>`, or is a `--name value` flag, everything
+/// after the separator becomes "[redacted]" -- unless it is exactly an unquoted all-caps env
+/// reference (`$NAME`, `${NAME}`, optionally after `Bearer `, optionally before one `;`/`,`), or
+/// empty. No other value is kept: code, placeholders and templates are redacted too (accepted).
+/// The value may run on, so the following lines are redacted too: while blank or more indented
+/// than the secret line when the value is YAML-shaped (empty, a block header with any tag, anchor,
+/// modifier or comment, or a line with no `(`, `{`, `)`), while a quote opened after the separator
+/// is still open, or after a line ending in `\` -- at most `MAX_CONTINUATION` lines. One pass, O(n).
+fn redact_lines(text: &str) -> String {
+    static KEY: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        // `name` [closing quote/bracket] separator, or a `--name value` flag. After `auth` comes a
+        // camelCase step, a `_ . -` and more name, or nothing (then the separator).
+        let tail = r"(?:(?-i:h[A-Z]|[hH][_.\-])[a-z0-9_.-]*|[hH])";
+        regex::Regex::new(&format!(
+            r#"(?i)(?:(?:{SECRET_NAMES})[a-z0-9_.-]*|{AUTH_START}{tail})["']?\]?[ \t]*(?:=>|:=|=|:)|--(?:[a-z0-9_.-]*?(?:{SECRET_NAMES})[a-z0-9_.-]*|(?:[a-z0-9_.-]*[_.\-])?[aA][uU][tT]{tail})[ \t]+"#
+        ))
+        .expect("secret line pattern")
+    });
+    static YAML: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        // Empty, a comment, a tag or anchor, a `|`/`>` block header: the value is on the next lines.
+        regex::Regex::new(r"^(?:[!&][^ \t]*[ \t]*)*(?:[|>][-+0-9]*)?[ \t]*(?:#.*)?$").expect("yaml header")
+    });
+    let mut out = String::with_capacity(text.len());
+    // The last secret line's indent, the quote it left open, its trailing `\`, and lines left.
+    let (mut block, mut quote, mut backslash, mut left) = (None::<usize>, Quote::None, false, 0usize);
+    for line in text.split_inclusive('\n') {
+        let body = line.trim_end_matches(['\n', '\r']);
+        let eol = &line[body.len()..];
+        let indent = body.len() - body.trim_start_matches([' ', '\t']).len();
+        let blank = body.trim().is_empty();
+        if left > 0 && (quote != Quote::None || backslash || block.is_some_and(|k| blank || indent > k)) {
+            left -= 1;
+            quote = scan_quotes(body, quote);
+            backslash = body.ends_with('\\');
+            out.push_str(&body[..indent]);
+            if !blank {
+                out.push_str("[redacted]");
+            }
+            out.push_str(eol);
+            continue;
+        }
+        left = 0;
+        let Some(m) = KEY.find(body) else {
+            out.push_str(line);
+            continue;
+        };
+        let rest = &body[m.end()..];
+        let value = rest.trim();
+        let value = value.strip_suffix([';', ',']).unwrap_or(value).trim_end();
+        if env_ref(value) {
+            out.push_str(line);
+            continue;
+        }
+        // Indented lines continue only a YAML-shaped value, not a `fn f(token: &str) {` body; a
+        // quote counts from the separator on, so an apostrophe before the name opens nothing.
+        // A value that opens a bracket (`"secret": {`, `decrypt(`) runs on into its indented lines.
+        let opens = !value.contains(')') && value.ends_with(['{', '[', '(']);
+        let yaml = opens || YAML.is_match(value) || !body.contains(['(', '{', ')']);
+        (block, quote, backslash, left) =
+            (yaml.then_some(indent), scan_quotes(rest, Quote::None), body.ends_with('\\'), MAX_CONTINUATION);
+        if value.is_empty() {
+            out.push_str(line);
+            continue;
+        }
+        let lead = rest.len() - rest.trim_start_matches([' ', '\t']).len();
+        out.push_str(&body[..m.end() + lead]);
+        out.push_str("[redacted]");
+        out.push_str(eol);
+    }
+    out
 }
 
 fn redact_pem(text: &str) -> String {
@@ -146,7 +345,19 @@ fn redact_pem(text: &str) -> String {
     out
 }
 
-/// Credential-shaped tokens become "[redacted]". A backstop, never a guarantee.
+/// Credential-shaped text becomes "[redacted]": PEM blocks, URL userinfo passwords, secret-named
+/// lines and what follows them (`redact_lines`), then provider-key-shaped words, JWTs and a long word
+/// after `Bearer`. A backstop, never a guarantee. Known ceiling: a secret under a name outside
+/// `SECRET_NAMES` (`pass=`, `pwd=`, `key=` -- deliberately not added), a name split or encoded
+/// (`pass%77ord=`), a value with no name at all (`curl -u bob:hunter2`, `mysql -phunter2`, a bare
+/// argument), XML (`<password>hunter2</password>`), a YAML list at the key's own indent
+/// (`password:\n- hunter2`), a bracket whose arguments are not indented (`decrypt(\n"hunter2")`), a
+/// string holding only the continuation lines of a multi-line secret whose name line is elsewhere
+/// (an `Edit`'s `old_string`/`new_string`), and a value that runs on past `MAX_CONTINUATION` lines
+/// or onto a line no more indented than its name with no open quote or `\`. Structured values are
+/// redacted by key as well (`bound_json`). Approvals add `shown_input`'s check on
+/// top, so a call that names a secret or carries URL userinfo is never `full`; a nameless secret in
+/// an approval still can be.
 pub(crate) fn redact(text: &str) -> String {
     fn flush(word: &mut String, previous: &mut String, out: &mut String) {
         if word.is_empty() {
@@ -160,7 +371,10 @@ pub(crate) fn redact(text: &str) -> String {
         });
         *previous = std::mem::take(word);
     }
+    static USERINFO: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(URL_USERINFO).expect("userinfo pattern"));
     let text = redact_pem(text);
+    let text = redact_lines(&USERINFO.replace_all(&text, "${head}[redacted]@"));
     let mut out = String::with_capacity(text.len());
     let (mut word, mut previous) = (String::new(), String::new());
     for c in text.chars() {
@@ -186,6 +400,29 @@ pub(crate) fn bound_json(mut value: Value, max: usize) -> (Value, bool) {
             _ => {}
         }
     }
+    /// A value under a secret-named key (`{"password": …}`, `{"Authorization": …}`) goes whole,
+    /// whatever its type, unless it is empty or an all-caps env reference.
+    fn by_key(v: &mut Value) {
+        match v {
+            Value::Array(a) => a.iter_mut().for_each(by_key),
+            Value::Object(o) => o.iter_mut().for_each(|(k, x)| {
+                let kept = match &*x {
+                    Value::Null => true,
+                    Value::String(s) => s.is_empty() || env_ref(s),
+                    Value::Array(a) => a.is_empty(),
+                    Value::Object(o) => o.is_empty(),
+                    _ => false,
+                };
+                if !names_secret(k) {
+                    by_key(x);
+                } else if !kept {
+                    *x = json!("[redacted]");
+                }
+            }),
+            _ => {}
+        }
+    }
+    by_key(&mut value);
     walk(&mut value, &|s| *s = redact(s));
     let mut per = max;
     let mut shrunk = false;
@@ -1340,7 +1577,7 @@ fn split_text(event: &Value) -> Vec<Value> {
         // of a non-ASCII char, so a CJK result can still build an event that never fits
         // alone. Shrink the assembled event against the wire itself.
         let mut budget = 8192;
-        while budget >= 64 && ascii_wire_len(&single).is_ok_and(|wire| wire > 15_000) {
+        while budget >= 64 && ascii_wire_len(&single).is_ok_and(|wire| wire > TOOL_EVENT_WIRE) {
             budget /= 2;
             single["text"] = json!(bounded(single["text"].as_str().unwrap_or(""), budget).0);
             if let Some(result) = single.pointer_mut("/tool/result") {
@@ -1443,7 +1680,8 @@ fn unsendable(original: &Value) -> Value {
 /// survive one of the two showing up without a tool-use id.
 ///
 /// `summary` is the REDACTED reason: a command line can hold a token, and this
-/// is persisted to disk.
+/// is persisted to disk. `exact` (on `held`) is the legacy flag that the summary
+/// is the whole call; `full` that `input` is.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct WaitingPrompt {
     #[serde(default)]
@@ -1457,6 +1695,16 @@ struct WaitingPrompt {
     held: Option<approval::Held>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     private_send: Option<Value>,
+    /// The held prompt's whole input (bounded, redacted), read from the hook's
+    /// private side file and digest-checked; shipped only to a relay that reads
+    /// `approvalInput`. `held.full` says it IS the raw call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    input: Option<Value>,
+    /// A row with `full: true` and its input actually went to the relay. Allow
+    /// rides on this, not on `held.full`: a row downgraded for size, or sent to
+    /// a relay without `approvalInput`, showed nobody the whole call.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    shipped_full: bool,
 }
 
 impl WaitingPrompt {
@@ -1957,7 +2205,7 @@ impl Mirror {
     }
 }
 
-fn ascii_wire_len(value: &Value) -> Result<usize> {
+pub(crate) fn ascii_wire_len(value: &Value) -> Result<usize> {
     // The backend uses json.dumps(ensure_ascii=True); count surrogate pairs too.
     Ok(serde_json::to_string(value)
         .map_err(|e| e.to_string())?
@@ -3240,11 +3488,184 @@ mod tests {
         assert!(mirror.queue.is_empty());
     }
 
+    /// Secrets (each `hunter2`) that value-level redaction let through; `approval` reuses them.
+    pub(crate) const LEAKS: &[&str] = &[
+        "token={{a}}hunter2{{b}}",
+        "password = \"\"\"hunter2\"\"\"",
+        "password = \"\" + \"hunter2\"",
+        "password = \"abc\nhunter2\"\n",
+        "password = \"\"\"\nhunter2\n\"\"\"\n",
+        "password = '''abc\n\nhunter2'''",
+        "token = `abc\nhunter2`",
+        "password: abc\n  hunter2\n",
+        "password: |  # c\n  hunter2\n",
+        "password: !!binary |\n  hunter2\n",
+        "password: &a |\n  hunter2\n",
+        "- password: |\n    hunter2\n",
+        "items:\n  - api_key: >-\n      x\n\n      hunter2\n",
+        "token = abc\\\nhunter2\n",
+        "Authorization: X-Api-Token hunter2",
+        "Authorization: AWS4-HMAC-SHA256 Credential=AKID/x, SignedHeaders=host, Signature=hunter2",
+        "-H 'Authorization: Basic hunter2'",
+        "{\"Authorization\": \"Digest hunter2\"}",
+        "Proxy-Authorization: hunter2",
+        "curl -H 'x-api-key: hunter2' https://a",
+        "Cookie: session=hunter2",
+        "set-cookie: sid=hunter2; Path=/",
+        "DB_PASSWORD=p@ss;hunter2",
+        "PASSWORD==hunter2",
+        "export CLIENT_SECRET=hunter2",
+        "\"database_url\" => \"postgres://u:hunter2@db/app\",",
+        "token := hunter2",
+        "password=${PREFIX}hunter2",
+        "api_key: \"$hunter2\"",
+        "Authorization: Bearer $TOKEN hunter2",
+        "\"secret\": {\n  \"pass\": \"hunter2\"\n}",
+        "password = decrypt(\n    \"hunter2\",\n)",
+        "{\"api_keys\": [\n  \"hunter2\"\n]}",
+        "cfg = {'token': (\n    'hunter2'\n)}",
+        "say \"x token: \"abc\nhunter2\"\n",
+        "cfg[\"password\"] = \"hunter2\"",
+        "headers['Authorization'] = 'Basic hunter2'",
+        "env[DB_PASSWORD]=hunter2",
+        "cli --token hunter2 --verbose",
+        "cli --password=hunter2",
+        "cli --db-password hunter2",
+        "cli --auth hunter2",
+        "auth: hunter2",
+        "X-Auth: hunter2",
+        "authToken = hunter2",
+        "basicAuth: hunter2",
+        "AUTH_KEY=hunter2",
+        "oauth_token=hunter2",
+        "git clone https://bob:hunter2@github.com/a/b",
+        "see postgres://u:p@ss:hunter2@db/app for details",
+    ];
+
+    /// Structured inputs whose secret sits under a named key, as a bare value.
+    pub(crate) const KEYED: &[&str] = &[
+        r#"{"password":"hunter2"}"#,
+        r#"{"headers":{"Authorization":"Basic hunter2"}}"#,
+        r#"{"cfg":{"api_key":["hunter2"]}}"#,
+        r#"{"db":{"credentials":{"user":"a","pass":"hunter2"}}}"#,
+        r#"{"token":"hunter2"}"#,
+        r#"{"items":[{"x-auth":{"v":"hunter2"}}],"pin":1234}"#,
+        r#"{"secret":4242}"#,
+    ];
+
+    #[test]
+    fn local_sessions_bound_json_redacts_by_key() {
+        for raw in KEYED {
+            let (v, _) = bound_json(serde_json::from_str(raw).unwrap(), 4096);
+            let text = v.to_string();
+            assert!(!text.contains("hunter2") && !text.contains("4242") && text.contains("[redacted]"), "{text}");
+        }
+        assert_eq!(
+            bound_json(json!({"items": [{"api_key": ["x"]}], "author": "Jane", "n": 1}), 4096).0,
+            json!({"items": [{"api_key": "[redacted]"}], "author": "Jane", "n": 1})
+        );
+        let kept = json!({"token": "$TOKEN", "password": "", "secret": null, "auth": {}, "API_KEY": "${API_KEY}"});
+        assert_eq!(bound_json(kept.clone(), 4096).0, kept);
+    }
+
+    #[test]
+    fn local_sessions_redact_catches_provider_keys_and_secret_lines() {
+        let aws = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+        let leaked = [
+            concat!("sk_live_", "abcdefghijklmnopqrstuvwx"),
+            concat!("rk_test_", "abcdefghijklmnopqrstuvwx"),
+            concat!("whsec_", "abcdefghijklmnopqrstuvwx"),
+            "sk-ant-api03-abcdefghijklmnopqrstuvwxyz",
+            concat!("AI", "za", "SyA1234567890abcdefghijklmnopqrstuv"),
+            aws,
+            "hunter2pass",
+            "postgres://u:pw@db.internal/app",
+        ];
+        let text = format!(
+            "STRIPE={}\nR={}\nW={}\nA={}\nG={}\naws_secret_access_key = {}\nDB_PASSWORD=hunter2pass\nDATABASE_URL=postgres://u:pw@db.internal/app\n",
+            leaked[0], leaked[1], leaked[2], leaked[3], leaked[4], aws
+        );
+        let json_cfg = r#"{"client_secret": "hunter2pass", "api_key": 'hunter2pass'}"#;
+        for clean in [redact(&text), redact(&format!("export DB_PASSWORD=hunter2pass && curl -H x {}", leaked[0])), redact(json_cfg)] {
+            for secret in leaked {
+                assert!(!clean.contains(secret), "{secret} leaked in {clean}");
+            }
+        }
+        assert!(redact(&text).contains("DB_PASSWORD=[redacted]\n"), "the name stays");
+        assert_eq!(redact(json_cfg), r#"{"client_secret": [redacted]"#);
+        // Everything after the separator goes, code included; continuation lines keep their indent.
+        assert_eq!(redact("const token = getToken(req);\nnext()"), "const token = [redacted]\nnext()");
+        assert_eq!(
+            redact("db:\n  password: |\n    hunter2\n\n    more\n  user: bob\nkey: >-\n  x\n"),
+            "db:\n  password: [redacted]\n    [redacted]\n\n    [redacted]\n  user: bob\nkey: >-\n  x\n"
+        );
+        assert_eq!(redact("password = \"a\nb\"\nnext = 1"), "password = [redacted]\n[redacted]\nnext = 1");
+        assert_eq!(redact("{\n  \"token\": \"x\",\n  \"user\": \"bob\"\n}"), "{\n  \"token\": [redacted]\n  \"user\": \"bob\"\n}");
+        // Over-redaction is accepted: no keep form but an all-caps env reference.
+        for text in ["TOKEN=changeme", "SECRET=<your-secret>", "max_tokens: 4096", "if token == expected:",
+            "TOKEN=\"{{ secrets.TOKEN }}\"", "{\"api_key\": ${API_KEY}}", "TOKEN='${API_TOKEN}'"] {
+            assert!(redact(text).ends_with("[redacted]"), "{text}");
+        }
+        // Prose, a name with no separator, an empty value, and a source file with no secret names stay.
+        for kept in [
+            "The token expires after an hour, so refresh the access token before each secret rotation.",
+            "key = os.environ[\"API_KEY\"]\nAPI_KEY=\nX=1",
+            "fn main() {\n    let items = vec![1, 2, 3];\n    for x in &items {\n        println!(\"{x}: ok\");\n    }\n    let url = \"https://example.com/?a=b\";\n}\n",
+            "Authorization: Bearer $TOKEN", "X_API_KEY=$X_API_KEY", "export TOKEN=${TOKEN};", "api-key: ${API_KEY},",
+        ] {
+            assert_eq!(redact(kept), kept);
+        }
+    }
+
+    #[test]
+    fn local_sessions_redact_catches_every_known_leak_in_linear_time() {
+        for leak in LEAKS {
+            let clean = redact(leak);
+            assert!(!clean.contains("hunter2") && clean.contains("[redacted]"), "{leak:?} -> {clean:?}");
+        }
+        let jwt = concat!("ey", "JhbGciOiJIUzI1NiJ9", ".", "ey", "JzdWIiOiIxMjM0NTY3ODkwIn0", ".", "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U");
+        for text in [format!("x {jwt} y"), format!("ID_TOKEN={jwt}")] {
+            assert!(!redact(&text).contains("eyJzdWIi"));
+        }
+        // A quote counts from the separator: an apostrophe before the name opens nothing.
+        assert_eq!(redact("# the user's token: abc\nnext line"), "# the user's token: [redacted]\nnext line");
+        // Indented lines continue a YAML-shaped value only, not a function body.
+        for (text, clean) in [
+            ("fn f(token: &str) {\n    body();\n}", "fn f(token: [redacted]\n    body();\n}"),
+            ("def f(token: str):\n    return 1", "def f(token: [redacted]\n    return 1"),
+            ("password: !!binary |\n  aGk=\nnext: 1", "password: [redacted]\n  [redacted]\nnext: 1"),
+            ("password: # c\n  hunter2\nnext: 1", "password: [redacted]\n  [redacted]\nnext: 1"),
+            ("token: x\n  y", "token: [redacted]\n  [redacted]"),
+        ] {
+            assert_eq!(redact(text), clean);
+        }
+        // `auth` only as a whole name segment.
+        for kept in ["author: Jane", "Author = x", "AUTHOR=x", "oauth: x", "OAuth: x", "authentic = 1", "--author me"] {
+            assert_eq!(redact(kept), kept);
+        }
+        // URL userinfo: the password goes, the user and host stay.
+        assert_eq!(redact("git clone https://bob:p@ss@host/x"), "git clone https://bob:[redacted]@host/x");
+        assert_eq!(redact("https://host/a:b@c"), "https://host/a:b@c");
+        // The continuation stops at a line no more indented than the name, or after 200 lines.
+        assert_eq!(redact("password: x\n  y\nuser: bob"), "password: [redacted]\n  [redacted]\nuser: bob");
+        let open = format!("password = \"x\n{}after", "line\n".repeat(MAX_CONTINUATION));
+        assert!(redact(&open).ends_with("[redacted]\nafter"));
+        // Linear on a 4 MiB input full of secret lines, continuations and open quotes.
+        let unit = "token=a\n  b\nplain: 1\npassword = \"x\ny\"\nk = v \\\n";
+        let big = unit.repeat(4 * 1024 * 1024 / unit.len());
+        let started = std::time::Instant::now();
+        let clean = redact(&big);
+        redact(&format!("token={}", "a".repeat(4 * 1024 * 1024)));
+        redact(&"dsn=f()".repeat(600_000));
+        assert!(started.elapsed() < std::time::Duration::from_secs(3), "{:?}", started.elapsed());
+        assert!(clean.starts_with("token=[redacted]\n  [redacted]\nplain: 1\npassword = [redacted]\n[redacted]\nk = v \\\n"));
+    }
+
     #[test]
     fn local_sessions_helpers_bound_preview_and_redact() {
         assert_eq!(bounded("héllo", 3), ("hé".into(), true));
         assert_eq!(preview("a\nb\nc", 2), ("a\nb".into(), 3));
-        let leaked = "token AKIAIOSFODNN7EXAMPLE and sk-abcdefghijklmnopqrstuvwxyz12 Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc plain sk-short";
+        let leaked = concat!("token AKIAIOSFODNN7EXAMPLE and sk-abcdefghijklmnopqrstuvwxyz12 plain sk-short Authorization: Bearer ", "ey", "JhbGciOiJIUzI1NiJ9.abc");
         let clean = redact(leaked);
         assert!(
             !clean.contains("AKIAIOSFODNN7EXAMPLE")

@@ -183,7 +183,9 @@ pub(crate) fn build_release_datagram(provider: &str, stdin_json: &Value, id: &st
 fn build(provider: &str, stdin_json: &Value, held: Option<&super::approval::Held>, source: Option<HookProcess>) -> Vec<u8> {
     let s = |k: &str| stdin_json[k].as_str().map(str::to_owned);
     // Summarized, never forwarded: `tool_input` is unbounded and holds file
-    // contents, patches and whatever a command line carries.
+    // contents, patches and whatever a command line carries. A held prompt's
+    // bounded, redacted input goes through the private side file instead
+    // (`approval::hold`), digest-bound; this datagram carries only the summary.
     let waiting = stdin_json["tool_name"].as_str().map(|name| {
         let input = &stdin_json["tool_input"];
         let cwd = stdin_json["cwd"].as_str();
@@ -319,7 +321,7 @@ pub(crate) fn parse_datagram(bytes: &[u8]) -> Option<HookEvent> {
                         input_digest: String::new(),
                         reply: String::new(),
                         exact: false,
-                        modes: vec![],
+                        modes: vec![], full: false,
                     })
             }),
     })
@@ -550,7 +552,7 @@ mod tests {
         let stdin = json!({"session_id":"abc", "hook_event_name":"PermissionRequest",
             "pid": 2, "birth_micros": 1, "sourceProcess": {"pid": 2, "birthMicros": 1}});
         let held = super::super::approval::Held { id: "appr-0123456789abcdef0123456789abcdef".into(),
-            input_digest: "d".repeat(64), reply: "/tmp/reply.sock".into(), exact: true, modes: vec![] };
+            input_digest: "d".repeat(64), reply: "/tmp/reply.sock".into(), exact: true, modes: vec![], full: false };
         for bytes in [build_datagram("codex", &stdin), build_held_datagram("codex", &stdin, &held),
             build_release_datagram("codex", &stdin, &held.id)] {
             let parsed = parse_datagram(&bytes).unwrap();
@@ -580,7 +582,7 @@ mod tests {
         let source = hook_process(&provider).expect("actual native provider ancestor");
         let native = super::super::process(source.pid).unwrap();
         let held = super::super::approval::Held { id: "appr-0123456789abcdef0123456789abcdef".into(),
-            input_digest: "d".repeat(64), reply: "/tmp/reply.sock".into(), exact: true, modes: vec![] };
+            input_digest: "d".repeat(64), reply: "/tmp/reply.sock".into(), exact: true, modes: vec![], full: false };
         for bytes in [build_datagram(&provider, &stdin), build_held_datagram(&provider, &stdin, &held),
             build_release_datagram(&provider, &stdin, &held.id)] {
             assert_eq!(parse_datagram(&bytes).unwrap().source_process, Some(source.clone()));
@@ -754,7 +756,7 @@ mod tests {
         let held = super::super::approval::Held {
             id: "appr-0123456789abcdef0123456789abcdef".into(),
             input_digest: "d".repeat(64), reply: "/tmp/appr.sock".into(),
-            exact: true, modes: vec![],
+            exact: true, modes: vec![], full: false,
         };
         let prompt = parse_datagram(&build_held_datagram("claude", &stdin, &held)).unwrap();
         assert_eq!(prompt.waiting_text.as_deref(), Some("receipt e12fd3e8-32ca-4b65-8eaf-ab979e3c9449"));

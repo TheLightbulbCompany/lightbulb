@@ -196,8 +196,13 @@ fn visible(v: &Value) -> bool {
 }
 
 /// What a remote approver is shown, and whether it is the whole raw call (then its digest equals
-/// `digest(raw)` and a client that hashes what it displayed can prove it saw all of it).
+/// `digest(raw)` and a client that hashes what it displayed can prove it saw all of it). A call
+/// that names a secret anywhere (`SECRET_NAMES`, in a key or a value) is never full: `redact` is a
+/// backstop, so a call that touches credentials is approved at the terminal.
 pub(crate) fn shown_input(tool: &str, raw: &Value) -> (Value, bool) {
+    static NAMED: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(&format!("(?i){}", super::SECRET_NAMES)).expect("secret names")
+    });
     if tool.starts_with("mcp__lightbulb") {
         return (json!({}), false); // private paths keep their own rules
     }
@@ -206,7 +211,8 @@ pub(crate) fn shown_input(tool: &str, raw: &Value) -> (Value, bool) {
         && shown.is_object()
         && shown == *raw
         && visible(&shown)
-        && super::ascii_wire_len(&shown).is_ok_and(|n| n <= MAX_APPROVAL_INPUT);
+        && super::ascii_wire_len(&shown).is_ok_and(|n| n <= MAX_APPROVAL_INPUT)
+        && !NAMED.is_match(&raw.to_string());
     (shown, full)
 }
 
@@ -715,7 +721,16 @@ mod tests {
             assert!(!full, "a quoted or mixed-case `$` secret is redacted: {s}");
             assert!(s["content"].as_str().unwrap().contains("[redacted]"));
         }
-        assert!(shown_input("Bash", &json!({"command": "curl -H \"Authorization: Bearer $TOKEN\" https://a"})).1);
+        // A call that names a secret is approved at the terminal, even when nothing was redacted.
+        for kept in ["Authorization: Bearer $TOKEN", "X_API_KEY=$X_API_KEY", "echo $OAUTH", "cat ~/.cookies"] {
+            let (s, full) = shown_input("Bash", &json!({"command": kept}));
+            assert!(!full && s["command"] == kept, "{kept}");
+        }
+        assert!(!shown_input("Bash", &json!({"command": "ls", "Token": 1})).1, "keys are checked too");
+        for leak in super::super::tests::LEAKS {
+            let (s, full) = shown_input("Write", &json!({"file_path": "/x/config", "content": leak}));
+            assert!(!full && !s.to_string().contains("hunter2"), "{s}");
+        }
         let (_, full) = shown_input("Write", &json!({"content": "x".repeat(20 * 1024)}));
         assert!(!full, "cut");
         let (_, full) = shown_input("Write", &json!({"content": "\u{e9}".repeat(2 * 1024)}));

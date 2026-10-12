@@ -137,9 +137,11 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const watchRemote = (canWatch && hasTerminal && (running || endedScreen)) || keptWatching;
   useEffect(() => { watched.current = watchRemote ? session.sessionId : ""; }, [watchRemote, session.sessionId]);
   // Terminal | Browser while the session has a browser connection open (spec 2026-10-11).
-  const [view, setView] = useState<"terminal" | "browser">("terminal");
+  // The session the Browser tab was picked for: another session, or no tab, reads as Terminal.
+  const [browserFor, setBrowserFor] = useState<string | null>(null);
   const browserTab = showsBrowserTab(session, local === "none" && !!onEvent);
-  const showBrowser = browserTab && view === "browser";
+  if (!browserTab && browserFor !== null) setBrowserFor(null);
+  const showBrowser = browserTab && browserFor === session.sessionId;
   const [screenLive, setScreenLive] = useState(false);
   // False once the terminal is read-only for this viewer (the Mac refused input): the message box is the way to send then.
   const [termCanType, setTermCanType] = useState(true);
@@ -340,10 +342,10 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
         </div>
       </div></>}
       {browserTab && <div className="session-view-tabs" role="tablist" aria-label="Session view">
-        <button type="button" role="tab" aria-selected={!showBrowser} onClick={() => setView("terminal")}>Terminal</button>
-        <button type="button" role="tab" aria-selected={showBrowser} onClick={() => setView("browser")}>Browser</button>
+        <button type="button" role="tab" aria-selected={!showBrowser} onClick={() => setBrowserFor(null)}>Terminal</button>
+        <button type="button" role="tab" aria-selected={showBrowser} onClick={() => setBrowserFor(session.sessionId)}>Browser</button>
       </div>}
-      {showBrowser && <SessionBrowserTab sessionId={session.sessionId} frames={frames} canType={control && running && session.shared !== false} />}
+      {showBrowser && <SessionBrowserTab sessionId={session.sessionId} frames={frames} canType={control && running && session.shared !== false && !(session.inputPaused && !own)} />}
       {watchRemote && <div className="session-terminal-slot" hidden={showBrowser} onScrollCapture={endedScreen ? openAtTop : undefined}><SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} frames={frames} onLive={setScreenLive} onCanType={setTermCanType} kept={endedScreen}
         admitted={running && control && session.shared !== false && !(session.inputPaused && !own)}
         input={client.sendLocalSessionInput ? (bytes, epoch) => client.sendLocalSessionInput!(session.sessionId, toBase64(bytes), epoch) : undefined} /></div>}

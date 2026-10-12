@@ -181,6 +181,20 @@ async def device_update_task(task: str, body: DeviceTaskUpdate, auth: AuthContex
     return await task_board.update_task(auth, task, body.status, body.priority, body.append_note)
 
 
+class DeviceBrowserPlace(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    where: Literal["mac", "cloud"]
+
+
+@router.post("/local-sessions/device/sessions/{session_id}/browser-place")
+async def device_use_browser(session_id: str, body: DeviceBrowserPlace, device=Depends(native_session_device)):
+    """`use_browser` from the Mac's `lightbulb` MCP: the calling session (the Mac proved which) moves
+    its next browser connection."""
+    return await session_browser.place_from_mac(
+        device.owner_id, device.user_id, device.device_id, session_id, body.where
+    )
+
+
 async def local_session_invocation(request: Request) -> local_session_grants.AgentInvocation:
     authorization = request.headers.get("Authorization", "")
     return local_session_grants.verify(

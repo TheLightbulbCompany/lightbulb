@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 RUN_PREFIX = "session-"
 AGENT_ID = "session"
 NOT_SHARED = "Share this session to use the Lightbulb browser"
+PLACES = ("mac", "cloud")
 CLOUD_MESSAGE = "The workspace's cloud browser isn't available right now. Try again in a minute."
 CLOUD_BUSY = "This session already has a cloud browser connection; close it first."
 MESSAGES = {"not_shared": NOT_SHARED, "cloud_unavailable": CLOUD_MESSAGE, "cloud_busy": CLOUD_BUSY}
@@ -129,6 +130,35 @@ async def shared_row(owner: str, user: str, device: str, session_id: str) -> dic
     except ApiProblem:
         raise _err("not_shared", 403) from None
     return row
+
+
+async def set_place(owner: str, session_id: str, where: str) -> dict:
+    """`use_browser`: where this session's NEXT browser connection goes; an open one stays where it is.
+    Kept on the row (it survives re-registration) for the session's life."""
+    if where not in PLACES:
+        raise ApiProblem("INVALID_REQUEST", "where must be mac or cloud.")
+    try:
+        await store.run_in_thread(
+            store._table().update_item,
+            Key={"pk": repo.session_pk(owner, session_id), "sk": "META"},
+            UpdateExpression="SET browserPlace = :w",
+            ConditionExpression="attribute_exists(pk)",
+            ExpressionAttributeValues={":w": where},
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.") from None
+        raise
+    return {"sessionId": session_id, "browser": where}
+
+
+async def place_from_mac(owner: str, user: str, device: str, session_id: str, where: str) -> dict:
+    """The Mac's own `lightbulb` MCP: the session the Mac proved is calling, shared and running."""
+    try:
+        await shared_row(owner, user, device, session_id)
+    except DesktopError as exc:
+        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", exc.message or NOT_SHARED) from None
+    return await set_place(owner, session_id, where)
 
 
 async def _mark_open(owner: str, human: str, session_id: str, where: str | None, *, announce: bool) -> None:

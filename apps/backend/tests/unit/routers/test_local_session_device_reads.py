@@ -104,3 +104,23 @@ def test_task_update_refuses_unknown_fields(client, monkeypatch):
     )
     assert response.status_code == 422
     router.task_board.update_task.assert_not_awaited()
+
+
+SESSION = "11111111-1111-4111-8111-111111111111"
+
+
+def test_the_macs_use_browser_moves_its_own_shared_session(client, monkeypatch):
+    from core.services.desktop_execution import DesktopError
+
+    shared = AsyncMock(return_value={})
+    monkeypatch.setattr(router.session_browser, "shared_row", shared)
+    monkeypatch.setattr(
+        router.session_browser, "set_place", AsyncMock(return_value={"sessionId": SESSION, "browser": "cloud"})
+    )
+    path = f"/api/v1/local-sessions/device/sessions/{SESSION}/browser-place"
+    response = client.post(path, json={"where": "cloud"}, headers={"Authorization": "Bearer device"})
+    assert response.status_code == 200 and response.json() == {"sessionId": SESSION, "browser": "cloud"}
+    shared.assert_awaited_once_with("org_1", "user_mac", "dev_1", SESSION)
+    shared.side_effect = DesktopError("not_shared", 403, "Share this session to use the Lightbulb browser")
+    assert client.post(path, json={"where": "mac"}, headers={"Authorization": "Bearer device"}).status_code == 403
+    assert client.post(path, json={"where": "laptop"}, headers={"Authorization": "Bearer device"}).status_code == 422

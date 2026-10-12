@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -936,3 +937,20 @@ async def test_unsharing_a_cloud_session_stops_its_cast_at_once(env, cloud, monk
     asks = [p for m, p in cloud if m == "browser.frames"]
     after = asks[asks.index({"runId": RUN, "ttl": 0}) :]
     assert all(ask["ttl"] == 0 for ask in after), "no cast asked for after the stop"
+
+
+async def test_use_browser_sets_where_the_next_connection_goes(monkeypatch):
+    from core.services.messaging import ApiProblem
+
+    updates = []
+
+    async def run_in_thread(fn, **kwargs):
+        updates.append(kwargs)
+
+    monkeypatch.setattr(session_browser.store, "run_in_thread", run_in_thread)
+    monkeypatch.setattr(session_browser.store, "_table", lambda: SimpleNamespace(update_item=None))
+    assert await session_browser.set_place(OWNER, SID, "cloud") == {"sessionId": SID, "browser": "cloud"}
+    assert updates[0]["UpdateExpression"] == "SET browserPlace = :w"
+    assert updates[0]["ExpressionAttributeValues"] == {":w": "cloud"}
+    with pytest.raises(ApiProblem):
+        await session_browser.set_place(OWNER, SID, "elsewhere")

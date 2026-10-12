@@ -130,6 +130,7 @@ FEATURES = [
     "endedStartId",
     "agentMessageAsks",
     "endedOnPurpose",
+    "approvalInput",
 ]
 
 
@@ -1337,7 +1338,12 @@ class LocalSessionRelay:
             if not stream or not stream.get("active"):
                 raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Sender is no longer in this workspace.")
         sessions.require_command_scope(auth, current, command["kind"])
-        sessions._require_control(current, sessions._public(sessions.LocalSessionCommand, command))
+        sessions._require_control(
+            current,
+            sessions._public(
+                sessions.LocalSessionCommand, {**command, "shownDigest": command.get("approvalShownDigest")}
+            ),
+        )
         connection, _ = await self.connect(current["connectionId"])
         if connection["device_id"] != current["deviceId"] or connection["user_id"] != current["humanUserId"]:
             raise _conflict("dispatch identity", sid=sid)

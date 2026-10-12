@@ -36,7 +36,10 @@ def owed(meeting: dict) -> bool:
     held = meeting.get("status") in ("ended", "bot_failed") and meeting.get("inCallAt")
     # An attempted mail is done: a send that failed or timed out may have delivered, and a
     # duplicate is worse than a lost mail.
-    return bool(held) and not (meeting.get("notesMailedAt") or meeting.get("notesMailAttemptedAt"))
+    # A dispatched notes run mails with its reply (on_agent_reply / on_notes_run_ended).
+    return bool(held) and not (
+        meeting.get("notesMailedAt") or meeting.get("notesMailAttemptedAt") or meeting.get("notesRunId")
+    )
 
 
 def _render(lines: list[dict]) -> str:
@@ -181,7 +184,12 @@ async def _notes(room_id: str, meta: dict, occurrence) -> None:
             )
             if message:
                 run_id = messaging_repo.run_id_for(writer, message["messageId"])
+                # The mail waits for the notes themselves (on_agent_reply), or for the run's failure.
+                await messaging_repo.put_meeting_notes_request(owner_id, message["messageId"], room_id, occurrence)
                 await meeting_invites._patch_meeting(room_id, {"notesRunId": run_id}, when=this_occurrence)
+                return
+    if meeting.get("notesRunId"):
+        return  # its notes run was dispatched: the mail goes with its reply
     mailed = await _mail_organizer(owner_id, room_id, target, meeting, title, occurrence)
     if mailed is None:
         return  # already attempted (here or by another end path), or the occurrence moved on
@@ -221,9 +229,19 @@ async def _transcript_text(owner_id: str, room_id: str, meeting: dict) -> str | 
 
 
 async def _mail_organizer(
-    owner_id: str, room_id: str, target: str, meeting: dict, title: str, occurrence
+    owner_id: str,
+    room_id: str,
+    target: str,
+    meeting: dict,
+    title: str,
+    occurrence,
+    notes: str | None = None,
+    notes_failed: bool = False,
 ) -> bool | None:
-    """True when the notes are done: mailed, or deliberately not (no address, no organizer, a paused
+    """The one mail after a meeting. ``notes``: the notes agent's own reply (its decisions, open
+    questions and the tasks it filed), which IS the mail, with the room linked for the transcript;
+    ``notes_failed``: its run ended without them. Neither: a meeting with no notes run (no
+    transcript, no agent). True when the notes are done: mailed, or deliberately not (no address, no organizer, a paused
     row, the owner's daily mail cap spent). False is a failed or ambiguous send and None a send
     that is not ours to make; neither is ever retried, because ``notesMailAttemptedAt`` is written
     before the send (at most once per occurrence: a lost mail beats a duplicate). With a default room the mail links to it; without one
@@ -245,7 +263,15 @@ async def _mail_organizer(
     name = " ".join(title.split())
     link = f"{settings.FRONTEND_URL.rstrip('/')}/chat?room={target}"
     no_notes = meeting.get("notesSkipped") == "no_agent"
-    if target != room_id and no_notes:
+    if notes or notes_failed:
+        subject = f"Notes: {name}" if notes else f"Transcript: {name}"
+        body = notes.strip() if notes else f"{name} ended. The notes could not be written this time."
+        if target != room_id:
+            body += f"\n\nThe transcript and everything said on the call: {link}"
+        else:  # nothing the organizer can open: the transcript travels in the mail
+            transcript = await _transcript_text(owner_id, target, meeting)
+            body += "\n\nTranscript:\n\n" + (transcript or "No transcript was captured.")
+    elif target != room_id and no_notes:
         subject = f"Transcript: {name}"
         body = f"The transcript is in your Lightbulb room: {link}\n\n{_NO_NOTES}"
     elif target != room_id and meeting.get("transcriptAttachedAt"):
@@ -260,7 +286,8 @@ async def _mail_organizer(
         body = f"Your Lightbulb agents joined {name}.\n\n" + (transcript or "No transcript was captured.")
         if no_notes:
             body += f"\n\n{_NO_NOTES}"
-    body += _unsaid_text(meeting)
+    if not notes:  # the notes run was handed these answers and works them into the notes itself
+        body += _unsaid_text(meeting)
     # Durable and before the send: a raise or a timeout may still have delivered it. The guard
     # refuses a moved occurrence and a marker another end path wrote first, so only one sends.
     marked = await meeting_invites._patch_meeting(
@@ -280,3 +307,49 @@ async def _mail_organizer(
         tenant_name=await agent_mail_tenant.ensure_tenant(owner_id),
     )
     return sent is not None
+
+
+async def on_agent_reply(owner_id: str, room_id: str, reply_to: str | None, text: str, progress: bool) -> None:
+    """An agent's reply to a meeting's "write the notes" request: those are the notes, and the
+    organizer's mail carries them (10-09: the only mail was the raw transcript, sent before the notes
+    existed). A progress line is not the reply. Never raises: the reply is already stored."""
+    if progress or not reply_to or not text.strip():
+        return
+    try:
+        request = await messaging_repo.get_meeting_notes_request(owner_id, reply_to)
+        if request is not None:
+            await _mail_notes(owner_id, request, notes=text)
+    except Exception:  # noqa: BLE001
+        put_metric("meeting.notes.mail_failed")
+        logger.warning("meeting notes mail failed for reply to %s", reply_to, exc_info=True)
+
+
+async def on_notes_run_ended(owner_id: str, trigger_message_id: str, outcome: str) -> None:
+    """A notes run that ended without its reply (an error, a stop): the organizer still gets one mail,
+    saying so, with the transcript. A completed run mails from its reply. Never raises."""
+    if outcome == "completed":
+        return
+    try:
+        request = await messaging_repo.get_meeting_notes_request(owner_id, trigger_message_id)
+        if request is not None:
+            await _mail_notes(owner_id, request, notes=None)
+    except Exception:  # noqa: BLE001
+        put_metric("meeting.notes.mail_failed")
+        logger.warning("meeting notes fallback mail failed for %s", trigger_message_id, exc_info=True)
+
+
+async def _mail_notes(owner_id: str, request: dict, notes: str | None) -> None:
+    room_id, occurrence = request["roomId"], request.get("occurrence")
+    meta = await messaging_repo.get_room(room_id) or {}
+    meeting = meta.get("meeting") or {}
+    if meeting.get("startAt") != occurrence or meeting.get("notesMailedAt"):
+        return  # the series moved on (that occurrence's record is gone), or this mail is done
+    title = meeting.get("title") or "Meeting"
+    target = await meeting_invites.output_room(owner_id, room_id)
+    mailed = await _mail_organizer(
+        owner_id, room_id, target, meeting, title, occurrence, notes=notes, notes_failed=notes is None
+    )
+    if mailed:
+        await meeting_invites._patch_meeting(
+            room_id, {"notesMailedAt": int(time.time())}, when=lambda m: m.get("startAt") == occurrence
+        )

@@ -1657,3 +1657,39 @@ async def test_sync_bot_books_nothing_into_a_slot_that_is_over(room, bots):
     assert await meeting_invites._sync_bot("org_1", "r", meeting, None) == meeting
     bots.create.assert_not_awaited()
     assert room.state["meta"]["meeting"] == meeting
+
+
+async def test_without_a_default_room_lines_go_to_the_organizers_dm_with_the_notes_agent(monkeypatch):
+    """10-09: the founder workspace has no default room, so its meeting notes sat in the hidden
+    meeting room. They go to the organizer's DM with the agent that writes them."""
+    from core.services import openclaw_work
+
+    created = []
+
+    async def create_room(auth, request):
+        created.append((auth, request))
+        return SimpleNamespace(room_id="dm-1")
+
+    members = [
+        {"kind": "human", "id": "user_org", "role": "owner"},
+        {"kind": "agent", "id": "ceo-agent"},
+        {"kind": "agent", "id": "forge"},
+    ]
+    monkeypatch.setattr(meeting_invites.messaging_repo, "get_room", AsyncMock(return_value=None))  # no default
+    monkeypatch.setattr(meeting_invites.messaging_repo, "list_members", AsyncMock(return_value=members))
+    monkeypatch.setattr(openclaw_work, "_fallback_single", AsyncMock(return_value="ceo-agent"))
+    monkeypatch.setattr(meeting_invites.messaging, "create_room", create_room)
+    assert await meeting_invites.output_room("org_1", "meeting-room") == "dm-1"
+    ((auth, request),) = created
+    assert (auth.user_id, auth.org_id) == ("user_org", "org_1")
+    assert request.kind == "dm" and [(m.kind, m.id) for m in request.members] == [("agent", "ceo-agent")]
+    # The same organizer and agent always name the same DM (found, not duplicated, on the next line).
+    await meeting_invites.output_room("org_1", "meeting-room")
+    assert created[0][1].client_room_id == created[1][1].client_room_id
+    # A DM that cannot be opened leaves the line in the meeting's own room: nothing is lost.
+    monkeypatch.setattr(
+        meeting_invites.messaging,
+        "create_room",
+        AsyncMock(side_effect=meeting_invites.messaging.ApiProblem("ROOM_FORBIDDEN", "no")),
+    )
+    assert await meeting_invites.output_room("org_1", "meeting-room") == "meeting-room"

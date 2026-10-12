@@ -4263,6 +4263,10 @@ async def _after_run_ended(owner_id: str, row: dict, outcome: str, usage: RunUsa
     the ledger only ever stores this same value into). Never raises into the callback."""
     if outcome not in {"completed", "error", "aborted"}:
         return
+    if outcome != "completed":  # a meeting's notes run that failed still owes its organizer one mail
+        from core.services import meeting_notes
+
+        await meeting_notes.on_notes_run_ended(owner_id, row["triggerMessageId"], outcome)
     trigger = await messaging_repo.get_message_by_id(row["roomId"], row["triggerMessageId"])
     author = (trigger or {}).get("author") or {}
     member_user_id = author.get("id") if author.get("kind") == "human" else None

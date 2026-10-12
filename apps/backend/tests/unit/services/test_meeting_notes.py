@@ -49,6 +49,15 @@ def env(monkeypatch):
         ceo=AsyncMock(return_value=CEO),
         advance=AsyncMock(),
         metric=MagicMock(),
+        requests={},
+    )
+
+    async def put_request(owner_id, message_id, room_id, occurrence):
+        m.requests[message_id] = {"roomId": room_id, "occurrence": occurrence}
+
+    monkeypatch.setattr(mod.messaging_repo, "put_meeting_notes_request", put_request)
+    monkeypatch.setattr(
+        mod.messaging_repo, "get_meeting_notes_request", AsyncMock(side_effect=lambda _o, mid: m.requests.get(mid))
     )
     monkeypatch.setattr(mod.messaging_repo, "list_members", m.members)
     monkeypatch.setattr(mod.openclaw_work, "_fallback_ceo_id", m.ceo)
@@ -68,6 +77,15 @@ def env(monkeypatch):
     monkeypatch.setattr(mod.settings, "FRONTEND_URL", "https://flickmeon.ai")
     monkeypatch.setattr(mod.asyncio, "sleep", m.sleep)
     return m
+
+
+NOTES = "Decisions: ship the beta Friday. Open: pricing. Tasks filed: ISOA-1 (Pat), ISOA-2 (Ada)."
+
+
+async def ended_and_noted(env, room=DEFAULT, notes=NOTES):
+    """The call ends, then the notes agent's reply to the notes request (msg-1) arrives."""
+    await mod.on_ended(ROOM)
+    await mod.on_agent_reply("org_1", room, "msg-1", notes, False)
 
 
 def _line(mark, name, text, at):
@@ -113,8 +131,12 @@ async def test_on_ended_dispatches_exactly_one_notes_run(env):
     assert args[3].endswith("the transcript is attached")
     assert kwargs["dispatch_targets"] == [{"agentId": CEO, "eventKind": "user_request"}]
     assert env.meta["meeting"]["notesRunId"] == mod.messaging_repo.run_id_for(CEO, "msg-1")
-    env.send.assert_awaited_once()
+    env.send.assert_not_awaited()  # the mail waits for the notes themselves
+    assert env.requests["msg-1"] == {"roomId": ROOM, "occurrence": 1790972400}
     env.sleep.assert_not_awaited()
+    await mod.on_agent_reply("org_1", DEFAULT, "msg-1", NOTES, False)
+    env.send.assert_awaited_once()
+    assert env.send.await_args.kwargs["body_text"].startswith(NOTES)
 
 
 async def test_on_ended_waits_for_the_transcript_then_proceeds(env):
@@ -143,10 +165,11 @@ async def test_on_ended_proceeds_without_a_transcript_after_sixty_seconds(env):
     env.send.assert_awaited_once()
 
 
-async def test_the_organizer_mail_carries_the_room_url_and_no_meeting_url(env):
+async def test_the_organizer_mail_carries_the_notes_and_the_room_url_and_no_meeting_url(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
-    await mod.on_ended(ROOM)
+    await ended_and_noted(env)
     kw = env.send.await_args.kwargs
+    assert kw["body_text"].startswith(NOTES)
     assert kw["from_addr"] == "agents@acme.thelightbulb.company" and kw["to"] == "pat@acme.com"
     assert kw["subject"] == "Notes: Weekly sync"
     assert f"https://flickmeon.ai/chat?room={DEFAULT}" in kw["body_text"]
@@ -156,7 +179,7 @@ async def test_the_organizer_mail_carries_the_room_url_and_no_meeting_url(env):
 async def test_a_paused_team_address_sends_no_mail(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
     env.row["outbound_disabled"] = "complaint"
-    await mod.on_ended(ROOM)
+    await ended_and_noted(env)
     env.line.assert_awaited_once()
     env.send.assert_not_awaited()
 
@@ -167,29 +190,23 @@ async def test_on_ended_never_raises(env):
     await mod.on_ended(ROOM)
 
 
-async def test_a_crash_after_the_claim_is_finished_by_a_later_on_ended(env):
+async def test_a_notes_mail_that_fails_before_sending_is_counted_and_never_doubled(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
-    env.cap.side_effect = [RuntimeError("ddb")] * 3 + [True]  # fails before the send: still owed
-    await mod.on_ended(ROOM)  # the notes message went out, the mail did not
-    assert env.meta["meeting"]["notesRunId"] and "notesMailedAt" not in env.meta["meeting"]
-    env.release.assert_awaited_once_with(f"meeting-notes#{ROOM}", token="tok")  # a caught failure frees the claim
-    env.claim.return_value = None  # a crashed attempt released nothing: within 120 s its claim still stands
-    await mod.on_ended(ROOM)
+    env.cap.side_effect = RuntimeError("ddb")  # fails before the send
+    await ended_and_noted(env)
     env.send.assert_not_awaited()
-    env.claim.return_value = "tok2"  # 121 s later it is stale
-    await mod.on_ended(ROOM)
-    assert env.claim.await_args.args == (f"meeting-notes#{ROOM}",) and env.claim.await_args.kwargs == {"stale_s": 120}
-    env.line.assert_awaited_once()  # the notes run is not asked for twice
-    assert env.send.await_count == 1 and env.meta["meeting"]["notesMailedAt"]
-    await mod.on_ended(ROOM)  # done: nothing more
-    assert env.send.await_count == 1
+    env.metric.assert_any_call("meeting.notes.mail_failed")
+    await mod.on_ended(ROOM)  # a later terminal webhook: the notes run already has the mail
+    env.line.assert_awaited_once()
+    env.send.assert_not_awaited()
 
 
 async def test_a_failed_or_ambiguous_send_is_never_retried_by_a_later_webhook(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
     env.send.return_value = None  # send_ses_email's non-raising failure: it may still have gone
-    await mod.on_ended(ROOM)
+    await ended_and_noted(env)
     assert "notesMailedAt" not in env.meta["meeting"] and env.meta["meeting"]["notesMailAttemptedAt"]
+    await mod.on_agent_reply("org_1", DEFAULT, "msg-1", NOTES, False)  # a replayed reply
     assert not mod.owed(env.meta["meeting"])
     env.send.return_value = "<id@ses>"
     await mod.on_ended(ROOM)  # the terminal webhook's redelivery: nothing more
@@ -201,7 +218,7 @@ async def test_a_failed_or_ambiguous_send_is_never_retried_by_a_later_webhook(en
 async def test_two_end_paths_racing_send_once(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
     stale = {**env.meta["meeting"]}  # the second path read the meeting before the first marked it
-    await mod.on_ended(ROOM)
+    await ended_and_noted(env)
     env.send.assert_awaited_once()
     assert await mod._mail_organizer("org_1", ROOM, DEFAULT, stale, "Weekly sync", stale["startAt"]) is None
     env.send.assert_awaited_once()  # the guarded marker write refused it
@@ -210,14 +227,14 @@ async def test_two_end_paths_racing_send_once(env):
 async def test_a_pre_send_skip_is_done_without_an_attempted_marker(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
     env.row["outbound_disabled"] = "complaint"
-    await mod.on_ended(ROOM)
+    await ended_and_noted(env)
     env.send.assert_not_awaited()
     assert env.meta["meeting"]["notesMailedAt"] and "notesMailAttemptedAt" not in env.meta["meeting"]
 
 
 async def test_the_notes_mail_draws_the_owners_daily_cap(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
-    await mod.on_ended(ROOM)
+    await ended_and_noted(env)
     env.cap.assert_awaited_once_with("org_1")
     env.send.assert_awaited_once()
 
@@ -225,11 +242,11 @@ async def test_the_notes_mail_draws_the_owners_daily_cap(env):
 async def test_a_spent_daily_cap_sends_nothing_and_is_not_retried(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
     env.cap.return_value = False
-    await mod.on_ended(ROOM)
+    await ended_and_noted(env)
     env.send.assert_not_awaited()
     assert env.meta["meeting"]["notesMailedAt"]  # a deliberate non-send: done
     env.release.assert_not_awaited()
-    await mod.on_ended(ROOM)
+    await mod.on_agent_reply("org_1", DEFAULT, "msg-1", NOTES, False)
     env.cap.assert_awaited_once()
 
 
@@ -262,7 +279,7 @@ async def test_no_notes_or_mail_for_a_call_nobody_admitted_the_bot_to(env):
 async def test_a_ceo_outside_the_output_room_hands_the_notes_to_an_agent_that_is_in_it(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
     env.members.return_value = [{"kind": "agent", "id": "b-agent"}, {"kind": "agent", "id": "a-agent"}]
-    await mod.on_ended(ROOM)
+    await ended_and_noted(env)
     assert env.line.await_args.kwargs["dispatch_targets"] == [{"agentId": "a-agent", "eventKind": "user_request"}]
     env.send.assert_awaited_once()
 
@@ -272,7 +289,7 @@ async def test_a_founder_roster_without_starter_ids_still_gets_its_notes(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
     env.ceo.return_value = None
     env.members.return_value = [{"kind": "agent", "id": "forge"}]
-    await mod.on_ended(ROOM)
+    await ended_and_noted(env)
     assert env.line.await_args.kwargs["dispatch_targets"] == [{"agentId": "forge", "eventKind": "user_request"}]
     assert env.meta["meeting"]["notesRunId"] == mod.messaging_repo.run_id_for("forge", "msg-1")
     assert env.send.await_args.kwargs["subject"] == "Notes: Weekly sync"
@@ -323,21 +340,23 @@ async def test_no_marker_lands_on_the_next_occurrence(env):
 
 @pytest.fixture
 def legacy(env, monkeypatch):
-    """A workspace with no default room: the hidden meeting room is the output room."""
+    """A workspace with no default room and no organizer DM to open: the hidden meeting room is the
+    output room, so the mail carries the transcript itself."""
     monkeypatch.setattr(
         mod.messaging_repo, "get_room", AsyncMock(side_effect=lambda r: None if r == DEFAULT else env.meta)
     )
+    monkeypatch.setattr(mod.meeting_invites, "_organizer_dm", AsyncMock(return_value=None))
     env.meta["meeting"].update(transcriptAttachedAt=1, transcriptId="att-1")
     env.load = MagicMock(return_value=(None, b"[20:23] Pat: Hi all\n"))
     monkeypatch.setattr(mod.messaging, "load_attachment", env.load)
     return env
 
 
-async def test_without_a_default_room_the_mail_carries_the_transcript_and_no_link(legacy):
-    await mod.on_ended(ROOM)
+async def test_with_nowhere_visible_the_mail_carries_the_notes_and_the_transcript_and_no_link(legacy):
+    await ended_and_noted(legacy, room=ROOM)
     kw = legacy.send.await_args.kwargs
-    assert kw["subject"] == "Transcript: Weekly sync"
-    assert kw["body_text"] == "Your Lightbulb agents joined Weekly sync.\n\n[20:23] Pat: Hi all\n"
+    assert kw["subject"] == "Notes: Weekly sync"
+    assert kw["body_text"] == f"{NOTES}\n\nTranscript:\n\n[20:23] Pat: Hi all\n"
     assert "/chat?room=" not in kw["body_text"]
     legacy.load.assert_called_once_with("org_1", ROOM, "att-1")
 
@@ -352,21 +371,21 @@ async def test_the_mail_that_carries_the_transcript_also_says_when_no_notes_were
 
 async def test_a_long_transcript_is_cut_and_says_so(legacy):
     legacy.load.return_value = (None, b"x" * 300_000)
-    await mod.on_ended(ROOM)
+    await ended_and_noted(legacy, room=ROOM)
     body = legacy.send.await_args.kwargs["body_text"]
     assert body.endswith("x" * 10 + "… (truncated)") and body.count("x") == 200_000
 
 
 async def test_without_a_transcript_the_mail_says_none_was_captured(legacy):
     legacy.meta["meeting"].pop("transcriptId")
-    await mod.on_ended(ROOM)
+    await ended_and_noted(legacy, room=ROOM)
     assert legacy.send.await_args.kwargs["body_text"].endswith("No transcript was captured.")
-    assert legacy.send.await_args.kwargs["subject"] == "Ended: Weekly sync"
+    assert legacy.send.await_args.kwargs["subject"] == "Notes: Weekly sync"
 
 
 async def test_the_mail_reads_the_transcript_from_the_room_it_was_stored_for(legacy):
     legacy.meta["meeting"]["transcriptRoomId"] = "stored-room"
-    await mod.on_ended(ROOM)
+    await ended_and_noted(legacy, room=ROOM)
     legacy.load.assert_called_once_with("org_1", "stored-room", "att-1")
 
 
@@ -391,7 +410,7 @@ async def test_a_redate_during_the_wait_keeps_todays_key_and_tomorrows_run(env):
 
 async def test_the_after_meeting_mail_goes_to_the_inviting_member(env):
     env.meta["meeting"].update(transcriptAttachedAt=1, invitedBy="member@acme.com", organizer="host@outside.example")
-    await mod.on_ended(ROOM)
+    await ended_and_noted(env)
     assert env.send.await_args.kwargs["to"] == "member@acme.com"
 
 
@@ -400,7 +419,9 @@ async def test_a_failed_notes_line_is_retried_and_the_mail_goes_once(env):
     env.line.side_effect = [RuntimeError("ddb"), {"messageId": "msg-1"}]
     await mod.on_ended(ROOM)
     assert env.line.await_count == 2 and env.meta["meeting"]["notesRunId"]
-    env.send.assert_awaited_once()  # on the attempt that reached it
+    env.send.assert_not_awaited()  # the mail waits for the notes
+    await mod.on_agent_reply("org_1", DEFAULT, "msg-1", NOTES, False)
+    env.send.assert_awaited_once()
     assert env.meta["meeting"]["notesMailedAt"]
     env.sleep.assert_awaited_once_with(10)
     env.release.assert_not_awaited()
@@ -434,8 +455,9 @@ async def test_a_retry_does_not_wait_for_the_transcript_again(env):
 async def test_an_ambiguous_send_is_never_repeated_in_one_end_path(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
     env.send.return_value = None  # failed or timed out: it may have gone
-    await mod.on_ended(ROOM)
-    env.send.assert_awaited_once()  # across the three attempts
+    await ended_and_noted(env)
+    await mod.on_agent_reply("org_1", DEFAULT, "msg-1", NOTES, False)  # a replayed reply
+    env.send.assert_awaited_once()
     assert "notesMailedAt" not in env.meta["meeting"]
     env.advance.assert_awaited_once_with(ROOM)
 
@@ -443,7 +465,7 @@ async def test_an_ambiguous_send_is_never_repeated_in_one_end_path(env):
 async def test_the_organizer_mail_is_from_the_public_address(env):
     env.meta["meeting"]["transcriptAttachedAt"] = 1
     env.row["public_address"] = "agents@thelightbulb.company"
-    await mod.on_ended(ROOM)
+    await ended_and_noted(env)
     assert env.send.await_args.kwargs["from_addr"] == "agents@thelightbulb.company"
 
 
@@ -457,14 +479,40 @@ _SAID = (
 )
 
 
-async def test_unsaid_answers_reach_the_notes_run_and_the_mail(env):
+async def test_unsaid_answers_reach_the_notes_run_which_works_them_into_the_mailed_notes(env):
     env.meta["meeting"].update(transcriptAttachedAt=1, unsaid=UNSAID)
-    await mod.on_ended(ROOM)
+    await ended_and_noted(env)
     assert env.line.await_args.args[3].endswith(_SAID)
-    assert env.send.await_args.kwargs["body_text"].endswith(_SAID)
+    assert _SAID not in env.send.await_args.kwargs["body_text"]  # the notes carry them, once
 
 
-async def test_unsaid_answers_reach_the_mail_that_carries_the_transcript(legacy):
+async def test_unsaid_answers_reach_the_mail_when_no_notes_were_written(legacy):
     legacy.meta["meeting"]["unsaid"] = UNSAID
+    legacy.members.return_value = [{"kind": "human", "id": "user_1"}]  # no agent: no notes run
     await mod.on_ended(ROOM)
     assert legacy.send.await_args.kwargs["body_text"].endswith(_SAID)
+
+
+async def test_only_the_notes_agents_own_final_reply_is_mailed(env):
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    await mod.on_ended(ROOM)
+    await mod.on_agent_reply("org_1", DEFAULT, "msg-1", "Reading the transcript now.", True)  # progress
+    await mod.on_agent_reply("org_1", DEFAULT, "other-msg", "Unrelated answer.", False)  # another request
+    await mod.on_agent_reply("org_1", DEFAULT, None, "Top-level post.", False)
+    env.send.assert_not_awaited()
+    await mod.on_agent_reply("org_1", DEFAULT, "msg-1", NOTES, False)
+    env.send.assert_awaited_once()
+
+
+async def test_a_notes_run_that_fails_still_mails_once_and_says_so(env):
+    env.meta["meeting"]["transcriptAttachedAt"] = 1
+    await mod.on_ended(ROOM)
+    await mod.on_notes_run_ended("org_1", "msg-1", "completed")  # a completed run mails from its reply
+    env.send.assert_not_awaited()
+    await mod.on_notes_run_ended("org_1", "msg-1", "error")
+    kw = env.send.await_args.kwargs
+    assert kw["subject"] == "Transcript: Weekly sync"
+    assert kw["body_text"].startswith("Weekly sync ended. The notes could not be written this time.")
+    assert f"https://flickmeon.ai/chat?room={DEFAULT}" in kw["body_text"]
+    await mod.on_notes_run_ended("org_1", "msg-1", "aborted")
+    env.send.assert_awaited_once()

@@ -10,6 +10,7 @@ import logging
 import re
 import secrets
 import time
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -223,14 +224,43 @@ def _when_text(start: datetime) -> str:
 
 
 async def output_room(owner_id: str, room_id: str) -> str:
-    """Where a meeting's lines go: the workspace's default room while it stands, else the meeting's
-    own room (the only fallback policy; nothing is lost)."""
-    # ponytail: with no default room, lines land in the hidden meeting room, so a booking failure
-    # is seen by nobody (the notes mail still reaches the organizer). Upgrade: a per-workspace
-    # meeting output room setting.
+    """Where a meeting's lines go (its transcript, the notes, booking notices): the workspace's
+    default room while it stands; else the organizer's DM with the agent who writes the notes, so a
+    workspace without a default room still sees them (10-09: the founder's notes sat in the hidden
+    meeting room, which no sidebar shows); else the meeting's own room (nothing is lost)."""
     default = messaging.default_room_id(owner_id)
     meta = await messaging_repo.get_room(default)
-    return default if meta and not meta.get("archivedAt") and not meta.get("deletedAt") else room_id
+    if meta and not meta.get("archivedAt") and not meta.get("deletedAt"):
+        return default
+    return await _organizer_dm(owner_id, room_id) or room_id
+
+
+async def _organizer_dm(owner_id: str, room_id: str) -> str | None:
+    """The DM between the meeting's organizer (the member whose invite made its room, seated as its
+    owner) and the agent that writes its notes (the CEO when it sits in the meeting, as the notes
+    writer is picked). Found or created; None when either is missing or it cannot be opened. A DM
+    passed in (a line already resolved here) resolves to itself."""
+    from core.auth import AuthContext
+    from core.services import openclaw_work
+
+    members = await messaging_repo.list_members(room_id)
+    creator = next((m["id"] for m in members if m.get("kind") == "human" and m.get("role") == "owner"), None)
+    agents = sorted(m["id"] for m in members if m.get("kind") == "agent")
+    if not creator or not agents:
+        return None
+    writer = await openclaw_work._fallback_single(owner_id, agents, {}, [])
+    request = messaging.CreateRoomRequest(
+        client_room_id=uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-meeting-dm|{owner_id}|{creator}|{writer}"),
+        name=None,
+        kind="dm",
+        members=[messaging.CreateRoomMember(kind="agent", id=writer, role="member", listen_mode="active")],
+    )
+    try:
+        room = await messaging.create_room(AuthContext(user_id=creator, org_id=owner_id), request)
+    except messaging.ApiProblem:
+        logger.warning("meeting room %s: could not open the organizer's DM", room_id, exc_info=True)
+        return None
+    return str(room.room_id)
 
 
 async def _post_line(

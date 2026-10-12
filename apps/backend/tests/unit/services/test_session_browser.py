@@ -338,9 +338,21 @@ async def test_a_failed_renewal_keeps_the_connection(env):
     env.acquired = DesktopError("mac_browser_busy", 409)
     calls = len(env.calls)
     await _until(lambda: ("acquire", RUN, DEVICE) in env.calls[calls:])
-    env.acquired = [mac_browser.STARTING]
     await asyncio.sleep(0.12)
     assert CHANNEL in node.cdp and not any(f["event"] == "browser.cdp.leased" for f in _out(node))
+    _closed_by_mac(node)
+    await asyncio.wait_for(served, 2)
+    assert not any(call[0] == "release" for call in env.calls), "the refused lease is not held"
+
+
+async def test_a_starting_renewal_keeps_the_lease_and_the_connection(env):
+    node, channel = _offered()
+    served = asyncio.create_task(session_browser.serve(OWNER, MEMBER, DEVICE, node, channel, SID, True))
+    await _play_mac(node)
+    env.acquired = [mac_browser.STARTING] * 50
+    await asyncio.sleep(0.12)
+    _signal(node, "active")
+    assert (await _next(node, "browser.cdp.leased"))["payload"] == {"channel": CHANNEL, "ok": True}
     _closed_by_mac(node)
     await asyncio.wait_for(served, 2)
     assert ("release", "g1") in env.calls
@@ -362,3 +374,33 @@ async def test_two_syncs_of_one_session_never_run_at_once(env, monkeypatch):
     answer = {"cdpUrl": DOOR, "generation": "g1", "sync": {"syncId": "S", "steps": [{"action": "save"}]}}
     await asyncio.gather(session_browser._sync(auth, DEVICE, answer), session_browser._sync(auth, DEVICE, answer))
     assert overlaps == [1, 1]
+
+
+async def test_a_refused_renewal_drops_the_lease_so_the_next_command_reacquires(env):
+    node, channel = _offered()
+    served = asyncio.create_task(session_browser.serve(OWNER, MEMBER, DEVICE, node, channel, SID, True))
+    await _play_mac(node)
+    env.acquired = DesktopError("mac_browser_busy", 409)
+    calls = len(env.calls)
+    await _until(lambda: ("acquire", RUN, DEVICE) in env.calls[calls:])
+    await asyncio.sleep(0.12)
+    renewals = env.calls.count(("acquire", RUN, DEVICE))
+    await asyncio.sleep(0.12)
+    assert env.calls.count(("acquire", RUN, DEVICE)) == renewals, "no renewals once the lease is gone"
+    held = "This Mac's agent browser holds the sign-ins of the Acme workspace."
+    env.acquired = DesktopError("browser_profile_held_by_another_workspace", 409, held)
+    _signal(node, "active")
+    assert (await _next(node, "browser.cdp.leased"))["payload"] == {
+        "channel": CHANNEL,
+        "ok": False,
+        "code": "browser_profile_held_by_another_workspace",
+        "message": held,
+    }
+    assert env.calls.count(("acquire", RUN, DEVICE)) == renewals + 1, "the command re-acquired"
+    env.acquired = [_answer({"syncId": "L4", "steps": [{"action": "load"}]})]
+    _signal(node, "active")
+    assert (await _next(node, "browser.cdp.leased"))["payload"] == {"channel": CHANNEL, "ok": True}
+    assert ("synced", "L4", True) in env.calls
+    _closed_by_mac(node)
+    await asyncio.wait_for(served, 2)
+    assert env.calls.count(("release", "g1")) == 1, "only the re-acquired lease is released"

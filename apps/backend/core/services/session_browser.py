@@ -185,12 +185,13 @@ async def _signal(channel) -> str | None:
 
 
 async def _renew(auth: dict, device: str, leased: dict) -> None:
-    """The timer's renewal. A refusal or STARTING is logged and the connection stays: the lease
-    lapses on its own, and the next `active` re-acquires it."""
+    """The timer's renewal. A refusal or STARTING is logged and the connection stays. A refusal
+    counts the lease as gone (it lapses on its own), so the next `active` re-acquires it with its sync."""
     try:
         answer = await mac_browser.acquire(auth, device)
     except DesktopError as exc:
         logger.warning("session browser renew refused owner=%s code=%s", auth["ownerId"], exc.code)
+        leased["generation"] = None
         return
     if answer == mac_browser.STARTING:
         logger.info("session browser renew starting owner=%s", auth["ownerId"])
@@ -274,6 +275,8 @@ async def serve(owner: str, user: str, device: str, node, channel, session_id: s
         logger.warning("session browser failed owner=%s error=%s", owner, type(exc).__name__)
         node.cdp_close(channel, "CLOSED", mac_browser.GENERIC_MESSAGE)
     finally:
+        # ponytail: a cancelled task still awaits this release's save, and nothing drains _tasks on
+        # shutdown (the lease expires on its own); drain them in the lifespan if that ever matters.
         if leased["generation"]:  # idle already released it
             await _release(auth, device, leased["generation"])
 

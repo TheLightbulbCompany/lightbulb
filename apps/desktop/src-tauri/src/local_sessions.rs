@@ -175,32 +175,74 @@ fn looks_jwt(word: &str) -> bool {
             .all(|p| p.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')))
 }
 
-/// A value an assignment leaves as written: empty, a number, a type or placeholder word, a
-/// template or variable reference, or (unquoted) code.
+/// A value an assignment leaves as written. The WHOLE value must be exactly one of these forms,
+/// anchored at both ends; anything else under a secret-named key is redacted:
+/// - empty, all digits, or a type/placeholder word (`changeme`, `string`, `null`, …);
+/// - a whole `<...>` or `{{...}}` placeholder;
+/// - unquoted only: an env reference `$NAME` / `${NAME}` (NAME = `[A-Z_][A-Z0-9_]*`);
+/// - unquoted only: code -- a dotted reference (`self.token`, `os.environ`) or a call/index on a
+///   name (`getToken(req)`, `secrets[0]`) whose every part is a short identifier. A literal
+///   cannot hide in it: each part is at most 40 identifier characters and is not itself
+///   credential-shaped.
 fn kept_value(v: &str, quoted: bool) -> bool {
+    static ENV: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"^(?:\$[A-Z_][A-Z0-9_]*|\$\{[A-Z_][A-Z0-9_]*\})$").expect("env pattern")
+    });
+    static CODE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        const ID: &str = r"[A-Za-z_][A-Za-z0-9_]{0,39}";
+        regex::Regex::new(&format!(
+            r"^{ID}(?:\.{ID})*(?:\((?:{ID}(?:\.{ID})*)?\)|\[(?:{ID}(?:\.{ID})*|[0-9]+)\])*$"
+        ))
+        .expect("code pattern")
+    });
     let lower = v.to_ascii_lowercase();
+    let code = || {
+        CODE.is_match(v)
+            && (v.contains('.') || v.contains(['(', '[']))
+            && !v
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .any(looks_secret)
+    };
     v.is_empty()
         || v.chars().all(|c| c.is_ascii_digit())
         || matches!(lower.as_str(), "changeme" | "string" | "str" | "number" | "int" | "bool"
             | "boolean" | "any" | "null" | "none" | "nil" | "true" | "false" | "undefined" | "[redacted]")
-        || (v.starts_with('<') && v.ends_with('>'))
-        || v.starts_with("{{")
-        // An unquoted environment reference (`$NAME`, `${NAME}`; the pattern stops before `}`).
-        // Quoted, or any other shape, it may be the secret itself (`"$Pa55word"`).
-        || (!quoted
-            && v.strip_prefix("${")
-                .map(|rest| rest.strip_suffix('}').unwrap_or(rest))
-                .or_else(|| v.strip_prefix('$'))
-                .is_some_and(|name| {
-                    name.chars().next().is_some_and(|c| c.is_ascii_uppercase() || c == '_')
-                        && name.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-                }))
-        // Code, not a literal: a call, an index, or a dotted reference (`os.environ`, `self.token`).
-        || (!quoted
-            && (v.contains(['(', '[', '<'])
-                || v.split('.').count() > 1
-                    && v.split('.').all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
-                    && !v.chars().next().is_some_and(|c| c.is_ascii_digit())))
+        || (v.len() > 2 && v.starts_with('<') && v.ends_with('>') && !v[1..v.len() - 1].contains(['<', '>']))
+        || (v.len() > 4 && v.starts_with("{{") && v.ends_with("}}"))
+        || (!quoted && (ENV.is_match(v) || code()))
+}
+
+/// An unquoted value runs to its terminator; a trailing `}` it does not open closes the
+/// surrounding JSON/brace instead and is not part of it. Returns the value's length.
+fn value_len(v: &str) -> usize {
+    let mut end = v.len();
+    while v[..end].ends_with('}') && v[..end].matches('}').count() > v[..end].matches('{').count() {
+        end -= 1;
+    }
+    end
+}
+
+/// How much of an unquoted value to keep or redact. One that opens `(` or `[` was matched to the
+/// end of its line (an argument can be a quoted literal); it is kept only if its call/index part,
+/// closed, is code by `kept_value`. Otherwise the whole rest of the line is redacted.
+fn bare_extent(v: &str, quoted: bool) -> (usize, bool) {
+    let Some(open) = v.find(['(', '[']) else {
+        let end = value_len(v);
+        return (end, kept_value(&v[..end], quoted));
+    };
+    let mut depth = 0i32;
+    for (i, c) in v.char_indices().skip_while(|(i, _)| *i < open) {
+        depth += match c {
+            '(' | '[' => 1,
+            ')' | ']' => -1,
+            _ => 0,
+        };
+        if depth == 0 && !v[i + 1..].starts_with(['(', '[']) {
+            let end = i + 1;
+            return if kept_value(&v[..end], quoted) { (end, true) } else { (v.len(), false) };
+        }
+    }
+    (v.len(), false)
 }
 
 /// `NAME=value`, `NAME: value` and `"NAME": "value"` where the name says it holds a secret
@@ -211,7 +253,7 @@ fn redact_assignments(text: &str) -> String {
         regex::Regex::new(concat!(
             r#"(?i)\b(?P<name>[a-z0-9_.-]*(?:password|passwd|secret|token|api[-_]?key|private[-_]?key|access[-_]?key|database_url|dsn)[a-z0-9_.-]*)"#,
             r#"(?P<sep>["']?[ \t]*(?::=|[:=])[ \t]*)"#,
-            r#"(?:"(?P<dq>[^"\n]*)"|'(?P<sq>[^'\n]*)'|(?P<bare>[^\s"',;}=][^\s"',;}]*))"#,
+            r#"(?:"(?P<dq>[^"\n]*)"|'(?P<sq>[^'\n]*)'|(?P<bare>[^\s"',;=(\[][^\s"',;(\[]*(?:[(\[][^\n]*)?))"#,
         ))
         .expect("assignment pattern")
     });
@@ -222,12 +264,13 @@ fn redact_assignments(text: &str) -> String {
             (_, _, Some(v)) => (v, false),
             _ => return all.to_owned(),
         };
-        let keep = kept_value(value.as_str(), quoted);
-        if keep {
-            return all.to_owned();
-        }
         let start = value.start() - c.get(0).unwrap().start();
-        let end = value.end() - c.get(0).unwrap().start();
+        let (len, keep) = if quoted { (value.len(), kept_value(value.as_str(), true)) } else { bare_extent(value.as_str(), false) };
+        let end = start + len;
+        if keep {
+            // A kept call's match ran to the end of its line: the rest is scanned on its own.
+            return format!("{}{}", &all[..end], redact_assignments(&all[end..]));
+        }
         format!("{}[redacted]{}", &all[..start], &all[end..])
     })
     .into_owned()
@@ -239,15 +282,17 @@ fn redact_authorization(text: &str) -> String {
     static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(concat!(
             r#"(?i)\b(?P<head>(?:proxy-)?authorization["']?[ \t]*[:=][ \t]*(?P<q>["']?)(?:[a-z]+[ \t]+)?)"#,
-            r#"(?P<value>[^\s"',;}]+)"#,
+            r#"(?P<value>[^\s"',;(\[]+(?:[(\[][^\n]*)?)"#,
         ))
         .expect("authorization pattern")
     });
     RE.replace_all(text, |c: &regex::Captures| {
-        if kept_value(&c["value"], !c["q"].is_empty()) {
-            c[0].to_owned()
+        let value = &c["value"];
+        let (end, keep) = bare_extent(value, !c["q"].is_empty());
+        if keep {
+            format!("{}{}{}", &c["head"], &value[..end], redact_authorization(&value[end..]))
         } else {
-            format!("{}[redacted]", &c["head"])
+            format!("{}[redacted]{}", &c["head"], &value[end..])
         }
     })
     .into_owned()
@@ -3440,12 +3485,23 @@ mod tests {
             ("password: $Secret1", "$Secret1"),
             ("TOKEN='${API_TOKEN}'", "${API_TOKEN}"),
             ("api_key=${lower_case}", "${lower_case"),
+            ("PASSWORD=${PREFIX}hunter2", "hunter2"),
+            ("password=hunter2(", "hunter2"),
+            ("password=decrypt(hunter2pass, k)", "hunter2pass"),
+            ("token = {{ x", "{{ x"),
+            ("Authorization: Basic ${X}abc123", "abc123"),
+            ("secret=<a>b<c>", "b<c>"),
         ] {
             let clean = redact(text);
             assert!(!clean.contains(secret) && clean.contains("[redacted]"), "{clean}");
         }
         // An unquoted env reference or code is not a credential.
-        for kept in ["-H \"Authorization: Bearer $TOKEN\"", "authorization = request.headers.get(\"a\")", "X_API_KEY=$X_API_KEY"] {
+        // A call with a quoted argument may hold the literal: the rest of the line goes.
+        assert_eq!(redact("authorization = request.headers.get(\"a\")"), "authorization = [redacted]");
+        assert_eq!(redact("password = decrypt(\"hunter2\") # x"), "password = [redacted]");
+        assert_eq!(redact("token = f(x); password=hunter2"), "token = f(x); password=[redacted]");
+        for kept in ["-H \"Authorization: Bearer $TOKEN\"", "X_API_KEY=$X_API_KEY", "password = getPassword(user.id);",
+            "{\"api_key\": ${API_KEY}}", "token = secrets[0]", "password = cfg.db.password", "TOKEN=\"{{ secrets.TOKEN }}\""] {
             assert_eq!(redact(kept), kept);
         }
     }

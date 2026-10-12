@@ -196,7 +196,10 @@ def url_for(run_id: str, upstream: str = CLOUD) -> str:
 
 def set_upstream(url: str, generation, upstream: str = CLOUD) -> None:
     """The backend's latest signed URL for ``upstream``. A new generation is a new session (or a
-    revoked connection): drop the old upstream and every client on it."""
+    revoked connection): drop the old upstream and every client on it. On the cloud, a new
+    generation for the SAME AWS session (the signed URL's path names it; only the signature
+    differs) is a re-claimed lease, not a new browser: its tabs are alive, so the upstream and
+    its clients stay (a shared session's relay resumes after an idle lease expired)."""
     _run(_set_upstream(url, generation, upstream))
 
 
@@ -319,6 +322,8 @@ async def _register(key: str, upstream: str) -> None:
 async def _set_upstream(url: str, generation, upstream: str) -> None:
     state = _ups(upstream)
     changed = state.generation is not None and generation != state.generation
+    if changed and not state.named and urlparse(url)._replace(query="") == urlparse(state.url)._replace(query=""):
+        changed = False  # same AWS session, lease re-claimed: if AWS did revoke the socket, _pump resets
     state.url, state.generation = url, generation
     if changed:
         await _drop_upstream(state)

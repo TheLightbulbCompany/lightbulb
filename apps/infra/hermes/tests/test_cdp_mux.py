@@ -168,14 +168,22 @@ def test_close_run_closes_its_tabs_and_clients_only(chrome):
         a.call("Target.getTargets")
 
 
-def test_a_new_generation_drops_every_client(chrome):
+def test_a_new_generation_on_a_new_session_drops_every_client(chrome):
     a = Client("run-a")
     a.call("Target.getTargets")
-    cdp_mux.set_upstream(chrome.url, "g2")
+    cdp_mux.set_upstream(chrome.url.replace("/automation", "/s2/automation"), "g2")  # the browser restarted
     with pytest.raises(ConnectionClosed):
         a.call("Target.getTargets")
     assert Client("run-a").call("Target.getTargets")[0]["result"]  # reconnects on the next client
     assert chrome.connects == 2
+
+
+def test_a_new_generation_on_the_same_cloud_session_keeps_its_clients(chrome):
+    a = Client("run-a")
+    a.call("Target.getTargets")
+    cdp_mux.set_upstream(chrome.url + "?X-Amz-Signature=new", "g2")  # re-signed, re-claimed lease
+    assert a.call("Target.getTargets")[0]["result"]
+    assert chrome.connects == 1 and cdp_mux.S.generation == "g2"
 
 
 def test_an_unknown_run_is_refused(chrome):

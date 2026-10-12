@@ -3,8 +3,28 @@
 import { useEffect, useId, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { ShieldCheck } from "lucide-react";
-import { APPROVAL_MODE_LABEL, canControlSession, useSessionApproval, type LocalSession, type PrivateSendApproval, type SessionControlClient } from "@lightbulb/shared";
+import { APPROVAL_MODE_LABEL, canControlSession, inputDiff, useSessionApproval, useShownInputMatches, type LocalSession, type PrivateSendApproval, type SessionControlClient } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
+import { Diff } from "./NativeSessionTranscript";
+
+/** Hex SHA-256, the digest the Mac binds an approval to. */
+async function sha256Hex(text: string): Promise<string> {
+  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(bytes), b => b.toString(16).padStart(2, "0")).join("");
+}
+
+const EDIT_TOOLS = new Set(["Edit", "MultiEdit", "Write"]);
+
+/** The call as the Mac shipped it: a command, an edit's diff, or the input itself. */
+function CallInput({ tool, input }: { tool: string; input: Record<string, unknown> }) {
+  const pre = "my-2 max-h-72 overflow-y-auto whitespace-pre-wrap break-all rounded bg-muted p-2 font-mono text-xs";
+  if (tool === "Bash" && typeof input.command === "string") return <pre className={pre}>{input.command}</pre>;
+  if (EDIT_TOOLS.has(tool)) return <div className="my-2 text-xs">
+    {typeof input.file_path === "string" && <p className="font-mono">{input.file_path}{input.replace_all === true ? " (every occurrence)" : ""}</p>}
+    <Diff lines={inputDiff(tool, input)} truncated={false} />
+  </div>;
+  return <pre className={pre}>{JSON.stringify(input, null, 2)}</pre>;
+}
 
 type Client = SessionControlClient;
 
@@ -17,7 +37,8 @@ type Client = SessionControlClient;
 export function SessionApprovalCard({ session, client, own, ownerName }: {
   session: LocalSession; client: Client; own: boolean; ownerName: string;
 }) {
-  const { pending, answer, state } = useSessionApproval(client, session, () => crypto.randomUUID());
+  const { pending, answer, state } = useSessionApproval(client, session, () => crypto.randomUUID(), sha256Hex);
+  const digestOk = useShownInputMatches(session.pendingApproval, sha256Hex);
   // Per prompt: a new prompt never opens mid-way through denying the last one.
   const [denyingFor, setDenyingFor] = useState<string | null>(null);
   const [reason, setReason] = useState("");
@@ -41,14 +62,15 @@ export function SessionApprovalCard({ session, client, own, ownerName }: {
   if (!pending || session.provider !== "claude" || session.status !== "waiting-approval") return null;
   const allowed = canControlSession(session, own, userId) && (!privateSend || own);
   const shown = own && privateSend && detail?.approvalId === pending.approvalId && detail.inputDigest === pending.inputDigest ? detail : null;
-  const canApprove = privateSend ? !!shown : pending.exact;
+  const canApprove = privateSend ? !!shown : pending.exact || (pending.full === true && digestOk);
   const denying = denyingFor === pending.approvalId;
   const current = state?.approvalId === pending.approvalId ? state : null;
   const busy = current?.status === "sending" || current?.status === "sent";
   const where = own ? "your" : `${ownerName}'s`;
   return <section className="mx-3 my-2 rounded-md border border-warn p-3 text-sm" aria-label="Permission prompt">
     <p className="font-medium">Claude wants to use {pending.tool}</p>
-    {pending.summary && <pre className="my-2 whitespace-pre-wrap break-all rounded bg-muted p-2 font-mono text-xs">{pending.summary}</pre>}
+    {pending.input && !privateSend ? <CallInput tool={pending.tool} input={pending.input} />
+      : pending.summary && <pre className="my-2 whitespace-pre-wrap break-all rounded bg-muted p-2 font-mono text-xs">{pending.summary}</pre>}
     {shown && <div className="my-2 rounded bg-muted p-2 text-xs"><p className="font-medium">To: {shown.destination}</p><p className="text-muted-foreground">Request ID: {shown.requestId}</p><pre className="mt-2 max-h-72 overflow-y-auto whitespace-pre-wrap break-words font-mono">{shown.text}</pre></div>}
     {!allowed ? <p className="text-muted-foreground">Waiting on {where} approval{privateSend ? "." : " in the terminal."}</p> : <>
       {!canApprove && <p className="text-muted-foreground">{privateSend

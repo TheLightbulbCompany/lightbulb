@@ -96,6 +96,14 @@ describe("adapter result shapes", () => {
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 
+  it("a running Claude Edit draws the diff its own input describes, before any result", () => {
+    render(<NativeSessionTranscript provider="claude" busy ownerName="Prasiddha" participants={people} events={[
+      ev(1, { kind: "tool", role: "assistant", text: "src/app.ts", itemId: "t2", tool: { name: "Edit", status: "running", input: { file_path: "src/app.ts", old_string: "OLDLINE", new_string: "NEWLINE" } } }),
+    ]} />);
+    expect(screen.getByText(/OLDLINE/)).toBeInTheDocument();
+    expect(screen.getByText(/NEWLINE/)).toBeInTheDocument();
+  });
+
   it("Claude Task ({description, status}): no preview text, a show-output button reveals both fields", () => {
     render(<NativeSessionTranscript provider="claude" busy={false} ownerName="Prasiddha" participants={people} events={[
       ev(1, { kind: "tool", role: "assistant", text: "Investigate flaky test", itemId: "t3", tool: { name: "Task", status: "running", input: {} } }),

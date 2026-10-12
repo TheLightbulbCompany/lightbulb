@@ -391,7 +391,17 @@ pub(crate) fn redact(text: &str) -> String {
 
 /// Redact every string leaf, then shrink string leaves until the JSON fits `max` bytes; Null if it
 /// cannot. The flag is true when anything was cut or nulled, so the caller can mark its event.
-pub(crate) fn bound_json(mut value: Value, max: usize) -> (Value, bool) {
+pub(crate) fn bound_json(value: Value, max: usize) -> (Value, bool) {
+    bound(value, max, false)
+}
+
+/// `bound_json` for an object keyed by file path: a path (`auth.ts`, `secrets.yaml`) is no secret
+/// name, so its entry stays; each entry's own keys are still read for one.
+pub(crate) fn bound_json_by_path(value: Value, max: usize) -> (Value, bool) {
+    bound(value, max, true)
+}
+
+fn bound(mut value: Value, max: usize, keyed_by_path: bool) -> (Value, bool) {
     fn walk(v: &mut Value, f: &dyn Fn(&mut String)) {
         match v {
             Value::String(s) => f(s),
@@ -422,7 +432,10 @@ pub(crate) fn bound_json(mut value: Value, max: usize) -> (Value, bool) {
             _ => {}
         }
     }
-    by_key(&mut value);
+    match &mut value {
+        Value::Object(o) if keyed_by_path => o.values_mut().for_each(by_key),
+        v => by_key(v),
+    }
     walk(&mut value, &|s| *s = redact(s));
     let mut per = max;
     let mut shrunk = false;

@@ -781,7 +781,7 @@ fn item(item: &Value, ts: Option<&str>) -> Option<Value> {
                 .collect();
             let names = changes.keys().cloned().collect::<Vec<_>>().join(", ");
             let mut e = event("tool", "assistant", &names, ts, id);
-            let (result, cut) = bound_json(Value::Object(changes), MAX_TOOL_RESULT);
+            let (result, cut) = bound_json_by_path(Value::Object(changes), MAX_TOOL_RESULT);
             e["tool"] = json!({"name": "FileChange", "status": if item["status"] == "failed" { "error" } else { "done" },
                 "result": result});
             if cut {
@@ -1491,6 +1491,17 @@ mod tests {
         // Current builds (0.153) write the hunk as `unified_diff`.
         let change = normalize("s", &ev(json!({"type":"FileChange","id":"f2","changes":{"/r/b.md":{"type":"update","unified_diff":"@@ -1 +1 @@\n-a\n+b","move_path":null}}}))).unwrap();
         assert_eq!(change[0]["tool"]["result"]["b.md"]["diff"], "@@ -1 +1 @@\n-a\n+b");
+        // A secret-named FILE is no secret: it stays in the changes list, and a secret in it is still cut.
+        let change = normalize("s", &ev(json!({"type":"FileChange","id":"f3","changes":{
+            "/r/src/auth.ts":{"type":"update","diff":"+const key = \"AKIAIOSFODNN7EXAMPLE\""},
+            "/r/secrets.yaml":{"type":"add","content":"aws: AKIAIOSFODNN7EXAMPLE"}}}))).unwrap();
+        let result = &change[0]["tool"]["result"];
+        let diff = result["auth.ts"]["diff"].as_str().unwrap();
+        let content = result["secrets.yaml"]["content"].as_str().unwrap();
+        assert_eq!(result["auth.ts"]["type"], "update");
+        assert_eq!(result["secrets.yaml"]["type"], "add");
+        assert!(diff.contains("[redacted]") && !diff.contains("AKIAIOSFODNN7EXAMPLE"), "{diff}");
+        assert!(content.contains("[redacted]") && !content.contains("AKIAIOSFODNN7EXAMPLE"), "{content}");
         let mcp = normalize("s", &ev(json!({"type":"McpToolCall","id":"m1","server":"codex_app","tool":"open","arguments":{"a":1},"status":"completed","result":{"content":[{"type":"text","text":"ok"}],"isError":false}}))).unwrap();
         assert_eq!(
             (mcp[0]["text"].as_str(), mcp[0]["tool"]["status"].as_str()),

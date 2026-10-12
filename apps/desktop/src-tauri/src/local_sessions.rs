@@ -191,6 +191,25 @@ const AUTH_START: &str = r"(?-i:(?:^|[^A-Za-z0-9])[aA]|[a-z0-9]A)[uU][tT]";
 /// `scheme://user:password@` -- the password part. Greedy to the last `@` before a `/` or space.
 pub(crate) const URL_USERINFO: &str = r"(?P<head>[A-Za-z][A-Za-z0-9+.-]*://[^\s:/@]*:)[^\s/]+@";
 
+/// Whether `text` names a secret anywhere: a `SECRET_NAMES` term or a whole `auth` segment.
+pub(crate) fn names_secret(text: &str) -> bool {
+    static NAMED: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(&format!(
+            r"(?i){SECRET_NAMES}|{AUTH_START}(?-i:h(?:$|[^a-z0-9])|H(?:$|[^A-Za-z0-9]))"
+        ))
+        .expect("secret names")
+    });
+    NAMED.is_match(text)
+}
+
+/// Exactly an unquoted all-caps env reference (`$NAME`, `${NAME}`), optionally after `Bearer `.
+fn env_ref(value: &str) -> bool {
+    static KEEP: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"^(?:Bearer[ \t]+)?(?:\$[A-Z_][A-Z0-9_]*|\$\{[A-Z_][A-Z0-9_]*\})$").expect("env pattern")
+    });
+    KEEP.is_match(value)
+}
+
 /// The quote a line leaves open, so a value that opens one is redacted to where it closes.
 #[derive(Clone, Copy, PartialEq)]
 enum Quote {
@@ -257,9 +276,6 @@ fn redact_lines(text: &str) -> String {
         // Empty, a comment, a tag or anchor, a `|`/`>` block header: the value is on the next lines.
         regex::Regex::new(r"^(?:[!&][^ \t]*[ \t]*)*(?:[|>][-+0-9]*)?[ \t]*(?:#.*)?$").expect("yaml header")
     });
-    static KEEP: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"^(?:Bearer[ \t]+)?(?:\$[A-Z_][A-Z0-9_]*|\$\{[A-Z_][A-Z0-9_]*\})$").expect("env pattern")
-    });
     let mut out = String::with_capacity(text.len());
     // The last secret line's indent, the quote it left open, its trailing `\`, and lines left.
     let (mut block, mut quote, mut backslash, mut left) = (None::<usize>, Quote::None, false, 0usize);
@@ -287,13 +303,15 @@ fn redact_lines(text: &str) -> String {
         let rest = &body[m.end()..];
         let value = rest.trim();
         let value = value.strip_suffix([';', ',']).unwrap_or(value).trim_end();
-        if KEEP.is_match(value) {
+        if env_ref(value) {
             out.push_str(line);
             continue;
         }
         // Indented lines continue only a YAML-shaped value, not a `fn f(token: &str) {` body; a
         // quote counts from the separator on, so an apostrophe before the name opens nothing.
-        let yaml = YAML.is_match(value) || !body.contains(['(', '{', ')']);
+        // A value that opens a bracket (`"secret": {`, `decrypt(`) runs on into its indented lines.
+        let opens = !value.contains(')') && value.ends_with(['{', '[', '(']);
+        let yaml = opens || YAML.is_match(value) || !body.contains(['(', '{', ')']);
         (block, quote, backslash, left) =
             (yaml.then_some(indent), scan_quotes(rest, Quote::None), body.ends_with('\\'), MAX_CONTINUATION);
         if value.is_empty() {
@@ -333,8 +351,11 @@ fn redact_pem(text: &str) -> String {
 /// `SECRET_NAMES` (`pass=`, `pwd=`, `key=` -- deliberately not added), a name split or encoded
 /// (`pass%77ord=`), a value with no name at all (`curl -u bob:hunter2`, `mysql -phunter2`, a bare
 /// argument), XML (`<password>hunter2</password>`), a YAML list at the key's own indent
-/// (`password:\n- hunter2`), and a value that runs on past `MAX_CONTINUATION` lines or onto a line
-/// no more indented than its name with no open quote or `\`. Approvals add `shown_input`'s check on
+/// (`password:\n- hunter2`), a bracket whose arguments are not indented (`decrypt(\n"hunter2")`), a
+/// string holding only the continuation lines of a multi-line secret whose name line is elsewhere
+/// (an `Edit`'s `old_string`/`new_string`), and a value that runs on past `MAX_CONTINUATION` lines
+/// or onto a line no more indented than its name with no open quote or `\`. Structured values are
+/// redacted by key as well (`bound_json`). Approvals add `shown_input`'s check on
 /// top, so a call that names a secret or carries URL userinfo is never `full`; a nameless secret in
 /// an approval still can be.
 pub(crate) fn redact(text: &str) -> String {
@@ -379,6 +400,29 @@ pub(crate) fn bound_json(mut value: Value, max: usize) -> (Value, bool) {
             _ => {}
         }
     }
+    /// A value under a secret-named key (`{"password": …}`, `{"Authorization": …}`) goes whole,
+    /// whatever its type, unless it is empty or an all-caps env reference.
+    fn by_key(v: &mut Value) {
+        match v {
+            Value::Array(a) => a.iter_mut().for_each(by_key),
+            Value::Object(o) => o.iter_mut().for_each(|(k, x)| {
+                let kept = match &*x {
+                    Value::Null => true,
+                    Value::String(s) => s.is_empty() || env_ref(s),
+                    Value::Array(a) => a.is_empty(),
+                    Value::Object(o) => o.is_empty(),
+                    _ => false,
+                };
+                if !names_secret(k) {
+                    by_key(x);
+                } else if !kept {
+                    *x = json!("[redacted]");
+                }
+            }),
+            _ => {}
+        }
+    }
+    by_key(&mut value);
     walk(&mut value, &|s| *s = redact(s));
     let mut per = max;
     let mut shrunk = false;
@@ -3476,6 +3520,10 @@ mod tests {
         "password=${PREFIX}hunter2",
         "api_key: \"$hunter2\"",
         "Authorization: Bearer $TOKEN hunter2",
+        "\"secret\": {\n  \"pass\": \"hunter2\"\n}",
+        "password = decrypt(\n    \"hunter2\",\n)",
+        "{\"api_keys\": [\n  \"hunter2\"\n]}",
+        "cfg = {'token': (\n    'hunter2'\n)}",
         "say \"x token: \"abc\nhunter2\"\n",
         "cfg[\"password\"] = \"hunter2\"",
         "headers['Authorization'] = 'Basic hunter2'",
@@ -3493,6 +3541,32 @@ mod tests {
         "git clone https://bob:hunter2@github.com/a/b",
         "see postgres://u:p@ss:hunter2@db/app for details",
     ];
+
+    /// Structured inputs whose secret sits under a named key, as a bare value.
+    pub(crate) const KEYED: &[&str] = &[
+        r#"{"password":"hunter2"}"#,
+        r#"{"headers":{"Authorization":"Basic hunter2"}}"#,
+        r#"{"cfg":{"api_key":["hunter2"]}}"#,
+        r#"{"db":{"credentials":{"user":"a","pass":"hunter2"}}}"#,
+        r#"{"token":"hunter2"}"#,
+        r#"{"items":[{"x-auth":{"v":"hunter2"}}],"pin":1234}"#,
+        r#"{"secret":4242}"#,
+    ];
+
+    #[test]
+    fn local_sessions_bound_json_redacts_by_key() {
+        for raw in KEYED {
+            let (v, _) = bound_json(serde_json::from_str(raw).unwrap(), 4096);
+            let text = v.to_string();
+            assert!(!text.contains("hunter2") && !text.contains("4242") && text.contains("[redacted]"), "{text}");
+        }
+        assert_eq!(
+            bound_json(json!({"items": [{"api_key": ["x"]}], "author": "Jane", "n": 1}), 4096).0,
+            json!({"items": [{"api_key": "[redacted]"}], "author": "Jane", "n": 1})
+        );
+        let kept = json!({"token": "$TOKEN", "password": "", "secret": null, "auth": {}, "API_KEY": "${API_KEY}"});
+        assert_eq!(bound_json(kept.clone(), 4096).0, kept);
+    }
 
     #[test]
     fn local_sessions_redact_catches_provider_keys_and_secret_lines() {

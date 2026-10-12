@@ -201,25 +201,19 @@ fn visible(v: &Value) -> bool {
 /// carries URL userinfo (`scheme://user:pw@`) is never full: `redact` is a
 /// backstop, so a call that touches credentials is approved at the terminal.
 pub(crate) fn shown_input(tool: &str, raw: &Value) -> (Value, bool) {
-    static NAMED: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(&format!(
-            r"(?i){}|{}(?-i:h(?:$|[^a-z0-9])|H(?:$|[^A-Za-z0-9]))|{}",
-            super::SECRET_NAMES,
-            super::AUTH_START,
-            super::URL_USERINFO,
-        ))
-        .expect("secret names")
-    });
+    static USERINFO: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(super::URL_USERINFO).expect("userinfo pattern"));
     if tool.starts_with("mcp__lightbulb") {
         return (json!({}), false); // private paths keep their own rules
     }
     let (shown, cut) = super::bound_json(raw.clone(), MAX_APPROVAL_INPUT);
     let full = !cut
-        && shown.is_object()
+        && shown.as_object().is_some_and(|o| !o.is_empty())
         && shown == *raw
         && visible(&shown)
         && super::ascii_wire_len(&shown).is_ok_and(|n| n <= MAX_APPROVAL_INPUT)
-        && !NAMED.is_match(&raw.to_string());
+        && !super::names_secret(&raw.to_string())
+        && !USERINFO.is_match(&raw.to_string());
     (shown, full)
 }
 
@@ -737,6 +731,11 @@ mod tests {
         let (s, full) = shown_input("Bash", &json!({"command": "git push https://bob:pw@host/r"}));
         assert!(!full && s["command"] == "git push https://bob:[redacted]@host/r", "userinfo");
         assert!(shown_input("Bash", &json!({"command": "echo author oauth OAuth authentic AUTHOR https://host/a:b@c"})).1);
+        for raw in super::super::tests::KEYED {
+            let (s, full) = shown_input("mcp__x__call", &serde_json::from_str(raw).unwrap());
+            assert!(!full && !s.to_string().contains("hunter2"), "{s}");
+        }
+        assert!(!shown_input("mcp__x__call", &json!({})).1, "an empty input is never full");
         for leak in super::super::tests::LEAKS {
             let (s, full) = shown_input("Write", &json!({"file_path": "/x/config", "content": leak}));
             assert!(!full && !s.to_string().contains("hunter2"), "{s}");

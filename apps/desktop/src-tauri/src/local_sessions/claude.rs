@@ -775,7 +775,8 @@ fn tool_input(name: &str, input: &Value, cwd: Option<&str>, home: Option<&str>) 
             }
             v
         }
-        "Agent" => pick(&["description", "subagent_type", "run_in_background"]),
+        // `Task` is the subagent tool's earlier name; its `prompt` stays private either way.
+        "Agent" | "Task" => pick(&["description", "subagent_type", "run_in_background"]),
         "WebFetch" | "WebSearch" => pick(&["url", "query", "prompt"]),
         "TodoWrite" => pick(&["todos"]),
         // The task list (2.1.2xx) replaced TodoWrite; the viewer rebuilds it as a checklist.
@@ -2226,6 +2227,8 @@ mod tests {
             {"type":"tool_use","id":"toolu_1","name":"Agent","input":{"description":"Survey","subagent_type":"Explore","run_in_background":true,"prompt":"long private brief"}}]}});
         let events = normalize("s", &call).unwrap();
         assert_eq!(events[0]["tool"]["input"], json!({"description":"Survey","subagent_type":"Explore","run_in_background":true}));
+        let task = serde_json::from_str(&call.to_string().replace("\"name\":\"Agent\"", "\"name\":\"Task\"")).unwrap();
+        assert!(!normalize("s", &task).unwrap()[0]["tool"]["input"].to_string().contains("private brief"), "Task is Agent's earlier name");
 
         let result = |status: &str| base(json!([{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]),
             json!({"toolUseResult":{"agentId":"a1","description":"Survey","status":status,"totalDurationMs":4200}}));

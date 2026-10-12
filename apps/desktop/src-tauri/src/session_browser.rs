@@ -22,7 +22,7 @@ use crate::node_client::EventSender;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
@@ -65,6 +65,12 @@ struct Pending {
 static PENDING: LazyLock<Mutex<HashMap<String, Pending>>> = LazyLock::new(Default::default);
 /// Open connections, by channel: where the backend's lease answers go.
 static OPEN: LazyLock<Mutex<HashMap<String, mpsc::Sender<Result<(), String>>>>> = LazyLock::new(Default::default);
+/// Channels this Mac ended, newest last: a late `open` or `leased` for one is claimed and closed,
+/// never left to open a run's channel for a connection that is gone.
+static ENDED: LazyLock<Mutex<VecDeque<String>>> = LazyLock::new(Default::default);
+const ENDED_KEEP: usize = 64;
+/// A client that connects and says nothing gets this long to send its request.
+const REQUEST_WAIT: Duration = Duration::from_secs(5);
 
 /// A connection's lease as the Mac sees it: commands pass while it is held; after idle the first
 /// command asks for it back (`Wake`) and it and those after it wait (`Hold`) for the answer.
@@ -148,6 +154,14 @@ pub(crate) fn http_response(path: &str) -> (u16, String) {
     }
 }
 
+/// DNS rebinding: a page on a name that resolves to 127.0.0.1 sends its own name as Host.
+fn allowed_host(request: &str) -> bool {
+    request.lines().skip(1).filter_map(|line| line.split_once(':')).any(|(name, value)| {
+        name.trim().eq_ignore_ascii_case("host")
+            && [format!("127.0.0.1:{PORT}"), format!("localhost:{PORT}")].contains(&value.trim().to_ascii_lowercase())
+    })
+}
+
 /// A web page can reach loopback too, and a browser always sends Origin on a WebSocket handshake;
 /// a CDP client (Node `ws`, Playwright) never does. Same rule as `proxy.rs`.
 fn no_browser(req: &Request, resp: Response) -> Result<Response, ErrorResponse> {
@@ -195,14 +209,19 @@ pub async fn serve(app: tauri::AppHandle) {
 async fn connection(app: tauri::AppHandle, mut stream: TcpStream) {
     let (Ok(local), Ok(peer)) = (stream.local_addr(), stream.peer_addr()) else { return };
     let mut head = [0u8; 4096];
-    let Ok(n) = stream.peek(&mut head).await else { return };
-    let path = String::from_utf8_lossy(&head[..n]).split_whitespace().nth(1).unwrap_or("").to_string();
+    let Ok(Ok(n)) = tokio::time::timeout(REQUEST_WAIT, stream.peek(&mut head)).await else { return };
+    let request = String::from_utf8_lossy(&head[..n]).to_string();
+    let path = request.split_whitespace().nth(1).unwrap_or("").to_string();
     if !path.starts_with("/devtools/browser/") {
-        let (status, body) = http_response(&path);
+        let (status, body) = if allowed_host(&request) { http_response(&path) } else { (403, "{}".into()) };
         let _ = stream.read(&mut head).await; // read the request, so closing never resets the answer
         let reply = format!(
             "HTTP/1.1 {status} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            if status == 200 { "OK" } else { "Not Found" },
+            match status {
+                200 => "OK",
+                403 => "Forbidden",
+                _ => "Not Found",
+            },
             body.len()
         );
         let _ = stream.write_all(reply.as_bytes()).await;
@@ -239,6 +258,29 @@ async fn still_shared(app: &tauri::AppHandle, session: &str) -> bool {
     })
     .await
     .unwrap_or(false)
+}
+
+/// This Mac is done with a channel: forget it, remember it ended, and release whatever the backend
+/// holds for it. `code` is sent when no Chrome channel was open to close (None: nothing to tell).
+fn ended(channels: &Channels, id: &str, code: Option<&'static str>) {
+    lock(&PENDING).remove(id);
+    lock(&OPEN).remove(id);
+    {
+        let mut ended = lock(&ENDED);
+        if ended.len() >= ENDED_KEEP {
+            ended.pop_front();
+        }
+        ended.push_back(id.to_string());
+    }
+    if !channels.end_local(id) {
+        if let Some(code) = code {
+            channels.send_close(id, code);
+        }
+    }
+}
+
+fn is_ended(id: &str) -> bool {
+    lock(&ENDED).iter().any(|ended| ended == id)
 }
 
 fn current(app: &tauri::AppHandle) -> Option<(Channels, EventSender)> {
@@ -281,8 +323,7 @@ async fn run(app: tauri::AppHandle, ws: Ws, session: String) {
                 Ok(Ok(Decision::Chrome(tx))) => break tx,
                 Ok(Ok(Decision::Refused(message))) => return refuse_split(sink, stream, early, &message).await,
                 _ => {
-                    lock(&PENDING).remove(&id);
-                    let _ = out.send("browser.cdp.close", json!({"channel": id, "code": "TIMEOUT"})).await;
+                    ended(&channels, &id, Some("TIMEOUT"));
                     return refuse_split(sink, stream, early, NO_ANSWER).await;
                 }
             },
@@ -290,26 +331,18 @@ async fn run(app: tauri::AppHandle, ws: Ws, session: String) {
                 Some(Ok(Message::Text(text))) if early.len() < MAX_EARLY => early.push(text.to_string()),
                 Some(Ok(Message::Text(text))) => {
                     if !answer_all(&mut sink, vec![text.to_string()], OVERFLOW).await {
-                        lock(&PENDING).remove(&id);
-                        if !channels.end_local(&id) {
-                            let _ = out.send("browser.cdp.close", json!({"channel": id, "code": "CLOSED"})).await;
-                        }
-                        return;
+                        return ended(&channels, &id, Some("CLOSED"));
                     }
                 }
                 Some(Ok(_)) => {}
                 _ => {
                     // The client left before the answer: whatever the backend took, it releases.
-                    lock(&PENDING).remove(&id);
-                    if !channels.end_local(&id) {
-                        let _ = out.send("browser.cdp.close", json!({"channel": id, "code": "CLOSED"})).await;
-                    }
-                    return;
+                    return ended(&channels, &id, Some("CLOSED"));
                 }
             },
         }
     };
-    let (leased, mut answers) = mpsc::channel::<Result<(), String>>(4);
+    let (leased, mut answers) = mpsc::channel::<Result<(), String>>(16);
     lock(&OPEN).insert(id.clone(), leased);
     let mut open = true;
     for text in early {
@@ -368,8 +401,7 @@ async fn run(app: tauri::AppHandle, ws: Ws, session: String) {
             _ = check.tick() => open = still_shared(&app, &session).await,
         }
     }
-    lock(&OPEN).remove(&id);
-    channels.end_local(&id);
+    ended(&channels, &id, None);
     let _ = sink.close().await;
 }
 
@@ -410,16 +442,31 @@ fn refusal(code: &str) -> &'static str {
     }
 }
 
+/// An answer for a channel this Mac already ended: claim it and close it again.
+fn late(channels: &Channels, id: &str) -> bool {
+    if !is_ended(id) {
+        return false;
+    }
+    channels.send_close(id, "CLOSED");
+    true
+}
+
 /// Backend events for this module's channels. node_invoke calls it before `Channels::on_event`:
 /// true when handled here.
 pub(crate) fn on_event(channels: &Channels, event: &str, payload: &Value) -> bool {
     let Some(id) = payload.get("channel").and_then(Value::as_str) else { return false };
     match event {
         "browser.cdp.open" => {
-            let Some(pending) = lock(&PENDING).remove(id) else { return false };
+            let Some(pending) = lock(&PENDING).remove(id) else { return late(channels, id) };
             let profile = payload.get("profileId").and_then(Value::as_str).unwrap_or("");
             let decision = match channels.open_local(id, profile, pending.to_client) {
-                Ok(tx) => Decision::Chrome(tx),
+                Ok(tx) => {
+                    // The connection gave up while this opened: ended() may have missed it.
+                    if is_ended(id) {
+                        channels.end_local(id);
+                    }
+                    Decision::Chrome(tx)
+                }
                 Err(code) => {
                     channels.send_close(id, code);
                     Decision::Refused(refusal(code).into())
@@ -435,13 +482,15 @@ pub(crate) fn on_event(channels: &Channels, event: &str, payload: &Value) -> boo
             true
         }
         "browser.cdp.leased" => {
-            let Some(leased) = lock(&OPEN).get(id).cloned() else { return false };
+            let Some(leased) = lock(&OPEN).get(id).cloned() else { return late(channels, id) };
             let answer = if payload.get("ok").and_then(Value::as_bool) == Some(true) {
                 Ok(())
             } else {
-                let code = payload.get("code").and_then(Value::as_str).map(clean).unwrap_or_default();
-                let message = payload.get("message").and_then(Value::as_str).map(clean).unwrap_or_default();
-                Err(format!("{code}: {message}"))
+                let text = |key| payload.get(key).and_then(Value::as_str).map(clean).filter(|t| !t.is_empty());
+                Err(match (text("code"), text("message")) {
+                    (Some(code), Some(message)) => format!("{code}: {message}"),
+                    (one, other) => one.or(other).unwrap_or_else(|| refusal("").into()),
+                })
             };
             let _ = leased.try_send(answer);
             true
@@ -695,6 +744,48 @@ mod tests {
         assert_eq!(answers.recv().await, Some(Err("browser_profile_held_by_another_workspace: Held by Acme.".into())));
         lock(&OPEN).remove("l1");
         assert!(!on_event(&channels, "browser.cdp.leased", &json!({"channel": "l1", "ok": true})), "not ours any more");
+    }
+
+    #[tokio::test]
+    async fn a_lease_refusal_reads_cleanly_whatever_the_backend_sent() {
+        let (channels, _rx) = crate::agent_chrome::test_channels();
+        let (leased, mut answers) = mpsc::channel(4);
+        lock(&OPEN).insert("l2".into(), leased);
+        on_event(&channels, "browser.cdp.leased", &json!({"channel": "l2", "ok": false, "message": "Held."}));
+        on_event(&channels, "browser.cdp.leased", &json!({"channel": "l2", "ok": false}));
+        lock(&OPEN).remove("l2");
+        assert_eq!(answers.recv().await, Some(Err("Held.".into())));
+        assert_eq!(answers.recv().await, Some(Err(refusal("").into())));
+    }
+
+    #[tokio::test]
+    async fn a_late_answer_for_an_ended_connection_is_closed_not_opened() {
+        let (channels, mut rx) = crate::agent_chrome::test_channels();
+        let (to_client, _client) = tokio::sync::mpsc::channel(8);
+        let (decide, _decided) = tokio::sync::oneshot::channel();
+        lock(&PENDING).insert("t1".into(), Pending { to_client, decide });
+        ended(&channels, "t1", Some("TIMEOUT"));
+        let close = |m: Option<Message>| {
+            let Some(Message::Text(text)) = m else { panic!() };
+            let v: Value = serde_json::from_str(&text).unwrap();
+            (v["event"].as_str().map(String::from), v["payload"]["channel"].as_str().map(String::from), v["payload"]["code"].as_str().map(String::from))
+        };
+        let wait = std::time::Duration::from_secs(1);
+        assert_eq!(close(tokio::time::timeout(wait, rx.recv()).await.unwrap()),
+            (Some("browser.cdp.close".into()), Some("t1".into()), Some("TIMEOUT".into())));
+        assert!(on_event(&channels, "browser.cdp.open", &json!({"channel": "t1", "profileId": "p"})), "claimed");
+        assert_eq!(close(tokio::time::timeout(wait, rx.recv()).await.unwrap()).2.as_deref(), Some("CLOSED"));
+        assert!(on_event(&channels, "browser.cdp.leased", &json!({"channel": "t1", "ok": true})), "claimed too");
+        assert!(channels.open_local("t2", "p", tokio::sync::mpsc::channel(1).0).is_ok(), "no run channel took a slot for t1");
+        assert!(!channels.end_local("t1"), "nothing open for t1");
+    }
+
+    #[test]
+    fn only_a_loopback_host_reads_the_http_surface() {
+        assert!(allowed_host("GET /json/version HTTP/1.1\r\nHost: 127.0.0.1:39222\r\n\r\n"));
+        assert!(allowed_host("GET /json/version HTTP/1.1\r\nhost: LOCALHOST:39222\r\n\r\n"));
+        assert!(!allowed_host("GET /json/version HTTP/1.1\r\nHost: rebind.evil.example:39222\r\n\r\n"));
+        assert!(!allowed_host("GET /json/version HTTP/1.1\r\n\r\n"), "no Host");
     }
 
     #[tokio::test]

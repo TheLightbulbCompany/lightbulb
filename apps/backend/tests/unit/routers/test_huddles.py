@@ -762,27 +762,24 @@ def test_team_lists_every_agent_any_mode_people_and_the_ceo(client, option_d):
     }
 
 
-def test_session_asks_a_default_named_agent_once(client, option_d):
-    first = _session(client).json()
-    assert first["askName"] is True and first["voice"] == "marin" and first["name"] == "CEO"
-    assert "don't have a name yet" in first["persona"] and "Be blunt." in first["persona"]
-    assert "Runs it." in first["persona"] and "lightbulb:generated" not in first["persona"]
-    assert "Penny" in first["persona"] and "Quiet" in first["persona"]
-    second = _session(client).json()
-    assert second["askName"] is False and "don't have a name yet" not in second["persona"]
+def test_session_gives_the_agents_voice_and_persona_and_never_asks_for_a_name(client, option_d):
+    body = _session(client).json()
+    assert "askName" not in body and body["voice"] == "marin" and body["name"] == "CEO"
+    assert "don't have a name yet" not in body["persona"] and "Be blunt." in body["persona"]
+    assert "Runs it." in body["persona"] and "lightbulb:generated" not in body["persona"]
+    assert "Penny" in body["persona"] and "Quiet" in body["persona"]
 
 
-def test_session_does_not_ask_once_renamed(client, option_d):
+def test_session_uses_the_renamed_name(client, option_d):
     option_d["roster"] = [{"id": "agent-ceo-1", "name": "Nova", "title": "CEO"}]
     body = _session(client).json()
-    assert body["askName"] is False and body["name"] == "Nova"
-    assert body["persona"].startswith("You are Nova, CEO,")
+    assert body["name"] == "Nova" and body["persona"].startswith("You are Nova, CEO,")
 
 
 def test_session_falls_back_to_the_bare_persona_when_reads_fail(client, option_d):
     with patch.object(vc.messaging, "load_agent_roster", AsyncMock(side_effect=RuntimeError("down"))):
         body = _session(client, "agent-fin").json()
-    assert body["name"] == "Penny" and body["voice"] == "stone" and body["askName"] is False
+    assert body["name"] == "Penny" and body["voice"] == "stone"
 
 
 def test_session_refuses_an_absent_agent_but_not_an_observe_one(client, option_d):

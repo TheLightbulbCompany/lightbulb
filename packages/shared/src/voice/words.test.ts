@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  agentA11yName, agentLine, agentLiveStatus, agentNaming, agentWorking, errorText, floorChange, floorHolder,
+  agentA11yName, agentLine, agentLiveStatus, agentWorking, errorText, floorChange, floorHolder,
   liveAgents, liveErrorText, liveHappening, liveHint, liveJoinErrorCode, liveMarker, liveQueue,
   agentHand, agentStateLine, handKey, meetVoiceLimitText, voiceLimit, nameCollides, orderAgentSlots, parseLiveNotice, queuePosition, renamedText, voiceFailedText, voiceNoteText, wakingText,
 } from "./words";
@@ -63,8 +63,6 @@ describe("per-agent Live readers", () => {
     expect(agentLiveStatus(undefined, "g")).toBe("idle");
     expect(floorHolder({ "lightbulb.speaking_agent": "" })).toBeNull();
     expect(agentWorking({ "lightbulb.agent.g.working": `  ${"x".repeat(80)} ` }, "g")).toHaveLength(60);
-    expect(agentNaming({ "lightbulb.agent.g.naming": "1" }, "g")).toBe(true);
-    expect(agentNaming({ "lightbulb.agent.g.naming": "" }, "g")).toBe(false);
   });
 
   it("reads the queue", () => {
@@ -97,8 +95,7 @@ describe("per-agent Live readers", () => {
     expect(agentLine("Gauge", status, x)).toBe(text);
   });
 
-  it("names a naming agent and builds a11y names", () => {
-    expect(agentLine("CEO", "speaking", { naming: true })).toBe("CEO — asking for a name");
+  it("builds a11y names", () => {
     expect(agentA11yName("Gauge", "speaking")).toBe("Gauge, agent, speaking");
     expect(agentA11yName("Forge", "working", { queuePos: 2, working: "drafting the launch post" }))
       .toBe("Forge, agent, next, working: drafting the launch post");

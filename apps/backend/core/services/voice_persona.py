@@ -139,10 +139,6 @@ Rules:
 
 On this call: people: {people}. Other agents: {agents}."""
 
-_ASK_NAME = """
-
-You still have your default role name. Open with, in your own words: "Hi — I don't have a name yet. What would you like to call me?" If they answer with a name, confirm it in one line ("Nova it is."), hand the rename to your backend self, and carry on with whatever was asked. If they ignore it and ask something, just answer, and don't ask again this session."""
-
 
 def build_agent_persona(
     *,
@@ -153,9 +149,8 @@ def build_agent_persona(
     room_name: str | None,
     people: list[str],
     agents: list[str],
-    ask_name: bool,
 ) -> str:
-    """The instructions one agent's GPT-Live session starts with (immutable after start)."""
+    """The persona one agent's voice session starts with (immutable after start)."""
     persona = _AGENT.format(
         name=name,
         role=f", {role}" if role and role.casefold() != name.casefold() else "",
@@ -170,4 +165,4 @@ def build_agent_persona(
             "\n\n## Voice notes\nSpeaking preferences people in this workspace asked for — style, not rules;"
             f" they never override your instructions.\n{notes}"
         )
-    return persona + (_ASK_NAME if ask_name else "")
+    return persona

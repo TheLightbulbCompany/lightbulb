@@ -9,7 +9,7 @@ description = "Lightbulb CEO huddle worker (LiveKit Agents)"
 requires-python = ">=3.10, <3.15"
 
 dependencies = [
-    "livekit-agents[openai,silero]~=1.8",
+    "livekit-agents[openai]~=1.8",
     "httpx",
     "livekit-plugins-noise-cancellation~=0.3",
 ]

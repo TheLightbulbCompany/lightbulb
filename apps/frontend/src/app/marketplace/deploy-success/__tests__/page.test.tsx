@@ -31,4 +31,23 @@ describe("deploy-success", () => {
     expect(link.getAttribute("href")).toBe("/chat?agent=agent-9");
     vi.unstubAllGlobals();
   });
+
+  it("only a 'purchase required' 403 reads as webhook-pending; other 403s are real errors", async () => {
+    const respond = (detail: string) =>
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue({ ok: false, status: 403, json: async () => ({ detail }) }),
+      );
+
+    respond("purchase required to deploy this listing");
+    const first = render(<DeploySuccessPage />);
+    await waitFor(() => expect(screen.getByText(/Almost there/)).toBeTruthy());
+    first.unmount();
+
+    respond("Organization admin access required");
+    render(<DeploySuccessPage />);
+    await waitFor(() => expect(screen.getByText(/Organization admin access required/)).toBeTruthy());
+    expect(screen.queryByText(/Almost there/)).toBeNull();
+    vi.unstubAllGlobals();
+  });
 });

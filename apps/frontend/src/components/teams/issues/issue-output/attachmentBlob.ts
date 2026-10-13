@@ -9,6 +9,7 @@
 "use client";
 
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { notifyApiError } from "@/lib/notify";
 import {
   attachmentPathFromHref,
   useAttachmentIssueId,
@@ -57,16 +58,21 @@ export function useAttachmentActions() {
         else saveBlob(url, name);
         // ponytail: fixed revoke delay; the tab has loaded by then in practice.
         window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
-      } catch {
+      } catch (err) {
         tab?.close();
+        notifyApiError(err, "Couldn't open this file");
       }
     },
     async download(upstreamPath: string, name: string) {
-      const url = URL.createObjectURL(await fetchBlob(upstreamPath));
       try {
-        saveBlob(url, name);
-      } finally {
-        URL.revokeObjectURL(url);
+        const url = URL.createObjectURL(await fetchBlob(upstreamPath));
+        try {
+          saveBlob(url, name);
+        } finally {
+          URL.revokeObjectURL(url);
+        }
+      } catch (err) {
+        notifyApiError(err, "Couldn't download this file");
       }
     },
   };

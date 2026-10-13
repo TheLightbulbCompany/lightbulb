@@ -172,7 +172,9 @@ export function MyListingsView() {
     setBusy(true);
     try {
       if (isOnboarded) {
-        window.open(dashboard!.dashboard_url!, "_blank", "noopener,noreferrer");
+        const url = dashboard?.dashboard_url;
+        if (!url) throw new Error("Your Stripe dashboard link is unavailable. Try again shortly.");
+        window.open(url, "_blank", "noopener,noreferrer");
       } else {
         // Test asserts toHaveBeenCalledWith("/marketplace/payouts/onboard")
         // (single arg). Cast lets us match the test's strict-args check while

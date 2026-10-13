@@ -216,7 +216,7 @@ export function ArtifactsPanel() {
     const artifact = pendingDelete;
     const path = deletePathForArtifact(artifact);
     if (!path) {
-      setPendingDelete(null);
+      setDeleteError("Couldn’t find this deliverable to delete.");
       return;
     }
     setDeleting(true);

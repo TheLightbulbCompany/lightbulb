@@ -380,7 +380,12 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
   }
 
   async function deleteTrigger(triggerId: string): Promise<void> {
-    if (typeof window !== "undefined" && !window.confirm("Delete this schedule?")) return;
+    const kind = routine?.triggers?.find((t) => t.id === triggerId)?.kind;
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm(kind === "webhook" ? "Delete this webhook trigger?" : "Delete this schedule?")
+    )
+      return;
     await run(async () => {
       await del(`/routines/${routineId}/triggers/${triggerId}`);
       await refresh();

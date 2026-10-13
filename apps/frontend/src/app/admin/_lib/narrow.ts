@@ -48,12 +48,13 @@ export function asAuditEntry(raw: AdminAction): AuditEntry {
         ? `${raw.timestamp}#${raw.action_id}`
         : (raw.timestamp ?? "");
 
+  const RESULTS: readonly AuditEntry["result"][] = ["success", "error", "partial_failure"];
+  const rawResult = (raw as Record<string, unknown>).result;
   const result =
     raw.status === "error" || raw.status === "success"
       ? raw.status
-      : (raw as Record<string, unknown>).result === "error" ||
-          (raw as Record<string, unknown>).result === "success"
-        ? ((raw as Record<string, unknown>).result as "success" | "error")
+      : RESULTS.includes(rawResult as AuditEntry["result"])
+        ? (rawResult as AuditEntry["result"])
         : "success";
 
   const auditStatus =

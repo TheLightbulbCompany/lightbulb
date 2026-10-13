@@ -665,7 +665,10 @@ function SettingsPageInner() {
     (isAdmin || !ADMIN_ONLY_PANELS.has(initialPanelParam))
       ? (initialPanelParam as Panel)
       : "profile";
-  const [activePanel, setActivePanel] = useState<Panel>(initialPanel);
+  // Derived, not latched: isAdmin reads false until Clerk knows the membership,
+  // so the deep-linked tab re-resolves once it does. A click wins from then on.
+  const [chosenPanel, setActivePanel] = useState<Panel | null>(null);
+  const activePanel = chosenPanel ?? initialPanel;
   const ActivePanelComponent = PANELS[activePanel];
 
   // …but a `?panel=` value can also name a destination that is NOT a tab here:

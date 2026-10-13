@@ -118,8 +118,10 @@ export function ModerationActions({
     setRejectOpen(next);
     if (!next) {
       // On close, restore the prefilled notes (don't clobber the safety-scan
-      // pre-fill if the admin opened-then-cancelled).
+      // pre-fill if the admin opened-then-cancelled), and drop a reject error
+      // that belonged to the dialog.
       setNotes(prefilledRejectionNotes ?? "");
+      setError(null);
     }
   }
 
@@ -182,6 +184,12 @@ export function ModerationActions({
               className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground"
               aria-label="Rejection notes"
             />
+            {/* Inside the dialog: the modal overlay hides anything rendered behind it. */}
+            {error && (
+              <p className="text-xs text-err" role="alert">
+                {error}
+              </p>
+            )}
             <AlertDialogFooter>
               <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
               <AlertDialogAction
@@ -195,7 +203,7 @@ export function ModerationActions({
           </AlertDialogContent>
         </AlertDialog>
       </div>
-      {error && (
+      {error && !rejectOpen && (
         <span className="text-xs text-err" role="alert">
           {error}
         </span>

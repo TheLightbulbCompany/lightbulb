@@ -77,11 +77,12 @@ async def revoke_all(body: RevokeAllBody, auth: Annotated[AuthContext, Depends(g
 
     # 1. Cancel open provisioning workflows (pure DDB; never deprovisions).
     cancelled, _open = await account_wipe.cancel_open_workflows(owner_id)
-    revoked.append(f"workflows_cancelled:{cancelled}")
+    if cancelled:
+        revoked.append(f"workflows_cancelled:{cancelled}")
 
     # 2. Delete our Secrets Manager copies: every projects/* credential the
-    # Provisioning rail landed, plus the retained posthog token (delete
-    # no-ops when absent).
+    # Provisioning rail landed, plus the retained posthog token. Only what was
+    # really there is reported: the toast counts this list.
     # Mark first: every OAuth connect started before now is refused when it lands
     # (connections.oauth_callback). Then read the rows under the lease, so a callback
     # already past that check finishes its write before the snapshot and is torn down below.
@@ -107,8 +108,8 @@ async def revoke_all(body: RevokeAllBody, auth: Annotated[AuthContext, Depends(g
     keys = [k for k in rows if k.startswith(integrations_repo.PROJECTS_KEY_PREFIX)]
     keys.append("posthog")
     for key in keys:
-        await integration_secret_store.delete(owner_id, key)
-        revoked.append(f"secret:{key}")
+        if await integration_secret_store.delete(owner_id, key):
+            revoked.append(f"secret:{key}")
 
     # 2b. Every connected app, through the Disconnect route's own teardown (same per-owner
     # guard, same github follow-up). One that fails is reported; the rest still go.

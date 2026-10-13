@@ -821,15 +821,18 @@ async def _mirror_agent_update(
             owner_id=owner_id,
             repo=PaperclipRepo(table_name="paperclip-companies"),
         )
-        if company_id:
-            async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as client:
-                await _mirror_paperclip_update_with_retry(
-                    admin=PaperclipAdminClient(http_client=client),
-                    cookie=await get_admin_session_cookie(client),
-                    company_id=company_id,
-                    agent_id=agent_id,
-                    body=body,
-                )
+        if not company_id:
+            # No company row means nowhere to write the edit -- the same lost edit as a failed
+            # mirror, so it gets the same refusal below instead of {"ok": True}.
+            raise RuntimeError("no Paperclip company for owner")
+        async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as client:
+            await _mirror_paperclip_update_with_retry(
+                admin=PaperclipAdminClient(http_client=client),
+                cookie=await get_admin_session_cookie(client),
+                company_id=company_id,
+                agent_id=agent_id,
+                body=body,
+            )
     except AgentLifecycleConflict:
         raise
     except (PaperclipApiError, httpx.HTTPError, RuntimeError) as exc:

@@ -638,19 +638,32 @@ async def delete_stripe_customer(owner_id: str) -> bool:
 
 async def pause_subscription_for_owner(user_id: str) -> dict:
     """Admin: pause Stripe subscription billing (mark_uncollectible)."""
+    return await _set_pause_collection(user_id, pause=True)
+
+
+async def resume_subscription_for_owner(user_id: str) -> dict:
+    """Admin: undo ``pause_subscription_for_owner`` (clear pause_collection)."""
+    return await _set_pause_collection(user_id, pause=False)
+
+
+async def _set_pause_collection(user_id: str, *, pause: bool) -> dict:
+    """Reads Stripe first so a pause of a paused subscription (or a resume of a
+    running one) reports the no-op instead of "paused". No Stripe idempotency key:
+    setting pause_collection is already idempotent, and a fixed key would replay a
+    pause → resume → pause cycle's first response inside Stripe's 24 h window."""
     billing = await billing_repo.get_by_owner_id(user_id)
     if not billing or not billing.get("stripe_subscription_id"):
         return {"status": "no_subscription"}
     sub_id = billing["stripe_subscription_id"]
+    verb = "pause" if pause else "resume"
     try:
-        stripe.Subscription.modify(
-            sub_id,
-            pause_collection={"behavior": "mark_uncollectible"},
-            idempotency_key=f"sub_modify:{sub_id}:pause",
-        )
+        paused = bool(stripe.Subscription.retrieve(sub_id).get("pause_collection"))
+        if paused == pause:
+            return {"status": "already_paused" if pause else "not_paused", "subscription_id": sub_id}
+        stripe.Subscription.modify(sub_id, pause_collection={"behavior": "mark_uncollectible"} if pause else "")
     except Exception as e:  # noqa: BLE001
-        raise BillingServiceError(f"stripe_pause_failed: {e}")
-    return {"status": "paused", "subscription_id": sub_id}
+        raise BillingServiceError(f"stripe_{verb}_failed: {e}")
+    return {"status": "paused" if pause else "resumed", "subscription_id": sub_id}
 
 
 async def issue_credit_for_owner(user_id: str, *, amount_cents: int, reason: str, request_id: str) -> dict:

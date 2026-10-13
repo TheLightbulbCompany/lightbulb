@@ -35,7 +35,7 @@ vi.mock("@clerk/nextjs", () => ({
     getToken: vi.fn().mockResolvedValue("test-token"),
     isSignedIn: true,
   }),
-  useOrganization: () => mockUseOrganization(),
+  useOrganization: () => ({ isLoaded: true, ...mockUseOrganization() }),
 }));
 
 // Hoisted spies so each test body can both inject them into the mocked

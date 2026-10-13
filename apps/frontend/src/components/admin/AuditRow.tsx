@@ -11,7 +11,7 @@ export interface AuditEntry {
   target_user_id: string;
   /** Dotted action name, e.g. `container.reprovision`. */
   action: string;
-  result: "success" | "error";
+  result: "success" | "error" | "partial_failure";
   audit_status?: "written" | "panic";
   http_status: number;
   elapsed_ms: number;
@@ -84,7 +84,9 @@ export function AuditRow({ entry, onClick }: AuditRowProps) {
           "rounded-sm px-2 py-0.5 text-2xs font-semibold uppercase tracking-caps",
           isError
             ? "border border-err text-err"
-            : "border border-ok text-ok",
+            : entry.result === "partial_failure"
+              ? "border border-warn text-warn"
+              : "border border-ok text-ok",
         )}
       >
         {entry.result}

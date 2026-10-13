@@ -18,6 +18,10 @@ export async function pauseSubscription(userId: string): Promise<ActionResult> {
   return adminPost(`/admin/users/${encodeURIComponent(userId)}/billing/pause-subscription`);
 }
 
+export async function resumeSubscription(userId: string): Promise<ActionResult> {
+  return adminPost(`/admin/users/${encodeURIComponent(userId)}/billing/resume-subscription`);
+}
+
 export async function issueCredit(
   userId: string,
   amountCents: number,

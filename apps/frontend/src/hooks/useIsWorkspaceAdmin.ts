@@ -7,10 +7,10 @@ import { useOrganization } from "@clerk/nextjs";
  * (no org membership) is implicitly the admin of their own resources; org
  * members count only with the `org:admin` role.
  *
- * `membership` is undefined while Clerk is still resolving the active org,
- * which reads as admin here — a UX-only race, invisible in practice because
- * Clerk's hooks are eager, and every write this gates is re-enforced
- * server-side (403).
+ * While Clerk is still loading this reads as NOT admin: an unknown caller
+ * must not see admin-only UI, even for a frame. Callers that latch a choice
+ * from it (Settings' deep-linked panel) re-resolve once it flips. Every write
+ * this gates is re-enforced server-side (403).
  *
  * This is the single source for the "personal owner OR org admin" gate.
  * Note the distinct strict check `membership?.role === "org:admin"`
@@ -18,6 +18,7 @@ import { useOrganization } from "@clerk/nextjs";
  * don't collapse the two.
  */
 export function useIsWorkspaceAdmin(): boolean {
-  const { membership } = useOrganization();
+  const { isLoaded, membership } = useOrganization();
+  if (!isLoaded) return false;
   return !membership || membership.role === "org:admin";
 }

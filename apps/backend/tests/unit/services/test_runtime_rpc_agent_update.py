@@ -74,6 +74,21 @@ async def test_name_and_existing_metadata_share_one_patch(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_missing_company_refuses_instead_of_answering_ok(monkeypatch):
+    """No company row means the name was written nowhere; that is a lost edit, not ok."""
+    admin = MagicMock()
+    admin.patch_agent = AsyncMock(return_value={})
+    _wire_admin(monkeypatch, admin)
+    monkeypatch.setattr(runtime_rpc, "resolve_company_id_for_owner", AsyncMock(return_value=None))
+
+    with pytest.raises(ApiProblem) as exc:
+        await runtime_rpc._mirror_agent_update("org_1", {"agentId": "a1", "name": "Ada"})
+
+    assert exc.value.error.code == "RUNTIME_UNAVAILABLE"
+    admin.patch_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_noop_update_skips_paperclip(monkeypatch):
     client = MagicMock()
     monkeypatch.setattr(runtime_rpc.httpx, "AsyncClient", client)

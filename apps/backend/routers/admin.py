@@ -393,7 +393,8 @@ async def admin_provision_retry(
     status = row.get("status")
     if status == "running":
         raise HTTPException(status_code=409, detail="Container is running — nothing to retry")
-    await dispatch_provision(owner_id)
+    if not await dispatch_provision(owner_id):
+        raise HTTPException(status_code=502, detail="Provisioning could not be started — nothing was dispatched")
     fresh = await container_repo.get_by_owner_id(owner_id)
     return {
         "ok": True,
@@ -416,6 +417,8 @@ _BILLING_NOOP_REASONS = {
         "That invoice belongs to a different Stripe customer than this workspace — nothing was changed."
     ),
     "already_paid": "That invoice is already paid — nothing was changed.",
+    "already_paused": "This subscription is already paused — nothing was changed.",
+    "not_paused": "This subscription is not paused — nothing was changed.",
 }
 
 
@@ -446,7 +449,7 @@ async def admin_billing_cancel_subscription(
 
 @router.post(
     "/users/{user_id}/billing/pause-subscription",
-    description="Pause Stripe subscription billing (mark_uncollectible). Resumes on unpause.",
+    description="Pause Stripe subscription billing (mark_uncollectible). Undo with resume-subscription.",
 )
 @idempotency()
 @audit_admin_action("billing.pause_subscription")
@@ -457,6 +460,21 @@ async def admin_billing_pause_subscription(
 ):
     owner_id, _ = await resolve_admin_owner_id(user_id)
     return _refuse_billing_noop(await billing_service.pause_subscription_for_owner(owner_id))
+
+
+@router.post(
+    "/users/{user_id}/billing/resume-subscription",
+    description="Resume Stripe subscription billing paused by pause-subscription.",
+)
+@idempotency()
+@audit_admin_action("billing.resume_subscription")
+async def admin_billing_resume_subscription(
+    user_id: str,
+    request: Request,
+    auth: AuthContext = Depends(require_platform_admin),
+):
+    owner_id, _ = await resolve_admin_owner_id(user_id)
+    return _refuse_billing_noop(await billing_service.resume_subscription_for_owner(owner_id))
 
 
 @router.post(

@@ -74,17 +74,19 @@ async def get(owner_id: str, provider: str) -> dict[str, Any] | None:
     return await run_in_thread(_get)
 
 
-async def delete(owner_id: str, provider: str) -> None:
+async def delete(owner_id: str, provider: str) -> bool:
     """Force-delete the secret (no recovery window) so a disconnect stops the
     credential from being re-injected immediately. No-op when the secret is
-    absent — actor-refresh providers never stored one."""
+    absent — actor-refresh providers never stored one. Returns whether a secret
+    was actually deleted."""
     name = _secret_name(owner_id, provider)
 
-    def _delete() -> None:
+    def _delete() -> bool:
         sm = _client()
         try:
             sm.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
         except sm.exceptions.ResourceNotFoundException:
-            pass
+            return False
+        return True
 
-    await run_in_thread(_delete)
+    return await run_in_thread(_delete)

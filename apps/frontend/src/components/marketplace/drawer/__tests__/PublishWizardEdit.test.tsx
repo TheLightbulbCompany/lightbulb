@@ -45,7 +45,7 @@ vi.mock("@clerk/nextjs", () => ({
     getToken: vi.fn().mockResolvedValue("test-token"),
     isSignedIn: true,
   }),
-  useOrganization: () => mockUseOrganization(),
+  useOrganization: () => ({ isLoaded: true, ...mockUseOrganization() }),
 }));
 
 vi.mock("@/hooks/useAgents", () => ({

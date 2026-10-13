@@ -96,3 +96,46 @@ async def test_a_deduplicated_credit_is_reported_as_a_duplicate(monkeypatch):
 
     assert result["status"] == "duplicate"
     assert result["transaction_id"] == "cbtxn_1"
+
+
+def _subscription(monkeypatch, pause_collection):
+    modify = MagicMock()
+    monkeypatch.setattr(
+        billing_service.stripe.Subscription,
+        "retrieve",
+        MagicMock(return_value={"id": "sub_1", "pause_collection": pause_collection}),
+    )
+    monkeypatch.setattr(billing_service.stripe.Subscription, "modify", modify)
+    return modify
+
+
+@pytest.mark.asyncio
+async def test_pausing_a_paused_subscription_says_so_and_writes_nothing(monkeypatch):
+    _owner(monkeypatch, {"owner_id": "org_1", "stripe_subscription_id": "sub_1"})
+    modify = _subscription(monkeypatch, {"behavior": "mark_uncollectible"})
+
+    result = await billing_service.pause_subscription_for_owner("org_1")
+
+    assert result == {"status": "already_paused", "subscription_id": "sub_1"}
+    modify.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pause_then_resume_flips_pause_collection(monkeypatch):
+    _owner(monkeypatch, {"owner_id": "org_1", "stripe_subscription_id": "sub_1"})
+    modify = _subscription(monkeypatch, None)
+    assert (await billing_service.pause_subscription_for_owner("org_1"))["status"] == "paused"
+    assert modify.call_args.kwargs == {"pause_collection": {"behavior": "mark_uncollectible"}}
+
+    modify = _subscription(monkeypatch, {"behavior": "mark_uncollectible"})
+    assert (await billing_service.resume_subscription_for_owner("org_1"))["status"] == "resumed"
+    assert modify.call_args.kwargs == {"pause_collection": ""}
+
+
+@pytest.mark.asyncio
+async def test_resuming_a_running_subscription_says_so_and_writes_nothing(monkeypatch):
+    _owner(monkeypatch, {"owner_id": "org_1", "stripe_subscription_id": "sub_1"})
+    modify = _subscription(monkeypatch, None)
+
+    assert (await billing_service.resume_subscription_for_owner("org_1"))["status"] == "not_paused"
+    modify.assert_not_called()

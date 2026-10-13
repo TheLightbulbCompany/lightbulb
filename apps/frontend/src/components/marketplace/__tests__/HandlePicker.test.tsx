@@ -14,7 +14,7 @@ const mockUseOrganization = vi.fn(() => ({ membership: null as null | { role: st
 const mockGetToken = vi.fn().mockResolvedValue("test-token");
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ getToken: mockGetToken }),
-  useOrganization: () => mockUseOrganization(),
+  useOrganization: () => ({ isLoaded: true, ...mockUseOrganization() }),
 }));
 
 // Stub the API surface — HandlePicker imports these eagerly but the gate

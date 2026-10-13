@@ -719,6 +719,14 @@ def browser_open(row: dict, now: int | None = None) -> Literal["mac", "cloud"] |
     return opened.get("where") if opened.get("where") in ("mac", "cloud") else None
 
 
+def reconnect_last_event_at(previous: dict | None, generation: str) -> int | None:
+    """A reconnect re-registers every session of its Mac, and that is not activity: the same live
+    run keeps the time it last did something. A new run (a resume, a new process) is activity."""
+    if previous and previous.get("generation") == generation and previous.get("endedAt") is None:
+        return previous.get("lastEventAt")
+    return None
+
+
 def ended_empty(provider: str, status: str, event_seq: int, control_unavailable_reason: str | None) -> bool:
     """A Claude Code session that ended before its first message: Claude writes a transcript only
     on that message, so there is nothing to show or resume (`claude --resume` answers "No
@@ -1051,7 +1059,7 @@ async def register_session(owner_id: str, user_id: str, device_id: str, registra
             "sessionId": sid,
             "revision": str(uuid.uuid4()),
             "commandSeq": (previous or {}).get("commandSeq", 0),
-            "lastEventAt": int(time.time()),
+            "lastEventAt": reconnect_last_event_at(previous, registration.generation) or int(time.time()),
         }
         if registration.start_id is None and previous and previous.get("generation") == registration.generation:
             row["startId"] = previous.get("startId")

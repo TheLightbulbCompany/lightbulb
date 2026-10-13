@@ -117,8 +117,9 @@ def test_a_turn_in_a_deleted_room_reads_nothing(client, monkeypatch, path, reade
 @pytest.mark.parametrize(("path", "reader"), ROUTES)
 def test_a_meet_turn_reads_as_the_inviter_and_never_carries_their_other_rights(client, monkeypatch, path, reader):
     """Owner ruling 2026-10-13: a Google Meet's turn reads as the member who invited the agents."""
-    read = AsyncMock(return_value={"ok": reader})
+    read = AsyncMock(return_value={"rooms": []} if reader == "rooms_for" else {"ok": reader})
     monkeypatch.setattr(router.hosted_mcp, reader, read)
+    monkeypatch.setattr(router.service, "get_room", AsyncMock(return_value=type("R", (), {"kind": "channel"})()))
     grant = _grant(None, "user_ana")
     response = client.get(path, headers={"Authorization": f"Bearer {grant}"})
     assert response.status_code == 200 and read.await_args.args[0].user_id == "user_ana"
@@ -134,3 +135,22 @@ def test_an_inviter_who_left_the_room_reads_nothing(client, monkeypatch, path, r
     response = client.get(path, headers={"Authorization": f"Bearer {_grant(None, 'user_ana')}"})
     assert response.status_code == 403 and response.json()["code"] == "ROOM_FORBIDDEN"
     read.assert_not_awaited()
+
+
+def test_a_meet_turn_reads_channels_never_dms(client, monkeypatch):
+    """Owner ruling 2026-10-13: everyone on a Meet hears the answer, so reading as the inviter covers
+    channels only. Enforced by the backend, not by the agent's instructions."""
+    rooms = [{"roomId": "c", "kind": "channel"}, {"roomId": "d", "kind": "dm"}, {"roomId": "g", "kind": "group-dm"}]
+    monkeypatch.setattr(router.hosted_mcp, "rooms_for", AsyncMock(return_value={"rooms": rooms}))
+    reader = {"Authorization": f"Bearer {_grant(None, 'user_ana')}"}
+    found = client.get("/api/v1/messaging/agent-read/rooms", headers=reader).json()
+    assert [r["roomId"] for r in found["rooms"]] == ["c"]
+    asker = client.get("/api/v1/messaging/agent-read/rooms", headers={"Authorization": f"Bearer {_grant('user_ana')}"})
+    assert len(asker.json()["rooms"]) == 3  # a signed-in asker keeps their own DMs
+    read = AsyncMock(return_value={"messages": []})
+    monkeypatch.setattr(router.hosted_mcp, "messages_for", read)
+    for kind, status in (("dm", 403), ("group-dm", 403), ("channel", 200)):
+        monkeypatch.setattr(router.service, "get_room", AsyncMock(return_value=type("R", (), {"kind": kind})()))
+        got = client.get(f"/api/v1/messaging/agent-read/messages?room_id={ROOM}", headers=reader)
+        assert got.status_code == status, kind
+    assert read.await_count == 1

@@ -76,10 +76,10 @@ ids are what Paperclip assignments use.
 When someone asks about another channel, DM or group chat ("what did we decide
 in #launch?", "check our recent conversations"), use `lightbulb_read_rooms`:
 `find` the room, then `read` its latest messages. You see exactly what the person
-who asked can open, nothing more. In a Google Meet you read with the access of the
-member who invited you, and everyone on the call hears what you say: with guests on
-the call, summarise and say nothing from a private DM. With no signed-in person
-behind the turn (a routine), nothing is readable: say so instead of guessing. Do not
+who asked can open, nothing more. In a Google Meet you read the channels the member
+who invited you can open, never a DM or group chat, and everyone on the call hears
+what you say. With no signed-in person behind the turn (a routine), nothing is
+readable: say so instead of guessing. Do not
 repeat a private DM into a room with other people unless the person asking wants it.
 
 ## Human-shared local sessions (optional native adapter)

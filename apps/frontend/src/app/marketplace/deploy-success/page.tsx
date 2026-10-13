@@ -12,6 +12,11 @@ import type { ListingDetailResponse } from "@/lib/marketplace/types";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 
+/** The deploy route's 403 for an unpaid listing: "purchase required to deploy this listing". */
+function isEntitlementPending(status: number, detail: unknown): boolean {
+  return status === 403 && typeof detail === "string" && detail.startsWith("purchase required");
+}
+
 function titleCase(token: string): string {
   return token
     .split(/[-_]/)
@@ -139,13 +144,15 @@ function DeploySuccessInner() {
             },
           },
         );
-        if (resp.status === 403) {
-          setPhase("entitlement_pending");
-          return;
-        }
         if (!resp.ok) {
           const body = await resp.json().catch(() => ({}));
           const d = body?.detail;
+          // Only the backend's "purchase required" 403 means the Stripe webhook
+          // hasn't landed; any other 403 (admin-only, wrong session) is a real error.
+          if (isEntitlementPending(resp.status, d)) {
+            setPhase("entitlement_pending");
+            return;
+          }
           // Structured 409s: deploy_in_progress means THIS deploy is already
           // running (a mid-deploy refresh lands here) — "Try again" is the
           // exact retry-invitation that once duplicated an agent, so it gets

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSWRConfig } from "swr";
+import { notifyApiError } from "@/lib/notify";
 import { useSearchParams } from "next/navigation";
 
 import { capture } from "@/lib/analytics";
@@ -285,6 +286,13 @@ export function ProvisioningStepper({
     container,
     refresh,
   } = useProvisioningState();
+  const checkAgain = async () => {
+    try {
+      await refresh();
+    } catch (err) {
+      notifyApiError(err, "Couldn't check your workspace status");
+    }
+  };
   // Same /container/recover call HealthIndicator's CONTAINER_DOWN action uses
   // (useSystemHealth) — nothing re-dispatches a failed provision on its own, so
   // the failed state's Retry button below drives it explicitly.
@@ -850,7 +858,7 @@ export function ProvisioningStepper({
                   variant="outline"
                   size="sm"
                   className="rounded-full border-[var(--edge)]"
-                  onClick={() => refresh()}
+                  onClick={checkAgain}
                 >
                   Check again
                 </Button>
@@ -999,7 +1007,7 @@ export function ProvisioningStepper({
               variant="outline"
               size="sm"
               className="rounded-full border-[var(--edge)]"
-              onClick={() => refresh()}
+              onClick={checkAgain}
             >
               Check again
             </Button>
@@ -1146,7 +1154,7 @@ export function ProvisioningStepper({
                   variant="outline"
                   size="sm"
                   className="rounded-full border-[var(--edge)]"
-                  onClick={() => refresh()}
+                  onClick={checkAgain}
                 >
                   Check again
                 </Button>
@@ -1590,7 +1598,7 @@ export function ProvisioningStepper({
                   // presses erased their own escalation and started the 5-min
                   // budget over — 21 hours of stall read as five minutes,
                   // repeatedly.
-                  onClick={() => refresh()}
+                  onClick={checkAgain}
                 >
                   Check again
                 </Button>

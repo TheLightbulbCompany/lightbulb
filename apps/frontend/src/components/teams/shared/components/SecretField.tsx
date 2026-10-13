@@ -1,6 +1,9 @@
 "use client";
 
-import { Copy } from "lucide-react";
+import { Check, Copy } from "lucide-react";
+import { useState } from "react";
+
+import { notifyApiError } from "@/lib/notify";
 
 // A copy-to-clipboard row for a one-time secret value (webhook URL / signing
 // secret). Shared by RoutineDetailPanel's rotate/add-trigger flows and
@@ -19,6 +22,16 @@ export function SecretField({
   value: string;
   copyLabel?: string;
 }) {
+  const [copied, setCopied] = useState(false);
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      notifyApiError(err, "Couldn't copy to the clipboard");
+    }
+  }
   return (
     <div>
       <div className="flex items-center justify-between gap-2">
@@ -26,10 +39,15 @@ export function SecretField({
         <button
           type="button"
           aria-label={`Copy ${copyLabel ?? label}`}
-          onClick={() => navigator.clipboard.writeText(value)}
+          onClick={copy}
           className="text-[var(--midnight-muted)] hover:text-[var(--midnight)]"
         >
-          <Copy size={16} aria-hidden="true" />
+          {copied ? (
+            <Check size={16} aria-hidden="true" />
+          ) : (
+            <Copy size={16} aria-hidden="true" />
+          )}
+          {copied && <span className="sr-only" role="status">Copied</span>}
         </button>
       </div>
       <code

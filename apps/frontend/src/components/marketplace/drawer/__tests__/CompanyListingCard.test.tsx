@@ -9,6 +9,9 @@ vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ getToken: vi.fn().mockResolvedValue("tok_test") }),
 }));
 
+const isAdmin = vi.hoisted(() => ({ value: true }));
+vi.mock("@/hooks/useIsWorkspaceAdmin", () => ({ useIsWorkspaceAdmin: () => isAdmin.value }));
+
 vi.mock("@/lib/marketplace/api", () => ({
   deployCompany: vi.fn(),
 }));
@@ -45,6 +48,7 @@ function companyListing(minPlan: "standard" | "ultra_pro"): Listing {
 
 beforeEach(() => {
   vi.mocked(deployCompany).mockReset();
+  isAdmin.value = true;
 });
 
 describe("<CompanyListingCard>", () => {
@@ -70,5 +74,13 @@ describe("<CompanyListingCard>", () => {
     expect(screen.queryByText(/^ultra$/i)).toBeNull();
     expect(screen.queryByRole("link", { name: /upgrade in settings/i })).toBeNull();
     expect(screen.getByRole("button", { name: /deploy company/i })).toBeEnabled();
+  });
+
+  it("disables Deploy company for non-admins with a reason", () => {
+    isAdmin.value = false;
+    render(<CompanyListingCard listing={companyListing("standard")} />);
+    const btn = screen.getByRole("button", { name: /deploy company/i });
+    expect(btn).toBeDisabled();
+    expect(btn).toHaveAttribute("title", expect.stringMatching(/admins/i));
   });
 });

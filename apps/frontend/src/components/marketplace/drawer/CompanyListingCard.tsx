@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import Link from "next/link";
 
+import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { companyMeta } from "@/components/marketplace/storefront/Listing/CompanyCard";
 import { deployCompany } from "@/lib/marketplace/api";
 import type { Listing } from "@/lib/marketplace/types";
@@ -18,6 +19,7 @@ import type { Listing } from "@/lib/marketplace/types";
 export function CompanyListingCard({ listing }: { listing: Listing }) {
   const company = companyMeta(listing);
   const { getToken } = useAuth();
+  const isAdmin = useIsWorkspaceAdmin();
   const [phase, setPhase] = useState<"idle" | "deploying" | "started">("idle");
   const [error, setError] = useState<string | null>(null);
 
@@ -66,7 +68,8 @@ export function CompanyListingCard({ listing }: { listing: Listing }) {
           <button
             type="button"
             onClick={deploy}
-            disabled={phase === "deploying"}
+            disabled={phase === "deploying" || !isAdmin}
+            title={isAdmin ? undefined : "Only workspace admins can deploy a company."}
             className="text-[var(--cream)] bg-[var(--midnight)] border border-[var(--midnight)] px-3.5 py-1.5 rounded-full text-ui font-semibold hover:opacity-90 transition disabled:opacity-50"
           >
             {phase === "deploying" ? "Deploying…" : "Deploy company"}

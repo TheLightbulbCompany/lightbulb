@@ -3,6 +3,8 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import useSWR from "swr";
+
+import { notifyApiError } from "@/lib/notify";
 import { useApi } from "@/lib/api";
 
 export type CreditsBalance = {
@@ -166,8 +168,12 @@ export function useCredits() {
   };
 
   const openBilling = async () => {
-    const { portal_url } = await api.post("/billing/portal", {}) as PortalResponse;
-    window.location.href = portal_url;
+    try {
+      const { portal_url } = await api.post("/billing/portal", {}) as PortalResponse;
+      window.location.href = portal_url;
+    } catch (err) {
+      notifyApiError(err, "Couldn't open billing");
+    }
   };
 
   return {

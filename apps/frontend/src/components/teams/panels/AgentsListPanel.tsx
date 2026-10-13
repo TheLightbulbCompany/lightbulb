@@ -27,6 +27,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { notifyApiError } from "@/lib/notify";
 import { handleShellLinkClick } from "@/lib/shellNav";
 import { agentInspectorUrl } from "@/components/teams/shared/lib/agentInspectorUrl";
 import { useAgentMutations } from "@/components/teams/agents/hooks/useAgentMutations";
@@ -124,15 +125,24 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
           <span className="flex items-center justify-end gap-2">
             <button
               className="text-sm hover:underline text-[var(--midnight-soft)]"
-              onClick={() => (paused ? resume(a.id) : pause(a.id))}
+              onClick={async () => {
+                try {
+                  await (paused ? resume(a.id) : pause(a.id));
+                } catch (err) {
+                  notifyApiError(err, paused ? "Couldn't resume this agent" : "Couldn't pause this agent");
+                }
+              }}
             >
               {paused ? "Resume" : "Pause"}
             </button>
             <button
               className="text-sm hover:underline text-[var(--err)]"
-              onClick={() => {
-                if (window.confirm(`Delete ${a.name}? This removes the agent and its workspace.`)) {
-                  remove(a.id);
+              onClick={async () => {
+                if (!window.confirm(`Delete ${a.name}? This removes the agent and its workspace.`)) return;
+                try {
+                  await remove(a.id);
+                } catch (err) {
+                  notifyApiError(err, "Couldn't delete this agent");
                 }
               }}
             >

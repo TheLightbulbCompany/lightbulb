@@ -1,4 +1,4 @@
-from huddle_agent.request_list import MAX_WORKING, RequestList, ack_line
+from huddle_agent.request_list import MAX_WORKING, RequestList
 
 NAMES = {"pulse": "Pulse", "forge": "Forge", "friday": "Friday"}.get
 SPLIT = [
@@ -122,15 +122,6 @@ def test_the_strip_shows_the_row_being_worked_on_not_the_last_queued():
     assert rl.task("a") == "one"  # the row it works on, not the one behind it
 
 
-def test_the_acknowledgement_names_every_task_once():
-    rl, rows = routed()
-    started(rl, rows)  # every request starts before its acknowledgement
-    assert ack_line(rows, NAMES) == (
-        "You are on an update on the go-to-market strategy. Forge is on what our PRs look like. "
-        "Friday is on a summary of our rooms. Say that in one short sentence, then wait."
-    )
-
-
 def test_a_cancelled_row_is_never_postable():
     rl = RequestList()
     (r,) = rl.settle(1, "u1", [{"agentId": "a", "task": "t"}], 0.0)
@@ -229,57 +220,6 @@ def test_for_route_lists_open_rows_then_three_newest_delivered_capped_at_twelve(
     assert out == [f"a{i}" for i in range(7, 15)] + ["z", "a0", "a1", "a2"]
 
 
-def rows_for(*pairs):
-    """Working rows: the acknowledgement of work that has started."""
-    rows = RequestList().settle(
-        1, "u", [{"agentId": a, "task": t} for a, t in pairs], 0.0
-    )
-    for r in rows:
-        r.status = "working"
-    return rows
-
-
-def test_ack_line_one_row_mine():
-    rows = rows_for(("pulse", "the update"))
-    assert (
-        ack_line(rows, NAMES, "pulse")
-        == "You are on the update. Say that in one short sentence, then wait."
-    )
-
-
-def test_ack_line_two_mine():
-    rows = rows_for(("pulse", "A"), ("pulse", "B"))
-    assert (
-        ack_line(rows, NAMES)
-        == "You are on A and on B. Say that in one short sentence, then wait."
-    )
-
-
-def test_ack_line_mine_and_another_agents_two():
-    rows = rows_for(("pulse", "A"), ("forge", "C"), ("forge", "D"))
-    assert ack_line(rows, NAMES, "pulse") == (
-        "You are on A. Forge is on C and on D. Say that in one short sentence, then wait."
-    )
-
-
-def test_ack_line_none_mine():
-    rows = rows_for(("forge", "C"))
-    assert (
-        ack_line(rows, NAMES, "pulse")
-        == "Forge is on C. Say that in one short sentence, then wait."
-    )
-
-
-def test_ack_line_names_three_and_counts_the_rest():
-    rows = rows_for(
-        ("pulse", "A"), ("forge", "B"), ("friday", "C"), ("pulse", "D"), ("forge", "E")
-    )
-    assert ack_line(rows, NAMES) == (
-        "You are on A and on D. Forge is on B. And 2 more, shown in the room. "
-        "Say that in one short sentence, then wait."
-    )
-
-
 def test_one_agents_stop_while_route_decides_drops_only_its_row():
     rl = RequestList()
     rl.pending(1, "u", ["forge", "friday"], 0.0)
@@ -294,13 +234,3 @@ def test_one_agents_stop_while_route_decides_drops_only_its_row():
         "friday"
     ]
 
-
-def test_ack_line_says_queued_rows_of_me_are_next_in_line():
-    rows = rows_for(("pulse", "A"), ("pulse", "B"), ("forge", "C"))
-    rows[1].status = rows[2].status = "queued"  # Forge's queued row still reads "is on"
-    assert ack_line([rows[1]], NAMES, "pulse") == (
-        "B is next in line for you. Say that in one short sentence, then wait."
-    )
-    assert ack_line(rows, NAMES, "pulse") == (
-        "You are on A. B is next in line for you. Forge is on C. Say that in one short sentence, then wait."
-    )

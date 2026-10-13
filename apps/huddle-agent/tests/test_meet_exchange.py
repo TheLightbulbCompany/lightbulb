@@ -282,10 +282,9 @@ async def test_an_answer_cut_before_its_person_turned_away_is_kept_once_and_neve
     h.on_agent_said("forge", "Three PRs are open.", interrupted=True)  # their sound cut its first sentence
     await says(h, P1, "Dan, did you push that fix last night?")
     await settle(h)
-    assert "forge" not in h._cut_off
     assert hand(h, "forge") == ["Three PRs are open. The oldest is two days old."]
     quiet(h)
-    clock.t += h_mod.CUT_WAIT_S + h_mod.MEET_QUIET_S + h_mod.gate.ANNOUNCE_QUIET
+    clock.t += 10.0 + h_mod.MEET_QUIET_S + h_mod.gate.ANNOUNCE_QUIET  # (10 s: the old cut-answer wait)
     await h.tick()
     await settle(h)
     assert backend.late_answers == [] and len(h._ledger) == 1 and h._ledger[0].state == "speaking"

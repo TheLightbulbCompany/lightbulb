@@ -777,7 +777,7 @@ def test_a_run_given_up_is_waited_for_no_longer_and_its_frames_are_still_read():
 
     sink, now = Sink(), [100.0]
     runs = Runs(sink, clock=lambda: now[0])
-    run = runs.started("r1", "forge", speaker=P1, request="x", delegation_id=None, gen=None)
+    run = runs.started("r1", "forge", speaker=P1, request="x", gen=None)
     assert run.accepted == 0.0 and runs.running("forge") == [run]  # /turns has not taken it: no deadline runs
     runs.give_up("r1")
     assert runs.running("forge") == []

@@ -524,29 +524,6 @@ def ghost_line(text: str, prompt: str | None) -> bool:
     return opening or said == full or (len(said) >= 12 and len(said.split()) >= 4 and said in full)
 
 
-def addressed_by_name(said: str, people: dict[str, str]) -> str | None:
-    """Who an agent's last sentence asks by name ("..., John, does that work?" / "John, can you confirm?").
-    `people`: identity -> display name. A question asks the last person it names; a statement only a
-    leading "Name,"."""
-    sentences = [s for s in re.split(r"(?<=[.!?])\s+", said.strip()) if s]
-    if not sentences:
-        return None
-    last = sentences[-1]
-    best: tuple[int, str] | None = None
-    for identity, display in people.items():
-        for name in {display, display.split()[0]} if display.strip() else ():
-            word = rf"(?<!\w){re.escape(name)}(?!\w)"
-            if last.endswith("?"):
-                m = None
-                for m in re.finditer(word, last, re.IGNORECASE):
-                    pass  # the last mention is the one being asked
-                if m and (best is None or m.start() > best[0]):
-                    best = (m.start(), identity)
-            elif re.match(word + r"\s*,", last, re.IGNORECASE) and best is None:
-                best = (0, identity)
-    return best[1] if best else None
-
-
 def stt_prompt(agent_names: list[str], people_names: list[str]) -> str:
     """Names the STT should spell right, capped at STT_PROMPT_CHARS."""
     out = "A team voice call. Names:"

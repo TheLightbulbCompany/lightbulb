@@ -151,18 +151,22 @@ fn live_mirrors(scope: &Path) -> Result<Vec<Mirror>> {
 const BROWSER_AMBIGUOUS: &str = "More than one session runs in this process (the Codex app, or one Codex \
     service for several conversations), so the Lightbulb browser cannot tell which one is asking";
 
-/// The one shared session among a browser connection's peer process and its ancestors. Every
-/// session those processes run counts, shared or not: an Only-me or unverified one could be the
-/// one asking, so a shared neighbour is never answered in its place (never the wrong session's
-/// browser). A Codex process that serves many conversations is refused even with one mirrored.
+/// The session a browser connection belongs to: the one in the NEAREST process, on the chain from
+/// the peer upward (closest first), that runs any session at all, shared or not. That session owns
+/// its descendants, so a session started inside another one browses as itself, and an Only-me or
+/// unverified one is refused rather than answered as the shared session around it (never the
+/// wrong session's browser). A nearest process with two sessions, or a Codex process that serves
+/// many conversations, cannot say which one is asking and is refused.
 pub(super) fn session_of_ancestors(scope: &Path, ancestors: &[u32]) -> Result<String> {
-    let running: Vec<(String, Mirror)> = running_mirrors(scope)?
-        .into_iter()
-        .filter(|(_, m)| ancestors.contains(&m.native.process.pid))
-        .collect();
+    let running = running_mirrors(scope)?;
     let not_shared = || crate::session_browser::NOT_SHARED.to_string();
-    match running.as_slice() {
-        [] => Err(not_shared()),
+    let Some(nearest) = ancestors.iter().find_map(|pid| {
+        let here: Vec<_> = running.iter().filter(|(_, m)| m.native.process.pid == *pid).collect();
+        (!here.is_empty()).then_some(here)
+    }) else {
+        return Err(not_shared());
+    };
+    match nearest.as_slice() {
         [(_, m)] if m.native.provider == "codex" && super::codex::serves_many(&m.native) => Err(BROWSER_AMBIGUOUS.into()),
         [(key, m)] if live(key, m) => m.session_id.clone().ok_or_else(not_shared),
         [_] => Err(not_shared()),
@@ -536,6 +540,45 @@ mod tests {
         mirror.persist(&path).unwrap();
         let refused = session_of_ancestors(scope.path(), &[std::process::id()]).unwrap_err();
         assert!(refused.contains("cannot tell which"), "{refused}");
+    }
+
+    /// A Claude session mirrored on `pid` (a spawned child, so it can sit below this process).
+    fn persisted_on(scope: &Path, key: &str, sid: &str, shared: bool, pid: u32) {
+        let mut mirror = super::super::transport::tests::test_mirror("44444444-4444-4444-8444-444444444444", "gen-1");
+        mirror.native.provider = "claude".into();
+        mirror.native.process = process(pid).unwrap();
+        mirror.session_id = Some(sid.into());
+        mirror.shared = shared;
+        mirror.persist(&scope.join(format!("{key}.json"))).unwrap();
+    }
+
+    #[test]
+    fn a_session_started_inside_another_browses_as_itself_never_as_the_outer_one() {
+        use std::os::unix::fs::PermissionsExt;
+        let me = std::process::id();
+        let mut inner = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let mut client = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        // The chain: CDP client -> inner session -> this process (the outer session).
+        let chain = [client.id(), inner.id(), me];
+        let resolve = |inner_shared: Option<bool>| {
+            let scope = tempfile::tempdir().unwrap();
+            fs::set_permissions(scope.path(), fs::Permissions::from_mode(0o700)).unwrap();
+            persisted(scope.path(), &"a2a2feed".repeat(8), "outer", true);
+            if let Some(shared) = inner_shared {
+                persisted_on(scope.path(), &"b2b2feed".repeat(8), "inner", shared, inner.id());
+            }
+            session_of_ancestors(scope.path(), &chain)
+        };
+        let both_shared = resolve(Some(true));
+        let inner_only_me = resolve(Some(false));
+        let no_inner = resolve(None);
+        client.kill().unwrap();
+        client.wait().unwrap();
+        inner.kill().unwrap();
+        inner.wait().unwrap();
+        assert_eq!(both_shared.unwrap(), "inner");
+        assert_eq!(inner_only_me.unwrap_err(), crate::session_browser::NOT_SHARED, "never the outer session");
+        assert_eq!(no_inner.unwrap(), "outer");
     }
 
     #[test]

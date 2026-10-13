@@ -192,6 +192,32 @@ fn launch_failure_code(stderr: &str) -> &'static str {
     }
 }
 
+/// The app to hand focus back to after a launch: the one that was frontmost before, when the
+/// launched Chrome is frontmost now and the person was in a different app.
+fn focus_to_restore(before: Option<i32>, after: Option<i32>, launched: i32) -> Option<i32> {
+    before.filter(|b| after == Some(launched) && *b != launched)
+}
+
+#[cfg(target_os = "macos")]
+fn frontmost_pid() -> Option<i32> {
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyClass, AnyObject};
+    use objc2::msg_send;
+    objc2::rc::autoreleasepool(|_| {
+        let class = AnyClass::get(c"NSWorkspace")?;
+        // SAFETY: documented AppKit getters, nil-checked; safe off the main thread.
+        let ws: Option<Retained<AnyObject>> = unsafe { msg_send![class, sharedWorkspace] };
+        let app: Option<Retained<AnyObject>> = unsafe { msg_send![&*ws?, frontmostApplication] };
+        let pid: i32 = unsafe { msg_send![&*app?, processIdentifier] };
+        Some(pid)
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn frontmost_pid() -> Option<i32> {
+    None
+}
+
 /// One launch at a time: two opens racing would start two Chromes on one profile.
 static LAUNCH: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -210,6 +236,7 @@ pub async fn ensure_running(app_data: &Path) -> Result<Endpoint, Failure> {
     }
     let active = dir.join("DevToolsActivePort");
     let _ = tokio::fs::remove_file(&active).await;
+    let before = frontmost_pid();
     let out = tokio::time::timeout(
         LAUNCH_TIMEOUT,
         tokio::process::Command::new("/usr/bin/open").args(launch_args(&dir)).kill_on_drop(true).output(),
@@ -224,6 +251,16 @@ pub async fn ensure_running(app_data: &Path) -> Result<Endpoint, Failure> {
     let deadline = Instant::now() + START_TIMEOUT;
     while Instant::now() < deadline {
         if let Some((port, path)) = tokio::fs::read_to_string(&active).await.ok().as_deref().and_then(parse_active_port) {
+            // A launch must not take focus from the app the person was using.
+            let (d, b) = (dir.clone(), before);
+            let _ = tokio::task::spawn_blocking(move || {
+                if let (Some(launched), after) = (chrome_pid_for(&d), frontmost_pid()) {
+                    if let Some(back) = focus_to_restore(b, after, launched) {
+                        activate_pid(back);
+                    }
+                }
+            })
+            .await;
             return Ok(Endpoint { port, path, profile_id });
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1312,6 +1349,15 @@ mod tests {
 
     fn call(method: &str, params: Value) -> String {
         json!({"id": 7, "method": method, "params": params}).to_string()
+    }
+
+    #[test]
+    fn focus_goes_back_only_from_the_launched_chrome_to_another_app() {
+        assert_eq!(focus_to_restore(Some(10), Some(99), 99), Some(10));
+        assert_eq!(focus_to_restore(Some(10), Some(10), 99), None); // focus never moved
+        assert_eq!(focus_to_restore(Some(10), Some(55), 99), None); // person switched meanwhile
+        assert_eq!(focus_to_restore(Some(99), Some(99), 99), None); // Chrome was already front
+        assert_eq!(focus_to_restore(None, Some(99), 99), None);
     }
 
     #[test]

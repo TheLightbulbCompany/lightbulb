@@ -23,7 +23,7 @@ describe("SoonPanel", () => {
     expect(screen.getByText("Make the business a real company.")).toBeInTheDocument();
     // No prompt was given — the agent cannot file paperwork — so none is
     // invented. A prompt answered with "I can't do that yet" is worse than none.
-    expect(screen.queryByText(/ask Friday/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/ask your CEO/i)).not.toBeInTheDocument();
 
     rerender(
       <SoonPanel

@@ -193,7 +193,7 @@ export function LeadsPanel() {
         <>
           <p className="text-xs text-[var(--midnight-muted)]">
             {total.toLocaleString()} {total === 1 ? "person" : "people"} for “{query}”. Surnames are
-            masked and emails hidden until a lead is enriched — ask Friday to do that for the ones
+            masked and emails hidden until a lead is enriched — ask your CEO to do that for the ones
             worth it.
           </p>
           <PanelDataTable rows={rows} columns={COLUMNS} rowKey={(r) => r.id ?? `${r.first_name}-${r.organization}`} />

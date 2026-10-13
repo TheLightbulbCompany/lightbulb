@@ -312,7 +312,7 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
       <div className="rounded-lg border border-[var(--edge)] p-4 space-y-3 bg-cream">
         <h3 className="text-sm font-medium text-[var(--midnight)]">Role &amp; description</h3>
         <p className="text-xs text-[var(--midnight-muted)]">
-          How Friday sees this agent in the org chart. Used when delegating work.
+          How the team sees this agent in the org chart. Used when delegating work.
         </p>
 
         <AgentPaperclipFields value={meta} onChange={setMetaFromUser} disabled={savingMeta} />

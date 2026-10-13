@@ -121,7 +121,7 @@ export function ProvisioningConsentActions({
         {price ? ` · ${price}` : ""}
       </span>
       {description && <p className="text-[var(--midnight-muted)]">{description}</p>}
-      {reason && <p className="text-[var(--midnight-muted)]">Friday asked because: {reason}</p>}
+      {reason && <p className="text-[var(--midnight-muted)]">Your CEO asked because: {reason}</p>}
       {facts && <p className="text-xs text-[var(--midnight-muted)]">{facts}</p>}
       {configuration.length > 0 && (
         <p className="text-xs text-[var(--midnight-muted)]">

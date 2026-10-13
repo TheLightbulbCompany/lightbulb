@@ -44,7 +44,7 @@ export function SoonPanel({ overline, title, icon: Icon, value, prompt }: SoonPa
         <p className="max-w-[60ch] text-ui text-[var(--midnight-soft)]">{value}</p>
         {prompt && (
           <p className="mt-1 max-w-[60ch] text-xs text-[var(--midnight-muted)]">
-            Until then, ask Friday:{" "}
+            Until then, ask your CEO:{" "}
             <span className="font-editorial-serif italic text-[var(--midnight-soft)]">
               &ldquo;{prompt}&rdquo;
             </span>

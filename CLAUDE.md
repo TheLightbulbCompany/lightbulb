@@ -1261,6 +1261,8 @@ A first-time **workspace** (Clerk org) with no billing row gets a `trial_local` 
 
 The trial is bounded on TWO axes: OpenRouter's **per-key daily $ limit** (`OPENROUTER_TRIAL_KEY_DAILY_LIMIT_USD`, currently $0.25; resets daily) and a **30-day window** (`billing_repo._TRIAL_LOCAL_DURATION_SECONDS`; `trial_end` is armed locally when the workspace first becomes ready, and a missing `trial_end` is unarmed, not expired; expiry → permanent `TRIAL_EXPIRED`). There is deliberately **no cap-only check primitive** — a cap-only check once woke EXPIRED trials, so every door must call the full predicate (`trial_block_reason` / `reason_for_account`, cap AND expiry).
 
+The managed model is not in code: it comes from the GitHub Actions variables `OPENROUTER_MANAGED_MODEL_ID_{DEV,PROD}` and `OPENROUTER_MODEL_POLICY_JSON_{DEV,PROD}`, read at synth time. As of 2026-10-13 both envs run `deepseek/deepseek-v4-flash`, with `google/gemma-3-12b-it` for images (`gh variable list` is the truth, not this line).
+
 ### Managed inference — the openrouter-gate
 
 **Bedrock is gone** (owner ruling; #3051 removed the Bedrock gate and meter stacks, #3056 the backend side). Managed inference is OpenRouter behind **the openrouter-gate** (`apps/infra/lambda/openrouter-gate/`, a streaming Lambda in `openrouter-gate-stack.ts`) — read this before changing anything here.

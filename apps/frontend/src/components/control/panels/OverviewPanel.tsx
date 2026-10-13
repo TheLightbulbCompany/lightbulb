@@ -273,7 +273,7 @@ export function OverviewPanel({ onPanelChange }: OverviewPanelProps = {}) {
         <div>
           <h2 className="font-editorial-serif text-title">Overview</h2>
           <p className="text-xs text-[var(--midnight-muted)]">
-            Container status and gateway health snapshot.
+            Status of this workspace's AgentCore runtime.
           </p>
         </div>
         <div className="flex items-center gap-1">

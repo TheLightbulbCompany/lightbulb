@@ -200,12 +200,17 @@ async def test_the_sfus_level_may_drop_between_words_but_a_stuck_detector_holds_
     assert h._speaking == set(), "no sound from him this long: the detector alone is nobody talking"
 
 
-async def test_a_room_of_live_voices_keeps_the_plain_rule_sound_and_speech_together():
+async def test_an_app_call_reads_talk_by_the_meets_rule():
+    """One voice system (owner ruling 10-12): in the app too, the SFU's level dropping between words does not end
+    a person's talk while the transcriber hears them, for LEVEL_FRESH_S."""
     from test_huddle import summoned
 
     h, room, backend, lives, clock, log = await summoned()
     talks(h, "u2")
     h.on_active_speakers(set())
+    assert h._speaking == {"u2"}, "still talking"
+    clock.t += h_mod.LEVEL_FRESH_S + 0.1
+    h._talking_changed()
     assert h._speaking == set()
 
 

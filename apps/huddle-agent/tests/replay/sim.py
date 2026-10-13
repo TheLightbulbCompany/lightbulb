@@ -309,7 +309,7 @@ class Mouth:
     def _nothing(self, *a, **kw) -> None:  # it has no ears, and only an order makes it speak
         pass
 
-    set_participant = append_thinking = append_commentary = append_instructions = mute = nudge = reply_to = _nothing
+    append_instructions = _nothing
 
     def say(self, text: str, order: int | None = None, first: int = 0) -> None:
         prior, epoch, h = self._tail, self._epoch, self.sim.h

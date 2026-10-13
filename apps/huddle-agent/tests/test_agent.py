@@ -1,71 +1,13 @@
-from livekit.agents import APIConnectionError, APIError
-
 from huddle_agent import agent
-from huddle_agent.agent import SEMANTIC_VAD, SERVER_VAD, retry_without_semantic_vad
+from huddle_agent.agent import SERVER_VAD
 
 
-class Engine:
-    def __init__(self):
-        self.updates = []
-
-    def update_options(self, **kw):
-        self.updates.append(kw)
-
-
-def test_semantic_vad_is_what_the_pinned_plugin_validates():
+def test_the_one_speech_setting_is_what_the_pinned_plugin_validates():
+    """Every call, in a Meet or in the app, transcribes with the short server VAD (owner ruling 10-12)."""
     from livekit.plugins.openai.stt import _as_turn_detection
 
-    assert _as_turn_detection(SEMANTIC_VAD).type == "semantic_vad"
     assert _as_turn_detection(SERVER_VAD).silence_duration_ms == 700
-
-
-def test_a_refused_semantic_vad_falls_back_to_server_vad_once(monkeypatch):
-    seen = []
-    monkeypatch.setattr(agent, "emit_metric", lambda name, *a, **k: seen.append(name))
-    engine, state = Engine(), {"vad": "semantic"}
-    refused = APIError("OpenAI Realtime STT error: invalid turn_detection", body={}, retryable=False)
-    assert retry_without_semantic_vad(engine, refused, "semantic", state)
-    assert state == {"vad": "server"} and engine.updates == [{"turn_detection": SERVER_VAD}]
-    assert retry_without_semantic_vad(engine, refused, "semantic", state)  # a second stream refused too: just reopen
-    assert engine.updates == [{"turn_detection": SERVER_VAD}] and seen == ["live.stt.semantic_vad_rejected"]
-    assert not retry_without_semantic_vad(engine, refused, "server", state)  # server_vad failing is a real error
-
-
-def test_connection_errors_are_not_a_vad_refusal():
-    engine, state = Engine(), {"vad": "semantic"}
-    assert not retry_without_semantic_vad(engine, APIConnectionError("down"), "semantic", state)
-    assert not retry_without_semantic_vad(engine, RuntimeError("boom"), "semantic", state)
-    assert state == {"vad": "semantic"} and engine.updates == []
-
-
-def test_a_muted_voice_is_muted_again_after_a_reconnect():
-    # a reconnect is a new GPT-Live session, which hears: a meeting voice must not start hearing the Meet
-    from unittest.mock import MagicMock
-
-    duplex, handlers = MagicMock(), {}
-    duplex.on.side_effect = lambda event, cb: handlers.__setitem__(event, cb)
-    live = agent._Live("forge", MagicMock(), duplex, MagicMock())
-    handlers["session_reconnected"](None)
-    assert duplex.mute_input.call_count == 0, "a Live voice hears its speaker: never muted by a reconnect"
-    live.mute()
-    handlers["session_reconnected"](None)
-    assert duplex.mute_input.call_count == 2
-
-
-async def test_a_meeting_voice_is_muted_as_its_session_starts():
-    # review: the huddle's mute came after session.start returned; the Meet could reach the model while it opened
-    from unittest.mock import MagicMock
-
-    session = MagicMock(spec=agent.GPTLiveSession)
-    for muted, calls in ((True, 1), (False, 0)):
-        session.reset_mock()
-        voice = agent._Voice("forge", "persona", MagicMock(), [], muted=muted)
-        type(voice).duplex_session = property(lambda self: session)
-        try:
-            await voice.on_enter()
-        finally:
-            del type(voice).duplex_session
-        assert session.mute_input.call_count == calls
+    assert _as_turn_detection(agent.MEET_VAD).silence_duration_ms == 400
 
 
 def test_the_meet_bots_page_is_never_a_person():
@@ -79,24 +21,6 @@ def test_the_meet_bots_page_is_never_a_person():
         assert agent.person(SimpleNamespace(identity=identity, kind=ingress))
     assert agent.person(SimpleNamespace(identity="u1", kind=standard))
     assert not agent.person(SimpleNamespace(identity="agent-x", kind=rtc.ParticipantKind.PARTICIPANT_KIND_AGENT))
-
-
-def test_a_meeting_voices_rule_is_applied_again_after_a_reconnect():
-    """Codex on #3792: a reconnect rebuilds the session from its first instructions, without the rule that
-    keeps a per-person voice out of its person's talk to others."""
-    from unittest.mock import MagicMock
-
-    duplex, handlers = MagicMock(), {}
-    duplex.on.side_effect = lambda event, cb: handlers.__setitem__(event, cb)
-    live = agent._Live("forge", MagicMock(), duplex, MagicMock())
-    handlers["session_reconnected"](None)
-    assert duplex.append_instructions.call_count == 0, "no rule, nothing to re-apply"
-    live.meet_rule("You hear only Priya.")
-    live.meet_rule("You hear only Dan.")  # the floor moved: the newest rule is the one in force
-    handlers["session_reconnected"](None)
-    assert [c.args[0] for c in duplex.append_instructions.call_args_list] == [
-        "You hear only Priya.", "You hear only Dan.", "You hear only Dan."
-    ]
 
 
 class DrivenSession:
@@ -258,14 +182,16 @@ async def test_small_talk_is_written_from_the_line_and_who_said_it_with_one_clie
     assert asked[0][0]["content"].startswith("You are Forge.") and asked[0][1]["content"] == 'Priya just said to you: "thanks"'
 
 
-async def test_what_a_gpt_live_voice_is_told_makes_a_mouth_say_nothing():
-    live, session, voice = _driven()
-    live.append_commentary("Tell Priya you are on it.")
-    live.append_thinking("Priya asked: what shipped", delegation_id="d1")
-    live.nudge()
-    await _settle()
-    assert session.orders == [], "no order"
-    assert list(voice.ctx.items) == [], "and nothing is kept for one"
+def test_a_mouth_has_only_the_doors_the_huddle_uses():
+    """What a hearing voice was told (thinking, commentary, a nudge, a typed turn) has no door on a mouth: only
+    an order makes it speak."""
+    from huddle_agent.huddle import Live
+
+    doors = {n for n in vars(Live) if not n.startswith("_")} - {"agent_id", "track_name"}
+    assert doors == {"append_instructions", "interrupt", "say", "usage_seconds", "aclose"}
+    assert all(callable(getattr(agent._DrivenLive, n)) for n in doors)
+    for gone in ("append_thinking", "append_commentary", "nudge", "reply_to", "mute", "set_participant", "hear"):
+        assert not hasattr(agent._DrivenLive, gone), gone
 
 
 async def test_an_interrupt_cuts_the_unit_being_said_and_drops_what_was_queued():
@@ -319,15 +245,12 @@ async def test_a_standing_rule_is_never_said_and_survives_a_stop():
     live, session, voice = _driven()
     live.say("one")
     live.append_instructions("Speak to Priya.")
-    live.meet_rule("Speak to Dan.")
+    live.append_instructions("Speak to Dan.")
     await _settle()
     live.interrupt()  # a stop drops speech, not a standing rule
     await _settle()
-    assert len(session.orders) == 1
-    assert voice.instructions == "persona\n\nSpeak to Priya.\n\nSpeak to Dan."
-    for name in ("mute", "hear", "set_participant"):  # it has no ears
-        getattr(live, name)(*((0.0,) if name == "hear" else ("u2",) if name == "set_participant" else ()))
     assert len(session.orders) == 1 and session.interrupts == 1
+    assert voice.instructions == "persona\n\nSpeak to Priya.\n\nSpeak to Dan."
 
 
 async def test_a_driven_voice_bills_wall_clock_seconds_to_its_close(monkeypatch):
@@ -343,34 +266,24 @@ async def test_a_driven_voice_bills_wall_clock_seconds_to_its_close(monkeypatch)
     assert session.orders == [], "nothing is ordered of a closed session"
 
 
-def test_gpt_live_keeps_the_protocol_say_in_its_own_words_and_hear_is_nothing():
-    from unittest.mock import MagicMock
-
-    duplex = MagicMock()
-    live = agent._Live("forge", MagicMock(), duplex, MagicMock())
-    live.say("Three PRs merged.")
-    live.hear(0.0)
-    duplex.append_commentary.assert_called_once_with("Three PRs merged.")
-
-
-async def test_a_meet_speaker_gets_a_driven_voice_and_anyone_else_gpt_live(monkeypatch):
+async def test_every_voice_is_driven_in_a_meet_or_in_the_app(monkeypatch):
+    """Owner ruling 10-12: one voice system. A person of a Meet, a mixed Meet and a person in the app all get a
+    mouth: no ears, a word-for-word line on each order."""
     from types import SimpleNamespace
     from unittest.mock import MagicMock
 
     made = []
     monkeypatch.setattr(agent, "AgentSession", lambda **kw: made.append(DrivenSession(**kw)) or made[-1])
     monkeypatch.setattr(agent, "_DrivenModel", lambda **kw: kw)
-    monkeypatch.setattr(agent, "_TrimmedGPTLiveModel", lambda **kw: "gpt-live")
-    monkeypatch.setattr(agent, "_Voice", lambda *a, **kw: SimpleNamespace(duplex_session=MagicMock()))
     huddle, room = MagicMock(), MagicMock()
 
     async def start(speaker):
         return await agent.start_live(
-            room, huddle, None, agent_id="forge", persona="You are Forge.", voice="cedar", speaker=speaker,
+            room, huddle, agent_id="forge", persona="You are Forge.", voice="cedar", speaker=speaker,
             seed=[("user", "Priya: hi")],
         )
 
-    for speaker in ("meet:room-1:p1", "meet:room-1"):  # a person of a Meet, and a mixed Meet
+    for speaker in ("meet:room-1:p1", "meet:room-1", "user_1"):  # a person of a Meet, a mixed Meet, the app
         made.clear()
         live = await start(speaker)
         assert isinstance(live, agent._DrivenLive) and live.track_name == "agent-forge"
@@ -400,12 +313,6 @@ async def test_a_meet_speaker_gets_a_driven_voice_and_anyone_else_gpt_live(monke
     ]
     huddle.on_live_closed.assert_called_once_with(live)
     assert live._closed is not None, "a session that closed on its own stops billing"
-
-    made.clear()
-    live = await start("user_1")
-    assert isinstance(live, agent._Live) and made[0].llm == "gpt-live"
-    assert "conversation_item_added" in made[0].handlers, "GPT-Live is heard by its own transcript"
-    assert made[0].started["room_options"].audio_input is not False
 
 
 def test_a_word_for_word_line_goes_to_the_model_without_the_conversation():
@@ -637,7 +544,7 @@ async def test_an_agents_mouth_opens_once_in_a_call_and_is_kept_until_the_call_e
 
     async def start(agent_id, mouths=mouths):
         return await agent.start_live(
-            room, huddle, None, agent_id=agent_id, persona="You are it.", voice="cedar", speaker="meet:room-1:p1",
+            room, huddle, agent_id=agent_id, persona="You are it.", voice="cedar", speaker="meet:room-1:p1",
             seed=[], mouths=mouths,
         )  # fmt: skip
 

@@ -1,18 +1,15 @@
 """Voice run frames for the huddle worker, routed by run id and agent (C2/C3).
 
-Ordering and sentence splitting are ports of packages/shared/src/voice/session.ts and sentences.ts.
-Keep the two in step: same REORDER_WINDOW.
+Ordering is a port of packages/shared/src/voice/session.ts. Keep the two in step: same REORDER_WINDOW.
 """
 
 from __future__ import annotations
 
 import logging
-import re
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Protocol
 
-APPEND_CHARS = 1400  # OpenAI caps each append at 500 tokens
 # ponytail: the bridge publishes deltas in batches of 5 (FRAME_BATCH, hermes bridge turn.py) and AppSync can swap whole
 # publishes, so deltas are held 10 back (2 batches). Reordering beyond that applies as it arrives; raise this with FRAME_BATCH.
 REORDER_WINDOW = 10
@@ -21,17 +18,7 @@ REORDER_WINDOW = 10
 STALE_TURN_SECONDS = 300
 QUEUED_TURN_SECONDS = 1_800  # a run_queued run waits on the room lock behind a chat run (the chat run budget)
 
-_SENTENCES = re.compile(r".*[.!?](?=\s)", re.DOTALL)
-
 logger = logging.getLogger("huddle.frames")
-
-
-def take_sentences(text: str) -> tuple[str, str]:
-    """Split off every completed sentence (terminator followed by whitespace) -> (ready, rest)."""
-    m = _SENTENCES.match(text)
-    if not m:
-        return "", text
-    return m.group(0).strip(), text[m.end():]
 
 
 def _order(state, frame: dict, handle: Callable[[dict], None]) -> None:
@@ -64,10 +51,9 @@ WORKING_CHARS = 60  # lightbulb.agent.<id>.working (C4)
 
 
 class RunSink(Protocol):
-    """Where a run's output goes. The sink decides floor vs has_news from run.agent_id/delegation_id/gen."""
+    """Where a run's output goes. Nothing is said as it streams: its answer is said when it ends."""
 
     def progress(self, run: "Run", text: str) -> None: ...  # text = the tool label
-    def say(self, run: "Run", text: str, final: bool) -> None: ...
     def ended(self, run: "Run", answer: str) -> None: ...
     def failed(self, run: "Run") -> None: ...
 
@@ -78,8 +64,7 @@ class Run:
     agent_id: str
     speaker: str | None = None
     request: str = ""
-    delegation_id: str | None = None
-    gen: int | None = None
+    gen: int | None = None  # the voice that started it (`Huddle._same_session`); None: no voice did
     bound: bool = False  # started() was called; an unbound run comes from frames alone (a restarted worker)
     queued: bool = False
     ended: bool = False
@@ -90,9 +75,7 @@ class Run:
     pending: list[tuple[int, dict]] = field(default_factory=list)
     reset_seq: float = -1
     auto: int = 0
-    text: str = ""
-    spoken: str = ""
-    box: int = 0  # which text box `text` is: narration before a tool is one, the answer after it another
+    text: str = ""  # its last text box: narration before a tool is gone from it
     label: str | None = None
     seen: float = 0.0
     # When it began executing: /turns took it (`Huddle._post_turn`), or it left the room lock's queue after
@@ -106,29 +89,23 @@ class Runs:
         self._sink, self._clock = sink, clock
         self._runs: dict[str, Run] = {}
 
-    def started(self, run_id: str, agent_id: str, *, speaker: str | None, request: str,
-                delegation_id: str | None, gen: int | None) -> Run:
+    def started(self, run_id: str, agent_id: str, *, speaker: str | None, request: str, gen: int | None) -> Run:
         """Call before the /turns POST (the worker mints runId), so no frame can beat it."""
         run = self._runs.get(run_id) or Run(run_id=run_id, agent_id=agent_id)
         run.agent_id, run.speaker, run.request = agent_id, speaker, request
-        run.delegation_id, run.gen, run.bound, run.seen = delegation_id, gen, True, self._clock()
+        run.gen, run.bound, run.seen = gen, True, self._clock()
         self._runs[run_id] = run
         if not run.held:
             self._replay(run)
         return run
 
-    def bind(self, run_id: str, delegation_id: str | None, gen: int | None) -> None:
-        """Point a run at another session's delegation (a steer from a newer session); None = no delegation."""
-        if run := self._runs.get(run_id):
-            run.delegation_id, run.gen = delegation_id, gen
-
     def get(self, run_id: str) -> Run | None:
         return self._runs.get(run_id)
 
     def hold(self, run_id: str, agent_id: str) -> None:
-        """Its voice is still opening: every frame waits, so no sentence is dropped (and counted as spoken)
-        before a voice can say it (10-04 prod Meet: a question got a greeting and no answer). Called before
-        the run is started, so the entry is made here: a voice that fails at once still finds it to release."""
+        """Its voice is still opening: every frame waits until it is open (10-04 prod Meet: a question got a
+        greeting and no answer). Called before the run is started, so the entry is made here: a voice that fails
+        at once still finds it to release."""
         self._runs.setdefault(run_id, Run(run_id=run_id, agent_id=agent_id)).held = True
 
     def release(self, run_id: str | None) -> None:
@@ -215,21 +192,16 @@ class Runs:
             return
         kind = frame.get("type")
         if kind == "tool_start" and isinstance(frame.get("tool"), str):
-            run.text = run.spoken = ""  # narration so far was already said; the next text box is a new answer
-            run.box += 1
+            run.text = ""  # narration before a tool is not the answer: the next text box is
             if frame["tool"] != run.label:
                 run.label = frame["tool"]
                 self._sink.progress(run, run.label)
         elif kind == "chunk" and isinstance(frame.get("content"), str):
-            content = frame["content"]
-            if frame.get("append"):
-                run.text += content
-            elif content.startswith(run.spoken):
-                run.text = content
-            else:  # deltas were lost: say the whole answer only if nothing was said since the reset
-                run.spoken = "" if not run.spoken else content
-                run.text = content
-            self._say_ready(run, run.ended)  # a closing chunk that lands after run_ended is final
+            before = run.text.strip()
+            run.text = run.text + frame["content"] if frame.get("append") else frame["content"]
+            if run.ended and run.text.strip() != before:
+                # the closing chunk landed after run_ended (publishes can swap): the answer is this, not what ended
+                self._sink.ended(run, run.text.strip())
         elif kind == "error":
             run.failed = run.ended = True
             # the bridge's own reason, for the ops log (10-07: every turn of a workspace failed in 0.4 s and the
@@ -244,14 +216,4 @@ class Runs:
             if frame.get("outcome") not in (None, "done"):  # the wire's success is "done" (bridge _WIRE_OUTCOME)
                 logger.warning("run %s of agent %s ended %s: %s", run.run_id, run.agent_id, frame.get("outcome"),
                                str({k: v for k, v in frame.items() if k in ("error", "reason", "code", "message", "detail")})[:300])
-            self._say_ready(run, True)
             self._sink.ended(run, run.text.strip())
-
-    def _say_ready(self, run: Run, final: bool) -> None:
-        pending = run.text[len(run.spoken):]
-        ready, rest = (pending.strip(), "") if final else take_sentences(pending)
-        if not ready:
-            return
-        run.spoken = run.text[: len(run.text) - len(rest)]
-        for i in range(0, len(ready), APPEND_CHARS):
-            self._sink.say(run, ready[i : i + APPEND_CHARS], final)

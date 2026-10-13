@@ -134,15 +134,32 @@ mcp = MCPServer(
 
 # The four reads below take an AuthContext so the paired-Mac device routes
 # (routers/messaging.py, /local-sessions/device/*) serve the same answers.
-async def rooms_for(auth: AuthContext, query: str = "", limit: int = 30, channels_only: bool = False) -> dict:
-    """`channels_only`: a Google Meet's read as its inviter. Filtered before the limit and the total, so
-    neither says anything about the inviter's DMs or group chats."""
+async def workspace_people(owner_id: str) -> frozenset[str]:
+    """Everyone in the workspace (Clerk). Empty when Clerk cannot say: nothing is workspace-wide then."""
+    try:
+        return frozenset(m["user_id"] for m in await clerk_admin.list_organization_members(owner_id, strict=True))
+    except Exception:  # noqa: BLE001 -- fails closed
+        logger.warning("workspace member list unavailable owner=%s", owner_id, exc_info=True)
+        return frozenset()
+
+
+def workspace_wide(room, people: frozenset[str]) -> bool:
+    """A channel every person in the workspace is in: what any teammate could already read. Every room
+    is private to its members (no channel can be browsed or joined), so this is the only public one."""
+    seated = {m.id for m in room.members if m.kind == "human"}
+    return room.kind == "channel" and bool(people) and people <= seated
+
+
+async def rooms_for(auth: AuthContext, query: str = "", limit: int = 30, workspace_only: bool = False) -> dict:
+    """`workspace_only`: a Google Meet's read as its inviter (owner ruling 2026-10-13): workspace-wide
+    channels only. Filtered before the limit and the total, so neither says anything about the rest."""
     rooms = (await messaging.list_rooms(auth)).rooms
+    people = await workspace_people(auth.org_id) if workspace_only else frozenset()
     needle = query.casefold().strip()
     matches = [
         room
         for room in rooms
-        if (not channels_only or room.kind == "channel")
+        if (not workspace_only or workspace_wide(room, people))
         and (
             not needle
             or needle in (room.name or "").casefold()

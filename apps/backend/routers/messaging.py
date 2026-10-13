@@ -205,12 +205,12 @@ async def local_session_invocation(request: Request) -> local_session_grants.Age
 
 @dataclass(frozen=True)
 class AgentRead:
-    """Who an agent turn reads rooms as, and whether only channels: a Google Meet reads as the member
-    who invited the agents, and everyone on the call (outsiders included) hears it, so never their DMs
-    or group chats (owner ruling 2026-10-13, enforced here rather than left to the agent)."""
+    """Who an agent turn reads rooms as, and whether only workspace-wide channels: a Google Meet reads
+    as the member who invited the agents, and everyone on the call (outsiders included) hears it, so
+    only what any teammate could read (owner ruling 2026-10-13, enforced here, not left to the agent)."""
 
     auth: AuthContext
-    channels_only: bool
+    workspace_only: bool
 
 
 async def agent_reader(
@@ -231,20 +231,22 @@ async def agent_reader(
     # And the person still in it: someone who left or was removed is no longer who this turn acts for.
     if await messaging_repo.get_member(auth.room_id, "human", person) is None:
         raise ApiProblem("ROOM_FORBIDDEN", "The person who asked is no longer in this room.")
-    return AgentRead(AuthContext(user_id=person, org_id=auth.owner_id), channels_only=not auth.requester_id)
+    return AgentRead(AuthContext(user_id=person, org_id=auth.owner_id), workspace_only=not auth.requester_id)
 
 
 @router.get("/messaging/agent-read/rooms")
 async def agent_find_rooms(query: str = "", limit: int = 30, read: AgentRead = Depends(agent_reader)):
-    return await hosted_mcp.rooms_for(read.auth, query, limit, channels_only=read.channels_only)
+    return await hosted_mcp.rooms_for(read.auth, query, limit, workspace_only=read.workspace_only)
 
 
 @router.get("/messaging/agent-read/messages")
 async def agent_read_messages(
     room_id: str, after_seq: int | None = None, limit: int = 25, read: AgentRead = Depends(agent_reader)
 ):
-    if read.channels_only and (await service.get_room(read.auth, room_id)).kind != "channel":
-        raise ApiProblem("ROOM_FORBIDDEN", "In a meeting only channels can be read, never a DM or group chat.")
+    if read.workspace_only and not hosted_mcp.workspace_wide(
+        await service.get_room(read.auth, room_id), await hosted_mcp.workspace_people(read.auth.org_id)
+    ):
+        raise ApiProblem("ROOM_FORBIDDEN", "In a meeting only channels the whole workspace is in can be read.")
     return await hosted_mcp.messages_for(read.auth, room_id, after_seq, limit)
 
 

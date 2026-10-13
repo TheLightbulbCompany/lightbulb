@@ -2152,6 +2152,19 @@ async def _find_existing_dm(owner_id: str, user_id: str, counterpart: CreateRoom
     return None
 
 
+async def _live_dm(room_id: str, user_id: str, counterpart: CreateRoomMember) -> dict | None:
+    """The room a ``DMPAIR#`` row names, if it is still this pair's 1:1 DM. Adding a
+    member turns a DM into a group DM, and the counterpart can leave one."""
+    meta = await messaging_repo.get_room(room_id)
+    if meta is None or meta.get("kind") != "dm" or meta.get("deletedAt"):
+        return None
+    if await messaging_repo.get_member(room_id, "human", user_id) is None:
+        return None
+    if await messaging_repo.get_member(room_id, counterpart.kind, counterpart.id) is None:
+        return None
+    return meta
+
+
 async def create_room(auth: AuthContext, request: CreateRoomRequest) -> RoomDetail:
     owner_id = resolve_owner_id(auth)
     keys = [(member.kind, member.id) for member in request.members]
@@ -2188,21 +2201,40 @@ async def create_room(auth: AuthContext, request: CreateRoomRequest) -> RoomDeta
     normalized = [{key: member.get(key) for key in ("kind", "id", "role", "listenMode")} for member in members[1:]]
     room_id = messaging_repo.deterministic_room_id(owner_id, auth.user_id, str(request.client_room_id))
     req_hash = messaging_repo.request_hash(request.name, request.kind, normalized)
-    try:
-        meta = await messaging_repo.create_room(
-            owner_id=owner_id,
-            room_id=room_id,
-            client_room_id=str(request.client_room_id),
-            creator_user_id=auth.user_id,
-            name=request.name,
-            kind=request.kind,
-            members=members,
-            req_hash=req_hash,
-        )
-    except messaging_repo.IdempotencyConflict as exc:
-        raise ApiProblem("IDEMPOTENCY_CONFLICT", "clientRoomId was already used with a different request.") from exc
-    except messaging_repo.MemberLimitExceeded as exc:
-        raise ApiProblem("MEMBER_LIMIT", str(exc)) from exc
+    # _find_existing_dm reads an eventually consistent GSI, so two racing creates can both
+    # miss; the pair row makes the second one land on the first one's room.
+    dm_pair = stale_room = None
+    if request.kind == "dm":
+        counterpart = request.members[0]
+        dm_pair = messaging_repo.dm_pair_sk(("human", auth.user_id), (counterpart.kind, counterpart.id))
+    for attempt in range(2):
+        try:
+            meta = await messaging_repo.create_room(
+                owner_id=owner_id,
+                room_id=room_id,
+                client_room_id=str(request.client_room_id),
+                creator_user_id=auth.user_id,
+                name=request.name,
+                kind=request.kind,
+                members=members,
+                req_hash=req_hash,
+                dm_pair=dm_pair,
+                dm_pair_replaces=stale_room,
+            )
+            break
+        except messaging_repo.DmPairTaken as exc:
+            existing = await _live_dm(exc.room_id, auth.user_id, request.members[0])
+            if existing is not None:
+                return await _room_detail(existing, auth.user_id)
+            if attempt:
+                raise
+            # A group DM now, or the counterpart left: take the row over in the same
+            # conditional write, so a racing create still finds exactly one DM.
+            stale_room = exc.room_id
+        except messaging_repo.IdempotencyConflict as exc:
+            raise ApiProblem("IDEMPOTENCY_CONFLICT", "clientRoomId was already used with a different request.") from exc
+        except messaging_repo.MemberLimitExceeded as exc:
+            raise ApiProblem("MEMBER_LIMIT", str(exc)) from exc
     _emit_room_created(owner_id, auth.user_id, request.kind, members[1:], by="owner")
     return await _room_detail(meta, auth.user_id)
 

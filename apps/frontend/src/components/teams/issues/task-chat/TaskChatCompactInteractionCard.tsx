@@ -38,6 +38,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { EditorialButton } from "@/components/teams/shell";
 import { cn } from "@/lib/utils";
+import { handleShellLinkClick, shellUrlFromPaperclipPath } from "@/lib/shellNav";
 import type {
   AskUserQuestionsAnswer,
   AskUserQuestionsInteraction,
@@ -433,7 +434,10 @@ function ItemVerdictsCard({
   if (!item) return <p className="text-sm text-[var(--midnight-muted)]">No review items were provided.</p>;
   const resolved = resolvedById.get(item.id);
   const draft = drafts.get(item.id);
-  const itemHref = item.href ? normalizeRequestConfirmationTargetHref(item.href) : null;
+  const rawHref = item.href ? normalizeRequestConfirmationTargetHref(item.href) : null;
+  // Paperclip paths (/issues/<id>) have no route here; open them in the shell.
+  const shellHref = shellUrlFromPaperclipPath(rawHref);
+  const itemHref = shellHref ?? rawHref;
   const rejectionNeedsConfirmation = Boolean(
     !resolved && draft && requireReasonOn.has(draft.verdict) && (!draft.reason.trim() || draft.confirmed === false),
   );
@@ -542,7 +546,11 @@ function ItemVerdictsCard({
           ) : null}
         </div>
         {itemHref ? (
-          <a href={itemHref} className="text-xs font-medium text-[var(--link)] hover:underline">
+          <a
+            href={itemHref}
+            onClick={shellHref ? (e) => handleShellLinkClick(e, shellHref) : undefined}
+            className="text-xs font-medium text-[var(--link)] hover:underline"
+          >
             Open
           </a>
         ) : null}

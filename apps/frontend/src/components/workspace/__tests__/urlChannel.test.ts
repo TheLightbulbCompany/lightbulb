@@ -8,6 +8,7 @@ import {
   clearPanelFromUrl,
   clearClosedPanelFromUrl,
   clearDurableParamFromUrl,
+  clearUnfocusedPanelFromUrl,
 } from "../urlChannel";
 
 describe("parseCommand", () => {
@@ -175,5 +176,18 @@ describe("commandSignature", () => {
     expect(commandSignature("?panel=teams-inbox&checkout=success")).toBe(
       commandSignature("?panel=teams-inbox"),
     );
+  });
+});
+
+describe("clearUnfocusedPanelFromUrl", () => {
+  it("drops the URL-named panel once another panel is active, keeping non-command params", () => {
+    expect(clearUnfocusedPanelFromUrl("?panel=teams-inbox&utm_source=x", MESSAGES_PANEL_ID)).toBe("utm_source=x");
+    expect(clearUnfocusedPanelFromUrl("?panel=teams-inbox", null)).toBe("");
+  });
+  it("leaves the URL alone while its panel is active, or when it names no panel", () => {
+    const id = parseCommand("?panel=teams-inbox")!.descriptor.panelId;
+    expect(clearUnfocusedPanelFromUrl("?panel=teams-inbox", id)).toBeNull();
+    expect(clearUnfocusedPanelFromUrl("?checkout=success", MESSAGES_PANEL_ID)).toBeNull();
+    expect(clearUnfocusedPanelFromUrl("", MESSAGES_PANEL_ID)).toBeNull();
   });
 });

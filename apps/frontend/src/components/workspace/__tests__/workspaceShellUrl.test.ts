@@ -192,6 +192,24 @@ describe("deriveReconcilerAction — warm first mount reads live window.location
   });
 });
 
+describe("deriveReconcilerAction — cold-load one-shots apply once when the dock is ready", () => {
+  // The shell runs nothing until the dock is ready, then onReady runs the
+  // reconciler with the latch reset to null; the strip's own URL churn re-runs it.
+  it("?panel=llm&action=change-provider hands the action to the LLM panel once", () => {
+    const first = deriveReconcilerAction("?panel=llm&action=change-provider", null)!;
+    expect(first.panelKey).toBe("llm");
+    expect(first.command?.oneShots).toEqual({ action: "change-provider" });
+    expect(first.strippedSearch).toBe("panel=llm");
+    expect(deriveReconcilerAction(first.strippedSearch!, first.nextSignature)).toBeNull();
+  });
+
+  it("a bare one-shot with no ?panel names no panel, so nothing opens", () => {
+    const d = deriveReconcilerAction("?new=task", null)!;
+    expect(d.command).toBeNull();
+    expect(d.strippedSearch).toBeNull();
+  });
+});
+
 describe("deriveReconcilerAction — billing returns are not commands", () => {
   it("never forms a command from checkout/subscription/credits/provider params", () => {
     const d = deriveReconcilerAction("?checkout=success&subscription=success", null);

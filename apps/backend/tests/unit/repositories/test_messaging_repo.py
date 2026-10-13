@@ -308,6 +308,43 @@ async def test_create_room_replay_is_idempotent_and_conflict_is_detected(table):
         await _room(name="different")
 
 
+async def _dm(client_room_id, creator=USER_A, other=("agent", FRIDAY), replaces=None):
+    members = [_member("human", creator, "owner"), _member(other[0], other[1])]
+    room_id = repo.deterministic_room_id(OWNER, creator, client_room_id)
+    return await repo.create_room(
+        owner_id=OWNER,
+        room_id=room_id,
+        client_room_id=client_room_id,
+        creator_user_id=creator,
+        name=None,
+        kind="dm",
+        members=members,
+        req_hash=repo.request_hash(None, "dm", members),
+        dm_pair=repo.dm_pair_sk(("human", creator), other),
+        dm_pair_replaces=replaces,
+    )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_dm_creates_for_one_pair_make_one_room(table):
+    results = await asyncio.gather(*(_dm(f"c-dm-{i}") for i in range(4)), return_exceptions=True)
+    created = [r for r in results if isinstance(r, dict)]
+    taken = [r for r in results if isinstance(r, repo.DmPairTaken)]
+    assert len(created) == 1 and len(taken) == 3, results
+    assert {t.room_id for t in taken} == {created[0]["roomId"]}
+    assert repo.dm_pair_sk(("agent", FRIDAY), ("human", USER_A)) == repo.dm_pair_sk(
+        ("human", USER_A), ("agent", FRIDAY)
+    )
+    # The same request replayed still returns its own room, not DmPairTaken.
+    assert (await _dm(f"c-dm-{results.index(created[0])}"))["roomId"] == created[0]["roomId"]
+    # Another pair is unaffected; a released pair can be taken again.
+    await _dm("c-dm-b", creator=USER_B)
+    # Only a create naming the row's current (stale) room may take it over.
+    with pytest.raises(repo.DmPairTaken):
+        await _dm("c-dm-again", replaces="some-other-room")
+    assert (await _dm("c-dm-again", replaces=created[0]["roomId"]))["roomId"] != created[0]["roomId"]
+
+
 @pytest.mark.asyncio
 async def test_default_room_uses_complete_renamed_starter_map_once_without_reconciling_members(table, monkeypatch):
     from core.repositories.paperclip_repo import PaperclipRepo

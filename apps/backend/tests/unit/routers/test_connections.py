@@ -697,6 +697,21 @@ class TestByoRequiredGate:
 
     @pytest.mark.asyncio
     @patch("routers.connections.oauth_dance")
+    async def test_authorize_502_logs_the_providers_refusal(self, mock_dance, async_client, monkeypatch, caplog):
+        # Intercom's DCR 502'd in prod with only an access-log line; the reason must be logged.
+        monkeypatch.setattr(connections, "_byo_active", AsyncMock(return_value=True))
+        req = httpx.Request("POST", "https://mcp.intercom.com/register")
+        resp = httpx.Response(400, request=req, text='{"error":"invalid_redirect_uri"}')
+        mock_dance.start = AsyncMock(side_effect=httpx.HTTPStatusError("400", request=req, response=resp))
+        with caplog.at_level("WARNING", logger="routers.connections"):
+            response = await async_client.get("/api/v1/connections/google/authorize")
+        assert response.status_code == 502
+        assert "mcp.intercom.com/register" in caplog.text
+        assert "status=400" in caplog.text
+        assert "invalid_redirect_uri" in caplog.text
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.oauth_dance")
     async def test_authorize_returns_503_not_500_when_platform_app_unseeded(self, mock_dance, async_client):
         # A platform-app provider (instagram) whose shared client hasn't been
         # seeded into Secrets Manager yet: _oauth_client raises ValueError. That

@@ -368,16 +368,17 @@ export function useTeamControl(client: SessionControlClient, session: LocalSessi
 /** The owner's "Show usage to teammates", with the server's answer as the truth. */
 export function useUsageSharing(client: SessionControlClient, session: LocalSession) {
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [override, setOverride] = useState<boolean | null>(null);
   useEffect(() => { setOverride(null); }, [session.shareUsage]);
   const set = useCallback(async (next: boolean) => {
     if (!client.setLocalSessionUsageSharing) return;
-    setSaving(true);
+    setSaving(true); setError(null);
     try { setOverride((await client.setLocalSessionUsageSharing(session.sessionId, next)).shareUsage === true); }
-    catch { /* the checkbox stays where the server left it */ }
+    catch { setError("Could not change who sees token usage."); } // the switch stays where the server left it
     finally { setSaving(false); }
   }, [client, session.sessionId]);
-  return { enabled: override ?? session.shareUsage === true, saving, set };
+  return { enabled: override ?? session.shareUsage === true, saving, error, set };
 }
 
 const megabytes = (bytes: number) => (bytes >= 1_048_576 ? `${(bytes / 1_048_576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`);

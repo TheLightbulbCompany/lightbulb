@@ -283,6 +283,74 @@ async def test_create_room_reuses_an_existing_dm_instead_of_making_a_duplicate(m
     create.assert_not_awaited()
 
 
+def _dm_create_stubs(monkeypatch, *, live_member=True, kind="dm"):
+    """Both racing creates miss the GSI; the repo's pair row lets only the first through."""
+    monkeypatch.setattr(messaging.messaging_repo, "list_rooms_for_member", AsyncMock(return_value=[]))
+    monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=[]))
+    monkeypatch.setattr(messaging, "human_display_name", AsyncMock(return_value="Owner"))
+    monkeypatch.setattr(
+        messaging, "_resolved_member", AsyncMock(side_effect=lambda _o, m, _r: {"kind": m.kind, "id": m.id})
+    )
+    monkeypatch.setattr(messaging.messaging_repo, "ensure_user_stream", AsyncMock(return_value={"active": True}))
+    monkeypatch.setattr(messaging, "_emit_room_created", lambda *a, **k: None)
+    monkeypatch.setattr(messaging, "_room_detail", AsyncMock(side_effect=lambda meta, _u, *a: meta["roomId"]))
+    pairs: dict[str, str] = {}
+    rooms: dict[str, dict] = {}
+
+    async def fake_create(*, owner_id, room_id, dm_pair, kind, **_):
+        await asyncio.sleep(0)
+        if dm_pair in pairs:
+            raise messaging.messaging_repo.DmPairTaken(pairs[dm_pair])
+        pairs[dm_pair] = room_id
+        rooms[room_id] = {"roomId": room_id, "kind": kind}
+        return rooms[room_id]
+
+    async def fake_release(_owner, pair, room_id):
+        if pairs.get(pair) == room_id:
+            del pairs[pair]
+
+    monkeypatch.setattr(messaging.messaging_repo, "create_room", fake_create)
+    monkeypatch.setattr(messaging.messaging_repo, "release_dm_pair", fake_release)
+    monkeypatch.setattr(
+        messaging.messaging_repo, "get_room", AsyncMock(side_effect=lambda r: {**rooms[r], "kind": kind})
+    )
+    monkeypatch.setattr(
+        messaging.messaging_repo, "get_member", AsyncMock(return_value={"role": "member"} if live_member else None)
+    )
+    return rooms
+
+
+def _dm_request():
+    return CreateRoomRequest(
+        client_room_id=uuid.uuid4(),
+        name=None,
+        kind="dm",
+        members=[CreateRoomMember(kind="agent", id="friday", role="member", listen_mode="active")],
+    )
+
+
+@pytest.mark.asyncio
+async def test_two_simultaneous_dm_creates_return_one_room(monkeypatch):
+    rooms = _dm_create_stubs(monkeypatch)
+    auth = AuthContext(user_id="user_owner", org_id="org_1")
+
+    first, second = await asyncio.gather(create_room(auth, _dm_request()), create_room(auth, _dm_request()))
+
+    assert first == second
+    assert list(rooms) == [first]
+
+
+@pytest.mark.asyncio
+async def test_a_pair_row_naming_a_dm_that_became_a_group_dm_is_released(monkeypatch):
+    rooms = _dm_create_stubs(monkeypatch, kind="group-dm")
+    auth = AuthContext(user_id="user_owner", org_id="org_1")
+
+    first = await create_room(auth, _dm_request())
+    second = await create_room(auth, _dm_request())
+
+    assert first != second and set(rooms) == {first, second}
+
+
 @pytest.mark.asyncio
 async def test_find_existing_dm_never_reuses_a_dm_belonging_to_a_different_human(monkeypatch):
     """Two different humans in the same workspace can each DM the same agent --

@@ -69,6 +69,14 @@ it("shows a failed save's error and puts the switch back", async () => {
   expect(switchNamed("Let teammates control this session")).not.toBeChecked();
 });
 
+it("shows a failed usage-sharing save's error and puts the switch back", async () => {
+  const c = { ...client(), setLocalSessionUsageSharing: vi.fn(async () => { throw new Error("500"); }) };
+  render(<Details c={c} />);
+  await userEvent.click(switchNamed("Show token usage to teammates"));
+  expect(await screen.findByText("Could not change who sees token usage.")).toHaveAttribute("role", "alert");
+  expect(switchNamed("Show token usage to teammates")).not.toBeChecked();
+});
+
 it("offers no pick-up switch on a Codex session", () => {
   render(<Details s={session({ provider: "codex" })} />);
   expect(screen.queryByRole("switch", { name: "Let teammates pick up this session" })).not.toBeInTheDocument();

@@ -162,7 +162,7 @@ function Access({ session, ownerName, own, client, nameOf, switches: { control, 
       label="People you let in" about="They asked to join. They can send follow-ups and answer permission prompts until the session ends." />}
     {ended && <People session={session} ids={session.resumeAllowed} remove={client.revokeLocalSessionResume} nameOf={nameOf}
       label="Who can resume it" about="They could send to it when it ended. They can start it again on your Mac, in plan mode, with a message." />}
-    {session.usage && client.setLocalSessionUsageSharing && <Setting label="Show token usage to teammates" checked={usage.enabled} disabled={usage.saving} onChange={next => void usage.set(next)}>
+    {session.usage && client.setLocalSessionUsageSharing && <Setting label="Show token usage to teammates" checked={usage.enabled} disabled={usage.saving} onChange={next => void usage.set(next)} error={usage.error}>
       Teammates see the token counts this session reports. They never see a cost.
     </Setting>}
     <Copies session={session} client={client} nameOf={nameOf} />

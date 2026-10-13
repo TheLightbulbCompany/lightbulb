@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { CommentThread } from "@/components/teams/issues/CommentThread";
+import { teamsDetailUrl } from "@/lib/shellNav";
 import type {
   AskUserQuestionsInteraction,
   Issue,
@@ -124,6 +125,16 @@ describe("task interaction takeover of the comment composer", () => {
       { id: "a", verdict: "approve" },
       { id: "b", verdict: "reject", reason: "not needed" },
     ]);
+  });
+
+  it("an item's Open link to a task opens it in the shell, not the dead /issues route", async () => {
+    const push = vi.spyOn(window.history, "pushState");
+    renderThread([{ ...verdicts, payload: { ...verdicts.payload, items: [{ id: "a", label: "Alpha", href: "/issues/ADM-9" }] } }]);
+    const open = screen.getByRole("link", { name: "Open" });
+    expect(open).toHaveAttribute("href", teamsDetailUrl("issue", "ADM-9"));
+    await userEvent.click(open);
+    expect(push).toHaveBeenCalledWith(null, "", teamsDetailUrl("issue", "ADM-9"));
+    push.mockRestore();
   });
 
   it("Skip sits beside Apply on item verdicts and calls the skip handler", async () => {

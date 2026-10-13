@@ -116,6 +116,14 @@ class IdempotencyConflict(MessagingRepoError):
     """Same idempotency key, different canonical request."""
 
 
+class DmPairTaken(MessagingRepoError):
+    """Another create already holds this member pair's DM; ``room_id`` names it."""
+
+    def __init__(self, room_id: str):
+        super().__init__(room_id)
+        self.room_id = room_id
+
+
 class MessageConflict(MessagingRepoError):
     pass
 
@@ -275,6 +283,27 @@ def deterministic_room_id(owner_id: str, user_id: str, client_room_id: str) -> s
     a replay lands on the SAME ``ROOM#`` partition and the durable IDEMP row can
     live under the spec's ``ROOM#<roomId>/IDEMP#human#…`` key."""
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-room|{owner_id}|{user_id}|{client_room_id}"))
+
+
+def dm_pair_sk(*members: tuple[str, str]) -> str:
+    """The owner-partition uniqueness row for one DM's member pair, order-free, so
+    concurrent creates for the same two members collide in the create transaction."""
+    return "DMPAIR#" + _sha256("|".join(sorted(f"{kind}#{member_id}" for kind, member_id in members)))
+
+
+async def release_dm_pair(owner_id: str, pair_sk: str, room_id: str) -> None:
+    """Drop a pair row that still names ``room_id`` (the DM became a group DM or lost a
+    member). A row someone already re-pointed is left alone."""
+    try:
+        await run_in_thread(
+            _table().delete_item,
+            Key={"pk": owner_pk(owner_id), "sk": pair_sk},
+            ConditionExpression="roomId = :room",
+            ExpressionAttributeValues={":room": room_id},
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            raise
 
 
 def vendor_room_id(owner_id: str) -> str:
@@ -736,15 +765,18 @@ async def create_room(
     members: list[dict],
     req_hash: str,
     extra: dict | None = None,
+    dm_pair: str | None = None,
 ) -> dict:
     """One transaction: META + owner catalog + IDEMP + every member row + one
     delivery cursor per agent (at seq 0). ``members`` must already include the
     creator (role ``owner``). Returns the META item; a byte-identical replay
-    returns the existing META, a different one raises ``IdempotencyConflict``."""
+    returns the existing META, a different one raises ``IdempotencyConflict``.
+    ``dm_pair`` (``dm_pair_sk``) adds a conditional uniqueness row, so a second
+    create for the same pair raises ``DmPairTaken`` instead of a second DM."""
     if len(members) > MAX_ROOM_MEMBERS:
         raise MemberLimitExceeded(f"rooms hold at most {MAX_ROOM_MEMBERS} members")
     agents = [m for m in members if m["kind"] == "agent"]
-    actions = _FIXED_CREATE_ACTIONS + len(members) + len(agents)
+    actions = _FIXED_CREATE_ACTIONS + len(members) + len(agents) + (dm_pair is not None)
     assert actions <= _TRANSACT_LIMIT, f"room create needs {actions} actions"
 
     now = utc_now_iso()
@@ -799,6 +831,16 @@ async def create_room(
             }
         },
     ]
+    if dm_pair is not None:
+        items.append(
+            {
+                "Put": {
+                    "TableName": table_name,
+                    "Item": {"pk": owner_pk(owner_id), "sk": dm_pair, "roomId": room_id, "createdAt": now},
+                    "ConditionExpression": "attribute_not_exists(pk)",
+                }
+            }
+        )
     for m in members:
         items.append({"Put": {"TableName": table_name, "Item": _member_item(room_id, owner_id, m, 0, 0, now)}})
     for a in agents:
@@ -818,6 +860,9 @@ async def create_room(
             raise
     existing = await _get(room_pk(room_id), human_idemp_sk(creator_user_id, client_room_id))
     if existing is None:
+        pair = await _get(owner_pk(owner_id), dm_pair) if dm_pair is not None else None
+        if pair is not None:
+            raise DmPairTaken(pair["roomId"])
         raise MessagingRepoError("room create cancelled without a durable receipt")
     if existing.get("requestHash") != req_hash:
         raise IdempotencyConflict("clientRoomId was already used with a different request")

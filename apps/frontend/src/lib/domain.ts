@@ -33,8 +33,8 @@ export const ROOT_DOMAIN = SITE_URL.replace(/^https?:\/\//, "").replace(
  * by `apps/desktop/src-tauri/tauri.conf.json`; those are separate registries,
  * so a change here is not a change there.
  *
- * NOT the internal `isol8-file://` asset scheme, and NOT the `isol8:*`
- * localStorage prefixes — neither is a domain, and neither is OS-registered.
+ * NOT the `isol8:*` localStorage prefixes — they are not a domain and are not
+ * OS-registered.
  */
 export const DEEP_LINK_SCHEME = "flickmeon";
 

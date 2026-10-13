@@ -1,6 +1,5 @@
 import * as React from "react";
 import { cn } from "@/lib/utils";
-import { linkifyFilePaths } from "@/lib/filePathDetection";
 import { stripExternalContentMarkers } from "@/lib/externalContentMarkers";
 import { Copy, Check, Share2, ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -197,11 +196,12 @@ export const MarkdownContent = React.memo(function MarkdownContent({
 }: {
   content: string;
 }) {
-  // Sentinel strip BEFORE linkify: the injection-defense markers are
-  // internal plumbing wherever they surface (echoed into assistant prose,
-  // folded history text) — see externalContentMarkers.ts.
+  // The injection-defense markers are internal plumbing wherever they surface
+  // (echoed into assistant prose, folded history text) — see
+  // externalContentMarkers.ts. File paths stay plain text: nothing here can
+  // open one (the old isol8-file:// links rendered as dead anchors).
   const processedContent = React.useMemo(
-    () => linkifyFilePaths(stripExternalContentMarkers(content)),
+    () => stripExternalContentMarkers(content),
     [content],
   );
   return (

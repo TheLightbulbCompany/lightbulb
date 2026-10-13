@@ -134,15 +134,20 @@ mcp = MCPServer(
 
 # The four reads below take an AuthContext so the paired-Mac device routes
 # (routers/messaging.py, /local-sessions/device/*) serve the same answers.
-async def rooms_for(auth: AuthContext, query: str = "", limit: int = 30) -> dict:
+async def rooms_for(auth: AuthContext, query: str = "", limit: int = 30, channels_only: bool = False) -> dict:
+    """`channels_only`: a Google Meet's read as its inviter. Filtered before the limit and the total, so
+    neither says anything about the inviter's DMs or group chats."""
     rooms = (await messaging.list_rooms(auth)).rooms
     needle = query.casefold().strip()
     matches = [
         room
         for room in rooms
-        if not needle
-        or needle in (room.name or "").casefold()
-        or any(needle in member.display_name.casefold() for member in room.members)
+        if (not channels_only or room.kind == "channel")
+        and (
+            not needle
+            or needle in (room.name or "").casefold()
+            or any(needle in member.display_name.casefold() for member in room.members)
+        )
     ]
     return {
         "rooms": [

@@ -236,10 +236,7 @@ async def agent_reader(
 
 @router.get("/messaging/agent-read/rooms")
 async def agent_find_rooms(query: str = "", limit: int = 30, read: AgentRead = Depends(agent_reader)):
-    found = await hosted_mcp.rooms_for(read.auth, query, limit)
-    if read.channels_only:
-        found = {**found, "rooms": [r for r in found["rooms"] if r.get("kind") == "channel"]}
-    return found
+    return await hosted_mcp.rooms_for(read.auth, query, limit, channels_only=read.channels_only)
 
 
 @router.get("/messaging/agent-read/messages")

@@ -140,13 +140,21 @@ def test_an_inviter_who_left_the_room_reads_nothing(client, monkeypatch, path, r
 def test_a_meet_turn_reads_channels_never_dms(client, monkeypatch):
     """Owner ruling 2026-10-13: everyone on a Meet hears the answer, so reading as the inviter covers
     channels only. Enforced by the backend, not by the agent's instructions."""
-    rooms = [{"roomId": "c", "kind": "channel"}, {"roomId": "d", "kind": "dm"}, {"roomId": "g", "kind": "group-dm"}]
-    monkeypatch.setattr(router.hosted_mcp, "rooms_for", AsyncMock(return_value={"rooms": rooms}))
+    from types import SimpleNamespace as NS
+
+    def room(rid, kind, name):
+        return NS(room_id=rid, kind=kind, name=name, members=[])
+
+    listed = [room("d", "dm", "launch dm"), room("g", "group-dm", "launch group"), room("c", "channel", "launch")]
+    monkeypatch.setattr(router.hosted_mcp.messaging, "list_rooms", AsyncMock(return_value=NS(rooms=listed)))
     reader = {"Authorization": f"Bearer {_grant(None, 'user_ana')}"}
-    found = client.get("/api/v1/messaging/agent-read/rooms", headers=reader).json()
-    assert [r["roomId"] for r in found["rooms"]] == ["c"]
-    asker = client.get("/api/v1/messaging/agent-read/rooms", headers={"Authorization": f"Bearer {_grant('user_ana')}"})
-    assert len(asker.json()["rooms"]) == 3  # a signed-in asker keeps their own DMs
+    found = client.get("/api/v1/messaging/agent-read/rooms?query=launch&limit=1", headers=reader).json()
+    # filtered before the limit and the total: DMs neither take the one place nor show in the count
+    assert [r["roomId"] for r in found["rooms"]] == ["c"] and found["total"] == 1
+    asker = client.get(
+        "/api/v1/messaging/agent-read/rooms?query=launch", headers={"Authorization": f"Bearer {_grant('user_ana')}"}
+    )
+    assert asker.json()["total"] == 3  # a signed-in asker keeps their own DMs
     read = AsyncMock(return_value={"messages": []})
     monkeypatch.setattr(router.hosted_mcp, "messages_for", read)
     for kind, status in (("dm", 403), ("group-dm", 403), ("channel", 200)):

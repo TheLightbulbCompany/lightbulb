@@ -45,7 +45,7 @@ import { InvitePeopleDialog } from "./InvitePeopleDialog";
 import { TasksHeaderActions } from "./TasksHeaderActions";
 import { buildMissionControlLayout } from "./buildDefaultLayout";
 import { readLayout, writeLayout } from "./layoutStorage";
-import { clearClosedPanelFromUrl, clearUnfocusedPanelFromUrl } from "./urlChannel";
+import { clearClosedPanelFromUrl } from "./urlChannel";
 import { MESSAGES_PANEL_ID, resolvePanelAlias } from "./panelRegistry";
 import { deriveReconcilerAction, isCommandTargetOpen } from "./workspaceShellReconciler";
 import {
@@ -333,16 +333,6 @@ function AuthenticatedWorkspace({ scopeId, workspaceName }: { scopeId: string; w
           const cleared = clearClosedPanelFromUrl(
             window.location.search,
             panel.id,
-          );
-          if (cleared !== null) replaceSearchParams(new URLSearchParams(cleared));
-        }),
-        // Clear-on-leave: registered after the URL command ran, so only a later
-        // focus change (another tab, Messages) drops the stale ?panel=.
-        api.onDidActivePanelChange(() => {
-          if (isShellOperationInProgress()) return;
-          const cleared = clearUnfocusedPanelFromUrl(
-            window.location.search,
-            api.activePanel?.id ?? null,
           );
           if (cleared !== null) replaceSearchParams(new URLSearchParams(cleared));
         }),

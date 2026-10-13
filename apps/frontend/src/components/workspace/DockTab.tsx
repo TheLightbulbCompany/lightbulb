@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import type { IDockviewPanelHeaderProps } from "dockview-react";
+import { replaceSearchParams } from "@/lib/shellNav";
+import { clearUnfocusedPanelFromUrl } from "./urlChannel";
 
 // dockview's default tab closes through a bare <div> with no keyboard path.
 // dockview wraps this renderer in its own role="tab", so the close control
@@ -24,8 +26,20 @@ export function DockTab({ api }: IDockviewPanelHeaderProps) {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Delete" && e.target === tab) api.close();
     };
+    // Picking a tab writes no history entry, so a ?panel= naming the panel left
+    // behind would reopen it on reload or in a shared link: clear it in place.
+    const onClick = (e: MouseEvent) => {
+      // The close button is not a pick (this native listener runs before React's handler).
+      if ((e.target as Element | null)?.closest(".dv-default-tab-action")) return;
+      const cleared = clearUnfocusedPanelFromUrl(window.location.search, api.id);
+      if (cleared !== null) replaceSearchParams(new URLSearchParams(cleared));
+    };
     tab.addEventListener("keydown", onKey);
-    return () => tab.removeEventListener("keydown", onKey);
+    tab.addEventListener("click", onClick);
+    return () => {
+      tab.removeEventListener("keydown", onKey);
+      tab.removeEventListener("click", onClick);
+    };
   }, [api]);
   return (
     <div className="dv-default-tab" ref={root}>

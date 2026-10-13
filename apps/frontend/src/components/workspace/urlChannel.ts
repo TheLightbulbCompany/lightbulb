@@ -1,7 +1,7 @@
 // The URL is a ONE-WAY retained command channel (spec §6): inbound ?panel=…
 // is a navigation intent the shell executes as open-or-focus; outbound, only
-// explicit navigations write it. Layout changes never touch it; focus and
-// close only ever CLEAR it, in place (clearPanelFromUrl, clearUnfocusedPanelFromUrl).
+// explicit navigations write it. Layout changes never touch it; closing a
+// panel or picking another dock tab only ever CLEARS it, in place.
 import {
   describePanel,
   durableParamsFor,
@@ -104,9 +104,9 @@ export function clearPanelFromUrl(search: string, closedPanelId: string): string
   return result === before ? null : result;
 }
 
-// Focusing another panel clears the URL-named one the same way, so a reload or
-// a copied link can't reopen a panel the user already left. Null when the URL
-// names no panel or names the one now active.
+// Picking another dock tab clears the URL-named panel the same way, so a reload
+// or a copied link can't reopen a panel the user already left. Null when the
+// URL names no panel or names the tab picked.
 export function clearUnfocusedPanelFromUrl(search: string, activePanelId: string | null): string | null {
   const command = parseCommand(search);
   if (!command || command.descriptor.panelId === activePanelId) return null;

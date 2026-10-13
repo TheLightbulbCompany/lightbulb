@@ -297,20 +297,15 @@ def _dm_create_stubs(monkeypatch, *, live_member=True, kind="dm"):
     pairs: dict[str, str] = {}
     rooms: dict[str, dict] = {}
 
-    async def fake_create(*, owner_id, room_id, dm_pair, kind, **_):
+    async def fake_create(*, owner_id, room_id, dm_pair, dm_pair_replaces, kind, **_):
         await asyncio.sleep(0)
-        if dm_pair in pairs:
+        if dm_pair in pairs and pairs[dm_pair] != dm_pair_replaces:
             raise messaging.messaging_repo.DmPairTaken(pairs[dm_pair])
         pairs[dm_pair] = room_id
         rooms[room_id] = {"roomId": room_id, "kind": kind}
         return rooms[room_id]
 
-    async def fake_release(_owner, pair, room_id):
-        if pairs.get(pair) == room_id:
-            del pairs[pair]
-
     monkeypatch.setattr(messaging.messaging_repo, "create_room", fake_create)
-    monkeypatch.setattr(messaging.messaging_repo, "release_dm_pair", fake_release)
     monkeypatch.setattr(
         messaging.messaging_repo, "get_room", AsyncMock(side_effect=lambda r: {**rooms[r], "kind": kind})
     )
@@ -341,7 +336,7 @@ async def test_two_simultaneous_dm_creates_return_one_room(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_pair_row_naming_a_dm_that_became_a_group_dm_is_released(monkeypatch):
+async def test_a_pair_row_naming_a_dm_that_became_a_group_dm_is_taken_over(monkeypatch):
     rooms = _dm_create_stubs(monkeypatch, kind="group-dm")
     auth = AuthContext(user_id="user_owner", org_id="org_1")
 

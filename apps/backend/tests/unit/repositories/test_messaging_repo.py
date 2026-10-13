@@ -308,7 +308,7 @@ async def test_create_room_replay_is_idempotent_and_conflict_is_detected(table):
         await _room(name="different")
 
 
-async def _dm(client_room_id, creator=USER_A, other=("agent", FRIDAY)):
+async def _dm(client_room_id, creator=USER_A, other=("agent", FRIDAY), replaces=None):
     members = [_member("human", creator, "owner"), _member(other[0], other[1])]
     room_id = repo.deterministic_room_id(OWNER, creator, client_room_id)
     return await repo.create_room(
@@ -321,6 +321,7 @@ async def _dm(client_room_id, creator=USER_A, other=("agent", FRIDAY)):
         members=members,
         req_hash=repo.request_hash(None, "dm", members),
         dm_pair=repo.dm_pair_sk(("human", creator), other),
+        dm_pair_replaces=replaces,
     )
 
 
@@ -338,12 +339,10 @@ async def test_concurrent_dm_creates_for_one_pair_make_one_room(table):
     assert (await _dm(f"c-dm-{results.index(created[0])}"))["roomId"] == created[0]["roomId"]
     # Another pair is unaffected; a released pair can be taken again.
     await _dm("c-dm-b", creator=USER_B)
-    pair = repo.dm_pair_sk(("human", USER_A), ("agent", FRIDAY))
-    await repo.release_dm_pair(OWNER, pair, "some-other-room")  # stale release is a no-op
+    # Only a create naming the row's current (stale) room may take it over.
     with pytest.raises(repo.DmPairTaken):
-        await _dm("c-dm-again")
-    await repo.release_dm_pair(OWNER, pair, created[0]["roomId"])
-    assert (await _dm("c-dm-again"))["roomId"] != created[0]["roomId"]
+        await _dm("c-dm-again", replaces="some-other-room")
+    assert (await _dm("c-dm-again", replaces=created[0]["roomId"]))["roomId"] != created[0]["roomId"]
 
 
 @pytest.mark.asyncio

@@ -291,21 +291,6 @@ def dm_pair_sk(*members: tuple[str, str]) -> str:
     return "DMPAIR#" + _sha256("|".join(sorted(f"{kind}#{member_id}" for kind, member_id in members)))
 
 
-async def release_dm_pair(owner_id: str, pair_sk: str, room_id: str) -> None:
-    """Drop a pair row that still names ``room_id`` (the DM became a group DM or lost a
-    member). A row someone already re-pointed is left alone."""
-    try:
-        await run_in_thread(
-            _table().delete_item,
-            Key={"pk": owner_pk(owner_id), "sk": pair_sk},
-            ConditionExpression="roomId = :room",
-            ExpressionAttributeValues={":room": room_id},
-        )
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
-            raise
-
-
 def vendor_room_id(owner_id: str) -> str:
     """The one platform-managed channel a customer workspace shares with the vendor org."""
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-vendor-room|{owner_id}"))
@@ -766,13 +751,15 @@ async def create_room(
     req_hash: str,
     extra: dict | None = None,
     dm_pair: str | None = None,
+    dm_pair_replaces: str | None = None,
 ) -> dict:
     """One transaction: META + owner catalog + IDEMP + every member row + one
     delivery cursor per agent (at seq 0). ``members`` must already include the
     creator (role ``owner``). Returns the META item; a byte-identical replay
     returns the existing META, a different one raises ``IdempotencyConflict``.
     ``dm_pair`` (``dm_pair_sk``) adds a conditional uniqueness row, so a second
-    create for the same pair raises ``DmPairTaken`` instead of a second DM."""
+    create for the same pair raises ``DmPairTaken`` instead of a second DM;
+    ``dm_pair_replaces`` takes over a row that still names that (stale) room."""
     if len(members) > MAX_ROOM_MEMBERS:
         raise MemberLimitExceeded(f"rooms hold at most {MAX_ROOM_MEMBERS} members")
     agents = [m for m in members if m["kind"] == "agent"]
@@ -837,7 +824,14 @@ async def create_room(
                 "Put": {
                     "TableName": table_name,
                     "Item": {"pk": owner_pk(owner_id), "sk": dm_pair, "roomId": room_id, "createdAt": now},
-                    "ConditionExpression": "attribute_not_exists(pk)",
+                    **(
+                        {
+                            "ConditionExpression": "attribute_not_exists(pk) OR roomId = :stale",
+                            "ExpressionAttributeValues": {":stale": dm_pair_replaces},
+                        }
+                        if dm_pair_replaces
+                        else {"ConditionExpression": "attribute_not_exists(pk)"}
+                    ),
                 }
             }
         )

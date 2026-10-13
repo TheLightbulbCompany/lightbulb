@@ -22,6 +22,7 @@ import contextlib
 import logging
 import re
 import time
+import uuid
 import weakref
 
 from botocore.exceptions import ClientError
@@ -48,6 +49,7 @@ RUN_PREFIX = "session-"
 AGENT_ID = "session"
 NOT_SHARED = "Share this session to use the Lightbulb browser"
 PLACES = ("mac", "cloud")
+PLACE_ATTEMPTS = 3
 PLACE_NOTE = "Applies to the session's next browser connection. To move an open one now, restart the lightbulb-browser MCP server (/mcp in Claude Code)."
 CLOUD_MESSAGE = "The workspace's cloud browser isn't available right now. Try again in a minute."
 CLOUD_BUSY = "This session already has a cloud browser connection; close it first."
@@ -138,19 +140,25 @@ async def set_place(owner: str, session_id: str, where: str) -> dict:
     Kept on the row (it survives re-registration) for the session's life."""
     if where not in PLACES:
         raise ApiProblem("INVALID_REQUEST", "where must be mac or cloud.")
-    try:
-        await store.run_in_thread(
-            store._table().update_item,
-            Key={"pk": repo.session_pk(owner, session_id), "sk": "META"},
-            UpdateExpression="SET browserPlace = :w",
-            ConditionExpression="attribute_exists(pk)",
-            ExpressionAttributeValues={":w": where},
-        )
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.") from None
-        raise
-    return {"sessionId": session_id, "browser": where, "note": PLACE_NOTE}
+    # Fenced by the row's `revision` (as local_sessions_repo.admit_command is), so a registration that read
+    # the old place and then puts the whole META row cannot silently revert this write.
+    for _ in range(PLACE_ATTEMPTS):
+        row = await repo.get_session(owner, session_id)
+        if not live_shared(row):
+            raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
+        try:
+            await store.run_in_thread(
+                store._table().update_item,
+                Key={"pk": repo.session_pk(owner, session_id), "sk": "META"},
+                UpdateExpression="SET browserPlace = :w, revision = :new",
+                ConditionExpression="revision = :rev",
+                ExpressionAttributeValues={":w": where, ":new": str(uuid.uuid4()), ":rev": row["revision"]},
+            )
+            return {"sessionId": session_id, "browser": where, "note": PLACE_NOTE}
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+    raise ApiProblem("LOCAL_SESSION_CONFLICT", "The session changed while switching; try again.", retryable=True)
 
 
 async def place_from_mac(owner: str, user: str, device: str, session_id: str, where: str) -> dict:

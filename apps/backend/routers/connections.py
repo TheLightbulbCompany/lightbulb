@@ -1121,7 +1121,17 @@ async def _start_oauth(owner_id: str, provider: str, *, origin: str | None = Non
             status_code=503,
             detail=f"{p.display_name} isn't available to connect yet; please try again later.",
         )
-    except httpx.HTTPError:
+    except httpx.HTTPError as exc:
+        # Log what the provider said: Intercom's DCR 502'd in prod with nothing
+        # but the access-log line, so the refusal reason was unknowable.
+        response = exc.response if isinstance(exc, httpx.HTTPStatusError) else None
+        logger.warning(
+            "oauth start failed provider=%s url=%s status=%s body=%r",
+            provider,
+            response.request.url if response is not None else None,
+            response.status_code if response is not None else None,
+            response.text[:500] if response is not None else repr(exc),
+        )
         raise HTTPException(
             status_code=502,
             detail=f"Couldn't start the {p.display_name} connection; please try again.",

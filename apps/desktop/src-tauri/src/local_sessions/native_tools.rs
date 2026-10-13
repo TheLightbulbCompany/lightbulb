@@ -315,24 +315,30 @@ async fn answer(
         if matches!(tool, "find_rooms" | "find_sessions" | "read_messages" | "find_tasks" | "read_task" | "update_task") {
             return read(&client, &token, tool, &request["arguments"], &source.session_id).await;
         }
-        // This route only prepares a private intent. An older backend returns
-        // 404 here, which is safe; it must never fall through to immediate send.
-        let route = if request["tool"] == "send" {
-            "native-session-tools/prepare-send"
+        let base = crate::LIGHTBULB_API_BASE.trim_end_matches('/');
+        // use_browser carries its own session-scoped route and body; both ride the same
+        // warmed-source retry below (the open connection stays put, the next one follows).
+        let (url, body) = if tool == "use_browser" {
+            (
+                format!("{base}/api/v1/local-sessions/device/sessions/{}/browser-place", source.session_id),
+                request["arguments"].clone(),
+            )
         } else {
-            "native-session-tools"
+            // This route only prepares a private intent. An older backend returns
+            // 404 here, which is safe; it must never fall through to immediate send.
+            let route = if tool == "send" { "native-session-tools/prepare-send" } else { "native-session-tools" };
+            (
+                format!("{base}/api/v1/messaging/{route}"),
+                json!({"sourceSessionId":source.session_id.clone(),"sourceGeneration":source.generation.clone(),
+                "sourceProvider":source.provider.clone(),"sourceConversationId":source.conversation.clone(),
+                "sourceTurnId":source.active_turn.clone(),"originItemId":source.item_id.clone(),
+                "tool":request["tool"],"arguments":request["arguments"]}),
+            )
         };
-        let body = json!({"sourceSessionId":source.session_id.clone(),"sourceGeneration":source.generation.clone(),
-            "sourceProvider":source.provider.clone(),"sourceConversationId":source.conversation.clone(),
-            "sourceTurnId":source.active_turn.clone(),"originItemId":source.item_id.clone(),
-            "tool":request["tool"],"arguments":request["arguments"]});
         let retry_until = tokio::time::Instant::now() + Duration::from_secs(4);
         loop {
             let response = client
-                .post(format!(
-                    "{}/api/v1/messaging/{route}",
-                    crate::LIGHTBULB_API_BASE.trim_end_matches('/'),
-                ))
+                .post(&url)
                 .bearer_auth(&token)
                 .json(&body)
                 .send()
@@ -343,8 +349,7 @@ async fn answer(
                 .json()
                 .await
                 .map_err(|_| "invalid Lightbulb response")?;
-            if warmed && !ok && data["code"] == "LOCAL_SESSION_FORBIDDEN"
-                && tokio::time::Instant::now() < retry_until
+            if retry_warmed_forbidden(warmed, ok, &data) && tokio::time::Instant::now() < retry_until
             {
                 tokio::time::sleep(Duration::from_millis(250)).await;
                 let current = resolve_source(&scope, peer, &request["meta"])?;
@@ -365,6 +370,12 @@ async fn answer(
         bytes.push(b'\n');
         let _ = socket.write_all(&bytes).await;
     }
+}
+
+/// A warmed first-turn Codex source can be ready locally before the backend has persisted its
+/// session row: a forbidden answer then is transient, for every tool that posts from the source.
+fn retry_warmed_forbidden(warmed: bool, ok: bool, data: &Value) -> bool {
+    warmed && !ok && data["code"] == "LOCAL_SESSION_FORBIDDEN"
 }
 
 /// Reads (and the task-board update) run as the enrolled human through the
@@ -564,6 +575,15 @@ mod tests {
         mark_own(&mut data, "b");
         assert_eq!(data["sessions"][0]["isThisSession"], false);
         assert_eq!(data["sessions"][1]["isThisSession"], true);
+    }
+
+    #[test]
+    fn warmed_source_retries_a_transient_forbidden_for_every_post() {
+        let forbidden = json!({"code":"LOCAL_SESSION_FORBIDDEN"});
+        assert!(retry_warmed_forbidden(true, false, &forbidden), "use_browser shares this retry");
+        assert!(!retry_warmed_forbidden(false, false, &forbidden), "a settled source is really forbidden");
+        assert!(!retry_warmed_forbidden(true, true, &forbidden));
+        assert!(!retry_warmed_forbidden(true, false, &json!({"code":"OTHER"})));
     }
 
     #[test]

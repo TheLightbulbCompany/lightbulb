@@ -11,7 +11,7 @@ export function showsBrowserTab(session: Pick<LocalSession, "browser" | "status"
   return watchingRemotely && !!session.browser && session.status !== "ended" && session.status !== "offline";
 }
 
-/** A shared session's browser (spec 2026-10-11 §3): the page the session drives, as 480 px frames on
+/** A shared session's browser: the page the session drives, as 480 px frames on
  *  the session's frames channel while this tab is open; people who may type into the session may click
  *  and type in it. Nothing is recorded. */
 export function SessionBrowserTab({ sessionId, frames, canType }: { sessionId: string; frames?: SessionFrames; canType: boolean }) {

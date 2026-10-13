@@ -27,9 +27,9 @@ If a tool fails with "Share this session to use the Lightbulb browser", this ses
 not shared; tell your user, and do not look for another browser. Once the session is shared,
 the tools work again after the `lightbulb-browser` MCP server is restarted (`/mcp` in Claude
 Code). "This Mac's browser is
-busy" means four connections are already open; try again shortly. After five minutes
-without a browser command the workspace's sign-ins are saved and the browser is let go; your
-next browser command takes up to a minute or two longer while they load again. The tabs you had open
+busy" means four connections are already open; try again shortly. On the Mac browser, after
+five minutes without a browser command the workspace's sign-ins are saved and the browser is let
+go; your next browser command takes up to a minute or two longer while they load again. The tabs you had open
 stay as they were. Only a Codex CLI started on its own gets the browser: if Codex runs in the
 Codex app or on its shared background service, the tool fails with "More than one session runs
 in this process ... cannot tell which one is asking"; your user can start Codex with
@@ -37,7 +37,14 @@ in this process ... cannot tell which one is asking"; your user can start Codex 
 When browser access is off on the Mac, the same tools drive the workspace's cloud browser
 instead, in a tab of their own; "The workspace's cloud browser isn't available right now. Try
 again in a minute." means it could not start, so try again in a minute; "This session already
-has a cloud browser connection" means close the one you have open first.
+has a cloud browser connection" means close the one you have open first. The cloud tab is held
+for 30 minutes without a command; after that your next command may wait while the cloud browser
+starts, and the tab may be gone.
+`use_browser` (the `lightbulb` MCP) chooses where: `"mac"` (the default; it needs Browser on for
+that Mac, and with it off the session still uses the cloud browser) or `"cloud"`. It
+applies to your next browser connection; the one already open stays where it is, with its
+tabs. To switch now, ask your user to restart the `lightbulb-browser` MCP server (`/mcp` in
+Claude Code). Use it when your user asks, or when a site needs the other browser's sign-in.
 
 ## When your user asks to share this session
 

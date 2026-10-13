@@ -7,6 +7,7 @@ import logging
 from contextlib import asynccontextmanager
 import time
 import uuid
+from typing import Literal
 from urllib.parse import urlsplit
 
 import httpx
@@ -24,7 +25,7 @@ from core.auth import AuthContext
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.repositories import messaging_repo
-from core.services import clerk_admin, local_sessions, messaging, native_session_tools, task_board
+from core.services import clerk_admin, local_sessions, messaging, native_session_tools, session_browser, task_board
 
 logger = logging.getLogger(__name__)
 
@@ -276,6 +277,21 @@ async def update_task(
 ) -> dict:
     """Change a task's status (backlog, todo, in_progress, in_review, blocked, done, cancelled) or priority (critical, high, medium, low), and/or append a dated note to the end of its description. This tool posts no comment: a task comment wakes the assigned agent and starts a paid run, so it is not offered here."""
     return await _board(task_board.update_task(_caller(WRITE_SCOPE), task, status, priority, append_note))
+
+
+@mcp.tool()
+async def use_browser(where: Literal["mac", "cloud"], session_id: str) -> dict:
+    """Choose where a shared Claude Code or Codex session browses with its lightbulb-browser tools: "mac" (its Mac's Lightbulb agent Chrome, the default) or "cloud" (the workspace's cloud browser). Its next browser connection goes there; one already open stays where it is: to move an open one now, restart the lightbulb-browser MCP server (`/mcp` in Claude Code). session_id comes from find_sessions; only people who may control that session can move it."""
+    auth = _caller(WRITE_SCOPE)
+    try:
+        sid = messaging.validate_uuid(session_id, label="session ID")
+        row, _ = await local_sessions.authorize_session(auth, None, sid, owner_only=True)
+        if not session_browser.live_shared(row):
+            raise messaging.ApiProblem("LOCAL_SESSION_FORBIDDEN", session_browser.NOT_SHARED)
+        return await session_browser.set_place(row["ownerId"], row["sessionId"], where)
+    except messaging.ApiProblem as exc:
+        # FastMCP hides any other exception's text, so the client would never learn why.
+        raise ToolError(f"{exc.error.code}: {exc.error.message}") from exc
 
 
 _CLIENTS = {

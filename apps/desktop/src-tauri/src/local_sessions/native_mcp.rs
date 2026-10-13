@@ -31,7 +31,7 @@ fn cli_home(command: &mut Command, home: &Path) {
     }
 }
 
-/// The session browser's MCP entry (spec 2026-10-11): Google's chrome-devtools-mcp attached to this
+/// The session browser's MCP entry: Google's chrome-devtools-mcp attached to this
 /// Mac's session-browser port. We write no browser tools of our own.
 pub(super) const BROWSER_SERVER_NAME: &str = "lightbulb-browser";
 
@@ -310,6 +310,9 @@ fn tools() -> Value {
         {"name":"update_task","description":"Change a task's status (backlog, todo, in_progress, in_review, blocked, done, cancelled) or priority (critical, high, medium, low), and/or append a dated note to its description. Posts no comment: a task comment wakes the assigned agent and starts a paid run.",
          "inputSchema":{"type":"object","properties":{"task":{"type":"string"},"status":{"type":"string"},"priority":{"type":"string"},
            "append_note":{"type":"string"}},"required":["task"],"additionalProperties":false},
+         "annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}},
+        {"name":"use_browser","description":"Choose where this session's lightbulb-browser tools browse: \"mac\" (this Mac's Lightbulb agent Chrome, the default) or \"cloud\" (the workspace's cloud browser). It applies to this session's next browser connection: to switch now, restart the lightbulb-browser MCP server (/mcp in Claude Code).",
+         "inputSchema":{"type":"object","properties":{"where":{"type":"string","enum":["mac","cloud"]}},"required":["where"],"additionalProperties":false},
          "annotations":{"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false}}
     ]})
 }
@@ -381,6 +384,9 @@ pub(super) fn internal(name: &str, args: &Value) -> Option<(&'static str, Value)
         "message_receipt" if only(&["request_id"]) => {
             let call = json!({"requestId":args.get("request_id")?.as_str()?});
             allowed("receipt", &call).then_some(("receipt", call))
+        }
+        "use_browser" if only(&["where"]) && args.get("where").and_then(Value::as_str).is_some_and(|w| w == "mac" || w == "cloud") => {
+            Some(("use_browser", Value::Object(args.clone())))
         }
         _ => None,
     }
@@ -549,17 +555,24 @@ mod tests {
     }
 
     #[test]
-    fn exactly_the_eight_tools_and_only_send_is_destructive() {
+    fn exactly_the_nine_tools_and_only_send_is_destructive() {
         let listed = tools();
         let names: Vec<_> = listed["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert_eq!(names, ["find_rooms", "find_sessions", "read_messages", "send_message", "message_receipt",
-            "find_tasks", "read_task", "update_task"]);
+            "find_tasks", "read_task", "update_task", "use_browser"]);
         for tool in listed["tools"].as_array().unwrap() {
-            let writes = tool["name"] == "send_message" || tool["name"] == "update_task";
+            let writes = matches!(tool["name"].as_str(), Some("send_message" | "update_task" | "use_browser"));
             assert_eq!(tool["annotations"]["readOnlyHint"], !writes);
             assert_eq!(tool["annotations"]["destructiveHint"], tool["name"] == "send_message");
             assert_eq!(tool["annotations"]["openWorldHint"], false);
         }
+    }
+
+    #[test]
+    fn use_browser_takes_only_mac_or_cloud_and_never_a_session() {
+        assert_eq!(internal("use_browser", &json!({"where": "cloud"})), Some(("use_browser", json!({"where": "cloud"}))));
+        assert!(internal("use_browser", &json!({"where": "laptop"})).is_none());
+        assert!(internal("use_browser", &json!({"where": "mac", "session_id": "x"})).is_none(), "the session is the Mac's to prove");
     }
 
     #[test]

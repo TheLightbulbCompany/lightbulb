@@ -1,10 +1,10 @@
-"""A shared Claude Code or Codex session's browser (spec docs/superpowers/specs/2026-10-11-session-browser-design.md).
+"""A shared Claude Code or Codex session's browser on its Mac (PRs #4046, #4051, #4053).
 
 The Mac app identifies a CDP connection on its loopback port as one shared session and offers it
 (`browser.cdp.offer`, node_broker). This runs on the task holding that Mac's socket. The session
 is a run, `session-<sessionId>`, of its own person: it takes a `mac_browser` lease (first owner
 wins; the first lease in loads the workspace sign-ins, the last one out saves them), the runtime
-runs those sync steps over the ticketed Mac door (`browser.state` with a door, spike 3), and then
+runs those sync steps over the ticketed Mac door (`browser.state` with a door), and then
 the Mac opens the channel on its own agent Chrome for the session's client. The channel stays open
 for the client's whole connection. While active the lease is renewed; 300 s after the last command
 the Mac says `idle` and the lease is released (saving); the next command is held on the Mac while
@@ -22,6 +22,7 @@ import contextlib
 import logging
 import re
 import time
+import uuid
 import weakref
 
 from botocore.exceptions import ClientError
@@ -47,6 +48,9 @@ logger = logging.getLogger(__name__)
 RUN_PREFIX = "session-"
 AGENT_ID = "session"
 NOT_SHARED = "Share this session to use the Lightbulb browser"
+PLACES = ("mac", "cloud")
+PLACE_ATTEMPTS = 3
+PLACE_NOTE = "Applies to the session's next browser connection. To move an open one now, restart the lightbulb-browser MCP server (/mcp in Claude Code)."
 CLOUD_MESSAGE = "The workspace's cloud browser isn't available right now. Try again in a minute."
 CLOUD_BUSY = "This session already has a cloud browser connection; close it first."
 MESSAGES = {"not_shared": NOT_SHARED, "cloud_unavailable": CLOUD_MESSAGE, "cloud_busy": CLOUD_BUSY}
@@ -103,7 +107,7 @@ def auth_for(owner: str, member: str, session_id: str) -> dict:
     }
 
 
-def _live_shared(row: dict | None) -> bool:
+def live_shared(row: dict | None) -> bool:
     """The session is still shared and running: its browser may be shown and driven."""
     return bool(row) and not row.get("unshared") and row.get("endedAt") is None and row.get("removedAt") is None
 
@@ -129,6 +133,41 @@ async def shared_row(owner: str, user: str, device: str, session_id: str) -> dic
     except ApiProblem:
         raise _err("not_shared", 403) from None
     return row
+
+
+async def set_place(owner: str, session_id: str, where: str) -> dict:
+    """`use_browser`: where this session's NEXT browser connection goes; an open one stays where it is.
+    Kept on the row (it survives re-registration) for the session's life."""
+    if where not in PLACES:
+        raise ApiProblem("INVALID_REQUEST", "where must be mac or cloud.")
+    # Fenced by the row's `revision` (as local_sessions_repo.admit_command is), so a registration that read
+    # the old place and then puts the whole META row cannot silently revert this write.
+    for _ in range(PLACE_ATTEMPTS):
+        row = await repo.get_session(owner, session_id)
+        if not live_shared(row):
+            raise ApiProblem("LOCAL_SESSION_NOT_FOUND", "Local session not found.")
+        try:
+            await store.run_in_thread(
+                store._table().update_item,
+                Key={"pk": repo.session_pk(owner, session_id), "sk": "META"},
+                UpdateExpression="SET browserPlace = :w, revision = :new",
+                ConditionExpression="revision = :rev",
+                ExpressionAttributeValues={":w": where, ":new": str(uuid.uuid4()), ":rev": row["revision"]},
+            )
+            return {"sessionId": session_id, "browser": where, "note": PLACE_NOTE}
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+    raise ApiProblem("LOCAL_SESSION_CONFLICT", "The session changed while switching; try again.", retryable=True)
+
+
+async def place_from_mac(owner: str, user: str, device: str, session_id: str, where: str) -> dict:
+    """The Mac's own `lightbulb` MCP: the session the Mac proved is calling, shared and running."""
+    try:
+        await shared_row(owner, user, device, session_id)
+    except DesktopError:
+        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", NOT_SHARED) from None
+    return await set_place(owner, session_id, where)
 
 
 async def _mark_open(owner: str, human: str, session_id: str, where: str | None, *, announce: bool) -> None:
@@ -246,7 +285,7 @@ async def _lease_loop(auth: dict, device: str, node, channel, leased: dict) -> N
     RENEW_SECONDS, re-checks that the session is shared (DesktopError ends the connection) and renews
     the `browserOpen` mark. Leased: renew the lease, running any sync it hands back. `idle` (the Mac's
     300 s with no command): release it, which saves. `active` (the Mac holds a command): re-acquire
-    with its sync (Decision 8: a `[save, load]`, so the Mac's own changes are saved before the load),
+    with its sync (a `[save, load]`, so the Mac's own changes are saved before the load),
     then answer `cdp_leased`; a refusal answers its code and the connection stays, idle.
     `leased["generation"]` is the lease held now (None: released)."""
     owner, user, sid = auth["ownerId"], auth["memberId"], session_of(auth["runId"])
@@ -298,7 +337,7 @@ async def _open_row(auth, session_id: str, *, owner_only: bool) -> dict:
     """The session's row for a person still in the workspace who may read it (`owner_only`: may type
     into it, `may_control`), while its browser is open."""
     row, _ = await local_sessions.authorize_session(auth, None, session_id, owner_only=owner_only)
-    if not _live_shared(row):  # its own person included: an unshared browser is shown to nobody
+    if not live_shared(row):  # its own person included: an unshared browser is shown to nobody
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", NOT_SHARED)
     await session_screen._still_a_member(row, auth.user_id)
     if local_sessions.browser_open(row) is None:
@@ -334,7 +373,7 @@ async def may_type(owner: str, user: str, run: str) -> bool:
     """Re-checked where the Mac's socket is (mac_live.input): this person may still type into it."""
     sid = session_of(run)
     row = await repo.get_session(owner, sid) if sid else None
-    if not _live_shared(row) or not local_sessions.may_control(row, user):
+    if not live_shared(row) or not local_sessions.may_control(row, user):
         return False
     try:
         await session_screen._still_a_member(row, user)
@@ -355,7 +394,7 @@ async def _watch_mac(owner: str, session_id: str, node, channel) -> None:
             logger.warning("session browser watch read failed owner=%s error=%s", owner, type(exc).__name__)
         else:
             now = _clock()
-            want = _live_shared(row) and now - float(row.get("browserWatchedAt") or 0) < mac_live.WANTED_S
+            want = live_shared(row) and now - float(row.get("browserWatchedAt") or 0) < mac_live.WANTED_S
             if want != sent or (want and now - sent_at >= mac_live.SET_EVERY_S):
                 try:
                     node.cast_set(channel, False, want)
@@ -391,7 +430,7 @@ async def _publish(owner: str, session_id: str, channel) -> None:
         }
         try:
             # right before the publish: a thumb pending across an unshare/end/remove is dropped
-            if not _live_shared(await repo.get_session(owner, session_id)):
+            if not live_shared(await repo.get_session(owner, session_id)):
                 continue
             workspace = workspace or await store.ensure_workspace_id(owner)
             await publisher.publish_session_frames(workspace, make_live_event("workspace.session.screen", payload))
@@ -488,7 +527,7 @@ async def _watch_cloud(owner: str, session_id: str, run: str) -> None:
         except Exception as exc:  # noqa: BLE001 -- a DynamoDB blip: the next beat tries again
             logger.info("session browser watch read failed owner=%s error=%s", owner, type(exc).__name__)
         else:
-            if not _live_shared(row):
+            if not live_shared(row):
                 await _stop_cast(owner, run)
                 return
             if _clock() - float(row.get("browserWatchedAt") or 0) < mac_live.WANTED_S:

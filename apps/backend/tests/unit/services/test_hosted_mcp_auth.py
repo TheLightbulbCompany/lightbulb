@@ -485,3 +485,29 @@ async def test_receipt_reads_rejected_even_when_get_command_refuses_again(monkey
     monkeypatch.setattr(hosted_mcp.local_sessions, "get_command", AsyncMock(side_effect=off))
     result = await hosted_mcp.message_receipt(request_id)
     assert result["state"] == "rejected" and result["reason"] == "LOCAL_SESSION_FORBIDDEN"
+
+
+@pytest.mark.asyncio
+async def test_use_browser_moves_a_session_its_caller_may_control(monkeypatch):
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    sid = "11111111-1111-4111-8111-111111111111"
+    monkeypatch.setattr(hosted_mcp, "_caller", lambda *_scope: AuthContext(user_id="user_sender", org_id="org_test"))
+    authorize = AsyncMock(return_value=({"ownerId": "org_test", "sessionId": sid}, {}))
+    monkeypatch.setattr(hosted_mcp.local_sessions, "authorize_session", authorize)
+    monkeypatch.setattr(
+        hosted_mcp.session_browser,
+        "set_place",
+        AsyncMock(return_value={"sessionId": sid, "browser": "mac", "note": hosted_mcp.session_browser.PLACE_NOTE}),
+    )
+    moved = await hosted_mcp.use_browser("mac", sid)
+    assert moved["browser"] == "mac" and "restart the lightbulb-browser MCP server" in moved["note"]
+    assert authorize.await_args.kwargs == {"owner_only": True}
+    authorize.return_value = ({"ownerId": "org_test", "sessionId": sid, "unshared": True}, {})
+    with pytest.raises(ToolError, match="Share this session to use the Lightbulb browser"):
+        await hosted_mcp.use_browser("cloud", sid)
+    authorize.side_effect = hosted_mcp.messaging.ApiProblem(
+        "LOCAL_SESSION_FORBIDDEN", "Only the session's owner can do that."
+    )
+    with pytest.raises(ToolError, match="LOCAL_SESSION_FORBIDDEN"):
+        await hosted_mcp.use_browser("cloud", sid)

@@ -1,4 +1,4 @@
-//! The Lightbulb browser for shared Claude Code and Codex sessions (spec 2026-10-11).
+//! The Lightbulb browser for shared Claude Code and Codex sessions.
 //!
 //! A fixed loopback port speaks the slice of Chrome's DevTools surface chrome-devtools-mcp and
 //! Playwright MCP use: `GET /json/version` (with or without a trailing slash), `/json/list`, and the
@@ -614,7 +614,7 @@ const INI_IPV4: u8 = 0x1;
 
 /// The process that owns the client end of a loopback TCP connection: its local end is `client`
 /// (the accepted stream's peer) and its foreign end `server` (the accepted stream's local
-/// address). Spike 2026-10-11: libproc socket matching, ~0.3 ms median, no root. Looks at this
+/// address). Measured: libproc socket matching, ~0.3 ms median, no root. Looks at this
 /// user's processes only; None when no process or more than one does (deny).
 #[cfg(target_os = "macos")]
 pub(crate) fn peer_pid(server: SocketAddr, client: SocketAddr) -> Option<Identity> {

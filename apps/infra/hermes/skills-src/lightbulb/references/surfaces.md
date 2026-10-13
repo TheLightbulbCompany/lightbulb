@@ -124,7 +124,7 @@ You still read the structured record with
 Codex session browses with its `lightbulb-browser` tools in that Mac's "Lightbulb agent"
 Chrome, with the workspace's sign-ins, exactly as a run does after `lightbulb_desktop
 use_browser`. A session that is not shared is refused ("Share this session to use the
-Lightbulb browser"). Its sign-ins load when it starts browsing and save five minutes after its
+Lightbulb browser"). On the Mac browser, its sign-ins load when it starts browsing and save five minutes after its
 last browser command and when the session ends; its next command after such a pause waits up
 to a minute or two while they load again (anything signed into in that window meanwhile is saved
 first, not lost). When a session stops being shared its browser connection closes and its
@@ -135,7 +135,15 @@ conversations (its shared background service), is refused with "More than one se
 this process ... so the Lightbulb browser cannot tell which one is asking"; the person can
 start Codex with `--no-daemon`.
 When Browser is switched off on that Mac, the session browses the workspace's cloud browser
-instead (its own tab, the same sign-ins; saved when the shared browser saves).
+instead (its own tab, the same sign-ins; saved when the shared browser saves). The cloud tab is
+held for 30 minutes without a command; after that the next command may wait while the cloud
+browser starts, and the tab may be gone.
+A session chooses between the two with the session's own `lightbulb` MCP tool `use_browser`, not
+`lightbulb_desktop use_browser` (`mac`, which needs Browser on for that Mac and otherwise falls
+back to the cloud browser, or `cloud`);
+a person who may control the session can do the same through the hosted MCP's `use_browser`
+with its `session_id`. It applies to the session's next browser connection (restarting its
+`lightbulb-browser` MCP server); an open connection stays where it is.
 People watching the session see a **Browser** tab beside its terminal while it browses; those
 who may type into the session may also click and type there. While the session's person has
 paused others' input (a request to join), the browser is read-only too. Frames flow only while

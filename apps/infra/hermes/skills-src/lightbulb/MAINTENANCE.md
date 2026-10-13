@@ -112,6 +112,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  packages/claude-plugin/lightbulb/skills/lightbulb-session-sharing/SKILL.md ("Browsing");
                                  apps/frontend/src/components/messaging/SessionBrowserTab.tsx + LocalSessionPanel.tsx (the tab);
                                  BrowserFrameView.tsx (session mode); routes /messaging/sessions/{id}/browser/{viewing,input}
+                                 native_mcp.rs + native_tools.rs (use_browser); apps/backend/core/services/hosted_mcp.py (use_browser); routers/messaging.py (/local-sessions/device/sessions/{id}/browser-place)
   - Browser tool choice ..... SKILL.md ("references/surfaces.md § Browser" row, a pointer only) + references/surfaces.md
                               (Browser row: "Which tool", extensions, recording, downloads) +
                               references/platform-primitives.md (pointer)

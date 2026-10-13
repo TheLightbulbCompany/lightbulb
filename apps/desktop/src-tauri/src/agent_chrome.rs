@@ -482,7 +482,13 @@ pub fn filter_for(raw: &str, downloads: &Path, session: bool) -> (Filtered, Opti
         } else if method == "Target.createTarget" && msg.get("params").is_some_and(Value::is_object) {
             // A background tab (a run) or a background window (a session): never in front of the person.
             msg["params"]["background"] = json!(true);
-            msg["params"]["newWindow"] = json!(session);
+            // A hidden target (the bridge's sign-in sync) is in no window at all, and Chrome
+            // refuses `hidden` with any `newWindow`, even false.
+            if msg.pointer("/params/hidden").and_then(Value::as_bool) == Some(true) {
+                msg["params"].as_object_mut().map(|p| p.remove("newWindow"));
+            } else {
+                msg["params"]["newWindow"] = json!(session);
+            }
             Filtered::Pass(msg.to_string())
         } else if method == "Browser.setDownloadBehavior" || method == "Page.setDownloadBehavior" {
             if !msg.get("params").is_some_and(Value::is_object) {
@@ -1503,6 +1509,17 @@ mod tests {
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!((v["params"]["background"].clone(), v["params"]["newWindow"].clone()), (json!(true), json!(false)));
         assert_eq!(v["params"]["url"], "https://a.com");
+    }
+
+    #[test]
+    fn a_hidden_sync_target_carries_no_new_window_flag_on_any_channel() {
+        // Chrome refuses `hidden` with any `newWindow`; the sync's hidden tab is in no window.
+        for session in [false, true] {
+            let raw = call("Target.createTarget", json!({"url": "about:blank", "background": true, "hidden": true, "newWindow": true}));
+            let Filtered::Pass(out) = filter_for(&raw, &dl(), session).0 else { panic!() };
+            let v: Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(v["params"], json!({"url": "about:blank", "background": true, "hidden": true}));
+        }
     }
 
     #[test]

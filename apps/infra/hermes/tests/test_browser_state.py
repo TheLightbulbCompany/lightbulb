@@ -638,8 +638,10 @@ class FakeMacChrome:
     localStorage per origin. It plays the storage script's contract: nothing changes unless the
     page is the expected origin; otherwise the page's storage becomes the items, as a diff."""
 
-    def __init__(self, storage=None, lagging=(), broken=()):
+    def __init__(self, storage=None, lagging=(), broken=(), refuse_hidden=False):
         from websockets.sync.server import serve
+
+        self.refuse_hidden = refuse_hidden  # an older Chrome or desktop app
 
         self.broken = set(broken)  # origins whose page script fails
 
@@ -659,6 +661,9 @@ class FakeMacChrome:
             result = {}
             if method == "Target.createTarget":
                 self.created = p
+                if p.get("hidden") and self.refuse_hidden:
+                    ws.send(json.dumps({"id": m["id"], "error": {"code": -32602, "message": "Hidden target cannot be created in a new window"}}))
+                    continue
                 result = {"targetId": "BG"}
             elif method == "Target.attachToTarget":
                 result = {"sessionId": "S-BG"}
@@ -719,11 +724,21 @@ def test_mac_localstorage_loads_in_a_background_tab_with_no_network_request():
         saved = [_ls("https://a.test", k="v", t="1"), _ls("http://localhost:3000", s="x")]
         reached = browser_state._mac_origins(fake.url, saved, time.monotonic() + 10)
         assert reached == {"https://a.test", "http://localhost:3000"}
-        assert fake.created == {"url": "about:blank", "background": True}
+        assert fake.created == {"url": "about:blank", "background": True, "hidden": True}
         assert fake.fulfilled == [("https://a.test/", 200, ""), ("http://localhost:3000/", 200, "")]  # every request answered
         assert fake.storage == {"https://a.test": {"k": "v", "t": "1"}, "http://localhost:3000": {"s": "x"}}
         assert fake.closed == ["BG"]
         assert fake.seen.index("Network.setBypassServiceWorker") < fake.seen.index("Fetch.enable") < fake.seen.index("Page.navigate")
+    finally:
+        fake.server.shutdown()
+
+
+def test_a_chrome_that_refuses_a_hidden_target_gets_the_background_tab():
+    fake = FakeMacChrome(refuse_hidden=True)
+    try:
+        reached = browser_state._mac_origins(fake.url, [_ls("https://a.test", k="v")], time.monotonic() + 10)
+        assert reached == {"https://a.test"} and fake.storage == {"https://a.test": {"k": "v"}}
+        assert fake.created == {"url": "about:blank", "background": True} and fake.closed == ["BG"]
     finally:
         fake.server.shutdown()
 
@@ -856,7 +871,7 @@ def test_a_closed_origins_localstorage_is_read_in_the_background_and_a_failing_o
                                             time.monotonic() + 10)
         assert found == {"https://left.test": [{"name": "token", "value": "t"}],
                          "https://gone.test": [{"name": "k", "value": "v"}]}  # broken.test is left out, not fatal
-        assert fake.created == {"url": "about:blank", "background": True} and fake.closed == ["BG"]
+        assert fake.created == {"url": "about:blank", "background": True, "hidden": True} and fake.closed == ["BG"]
         assert [f[0] for f in fake.fulfilled] == ["https://left.test/", "https://broken.test/", "https://gone.test/"]
     finally:
         fake.server.shutdown()

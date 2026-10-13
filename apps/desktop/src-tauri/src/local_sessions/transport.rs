@@ -450,6 +450,14 @@ impl Host {
                         native.status = codex::turn_status(path).into();
                     }
                 }
+                // A live session is online unless something says it works or waits on its
+                // person (Happy's rule). The restart's "unknown" is only cleared by a hook or a
+                // listing, and an idle session gets neither: Claude leaves some live processes
+                // out of `claude agents`, and a Codex thread's rollout can be gone. A hook still
+                // moves it to busy or waiting when it next works.
+                if m.ended_at.is_none() && native.status == "unknown" && still_running(&native.process) {
+                    native.status = "idle".into();
+                }
                 native
             })
             .collect();
@@ -585,10 +593,12 @@ impl Host {
                 // it: an upgrade that changes the fingerprint must not re-register it.
                 if mirror.generation != generation && mirror.native.process != native.process {
                     invalidate = true;
+                    // The predecessor is not running; the session is, as the successor, and
+                    // discovery just read its status. Control stays unverified until `advance`,
+                    // but the status must not wait on that: `advance` first drains the old
+                    // generation's history, which a relay that never acks holds up forever.
+                    mirror.native.status.clone_from(&native.status);
                     mirror.registration.successor = Some(native);
-                    // The predecessor is not running and this Mac has verified nothing
-                    // about the successor yet. "offline" is not a status the relay knows.
-                    mirror.native.status = "unknown".into();
                     if mirror.native.restriction.as_deref() != Some("history-gap") {
                         mirror.native.restriction = Some("runtime-unverified".into());
                     }
@@ -3877,6 +3887,56 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn local_sessions_a_live_session_no_listing_names_is_idle_not_unknown_after_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        // An idle Claude session `claude agents` leaves out, and a Codex thread whose rollout is
+        // gone, both restored as "unknown": no hook fires for an idle session.
+        let mut claude = test_mirror(SID, "gen-1");
+        claude.native.provider = "claude".into();
+        claude.native.restriction = Some("runtime-unverified".into());
+        let mut codex = test_mirror(SID_B, "gen-1");
+        codex.native.restriction = Some("history-gap".into());
+        codex.native.transcript = Some(dir.path().join("archived-rollout.jsonl"));
+        let mut gone = test_mirror("cccc0000-0000-4000-8000-000000000000", "gen-1");
+        gone.native.process.pid = 2_147_483_000;
+        let keys: Vec<String> = [&claude, &codex, &gone].iter().map(|m| native_key(&m.native)).collect();
+        let mut host = test_host(
+            dir.path(),
+            vec![(keys[0].as_str(), claude), (keys[1].as_str(), codex), (keys[2].as_str(), gone)],
+        );
+        host.observe(vec![], &BTreeSet::new()).unwrap();
+        assert_eq!(host.mirrors[&keys[0]].native.status, "idle");
+        assert_eq!(host.mirrors[&keys[1]].native.status, "idle");
+        assert_ne!(host.mirrors[&keys[2]].native.status, "idle", "a dead process is not online");
+        assert_eq!(
+            host.mirrors[&keys[0]].native.restriction.as_deref(),
+            Some("runtime-unverified"),
+            "online is a status, not verified control"
+        );
+    }
+
+    #[test]
+    fn local_sessions_a_resumed_session_shows_its_successor_status_while_history_drains() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mirror = test_mirror(SID, "gen-1");
+        mirror.native.provider = "claude".into();
+        mirror.session_id = Some("session".into());
+        // The old generation's batch is still unacknowledged, so `advance` cannot promote yet.
+        mirror.queue = vec![json!({"kind":"text","role":"assistant","text":"old","truncated":false})];
+        mirror.pending = Some(json!({"batchId":"old","afterSeq":0,"events":[]}));
+        let key = native_key(&mirror.native);
+        let mut resumed = mirror.native.clone();
+        resumed.process.birth_micros += 1;
+        resumed.status = "busy".into();
+        let mut host = test_host(dir.path(), vec![(key.as_str(), mirror)]);
+        host.observe(vec![resumed], &BTreeSet::new()).unwrap();
+        let mirror = &host.mirrors[&key];
+        assert!(mirror.registration.successor.is_some(), "not promoted before the drain");
+        assert_eq!(mirror.native.status, "busy", "the running process's status, not unknown");
+        assert_eq!(mirror.native.restriction.as_deref(), Some("runtime-unverified"));
+    }
+
+    #[test]
     fn local_sessions_a_fork_keeps_its_lineage_through_a_failed_ps() {
         let dir = tempfile::tempdir().unwrap();
         let mut fork = test_mirror(SID_B, "gen-1");
@@ -5478,7 +5538,9 @@ pub(super) mod tests {
     fn local_sessions_observation_does_not_rewrite_unchanged_or_unlisted_state() {
         let dir = tempfile::tempdir().unwrap();
         let scope = dir.path().join("scope");
-        let native = observed_fixture(dir.path());
+        // Listed with a known status: an unlisted live "unknown" is moved to idle, a change.
+        let mut native = observed_fixture(dir.path());
+        native.status = "idle".into();
         let key = native_key(&native);
         let mut host = Host::restore(
             scope.clone(),

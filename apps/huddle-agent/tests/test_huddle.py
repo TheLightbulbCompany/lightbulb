@@ -2461,3 +2461,45 @@ async def test_backend_turn_carries_the_turns_requests_and_no_post_marks_a_run(
         "/api/v1/internal/huddles/r1/runs/r1/no-post",
         {"ownerId": "org_1", "roomToken": "tok"},
     )
+
+
+async def test_a_closing_chunk_after_the_answer_began_says_only_the_rest():
+    """Publishes swap: run_ended came first, so the streamed part was being said when the closing chunk
+    landed. Its first words are not said twice (Codex #4061)."""
+    h, room, backend, lives, clock, log = await summoned(drive=True)
+    run_id = backend.turns[0]["runId"]
+    live = lives[0]
+    h.on_data(None, "call.frame", packet(
+        frame(run_id, "forge", {"type": "chunk", "content": "The total is in.", "seq": 1}),
+        frame(run_id, "forge", {"type": "run_ended", "seq": 2}),
+    ))
+    await pause(h, clock)
+    said = [c[1] for c in live.calls if c[0] == "say"]
+    assert said and said[-1] == "The total is in."  # it is being said now
+    h.on_data(None, "call.frame", packet(
+        frame(run_id, "forge", {"type": "chunk", "content": "The total is in. It is $42.", "seq": 3}),
+    ))
+    spoken(h, live)
+    await pause(h, clock)
+    spoken(h, live)
+    said = [c[1] for c in live.calls if c[0] == "say"]
+    assert said.count("The total is in.") == 1 and said[-1] == "It is $42."
+
+
+async def test_a_closing_chunk_after_the_answer_was_said_in_full_says_only_the_rest():
+    h, room, backend, lives, clock, log = await summoned(drive=True)
+    run_id = backend.turns[0]["runId"]
+    live = lives[0]
+    h.on_data(None, "call.frame", packet(
+        frame(run_id, "forge", {"type": "chunk", "content": "The total is in.", "seq": 1}),
+        frame(run_id, "forge", {"type": "run_ended", "seq": 2}),
+    ))
+    await pause(h, clock)
+    spoken(h, live)  # said to its end before the closing chunk lands
+    h.on_data(None, "call.frame", packet(
+        frame(run_id, "forge", {"type": "chunk", "content": "The total is in. It is $42.", "seq": 3}),
+    ))
+    await pause(h, clock)
+    spoken(h, live)
+    said = [c[1] for c in live.calls if c[0] == "say"]
+    assert said.count("The total is in.") == 1 and said[-1] == "It is $42."

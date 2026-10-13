@@ -545,6 +545,7 @@ class Huddle:
         # it is only an agent's name. Their next line completes it.
         self._incomplete: dict[str, tuple[str, float, int, str | None]] = {}
         self._ledger: list[Utterance] = []  # everything the room's mouths still have to say (`_pump`)
+        self._answered: dict[str, list[str]] = {}  # each run's answer as said, sentence by sentence (`_carry_on`)
         self._uid = 0
         self._order = 0  # the last playback started (`_start`): its receipts name it
         # Obligations (a request row, a run) whose speech a person silenced -> their agent. Nothing more
@@ -2912,6 +2913,10 @@ class Huddle:
             return u
         self._ledger.remove(u)
         u.state = "delivered"
+        if u.kind == "answer" and u.obligation:
+            # what this run's answer said, for a closing chunk that lands after it (`_carry_on`)
+            # ponytail: one entry per answered run, for the call's life
+            self._answered[u.obligation] = self._answered.get(u.obligation, []) + u.units
         if u.kind == "answer":
             self._requests.delivered({u.obligation})
             self._delivery_tries.pop(u.obligation or "", None)
@@ -3636,6 +3641,8 @@ class Huddle:
     def ended(self, run: Run, answer: str) -> None:
         """The work is done. Nothing of a run is said as it streams (a run speaks a sentence before each lookup,
         which is an agent talking again and again over people): its answer is said when it ends."""
+        if answer and self._carry_on(run, answer):
+            return
         asked = self._requests.by_run(run.run_id)  # a request-list run (engine §3.5)
         v = self._floor_voice(run.agent_id)
         sorry = [u for u in self._ledger if u.kind == "answer" and u.obligation == run.run_id and u.state == "pending"]
@@ -3662,6 +3669,34 @@ class Huddle:
             )  # fmt: skip
         self._start_queued()  # understanding §4.5: the agent's next row starts now, not on the next tick
         self._sync_state()
+
+    def _carry_on(self, run: Run, answer: str) -> bool:
+        """The run's closing text, landing after its answer began to be said (publishes can swap: `run_ended`,
+        then the last chunk). Said again from the start, its first words were heard twice. So when the new
+        text goes on from what is being or was said, only the rest is said: a paused answer takes the new
+        sentences in place from its cursor; one playing now, or said in full, is followed by the rest as an
+        answer of its own. False: nothing of it was said, or the new text does not go on from it (the
+        caller's ordinary answer, which replaces it)."""
+        new = units(answer)
+        prior = next(
+            (u for u in self._ledger if u.agent == run.agent_id and u.kind == "answer"
+             and u.obligation == run.run_id and u.state in ("speaking", "paused")),
+            None,
+        )  # fmt: skip
+        if prior is not None and prior.state == "paused" and new[: prior.cursor] == prior.units[: prior.cursor]:
+            prior.units = new
+        else:
+            base = prior.units if prior is not None else self._answered.get(run.run_id)
+            if base is None or new[: len(base)] != base:
+                return False
+            if rest := new[len(base) :]:
+                self._utter(
+                    run.agent_id, "answer", " ".join(rest), obligation=run.run_id, request=run.request,
+                    audience=run.speaker, label=prior.label if prior is not None else "",
+                )  # fmt: skip
+        self._sync_state()
+        self._pump()
+        return True
 
     def failed(self, run: Run) -> None:
         rows = self._requests.by_run(run.run_id)

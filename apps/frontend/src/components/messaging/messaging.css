@@ -262,7 +262,6 @@
 .native-session-dot-ended { background: var(--border); opacity: 0.5; }
 /* Sidebar session row: the tool logo, with the status dot as a corner badge. */
 .session-tool-badge { position: relative; display: inline-flex; flex-shrink: 0; }
-.session-tool-badge .native-session-dot { position: absolute; right: -2px; bottom: -2px; width: 7px; height: 7px; box-shadow: 0 0 0 1.5px var(--plane-sidebar); }
 .native-session-prompt-row { display: flex; gap: 8px; align-items: flex-start; }
 .native-session-prompt-row .native-session-glyph { padding-top: 8px; font-family: var(--font-mono), ui-monospace, monospace; }
 .native-session-composer textarea { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; }
@@ -337,6 +336,22 @@
 .room-unread { display: inline-block; height: 6px; width: 6px; border-radius: 50%; background: var(--foreground); flex-shrink: 0; }
 .session-unread { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--info); }
 .session-unread--finished { background: var(--ok); }
+/* Session rows, after Happy: the time sits where a dot would be; waiting on its person is the one
+   loud dot; the title shimmers while it works; a session that is gone is faded; rename and
+   remove wait for hover, as Happy keeps them behind a swipe. */
+.session-unread--waiting { background: var(--warn); }
+.session-row-time { flex: none; font-size: .75rem; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.session-row--gone .room-directory-entry { opacity: .6; }
+.session-row--gone .session-tool-badge { filter: grayscale(1); }
+.session-row .session-rename-trigger { opacity: 0; }
+.session-row:hover .session-rename-trigger, .session-row .session-rename-trigger:focus-visible, .session-row:focus-within .session-rename-trigger { opacity: 1; }
+@media (hover: none) { .session-row .session-rename-trigger { opacity: 1; } }
+.session-title--working { color: transparent; background: linear-gradient(90deg, var(--muted-foreground) 35%, var(--foreground) 50%, var(--muted-foreground) 65%) 0 0 / 250% 100%; -webkit-background-clip: text; background-clip: text; animation: session-title-shimmer 2s linear infinite; }
+@keyframes session-title-shimmer { from { background-position: 100% 0; } to { background-position: -150% 0; } }
+@media (prefers-reduced-motion: reduce) { .session-title--working { animation: none; color: inherit; background: none; } }
+.all-sessions-toggle { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; font-size: .75rem; font-weight: 600; color: var(--muted-foreground); border-radius: 6px; cursor: pointer; }
+.all-sessions-toggle:hover { color: var(--foreground); }
+.all-sessions-toggle svg { width: 12px; height: 12px; }
 .room-directory-session-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 2px 8px 6px; }
 .room-directory-subgroup { display: flex; align-items: center; gap: 4px; width: 100%; padding: 2px 8px; font-size: .75rem; font-weight: 600; color: var(--muted-foreground); border-radius: 6px; }
 .room-directory-subgroup svg { width: 12px; height: 12px; }

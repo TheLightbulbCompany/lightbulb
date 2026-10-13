@@ -10,21 +10,32 @@ const make = (sessionId: string, title: string, status: "busy" | "offline" | "en
   ownerName: "Alice", own: false,
 });
 
-it("groups every session by day, newest first, searches, and opens one", async () => {
+it("lists live sessions first, newest first; ended ones under a collapsed Ended, by day; searches everything", async () => {
   const onOpenSession = vi.fn();
   render(<AllSessionsView loading={false} onOpenSession={onOpenSession} onClose={vi.fn()} entries={[
-    make("old", "Billing audit", "offline", 24 * 20),
+    make("lost", "Lost weeks ago", "offline", 24 * 20),
+    make("older", "Older run", "busy", 2),
     make("now", "Fix relay", "busy", 0),
     make("ended", "Ship docs", "ended", 24 * 10),
+    make("gone", "Billing audit", "offline", 1),
   ]} />);
   const view = screen.getByRole("region", { name: "All sessions" });
-  expect(within(view).getByRole("region", { name: "Today" })).toHaveTextContent("Fix relay");
-  expect(within(within(view).getByRole("region", { name: "Earlier" })).getAllByRole("button").map((b) => b.getAttribute("aria-label"))).toEqual([
-    expect.stringMatching(/Ship docs, Alice, Ended/), expect.stringMatching(/Billing audit, Alice, Offline/)]);
-  await userEvent.type(within(view).getByRole("searchbox", { name: "Search sessions" }), "billing");
+  expect(within(within(view).getByRole("list", { name: "Live" })).getAllByRole("button").map((b) => b.getAttribute("aria-label"))).toEqual([
+    expect.stringMatching(/Fix relay, Alice, Working/), expect.stringMatching(/Older run, Alice, Working/)]);
+  // Offline for days: its Mac lost it, so it is not listed at all.
+  expect(within(view).queryByText("Lost weeks ago")).toBeNull();
+  const toggle = within(view).getByRole("button", { name: "Ended 2" });
+  expect(toggle).toHaveAttribute("aria-expanded", "false");
+  expect(within(view).queryByText("Ship docs")).toBeNull();
+  await userEvent.click(toggle);
+  expect(within(view).getByRole("region", { name: "Today" })).toHaveTextContent("Billing audit");
+  expect(within(view).getByRole("region", { name: "Earlier" })).toHaveTextContent("Ship docs");
+  await userEvent.click(toggle);
+  // A search looks in Ended too.
+  await userEvent.type(within(view).getByRole("searchbox", { name: "Search sessions" }), "ship");
   expect(within(view).getAllByRole("button", { name: /^Open / })).toHaveLength(1);
-  await userEvent.click(within(view).getByRole("button", { name: /Billing audit/ }));
-  expect(onOpenSession).toHaveBeenCalledWith("old");
+  await userEvent.click(within(view).getByRole("button", { name: /Ship docs/ }));
+  expect(onOpenSession).toHaveBeenCalledWith("ended");
   await userEvent.clear(within(view).getByRole("searchbox", { name: "Search sessions" }));
   await userEvent.type(within(view).getByRole("searchbox", { name: "Search sessions" }), "zzz");
   expect(within(view).getByText("No sessions match.")).toBeInTheDocument();
@@ -37,6 +48,7 @@ it("offers Remove on the viewer's own ended sessions only, one by one or all at 
   render(<AllSessionsView loading={false} onOpenSession={vi.fn()} onClose={vi.fn()} onRemove={onRemove} onRemoveEnded={onRemoveEnded} entries={[
     mine("a", "Old test", "ended"), mine("b", "Older test", "ended", 3), mine("live", "Running", "busy"), make("theirs", "Alice's", "ended", 2),
   ]} />);
+  await userEvent.click(screen.getByRole("button", { name: /^Ended/ }));
   expect(screen.getAllByRole("button", { name: /Remove .* from the list/ }).map((b) => b.getAttribute("aria-label"))).toEqual([
     "Remove Old test from the list", "Remove Older test from the list"]);
   // A running one of the viewer's own: removing it ends it, and the confirmation says so (owner ruling 2026-10-08).

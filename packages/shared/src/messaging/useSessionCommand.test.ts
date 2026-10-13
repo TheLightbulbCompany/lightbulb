@@ -95,7 +95,7 @@ describe("useSessionOutbox", () => {
 describe("labels", () => {
   it("labels a session by provider and title, and gates sending on verified control", () => {
     expect(sessionLabel(session)).toBe("Claude · Fix relay");
-    expect(sessionLabel({ ...session, provider: "codex", title: null })).toBe("Codex · Codex session");
+    expect(sessionLabel({ ...session, provider: "codex", title: null })).toBe("Codex · New chat");
     expect(canSendToSession(session)).toBe(true);
     expect(canSendToSession({ ...session, status: "offline" })).toBe(false);
     expect(canSendToSession({ ...session, status: "offline" }, true)).toBe(true);

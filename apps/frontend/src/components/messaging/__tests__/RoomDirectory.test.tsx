@@ -755,7 +755,7 @@ it("lists live sessions above the room groups, hides the section without a sessi
   const row = within(section).getByRole("button", { name: /Open Claude · Fix login, Alice, Working/ });
   expect(row).not.toHaveTextContent("Claude ·");
   expect(within(row).getByText("Fix login")).toBeInTheDocument();
-  expect(row.querySelector(".session-tool-badge .native-session-dot-busy")).not.toBeNull();
+  expect(row.querySelector(".session-title--working")).toHaveTextContent("Fix login");
   await userEvent.click(row);
   expect(onSelectSession).toHaveBeenCalledWith("s1");
   rerender(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[base]} participants={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} sessions={[]} />);

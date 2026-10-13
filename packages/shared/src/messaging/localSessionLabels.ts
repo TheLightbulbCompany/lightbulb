@@ -12,13 +12,15 @@ const hostFirst = (title: string | undefined): string | undefined => {
   return host ? [host, words].filter(Boolean).join(" · ") : title;
 };
 /** The title without the tool prefix, for surfaces that show the tool as a logo. */
-// Never an id: VoiceOver reads it aloud as gibberish.
+// Never an id: VoiceOver reads it aloud as gibberish. Untitled is "New chat", as Happy does: the
+// folder is the row's second line, and a folder name as the title made "lightbulb.nosync" look
+// like a conversation.
 export const sessionTitle = (s: LocalSession): string =>
-  s.displayTitle?.trim() || hostFirst(s.title?.trim()) || s.cwdName?.trim() || `${sessionToolName(s.provider)} session`;
+  s.displayTitle?.trim() || hostFirst(s.title?.trim()) || "New chat";
 export const sessionLabel = (s: LocalSession) => `${sessionToolName(s.provider)} · ${sessionTitle(s)}`;
 
 export const sessionStatus: Record<LocalSession["status"], string> = {
-  idle: "Idle", busy: "Working", "waiting-approval": "Waiting for input", unknown: "Status unavailable", offline: "Offline", ended: "Ended",
+  idle: "Idle", busy: "Working", "waiting-approval": "Waiting for input", unknown: "Online", offline: "Offline", ended: "Ended",
 };
 
 /** Why an ended session ended, when it is not the ordinary leave. `mac` is "your Mac" or "Leo's Mac"; the phone passes its curly ’ as `apostrophe`. */

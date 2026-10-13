@@ -11,12 +11,14 @@ import { useMemo, useState } from "react";
 import {
   DndContext,
   DragOverlay,
+  KeyboardSensor,
   PointerSensor,
   useSensor,
   useSensors,
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
+import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import { KanbanColumn } from "@/components/teams/inbox/KanbanColumn";
 import { KanbanCardOverlay, type KanbanAgent } from "@/components/teams/inbox/KanbanCard";
 import type { Issue } from "@/components/teams/shared/types";
@@ -106,6 +108,7 @@ export function KanbanBoard({
   const [activeId, setActiveId] = useState<string | null>(null);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
   const columns = useMemo(() => boardColumns(issues), [issues]);

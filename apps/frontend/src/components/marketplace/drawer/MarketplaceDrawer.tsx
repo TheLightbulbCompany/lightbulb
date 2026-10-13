@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { Dialog as DialogPrimitive } from "radix-ui";
 import { ChevronLeft, X, Plus, ExternalLink } from "lucide-react";
 
 import { useMarketplaceDrawer } from "./MarketplaceDrawerProvider";
@@ -22,14 +23,15 @@ export function MarketplaceDrawer() {
   const showActions = !isPublish && !isDetail;
 
   return (
-    <>
+    <DialogPrimitive.Root open onOpenChange={(o) => !o && close()}>
+      <DialogPrimitive.Portal>
       {/* Scrim */}
-      <div
-        onClick={close}
+      <DialogPrimitive.Overlay
+        data-modal-overlay=""
         className="fixed inset-0 z-(--z-overlay) bg-[var(--midnight)]/45 transition-opacity duration-(--dur-slow)"
-        aria-hidden="true"
       />
-      <aside
+      <DialogPrimitive.Content
+        aria-describedby={undefined}
         data-mode={isPublish ? "publish" : undefined}
         className="fixed top-0 right-0 z-[60] h-screen w-[min(920px,98vw)] bg-[var(--cream)] border-l border-[var(--edge)] shadow-xl flex flex-col transform translate-x-0 transition-transform duration-(--dur-slow)"
         aria-label="Marketplace drawer"
@@ -76,8 +78,9 @@ export function MarketplaceDrawer() {
           {state.view === "publish" && <PublishWizard />}
           {state.view === "detail" && <DetailBody />}
         </div>
-      </aside>
-    </>
+      </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
   );
 }
 

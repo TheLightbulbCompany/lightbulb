@@ -14,7 +14,6 @@ export const SUPPORT_CATEGORIES = [
   "Integration request",
   "Billing question",
   "Account issue",
-  "GooseTown",
   "Other",
 ] as const;
 

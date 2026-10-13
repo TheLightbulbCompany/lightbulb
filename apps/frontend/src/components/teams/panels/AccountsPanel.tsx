@@ -231,7 +231,7 @@ export function AccountsPanel() {
             <PanelEmptyState
               icon={Plug}
               headline="Nothing provisioned yet."
-              supporting="When Friday sets up a service for you, it lands here with a link to that provider's own dashboard."
+              supporting="When your CEO sets up a service for you, it lands here with a link to that provider's own dashboard."
               className="py-8"
             />
           )}

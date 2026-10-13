@@ -226,7 +226,7 @@ def _closed_origins(env: dict[str, str], cdp_url: str, mac: bool, current: dict,
 
 def _in_background_tab(cdp_url: str, jobs: list[tuple[str, str]], deadline: float) -> dict:
     """Run each (origin, script) in that origin's page without showing or fetching anything: a
-    background tab (``Target.createTarget`` background), ``Fetch`` pausing its every request and
+    hidden tab (``Target.createTarget`` hidden, in no window; else a background tab), ``Fetch`` pausing its every request and
     answering it with an empty page, then the script evaluated there; the tab is closed after.
     Answers origin -> the script's value, for the origins that answered in time."""
     from websockets.sync.client import connect
@@ -261,7 +261,14 @@ def _in_background_tab(cdp_url: str, jobs: list[tuple[str, str]], deadline: floa
 
         target = None
         try:
-            target = call("Target.createTarget", {"url": "about:blank", "background": True})["targetId"]
+            # A hidden target is in no window and no tab strip: the person never sees the sync
+            # walk the saved sites (owner, prod 2026-10-13). A Chrome or desktop app that refuses
+            # it (Chrome rejects ``hidden`` with any ``newWindow``) gets today's background tab.
+            try:
+                target = call("Target.createTarget", {"url": "about:blank", "background": True,
+                                                      "hidden": True})["targetId"]
+            except RuntimeError:
+                target = call("Target.createTarget", {"url": "about:blank", "background": True})["targetId"]
             page["session"] = call("Target.attachToTarget", {"targetId": target, "flatten": True})["sessionId"]
             # A service worker answers a navigation before Fetch sees it (and runs site script):
             # bypass them in this tab first.

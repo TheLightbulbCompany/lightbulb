@@ -27,7 +27,8 @@ the Atlas register path. Both halves of that — the EFS staging and the opencla
 slice a minted agent needed — went with the ECS runtime. Claude Code import is a
 separate, live feature and is what this router is now.
 
-Clerk-authed (owner = resolve_owner_id), unlike the hook-token Atlas bridge.
+Clerk-authed and org-admin only (owner = resolve_owner_id): confirm rewrites a roster agent's
+memory and skills, which a plain member must not be able to do. Unlike the hook-token Atlas bridge.
 """
 
 from __future__ import annotations
@@ -44,7 +45,7 @@ import boto3
 from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, HTTPException, Response
 
-from core.auth import AuthContext, get_current_user, resolve_owner_id
+from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.config import settings
 from core.dynamodb import run_in_thread
 from core.repositories import container_repo
@@ -153,7 +154,7 @@ async def presign_import(
 ):
     """The import id is minted HERE and carried in the key, so the confirm can address the
     staged object without a listing or a server-side copy."""
-    owner_id = resolve_owner_id(auth)
+    owner_id = resolve_owner_id(require_org_admin(auth))
     await _require_container(owner_id)
     max_bytes = claude_code_import.MAX_UPLOAD_BYTES
     if payload.size_bytes > max_bytes:
@@ -181,7 +182,7 @@ def _preview(key: str, etag: str | None) -> claude_code_import.ClaudeNormalized:
 
 @router.post("", response_model=schemas.ImportPreviewResponse)
 async def start_import(payload: schemas.ImportStartRequest, auth: Annotated[AuthContext, Depends(get_current_user)]):
-    owner_id = resolve_owner_id(auth)
+    owner_id = resolve_owner_id(require_org_admin(auth))
     await _require_container(owner_id)
     m = _KEY_RE.match(payload.key)
     if not m or m.group(1) != owner_id:
@@ -291,7 +292,7 @@ async def confirm_import(
 ):
     """Apply a staged Claude import to one existing roster agent. No Ultra gate — nothing
     here mints an agent."""
-    owner_id = resolve_owner_id(auth)
+    owner_id = resolve_owner_id(require_org_admin(auth))
     _check_import_id(import_id)
     await _require_container(owner_id)
     if not payload.target_agent_id:
@@ -334,7 +335,7 @@ async def confirm_import(
 
 @router.delete("/{import_id}", status_code=204)
 async def discard_import(import_id: str, auth: Annotated[AuthContext, Depends(get_current_user)]):
-    owner_id = resolve_owner_id(auth)
+    owner_id = resolve_owner_id(require_org_admin(auth))
     _check_import_id(import_id)
     await run_in_thread(_delete_raw, _upload_key(owner_id, import_id), import_id)
     return Response(status_code=204)

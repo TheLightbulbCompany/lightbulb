@@ -34,6 +34,7 @@ vi.mock("@/components/control/panels/SkillsTab", () => ({
 // `{ role: "org:member" }` = a non-admin org member (Usage must hide).
 const clerk = vi.hoisted(() => ({
   membership: null as { role: string } | null,
+  isLoaded: true,
 }));
 
 vi.mock("@clerk/nextjs", () => ({
@@ -46,7 +47,7 @@ vi.mock("@clerk/nextjs", () => ({
     },
   }),
   useAuth: () => ({ getToken: () => Promise.resolve("jwt"), isLoaded: true }),
-  useOrganization: () => ({ membership: clerk.membership, organization: null, isLoaded: true }),
+  useOrganization: () => ({ membership: clerk.membership, organization: null, isLoaded: clerk.isLoaded }),
   useClerk: () => ({ signOut: vi.fn() }),
   UserButton: () => <div data-testid="user-button" />,
 }));
@@ -66,6 +67,7 @@ import SettingsPage from "../page";
 describe("Settings nav — 6 intent-ordered groups", () => {
   beforeEach(() => {
     clerk.membership = null; // default: personal owner = admin
+    clerk.isLoaded = true;
     nav.panel = null;
     nav.replace.mockClear();
   });
@@ -147,6 +149,32 @@ describe("Settings nav — 6 intent-ordered groups", () => {
     const { container } = render(<SettingsPage />);
     expect(container.querySelector("#panel-members")).not.toBeInTheDocument();
     expect(container.querySelector("#panel-profile")).toBeInTheDocument();
+  });
+
+  it("never opens an admin-only deep link while the membership is still loading", () => {
+    // Clerk reports no membership at all until it has loaded.
+    clerk.isLoaded = false;
+    clerk.membership = null;
+    nav.panel = "members";
+    const { container, rerender } = render(<SettingsPage />);
+    expect(container.querySelector("#panel-profile")).toBeInTheDocument();
+    clerk.isLoaded = true;
+    clerk.membership = { role: "org:member" };
+    rerender(<SettingsPage />);
+    expect(container.querySelector("#panel-members")).not.toBeInTheDocument();
+    expect(container.querySelector("#panel-profile")).toBeInTheDocument();
+  });
+
+  it("opens an admin's deep link once the membership resolves", () => {
+    clerk.isLoaded = false;
+    clerk.membership = null;
+    nav.panel = "members";
+    const { container, rerender } = render(<SettingsPage />);
+    expect(container.querySelector("#panel-members")).not.toBeInTheDocument();
+    clerk.isLoaded = true;
+    clerk.membership = { role: "org:admin" };
+    rerender(<SettingsPage />);
+    expect(container.querySelector("#panel-members")).toBeInTheDocument();
   });
 
   // --- Model & Credits (LLMPanel, MODEL & PROVIDERS group) ---

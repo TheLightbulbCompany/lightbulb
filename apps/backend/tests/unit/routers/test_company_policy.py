@@ -119,7 +119,7 @@ def test_patch_unknown_capability_is_422_and_writes_nothing(client):
 def _revoke_mocks():
     manager = MagicMock()
     cancel = AsyncMock(return_value=(1, 1))
-    sdelete = AsyncMock()
+    sdelete = AsyncMock(return_value=True)
     deauth = AsyncMock(return_value=True)
     manager.attach_mock(cancel, "cancel")
     manager.attach_mock(sdelete, "sdelete")
@@ -209,6 +209,20 @@ def test_revoke_all_skips_stripe_when_unbound(client):
     assert resp.status_code == 200
     assert resp.json() == {"revoked": ["workflows_cancelled:1", "secret:posthog"], "failed": []}
     deauth.assert_not_awaited()
+
+
+def test_revoke_all_on_a_clean_workspace_reports_nothing_revoked(client):
+    """The toast counts `revoked`: no open workflows and no stored posthog token must
+    read as 0, not as "Revoked 2 item(s)"."""
+    with (
+        patch.object(mod.account_wipe, "cancel_open_workflows", AsyncMock(return_value=(0, 0))),
+        patch.object(mod.integrations_repo, "list_for_owner", AsyncMock(return_value=[])),
+        patch.object(mod.integration_secret_store, "delete", AsyncMock(return_value=False)),
+        patch.object(billing_repo, "get_by_owner_id", AsyncMock(return_value={"owner_id": "org_a"})),
+    ):
+        resp = client.post("/api/v1/company/revoke-all", json={"confirm": "revoke"})
+    assert resp.status_code == 200
+    assert resp.json() == {"revoked": [], "failed": []}
 
 
 def test_revoke_all_deletes_every_saved_website_login(client, monkeypatch):

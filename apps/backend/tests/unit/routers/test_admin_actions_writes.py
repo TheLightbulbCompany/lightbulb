@@ -204,7 +204,7 @@ class TestProvisionRetry:
         before = {"status": "error", "substatus": "boom"}
         after = {"status": "provisioning", "substatus": None}
         mock_get = AsyncMock(side_effect=[before, after])
-        mock_dispatch = AsyncMock(return_value=None)
+        mock_dispatch = AsyncMock(return_value=True)
         with (
             patch("routers.admin.container_repo.get_by_owner_id", new=mock_get),
             patch("routers.admin.dispatch_provision", new=mock_dispatch),
@@ -218,12 +218,23 @@ class TestProvisionRetry:
         assert "provision_claim_id" not in body
 
     @pytest.mark.asyncio
+    async def test_502_when_dispatch_starts_nothing(self, async_client, admin_env):
+        """dispatch_provision never raises; False means no execution was started."""
+        row = {"status": "error", "substatus": "boom"}
+        with (
+            patch("routers.admin.container_repo.get_by_owner_id", new=AsyncMock(return_value=row)),
+            patch("routers.admin.dispatch_provision", new=AsyncMock(return_value=False)),
+        ):
+            res = await async_client.post("/api/v1/admin/users/u_target/provisioning/retry")
+        assert res.status_code == 502
+
+    @pytest.mark.asyncio
     async def test_200_dispatches_when_provisioning(self, async_client, admin_env):
         """A wedged provisioning row is re-driven; dispatch itself no-ops while one runs."""
         before = {"status": "provisioning"}
         after = {"status": "provisioning", "substatus": None}
         mock_get = AsyncMock(side_effect=[before, after])
-        mock_dispatch = AsyncMock(return_value=None)
+        mock_dispatch = AsyncMock(return_value=True)
         with (
             patch("routers.admin.container_repo.get_by_owner_id", new=mock_get),
             patch("routers.admin.dispatch_provision", new=mock_dispatch),
@@ -239,7 +250,7 @@ class TestProvisionRetry:
         mock_get = AsyncMock(side_effect=[before, after])
         with (
             patch("routers.admin.container_repo.get_by_owner_id", new=mock_get),
-            patch("routers.admin.dispatch_provision", new=AsyncMock(return_value=None)),
+            patch("routers.admin.dispatch_provision", new=AsyncMock(return_value=True)),
         ):
             res = await async_client.post("/api/v1/admin/users/u_target/provisioning/retry")
         assert res.status_code == 200
@@ -338,6 +349,40 @@ class TestBillingPauseSubscription:
         assert r1.status_code == 200
         assert r2.status_code == 409
         assert billing.pause_subscription_for_owner.await_count == 1
+
+
+class TestBillingResumeSubscription:
+    """POST /api/v1/admin/users/{user_id}/billing/resume-subscription."""
+
+    @pytest.mark.asyncio
+    async def test_happy_path_is_audited(self, async_client, admin_env, mock_audit_repo):
+        billing = MagicMock()
+        billing.resume_subscription_for_owner = AsyncMock(return_value={"status": "resumed"})
+        with patch("routers.admin.billing_service", new=billing):
+            res = await async_client.post("/api/v1/admin/users/u_target/billing/resume-subscription")
+        assert res.status_code == 200
+        billing.resume_subscription_for_owner.assert_awaited_once_with("u_target")
+        assert mock_audit_repo.await_args.kwargs["action"] == "billing.resume_subscription"
+
+    @pytest.mark.asyncio
+    async def test_403_for_non_admin(self, async_client, non_admin_env):
+        res = await async_client.post("/api/v1/admin/users/u_target/billing/resume-subscription")
+        assert res.status_code == 403
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "route,fn,status",
+        [
+            ("pause-subscription", "pause_subscription_for_owner", "already_paused"),
+            ("resume-subscription", "resume_subscription_for_owner", "not_paused"),
+        ],
+    )
+    async def test_a_noop_is_a_409(self, async_client, admin_env, route, fn, status):
+        billing = MagicMock()
+        setattr(billing, fn, AsyncMock(return_value={"status": status}))
+        with patch("routers.admin.billing_service", new=billing):
+            res = await async_client.post(f"/api/v1/admin/users/u_target/billing/{route}")
+        assert res.status_code == 409
 
 
 class TestBillingIssueCredit:

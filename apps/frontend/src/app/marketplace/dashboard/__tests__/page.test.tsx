@@ -16,7 +16,7 @@ vi.mock("@/lib/api", () => ({
 
 const mockUseOrganization = vi.fn(() => ({ membership: null as null | { role: string } }));
 vi.mock("@clerk/nextjs", () => ({
-  useOrganization: () => mockUseOrganization(),
+  useOrganization: () => ({ isLoaded: true, ...mockUseOrganization() }),
 }));
 
 // SWR has a global cache that persists across renders. Wrap each test in a

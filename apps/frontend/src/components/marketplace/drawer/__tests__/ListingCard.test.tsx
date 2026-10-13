@@ -18,7 +18,7 @@ const mockUseOrganization = vi.fn(() => ({ membership: null as null | { role: st
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ userId: "u_viewer", isSignedIn: true, getToken: vi.fn() }),
   useUser: () => ({ user: { id: "u_viewer", primaryEmailAddress: null } }),
-  useOrganization: () => mockUseOrganization(),
+  useOrganization: () => ({ isLoaded: true, ...mockUseOrganization() }),
 }));
 
 // useHire pulls in useCatalog + useAgents + MarketplaceDrawerProvider — mock

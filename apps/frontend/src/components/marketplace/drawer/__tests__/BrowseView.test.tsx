@@ -43,7 +43,7 @@ vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ getToken: vi.fn().mockResolvedValue("tok_test") }),
   useUser: () => ({ user: { primaryEmailAddress: { emailAddress: "buyer@example.com" } } }),
   // ListingCard now uses the admin gate. null membership = personal user → gate open.
-  useOrganization: () => ({ membership: null }),
+  useOrganization: () => ({ isLoaded: true, membership: null }),
 }));
 
 import { BrowseView } from "@/components/marketplace/drawer/BrowseView";

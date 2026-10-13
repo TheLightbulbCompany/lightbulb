@@ -4,9 +4,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
 const issueCredit = vi.fn();
+const resumeSubscription = vi.fn();
 vi.mock("@/app/admin/_actions/billing", () => ({
   cancelSubscription: vi.fn(),
   pauseSubscription: vi.fn(),
+  resumeSubscription: (...args: unknown[]) => resumeSubscription(...args),
   markInvoiceResolved: vi.fn(),
   issueCredit: (...args: unknown[]) => issueCredit(...args),
 }));
@@ -84,5 +86,21 @@ describe("Issue credit", () => {
 
     expect(await screen.findByText(/already issued.*no new credit/i)).toBeInTheDocument();
     expect(screen.queryByText("Credit issued.")).not.toBeInTheDocument();
+  });
+});
+
+describe("Resume subscription", () => {
+  it("resumes behind the same typed confirmation as Pause", async () => {
+    const user = userEvent.setup();
+    resumeSubscription.mockResolvedValue({ ok: true, status: 200, data: { status: "resumed" } });
+    render(<BillingActionsPanel userId="u_target" email="a@b.co" />);
+
+    await user.click(screen.getByRole("button", { name: "Resume subscription" }));
+    const dialog = await screen.findByRole("alertdialog");
+    await user.type(within(dialog).getByRole("textbox"), "a@b.co");
+    await user.click(within(dialog).getByRole("button", { name: /^confirm /i }));
+
+    expect(resumeSubscription).toHaveBeenCalledWith("u_target");
+    expect(await screen.findByText("Resume subscription succeeded.")).toBeInTheDocument();
   });
 });

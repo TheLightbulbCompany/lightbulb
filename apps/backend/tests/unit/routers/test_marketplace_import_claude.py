@@ -415,3 +415,24 @@ def test_discard_is_idempotent(client):
     c, _, _ = client
     assert c.delete(f"/api/v1/marketplace/import/{IMPORT_ID}").status_code == 204
     assert c.delete(f"/api/v1/marketplace/import/{IMPORT_ID}").status_code == 204
+
+
+@pytest.mark.parametrize(
+    "method,path,body",
+    [
+        ("post", "/api/v1/marketplace/import/presign", {"filename": "c.tar.gz", "size_bytes": 10}),
+        ("post", "/api/v1/marketplace/import", {"key": KEY}),
+        ("post", f"/api/v1/marketplace/import/{IMPORT_ID}/confirm", {"target_agent_id": AGENT}),
+        ("delete", f"/api/v1/marketplace/import/{IMPORT_ID}", None),
+    ],
+)
+def test_a_plain_member_cannot_touch_an_import(client, method, path, body):
+    """Confirm rewrites a roster agent's memory and skills, so every import door is admin-only."""
+    c, s3, profile = client
+    c.app.dependency_overrides[get_current_user] = lambda: AuthContext(
+        user_id="user_member", email="m@example.com", org_id=OWNER, org_role="org:member"
+    )
+    kwargs = {"json": body} if body is not None else {}
+    r = getattr(c, method)(path, **kwargs)
+    assert r.status_code == 403
+    assert s3.presigned == [] and s3.deleted == [] and profile.writes == []

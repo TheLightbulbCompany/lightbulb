@@ -13,6 +13,7 @@ import {
   issueCredit,
   markInvoiceResolved,
   pauseSubscription,
+  resumeSubscription,
 } from "@/app/admin/_actions/billing";
 
 export interface BillingActionsPanelProps {
@@ -77,6 +78,12 @@ export function BillingActionsPanel({ userId, email }: BillingActionsPanelProps)
     clearStatus();
     const result = await pauseSubscription(userId);
     applyResult("Pause subscription", result.ok, result.error);
+  }
+
+  async function handleResume() {
+    clearStatus();
+    const result = await resumeSubscription(userId);
+    applyResult("Resume subscription", result.ok, result.error);
   }
 
   async function handleCredit() {
@@ -158,6 +165,15 @@ export function BillingActionsPanel({ userId, email }: BillingActionsPanelProps)
           >
             <Button type="button" variant="outline" size="sm" disabled={subscriptionDisabled}>
               Pause subscription
+            </Button>
+          </ConfirmActionDialog>
+          <ConfirmActionDialog
+            confirmText={subscriptionConfirm}
+            actionLabel="Resume subscription"
+            onConfirm={handleResume}
+          >
+            <Button type="button" variant="outline" size="sm" disabled={subscriptionDisabled}>
+              Resume subscription
             </Button>
           </ConfirmActionDialog>
         </div>

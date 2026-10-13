@@ -92,7 +92,7 @@ vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ getToken: mockGetToken }),
   // PublishWizard now reads useOrganization via useMarketplaceWriteGate.
   // null membership = personal user → wizard renders normally.
-  useOrganization: () => ({ membership: null }),
+  useOrganization: () => ({ isLoaded: true, membership: null }),
 }));
 
 describe("PickAgentStep", () => {

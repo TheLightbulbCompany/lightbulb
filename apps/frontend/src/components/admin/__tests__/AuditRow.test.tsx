@@ -24,4 +24,11 @@ describe("AuditRow", () => {
     expect(screen.getByText("__marketplace__")).toBeInTheDocument();
     expect(screen.queryByRole("link")).toBeNull();
   });
+
+  it("styles a partial failure as a warning, not as ok", () => {
+    render(<AuditRow entry={{ ...entry("org_123"), result: "partial_failure" }} />);
+    const badge = screen.getByText("partial_failure");
+    expect(badge).toHaveClass("text-warn");
+    expect(badge).not.toHaveClass("text-ok");
+  });
 });

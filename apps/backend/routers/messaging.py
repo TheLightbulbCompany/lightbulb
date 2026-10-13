@@ -9,6 +9,7 @@ import math
 import re
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import timedelta
 from urllib.parse import quote
 from typing import Annotated, Literal
@@ -202,36 +203,51 @@ async def local_session_invocation(request: Request) -> local_session_grants.Age
     )
 
 
+@dataclass(frozen=True)
+class AgentRead:
+    """Who an agent turn reads rooms as, and whether only workspace-wide channels: a Google Meet reads
+    as the member who invited the agents, and everyone on the call (outsiders included) hears it, so
+    only what any teammate could read (owner ruling 2026-10-13, enforced here, not left to the agent)."""
+
+    auth: AuthContext
+    workspace_only: bool
+
+
 async def agent_reader(
     auth: local_session_grants.AgentInvocation = Depends(local_session_invocation),
-) -> AuthContext:
+) -> AgentRead:
     """An agent turn reads rooms as the person who asked it, with exactly that person's access (the
     hosted MCP's find_rooms/read_messages). The person is the turn grant's requester, set by the
     backend from the canonical trigger -- the human author of a typed message, the signed-in speaker
-    of a Live run -- never by the agent. No requester (a Meet speaker, a voice run another speaker
-    steered, a Paperclip run, an agent's message): nothing is readable, since every room is private
-    to its members."""
-    if not auth.requester_id or not auth.room_id:
+    of a Live run -- never by the agent. A Google Meet's turn reads as the member who invited the agents
+    (the grant's reader, owner ruling 2026-10-13). Neither (a voice run another member steered, a
+    Paperclip run, an agent's message): nothing is readable, since every room is private to its members."""
+    person = auth.requester_id or auth.reader_id
+    if not person or not auth.room_id:
         raise ApiProblem("ROOM_FORBIDDEN", "No signed-in person asked for this, so no rooms can be read for it.")
     # The turn's room, re-checked on every read as a local-session read is: the agent still a member
     # (a removed agent's unexpired grant reads nothing), and no other org in the room to hear it.
     await local_sessions.require_caller(auth, auth.room_id)
     # And the person still in it: someone who left or was removed is no longer who this turn acts for.
-    if await messaging_repo.get_member(auth.room_id, "human", auth.requester_id) is None:
+    if await messaging_repo.get_member(auth.room_id, "human", person) is None:
         raise ApiProblem("ROOM_FORBIDDEN", "The person who asked is no longer in this room.")
-    return AuthContext(user_id=auth.requester_id, org_id=auth.owner_id)
+    return AgentRead(AuthContext(user_id=person, org_id=auth.owner_id), workspace_only=not auth.requester_id)
 
 
 @router.get("/messaging/agent-read/rooms")
-async def agent_find_rooms(query: str = "", limit: int = 30, auth: AuthContext = Depends(agent_reader)):
-    return await hosted_mcp.rooms_for(auth, query, limit)
+async def agent_find_rooms(query: str = "", limit: int = 30, read: AgentRead = Depends(agent_reader)):
+    return await hosted_mcp.rooms_for(read.auth, query, limit, workspace_only=read.workspace_only)
 
 
 @router.get("/messaging/agent-read/messages")
 async def agent_read_messages(
-    room_id: str, after_seq: int | None = None, limit: int = 25, auth: AuthContext = Depends(agent_reader)
+    room_id: str, after_seq: int | None = None, limit: int = 25, read: AgentRead = Depends(agent_reader)
 ):
-    return await hosted_mcp.messages_for(auth, room_id, after_seq, limit)
+    if read.workspace_only and not hosted_mcp.workspace_wide(
+        await service.get_room(read.auth, room_id), await hosted_mcp.workspace_people(read.auth.org_id)
+    ):
+        raise ApiProblem("ROOM_FORBIDDEN", "In a meeting only channels the whole workspace is in can be read.")
+    return await hosted_mcp.messages_for(read.auth, room_id, after_seq, limit)
 
 
 @router.get("/messaging/local-session-agent/resources", response_model=local_sessions.RoomResources)

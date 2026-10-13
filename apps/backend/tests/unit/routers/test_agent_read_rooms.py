@@ -28,8 +28,8 @@ def client(monkeypatch):
     return TestClient(app)
 
 
-def _grant(requester):
-    return local_session_grants.mint("org_1", ROOM, "friday", "44444444-4444-4444-8444-444444444444", requester)
+def _grant(requester, reader=None):
+    return local_session_grants.mint("org_1", ROOM, "friday", "44444444-4444-4444-8444-444444444444", requester, reader)
 
 
 @pytest.fixture(autouse=True)
@@ -112,3 +112,69 @@ def test_a_turn_in_a_deleted_room_reads_nothing(client, monkeypatch, path, reade
     )
     assert client.get(path, headers={"Authorization": f"Bearer {_grant('user_ana')}"}).status_code == 403
     read.assert_not_awaited()
+
+
+@pytest.mark.parametrize(("path", "reader"), ROUTES)
+def test_a_meet_turn_reads_as_the_inviter_and_never_carries_their_other_rights(client, monkeypatch, path, reader):
+    """Owner ruling 2026-10-13: a Google Meet's turn reads as the member who invited the agents."""
+    read = AsyncMock(return_value={"rooms": []} if reader == "rooms_for" else {"ok": reader})
+    monkeypatch.setattr(router.hosted_mcp, reader, read)
+    monkeypatch.setattr(router.service, "get_room", AsyncMock(return_value=object()))
+    monkeypatch.setattr(router.hosted_mcp, "workspace_wide", lambda room, people: True)
+    monkeypatch.setattr(router.hosted_mcp, "workspace_people", AsyncMock(return_value=frozenset({"user_ana"})))
+    grant = _grant(None, "user_ana")
+    response = client.get(path, headers={"Authorization": f"Bearer {grant}"})
+    assert response.status_code == 200 and read.await_args.args[0].user_id == "user_ana"
+    auth = local_session_grants.verify(grant)
+    assert (auth.requester_id, auth.reader_id) == (None, "user_ana")  # the Mac and sessions see nobody
+
+
+@pytest.mark.parametrize(("path", "reader"), ROUTES)
+def test_an_inviter_who_left_the_room_reads_nothing(client, monkeypatch, path, reader, agent_in_room):
+    agent_in_room.seated.discard(("human", "user_ana"))
+    read = AsyncMock()
+    monkeypatch.setattr(router.hosted_mcp, reader, read)
+    response = client.get(path, headers={"Authorization": f"Bearer {_grant(None, 'user_ana')}"})
+    assert response.status_code == 403 and response.json()["code"] == "ROOM_FORBIDDEN"
+    read.assert_not_awaited()
+
+
+def test_a_meet_turn_reads_only_channels_the_whole_workspace_is_in(client, monkeypatch):
+    """Owner ruling 2026-10-13: everyone on a Meet hears the answer, so reading as the inviter covers
+    only what any teammate could read: channels every person in the workspace is in. Every room is
+    private to its members, so a channel with a narrower membership is as private as a DM. Enforced by
+    the backend, filtered before the limit and the total."""
+    from types import SimpleNamespace as NS
+
+    def room(rid, kind, name, people):
+        return NS(
+            room_id=rid,
+            kind=kind,
+            name=name,
+            members=[NS(id=p, kind="human", display_name=p, mention_handle=None) for p in people],
+        )
+
+    team = frozenset({"user_ana", "user_bo"})
+    listed = [
+        room("d", "dm", "launch dm", ["user_ana", "user_bo"]),  # everyone, but a DM
+        room("f", "channel", "launch-fundraise", ["user_ana"]),  # a narrower channel
+        room("c", "channel", "launch", ["user_ana", "user_bo"]),
+    ]
+    monkeypatch.setattr(router.hosted_mcp.messaging, "list_rooms", AsyncMock(return_value=NS(rooms=listed)))
+    monkeypatch.setattr(router.hosted_mcp, "workspace_people", AsyncMock(return_value=team))
+    reader = {"Authorization": f"Bearer {_grant(None, 'user_ana')}"}
+    found = client.get("/api/v1/messaging/agent-read/rooms?query=launch&limit=1", headers=reader).json()
+    assert [r["roomId"] for r in found["rooms"]] == ["c"] and found["total"] == 1
+    asker = client.get(
+        "/api/v1/messaging/agent-read/rooms?query=launch", headers={"Authorization": f"Bearer {_grant('user_ana')}"}
+    )
+    assert asker.json()["total"] == 3  # a signed-in asker keeps everything they can open
+    read = AsyncMock(return_value={"messages": []})
+    monkeypatch.setattr(router.hosted_mcp, "messages_for", read)
+    for r, status in ((listed[0], 403), (listed[1], 403), (listed[2], 200)):
+        monkeypatch.setattr(router.service, "get_room", AsyncMock(return_value=r))
+        got = client.get(f"/api/v1/messaging/agent-read/messages?room_id={ROOM}", headers=reader)
+        assert got.status_code == status, r.room_id
+    assert read.await_count == 1
+    monkeypatch.setattr(router.hosted_mcp, "workspace_people", AsyncMock(return_value=frozenset()))  # Clerk down
+    assert client.get("/api/v1/messaging/agent-read/rooms?query=launch", headers=reader).json()["total"] == 0

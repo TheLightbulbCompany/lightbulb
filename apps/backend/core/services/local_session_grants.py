@@ -42,6 +42,10 @@ class AgentInvocation:
     # The person who chose Send on this agent's ask (spec §3.3). Set only by the ask resolver
     # and by the relay restoring that command; never from a token.
     approved_by: str | None = None
+    # Whose access the turn READS rooms with when nobody signed in asked (owner ruling 2026-10-13: a
+    # Google Meet reads as the member who invited the agents). Rooms only: every other right a grant
+    # carries (local sessions, the Mac) is the requester's, and a Meet guest is never one.
+    reader_id: str | None = None
 
 
 def session_key(agent: str, room: str) -> str:
@@ -59,7 +63,7 @@ def _sign(claims: dict) -> str:
     return token
 
 
-def mint(owner: str, room: str, agent: str, event: str, requester: str | None = None) -> str:
+def mint(owner: str, room: str, agent: str, event: str, requester: str | None = None, reader: str | None = None) -> str:
     return _sign(
         {
             "ownerId": owner,
@@ -69,6 +73,7 @@ def mint(owner: str, room: str, agent: str, event: str, requester: str | None = 
             "requesterId": requester,
             "sessionKey": session_key(agent, room),
             "origin": {"kind": "room", "roomId": room},
+            **({"readerId": reader} if reader else {}),
         }
     )
 
@@ -128,7 +133,11 @@ def verify(token: str) -> AgentInvocation:
             raise ValueError()
         claims = jwt.decode(token, _signing_key(), algorithms=["HS256"], audience=AUDIENCE)
         # A grant without `origin` is a room grant minted by an older task during a roll.
-        if set(claims) != _CLAIMS | {"origin"} and not (set(claims) == _CLAIMS and claims.get("roomId")):
+        keys = set(claims) - {"readerId"}
+        if keys != _CLAIMS | {"origin"} and not (keys == _CLAIMS and claims.get("roomId")):
+            raise ValueError()
+        reader = claims.get("readerId")
+        if reader is not None and not (isinstance(reader, str) and _ID_RE.fullmatch(reader) and claims.get("roomId")):
             raise ValueError()
         if claims["kind"] != PURPOSE or claims["aud"] != AUDIENCE:
             raise ValueError()
@@ -156,6 +165,7 @@ def verify(token: str) -> AgentInvocation:
             claims["requesterId"],
             claims.get("origin", {"kind": "room", "roomId": claims["roomId"]}),
             turn,
+            reader_id=reader,
         )
     except (jwt.InvalidTokenError, ValueError, TypeError, KeyError, RuntimeError):
         raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Local session invocation is unavailable.") from None

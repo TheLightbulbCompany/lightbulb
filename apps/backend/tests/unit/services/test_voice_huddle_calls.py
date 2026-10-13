@@ -417,7 +417,7 @@ async def test_voice_run_is_a_run_on_the_room_key_that_names_its_call(run_env):
         "org_a",
         "run-1",
         {"roomId": "room-1", "agentId": "fin-1", "speakerUserId": "user_b", "speakerName": "Bea",
-         "requesterUserId": "user_b"},
+         "requesterUserId": "user_b", "readerUserId": None},
         once=frozenset({"requesterUserId"}),
     )  # fmt: skip
     assert out == {"runId": "run-1", "agentId": "fin-1", "steered": False}
@@ -431,7 +431,7 @@ async def test_a_retry_after_a_lowering_steer_keeps_the_requester_lowered(run_en
     mint = MagicMock(return_value="grant")
     with patch.object(vc.local_session_grants, "mint", mint):
         await _dispatch()
-    mint.assert_called_once_with("org_a", "room-1", "fin-1", "run-1", None)
+    mint.assert_called_once_with("org_a", "room-1", "fin-1", "run-1", None, None)
 
 
 async def test_a_voice_run_carries_what_a_typed_turn_here_carries(run_env):
@@ -471,7 +471,7 @@ async def test_voice_run_carries_the_room_grant_for_the_member_who_asked(run_env
         await vc.dispatch_voice_run(
             call=WINDOW, run_id="run-1", agent_id="fin-1", speaker_id=speaker, utterance="sessions?", transcript=""
         )
-    mint.assert_called_once_with("org_a", "room-1", "fin-1", "run-1", requester)
+    mint.assert_called_once_with("org_a", "room-1", "fin-1", "run-1", requester, None)
     assert run_env.await_args.kwargs["headers"] == {
         "Authorization": "Bearer gw",
         "X-Lightbulb-Local-Session-Token": "jwt",
@@ -567,7 +567,7 @@ async def test_a_steer_by_another_speaker_lowers_the_runs_grant(run_env, steerer
             call=WINDOW, run_id="run-1", agent_id="fin-1", speaker_id=steerer, utterance="x", speaker_name="Z"
         )
     assert result["steered"] is True
-    mint.assert_called_once_with("org_a", "room-1", "fin-1", "run-1", None)  # never a requester: only lowered
+    mint.assert_called_once_with("org_a", "room-1", "fin-1", "run-1", None, None)  # never a requester: only lowered
     assert run_env.await_args.kwargs["headers"]["X-Lightbulb-Local-Session-Token"] == "lowered"
     # The row's verified requester drops with the grant: the Mac tool and room reads check it.
     assert vc.messaging_repo.update_voice_run.await_args.args[2]["requesterUserId"] is None
@@ -1032,3 +1032,36 @@ def test_steps_are_timed_one_after_the_other(monkeypatch):
     steps.done("room")
     steps.done("gate")
     assert steps.ms == {"room": 250, "gate": 2000} and str(steps) == "room=250 gate=2000 total=2250"
+
+
+async def test_a_meet_run_reads_rooms_as_the_member_who_invited_the_agents(run_env):
+    """Owner ruling 2026-10-13: in a Google Meet the agent reads with the inviter's access. Rooms only:
+    the speaker is no member, so the run's requester (the Mac, local sessions) stays nobody."""
+    vc.messaging_repo.get_room.return_value = {**ROOM_META, "meeting": {"title": "Sync"}}
+    members = [m for m in vc.messaging_repo.list_members.return_value if m.get("kind") != "human"]
+    vc.messaging_repo.list_members.return_value = members + [
+        {"kind": "human", "id": "user_inviter", "role": "owner", "displayName": "Ina"}
+    ]
+    vc.messaging_repo.put_voice_run.return_value = {"runId": "run-1", "requesterUserId": None}
+    mint = MagicMock(return_value="grant")
+    with (
+        patch.object(vc.local_session_grants, "mint", mint),
+        patch.object(vc.messaging_repo, "member_home", MagicMock(return_value="org_a")),
+    ):
+        await vc.dispatch_voice_run(
+            call=WINDOW, run_id="run-1", agent_id="fin-1", speaker_id="meet:room-1", utterance="what did we decide",
+            transcript="", speaker_name="Prospect",
+        )  # fmt: skip
+    mint.assert_called_once_with("org_a", "room-1", "fin-1", "run-1", None, "user_inviter")
+    fields = vc.messaging_repo.put_voice_run.await_args.args[2]
+    assert (fields["requesterUserId"], fields["readerUserId"]) == (None, "user_inviter")
+
+
+async def test_a_steer_on_a_meet_run_keeps_its_reader(run_env):
+    vc.messaging_repo.get_voice_run.return_value = {**VOICERUN, "readerUserId": "user_inviter"}
+    mint = MagicMock(return_value="lowered")
+    with patch.object(vc.local_session_grants, "mint", mint):
+        await vc.steer_voice_run(
+            call=WINDOW, run_id="run-1", agent_id="fin-1", speaker_id="meet:room-1", utterance="x", speaker_name="Z"
+        )
+    mint.assert_called_once_with("org_a", "room-1", "fin-1", "run-1", None, "user_inviter")

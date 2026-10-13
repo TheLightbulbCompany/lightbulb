@@ -314,8 +314,10 @@ READ_ROOMS_SCHEMA = {
     "description": "Find and read the workspace's other channels, DMs and group chats, with exactly the "
                    "access of the person who asked you (what they could open themselves). action "
                    "\"find\" lists rooms (optional query matches a room or member name); \"read\" returns "
-                   "a room's latest messages, or those after afterSeq. With no signed-in person behind "
-                   "this turn (a Meet guest, a routine) nothing is readable: say so.",
+                   "a room's latest messages, or those after afterSeq. In a Google Meet you read with the "
+                   "access of the member who invited you, and everyone on the call hears what you say: "
+                   "with guests there, summarise, and say nothing from a private DM. With no signed-in "
+                   "person behind this turn (a routine) nothing is readable: say so.",
     "parameters": {
         "type": "object",
         "properties": {

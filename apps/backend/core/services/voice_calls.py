@@ -490,6 +490,14 @@ def _voice_requester(members: list[dict], owner_id: str, speaker_id: str) -> str
     return speaker_id if member and messaging_repo.member_home(member, owner_id) == owner_id else None
 
 
+def _meeting_reader(members: list[dict], owner_id: str) -> str | None:
+    """Whose access a Google Meet's turns read rooms with (owner ruling 2026-10-13): the member who
+    invited the agents, the meeting room's one human, its owner. Everyone on the call hears what is
+    read. Rooms only: the run's requester (the Mac, local sessions) stays nobody for a Meet speaker."""
+    m = next((m for m in members if m.get("kind") == "human" and m.get("role") == "owner"), None)
+    return m["id"] if m and messaging_repo.member_home(m, owner_id) == owner_id else None
+
+
 def prewake_owner(owner_id: str, team: list[dict] | None = None, room_id: str | None = None) -> None:
     """Fire-and-forget wake of the workspace runtime (one health RPC), then a profile pull for every
     agent in the room (the bridge's profile.warm, off its request thread), so the first summon finds
@@ -794,6 +802,7 @@ async def dispatch_voice_run(
     also = "\n".join((requests or [])[:8])
     asked = f"[Asked in the same breath; teammates are on these:\n{also}]\n\n" if also else ""
     requester = _voice_requester(members, owner_id, speaker_id)
+    reader = _meeting_reader(members, owner_id) if meta.get("meeting") else None
     # What a typed turn here gets (openclaw_work.build_ingress_body): the room block, the roster with
     # human handles, and the live local sessions (withheld for a room shared with another org).
     from core.services import local_sessions
@@ -844,6 +853,7 @@ async def dispatch_voice_run(
         "speakerUserId": speaker_id,
         "speakerName": name,
         "requesterUserId": requester,
+        "readerUserId": reader,
     }
     # An atomic SET of these fields: a /turns retry cannot drop a "don't post that" mark, whenever it lands.
     # The requester is written once: a retry after another speaker's steer lowered it keeps it lowered,
@@ -852,7 +862,7 @@ async def dispatch_voice_run(
     requester = row.get("requesterUserId") if "requesterUserId" in row else requester
     # The room grant a typed message here would get (openclaw_work), keyed on the voice run.
     try:
-        grant = local_session_grants.mint(owner_id, room_id, agent_id, run_id, requester)
+        grant = local_session_grants.mint(owner_id, room_id, agent_id, run_id, requester, reader)
     except (RuntimeError, messaging.ApiProblem):
         grant = None
         logger.warning("Voice local session invocation unavailable")
@@ -903,7 +913,9 @@ async def steer_voice_run(
     grant = None
     if speaker_id != row.get("speakerUserId"):
         try:
-            grant = local_session_grants.mint(call["ownerId"], call["roomId"], agent_id, run_id, None)
+            grant = local_session_grants.mint(
+                call["ownerId"], call["roomId"], agent_id, run_id, None, row.get("readerUserId")
+            )
         except (RuntimeError, messaging.ApiProblem):
             return None  # the old grant cannot be lowered: the steerer gets a run (and grant) of its own
     text = {"text": f"{name} (voice): {utterance}"}

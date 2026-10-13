@@ -28,8 +28,8 @@ def client(monkeypatch):
     return TestClient(app)
 
 
-def _grant(requester):
-    return local_session_grants.mint("org_1", ROOM, "friday", "44444444-4444-4444-8444-444444444444", requester)
+def _grant(requester, reader=None):
+    return local_session_grants.mint("org_1", ROOM, "friday", "44444444-4444-4444-8444-444444444444", requester, reader)
 
 
 @pytest.fixture(autouse=True)
@@ -111,4 +111,26 @@ def test_a_turn_in_a_deleted_room_reads_nothing(client, monkeypatch, path, reade
         AsyncMock(return_value={"roomId": ROOM, "ownerId": "org_1", "deletedAt": "2026-10-09"}),
     )
     assert client.get(path, headers={"Authorization": f"Bearer {_grant('user_ana')}"}).status_code == 403
+    read.assert_not_awaited()
+
+
+@pytest.mark.parametrize(("path", "reader"), ROUTES)
+def test_a_meet_turn_reads_as_the_inviter_and_never_carries_their_other_rights(client, monkeypatch, path, reader):
+    """Owner ruling 2026-10-13: a Google Meet's turn reads as the member who invited the agents."""
+    read = AsyncMock(return_value={"ok": reader})
+    monkeypatch.setattr(router.hosted_mcp, reader, read)
+    grant = _grant(None, "user_ana")
+    response = client.get(path, headers={"Authorization": f"Bearer {grant}"})
+    assert response.status_code == 200 and read.await_args.args[0].user_id == "user_ana"
+    auth = local_session_grants.verify(grant)
+    assert (auth.requester_id, auth.reader_id) == (None, "user_ana")  # the Mac and sessions see nobody
+
+
+@pytest.mark.parametrize(("path", "reader"), ROUTES)
+def test_an_inviter_who_left_the_room_reads_nothing(client, monkeypatch, path, reader, agent_in_room):
+    agent_in_room.seated.discard(("human", "user_ana"))
+    read = AsyncMock()
+    monkeypatch.setattr(router.hosted_mcp, reader, read)
+    response = client.get(path, headers={"Authorization": f"Bearer {_grant(None, 'user_ana')}"})
+    assert response.status_code == 403 and response.json()["code"] == "ROOM_FORBIDDEN"
     read.assert_not_awaited()

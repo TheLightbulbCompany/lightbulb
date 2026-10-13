@@ -650,7 +650,6 @@ async def open_voice_window(*, owner_id: str, room_id: str, speaker_user_id: str
 
 # ---- Option D: the worker's per-agent reads (C1 /team and /agents/{agentId}/session) ---------
 
-VOICE_ASKED_PREFIX = "__voiceasked__#"
 _SESSION_READ_BUDGET_S = 2.0
 
 
@@ -683,22 +682,6 @@ async def huddle_team(*, owner_id: str, room_id: str) -> dict:
     return {"agents": agents, "people": people, "ceoId": starters.get("ceo")}
 
 
-async def _claim_voice_asked(owner_id: str, agent_id: str) -> bool:
-    # ponytail: one row per agent, never removed on agent delete or wipe (scan_all skips the __ prefix);
-    # delete it in delete_agent_everywhere if rows pile up.
-    try:
-        await run_in_thread(
-            _table().put_item,
-            Item={"owner_id": f"{VOICE_ASKED_PREFIX}{owner_id}#{agent_id}", "askedAt": int(time.time())},
-            ConditionExpression="attribute_not_exists(owner_id)",
-        )
-        return True
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            logger.warning("voice asked-name claim failed owner=%s agent=%s", owner_id, agent_id, exc_info=True)
-        return False  # fails closed: not asking for a name is harmless
-
-
 async def _session_reads(owner_id: str, agent_id: str) -> tuple[dict | None, str | None, str | None]:
     """(roster row, SOUL.md, VOICE_NOTES.md); any read that fails or overruns the budget is None."""
 
@@ -721,7 +704,7 @@ async def _session_reads(owner_id: str, agent_id: str) -> tuple[dict | None, str
 
 
 async def agent_meet_voice(*, owner_id: str, room_id: str, agent_id: str) -> dict:
-    """An agent's meeting voice and nothing else: no persona, and the naming prompt stays unclaimed."""
+    """An agent's meeting voice and nothing else: no persona."""
     await _owned_room(owner_id, room_id)
     members, starters = await asyncio.gather(messaging_repo.list_members(room_id), _starter_ids(owner_id))
     if not any(m.get("kind") == "agent" and m["id"] == agent_id for m in members):
@@ -736,8 +719,8 @@ async def agent_meet_voice(*, owner_id: str, room_id: str, agent_id: str) -> dic
     return {"voice": voice_persona.agent_meet_voice(agent_id, starters, title)}
 
 
-async def agent_session(*, owner_id: str, room_id: str, agent_id: str, ask_name: bool = True) -> dict:
-    """One agent's GPT-Live session: its own voice and persona. Falls back to the bare persona
+async def agent_session(*, owner_id: str, room_id: str, agent_id: str) -> dict:
+    """One agent's voice session: its own voice and persona. Falls back to the bare persona
     (no role, SOUL or notes) when the reads fail or overrun."""
     steps = _Steps()
     meta = await _owned_room(owner_id, room_id)
@@ -750,12 +733,6 @@ async def agent_session(*, owner_id: str, room_id: str, agent_id: str, ask_name:
     row, soul, notes_md = await _session_reads(owner_id, agent_id)
     steps.done("profile_reads")  # the roster, SOUL.md and the voice notes, side by side, _SESSION_READ_BUDGET_S at most
     name = (row or {}).get("name") or me.get("displayName") or "Agent"
-    ask_name = (
-        ask_name
-        and voice_persona.is_default_name(agent_id, name, starters)
-        and await _claim_voice_asked(owner_id, agent_id)
-    )
-    steps.done("asked_name")
     logger.info("voice session room=%s agent=%s ms: %s", room_id, agent_id, steps)
     title = (row or {}).get("title") or (row or {}).get("role")
     persona = voice_persona.build_agent_persona(
@@ -766,7 +743,6 @@ async def agent_session(*, owner_id: str, room_id: str, agent_id: str, ask_name:
         room_name=meta.get("name"),
         people=[m.get("displayName") or m["id"] for m in members if m.get("kind") == "human"],
         agents=[m.get("displayName") or "Agent" for m in members if m.get("kind") == "agent" and m["id"] != agent_id],
-        ask_name=ask_name,
     )
     return {
         "agentId": agent_id,
@@ -774,7 +750,6 @@ async def agent_session(*, owner_id: str, room_id: str, agent_id: str, ask_name:
         "voice": voice_persona.agent_voice(agent_id, starters, title),
         "meetVoice": voice_persona.agent_meet_voice(agent_id, starters, title),
         "persona": persona,
-        "askName": ask_name,
     }
 
 

@@ -3165,7 +3165,7 @@ class Huddle:
 
         # understanding §4.6: a named line's /route answer is awaited beside the window and session, never before
         window, session = await asyncio.gather(
-            timed("window", self._ensure_window(identity)), timed("session", self._backend.session(agent_id, silent=True)),
+            timed("window", self._ensure_window(identity)), timed("session", self._backend.session(agent_id)),
             return_exceptions=True,
         )  # fmt: skip
         warm: list[asyncio.Task] = []

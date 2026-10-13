@@ -33,7 +33,7 @@ def test_is_default_name():
 def _persona(**kw):
     args = dict(
         name="Nova", role="CEO", soul_excerpt="Runs the company.", voice_notes="Be blunt.",
-        room_name="general", people=["Aden"], agents=["Gauge", "Forge"], ask_name=False,
+        room_name="general", people=["Aden"], agents=["Gauge", "Forge"],
     )  # fmt: skip
     return vp.build_agent_persona(**{**args, **kw})
 
@@ -48,7 +48,6 @@ def test_agent_persona_has_name_notes_rules_and_roster():
     roster = [line for line in p.splitlines() if "Gauge" in line or "Forge" in line]
     assert roster == ["On this call: people: Aden. Other agents: Gauge, Forge."]
     assert "don't have a name yet" not in p
-    assert "don't have a name yet" in _persona(ask_name=True)
 
 
 def test_agent_persona_is_the_mouth_not_the_source():
@@ -81,7 +80,6 @@ def test_agent_persona_caps_soul_and_notes_and_fits_the_instruction_limit():
         voice_notes="n" * 20_000,
         people=["P" * 256] * 30,
         agents=["A" * 256] * 30,
-        ask_name=True,
     )
     assert "s" * vp.SOUL_EXCERPT_MAX in p and "s" * (vp.SOUL_EXCERPT_MAX + 1) not in p
     assert "n" * 1000 in p and "n" * 1001 not in p

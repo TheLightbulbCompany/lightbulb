@@ -1,5 +1,5 @@
 import {
-  AGENTS_JOINING, agentA11yName, agentLiveStatus, agentNaming, agentStateLine, agentWorking, floorChange, floorHolder, LIVE_AGENT_IDENTITY, liveAgents,
+  AGENTS_JOINING, agentA11yName, agentLiveStatus, agentStateLine, agentWorking, floorChange, floorHolder, LIVE_AGENT_IDENTITY, liveAgents,
   liveErrorText, liveHappening, liveHint, LISTENING_TO, nameCollides, orderAgentSlots, queuePosition, voiceFailedText, wakingText,
 } from "@lightbulb/shared";
 import { RoomContext, useIsSpeaking, useParticipants, useTracks } from "@livekit/components-react";
@@ -38,7 +38,7 @@ function AgentTile({ id, name, attrs, isHolder, disabled, ambiguous, failed, pal
 }) {
   const status = agentLiveStatus(attrs, id);
   const extras = {
-    working: agentWorking(attrs, id), naming: agentNaming(attrs, id), queuePos: queuePosition(attrs, id),
+    working: agentWorking(attrs, id), queuePos: queuePosition(attrs, id),
     listeningTo: attrs[LISTENING_TO] || undefined,
   };
   const live = status === "speaking" || status === "joining" || status === "listening";
@@ -86,7 +86,7 @@ function Stage() {
   const stageId = holder ?? ids.find((id) => agentLiveStatus(attrs, id) === "joining") ?? live.lastSpeaker ?? tiles[0]?.id ?? null;
   const stageStatus = stageId ? agentLiveStatus(attrs, stageId) : "idle";
   const stageExtras = stageId
-    ? { working: agentWorking(attrs, stageId), naming: agentNaming(attrs, stageId), queuePos: queuePosition(attrs, stageId), listeningTo: attrs[LISTENING_TO] || undefined }
+    ? { working: agentWorking(attrs, stageId), queuePos: queuePosition(attrs, stageId), listeningTo: attrs[LISTENING_TO] || undefined }
     : {};
 
   // Two agent tracks can coexist during a switch (C7): pick by name.

@@ -453,7 +453,7 @@ class Backend:
         await asyncio.sleep(took)
         return {"callId": "call-replay", "deadline": self.sim.now() + 3600, "budgetSeconds": 3600, "joined": False}
 
-    async def session(self, agent_id, silent=False) -> dict:
+    async def session(self, agent_id) -> dict:
         await asyncio.sleep(self.sim.model.quick())
         name = next(a["name"] for a in self.sim.team["agents"] if a["id"] == agent_id)
         return {"agentId": agent_id, "name": name, "voice": "marin", "persona": f"You are {name}.", "askName": False}

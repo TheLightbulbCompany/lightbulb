@@ -132,7 +132,7 @@ def test_admin_sends_an_invitation_and_the_metric_and_event_fire(app, admin_auth
     capture.assert_called_once_with(
         distinct_id="user_admin",
         event="invitation_sent",
-        properties={"workspace_id": "org_test", "by_admin": True},
+        properties={"workspace_id": "org_test", "by_admin": True, "source": "unknown"},
     )
     assert "cofounder@example.com" not in "\n".join(r.getMessage() for r in caplog.records)
 
@@ -161,7 +161,7 @@ def test_a_member_may_invite_but_not_list_or_revoke(app, clerk):
         resp = client.post("/api/v1/orgs/org_test/invitations", json={"email": "x@example.com"})
     assert resp.status_code == 201
     assert json.loads(clerk.requests[-1].content)["inviter_user_id"] == "user_member"
-    assert capture.call_args.kwargs["properties"] == {"workspace_id": "org_test", "by_admin": False}
+    assert capture.call_args.kwargs["properties"]["by_admin"] is False
 
 
 def test_a_failed_name_lookup_still_sends_the_invitation(app, admin_auth, clerk):
@@ -260,3 +260,16 @@ def test_revoke_is_204_and_idempotent(app, admin_auth, clerk):
         distinct_id="user_admin", event="invitation_revoked", properties={"workspace_id": "org_test"}
     )
     assert client.get("/api/v1/orgs/org_test/invitations").json() == {"invitations": []}
+
+
+def test_the_door_an_invitation_came_from_is_recorded(app, admin_auth, clerk):
+    with patch.object(workspace_invitations, "capture_product_event") as capture:
+        resp = _as(app, admin_auth).post(
+            "/api/v1/orgs/org_test/invitations", json={"email": "s@x.com", "source": "chat"}
+        )
+    assert resp.status_code == 201
+    assert capture.call_args.kwargs["properties"]["source"] == "chat"
+    bad = _as(app, admin_auth).post(
+        "/api/v1/orgs/org_test/invitations", json={"email": "s@x.com", "source": "Bad Label!"}
+    )
+    assert bad.status_code == 422

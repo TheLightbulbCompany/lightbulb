@@ -39,7 +39,7 @@ describe("InvitePeoplePanel", () => {
     fireEvent.change(await screen.findByLabelText("Email address"), { target: { value: "new@acme.com, in@acme.com  dup@acme.com nope" } });
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Send invites" })); });
     expect(api.post).toHaveBeenCalledTimes(4);
-    expect(api.post).toHaveBeenCalledWith("/orgs/org_1/invitations", { email: "new@acme.com" });
+    expect(api.post).toHaveBeenCalledWith("/orgs/org_1/invitations", { email: "new@acme.com", source: "test" });
     const lines = within(screen.getByRole("list", { name: "Invite results" })).getAllByRole("listitem").map((li) => li.textContent);
     expect(lines).toEqual([
       "new@acme.com: Invitation sent.",

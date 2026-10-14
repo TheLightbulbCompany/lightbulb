@@ -309,6 +309,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- apps/backend/core/services/messaging.py (default_room_welcome, FIRST_REPLIES);
                                  core/services/onboarding_brief.py (first_message_intake);
                                  apps/frontend/src/components/messaging/FirstReplyChips.tsx
+  - The invite ask after the first run ... references/company-and-plans.md <- core/services/messaging.py ask_who_should_see (INVITE_ASK)
   - Plans / providers ....... references/company-and-plans.md
                               <- apps/backend/core/services/{billing_service,provision_gate,owner_facts}.py
                                  (billing_service.create_workspace_checkout: confirm=True to change a live plan; prorated onto the next invoice)

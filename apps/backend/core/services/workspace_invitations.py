@@ -77,7 +77,7 @@ async def _landing_url(org_id: str, inviter: str) -> str:
     return f"{base}?{query}" if query else base
 
 
-async def send(org_id: str, email: str, *, inviter: str, by_admin: bool = False) -> dict:
+async def send(org_id: str, email: str, *, inviter: str, by_admin: bool = False, source: str | None = None) -> dict:
     """Invite ``email`` to ``org_id``. 409 if they are a member or already invited.
 
     Both checks run HERE, before Clerk, because Clerk does not document the
@@ -113,7 +113,7 @@ async def send(org_id: str, email: str, *, inviter: str, by_admin: bool = False)
     capture_product_event(
         distinct_id=inviter,
         event="invitation_sent",
-        properties={"workspace_id": org_id, "by_admin": by_admin},
+        properties={"workspace_id": org_id, "by_admin": by_admin, "source": source or "unknown"},
     )
     view = _view(inv)
     view["email"] = view["email"] or email

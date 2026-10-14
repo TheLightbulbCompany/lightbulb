@@ -13,6 +13,8 @@ import { handleShellLinkClick } from "@/lib/shellNav";
 import { extractAppLinks, type AppLink } from "./appLinks";
 import { useMessagingWorkspaceOptional, type MessagingWorkspaceValue } from "./MessagingWorkspaceContext";
 import { ParticipantAvatar } from "./ParticipantAvatar";
+import { RoomInviteCard } from "./RoomInviteCard";
+import { openInviteDialog } from "@/components/workspace/workspaceController";
 
 /**
  * Links to our own app, shown as the native thing they point at instead of the
@@ -31,6 +33,11 @@ export function RoomAppLinks({ text }: { text: string }) {
 /** Open an own-app link in place: room/message/session through the workspace, the rest via the shell URL. */
 export function openAppLink(event: MouseEvent<HTMLAnchorElement>, link: AppLink, ws: MessagingWorkspaceValue | null): void {
   if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+  if (link.kind === "invite") {
+    event.preventDefault();
+    openInviteDialog();
+    return;
+  }
   if (ws && (link.kind === "room" || link.kind === "message")) {
     event.preventDefault();
     ws.openMessage(link.roomId, link.kind === "message" ? link.messageId : null);
@@ -45,6 +52,7 @@ export function openAppLink(event: MouseEvent<HTMLAnchorElement>, link: AppLink,
 function AppLinkCard({ link, ws }: { link: AppLink; ws: MessagingWorkspaceValue | null }) {
   if (link.kind === "approval") return <ApprovalCard id={link.id} />;
   if (link.kind === "connect") return <ConnectCard provider={link.provider} />;
+  if (link.kind === "invite") return <RoomInviteCard />;
   if (!ws) return null;
   const rooms = ws.directoryProps.rooms;
   const chip = (icon: ReactNode, label: string, meta?: string) =>

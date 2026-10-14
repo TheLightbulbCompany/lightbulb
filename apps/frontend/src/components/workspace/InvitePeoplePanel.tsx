@@ -13,7 +13,7 @@ export type Invitation = { id: string; email: string; created_at: string; expire
 type SendResult = { email: string; sent: boolean; note: string };
 
 /** One line per address. A 409's detail is already a sentence ("…already in this workspace."). */
-function sendNote(error: unknown): string {
+export function inviteSendNote(error: unknown): string {
   if (error instanceof ApiError) {
     const detail = (error.body as { detail?: unknown } | undefined)?.detail;
     if (error.status === 409 && typeof detail === "string" && detail) return detail;
@@ -62,11 +62,11 @@ export function InvitePeoplePanel({ source, onJoinLinkCopied }: { source: string
     setResults([]);
     const settled = await Promise.all(emails.map(async (email): Promise<SendResult> => {
       try {
-        const invitation = (await api.post(`/orgs/${orgId}/invitations`, { email })) as Invitation;
+        const invitation = (await api.post(`/orgs/${orgId}/invitations`, { email, source })) as Invitation;
         setPending((current) => [invitation, ...(current ?? []).filter((row) => row.id !== invitation.id)]);
         return { email, sent: true, note: "Invitation sent." };
       } catch (error) {
-        return { email, sent: false, note: sendNote(error) };
+        return { email, sent: false, note: inviteSendNote(error) };
       }
     }));
     setResults(settled);

@@ -115,7 +115,6 @@ async def send(org_id: str, email: str, *, inviter: str, by_admin: bool = False)
         event="invitation_sent",
         properties={"workspace_id": org_id, "by_admin": by_admin},
     )
-    # T02 hook: write the short-lived ``via=invite`` join marker here once T02's marker store lands.
     view = _view(inv)
     view["email"] = view["email"] or email
     return view

@@ -76,3 +76,5 @@ jobs:
           NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY }}
           NEXT_PUBLIC_API_URL: https://api-dev.thelightbulb.company/api/v1
         run: pnpm --filter @lightbulb/frontend run build
+
+# ci probe 2026-10-14: full run of main after the offline-runner merges (do not merge)

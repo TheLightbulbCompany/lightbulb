@@ -90,3 +90,5 @@ jobs:
         env:
           CI: "1"
         run: pnpm --filter @lightbulb/mobile run export:ios
+
+# ci probe 2026-10-14: full run of main after the offline-runner merges (do not merge)

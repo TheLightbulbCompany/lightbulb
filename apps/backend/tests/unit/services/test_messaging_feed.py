@@ -449,3 +449,79 @@ async def test_a_workspace_with_no_active_human_has_no_feed_404_not_503(workspac
             await call
         assert exc.value.error.code == "ROOM_NOT_FOUND"
     assert await repo.get_room(FEED) is None
+
+
+# ---- round 3: a seat inside revoke's own window; the undo's revision race -----
+
+
+def _cancelled():
+    from botocore.exceptions import ClientError
+
+    return ClientError({"Error": {"Code": "TransactionCanceledException", "Message": "revision"}}, "TransactWriteItems")
+
+
+@pytest.mark.asyncio
+async def test_a_first_seat_between_revokes_room_list_and_stream_off_is_removed(workspace, monkeypatch):
+    """No marker is held for a user not yet seated: a seat landing after revoke listed the rooms
+    passes its own re-check (stream still on). Revoke's second pass removes it."""
+    await messaging.ensure_feed_room(OWNER)
+    await repo.ensure_user_stream(OWNER, "user_C")
+    before = await repo.get_room(FEED)
+    real_list = repo.list_rooms_for_member
+    calls = {"n": 0}
+
+    async def seat_after_first_list(owner_id, kind, member_id):
+        rows = await real_list(owner_id, kind, member_id)
+        calls["n"] += 1
+        if calls["n"] == 1:
+            assert await messaging.join_feed_room(OWNER, "user_C") is True  # lands in the window
+        return rows
+
+    monkeypatch.setattr(messaging.messaging_repo, "list_rooms_for_member", seat_after_first_list)
+    await messaging.revoke_human_membership(OWNER, "user_C")
+    assert await repo.get_member(FEED, "human", "user_C") is None
+    assert (await repo.get_room(FEED))["deliveryKey"] != before["deliveryKey"]
+
+
+@pytest.mark.asyncio
+async def test_the_undo_retries_a_revision_race_and_still_unseats(workspace, monkeypatch):
+    await messaging.ensure_feed_room(OWNER)
+    await repo.ensure_user_stream(OWNER, "user_C")
+    real_upsert, real_remove = repo.upsert_member, repo.remove_member
+
+    async def removed_meanwhile(**kwargs):
+        meta = await real_upsert(**kwargs)
+        await repo.deactivate_user_stream(OWNER, "user_C")
+        return meta
+
+    monkeypatch.setattr(messaging.messaging_repo, "upsert_member", removed_meanwhile)
+    calls = iter([_cancelled()])
+
+    async def flaky(**kwargs):
+        exc = next(calls, None)
+        if exc is not None:
+            raise exc
+        return await real_remove(**kwargs)
+
+    monkeypatch.setattr(messaging.messaging_repo, "remove_member", flaky)
+    assert await messaging.join_feed_room(OWNER, "user_C") is False
+    assert await repo.get_member(FEED, "human", "user_C") is None
+
+
+@pytest.mark.asyncio
+async def test_an_undo_that_cannot_remove_fails_loudly(workspace, monkeypatch):
+    from botocore.exceptions import ClientError
+
+    await messaging.ensure_feed_room(OWNER)
+    await repo.ensure_user_stream(OWNER, "user_C")
+    real_upsert = repo.upsert_member
+
+    async def removed_meanwhile(**kwargs):
+        meta = await real_upsert(**kwargs)
+        await repo.deactivate_user_stream(OWNER, "user_C")
+        return meta
+
+    monkeypatch.setattr(messaging.messaging_repo, "upsert_member", removed_meanwhile)
+    monkeypatch.setattr(messaging.messaging_repo, "remove_member", AsyncMock(side_effect=_cancelled()))
+    with pytest.raises(ClientError):
+        await messaging.join_feed_room(OWNER, "user_C")

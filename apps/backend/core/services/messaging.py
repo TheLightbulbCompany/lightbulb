@@ -1936,7 +1936,7 @@ async def _autojoin(owner_id: str, room_id: str, user_id: str) -> bool:
     # seat, which rotates the key they may have seen. The feed marker is freed for a later rejoin.
     stream = await messaging_repo.get_user_stream(owner_id, user_id)
     if not (stream and stream.get("active")):
-        await _remove_member_with_notices(meta, "human", user_id)
+        await _remove_human_seat(owner_id, room_id, user_id)
         if is_feed_room(meta):
             await messaging_repo.release_autojoin(room_id, user_id)
         return False
@@ -2766,6 +2766,23 @@ async def _remove_member_with_notices(meta: dict, kind: str, member_id: str) -> 
     return new_meta
 
 
+async def _remove_human_seat(owner_id: str, room_id: str, user_id: str) -> None:
+    """Remove a human's seat (key rotation + notices), re-reading on a lost revision race: a
+    concurrent join or edit moves the revision the removal is conditioned on. Raises after three
+    tries, so a request that must unseat someone fails loudly instead of leaving the seat."""
+    for attempt in range(3):
+        meta = await messaging_repo.get_room(room_id)
+        member = await messaging_repo.get_member(room_id, "human", user_id)
+        if meta is None or member is None or messaging_repo.member_home(member, meta["ownerId"]) != owner_id:
+            return
+        try:
+            await _remove_member_with_notices(meta, "human", user_id)
+            return
+        except ClientError as exc:
+            if not messaging_repo._is_cancelled(exc) or attempt == 2:
+                raise
+
+
 async def _mark_removed(meta: dict, member_id: str) -> None:
     """Best-effort -- the removal already committed; a missed marker only risks one re-seat."""
     try:
@@ -2868,6 +2885,10 @@ async def revoke_human_membership(owner_id: str, user_id: str) -> None:
     except Exception:
         logger.warning("workspace.access.removed notice failed")
     await messaging_repo.deactivate_user_stream(owner_id, user_id)
+    # Second pass, stream off: a first seat (#general, the feed) that landed after the list above
+    # held no marker and passed its own re-check while the stream was still on.
+    for row in await messaging_repo.list_rooms_for_member(owner_id, "human", user_id):
+        await _remove_human_seat(owner_id, row["meta"]["roomId"], user_id)
     # Only now, with the stream off: a feed read in the window above found the marker held.
     try:
         await messaging_repo.release_autojoin(messaging_repo.feed_room_id(owner_id), user_id)

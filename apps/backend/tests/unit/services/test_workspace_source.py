@@ -43,7 +43,7 @@ async def test_the_stash_moves_onto_the_workspace_once(table):
     props = await workspace_source.adopt_for_workspace("org_1", "user_a")
     assert props == {
         "self_reported_source": "hacker_news",
-        "self_reported_detail": "launch thread",
+        "has_self_reported_detail": True,
         "source": "sign_up",
         "first_touch_utm_source": "hn",
         "first_touch_landing_path": "/",

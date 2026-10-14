@@ -407,7 +407,7 @@ export default function SessionLinkPageRoute() {
           <p>Sign up, free, to continue {page.title?.trim() || "this session"} in Claude Code on this computer.</p>
           <SignUpButton mode="modal" forceRedirectUrl="/s"><Button type="button">Sign up to continue</Button></SignUpButton>
         </>
-        : isSignedIn && !orgId ? <Button type="button" onClick={() => router.push(`/onboarding?returnTo=${encodeURIComponent("/s")}`)}>Create your free workspace</Button>
+        : isSignedIn && !orgId ? <Button type="button" onClick={() => { markWorkspaceDoor("session_link"); router.push(`/onboarding?returnTo=${encodeURIComponent("/s")}`); }}>Create your free workspace</Button>
         : stash.port ? <>
             <p>Continue {page.title?.trim() || "this session"} in Claude Code on this computer?</p>
             <Button type="button" disabled={busy} onClick={() => void confirmContinue()}>Continue in Claude Code</Button>

@@ -107,7 +107,7 @@ describe("workspace onboarding", () => {
       answer: "reddit", detail: "r/startups", door: "sign_up", first_touch: { utm_source: "reddit" }, last_touch: {},
     });
     expect(analytics.capture).toHaveBeenCalledWith("source_reported", expect.objectContaining({
-      surface: "sign_up", answer: "reddit", workspace_id: "org_new", $set_once: { self_reported_source: "reddit" },
+      surface: "sign_up", answer: "reddit", has_detail: true, workspace_id: "org_new", $set_once: { self_reported_source: "reddit" },
     }));
     await waitFor(() => expect(clerk.apiPost).toHaveBeenCalledWith("/company/slug/claim", { slug: "bench-club" }));
     expect(clerk.apiPost.mock.invocationCallOrder[0]).toBeLessThan(clerk.createOrganization.mock.invocationCallOrder[0]);

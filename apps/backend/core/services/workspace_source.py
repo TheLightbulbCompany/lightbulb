@@ -101,7 +101,11 @@ def as_properties(record: dict | None) -> dict:
     """Flat event properties: ``source`` (the door), ``self_reported_source``, ``first_touch_utm_source``..."""
     if not record:
         return {}
-    props: dict = {k: record.get(k) for k in ("self_reported_source", "self_reported_detail")}
+    # The free-text detail stays on the workspace record; events carry only that it exists
+    # (it can hold anything a person typed, so it never goes to analytics).
+    props: dict = {"self_reported_source": record.get("self_reported_source")}
+    if record.get("self_reported_detail"):
+        props["has_self_reported_detail"] = True
     props["source"] = record.get("door")
     for prefix in ("first_touch", "last_touch"):
         for key, value in (record.get(prefix) or {}).items():

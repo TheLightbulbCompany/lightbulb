@@ -10,13 +10,14 @@ export const SOURCE_OPTIONS = SOURCES;
 
 export type SourceAnswer = { answer: string; detail: string };
 
-/** `source_reported`, with the answer also kept on the person (`$set_once`). No-op unanswered. */
+/** `source_reported`, with the answer also kept on the person (`$set_once`). No-op unanswered.
+ *  The free-text detail never goes to analytics (people paste anything); only whether there was one. */
 export function reportSource(surface: "sign_up" | "setup_form", { answer, detail }: SourceAnswer, extra?: Record<string, unknown>) {
   if (!answer) return;
   capture("source_reported", {
     surface,
     answer,
-    detail: detail.trim() || null,
+    has_detail: !!detail.trim(),
     ...extra,
     $set_once: { self_reported_source: answer },
   });

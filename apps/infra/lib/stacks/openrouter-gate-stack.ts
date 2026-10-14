@@ -78,7 +78,11 @@ export class OpenRouterGateStack extends cdk.Stack {
         // 5 MiB: a turn that carries a photo (an inline image part is base64) is >1 MiB, and the
         // function URL takes up to 6 MB. 413 here read as "The AI model is having problems".
         MAX_BODY_BYTES: "5242880",
-        MAX_OUTPUT_TOKENS: "4096",
+        // 4096 cut agents off mid-file: a new team's first "build our site" turn ended in
+        // Hermes's "reply was cut off" error (dev walkthrough 2026-10-14). At the policy's
+        // completion ceiling 32k tokens cost < $0.01, and the paid reservation stays under
+        // metronome_gate.RESERVE_ESTIMATE_MICROCENTS (55,865 vs 300,000 microcents).
+        MAX_OUTPUT_TOKENS: "32768",
         OPENROUTER_MARKUP,
       },
       logGroup: new logs.LogGroup(this, "GateLogs", {

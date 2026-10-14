@@ -3,6 +3,7 @@ import {
   buildSetupSteps,
   createApiClient,
   isBandComplete,
+  isConnectorStep,
   type SetupBilling,
   type SetupConnection,
   type SetupParticipant,
@@ -54,6 +55,9 @@ const STEP_SYMBOL: Record<SetupStepId, SFSymbol> = {
   github: "link",
   notion: "link",
   invite: "person.2",
+  // Never rendered: mobile passes no `humanSpoke`/`approvalAnswered`, so buildSetupSteps omits them.
+  "tell-ceo": "text.bubble",
+  approval: "checkmark.square",
   "name-agents": "pencil",
   // Never rendered: mobile passes no `contextImported`, so buildSetupSteps omits the step.
   context: "doc.text",
@@ -202,8 +206,9 @@ export function OnboardingBand({ participants }: { participants: readonly SetupP
   if (dismissed || isBandComplete(steps)) return null;
 
   const starter = steps.find((step) => step.id === "starter-model");
-  const connectors = steps.filter((step) => step.id !== "invite" && step.id !== "name-agents" && step !== starter);
-  const actions = steps.filter((step) => step.id === "invite" || step.id === "name-agents");
+  const inviteStep = steps.find((step) => step.id === "invite");
+  const connectors = steps.filter(isConnectorStep);
+  const later = steps.filter((step) => step.later);
 
   const card = (step: SetupStep, status?: string, busy?: boolean) => (
     <StepCard key={step.id} step={step} isAdmin={isAdmin} status={status} busy={busy} onSelect={onStep} palette={palette} />
@@ -214,7 +219,7 @@ export function OnboardingBand({ participants }: { participants: readonly SetupP
       <View style={styles.head}>
         <View style={styles.headText}>
           <Text style={[styles.title, { color: palette.fg }]}>Get started</Text>
-          <Text style={[styles.subtitle, { color: palette.fgMute }]}>Connect what your team already uses, then bring the rest of them in.</Text>
+          <Text style={[styles.subtitle, { color: palette.fgMute }]}>Bring in the person you work with most, then connect what your team uses.</Text>
         </View>
         <Pressable
           accessibilityRole="button"
@@ -231,6 +236,8 @@ export function OnboardingBand({ participants }: { participants: readonly SetupP
       </View>
 
       {starter && card(starter)}
+      {/* Invite first (08 §3): the second person is the activation event. */}
+      {inviteStep && card(inviteStep, inviteStatus(invite, isAdmin), invite === "working")}
       {connectors.map((step) =>
         card(
           step,
@@ -248,7 +255,7 @@ export function OnboardingBand({ participants }: { participants: readonly SetupP
         <SymbolView accessibilityElementsHidden name="plus" size={16} tintColor={palette.fg} />
         <Text style={[styles.label, { color: palette.fg }]}>More connections</Text>
       </Pressable>
-      {actions.map((step) => card(step, step.id === "invite" ? inviteStatus(invite, isAdmin) : undefined, step.id === "invite" && invite === "working"))}
+      {later.map((step) => card(step))}
 
       {invite === "legacy" && (
         <Text style={[styles.detail, { color: palette.fgMute }]}>{LEGACY_JOIN_LINK_TEXT}</Text>

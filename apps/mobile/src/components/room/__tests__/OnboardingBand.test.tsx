@@ -115,13 +115,13 @@ describe("OnboardingBand", () => {
     expect(screen.queryByText("Get started")).toBeNull();
   });
 
-  it("orders starter model, connectors, More connections, then invite and naming", async () => {
+  it("orders starter model, invite, connectors, More connections, then naming", async () => {
     await renderBand();
     await waitFor(() => expect(screen.getByText("Get started")).toBeTruthy());
     const labels = screen.getAllByRole("button").map((node) => node.props.accessibilityLabel as string);
     const order = [
-      "You're on the starter model", "Stripe", "GitHub", "Notion", "More connections",
-      "Invite your teammates", "Name your agents",
+      "You're on the starter model", "Invite your team", "Stripe", "GitHub", "Notion", "More connections",
+      "Name your agents",
     ].map((label) => labels.findIndex((candidate) => candidate.startsWith(label)));
     expect(order.every((index) => index >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
@@ -204,7 +204,7 @@ describe("OnboardingBand", () => {
     it("mints a link only when none exists, then shares it", async () => {
       setReads({ [invitePath()]: { exists: false } });
       await renderBand();
-      const target = await screen.findByLabelText(/^Invite your teammates/);
+      const target = await screen.findByLabelText(/^Invite your team/);
       await act(async () => { fireEvent.press(target); });
       expect(mockPost).toHaveBeenCalledWith(invitePath(), {});
       expect(share).toHaveBeenCalledWith({ message: "https://thelightbulb.company/join/new" });
@@ -214,7 +214,7 @@ describe("OnboardingBand", () => {
     it("shares an existing link without rotating it", async () => {
       setReads({ [invitePath()]: { exists: true, join_url: "https://thelightbulb.company/join/old" } });
       await renderBand();
-      const target = await screen.findByLabelText(/^Invite your teammates/);
+      const target = await screen.findByLabelText(/^Invite your team/);
       await act(async () => { fireEvent.press(target); });
       expect(mockPost).not.toHaveBeenCalled();
       expect(share).toHaveBeenCalledWith({ message: "https://thelightbulb.company/join/old" });
@@ -223,7 +223,7 @@ describe("OnboardingBand", () => {
     it("never rotates a legacy link and points at Settings → Members", async () => {
       setReads({ [invitePath()]: { exists: true, join_url: null } });
       await renderBand();
-      const target = await screen.findByLabelText(/^Invite your teammates/);
+      const target = await screen.findByLabelText(/^Invite your team/);
       await act(async () => { fireEvent.press(target); });
       expect(mockPost).not.toHaveBeenCalled();
       expect(share).not.toHaveBeenCalled();
@@ -233,7 +233,7 @@ describe("OnboardingBand", () => {
     it("reports a failed fetch", async () => {
       setReads({ [invitePath()]: () => { throw new Error("boom"); } });
       await renderBand();
-      const target = await screen.findByLabelText(/^Invite your teammates/);
+      const target = await screen.findByLabelText(/^Invite your team/);
       await act(async () => { fireEvent.press(target); });
       expect(screen.getByText("Couldn’t get the link — try again")).toBeTruthy();
     });

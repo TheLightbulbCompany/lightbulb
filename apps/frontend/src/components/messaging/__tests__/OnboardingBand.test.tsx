@@ -27,6 +27,8 @@ const h = vi.hoisted(() => ({
   contextImported: true as boolean,
   contextError: undefined as unknown,
   setContext: vi.fn(),
+  approvals: [] as { id: string; status: string }[],
+  openInviteDialog: vi.fn(),
 }));
 
 // The context card's done-state is the band's one SWR read; mocked like its
@@ -50,6 +52,7 @@ vi.mock("@/hooks/useConnections", () => ({
 }));
 
 vi.mock("@clerk/nextjs", () => ({
+  useAuth: () => ({ orgId: h.orgId }),
   useOrganization: () => ({
     organization: { id: h.orgId, membersCount: h.membersCount },
     membership: { role: h.role },
@@ -65,11 +68,14 @@ import { capture } from "@/lib/analytics";
 
 vi.mock("@/components/workspace/workspaceController", () => ({
   openPanel: (...args: unknown[]) => h.openPanel(...args),
+  openInviteDialog: () => h.openInviteDialog(),
 }));
 
 vi.mock("@/hooks/useTeamsApi", () => ({
   useTeamsApi: () => ({
-    read: () => ({ data: h.rosterLoading ? undefined : { agents: h.agents }, isLoading: h.rosterLoading, mutate: vi.fn() }),
+    read: (path: string) => path === "/approvals"
+      ? { data: { approvals: h.approvals }, isLoading: false, mutate: vi.fn() }
+      : { data: h.rosterLoading ? undefined : { agents: h.agents }, isLoading: h.rosterLoading, mutate: vi.fn() },
   }),
 }));
 
@@ -113,6 +119,8 @@ beforeEach(() => {
   h.contextImported = true;
   h.contextError = undefined;
   h.setContext.mockReset();
+  h.approvals = [];
+  h.openInviteDialog.mockReset();
   window.localStorage.clear();
 });
 
@@ -124,7 +132,7 @@ describe("OnboardingBand", () => {
     expect(screen.getByRole("button", { name: /Notion/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /PostHog/ })).toBeNull();
     expect(screen.getByRole("button", { name: /See more connections/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Invite your teammates/ })).toBeInTheDocument();
+    expect(screen.getByText("Invite your team")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Name your agents/ })).toBeInTheDocument();
   });
 
@@ -141,13 +149,14 @@ describe("OnboardingBand", () => {
     expect(screen.getByRole("button", { name: /Stripe/ })).toHaveTextContent(/Connected/);
   });
 
-  it("renders nothing at all once every step is done", () => {
+  it("says All set for one session once every counted step is done, then renders nothing", () => {
     h.connections = ["stripe", "github", "notion"].map(connected);
     h.membersCount = 2;
-    const { container } = render(<OnboardingBand participants={[
-      participant("human", "user_a", "Aden"),
-      participant("agent", "agent_0", "Ada"),
-    ]} />);
+    h.approvals = [{ id: "ap_1", status: "approved" }];
+    const { unmount } = render(<OnboardingBand participants={FRESH} humanSpoke />);
+    expect(screen.getByText("All set. Your team can see everything your AI employees do.")).toBeInTheDocument();
+    unmount();
+    const { container } = render(<OnboardingBand participants={FRESH} humanSpoke />);
     expect(container).toBeEmptyDOMElement();
   });
 
@@ -162,11 +171,9 @@ describe("OnboardingBand", () => {
     // band must still retire; counting it would keep the band up forever.
     h.connections = ["stripe", "github", "notion"].map(connected);
     h.membersCount = 2;
-    const { container } = render(<OnboardingBand participants={[
-      participant("human", "user_a", "Aden"),
-      participant("agent", "agent_0", "Ada"),
-    ]} />);
-    expect(container).toBeEmptyDOMElement();
+    h.approvals = [{ id: "ap_1", status: "rejected" }];
+    render(<OnboardingBand participants={FRESH} humanSpoke />);
+    expect(screen.getByText(/All set/)).toBeInTheDocument();
   });
 
   it("lets a plain member browse connections even though they cannot connect one", () => {
@@ -188,7 +195,7 @@ describe("a member who is not an org admin", () => {
   it("cannot action the admin-only cards, but can invite (D5)", () => {
     render(<OnboardingBand participants={FRESH} />);
     expect(screen.getByRole("button", { name: /Stripe/ })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /Invite your teammates/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Send invite" })).toBeInTheDocument();
   });
 
   it("is told why, rather than being handed a 403 on click", () => {
@@ -206,7 +213,7 @@ describe("done-state copy", () => {
   it("does not call an invited teammate a connection", () => {
     h.membersCount = 2;
     render(<OnboardingBand participants={FRESH} />);
-    const invite = screen.getByRole("button", { name: /Invite your teammates/ });
+    const invite = screen.getByRole("button", { name: /Invite your team/ });
     expect(invite).not.toHaveTextContent(/Connected/);
     expect(invite).toHaveTextContent(/Teammates joined/);
   });
@@ -246,7 +253,7 @@ describe("a done card", () => {
   it("stays clickable for invite, so the link can be copied again", () => {
     h.membersCount = 2;
     render(<OnboardingBand participants={FRESH} />);
-    expect(screen.getByRole("button", { name: /Invite your teammates/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /Invite your team/ })).toBeEnabled();
   });
 });
 
@@ -351,43 +358,35 @@ describe("connector cards", () => {
   });
 });
 
-describe("copying the join link", () => {
-  const invite = () => fireEvent.click(screen.getByRole("button", { name: /Invite your teammates/ }));
-
-  it("copies the existing link without minting a new one", async () => {
-    h.get.mockResolvedValue({ exists: true, join_url: "https://x/join/abc" });
+describe("08 §3 order", () => {
+  it("counts the workspace and its AI employees as done and puts the invite form first", () => {
     render(<OnboardingBand participants={FRESH} />);
-    invite();
-    await waitFor(() => expect(clipboard).toHaveBeenCalledWith("https://x/join/abc"));
-    expect(h.post).not.toHaveBeenCalled();
+    expect(screen.getByRole("heading", { name: "Get started · 2 of 6 done" })).toBeInTheDocument();
+    expect(screen.getByText("Your workspace")).toBeInTheDocument();
+    expect(screen.getByText("Six of them, in #general")).toBeInTheDocument();
+    expect(screen.getByText("Invite your team")).toBeInTheDocument();
+    expect(screen.getByLabelText("Email address")).toBeInTheDocument();
+    // In the band the invite stays until someone joins: no "Just me for now".
+    expect(screen.queryByRole("button", { name: "Just me for now" })).toBeNull();
   });
 
-  it("mints one only when the workspace has never had a link", async () => {
-    h.get.mockResolvedValue({ exists: false });
-    h.post.mockResolvedValue({ join_url: "https://x/join/new" });
-    render(<OnboardingBand participants={FRESH} />);
-    invite();
-    await waitFor(() => expect(clipboard).toHaveBeenCalledWith("https://x/join/new"));
+  it("marks the CEO step done once a person has written in the channel", () => {
+    render(<OnboardingBand participants={FRESH} humanSpoke />);
+    expect(screen.getByRole("button", { name: /Tell your CEO about the business/ })).toHaveTextContent(/Your CEO has it/);
+    expect(screen.getByRole("heading", { name: "Get started · 3 of 6 done" })).toBeInTheDocument();
   });
 
-  it("never rotates a link it cannot display — that strands everyone holding it", async () => {
-    // exists + null join_url is a legacy link; POST would revoke it.
-    h.get.mockResolvedValue({ exists: true, join_url: null });
+  it("marks the approval step done once any approval was answered, and opens Needs you on click", async () => {
     render(<OnboardingBand participants={FRESH} />);
-    invite();
-    const link = await screen.findByRole("link", { name: /Settings → Members/ });
-    expect(link).toHaveAttribute("href", "/settings?panel=members");
-    expect(h.post).not.toHaveBeenCalled();
-    expect(clipboard).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: /Answer your first approval/ }));
+    expect(h.openPanel).toHaveBeenCalledWith("teams-inbox", { section: "needs-you" }, { pushUrl: true });
   });
 
-  it("tells a member to ask an admin, since Settings → Members is admin-only", async () => {
-    h.role = "org:member";
-    h.get.mockResolvedValue({ exists: true, join_url: null });
+  it("opens the Invite people dialog from a done invite card", async () => {
+    h.membersCount = 2;
     render(<OnboardingBand participants={FRESH} />);
-    invite();
-    expect(await screen.findByText(/Ask a workspace admin to reset it/)).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: /Settings → Members/ })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /Invite your team/ }));
+    expect(h.openInviteDialog).toHaveBeenCalled();
   });
 });
 
@@ -492,17 +491,7 @@ describe("share your context", () => {
   it("drops the card when the status read fails, rather than guessing", () => {
     h.contextError = new Error("409");
     render(<OnboardingBand participants={FRESH} />);
-    expect(screen.getByRole("button", { name: /Invite your teammates/ })).toBeInTheDocument();
+    expect(screen.getByText("Invite your team")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Share your context/ })).toBeNull();
-  });
-});
-
-describe("invite analytics", () => {
-  it("reports join_link_copied when the invite card copies the link", async () => {
-    h.get.mockResolvedValueOnce({ exists: true, join_url: "https://dev.thelightbulb.company/join/org_a#tok" });
-    render(<OnboardingBand participants={FRESH} />);
-    await userEvent.click(screen.getByRole("button", { name: /Invite your teammates/ }));
-    await waitFor(() => expect(clipboard).toHaveBeenCalledWith("https://dev.thelightbulb.company/join/org_a#tok"));
-    expect(capture).toHaveBeenCalledWith("join_link_copied", { source: "onboarding_band", workspace_id: "org_a" });
   });
 });

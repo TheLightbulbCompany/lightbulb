@@ -40,11 +40,9 @@ vi.mock("@clerk/nextjs", () => ({
 let freshlyInstalledAgentId: string | null;
 const setFreshlyInstalled = vi.fn();
 const openMarketplace = vi.fn();
-const emitStep = vi.fn();
 vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({
   useMarketplaceDrawer: () => ({ state: { freshlyInstalledAgentId }, setFreshlyInstalled, open: openMarketplace }),
 }));
-vi.mock("@/components/getstarted/getStartedEvents", () => ({ emitStep: (...args: unknown[]) => emitStep(...args) }));
 vi.mock("@/components/chat/HealthIndicator", () => ({
   HealthIndicator: ({ onRecoveryReprovision }: { onRecoveryReprovision: () => void }) => (
     <button onClick={onRecoveryReprovision}>Recover workspace</button>
@@ -123,11 +121,10 @@ describe("WorkspaceSidebar", () => {
     fireEvent.click(screen.getByRole("button", { name: "Recover workspace" }));
     expect(recover).toHaveBeenCalledOnce();
   });
-  it("records completed marketplace hires and clears the installation marker", () => {
+  it("clears the marketplace installation marker", () => {
     vi.useFakeTimers();
     freshlyInstalledAgentId = "agent-new";
     render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
-    expect(emitStep).toHaveBeenCalledWith("hire");
     act(() => vi.advanceTimersByTime(600));
     expect(setFreshlyInstalled).toHaveBeenCalledWith(null);
   });

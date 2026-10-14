@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildSetupSteps,
   isBandComplete,
+  setupProgress,
   STARTER_AGENT_DEFAULT_NAMES,
   type SetupConnection as Connection,
   type SetupParticipant as RoomParticipant,
@@ -39,14 +40,14 @@ describe("connector steps", () => {
   });
 
   it("offers exactly stripe, github and notion", () => {
-    expect(build(CATALOG).map((s) => s.id)).toEqual(["stripe", "github", "notion", "invite", "name-agents"]);
+    expect(build(CATALOG).map((s) => s.id)).toEqual(["invite", "stripe", "github", "notion", "name-agents"]);
   });
 
   it("drops a connector this owner cannot connect, rather than offering a dead card", () => {
     // "unavailable" covers both a gated provider and one this runtime cannot
     // deliver; the authorize leg would refuse either.
     const connections = [connection("stripe", "unavailable"), ...CATALOG.slice(1)];
-    expect(build(connections).map((s) => s.id)).toEqual(["github", "notion", "invite", "name-agents"]);
+    expect(build(connections).map((s) => s.id)).toEqual(["invite", "github", "notion", "name-agents"]);
   });
 
   it("drops a connector missing from the catalog entirely", () => {
@@ -113,19 +114,50 @@ describe("permissions", () => {
 });
 
 describe("isBandComplete", () => {
-  it("is false while any step is outstanding", () => {
+  it("is false while any counted step is outstanding", () => {
     expect(isBandComplete(build(ALL_CONNECTED))).toBe(false);
   });
 
-  it("is true once every step is done", () => {
-    const participants = [participant("human", "user_a", "Aden"), participant("agent", "agent_0", "Ada")];
-    expect(isBandComplete(build(ALL_CONNECTED, participants, 2))).toBe(true);
+  it("is true once the invite and one tool are done, without waiting on the later steps", () => {
+    expect(isBandComplete(build([connection("stripe", "connected"), ...CATALOG.slice(1)], SOLO, 2))).toBe(true);
   });
 
   it("does not wait on a connector it dropped as unavailable", () => {
     const participants = [participant("human", "user_a", "Aden"), participant("agent", "agent_0", "Ada")];
     const connections = [connection("stripe", "unavailable"), ...ALL_CONNECTED.slice(1)];
     expect(isBandComplete(build(connections, participants, 2))).toBe(true);
+  });
+});
+
+describe("08 §3 order and progress", () => {
+  const full = (inputs: { humanSpoke: boolean; approvalAnswered: boolean; members?: number; connected?: boolean }) =>
+    buildSetupSteps({
+      participants: SOLO,
+      connections: inputs.connected ? [...CATALOG, connection("github", "connected")] : CATALOG,
+      agentNames: new Map(),
+      workspaceMembers: inputs.members ?? 1,
+      contextImported: false,
+      humanSpoke: inputs.humanSpoke,
+      approvalAnswered: inputs.approvalAnswered,
+    });
+
+  it("puts the invite first and naming and context last, as later steps", () => {
+    const steps = full({ humanSpoke: false, approvalAnswered: false });
+    expect(steps.map((s) => s.id)).toEqual(["invite", "tell-ceo", "stripe", "github", "notion", "approval", "name-agents", "context"]);
+    expect(steps.filter((s) => s.later).map((s) => s.id)).toEqual(["name-agents", "context"]);
+    expect(steps[0]).toMatchObject({ label: "Invite your team", adminOnly: false });
+  });
+
+  it("starts at 2 of 6 (the workspace and its AI employees) and counts the tools as one", () => {
+    expect(setupProgress(full({ humanSpoke: false, approvalAnswered: false }))).toEqual({ done: 2, total: 6 });
+    expect(setupProgress(full({ humanSpoke: true, approvalAnswered: false, connected: true }))).toEqual({ done: 4, total: 6 });
+    const all = full({ humanSpoke: true, approvalAnswered: true, connected: true, members: 2 });
+    expect(setupProgress(all)).toEqual({ done: 6, total: 6 });
+    expect(isBandComplete(all)).toBe(true);
+  });
+
+  it("omits a step whose signal the client does not supply", () => {
+    expect(build(CATALOG).some((s) => s.id === "tell-ceo" || s.id === "approval")).toBe(false);
   });
 });
 
@@ -175,9 +207,9 @@ describe("context step", () => {
   const withContext = (contextImported?: boolean | null) =>
     buildSetupSteps({ participants: SOLO, connections: CATALOG, agentNames: new Map(), workspaceMembers: 1, contextImported });
 
-  it("is offered after the two action cards, admin-only and repeatable", () => {
+  it("is offered last, admin-only and repeatable", () => {
     const steps = withContext(false);
-    expect(steps.map((s) => s.id)).toEqual(["stripe", "github", "notion", "invite", "name-agents", "context"]);
+    expect(steps.map((s) => s.id)).toEqual(["invite", "stripe", "github", "notion", "name-agents", "context"]);
     expect(steps.at(-1)).toMatchObject({ label: "Share your context", done: false, adminOnly: true, repeatable: true });
   });
 

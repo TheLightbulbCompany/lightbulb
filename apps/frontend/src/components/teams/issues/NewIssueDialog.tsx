@@ -14,7 +14,6 @@ import { EditorialButton, EditorialDialog } from "@/components/teams/shell";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useIssueMutations } from "./hooks/useIssueMutations";
-import { emitStep } from "@/components/getstarted/getStartedEvents";
 import { assignableMembers, parseAssigneeValue } from "@/components/teams/shared/lib/assignees";
 import { workModeMetaList } from "@/components/teams/shared/lib/workModeMeta";
 import type {
@@ -169,7 +168,6 @@ export function NewIssueDialog({
         assigneeUserId: assigneeUserId || undefined,
       };
       const issue = parentId ? await createChild(parentId, payload) : await create(payload);
-      emitStep("task");
       onCreated?.(issue.id);
       reset();
       onOpenChange(false);

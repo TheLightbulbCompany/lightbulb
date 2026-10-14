@@ -840,12 +840,12 @@ it("nudges a lone founder to invite people, and opens the invite dialog from the
   const onInvitePeople = vi.fn();
   const { rerender } = render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[base]} participants={[atlas]}
     onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onInvitePeople={onInvitePeople} />);
-  expect(screen.getByText(/just you and your agents here/)).toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button", { name: "Invite people" }));
+  expect(screen.getByText(/just you and your AI employees/)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Invite" }));
   expect(onInvitePeople).toHaveBeenCalledTimes(1);
   rerender(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[base]} participants={[atlas, alice]}
     onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} />);
-  expect(screen.queryByText(/just you and your agents here/)).not.toBeInTheDocument();
+  expect(screen.queryByText(/just you and your AI employees/)).not.toBeInTheDocument();
 });
 
 it("offers Add people in a row's menu only where the viewer may add, and asks for that room's picker", async () => {

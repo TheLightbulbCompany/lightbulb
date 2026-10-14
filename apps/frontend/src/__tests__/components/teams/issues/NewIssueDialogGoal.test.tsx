@@ -17,10 +17,6 @@ vi.mock("@/components/teams/issues/hooks/useIssueMutations", () => ({
   useIssueMutations: () => ({ create, createChild }),
 }));
 
-vi.mock("@/components/getstarted/getStartedEvents", () => ({
-  emitStep: vi.fn(),
-}));
-
 import { NewIssueDialog } from "@/components/teams/issues/NewIssueDialog";
 
 const GOALS: Goal[] = [

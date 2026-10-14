@@ -227,3 +227,25 @@ def test_off_schema_bodies_are_422(client, admin, name, body):
     r = client.post(_CALLS[name][1], json=body, headers=H)
     assert r.status_code == 422
     admin.get_approval.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("action", "body", "admin_call", "decision"),
+    [
+        ("approve", {"note": "ok"}, "approve_approval", "approved"),
+        ("reject", {"reason": "not this"}, "reject_approval", "rejected"),
+    ],
+)
+def test_answering_an_approval_is_a_handoff(client, monkeypatch, action, body, admin_call, decision):
+    """T03: approve AND reject (D12) emit approval_answered with the decision."""
+    admin = MagicMock()
+    setattr(admin, admin_call, AsyncMock(return_value={"ok": True}))
+    from routers.teams import agents as agents_mod
+    from routers.teams import approvals as approvals_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    answered = MagicMock()
+    monkeypatch.setattr(approvals_mod.handoff_analytics, "approval_answered", answered)
+    r = client.post(f"/api/v1/teams/approvals/ap_1/{action}", json=body, headers={"Authorization": "Bearer x"})
+    assert r.status_code == 200
+    answered.assert_called_once_with(workspace_id="o1", user_id="u1", approval_id="ap_1", decision=decision)

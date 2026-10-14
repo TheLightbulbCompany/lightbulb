@@ -88,11 +88,13 @@ def build_join_url(org_id: str, token: str) -> str:
     return f"{settings.FRONTEND_URL.rstrip('/')}/join/{org_id}#{token}"
 
 
-async def mint_join_link(org_id: str, *, created_by: str) -> dict:
-    """Create (or replace) the org's join link.
+async def mint_join_link(org_id: str, *, created_by: str, replace: bool = True) -> dict | None:
+    """Create (or, with ``replace``, replace) the org's join link.
 
     Returns ``{join_url, created_at, created_by}``. Keep the plaintext out of
     logs; ``describe_join_link`` can re-derive it from the stored ciphertext.
+    ``replace=False`` is an atomic create: when a link already exists it
+    writes nothing and returns that link's ``describe_join_link`` view.
     """
     token = secrets.token_urlsafe(_TOKEN_BYTES)
     row = await workspace_join_repo.put_link(
@@ -100,7 +102,10 @@ async def mint_join_link(org_id: str, *, created_by: str) -> dict:
         token_hash=_hash_token(token),
         token_enc=encryption.encrypt(token),
         created_by=created_by,
+        only_if_absent=not replace,
     )
+    if row is None:
+        return await describe_join_link(org_id)
     put_metric("orgs.join_link.minted")
     logger.info("orgs.join_link.minted org_id=%s created_by=%s", org_id, created_by)
     return {
@@ -118,8 +123,8 @@ async def describe_join_link(org_id: str) -> dict | None:
     to get a copyable link". Never includes the hash or the ciphertext.
     """
     row = await workspace_join_repo.get_link(org_id)
-    if not row:
-        return None
+    if not row or not row.get("token_hash"):
+        return None  # never had one, or an admin revoked it (tombstone)
     join_url = None
     if row.get("token_enc"):
         try:
@@ -136,9 +141,10 @@ async def describe_join_link(org_id: str) -> dict | None:
     }
 
 
-async def revoke_join_link(org_id: str) -> None:
-    """Turn the org's link off. Idempotent."""
-    await workspace_join_repo.delete_link(org_id)
+async def revoke_join_link(org_id: str, *, revoked_by: str = "") -> None:
+    """Turn the org's link off. Idempotent. Leaves a tombstone so a member cannot mint a new
+    link over an admin's revoke; only an admin's regenerate does."""
+    await workspace_join_repo.mark_revoked(org_id, revoked_by=revoked_by)
     put_metric("orgs.join_link.revoked")
     logger.info("orgs.join_link.revoked org_id=%s", org_id)
 

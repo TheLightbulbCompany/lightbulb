@@ -94,7 +94,7 @@ export interface RoomPanelProps {
   addMemberCandidates?: readonly DirectoryParticipant[];
   onAddMember?: (member: MemberRef) => Promise<void>;
   /** Copies the workspace join link (minting one if there is none): the door for someone not in the
-   *  workspace yet. Rejects with an `ApiError` 403 for anyone but a workspace admin. */
+   *  workspace yet. Any workspace member may copy it. */
   onCopyJoinLink?: () => Promise<void>;
   /** One-shot: open the member picker as soon as this room allows adding (the sidebar's ⋯ → Add people). */
   openAddPeople?: boolean;

@@ -164,7 +164,7 @@ export function buildSetupSteps({ participants, connections, agentNames, workspa
       doneDetail: "Teammates joined",
       repeatable: true,
       done: workspaceMembers > 1,
-      adminOnly: true,
+      adminOnly: false, // any member may invite (D5)
     },
     {
       id: "name-agents" as const,

@@ -27,6 +27,8 @@ end when an admin regenerates or revokes.
 
 from __future__ import annotations
 
+from botocore.exceptions import ClientError
+
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
 
 _TABLE = "workspace-join-links"
@@ -42,12 +44,15 @@ async def get_link(org_id: str) -> dict | None:
     return resp.get("Item")
 
 
-async def put_link(org_id: str, *, token_hash: str, token_enc: str, created_by: str) -> dict:
+async def put_link(
+    org_id: str, *, token_hash: str, token_enc: str, created_by: str, only_if_absent: bool = False
+) -> dict | None:
     """Install ``token_hash`` as the org's one live join link.
 
     A whole-item put, deliberately: it is what makes "regenerating invalidates
     the previous link" atomic and total. Returns the row it wrote so the caller
-    can echo ``created_at`` without a read-back.
+    can echo ``created_at`` without a read-back. ``only_if_absent`` makes it a
+    create that never replaces (a member's first link): None when a link exists.
     """
     item = {
         "org_id": org_id,
@@ -56,8 +61,25 @@ async def put_link(org_id: str, *, token_hash: str, token_enc: str, created_by: 
         "created_by": created_by,
         "created_at": utc_now_iso(),
     }
-    await run_in_thread(_table().put_item, Item=item)
+    if not only_if_absent:
+        await run_in_thread(_table().put_item, Item=item)
+        return item
+    try:
+        await run_in_thread(_table().put_item, Item=item, ConditionExpression="attribute_not_exists(org_id)")
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return None
     return item
+
+
+async def mark_revoked(org_id: str, *, revoked_by: str) -> None:
+    """Revoke by replacing the row with a tombstone (no ``token_hash``): nothing redeems, and a
+    member's create-if-absent mint (``only_if_absent``) sees a row and refuses, so after a revoke
+    only an admin's replacing mint brings a link back. Idempotent."""
+    await run_in_thread(
+        _table().put_item, Item={"org_id": org_id, "revoked_at": utc_now_iso(), "revoked_by": revoked_by}
+    )
 
 
 async def delete_link(org_id: str) -> None:

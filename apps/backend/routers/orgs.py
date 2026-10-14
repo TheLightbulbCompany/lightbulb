@@ -2,12 +2,12 @@
 
 Mounted at ``/api/v1/orgs``:
 
-* ``GET    /{org_id}/join-link``  — admin: is there a live link, and when was it made
-* ``POST   /{org_id}/join-link``  — admin: mint/replace it, returns the plaintext ONCE
+* ``GET    /{org_id}/join-link``  — member: is there a live link, and when was it made
+* ``POST   /{org_id}/join-link``  — member: mint one when none exists; admin: replace it
 * ``DELETE /{org_id}/join-link``  — admin: revoke it
 * ``POST   /{org_id}/join``       — any signed-in user: redeem a link
 * ``GET    /{org_id}/invitations``                   — admin: pending email invitations
-* ``POST   /{org_id}/invitations``                   — admin: email an invitation
+* ``POST   /{org_id}/invitations``                   — member: email an invitation
 * ``DELETE /{org_id}/invitations/{invitation_id}``   — admin: revoke one (idempotent)
 
 History: the join link replaced ``POST /{org_id}/invitations`` (Clerk email
@@ -20,6 +20,11 @@ joins as ``org:member``, like a link redeemer.
 
 Authorization:
 
+* Members, not only admins, may invite (founder decision D5, 2026-10-13): the
+  person who wants a cofounder in is often not the admin. So sending an email
+  invitation and copying the join link are member actions. Everything that
+  takes access AWAY stays admin-only: revoking an invitation, revoking the
+  link, and replacing it (a replace is a revoke of the old link).
 * The admin routes share one pattern —
   ``require_org_admin(auth)`` for the role, plus an explicit
   ``auth.org_id != org_id`` check, because ``require_org_admin`` only proves the
@@ -42,7 +47,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Path
 
-from core.auth import AuthContext, get_current_user, require_org_admin
+from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.services import workspace_invitations, workspace_join
 from schemas.orgs import (
     CreateInvitationRequest,
@@ -71,6 +76,13 @@ def _require_admin_of(auth: AuthContext, org_id: str) -> None:
         raise HTTPException(403, "Cannot manage a different workspace")
 
 
+def _require_member_of(auth: AuthContext, org_id: str) -> None:
+    """Any member of THIS org (admin or not). 409s a caller with no active workspace."""
+    resolve_owner_id(auth)
+    if auth.org_id != org_id:
+        raise HTTPException(403, "Cannot manage a different workspace")
+
+
 @router.get(
     "/{org_id}/join-link",
     response_model=JoinLinkStatus,
@@ -81,7 +93,7 @@ async def get_join_link(
     org_id: str,
     auth: AuthContext = Depends(get_current_user),
 ) -> JoinLinkStatus:
-    _require_admin_of(auth, org_id)
+    _require_member_of(auth, org_id)
     meta = await workspace_join.describe_join_link(org_id)
     if not meta:
         return JoinLinkStatus(exists=False)
@@ -99,9 +111,16 @@ async def create_join_link(
     org_id: str,
     auth: AuthContext = Depends(get_current_user),
 ) -> CreateJoinLinkResponse:
-    """Regenerating is the revoke: the previous link stops working immediately."""
-    _require_admin_of(auth, org_id)
-    minted = await workspace_join.mint_join_link(org_id, created_by=auth.user_id)
+    """Regenerating is the revoke: the previous link stops working immediately.
+
+    So a member may mint only the FIRST link; replacing one is an admin's call.
+    """
+    _require_member_of(auth, org_id)
+    # A member's mint is an atomic create: losing a race (or meeting an existing link) returns
+    # the live link instead of replacing it, and an admin's revoke (a tombstone row) is a 403.
+    minted = await workspace_join.mint_join_link(org_id, created_by=auth.user_id, replace=auth.is_org_admin)
+    if not minted or not minted.get("join_url"):
+        raise HTTPException(403, "Only a workspace admin can replace the join link")
     return CreateJoinLinkResponse(**minted)
 
 
@@ -116,7 +135,7 @@ async def delete_join_link(
     auth: AuthContext = Depends(get_current_user),
 ) -> None:
     _require_admin_of(auth, org_id)
-    await workspace_join.revoke_join_link(org_id)
+    await workspace_join.revoke_join_link(org_id, revoked_by=auth.user_id)
 
 
 @router.post(
@@ -168,8 +187,9 @@ async def create_invitation(
     body: CreateInvitationRequest,
     auth: AuthContext = Depends(get_current_user),
 ) -> Invitation:
-    _require_admin_of(auth, org_id)
-    return Invitation(**await workspace_invitations.send(org_id, body.email, inviter=auth.user_id))
+    _require_member_of(auth, org_id)
+    sent = await workspace_invitations.send(org_id, body.email, inviter=auth.user_id, by_admin=auth.is_org_admin)
+    return Invitation(**sent)
 
 
 @router.delete(

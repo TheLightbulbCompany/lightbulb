@@ -8,11 +8,13 @@ and "invite my cofounder by email" is where people look first (Slack's shape:
 a link to share AND invitations by email).
 
 Clerk owns the invitation: it stores it, emails it, and its link lands on our
-``/sign-up``, where the prebuilt ``<SignUp>`` consumes the ticket and creates
-the membership. From there the existing ``organizationMembership.created``
+``/join/invite`` page, which names the inviter and the workspace (both carried
+in the redirect URL's query, display-only) and hands the ticket to the prebuilt
+``<SignUp>``/``<SignIn>``, which consumes it and creates the membership. From there the existing ``organizationMembership.created``
 webhook does exactly what it does for a join link. Nothing is stored here.
 
-Everyone is invited as ``org:member`` — the same rule as the join link.
+Everyone is invited as ``org:member`` — the same rule as the join link. Any
+member may send one (D5); revoking stays admin-only (see ``routers/orgs.py``).
 
 **The invitee's email is PII.** It reaches Clerk and the admin's own response,
 and nothing else: no log line, metric dimension or product-event property.
@@ -22,6 +24,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from urllib.parse import urlencode
 
 from fastapi import HTTPException
 
@@ -57,7 +60,24 @@ async def list_pending(org_id: str) -> list[dict]:
     return [_view(r) for r in rows]
 
 
-async def send(org_id: str, email: str, *, inviter: str) -> dict:
+async def _landing_url(org_id: str, inviter: str) -> str:
+    """``/join/invite?workspace=…&inviter=…`` — the page the invitation email opens.
+
+    The names are for display only: the ticket Clerk appends is what grants
+    anything, so a lookup that fails just leaves a name out of the headline.
+    """
+    org = await clerk_admin.get_organization(org_id) or {}
+    user = await clerk_admin.get_user(inviter) or {}
+    params = {
+        "workspace": (org.get("name") or "").strip()[:80],
+        "inviter": (user.get("first_name") or "").strip()[:80],
+    }
+    query = urlencode({k: v for k, v in params.items() if v})
+    base = f"{settings.FRONTEND_URL.rstrip('/')}/join/invite"
+    return f"{base}?{query}" if query else base
+
+
+async def send(org_id: str, email: str, *, inviter: str, by_admin: bool = False) -> dict:
     """Invite ``email`` to ``org_id``. 409 if they are a member or already invited.
 
     Both checks run HERE, before Clerk, because Clerk does not document the
@@ -86,11 +106,15 @@ async def send(org_id: str, email: str, *, inviter: str) -> dict:
         org_id=org_id,
         email=email,
         inviter_user_id=inviter,
-        redirect_url=f"{settings.FRONTEND_URL.rstrip('/')}/sign-up",
+        redirect_url=await _landing_url(org_id, inviter),
     )
     put_metric("orgs.invitation.sent")
     logger.info("orgs.invitation.sent org_id=%s inviter=%s", org_id, inviter)
-    capture_product_event(distinct_id=inviter, event="invitation_sent", properties={"workspace_id": org_id})
+    capture_product_event(
+        distinct_id=inviter,
+        event="invitation_sent",
+        properties={"workspace_id": org_id, "by_admin": by_admin},
+    )
     view = _view(inv)
     view["email"] = view["email"] or email
     return view

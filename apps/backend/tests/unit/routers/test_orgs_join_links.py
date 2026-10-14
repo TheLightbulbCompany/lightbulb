@@ -28,7 +28,11 @@ class FakeJoinRepo:
     async def get_link(self, org_id: str):
         return self.rows.get(org_id)
 
-    async def put_link(self, org_id: str, *, token_hash: str, token_enc: str, created_by: str) -> dict:
+    async def put_link(
+        self, org_id: str, *, token_hash: str, token_enc: str, created_by: str, only_if_absent: bool = False
+    ) -> dict | None:
+        if only_if_absent and org_id in self.rows:
+            return None
         row = {
             "org_id": org_id,
             "token_hash": token_hash,
@@ -41,6 +45,9 @@ class FakeJoinRepo:
 
     async def delete_link(self, org_id: str) -> None:
         self.rows.pop(org_id, None)
+
+    async def mark_revoked(self, org_id: str, *, revoked_by: str) -> None:
+        self.rows[org_id] = {"org_id": org_id, "revoked_at": "2026-10-14T00:00:00+00:00", "revoked_by": revoked_by}
 
 
 @pytest.fixture
@@ -213,7 +220,7 @@ def test_revoke_kills_the_link(app, admin_auth, repo, clerk):
     token = _token_from(client.post("/api/v1/orgs/org_test/join-link").json()["join_url"])
 
     assert client.delete("/api/v1/orgs/org_test/join-link").status_code == 204
-    assert repo.rows == {}
+    assert "token_hash" not in repo.rows["org_test"]  # a tombstone, so no member can mint over it
     # Revoking twice is fine.
     assert client.delete("/api/v1/orgs/org_test/join-link").status_code == 204
 
@@ -243,16 +250,32 @@ def test_status_survives_a_missing_encryption_key(app, admin_auth, repo):
 # --- Admin gating ------------------------------------------------------------
 
 
-def test_non_admin_member_cannot_see_or_mint_the_link(app, member_auth, repo):
+def test_a_member_may_copy_and_mint_the_first_link_but_not_replace_or_revoke_it(app, member_auth, repo):
+    """D5: members copy the link. Replacing one revokes it for everyone holding it, so that stays admin-only."""
     _override_auth(app, member_auth)
     client = TestClient(app)
 
-    assert client.get("/api/v1/orgs/org_test/join-link").status_code == 403
-    minted = client.post("/api/v1/orgs/org_test/join-link")
-    assert minted.status_code == 403
-    assert minted.json()["detail"] == "Organization admin access required"
+    assert client.get("/api/v1/orgs/org_test/join-link").json()["exists"] is False
+    first = client.post("/api/v1/orgs/org_test/join-link")
+    assert first.status_code == 201
+    assert client.get("/api/v1/orgs/org_test/join-link").json()["join_url"] == first.json()["join_url"]
+
+    # A second mint (another member racing, or a stale "no link" read) never replaces: it hands
+    # back the live link.
+    again = client.post("/api/v1/orgs/org_test/join-link")
+    assert again.status_code == 201
+    assert again.json()["join_url"] == first.json()["join_url"]
     assert client.delete("/api/v1/orgs/org_test/join-link").status_code == 403
-    assert repo.rows == {}
+    assert client.get("/api/v1/orgs/org_test/join-link").json()["join_url"] == first.json()["join_url"]
+
+
+def test_a_member_cannot_replace_a_link_that_cannot_be_shown(app, member_auth, repo):
+    _override_auth(app, member_auth)
+    repo.rows["org_test"] = {"org_id": "org_test", "token_hash": "h", "created_by": "user_admin", "created_at": "x"}
+    resp = TestClient(app).post("/api/v1/orgs/org_test/join-link")
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "Only a workspace admin can replace the join link"
+    assert repo.rows["org_test"]["token_hash"] == "h"
 
 
 def test_personal_caller_is_rejected_before_any_write(app, personal_auth, repo):
@@ -365,3 +388,22 @@ def test_redeem_lands_join_link_redeemed_on_the_new_member(app, admin_auth, repo
         "invited_by": "user_admin",
         "members_count": 2,
     }
+
+
+def test_after_an_admin_revokes_only_an_admin_can_bring_a_link_back(app, admin_auth, member_auth, repo, clerk):
+    """Codex P1: a member's create-if-absent must not undo an admin's revoke."""
+    _override_auth(app, admin_auth)
+    client = TestClient(app)
+    minted = client.post("/api/v1/orgs/org_test/join-link").json()["join_url"]
+    assert client.delete("/api/v1/orgs/org_test/join-link").status_code == 204
+
+    _override_auth(app, member_auth)
+    member = TestClient(app)
+    assert member.get("/api/v1/orgs/org_test/join-link").json()["exists"] is False
+    refused = member.post("/api/v1/orgs/org_test/join-link")
+    assert refused.status_code == 403
+    token = minted.split("#", 1)[1]
+    assert member.post("/api/v1/orgs/org_test/join", json={"token": token}).status_code == 404
+
+    _override_auth(app, admin_auth)
+    assert TestClient(app).post("/api/v1/orgs/org_test/join-link").status_code == 201

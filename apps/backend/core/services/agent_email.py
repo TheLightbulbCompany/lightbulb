@@ -32,8 +32,13 @@ EMAIL_ADDRESS_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 async def append_agent_mail_footer(
-    *, owner_id: str, agent_id: str, address: str, body_text: str,
-    body_html: str | None, agent_name: str | None = None,
+    *,
+    owner_id: str,
+    agent_id: str,
+    address: str,
+    body_text: str,
+    body_html: str | None,
+    agent_name: str | None = None,
 ) -> tuple[str, str | None]:
     """Append the default-on attribution footer without risking delivery."""
     try:

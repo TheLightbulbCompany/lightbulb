@@ -74,12 +74,13 @@ describe("InvitePeoplePanel", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Couldn't revoke the invitation to ann@acme.com.");
   });
 
-  it("tells a non-admin to ask an admin, with no inputs", async () => {
+  it("lets a non-admin member invite and copy the link, without the admin-only pending list", async () => {
     api.get.mockRejectedValue(new ApiError(403, { detail: "admin only" }));
     render(<InvitePeoplePanel source="test" />);
-    expect(await screen.findByText("Only a workspace admin can invite people. Ask an admin.")).toBeInTheDocument();
-    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(await screen.findByLabelText("Email address")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send invites" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy join link" })).toBeInTheDocument();
+    expect(screen.queryByText("Pending invitations")).not.toBeInTheDocument();
   });
 
   it("copies the join link and says so inline", async () => {
@@ -90,7 +91,7 @@ describe("InvitePeoplePanel", () => {
     expect(copyJoinLink).toHaveBeenCalledWith("invite_dialog");
     expect(screen.getByRole("status")).toHaveTextContent("Copied. Anyone who opens it and signs in joins this workspace.");
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Copy join link" })); });
-    expect(screen.getByRole("status")).toHaveTextContent("Only a workspace admin can copy it.");
+    expect(screen.getByRole("status")).toHaveTextContent("Ask a workspace admin for a new one.");
   });
 });
 

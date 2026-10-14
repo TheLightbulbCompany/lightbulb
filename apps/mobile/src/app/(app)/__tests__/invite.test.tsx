@@ -90,12 +90,12 @@ describe("Invite people", () => {
     expect(screen.getByText("Couldn't revoke ada@x.com. Try again.")).toBeTruthy();
   });
 
-  it("shows a member only the ask-an-admin line", async () => {
+  it("lets a member invite and copy the link, without the admin-only pending list (D5)", async () => {
     mockList = new ApiError(403, { detail: "admin only" });
     await renderScreen();
-    expect(await screen.findByText("Only a workspace admin can invite people. Ask an admin.")).toBeTruthy();
-    expect(screen.queryByLabelText("Email addresses")).toBeNull();
-    expect(screen.queryByLabelText("Copy join link")).toBeNull();
+    expect(await screen.findByLabelText("Email addresses")).toBeTruthy();
+    expect(screen.getByLabelText("Copy join link")).toBeTruthy();
+    expect(screen.queryByText("Pending invitations")).toBeNull();
   });
 
   it("takes one copy at a time so a double tap cannot mint two links", async () => {

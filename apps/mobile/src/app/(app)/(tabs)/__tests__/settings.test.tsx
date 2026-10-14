@@ -363,7 +363,7 @@ describe("Settings Switch workspace", () => {
   });
 });
 
-// Email invitations: the row is for everyone; a member learns there to ask an admin.
+// Email invitations: the row is for everyone; any member may invite (D5).
 describe("Settings Invite people", () => {
   it("opens the invite screen", async () => {
     mockAccountFixture = new Error("offline");

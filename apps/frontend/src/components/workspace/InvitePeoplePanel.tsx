@@ -8,7 +8,7 @@ import { timeAgo } from "@/components/teams/shared/lib/timeAgo";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
-/** `GET /orgs/{orgId}/invitations` rows. Clerk sends the email; the link lands on /sign-up. */
+/** `GET /orgs/{orgId}/invitations` rows. Clerk sends the email; the link lands on /join/invite. */
 export type Invitation = { id: string; email: string; created_at: string; expires_at: string | null; status: "pending" };
 type SendResult = { email: string; sent: boolean; note: string };
 
@@ -18,13 +18,15 @@ function sendNote(error: unknown): string {
     const detail = (error.body as { detail?: unknown } | undefined)?.detail;
     if (error.status === 409 && typeof detail === "string" && detail) return detail;
     if (error.status === 422) return "That doesn't look like an email address.";
-    if (error.status === 403) return "Only a workspace admin can invite people.";
+    if (error.status === 403) return "You can't invite people to this workspace.";
   }
   return "Couldn't send. Try again.";
 }
 
 /** The one invite UI (the rail's Invite dialog and Settings → Members): email invitations, the
- *  pending list, and the join link for people who would rather get a link in a chat. */
+ *  pending list, and the join link for people who would rather get a link in a chat. Any member
+ *  may invite and copy the link (D5); the pending list and Revoke are admin-only, so a member's
+ *  403 on the list just hides that section. */
 /** `onJoinLinkCopied` fires after a successful copy, which may have MINTED the link: a host that
  *  shows its own join-link state (Settings → Members) reloads it, so its card never offers
  *  "Create join link" over a link the admin just copied (that POST would rotate the token). */
@@ -50,7 +52,6 @@ export function InvitePeoplePanel({ source, onJoinLinkCopied }: { source: string
     return () => { stale = true; };
   }, [api, orgId]);
 
-  if (listState === "forbidden") return <p className="text-sm text-muted-foreground">Only a workspace admin can invite people. Ask an admin.</p>;
   if (listState === "loading") return <p role="status" className="text-sm text-muted-foreground">Loading…</p>;
 
   async function send(event: FormEvent) {
@@ -109,7 +110,7 @@ export function InvitePeoplePanel({ source, onJoinLinkCopied }: { source: string
         </ul>}
       </form>
 
-      <section aria-labelledby="invite-pending" className="flex flex-col gap-2">
+      {listState !== "forbidden" && <section aria-labelledby="invite-pending" className="flex flex-col gap-2">
         <h3 id="invite-pending" className="text-sm font-medium">Pending invitations</h3>
         {listState === "error" ? <p className="text-sm text-muted-foreground">Couldn&apos;t load pending invitations.</p>
           : !pending?.length ? <p className="text-sm text-muted-foreground">No pending invitations.</p>
@@ -119,7 +120,7 @@ export function InvitePeoplePanel({ source, onJoinLinkCopied }: { source: string
               <Button type="button" variant="outline" size="sm" aria-label={`Revoke invitation to ${invitation.email}`} onClick={() => void revoke(invitation)}>Revoke</Button>
             </li>)}</ul>}
         {revokeError && <p role="alert" className="text-sm text-destructive">{revokeError}</p>}
-      </section>
+      </section>}
 
       <section className="flex flex-col gap-1.5 border-t border-border pt-4">
         <div className="flex flex-wrap items-center justify-between gap-2">

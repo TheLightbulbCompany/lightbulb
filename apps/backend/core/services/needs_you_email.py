@@ -230,7 +230,11 @@ async def _approval_pending(approval_id: str) -> bool:
 async def _still_in_workspace(owner_id: str, user_id: str) -> bool:
     from core.repositories.paperclip_repo import PaperclipRepo
 
-    ws = await PaperclipRepo(table_name="paperclip-companies").get_workspace(owner_id) if owner_id else None
+    ws = (
+        await PaperclipRepo(table_name="paperclip-companies").get_workspace(owner_id, consistent_read=True)
+        if owner_id
+        else None
+    )
     return ws is not None and user_id in (ws.member_user_ids or set())
 
 

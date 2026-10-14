@@ -505,17 +505,6 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
             await relimit_owner_key(account["owner_id"])
         except Exception:
             logger.exception("Failed to relimit OpenRouter key for owner %s", account["owner_id"])
-    if new_status in ("active", "trialing"):
-        # Seats follow the roster. Our own seat modify fires .updated, which lands here and
-        # re-syncs against a fresh roster, so racing membership events converge. Best-effort:
-        # a failure never 500s Stripe; the next membership or subscription event retries.
-        from core.services.billing_service import sync_seat_quantity
-
-        try:
-            await sync_seat_quantity(account["owner_id"])
-        except Exception:
-            put_metric("billing.seat_sync", dimensions={"outcome": "error"})
-            logger.exception("Seat sync failed for owner %s", account["owner_id"])
     # Decided here, dispatched LAST (below): a failed dispatch raises so Stripe redelivers, and
     # everything before it must already have run once.
     reconcile_needed = (
@@ -592,6 +581,19 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
 
         if not await dispatch_reconcile(account["owner_id"]):
             raise RuntimeError(f"reconcile dispatch failed for owner {account['owner_id']}; Stripe will redeliver")
+    if new_status in ("active", "trialing"):
+        # Seats follow the roster (T04). LAST, and a failure RAISES so Stripe redelivers: every
+        # step above is idempotent and the sync sets an absolute quantity. Our own seat modify
+        # fires .updated, which re-syncs against a fresh roster, so racing membership events
+        # converge.
+        from core.services.billing_service import sync_seat_quantity
+
+        try:
+            await sync_seat_quantity(account["owner_id"])
+        except Exception:
+            put_metric("billing.seat_sync", dimensions={"outcome": "error"})
+            logger.exception("Seat sync failed for owner %s; Stripe will redeliver", account["owner_id"])
+            raise
     return None
 
 

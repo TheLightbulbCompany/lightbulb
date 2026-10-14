@@ -64,6 +64,7 @@ export type AnalyticsEvent =
   | "join_link_copied"
   | "session_opened"
   | "share_link_full_viewed"
+  | "share_link_cta_clicked"
   // Agent lifecycle
   | "agent_create_chooser"
   | "agent_created"

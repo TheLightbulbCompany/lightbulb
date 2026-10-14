@@ -343,6 +343,14 @@ export default function SessionLinkPageRoute() {
       <CodeLine code={page.code} />
       {page.me.member && page.sessionId && <a href={sessionPermalink(page.sessionId)}>Open in Lightbulb</a>}
     </header>
+    {/* The stranger's door (06 §2): every non-member who has no workspace of their own, except in
+        the CLI's confirm mode and where Continue already offers "Create your free workspace". */}
+    {!page.me.member && !stash.port && !(isSignedIn && (orgId || canContinue)) && <section aria-label="Start your own" className="mb-4 flex flex-col gap-2 rounded-lg border p-3">
+      <p className="font-semibold">{page.ownerFirstName} is working with their team and AI employees in Lightbulb.</p>
+      {isSignedIn
+        ? <Button type="button" className="self-start" onClick={() => { capture("share_link_cta_clicked", { cta: "start_own", signed_in: true }); router.push("/onboarding"); }}>Start your own workspace</Button>
+        : <SignUpButton mode="modal" forceRedirectUrl="/onboarding"><Button type="button" className="self-start" onClick={() => capture("share_link_cta_clicked", { cta: "start_own", signed_in: false })}>Start your own workspace</Button></SignUpButton>}
+    </section>}
     {canContinue && <section aria-label="Continue" className="mb-4 flex flex-col gap-2">
       {/* Signed out with no CLI waiting: the steps to continue, in order. `lightbulb continue` opens this
           page again (its confirm mode, `stash.port`), and that visit is where signing up happens. */}

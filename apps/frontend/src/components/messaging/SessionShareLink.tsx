@@ -130,7 +130,7 @@ export function SessionShareLink({ session, client }: { session: LocalSession; c
     {armed
       ? <Button type="button" variant="outline" size="sm" className="self-start" disabled={busy} onClick={() => void onlyMe()}>Click again to stop sharing</Button>
       : shown === "anyone"
-        ? <p role="note" className="session-setting-warning">{ABOUT.anyone} They see everything the terminal prints, secrets included.</p>
+        ? <p role="note" className="session-setting-warning">Anyone with the link sees this terminal live, including anything printed in it. They cannot type.</p>
         : <p className="session-setting-about">{ABOUT[shown]}</p>}
     {who !== "me" && !armed && <>
       {/* The audience above, the link and its Copy together: what is copied is always next to who can open it. */}

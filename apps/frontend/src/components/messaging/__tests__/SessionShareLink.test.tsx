@@ -30,7 +30,7 @@ it("is one control: Only me, My workspace, Anyone with the link, and one link to
   expect(navigator.clipboard.writeText).toHaveBeenCalledWith(url);
   await userEvent.selectOptions(await who(), "anyone");
   expect(client.putLocalSessionLink).toHaveBeenLastCalledWith("s1", "anyone");
-  expect(await screen.findByRole("note")).toHaveTextContent("Anyone with the link can watch this terminal live without signing in. They cannot type.");
+  expect(await screen.findByRole("note")).toHaveTextContent("Anyone with the link sees this terminal live, including anything printed in it. They cannot type.");
   await userEvent.click(screen.getByRole("button", { name: "Copy link" }));
   expect(await screen.findByText("Link copied. Anyone with the link can watch.")).toBeInTheDocument();
   await userEvent.selectOptions(await who(), "workspace");

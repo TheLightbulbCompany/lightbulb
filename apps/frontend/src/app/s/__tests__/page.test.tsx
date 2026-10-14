@@ -478,6 +478,22 @@ describe("session link page", () => {
     expect(screen.getByRole("region", { name: "Continue" })).toBeTruthy();
   });
 
+  it("offers every signed-out viewer their own workspace, but not in the CLI's confirm mode (T16)", async () => {
+    vi.useFakeTimers();
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => ({ ok: true, status: 200, json: async () => url.endsWith("/viewing") ? seat : model({}) }) as Response));
+    const { unmount } = render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const door = screen.getByRole("region", { name: "Start your own" });
+    expect(door.textContent).toContain("Ada is working with their team and AI employees in Lightbulb.");
+    expect(screen.getByRole("button", { name: "Start your own workspace" })).toBeTruthy();
+    unmount();
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok", port: 4321, challenge: "c".repeat(43) }));
+    render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.queryByRole("region", { name: "Start your own" })).toBeNull();
+  });
+
   // Round 18: a signed-out person saw only "Sign up to continue", and nothing about the Mac app or the command.
   it("tells a signed-out person how to continue: the Mac app, then the command; sign-up is the CLI's confirm step", async () => {
     vi.useFakeTimers();

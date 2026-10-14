@@ -225,7 +225,7 @@ def _title(row: dict, member: bool) -> str | None:
 
 
 async def open_page(auth: AuthContext | None, token: str, *, refresh: bool = False) -> LinkPage:
-    row, _, member = await resolve(auth, token)
+    row, link, member = await resolve(auth, token)
     manifest = await store._get(row["pk"], "PICKUP") if row.get("pickupAllowed") else None
     continuable = (
         row["provider"] == "claude"
@@ -233,8 +233,21 @@ async def open_page(auth: AuthContext | None, token: str, *, refresh: bool = Fal
         and (row.get("pickupSnapshot") or {}).get("state") == "ready"
         and not pickup._expired(row)
     )
-    if auth is not None and not refresh:  # the page's poll re-opens every few seconds: one open, one event
-        sessions._capture_growth(row, "share_link_opened", auth.user_id, member=member)
+    if not refresh:  # the page's poll re-opens every few seconds: one open, one event
+        # `link_ref` names the link without being it: a hash of the stored token hash. A signed-out
+        # open is its own anonymous person, `anon:<link_ref>`, with no person profile made for it.
+        link_ref = hashlib.sha256(link["tokenHash"].encode()).hexdigest()[:16]
+        signed_in = auth is not None
+        sessions._capture_growth(
+            row,
+            "share_link_opened",
+            auth.user_id if auth is not None else f"anon:{link_ref}",
+            member=member,
+            signed_in=signed_in,
+            link_ref=link_ref,
+            state=_state(row),
+            **({} if signed_in else {"$process_person_profile": False}),
+        )
     return LinkPage(
         title=_title(row, member),
         owner_first_name=await _name(row["humanUserId"], first=True),

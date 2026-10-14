@@ -227,3 +227,20 @@ async def test_a_mac_that_stopped_sharing_reads_as_gone(transport, s3):
     with patch.object(service, "_enrolled", AsyncMock(side_effect=refusal)):
         with pytest.raises(ApiProblem, match=links.GONE):
             await links.open_page(None, token)
+
+
+@pytest.mark.asyncio
+async def test_a_signed_out_open_is_counted_once_as_an_anonymous_viewer_of_that_link(transport):
+    """T16: the loop's top of funnel. One event per page load, never on the page's refresh poll."""
+    sid = await claude_session(transport)
+    token = (await service.put_link(ALICE, sid, "anyone")).url.split("#", 1)[1]
+    with patch("core.services.local_sessions.capture_product_event") as capture:
+        await links.open_page(None, token)
+        await links.open_page(None, token, refresh=True)
+        await links.open_page(STRANGER, token)
+    anon, signed = (c.kwargs for c in capture.call_args_list)
+    ref = anon["properties"]["link_ref"]
+    assert anon["distinct_id"] == f"anon:{ref}" and len(ref) == 16 and ref not in token
+    assert anon["properties"]["signed_in"] is False and anon["properties"]["$process_person_profile"] is False
+    assert signed["distinct_id"] == STRANGER.user_id and signed["properties"]["link_ref"] == ref
+    assert signed["properties"]["signed_in"] is True and "$process_person_profile" not in signed["properties"]

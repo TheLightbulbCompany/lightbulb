@@ -499,11 +499,22 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 // The app's panel joins a session a terminal (`lightbulb claude`) already has: it
                 // never takes that terminal's keyboard or size.
                 let joining = !ended && role["role"] == "interactive" && role["join"] == true && interactive.is_some();
+                // An idle stop (`manager::end_idle`) is END taken only while no terminal or panel has
+                // the keyboard, checked and taken in this one turn: nobody can attach in between.
+                let idle_end = role["role"] == "origin" && role["idleEnd"] == true && interactive.is_none()
+                    && !ending && !ended && exited.is_none() && provider_pid > 1;
+                if idle_end {
+                    ending = true;
+                    model.ending();
+                    hang_up(provider_pid, &reaped);
+                }
                 let (rows, cols) = model.size();
                 let facts = serde_json::json!({"protocol": 1, "pid": std::process::id(),
                     "providerPid": provider_pid, "argv": argv, "cwd": cwd, "rows": rows, "cols": cols,
                     "watch": true, "type": true, "joined": joining, "origin": true, "lastInput": last_input, "end": true, "history": classic || inline,
-                    "ended": ended, "endedAt": ended.then_some(exited_at_ms), "endedCode": ended.then_some(exit_code)});
+                    "ended": ended, "endedAt": ended.then_some(exited_at_ms), "endedCode": ended.then_some(exit_code),
+                    // A terminal (`lightbulb claude`) or the app's panel has the keyboard: an idle stop leaves it be.
+                    "attached": interactive.is_some(), "idleEnded": idle_end});
                 if !client.send(encode(HELLO, facts.to_string().as_bytes())) {
                     continue;
                 }
@@ -574,25 +585,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
             Event::Frame(_, END, _) if !ending && !ended && exited.is_none() && provider_pid > 1 => {
                 ending = true;
                 model.ending();
-                // The provider leads its terminal's process group (the pty made it a session
-                // leader): what a closing terminal hangs up on.
-                let group = -(provider_pid as libc::pid_t);
-                if !reaped.load(Ordering::SeqCst) {
-                    unsafe { libc::kill(group, libc::SIGHUP) };
-                }
-                std::thread::spawn(move || {
-                    // The whole group, not only its leader: a subprocess that ignores the hang-up
-                    // would otherwise keep working in the folder after End. A group id is not
-                    // reused while a member lives, and signal 0 fails once none does.
-                    let alive = || unsafe { libc::kill(group, 0) } == 0;
-                    let deadline = Instant::now() + END_KILL_AFTER;
-                    while Instant::now() < deadline && alive() {
-                        std::thread::sleep(Duration::from_millis(50));
-                    }
-                    if alive() {
-                        unsafe { libc::kill(group, libc::SIGKILL) };
-                    }
-                });
+                hang_up(provider_pid, &reaped);
             }
             Event::Frame(id, RESIZE, payload) if !ended && interactive == Some(id) && payload.len() == 4 => {
                 let cols = u16::from_be_bytes([payload[0], payload[1]]).max(1);
@@ -728,6 +721,30 @@ fn tell(clients: &HashMap<u64, Client>, watchers: &HashSet<u64>, frame: &[u8]) {
 
 /// A connected client. Frames go through a bounded queue to its own writer thread, so a window
 /// that stops reading can never block the holder; when its queue fills it is disconnected.
+/// End the provider as a closing terminal would: hang up its process group, then kill what is
+/// left of it after END_KILL_AFTER.
+fn hang_up(provider_pid: u32, reaped: &std::sync::atomic::AtomicBool) {
+    // The provider leads its terminal's process group (the pty made it a session
+    // leader): what a closing terminal hangs up on.
+    let group = -(provider_pid as libc::pid_t);
+    if !reaped.load(Ordering::SeqCst) {
+        unsafe { libc::kill(group, libc::SIGHUP) };
+    }
+    std::thread::spawn(move || {
+        // The whole group, not only its leader: a subprocess that ignores the hang-up
+        // would otherwise keep working in the folder after End. A group id is not
+        // reused while a member lives, and signal 0 fails once none does.
+        let alive = || unsafe { libc::kill(group, 0) } == 0;
+        let deadline = Instant::now() + END_KILL_AFTER;
+        while Instant::now() < deadline && alive() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if alive() {
+            unsafe { libc::kill(group, libc::SIGKILL) };
+        }
+    });
+}
+
 struct Client {
     queue: SyncSender<Vec<u8>>,
     stream: UnixStream,

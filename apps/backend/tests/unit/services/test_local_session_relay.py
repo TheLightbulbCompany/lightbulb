@@ -2045,9 +2045,10 @@ async def test_ended_frame_marks_row_ended_idempotently_and_hints(transport):
 
 
 @pytest.mark.asyncio
-async def test_ended_frame_reports_login_session_ended(transport):
-    """A Mac that found a holder older than its login session ends it with that reason, and the
-    row and the public session carry it."""
+@pytest.mark.parametrize("reason", ["login-session-ended", "idle-stopped"])
+async def test_ended_frame_reports_the_macs_own_end(transport, reason):
+    """A Mac that ended a held session itself (a holder older than its login session, or one idle
+    an hour with nobody on it) says why, and the row and the public session carry it."""
     with patch("time.time", return_value=10000):
         sid = await start(transport)
     frame = {
@@ -2055,14 +2056,20 @@ async def test_ended_frame_reports_login_session_ended(transport):
         "sessionId": sid,
         "generation": "generation-1",
         "endedAt": 10005,
-        "reason": "login-session-ended",
+        "reason": reason,
     }
     with patch("time.time", return_value=10006):
         await relay(transport).handle_message("conn-1", frame)
     row = await repo.get_session(OWNER, sid)
     assert row["status"] == "ended"
-    assert row["endedReason"] == "login-session-ended"
-    assert (await service.get_session(BOB, sid)).ended_reason == "login-session-ended"
+    assert row["endedReason"] == reason
+    assert (await service.get_session(BOB, sid)).ended_reason == reason
+
+
+def test_relay_lists_ended_idle_stopped_so_the_mac_may_stop_idle_sessions():
+    from core.services import local_session_relay as module
+
+    assert "endedIdleStopped" in module.FEATURES
 
 
 @pytest.mark.asyncio

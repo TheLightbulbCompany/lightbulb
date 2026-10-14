@@ -11,6 +11,12 @@ describe("endedWhy", () => {
     expect(endedWhy({ status: "ended", endedReason: "exited" }, "your Mac")).toBeNull();
     expect(endedWhy({ status: "idle", endedReason: "login-session-ended" }, "your Mac")).toBeNull();
   });
+
+  it("names a session the Mac stopped while idle, on an ended row only", () => {
+    expect(endedWhy({ status: "ended", endedReason: "idle-stopped" }, "your Mac")).toBe("stopped while idle");
+    expect(endedWhy({ status: "ended", endedReason: "idle-stopped" }, "Leo’s Mac", "’")).toBe("stopped while idle");
+    expect(endedWhy({ status: "idle", endedReason: "idle-stopped" }, "your Mac")).toBeNull();
+  });
 });
 
 describe("session labels", () => {

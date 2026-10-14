@@ -16,7 +16,7 @@ stale text until it was deleted). Hermes tool names are anchored to its
 `CONFIGURABLE_TOOLSETS`
 (`terminal`, `file`, `web`, `memory`, `skills`, `browser`, `secrets`) plus our
 own plugin tools in `apps/infra/hermes/plugins/lightbulb/__init__.py`
-(`send_room_message`, `hire_suggestion`, `lightbulb_read_rooms`, `lightbulb_local_sessions` — its direct-or-ask
+(`send_room_message`, `hire_suggestion`, `request_approval`, `lightbulb_read_rooms`, `lightbulb_local_sessions` — its direct-or-ask
 send rule is `agent_command` in `apps/backend/core/services/local_sessions.py`).
 
 MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
@@ -70,11 +70,18 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  stopping you" holds (gate is per owner key, so for every teammate).
   - Decisions are approvals . SKILL.md ("A person's decision is an approval") + references/chat-vs-document.md
                                  (step 3 disposition, "The first run" step 2) -> the paperclip skill's
-                                 references/interactions.md "When a person must decide" (the worked commands).
+                                 references/interactions.md "When a person must decide" -> the `request_approval`
+                                 tool (apps/infra/hermes/plugins/lightbulb/__init__.py _request_approval: picks
+                                 approve_ceo_strategy only for companyPlan + root CEO by role, resolves WAL-6 identifiers,
+                                 links them, moves them to in_review, returns the app link). Also named in
+                                 references/chat-vs-document.md step 3 + "The first run" step 2 and backend
+                                 core/services/onboarding_brief.py _CEO_DECISION/_SPECIALIST_DECISION.
                               <- apps/frontend/src/components/messaging/OnboardingBand.tsx (approvalAnswered: any
                                  answered row of /teams/approvals) + apps/backend/routers/teams/approvals.py.
                                  Observed dev 2026-10-14: the CEO filed "Approve pricing packages" as a task assigned
-                                 to the person and the approvals list stayed empty.
+                                 to the person and the approvals list stayed empty. Observed again on image
+                                 h-2026.10.14-f8eebfc (the raw POST + jq instructions): "Send the launch plan to me for
+                                 approval" got "Reply 'Plan approved' here" and no approval for 9 minutes; hence the tool.
   - App host for links ...... SKILL.md ("Links: use this workspace's own app host")
                               <- core/services/owner_facts.py (`app_url` = settings.FRONTEND_URL)
   - Workspace memory ........ references/platform-primitives.md ("Queryable company state" row)

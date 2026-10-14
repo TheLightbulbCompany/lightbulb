@@ -138,16 +138,14 @@ judgment anyway — do not stall waiting for them to answer.
 # The first run's one decision. Only the root CEO files ``approve_ceo_strategy``;
 # the first message can be dispatched to a specialist (whichever target the room
 # picked), and a specialist's decision is a plain board approval.
-_CEO_DECISION = """   - **One decision:** one `approve_ceo_strategy` approval for the plan,
-     linked to the plan's task and given with its full app link
-     (`<app_url>/<PREFIX>/approvals/<id>`) so it shows as an Approve card
-     (the paperclip skill's `references/interactions.md` has the command).
-     Any later sign-off is a `request_board_approval`, never a task assigned
-     to the person."""
+_CEO_DECISION = """   - **One decision:** one `approve_ceo_strategy` approval for the plan:
+     call the `request_approval` tool with `companyPlan: true` and the plan's
+     task in `tasks`, and give the `link` it returns so it shows as an
+     Approve card. Any later sign-off is a `request_board_approval` (the same
+     tool, without `companyPlan`), never a task assigned to the person."""
 _SPECIALIST_DECISION = """   - **One decision:** one `request_board_approval` for the plan's first
-     concrete action, linked to the plan's task and given with its full app
-     link (`<app_url>/<PREFIX>/approvals/<id>`) so it shows as an Approve card
-     (the paperclip skill's `references/interactions.md` has the command).
+     concrete action: call the `request_approval` tool with the plan's task in
+     `tasks`, and give the `link` it returns so it shows as an Approve card.
      Never a task assigned to the person."""
 
 

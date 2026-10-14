@@ -362,6 +362,130 @@ def _read_rooms(args: dict, *, session_id: str = "", **_kw) -> str:
         return "Lightbulb rooms are unavailable right now."
 
 
+# ---- request_approval: a person's decision as a real Paperclip approval ------------------------
+# Observed dev 2026-10-14 (Walker Studio): told to raise an approval through
+# `paperclip-api.sh raw POST .../approvals` with a jq body, the managed model asked in chat or
+# assigned the person a task instead, and /teams/approvals stayed empty. One named tool is what
+# the model reaches for. Auth is the agent's own Paperclip key from the profile's secret scope,
+# the same credential paperclip-api.sh uses (turn._secret_scope; Hermes copies the ContextVar
+# into tool workers).
+APPROVAL_SCHEMA = {
+    "name": "request_approval",
+    "description": "Ask a person to decide something: creates an approval in their Needs you with "
+                   "Approve and Reject buttons; approving it wakes you with the answer. Use it for "
+                   "every sign-off (a plan, prices, spend, a launch, a public post, a vendor), never a "
+                   "task assigned to the person or a question in chat. Linked tasks move to in_review. "
+                   "Returns the approval's link: give it to the person in your reply.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "The decision, e.g. 'Approve the two-week launch plan'."},
+            "summary": {"type": "string",
+                        "description": "What the person needs to decide it, in two or three sentences, "
+                                       "with the document link if there is one."},
+            "tasks": {"type": "array", "items": {"type": "string"},
+                      "description": "Tasks this decision is about, as identifiers like WAL-6 (or ids)."},
+            "recommendedAction": {"type": "string", "description": "What you will do if approved."},
+            "companyPlan": {"type": "boolean",
+                            "description": "True only when this is your plan or strategy for the whole company."},
+        },
+        "required": ["title", "summary"],
+    },
+}
+APPROVAL_NO_KEY = "request_approval is unavailable: this turn has no Paperclip credentials."
+
+
+def _paperclip_call(method: str, url: str, key: str, body: dict | None = None, run_id: str | None = None):
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
+    if run_id:  # a live heartbeat run's checkout lock needs its id (fork issues.ts)
+        headers["X-Paperclip-Run-Id"] = run_id
+    request = urllib.request.Request(
+        url, data=json.dumps(body).encode() if body is not None else None, headers=headers, method=method)
+    with urllib.request.urlopen(request, timeout=20) as res:
+        return json.loads(res.read() or b"{}")
+
+
+def _scope_secret(name: str) -> str:
+    try:
+        from agent.secret_scope import get_secret
+
+        return str(get_secret(name) or "").strip()
+    except Exception:  # noqa: BLE001 -- unimportable, or no scope installed (fails closed)
+        return ""
+
+
+def _app_url() -> str:
+    try:
+        facts = json.loads((turn_context._home() / "lightbulb-facts.json").read_text(encoding="utf-8"))
+        return str(facts.get("app_url") or "").rstrip("/")
+    except Exception:  # noqa: BLE001 -- a relative link still opens in the app
+        return ""
+
+
+def _http_error_text(exc: urllib.error.HTTPError) -> str:
+    try:
+        err = json.loads(exc.read(4096) or b"{}")
+        detail = err.get("error") if isinstance(err, dict) else None
+    except Exception:  # noqa: BLE001
+        detail = None
+    return f"HTTP {exc.code}" + (f": {str(detail)[:200]}" if detail else "")
+
+
+def _request_approval(args: dict, **_kw) -> str:
+    base, key = _scope_secret("PAPERCLIP_API_URL").rstrip("/"), _scope_secret("PAPERCLIP_API_KEY")
+    if not base or not key:
+        return APPROVAL_NO_KEY
+    run_id = _scope_secret("PAPERCLIP_RUN_ID") or None
+    title, summary = str(args.get("title") or "").strip(), str(args.get("summary") or "").strip()
+    if not title or not summary:
+        return "title and summary are required."
+    refs = [str(t).strip() for t in (args.get("tasks") or []) if str(t).strip()]
+    try:
+        me = _paperclip_call("GET", f"{base}/api/agents/me", key)
+        issues = []
+        for ref in refs:  # GET /api/issues/:id resolves WAL-6 identifiers too (fork router.param)
+            try:
+                issues.append(_paperclip_call("GET", f"{base}/api/issues/{urllib.parse.quote(ref)}", key))
+            except urllib.error.HTTPError as exc:
+                if exc.code == 404:
+                    return f"Approval not created: task {ref} was not found."
+                raise
+        company_id = me["companyId"]
+        # Read before the create: a failure after it would read "not created" and invite a duplicate.
+        company = _paperclip_call("GET", f"{base}/api/companies/{company_id}", key)
+        # approve_ceo_strategy is the ROOT CEO's company plan only: by role, never by name.
+        root_ceo = me.get("role") == "ceo" and not me.get("reportsTo")
+        ceo_plan = bool(args.get("companyPlan")) and root_ceo
+        payload = {"title": title, "summary": summary}
+        if ceo_plan:
+            payload["plan"] = summary
+        if str(args.get("recommendedAction") or "").strip():
+            payload["recommendedAction"] = str(args["recommendedAction"]).strip()
+        body = {"type": "approve_ceo_strategy" if ceo_plan else "request_board_approval",
+                "requestedByAgentId": me["id"], "payload": payload}
+        if issues:
+            body["issueIds"] = [issue["id"] for issue in issues]
+        approval = _paperclip_call("POST", f"{base}/api/companies/{company_id}/approvals", key, body, run_id)
+    except urllib.error.HTTPError as exc:
+        return f"Approval not created: {_http_error_text(exc)}."
+    except Exception as exc:  # noqa: BLE001
+        return f"Approval not created: {type(exc).__name__}."
+    result = {"approvalId": approval["id"], "type": body["type"],
+              "link": f"{_app_url()}/{company.get('issuePrefix')}/approvals/{approval['id']}"}
+    # The linked approval is the review path an agent-authored in_review needs, so it goes first.
+    not_moved = []
+    for issue in issues:
+        try:
+            _paperclip_call("PATCH", f"{base}/api/issues/{issue['id']}", key, {"status": "in_review"}, run_id)
+        except urllib.error.HTTPError as exc:
+            not_moved.append(f"{issue.get('identifier') or issue['id']} ({_http_error_text(exc)})")
+        except Exception as exc:  # noqa: BLE001
+            not_moved.append(f"{issue.get('identifier') or issue['id']} ({type(exc).__name__})")
+    if not_moved:
+        result["notMovedToInReview"] = not_moved
+    return json.dumps(result)
+
+
 def _log_memory_full(tool_name: str = "", result=None, **_kw) -> None:
     """Hermes refuses a built-in memory write over its char budget and tells only the model."""
     if tool_name == "memory" and isinstance(result, str) and "would exceed the limit" in result:
@@ -469,6 +593,8 @@ def register(ctx) -> None:
                       description=SEND_SCHEMA["description"], emoji="💬")
     ctx.register_tool("hire_suggestion", "lightbulb", HIRE_SCHEMA, _hire_suggestion,
                       description=HIRE_SCHEMA["description"], emoji="🧑‍💼")
+    ctx.register_tool("request_approval", "lightbulb", APPROVAL_SCHEMA, _request_approval,
+                      description=APPROVAL_SCHEMA["description"], emoji="✅")
     ctx.register_tool("lightbulb_local_sessions", "lightbulb", SESSIONS_SCHEMA, _local_sessions,
                       description=SESSIONS_SCHEMA["description"], emoji="🖥️")
     ctx.register_tool("lightbulb_read_rooms", "lightbulb", READ_ROOMS_SCHEMA, _read_rooms,

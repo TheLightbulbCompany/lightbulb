@@ -5,6 +5,7 @@ author: "Lightbulb"
 provides_tools:
   - send_room_message
   - hire_suggestion
+  - request_approval
   - lightbulb_local_sessions
   - lightbulb_desktop
   - lightbulb_read_rooms

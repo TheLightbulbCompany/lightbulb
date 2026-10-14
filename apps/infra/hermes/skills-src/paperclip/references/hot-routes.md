@@ -19,7 +19,8 @@ Each is `/app/skills/paperclip/scripts/paperclip-api.sh <subcommand>`; type the 
 | Read own decision / stats | `decision-get <decisionId>` • `decision-stats <companyId> [--since ISO]` |
 | Company search / literal extraction | `{search,extract} <companyId> ...` |
 | Decision queues / triage | `{queue-list,queue-items,queue-create,queue-add,triage} <companyId> ...` |
-| Anything else (board approvals, checkbox/questions/suggest-tasks cards, issue documents) | `raw <METHOD> </api/...path>` — body built with `jq -n` from the exact shape in `api-reference.md`, on stdin; `raw` validates it parses and sets the same headers |
+| A person must decide (approval) | the `request_approval` tool, never `raw` (`interactions.md`) |
+| Anything else (checkbox/questions/suggest-tasks cards, issue documents) | `raw <METHOD> </api/...path>` — body built with `jq -n` from the exact shape in `api-reference.md`, on stdin; `raw` validates it parses and sets the same headers |
 
 ## Key Endpoints (Hot Routes)
 

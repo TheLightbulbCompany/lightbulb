@@ -374,9 +374,9 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     old_status = account.get("subscription_status")
     new_status = event_data.get("status", "active")
     if (new_status in ("incomplete", "incomplete_expired") and old_status in ("trial_local", "active", "trialing")) or (
-        # A subscription never re-enters its trial: a trialing event after the charge (T05's
-        # card-on-file trial converting) is a stale, reordered delivery.
-        new_status == "trialing" and old_status == "active"
+        # A subscription never re-enters its trial, and Checkout only opens a trial for a
+        # trial_local row: a trialing event over a post-trial status is a stale, reordered delivery.
+        new_status == "trialing" and old_status in ("active", "past_due", "unpaid", "canceled")
     ):
         # Checkout bills immediately (no Stripe trial), so a Checkout-born
         # subscription can surface here as `incomplete` (.created fires before
@@ -488,7 +488,9 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
 
     # First-PAID side effects (referral credit, company-Stripe workflow): a card-on-file trial
     # (trial_local -> trialing, T05) has paid nothing, so they wait for its trialing -> active.
-    if (entering_live and new_status == "active") or (old_status == "trialing" and new_status == "active"):
+    # Any arrival at "active" from a non-active status counts (trial charge, or its recovery from
+    # past_due); the hook is deduped inside, so a repeat for an old customer is a no-op.
+    if new_status == "active" and (entering_live or old_status != "active"):
         # The Metronome customer is NOT created here: this transition dispatches a durable
         # reconcile (below), and ``reconcile_runtime`` ensures the customer for a ledger-eligible
         # non-ChatGPT/BYO owner -- an SFN execution a backend deploy cannot kill, where the old

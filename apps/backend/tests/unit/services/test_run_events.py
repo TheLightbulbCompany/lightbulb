@@ -471,8 +471,8 @@ async def test_failure_message_write_error_never_5xxes_the_callback(metrics):
 @pytest.mark.parametrize("reason", ["trial_daily_cap", "included_daily_cap", "trial_expired", "out_of_credits"])
 async def test_failed_run_of_a_blocked_owner_is_a_system_notice(metrics, _not_blocked, reason):
     """Out of budget is the platform talking, not the agent: a system-authored
-    notice with the reason and its link, keyed on the run like the agent note."""
-    from core.config import settings
+    notice with the reason and no purchase link (the iPhone app renders room
+    notes as-is), keyed on the run like the agent note."""
     from core.constants import SYSTEM_ACTOR_ID
     from core.services.chat_gate import BUDGET_BLOCK_MESSAGES
 
@@ -484,9 +484,9 @@ async def test_failed_run_of_a_blocked_owner_is_a_system_notice(metrics, _not_bl
             await messaging.handle_run_event(
                 "o", _event(type="run.ended", outcome="error", error_kind="model_unavailable", usage=USAGE)
             )
-    path, label = messaging.BUDGET_BLOCK_LINKS[reason]
     kw = create.await_args.kwargs
-    assert kw["text"] == f"{BUDGET_BLOCK_MESSAGES[reason]} [{label}]({settings.FRONTEND_URL.rstrip('/')}{path})"
+    assert kw["text"] == BUDGET_BLOCK_MESSAGES[reason]
+    assert "](" not in kw["text"]
     assert kw["author"] == {"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": "Lightbulb"}
     assert kw["idemp_sk"] == messaging.messaging_repo.agent_idemp_sk(f"run-failed:{RUN}")
 

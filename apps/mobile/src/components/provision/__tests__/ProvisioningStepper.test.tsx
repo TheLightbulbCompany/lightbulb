@@ -138,14 +138,14 @@ describe("ProvisioningStepper time-box", () => {
     ).toBeTruthy();
   });
 
-  it("never promotes a parked wake, however long it runs", async () => {
+  it("shows a parked workspace as a plain pass-through, however long it stays parked", async () => {
     await renderStepper({ kind: "parked" });
 
     await act(async () => {
       jest.advanceTimersByTime(60_000);
     });
 
-    expect(screen.getByText("Waking your agents…")).toBeTruthy();
+    expect(screen.queryByText("Waking your agents…")).toBeNull();
     expect(screen.getByText("APP")).toBeTruthy();
     expect(screen.queryByTestId("provision-dot-rail")).toBeNull();
   });
@@ -182,7 +182,7 @@ describe("ProvisioningStepper time-box", () => {
     await act(async () => {
       jest.advanceTimersByTime(12_000);
     });
-    expect(screen.getByText("Waking your agents…")).toBeTruthy();
+    expect(screen.queryByText("Waking your agents…")).toBeNull();
 
     // The wake lands: same element type, so this UPDATES the component rather
     // than remounting it — which is exactly how the bug survived.
@@ -327,7 +327,7 @@ describe("ProvisioningStepper children continuity", () => {
     expect(childMounts).toBe(1);
 
     await rerender(tree({ kind: "parked" }));
-    expect(screen.getByText("Waking your agents…")).toBeTruthy();
+    expect(screen.queryByText("Waking your agents…")).toBeNull();
     expect(childMounts).toBe(1);
 
     await rerender(tree({ kind: "starting", phase: "provisioning" }));

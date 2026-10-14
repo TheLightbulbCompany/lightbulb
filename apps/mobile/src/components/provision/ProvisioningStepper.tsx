@@ -383,14 +383,11 @@ export function ProvisioningStepper({ status, onRetry, children }: Props) {
     // in place and the tab navigator underneath never remounts.
     return (
       <View style={styles.root}>
-        {status.kind === "starting" || status.kind === "parked" ? (
-          <StartingBanner
-            label={
-              status.kind === "parked"
-                ? "Waking your agents…"
-                : "Your workspace is starting…"
-            }
-          />
+        {/* No banner for `parked`: on AgentCore it is only "idle for 4 h",
+            nothing is waking, and the next message starts the runtime itself
+            (its run shows as working). A banner there never cleared. */}
+        {status.kind === "starting" ? (
+          <StartingBanner label="Your workspace is starting…" />
         ) : null}
         {children}
       </View>

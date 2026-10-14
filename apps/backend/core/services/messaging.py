@@ -3940,19 +3940,6 @@ async def redispatch_lost_steers(owner_id: str, row: dict) -> None:
             logger.exception("lost steer redispatch failed")
 
 
-# Where a BUDGET_BLOCK_MESSAGES reason sends the owner to fix it: (path, link
-# label). Only appended to the room note below — BUDGET_BLOCK_MESSAGES itself
-# stays plain text for its other readers (ChatErrorCard renders from `code`
-# alone). Panel keys verified against apps/frontend/src/app/settings/page.tsx's
-# `PANELS` registry, not the workspace-dock's separate `llm` alias.
-BUDGET_BLOCK_LINKS: dict[str, tuple[str, str]] = {
-    "trial_daily_cap": ("/settings?panel=billing", "Upgrade"),
-    "trial_expired": ("/settings?panel=billing", "Upgrade"),
-    "included_daily_cap": ("/settings?panel=billing", "Upgrade"),
-    "out_of_credits": ("/settings?panel=providers", "Add credits"),
-}
-
-
 async def count_first_turn_failure(owner_id: str, error_kind: str | None) -> None:
     """A failed run for a free-tier workspace that has NEVER had an agent reply is a new user's
     first impression dying (the 09-22 gate-413 bug failed every one, silently). Counted for the
@@ -4041,11 +4028,8 @@ async def post_run_failure_message(
                 except Exception:
                     logger.warning("provider quota stamp failed owner=%s", owner_id, exc_info=True)
         if budget_reason:
+            # No purchase link: the iPhone app renders room notes as-is (App Store 3.1.1).
             text = BUDGET_BLOCK_MESSAGES[budget_reason]
-            link = BUDGET_BLOCK_LINKS.get(budget_reason)
-            if link:
-                path, link_label = link
-                text = f"{text} [{link_label}]({settings.FRONTEND_URL.rstrip('/')}{path})"
         trigger = (
             await messaging_repo.get_message_by_id(room_id, row["triggerMessageId"])
             if row.get("triggerMessageId")

@@ -142,6 +142,7 @@ export type AnalyticsEvent =
   | "composer_typing_started"
   // Notifications
   | "notification_clicked"
+  | "notification_opened"
   | "notification_shown"
   | "run_notification_clicked"
   | "run_notification_shown"

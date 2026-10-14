@@ -3063,6 +3063,49 @@ async def label_run_followup(owner_id: str, run_id: str, follow_up: str) -> dict
 
 
 # ---------------------------------------------------------------------------
+# away-email checks (T15): ``AWAY#<user>`` rows on the same sparse deadline index,
+# ``sweep = "away"``; written by the projector and ``needs_you_email.queue_approval``
+# ---------------------------------------------------------------------------
+
+
+async def list_due_away_checks(now_epoch: int, page_size: int = 100) -> list[dict]:
+    """``[{pk, sk}]`` of every away check whose deadline has passed."""
+    query = {
+        "IndexName": GSI_BY_RUN_DEADLINE,
+        "KeyConditionExpression": "sweep = :away AND deadlineAt < :now",
+        "ExpressionAttributeValues": {":away": "away", ":now": int(now_epoch)},
+        "Limit": page_size,
+    }
+    keys: list[dict] = []
+    table = _table()
+    while True:
+        response = await run_in_thread(table.query, **query)
+        keys.extend({"pk": item["pk"], "sk": item["sk"]} for item in response.get("Items", []))
+        last = response.get("LastEvaluatedKey")
+        if not last:
+            return keys
+        query["ExclusiveStartKey"] = last
+
+
+async def get_away_check(pk: str, sk: str) -> dict | None:
+    return await _get(pk, sk)
+
+
+async def finish_away_check(pk: str, sk: str) -> None:
+    await run_in_thread(_table().delete_item, Key={"pk": pk, "sk": sk})
+
+
+async def defer_away_check(pk: str, sk: str, deadline_epoch: int) -> None:
+    await run_in_thread(
+        _table().update_item,
+        Key={"pk": pk, "sk": sk},
+        UpdateExpression="SET deadlineAt = :d",
+        ConditionExpression="attribute_exists(pk)",
+        ExpressionAttributeValues={":d": int(deadline_epoch)},
+    )
+
+
+# ---------------------------------------------------------------------------
 # wipe
 # ---------------------------------------------------------------------------
 

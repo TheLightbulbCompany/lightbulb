@@ -351,6 +351,14 @@ async def receive_paperclip_event(request: Request):
         if specific is not None:
             title, body = specific
 
+    if event.get("eventType") in ("approval.created", "approval.resubmitted") and event.get("entityId"):
+        # The away email (T15): each member who leaves it unanswered 5 minutes while away.
+        from core.services.needs_you_email import queue_approval
+
+        await queue_approval(
+            company_id=str(company_id), approval_id=str(event["entityId"]), user_ids=user_ids, title=title, body=body
+        )
+
     # Concurrent fan-out; send_push_to_user contractually never raises.
     data = push_data(event)
     await asyncio.gather(*(send_push_to_user(user_id, title, body, data) for user_id in user_ids))

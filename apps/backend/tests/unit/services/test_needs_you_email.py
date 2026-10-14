@@ -1,0 +1,135 @@
+"""T15 away email: seen/away/quiet-hours/per-room rules, the copy, and the one event."""
+
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from core.config import settings
+from core.services import needs_you_email as away
+
+NOW = datetime(2026, 10, 14, 15, 0, tzinfo=timezone.utc)  # 11:00 in New York
+EPOCH = int(NOW.timestamp())
+ROW = {
+    "pk": "AWAY#user_b",
+    "sk": "M#room1#m1",
+    "sweep": "away",
+    "kind": "dm",
+    "userId": "user_b",
+    "ownerId": "org_1",
+    "roomId": "room1",
+    "messageId": "m1",
+    "seq": 7,
+    "createdAt": "2026-10-14T14:54:00+00:00",
+}
+MESSAGE = {"author": {"kind": "human", "displayName": "Alice"}, "text": "can you look at the deck?"}
+USER = {"user_id": "user_b", "email": "b+clerk_test@x.co", "timezone": "America/New_York"}
+
+
+@pytest.fixture(autouse=True)
+def _env(monkeypatch):
+    monkeypatch.setattr(settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "k")
+    monkeypatch.setattr(settings, "FRONTEND_URL", "https://app.example")
+    monkeypatch.setattr(settings, "PUBLIC_API_BASE", "https://api.example")
+
+
+@pytest.fixture
+def world(monkeypatch):
+    repo = away.messaging_repo
+    w = MagicMock()
+    w.cursor = AsyncMock(return_value=6)
+    w.finish = AsyncMock()
+    w.defer = AsyncMock()
+    w.send = AsyncMock(return_value="ses-1")
+    w.capture = MagicMock()
+    w.slot = AsyncMock(return_value=True)
+    w.user = dict(USER)
+    monkeypatch.setattr(repo, "get_read_cursor", w.cursor)
+    monkeypatch.setattr(repo, "get_message_by_id", AsyncMock(return_value=MESSAGE))
+    monkeypatch.setattr(repo, "get_room", AsyncMock(return_value={"kind": "dm"}))
+    monkeypatch.setattr(repo, "finish_away_check", w.finish)
+    monkeypatch.setattr(repo, "defer_away_check", w.defer)
+    monkeypatch.setattr(away.user_repo, "get", AsyncMock(side_effect=lambda _id: w.user))
+    monkeypatch.setattr(away.email_service, "send_email", w.send)
+    monkeypatch.setattr(away, "capture_product_event", w.capture)
+    monkeypatch.setattr(away, "_claim_room_slot", w.slot)
+    monkeypatch.setattr(away, "put_metric", lambda *a, **k: None)
+    return w
+
+
+@pytest.mark.asyncio
+async def test_an_unread_dm_while_away_is_emailed_once_with_the_event(world):
+    assert await away.check_one(ROW, NOW) is True
+    kw = world.send.await_args.kwargs
+    assert kw["subject"] == "Alice sent you a message"
+    assert 'Alice: "can you look at the deck?"' in kw["text"]
+    assert "panel=chat&room=room1&message=m1&from=away_email" in kw["text"]
+    assert kw["headers"]["List-Unsubscribe-Post"] == "List-Unsubscribe=One-Click"
+    world.finish.assert_awaited_once_with("AWAY#user_b", "M#room1#m1")
+    event = world.capture.call_args.kwargs
+    assert event["event"] == "needs_you_email_sent" and event["distinct_id"] == "user_b"
+    assert event["properties"] == {"workspace_id": "org_1", "kind": "dm", "delay_s": 360}
+
+
+@pytest.mark.asyncio
+async def test_a_read_message_sends_nothing(world):
+    world.cursor.return_value = 7
+    assert await away.check_one(ROW, NOW) is False
+    world.send.assert_not_awaited()
+    world.finish.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_person_in_the_app_is_deferred_not_emailed(world):
+    world.user["last_active_at"] = EPOCH - 30
+    assert await away.check_one(ROW, NOW) is False
+    world.send.assert_not_awaited()
+    world.defer.assert_awaited_once_with("AWAY#user_b", "M#room1#m1", EPOCH + away.PRESENT_S)
+
+
+@pytest.mark.asyncio
+async def test_quiet_hours_the_setting_and_the_room_cap_each_stop_it(world):
+    world.user["timezone"] = "Asia/Tokyo"  # midnight there
+    assert await away.check_one(ROW, NOW) is False
+    world.user["timezone"] = "America/New_York"
+    world.user["away_email"] = False
+    assert await away.check_one(ROW, NOW) is False
+    world.user["away_email"] = True
+    world.slot.return_value = False
+    assert await away.check_one(ROW, NOW) is False
+    world.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_answered_approval_sends_nothing_and_a_pending_one_uses_e4b(world, monkeypatch):
+    row = {
+        **ROW,
+        "sk": "A#co#ap1",
+        "kind": "approval",
+        "approvalId": "ap1",
+        "title": "Growth · LB-12",
+        "body": "Needs your approval: Launch email",
+    }
+    monkeypatch.setattr(away, "_approval_pending", AsyncMock(return_value=False))
+    assert await away.check_one(row, NOW) is False
+    monkeypatch.setattr(away, "_approval_pending", AsyncMock(return_value=True))
+    assert await away.check_one(row, NOW) is True
+    kw = world.send.await_args.kwargs
+    assert kw["subject"] == "Approval waiting: Launch email"
+    assert "Growth needs your yes on Launch email. Nothing happens until you answer." in kw["text"]
+    assert "panel=teams-approval-detail&detailId=ap1" in kw["text"]
+
+
+def test_mention_copy_names_the_room():
+    out = away.render(
+        {**ROW, "kind": "mention"}, author="Alice", text="hi", room={"kind": "channel", "name": "gtm"}, sent=1
+    )
+    assert out["subject"] == "Alice mentioned you in #gtm"
+
+
+def test_unsubscribe_token_is_scoped_to_this_email():
+    token = away.mint_unsubscribe_token("user_b")
+    assert away.verify_unsubscribe_token(token) == "user_b"
+    from core.services import daily_digest
+
+    assert daily_digest.verify_unsubscribe_token(token) is None

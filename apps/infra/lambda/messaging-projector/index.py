@@ -756,6 +756,42 @@ def _write_activity(user_id: str, member: dict[str, Any], owner_id: str, kind: s
             raise
 
 
+# The away email (T15): a DM or @mention still unread AWAY_DELAY_S later is emailed by the
+# backend's needs_you_email sweeper, which re-checks the read cursor and presence then.
+AWAY_KINDS = ("dm", "mention")
+AWAY_DELAY_S = 300
+AWAY_TTL_S = 86400
+
+
+def _write_away(user_id: str, member: dict[str, Any], owner_id: str, kind: str, message: dict[str, Any]) -> None:
+    """A pending away-email row on the shared sparse deadline index (``sweep = "away"``).
+    Ids only, like the Activity row. Idempotent on the message."""
+    created = int(_parse_rfc3339(message["createdAt"]).timestamp())
+    item = {
+        "pk": f"AWAY#{user_id}",
+        "sk": f"M#{message['roomId']}#{message['messageId']}",
+        "sweep": "away",
+        "deadlineAt": created + AWAY_DELAY_S,
+        "kind": kind,
+        "userId": user_id,
+        "ownerId": member.get("homeOwnerId") or owner_id,
+        "roomId": message["roomId"],
+        "messageId": message["messageId"],
+        "seq": message["messageSeq"],
+        "createdAt": message["createdAt"],
+        "expiresAt": created + AWAY_TTL_S,
+    }
+    try:
+        _ddb().put_item(
+            TableName=MESSAGING_TABLE,
+            Item={key: _serializer.serialize(value) for key, value in item.items()},
+            ConditionExpression="attribute_not_exists(pk)",
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+
 def _notify_members(
     message: dict[str, Any], meta: dict[str, Any], thread_root_seq: Any = None,
     silent: bool = False, actor_user_id: Any = None,
@@ -794,6 +830,8 @@ def _notify_members(
         if kind is not None:
             # Written before the hint below, so the refetch a notify triggers already sees it.
             _write_activity(user_id, member, owner_id, kind, message, user_id in mentioned)
+        if kind in AWAY_KINDS and member.get("muted") is not True:
+            _write_away(user_id, member, owner_id, kind, message)
         channel = _stream_channel(user_id, member, owner_id)
         if channel is None:
             return tokens

@@ -310,6 +310,14 @@ function PostHogPageview() {
       if (pathname === "/") {
         capture("landing_viewed", { path: url });
       }
+      if (searchParams.get("from") === "away_email") {
+        // The away email's link (T15): how long "needs you" took to reach the person.
+        const sent = Number(searchParams.get("sent"));
+        capture("notification_opened", {
+          channel: "email",
+          latency_s: Number.isFinite(sent) && sent > 0 ? Math.max(0, Math.round(Date.now() / 1000 - sent)) : null,
+        });
+      }
       const checkoutStatus = searchParams.get("checkout") ?? searchParams.get("subscription");
       if (checkoutStatus === "success" || checkoutStatus === "cancel") {
         capture(

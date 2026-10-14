@@ -299,11 +299,12 @@ async def test_prefs_default_on_new_york_and_round_trip(users_table, async_clien
     assert (await async_client.get("/api/v1/users/me/prefs")).json() == {
         "timezone": "America/New_York",
         "dailySummary": True,
+        "awayEmail": True,
         "chatTheme": None,
         "agentSendWithoutAsking": False,
         "sessionsReachableFromBackgroundWork": False,
     }
-    off = {"agentSendWithoutAsking": False, "sessionsReachableFromBackgroundWork": False}
+    off = {"agentSendWithoutAsking": False, "sessionsReachableFromBackgroundWork": False, "awayEmail": True}
     resp = await async_client.put("/api/v1/users/me/prefs", json={"timezone": "Europe/Paris"})
     assert resp.json() == {"timezone": "Europe/Paris", "dailySummary": True, "chatTheme": None, **off}
     resp = await async_client.put("/api/v1/users/me/prefs", json={"dailySummary": False})

@@ -232,6 +232,7 @@ def test_get_address_returns_the_single_row(client):
         "address": TEAM,
         "verified_senders": ["o@x.y"],
         "send_to_anyone": False,
+        "footer_enabled": True,
         "outbound_disabled": None,
         "status": None,
     }

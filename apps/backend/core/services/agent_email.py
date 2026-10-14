@@ -14,6 +14,7 @@ and SHOWS; mail to it is forwarded to the routing address outside SES.
 """
 
 import asyncio
+import html
 import logging
 import re
 from email.utils import formataddr
@@ -28,6 +29,38 @@ from core.services.paperclip_admin_session import get_admin_session_cookie
 logger = logging.getLogger(__name__)
 
 EMAIL_ADDRESS_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+async def append_agent_mail_footer(
+    *, owner_id: str, agent_id: str, address: str, body_text: str,
+    body_html: str | None, agent_name: str | None = None,
+) -> tuple[str, str | None]:
+    """Append the default-on attribution footer without risking delivery."""
+    try:
+        row = await agent_email_repo.get_by_address(address) or {}
+        if row.get("footer_enabled") is False:
+            return body_text, body_html
+        onboarding = await PaperclipRepo(table_name="paperclip-companies").get_onboarding_state(owner_id) or {}
+        company_id = onboarding.get("company_id")
+        company = await resolve_company_name(company_id) if company_id else None
+        agent = agent_name or (
+            await resolve_agent_name(agent_id=agent_id, company_id=company_id) if company_id else None
+        )
+        if not agent or not company:
+            logger.warning("agent_email: footer identity lookup failed for %s/%s", owner_id, agent_id)
+            return body_text, body_html
+        url = f"{settings.FRONTEND_URL.rstrip('/')}?utm_source=agent_email"
+        rendered_text = f"{body_text.rstrip()}\n\nSent by {agent} for {company} with Lightbulb ({url})."
+        rendered_html = body_html
+        if body_html is not None:
+            rendered_html = (
+                f"{body_html.rstrip()}<p>Sent by {html.escape(agent)} for {html.escape(company)} with "
+                f'<a href="{html.escape(url, quote=True)}">Lightbulb</a>.</p>'
+            )
+        return rendered_text, rendered_html
+    except Exception:  # noqa: BLE001 -- attribution lookup must never block mail
+        logger.warning("agent_email: footer lookup failed for %s/%s", owner_id, agent_id, exc_info=True)
+        return body_text, body_html
 
 
 def _domain() -> str:

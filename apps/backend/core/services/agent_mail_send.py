@@ -37,6 +37,7 @@ from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import ses_email
 from core.services.agent_email import (
     EMAIL_ADDRESS_RE,
+    append_agent_mail_footer,
     ensure_team_address,
     from_header,
     resolve_agent_name,
@@ -181,6 +182,14 @@ async def send(
             return _done(path, "forbidden_recipient")
         if not await consume_cap(owner_id):
             return _done(path, "rate_limited")
+        body_text, body_html = await append_agent_mail_footer(
+            owner_id=owner_id,
+            agent_id=agent_id,
+            address=address,
+            body_text=body_text,
+            body_html=body_html,
+            agent_name=agent_name,
+        )
         sent_subject = _env_subject(subject)
         message_id = await ses_email.send_ses_email(
             from_addr=await from_header(owner_id, agent_id, address, agent_name=agent_name),

@@ -34,7 +34,12 @@ from core.observability.metrics import put_metric
 from core.repositories import agent_mail_inbox_repo, container_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import ses_email
-from core.services.agent_email import ensure_team_address, from_header, resolve_agent_name
+from core.services.agent_email import (
+    append_agent_mail_footer,
+    ensure_team_address,
+    from_header,
+    resolve_agent_name,
+)
 from core.services.agent_export import resolve_apex_ceo_agent_id
 from core.services.agent_mail_reply import AGENT_AUTHORED_HEADERS
 from core.services.owner_facts import write_owner_facts
@@ -187,6 +192,15 @@ async def send_to_owner(
 
         sent_subject = _env_subject(subject)
         agent_name = await resolve_agent_name(agent_id=resolved_agent_id, company_id=company_id)
+        if not system_notice:
+            body_text, body_html = await append_agent_mail_footer(
+                owner_id=owner_id,
+                agent_id=resolved_agent_id,
+                address=address,
+                body_text=body_text,
+                body_html=body_html,
+                agent_name=agent_name,
+            )
         message_id = await ses_email.send_ses_reply(
             from_addr=await from_header(owner_id, resolved_agent_id, address, agent_name=agent_name),
             to=owner_email,

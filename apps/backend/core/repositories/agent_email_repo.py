@@ -145,6 +145,7 @@ async def update_settings(
     *,
     verified_senders: list[str] | None = None,
     send_to_anyone: bool | None = None,
+    footer_enabled: bool | None = None,
     outbound_disabled: str | None | object = _UNSET,
 ) -> dict | None:
     """SET the supplied owner-editable fields on an existing row; None for
@@ -159,6 +160,9 @@ async def update_settings(
     if send_to_anyone is not None:
         sets.append("send_to_anyone = :sta")
         values[":sta"] = bool(send_to_anyone)
+    if footer_enabled is not None:
+        sets.append("footer_enabled = :fe")
+        values[":fe"] = bool(footer_enabled)
     if outbound_disabled is not _UNSET:
         if outbound_disabled is None:
             removes.append("outbound_disabled")

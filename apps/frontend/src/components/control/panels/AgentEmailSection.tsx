@@ -14,6 +14,7 @@ interface AddressRow {
   address: string;
   verified_senders: string[];
   send_to_anyone: boolean;
+  footer_enabled: boolean;
   outbound_disabled: string | null;
 }
 
@@ -51,6 +52,7 @@ export function AgentEmailSection() {
   const [copied, setCopied] = useState(false);
   const [senders, setSenders] = useState("");
   const [anyone, setAnyone] = useState(true);
+  const [footerEnabled, setFooterEnabled] = useState(true);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -59,10 +61,12 @@ export function AgentEmailSection() {
   // so depending on it would clobber whatever the user is mid-typing.
   const sendersFromRow = (row?.verified_senders ?? []).join("\n");
   const anyoneFromRow = row?.send_to_anyone ?? true;
+  const footerFromRow = row?.footer_enabled ?? true;
   useEffect(() => {
     setSenders(sendersFromRow);
     setAnyone(anyoneFromRow);
-  }, [row?.address, sendersFromRow, anyoneFromRow]);
+    setFooterEnabled(footerFromRow);
+  }, [row?.address, sendersFromRow, anyoneFromRow, footerFromRow]);
 
   const copyTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => () => clearTimeout(copyTimer.current), []);
@@ -89,7 +93,11 @@ export function AgentEmailSection() {
     setErr(null);
     try {
       const list = senders.split("\n").map((s) => s.trim()).filter(Boolean);
-      await api.patch("/agent-mail/address", { verified_senders: list, send_to_anyone: anyone });
+      await api.patch("/agent-mail/address", {
+        verified_senders: list,
+        send_to_anyone: anyone,
+        footer_enabled: footerEnabled,
+      });
       await mutate();
     } catch (e) {
       setErr(describeSaveError(e));
@@ -155,6 +163,10 @@ export function AgentEmailSection() {
         <label className="flex items-center gap-2 text-xs">
           <input type="checkbox" checked={anyone} disabled={saving || !canManage} onChange={(e) => setAnyone(e.target.checked)} />
           Open email: anyone can email the team and agents can email anyone (daily limit applies; a spam report pauses all outbound)
+        </label>
+        <label className="flex items-center gap-2 text-xs">
+          <input type="checkbox" checked={footerEnabled} disabled={saving || !canManage} onChange={(e) => setFooterEnabled(e.target.checked)} />
+          Add a Lightbulb attribution footer to agent email
         </label>
         {err && <p className="text-xs text-err">{err}</p>}
         {canManage

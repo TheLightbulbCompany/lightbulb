@@ -138,6 +138,7 @@ def _project(row: dict) -> dict:
         "address": row.get("public_address") or row.get("address"),
         "verified_senders": row.get("verified_senders") or [],
         "send_to_anyone": bool(row.get("send_to_anyone")),
+        "footer_enabled": row.get("footer_enabled") is not False,
         "outbound_disabled": row.get("outbound_disabled"),
         "status": row.get("status"),
     }
@@ -176,6 +177,7 @@ async def get_address(auth: AuthContext = Depends(get_current_user)) -> dict:
 class AddressSettings(BaseModel):
     verified_senders: list[str] | None = None
     send_to_anyone: bool | None = None
+    footer_enabled: bool | None = None
     outbound_disabled: str | None = None  # only explicit null is honoured (re-enable)
 
 
@@ -199,6 +201,8 @@ async def patch_address(body: AddressSettings, auth: AuthContext = Depends(get_c
         kwargs["verified_senders"] = senders
     if body.send_to_anyone is not None:
         kwargs["send_to_anyone"] = body.send_to_anyone
+    if body.footer_enabled is not None:
+        kwargs["footer_enabled"] = body.footer_enabled
     if "outbound_disabled" in body.model_fields_set:
         if body.outbound_disabled is not None:
             raise HTTPException(status_code=400, detail={"status": "outbound_disabled_readonly"})

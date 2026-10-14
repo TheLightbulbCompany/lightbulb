@@ -20,7 +20,7 @@ import logging
 from core.config import settings
 from core.repositories import agent_mail_inbox_repo
 from core.services import ses_email
-from core.services.agent_email import from_header, team_address
+from core.services.agent_email import append_agent_mail_footer, from_header, team_address
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +104,14 @@ async def send_reply(*, ctx: dict, body_text: str, body_html: str | None = None,
         # new email Friday is sending unprompted, not a reply -- prepending
         # "Re: " to it would be a lie about what it is.
         subject = ctx["subject"] if not in_reply_to else reply_subject(ctx["subject"])
+
+        body_text, body_html = await append_agent_mail_footer(
+            owner_id=ctx["owner_id"],
+            agent_id=ctx["agent_id"],
+            address=address,
+            body_text=body_text,
+            body_html=body_html,
+        )
 
         message_id = await ses_email.send_ses_reply(
             from_addr=await from_header(ctx["owner_id"], ctx["agent_id"], address),

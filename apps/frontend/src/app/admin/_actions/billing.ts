@@ -22,6 +22,10 @@ export async function resumeSubscription(userId: string): Promise<ActionResult> 
   return adminPost(`/admin/users/${encodeURIComponent(userId)}/billing/resume-subscription`);
 }
 
+export async function pauseThirtyDays(userId: string): Promise<ActionResult> {
+  return adminPost(`/admin/users/${encodeURIComponent(userId)}/billing/pause-30-days`);
+}
+
 export async function markFoundingTeam(userId: string): Promise<ActionResult> {
   return adminPost(`/admin/users/${encodeURIComponent(userId)}/billing/founding-team`);
 }

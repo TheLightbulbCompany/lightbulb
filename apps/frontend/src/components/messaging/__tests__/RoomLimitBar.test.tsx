@@ -12,7 +12,7 @@ const account = (over: Partial<BillingAccount>): BillingAccount => ({
 
 describe("RoomLimitBar", () => {
   it.each([
-    [{ block_reason: "trial_expired" as const }, "Your free trial has ended", "Agents won't reply until you choose a plan.", "Choose a plan", "/settings?panel=billing"],
+    [{ block_reason: "trial_expired" as const }, "This workspace is reading-only", "people can still message. Agents start again when an admin picks the plan.", "Continue for $50", "/settings?panel=billing"],
     [{ block_reason: "trial_daily_cap" as const }, "Daily free limit reached", "resets at 00:00 UTC", "Upgrade to keep going", "/settings?panel=billing"],
     [{ block_reason: "included_daily_cap" as const, is_subscribed: true, subscription_status: "active", plan: "base" as const },
       "Today's included usage is used up", "resets at 00:00 UTC", "Upgrade", "/settings?panel=billing"],
@@ -21,7 +21,7 @@ describe("RoomLimitBar", () => {
     const bar = screen.getByRole("status");
     expect(bar).toHaveTextContent(title);
     expect(bar).toHaveTextContent(line);
-    expect(bar).toHaveTextContent("Messages to people still send.");
+    expect(bar).toHaveTextContent(/Messages to people still send\.|people can still message/);
     expect(screen.getByRole("link", { name: cta })).toHaveAttribute("href", href);
   });
 

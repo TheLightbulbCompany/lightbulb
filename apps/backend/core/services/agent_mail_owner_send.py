@@ -55,7 +55,7 @@ DAILY_SEND_CAP = 50
 
 # Validated to bound metric cardinality, NOT for safety: policy never reads
 # `purpose`.
-VALID_PURPOSES = ("first_contact", "routine")
+VALID_PURPOSES = ("first_contact", "routine", "trial_recap", "deletion_notice")
 
 # States that mean first contact is still OWED. `failed` is included so a bad
 # mint or a failed SES send stays retryable instead of making the first

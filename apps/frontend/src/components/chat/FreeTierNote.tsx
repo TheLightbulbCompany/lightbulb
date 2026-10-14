@@ -32,7 +32,7 @@ import { freeTierDaysLeft, isFreeTierExpired } from "@/lib/planLabel";
 const TICK_MS = 60 * 60 * 1000;
 
 /** At or under this many days left, the note switches to the warning state. */
-const NUDGE_DAYS = 3;
+const NUDGE_DAYS = 5;
 
 export function FreeTierNote() {
   const { account } = useBilling();

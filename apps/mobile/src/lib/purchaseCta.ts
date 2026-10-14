@@ -62,8 +62,8 @@ const PURCHASE_GATE_COPY: Record<string, { title: string; body: string }> = {
     body: "You've used today's free allowance. It resets tomorrow.",
   },
   trial_expired: {
-    title: "Your free trial has ended",
-    body: "Your free trial has ended, so your agents are paused for now.",
+    title: "This workspace is reading-only",
+    body: "Your team's record is all here, and people can still message. Agents start again when an admin picks the plan.",
   },
   signup_required: {
     title: "No active plan",

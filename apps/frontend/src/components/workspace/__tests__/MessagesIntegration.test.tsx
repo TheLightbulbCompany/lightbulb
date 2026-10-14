@@ -12,6 +12,7 @@ import { parseCommand } from "../urlChannel";
 import { MESSAGES_PANEL_ID } from "../panelRegistry";
 import { layoutStorageKey, readLayout, writeLayout } from "../layoutStorage";
 
+vi.mock("@/components/messaging/TrialRecapCard", () => ({ TrialRecapCard: () => null }));
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ isLoaded: true, userId: "user-a", orgId: "org-a" }),
   useUser: () => ({ user: { fullName: "Alice" } }),

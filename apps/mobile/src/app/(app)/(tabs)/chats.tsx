@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Animated, AppState, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { usePulse } from "../../../components/chat/usePulse";
+import { TrialRecapCard } from "../../../components/billing/TrialRecapCard";
 import { RoomChatRow, SessionChatRow, type ChatRowAction } from "../../../components/chats/ChatRow";
 import { SessionRenameSheet } from "../../../components/session/SessionRenameSheet";
 import { LogoMark } from "../../../components/LogoMark";
@@ -287,6 +288,7 @@ export default function Chats() {
         // A failure is shown ABOVE the rows.
         ListHeaderComponent={
           <>
+            <TrialRecapCard />
             <View style={styles.filters} accessibilityRole="radiogroup" accessibilityLabel="Filter chats">
               {filters.map(({ id, label }) => (
                 <Pressable key={id} onPress={() => setFilter(id)} accessibilityRole="radio"

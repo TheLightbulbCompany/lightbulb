@@ -96,7 +96,7 @@ describe("Settings plan card", () => {
     };
     await render(<Settings />);
     expect(await screen.findByText("Free trial ended")).toBeTruthy();
-    expect(screen.getByText("Your free trial has ended.")).toBeTruthy();
+    expect(screen.getByText(/This workspace is reading-only/)).toBeTruthy();
   });
 
   it("labels a paid owner who never picked a provider as managed, not unset", async () => {

@@ -494,7 +494,7 @@ export default function Settings() {
     const provider = providerLabel(account, chatgpt);
     const planName = isTrialLocal ? "Lightbulb Free plan" : "Lightbulb";
     const planNote = isTrialLocalEnded
-      ? "Your free trial has ended."
+      ? "This workspace is reading-only. Agents start again when an admin picks the plan."
       : isTrialLocal
         ? "Includes a daily free usage allowance."
         : trialing && account.trial_end != null

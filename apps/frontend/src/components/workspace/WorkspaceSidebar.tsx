@@ -15,6 +15,7 @@ import { useCompanyStripeStatus } from "@/components/settings/CompanyStripeSecti
 import { MessagingDirectory } from "@/components/messaging/MessagingWorkspace";
 import { planLabel, isFreeTierExpired } from "@/lib/planLabel";
 import { FreeTierNote } from "@/components/chat/FreeTierNote";
+import { TrialRecapCard } from "@/components/messaging/TrialRecapCard";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { DesktopUpdater } from "@/components/desktop/DesktopUpdater";
 import { NodeStatusPill } from "@/components/desktop/NodeStatusPill";
@@ -73,6 +74,7 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady, onNavigate 
 
       <div className="sidebar-scroll">
         {/* Messaging never needs the container, so conversations never wait on it. */}
+        <TrialRecapCard />
         <MessagingDirectory onOpenRoom={() => { activateMessagesPanel(); onNavigate?.(); }} />
         <details className="workspace-more-nav">
           <summary>More</summary>

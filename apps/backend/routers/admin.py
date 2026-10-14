@@ -418,6 +418,7 @@ _BILLING_NOOP_REASONS = {
     ),
     "already_paid": "That invoice is already paid — nothing was changed.",
     "already_paused": "This subscription is already paused — nothing was changed.",
+    "pause_used": "This workspace has already used its one 30-day pause — nothing was changed.",
     "not_paused": "This subscription is not paused — nothing was changed.",
 }
 
@@ -490,6 +491,23 @@ async def admin_billing_founding_team(
 ):
     owner_id, _ = await resolve_admin_owner_id(user_id)
     return _refuse_billing_noop(await billing_service.mark_founding_team(owner_id))
+
+
+@router.post(
+    "/users/{user_id}/billing/pause-30-days",
+    description="The one 30-day pause per company: extend the trial, or pause collection on a live subscription.",
+)
+@idempotency()
+@audit_admin_action("billing.pause_30_days")
+async def admin_billing_pause_30_days(
+    user_id: str,
+    request: Request,
+    auth: AuthContext = Depends(require_platform_admin),
+):
+    from core.services.trial_lifecycle import pause_once
+
+    owner_id, _ = await resolve_admin_owner_id(user_id)
+    return _refuse_billing_noop(await pause_once(owner_id))
 
 
 @router.post(

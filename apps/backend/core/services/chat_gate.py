@@ -11,7 +11,7 @@ from __future__ import annotations
 # them as-is, so they state the fact and never ask for a purchase (App Store
 # 3.1.1); the web's own cards and bars carry the upgrade button.
 BUDGET_BLOCK_MESSAGES = {
-    "trial_expired": "Your free trial has ended, so your agents are paused for now.",
+    "trial_expired": "Reading-only — agents start again when the plan is on.",
     "trial_daily_cap": "You've used today's free allowance. It resets tomorrow.",
     "included_daily_cap": "You've used today's included usage. It resets at 00:00 UTC.",
     "out_of_credits": "This workspace is out of credits.",

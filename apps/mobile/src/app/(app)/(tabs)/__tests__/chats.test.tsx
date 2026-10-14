@@ -147,6 +147,7 @@ jest.mock("react-native-gesture-handler/ReanimatedSwipeable", () => {
     ),
   };
 });
+jest.mock("../../../../components/billing/TrialRecapCard", () => ({ TrialRecapCard: () => null }));
 jest.mock("@clerk/expo", () => ({
   useAuth: () => ({ userId: "user-a", orgId: mockOrgId }),
   useOrganization: () => ({ organization: null }),

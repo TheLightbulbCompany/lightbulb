@@ -313,6 +313,9 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
   - Plans / providers ....... references/company-and-plans.md
                               <- apps/backend/core/services/{billing_service,provision_gate,owner_facts}.py
                                  (billing_service.create_workspace_checkout: confirm=True to change a live plan; prorated onto the next invoice)
+  - Trial end (recap, reading-only, pause, 90 days) ... references/company-and-plans.md ("How a trial ends")
+                              <- apps/backend/core/services/{trial_recap,trial_lifecycle}.py;
+                                 docs/runbooks/pause-and-reading-only.md
   - Voice calls ............. references/company-and-plans.md ("Voice calls")
                               <- apps/backend/core/billing/voice_billing.py (free 10 min/UTC day, credits mode, MIN_CALL_SECONDS);
                                  core/services/voice_calls.py (30 min cap, one free call at a time, no transcript);

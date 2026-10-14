@@ -117,7 +117,7 @@ async def create_join_link(
     """
     _require_member_of(auth, org_id)
     # A member's mint is an atomic create: losing a race (or meeting an existing link) returns
-    # the live link instead of replacing it.
+    # the live link instead of replacing it, and an admin's revoke (a tombstone row) is a 403.
     minted = await workspace_join.mint_join_link(org_id, created_by=auth.user_id, replace=auth.is_org_admin)
     if not minted or not minted.get("join_url"):
         raise HTTPException(403, "Only a workspace admin can replace the join link")
@@ -135,7 +135,7 @@ async def delete_join_link(
     auth: AuthContext = Depends(get_current_user),
 ) -> None:
     _require_admin_of(auth, org_id)
-    await workspace_join.revoke_join_link(org_id)
+    await workspace_join.revoke_join_link(org_id, revoked_by=auth.user_id)
 
 
 @router.post(

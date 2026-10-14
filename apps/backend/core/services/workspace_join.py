@@ -123,8 +123,8 @@ async def describe_join_link(org_id: str) -> dict | None:
     to get a copyable link". Never includes the hash or the ciphertext.
     """
     row = await workspace_join_repo.get_link(org_id)
-    if not row:
-        return None
+    if not row or not row.get("token_hash"):
+        return None  # never had one, or an admin revoked it (tombstone)
     join_url = None
     if row.get("token_enc"):
         try:
@@ -141,9 +141,10 @@ async def describe_join_link(org_id: str) -> dict | None:
     }
 
 
-async def revoke_join_link(org_id: str) -> None:
-    """Turn the org's link off. Idempotent."""
-    await workspace_join_repo.delete_link(org_id)
+async def revoke_join_link(org_id: str, *, revoked_by: str = "") -> None:
+    """Turn the org's link off. Idempotent. Leaves a tombstone so a member cannot mint a new
+    link over an admin's revoke; only an admin's regenerate does."""
+    await workspace_join_repo.mark_revoked(org_id, revoked_by=revoked_by)
     put_metric("orgs.join_link.revoked")
     logger.info("orgs.join_link.revoked org_id=%s", org_id)
 

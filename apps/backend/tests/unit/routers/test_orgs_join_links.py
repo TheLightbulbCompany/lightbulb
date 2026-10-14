@@ -46,6 +46,9 @@ class FakeJoinRepo:
     async def delete_link(self, org_id: str) -> None:
         self.rows.pop(org_id, None)
 
+    async def mark_revoked(self, org_id: str, *, revoked_by: str) -> None:
+        self.rows[org_id] = {"org_id": org_id, "revoked_at": "2026-10-14T00:00:00+00:00", "revoked_by": revoked_by}
+
 
 @pytest.fixture
 def repo():
@@ -217,7 +220,7 @@ def test_revoke_kills_the_link(app, admin_auth, repo, clerk):
     token = _token_from(client.post("/api/v1/orgs/org_test/join-link").json()["join_url"])
 
     assert client.delete("/api/v1/orgs/org_test/join-link").status_code == 204
-    assert repo.rows == {}
+    assert "token_hash" not in repo.rows["org_test"]  # a tombstone, so no member can mint over it
     # Revoking twice is fine.
     assert client.delete("/api/v1/orgs/org_test/join-link").status_code == 204
 
@@ -385,3 +388,22 @@ def test_redeem_lands_join_link_redeemed_on_the_new_member(app, admin_auth, repo
         "invited_by": "user_admin",
         "members_count": 2,
     }
+
+
+def test_after_an_admin_revokes_only_an_admin_can_bring_a_link_back(app, admin_auth, member_auth, repo, clerk):
+    """Codex P1: a member's create-if-absent must not undo an admin's revoke."""
+    _override_auth(app, admin_auth)
+    client = TestClient(app)
+    minted = client.post("/api/v1/orgs/org_test/join-link").json()["join_url"]
+    assert client.delete("/api/v1/orgs/org_test/join-link").status_code == 204
+
+    _override_auth(app, member_auth)
+    member = TestClient(app)
+    assert member.get("/api/v1/orgs/org_test/join-link").json()["exists"] is False
+    refused = member.post("/api/v1/orgs/org_test/join-link")
+    assert refused.status_code == 403
+    token = minted.split("#", 1)[1]
+    assert member.post("/api/v1/orgs/org_test/join", json={"token": token}).status_code == 404
+
+    _override_auth(app, admin_auth)
+    assert TestClient(app).post("/api/v1/orgs/org_test/join-link").status_code == 201

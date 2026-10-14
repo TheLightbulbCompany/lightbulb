@@ -38,7 +38,7 @@ it("mints a link when there is none", async () => {
 it("tells a non-admin to ask an admin", async () => {
   api.get.mockRejectedValue(new ApiError(403, { detail: "admin only" }));
   const error = await run().catch((e: unknown) => e);
-  expect(joinLinkNote(error)).toBe("Couldn't get the join link. Ask a workspace admin to copy it from Settings → Members.");
+  expect(joinLinkNote(error)).toBe("This workspace's join link is turned off. Ask a workspace admin for a new one.");
   expect(capture).not.toHaveBeenCalled();
 });
 
@@ -54,6 +54,6 @@ it("says so when the clipboard refuses", async () => {
   api.get.mockResolvedValue({ exists: true, join_url: "https://x/join/abc" });
   copy.result = false;
   const error = await run().catch((e: unknown) => e);
-  expect(joinLinkNote(error)).toBe("Couldn't copy automatically. Copy it from Settings → Members.");
+  expect(joinLinkNote(error)).toBe("Couldn't copy automatically. Try again, or ask a workspace admin for the link.");
   expect(JOIN_LINK_COPIED).toBe("Copied. Anyone who opens it and signs in joins this workspace.");
 });

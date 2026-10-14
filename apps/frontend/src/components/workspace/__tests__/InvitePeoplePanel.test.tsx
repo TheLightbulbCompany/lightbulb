@@ -91,7 +91,7 @@ describe("InvitePeoplePanel", () => {
     expect(copyJoinLink).toHaveBeenCalledWith("invite_dialog");
     expect(screen.getByRole("status")).toHaveTextContent("Copied. Anyone who opens it and signs in joins this workspace.");
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Copy join link" })); });
-    expect(screen.getByRole("status")).toHaveTextContent("Ask a workspace admin to copy it from Settings → Members.");
+    expect(screen.getByRole("status")).toHaveTextContent("Ask a workspace admin for a new one.");
   });
 });
 

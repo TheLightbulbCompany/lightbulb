@@ -73,6 +73,15 @@ async def put_link(
     return item
 
 
+async def mark_revoked(org_id: str, *, revoked_by: str) -> None:
+    """Revoke by replacing the row with a tombstone (no ``token_hash``): nothing redeems, and a
+    member's create-if-absent mint (``only_if_absent``) sees a row and refuses, so after a revoke
+    only an admin's replacing mint brings a link back. Idempotent."""
+    await run_in_thread(
+        _table().put_item, Item={"org_id": org_id, "revoked_at": utc_now_iso(), "revoked_by": revoked_by}
+    )
+
+
 async def delete_link(org_id: str) -> None:
     """Revoke: drop the row. Idempotent — DeleteItem on a missing key is a no-op."""
     await run_in_thread(_table().delete_item, Key={"org_id": org_id})

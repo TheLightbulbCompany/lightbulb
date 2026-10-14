@@ -1168,12 +1168,13 @@ async def test_reassigning_an_unblocked_issue_leaves_its_status_alone(status):
 
 
 @pytest.mark.asyncio
-async def test_an_explicit_status_or_an_unassign_never_reads_the_issue():
+async def test_an_explicit_status_or_an_unassign_is_never_rewritten():
     fake_admin, agents, ctx = _patch_fixture("blocked")
     with patch("routers.teams.issues._agents", agents):
         await patch_issue(issue_id="iss_1", body=PatchIssueBody(assignee_agent_id="a", status="blocked"), ctx=ctx)
         await patch_issue(issue_id="iss_1", body=PatchIssueBody(assignee_agent_id=None), ctx=ctx)
-    fake_admin.get_issue.assert_not_awaited()
+    # The status PATCH reads the issue once, for the handoff event (T03); the unassign never does.
+    assert fake_admin.get_issue.await_count == 1
     assert fake_admin.patch_issue.call_args_list[0].kwargs["body"] == {"assigneeAgentId": "a", "status": "blocked"}
 
 
@@ -1182,6 +1183,7 @@ def test_a_person_moving_an_agents_task_is_a_handoff(client, monkeypatch):
     admin = MagicMock()
     moved = {"id": "iss_1", "assigneeAgentId": "agent_1", "status": "done"}
     admin.patch_issue = AsyncMock(return_value=moved)
+    admin.get_issue = AsyncMock(return_value={"id": "iss_1", "assigneeAgentId": "agent_1", "status": "in_progress"})
     from routers.teams import agents as agents_mod
     from routers.teams import issues as issues_mod
 
@@ -1193,6 +1195,10 @@ def test_a_person_moving_an_agents_task_is_a_handoff(client, monkeypatch):
     task_moved.assert_not_called()
     assert client.patch(url, json={"status": "done"}, headers={"Authorization": "Bearer x"}).status_code == 200
     task_moved.assert_called_once_with(workspace_id="o1", user_id="u1", issue=moved, status="done")
+    # The picker re-sending the status the task already has is not a move.
+    admin.get_issue.return_value = {"id": "iss_1", "assigneeAgentId": "agent_1", "status": "done"}
+    assert client.patch(url, json={"status": "done"}, headers={"Authorization": "Bearer x"}).status_code == 200
+    assert task_moved.call_count == 1
 
 
 def test_completing_and_unassigning_an_agents_task_in_one_patch_is_still_a_handoff(client, monkeypatch):

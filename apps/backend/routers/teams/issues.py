@@ -262,8 +262,9 @@ async def patch_issue(
             raise HTTPException(status_code=422, detail="A task can't be moved under one of its own sub-tasks.")
     moving = "status" in body.model_fields_set
     current = None
-    if moving and "assigneeAgentId" in payload and not payload["assigneeAgentId"]:
-        # The same PATCH unassigns the agent; whose task it WAS decides the handoff (T03).
+    if moving:
+        # A handoff (T03) is a real move of an agent's task: the issue's state BEFORE this PATCH
+        # says whose it was and whether the status changes (the picker re-sends the current one).
         current = await admin.get_issue(issue_id=issue_id, session_cookie=ctx.session_cookie)
     if payload.get("assigneeAgentId") and "status" not in payload:
         current = await admin.get_issue(issue_id=issue_id, session_cookie=ctx.session_cookie)
@@ -274,12 +275,10 @@ async def patch_issue(
         body=payload,
         session_cookie=ctx.session_cookie,
     )
-    if moving:
+    if moving and (current or {}).get("status") != payload["status"]:
         # A person moved an agent's task: a handoff (T03). Only the caller's own status change,
         # not the unblock this route adds on reassignment.
-        was_agents = (
-            {**(patched or {}), "assigneeAgentId": (current or {}).get("assigneeAgentId")} if current else patched
-        )
+        was_agents = {**(patched or {}), "assigneeAgentId": (current or {}).get("assigneeAgentId")}
         handoff_analytics.task_moved(
             workspace_id=ctx.owner_id, user_id=ctx.user_id, issue=was_agents, status=payload["status"]
         )

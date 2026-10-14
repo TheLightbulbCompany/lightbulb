@@ -33,6 +33,7 @@ export default function PlansScreen() {
   const api = useMemo(() => createApiClient(makeAdapter(() => getTokenRef.current())), []);
   const palette = useChatPalette();
   const [account, setAccount] = useState<Account | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
 
   const [refetchTick, setRefetchTick] = useState(0);
   const refetch = useCallback(() => setRefetchTick((t) => t + 1), []);
@@ -45,7 +46,9 @@ export default function PlansScreen() {
         if (!cancelled) setAccount(body as Account);
       })
       // No account → no products → the paywall stays dark.
-      .catch(() => {});
+      .catch(() => {
+        if (!cancelled) setLoadFailed(true);
+      });
     return () => {
       cancelled = true;
     };
@@ -70,7 +73,7 @@ export default function PlansScreen() {
         // Loading until the account says which products exist; StoreKit then fills
         // them in. Only an account offering none gets the notice.
         fallback={
-          account === null || paywallProductIds(account).length > 0 ? (
+          (account === null && !loadFailed) || paywallProductIds(account).length > 0 ? (
             <ActivityIndicator style={{ padding: 24 }} />
           ) : (
             <Text style={{ padding: 24, color: palette.fgSoft }}>No plans are available in the app right now.</Text>

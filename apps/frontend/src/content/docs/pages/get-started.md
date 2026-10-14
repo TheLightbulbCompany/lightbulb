@@ -44,6 +44,6 @@ If you work in Claude Code or Codex, the [Lightbulb Mac app](/api/download/deskt
 
 ## 9. Plans and providers
 
-See [plans](/#pricing) for what a team pays. Your agents run on Lightbulb-managed AI during the free month; after your plan is active you can switch to your own ChatGPT account or an OpenAI or Anthropic key in the **Model & Credits** tab.
+See [pricing](/pricing) for what a team pays. Your agents run on Lightbulb-managed AI during the free month; after your plan is active you can switch to your own ChatGPT account or an OpenAI or Anthropic key in the **Model & Credits** tab.
 
 Next: [Use cases](/docs/use-cases), the loops teams run today.

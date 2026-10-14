@@ -43,11 +43,10 @@ describe("/llms.txt", () => {
 
   it("states the plan facts the backend actually charges", async () => {
     const text = await body(llms());
-    // Mirrors WORKSPACE_PRICE_USD / ULTRA_PRICE_USD and the trial_local cap.
-    // A price edit in the backend must be reflected here, not silently drift.
-    expect(text).toContain("$50/month");
-    expect(text).toContain("$150/month");
-    expect(text).toContain("Base plan: $20/month");
+    // The one plan (lib/pricing, lockstep with WORKSPACE_PRICE_USD / SEAT_PRICE_USD).
+    // Base and Ultra are retired: never quote them again.
+    expect(text).toContain("Team plan: $50/month for the workspace and up to 5 people, then $20/month");
+    expect(text).not.toMatch(/Ultra|Base plan|vCPU/);
     expect(text).toContain("server-selected free model");
     expect(text).toContain("30 days");
     // The 14-day trial was removed in 2026-07; never reintroduce the claim.

@@ -97,6 +97,7 @@ export function Navbar() {
     if (onMarketplace) return id === "marketplace" ? "active" : undefined;
     if (onBlog) return id === "blog" ? "active" : undefined;
     if (onDocs) return id === "docs" ? "active" : undefined;
+    if (pathname.startsWith("/pricing")) return id === "pricing" ? "active" : undefined;
     return undefined;
   };
 
@@ -116,7 +117,7 @@ export function Navbar() {
         <Link href="/blog" data-section="blog" className={initialActive("blog")}>
           Blog
         </Link>
-        <Link href={anchor("pricing")} data-section="pricing" className={initialActive("pricing")}>
+        <Link href="/pricing" data-section="pricing" className={initialActive("pricing")}>
           Pricing
         </Link>
         {/* Plain <a>: an API route (302 to the signed DMG), not a Next page. */}

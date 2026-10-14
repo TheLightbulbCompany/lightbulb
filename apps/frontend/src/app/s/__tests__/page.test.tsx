@@ -122,7 +122,7 @@ describe("session link page", () => {
     vi.useFakeTimers();
     window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
     const opens = [model({}), model({ title: "Fix the bug", continuable: true })];
-    const fetchMock = vi.fn(async (url: string) => {
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
       const body = url.endsWith("/open") ? (opens.shift() ?? opens[0] ?? model({ title: "Fix the bug", continuable: true })) : { events: [], nextAfterSeq: null };
       return { ok: true, json: async () => body } as Response;
     });
@@ -146,7 +146,7 @@ describe("session link page", () => {
       { ok: true, body: model({ continuable: true }) },
       { ok: true, body: model({ continuable: true, state: "ended" }) },
     ];
-    const fetchMock = vi.fn(async (url: string) => {
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
       if (!url.endsWith("/open")) return { ok: true, json: async () => ({ events: [], nextAfterSeq: null }) } as Response;
       const o = opens.shift() ?? { ok: false, body: { message: "This link is off." } };
       return { ok: o.ok, status: o.ok ? 200 : 404, json: async () => o.body } as Response;
@@ -167,7 +167,7 @@ describe("session link page", () => {
     vi.useFakeTimers();
     window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
     let open = true;
-    const fetchMock = vi.fn(async (url: string) => {
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
       if (url.endsWith("/viewing")) return { ok: true, status: 200, json: async () => seat } as Response;
       return open ? { ok: true, status: 200, json: async () => model({ title: "ALPHA18" }) } as Response
         : { ok: false, status: 404, json: async () => ({ message: "This link was turned off or is not for you." }) } as Response;
@@ -218,7 +218,7 @@ describe("session link page", () => {
     vi.useFakeTimers();
     window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
     const opens: Array<{ ok: boolean; body: object }> = [{ ok: true, body: model({ continuable: true }) }];
-    const fetchMock = vi.fn(async (url: string) => {
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
       if (!url.endsWith("/open")) return { ok: true, json: async () => ({ events: [], nextAfterSeq: null }) } as Response;
       const o = opens.shift() ?? { ok: false, body: { message: "This link is off." } };
       return { ok: o.ok, status: o.ok ? 200 : 404, json: async () => o.body } as Response;
@@ -324,7 +324,7 @@ describe("session link page", () => {
     vi.useFakeTimers();
     window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
     let ended = false;
-    const fetchMock = vi.fn(async (url: string) => {
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
       if (!url.endsWith("/viewing")) return { ok: true, status: 200, json: async () => model({ state: ended ? "ended" : "live" }) } as Response;
       return ended ? { ok: false, status: 409, json: async () => ({ code: "LOCAL_SESSION_OFFLINE", message: "This session is not running." }) } as Response
         : { ok: true, status: 200, json: async () => seat } as Response;
@@ -505,7 +505,7 @@ describe("session link page", () => {
     window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
     let me: object = { signedIn: true, member: false, canAsk: true };
     let extra: object = {};
-    const fetchMock = vi.fn(async (url: string) => {
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
       if (url.endsWith("/viewing")) return { ok: true, status: 200, json: async () => seat } as Response;
       if (url.endsWith("/join-request")) return { ok: true, status: 200, json: async () => ({ join: "pending" }) } as Response;
       return { ok: true, status: 200, json: async () => model({ me, ...extra }) } as Response;
@@ -554,7 +554,7 @@ describe("session link page", () => {
     vi.useFakeTimers();
     window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
     let full = true;
-    const fetchMock = vi.fn(async (url: string) => {
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
       if (!url.endsWith("/viewing")) return { ok: true, status: 200, json: async () => model({}) } as Response;
       return full ? { ok: false, status: 409, json: async () => ({ code: "LOCAL_SESSION_VIEWERS_FULL", message: "This session already has 20 people watching by link.", details: { watching: 20 } }) } as Response
         : { ok: true, status: 200, json: async () => seat } as Response;

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.services import local_sessions as sessions, session_presence as presence
+from core.services import local_sessions as sessions, session_links, session_presence as presence
 
 NOW = 1_000_000
 
@@ -36,7 +36,7 @@ def _rows(viewers=(), typed=()):
     async def query(pk, begins_with, limit=None):
         assert begins_with == "VIEWER#", "presence reads only the VIEWER rows, never the typing history"
         if pk.startswith("PUBWATCH#"):  # an "Anyone" link's seats: one bounded read
-            assert limit == 21
+            assert limit == session_links.MAX_LINK_VIEWERS + 1  # the cap differs by environment (T18)
             return [{"expiresAt": NOW + 30}, {"expiresAt": NOW - 1}]
         # A typist typed 2 s ago; everyone else last typed a minute ago.
         return [{"userId": u, "expiresAt": NOW + 30, "typedAt": NOW - (2 if u in typed else 60)} for u in viewers] + [

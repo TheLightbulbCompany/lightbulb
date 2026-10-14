@@ -1870,7 +1870,8 @@ def is_session_room(meta: dict) -> bool:
 
 def _deny_vendor_human_change(meta: dict, kind: str) -> None:
     # A session chat's people follow session read access (spec 2026-10-07 decision 2).
-    if kind == "human" and (is_vendor_room(meta) or is_session_room(meta)):
+    # The feed's people are the workspace's: only a workspace join/removal changes them.
+    if kind == "human" and (is_vendor_room(meta) or is_session_room(meta) or is_feed_room(meta)):
         raise ApiProblem("ROOM_FORBIDDEN", "Membership of this channel is managed by Lightbulb.")
 
 
@@ -2029,8 +2030,10 @@ async def ensure_feed_room(owner_id: str, owner_user_id: str | None = None) -> s
     ``get_room``), so the Activity page can call it on every read and a workspace that predates
     the feed gets it lazily, with no backfill. Every roster agent sits on ``mentions`` (a plain
     post wakes nobody); every workspace human is seated through the ``AUTOJOIN#`` marker, so a
-    later teammate joins the same way and a removal sticks. ``owner_user_id`` creates the room;
-    None falls back to the Clerk org's creator. Returns None until the company is active."""
+    later teammate joins the same way. The room is always created as the WORKSPACE creator (the
+    company row's provisioner, else ``owner_user_id``, else the Clerk org's ``created_by``), never
+    whoever reads first: the create receipt is per creator, so one identity is what lets racing
+    callers converge. Returns None until the company is active."""
     from core.repositories.paperclip_repo import PaperclipRepo
     from core.services.user_provision import ceo_agent_id
 
@@ -2049,7 +2052,11 @@ async def ensure_feed_room(owner_id: str, owner_user_id: str | None = None) -> s
         return None
     client_room_id = f"workspace-feed-v1:{owner_id}"
     if existing_room is None:
-        owner_user_id = owner_user_id or (await clerk_admin.get_organization(owner_id) or {}).get("created_by")
+        owner_user_id = (
+            getattr(company, "provisioner_user_id", "")
+            or owner_user_id
+            or (await clerk_admin.get_organization(owner_id) or {}).get("created_by")
+        )
         if not owner_user_id:
             return None
         handles = mention_handles(roster)
@@ -2090,8 +2097,10 @@ async def ensure_feed_room(owner_id: str, owner_user_id: str | None = None) -> s
                 extra={"topic": FEED_DEFAULT_TOPIC},
             )
             _emit_room_created(owner_id, owner_user_id, "channel", members[1:], by="system")
-        except messaging_repo.IdempotencyConflict:
-            pass  # another caller (another creator) made it first: same room, carry on
+        except messaging_repo.MessagingRepoError:
+            # A racing create won (another roster, or a create from before this rule): same room.
+            if await messaging_repo.get_room(room_id) is None:
+                raise
     # Every current teammate, before the welcome: a room with a message is the "done" signal.
     try:
         for row in await clerk_admin.list_organization_members(owner_id):
@@ -2128,7 +2137,7 @@ class FeedResponse(ContractModel):
 async def get_feed(auth: AuthContext) -> FeedResponse:
     """The Activity page's read: ensure the feed, seat the caller, return its id and brief."""
     owner_id = resolve_owner_id(auth)
-    room_id = await ensure_feed_room(owner_id, auth.user_id)
+    room_id = await ensure_feed_room(owner_id)
     if room_id is None:
         raise ApiProblem("RUNTIME_UNAVAILABLE", "The feed is not ready yet.", retryable=True, retry_after=3)
     await join_feed_room(owner_id, auth.user_id)
@@ -2148,8 +2157,12 @@ async def agent_feed(owner_id: str) -> dict[str, Any]:
     if room_id is None:
         raise ApiProblem("ACTION_UNAVAILABLE", "This workspace has no feed yet.")
     meta = await messaging_repo.get_room(room_id) or {}
-    rows = await messaging_repo.list_messages_before(room_id, int(meta.get("lastSeq") or 0) + 1, FEED_AGENT_READ_LIMIT)
-    posts = [canonical_message(row) for row in rows if not row.get("deletedAt")]
+    # ponytail: the newest 100 rows, top-level kept; a Discuss thread longer than ~80 replies in
+    # that window shortens the list. A top-level index if that is ever seen.
+    rows = await messaging_repo.list_messages_before(room_id, int(meta.get("lastSeq") or 0) + 1, 100)
+    posts = [canonical_message(row) for row in rows if not row.get("deletedAt") and not row.get("threadRootMessageId")][
+        -FEED_AGENT_READ_LIMIT:
+    ]
     return {
         "roomId": room_id,
         "topic": meta.get("topic"),
@@ -2664,8 +2677,6 @@ async def leave_room(auth: AuthContext, room_id: str) -> None:
     _deny_vendor_human_change(meta, "human")
     if member.get("role") == "owner" and meta.get("kind") == "dm":
         raise ApiProblem("INVALID_REQUEST", "A direct message cannot be left.")
-    if is_feed_room(meta):
-        raise ApiProblem("INVALID_REQUEST", "The feed cannot be left.")
     if (
         member.get("role") == "owner"
         and meta.get("kind") == "channel"
@@ -2717,9 +2728,15 @@ async def _remove_member_with_notices(meta: dict, kind: str, member_id: str) -> 
         # A channel never loses its owner: leaving or a workspace removal hands it on.
         new_owner_id=_channel_heir(meta, members, member_id),
     )
-    if meta["roomId"] == default_room_id(meta["ownerId"]) or is_feed_room(meta):
-        # A removal (or leave) must stick: the autojoin never re-seats a marked user.
+    if meta["roomId"] == default_room_id(meta["ownerId"]):
+        # A removal (or leave) must stick: join_default_room never re-seats a marked user.
         await _mark_removed(meta, member_id)
+    elif is_feed_room(meta):
+        # Only a workspace removal reaches here: a rejoin to the workspace re-seats them.
+        try:
+            await messaging_repo.release_autojoin(meta["roomId"], member_id)
+        except Exception:
+            logger.exception("feed autojoin release failed room=%s member=%s", meta["roomId"], member_id)
     # The same revocation for the room's huddle: best effort, never raises.
     await livekit_huddles.remove_participant(meta["roomId"], member_id)
     return new_meta

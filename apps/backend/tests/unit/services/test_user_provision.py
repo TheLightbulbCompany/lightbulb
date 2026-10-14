@@ -1580,6 +1580,30 @@ async def test_a_replayed_feed_routine_the_owner_renamed_gets_no_second_trigger(
 
 
 @pytest.mark.asyncio
+async def test_a_feed_routine_the_owner_deleted_stays_deleted_without_errors():
+    """Paperclip replays a create key only while its routine exists: a deleted one answers
+    409 ..._idempotency_target_missing. A trigger on a routine gone since the list is a 404."""
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    provisioning = _arm_provisioning(_company_row(starter_ids={"ceo": "ceo1"}))
+    gone = PaperclipApiError(
+        "POST -> 409", status_code=409, body='{"code":"routine_create_idempotency_target_missing"}'
+    )
+    provisioning._admin.create_routine.side_effect = [gone, {"id": "r-13"}, {"id": "r-18"}]
+    provisioning._admin.create_routine_trigger.side_effect = [
+        PaperclipApiError("POST -> 404", status_code=404, body="{}"),
+        {},
+    ]
+    with patch("core.services.user_provision.put_metric") as metric:
+        assert await _arm(provisioning, _paid_account()) == "armed"
+    assert [c.kwargs["routine_id"] for c in provisioning._admin.create_routine_trigger.await_args_list] == [
+        "r-13",
+        "r-18",
+    ]
+    assert all(c.args[0] != "feed.routines" for c in metric.call_args_list)
+
+
+@pytest.mark.asyncio
 async def test_feed_routines_use_the_owners_timezone_when_known():
     provisioning = _arm_provisioning(_company_row(starter_ids={"ceo": "ceo1"}, provisioner_user_id="user_p"))
     with patch("core.services.user_provision.user_repo.get", AsyncMock(return_value={"timezone": "Europe/Paris"})):

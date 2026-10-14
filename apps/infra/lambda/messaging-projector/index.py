@@ -853,6 +853,7 @@ def _notify_members(
             payload["accountableHumanId"] = accountable_human
         if notify:
             if feed:
+                # By design this covers a human @mentioned in a feed post's Discuss thread too.
                 _emit_metric("messaging.projector.push", 1, "Count", {"outcome": "feed"})
             elif member.get("muted") is True:
                 _emit_metric("messaging.projector.push", 1, "Count", {"outcome": "muted"})

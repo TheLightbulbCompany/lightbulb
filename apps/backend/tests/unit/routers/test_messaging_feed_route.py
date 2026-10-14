@@ -17,7 +17,7 @@ def test_feed_ensures_the_room_seats_the_caller_and_returns_its_brief(client, mo
         response = client.get("/api/v1/messaging/feed")
     assert response.status_code == 200, response.text
     assert response.json() == {"roomId": FEED, "topic": "Money only."}
-    ensure.assert_awaited_once_with(owner, mock_auth_context.user_id)
+    ensure.assert_awaited_once_with(owner)  # created as the workspace creator, never the reader
     join.assert_awaited_once_with(owner, mock_auth_context.user_id)
 
 

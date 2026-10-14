@@ -61,7 +61,9 @@ def workspace(table, monkeypatch):  # noqa: F811
     from core.repositories.paperclip_repo import PaperclipRepo
 
     async def owner_row(*_args, **_kwargs):
-        return SimpleNamespace(status="active", starter_agent_ids=STARTERS, seeded_agent_ids=None)
+        return SimpleNamespace(
+            status="active", starter_agent_ids=STARTERS, seeded_agent_ids=None, provisioner_user_id="user_A"
+        )
 
     roster = [{"id": agent_id, "name": key.title()} for key, agent_id in STARTERS.items()]
     monkeypatch.setattr(PaperclipRepo, "resolve_owner_row", owner_row)
@@ -104,14 +106,81 @@ async def test_ensure_feed_room_twice_makes_one_room_with_one_welcome(workspace)
 
 
 @pytest.mark.asyncio
-async def test_a_later_teammate_joins_the_feed_once_and_a_removal_sticks(workspace):
+async def test_a_later_teammate_joins_once_and_workspace_membership_alone_decides(workspace):
     await messaging.ensure_feed_room(OWNER, "user_A")
     assert await messaging.join_feed_room(OWNER, "user_C") is True
     assert await messaging.join_feed_room(OWNER, "user_C") is False
-    meta = await repo.get_room(FEED)
-    await messaging._remove_member_with_notices(meta, "human", "user_C")
-    assert await messaging.join_feed_room(OWNER, "user_C") is False
+    before = await repo.get_room(FEED)
+    # A workspace removal (revoke_human_membership's call) still removes and rotates the key...
+    await messaging._remove_member_with_notices(before, "human", "user_C")
     assert await repo.get_member(FEED, "human", "user_C") is None
+    assert (await repo.get_room(FEED))["deliveryKey"] != before["deliveryKey"]
+    # ...and leaves no marker: rejoining the workspace re-seats them (the stream gate holds a removed one out).
+    assert await messaging.join_feed_room(OWNER, "user_C") is True
+
+
+@pytest.mark.asyncio
+async def test_the_first_reader_is_a_member_and_the_workspace_creator_owns_the_feed(workspace):
+    from core.auth import AuthContext
+
+    await messaging.get_feed(AuthContext(user_id="user_B", org_id=OWNER))
+    roles = {row["id"]: row["role"] for row in await repo.list_members(FEED) if row["kind"] == "human"}
+    assert roles == {"user_A": "owner", "user_B": "member"}
+
+
+@pytest.mark.asyncio
+async def test_two_different_users_racing_get_one_room_one_welcome_no_error(workspace):
+    from core.auth import AuthContext
+
+    results = await asyncio.gather(
+        messaging.get_feed(AuthContext(user_id="user_B", org_id=OWNER)),
+        messaging.get_feed(AuthContext(user_id="user_A", org_id=OWNER)),
+        messaging.ensure_feed_room(OWNER, "user_A"),
+    )
+    assert {str(results[0].room_id), str(results[1].room_id), results[2]} == {FEED}
+    messages, _ = await repo.list_messages(FEED, 0, 100)
+    assert len(messages) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_stale_create_that_loses_to_another_roster_converges(workspace, monkeypatch):
+    """The loser of a create race whose request differs (here: an agent hired in between)
+    re-reads the room instead of answering 500."""
+    await messaging.ensure_feed_room(OWNER)
+    real_get_room = repo.get_room
+    calls = {"n": 0}
+
+    async def stale_once(room_id):
+        calls["n"] += 1
+        return None if calls["n"] == 1 else await real_get_room(room_id)
+
+    roster = [{"id": agent_id, "name": key.title()} for key, agent_id in STARTERS.items()]
+    roster.append({"id": "10000000-0000-4000-8000-000000000099", "name": "Hire"})
+    monkeypatch.setattr(messaging.messaging_repo, "get_room", stale_once)
+    monkeypatch.setattr(messaging, "load_agent_roster", lambda _owner: asyncio.sleep(0, result=roster))
+    assert await messaging.ensure_feed_room(OWNER) == FEED
+    messages, _ = await repo.list_messages(FEED, 0, 100)
+    assert len(messages) == 1
+
+
+@pytest.mark.asyncio
+async def test_humans_are_never_added_or_removed_in_the_feed_by_hand(workspace):
+    from core.auth import AuthContext
+
+    await messaging.ensure_feed_room(OWNER, "user_A")
+    owner = AuthContext(user_id="user_A", org_id=OWNER)
+    with pytest.raises(messaging.ApiProblem) as exc:
+        await messaging.remove_member(owner, FEED, "human", "user_B")
+    assert exc.value.error.code == "ROOM_FORBIDDEN"
+    assert await repo.get_member(FEED, "human", "user_B") is not None
+    with pytest.raises(messaging.ApiProblem):
+        await messaging.upsert_member(
+            owner,
+            FEED,
+            messaging.UpsertRoomMemberRequest.model_validate(
+                {"kind": "human", "id": "user_C", "role": "member", "listenMode": None}
+            ),
+        )
 
 
 @pytest.mark.asyncio
@@ -262,3 +331,28 @@ async def test_an_agent_reads_the_brief_and_recent_posts_outside_a_room_turn(wor
     feed = await messaging.agent_feed(OWNER)
     assert feed["roomId"] == FEED and feed["topic"] == messaging.FEED_DEFAULT_TOPIC
     assert [(p["author"], p["text"], p["postReason"]) for p in feed["posts"]] == [("Ceo", messaging.FEED_WELCOME, None)]
+
+
+@pytest.mark.asyncio
+async def test_the_agent_read_returns_top_level_posts_only(workspace):
+    await messaging.ensure_feed_room(OWNER)
+    (welcome,), _ = await repo.list_messages(FEED, 0, 100)
+    await repo.create_message(
+        room_id=FEED,
+        owner_id=OWNER,
+        idemp_pk=repo.owner_pk(OWNER),
+        idemp_sk=repo.agent_idemp_sk("discuss-1"),
+        req_hash="d",
+        author={"kind": "agent", "id": CEO, "displayName": "Ceo"},
+        text="A Discuss reply",
+        mentions=[],
+        reply_to_message_id=None,
+        thread_root_message_id=welcome["messageId"],
+        run_id=None,
+        dispatch_targets=[],
+        source_agent_id=CEO,
+        client_message_id=None,
+        thread_root_seq=welcome["messageSeq"],
+    )
+    feed = await messaging.agent_feed(OWNER)
+    assert [p["text"] for p in feed["posts"]] == [messaging.FEED_WELCOME]

@@ -291,27 +291,42 @@ async def _ensure_feed_routines(admin, cookie: str, owner_id: str, row, ceo_id: 
             if routine is not None and settled(routine):
                 continue
             if routine is None:
-                routine = await admin.create_routine(
-                    session_cookie=cookie,
-                    company_id=row.company_id,
-                    body={
-                        "title": title,
-                        "description": FEED_ROUTINE_DESCRIPTION,
-                        "assigneeAgentId": ceo_id,
-                        "concurrencyPolicy": "coalesce_if_active",
-                        "catchUpPolicy": "skip_missed",
-                    },
-                    idempotency_key=f"lightbulb-feed-routine:v1:{owner_id}:{hour:02d}",
-                )
+                try:
+                    routine = await admin.create_routine(
+                        session_cookie=cookie,
+                        company_id=row.company_id,
+                        body={
+                            "title": title,
+                            "description": FEED_ROUTINE_DESCRIPTION,
+                            "assigneeAgentId": ceo_id,
+                            "concurrencyPolicy": "coalesce_if_active",
+                            "catchUpPolicy": "skip_missed",
+                        },
+                        idempotency_key=f"lightbulb-feed-routine:v1:{owner_id}:{hour:02d}",
+                    )
+                except PaperclipApiError as exc:
+                    # The key's routine was deleted by the owner: Paperclip refuses the replay.
+                    if exc.status_code == 409 and "idempotency_target_missing" in str(exc.body or ""):
+                        continue
+                    raise
                 # A replay of a routine the owner since renamed or reassigned: theirs to keep.
                 if routine.get("id") in by_id and settled(by_id[routine["id"]]):
                     continue
             timezone = timezone or await _feed_timezone(row)
-            await admin.create_routine_trigger(
-                session_cookie=cookie,
-                routine_id=routine["id"],
-                body={"kind": "schedule", "cronExpression": f"0 {hour} * * *", "timezone": timezone, "enabled": True},
-            )
+            try:
+                await admin.create_routine_trigger(
+                    session_cookie=cookie,
+                    routine_id=routine["id"],
+                    body={
+                        "kind": "schedule",
+                        "cronExpression": f"0 {hour} * * *",
+                        "timezone": timezone,
+                        "enabled": True,
+                    },
+                )
+            except PaperclipApiError as exc:
+                if exc.status_code != 404:  # deleted since the list: the owner's choice
+                    raise
     except Exception:  # noqa: BLE001 -- retried by the next reconcile
         put_metric("feed.routines", dimensions={"status": "error"})
         logger.exception("feed routines: ensure failed for owner %s", owner_id)

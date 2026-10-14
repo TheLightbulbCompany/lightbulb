@@ -9,7 +9,7 @@ import { capture } from "@/lib/analytics";
 import { SUPPORT_EMAIL } from "@/lib/domain";
 import { freeTierDaysLeft, planLabel } from "@/lib/planLabel";
 import { useAuth, useUser, UserButton, useOrganization, useClerk } from "@clerk/nextjs";
-import { useApi, ApiError } from "@/lib/api";
+import { useApi, ApiError, BACKEND_URL } from "@/lib/api";
 import { useBilling } from "@/hooks/useBilling";
 import { useCheckoutReturn } from "@/components/chat/shell/useCheckoutReturn";
 import { WorkspaceMembersSection } from "@/components/settings/WorkspaceMembersSection";
@@ -170,6 +170,54 @@ function DeleteAccountCard() {
   );
 }
 
+function WorkspaceExportCard() {
+  const isWorkspaceAdmin = useIsWorkspaceAdmin();
+  const { getToken } = useAuth();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleExport = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const token = await getToken();
+      const response = await fetch(`${BACKEND_URL}/teams/workspace/export`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!response.ok) throw new Error(`Export failed (${response.status})`);
+      const blob = await response.blob();
+      const disposition = response.headers.get("content-disposition") ?? "";
+      const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? "lightbulb-workspace.zip";
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+      capture("workspace_export_downloaded");
+    } catch {
+      setError(`We couldn't prepare your export. Try again, or contact ${SUPPORT_EMAIL}.`);
+    } finally {
+      setBusy(false);
+    }
+  }, [getToken]);
+
+  if (!isWorkspaceAdmin) return null;
+  return (
+    <div className="settings-card" data-testid="workspace-export-card">
+      <div className="settings-card-title">Export workspace</div>
+      <div className="settings-card-desc">
+        Download a ZIP containing this workspace&apos;s room transcripts and board tasks. This stays available
+        here when the workspace is read-only, so you can keep your team&apos;s record.
+      </div>
+      <button type="button" className="settings-btn-outline" onClick={handleExport} disabled={busy}>
+        {busy ? "Preparing export…" : "Download workspace ZIP"}
+      </button>
+      {error && <div className="settings-alert settings-alert-error" style={{ marginTop: 10 }}>{error}</div>}
+    </div>
+  );
+}
+
 function ProfilePanel() {
   const { user } = useUser();
   const { account } = useBilling();
@@ -212,6 +260,8 @@ function ProfilePanel() {
       </div>
 
       <DailySummaryCard />
+
+      <WorkspaceExportCard />
 
       <DeleteAccountCard />
     </div>

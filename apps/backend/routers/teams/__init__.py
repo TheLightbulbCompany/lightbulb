@@ -18,6 +18,7 @@ from . import settings as _settings_r
 from . import session_work as _session_work
 from . import tree_control as _tree_control
 from . import work as _work
+from . import workspace_export as _workspace_export
 
 router = APIRouter(prefix="/teams", tags=["teams"])
 router.include_router(_agents.router)
@@ -36,3 +37,4 @@ router.include_router(_feedback.router)
 router.include_router(_cases.router)
 router.include_router(_settings_r.router)
 router.include_router(_session_work.router)
+router.include_router(_workspace_export.router)

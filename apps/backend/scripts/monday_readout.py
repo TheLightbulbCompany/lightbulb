@@ -29,6 +29,7 @@ from typing import Any, Iterable
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+from uuid import uuid4
 
 POSTHOG_PROJECT_ID = "380894"
 POSTHOG_URL = f"https://us.posthog.com/api/projects/{POSTHOG_PROJECT_ID}/query/"
@@ -46,6 +47,7 @@ EXCLUDED_ORG_QUERIES = (
     "MKT385",
 )
 CLIENT_EVENTS = ("landing_viewed", "setup_cta_clicked", "signup_cta_clicked", "signup_started")
+ACQUISITION_EVENTS = (*CLIENT_EVENTS, "setup_requested")
 READOUT_EVENTS = (
     "workspace_created",
     "team_formed",
@@ -84,6 +86,7 @@ def build_posthog_query(start: datetime, end: datetime, excluded: set[str]) -> s
     earliest = start - timedelta(days=28)
     event_names = ", ".join(_sql(name) for name in READOUT_EVENTS)
     client_names = ", ".join(_sql(name) for name in CLIENT_EVENTS)
+    acquisition_names = ", ".join(_sql(name) for name in ACQUISITION_EVENTS)
     exclusion = ""
     if excluded:
         exclusion = f"\n  AND toString(properties.workspace_id) NOT IN ({', '.join(_sql(v) for v in sorted(excluded))})"
@@ -91,19 +94,24 @@ def build_posthog_query(start: datetime, end: datetime, excluded: set[str]) -> s
   event,
   timestamp,
   toString(properties.workspace_id) AS workspace_id,
+  nullIf(toString(distinct_id), '') AS visitor_id,
   nullIf(toString(properties.self_reported_source), '') AS self_reported_source,
-  nullIf(toString(properties.first_touch_source), '') AS first_touch_source,
+  nullIf(toString(properties.first_touch_utm_source), '') AS first_touch_utm_source,
+  nullIf(toString(properties.first_touch_referring_domain), '') AS first_touch_referring_domain,
   nullIf(toString(properties.last_touch_source), '') AS last_touch_source,
-  nullIf(toString(properties.source), '') AS source,
   nullIf(toString(properties.$host), '') AS host
 FROM events
 WHERE event IN ({event_names})
   AND timestamp >= toDateTime({_sql(earliest.isoformat())})
   AND timestamp < toDateTime({_sql(end.isoformat())})
   AND properties.environment = 'prod'
-  AND notEmpty(toString(properties.workspace_id)){exclusion}
-  AND (event NOT IN ({client_names})
-       OR properties.$host IN ('thelightbulb.company', 'www.thelightbulb.company'))
+  AND (
+    (event IN ({acquisition_names})
+     AND (event NOT IN ({client_names})
+          OR properties.$host IN ('thelightbulb.company', 'www.thelightbulb.company')))
+    OR (event NOT IN ({client_names})
+        AND notEmpty(toString(properties.workspace_id)){exclusion})
+  )
 ORDER BY timestamp"""
 
 
@@ -117,8 +125,8 @@ def _ids(ids: Iterable[str], organizations: dict[str, str]) -> dict[str, Any]:
 
 
 def _source(event: dict[str, Any]) -> str:
-    value = event.get("source") or event.get("first_touch_source") or "unknown"
-    return str(value).strip().lower() or "unknown"
+    value = event.get("first_touch_utm_source") or event.get("first_touch_referring_domain") or "direct"
+    return str(value).strip().lower() or "direct"
 
 
 def summarize(
@@ -133,32 +141,49 @@ def summarize(
     vercel_visitors: int | None = None,
 ) -> dict[str, Any]:
     """Compute all readout metrics from fixture-shaped source records."""
-    clean_events = [
-        {**event, "timestamp": _dt(event["timestamp"])}
-        for event in events
-        if event.get("workspace_id") and event["workspace_id"] not in excluded
+    clean_events = [{**event, "timestamp": _dt(event["timestamp"])} for event in events]
+    workspace_events = [
+        event for event in clean_events if event.get("workspace_id") and event["workspace_id"] not in excluded
+    ]
+    acquisition_events = [
+        event for event in clean_events if event["event"] in ACQUISITION_EVENTS and event.get("visitor_id")
     ]
     by_workspace: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for event in clean_events:
+    for event in workspace_events:
         by_workspace[event["workspace_id"]].append(event)
 
-    setup_events = [event for event in clean_events if event["event"] == "setup_requested" and start <= event["timestamp"] < end]
+    setup_events = [
+        event for event in workspace_events if event["event"] == "setup_requested" and start <= event["timestamp"] < end
+    ]
     setup: dict[str, Any] = {"total": _ids((event["workspace_id"] for event in setup_events), organizations)}
-    for key in ("self_reported_source", "first_touch_source", "last_touch_source"):
+    for key in ("self_reported_source", "last_touch_source"):
         groups: dict[str, set[str]] = defaultdict(set)
         for event in setup_events:
             groups[str(event.get(key) or "unknown").strip().lower()].add(event["workspace_id"])
         setup[key] = {source: _ids(workspaces, organizations) for source, workspaces in sorted(groups.items())}
+    first_touch: dict[str, set[str]] = defaultdict(set)
+    for event in setup_events:
+        first_touch[_source(event)].add(event["workspace_id"])
+    setup["first_touch_source"] = {
+        source: _ids(workspaces, organizations) for source, workspaces in sorted(first_touch.items())
+    }
 
     formed_ids: list[str] = []
     membership_mismatches: list[str] = []
     cohort_start, cohort_end = end - timedelta(days=9), end - timedelta(days=2)
     for workspace_id, rows in by_workspace.items():
-        created = [row["timestamp"] for row in rows if row["event"] == "workspace_created" and cohort_start <= row["timestamp"] < cohort_end]
+        created = [
+            row["timestamp"]
+            for row in rows
+            if row["event"] == "workspace_created" and cohort_start <= row["timestamp"] < cohort_end
+        ]
         if not created:
             continue
         first_created = min(created)
-        formed = any(row["event"] == "team_formed" and first_created <= row["timestamp"] <= first_created + timedelta(hours=48) for row in rows)
+        formed = any(
+            row["event"] == "team_formed" and first_created <= row["timestamp"] <= first_created + timedelta(hours=48)
+            for row in rows
+        )
         if formed and membership_counts.get(workspace_id, 0) >= 2:
             formed_ids.append(workspace_id)
         elif formed:
@@ -167,7 +192,11 @@ def summarize(
     handoff_ids: list[str] = []
     cohort_start, cohort_end = end - timedelta(days=14), end - timedelta(days=7)
     for workspace_id, rows in by_workspace.items():
-        created = [row["timestamp"] for row in rows if row["event"] == "workspace_created" and cohort_start <= row["timestamp"] < cohort_end]
+        created = [
+            row["timestamp"]
+            for row in rows
+            if row["event"] == "workspace_created" and cohort_start <= row["timestamp"] < cohort_end
+        ]
         if not created:
             continue
         first_created = min(created)
@@ -183,7 +212,8 @@ def summarize(
         formed = [
             row["timestamp"]
             for row in rows
-            if row["event"] == "team_formed" and start - timedelta(days=28) <= row["timestamp"] < end - timedelta(days=28)
+            if row["event"] == "team_formed"
+            and start - timedelta(days=28) <= row["timestamp"] < end - timedelta(days=28)
         ]
         if not formed:
             continue
@@ -211,11 +241,14 @@ def summarize(
         qualifying[workspace_id] = min(paid_at, qualifying.get(workspace_id, paid_at))
 
     funnel_ids: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
-    for event in clean_events:
-        if event["event"] in (*CLIENT_EVENTS, "setup_requested") and start <= event["timestamp"] < end:
-            funnel_ids[_source(event)][event["event"]].add(event["workspace_id"])
+    for event in acquisition_events:
+        if start <= event["timestamp"] < end:
+            funnel_ids[_source(event)][event["event"]].add(event["visitor_id"])
     funnel = {
-        source: {event: _ids(workspaces, organizations) for event, workspaces in sorted(steps.items())}
+        source: {
+            event: {"count": len(visitors), "visitor_ids": sorted(visitors)}
+            for event, visitors in sorted(steps.items())
+        }
         for source, steps in sorted(funnel_ids.items())
     }
 
@@ -231,7 +264,9 @@ def summarize(
         "week4_active": _ids(week4_ids, organizations),
         "paying_at_list": {
             "all_time": _ids(qualifying, organizations),
-            "new_this_week": _ids((key for key, paid_at in qualifying.items() if start <= paid_at < end), organizations),
+            "new_this_week": _ids(
+                (key for key, paid_at in qualifying.items() if start <= paid_at < end), organizations
+            ),
         },
         "funnel": funnel,
         "vercel_visitors": vercel_visitors,
@@ -239,7 +274,7 @@ def summarize(
 
 
 def _names(metric: dict[str, Any]) -> str:
-    return ", ".join(metric["workspace_names"]) or "none"
+    return ", ".join(metric.get("workspace_names", metric.get("visitor_ids", []))) or "none"
 
 
 def _metric(label: str, metric: dict[str, Any]) -> str:
@@ -280,7 +315,7 @@ def render_readout(result: dict[str, Any]) -> str:
         lines.append(f"- **{source}**")
         base = steps.get("landing_viewed", {"count": 0})["count"]
         for event in ("landing_viewed", "setup_cta_clicked", "setup_requested", "signup_cta_clicked", "signup_started"):
-            metric = steps.get(event, {"count": 0, "workspace_names": []})
+            metric = steps.get(event, {"count": 0, "visitor_ids": []})
             percentage = f" ({metric['count'] / base:.0%})" if base >= 10 else ""
             lines.append(f"  - {event}: **{metric['count']}**{percentage} — {_names(metric)}")
     visitors = result["vercel_visitors"]
@@ -312,7 +347,17 @@ def _secret(env_name: str, secret_id: str) -> str:
     if value := os.environ.get(env_name):
         return value
     raw = subprocess.check_output(
-        ["aws", "secretsmanager", "get-secret-value", "--secret-id", secret_id, "--query", "SecretString", "--output", "text"],
+        [
+            "aws",
+            "secretsmanager",
+            "get-secret-value",
+            "--secret-id",
+            secret_id,
+            "--query",
+            "SecretString",
+            "--output",
+            "text",
+        ],
         text=True,
     ).strip()
     if raw.startswith("{"):
@@ -430,7 +475,13 @@ def post_readout(text: str) -> None:
         "POST",
         f"{base}/messaging/rooms/{room_id}/messages",
         headers={"Authorization": f"Bearer {token}"},
-        body={"text": text, "mentions": []},
+        body={
+            "text": text,
+            "mentions": [],
+            "client_message_id": str(uuid4()),
+            "reply_to_message_id": None,
+            "thread_root_message_id": None,
+        },
     )
 
 
@@ -445,11 +496,23 @@ def main(argv: list[str] | None = None) -> int:
     clerk = Clerk(_secret("CLERK_SECRET_KEY", "lightbulb/prod/clerk_secret_key"))
     admins = {value.strip() for value in os.environ.get("PLATFORM_ADMIN_USER_IDS", "").split(",") if value.strip()}
     organizations, excluded = resolve_organizations(clerk, admins)
-    events = fetch_events(_secret("POSTHOG_PROJECT_API_KEY", "lightbulb/prod/posthog_project_api_key"), build_posthog_query(start, end, excluded))
-    relevant = {event["workspace_id"] for event in events}
+    events = fetch_events(
+        _secret("POSTHOG_PROJECT_API_KEY", "lightbulb/prod/posthog_project_api_key"),
+        build_posthog_query(start, end, excluded),
+    )
+    relevant = {event["workspace_id"] for event in events if event.get("workspace_id")}
     membership_counts = {workspace_id: clerk.membership_count(workspace_id) for workspace_id in relevant}
     invoices = fetch_invoices(_secret("STRIPE_SECRET_KEY", "lightbulb/prod/stripe_secret_key"))
-    result = summarize(events, invoices, organizations, membership_counts, excluded, start, end, vercel_visitors=fetch_vercel_visitors(start, end))
+    result = summarize(
+        events,
+        invoices,
+        organizations,
+        membership_counts,
+        excluded,
+        start,
+        end,
+        vercel_visitors=fetch_vercel_visitors(start, end),
+    )
     text = render_readout(result)
     if args.stdout:
         print(text)

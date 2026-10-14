@@ -16,7 +16,7 @@ Sign up at [thelightbulb.company/sign-up](/sign-up) and name the workspace after
 
 ## 3. Brief your CEO
 
-Your first message in #general is the brief. Say what the company does, who it is for, and what matters this week. Your CEO keeps it, turns it into a first goal and project on the task board, and plans from there. The CEO plans and hands work to the specialists; it does not do their work itself.
+Your first message in #general is the brief. Say what the company does, who it is for, and what matters this week. The agent that answers keeps it as the brief and turns it into a first goal and project on the task board. The first run ends with one finished thing: a plan document, an approval card for you to answer, a card to connect one tool, and three things it can do next.
 
 ## 4. Invite your second person
 
@@ -24,7 +24,7 @@ Do this before the first handoff, so someone else is in the room when the result
 
 ## 5. Connect one real tool
 
-Ask in chat, for example *"connect our GitHub"*, *"connect my Gmail"* or *"connect QuickBooks"*. The agent sends you a link to approve the connection. You can also open **Connections** on the workspace rail. One real tool is enough to start.
+Use the connect card from the first run, or ask in chat, for example *"connect our GitHub"*, *"connect my Gmail"* or *"connect QuickBooks"*. The agent sends you a link to approve the connection. You can also open **Connections** on the workspace rail. One real tool is enough to start.
 
 ## 6. Put agents in rooms
 

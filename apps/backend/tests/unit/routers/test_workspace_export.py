@@ -1,7 +1,7 @@
 import io
 import json
 import zipfile
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 import pytest
 from fastapi import HTTPException
@@ -24,7 +24,7 @@ CTX = TeamsContext(
 @pytest.mark.asyncio
 async def test_export_rejects_non_owner_before_reading_records():
     auth = AuthContext(user_id="user_member", org_id="org_1", org_role="org:member")
-    with patch("routers.teams.workspace_export.messaging_repo.list_owner_room_ids", new=AsyncMock()) as rooms:
+    with patch("routers.teams.workspace_export.messaging_repo.list_owner_room_ids", autospec=True) as rooms:
         with pytest.raises(HTTPException) as exc:
             await export_workspace(ctx=CTX, auth=auth)
     assert exc.value.status_code == 403
@@ -37,14 +37,22 @@ async def test_export_zip_contains_all_room_messages_and_board_tasks():
     page_1 = ([{"messageId": "m1", "messageSeq": 1, "body": "hello", "pk": "internal"}], 1)
     page_2 = ([{"messageId": "m2", "messageSeq": 2, "body": "goodbye", "sk": "internal"}], None)
     admin = AsyncMock()
-    admin.list_issues.return_value = [{"id": "i1", "title": "Retain records", "status": "done"}]
+    first_task_page = [
+        {"id": f"i{index}", "title": f"Task {index}", "status": "done"}
+        for index in range(500)
+    ]
+    final_task = {"id": "i500", "title": "Retain records", "status": "done"}
+    admin.list_issues.side_effect = [first_task_page, [final_task]]
 
     with (
-        patch("routers.teams.workspace_export.messaging_repo.list_owner_room_ids", new=AsyncMock(return_value=["room-1"])),
-        patch("routers.teams.workspace_export.messaging_repo.get_room", new=AsyncMock(return_value={"roomId": "room-1", "name": "General", "pk": "internal"})),
-        patch("routers.teams.workspace_export.messaging_repo.list_messages", new=AsyncMock(side_effect=[page_1, page_2])) as list_messages,
+        patch("routers.teams.workspace_export.messaging_repo.list_owner_room_ids", autospec=True) as list_room_ids,
+        patch("routers.teams.workspace_export.messaging_repo.get_room", autospec=True) as get_room,
+        patch("routers.teams.workspace_export.messaging_repo.list_messages", autospec=True) as list_messages,
         patch("routers.teams.workspace_export._agents._admin", return_value=admin),
     ):
+        list_room_ids.return_value = ["room-1"]
+        get_room.return_value = {"roomId": "room-1", "name": "General", "pk": "internal"}
+        list_messages.side_effect = [page_1, page_2]
         response = await export_workspace(ctx=CTX, auth=auth)
 
     assert response.media_type == "application/zip"
@@ -54,10 +62,23 @@ async def test_export_zip_contains_all_room_messages_and_board_tasks():
     assert room["room"] == {"roomId": "room-1", "name": "General"}
     assert [message["body"] for message in room["messages"]] == ["hello", "goodbye"]
     assert all("pk" not in message and "sk" not in message for message in room["messages"])
-    assert json.loads(archive.read("board/tasks.json"))["tasks"][0]["id"] == "i1"
-    assert list_messages.await_count == 2
-    admin.list_issues.assert_awaited_once_with(
-        company_id="company_1",
-        session_cookie="session=opaque",
-        params={"limit": "500"},
-    )
+    tasks = json.loads(archive.read("board/tasks.json"))["tasks"]
+    assert len(tasks) == 501
+    assert tasks[-1]["id"] == "i500"
+    get_room.assert_awaited_once_with("room-1")
+    assert list_messages.await_args_list == [
+        call("room-1", 0, 100),
+        call("room-1", 1, 100),
+    ]
+    assert admin.list_issues.await_args_list == [
+        call(
+            company_id="company_1",
+            session_cookie="session=opaque",
+            params={"limit": "500", "offset": "0"},
+        ),
+        call(
+            company_id="company_1",
+            session_cookie="session=opaque",
+            params={"limit": "500", "offset": "500"},
+        ),
+    ]

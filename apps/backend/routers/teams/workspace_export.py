@@ -47,20 +47,32 @@ def _json_bytes(value: Any) -> bytes:
     ).encode("utf-8")
 
 
-async def _all_messages(owner_id: str, room_id: str) -> list[dict[str, Any]]:
+async def _all_messages(room_id: str) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
-    after_seq: int | None = None
+    after_seq = 0
     while True:
-        page, next_seq = await messaging_repo.list_messages(
-            owner_id,
-            room_id,
-            after_seq=after_seq,
-            limit=200,
-        )
+        page, next_seq = await messaging_repo.list_messages(room_id, after_seq, 100)
         messages.extend(page)
         if next_seq is None:
             return messages
         after_seq = next_seq
+
+
+async def _all_tasks(ctx: TeamsContext) -> list[dict[str, Any]]:
+    tasks: list[dict[str, Any]] = []
+    offset = 0
+    limit = 500
+    admin = _agents._admin()
+    while True:
+        page = await admin.list_issues(
+            company_id=ctx.company_id,
+            session_cookie=ctx.session_cookie,
+            params={"limit": str(limit), "offset": str(offset)},
+        )
+        tasks.extend(page)
+        if len(page) < limit:
+            return tasks
+        offset += len(page)
 
 
 @router.get("/workspace/export")
@@ -73,12 +85,7 @@ async def export_workspace(
         raise HTTPException(status_code=403, detail="Workspace owner access required")
 
     room_ids = await messaging_repo.list_owner_room_ids(ctx.owner_id)
-    admin = _agents._admin()
-    tasks = await admin.list_issues(
-        company_id=ctx.company_id,
-        session_cookie=ctx.session_cookie,
-        params={"limit": "500"},
-    )
+    tasks = await _all_tasks(ctx)
 
     generated_at = datetime.now(UTC).isoformat()
     output = io.BytesIO()
@@ -100,8 +107,8 @@ async def export_workspace(
             _json_bytes({"exportedAt": generated_at, "tasks": tasks}),
         )
         for room_id in room_ids:
-            room = await messaging_repo.get_room(ctx.owner_id, room_id)
-            messages = await _all_messages(ctx.owner_id, room_id)
+            room = await messaging_repo.get_room(room_id)
+            messages = await _all_messages(room_id)
             archive.writestr(
                 f"rooms/{room_id}.json",
                 _json_bytes({"room": room, "messages": messages}),

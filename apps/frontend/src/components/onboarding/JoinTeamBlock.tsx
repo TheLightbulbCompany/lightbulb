@@ -23,7 +23,7 @@ export function JoinTeamBlock({ compact = false }: { compact?: boolean }) {
   const form = (
     <form onSubmit={join} className="flex w-full flex-col gap-1.5">
       <label htmlFor={`${id}-link`} className={compact ? undefined : "text-sm font-medium"}>
-        {compact ? "Have a join link?" : "Paste a join link"}
+        {compact ? "Join link" : "Paste a join link"}
       </label>
       <div className="flex gap-2">
         <Input id={`${id}-link`} value={link} onChange={(e) => { setLink(e.target.value); setProblem(null); }} placeholder="https://…/join/…"
@@ -36,7 +36,6 @@ export function JoinTeamBlock({ compact = false }: { compact?: boolean }) {
   if (compact) {
     return (
       <div className="auth-join">
-        <p>Joining a team? If you got an invitation email, open it on this device.</p>
         {form}
       </div>
     );

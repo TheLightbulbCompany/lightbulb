@@ -2,7 +2,7 @@ import { SignUp } from "@clerk/nextjs";
 import Link from "next/link";
 
 import { Logo } from "@/components/Logo";
-import { JoinTeamBlock } from "@/components/onboarding/JoinTeamBlock";
+import { SignUpDoors } from "@/components/onboarding/SignUpDoors";
 import { SignupPlanPill } from "@/components/SignupPlanPill";
 
 export default function Page() {
@@ -84,6 +84,7 @@ export default function Page() {
         .auth-feat:nth-child(1) { animation-delay: 300ms; }
         .auth-feat:nth-child(2) { animation-delay: 500ms; }
         .auth-feat:nth-child(3) { animation-delay: 700ms; }
+        .auth-feat:nth-child(4) { animation-delay: 900ms; }
         @keyframes auth-feat-in {
           to { opacity: 1; transform: translateX(0); }
         }
@@ -168,6 +169,29 @@ export default function Page() {
         }
         .auth-footer-links a:hover { color: var(--midnight-soft); }
 
+        .auth-doors {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 8px;
+          width: 100%;
+          margin-bottom: 20px;
+        }
+        .auth-door {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          padding: 12px;
+          text-align: left;
+          border: 1px solid color-mix(in srgb, var(--midnight) 14%, transparent);
+          border-radius: 10px;
+          background: transparent;
+          font-family: var(--font-sans), system-ui, sans-serif;
+          cursor: pointer;
+        }
+        .auth-door[aria-selected="true"] { border-color: var(--midnight); }
+        .auth-door-title { font-size: 14px; font-weight: 600; color: var(--midnight); }
+        .auth-door-body { font-size: 12px; line-height: 1.4; color: var(--midnight-muted); }
+
         .auth-join {
           margin-top: 24px;
           width: 100%;
@@ -228,25 +252,9 @@ export default function Page() {
 
           <div className="auth-brand-middle">
             <div className="auth-eyebrow">Get started</div>
-            <h1 className="auth-tagline">
-              Your AI <em>company</em>
-              <br />
-              starts here.
-            </h1>
+            <h1 className="auth-tagline">Bring your team.</h1>
 
             <div className="auth-features" role="list">
-              <div className="auth-feat" role="listitem">
-                <div className="auth-feat-icon" aria-hidden="true">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--cream)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                  </svg>
-                </div>
-                <div>
-                  <div className="auth-feat-title">Private by design</div>
-                  <div className="auth-feat-desc">Your own private workspace. No shared data.</div>
-                </div>
-              </div>
               <div className="auth-feat" role="listitem">
                 <div className="auth-feat-icon" aria-hidden="true">
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--cream)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -266,14 +274,40 @@ export default function Page() {
               <div className="auth-feat" role="listitem">
                 <div className="auth-feat-icon" aria-hidden="true">
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--cream)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                    <circle cx="9" cy="7" r="4" />
+                    <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                    <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+                  </svg>
+                </div>
+                <div>
+                  <div className="auth-feat-title">Your team in the same rooms</div>
+                  <div className="auth-feat-desc">The first five people are included in the plan.</div>
+                </div>
+              </div>
+              <div className="auth-feat" role="listitem">
+                <div className="auth-feat-icon" aria-hidden="true">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--cream)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                  </svg>
+                </div>
+                <div>
+                  <div className="auth-feat-title">Your own cloud</div>
+                  <div className="auth-feat-desc">Each workspace runs in its own isolated environment.</div>
+                </div>
+              </div>
+              <div className="auth-feat" role="listitem">
+                <div className="auth-feat-icon" aria-hidden="true">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--cream)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M12 2L2 7l10 5 10-5-10-5z" />
                     <path d="M2 17l10 5 10-5" />
                     <path d="M2 12l10 5 10-5" />
                   </svg>
                 </div>
                 <div>
-                  <div className="auth-feat-title">Extensible skills</div>
-                  <div className="auth-feat-desc">Search, code, email, calendar -- and growing.</div>
+                  <div className="auth-feat-title">Agents that ask first</div>
+                  <div className="auth-feat-desc">Plans, spending and new hires wait for a yes.</div>
                 </div>
               </div>
             </div>
@@ -288,9 +322,7 @@ export default function Page() {
               <Logo size="md" withMark />
             </div>
 
-            <SignUp fallbackRedirectUrl="/chat" signInFallbackRedirectUrl="/chat" />
-
-            <JoinTeamBlock compact />
+            <SignUpDoors createForm={<SignUp fallbackRedirectUrl="/chat" signInFallbackRedirectUrl="/chat" />} />
 
             <div className="auth-footer-links">
               Already have an account?{" "}

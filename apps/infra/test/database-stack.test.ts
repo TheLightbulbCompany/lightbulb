@@ -355,6 +355,13 @@ describe("DatabaseStack — launch competition tables", () => {
     });
   });
 
+  test("creates setup-requests keyed by id", () => {
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "lightbulb-dev-setup-requests",
+      KeySchema: [{ AttributeName: "id", KeyType: "HASH" }],
+    });
+  });
+
   test("creates launch-settings keyed by id", () => {
     template.hasResourceProperties("AWS::DynamoDB::Table", {
       TableName: "lightbulb-dev-launch-settings",

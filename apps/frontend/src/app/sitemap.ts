@@ -13,6 +13,7 @@ import { seoLandingPages } from "@/lib/seo";
 export default function sitemap(): MetadataRoute.Sitemap {
   const staticRoutes: MetadataRoute.Sitemap = [
     { url: `${SITE_URL}/`, changeFrequency: "weekly", priority: 1 },
+    { url: `${SITE_URL}/request-setup`, changeFrequency: "monthly", priority: 0.9 },
     { url: `${SITE_URL}/blog`, changeFrequency: "weekly", priority: 0.8 },
     { url: `${SITE_URL}/docs`, changeFrequency: "weekly", priority: 0.85 },
     { url: `${SITE_URL}/marketplace`, changeFrequency: "weekly", priority: 0.7 },

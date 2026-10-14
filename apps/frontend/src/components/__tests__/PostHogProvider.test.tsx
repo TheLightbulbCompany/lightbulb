@@ -368,6 +368,21 @@ describe("PostHogProvider", () => {
     expect(clicks[0][1]).toMatchObject({ cta_id: "hero_setup", surface: "hero", cta_label: "Request a guided setup" });
   });
 
+  it("never reads a /request-setup link inside a conversation (/chat)", async () => {
+    process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
+    window.history.replaceState(null, "", "/chat");
+    mockRouterState.pathname = "/chat";
+    const mod = await import("../PostHogProvider");
+    render(
+      <mod.PostHogProvider>
+        <a href="/request-setup">a customer's private words</a>
+      </mod.PostHogProvider>,
+    );
+    screen.getByText("a customer's private words").click();
+    expect(mockCapture.mock.calls.filter((c) => c[0] === "setup_cta_clicked")).toHaveLength(0);
+    window.history.replaceState(null, "", "/");
+  });
+
   it("counts landing_viewed on the first website page of a session, not the app", async () => {
     process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
     const mod = await import("../PostHogProvider");

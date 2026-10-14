@@ -309,7 +309,8 @@ function SetupCtaTracker() {
       } catch {
         return;
       }
-      if (path !== "/request-setup") return;
+      // Never on /chat or /s: a link there is a person's message, and its label is their words.
+      if (path !== "/request-setup" || isPrivateRoute(window.location.pathname)) return;
       capture("setup_cta_clicked", {
         cta_id: link.dataset.ctaId ?? null,
         cta_label: (link.textContent ?? "").trim().slice(0, 80),

@@ -66,6 +66,18 @@ async def test_a_failed_read_takes_no_marker(world):
 
 
 @pytest.mark.asyncio
+async def test_a_busy_room_is_scanned_through_to_week_four(world):
+    """Pages newer than week four do not use the in-window read budget."""
+    _, capture = world
+    newer = ([_msg("agent", FORMED + 30 * DAY)] * 100, 5)
+    target = ([_msg("human", FORMED + 22 * DAY)], None)
+    pages = [newer] * 40 + [target]
+    with patch.object(week4_active.messaging_repo, "list_messages_before_page", AsyncMock(side_effect=pages)):
+        assert await week4_active.check_workspace("org_1", FORMED + 28 * DAY + 60) is True
+    assert capture.call_count == 1
+
+
+@pytest.mark.asyncio
 async def test_outside_the_check_window_does_nothing(world):
     claim, _ = world
     assert await week4_active.check_workspace("org_1", FORMED + 10 * DAY) is False

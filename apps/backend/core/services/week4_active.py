@@ -26,7 +26,8 @@ _DAY = 86400
 _WEEK4 = (21 * _DAY, 28 * _DAY)
 _CHECK_WINDOW = (28 * _DAY, 31 * _DAY)
 _PAGE = 100
-_MAX_PAGES = 20  # ponytail: 2,000 messages back per room; a busier room counts as active long before
+_MAX_PAGES = 20  # ponytail: 2,000 messages read inside the window per room
+_MAX_SKIP_PAGES = 200  # ponytail: up to 20,000 newer messages skipped to reach the window
 _NS = uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb:week4_active")
 
 
@@ -40,8 +41,16 @@ def _epoch(iso) -> float | None:
 async def _human_message_between(room_id: str, lo: float, hi: float) -> bool:
     meta = await messaging_repo.get_room(room_id) or {}
     before = int(meta.get("lastSeq") or 0) + 1
-    for _ in range(_MAX_PAGES):
+    in_window = 0
+    for _ in range(_MAX_PAGES + _MAX_SKIP_PAGES):
         page, older = await messaging_repo.list_messages_before_page(room_id, before, _PAGE)
+        oldest = _epoch(page[0].get("createdAt")) if page else None
+        if oldest is None or oldest < hi:
+            # Only pages that reach into week four count against the read budget; newer
+            # traffic (an agent-heavy room) is skipped on its own, larger budget.
+            in_window += 1
+            if in_window > _MAX_PAGES:
+                return False
         for message in reversed(page):  # newest first
             t = _epoch(message.get("createdAt"))
             if t is None:

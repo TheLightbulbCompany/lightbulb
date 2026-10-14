@@ -276,7 +276,24 @@ describe("layoutStorage", () => {
     } as unknown as SerializedDockview;
   }
 
-  it("sanitizer migrates a retired teams-costs layout entry to teams-dashboard", () => {
+  it("sanitizer folds a saved Home tab into Activity", () => {
+    const dirty = leafLayout(["teams-dashboard"], "teams-dashboard", {
+      "teams-dashboard": {
+        id: "teams-dashboard",
+        contentComponent: "teams",
+        params: { teamsKey: "dashboard" },
+        title: "Home",
+      },
+    });
+    const clean = sanitizeLayout(dirty);
+    expect(Object.keys(clean.panels)).toEqual(["activity"]);
+    expect(clean.panels.activity).toEqual({ id: "activity", contentComponent: "activity", params: {}, title: "Activity" });
+    const leafData = (clean.grid.root as unknown as { data: { views: string[]; activeView: string } }).data;
+    expect(leafData.views).toEqual(["activity"]);
+    expect(leafData.activeView).toBe("activity");
+  });
+
+  it("sanitizer migrates a retired teams-costs layout entry to activity", () => {
     const dirty = leafLayout(["teams-costs"], "teams-costs", {
       "teams-costs": {
         id: "teams-costs",
@@ -286,17 +303,17 @@ describe("layoutStorage", () => {
     });
     const clean = sanitizeLayout(dirty);
     expect(clean.panels["teams-costs"]).toBeUndefined();
-    expect(clean.panels["teams-dashboard"]).toEqual({
-      id: "teams-dashboard",
-      contentComponent: "teams",
-      params: { teamsKey: "dashboard" },
+    expect(clean.panels["activity"]).toEqual({
+      id: "activity",
+      contentComponent: "activity",
+      params: {},
     });
     const leafData = (clean.grid.root as unknown as { data: { views: string[]; activeView: string } }).data;
-    expect(leafData.views).toEqual(["teams-dashboard"]);
-    expect(leafData.activeView).toBe("teams-dashboard");
+    expect(leafData.views).toEqual(["activity"]);
+    expect(leafData.activeView).toBe("activity");
   });
 
-  it("sanitizer migrates a retired teams-skills layout entry to teams-dashboard", () => {
+  it("sanitizer migrates a retired teams-skills layout entry to activity", () => {
     const dirty = leafLayout(["teams-skills"], "teams-skills", {
       "teams-skills": {
         id: "teams-skills",
@@ -306,14 +323,14 @@ describe("layoutStorage", () => {
     });
     const clean = sanitizeLayout(dirty);
     expect(clean.panels["teams-skills"]).toBeUndefined();
-    expect(clean.panels["teams-dashboard"]).toEqual({
-      id: "teams-dashboard",
-      contentComponent: "teams",
-      params: { teamsKey: "dashboard" },
+    expect(clean.panels["activity"]).toEqual({
+      id: "activity",
+      contentComponent: "activity",
+      params: {},
     });
     const leafData = (clean.grid.root as unknown as { data: { views: string[]; activeView: string } }).data;
-    expect(leafData.views).toEqual(["teams-dashboard"]);
-    expect(leafData.activeView).toBe("teams-dashboard");
+    expect(leafData.views).toEqual(["activity"]);
+    expect(leafData.activeView).toBe("activity");
   });
 
   it("sanitizer migrates a persisted teams-spend panel to Money in the Work tab", () => {
@@ -336,33 +353,33 @@ describe("layoutStorage", () => {
   });
 
   it("sanitizer drops a retired panel instead of duplicating an already-open target", () => {
-    const dirty = leafLayout(["teams-costs", "teams-dashboard"], "teams-costs", {
+    const dirty = leafLayout(["teams-costs", "activity"], "teams-costs", {
       "teams-costs": {
         id: "teams-costs",
         contentComponent: "teams",
         params: { teamsKey: "costs" },
       },
-      "teams-dashboard": {
-        id: "teams-dashboard",
-        contentComponent: "teams",
-        params: { teamsKey: "dashboard" },
+      "activity": {
+        id: "activity",
+        contentComponent: "activity",
+        params: {},
       },
     });
     const clean = sanitizeLayout(dirty);
     expect(clean.panels["teams-costs"]).toBeUndefined();
-    expect(Object.keys(clean.panels)).toEqual(["teams-dashboard"]);
+    expect(Object.keys(clean.panels)).toEqual(["activity"]);
     const leafData = (clean.grid.root as unknown as { data: { views: string[]; activeView: string } }).data;
-    expect(leafData.views).toEqual(["teams-dashboard"]);
+    expect(leafData.views).toEqual(["activity"]);
     // the dropped id was activeView — falls back to the remaining view
-    expect(leafData.activeView).toBe("teams-dashboard");
+    expect(leafData.activeView).toBe("activity");
   });
 
   it("sanitizer dedupes two retired panels that alias to the same absent target", () => {
-    // Regression: teams-skills and teams-costs both alias to teams-dashboard.
+    // Regression: teams-skills and teams-costs both alias to activity.
     // Neither is already open — without target-collision tracking, both
-    // would rename to "teams-dashboard" and the second write would silently
+    // would rename to "activity" and the second write would silently
     // overwrite the first in `panels`, while the grid tree ends up with two
-    // "teams-dashboard" view entries (a corrupt/duplicated dockview group).
+    // "activity" view entries (a corrupt/duplicated dockview group).
     const dirty = leafLayout(["teams-skills", "teams-costs"], "teams-skills", {
       "teams-skills": {
         id: "teams-skills",
@@ -378,15 +395,15 @@ describe("layoutStorage", () => {
     const clean = sanitizeLayout(dirty);
     expect(clean.panels["teams-skills"]).toBeUndefined();
     expect(clean.panels["teams-costs"]).toBeUndefined();
-    expect(Object.keys(clean.panels)).toEqual(["teams-dashboard"]);
+    expect(Object.keys(clean.panels)).toEqual(["activity"]);
     const leafData = (clean.grid.root as unknown as { data: { views: string[]; activeView: string } }).data;
-    expect(leafData.views).toEqual(["teams-dashboard"]);
-    expect(leafData.activeView).toBe("teams-dashboard");
+    expect(leafData.views).toEqual(["activity"]);
+    expect(leafData.activeView).toBe("activity");
   });
 
   it("sanitizer prunes a group emptied when its only tab is a dropped retired-panel duplicate", () => {
     // Regression (round-4 finding): teams-costs is the ONLY tab in group-1;
-    // teams-dashboard (its alias target) is already open in group-2. The
+    // activity (its alias target) is already open in group-2. The
     // duplicate-target branch drops teams-costs, which would otherwise
     // leave group-1 restored as an empty pane. It must be pruned, and the
     // branch (now down to one child) must collapse to group-2 rather than
@@ -401,7 +418,7 @@ describe("layoutStorage", () => {
             {
               type: "leaf",
               size: 400,
-              data: { id: "group-2", views: ["teams-dashboard"], activeView: "teams-dashboard" },
+              data: { id: "group-2", views: ["activity"], activeView: "activity" },
             },
           ],
         },
@@ -411,10 +428,10 @@ describe("layoutStorage", () => {
       },
       panels: {
         "teams-costs": { id: "teams-costs", contentComponent: "teams", params: { teamsKey: "costs" } },
-        "teams-dashboard": {
-          id: "teams-dashboard",
-          contentComponent: "teams",
-          params: { teamsKey: "dashboard" },
+        "activity": {
+          id: "activity",
+          contentComponent: "activity",
+          params: {},
         },
       },
       activeGroup: "group-1",
@@ -423,7 +440,7 @@ describe("layoutStorage", () => {
     const clean = sanitizeLayout(dirty);
 
     expect(clean.panels["teams-costs"]).toBeUndefined();
-    expect(Object.keys(clean.panels)).toEqual(["teams-dashboard"]);
+    expect(Object.keys(clean.panels)).toEqual(["activity"]);
 
     // The branch collapsed to its sole surviving child — no empty group-1
     // leaf anywhere in the tree, and no redundant single-child branch.
@@ -432,8 +449,8 @@ describe("layoutStorage", () => {
       data: { id: string; views: string[]; activeView: string };
     }).data;
     expect(leafData.id).toBe("group-2");
-    expect(leafData.views).toEqual(["teams-dashboard"]);
-    expect(leafData.activeView).toBe("teams-dashboard");
+    expect(leafData.views).toEqual(["activity"]);
+    expect(leafData.activeView).toBe("activity");
 
     // activeGroup pointed at the pruned group-1 — must be repointed off it.
     expect(clean.activeGroup).toBe("group-2");

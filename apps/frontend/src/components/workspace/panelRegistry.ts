@@ -21,8 +21,12 @@ export const DEFAULT_AGENT_SENTINEL = "__default__";
 // (the old ControlPanelRouter remap pushed, trapping Back on ?panel=credits).
 export const RETIRED_PANEL_ALIASES: Readonly<Record<string, string>> = {
   "teams-approvals": "teams-inbox",
-  "teams-skills": "teams-dashboard",
-  "teams-costs": "teams-dashboard",
+  // Home is no longer a destination (stage-2 rail trim): it, and the keys it
+  // had absorbed, open the viewer's Activity feed. A saved Home tab is folded
+  // into Activity by layoutStorage's sanitizer.
+  "teams-dashboard": "activity",
+  "teams-skills": "activity",
+  "teams-costs": "activity",
   // Money is ONE page, and Payments/Products/Customers/Spend are its sections.
   // They alias to its key so the dock (which dedupes by panel id) opens ONE
   // "Money" tab no matter which of the five keys a link carries — Home's tiles

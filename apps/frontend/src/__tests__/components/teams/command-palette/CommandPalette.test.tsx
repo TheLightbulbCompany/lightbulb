@@ -23,7 +23,7 @@ test("renders 'Navigate' group with the IA nav actions on open with empty query"
   render(<CommandPalette open onOpenChange={vi.fn()} />);
   expect(screen.getByText("Navigate")).toBeInTheDocument();
   expect(screen.getByText("Inbox")).toBeInTheDocument();
-  expect(screen.getByText("Home")).toBeInTheDocument();
+  expect(screen.getByText("Activity")).toBeInTheDocument();
   // The org chart is a view of the Agents panel now, so "Agents" is the row.
   expect(screen.getByText("Agents")).toBeInTheDocument();
   expect(screen.getByText("Settings")).toBeInTheDocument();
@@ -34,14 +34,14 @@ test("typing in search filters nav actions", () => {
   const input = screen.getByPlaceholderText(/search messages/i);
   fireEvent.change(input, { target: { value: "inbo" } });
   expect(screen.getByText("Inbox")).toBeInTheDocument();
-  expect(screen.queryByText("Home")).not.toBeInTheDocument();
+  expect(screen.queryByText("Activity")).not.toBeInTheDocument();
 });
 
 test("ArrowDown moves selection to next row", () => {
   render(<CommandPalette open onOpenChange={vi.fn()} />);
   const input = screen.getByPlaceholderText(/search/i);
   fireEvent.keyDown(input, { key: "ArrowDown" });
-  // Search is item 1 (after Home at 0)
+  // Search is item 1 (after Activity at 0)
   const searchRow = screen.getByText("Search").closest("[data-cmd-row]")!;
   expect(searchRow).toHaveAttribute("aria-selected", "true");
 });
@@ -50,8 +50,8 @@ test("ArrowUp at top stays at 0", () => {
   render(<CommandPalette open onOpenChange={vi.fn()} />);
   const input = screen.getByPlaceholderText(/search/i);
   fireEvent.keyDown(input, { key: "ArrowUp" });
-  const homeRow = screen.getByText("Home").closest("[data-cmd-row]")!;
-  expect(homeRow).toHaveAttribute("aria-selected", "true");
+  const firstRow = screen.getByText("Activity").closest("[data-cmd-row]")!;
+  expect(firstRow).toHaveAttribute("aria-selected", "true");
 });
 
 test("Enter on selected row pushes the canonical URL + closes dialog", () => {
@@ -66,7 +66,7 @@ test("Enter on selected row pushes the canonical URL + closes dialog", () => {
   expect(pushStateSpy).toHaveBeenCalledWith(
     null,
     "",
-    "/chat?panel=teams-dashboard",
+    "/chat?panel=activity",
   );
   expect(onOpenChange).toHaveBeenCalledWith(false);
 });

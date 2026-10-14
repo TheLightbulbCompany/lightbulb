@@ -534,6 +534,6 @@ async def test_interaction_push_names_agent_and_task_and_focuses_activity(async_
         )
     assert resp.status_code == 200
     _, title, body, data = sent.await_args.args
-    assert title == "Growth · LB-7"
-    assert body == "Needs your confirmation: Launch email"
+    assert title == "Growth · needs your OK"  # T25: approvals read as a text from the agent
+    assert "Launch email" in body
     assert data["interactionId"] == "int-1" and data["issueId"] == "ent-1"

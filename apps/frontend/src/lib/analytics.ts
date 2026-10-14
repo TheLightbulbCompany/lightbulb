@@ -132,6 +132,7 @@ export type AnalyticsEvent =
   // Landing
   | "landing_download_clicked"
   | "landing_viewed"
+  | "setup_cta_clicked"
   // Integrations
   | "integration_access_requested"
   // MCP
@@ -277,6 +278,19 @@ function externalReferrer(): { referrer: string | null; domain: string | null } 
   } catch {
     return { referrer: document.referrer, domain: null };
   }
+}
+
+// The product app, not the site. Every other path (/, /pricing, /request-setup, /docs, /blog,
+// comparison and legal pages, the [seoSlug] pages) is a marketing route for landing_viewed.
+const APP_ROUTE_PREFIXES = [
+  "/chat", "/s", "/settings", "/onboarding", "/sign-in", "/sign-up", "/admin", "/join", "/welcome",
+  "/auth", "/oauth", "/checkout_redirect", "/session-tasks", "/marketplace", "/meet-bot", "/api",
+];
+
+/** A page of the website (T23): where a visit lands, as opposed to the signed-in app. */
+export function isMarketingRoute(pathname: string | null | undefined): boolean {
+  if (!pathname) return false;
+  return !APP_ROUTE_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 }
 
 /** Routes whose DOM is a customer's conversation (/chat, /s) or names people and carries an

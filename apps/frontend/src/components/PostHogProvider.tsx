@@ -12,6 +12,7 @@ import {
   client as posthogClient,
   identify,
   init as initAnalytics,
+  isMarketingRoute,
   isPrivateRoute,
   pageview,
   register,
@@ -71,6 +72,20 @@ function safeStorageGet(key: string): string | null {
     return window.localStorage.getItem(key);
   } catch {
     return null;
+  }
+}
+
+const LANDING_SESSION_KEY = "lightbulb:landing_viewed";
+
+/** True when the flag was already set this browser session; sets it otherwise. */
+function safeSessionFlag(key: string): boolean {
+  if (typeof window === "undefined") return true;
+  try {
+    if (window.sessionStorage.getItem(key)) return true;
+    window.sessionStorage.setItem(key, "1");
+    return false;
+  } catch {
+    return false; // storage off: count every entry rather than none
   }
 }
 
@@ -279,6 +294,36 @@ function SignupExitTracker() {
   return null;
 }
 
+/**
+ * `setup_cta_clicked` (T23): any link to /request-setup, wherever it is, counts. One listener
+ * instead of wiring every button; a link names itself with `data-cta-id` / `data-surface`.
+ */
+function SetupCtaTracker() {
+  useEffect(() => {
+    const onClick = (event: MouseEvent) => {
+      const link = (event.target as Element | null)?.closest?.("a[href]") as HTMLAnchorElement | null;
+      if (!link) return;
+      let path: string;
+      try {
+        path = new URL(link.href, window.location.origin).pathname;
+      } catch {
+        return;
+      }
+      // Never on /chat or /s: a link there is a person's message, and its label is their words.
+      if (path !== "/request-setup" || isPrivateRoute(window.location.pathname)) return;
+      capture("setup_cta_clicked", {
+        cta_id: link.dataset.ctaId ?? null,
+        cta_label: (link.textContent ?? "").trim().slice(0, 80),
+        surface: link.dataset.surface ?? null,
+        route: window.location.pathname,
+      });
+    };
+    document.addEventListener("click", onClick, true);
+    return () => document.removeEventListener("click", onClick, true);
+  }, []);
+  return null;
+}
+
 function PostHogPageview() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -309,7 +354,9 @@ function PostHogPageview() {
     if (!POSTHOG_KEY) return;
     if (lastSentUrlRef.current !== url && pageview(url)) {
       lastSentUrlRef.current = url;
-      if (pathname === "/") {
+      // The visit's entry on the website: the first marketing page of the browser session,
+      // whichever page that is (T23; it used to be "/" only, and every time).
+      if (isMarketingRoute(pathname) && !safeSessionFlag(LANDING_SESSION_KEY)) {
         capture("landing_viewed", { path: url });
       }
       if (searchParams.get("from") === "away_email") {
@@ -467,6 +514,7 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
       </Suspense>
       <PostHogIdentify />
       <SignupExitTracker />
+      <SetupCtaTracker />
       <PostHogErrorForwarder />
       {children}
     </AnalyticsProvider>

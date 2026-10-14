@@ -8,6 +8,7 @@ import { ExplicitSharingNotice, LiveSharingOffer } from "@/components/desktop/Ex
 import { InAppNavTracker } from "@/components/legal/BackButton";
 import { PostHogProvider } from "@/components/PostHogProvider";
 import { SwrProvider } from "@/components/SwrProvider";
+import { VercelAnalytics } from "@/components/VercelAnalytics";
 import { SupportProvider } from "@/components/support/SupportProvider";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -125,6 +126,7 @@ export default function RootLayout({
               </PostHogProvider>
             </SwrProvider>
           </ErrorBoundary>
+          <VercelAnalytics />
         </body>
       </html>
     </ClerkProvider>

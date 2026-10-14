@@ -276,9 +276,9 @@ def _bridge_subscription_state(
     }
     if new_status == "trialing" and old_status != "trialing":
         event = "trial_started"
-    elif new_status == "active" and old_status == "trialing":
-        event = "trial_converted"  # the trial->paid moment — the core SaaS metric
     elif new_status == "active":
+        # trial_converted is NOT a status change: it is the first paid, undiscounted invoice
+        # (handle_invoice_paid, T23). A coupon or a $0 invoice turns a status active too.
         event = "subscription_activated"
     elif new_status == "past_due":
         event = "subscription_past_due"
@@ -521,15 +521,15 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         or (plan_persisted and account.get("plan") != new_plan)
     )
     if old_status == "trial_local" and new_status == "active":
-        # A card-on-file trial (trial_local -> trialing, T05) has paid nothing yet; its
-        # conversion is the bridge's trialing -> active "trial_converted" below.
-        # Trial funnel telemetry: the free-tier trial converting to paid billing -- distinct
-        # from the generic trialing->active "trial_converted" the bridge below may also emit for
-        # a REAL (card-collected) Stripe trial. Several events per subscription change can each
-        # see old_status == "trial_local"; the deterministic uuid makes PostHog keep one.
+        # The free trial checked out straight into paid billing (a card-on-file trial,
+        # trial_local -> trialing (T05), has paid nothing and is not this). The conversion
+        # itself is trial_converted on the first invoice paid at list (handle_invoice_paid,
+        # T23). Several events per change can see old_status == "trial_local"; the
+        # deterministic uuid makes PostHog keep one.
         capture_product_event(
             distinct_id=_subscriber_distinct_id(account, event_data),
-            event="trial_converted",
+            # The card went on at checkout; the paid moment is trial_converted on invoice.paid.
+            event="trial_checkout_completed",
             properties={
                 "workspace_id": account["owner_id"],
                 "from_status": old_status,
@@ -689,6 +689,77 @@ async def handle_invoice_payment_failed(event: dict[str, Any], billing_service: 
     return None
 
 
+_TRIAL_CONVERTED_ONCE_TTL_S = 10 * 365 * 86400
+_INVOICE_PAID_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "lightbulb:invoice_paid")
+
+
+def _invoice_subscription(invoice: dict[str, Any]) -> tuple[str | None, dict]:
+    """``(subscription id, subscription metadata)`` across Stripe API versions: the newer
+    ``parent.subscription_details`` and the older top-level ``subscription``."""
+    details = ((invoice.get("parent") or {}).get("subscription_details")) or invoice.get("subscription_details") or {}
+    sub = details.get("subscription") or invoice.get("subscription")
+    if isinstance(sub, dict):
+        sub = sub.get("id")
+    return sub, details.get("metadata") or {}
+
+
+def invoice_at_list(invoice: dict[str, Any]) -> bool:
+    """Paid at list: money moved and no discount of any kind (09-analytics: coupons are not
+    revenue, six workspaces sit on a 100% internal coupon)."""
+    discounted = bool(invoice.get("discounts")) or any(
+        int(d.get("amount") or 0) > 0 for d in invoice.get("total_discount_amounts") or []
+    )
+    return int(invoice.get("amount_paid") or 0) > 0 and not discounted
+
+
+async def handle_invoice_paid(event: dict[str, Any], billing_service: BillingService) -> Response | None:
+    """`invoice.paid` (T23): ``invoice_paid {at_list}`` on every paid invoice, and
+    ``trial_converted`` once per workspace, on its first invoice paid at list. Telemetry only;
+    billing state stays with the subscription events. Never raises into the webhook."""
+    invoice = event["data"]["object"]
+    put_metric("stripe.invoice", dimensions={"event": "paid"})
+    sub_id, sub_metadata = _invoice_subscription(invoice)
+    account = await resolve_owner_account({"metadata": sub_metadata, "customer": invoice.get("customer"), "id": sub_id})
+    if not account:
+        return None
+    owner_id = account["owner_id"]
+    at_list = invoice_at_list(invoice)
+    props = {
+        "workspace_id": owner_id,
+        "invoice_id": invoice.get("id"),
+        "amount_paid": invoice.get("amount_paid"),
+        "currency": invoice.get("currency"),
+        "plan": account.get("plan"),
+        "billing_reason": invoice.get("billing_reason"),
+        "at_list": at_list,
+    }
+    distinct_id = _subscriber_distinct_id(account, {"metadata": sub_metadata})
+    capture_product_event(
+        distinct_id=distinct_id,
+        event="invoice_paid",
+        properties=props,
+        event_uuid=str(uuid.uuid5(_INVOICE_PAID_NAMESPACE, str(invoice.get("id")))),
+    )
+    if at_list and sub_id:  # a subscription's invoice: a credit top-up is not a conversion
+        from core.services import webhook_dedup
+
+        try:
+            first = await webhook_dedup.record_event_or_skip(
+                f"trial-converted:{owner_id}", source="analytics", ttl_seconds=_TRIAL_CONVERTED_ONCE_TTL_S
+            )
+        except Exception:
+            logger.warning("trial_converted marker failed for %s", owner_id, exc_info=True)
+            return None
+        if first is webhook_dedup.WebhookDedupResult.RECORDED:
+            capture_product_event(
+                distinct_id=distinct_id,
+                event="trial_converted",
+                properties={"workspace_id": owner_id, "plan": account.get("plan"), "invoice_id": invoice.get("id")},
+                event_uuid=str(uuid.uuid5(_TRIAL_CONVERTED_NAMESPACE, owner_id)),
+            )
+    return None
+
+
 async def handle_checkout_session(event: dict[str, Any], billing_service: BillingService) -> Response | None:
     """Handle the Checkout events still owned outside subscription lifecycle.
 
@@ -731,6 +802,7 @@ STRIPE_WEBHOOK_HANDLERS: dict[str, HandlerFn] = {
     "customer.subscription.trial_will_end": handle_trial_will_end,
     "customer.subscription.deleted": handle_subscription_deleted,
     "invoice.payment_failed": handle_invoice_payment_failed,
+    "invoice.paid": handle_invoice_paid,
     "checkout.session.completed": handle_checkout_session,
     "checkout.session.async_payment_succeeded": handle_checkout_session,
 }

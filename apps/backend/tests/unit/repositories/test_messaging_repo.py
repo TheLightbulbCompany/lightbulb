@@ -328,17 +328,15 @@ async def _dm(client_room_id, creator=USER_A, other=("agent", FRIDAY), replaces=
 
 @pytest.mark.asyncio
 async def test_concurrent_dm_creates_for_one_pair_make_one_room(table, monkeypatch):
-    # DynamoDB applies a transaction and its conditions atomically; moto's in-memory table does
-    # not across threads, so two creates could both pass `attribute_not_exists` and the test
-    # flaked (2 rooms) while prod could not. Make the mock atomic the way DynamoDB is; the four
-    # creates still race through everything else.
+    # DynamoDB applies each call (a transaction and its conditions included) atomically; moto's
+    # in-memory table is not thread-safe, so two creates could both pass `attribute_not_exists`
+    # (2 rooms) or a read could hit a write mid-update ("dictionary changed size during
+    # iteration") -- flakes prod cannot have. One call at a time, as DynamoDB serializes them;
+    # the four creates still interleave between calls, which is the race under test.
     atomic = threading.Lock()
     real = repo.run_in_thread
 
     async def run_in_thread(call, *args, **kwargs):
-        if getattr(call, "__name__", "") != "transact_write_items":
-            return await real(call, *args, **kwargs)
-
         def locked(*a, **kw):
             with atomic:
                 return call(*a, **kw)

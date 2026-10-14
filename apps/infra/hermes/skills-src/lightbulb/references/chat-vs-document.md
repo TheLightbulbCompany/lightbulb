@@ -98,9 +98,11 @@ finished document is announced with `scripts/lightbulb-post.sh`:
 The answer is in chat (the takeaways), the detail is one click away, and it
 ends with a clear next step.
 
-## The first run (when `BRIEF.md` is in your home)
+## The first run
 
-`BRIEF.md` carries the result contract; this is its mirror. The person should
+The owner's first reply to the seeded welcome in `#general` starts it. Your
+first turn on it may run before `BRIEF.md` reaches your home; follow this
+anyway. `BRIEF.md` carries the same contract once it lands. The person should
 see work done and make one decision:
 
 1. First reply: three sentences at most, the point first ("Got it: … I'm

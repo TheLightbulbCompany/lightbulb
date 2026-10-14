@@ -1,124 +1,67 @@
-"use client";
-import Image from "next/image";
 import Link from "next/link";
 
-import { PROVIDER_CARDS } from "@/lib/providerCards";
-import { captureSignupCta } from "@/lib/signupFlow";
+import { markupPercent, ordinal, type Pricing } from "@/lib/pricing";
 
 import { Arrow } from "./Arrow";
 
 /**
- * Pricing — one workspace, three ways to power inference.
- *
- * The cards are provider PATHS, not plans. Exact plan prices (Base/Workspace/
- * Ultra) live on the in-app Billing page via `/billing/account` — never
- * hardcoded here. Order and highlighting come from `PROVIDER_CARDS`.
+ * Homepage price block (10 §A.5): one price, then the three ways to power the
+ * agents as a plain row (no pill, no per-card buttons, no art). Prices come from
+ * the billing API via the page (lib/pricing.getPricing); null shows no number.
  */
-const ART: Record<string, { src: string; pos: string }> = {
-  chatgpt_oauth: { src: "/landing/ladder-star.jpg", pos: "center 30%" },
-  byo_key: { src: "/landing/step-work.jpg", pos: "center 40%" },
-  openrouter_managed: { src: "/landing/plan-lights.jpg", pos: "center 34%" },
-};
+const options = (p: Pricing | null) => [
+  {
+    title: "Lightbulb-managed.",
+    body: p
+      ? `Nothing to set up. Billed as credits at the model provider's price plus ${markupPercent(p.managedMarkup)}%.`
+      : "Nothing to set up. Billed as prepaid credits.",
+  },
+  { title: "Your ChatGPT account.", body: "Sign in once; your agents run on your ChatGPT plan." },
+  { title: "Your own key.", body: "OpenAI or Anthropic. Your provider bills you directly." },
+];
 
-function Tick() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 14 14" aria-hidden="true">
-      <path d="M2.5 7.3l3 3 6-6.2" fill="none" stroke="#B68235" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-export function PricingThreeCard() {
+export function PricingThreeCard({ pricing: p }: { pricing: Pricing | null }) {
   return (
     <section id="pricing" className="lb-pricing">
       <div className="lb-wrap">
-        <h2 className="lb-h2">
-          One workspace.{" "}
-          <br className="lb-brk" />
-          Three ways to power it.
-        </h2>
-
-        <p className="lb-price-hero">
-          <b>Choose your plan</b>
-        </p>
-        <p className="lb-price-free">
-          <strong>Start free for 30 days</strong> — no credit card.
-        </p>
-
+        <h2 className="lb-h2">Any model. One price.</h2>
+        {p && (
+          <>
+            <p className="lb-price-hero">
+              <b>
+                ${p.teamPriceUsd} a month for your workspace, up to {numberWord(p.includedMembers)} people.
+              </b>
+            </p>
+            <p className="lb-price-free">
+              Then ${p.seatPriceUsd} a month for each person from the {ordinal(p.includedMembers + 1)}. {p.trialDays}{" "}
+              days free, no card to start; founding teams put a card on file at their setup session and the first charge
+              is on day 31.
+            </p>
+          </>
+        )}
         <div className="lb-plans">
-          {PROVIDER_CARDS.map((card) => {
-            const art = ART[card.id];
-            return (
-              <article key={card.id} className={`lb-plan${card.highlighted ? " rec" : ""}`}>
-                <div className="lb-plan-art">
-                  {art && (
-                    <Image
-                      src={art.src}
-                      alt=""
-                      fill
-                      sizes="(max-width: 980px) 100vw, 33vw"
-                      style={{ objectFit: "cover", objectPosition: art.pos }}
-                    />
-                  )}
-                  <span className="lb-rec-pill">{card.highlighted ? "Recommended" : "Option"}</span>
-                </div>
-                <div className="lb-plan-b">
-                  <h3>{card.title}</h3>
-                  <p className="lb-blurb">{card.subtitle}</p>
-                  <Link
-                    href={card.href}
-                    className={`lb-btn ${card.highlighted ? "lb-btn-p" : "lb-btn-s"}`}
-                    onClick={() =>
-                      captureSignupCta({
-                        ctaId: `pricing_card_${card.id}`,
-                        label: card.cta,
-                        surface: "landing_pricing",
-                        destination: "/sign-up",
-                        providerChoice: card.id,
-                      })
-                    }
-                  >
-                    {card.cta}
-                  </Link>
-                  <ul className="lb-feats">
-                    {card.bullets.map((b) => (
-                      <li key={b}>
-                        <Tick />
-                        <span>{b}</span>
-                      </li>
-                    ))}
-                  </ul>
-                  <p className="lb-trial-note">{card.trialNote}</p>
-                </div>
-              </article>
-            );
-          })}
+          {options(p).map((o) => (
+            <article key={o.title} className="lb-plan">
+              <div className="lb-plan-b">
+                <p className="lb-blurb">
+                  <strong>{o.title}</strong> {o.body}
+                </p>
+              </div>
+            </article>
+          ))}
         </div>
-
-        <div className="lb-ws-strip">
-          <div>
-            <h3>Your workspace</h3>
-            <p>Agents, people, and work in one place.</p>
-          </div>
-          <Link
-            href="/sign-up"
-            className="lb-btn lb-btn-p"
-            onClick={() =>
-              captureSignupCta({
-                ctaId: "pricing_create_workspace",
-                label: "Create a workspace",
-                surface: "landing_pricing",
-                destination: "/sign-up",
-              })
-            }
-          >
-            Create a workspace
-            <Arrow />
+        <p className="lb-price-free">
+          <Link href="/pricing">
+            See pricing for your team <Arrow />
           </Link>
-        </div>
+        </p>
       </div>
     </section>
   );
+}
+
+function numberWord(n: number): string {
+  return ["zero", "one", "two", "three", "four", "five", "six"][n] ?? String(n);
 }
 
 export default PricingThreeCard;

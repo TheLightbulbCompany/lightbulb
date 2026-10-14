@@ -62,9 +62,10 @@ describe("landing headlines survive .lb-brk being hidden", () => {
     expect(flatten(container)).toContain("Everything an agent does, where your team can see it.");
   });
 
-  it("PricingThreeCard keeps a space after the first sentence", async () => {
+  it("PricingThreeCard states the one price", async () => {
     const { PricingThreeCard } = await import("../PricingThreeCard");
-    const { container } = render(<PricingThreeCard />);
-    expect(flatten(container)).toContain("One workspace. Three ways to power it.");
+    const { container } = render(<PricingThreeCard pricing={{ teamPriceUsd: 50, includedMembers: 5, seatPriceUsd: 20, trialDays: 30, managedMarkup: "1.2" }} />);
+    expect(flatten(container)).toContain("Any model. One price.");
+    expect(flatten(container)).toContain("$50 a month for your workspace, up to five people.");
   });
 });

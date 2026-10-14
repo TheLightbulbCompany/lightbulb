@@ -8,6 +8,7 @@ import { ProofBand } from "@/components/landing/ProofBand";
 import { HowItWorks } from "@/components/landing/HowItWorks";
 import { WorkspaceBand } from "@/components/landing/WorkspaceBand";
 import { PricingThreeCard as Pricing } from "@/components/landing/PricingThreeCard";
+import { getPricing } from "@/lib/pricing";
 import { AskAI } from "@/components/landing/AskAI";
 import { FoundingTeams } from "@/components/landing/FoundingTeams";
 import { HomeFaq } from "@/components/landing/HomeFaq";
@@ -41,6 +42,7 @@ export default async function LandingPage() {
   // Reading the cookie makes this page render per request: the headline test
   // needs each visitor to keep the variant they were first shown.
   const variant = parseHeadlineVariant((await cookies()).get(HEADLINE_COOKIE)?.value) ?? pickHeadlineVariant();
+  const pricing = await getPricing();
   return (
     <main className="ld-page min-h-screen">
       <JsonLd data={homeJsonLd} />
@@ -55,8 +57,8 @@ export default async function LandingPage() {
       <WorkspaceBand />
       <ProofStories />
       <ProofBand />
-      <Pricing />
-      <FoundingTeams />
+      <Pricing pricing={pricing} />
+      <FoundingTeams pricing={pricing} />
       <HomeFaq />
       <AskAI />
       <Footer />

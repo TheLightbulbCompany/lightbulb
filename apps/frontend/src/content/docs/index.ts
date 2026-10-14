@@ -48,12 +48,12 @@ export const docsFaq = [
   {
     question: "Is Lightbulb free to try?",
     answer:
-      "Yes. The free tier needs no credit card and runs for 30 days on the server-selected free model. The workspace sleeps when idle and wakes when you open it. Paid plans are Base at $20 a month, Workspace at $50 a month, and Ultra at $150 a month.",
+      "Yes. The free tier needs no credit card and runs for 30 days on the server-selected free model. The workspace sleeps when idle and wakes when you open it. After that there is one plan; see /pricing.",
   },
   {
     question: "How much does Lightbulb cost?",
     answer:
-      "Base is $20 per month, Workspace is $50 per month, and Ultra is $150 per month. Each covers one workspace and up to 5 people; each person from the 6th adds $20 a month. Ultra provides a larger workspace and is required above 10 agents. A free tier with no credit card is available for evaluation.",
+      "One plan: a flat monthly price for the workspace and its first people, then a per-person price for each member after. Agents' AI is billed separately: Lightbulb-managed as prepaid credits, or your own ChatGPT account or API key, billed by them. Current prices are on /pricing.",
   },
   {
     question: "Which agents do I get when I sign up?",
@@ -68,6 +68,6 @@ export const docsFaq = [
   {
     question: "Which AI models does Lightbulb run on?",
     answer:
-      "Three provider paths. Lightbulb-managed is included with every plan and needs no setup — the free trial and Base run on DeepSeek within a daily allowance, and more models via prepaid credits are coming soon. Or connect your own ChatGPT account over OAuth, or bring your own Anthropic or OpenAI API key.",
+      "Three provider paths. Lightbulb-managed is included with every plan and needs no setup — the free trial runs on DeepSeek within a daily allowance, and more models via prepaid credits are coming soon. Or connect your own ChatGPT account over OAuth, or bring your own Anthropic or OpenAI API key.",
   },
 ];

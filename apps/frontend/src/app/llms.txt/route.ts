@@ -1,6 +1,7 @@
 import { getAllPosts } from "@/content/blog";
 import { docsFaq, getAllDocs } from "@/content/docs";
 import { SITE_URL } from "@/lib/domain";
+import { getPricing, pricingInference } from "@/lib/pricing";
 import { seoLandingPages } from "@/lib/seo";
 
 /**
@@ -13,18 +14,19 @@ import { seoLandingPages } from "@/lib/seo";
  * hand-maintain a list here — add the doc or post and it appears.
  *
  * Every factual claim below is verified against the product, not marketing
- * copy: plan prices are `WORKSPACE_PRICE_USD` / `ULTRA_PRICE_USD` in
- * `apps/backend/core/config.py` (50 / 150), and the free tier is the
+ * copy: the one plan's prices come from the billing API (`lib/pricing.getPricing`),
+ * and the free tier is the
  * `trial_local` path — a 30-day no-card window on the server-selected free
  * model. There is no 14-day trial; it was removed 2026-07-17.
  */
-export const dynamic = "force-static";
+export const revalidate = 300;
 
 function line(name: string, path: string, description: string) {
   return `- [${name}](${SITE_URL}${path}): ${description}`;
 }
 
-export function GET() {
+export async function GET() {
+  const p = await getPricing();
   const docs = getAllDocs();
   const posts = getAllPosts();
 
@@ -42,9 +44,10 @@ export function GET() {
     "",
     "- Product site: " + SITE_URL,
     "- Free tier: no credit card, 30 days on the server-selected free model. The workspace sleeps when idle and wakes when opened.",
-    "- Base plan: $20/month — the same managed free model after the no-card trial, with no per-user request cap in the initial release.",
-    "- Workspace plan: $50/month — an always-on workspace so channels, webhooks, routines and autonomous runs keep working while you are away. Covers 5 people; each person from the 6th adds $20/month.",
-    "- Ultra plan: $150/month — a larger workspace (2 vCPU / 8 GB), required above 10 agents. Covers 5 people; each person from the 6th adds $20/month.",
+    p
+      ? `- Team plan: $${p.teamPriceUsd}/month for the workspace and up to ${p.includedMembers} people, then $${p.seatPriceUsd}/month for each person after. One plan; details at ${SITE_URL}/pricing.`
+      : `- Team plan: one plan, a flat monthly price for the workspace and its first people, then a per-person price. Details at ${SITE_URL}/pricing.`,
+    `- ${pricingInference(p)}`,
     "- Inference providers: Lightbulb-managed models (DeepSeek within a daily allowance; more via prepaid credits), your own ChatGPT account via OAuth, or a bring-your-own Anthropic or OpenAI API key.",
     "- Surfaces: web app, a macOS desktop app, and an iOS app.",
     "",

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { capture } from "@/lib/analytics";
 import type { BillingAccount } from "@/hooks/useBilling";
+import { markupPercent } from "@/lib/pricing";
 
 /**
  * The one plan (T06) on Settings → Billing: Team, $workspace_price_usd a month
@@ -73,8 +74,10 @@ export function PlanChooser({
             always-on runtime.
           </li>
           <li>
-            AI usage: bring your ChatGPT account or API key at no charge, or use Lightbulb credits at the model&apos;s
-            price plus 20%.
+            AI usage: bring your ChatGPT account or API key at no charge, or use Lightbulb credits
+            {account?.managed_markup
+              ? ` at the model's price plus ${markupPercent(account.managed_markup)}%.`
+              : "."}
           </li>
         </ul>
         {!current && (

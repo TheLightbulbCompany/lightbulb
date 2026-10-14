@@ -31,7 +31,7 @@ Open **Company → Automations**, or ask your CEO to set the loop up.
 
 ## What needs a paid plan
 
-Anything always-on — webhooks, routines, and autonomous runs — requires a Workspace or Ultra subscription. A free-tier workspace sleeps when idle: it can chat, but it can't run while you're away.
+Anything always-on — webhooks, routines, and autonomous runs — requires the Team plan. A free-tier workspace sleeps when idle: it can chat, but it can't run while you're away.
 
 ## Budgets
 

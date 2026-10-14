@@ -44,6 +44,8 @@ class BillingAccountResponse(BaseModel):
     # then seat_price_usd a month for each member past them.
     seat_price_usd: int
     included_members: int
+    # Managed-credit markup (provider price x this), from openrouter-pricing.json via CDK.
+    managed_markup: str | None = None
     # Which channel the live subscription was bought through: "apple_iap", or
     # absent/None for the Stripe path (the default, and every pre-IAP row).
     #

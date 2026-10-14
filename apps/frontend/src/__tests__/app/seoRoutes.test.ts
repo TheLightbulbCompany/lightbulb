@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { GET as llms } from "@/app/llms.txt/route";
 import { GET as llmsFull } from "@/app/llms-full.txt/route";
@@ -14,9 +14,21 @@ import { seoLandingPages } from "@/lib/seo";
  * or a post and it must appear, without anyone editing a list by hand.
  */
 
-async function body(res: Response) {
-  return res.text();
+async function body(res: Response | Promise<Response>) {
+  return (await res).text();
 }
+
+const json = (body: unknown) => new Response(JSON.stringify(body));
+
+// /llms.txt reads the plan's price from the billing API (lib/pricing.getPricing).
+beforeEach(() => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () =>
+      json({ workspace_price_usd: 50, included_members: 5, seat_price_usd: 20, trial_days: 30, managed_markup: "1.2" }),
+    ),
+  );
+});
 
 describe("/llms.txt", () => {
   it("lists every doc, post, and landing page with an absolute URL", async () => {
@@ -34,7 +46,7 @@ describe("/llms.txt", () => {
   });
 
   it("is served as plain text and opens with the llms.txt H1 + summary", async () => {
-    const res = llms();
+    const res = await llms();
     expect(res.headers.get("Content-Type")).toMatch(/^text\/plain/);
     const text = await body(res);
     expect(text.startsWith("# Lightbulb\n")).toBe(true);
@@ -43,11 +55,9 @@ describe("/llms.txt", () => {
 
   it("states the plan facts the backend actually charges", async () => {
     const text = await body(llms());
-    // Mirrors WORKSPACE_PRICE_USD / ULTRA_PRICE_USD and the trial_local cap.
-    // A price edit in the backend must be reflected here, not silently drift.
-    expect(text).toContain("$50/month");
-    expect(text).toContain("$150/month");
-    expect(text).toContain("Base plan: $20/month");
+    // The one plan, priced by the billing API. Base and Ultra are retired: never quote them again.
+    expect(text).toContain("Team plan: $50/month for the workspace and up to 5 people, then $20/month");
+    expect(text).not.toMatch(/Ultra|Base plan|vCPU/);
     expect(text).toContain("server-selected free model");
     expect(text).toContain("30 days");
     // The 14-day trial was removed in 2026-07; never reintroduce the claim.

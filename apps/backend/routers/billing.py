@@ -119,6 +119,28 @@ async def get_trial_recap(
 
 
 @router.get(
+    "/prices",
+    summary="The public plan price",
+    description=(
+        "Unauthenticated. The one plan's price as checkout bills it: the workspace price, the "
+        "members it covers, the per-member seat price past them, and the free-trial length. "
+        "The marketing site renders /pricing from this."
+    ),
+    operation_id="get_public_prices",
+)
+async def get_public_prices(response: Response):
+    response.headers["Cache-Control"] = "public, max-age=300"
+    return {
+        "workspace_price_usd": settings.WORKSPACE_PRICE_USD,
+        "included_members": SEATS_INCLUDED,
+        "seat_price_usd": settings.SEAT_PRICE_USD,
+        "trial_days": billing_repo._TRIAL_LOCAL_DURATION_SECONDS // 86400,
+        # The one billed copy is repo-root openrouter-pricing.json, fed in by CDK.
+        "managed_markup": settings.OPENROUTER_MARKUP or None,
+    }
+
+
+@router.get(
     "/account",
     response_model=BillingAccountResponse,
     summary="Get billing account",
@@ -174,6 +196,7 @@ async def get_billing_account(
         ultra_price_usd=settings.ULTRA_PRICE_USD,
         seat_price_usd=settings.SEAT_PRICE_USD,
         included_members=SEATS_INCLUDED,
+        managed_markup=settings.OPENROUTER_MARKUP or None,
         subscription_source=(account.get("subscription_source") if account else None),
         apple_iap_product_ids=list(apple_iap.SELLING_PRODUCTS) if settings.APPLE_IAP_SELLING else [],
         capped_today=bool(account) and account.get("openrouter_capped_day") == trial_cap.utc_today(),

@@ -99,7 +99,7 @@ export const PROVIDER_CARDS: ProviderCard[] = [
     subtitle: "Included with every plan — DeepSeek within a daily allowance",
     trialNote: "On by default — nothing to set up",
     bullets: [
-      "Free trial and Base: DeepSeek within a daily allowance",
+      "Free trial: DeepSeek within a daily allowance",
       "More models with prepaid credits — coming soon",
       "All channels",
     ],

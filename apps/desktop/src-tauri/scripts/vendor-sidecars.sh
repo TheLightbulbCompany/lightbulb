@@ -161,6 +161,8 @@ EOF
     local GOT
     GOT="$(node -p "require('$DIR/node_modules/chrome-devtools-mcp/package.json').version")"
     [ "$GOT" = "$CHROME_DEVTOOLS_MCP_VERSION" ] || { echo "chrome-devtools-mcp is $GOT, pinned $CHROME_DEVTOOLS_MCP_VERSION" >&2; exit 1; }
+    # Loaded with node --env-file (native_mcp.rs BROWSER_ENV): no npm update check, no usage report.
+    printf 'CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS=1\nCHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS=1\n' > "$DIR/mcp.env"
 }
 
 # CI passes a single target triple; local dev (no args) vendors both

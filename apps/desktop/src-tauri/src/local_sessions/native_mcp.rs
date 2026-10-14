@@ -37,6 +37,9 @@ pub(super) const BROWSER_SERVER_NAME: &str = "lightbulb-browser";
 const NODE: &str = if cfg!(target_arch = "aarch64") { "node-aarch64-apple-darwin" } else { "node-x86_64-apple-darwin" };
 /// vendor-sidecars.sh installs the pinned package here, beside the bundled `node`.
 const BROWSER_ENTRY: &str = "chrome-devtools-mcp/node_modules/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js";
+/// Node loads it with `--env-file`: `mcp add` takes a command line, not an environment, and the
+/// server checks npm for updates (CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS) and reports usage unless told not to.
+const BROWSER_ENV: &str = "chrome-devtools-mcp/mcp.env";
 
 fn browser_url() -> String {
     format!("http://127.0.0.1:{}", crate::session_browser::PORT)
@@ -53,9 +56,10 @@ pub(super) fn browser_command(executable: &Path) -> Option<Vec<String>> {
     let bin = [macos.parent().map(|c| c.join("Resources/bin")), Some(macos.join("bin"))]
         .into_iter()
         .flatten()
-        .find(|bin| bin.join(NODE).is_file() && bin.join(BROWSER_ENTRY).is_file())?;
+        .find(|bin| bin.join(NODE).is_file() && bin.join(BROWSER_ENTRY).is_file() && bin.join(BROWSER_ENV).is_file())?;
     Some(vec![
         bin.join(NODE).to_string_lossy().into_owned(),
+        format!("--env-file={}", bin.join(BROWSER_ENV).to_string_lossy()),
         bin.join(BROWSER_ENTRY).to_string_lossy().into_owned(),
         "--browserUrl".into(),
         browser_url(),
@@ -75,8 +79,10 @@ fn is_lightbulb_browser(entry: &Value) -> bool {
         return true;
     }
     command.ends_with(&format!("/{NODE}"))
-        && args.first().is_some_and(|a| a.ends_with(&format!("/{BROWSER_ENTRY}")))
-        && args[1..] == ["--browserUrl", url.as_str(), "--no-usage-statistics"]
+        && args.len() == 5
+        && args[0].starts_with("--env-file=") && args[0].ends_with(&format!("/{BROWSER_ENV}"))
+        && args[1].ends_with(&format!("/{BROWSER_ENTRY}"))
+        && args[2..] == ["--browserUrl", url.as_str(), "--no-usage-statistics"]
 }
 
 /// The MCP server entry `name` as the provider stores it (`{command, args}`); Null when absent.
@@ -737,7 +743,8 @@ json.dump(doc, open(p, "w"))
         let npx = json!({"command": "npx", "args": ["-y", "chrome-devtools-mcp@latest", "--browserUrl", "http://127.0.0.1:39222"]});
         std::fs::write(h.join(".claude.json"), json!({"mcpServers": {BROWSER_SERVER_NAME: npx, "chrome-devtools": npx}}).to_string()).unwrap();
         let notes = configure(h, &exe, true);
-        assert!(!notes.iter().any(|n| n.contains(BROWSER_SERVER_NAME)), "{notes:?}");
+        // (Only Claude's: a CI machine's codex CLI may not install into this temp home at all.)
+        assert!(!notes.iter().any(|n| n.starts_with("claude ") && n.contains(BROWSER_SERVER_NAME)), "{notes:?}");
         assert_eq!(servers()[BROWSER_SERVER_NAME], json!({"command": ours[0], "args": &ours[1..]}));
         assert_eq!(servers()["chrome-devtools"], npx, "a server under another name is never touched");
 
@@ -771,6 +778,7 @@ json.dump(doc, open(p, "w"))
         std::fs::create_dir_all(bin.join(BROWSER_ENTRY).parent().unwrap()).unwrap();
         std::fs::write(bin.join(NODE), b"").unwrap();
         std::fs::write(bin.join(BROWSER_ENTRY), b"").unwrap();
+        std::fs::write(bin.join(BROWSER_ENV), b"").unwrap();
         root.join("Lightbulb.app/Contents/MacOS/lightbulb-desktop")
     }
 
@@ -781,6 +789,7 @@ json.dump(doc, open(p, "w"))
         let bin = app.path().join("Lightbulb.app/Contents/Resources/bin");
         assert_eq!(browser_command(&exe).unwrap(), vec![
             bin.join(NODE).to_string_lossy().into_owned(),
+            format!("--env-file={}", bin.join(BROWSER_ENV).to_string_lossy()),
             bin.join(BROWSER_ENTRY).to_string_lossy().into_owned(),
             "--browserUrl".to_owned(),
             "http://127.0.0.1:39222".to_owned(),
@@ -793,6 +802,7 @@ json.dump(doc, open(p, "w"))
         std::fs::create_dir_all(dev_bin.join(BROWSER_ENTRY).parent().unwrap()).unwrap();
         std::fs::write(dev_bin.join(NODE), b"").unwrap();
         std::fs::write(dev_bin.join(BROWSER_ENTRY), b"").unwrap();
+        std::fs::write(dev_bin.join(BROWSER_ENV), b"").unwrap();
         assert_eq!(browser_command(&dev.path().join("lightbulb-desktop")).unwrap()[0], dev_bin.join(NODE).to_string_lossy());
         // No bundle (an unvendored build): no command, never a guess.
         let empty = tempfile::tempdir().unwrap();

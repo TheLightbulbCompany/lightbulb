@@ -97,6 +97,7 @@ def wired(monkeypatch):
 
     async def _send(*, from_addr, to, subject, body_text, body_html, headers, tenant_name=None):
         st.ses_calls += 1
+        st.sent_tenant = tenant_name
         st.sent_subject = subject
         st.sent_to = to
         st.sent_from = from_addr
@@ -444,6 +445,8 @@ def member_wired(wired, monkeypatch):
     wired.update = AsyncMock(return_value={})
     monkeypatch.setattr(mod.agent_email_repo, "get_by_address", AsyncMock(side_effect=lambda _a: wired.row))
     monkeypatch.setattr(mod.agent_email_repo, "update_settings", wired.update)
+    wired.tenant = AsyncMock(return_value="tenant-org_a")
+    monkeypatch.setattr(mod, "ensure_tenant", wired.tenant)
     return wired
 
 
@@ -482,3 +485,18 @@ async def test_member_send_before_provisioning_sends_nothing(member_wired):
     member_wired.company_id = None
     assert await _send_member() == "error"
     assert member_wired.ses_calls == 0 and member_wired.cap_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_member_send_goes_through_the_owners_ses_tenant(member_wired):
+    assert await _send_member() == "sent"
+    member_wired.tenant.assert_awaited_once_with("org_a")
+    assert member_wired.sent_tenant == "tenant-org_a"
+
+
+@pytest.mark.asyncio
+async def test_member_send_honours_the_complaint_pause(member_wired):
+    member_wired.row["outbound_disabled"] = "complaint"
+    assert await _send_member() == "outbound_disabled"
+    assert member_wired.ses_calls == 0
+    member_wired.update.assert_not_awaited()

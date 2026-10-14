@@ -86,7 +86,15 @@ async def send_owner_welcome(owner_id: str, owner_user_id: str) -> str:
     subject, text = owner_welcome(
         first_name=user.get("first_name"), workspace=await _workspace_name(owner_id), url=general_url(owner_id)
     )
-    return await send_to_owner(owner_id=owner_id, purpose="first_contact", subject=subject, body_text=text)
+    from core.services.agent_mail_tenant import ensure_tenant
+
+    return await send_to_owner(
+        owner_id=owner_id,
+        purpose="first_contact",
+        subject=subject,
+        body_text=text,
+        tenant_name=await ensure_tenant(owner_id),  # the owner's SES tenant, like every agent send
+    )
 
 
 async def send_teammate_welcome(

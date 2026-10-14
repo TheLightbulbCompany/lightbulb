@@ -42,6 +42,7 @@ from core.services.agent_email import (
 )
 from core.services.agent_export import resolve_apex_ceo_agent_id
 from core.services.agent_mail_reply import AGENT_AUTHORED_HEADERS
+from core.services.agent_mail_tenant import ensure_tenant
 from core.services.owner_facts import write_owner_facts
 from core.services.paperclip_owner_email import lookup_owner_email
 
@@ -247,7 +248,8 @@ async def send_to_member(*, owner_id: str, user_id: str, email: str, subject: st
     ``send_to_owner``, and the member becomes a verified sender so their reply wakes the CEO
     even when the owner has closed the address to strangers.
 
-    Returns "sent", "disabled", "rate_limited", "no_address" or "error". Never raises.
+    Returns "sent", "disabled", "rate_limited", "no_address", "outbound_disabled" or "error".
+    Never raises. Honours the address's complaint pause and sends through the owner's SES tenant.
     ``user_id`` is a log/metric subject only; ``email`` comes from the caller (the Clerk
     membership event carries it). The address is PII: it is never logged.
     """
@@ -275,6 +277,10 @@ async def send_to_member(*, owner_id: str, user_id: str, email: str, subject: st
             result = "no_address" if reason in ("slug_allocation_failed", "mint_failed") else "error"
             return result
         row = await agent_email_repo.get_by_address(address) or {}
+        if row.get("outbound_disabled"):
+            # A recipient reported spam: the whole account's outbound is paused (agent_mail_send).
+            result = "outbound_disabled"
+            return result
         senders = row.get("verified_senders") or []
         if email not in senders:
             # ponytail: read-modify-write; a concurrent owner edit of the list can lose one entry.
@@ -288,6 +294,7 @@ async def send_to_member(*, owner_id: str, user_id: str, email: str, subject: st
             body_text=body_text,
             body_html=None,
             headers=dict(AGENT_AUTHORED_HEADERS),
+            tenant_name=await ensure_tenant(owner_id),  # the owner's SES tenant, like every agent send
         )
         if message_id is None:
             return result

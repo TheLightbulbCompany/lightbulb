@@ -34,12 +34,14 @@ async def test_owner_welcome_is_the_ceos_first_contact():
         patch.object(welcome_email.clerk_admin, "get_user", new=AsyncMock(return_value={"first_name": "Ada"})),
         patch.object(welcome_email.clerk_admin, "get_organization", new=AsyncMock(return_value={"name": "Acme"})),
         patch("core.services.agent_mail_owner_send.send_to_owner", new=AsyncMock(return_value="sent")) as send,
+        patch("core.services.agent_mail_tenant.ensure_tenant", new=AsyncMock(return_value="tenant-org_1")),
     ):
         assert await welcome_email.send_owner_welcome("org_1", "user_1") == "sent"
     kwargs = send.call_args.kwargs
     assert kwargs["owner_id"] == "org_1"
     assert kwargs["purpose"] == "first_contact"
     assert kwargs["subject"] == "Your team at Acme is ready"
+    assert kwargs["tenant_name"] == "tenant-org_1"
 
 
 @pytest.mark.asyncio

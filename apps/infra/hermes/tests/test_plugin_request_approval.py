@@ -124,3 +124,56 @@ def test_no_credentials_and_missing_fields_are_refused(paperclip):
     assert "title and summary" in lightbulb._request_approval({"title": "t"})
     paperclip["scope"].pop("PAPERCLIP_API_KEY")
     assert lightbulb._request_approval({"title": "t", "summary": "s"}) == lightbulb.APPROVAL_NO_KEY
+
+
+ROOM_KEY = "agent:ceo:lightbulb:channel:11111111-1111-4111-8111-111111111111"
+
+
+def _binding(tmp_path):
+    return tmp_path / "lightbulb-issue-bindings" / f"{ISSUE}.json"
+
+
+def test_a_room_turn_binds_the_linked_issue_before_the_approval_is_created(paperclip, tmp_path, monkeypatch):
+    seen = []
+    inner = lightbulb._paperclip_call
+
+    def call(method, url, key, body=None, run_id=None):
+        if method == "POST":
+            seen.append(json.loads(_binding(tmp_path).read_text()))  # already on disk at the POST
+        return inner(method, url, key, body, run_id)
+
+    monkeypatch.setattr(lightbulb, "_paperclip_call", call)
+    json.loads(lightbulb._request_approval(
+        {"title": "t", "summary": "s", "tasks": ["WAL-6"]}, session_id=ROOM_KEY))
+    [binding] = seen
+    assert binding["sessionKey"] == ROOM_KEY and "origin" not in binding
+    assert isinstance(binding["boundAt"], int)
+    from bridge import turn  # the bridge's own reader accepts it
+    monkeypatch.setattr(turn, "_profile_dir", lambda agent_id: tmp_path)
+    assert turn.issue_conversation("ceo", ISSUE) == ROOM_KEY
+
+
+def test_a_call_binds_to_its_room_and_records_the_origin(paperclip, tmp_path):
+    paperclip["scope"]["LIGHTBULB_ROOM_SESSION_KEY"] = ROOM_KEY
+    lightbulb._request_approval({"title": "t", "summary": "s", "tasks": ["WAL-6"]}, session_id="call-1")
+    assert json.loads(_binding(tmp_path).read_text())["origin"] == "call-1"
+
+
+def test_a_failed_create_removes_the_binding_it_wrote(paperclip, tmp_path):
+    paperclip["fail"][("POST", f"/api/companies/{COMPANY}/approvals")] = _http_error(500, {})
+    lightbulb._request_approval({"title": "t", "summary": "s", "tasks": ["WAL-6"]}, session_id=ROOM_KEY)
+    assert not _binding(tmp_path).exists()
+
+
+def test_a_non_room_session_binds_nothing(paperclip, tmp_path):
+    lightbulb._request_approval({"title": "t", "summary": "s", "tasks": ["WAL-6"]}, session_id="issue-session")
+    assert not _binding(tmp_path).exists()
+
+
+def test_the_in_review_move_carries_the_run_attached_to_this_conversation(paperclip, tmp_path):
+    run_file = tmp_path / turn_context.DIRNAME / f"paperclip-run.{ISSUE}"
+    run_file.parent.mkdir(parents=True)
+    run_file.write_text("run-attached\n")
+    lightbulb._request_approval({"title": "t", "summary": "s", "tasks": ["WAL-6"]}, session_id=ROOM_KEY)
+    assert ("PATCH", f"/api/issues/{ISSUE}", {"status": "in_review"}, "run-attached") in paperclip["calls"]
+    assert _created(paperclip)[0][3] is None  # the create is not an issue write

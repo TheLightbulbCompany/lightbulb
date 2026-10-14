@@ -364,7 +364,12 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       agent's own key (agents may create from a room turn; `issueIds` are
       UUIDs per createApprovalSchema, so it resolves WAL-6 through GET
       /api/issues/:id, whose router.param accepts identifiers), then PATCHes
-      each linked issue to in_review (the linked approval is the review path). `approve_ceo_strategy` is
+      each linked issue to in_review (the linked approval is the review path).
+      Like paperclip-api.sh it binds each linked issue to the room conversation
+      (write_binding's file + format, before the create, so the approval's wake
+      routes to the room) and sends the bridge-attached run id
+      (.lightbulb-turn/paperclip-run.<issue>) on the in_review PATCH; keep the
+      two in step with the helper's write_binding/attached_run_id. `approve_ceo_strategy` is
       the ROOT CEO's first-plan decision (a first message dispatched to a
       specialist gets `request_board_approval` instead: onboarding_brief.py
       is_root_ceo picks the brief's decision by role, never by name): no server side effect on approve beyond the

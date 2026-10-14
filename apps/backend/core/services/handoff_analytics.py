@@ -46,22 +46,26 @@ def handoff(*, workspace_id: str, user_id: str, kind: str) -> None:
 
 async def _first_handoff(workspace_id: str, user_id: str, kind: str) -> None:
     try:
+        # Read the creation time BEFORE taking the once-ever marker: a Clerk miss leaves the
+        # marker untaken, so a later handoff tries again instead of being suppressed for a year.
+        org = await clerk_admin.get_organization(workspace_id) or {}
+        created = org.get("created_at")
+        if not isinstance(created, (int, float)) or created <= 0:
+            logger.warning("handoff_analytics: no created_at for %s; next handoff retries", workspace_id)
+            return
         first = await webhook_dedup.record_event_or_skip(
             f"handoff-first:{workspace_id}", source="analytics", ttl_seconds=_ONCE_TTL_S
         )
         if first is not webhook_dedup.WebhookDedupResult.RECORDED:
             return
-        org = await clerk_admin.get_organization(workspace_id) or {}
-        created = org.get("created_at")
-        days = (
-            round((time.time() - created / 1000) / 86400, 2)
-            if isinstance(created, (int, float)) and created > 0
-            else None
-        )
         capture_product_event(
             distinct_id=user_id,
             event="handoff_completed",
-            properties={"workspace_id": workspace_id, "kind": kind, "days_since_created": days},
+            properties={
+                "workspace_id": workspace_id,
+                "kind": kind,
+                "days_since_created": round((time.time() - created / 1000) / 86400, 2),
+            },
             event_uuid=str(uuid.uuid5(_NS, workspace_id)),
         )
     except Exception:

@@ -31,6 +31,18 @@ async def test_first_handoff_emits_once_with_days_since_created():
 
 
 @pytest.mark.asyncio
+async def test_a_clerk_miss_does_not_spend_the_once_marker():
+    with (
+        patch.object(webhook_dedup, "record_event_or_skip", AsyncMock(return_value=RECORDED)) as claim,
+        patch.object(handoff_analytics.clerk_admin, "get_organization", AsyncMock(return_value=None)),
+        patch.object(handoff_analytics, "capture_product_event") as capture,
+    ):
+        await handoff_analytics._first_handoff("org_1", "user_a", "approval_answered")
+    claim.assert_not_awaited()
+    capture.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_task_moved_only_for_an_agent_assigned_task():
     with (
         patch.object(handoff_analytics, "capture_product_event") as capture,

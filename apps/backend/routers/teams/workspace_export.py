@@ -14,6 +14,7 @@ from fastapi.responses import Response
 
 from core.auth import AuthContext, get_current_user
 from core.repositories import messaging_repo
+from core.services import messaging
 
 from . import agents as _agents
 from .agents import _ctx
@@ -48,7 +49,9 @@ async def _all_messages(room_id: str) -> list[dict[str, Any]]:
     after_seq = 0
     while True:
         page, next_seq = await messaging_repo.list_messages(room_id, after_seq, 100)
-        messages.extend(page)
+        # The same projection normal reads serve: a deleted message keeps no
+        # text or attachments, an edited one shows its edited text.
+        messages.extend(messaging.canonical_message(row).model_dump(mode="json") for row in page)
         if next_seq is None:
             return messages
         after_seq = next_seq
@@ -83,7 +86,15 @@ async def export_workspace(
     if auth.org_role != "org:admin":
         raise HTTPException(status_code=403, detail="Workspace owner access required")
 
-    room_ids = await messaging_repo.list_owner_room_ids(ctx.owner_id)
+    # Owner role does not open a room: only rooms the owner can read in the
+    # app (the messaging membership seam) go into the archive.
+    rooms: list[tuple[str, dict[str, Any]]] = []
+    for room_id in await messaging_repo.list_owner_room_ids(ctx.owner_id):
+        try:
+            room, _member = await messaging.require_room_member(ctx.owner_id, auth.user_id, room_id)
+        except messaging.ApiProblem:
+            continue
+        rooms.append((room_id, room))
     tasks = await _all_tasks(ctx)
 
     generated_at = datetime.now(UTC).isoformat()
@@ -96,7 +107,7 @@ async def export_workspace(
                     "formatVersion": 1,
                     "generatedAt": generated_at,
                     "workspaceId": ctx.company_id,
-                    "roomCount": len(room_ids),
+                    "roomCount": len(rooms),
                     "taskCount": len(tasks),
                 }
             ),
@@ -105,8 +116,7 @@ async def export_workspace(
             "board/tasks.json",
             _json_bytes({"exportedAt": generated_at, "tasks": tasks}),
         )
-        for room_id in room_ids:
-            room = await messaging_repo.get_room(room_id)
+        for room_id, room in rooms:
             messages = await _all_messages(room_id)
             archive.writestr(
                 f"rooms/{room_id}.json",
@@ -117,7 +127,7 @@ async def export_workspace(
         "workspace_export_requested owner_id=%s company_id=%s rooms=%d tasks=%d",
         ctx.owner_id,
         ctx.company_id,
-        len(room_ids),
+        len(rooms),
         len(tasks),
     )
     filename = f"lightbulb-workspace-{datetime.now(UTC).date().isoformat()}.zip"

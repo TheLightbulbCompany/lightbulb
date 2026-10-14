@@ -16,6 +16,10 @@ from unittest.mock import AsyncMock, MagicMock, patch  # noqa: E402
 import pytest  # noqa: E402
 
 from core.services import stripe_webhook_handlers as handlers  # noqa: E402
+from core.services.webhook_dedup import WebhookDedupResult  # noqa: E402
+
+RECORDED_RESULT = WebhookDedupResult.RECORDED
+ALREADY_SEEN_RESULT = WebhookDedupResult.ALREADY_SEEN
 
 
 @pytest.fixture(autouse=True)
@@ -548,7 +552,7 @@ async def test_trial_local_to_canceled_does_not_reconcile(mock_repo, reconcile_d
 
 
 # ---------------------------------------------------------------------------
-# trial_converted telemetry — the SAME trial_local -> paid transition
+# conversion telemetry: status changes vs. the first invoice paid at list (T23)
 # ---------------------------------------------------------------------------
 
 
@@ -560,8 +564,7 @@ async def _run_state_capturing_telemetry(mock_repo, prior_status, new_status):
 
 @pytest.mark.asyncio
 async def test_card_on_file_trial_is_not_a_conversion(mock_repo):
-    """trial_local -> trialing is a card on file with nothing paid (T05): the conversion is the
-    later trialing -> active, which the bridge reports."""
+    """trial_local -> trialing is a card on file with nothing paid (T05)."""
     mock_capture = await _run_state_capturing_telemetry(mock_repo, "trial_local", "trialing")
 
     events = [c.kwargs.get("event") for c in mock_capture.call_args_list]
@@ -570,39 +573,78 @@ async def test_card_on_file_trial_is_not_a_conversion(mock_repo):
 
 
 @pytest.mark.asyncio
-async def test_trial_converted_uuid_is_stable_per_subscription(mock_repo):
-    """Several events per subscription change can each see old_status == trial_local; a
-    deterministic event uuid lets PostHog keep one (it replaced the conversion-entry CAS)."""
-    first = await _run_state_capturing_telemetry(mock_repo, "trial_local", "active")
-    second = await _run_state_capturing_telemetry(mock_repo, "trial_local", "active")
-
-    uuids = [
-        c.kwargs["event_uuid"]
-        for mock in (first, second)
-        for c in mock.call_args_list
-        if c.kwargs.get("event") == "trial_converted"
-    ]
-    assert len(uuids) == 2 and uuids[0] == uuids[1]
+async def test_trial_local_straight_to_paid_is_trial_checkout_completed(mock_repo):
+    mock_capture = await _run_state_capturing_telemetry(mock_repo, "trial_local", "active")
+    calls = [c for c in mock_capture.call_args_list if c.kwargs.get("event") == "trial_checkout_completed"]
+    assert len(calls) == 1
+    assert calls[0].kwargs["properties"] == {
+        "workspace_id": "org_x",
+        "from_status": "trial_local",
+        "to_status": "active",
+        "provider_choice": None,
+    }
 
 
 @pytest.mark.asyncio
-async def test_active_renewal_does_not_fire_trial_converted_telemetry(mock_repo):
-    """An ordinary active->active renewal (not a trial_local conversion)
-    must never fire trial_converted."""
-    mock_capture = await _run_state_capturing_telemetry(mock_repo, "active", "active")
+@pytest.mark.parametrize(("prior", "new"), [("trial_local", "active"), ("trialing", "active"), ("active", "active")])
+async def test_no_status_change_is_trial_converted(mock_repo, prior, new):
+    """T23: trial_converted comes only from the first invoice paid at list, never a status."""
+    mock_capture = await _run_state_capturing_telemetry(mock_repo, prior, new)
+    assert [c for c in mock_capture.call_args_list if c.kwargs.get("event") == "trial_converted"] == []
 
-    trial_converted_calls = [c for c in mock_capture.call_args_list if c.kwargs.get("event") == "trial_converted"]
-    assert trial_converted_calls == []
+
+def _invoice(**kw):
+    base = {
+        "id": "in_1",
+        "customer": "cus_1",
+        "amount_paid": 5000,
+        "currency": "usd",
+        "billing_reason": "subscription_cycle",
+        "discounts": [],
+        "parent": {"subscription_details": {"subscription": "sub_1", "metadata": {"workspace_id": "org_x"}}},
+    }
+    return {"data": {"object": {**base, **kw}}}
 
 
 @pytest.mark.asyncio
-async def test_trialing_to_active_fires_only_the_generic_bridge_trial_converted(mock_repo):
-    """A REAL Stripe trial converting (trialing -> active) is a different moment from the local
-    no-card trial converting: exactly one "trial_converted" capture (the generic bridge's)."""
-    mock_capture = await _run_state_capturing_telemetry(mock_repo, "trialing", "active")
+async def test_invoice_paid_at_list_emits_invoice_paid_and_trial_converted_once():
+    account = {"owner_id": "org_x", "plan": "standard", "stripe_customer_id": "cus_1"}
+    claim = AsyncMock(side_effect=[RECORDED_RESULT, ALREADY_SEEN_RESULT])
+    with (
+        patch.object(handlers, "resolve_owner_account", AsyncMock(return_value=account)),
+        patch.object(handlers, "capture_product_event") as capture,
+        patch("core.services.webhook_dedup.record_event_or_skip", claim),
+    ):
+        await handlers.handle_invoice_paid(_invoice(), MagicMock())
+        await handlers.handle_invoice_paid(_invoice(id="in_2"), MagicMock())
+    events = [c.kwargs["event"] for c in capture.call_args_list]
+    assert events == ["invoice_paid", "trial_converted", "invoice_paid"]
+    paid = capture.call_args_list[0].kwargs["properties"]
+    assert paid["at_list"] is True and paid["workspace_id"] == "org_x" and paid["plan"] == "standard"
 
-    trial_converted_calls = [c for c in mock_capture.call_args_list if c.kwargs.get("event") == "trial_converted"]
-    assert len(trial_converted_calls) == 1
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invoice",
+    [
+        {"discounts": ["di_1"]},
+        {"amount_paid": 0},
+        {"total_discount_amounts": [{"amount": 5000, "discount": "di_1"}]},
+    ],
+)
+async def test_a_coupon_or_free_invoice_is_not_at_list_and_converts_nothing(invoice):
+    account = {"owner_id": "org_x", "plan": "standard", "stripe_customer_id": "cus_1"}
+    with (
+        patch.object(handlers, "resolve_owner_account", AsyncMock(return_value=account)),
+        patch.object(handlers, "capture_product_event") as capture,
+    ):
+        await handlers.handle_invoice_paid(_invoice(**invoice), MagicMock())
+    assert [c.kwargs["event"] for c in capture.call_args_list] == ["invoice_paid"]
+    assert capture.call_args.kwargs["properties"]["at_list"] is False
+
+
+def test_invoice_paid_is_handled():
+    assert handlers.STRIPE_WEBHOOK_HANDLERS["invoice.paid"] is handlers.handle_invoice_paid
 
 
 @pytest.mark.asyncio
@@ -737,7 +779,7 @@ async def test_subscription_deleted_resets_plan_to_standard(facts_mock):
 
 class TestSubscriptionActivationDelegatesToLaunchReferral:
     """The launch referral hook rides the entering-live transition of
-    handle_subscription_state (invoice.paid is no longer handled at all)."""
+    handle_subscription_state (invoice.paid carries telemetry only)."""
 
     async def test_entering_live_calls_the_launch_hook(self, mock_repo):
         with patch("core.services.launch_referral.on_subscription_activated", new_callable=AsyncMock) as hook:
@@ -768,8 +810,19 @@ class TestSubscriptionActivationDelegatesToLaunchReferral:
             await _run_state(mock_repo, "past_due", "active")  # a failed first charge, recovered
         assert hook.await_count == 2
 
-    async def test_invoice_paid_is_not_a_handled_event(self):
-        assert "invoice.paid" not in handlers.STRIPE_WEBHOOK_HANDLERS
+    async def test_invoice_paid_is_telemetry_only_and_never_runs_the_launch_hook(self):
+        """invoice.paid is handled again (T23) but only for invoice_paid / trial_converted."""
+        account = {"owner_id": "org_x", "plan": "standard", "stripe_customer_id": "cus_1"}
+        with (
+            patch("core.services.launch_referral.on_subscription_activated", new_callable=AsyncMock) as hook,
+            patch.object(handlers, "on_entering_live", new_callable=AsyncMock) as live,
+            patch.object(handlers, "resolve_owner_account", AsyncMock(return_value=account)),
+            patch.object(handlers, "capture_product_event"),
+            patch("core.services.webhook_dedup.record_event_or_skip", AsyncMock(return_value=ALREADY_SEEN_RESULT)),
+        ):
+            await handlers.handle_invoice_paid(_invoice(), MagicMock())
+        hook.assert_not_awaited()
+        live.assert_not_awaited()
 
     async def test_checkout_with_the_winner_marker_stamps_coupon_consumed(self):
         """A completed session that carried the winner discount consumed the

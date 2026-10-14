@@ -531,3 +531,16 @@ async def test_compute_is_cached():
     growth._cache = (float("inf"), {"cached": True}, "ok", [])
     assert await growth.compute() == ({"cached": True}, "ok", [])
     growth._cache = None
+
+
+def test_hogql_reads_only_this_environment_and_on_prod_only_product_hosts():
+    """T23 (09-analytics §6): dev events and the launch site never enter the admin funnel."""
+    from core.services.ops import growth as g
+
+    prod = g._hogql_filter("prod")
+    assert "properties.environment = 'prod'" in prod
+    assert "'thelightbulb.company', 'www.thelightbulb.company'" in prod
+    assert g._hogql_filter("dev") == "properties.environment = 'dev'"
+    assert g._hogql_filter("") == "properties.environment = 'local'"
+    for query in (g.HOGQL_FUNNEL, g.HOGQL_FUNNEL_DAILY, g.HOGQL_SIGNUP_SOURCES):
+        assert g._FILTER in query

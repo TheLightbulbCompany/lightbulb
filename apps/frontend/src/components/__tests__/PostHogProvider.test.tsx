@@ -70,6 +70,7 @@ vi.mock("next/navigation", () => ({
 }));
 
 describe("PostHogProvider", () => {
+  beforeEach(() => window.sessionStorage.clear());
   const originalKey = process.env.NEXT_PUBLIC_POSTHOG_KEY;
   const originalApiUrl = process.env.NEXT_PUBLIC_API_URL;
 
@@ -347,6 +348,43 @@ describe("PostHogProvider", () => {
     // matcher here could never match and the assertion would be vacuous.
     expect(mockCapture).not.toHaveBeenCalledWith("signup_started", expect.anything(), undefined);
     expect(mockCapture.mock.calls.map((c) => c[0])).not.toContain("signup_started");
+  });
+
+  it("counts a click on any link to /request-setup as setup_cta_clicked", async () => {
+    process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
+    mockRouterState.pathname = "/";
+    const mod = await import("../PostHogProvider");
+    render(
+      <mod.PostHogProvider>
+        <a href="/request-setup?utm_source=x" data-cta-id="hero_setup" data-surface="hero"><span>Request a guided setup</span></a>
+        <a href="/sign-up">Start free</a>
+      </mod.PostHogProvider>,
+    );
+    screen.getByText("Start free").click();
+    expect(mockCapture.mock.calls.filter((c) => c[0] === "setup_cta_clicked")).toHaveLength(0);
+    screen.getByText("Request a guided setup").click();
+    const clicks = mockCapture.mock.calls.filter((c) => c[0] === "setup_cta_clicked");
+    expect(clicks).toHaveLength(1);
+    expect(clicks[0][1]).toMatchObject({ cta_id: "hero_setup", surface: "hero", cta_label: "Request a guided setup" });
+  });
+
+  it("counts landing_viewed on the first website page of a session, not the app", async () => {
+    process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
+    const mod = await import("../PostHogProvider");
+    const landings = () => mockCapture.mock.calls.filter((c) => c[0] === "landing_viewed");
+    mockRouterState.pathname = "/chat";
+    mockRouterState.search = "";
+    const { unmount } = render(<mod.PostHogProvider><div /></mod.PostHogProvider>);
+    unmount();
+    expect(landings()).toHaveLength(0);
+    mockRouterState.pathname = "/pricing";
+    const second = render(<mod.PostHogProvider><div /></mod.PostHogProvider>);
+    second.unmount();
+    expect(landings()).toHaveLength(1);
+    expect(landings()[0][1]).toMatchObject({ path: "/pricing" });
+    mockRouterState.pathname = "/blog";
+    render(<mod.PostHogProvider><div /></mod.PostHogProvider>);
+    expect(landings()).toHaveLength(1); // same session: the entry was already counted
   });
 
   it("sends $pageview and landing_viewed ONCE per landing load even when Clerk resolves after mount", async () => {

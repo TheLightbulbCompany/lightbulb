@@ -28,6 +28,7 @@
     "@dnd-kit/utilities": "^3.2.2",
     "@lightbulb/shared": "workspace:*",
     "@livekit/components-react": "^2.9.24",
+    "@vercel/analytics": "^2.0.1",
     "@xterm/xterm": "^5.5.0",
     "bedrock-agentcore": "0.4.4",
     "class-variance-authority": "^0.7.1",

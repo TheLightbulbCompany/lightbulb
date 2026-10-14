@@ -42,6 +42,7 @@ from bisect import bisect_left
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 
+from core.config import settings
 from core.services.ops import envelope as env
 
 logger = logging.getLogger(__name__)
@@ -66,10 +67,27 @@ RETENTION_WEEKS = 4
 FUNNEL_EVENTS = ("landing_viewed", "signup_started", "trial_started")
 _FUNNEL_EVENT_SQL = ", ".join(f"'{e}'" for e in FUNNEL_EVENTS)
 
+
+def _hogql_filter(environment: str) -> str:
+    """The shared filter (09-analytics §6): this backend's own environment only (dev and prod
+    share one PostHog project), and on prod only the product hosts -- never the launch site
+    or a dev host. Server events carry no ``$host`` and pass the host test."""
+    name = "prod" if environment.strip().lower() in ("prod", "production") else (environment.strip() or "local")
+    clause = f"properties.environment = '{name}'"
+    if name == "prod":
+        clause += (
+            " and (coalesce(properties.$host, '') = ''"
+            " or properties.$host in ('thelightbulb.company', 'www.thelightbulb.company'))"
+        )
+    return clause
+
+
+_FILTER = _hogql_filter(settings.ENVIRONMENT or "")
+
 HOGQL_FUNNEL = f"""
 select toStartOfWeek(timestamp, 1) as week, event, uniq(distinct_id) as owners
 from events
-where event in ({_FUNNEL_EVENT_SQL})
+where event in ({_FUNNEL_EVENT_SQL}) and {_FILTER}
   and timestamp > now() - interval {WINDOW_WEEKS + 1} week
 group by week, event order by week, event limit 500
 """
@@ -78,7 +96,7 @@ group by week, event order by week, event limit 500
 HOGQL_FUNNEL_DAILY = f"""
 select toDate(timestamp) as day, event, uniq(distinct_id) as owners
 from events
-where event in ({_FUNNEL_EVENT_SQL})
+where event in ({_FUNNEL_EVENT_SQL}) and {_FILTER}
   and timestamp > now() - interval {WINDOW_WEEKS + 1} week
 group by day, event order by day, event limit 2000
 """
@@ -96,7 +114,7 @@ select coalesce(nullIf(properties.first_touch_utm_source, ''),
                 nullIf(properties.first_touch_referring_domain, ''), 'direct') as source,
        uniq(distinct_id) as owners
 from events
-where event = 'signup_started' and timestamp > now() - interval {WINDOW_WEEKS + 1} week
+where event = 'signup_started' and {_FILTER} and timestamp > now() - interval {WINDOW_WEEKS + 1} week
 group by source order by owners desc limit 50
 """
 

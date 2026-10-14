@@ -265,6 +265,10 @@ async def run_digest_sweeper(stop: asyncio.Event) -> None:
         try:
             if await container_repo.try_claim_pass(PASS_NAME, interval_s=PASS_SECONDS):
                 await run_once()
+            from core.services import week4_active  # T23: daily, its own pass, same loop
+
+            if await container_repo.try_claim_pass(week4_active.PASS_NAME, interval_s=week4_active.PASS_SECONDS):
+                await week4_active.run_once()
         except Exception:  # noqa: BLE001
             logger.warning("daily digest pass failed", exc_info=True)
         try:

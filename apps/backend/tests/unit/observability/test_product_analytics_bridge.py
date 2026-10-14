@@ -19,9 +19,10 @@ def test_trial_started(monkeypatch):
     assert _run(monkeypatch, None, "trialing")["event"] == "trial_started"
 
 
-def test_trial_converted_is_the_trial_to_paid_moment(monkeypatch):
+def test_trialing_to_active_is_activation_not_conversion(monkeypatch):
+    """T23: trial_converted is the first invoice paid at list (handle_invoice_paid)."""
     call = _run(monkeypatch, "trialing", "active")
-    assert call["event"] == "trial_converted"
+    assert call["event"] == "subscription_activated"
     assert call["set_person"]["is_subscribed"] is True
     assert call["set_person"]["subscription_status"] == "active"
     assert call["properties"]["from_status"] == "trialing"

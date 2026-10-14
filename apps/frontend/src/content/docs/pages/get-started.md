@@ -40,7 +40,7 @@ The agent reads the thread above it, does the work, and posts the result in the 
 
 ## 8. Share a session (optional, Mac app)
 
-If you work in Claude Code or Codex, the [Lightbulb Mac app](/api/download/desktop) shares those sessions with your workspace. A teammate can watch a session live, join it, or pick it up where you stopped.
+If you work in Claude Code or Codex, the [Lightbulb Mac app](/api/download/desktop) shares those sessions with your workspace. A teammate can watch a session live and join it, and can pick up a Claude Code session where you stopped.
 
 ## 9. Plans and providers
 

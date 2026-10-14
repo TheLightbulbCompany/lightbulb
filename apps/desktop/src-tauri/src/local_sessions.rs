@@ -3672,14 +3672,23 @@ mod tests {
         assert_eq!(redact("password: x\n  y\nuser: bob"), "password: [redacted]\n  [redacted]\nuser: bob");
         let open = format!("password = \"x\n{}after", "line\n".repeat(MAX_CONTINUATION));
         assert!(redact(&open).ends_with("[redacted]\nafter"));
-        // Linear on a 4 MiB input full of secret lines, continuations and open quotes.
+        // Linear on inputs full of secret lines, continuations and open quotes: 4x the input takes
+        // about 4x the time (quadratic would be 16x). A ratio, not a wall-clock bound: the
+        // self-hosted CI Mac is often busy, and a fixed 3 s limit failed there on untouched code.
         let unit = "token=a\n  b\nplain: 1\npassword = \"x\ny\"\nk = v \\\n";
-        let big = unit.repeat(4 * 1024 * 1024 / unit.len());
-        let started = std::time::Instant::now();
-        let clean = redact(&big);
-        redact(&format!("token={}", "a".repeat(4 * 1024 * 1024)));
-        redact(&"dsn=f()".repeat(600_000));
-        assert!(started.elapsed() < std::time::Duration::from_secs(3), "{:?}", started.elapsed());
+        let timed = |mib: usize| {
+            let lines = unit.repeat(mib * 1024 * 1024 / unit.len());
+            let one_token = format!("token={}", "a".repeat(mib * 1024 * 1024));
+            let calls = "dsn=f()".repeat(mib * 150_000);
+            let started = std::time::Instant::now();
+            let clean = redact(&lines);
+            redact(&one_token);
+            redact(&calls);
+            (started.elapsed(), clean)
+        };
+        let (small, _) = timed(1);
+        let (large, clean) = timed(4);
+        assert!(large < small * 8 + std::time::Duration::from_millis(250), "1 MiB {small:?}, 4 MiB {large:?}");
         assert!(clean.starts_with("token=[redacted]\n  [redacted]\nplain: 1\npassword = [redacted]\n[redacted]\nk = v \\\n"));
     }
 

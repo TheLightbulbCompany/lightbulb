@@ -1,6 +1,7 @@
 """Canonical messaging table — transaction shapes and ordering guarantees."""
 
 import asyncio
+import threading
 import time
 import uuid
 from types import SimpleNamespace
@@ -326,7 +327,25 @@ async def _dm(client_room_id, creator=USER_A, other=("agent", FRIDAY), replaces=
 
 
 @pytest.mark.asyncio
-async def test_concurrent_dm_creates_for_one_pair_make_one_room(table):
+async def test_concurrent_dm_creates_for_one_pair_make_one_room(table, monkeypatch):
+    # DynamoDB applies a transaction and its conditions atomically; moto's in-memory table does
+    # not across threads, so two creates could both pass `attribute_not_exists` and the test
+    # flaked (2 rooms) while prod could not. Make the mock atomic the way DynamoDB is; the four
+    # creates still race through everything else.
+    atomic = threading.Lock()
+    real = repo.run_in_thread
+
+    async def run_in_thread(call, *args, **kwargs):
+        if getattr(call, "__name__", "") != "transact_write_items":
+            return await real(call, *args, **kwargs)
+
+        def locked(*a, **kw):
+            with atomic:
+                return call(*a, **kw)
+
+        return await real(locked, *args, **kwargs)
+
+    monkeypatch.setattr(repo, "run_in_thread", run_in_thread)
     results = await asyncio.gather(*(_dm(f"c-dm-{i}") for i in range(4)), return_exceptions=True)
     created = [r for r in results if isinstance(r, dict)]
     taken = [r for r in results if isinstance(r, repo.DmPairTaken)]

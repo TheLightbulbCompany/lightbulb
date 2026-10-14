@@ -28,7 +28,6 @@ function PanelSkeleton() {
 // preloadTeamsPanels() can warm the exact same chunks without duplicating
 // import paths.
 const PANEL_LOADERS: Record<string, () => Promise<React.ComponentType>> = {
-  dashboard: () => import("./panels/DashboardPanel").then((m) => m.DashboardPanel),
   agents: () => import("./panels/AgentsListPanel").then((m) => m.AgentsListPanel),
   inbox: () => import("./panels/InboxPanel").then((m) => m.InboxPanel),
   issues: () => import("./panels/IssuesPanel").then((m) => m.IssuesPanel),

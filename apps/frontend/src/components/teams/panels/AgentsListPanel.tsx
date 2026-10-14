@@ -48,6 +48,7 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
   const { data, isLoading, error, mutate } = read<{ agents: CompanyAgent[] }>(
     "/agents",
   );
+  const { open: openMarketplace } = useMarketplaceDrawer();
   const [creating, setCreating] = useState(false);
   const [search, setSearch] = useState("");
   const storedView = useAgentsViewMode();
@@ -175,9 +176,15 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
         overline="Team"
         title="Agents"
         actions={
-          <EditorialButton variant="primary" onClick={() => setCreating(true)}>
-            New agent
-          </EditorialButton>
+          <>
+            {/* Hiring moved here from the workspace rail: the same marketplace drawer. */}
+            <EditorialButton variant="secondary" onClick={() => openMarketplace({ view: "browse" })}>
+              Add an AI employee
+            </EditorialButton>
+            <EditorialButton variant="primary" onClick={() => setCreating(true)}>
+              New agent
+            </EditorialButton>
+          </>
         }
       />
       <PanelToolbar

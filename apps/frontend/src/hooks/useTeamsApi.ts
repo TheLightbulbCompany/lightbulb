@@ -210,9 +210,8 @@ export type TeamsWorkspaceStatus =
  * detection. Drives an SWR auto-poll while in the provisioning state so
  * the layout flips to ``ready`` as soon as the BFF returns 200.
  *
- * Implementation: hits ``/teams/dashboard`` (cheapest existing endpoint;
- * SWR cache shares the request with ``DashboardPanel`` when the user is
- * actually on /teams/dashboard) and inspects the response/error.
+ * Implementation: hits ``/teams/dashboard`` (cheapest existing endpoint)
+ * and inspects the response/error.
  */
 export function useTeamsWorkspaceStatus(): TeamsWorkspaceStatus {
   const { read } = useTeamsApi();

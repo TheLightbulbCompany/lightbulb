@@ -1944,8 +1944,8 @@ export function useTeamsApprovals() {
 // (`GET /teams/dashboard` → `{dashboard, sidebar_badges}`) that fans out to the
 // upstream summary + badges. Same `_ctx` readiness gate (202/402/503) as the
 // inbox/board/approvals surfaces. The mobile surface renders ~4 stat tiles from
-// the counts + a minimal run-activity summary; the heavier 14-day charts the
-// web `DashboardPanel` draws are intentionally skipped on a phone.
+// the counts + a minimal run-activity summary. (The web app has no dashboard
+// page any more; its Home was retired into Activity.)
 // ---------------------------------------------------------------------------
 
 /** One day of the ~14-day run-activity series (contract §3). */

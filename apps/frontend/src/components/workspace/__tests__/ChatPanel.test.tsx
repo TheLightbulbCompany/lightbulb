@@ -34,7 +34,7 @@ function makeProps(agentId?: string) {
   const listeners = new Set<(params: { agentId?: string }) => void>();
   const api = {
     id: MESSAGES_PANEL_ID,
-    title: "Messages",
+    title: "Chat",
     setTitle: vi.fn(),
     onDidParametersChange: (listener: (params: { agentId?: string }) => void) => {
       listeners.add(listener);

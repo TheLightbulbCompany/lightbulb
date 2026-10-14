@@ -5,10 +5,8 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 const setPaletteOpen = vi.fn();
 const openPanel = vi.fn();
 const activateMessagesPanel = vi.fn();
-let activePanelId = "teams-dashboard";
+let activePanelId = "activity";
 const shared = vi.hoisted(() => ({ statusLoaded: false }));
-const routerPush = vi.hoisted(() => vi.fn());
-vi.mock("next/navigation", () => ({ useRouter: () => ({ push: routerPush }) }));
 
 // Partial mock: WorkspaceHeader reads only `useStatusLoaded` from the barrel, but
 // the rest of this module graph pulls plenty else out of it.
@@ -42,17 +40,11 @@ vi.mock("@clerk/nextjs", () => {
   return { UserButton };
 });
 
-const openMarketplace = vi.fn();
-vi.mock("@/components/marketplace/drawer/MarketplaceDrawerProvider", () => ({
-  useMarketplaceDrawer: () => ({ open: openMarketplace }),
-}));
-
 const activityState = { attentionCount: 0 };
 vi.mock("@/hooks/useActivity", () => ({ useActivity: () => activityState }));
 const mailState = { newCount: 0 };
 vi.mock("@/components/mail/useTeamMail", () => ({ useNewMailCount: () => mailState.newCount }));
-const openInviteDialog = vi.fn();
-vi.mock("../workspaceController", () => ({ openPanel: (...args: unknown[]) => openPanel(...args), activateMessagesPanel: () => activateMessagesPanel(), openInviteDialog: () => openInviteDialog(), useWorkspaceState: () => ({ activePanelId }) }));
+vi.mock("../workspaceController", () => ({ openPanel: (...args: unknown[]) => openPanel(...args), activateMessagesPanel: () => activateMessagesPanel(), useWorkspaceState: () => ({ activePanelId }) }));
 
 const recordMessagesNavigation = vi.fn();
 vi.mock("../chatHistory", () => ({ recordMessagesNavigation: () => recordMessagesNavigation() }));
@@ -61,34 +53,28 @@ import { trackTeamRunActivity } from "@/components/notifications/teamRunActivity
 import { WorkspaceHeader } from "../WorkspaceHeader";
 
 describe("WorkspaceHeader", () => {
-  it("records the Messages button as a navigation", () => {
+  // The rail after the stage-2 trim: Home, Hire, Invite and Connections each
+  // have a home elsewhere (Activity, the Agents tab, the sidebar invite row,
+  // the Settings page).
+  it("reads Chat, Activity, Work, Library, Mail, Browser, Files, in that order", () => {
+    shared.statusLoaded = true;
+    render(<WorkspaceHeader />);
+    const rail = screen.getByRole("navigation", { name: "Workspace" });
+    const labels = [...rail.querySelectorAll("button")].map((b) => b.getAttribute("aria-label"));
+    expect(labels.slice(labels.indexOf("Chat"), labels.indexOf("Files") + 1)).toEqual([
+      "Chat", "Activity", "Work", "Library", "Mail", "Browser", "Files",
+    ]);
+    for (const gone of ["Home", "Messages", "Hire an agent", "Invite people", "Connections", "Browse workspace files"]) {
+      expect(screen.queryByRole("button", { name: gone })).toBeNull();
+    }
+    shared.statusLoaded = false;
+  });
+
+  it("records the Chat button as a Messages navigation", () => {
     render(<WorkspaceHeader chatReady={false} />);
-    fireEvent.click(screen.getByRole("button", { name: "Messages" }));
+    fireEvent.click(screen.getByRole("button", { name: "Chat" }));
     expect(activateMessagesPanel).toHaveBeenCalled();
     expect(recordMessagesNavigation).toHaveBeenCalled();
-  });
-
-  it("offers Hire right after Work and opens the marketplace, not a panel", () => {
-    render(<WorkspaceHeader chatReady={false} />);
-    const labels = within(screen.getByRole("navigation", { name: "Workspace" }))
-      .getAllByRole("button")
-      .map((b) => b.getAttribute("aria-label"));
-    expect(labels.indexOf("Hire an agent")).toBe(labels.indexOf("Work") + 1);
-    const hire = screen.getByRole("button", { name: "Hire an agent" });
-    expect(hire).not.toBeDisabled();
-    expect(screen.getByRole("button", { name: "Mail" })).not.toBeDisabled(); // the mailbox needs no runtime
-    openPanel.mockClear();
-    fireEvent.click(hire);
-    expect(openMarketplace).toHaveBeenCalledWith({ view: "browse" });
-    expect(openPanel).not.toHaveBeenCalled();
-  });
-
-  it("puts Mail right after Activity", () => {
-    render(<WorkspaceHeader />);
-    const labels = within(screen.getByRole("navigation", { name: "Workspace" }))
-      .getAllByRole("button")
-      .map((b) => b.getAttribute("aria-label"));
-    expect(labels.indexOf("Mail")).toBe(labels.indexOf("Activity") + 1);
   });
 
   it("badges Mail with new received mail, capped at 9+", () => {
@@ -101,32 +87,13 @@ describe("WorkspaceHeader", () => {
     mailState.newCount = 0;
   });
 
-  it.each([["Home", "teams-dashboard"], ["Activity", "activity"], ["Mail", "mail"], ["Library", "teams-artifacts"]])("opens %s and marks the active destination", (label, panel) => {
+  it.each([["Activity", "activity"], ["Mail", "mail"], ["Library", "teams-artifacts"], ["Files", "file-viewer"]])("opens %s and marks the active destination", (label, panel) => {
     activePanelId = panel;
     render(<WorkspaceHeader />);
     const button = screen.getByRole("button", { name: label });
     expect(button).toHaveAttribute("aria-current", "page");
     fireEvent.click(button);
     expect(openPanel).toHaveBeenCalledWith(panel, {}, { pushUrl: true });
-  });
-  // Connections is a section of the one Settings page, not a dock tab.
-  it("opens Connections under Files on the Settings page", () => {
-    openPanel.mockClear();
-    render(<WorkspaceHeader />);
-    const button = screen.getByRole("button", { name: "Connections" });
-    expect(button).not.toHaveAttribute("aria-current");
-    fireEvent.click(button);
-    expect(routerPush).toHaveBeenCalledWith("/settings?panel=connections");
-    expect(openPanel).not.toHaveBeenCalled();
-
-    // Order matters: the ask was "under workspace files".
-    const rail = screen.getByRole("navigation", { name: "Workspace" });
-    const labels = [...rail.querySelectorAll("button")].map((b) => b.getAttribute("aria-label"));
-    const filesAt = labels.indexOf("Browse workspace files");
-    expect(labels.slice(filesAt, filesAt + 2)).toEqual([
-      "Browse workspace files",
-      "Connections",
-    ]);
   });
   // Inverted gate: the AgentCore Browser live view is offered only once the
   // status body has landed, so an unresolved status body hides it rather than
@@ -172,16 +139,17 @@ describe("WorkspaceHeader", () => {
     expect(openPanel).toHaveBeenCalledWith("activity", {}, { pushUrl: true });
     activityState.attentionCount = 0;
   });
-  it("returns to Messages and keeps settings accessible", () => {
+  it("returns to Chat and keeps settings accessible", () => {
     render(<WorkspaceHeader />);
-    fireEvent.click(screen.getByRole("button", { name: "Messages" }));
+    fireEvent.click(screen.getByRole("button", { name: "Chat" }));
     expect(activateMessagesPanel).toHaveBeenCalled();
     expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute("href", "/settings");
   });
-  it("keeps Messages available but disables runtime-backed panels until the agents are up", () => {
+  it("keeps Chat and Mail available but disables runtime-backed panels until the agents are up", () => {
     render(<WorkspaceHeader chatReady={false} />);
-    expect(screen.getByRole("button", { name: "Messages" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Browse workspace files" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Chat" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Mail" })).toBeEnabled(); // the mailbox needs no runtime
+    expect(screen.getByRole("button", { name: "Files" })).toBeDisabled();
   });
   it("opens the existing command palette from a visible search control", () => {
     render(<WorkspaceHeader />);
@@ -190,19 +158,8 @@ describe("WorkspaceHeader", () => {
 
     expect(setPaletteOpen).toHaveBeenCalledWith(true);
     expect(screen.getByRole("button", { name: /Search messages/ })).toHaveAttribute("title", "Search (⌘/Ctrl K)");
-    expect(screen.getByRole("button", { name: "Browse workspace files" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Get help" })).toBeInTheDocument();
     expect(screen.getByLabelText("Profile")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Reset workspace layout" })).not.toBeInTheDocument();
-  });
-
-  it("offers Invite people to everyone, even before chat is ready, and opens the invite dialog", () => {
-    const onNavigate = vi.fn();
-    render(<WorkspaceHeader chatReady={false} onNavigate={onNavigate} />);
-    const invite = screen.getByRole("button", { name: "Invite people" });
-    expect(invite).not.toBeDisabled();
-    fireEvent.click(invite);
-    expect(openInviteDialog).toHaveBeenCalledTimes(1);
-    expect(onNavigate).toHaveBeenCalled();
   });
 });

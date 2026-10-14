@@ -56,7 +56,7 @@ const FIXTURE_KEYS = [
   "/teams/agents",
   "/teams/inbox-foo", // boundary check: must NOT match `/teams/inbox`
   // Issue-detail subtree. Production openers all pass `issue.id` (a UUID) —
-  // see IssueRow/KanbanCard/DashboardPanel/TasksList — so `entityId` from the
+  // see IssueRow/KanbanCard/TasksList — so `entityId` from the
   // activity payload is the key shape that actually needs to match.
   "/teams/issues/iss_1",
   "/teams/issues/iss_1/comments",

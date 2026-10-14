@@ -21,12 +21,12 @@ export interface CommandPaletteAction {
 // "artifacts", "issues", "approvals") so muscle memory survives the renames,
 // plus the still-applicable synonyms the palette always had.
 const KEYWORDS: Record<string, string[]> = {
-  dashboard: ["dashboard"],
   inbox: ["mine", "issues", "approvals"],
   issues: ["issues", "tickets"],
   routines: ["cron", "schedule", "routines"],
   artifacts: ["artifacts"],
-  activity: ["events", "log"],
+  // Home folded into Activity, so its old words land here.
+  activity: ["events", "log", "home", "dashboard"],
   mail: ["email", "meetings", "transcripts"],
   // Money absorbed Payments/Products/Customers/Spend as sections of one
   // page — their old search words, plus "usage" (the label the same numbers

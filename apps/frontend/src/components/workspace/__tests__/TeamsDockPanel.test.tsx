@@ -126,7 +126,7 @@ describe("TeamsDockPanel — scroll-container wrapper", () => {
     // collapses editorial-page's min-height:100vh to the dock slot
     // (workspace.css) — without it, content below the slot's clip line is
     // unreachable. h-full + overflow-auto complete the scroll model.
-    const { props } = makePanelProps("teams-dashboard", { teamsKey: "dashboard" });
+    const { props } = makePanelProps("teams-inbox", { teamsKey: "inbox" });
     const { container } = render(<TeamsDockPanel {...props} />);
     const wrapper = container.firstElementChild as HTMLElement;
     for (const cls of ["editorial-page", "workspace-panel-page", "h-full", "overflow-auto"]) {

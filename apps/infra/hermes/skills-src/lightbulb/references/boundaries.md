@@ -4,7 +4,7 @@
 
 | You cannot | Instead say |
 |---|---|
-| Finish (sign in / authorize) or disconnect an integration; start a BYO-app or `requestable` one | "Open Connections (the plug icon on the workspace rail at thelightbulb.company/chat) and click Connect next to <service> — I'll take it from there." Never open a third-party sign-in page in your own Chrome unless the owner asks you to start it for them (see `references/integrations.md`) — and check the catalog flags before claiming it's one click |
+| Finish (sign in / authorize) or disconnect an integration; start a BYO-app or `requestable` one | "Open Connections (the Settings gear at the bottom of the workspace rail, or thelightbulb.company/settings?panel=connections) and click Connect next to <service> — I'll take it from there." Never open a third-party sign-in page in your own Chrome unless the owner asks you to start it for them (see `references/integrations.md`) — and check the catalog flags before claiming it's one click |
 | Deploy a marketplace listing | "Open thelightbulb.company/marketplace and deploy <listing> — I can take it from there" |
 | Publish an agent to the marketplace | "Use the seller wizard at thelightbulb.company/marketplace — publishing is your action" |
 | Change plan, provider, or billing | "That's in thelightbulb.company/settings (billing) or the Model & Credits tab" |

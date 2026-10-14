@@ -21,12 +21,15 @@ export const DEFAULT_AGENT_SENTINEL = "__default__";
 // (the old ControlPanelRouter remap pushed, trapping Back on ?panel=credits).
 export const RETIRED_PANEL_ALIASES: Readonly<Record<string, string>> = {
   "teams-approvals": "teams-inbox",
-  "teams-skills": "teams-dashboard",
-  "teams-costs": "teams-dashboard",
+  // Home is no longer a destination (stage-2 rail trim): it, and the keys it
+  // had absorbed, open the viewer's Activity feed. A saved Home tab is folded
+  // into Activity by layoutStorage's sanitizer.
+  "teams-dashboard": "activity",
+  "teams-skills": "activity",
+  "teams-costs": "activity",
   // Money is ONE page, and Payments/Products/Customers/Spend are its sections.
   // They alias to its key so the dock (which dedupes by panel id) opens ONE
-  // "Money" tab no matter which of the five keys a link carries — Home's tiles
-  // link three of them. describePanel synthesizes `section` from the RAW key
+  // "Money" tab no matter which of the five keys a link carries. describePanel synthesizes `section` from the RAW key
   // below.
   "teams-payments": "teams-money",
   "teams-products": "teams-money",
@@ -116,7 +119,6 @@ export const NON_COMMAND_PARAMS = [
 ] as const;
 
 const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
-  dashboard: "Home",
   agents: "Agents",
   inbox: "Inbox",
   issues: "Tasks",
@@ -246,7 +248,7 @@ export function describePanel(
       return {
         panelId: MESSAGES_PANEL_ID,
         component: "chat",
-        title: "Messages",
+        title: "Chat",
         params: { agentId },
         renderer: "always",
       };
@@ -257,13 +259,13 @@ export function describePanel(
     // task-7a's report.
     // A session is workspace-scoped: a `room` riding along (old links) is ignored.
     if (params.session) {
-      return { panelId: MESSAGES_PANEL_ID, component: "chat", title: "Messages", params: { sessionId: params.session }, renderer: "always" };
+      return { panelId: MESSAGES_PANEL_ID, component: "chat", title: "Chat", params: { sessionId: params.session }, renderer: "always" };
     }
     if (params.room) {
       return {
         panelId: MESSAGES_PANEL_ID,
         component: "chat",
-        title: "Messages",
+        title: "Chat",
         params: { roomId: params.room, ...(params.message ? { messageId: params.message } : {}) },
         renderer: "always",
       };
@@ -367,7 +369,7 @@ export function describePanel(
         // list, which lives on Tasks — those land at the top of Inbox.
         else if (params.tab === "approvals") p.section = "needs-you";
       }
-      // ?day scopes the Payments section to one UTC day — the hero bar on Home links here.
+      // ?day scopes the Payments section to one UTC day (Money's biggest-day link).
       if (teamsKey === "money" && params.day) p.day = params.day;
       // The four absorbed keys (teams-payments/products/customers/spend) alias
       // to teams-money, so the section they meant survives only if it is read

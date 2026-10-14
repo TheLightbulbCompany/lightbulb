@@ -267,6 +267,15 @@ describe("retired-alias deep links keep their meaning end to end", () => {
     expect(element.props.initialView).toBe("chart");
   });
 
+  it("a stale ?panel=teams-dashboard (Home) opens Activity, not a dead tab", () => {
+    const api = makeFakeApi();
+    attachDockviewApi(api, () => undefined);
+    const d = deriveReconcilerAction("?panel=teams-dashboard", null)!;
+    openPanel(d.panelKey!, d.durableParams);
+    expect(api.getPanel("activity")).toBeDefined();
+    expect(api.getPanel("teams-dashboard")).toBeUndefined();
+  });
+
   it("every retired alias still lands on its successor's panel id", () => {
     const api = makeFakeApi();
     attachDockviewApi(api, () => undefined);
@@ -299,7 +308,7 @@ describe("INVARIANT: panel open/focus writes zero history entries", () => {
   it("only pushUrl:true writes — exactly one push, still zero replaces", () => {
     const api = makeFakeApi();
     attachDockviewApi(api, () => undefined);
-    openPanel("teams-dashboard", {}, { pushUrl: true });
+    openPanel("activity", {}, { pushUrl: true });
     expect(pushSearchParams).toHaveBeenCalledTimes(1);
     expect(replaceSearchParams).not.toHaveBeenCalled();
   });

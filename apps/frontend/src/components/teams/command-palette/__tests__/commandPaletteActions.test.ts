@@ -26,8 +26,10 @@ describe("NAV_ACTIONS derives from the sidebar IA", () => {
     }
   });
 
-  test("Home, Library and Tasks carry the sidebar labels", () => {
-    expect(byId["go-dashboard"]?.label).toBe("Home");
+  test("Activity, Library and Tasks carry the sidebar labels; Home is gone", () => {
+    expect(byId["go-activity"]?.label).toBe("Activity");
+    expect(byId["go-activity"]?.path).toBe("/chat?panel=activity");
+    expect(byId["go-dashboard"]).toBeUndefined();
     expect(byId["go-artifacts"]?.label).toBe("Library");
     expect(byId["go-issues"]?.label).toBe("Tasks");
   });
@@ -58,7 +60,8 @@ describe("NAV_ACTIONS derives from the sidebar IA", () => {
   });
 
   test("old labels survive as keyword aliases", () => {
-    expect(filterNavActions("dashboard").map((a) => a.id)).toContain("go-dashboard");
+    expect(filterNavActions("dashboard").map((a) => a.id)).toContain("go-activity");
+    expect(filterNavActions("home").map((a) => a.id)).toContain("go-activity");
     expect(filterNavActions("artifacts").map((a) => a.id)).toContain("go-artifacts");
     expect(filterNavActions("issues").map((a) => a.id)).toContain("go-issues");
     expect(filterNavActions("approvals").map((a) => a.id)).toContain("go-inbox");

@@ -14,8 +14,11 @@ import {
 describe("panelRegistry", () => {
   it("resolves retired aliases (both routers' maps, merged)", () => {
     expect(resolvePanelAlias("teams-approvals")).toBe("teams-inbox");
-    expect(resolvePanelAlias("teams-skills")).toBe("teams-dashboard");
-    expect(resolvePanelAlias("teams-costs")).toBe("teams-dashboard");
+    // Home is no longer a destination: it and the keys it absorbed open Activity.
+    expect(resolvePanelAlias("teams-dashboard")).toBe("activity");
+    expect(resolvePanelAlias("teams-skills")).toBe("activity");
+    expect(resolvePanelAlias("teams-costs")).toBe("activity");
+    expect(describePanel("teams-dashboard", {})).toMatchObject({ panelId: "activity", component: "activity", title: "Activity" });
     expect(resolvePanelAlias("teams-inbox")).toBe("teams-inbox");
     // Money is ONE page: its four absorbed keys alias to its panel id, or the
     // dock (which dedupes by panel id) opens four sibling tabs all called
@@ -120,7 +123,6 @@ describe("panelRegistry", () => {
 
   it("one label per panel — dock titles match the sidebar's IA labels", () => {
     // Clicking "Library" in the sidebar must not open a tab titled "Artifacts";
-    expect(describePanel("teams-dashboard", {})?.title).toBe("Home");
     expect(describePanel("teams-artifacts", {})?.title).toBe("Library");
   });
 
@@ -129,7 +131,7 @@ describe("panelRegistry", () => {
     expect(d).toEqual({
       panelId: MESSAGES_PANEL_ID,
       component: "chat",
-      title: "Messages",
+      title: "Chat",
       params: { agentId: "a-9" },
       renderer: "always",
     });
@@ -154,7 +156,7 @@ describe("panelRegistry", () => {
     expect(clearablePanelParamKeys("file-viewer")).toEqual(["path", "agent"]);
     expect(clearablePanelParamKeys("agent-inspector")).toEqual(["agentId", "initialTab"]);
     expect(clearablePanelParamKeys("control:agents")).toEqual(["agentId", "initialTab"]);
-    expect(clearablePanelParamKeys("teams-dashboard")).toEqual([]);
+    expect(clearablePanelParamKeys("browser")).toEqual([]);
     expect(clearablePanelParamKeys("chat:a-1")).toEqual([]);
     // roomId/messageId (permalinks) are clearable alongside agentId/
     // agentSelection: an agent open must clear a stale room target, and a

@@ -128,10 +128,3 @@ def test_the_skill_describes_the_generic_starter_roster_and_optional_classics():
         assert role in flat
     assert "Names are user-renamable" in flat
     assert "Friday and Atlas are optional marketplace agents" in flat
-
-
-def test_the_home_surface_uses_the_current_ceo_display_name():
-    flat = _flat()
-    assert "current default CEO's display name" in flat
-    assert "Ask CEO while the roster loads" in flat
-    assert "Ask Friday" not in flat

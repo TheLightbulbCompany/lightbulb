@@ -64,11 +64,13 @@ interface StoredLayout {
 // did until it went back to being its own control panel).
 function migrateRetiredPanelId(
   id: string,
-): { id: string; teamsKey?: string; controlKey?: string; component?: "teams" } | null {
+): { id: string; teamsKey?: string; controlKey?: string; component?: "teams" | "activity" } | null {
   const work = migrateToWorkPanel(id);
   if (work) return work;
   if (Object.hasOwn(RETIRED_PANEL_ALIASES, id)) {
     const target = RETIRED_PANEL_ALIASES[id];
+    // Home (and what it absorbed) folds into the singleton Activity panel.
+    if (target === "activity") return { id: "activity", component: "activity" };
     if (target.startsWith("teams-")) {
       // Hardening: every existing bare teams-* alias is already
       // contentComponent "teams", so this is a no-op for them today — but
@@ -97,6 +99,7 @@ function migrateRetiredPanelId(
 function migrateToWorkPanel(id: string): { id: string; teamsKey: string; component: "teams" } | null {
   if (!id.startsWith("teams-")) return null;
   const target = resolvePanelAlias(id);
+  if (!target.startsWith("teams-")) return null; // Home → Activity is not a Work page
   const teamsKey = target.slice("teams-".length);
   return isWorkTeamsKey(teamsKey) ? { id: WORK_PANEL_ID, teamsKey, component: "teams" } : null;
 }
@@ -350,6 +353,8 @@ export function sanitizeLayout(
         // weight in the persisted params.
         if (migration.component === "teams") delete params.controlKey;
       }
+      // Activity takes none of a teams panel's params.
+      if (migration.component === "activity") params = {};
     }
 
     // A retired alias can cross namespaces (control:x -> teams-y), so

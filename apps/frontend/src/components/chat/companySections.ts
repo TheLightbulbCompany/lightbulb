@@ -7,7 +7,7 @@
 // resolves every key through panelRegistry, so a typo fails there.
 
 import {
-  LayoutDashboard,
+  Bell,
   Inbox,
   ListTodo,
   Mail,
@@ -40,7 +40,8 @@ export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem
   {
     label: null,
     items: [
-      { panel: "teams-dashboard", label: "Home", Icon: LayoutDashboard },
+      // Home was retired into Activity (RETIRED_PANEL_ALIASES), so Activity leads.
+      { panel: "activity", label: "Activity", Icon: Bell },
       { panel: "teams-search", label: "Search", Icon: Search },
       { panel: "teams-inbox", label: "Inbox", Icon: Inbox },
       // The agents' shared mailbox. Not a teams-* key: its own panel, on the

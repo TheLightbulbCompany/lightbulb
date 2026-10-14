@@ -202,6 +202,14 @@ describe("AgentsListPanel", () => {
     expect(mockPost).not.toHaveBeenCalled();
   });
 
+  // The rail's Hire button moved here: hiring is the Agents tab's verb.
+  it("the header's Add an AI employee opens the marketplace drawer", () => {
+    mockOpenMarketplace.mockClear();
+    render(<AgentsListPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Add an AI employee" }));
+    expect(mockOpenMarketplace).toHaveBeenCalledWith({ view: "browse" });
+  });
+
   it("renders agent rows with link to /teams/agents/{id}", () => {
     mockRead.mockReturnValueOnce({
       data: { agents: [{ id: "a1", name: "Alice", role: "ceo" }] },

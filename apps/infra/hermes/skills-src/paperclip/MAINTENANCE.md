@@ -343,3 +343,32 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
         heartbeat.md "retry a 401 once" sentence: the window before the run is
         attached.
       Re-apply on re-vendor.
+  25. A person's decision is an approval (SKILL.md Critical Rules "A person's
+      decision is an approval" + the interactions.md routing row; detail in
+      references/interactions.md "When a person must decide", which replaced
+      upstream's "Requesting Board Approval" section; references/api-reference.md
+      "CEO strategy approval" points at it; references/heartbeat.md's
+      blocked-on-a-human bullet carries a pointer). Observed dev 2026-10-14
+      (Walker Studio): asked twice for "an approval in Needs you", the CEO filed
+      a task assigned to the person instead, and other agents asked in chat; the
+      approvals list stayed empty, so the setup list's "Answer your first
+      approval" step (apps/frontend OnboardingBand.tsx, any answered approval)
+      could not be done. The commands use `raw POST
+      /api/companies/:id/approvals` (fork server/src/routes/approvals.ts: agents
+      may create from a room turn, `requestedByAgentId` defaults to the actor,
+      `issueIds` are UUIDs per createApprovalSchema). `approve_ceo_strategy` is
+      the CEO's first-plan decision: no server side effect on approve beyond the
+      requester wake, and the BFF renders title/summary/plan
+      (core/services/activity.py, ApprovalPayload.tsx CeoStrategyPayload). The
+      old api-reference line "must be approved before you can move tasks to
+      in_progress" was dropped: the fork enforces no such gate. The first-run
+      contract mirrors backend core/services/onboarding_brief.py; edit both
+      together. Re-apply on re-vendor.
+  26. What the Library shows (references/artifacts.md first paragraph + the
+      artifacts.md routing row): the Library (web panel teams-artifacts,
+      ArtifactsPanel.tsx -> BFF /teams/artifacts -> fork
+      server/src/services/company-artifacts.ts) lists agent-written issue
+      documents (minus SYSTEM_ISSUE_DOCUMENT_KEYS), work products and
+      attachments only. Observed dev 2026-10-14: Growth said "the full doc is
+      WAL-4's issue thread" and the Library said "Nothing made yet".
+      Re-apply on re-vendor.

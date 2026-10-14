@@ -59,6 +59,22 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  a webchat session, not a heartbeat)". No code enforces it; the verifier footer that
                                  leaked the same class of text is off in apps/infra/hermes/managed/config.yaml
                                  (display.file_mutation_verifier).
+                              The progress-line + stale-notice sentences in that bullet, detailed in
+                                 references/chat-vs-document.md "What a room message may say":
+                                 <- apps/infra/hermes/bridge/turn.py _progress_poster (Hermes interim_assistant_callback:
+                                 text between tool calls is posted to an addressed room turn as a `progress` line) +
+                                 backend core/services/chat_gate.py ("trial_daily_cap" notice text). Observed dev
+                                 2026-10-14 (Walker Studio): "Let me try creating with --status todo" posted to #general,
+                                 and the CEO read an old allowance notice as a live cap. A running turn proves the
+                                 openrouter-gate admitted it, which is why "you are running, so the allowance is not
+                                 stopping you" holds (gate is per owner key, so for every teammate).
+  - Decisions are approvals . SKILL.md ("A person's decision is an approval") + references/chat-vs-document.md
+                                 (step 3 disposition, "The first run" step 2) -> the paperclip skill's
+                                 references/interactions.md "When a person must decide" (the worked commands).
+                              <- apps/frontend/src/components/messaging/OnboardingBand.tsx (approvalAnswered: any
+                                 answered row of /teams/approvals) + apps/backend/routers/teams/approvals.py.
+                                 Observed dev 2026-10-14: the CEO filed "Approve pricing packages" as a task assigned
+                                 to the person and the approvals list stayed empty.
   - App host for links ...... SKILL.md ("Links: use this workspace's own app host")
                               <- core/services/owner_facts.py (`app_url` = settings.FRONTEND_URL)
   - Workspace memory ........ references/platform-primitives.md ("Queryable company state" row)
@@ -262,6 +278,12 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- apps/frontend/src/components/workspace/WorkspaceHeader.tsx (workspace-rail Library item);
                                  apps/frontend/src/components/workspace/panelRegistry.ts (teams-artifacts panel title);
                                  apps/frontend/src/components/teams/panels/ArtifactsPanel.tsx (Library surface)
+                              What the Library lists (SKILL.md deliverable bullet + references/chat-vs-document.md intro +
+                                 the paperclip skill's references/artifacts.md first paragraph) <- backend
+                                 routers/teams/issues.py list_company_artifacts -> paperclip fork
+                                 server/src/services/company-artifacts.ts (issue documents created/updated by an agent,
+                                 minus SYSTEM_ISSUE_DOCUMENT_KEYS; work products; attachments; never comments or the
+                                 description)
   - Mail ..................... references/surfaces.md
                               <- apps/frontend/src/components/workspace/WorkspaceHeader.tsx (Mail rail item + badge);
                                  apps/frontend/src/components/mail/ (MailPanel sections, chips, meeting detail, "new");

@@ -7,6 +7,11 @@ versioned. A deliverable goes in a Paperclip **issue document** on a task; chat
 gets a short summary with the document's link, and the app turns that link
 into a card (title, task, preview, Open) right in the conversation.
 
+The **Library** lists issue documents, work products and attachments, and
+nothing else. A deliverable written in chat, in a task comment or in the task
+description is not in the Library, so the person cannot find it again. Never
+say "the full doc is in the task thread": write the document, then link it.
+
 ## Which one
 
 | What was asked | Deliver as |
@@ -64,10 +69,11 @@ helper omits the header, and every call below works without one.
    the response**, not the one you asked for: Paperclip may redirect a write
    on a locked document to a new key.
 
-3. **Give the task a disposition.** Done → `update <id> --status done`. Needs
-   sign-off → `confirm <id> --prompt "Approve this plan?"`, then
-   `update <id> --status in_review` (see the paperclip skill's
-   `references/artifacts.md`).
+3. **Give the task a disposition.** Done → `update <id> --status done`. A
+   person must sign off → raise an approval linked to this task (the paperclip
+   skill's `references/interactions.md` "When a person must decide"), then
+   `update <id> --status in_review`. Never assign the task to the person as
+   the way to ask.
 
 4. **Reply in chat** with at most five lines: what it is, the link, the two or
    three takeaways that matter, and the next step. The link is the document
@@ -109,8 +115,10 @@ see work done and make one decision:
    writing a one-page plan for the next two weeks. It'll be here in a few
    minutes.").
 2. One result message: the plan as a document (above), one
-   `request_board_approval` for the plan's first concrete action linked as
-   `<app_url>/<PREFIX>/approvals/<id>` (it renders as an Approve card), one
+   `approve_ceo_strategy` approval for that plan, linked to its task (the
+   worked command is in the paperclip skill's `references/interactions.md`),
+   given as `<app_url>/<PREFIX>/approvals/<id>` (it renders as an Approve card
+   and is the "Answer your first approval" step of the person's setup list), one
    connect card for the tool the first piece needs as
    `<app_url>/chat?panel=connections&provider=<slug>` (it renders as a Connect
    button; skip it when that tool is connected), and three offers written as
@@ -119,3 +127,26 @@ see work done and make one decision:
 3. Only you (the agent whose home holds `BRIEF.md`) speak in the room until the
    approval is answered; hand work to teammates through tasks, then say in one
    line who has it.
+
+## What a room message may say
+
+Everything you write in a room is for the person reading it, and that includes
+the text you write between tool calls: in a turn someone addressed to you, it
+is posted to the room as a progress line.
+
+- **Say the work, not the mechanics.** Never write tool or script names, flags
+  (`--status todo`), run ids, session files, file paths, HTTP codes, or "let me
+  retry". A failed call you are fixing is not news; fix it and say the result.
+  Wrong: "Good — there's a run ID in the session file. Let me try creating with
+  --status todo." Right: "Filed the outreach task for Growth."
+- **Between tool calls, write nothing or one plain line of progress** ("Pricing
+  research is done; drafting the packages now."). Think in your head, not in the
+  room.
+- **A platform notice in the history describes the moment it was posted, not
+  now.** A system line such as "You've used today's free allowance. It resets
+  tomorrow." may be hours old and already cleared. Before you tell a person that
+  anything is blocked, waiting or capped, check the current state: read
+  `~/.openclaw/lightbulb-facts.json` again (plan, provider), or make a fresh call
+  (the task's status, the approval's status). You are running this turn, so the
+  model allowance is not stopping you now. If a teammate's work is waiting, say
+  what it is waiting on today (a task status, an open approval), or say nothing.

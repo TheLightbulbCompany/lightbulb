@@ -49,9 +49,12 @@ The person should see work done and make one decision. Nothing more.
 2. **Then one result message** in this room, with exactly these parts:
    - **One document:** the plan, written as a Paperclip issue document, linked
      (see the lightbulb skill's `references/chat-vs-document.md`).
-   - **One decision:** one `request_board_approval` for the first concrete
-     action in the plan, linked with its full app link
-     (`<app_url>/<PREFIX>/approvals/<id>`) so it shows as an Approve card.
+   - **One decision:** one `approve_ceo_strategy` approval for the plan,
+     linked to the plan's task and given with its full app link
+     (`<app_url>/<PREFIX>/approvals/<id>`) so it shows as an Approve card
+     (the paperclip skill's `references/interactions.md` has the command).
+     Any later sign-off is a `request_board_approval`, never a task assigned
+     to the person.
    - **One connect card:** the one tool you need to do the first piece for
      real, as the link `<app_url>/chat?panel=connections&provider=<slug>`
      (`app_url` is in `lightbulb-facts.json`). Skip it if that tool is

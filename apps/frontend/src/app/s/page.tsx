@@ -86,6 +86,7 @@ function LinkTerminal({ token, onTrouble }: { token: string; onTrouble: () => vo
   // Bumped to take a seat again: after a failure, or when the link was made public anew (a new channel).
   const [round, setRound] = useState(0);
   const lease = useRef<string | null>(null);
+  const fullSeen = useRef(false);
   const leaseOf = useRef(token);
   const handlers = useRef(new Set<(event: LiveEvent) => void>());
   // Whether this seat has drawn a snapshot. Until it has, every renewal asks for one: the server
@@ -165,7 +166,8 @@ function LinkTerminal({ token, onTrouble }: { token: string; onTrouble: () => vo
     }, (e) => {
       if (!alive) return;
       const full = fullOf(e);
-      if (full) capture("share_link_full_viewed", { watching: full.watching });
+      // Once per page load: a full link is retried every 15 s, and each retry is the same view.
+      if (full && !fullSeen.current) { fullSeen.current = true; capture("share_link_full_viewed", { watching: full.watching }); }
       setNote(full ? full.note : e instanceof ApiError ? e.message : "Could not reach this session. Trying again.");
       if (!refusal(e)) retry = setTimeout(() => setRound((n) => n + 1), VIEWING_RETRY_MS); // a refused link is the page poll's to show
     });

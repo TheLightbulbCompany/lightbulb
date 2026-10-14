@@ -150,8 +150,8 @@ export function WorkspaceBand() {
 
       <div className="lb-wrap lb-captions">
         <p>
-          <b>Shared sessions.</b> Watch a teammate&rsquo;s Claude Code or Codex session live from the Mac app, and pick
-          it up where they stopped.
+          <b>Shared sessions.</b> Watch a teammate&rsquo;s Claude Code or Codex session live from the Mac app, and
+          pick up a Claude Code session where they stopped.
         </p>
         <p>
           <b>Approval cards.</b> When an agent needs a yes (a plan, a spend, a new hire), it asks in the room and

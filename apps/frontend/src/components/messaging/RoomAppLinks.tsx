@@ -6,6 +6,9 @@ import { roomDisplayName, sessionLabel } from "@lightbulb/shared";
 import { ApprovalRow } from "@/components/teams/inbox/ApprovalRow";
 import type { Approval } from "@/components/teams/shared/types";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import { useConnections } from "@/hooks/useConnections";
+import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
+import { ConnectButton } from "@/components/settings/ConnectButton";
 import { handleShellLinkClick } from "@/lib/shellNav";
 import { extractAppLinks, type AppLink } from "./appLinks";
 import { useMessagingWorkspaceOptional, type MessagingWorkspaceValue } from "./MessagingWorkspaceContext";
@@ -14,8 +17,8 @@ import { ParticipantAvatar } from "./ParticipantAvatar";
 /**
  * Links to our own app, shown as the native thing they point at instead of the
  * site's OG card. Issues and documents are rendered by MessageTaskCard and
- * RoomDocumentCards; this covers approvals, agents, rooms, messages and
- * sessions. Anything it cannot resolve from data already loaded renders
+ * RoomDocumentCards; this covers approvals, connect buttons, agents, rooms,
+ * messages and sessions. Anything it cannot resolve from data already loaded renders
  * nothing — the link in the text stays a plain (in-app) link.
  */
 export function RoomAppLinks({ text }: { text: string }) {
@@ -41,6 +44,7 @@ export function openAppLink(event: MouseEvent<HTMLAnchorElement>, link: AppLink,
 
 function AppLinkCard({ link, ws }: { link: AppLink; ws: MessagingWorkspaceValue | null }) {
   if (link.kind === "approval") return <ApprovalCard id={link.id} />;
+  if (link.kind === "connect") return <ConnectCard provider={link.provider} />;
   if (!ws) return null;
   const rooms = ws.directoryProps.rooms;
   const chip = (icon: ReactNode, label: string, meta?: string) =>
@@ -75,4 +79,21 @@ function ApprovalCard({ id }: { id: string }) {
   const { read } = useTeamsApi();
   const { data } = read<Approval>(`/approvals/${encodeURIComponent(id)}`);
   return data?.id ? <section aria-label="Approval in this message" className="editorial-card max-w-xl"><ApprovalRow approval={data} /></section> : null;
+}
+
+/** An agent's `?panel=connections&provider=x` link: the same Connect button the Connections panel shows. */
+function ConnectCard({ provider }: { provider: string }) {
+  const { connections, mutate, connectPaste, startOAuth, disconnect } = useConnections();
+  const canManage = useIsWorkspaceAdmin();
+  const connection = connections.find((c) => c.provider === provider);
+  if (!connection || connection.status === "unavailable" || connection.runtime_supported === false) return null;
+  return (
+    <section aria-label={`Connect ${connection.display_name}`} className="room-app-chip">
+      <span className="room-app-chip-label">{connection.display_name}</span>
+      {/* Connected: say so, never offer Disconnect from inside a chat message. */}
+      {connection.status === "connected"
+        ? <span className="room-link-card-meta">Connected</span>
+        : <ConnectButton connection={connection} canManage={canManage} connectPaste={connectPaste} startOAuth={startOAuth} disconnect={disconnect} refreshConnections={mutate} />}
+    </section>
+  );
 }

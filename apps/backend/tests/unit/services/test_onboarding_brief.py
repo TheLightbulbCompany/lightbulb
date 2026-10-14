@@ -169,6 +169,18 @@ def test_render_brief_md_contains_all_fields():
     assert "max@acme.com" in md
 
 
+def test_render_brief_md_carries_the_first_run_result_contract():
+    """T13: the first run ends with one document, one decision, one connect card, three offers."""
+    md = render_brief_md(path="new", user_input="a bakery", detail=None, display_name="Ann", email="a@x.com")
+    assert "three sentences at most" in md
+    assert "request_board_approval" in md
+    assert "/approvals/<id>" in md
+    assert "chat?panel=connections&provider=<slug>" in md
+    assert "Three offers" in md
+    assert "Only you speak" in md
+    assert "{one line}" in md  # format() escapes rendered, not raised
+
+
 def test_render_brief_md_omits_detail_line_when_none():
     md = render_brief_md(
         path="new",

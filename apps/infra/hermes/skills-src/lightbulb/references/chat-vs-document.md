@@ -97,3 +97,22 @@ finished document is announced with `scripts/lightbulb-post.sh`:
 
 The answer is in chat (the takeaways), the detail is one click away, and it
 ends with a clear next step.
+
+## The first run (when `BRIEF.md` is in your home)
+
+`BRIEF.md` carries the result contract; this is its mirror. The person should
+see work done and make one decision:
+
+1. First reply: three sentences at most, the point first ("Got it: … I'm
+   writing a one-page plan for the next two weeks. It'll be here in a few
+   minutes.").
+2. One result message: the plan as a document (above), one
+   `request_board_approval` for the plan's first concrete action linked as
+   `<app_url>/<PREFIX>/approvals/<id>` (it renders as an Approve card), one
+   connect card for the tool the first piece needs as
+   `<app_url>/chat?panel=connections&provider=<slug>` (it renders as a Connect
+   button; skip it when that tool is connected), and three offers written as
+   outcomes that name the person's one part ("I'll draft the three invoices due
+   this week; you send them in a tap."). Never offer work you will not do.
+3. Only the CEO speaks in the room until the approval is answered; hand work to
+   teammates through tasks, then say in one line who has it.

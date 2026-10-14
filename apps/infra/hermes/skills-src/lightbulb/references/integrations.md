@@ -152,7 +152,9 @@ the platform can't do.
   For a catalog entry with `requestable: false` AND `byo_required: false`,
   Lightbulb already has the integration, so your answer is: *"Open Connections
   (the plug icon on the workspace rail at thelightbulb.company/chat) and click Connect
-  next to <service> — sign in there and I'll take it from here."* They are
+  next to <service> — sign in there and I'll take it from here."* In a room,
+  add the link `<app_url>/chat?panel=connections&provider=<slug>`: the app
+  shows it as a Connect button for that service right in the message. They are
   almost always already signed in to <service> in their own browser, and the
   OAuth finishes there with nothing to re-type. **Never open a third-party
   sign-in page in your own browser unprompted** — that is the wrong door.

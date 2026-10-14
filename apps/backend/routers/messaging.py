@@ -23,7 +23,7 @@ from core.observability.session_analytics import capture_session_event
 from core.dynamodb import run_in_thread
 from core.auth import AuthContext, get_current_user, get_human_session, get_optional_user, resolve_owner_id
 from core.config import settings
-from core.repositories import container_repo, messaging_repo
+from core.repositories import container_repo, messaging_repo, user_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import activity, chat_gate
 from core.services import messaging as service
@@ -1052,7 +1052,9 @@ async def set_room_read_cursor(
     request: ReadCursorRequest,
     auth: AuthContext = Depends(get_current_user),
 ):
-    return await service.set_read_cursor(auth, room_id, request)
+    result = await service.set_read_cursor(auth, room_id, request)
+    asyncio.create_task(user_repo.touch_active(auth.user_id))  # presence for the away email (T15)
+    return result
 
 
 @router.post("/messaging/rooms/{room_id}/unread", response_model=ReadCursorResponse)

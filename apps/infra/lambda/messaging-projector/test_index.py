@@ -1457,6 +1457,27 @@ class ActivityTests(unittest.TestCase):
     def test_plain_channel_message_writes_nothing(self):
         self.assertEqual(self.project(activity_world(), message_item(sequence=2)).activity(), {})
 
+    def away(self, ddb: FakeDdb) -> dict[str, dict]:
+        return {pk: row for (pk, _sk), row in ddb.items.items() if pk.startswith("AWAY#")}
+
+    def test_a_dm_queues_an_away_email_check_five_minutes_out(self):
+        """T15: the backend sweeper emails it if it is still unread then."""
+        rows = self.away(self.project(activity_world("dm", (USER_ID, BOB_ID)), message_item(sequence=2)))
+        self.assertEqual(list(rows), [f"AWAY#{BOB_ID}"])
+        row = rows[f"AWAY#{BOB_ID}"]
+        created = int(index._parse_rfc3339(CREATED_AT).timestamp())
+        self.assertEqual(
+            (row["sweep"], int(row["deadlineAt"]), row["kind"], row["sk"], row["ownerId"]),
+            ("away", created + 300, "dm", f"M#{ROOM_ID}#{MESSAGE_ID}", OWNER_ID),
+        )
+        self.assertNotIn("hello", json.dumps(row, default=str))
+
+    def test_a_muted_member_and_a_thread_reply_queue_no_away_email(self):
+        items = activity_world("dm", (USER_ID, BOB_ID))
+        items[(f"ROOM#{ROOM_ID}", f"MEMBER#human#{BOB_ID}")]["muted"] = True
+        self.assertEqual(self.away(self.project(items, message_item(sequence=2))), {})
+        self.assertEqual(self.away(self.project(activity_world(), message_item(sequence=2))), {})
+
 
 class ThreadRootModifyTests(unittest.TestCase):
     """A thread reply ADDs to its root's threadParticipants: that MODIFY is not an edit."""

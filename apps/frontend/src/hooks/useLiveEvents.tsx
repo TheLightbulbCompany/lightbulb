@@ -124,6 +124,24 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     onConfigStale: () => void refreshConfig(),
   });
 
+  // Presence for the away email (T15): every two minutes while this tab is VISIBLE, and on
+  // becoming visible. A hidden tab says nothing, so a person who walked away gets the email.
+  useEffect(() => {
+    if (!httpReady) return;
+    const ping = () => {
+      if (document.visibilityState === "visible") void Promise.resolve().then(() => api.post("/users/me/active", {})).catch(() => undefined);
+    };
+    ping();
+    const timer = window.setInterval(ping, 120_000);
+    document.addEventListener("visibilitychange", ping);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", ping);
+    };
+    // `api` identity churns every render; the ping only needs the signed-in user.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [httpReady, userId]);
+
   const onEvent = useCallback((handler: (event: LiveEvent) => void) => {
     eventHandlers.current.add(handler);
     return () => eventHandlers.current.delete(handler);

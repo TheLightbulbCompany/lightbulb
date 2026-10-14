@@ -1550,3 +1550,19 @@ async def test_a_stop_records_who_and_when(table):
     assert await repo.request_abort("owner_1", run_id, stopped_by="user_1", stop_after_s=12)
     row = await repo.get_run("owner_1", run_id)
     assert row["stoppedBy"] == "user_1" and row["stopAfterS"] == 12
+
+
+@pytest.mark.asyncio
+async def test_away_checks_ride_the_deadline_index_and_leave_it(table):
+    """T15: due ``sweep = "away"`` rows are listed by key; defer moves the deadline; finish deletes."""
+    now = int(time.time())
+    for sk, deadline in (("M#r#due", now - 1), ("M#r#later", now + 600)):
+        await repo.run_in_thread(
+            repo._table().put_item, Item={"pk": "AWAY#user_b", "sk": sk, "sweep": "away", "deadlineAt": deadline}
+        )
+    assert await repo.list_due_away_checks(now) == [{"pk": "AWAY#user_b", "sk": "M#r#due"}]
+    assert await repo.list_overdue_runs(now + 10_000) == []  # never mistaken for a run
+    await repo.defer_away_check("AWAY#user_b", "M#r#due", now + 300)
+    assert await repo.list_due_away_checks(now) == []
+    await repo.finish_away_check("AWAY#user_b", "M#r#due")
+    assert await repo.get_away_check("AWAY#user_b", "M#r#due") is None

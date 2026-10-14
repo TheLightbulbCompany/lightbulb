@@ -79,12 +79,15 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  _code_prompt posts the line and watches the page; there is no code form.
   - Background subagents .... references/surfaces.md ("Background subagents" row) <- core/services/subagents.py + packages/shared/src/messaging/subagents.ts
   - Members / join link ..... references/surfaces.md ("Members & join link" row)
-  - Data page ............... references/surfaces.md ("Your data" row) <- apps/frontend/src/app/security/page.tsx
                               <- routers/orgs.py (one link per workspace; admin-only mint/copy/revoke;
                                  open join as org:member); frontend WorkspaceMembersSection (Settings →
                                  Members), workspace/InvitePeoplePanel + InvitePeopleDialog (email invites, pending/revoke,
                                  rail Invite), app/onboarding JoinTeamBlock (paste a join link), and
                                  MessagingWorkspaceContext.copyJoinLink (channel/group-chat Members section, not DMs).
+  - Data page ............... references/surfaces.md ("Your data" row) <- apps/frontend/src/app/security/page.tsx
+  - Away email / daily summary references/surfaces.md ("Away email and daily summary" row)
+                              <- core/services/needs_you_email.py (5 min, quiet hours, per-room cap, membership),
+                                 core/services/daily_digest.py, components/settings/DailySummaryCard.tsx
   - Browser live view ....... references/surfaces.md
                               <- Mac viewer input: apps/frontend/src/components/workspace/panels/BrowserFrameView.tsx
                                  (event producer); apps/backend/routers/container.py and

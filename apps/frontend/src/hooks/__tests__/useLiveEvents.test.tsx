@@ -23,8 +23,9 @@ const get = vi.fn(async () => ({
   userChannelKey: "11111111-1111-4111-8111-111111111111",
   workspaceId: WORKSPACE_ID,
 }));
+const post = vi.fn(async () => ({}));
 vi.mock("@/lib/api", () => ({
-  useApi: () => ({ get, post: vi.fn(), put: vi.fn(), patch: vi.fn(), del: vi.fn() }),
+  useApi: () => ({ get, post, put: vi.fn(), patch: vi.fn(), del: vi.fn() }),
 }));
 vi.mock("@/lib/desktopPermissions", () => ({
   readDesktopPermissionGrant: () => ({ permissions: ["screen"] }),
@@ -116,6 +117,18 @@ beforeEach(() => {
 });
 
 describe("LiveEventsProvider", () => {
+  it("tells the backend the person is here only while the tab is visible (away-email presence)", async () => {
+    post.mockClear();
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    render(<LiveEventsProvider><Probe /></LiveEventsProvider>);
+    await act(async () => {});
+    expect(post).not.toHaveBeenCalledWith("/users/me/active", {});
+    visibility.mockReturnValue("visible");
+    await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/users/me/active", {}));
+    visibility.mockRestore();
+  });
+
   it("invalidates only the current account/workspace status key for health updates", async () => {
     await act(async () => { render(<LiveEventsProvider><Probe /></LiveEventsProvider>); });
     shared.onEvent?.({ type: "runtime.resource.invalidated", payload: { resource: "health" } });

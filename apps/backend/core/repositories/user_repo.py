@@ -1,8 +1,13 @@
 """User repository -- DynamoDB operations for the users table."""
 
+import logging
+import time
+
 from botocore.exceptions import ClientError
 
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
+
+logger = logging.getLogger(__name__)
 
 
 def _get_table():
@@ -186,6 +191,37 @@ def daily_summary_on(row: dict | None) -> bool:
     return (row or {}).get("daily_summary") is not False
 
 
+def away_email_on(row: dict | None) -> bool:
+    """The "Email me when something needs me and I'm away" pref (``users.away_email``,
+    T15). Absent means ON."""
+    return (row or {}).get("away_email") is not False
+
+
+#: ``touch_active`` writes at most once per this many seconds per person.
+_ACTIVE_STAMP_EVERY_S = 60
+
+
+async def touch_active(user_id: str) -> None:
+    """Stamp ``last_active_at`` (epoch s): the person is in the app right now (they read a
+    room or opened the live channel). AppSync has no disconnect callback, so this is the
+    away email's presence signal. One conditional write a minute at most; never raises."""
+    now = int(time.time())
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"user_id": user_id},
+            UpdateExpression="SET last_active_at = :now",
+            ConditionExpression="attribute_exists(user_id) AND "
+            "(attribute_not_exists(last_active_at) OR last_active_at < :stale)",
+            ExpressionAttributeValues={":now": now, ":stale": now - _ACTIVE_STAMP_EVERY_S},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            logger.warning("user_repo.touch_active failed for %s", user_id, exc_info=True)
+    except Exception:
+        logger.warning("user_repo.touch_active failed for %s", user_id, exc_info=True)
+
+
 def chat_theme_of(row: dict | None) -> str | None:
     """The account's chat theme (``users.chat_theme``), or None when never set
     on any device. Unlike ``timezone_of``/``daily_summary_on`` this has no
@@ -212,6 +248,7 @@ async def set_prefs(
     *,
     timezone: str | None = None,
     daily_summary: bool | None = None,
+    away_email: bool | None = None,
     chat_theme: str | None = None,
     agent_send_without_asking: bool | None = None,
     sessions_reachable_from_background_work: bool | None = None,
@@ -224,6 +261,7 @@ async def set_prefs(
         for k, v in (
             ("timezone", timezone),
             ("daily_summary", daily_summary),
+            ("away_email", away_email),
             ("chat_theme", chat_theme),
             ("agent_send_without_asking", agent_send_without_asking),
             ("sessions_reachable_from_background_work", sessions_reachable_from_background_work),

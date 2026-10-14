@@ -362,6 +362,19 @@ describe("PostHogProvider", () => {
     expect(names.filter((n) => n === "landing_viewed")).toHaveLength(1);
   });
 
+  it("counts an away email's link as notification_opened with the time since it was sent", async () => {
+    process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
+    mockRouterState.pathname = "/chat";
+    const sent = Math.round(Date.now() / 1000) - 120;
+    mockRouterState.search = `panel=chat&room=r&message=m&from=away_email&sent=${sent}`;
+    const mod = await import("../PostHogProvider");
+    render(<mod.PostHogProvider><div>child</div></mod.PostHogProvider>);
+    const opened = mockCapture.mock.calls.filter((c) => c[0] === "notification_opened");
+    expect(opened).toHaveLength(1);
+    expect(opened[0][1]).toMatchObject({ channel: "email" });
+    expect(opened[0][1].latency_s).toBeGreaterThanOrEqual(119);
+  });
+
   it("does NOT stash a sign-up intent while Clerk is unresolved or for a signed-in user", async () => {
     // `isSignedIn` is `undefined` on first render. The old `!isSignedIn`
     // treated that as signed-out and stashed an intent for anyone opening

@@ -25,6 +25,17 @@ describe("DailySummaryCard", () => {
     await waitFor(() => expect(box.checked).toBe(false));
   });
 
+  it("saves the away-email switch on its own key", async () => {
+    get.mockResolvedValue({ timezone: "Europe/Paris", dailySummary: true, awayEmail: true });
+    put.mockResolvedValue({ timezone: "Europe/Paris", dailySummary: true, awayEmail: false });
+    render(<DailySummaryCard />);
+    const box = (await screen.findByLabelText("Email me when I'm away")) as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    fireEvent.click(box);
+    await waitFor(() => expect(put).toHaveBeenCalledWith("/users/me/prefs", { awayEmail: false }));
+    await waitFor(() => expect(box.checked).toBe(false));
+  });
+
   it("renders nothing until the prefs load", () => {
     get.mockReturnValue(new Promise(() => {}));
     const { container } = render(<DailySummaryCard />);

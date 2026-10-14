@@ -133,6 +133,7 @@ def _prefs(row: dict | None) -> UserPrefs:
     return UserPrefs(
         timezone=user_repo.timezone_of(row),
         dailySummary=user_repo.daily_summary_on(row),
+        awayEmail=user_repo.away_email_on(row),
         chatTheme=user_repo.chat_theme_of(row),
         agentSendWithoutAsking=user_repo.agent_send_without_asking(row),
         sessionsReachableFromBackgroundWork=user_repo.sessions_reachable_from_background_work(row),
@@ -157,6 +158,7 @@ async def update_my_prefs(body: UserPrefsUpdate, auth: AuthContext = Depends(get
         auth.user_id,
         timezone=body.timezone,
         daily_summary=body.dailySummary,
+        away_email=body.awayEmail,
         chat_theme=body.chatTheme,
         agent_send_without_asking=body.agentSendWithoutAsking,
         sessions_reachable_from_background_work=body.sessionsReachableFromBackgroundWork,
@@ -201,6 +203,35 @@ async def digest_unsubscribe(token: str = Query(..., max_length=2048)) -> HTMLRe
         return _unsubscribe_page("This unsubscribe link is invalid or has expired.", status_code=400)
     await user_repo.set_prefs(user_id, daily_summary=False)
     return _unsubscribe_page("You're unsubscribed from the daily summary. Turn it back on in Settings.")
+
+
+@router.post("/me/active", status_code=204, operation_id="mark_me_active")
+async def mark_me_active(auth: AuthContext = Depends(get_current_user)) -> None:
+    """Presence for the away email (T15): web and the phone call this every two minutes
+    while the app is visible / in the foreground, never from a hidden tab."""
+    await user_repo.touch_active(auth.user_id)
+
+
+@router.get("/away-email/unsubscribe", response_class=HTMLResponse, include_in_schema=False)
+async def away_email_unsubscribe_page(token: str = Query(..., max_length=2048)) -> HTMLResponse:
+    """The away email's footer link (T15). A GET changes nothing; it shows the POST form."""
+    from core.services.needs_you_email import verify_unsubscribe_token
+
+    if verify_unsubscribe_token(token) is None:
+        return _unsubscribe_page("This unsubscribe link is invalid or has expired.", status_code=400)
+    return _unsubscribe_page("Stop emails when something needs you and you're away?", form_token=token)
+
+
+@router.post("/away-email/unsubscribe", response_class=HTMLResponse, include_in_schema=False)
+async def away_email_unsubscribe(token: str = Query(..., max_length=2048)) -> HTMLResponse:
+    """RFC 8058 one-click target. The token can only turn the away email off. Idempotent."""
+    from core.services.needs_you_email import verify_unsubscribe_token
+
+    user_id = verify_unsubscribe_token(token)
+    if user_id is None:
+        return _unsubscribe_page("This unsubscribe link is invalid or has expired.", status_code=400)
+    await user_repo.set_prefs(user_id, away_email=False)
+    return _unsubscribe_page("You won't get these emails any more. Turn them back on in Settings.")
 
 
 async def _org_blocker(user_id: str, *, active_org_id: str | None, clerk_admin) -> str | None:

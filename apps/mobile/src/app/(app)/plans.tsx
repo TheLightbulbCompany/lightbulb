@@ -1,11 +1,11 @@
 import { useAuth } from "@clerk/expo";
 import { router, Stack } from "expo-router";
 import { ActivityIndicator, Text } from "react-native";
-import { useChatPalette } from "../../config/theme";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createApiClient } from "@lightbulb/shared";
 
 import { PaywallScreen } from "../../components/billing/PaywallScreen";
+import { useChatPalette } from "../../config/theme";
 import { makeAdapter } from "../../lib/adapter";
 import { paywallProductIds } from "../../lib/appleIap";
 

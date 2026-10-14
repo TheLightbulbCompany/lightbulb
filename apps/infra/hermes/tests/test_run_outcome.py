@@ -73,13 +73,16 @@ def test_only_room_event_turns_are_offered_silence():
 
 
 def test_the_first_run_line_reaches_only_the_owners_first_message():
-    welcome = [{"author": {"kind": "agent", "id": "ceo"}, "text": "Welcome"}]
-    first = {"eventKind": "user_request", "sender": {"kind": "human"}, "room": {"kind": "channel"}, "recentHistory": welcome}
+    welcome = [{"author": {"kind": "agent", "id": "ceo"}, "text": "Welcome", "messageSeq": 1}]
+    general = {"kind": "channel", "id": turn.default_room_id(turn.OWNER)}
+    first = {"eventKind": "user_request", "sender": {"kind": "human"}, "room": general, "recentHistory": welcome}
     assert turn.FIRST_RUN_LINE in turn._observe_prompt("ceo", first)
     later = {**first, "recentHistory": [*welcome, {"author": {"kind": "human"}, "text": "hi"}]}
     assert turn.FIRST_RUN_LINE not in turn._observe_prompt("ceo", later)
-    assert turn.FIRST_RUN_LINE not in turn._observe_prompt("ceo", {**first, "room": {"kind": "dm"}})
+    assert turn.FIRST_RUN_LINE not in turn._observe_prompt("ceo", {**first, "room": {"kind": "channel", "id": "other"}})
     assert turn.FIRST_RUN_LINE not in turn._observe_prompt("ceo", {**first, "recentHistory": []})
+    trimmed = [{"author": {"kind": "agent", "id": "eng"}, "text": "status", "messageSeq": 40}]
+    assert turn.FIRST_RUN_LINE not in turn._observe_prompt("ceo", {**first, "recentHistory": trimmed})
 
 
 def test_group_manners_reach_every_turn_and_the_room_question_rule_only_ambient_ones():

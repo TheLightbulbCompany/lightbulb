@@ -1777,7 +1777,8 @@ async def put_sections(auth: AuthContext, request: SectionsRequest) -> RoomListR
 
 
 def default_room_id(owner_id: str) -> str:
-    """Stable identity for the one fresh-workspace general room."""
+    """Stable identity for the one fresh-workspace general room. Mirrored by the Hermes bridge
+    (apps/infra/hermes/bridge/turn.py default_room_id) for the first-run prompt: edit both together."""
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-default-room|{owner_id}"))
 
 

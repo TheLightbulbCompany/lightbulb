@@ -34,6 +34,10 @@ class FakeClerk:
         self.requests.append(request)
         if self.fail_with:
             return httpx.Response(self.fail_with, json={"errors": [{"code": "internal_error"}]})
+        if request.url.path == "/v1/users/user_admin":
+            return httpx.Response(200, json={"id": "user_admin", "first_name": "Sam"})
+        if request.url.path == "/v1/organizations/org_test":
+            return httpx.Response(200, json={"id": "org_test", "name": "Acme & Co"})
         path = request.url.path.removeprefix("/v1/organizations/org_test")
         if path == "/memberships":
             return httpx.Response(200, json={"data": self.members, "total_count": len(self.members)})
@@ -122,11 +126,13 @@ def test_admin_sends_an_invitation_and_the_metric_and_event_fire(app, admin_auth
         "email_address": "cofounder@example.com",
         "inviter_user_id": "user_admin",
         "role": "org:member",
-        "redirect_url": "https://app.example.com/sign-up",
+        "redirect_url": "https://app.example.com/join/invite?workspace=Acme+%26+Co&inviter=Sam",
     }
     metric.assert_called_once_with("orgs.invitation.sent")
     capture.assert_called_once_with(
-        distinct_id="user_admin", event="invitation_sent", properties={"workspace_id": "org_test"}
+        distinct_id="user_admin",
+        event="invitation_sent",
+        properties={"workspace_id": "org_test", "by_admin": True},
     )
     assert "cofounder@example.com" not in "\n".join(r.getMessage() for r in caplog.records)
 
@@ -143,13 +149,30 @@ def test_admin_lists_pending_newest_first(app, admin_auth, clerk):
     assert [i["email"] for i in resp.json()["invitations"]] == ["c@example.com", "b@example.com"]
 
 
-def test_non_admin_member_is_403_and_clerk_is_never_called(app, clerk):
+def test_a_member_may_invite_but_not_list_or_revoke(app, clerk):
+    """D5: the person who wants a cofounder in is often not the admin. Taking access away stays admin-only."""
     member = AuthContext(user_id="user_member", org_id="org_test", org_role="org:member", org_slug="testorg")
     client = _as(app, member)
     assert client.get("/api/v1/orgs/org_test/invitations").status_code == 403
-    assert client.post("/api/v1/orgs/org_test/invitations", json={"email": "x@example.com"}).status_code == 403
     assert client.delete("/api/v1/orgs/org_test/invitations/orginv_1").status_code == 403
     assert clerk.requests == []
+
+    with patch.object(workspace_invitations, "capture_product_event") as capture:
+        resp = client.post("/api/v1/orgs/org_test/invitations", json={"email": "x@example.com"})
+    assert resp.status_code == 201
+    assert json.loads(clerk.requests[-1].content)["inviter_user_id"] == "user_member"
+    assert capture.call_args.kwargs["properties"] == {"workspace_id": "org_test", "by_admin": False}
+
+
+def test_a_failed_name_lookup_still_sends_the_invitation(app, admin_auth, clerk):
+    """The names are display-only; the ticket Clerk appends is what grants anything."""
+    with (
+        patch.object(workspace_invitations.clerk_admin, "get_organization", return_value=None),
+        patch.object(workspace_invitations.clerk_admin, "get_user", return_value=None),
+    ):
+        resp = _as(app, admin_auth).post("/api/v1/orgs/org_test/invitations", json={"email": "x@example.com"})
+    assert resp.status_code == 201
+    assert json.loads(clerk.requests[-1].content)["redirect_url"] == "https://app.example.com/join/invite"
 
 
 def test_admin_of_another_workspace_is_403(app, admin_auth, clerk):

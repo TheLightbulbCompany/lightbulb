@@ -243,16 +243,21 @@ def test_status_survives_a_missing_encryption_key(app, admin_auth, repo):
 # --- Admin gating ------------------------------------------------------------
 
 
-def test_non_admin_member_cannot_see_or_mint_the_link(app, member_auth, repo):
+def test_a_member_may_copy_and_mint_the_first_link_but_not_replace_or_revoke_it(app, member_auth, repo):
+    """D5: members copy the link. Replacing one revokes it for everyone holding it, so that stays admin-only."""
     _override_auth(app, member_auth)
     client = TestClient(app)
 
-    assert client.get("/api/v1/orgs/org_test/join-link").status_code == 403
-    minted = client.post("/api/v1/orgs/org_test/join-link")
-    assert minted.status_code == 403
-    assert minted.json()["detail"] == "Organization admin access required"
+    assert client.get("/api/v1/orgs/org_test/join-link").json()["exists"] is False
+    first = client.post("/api/v1/orgs/org_test/join-link")
+    assert first.status_code == 201
+    assert client.get("/api/v1/orgs/org_test/join-link").json()["join_url"] == first.json()["join_url"]
+
+    again = client.post("/api/v1/orgs/org_test/join-link")
+    assert again.status_code == 403
+    assert again.json()["detail"] == "Only a workspace admin can replace the join link"
     assert client.delete("/api/v1/orgs/org_test/join-link").status_code == 403
-    assert repo.rows == {}
+    assert client.get("/api/v1/orgs/org_test/join-link").json()["join_url"] == first.json()["join_url"]
 
 
 def test_personal_caller_is_rejected_before_any_write(app, personal_auth, repo):

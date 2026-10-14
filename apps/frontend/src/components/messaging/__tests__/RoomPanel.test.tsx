@@ -619,7 +619,7 @@ it("tells a non-admin where the join link lives instead of a bare error", async 
 
   await user.click(screen.getByRole("button", { name: /^Details/ }));
   await user.click(screen.getByRole("button", { name: "Copy the workspace join link" }));
-  expect(await screen.findByText("Only a workspace admin can copy it. Ask an admin to copy it from Settings → Members.")).toBeInTheDocument();
+  expect(await screen.findByText("Couldn't get the join link. Ask a workspace admin to copy it from Settings → Members.")).toBeInTheDocument();
 });
 
 it("opens the channel member picker directly from the header for an owner", async () => {

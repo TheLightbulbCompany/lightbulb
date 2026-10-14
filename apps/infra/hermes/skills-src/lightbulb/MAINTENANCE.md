@@ -79,8 +79,9 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  _code_prompt posts the line and watches the page; there is no code form.
   - Background subagents .... references/surfaces.md ("Background subagents" row) <- core/services/subagents.py + packages/shared/src/messaging/subagents.ts
   - Members / join link ..... references/surfaces.md ("Members & join link" row)
-                              <- routers/orgs.py (one link per workspace; admin-only mint/copy/revoke;
-                                 open join as org:member); frontend WorkspaceMembersSection (Settings →
+                              <- routers/orgs.py (one link per workspace; any member invites + copies, admin-only
+                                 replace/revoke + pending list; open join as org:member); app/join/invite
+                                 (invitation landing); frontend WorkspaceMembersSection (Settings →
                                  Members), workspace/InvitePeoplePanel + InvitePeopleDialog (email invites, pending/revoke,
                                  rail Invite), app/onboarding JoinTeamBlock (paste a join link), and
                                  MessagingWorkspaceContext.copyJoinLink (channel/group-chat Members section, not DMs).

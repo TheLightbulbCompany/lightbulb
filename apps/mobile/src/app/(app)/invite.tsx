@@ -8,7 +8,6 @@ import { insetRowStyle, InsetSectionHeader } from "../../components/ui/InsetGrou
 import { fonts, radii, spacing, useChatPalette } from "../../config/theme";
 import { makeAdapter } from "../../lib/adapter";
 import {
-  ADMIN_ONLY_TEXT,
   copyJoinLink,
   inviteResultText,
   isForbidden,
@@ -32,7 +31,7 @@ export default function InviteScreen() {
   const api = useMemo(() => createApiClient(makeAdapter(() => getTokenRef.current())), []);
   const orgId = useOrganization().organization?.id ?? "";
 
-  // undefined = loading, "forbidden" = not an admin, null = the read failed.
+  // undefined = loading, "forbidden" = not an admin (who may still invite, D5), null = the read failed.
   const [invitations, setInvitations] = useState<Invitation[] | "forbidden" | null | undefined>(undefined);
   const [refreshing, setRefreshing] = useState(false);
   const [emails, setEmails] = useState("");
@@ -109,14 +108,6 @@ export default function InviteScreen() {
   const body = { color: palette.fg, fontFamily: fonts.sans, fontSize: 17 };
   const caption = { color: palette.fgMute, fontFamily: fonts.sans, fontSize: 13, lineHeight: 18 };
 
-  if (invitations === "forbidden") {
-    return (
-      <View style={{ flex: 1, backgroundColor: palette.ground, padding: spacing.lg }}>
-        <Text style={[body, { marginTop: spacing.xl, textAlign: "center" }]}>{`${ADMIN_ONLY_TEXT} Ask an admin.`}</Text>
-      </View>
-    );
-  }
-
   const canSend = splitEmails(emails).length > 0 && !sending && !!orgId;
   const pending = Array.isArray(invitations) ? invitations : [];
 
@@ -186,7 +177,7 @@ export default function InviteScreen() {
         {linkStatus ?? "Anyone with the link can join this workspace."}
       </Text>
 
-      <InsetSectionHeader title="Pending invitations" palette={palette} />
+      {invitations !== "forbidden" ? <InsetSectionHeader title="Pending invitations" palette={palette} /> : null}
       {invitations === undefined ? <ActivityIndicator accessibilityLabel="Loading invitations" /> : null}
       {invitations === null ? <Text style={[caption, { marginHorizontal: 32, color: palette.alert }]}>Couldn’t load invitations. Pull to try again.</Text> : null}
       {Array.isArray(invitations) && pending.length === 0 ? <Text style={[caption, { marginHorizontal: 32 }]}>No pending invitations.</Text> : null}

@@ -38,7 +38,7 @@ it("mints a link when there is none", async () => {
 it("tells a non-admin to ask an admin", async () => {
   api.get.mockRejectedValue(new ApiError(403, { detail: "admin only" }));
   const error = await run().catch((e: unknown) => e);
-  expect(joinLinkNote(error)).toBe("Only a workspace admin can copy it. Ask an admin to copy it from Settings → Members.");
+  expect(joinLinkNote(error)).toBe("Couldn't get the join link. Ask a workspace admin to copy it from Settings → Members.");
   expect(capture).not.toHaveBeenCalled();
 });
 

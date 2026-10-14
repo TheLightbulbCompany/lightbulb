@@ -4,7 +4,8 @@ import * as Clipboard from "expo-clipboard";
 import { relativeTime } from "./relativeTime";
 
 // Email invitations and the join link, the two ways into a workspace
-// (apps/backend/routers/orgs.py). Every route is admin-only: a member gets 403.
+// (apps/backend/routers/orgs.py). Any member may send and copy (D5); listing and revoking are
+// admin-only, so a member gets 403 on the list.
 
 export type Invitation = { id: string; email: string; created_at: string; expires_at: string | null; status: string };
 
@@ -23,8 +24,6 @@ export async function revokeInvitation(api: ApiMethods, orgId: string, id: strin
   await api.del(`${orgPath(orgId)}/invitations/${encodeURIComponent(id)}`);
 }
 
-export const ADMIN_ONLY_TEXT = "Only a workspace admin can invite people.";
-
 export function isForbidden(error: unknown): boolean {
   return error instanceof ApiError && error.status === 403;
 }
@@ -35,7 +34,7 @@ export function inviteResultText(error: unknown): string {
     const detail = (error.body as { detail?: unknown } | null)?.detail;
     if (error.status === 409 && typeof detail === "string") return detail;
     if (error.status === 422) return "That doesn't look like an email address.";
-    if (error.status === 403) return ADMIN_ONLY_TEXT;
+    if (error.status === 403) return "You can't invite people to this workspace.";
   }
   return "Couldn't send. Try again.";
 }

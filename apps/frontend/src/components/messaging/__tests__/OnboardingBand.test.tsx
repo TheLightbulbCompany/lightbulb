@@ -185,10 +185,10 @@ describe("OnboardingBand", () => {
 describe("a member who is not an org admin", () => {
   beforeEach(() => { h.role = "org:member"; });
 
-  it("cannot action the admin-only cards", () => {
+  it("cannot action the admin-only cards, but can invite (D5)", () => {
     render(<OnboardingBand participants={FRESH} />);
     expect(screen.getByRole("button", { name: /Stripe/ })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /Invite your teammates/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Invite your teammates/ })).toBeEnabled();
   });
 
   it("is told why, rather than being handed a 403 on click", () => {

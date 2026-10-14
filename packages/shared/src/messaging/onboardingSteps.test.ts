@@ -101,10 +101,10 @@ describe("name-agents step", () => {
 });
 
 describe("permissions", () => {
-  it("marks every connector and the invite as admin-only", () => {
+  it("marks every connector as admin-only, and leaves the invite open to members (D5)", () => {
     const steps = build(CATALOG);
     expect(steps.filter((s) => s.adminOnly).map((s) => s.id))
-      .toEqual(["stripe", "github", "notion", "invite"]);
+      .toEqual(["stripe", "github", "notion"]);
   });
 
   it("leaves naming open to members, since PATCH /teams/agents has no admin guard", () => {

@@ -1592,6 +1592,25 @@ async def claim_autojoin(room_id: str, user_id: str) -> bool:
         return False
 
 
+async def claim_room_marker(room_id: str, name: str) -> bool:
+    """One-time per-room marker (``MARKER#<name>``): True only for the first claim."""
+    try:
+        await run_in_thread(
+            _table().put_item,
+            Item={"pk": room_pk(room_id), "sk": f"MARKER#{name}", "createdAt": utc_now_iso()},
+            ConditionExpression="attribute_not_exists(sk)",
+        )
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return False
+
+
+async def release_room_marker(room_id: str, name: str) -> None:
+    await run_in_thread(_table().delete_item, Key={"pk": room_pk(room_id), "sk": f"MARKER#{name}"})
+
+
 async def release_autojoin(room_id: str, user_id: str) -> None:
     await run_in_thread(_table().delete_item, Key={"pk": room_pk(room_id), "sk": autojoin_sk(user_id)})
 

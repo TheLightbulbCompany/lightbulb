@@ -188,7 +188,9 @@ async def create_invitation(
     auth: AuthContext = Depends(get_current_user),
 ) -> Invitation:
     _require_member_of(auth, org_id)
-    sent = await workspace_invitations.send(org_id, body.email, inviter=auth.user_id, by_admin=auth.is_org_admin)
+    sent = await workspace_invitations.send(
+        org_id, body.email, inviter=auth.user_id, by_admin=auth.is_org_admin, source=body.source
+    )
     return Invitation(**sent)
 
 

@@ -18,6 +18,7 @@ describe("appLinkTarget", () => {
     expect(kind("https://thelightbulb.company/chat?panel=chat&room=r1")).toMatchObject({ kind: "room", roomId: "r1" });
     expect(kind("https://thelightbulb.company/chat?panel=session&session=s1")).toMatchObject({ kind: "session", sessionId: "s1" });
     expect(kind("https://thelightbulb.company/chat?panel=connections&provider=github")).toEqual({ kind: "connect", provider: "github", href: "/chat?panel=connections&provider=github" });
+    expect(kind("https://thelightbulb.company/chat?panel=invite")).toEqual({ kind: "invite", href: "/chat?panel=invite" });
     expect(kind("https://thelightbulb.company/pricing")).toEqual({ kind: "other", href: "https://thelightbulb.company/pricing" });
   });
 

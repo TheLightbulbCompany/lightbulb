@@ -124,6 +124,20 @@ _FIRST_MESSAGE = (
 )
 
 
+#: Posted once by the CEO in #general after the first finished run, while the workspace has one
+#: person (08 §3, screen 6). Static on purpose: a model-written ask would not fire reliably or be
+#: measurable. The link renders as the inline invite card on the web (``RoomAppLinks``).
+INVITE_ASK = (
+    "Who should see this with you? Add them now and they'll see the plan the moment it's ready, "
+    "and can approve it with you."
+)
+INVITE_ASK_MARKER = "invite-ask"
+
+
+def invite_ask_text() -> str:
+    return f"{INVITE_ASK}\n\n[Invite someone]({settings.FRONTEND_URL.rstrip('/')}/chat?panel=invite)"
+
+
 def default_room_welcome(workspace_name: str | None) -> str:
     """The CEO's first message. Only the workspace name is interpolated; a leading @ or #
     is stripped so the name cannot render as a mention or a channel link."""
@@ -4257,6 +4271,10 @@ async def handle_run_event(owner_id: str, event: RunEventRequest) -> RunEventRes
                 await _after_run_ended(owner_id, row, event.outcome, event.usage)
             except Exception:
                 logger.exception("run post-processing failed")
+            try:
+                await ask_who_should_see(owner_id, row, event.outcome)
+            except Exception:
+                logger.exception("invite ask failed")
     if not applied and await messaging_repo.get_run(owner_id, run_id) is None:
         put_metric("messaging.run.callback", dimensions={"type": event.type, "outcome": "unknown"})
         raise ApiProblem("RUN_NOT_FOUND", "Run not found.")
@@ -4355,6 +4373,51 @@ async def _after_run_ended(owner_id: str, row: dict, outcome: str, usage: RunUsa
             )
         except Exception:
             logger.exception("run failure push failed")
+
+
+async def ask_who_should_see(owner_id: str, row: dict, outcome: str) -> None:
+    """After the first completed run in #general of a one-person workspace, the CEO asks
+    "Who should see this with you?" with the invite card -- once per workspace, ever.
+
+    The marker is claimed before the Clerk read so a busy #general costs one failed
+    conditional put per run afterwards; a read that cannot answer releases it to retry.
+    A workspace that already has two people keeps the marker: the ask is for one person."""
+    room_id = row.get("roomId")
+    if outcome != "completed" or room_id != default_room_id(owner_id):
+        return
+    if not await messaging_repo.claim_room_marker(room_id, INVITE_ASK_MARKER):
+        return
+    org = await clerk_admin.get_organization(owner_id, include_members_count=True)
+    if org is None or org.get("members_count") is None:
+        await messaging_repo.release_room_marker(room_id, INVITE_ASK_MARKER)
+        return
+    if org["members_count"] != 1:
+        return
+    from core.repositories.paperclip_repo import PaperclipRepo
+
+    company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
+    ceo_id = (getattr(company, "starter_agent_ids", None) or {}).get("ceo") if company else None
+    if not ceo_id or await messaging_repo.get_member(room_id, "agent", ceo_id) is None:
+        return  # a legacy roster or a CEO removed from #general: nobody to ask in its voice
+    name = next((a["name"] for a in await load_agent_roster(owner_id) if a["id"] == ceo_id), "CEO")
+    text = invite_ask_text()
+    await messaging_repo.create_message(
+        room_id=room_id,
+        owner_id=owner_id,
+        idemp_pk=messaging_repo.room_pk(room_id),
+        idemp_sk=messaging_repo.human_idemp_sk("__system__", f"{room_id}:{INVITE_ASK_MARKER}"),
+        req_hash=messaging_repo.request_hash(text, ceo_id),
+        author={"kind": "agent", "id": ceo_id, "displayName": name},
+        text=text,
+        mentions=[],
+        reply_to_message_id=None,
+        thread_root_message_id=None,
+        run_id=None,
+        dispatch_targets=[],
+        source_agent_id=ceo_id,
+        client_message_id=None,
+    )
+    put_metric("messaging.invite_ask.posted")
 
 
 async def require_agent_in_live_room(owner_id: str, room_id: str, agent_id: str) -> None:

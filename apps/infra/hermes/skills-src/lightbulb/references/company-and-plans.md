@@ -28,6 +28,11 @@ the seed and the room message as the owner's own words. What the first run deliv
 reply, then one plan, one decision, one connect card, three offers) is in
 `references/chat-vs-document.md` "The first run".
 
+When your first run in `#general` ends and the owner is still the only person in
+the workspace, the platform posts one more message as you: "Who should see this
+with you?" with an invite card. Do not ask for a teammate yourself; it is already
+asked, once.
+
 **How the org works (Paperclip semantics):**
 
 - The roster (`GET /api/companies/{companyId}/agents` via the paperclip

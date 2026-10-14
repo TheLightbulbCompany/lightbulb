@@ -57,6 +57,8 @@ class CreateInvitationRequest(BaseModel):
     """Body for POST /api/v1/orgs/{org_id}/invitations. Lower-cased by the service."""
 
     email: EmailStr
+    # Which door sent it (invite card in chat, the band, Settings…): an ``invitation_sent`` label.
+    source: str | None = Field(default=None, pattern=r"^[a-z_]{1,32}$")
 
 
 class Invitation(BaseModel):

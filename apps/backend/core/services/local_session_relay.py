@@ -639,7 +639,9 @@ class LocalSessionRelay:
                             by_alias=True
                         ),
                         capabilitiesVerified=compatible,
-                        lastEventAt=sessions.reconnect_last_event_at(previous, descriptor.generation)
+                        lastEventAt=sessions.reconnect_last_event_at(
+                            previous, descriptor.generation, descriptor.status, descriptor.active_turn_id
+                        )
                         or int(time.time()),
                     )
                     # The run before had no terminal (it ran inside an app): this one, which may
@@ -952,12 +954,10 @@ class LocalSessionRelay:
                         (row.get("stats") or {}).get(key) != (updated.get("stats") or {}).get(key)
                         for key in ("model", "permissionMode")
                     )
-                    # Activity is a turn starting or ending, not a control, title or scan change, and not
-                    # the Mac saying it is unsure ("unknown", after every restart).
-                    turned = row.get("activeTurnId") != updated.get("activeTurnId") or (
-                        row["status"] != updated["status"] and "unknown" not in (row["status"], updated["status"])
-                    )
-                    if turned:
+                    # Activity is a turn starting or ending, not a control, title or scan change.
+                    if sessions.session_activity(
+                        row["status"], updated["status"], row.get("activeTurnId"), updated.get("activeTurnId")
+                    ):
                         updated["lastEventAt"] = now
                     scanned = row.get("workspace") != updated.get("workspace")
                     controls_changed = row.get("capabilities") != updated.get("capabilities")

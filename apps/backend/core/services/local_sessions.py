@@ -719,10 +719,29 @@ def browser_open(row: dict, now: int | None = None) -> Literal["mac", "cloud"] |
     return opened.get("where") if opened.get("where") in ("mac", "cloud") else None
 
 
-def reconnect_last_event_at(previous: dict | None, generation: str) -> int | None:
+def session_activity(old_status: str | None, new_status: str, old_turn: str | None, new_turn: str | None) -> bool:
+    """Whether a change of status is the session doing something: a turn starting or ending. Not
+    the Mac becoming unsure ("unknown", after every restart) or losing it ("offline"), and not the
+    restart's re-check settling "unknown" back to "idle". "unknown" -> "busy" is a real turn."""
+    if old_turn != new_turn:
+        return True
+    if old_status == new_status or new_status in ("unknown", "offline"):
+        return False
+    return not (old_status == "unknown" and new_status == "idle")
+
+
+def reconnect_last_event_at(
+    previous: dict | None, generation: str, status: str, active_turn_id: str | None
+) -> int | None:
     """A reconnect re-registers every session of its Mac, and that is not activity: the same live
-    run keeps the time it last did something. A new run (a resume, a new process) is activity."""
-    if previous and previous.get("generation") == generation and previous.get("endedAt") is None:
+    run keeps the time it last did something, unless the registration itself carries a turn
+    starting or ending. A new run (a resume, a new process) is activity."""
+    if (
+        previous
+        and previous.get("generation") == generation
+        and previous.get("endedAt") is None
+        and not session_activity(previous.get("status"), status, previous.get("activeTurnId"), active_turn_id)
+    ):
         return previous.get("lastEventAt")
     return None
 
@@ -1059,7 +1078,10 @@ async def register_session(owner_id: str, user_id: str, device_id: str, registra
             "sessionId": sid,
             "revision": str(uuid.uuid4()),
             "commandSeq": (previous or {}).get("commandSeq", 0),
-            "lastEventAt": reconnect_last_event_at(previous, registration.generation) or int(time.time()),
+            "lastEventAt": reconnect_last_event_at(
+                previous, registration.generation, registration.status, registration.active_turn_id
+            )
+            or int(time.time()),
         }
         if registration.start_id is None and previous and previous.get("generation") == registration.generation:
             row["startId"] = previous.get("startId")

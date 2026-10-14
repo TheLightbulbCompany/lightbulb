@@ -2131,6 +2131,27 @@ async def test_register_and_events_stamp_last_event_at(transport):
     with patch("time.time", return_value=10060):
         await relay(transport).handle_message("conn-1", heartbeat(sid, status="unknown"))
     assert (await repo.get_session(OWNER, sid))["lastEventAt"] == 10020
+    # Nor is the restart's re-check settling it back to idle; a turn starting from unknown is activity.
+    with patch("time.time", return_value=10070):
+        await relay(transport).handle_message("conn-1", heartbeat(sid, status="idle"))
+    assert (await repo.get_session(OWNER, sid))["lastEventAt"] == 10020
+    with patch("time.time", return_value=10080):
+        await relay(transport).handle_message("conn-1", heartbeat(sid, status="unknown"))
+        await relay(transport).handle_message("conn-1", heartbeat(sid, status="busy"))
+    assert (await repo.get_session(OWNER, sid))["lastEventAt"] == 10080
+    # A reconnect that itself carries a turn ending is activity.
+    with patch("time.time", return_value=10090):
+        await relay(transport).handle_message("conn-1", registration(status="idle"))
+    assert (await repo.get_session(OWNER, sid))["lastEventAt"] == 10090
+
+
+def test_session_activity_is_a_turn_starting_or_ending():
+    from core.services.local_sessions import session_activity
+
+    assert session_activity("idle", "busy", None, None) and session_activity("busy", "idle", None, None)
+    assert session_activity("unknown", "busy", None, None) and session_activity("idle", "idle", None, "t1")
+    assert not session_activity("busy", "unknown", None, None) and not session_activity("idle", "offline", None, None)
+    assert not session_activity("unknown", "idle", None, None) and not session_activity("idle", "idle", None, None)
 
 
 @pytest.mark.asyncio

@@ -7,32 +7,44 @@ vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
 import type { BillingAccount } from "@/hooks/useBilling";
 import { PlanChooser } from "../PlanChooser";
 
-const account = { plan: "standard", base_price_usd: 20, workspace_price_usd: 50, ultra_price_usd: 150 } as BillingAccount;
+const prices = { workspace_price_usd: 50, seat_price_usd: 20, included_members: 5 };
 
-describe("PlanChooser on a subscribed workspace", () => {
-  it("changes the plan only after the owner confirms the prorated charge", async () => {
-    const user = userEvent.setup();
-    const startCheckout = vi.fn().mockResolvedValue(undefined);
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
-    render(<PlanChooser account={account} subscribed startCheckout={startCheckout} />);
-
-    await user.click(screen.getByRole("button", { name: "Upgrade to Ultra" }));
-    expect(confirm.mock.calls[0][0]).toMatch(/\$150\/mo.*next invoice/s);
-    expect(startCheckout).not.toHaveBeenCalled();
-
-    confirm.mockReturnValue(true);
-    await user.click(screen.getByRole("button", { name: "Upgrade to Ultra" }));
-    expect(startCheckout).toHaveBeenCalledWith("ultra", true);
-  });
-
-  it("a first subscription goes straight to Checkout with no confirm", async () => {
+describe("PlanChooser: one plan", () => {
+  it("offers one Team plan with the seat price, and no Base or Ultra", async () => {
     const user = userEvent.setup();
     const startCheckout = vi.fn().mockResolvedValue(undefined);
     const confirm = vi.spyOn(window, "confirm");
-    render(<PlanChooser account={account} subscribed={false} startCheckout={startCheckout} />);
+    render(<PlanChooser account={{ ...prices } as BillingAccount} subscribed={false} startCheckout={startCheckout} />);
 
-    await user.click(screen.getByRole("button", { name: "Choose Ultra" }));
+    expect(screen.getByText("$50 a month for up to 5 people. $20 a month for each member from the 6th.")).toBeInTheDocument();
+    expect(screen.queryByText(/Ultra|Base/)).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Continue for $50 a month" }));
     expect(confirm).not.toHaveBeenCalled();
-    expect(startCheckout).toHaveBeenCalledWith("ultra", false);
+    expect(startCheckout).toHaveBeenCalledWith("workspace", false);
+  });
+
+  it("marks Team current for a workspace already on it", () => {
+    render(
+      <PlanChooser account={{ ...prices, plan: "standard" } as BillingAccount} subscribed startCheckout={vi.fn()} />,
+    );
+    expect(screen.getByText("Current plan")).toBeInTheDocument();
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("moves a retired plan to Team only after the owner confirms the prorated change", async () => {
+    const user = userEvent.setup();
+    const startCheckout = vi.fn().mockResolvedValue(undefined);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(
+      <PlanChooser account={{ ...prices, plan: "ultra_pro" } as BillingAccount} subscribed startCheckout={startCheckout} />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Switch to Team" }));
+    expect(confirm.mock.calls[0][0]).toMatch(/\$50\/mo.*next invoice/s);
+    expect(startCheckout).not.toHaveBeenCalled();
+
+    confirm.mockReturnValue(true);
+    await user.click(screen.getByRole("button", { name: "Switch to Team" }));
+    expect(startCheckout).toHaveBeenCalledWith("workspace", true);
   });
 });

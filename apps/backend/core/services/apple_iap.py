@@ -100,6 +100,11 @@ PRODUCT_PLANS: dict[str, str] = {
 }
 
 
+#: What the paywall offers (T06: one plan). PRODUCT_PLANS still maps the
+#: retired Base/Ultra products so existing purchases keep verifying.
+SELLING_PRODUCTS: tuple[str, ...] = ("company.thelightbulb.mobile.plan.monthly",)
+
+
 def owner_account_token(owner_id: str) -> str:
     """The ``appAccountToken`` a purchase for ``owner_id`` must carry.
 

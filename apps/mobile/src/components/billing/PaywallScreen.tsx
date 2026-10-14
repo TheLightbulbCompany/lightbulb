@@ -55,7 +55,7 @@ import { useSharedIAP } from "./IapProvider";
 
 const FALLBACK_TITLES: Record<string, string> = {
   "company.thelightbulb.mobile.base.monthly": "Base",
-  "company.thelightbulb.mobile.plan.monthly": "Workspace",
+  "company.thelightbulb.mobile.plan.monthly": "Team",
   "company.thelightbulb.mobile.ultra.monthly": "Ultra",
 };
 
@@ -83,6 +83,13 @@ function confirmPlanChange(name: string, price: number | null): Promise<boolean>
       { cancelable: true, onDismiss: () => resolve(false) },
     ),
   );
+}
+
+/** The one plan's price line (T06), from the server's prices; null until they load. */
+function planLine(account: Parameters<typeof webPriceFor>[1] | undefined): string | null {
+  const { workspace_price_usd: price, seat_price_usd: seat, included_members: included } = account ?? {};
+  if (price == null || seat == null || included == null) return null;
+  return `$${price} a month for up to ${included} people. $${seat} a month for each member from the ${included + 1}th.`;
 }
 
 type Purchase = { purchaseToken?: string | null; productId?: string; id?: string };
@@ -317,7 +324,13 @@ export function PaywallScreen({
 
   return (
     <ScrollView style={styles.page} contentContainerStyle={styles.content} testID="paywall">
-      <Text style={styles.title}>Choose a plan</Text>
+      <Text style={styles.title}>Keep your team on Lightbulb</Text>
+      {planLine(account) != null && <Text style={styles.price}>{planLine(account)}</Text>}
+      <Text style={styles.caption}>
+        Includes your six AI employees, their memory and email, the shared browser, the task board and the always-on
+        runtime. AI usage: bring your ChatGPT account or API key at no charge, or use Lightbulb credits at the
+        model&apos;s price plus 20%.
+      </Text>
       {products.map((p) => {
         const name = p.title || FALLBACK_TITLES[p.id] || p.id;
         const webPrice = webPriceFor(p.id, account);

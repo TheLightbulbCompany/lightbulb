@@ -164,7 +164,7 @@ async def create_workspace_checkout(
     *,
     owner_id: str,
     clerk_user_id: str,
-    plan: Literal["base", "workspace", "ultra"],
+    plan: Literal["workspace"],
     return_to: Literal["web", "app"] = "web",
     confirm: bool = False,
 ) -> dict:
@@ -176,13 +176,12 @@ async def create_workspace_checkout(
     """
     checkout_bucket = int(time.time() // 300)
     checkout_expires_at = (checkout_bucket * 300) + 36 * 60
-    price_id = {
-        "base": settings.STRIPE_BASE_PRICE_ID,
-        "workspace": settings.STRIPE_WORKSPACE_PRICE_ID,
-        "ultra": settings.STRIPE_ULTRA_PRICE_ID,
-    }[plan]
+    # One plan (T06): Base and Ultra are retired and never sold again.
+    if plan != "workspace":
+        raise BillingServiceError("plan_retired")
+    price_id = settings.STRIPE_WORKSPACE_PRICE_ID
     if not price_id:
-        raise BillingServiceError(f"STRIPE_{plan.upper()}_PRICE_ID not configured")
+        raise BillingServiceError("STRIPE_WORKSPACE_PRICE_ID not configured")
 
     from core.services.provision_gate import LIVE_SUBSCRIPTION_STATUSES
 

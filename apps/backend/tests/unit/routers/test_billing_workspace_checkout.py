@@ -21,7 +21,7 @@ def test_legacy_subscription_checkout_routes_are_not_registered():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("plan", ["base", "workspace", "ultra"])
+@pytest.mark.parametrize("plan", ["workspace"])
 async def test_org_admin_can_start_workspace_checkout(plan, monkeypatch):
     monkeypatch.setattr(
         billing,
@@ -120,7 +120,7 @@ async def test_workspace_checkout_passes_the_plan_change_confirmation_through(mo
     monkeypatch.setattr(billing, "_get_billing_account", AsyncMock(return_value={"stripe_customer_id": "cus_1"}))
     with patch("core.services.billing_service.create_workspace_checkout", create):
         result = await billing.create_workspace_checkout(
-            billing.CheckoutRequest(plan="ultra", confirm=True), auth=_admin()
+            billing.CheckoutRequest(plan="workspace", confirm=True), auth=_admin()
         )
 
     assert result == {"updated": True}

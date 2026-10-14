@@ -313,6 +313,8 @@ class Settings(BaseSettings):
     WORKSPACE_PRICE_USD: int = 50
     BASE_PRICE_USD: int = 20
     ULTRA_PRICE_USD: int = 150
+    # Display dollars for STRIPE_SEAT_PRICE_ID (per member from the 6th); lockstep with its unit amount.
+    SEAT_PRICE_USD: int = 20
 
     # Apple In-App Purchase (App Store guideline 3.1.3(b) — the plan must also
     # be buyable inside the iOS app). ALL default empty, and the feature is off

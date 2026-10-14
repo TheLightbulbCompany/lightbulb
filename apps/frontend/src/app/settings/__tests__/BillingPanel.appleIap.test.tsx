@@ -88,7 +88,7 @@ describe("BillingPanel — Apple IAP billing", () => {
         "Billed through the App Store. Change or cancel on your iPhone: Settings → Apple Account → Subscriptions.",
       ),
     ).toBeInTheDocument();
-    expect(screen.getByText(/Workspace/)).toBeInTheDocument();
+    expect(screen.getByText(/Team/)).toBeInTheDocument();
 
     // No Stripe portal button.
     expect(screen.queryByRole("button", { name: /manage payment/i })).not.toBeInTheDocument();

@@ -448,7 +448,7 @@ function BillingPanel() {
     ["active", "trialing", "past_due"].includes(account?.subscription_status ?? "")
   ) {
     const applePlanName =
-      account?.plan === "base" ? "Base" : account?.plan === "ultra_pro" ? "Ultra" : "Workspace";
+      account?.plan === "base" ? "Base" : account?.plan === "ultra_pro" ? "Ultra" : "Team";
     return (
       <div className="settings-panel" id="panel-billing" role="tabpanel">
         <h1 className="settings-page-title">Billing</h1>
@@ -491,9 +491,6 @@ function BillingPanel() {
             endLabel={trialEndLabel}
           />
         )}
-        <p className="settings-card-desc" style={{ marginBottom: 12 }}>
-          One price per workspace for up to 5 people; each member from the 6th adds a seat.
-        </p>
         <PlanChooser account={account} subscribed={false} startCheckout={startCheckout} />
       </div>
     );

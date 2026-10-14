@@ -75,10 +75,10 @@ reply, then one plan, one decision, one connect card, three offers) is in
 
 ## Plans, providers, and this owner's current state
 
-Lightbulb's paid plans are **Base, $20/month**, **Workspace, $50/month**
-and **Ultra, $150/month** (this owner's current plan is in the facts file). Every
-plan allows unlimited agent identities; agent identity count is not a plan
-entitlement. A paid plan covers 5 people; each member from the 6th adds a $20/month
+Lightbulb has one paid plan, **Team, $50/month** (Base and Ultra are retired
+and no longer sold; a workspace still on one keeps it until it switches; this
+owner's current plan is in the facts file). It allows unlimited agent
+identities; agent identity count is not a plan entitlement. The plan covers 5 people; each member from the 6th adds a $20/month
 seat to the subscription, prorated from the day they join and removed when they
 leave (a trial is not charged for members). Runtime capacity remains finite. Upgrade lives in
 thelightbulb.company/settings. Changing the plan of a workspace that already

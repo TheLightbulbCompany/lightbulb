@@ -28,7 +28,7 @@ def checkout_slot(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("plan", "price_id"),
-    [("base", "price_base"), ("workspace", "price_workspace"), ("ultra", "price_ultra")],
+    [("workspace", "price_workspace")],
 )
 async def test_workspace_checkout_has_one_recurring_item_and_no_promotion_codes(monkeypatch, plan, price_id):
     monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
@@ -217,7 +217,7 @@ async def test_workspace_checkout_swaps_an_active_subscription_item_in_place(mon
         "customer": "cus_1",
         "metadata": {"workspace_id": "org_1", "owner_id": "org_1", "workspace_plan_revision": "0"},
         "status": "active",
-        "items": {"data": [{"id": "si_1", "price": {"id": "price_workspace"}}]},
+        "items": {"data": [{"id": "si_1", "price": {"id": "price_ultra"}}]},
     }
     monkeypatch.setattr(
         billing_service.stripe.Subscription,
@@ -233,23 +233,23 @@ async def test_workspace_checkout_swaps_an_active_subscription_item_in_place(mon
     monkeypatch.setattr(billing_service.stripe.Subscription, "modify", modify)
 
     # Unconfirmed: nothing is changed; the caller must confirm the prorated change.
-    result = await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="ultra")
+    result = await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="workspace")
 
     assert result == {"updated": False, "confirm_required": True}
     modify.assert_not_called()
 
     result = await billing_service.create_workspace_checkout(
-        owner_id="org_1", clerk_user_id="user_1", plan="ultra", confirm=True
+        owner_id="org_1", clerk_user_id="user_1", plan="workspace", confirm=True
     )
 
     assert result == {"updated": True}
     assert modify.call_args.args == ("sub_1",)
-    assert modify.call_args.kwargs["items"] == [{"id": "si_1", "price": "price_ultra"}]
+    assert modify.call_args.kwargs["items"] == [{"id": "si_1", "price": "price_workspace"}]
     assert modify.call_args.kwargs["proration_behavior"] == "create_prorations"
     assert modify.call_args.kwargs["metadata"] == {
         "workspace_id": "org_1",
         "owner_id": "org_1",
-        "plan": "ultra",
+        "plan": "workspace",
         "purpose": "workspace_subscription_v2",
         "workspace_plan_revision": "1",
         "provider_choice": "",
@@ -282,7 +282,7 @@ async def test_workspace_checkout_rejects_a_legacy_multi_item_subscription(monke
         "status": "active",
         "items": {
             "data": [
-                {"id": "si_base", "price": {"id": "price_workspace"}},
+                {"id": "si_base", "price": {"id": "price_ultra"}},
                 {"id": "si_seat", "price": {"id": "price_seat"}},
             ]
         },
@@ -301,7 +301,7 @@ async def test_workspace_checkout_rejects_a_legacy_multi_item_subscription(monke
     monkeypatch.setattr(billing_service.stripe.Subscription, "modify", modify)
 
     with pytest.raises(billing_service.BillingServiceError, match="can't be changed automatically"):
-        await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="ultra")
+        await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="workspace")
 
     modify.assert_not_called()
 
@@ -315,7 +315,7 @@ async def test_workspace_checkout_rejects_multiple_live_subscriptions_even_with_
         "customer": "cus_1",
         "status": "active",
         "metadata": {"workspace_id": "org_1", "owner_id": "org_1"},
-        "items": {"data": [{"id": "si_1", "price": {"id": "price_workspace"}}]},
+        "items": {"data": [{"id": "si_1", "price": {"id": "price_ultra"}}]},
     }
     monkeypatch.setattr(
         billing_service.billing_repo,
@@ -332,7 +332,7 @@ async def test_workspace_checkout_rejects_multiple_live_subscriptions_even_with_
     monkeypatch.setattr(billing_service.stripe.Subscription, "modify", modify)
 
     with pytest.raises(billing_service.BillingServiceError, match="Multiple live subscriptions"):
-        await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="ultra")
+        await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="workspace")
 
     modify.assert_not_called()
 
@@ -351,7 +351,7 @@ async def test_workspace_checkout_does_not_create_a_second_subscription_while_we
         "customer": "cus_1",
         "status": "active",
         "metadata": {"workspace_id": "org_1", "owner_id": "org_1", "workspace_plan_revision": "0"},
-        "items": {"data": [{"id": "si_1", "price": {"id": "price_workspace"}}]},
+        "items": {"data": [{"id": "si_1", "price": {"id": "price_ultra"}}]},
     }
     monkeypatch.setattr(
         billing_service.stripe.Subscription,
@@ -364,7 +364,7 @@ async def test_workspace_checkout_does_not_create_a_second_subscription_while_we
     monkeypatch.setattr(billing_service.stripe.Subscription, "modify", modify)
 
     result = await billing_service.create_workspace_checkout(
-        owner_id="org_1", clerk_user_id="user_1", plan="ultra", confirm=True
+        owner_id="org_1", clerk_user_id="user_1", plan="workspace", confirm=True
     )
 
     assert result == {"updated": True}
@@ -504,9 +504,9 @@ async def test_cancelled_checkout_then_another_plan_expires_the_old_session_and_
 
 @pytest.mark.asyncio
 async def test_switching_back_to_a_plan_never_replays_its_expired_session(monkeypatch):
-    """Workspace -> cancel -> Ultra -> cancel -> Workspace inside one 5-minute
-    bucket. Without the superseded id in the key, the third create reuses the
-    first key and Stripe replays the first (expired) session."""
+    """Web -> cancel -> app -> cancel -> web inside one 5-minute bucket. Without
+    the superseded id in the key, the third create reuses the first key and
+    Stripe replays the first (expired) session."""
     monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
     monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra")
     monkeypatch.setattr(billing_service.time, "time", lambda: 1_800_000_001)
@@ -518,11 +518,15 @@ async def test_switching_back_to_a_plan_never_replays_its_expired_session(monkey
 
     def create(**kwargs):
         sid = f"cs_{len(sessions) + 1}"
-        sessions[sid] = kwargs["metadata"]["plan"]
+        sessions[sid] = kwargs["metadata"]["return_to"]
         return {"id": sid, "url": f"https://checkout.test/{sid}"}
 
     def retrieve(sid, **_kwargs):
-        return {**_OPEN_BASE, "id": sid, "metadata": {**_OPEN_BASE["metadata"], "plan": sessions[sid]}}
+        return {
+            **_OPEN_BASE,
+            "id": sid,
+            "metadata": {**_OPEN_BASE["metadata"], "plan": "workspace", "return_to": sessions[sid]},
+        }
 
     monkeypatch.setattr(billing_service.billing_repo, "get_by_owner_id", AsyncMock(side_effect=lambda *_a, **_k: row))
     monkeypatch.setattr(billing_service.billing_repo, "set_pending_checkout", record)
@@ -531,8 +535,10 @@ async def test_switching_back_to_a_plan_never_replays_its_expired_session(monkey
     monkeypatch.setattr(billing_service.stripe.checkout.Session, "retrieve", MagicMock(side_effect=retrieve))
     monkeypatch.setattr(billing_service.stripe.checkout.Session, "expire", MagicMock())
 
-    for plan in ("workspace", "ultra", "workspace"):
-        await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan=plan)
+    for return_to in ("web", "app", "web"):
+        await billing_service.create_workspace_checkout(
+            owner_id="org_1", clerk_user_id="user_1", plan="workspace", return_to=return_to
+        )
 
     keys = [call.kwargs["idempotency_key"] for call in create_mock.call_args_list]
     assert len(keys) == 3 and len(set(keys)) == 3
@@ -610,7 +616,7 @@ async def test_a_completed_marker_whose_subscription_is_gone_no_longer_strands_t
 async def test_an_expired_marker_mints_fresh(monkeypatch):
     stripe_calls = _with_pending_marker(monkeypatch, {**_OPEN_BASE, "status": "expired"})
 
-    result = await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="base")
+    result = await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan="workspace")
 
     assert result == {"checkout_url": "https://checkout.test/cs_new"}
     stripe_calls["expire"].assert_not_called()
@@ -759,3 +765,12 @@ async def test_workspace_customer_backfill_race_keeps_the_existing_row_winner(mo
 
     assert account == winner
     delete.assert_called_once_with("cus_loser", idempotency_key="delete_customer:cus_loser")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("plan", ["base", "ultra"])
+async def test_retired_plans_are_never_sold(monkeypatch, plan):
+    monkeypatch.setattr(billing_service.settings, "STRIPE_BASE_PRICE_ID", "price_base")
+    monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra")
+    with pytest.raises(billing_service.BillingServiceError, match="plan_retired"):
+        await billing_service.create_workspace_checkout(owner_id="org_1", clerk_user_id="user_1", plan=plan)

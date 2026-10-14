@@ -1,6 +1,6 @@
 import { useAuth } from "@clerk/expo";
 import { router, Stack } from "expo-router";
-import { Text } from "react-native";
+import { ActivityIndicator, Text } from "react-native";
 import { useChatPalette } from "../../config/theme";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createApiClient } from "@lightbulb/shared";
@@ -67,8 +67,15 @@ export default function PlansScreen() {
         account={account}
         // A web checkout may have been abandoned: refetch, stay on Plans.
         onWebReturn={refetch}
-        // StoreKit can return no products (not yet approved, or offline).
-        fallback={<Text style={{ padding: 24, color: palette.fgSoft }}>No plans are available in the app right now.</Text>}
+        // Loading until the account says which products exist; StoreKit then fills
+        // them in. Only an account offering none gets the notice.
+        fallback={
+          account === null || paywallProductIds(account).length > 0 ? (
+            <ActivityIndicator style={{ padding: 24 }} />
+          ) : (
+            <Text style={{ padding: 24, color: palette.fgSoft }}>No plans are available in the app right now.</Text>
+          )
+        }
       />
     </>
   );

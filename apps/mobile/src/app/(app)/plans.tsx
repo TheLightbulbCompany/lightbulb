@@ -1,5 +1,7 @@
 import { useAuth } from "@clerk/expo";
 import { router, Stack } from "expo-router";
+import { Text } from "react-native";
+import { useChatPalette } from "../../config/theme";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createApiClient } from "@lightbulb/shared";
 
@@ -29,6 +31,7 @@ export default function PlansScreen() {
   const getTokenRef = useRef(getToken);
   getTokenRef.current = getToken;
   const api = useMemo(() => createApiClient(makeAdapter(() => getTokenRef.current())), []);
+  const palette = useChatPalette();
   const [account, setAccount] = useState<Account | null>(null);
 
   const [refetchTick, setRefetchTick] = useState(0);
@@ -64,6 +67,8 @@ export default function PlansScreen() {
         account={account}
         // A web checkout may have been abandoned: refetch, stay on Plans.
         onWebReturn={refetch}
+        // StoreKit can return no products (not yet approved, or offline).
+        fallback={<Text style={{ padding: 24, color: palette.fgSoft }}>No plans are available in the app right now.</Text>}
       />
     </>
   );

@@ -6,14 +6,16 @@ from __future__ import annotations
 # The user-facing text for each way an owner can run out of Isol8 budget.
 # gate_chat's pre-send refusal is the sole reader (the gateway's own mid-run
 # reclassification is gone). The web card renders from `code` alone (see
-# ChatErrorCard); these strings are what non-web surfaces — Paperclip run
-# rows, logs, the wake refusal frame — show.
+# ChatErrorCard); these strings are what non-web surfaces — room notes,
+# Paperclip run rows, logs, the wake refusal frame — show. The iPhone app shows
+# them as-is, so they state the fact and never ask for a purchase (App Store
+# 3.1.1); the web's own cards and bars carry the upgrade button.
 BUDGET_BLOCK_MESSAGES = {
-    "trial_expired": "Your free trial has ended. Pick a plan to keep your agents.",
-    "trial_daily_cap": "You've used today's free allowance — resets tomorrow. Upgrade to keep going.",
+    "trial_expired": "Your free trial has ended, so your agents are paused for now.",
+    "trial_daily_cap": "You've used today's free allowance. It resets tomorrow.",
     "included_daily_cap": "You've used today's included usage. It resets at 00:00 UTC.",
-    "out_of_credits": "You're out of workspace credits. Top up in Settings → Model & Credits to continue.",
-    "subscription_inactive": "Your subscription is not active. Reactivate to continue chatting.",
+    "out_of_credits": "This workspace is out of credits.",
+    "subscription_inactive": "This workspace's plan is not active.",
 }
 
 

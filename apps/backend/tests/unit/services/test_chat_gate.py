@@ -244,7 +244,7 @@ async def test_card3_blocked_by_metronome_gate():
         result = await gate_chat(user_id="u_1", owner_id="o_1", session_key="sk_test")
     assert result["blocked"] is True
     assert result["code"] == "out_of_credits"
-    assert "Top up" in result["message"]
+    assert "out of credits" in result["message"]
 
 
 @pytest.mark.asyncio
@@ -264,7 +264,7 @@ async def test_openrouter_managed_owner_uses_the_same_credit_gate():
         result = await gate_chat(user_id="u_1", owner_id="org_1", session_key="sk_test")
     assert result["blocked"] is True
     assert result["code"] == "out_of_credits"
-    assert "workspace credits" in result["message"]
+    assert "out of credits" in result["message"]
 
 
 @pytest.mark.asyncio

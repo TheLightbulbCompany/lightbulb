@@ -7,6 +7,8 @@
  * published"; a page's `checkedOn` moves only when every cell was reopened.
  */
 
+import { teamMonthlyUsd, type Pricing } from "@/lib/pricing";
+
 export type RowKey = "who" | "where" | "sees" | "models" | "price" | "approvals" | "offline" | "work";
 
 export const ROWS: { key: RowKey; label: string }[] = [
@@ -46,6 +48,8 @@ export interface ComparePage {
   betterTitle: string;
   better: string[];
   faq: { q: string; a: string }[];
+  /** A price question, answered only when the billing API gave a price. */
+  priceFaq?: (p: Pricing) => { q: string; a: string };
 }
 
 export const COMPARE_AUTHOR = "Leo";
@@ -64,8 +68,8 @@ export const LIGHTBULB: Column = {
     where: c("A member of your channels, running in your workspace's own cloud", `${SITE}/security`, OURS),
     sees: c("Everyone in the room; one shared record", `${SITE}/docs/get-started`, OURS),
     models: c("Lightbulb-managed, your ChatGPT account, or your own API key", `${SITE}/security`, OURS),
-    // TODO(T30): "$110 a month, plus AI usage or your own key" once /pricing ships the plan's price.
-    price: c("See pricing", `${SITE}/pricing`, OURS),
+    // Filled from the billing API by lightbulbColumn(); this is the copy when the API cannot be read.
+    price: c("One price for the workspace; see pricing", `${SITE}/pricing`, OURS),
     approvals: c("Approval cards for plans, spending and new hires; who did what and who approved it", `${SITE}/docs/approvals-security-privacy`, OURS),
     offline: c("Yes: routines, email and a nightly CEO run", `${SITE}/docs/skills-and-automations`, OURS),
     work: c("Both: shared Claude Code and Codex sessions, plus email, books and the task board", `${SITE}/docs/get-started`, OURS),
@@ -186,8 +190,11 @@ export const COMPARE_PAGES: ComparePage[] = [
         q: "Is Slackbot an AI employee?",
         a: "Slackbot is a personal assistant; its interactions are private to you. In Lightbulb the agents are shared members with their own email, tools and approval rules.",
       },
-      // TODO(T30): "What does it cost for 8 people?" — "Slack Business+ is $120 a month billed yearly. Lightbulb is $110 a month for the workspace, plus AI usage or your own key."
     ],
+    priceFaq: (p) => ({
+      q: "What does it cost for 8 people?",
+      a: `Slack Business+ is $120 a month billed yearly. Lightbulb is $${teamMonthlyUsd(p, 8)} a month for the workspace, plus AI usage or your own key.`,
+    }),
   },
   {
     slug: "shared-claude-code-sessions",
@@ -339,8 +346,11 @@ export const COMPARE_PAGES: ComparePage[] = [
         a: "If the agents should be shared members of the team, Lightbulb or Bloome. If you only want a personal assistant in chat, Slackbot or Copilot.",
       },
       { q: "Do we have to leave Slack?", a: "No. Keep Slack for talk and add Lightbulb where agents work." },
-      // TODO(T30): "Which is cheapest for 8 people?" — "Compare the Price row. Lightbulb is $110 a month; Bloome has not published a price."
     ],
+    priceFaq: (p) => ({
+      q: "Which is cheapest for 8 people?",
+      a: `Compare the Price row. Lightbulb is $${teamMonthlyUsd(p, 8)} a month; Bloome has not published a price.`,
+    }),
   },
   {
     slug: "grok-bot",
@@ -389,9 +399,12 @@ export const COMPARE_PAGES: ComparePage[] = [
         q: "Does Copilot work outside Microsoft 365?",
         a: "Copilot Business requires an eligible Microsoft 365 plan. Lightbulb connects to the tools you use, Google or Microsoft.",
       },
-      // TODO(T30): "What does it cost for 8 people?" — "$188 a month for Business Standard with Copilot, paid yearly. Lightbulb is $110 a month plus AI usage."
       { q: "Can we use both?", a: "Yes. Lightbulb agents can work alongside a Microsoft 365 company." },
     ],
+    priceFaq: (p) => ({
+      q: "What does it cost for 8 people?",
+      a: `$188 a month for Business Standard with Copilot, paid yearly. Lightbulb is $${teamMonthlyUsd(p, 8)} a month plus AI usage.`,
+    }),
   },
   {
     slug: "bloome",
@@ -417,6 +430,20 @@ export const COMPARE_PAGES: ComparePage[] = [
     ],
   },
 ];
+
+/** The Lightbulb column with its price cell read from the billing API (null: neutral copy). */
+export function lightbulbColumn(p: Pricing | null): Column {
+  if (!p) return LIGHTBULB;
+  const text =
+    `$${teamMonthlyUsd(p, 8)} a month ($${p.teamPriceUsd} for up to ${p.includedMembers} people, ` +
+    `$${p.seatPriceUsd} each after), plus AI usage or your own key`;
+  return { ...LIGHTBULB, cells: { ...LIGHTBULB.cells, price: { ...LIGHTBULB.cells.price, text } } };
+}
+
+/** The page's questions, with its price question when the price is known. */
+export function pageFaq(page: ComparePage, p: Pricing | null): { q: string; a: string }[] {
+  return p && page.priceFaq ? [...page.faq, page.priceFaq(p)] : page.faq;
+}
 
 /** The oldest date any competitor cell was read: what "Checked on" may claim. */
 export function checkedOn(page: ComparePage): string {

@@ -2,15 +2,18 @@ import Link from "next/link";
 
 import { Footer } from "@/components/landing/Footer";
 import { Navbar } from "@/components/landing/Navbar";
-import { COMPARE_AUTHOR, LIGHTBULB, ROWS, checkedOn, type ComparePage } from "@/content/compare";
+import { COMPARE_AUTHOR, ROWS, checkedOn, lightbulbColumn, pageFaq, type ComparePage } from "@/content/compare";
+import { getPricing } from "@/lib/pricing";
 import { JsonLd, breadcrumbJsonLd, pageMetadata } from "@/lib/seo";
 
 export function compareMetadata(page: ComparePage) {
   return pageMetadata({ title: page.title, description: page.description, path: page.path });
 }
 
-export function ComparePageView({ page }: { page: ComparePage }) {
-  const columns = [LIGHTBULB, ...page.columns];
+export async function ComparePageView({ page }: { page: ComparePage }) {
+  const pricing = await getPricing();
+  const columns = [lightbulbColumn(pricing), ...page.columns];
+  const faq = pageFaq(page, pricing);
   const source = `compare-${page.slug}`;
   return (
     <main className="ld-page min-h-screen">
@@ -25,7 +28,7 @@ export function ComparePageView({ page }: { page: ComparePage }) {
         data={{
           "@context": "https://schema.org",
           "@type": "FAQPage",
-          mainEntity: page.faq.map(({ q, a }) => ({
+          mainEntity: faq.map(({ q, a }) => ({
             "@type": "Question",
             name: q,
             acceptedAnswer: { "@type": "Answer", text: a },
@@ -86,7 +89,7 @@ export function ComparePageView({ page }: { page: ComparePage }) {
         <section className="mt-14 max-w-3xl">
           <h2 className="font-editorial-serif text-3xl text-[var(--midnight)]">Questions</h2>
           <dl className="mt-4 space-y-6">
-            {page.faq.map(({ q, a }) => (
+            {faq.map(({ q, a }) => (
               <div key={q}>
                 <dt className="font-semibold text-[var(--midnight)]">{q}</dt>
                 <dd className="mt-2 leading-7 text-[var(--midnight-soft)]">{a}</dd>

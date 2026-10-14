@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 import { endedWhy, sessionEndable, sessionLabel, sessionLive, sessionStatus, sessionTitle } from "@lightbulb/shared";
 import { SessionToolIcon } from "./SessionToolIcon";
 import { SessionRenameButton } from "./SessionRenameButton";
@@ -21,11 +21,12 @@ export function sessionListTime(iso: string | null | undefined, now = Date.now()
   return date.toLocaleDateString([], thisYear ? { month: "numeric", day: "numeric" } : { month: "numeric", day: "numeric", year: "2-digit" });
 }
 
+const noSubscribe = () => () => {};
+
 /** The viewer's own clock and locale, so it waits for the browser: the server's would not match. */
 function SessionListTime({ at }: { at: string | null | undefined }) {
-  const [text, setText] = useState("");
-  useEffect(() => setText(sessionListTime(at)), [at]);
-  return <span className="session-row-time" aria-hidden="true">{text}</span>;
+  const browser = useSyncExternalStore(noSubscribe, () => true, () => false);
+  return <span className="session-row-time" aria-hidden="true">{browser ? sessionListTime(at) : ""}</span>;
 }
 
 /**

@@ -40,6 +40,11 @@ export const options = {
     'http_req_duration{name:POST /public/session-links/viewing}': ['p(95)<500'],
     frame_latency_ms: ['p(95)<1000'],
     frame_delivered: ['rate>=0.99'],
+    // A seat refused by the cap (viewers_full) is the measurement; one refused by the throttle, or a
+    // seat that never went live, fails the run. At or below the cap, viewers_seated must equal VIEWERS.
+    viewers_throttled: ['count==0'],
+    viewers_never_live: ['count==0'],
+    ...(__ENV.EXPECT_SEATED ? { viewers_seated: [`count>=${Number(__ENV.EXPECT_SEATED)}`] } : {}),
   },
 };
 
@@ -61,7 +66,7 @@ function viewing(token, lease, fresh) {
 let done = false; // one seat per VU: a VU that got none, or whose hold ended, waits the run out
 
 export function watch(data) {
-  const end = L.remainingMs(SEND_S + RAMP_S + 15, 2_000);
+  const end = L.remainingMs(SEND_S + 15, 2_000); // the two stages: RAMP_S + (SEND_S - RAMP_S + 15)
   if (done || end <= 0) { sleep(Math.max(1, end / 1000)); return; }
   done = true;
   const seat = viewing(data.token, null, false);

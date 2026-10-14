@@ -40,7 +40,7 @@ The agent reads the thread above it, does the work, and posts the result in the 
 
 ## 8. Share a session (optional, Mac app)
 
-If you work in Claude Code or Codex, the [Lightbulb Mac app](/api/download/desktop) can share those sessions with your workspace. Sharing is opt-in: turn it on in the app, then share a session (or choose to share every new one). Sessions over SSH, in containers or inside an IDE are not supported. A teammate can watch a session live and join it, and can pick up a Claude Code session where you stopped.
+If you work in Claude Code or Codex, the [Lightbulb Mac app](/api/download/desktop) can share those sessions with your workspace. Sharing is opt-in: turn it on in the app, then share a session (or choose to share every new one). Sessions over SSH, in containers or inside an IDE are not supported. A teammate can watch a session live and join it, and, once you allow it, can pick up a Claude Code session where you stopped.
 
 ## 9. Plans and providers
 

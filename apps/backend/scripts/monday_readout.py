@@ -239,6 +239,8 @@ def summarize(
         ):
             continue
         paid_at = _dt(invoice["paid_at"])
+        if paid_at >= end:
+            continue
         qualifying[workspace_id] = min(paid_at, qualifying.get(workspace_id, paid_at))
 
     funnel_ids: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))

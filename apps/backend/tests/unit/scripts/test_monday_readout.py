@@ -52,6 +52,35 @@ def test_fixture_metrics_exclude_internal_and_cross_check_memberships():
     assert result["vercel_visitors"] == 123
 
 
+def test_paying_at_list_excludes_invoices_at_or_after_end():
+    start, end = monday_window(datetime(2026, 10, 14, tzinfo=timezone.utc))
+    invoices = [
+        {
+            "workspace_id": "org_before_end",
+            "amount_paid": 100,
+            "billing_reason": "subscription_cycle",
+            "paid_at": "2026-10-11T23:59:59+00:00",
+        },
+        {
+            "workspace_id": "org_at_end",
+            "amount_paid": 100,
+            "billing_reason": "subscription_cycle",
+            "paid_at": end.isoformat(),
+        },
+        {
+            "workspace_id": "org_after_end",
+            "amount_paid": 100,
+            "billing_reason": "subscription_cycle",
+            "paid_at": "2026-10-12T00:00:01+00:00",
+        },
+    ]
+
+    result = summarize([], invoices, {}, {}, set(), start, end)
+
+    assert result["paying_at_list"]["all_time"]["workspace_ids"] == ["org_before_end"]
+    assert result["paying_at_list"]["new_this_week"]["workspace_ids"] == ["org_before_end"]
+
+
 def test_render_names_every_metric_and_suppresses_small_base_percentages():
     data = _fixture()
     start, end = monday_window(datetime.fromisoformat(data["now"]))

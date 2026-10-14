@@ -92,7 +92,7 @@ export function DocumentDiffModal({
       <DialogContent className="flex max-h-[85vh] w-full max-w-4xl flex-col overflow-hidden">
         <DialogHeader>
           <DialogTitle>
-            Diff — <span className="font-mono text-sm">{documentKey}</span>
+            Diff — <span className="font-mono text-ui">{documentKey}</span>
           </DialogTitle>
         </DialogHeader>
 
@@ -100,12 +100,12 @@ export function DocumentDiffModal({
           <div className="flex items-center gap-2">
             <span className="label-caps text-err">Old</span>
             <Select value={effectiveLeftId ?? ""} onValueChange={setLeftRevisionId}>
-              <SelectTrigger aria-label="Old revision" className="h-7 w-56 text-xs">
+              <SelectTrigger aria-label="Old revision" className="h-7 w-56 text-caption">
                 <SelectValue placeholder="Select revision" />
               </SelectTrigger>
               <SelectContent>
                 {sortedRevisions.map((revision) => (
-                  <SelectItem key={revision.id} value={revision.id} className="text-xs">
+                  <SelectItem key={revision.id} value={revision.id} className="text-caption">
                     {revisionLabel(revision)}
                   </SelectItem>
                 ))}
@@ -115,12 +115,12 @@ export function DocumentDiffModal({
           <div className="flex items-center gap-2">
             <span className="label-caps text-ok">New</span>
             <Select value={effectiveRightId ?? ""} onValueChange={setRightRevisionId}>
-              <SelectTrigger aria-label="New revision" className="h-7 w-56 text-xs">
+              <SelectTrigger aria-label="New revision" className="h-7 w-56 text-caption">
                 <SelectValue placeholder="Select revision" />
               </SelectTrigger>
               <SelectContent>
                 {sortedRevisions.map((revision) => (
-                  <SelectItem key={revision.id} value={revision.id} className="text-xs">
+                  <SelectItem key={revision.id} value={revision.id} className="text-caption">
                     {revisionLabel(revision)}
                   </SelectItem>
                 ))}
@@ -130,19 +130,19 @@ export function DocumentDiffModal({
         </div>
 
         <div
-          className="flex-1 overflow-auto rounded-md text-xs"
+          className="flex-1 overflow-auto rounded-md text-caption"
           style={{ border: "1px solid var(--edge)" }}
         >
           {!data ? (
-            <div className="p-6 text-center text-sm" style={{ color: "var(--midnight-muted)" }}>
+            <div className="p-6 text-center text-ui" style={{ color: "var(--midnight-muted)" }}>
               Loading revisions…
             </div>
           ) : !leftRevision || !rightRevision ? (
-            <div className="p-6 text-center text-sm" style={{ color: "var(--midnight-muted)" }}>
+            <div className="p-6 text-center text-ui" style={{ color: "var(--midnight-muted)" }}>
               Select two revisions to compare.
             </div>
           ) : leftRevision.id === rightRevision.id ? (
-            <div className="p-6 text-center text-sm" style={{ color: "var(--midnight-muted)" }}>
+            <div className="p-6 text-center text-ui" style={{ color: "var(--midnight-muted)" }}>
               Both sides are the same revision.
             </div>
           ) : (
@@ -152,7 +152,7 @@ export function DocumentDiffModal({
                   <div
                     key={`truncated-${index}`}
                     data-testid="document-diff-truncated"
-                    className="px-4 py-3 text-center text-xs"
+                    className="px-4 py-3 text-center text-caption"
                     style={{ color: "var(--midnight-muted)", borderTop: "1px solid var(--edge)" }}
                   >
                     {row.text}

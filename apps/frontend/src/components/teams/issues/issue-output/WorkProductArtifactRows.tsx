@@ -101,7 +101,7 @@ export function stateChipFor(
 function Chip({ chip }: { chip: StateChip }) {
   return (
     <span
-      className="inline-flex shrink-0 items-center rounded-full px-2 py-1 text-[10px] font-medium leading-none"
+      className="inline-flex shrink-0 items-center rounded-full px-2 py-1 text-2xs font-medium leading-none"
       style={{ border: `1px ${chip.dashed ? "dashed" : "solid"} ${TONE_VAR[chip.tone]}`, color: TONE_VAR[chip.tone] }}
     >
       {chip.label}
@@ -142,7 +142,7 @@ function urlLabel(url: string | null | undefined): string | null {
   }
 }
 
-const LINK_CLASS = "inline-flex items-center gap-1 text-xs font-medium hover:underline";
+const LINK_CLASS = "inline-flex items-center gap-1 text-caption font-medium hover:underline";
 
 /** Stock RichWorkProductCard, compact variant. */
 export function WorkProductCard({ workProduct }: { workProduct: IssueWorkProduct }) {
@@ -252,9 +252,9 @@ export function WorkProductCard({ workProduct }: { workProduct: IssueWorkProduct
         <Icon aria-hidden size={16} />
       </div>
       <div className="min-w-0 flex-1">
-        <strong className="block truncate text-sm font-medium" style={{ color: "var(--midnight)" }}>{workProduct.title}</strong>
-        {visibleMeta.length > 0 ? <p className="mt-1 truncate text-xs" style={{ color: "var(--midnight-muted)" }}>{visibleMeta.join(" · ")}</p> : null}
-        {statsLabel ? <p className="mt-1 whitespace-nowrap text-xs" style={{ color: "var(--midnight-muted)" }}>{statsLabel}</p> : null}
+        <strong className="block truncate text-ui font-medium" style={{ color: "var(--midnight)" }}>{workProduct.title}</strong>
+        {visibleMeta.length > 0 ? <p className="mt-1 truncate text-caption" style={{ color: "var(--midnight-muted)" }}>{visibleMeta.join(" · ")}</p> : null}
+        {statsLabel ? <p className="mt-1 whitespace-nowrap text-caption" style={{ color: "var(--midnight-muted)" }}>{statsLabel}</p> : null}
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
         {chip ? <Chip chip={chip} /> : null}
@@ -311,7 +311,7 @@ export function WorkProductReviewActions({
         type="button"
         onClick={() => void act("approved")}
         disabled={busy !== null}
-        className="rounded-sm px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50"
+        className="rounded-sm px-2.5 py-1 text-caption font-medium transition-colors disabled:opacity-50"
         style={{ background: "var(--midnight)", color: "var(--cream)" }}
       >
         {busy === "approved" ? "Approving…" : "Approve"}
@@ -320,7 +320,7 @@ export function WorkProductReviewActions({
         type="button"
         onClick={() => void act("changes_requested")}
         disabled={busy !== null}
-        className="rounded-sm px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50"
+        className="rounded-sm px-2.5 py-1 text-caption font-medium transition-colors disabled:opacity-50"
         style={{ border: "1px solid var(--edge)", color: "var(--midnight)" }}
       >
         {busy === "changes_requested" ? "Requesting…" : "Request changes"}
@@ -403,7 +403,7 @@ export function MarkdownWorkProductRow({
   let expandedBody: React.ReactNode;
   if (tooLarge) {
     expandedBody = (
-      <p className="text-sm" style={{ color: "var(--midnight-muted)" }}>
+      <p className="text-ui" style={{ color: "var(--midnight-muted)" }}>
         This Markdown file is too large to preview. Use Raw or Download instead.
       </p>
     );
@@ -411,12 +411,12 @@ export function MarkdownWorkProductRow({
     expandedBody = (reviewDoc.body ?? "").trim().length > 0 ? (
       <MarkdownView>{reviewDoc.body ?? ""}</MarkdownView>
     ) : (
-      <p className="text-sm" style={{ color: "var(--midnight-muted)" }}>Document is empty.</p>
+      <p className="text-ui" style={{ color: "var(--midnight-muted)" }}>Document is empty.</p>
     );
   } else if (ensure === "unsupported" || ensure === "error") {
     expandedBody = (
       <div className="flex flex-col items-start gap-1.5">
-        <p className="text-sm" style={{ color: "var(--midnight-muted)" }}>
+        <p className="text-ui" style={{ color: "var(--midnight-muted)" }}>
           {ensure === "unsupported"
             ? "This file can't be previewed as Markdown. Use Raw or Download instead."
             : "Preview failed to load."}
@@ -424,7 +424,7 @@ export function MarkdownWorkProductRow({
         {ensure === "error" ? (
           <button
             type="button"
-            className="rounded-md px-2 py-0.5 text-xs hover:bg-[var(--cream-deep)]"
+            className="rounded-md px-2 py-0.5 text-caption hover:bg-[var(--cream-deep)]"
             style={{ border: "1px solid var(--edge)", color: "var(--midnight-muted)" }}
             onClick={runEnsure}
           >
@@ -434,7 +434,7 @@ export function MarkdownWorkProductRow({
       </div>
     );
   } else {
-    expandedBody = <p className="text-sm" style={{ color: "var(--midnight-muted)" }}>Preparing preview…</p>;
+    expandedBody = <p className="text-ui" style={{ color: "var(--midnight-muted)" }}>Preparing preview…</p>;
   }
 
   return (
@@ -443,21 +443,21 @@ export function MarkdownWorkProductRow({
         <button
           type="button"
           onClick={() => setExpanded((open) => !open)}
-          className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-1.5 text-left text-sm"
+          className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-1.5 text-left text-ui"
           aria-expanded={expanded}
         >
           <FileText size={14} className="shrink-0" style={{ color: "var(--midnight-muted)" }} />
           <span className="min-w-0 flex-1 truncate" style={{ color: "var(--midnight)" }}>{workProduct.title}</span>
           {badge ? (
             <span
-              className="inline-flex shrink-0 items-center whitespace-nowrap rounded-full px-1.5 py-0.5 text-[10px] leading-none"
+              className="inline-flex shrink-0 items-center whitespace-nowrap rounded-full px-1.5 py-0.5 text-2xs leading-none"
               style={{ border: `1px solid ${badge.color}`, color: badge.color }}
             >
               {badge.label}
             </span>
           ) : null}
           {reviewDoc ? (
-            <span className="shrink-0 text-xs" style={{ color: "var(--midnight-muted)" }}>
+            <span className="shrink-0 text-caption" style={{ color: "var(--midnight-muted)" }}>
               {`Rev ${reviewDoc.latestRevisionNumber ?? 1}`}
             </span>
           ) : null}

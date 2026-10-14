@@ -81,7 +81,7 @@ export function IssueContinuationHandoff({ document }: IssueContinuationHandoffP
         <History className="h-4 w-4 text-muted-foreground" />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm font-medium text-foreground">{title}</span>
+            <span className="text-ui font-medium text-foreground">{title}</span>
             <Badge variant="outline" className="border-border font-mono text-2xs uppercase text-muted-foreground">
               handoff
             </Badge>
@@ -97,7 +97,7 @@ export function IssueContinuationHandoff({ document }: IssueContinuationHandoffP
         </Button>
       </div>
       {expanded ? (
-        <div className="mt-3 rounded-md border border-border bg-background/80 p-3 text-sm leading-6">
+        <div className="mt-3 rounded-md border border-border bg-background/80 p-3 text-ui leading-6">
           <MarkdownView>{document.body ?? ""}</MarkdownView>
         </div>
       ) : null}

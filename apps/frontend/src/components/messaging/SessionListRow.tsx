@@ -59,7 +59,7 @@ export function SessionListRow({ entry: { session, ownerName, own, unread }, cur
       <span className="session-tool-badge" aria-hidden="true"><SessionToolIcon provider={session.provider} /></span>
       <span className="min-w-0 flex-1">
         <span className={`block truncate${unread ? " font-semibold" : ""}${live && session.status === "busy" ? " session-title--working" : ""}`} title={label}>{sessionTitle(session)}</span>
-        {second && <span className="block truncate text-xs text-muted-foreground">{second}</span>}
+        {second && <span className="block truncate text-caption text-muted-foreground">{second}</span>}
       </span>
       {!!session.chatUnread && <span className="session-chat-unread" aria-hidden="true">{session.chatUnread > 99 ? "99+" : session.chatUnread}</span>}
       {waiting ? <span className="session-unread session-unread--waiting" aria-hidden="true" />

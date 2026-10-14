@@ -215,7 +215,7 @@ export function DocumentAnnotationLayer({
         >
           <button
             type="button"
-            className="flex h-7 items-center gap-1 rounded-sm px-2 text-xs disabled:opacity-50"
+            className="flex h-7 items-center gap-1 rounded-sm px-2 text-caption disabled:opacity-50"
             style={{ color: "var(--midnight)" }}
             disabled={newCommentDisabled}
             title={newCommentDisabled ? newCommentDisabledReason ?? undefined : "Comment on selection"}

@@ -100,7 +100,7 @@ function TextPreview({ text }: { text: string }) {
       <div className="absolute inset-0 overflow-hidden p-3">
         <p
           data-testid="artifact-preview-text"
-          className="max-h-full overflow-hidden whitespace-pre-wrap break-words text-xs leading-5"
+          className="max-h-full overflow-hidden whitespace-pre-wrap break-words text-caption leading-5"
           style={{ color: "var(--midnight-soft)" }}
         >
           {text}
@@ -297,7 +297,7 @@ export function ArtifactGalleryCard({
 
       <div className="flex flex-1 flex-col gap-1 p-3">
         <h3
-          className="truncate text-sm font-medium leading-5"
+          className="truncate text-ui font-medium leading-5"
           style={{ color: "var(--midnight)" }}
           title={title}
         >
@@ -372,7 +372,7 @@ export function ArtifactStackCard({ group, onOpenStack }: ArtifactStackCardProps
             </span>
           ) : null}
           <h3
-            className="min-w-0 flex-1 truncate text-sm font-medium leading-5"
+            className="min-w-0 flex-1 truncate text-ui font-medium leading-5"
             style={{ color: "var(--midnight)" }}
             title={group.title}
           >

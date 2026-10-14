@@ -101,7 +101,7 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
   if (isLoading && !project) {
     return (
       <div
-        className="flex h-full items-center justify-center p-8 text-sm italic"
+        className="flex h-full items-center justify-center p-8 text-ui italic"
         style={{
           fontFamily: "var(--font-serif), serif",
           color: "var(--midnight-muted)",
@@ -116,7 +116,7 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
     return (
       <div
         role="alert"
-        className="flex h-full flex-col items-center justify-center p-8 text-sm"
+        className="flex h-full flex-col items-center justify-center p-8 text-ui"
         style={{ color: "var(--err)" }}
       >
         <p>Failed to load project.</p>
@@ -132,7 +132,7 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
   if (!project) {
     return (
       <div
-        className="flex h-full items-center justify-center p-8 text-sm italic"
+        className="flex h-full items-center justify-center p-8 text-ui italic"
         style={{
           fontFamily: "var(--font-serif), serif",
           color: "var(--midnight-muted)",
@@ -165,7 +165,7 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
       style={{ background: "var(--cream)", color: "var(--midnight)" }}
     >
       <nav
-        className="flex items-center gap-1 text-xs"
+        className="flex items-center gap-1 text-caption"
         style={{ color: "var(--midnight-muted)" }}
         aria-label="Breadcrumb"
       >

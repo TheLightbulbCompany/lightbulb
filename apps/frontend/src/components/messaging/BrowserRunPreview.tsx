@@ -88,7 +88,7 @@ export function macBrowser(run: { tools: ReadonlyArray<DesktopCall> }): MacTarge
  * that never named its Mac (legacy calls) has nowhere to send input or viewer demand: it can
  * show frames cast for other viewers, view-only. */
 export function MacRunFrames({ runId, deviceId, roomId }: { runId: string; deviceId?: string; roomId?: string }): React.ReactElement {
-  const empty = <p role="status" className="p-6 text-center text-sm text-[var(--midnight-muted)]">Waiting for the page on the Mac…</p>;
+  const empty = <p role="status" className="p-6 text-center text-ui text-[var(--midnight-muted)]">Waiting for the page on the Mac…</p>;
   return deviceId
     ? <BrowserFrameView runId={runId} mac={{ deviceId, roomId }} prefer="view" empty={empty} />
     : <BrowserFrameView runId={runId} heartbeat="" empty={empty} />;
@@ -118,10 +118,10 @@ export function MacBrowserPreview({ agentName, runId, roomId, deviceId, deviceNa
   }, []);
   const pageVisible = usePageVisible();
   const seen = pageVisible && onScreen;
-  const waiting = <span className="p-3 text-xs text-[var(--midnight-muted)]">Waiting for the page…</span>;
+  const waiting = <span className="p-3 text-caption text-[var(--midnight-muted)]">Waiting for the page…</span>;
   return (
     <div className="mt-1.5 flex flex-col gap-1.5" data-testid="mac-browser-preview">
-      <button type="button" onClick={open} className="flex w-fit items-center gap-1.5 text-xs text-[var(--midnight-muted)] hover:text-[var(--midnight)]">
+      <button type="button" onClick={open} className="flex w-fit items-center gap-1.5 text-caption text-[var(--midnight-muted)] hover:text-[var(--midnight)]">
         <Globe size={12} aria-hidden="true" />{label}
       </button>
       <button ref={thumb} type="button" onClick={open} aria-label={`${label}. Show it in the Browser panel`}
@@ -131,7 +131,7 @@ export function MacBrowserPreview({ agentName, runId, roomId, deviceId, deviceNa
       </button>
       <Dialog open={fullScreen} onOpenChange={setFullScreen}>
         <DialogContent showCloseButton className="flex h-dvh max-w-none flex-col gap-2 rounded-none p-3 pt-4 shadow-none">
-          <DialogTitle className="pr-8 text-sm">{label}</DialogTitle>
+          <DialogTitle className="pr-8 text-ui">{label}</DialogTitle>
           <DialogDescription className="sr-only">The live tab on that Mac.</DialogDescription>
           <div className="relative min-h-0 flex-1">{fullScreen && pageVisible && <MacRunFrames runId={runId} deviceId={deviceId} roomId={roomId} />}</div>
         </DialogContent>
@@ -170,7 +170,7 @@ export function BrowserRunPreview({ agentName, site, runId }: { agentName: strin
   const open = () => showBrowserBesideChat({ focus: true, asTabWhenNarrow: true });
   return (
     <div className="mt-1.5 flex flex-col gap-1.5" data-testid="browser-run-preview">
-      <button type="button" onClick={open} className="flex w-fit items-center gap-1.5 text-xs text-[var(--midnight-muted)] hover:text-[var(--midnight)]">
+      <button type="button" onClick={open} className="flex w-fit items-center gap-1.5 text-caption text-[var(--midnight-muted)] hover:text-[var(--midnight)]">
         <Globe size={12} aria-hidden="true" />{label}
       </button>
       {source && (
@@ -179,7 +179,7 @@ export function BrowserRunPreview({ agentName, site, runId }: { agentName: strin
           {status === "elsewhere"
             // Another screen holds the one live view: this run's own tab, as live frames.
             ? <span className="pointer-events-none" inert><BrowserFrameView runId={runId} empty={
-                <span className="p-3 text-xs text-[var(--midnight-muted)]">Being watched elsewhere</span>} /></span>
+                <span className="p-3 text-caption text-[var(--midnight-muted)]">Being watched elsewhere</span>} /></span>
             : <LiveViewMirror className="pointer-events-none h-full w-full object-contain" />}
         </button>
       )}

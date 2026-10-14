@@ -44,11 +44,11 @@ export function InboxHappeningNow() {
                 <span className="min-w-0 flex-1 truncate text-[var(--midnight)]">
                   {run.nextAction?.trim() || "Working"}
                 </span>
-                <span className="shrink-0 text-xs text-[var(--midnight-muted)]">
+                <span className="shrink-0 text-caption text-[var(--midnight-muted)]">
                   {run.agentName ?? "Agent"}
                   {started ? ` · ${timeAgo(started)}` : ""}
                 </span>
-                <span className="w-16 shrink-0 text-right text-xs">
+                <span className="w-16 shrink-0 text-right text-caption">
                   {stalled ? (
                     <span className="text-warn">stalled</span>
                   ) : run.status === "queued" ? (

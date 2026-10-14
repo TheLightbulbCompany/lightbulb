@@ -123,12 +123,12 @@ export function PanelNotice({
             {headline}
           </p>
           {supporting && (
-            <p className="mt-1 max-w-[60ch] text-xs text-[var(--midnight-muted)]">
+            <p className="mt-1 max-w-[60ch] text-caption text-[var(--midnight-muted)]">
               {supporting}
             </p>
           )}
           {prompt && (
-            <p className="mt-2 font-editorial-serif text-xs italic text-[var(--midnight-soft)]">
+            <p className="mt-2 font-editorial-serif text-caption italic text-[var(--midnight-soft)]">
               &ldquo;{prompt}&rdquo;
             </p>
           )}
@@ -138,7 +138,7 @@ export function PanelNotice({
                 <a
                   href={href}
                   onClick={action?.onClick}
-                  className="text-xs font-medium text-[var(--midnight)] underline"
+                  className="text-caption font-medium text-[var(--midnight)] underline"
                 >
                   {action?.label ?? "Open"}
                 </a>

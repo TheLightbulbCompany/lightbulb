@@ -31,7 +31,7 @@ export function RoomLimitBar({ account }: { account?: BillingAccount | null }): 
   const { title, action } = describeError(reason, "", account);
   return <div className="room-limit-bar" role="status" data-block-reason={reason}>
     <AlertTriangle className="size-4 shrink-0 text-err" aria-hidden="true" />
-    <p className="min-w-0 flex-1 text-sm">
+    <p className="min-w-0 flex-1 text-ui">
       <span className="font-medium">{title}.</span> {line}
       {reason === "trial_expired" ? "" : " Messages to people still send."}
     </p>

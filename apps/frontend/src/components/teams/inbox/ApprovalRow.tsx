@@ -241,7 +241,7 @@ export function ApprovalRow({
             ) : isProviderConnectApproval(approval) ? (
               <>
                 {connectAccount && (
-                  <span className="text-sm text-[var(--midnight-muted)]">
+                  <span className="text-ui text-[var(--midnight-muted)]">
                     {[connectAccount.display_name, connectAccount.primary_email]
                       .filter(Boolean)
                       .join(" · ")}
@@ -271,7 +271,7 @@ export function ApprovalRow({
               </>
             ) : isPaymentSetupApproval(approval) ? (
               <>
-                <span className="text-sm text-[var(--midnight-muted)]">
+                <span className="text-ui text-[var(--midnight-muted)]">
                   {payloadString(approval.payload, "price_display")}
                   {paymentLimit ? ` · Limit ${formatUsageLimit(paymentLimit)}` : ""}
                 </span>

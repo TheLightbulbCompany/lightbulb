@@ -108,7 +108,7 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
       key: "origin",
       header: "Origin",
       cell: (a) => (
-        <span className="text-xs text-[var(--midnight-soft)]">
+        <span className="text-caption text-[var(--midnight-soft)]">
           {a.origin ?? "Custom"}
           {a.origin === "Marketplace" && a.marketplace
             ? ` · ${a.marketplace.slug} v${a.marketplace.version}`
@@ -125,7 +125,7 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
         return (
           <span className="flex items-center justify-end gap-2">
             <button
-              className="text-sm hover:underline text-[var(--midnight-soft)]"
+              className="text-ui hover:underline text-[var(--midnight-soft)]"
               onClick={async () => {
                 try {
                   await (paused ? resume(a.id) : pause(a.id));
@@ -137,7 +137,7 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
               {paused ? "Resume" : "Pause"}
             </button>
             <button
-              className="text-sm hover:underline text-[var(--err)]"
+              className="text-ui hover:underline text-[var(--err)]"
               onClick={async () => {
                 if (!window.confirm(`Delete ${a.name}? This removes the agent and its workspace.`)) return;
                 try {
@@ -161,7 +161,7 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
         <a
           href={agentInspectorUrl(a.id)}
           onClick={(e) => handleShellLinkClick(e, agentInspectorUrl(a.id))}
-          className="text-sm hover:underline"
+          className="text-ui hover:underline"
           style={{ color: "var(--midnight)" }}
         >
           Open →
@@ -383,7 +383,7 @@ function CreateAgentDialog({
     >
       <div className="flex flex-col gap-3">
         <label className="block">
-          <span className="text-sm text-[var(--midnight-soft)]">Name</span>
+          <span className="text-ui text-[var(--midnight-soft)]">Name</span>
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -391,7 +391,7 @@ function CreateAgentDialog({
           />
         </label>
         <label className="block">
-          <span className="text-sm text-[var(--midnight-soft)]">Title</span>
+          <span className="text-ui text-[var(--midnight-soft)]">Title</span>
           <input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
@@ -400,7 +400,7 @@ function CreateAgentDialog({
           />
         </label>
         <label className="block">
-          <span className="text-sm text-[var(--midnight-soft)]">Role</span>
+          <span className="text-ui text-[var(--midnight-soft)]">Role</span>
           <select
             value={role}
             onChange={(e) => setRole(e.target.value)}
@@ -412,7 +412,7 @@ function CreateAgentDialog({
           </select>
         </label>
         <label className="block">
-          <span className="text-sm text-[var(--midnight-soft)]">Reports to</span>
+          <span className="text-ui text-[var(--midnight-soft)]">Reports to</span>
           <select
             aria-label="Reports to"
             value={reportsTo}

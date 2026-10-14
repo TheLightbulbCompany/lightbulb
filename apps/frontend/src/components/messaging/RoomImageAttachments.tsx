@@ -142,7 +142,7 @@ export function RoomImageAttachments({ roomId, attachments, download, attachment
           : loadFailed
             ? <Button type="button" variant="outline" onClick={() => retry(attachment.id)}><RotateCcw aria-hidden="true" /> Retry {attachment.fileName}</Button>
             : <span role="status">Loading video…</span>}
-        <figcaption className="flex items-center gap-2 text-sm text-muted-foreground">
+        <figcaption className="flex items-center gap-2 text-ui text-muted-foreground">
           <span className="min-w-0 truncate" title={attachment.fileName}>{attachment.fileName} · {formatBytes(attachment.size)}</span>
           {url && !loadFailed && <a href={url} target="_blank" rel="noopener noreferrer" aria-label={`Download ${attachment.fileName}`} className="inline-flex items-center gap-1"><Download aria-hidden="true" className="size-4" /> Download</a>}
         </figcaption>
@@ -156,8 +156,8 @@ export function RoomImageAttachments({ roomId, attachments, download, attachment
           onClick={() => void downloadDirect(attachment)}>
           <Icon aria-hidden="true" />
           <span className="min-w-0 flex-1"><strong className="block truncate" title={attachment.fileName}>{attachment.fileName}</strong>
-            <span className="block text-sm text-muted-foreground">{label} · {formatBytes(attachment.size)}</span>
-            <span className={loadFailed ? "block text-sm text-err" : "block text-sm text-muted-foreground"}>{loadFailed ? "Download failed — try again" : isDownloading ? "Downloading…" : "Download file"}</span></span>
+            <span className="block text-ui text-muted-foreground">{label} · {formatBytes(attachment.size)}</span>
+            <span className={loadFailed ? "block text-ui text-err" : "block text-ui text-muted-foreground"}>{loadFailed ? "Download failed — try again" : isDownloading ? "Downloading…" : "Download file"}</span></span>
           {loadFailed ? <RotateCcw aria-hidden="true" /> : <Download aria-hidden="true" />}
         </button>;
       }
@@ -171,8 +171,8 @@ export function RoomImageAttachments({ roomId, attachments, download, attachment
         }}>
         <FileText aria-hidden="true" />
         <span className="min-w-0 flex-1"><strong className="block truncate" title={attachment.fileName}>{attachment.fileName}</strong>
-          <span className="block text-sm text-muted-foreground">PDF · {formatBytes(attachment.size)}</span>
-          <span className={loadFailed ? "block text-sm text-err" : "block text-sm text-muted-foreground"}>{loadFailed ? "Could not load file" : url ? "Open file" : "Loading…"}</span></span>
+          <span className="block text-ui text-muted-foreground">PDF · {formatBytes(attachment.size)}</span>
+          <span className={loadFailed ? "block text-ui text-err" : "block text-ui text-muted-foreground"}>{loadFailed ? "Could not load file" : url ? "Open file" : "Loading…"}</span></span>
         {loadFailed && <RotateCcw aria-hidden="true" />}
       </button>;
     })}</div>

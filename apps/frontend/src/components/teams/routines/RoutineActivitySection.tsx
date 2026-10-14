@@ -62,7 +62,7 @@ export function RoutineActivityRow({ event }: { event: RoutineActivityEvent }) {
         onClick={() => setExpanded((value) => !value)}
         aria-expanded={hasPayload ? expanded : undefined}
         className={cn(
-          "flex w-full items-center gap-3 px-1 py-2 text-left text-xs",
+          "flex w-full items-center gap-3 px-1 py-2 text-left text-caption",
           hasPayload ? "hover:bg-[var(--cream-deep)]" : "cursor-default",
         )}
       >
@@ -91,7 +91,7 @@ export function RoutineActivityRow({ event }: { event: RoutineActivityEvent }) {
       </button>
       {expanded && hasPayload ? (
         <pre
-          className="mx-1 mb-2 overflow-x-auto rounded-md p-3 font-mono text-xs"
+          className="mx-1 mb-2 overflow-x-auto rounded-md p-3 font-mono text-caption"
           style={{ background: "var(--cream-deep)", color: "var(--midnight)" }}
         >
           {JSON.stringify(event.details, null, 2)}
@@ -130,21 +130,21 @@ export function RoutineActivitySection({ routineId }: { routineId: string }) {
 
   if (error) {
     return (
-      <p role="alert" className="text-sm" style={{ color: "var(--err)" }}>
+      <p role="alert" className="text-ui" style={{ color: "var(--err)" }}>
         Failed to load activity.
       </p>
     );
   }
   if (isLoading && !data) {
     return (
-      <p className="text-sm italic" style={{ color: "var(--midnight-muted)" }}>
+      <p className="text-ui italic" style={{ color: "var(--midnight-muted)" }}>
         Loading…
       </p>
     );
   }
   if (events.length === 0) {
     return (
-      <p className="text-sm italic" style={{ color: "var(--midnight-muted)" }}>
+      <p className="text-ui italic" style={{ color: "var(--midnight-muted)" }}>
         No activity yet.
       </p>
     );
@@ -154,7 +154,7 @@ export function RoutineActivitySection({ routineId }: { routineId: string }) {
     <div className="flex flex-col gap-4">
       {groups.map(([day, dayEvents]) => (
         <div key={day}>
-          <div className="py-2 text-xs font-medium uppercase tracking-wide text-[var(--midnight-muted)]">
+          <div className="py-2 text-caption font-medium uppercase tracking-wide text-[var(--midnight-muted)]">
             {day}
           </div>
           <div>

@@ -57,12 +57,12 @@ export function IssueWorkProductsSection({ issueId }: { issueId: string }) {
     <section className="flex flex-col gap-3 pt-4" style={{ borderTop: "1px solid var(--edge)" }}>
       <IssueOutputSection workProducts={workProducts} />
       {isError && (
-        <p className="text-xs" style={{ color: "var(--err)" }}>
+        <p className="text-caption" style={{ color: "var(--err)" }}>
           Couldn&apos;t load deliverables.
         </p>
       )}
       {isLoading && workProducts.length === 0 && !isError && (
-        <p className="text-xs italic" style={{ color: "var(--midnight-muted)" }}>
+        <p className="text-caption italic" style={{ color: "var(--midnight-muted)" }}>
           Loading deliverables…
         </p>
       )}

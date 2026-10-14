@@ -155,13 +155,13 @@ export function StartRungPicker({
               <span className="min-w-0 flex-1">
                 <span
                   className={cn(
-                    "block text-sm font-medium",
+                    "block text-ui font-medium",
                     active ? "text-[var(--midnight)]" : "text-[var(--midnight-soft)]",
                   )}
                 >
                   {r.label}
                 </span>
-                <span className="block text-xs leading-snug text-[var(--midnight-muted)]">{r.hint}</span>
+                <span className="block text-caption leading-snug text-[var(--midnight-muted)]">{r.hint}</span>
               </span>
               {active && (
                 <Check size={16} strokeWidth={2} className="mt-px shrink-0 text-[var(--midnight)]" />
@@ -625,7 +625,7 @@ function EventPicker({
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="flex w-full items-center justify-between gap-2 rounded-sm border border-[var(--edge)] bg-[var(--cream)] px-3 py-2 text-left text-sm text-[var(--midnight)]"
+          className="flex w-full items-center justify-between gap-2 rounded-sm border border-[var(--edge)] bg-[var(--cream)] px-3 py-2 text-left text-ui text-[var(--midnight)]"
         >
           <span className={cn("truncate", !selectedLabel && "text-[var(--midnight-muted)]")}>
             {selectedLabel ?? (multiple ? "Select events…" : "Select an event…")}
@@ -665,7 +665,7 @@ function EventPicker({
           className="mt-1 max-h-[260px] overflow-y-auto rounded-sm border border-[var(--edge)] bg-[var(--cream)] pb-1"
         >
           {visible.length === 0 && (
-            <p className="px-3 py-2 text-sm text-[var(--midnight-muted)]">
+            <p className="px-3 py-2 text-ui text-[var(--midnight-muted)]">
               No events match &ldquo;{query.trim()}&rdquo;.
             </p>
           )}
@@ -692,7 +692,7 @@ function EventPicker({
                   if (!multiple || wasEmpty) setOpen(false);
                 }}
                 className={cn(
-                  "flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors",
+                  "flex w-full items-center gap-2 px-3 py-1.5 text-left text-ui transition-colors",
                   values.includes(e.id)
                     ? "bg-[var(--cream-deeper)] text-[var(--midnight)]"
                     : "text-[var(--midnight-soft)] hover:bg-[var(--cream-deep)]",
@@ -743,7 +743,7 @@ export function ConnectedAppFields({
   return (
     <>
       <label className="block">
-        <span className="text-sm text-[var(--midnight-soft)]">Connected app</span>
+        <span className="text-ui text-[var(--midnight-soft)]">Connected app</span>
         <div className="mt-1">
           <EditorialSelect
             options={ctl.triggerableConnections.map((c) => ({
@@ -763,7 +763,7 @@ export function ConnectedAppFields({
       </label>
       {ctl.selectedConnection && (
         <div className="block">
-          <span className="text-sm text-[var(--midnight-soft)]">
+          <span className="text-ui text-[var(--midnight-soft)]">
             {ctl.multiSelect ? "Events" : "Event"}
           </span>
           <div className="mt-1">
@@ -784,7 +784,7 @@ export function ConnectedAppFields({
       {ctl.isAutoRegister && ctl.eventIds.length > 0 && (
         <div className="flex flex-col gap-1.5">
           <label className="block">
-            <span className="text-sm text-[var(--midnight-soft)]">{ctl.resourceNoun.label}</span>
+            <span className="text-ui text-[var(--midnight-soft)]">{ctl.resourceNoun.label}</span>
             <div className="mt-1">
               <EditorialSelect
                 options={(ctl.resourceOptions ?? []).map((r) => ({
@@ -806,7 +806,7 @@ export function ConnectedAppFields({
               />
             </div>
             {ctl.resourceError && (
-              <span className="text-xs text-[var(--err)]">{ctl.resourceError}</span>
+              <span className="text-caption text-[var(--err)]">{ctl.resourceError}</span>
             )}
           </label>
           {/* Google's "resource" is an identity, not a repo — which agent
@@ -829,14 +829,14 @@ export function ConnectedAppFields({
           finish dialog after Create. */}
       {ctl.isOwnerSetup && (
         <label className="block">
-          <span className="text-sm text-[var(--midnight-soft)]">Pub/Sub topic</span>
+          <span className="text-ui text-[var(--midnight-soft)]">Pub/Sub topic</span>
           <input
             value={ctl.topic}
             onChange={(e) => ctl.setTopic(e.target.value)}
             placeholder="projects/my-project/topics/isol8-gmail"
             className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 font-mono text-[var(--midnight)]"
           />
-          <span className="text-xs text-[var(--midnight-muted)]">
+          <span className="text-caption text-[var(--midnight-muted)]">
             A topic in your own Google Cloud project — you&apos;ll wire it up after Create.
           </span>
         </label>
@@ -849,7 +849,7 @@ export function ConnectedAppFields({
       {ctl.showDraftFields && (
         <>
           <label className="block">
-            <span className="text-sm text-[var(--midnight-soft)]">Title</span>
+            <span className="text-ui text-[var(--midnight-soft)]">Title</span>
             <input
               value={ctl.title}
               onChange={(e) => ctl.setTitleEdit(e.target.value)}
@@ -857,7 +857,7 @@ export function ConnectedAppFields({
             />
           </label>
           <label className="block">
-            <span className="text-sm text-[var(--midnight-soft)]">Description</span>
+            <span className="text-ui text-[var(--midnight-soft)]">Description</span>
             <textarea
               value={ctl.description}
               onChange={(e) => ctl.setDescriptionEdit(e.target.value)}
@@ -865,7 +865,7 @@ export function ConnectedAppFields({
               className="w-full border border-[var(--edge)] bg-[var(--cream)] rounded-sm px-3 py-2 mt-1 text-[var(--midnight)]"
             />
           </label>
-          <span className="-mt-2 text-xs text-[var(--midnight-muted)]">
+          <span className="-mt-2 text-caption text-[var(--midnight-muted)]">
             What the agent is told to do when this fires. Edit it — this draft is a starting
             point, not a fixed template.
           </span>
@@ -873,7 +873,7 @@ export function ConnectedAppFields({
       )}
       {ctl.attachDisclosure && (
         <p
-          className="rounded-sm px-3 py-2 text-xs text-[var(--midnight-soft)]"
+          className="rounded-sm px-3 py-2 text-caption text-[var(--midnight-soft)]"
           style={{
             border: "1px solid var(--edge)",
             background: "var(--cream-deep)",
@@ -975,12 +975,12 @@ export function ConnectedAppResultDialog({
             to re-derive the list from the instructions sentence. */}
         {result.guided && ctl.selectedEvents.length > 1 && (
           <div className="flex flex-col gap-1">
-            <span className="text-sm text-[var(--midnight-soft)]">
+            <span className="text-ui text-[var(--midnight-soft)]">
               Subscribe this one endpoint to all {ctl.selectedEvents.length} events
             </span>
             <ul className="flex flex-col gap-0.5">
               {ctl.selectedEvents.map((e) => (
-                <li key={e.id} className="text-xs text-[var(--midnight-muted)]">
+                <li key={e.id} className="text-caption text-[var(--midnight-muted)]">
                   {e.label} — <code className="break-all">{e.id}</code>
                 </li>
               ))}
@@ -997,14 +997,14 @@ export function ConnectedAppResultDialog({
           />
         )}
         {result.instructions && (
-          <p className="text-xs text-[var(--midnight-muted)]">
+          <p className="text-caption text-[var(--midnight-muted)]">
             {renderInstructions(result.instructions, result.proxy_url)}
           </p>
         )}
         {result.guided && !isReverseGuided ? (
           <>
             <label className="block">
-              <span className="text-sm text-[var(--midnight-soft)]">
+              <span className="text-ui text-[var(--midnight-soft)]">
                 Paste your {providerName} signing secret
               </span>
               <input
@@ -1016,7 +1016,7 @@ export function ConnectedAppResultDialog({
               />
             </label>
             {ctl.whsecSaved ? (
-              <p className="text-sm" style={{ color: "var(--midnight)" }}>
+              <p className="text-ui" style={{ color: "var(--midnight)" }}>
                 Secret saved.
               </p>
             ) : (
@@ -1034,14 +1034,14 @@ export function ConnectedAppResultDialog({
           // Reverse-guided is guided-but-unwired: "Registered." would claim a
           // liveness the owner's PostHog-side setup hasn't earned yet.
           !result.guided && (
-            <p className="text-sm" style={{ color: "var(--midnight)" }}>
+            <p className="text-ui" style={{ color: "var(--midnight)" }}>
               Registered.
             </p>
           )
         )}
         {ctl.err && (
           <div
-            className="text-[var(--err)] text-sm rounded-sm px-3 py-2"
+            className="text-[var(--err)] text-ui rounded-sm px-3 py-2"
             style={{
               border: "1px solid var(--err)",
               background: "var(--cream)",

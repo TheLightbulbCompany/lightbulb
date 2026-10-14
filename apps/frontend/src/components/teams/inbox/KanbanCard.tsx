@@ -89,7 +89,7 @@ function CardContent({ issue, agents, isLive, isDragging }: CardContentProps) {
     >
       <div className="flex items-start gap-1.5 mb-1.5">
         <span
-          className="text-xs font-mono shrink-0"
+          className="text-caption font-mono shrink-0"
           style={{ color: "var(--midnight-muted)" }}
         >
           {issue.identifier ?? issue.id.slice(0, 8)}
@@ -99,7 +99,7 @@ function CardContent({ issue, agents, isLive, isDragging }: CardContentProps) {
         )}
       </div>
       <p
-        className="text-sm leading-snug line-clamp-2 mb-2"
+        className="text-ui leading-snug line-clamp-2 mb-2"
         style={{ color: "var(--midnight)" }}
       >
         {issue.title}
@@ -113,7 +113,7 @@ function CardContent({ issue, agents, isLive, isDragging }: CardContentProps) {
               <Identity name={name} size="xs" />
             ) : (
               <span
-                className="text-xs font-mono"
+                className="text-caption font-mono"
                 style={{ color: "var(--midnight-muted)" }}
               >
                 {issue.assigneeAgentId.slice(0, 8)}
@@ -170,7 +170,7 @@ export function KanbanCard({ issue, agents, isLive, columns, onStatusChange }: K
         <select
           aria-label={`Status of ${issue.title}`}
           value={issue.status}
-          className="mt-2 w-full rounded border bg-transparent text-xs"
+          className="mt-2 w-full rounded border bg-transparent text-caption"
           onChange={(e) => onStatusChange(issue.id, e.target.value)}
         >
           {columns.map((s) => (

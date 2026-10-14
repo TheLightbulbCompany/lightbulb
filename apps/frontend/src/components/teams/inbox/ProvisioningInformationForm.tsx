@@ -82,7 +82,7 @@ export function ProvisioningInformationForm({
 
   if (!fields) {
     return (
-      <p className="pl-6 text-sm text-[var(--midnight-muted)]">
+      <p className="pl-6 text-ui text-[var(--midnight-muted)]">
         {provider} is asking for something this form needs Lightbulb to handle — email support and
         we&apos;ll take it from here.
       </p>
@@ -143,7 +143,7 @@ export function ProvisioningInformationForm({
   }
 
   return (
-    <div className="flex flex-col gap-2 pl-6 text-sm">
+    <div className="flex flex-col gap-2 pl-6 text-ui">
       {fields.map((field) => {
         const id = `info-${approval.id}-${field.name}`;
         return (
@@ -200,7 +200,7 @@ export function ProvisioningInformationForm({
           </span>
         );
       })}
-      {fieldError && <p className="text-sm text-[var(--err)]">{fieldError}</p>}
+      {fieldError && <p className="text-ui text-[var(--err)]">{fieldError}</p>}
       <span>
         <EditorialButton
           size="sm"

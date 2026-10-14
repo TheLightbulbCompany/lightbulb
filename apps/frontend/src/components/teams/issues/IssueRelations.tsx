@@ -54,7 +54,7 @@ function RemovableRelationChip({
   return (
     <>
       <span
-        className="group inline-flex items-center gap-1 rounded-full py-0.5 pl-1 pr-2 text-xs"
+        className="group inline-flex items-center gap-1 rounded-full py-0.5 pl-1 pr-2 text-caption"
         style={{
           border: "1px solid var(--edge)",
           background: "var(--cream-deep)",
@@ -141,7 +141,7 @@ function RelationChip({ issue }: { issue: IssueRelationIssueSummary }) {
       href={issueUrl}
       prefetch={false}
       onClick={(e) => handleShellLinkClick(e, issueUrl)}
-      className="inline-flex min-w-0 items-center gap-1 rounded-full px-2 py-0.5 text-xs no-underline hover:underline"
+      className="inline-flex min-w-0 items-center gap-1 rounded-full px-2 py-0.5 text-caption no-underline hover:underline"
       style={{
         border: "1px solid var(--edge)",
         background: "var(--cream-deep)",
@@ -212,7 +212,7 @@ export function IssueRelations({ issue, onBlockedByChange }: IssueRelationsProps
   return (
     <>
       <div
-        className="grid grid-cols-[100px_1fr] gap-3 items-baseline py-2 text-sm"
+        className="grid grid-cols-[100px_1fr] gap-3 items-baseline py-2 text-ui"
         style={{ color: "var(--midnight-soft)", borderBottom: "1px solid var(--edge)" }}
       >
         <dt className="section-label" style={{ marginTop: 0, marginBottom: 0 }}>
@@ -237,7 +237,7 @@ export function IssueRelations({ issue, onBlockedByChange }: IssueRelationsProps
               <PopoverTrigger asChild>
                 <button
                   type="button"
-                  className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs transition-colors hover:underline"
+                  className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-caption transition-colors hover:underline"
                   style={{ border: "1px solid var(--edge)", color: "var(--midnight-muted)" }}
                 >
                   <Plus size={12} strokeWidth={1.75} />
@@ -258,7 +258,7 @@ export function IssueRelations({ issue, onBlockedByChange }: IssueRelationsProps
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   placeholder="Search issues..."
-                  className="w-full px-2 py-1.5 text-xs bg-transparent mb-1 rounded-sm"
+                  className="w-full px-2 py-1.5 text-caption bg-transparent mb-1 rounded-sm"
                   style={{ borderBottom: "1px solid var(--edge)" }}
                   aria-label="Search issues to add as blockers"
                 />
@@ -275,7 +275,7 @@ export function IssueRelations({ issue, onBlockedByChange }: IssueRelationsProps
                           type="button"
                           onClick={() => toggle(candidate.id)}
                           className={cn(
-                            "flex w-full items-center gap-2 px-2 py-1.5 text-left text-sm rounded-sm hover:bg-[var(--cream-deep)]",
+                            "flex w-full items-center gap-2 px-2 py-1.5 text-left text-ui rounded-sm hover:bg-[var(--cream-deep)]",
                             selected && "bg-[var(--cream-deeper)]",
                           )}
                         >
@@ -298,7 +298,7 @@ export function IssueRelations({ issue, onBlockedByChange }: IssueRelationsProps
                     );
                   })}
                   {candidates.length === 0 && (
-                    <li className="px-2 py-2 text-xs" style={{ color: "var(--midnight-muted)" }}>
+                    <li className="px-2 py-2 text-caption" style={{ color: "var(--midnight-muted)" }}>
                       No matching issues.
                     </li>
                   )}
@@ -310,7 +310,7 @@ export function IssueRelations({ issue, onBlockedByChange }: IssueRelationsProps
       </div>
 
       <div
-        className="grid grid-cols-[100px_1fr] gap-3 items-baseline py-2 text-sm"
+        className="grid grid-cols-[100px_1fr] gap-3 items-baseline py-2 text-ui"
         style={{ color: "var(--midnight-soft)", borderBottom: "1px solid var(--edge)" }}
       >
         <dt className="section-label" style={{ marginTop: 0, marginBottom: 0 }}>

@@ -63,7 +63,7 @@ function Link({ to, className, children }: { to: string; className?: string; chi
 
 function StatusBadge({ status }: { status: string }) {
   return (
-    <span className="inline-flex items-center rounded-full border border-border/70 px-2.5 py-0.5 text-xs capitalize text-muted-foreground">
+    <span className="inline-flex items-center rounded-full border border-border/70 px-2.5 py-0.5 text-caption capitalize text-muted-foreground">
       {status.replace(/_/g, " ")}
     </span>
   );
@@ -122,7 +122,7 @@ export function ApprovalDetail({ approvalId }: { approvalId: string }) {
   }
 
   if (approvalRead.isLoading) return <div className="p-8"><PageSkeleton /></div>;
-  if (!approval) return <p className="p-8 text-sm text-muted-foreground">Approval not found.</p>;
+  if (!approval) return <p className="p-8 text-ui text-muted-foreground">Approval not found.</p>;
 
   const payload = (approval.payload ?? {}) as Record<string, unknown>;
   const type = approval.type ?? "";
@@ -162,8 +162,8 @@ export function ApprovalDetail({ approvalId }: { approvalId: string }) {
                 <Sparkles className="h-3 w-3 text-ok absolute -right-2 -top-1 animate-pulse" />
               </div>
               <div>
-                <p className="text-sm text-foreground font-medium">Approval confirmed</p>
-                <p className="text-xs text-muted-foreground">
+                <p className="text-ui text-foreground font-medium">Approval confirmed</p>
+                <p className="text-caption text-muted-foreground">
                   Requesting agent was notified to review this approval and linked tasks.
                 </p>
               </div>
@@ -185,15 +185,15 @@ export function ApprovalDetail({ approvalId }: { approvalId: string }) {
             <TypeIcon className="h-5 w-5 text-muted-foreground shrink-0" />
             <div>
               <h2 className="text-lg font-semibold">{approvalLabel(type, payload)}</h2>
-              <p className="text-xs text-muted-foreground font-mono">{approval.id}</p>
+              <p className="text-caption text-muted-foreground font-mono">{approval.id}</p>
             </div>
           </div>
           <StatusBadge status={approval.status} />
         </div>
-        <div className="text-sm space-y-1">
+        <div className="text-ui space-y-1">
           {approval.requestedByAgentId && (
             <div className="flex items-center gap-2">
-              <span className="text-muted-foreground text-xs">Requested by</span>
+              <span className="text-muted-foreground text-caption">Requested by</span>
               <Identity
                 name={agentNameById.get(approval.requestedByAgentId) ?? approval.requestedByAgentId.slice(0, 8)}
                 size="sm"
@@ -203,31 +203,31 @@ export function ApprovalDetail({ approvalId }: { approvalId: string }) {
           <ApprovalPayloadRenderer type={type} payload={payload} approval={approval as Approval} />
           <button
             type="button"
-            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors mt-2"
+            className="flex items-center gap-1 text-caption text-muted-foreground hover:text-foreground transition-colors mt-2"
             onClick={() => setShowRawPayload((v) => !v)}
           >
             <ChevronRight className={`h-3 w-3 transition-transform ${showRawPayload ? "rotate-90" : ""}`} />
             See full request
           </button>
           {showRawPayload && (
-            <pre className="text-xs bg-muted/40 rounded-md p-3 overflow-x-auto">
+            <pre className="text-caption bg-muted/40 rounded-md p-3 overflow-x-auto">
               {JSON.stringify(payload, null, 2)}
             </pre>
           )}
           {approval.decisionNote && (
-            <p className="text-xs text-muted-foreground">Decision note: {approval.decisionNote}</p>
+            <p className="text-caption text-muted-foreground">Decision note: {approval.decisionNote}</p>
           )}
         </div>
-        {error && <p className="text-sm text-destructive">{error}</p>}
+        {error && <p className="text-ui text-destructive">{error}</p>}
         {linkedIssues && linkedIssues.length > 0 && (
           <div className="pt-2 border-t border-border/60">
-            <p className="text-xs text-muted-foreground mb-1.5">Linked Tasks</p>
+            <p className="text-caption text-muted-foreground mb-1.5">Linked Tasks</p>
             <div className="space-y-1.5">
               {linkedIssues.map((issue) => (
                 <Link
                   key={issue.id}
                   to={teamsDetailUrl("issue", issue.identifier ?? issue.id)}
-                  className="block text-xs rounded border border-border/70 px-2 py-1.5 hover:bg-accent/20"
+                  className="block text-caption rounded border border-border/70 px-2 py-1.5 hover:bg-accent/20"
                 >
                   <span className="font-mono text-muted-foreground mr-2">
                     {issue.identifier ?? issue.id.slice(0, 8)}
@@ -294,7 +294,7 @@ export function ApprovalDetail({ approvalId }: { approvalId: string }) {
               </div>
             )}
             {isBudgetApproval && approval.status === "pending" && (
-              <p className="text-sm text-muted-foreground">
+              <p className="text-ui text-muted-foreground">
                 Resolve this budget stop from the budget controls.
               </p>
             )}
@@ -341,7 +341,7 @@ export function ApprovalDetail({ approvalId }: { approvalId: string }) {
       </div>
 
       <div className="border border-border rounded-lg p-4 space-y-3">
-        <h3 className="text-sm font-medium">Comments ({comments?.length ?? 0})</h3>
+        <h3 className="text-ui font-medium">Comments ({comments?.length ?? 0})</h3>
         <div className="space-y-2">
           {(comments ?? []).map((comment) => (
             <div key={comment.id} className="border border-border/60 rounded-md p-3">
@@ -356,11 +356,11 @@ export function ApprovalDetail({ approvalId }: { approvalId: string }) {
                 ) : (
                   <Identity name="Board" size="sm" />
                 )}
-                <span className="text-xs text-muted-foreground">
+                <span className="text-caption text-muted-foreground">
                   {new Date(comment.createdAt).toLocaleString()}
                 </span>
               </div>
-              <div className="text-sm">
+              <div className="text-ui">
                 <MarkdownView>{comment.body}</MarkdownView>
               </div>
             </div>

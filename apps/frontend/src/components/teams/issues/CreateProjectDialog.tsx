@@ -44,7 +44,7 @@ export function CreateProjectDialog({
     >
       <div className="flex flex-col gap-3">
         <label className="block">
-          <span className="text-sm text-[var(--midnight-soft)]">Name</span>
+          <span className="text-ui text-[var(--midnight-soft)]">Name</span>
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -52,7 +52,7 @@ export function CreateProjectDialog({
           />
         </label>
         <label className="block">
-          <span className="text-sm text-[var(--midnight-soft)]">Description</span>
+          <span className="text-ui text-[var(--midnight-soft)]">Description</span>
           <textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
@@ -62,7 +62,7 @@ export function CreateProjectDialog({
         </label>
         {err && (
           <div
-            className="text-[var(--err)] text-sm rounded-sm px-3 py-2"
+            className="text-[var(--err)] text-ui rounded-sm px-3 py-2"
             style={{
               border:
                 "1px solid var(--err)",

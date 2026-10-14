@@ -218,7 +218,7 @@ function RunChip({ runId }: { runId: string }) {
     <a
       href={to}
       onClick={(e) => handleShellLinkClick(e, to)}
-      className="inline-flex items-center rounded-md px-2 py-1 font-mono text-[11px] transition-colors hover:bg-[var(--cream-deeper)]"
+      className="inline-flex items-center rounded-md px-2 py-1 font-mono text-2xs transition-colors hover:bg-[var(--cream-deeper)]"
       style={{ border: "1px solid var(--edge)", background: "var(--cream-deep)", color: "var(--midnight-muted)" }}
     >
       run {runId.slice(0, 8)}
@@ -236,7 +236,7 @@ function CopyMarkdownButton({ text }: { text: string }) {
   return (
     <button
       type="button"
-      className="inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors hover:bg-[var(--cream-deep)]"
+      className="inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-caption font-medium transition-colors hover:bg-[var(--cream-deep)]"
       style={{ color: status === "copied" ? "var(--ok)" : status === "failed" ? "var(--err)" : "var(--midnight-muted)" }}
       title={label}
       aria-label="Copy comment as markdown"
@@ -314,7 +314,7 @@ function CommentCard({
         <span className="flex items-center gap-1.5">
           <a
             href={`#comment-${comment.id}`}
-            className="text-xs transition-colors hover:underline"
+            className="text-caption transition-colors hover:underline"
             style={{ color: "var(--midnight-muted)" }}
           >
             {formatDateTime(comment.createdAt)}
@@ -335,9 +335,9 @@ function CommentCard({
         </span>
       </div>
       {isDeleted ? (
-        <div className="text-sm italic">Comment deleted</div>
+        <div className="text-ui italic">Comment deleted</div>
       ) : (
-        <div className="text-sm" style={{ color: "var(--midnight)" }}>
+        <div className="text-ui" style={{ color: "var(--midnight)" }}>
           <TaskChatMarkdown>{comment.body}</TaskChatMarkdown>
         </div>
       )}
@@ -382,8 +382,8 @@ function CommentCard({
 
 function ChangeRow({ label, from, to }: { label: string; from: string; to: string }) {
   return (
-    <div className="flex flex-wrap items-center gap-2 text-sm">
-      <span className="w-16 text-[10px] font-medium uppercase tracking-wider" style={{ color: "var(--midnight-muted)" }}>
+    <div className="flex flex-wrap items-center gap-2 text-ui">
+      <span className="w-16 text-2xs font-medium uppercase tracking-wider" style={{ color: "var(--midnight-muted)" }}>
         {label}
       </span>
       <span style={{ color: "var(--midnight-muted)" }}>{from}</span>
@@ -416,7 +416,7 @@ function TimelineEventCard({
     <div id={`activity-${event.id}`} className="flex items-start gap-2.5 py-1.5" data-testid="issue-timeline-event">
       <Identity name={actorName} size="sm" avatarOnly />
       <div className="min-w-0 flex-1 space-y-1.5">
-        <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-1 text-sm">
+        <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-1 text-ui">
           <span className="font-medium" style={{ color: "var(--midnight)" }}>
             {actorName}
           </span>
@@ -425,7 +425,7 @@ function TimelineEventCard({
           </span>
           <a
             href={`#activity-${event.id}`}
-            className="text-sm transition-colors hover:underline"
+            className="text-ui transition-colors hover:underline"
             style={{ color: "var(--midnight-muted)" }}
             title={formatDateTime(event.createdAt)}
           >
@@ -460,7 +460,7 @@ function RunRow({ run, agentMap }: { run: IssueRun; agentMap: AgentMap }) {
   return (
     <div id={`run-${run.runId}`} className="flex items-center gap-2.5 py-1.5" data-testid="issue-timeline-run">
       <Identity name={actorName} size="sm" avatarOnly />
-      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-1 text-sm">
+      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-1 text-ui">
         <span className="font-medium" style={{ color: "var(--midnight)" }}>
           {actorName}
         </span>
@@ -472,7 +472,7 @@ function RunRow({ run, agentMap }: { run: IssueRun; agentMap: AgentMap }) {
         {at ? (
           <a
             href={`#run-${run.runId}`}
-            className="text-sm transition-colors hover:underline"
+            className="text-ui transition-colors hover:underline"
             style={{ color: "var(--midnight-muted)" }}
             title={formatDateTime(at)}
           >
@@ -697,12 +697,12 @@ export function CommentThread({
 
   return (
     <div className="space-y-4" data-testid="issue-comment-thread">
-      <h3 className="text-sm font-semibold" style={{ color: "var(--midnight)" }}>
+      <h3 className="text-ui font-semibold" style={{ color: "var(--midnight)" }}>
         Timeline ({timeline.length})
       </h3>
 
       {timeline.length === 0 ? (
-        <p className="text-sm" style={{ color: "var(--midnight-muted)" }}>
+        <p className="text-ui" style={{ color: "var(--midnight-muted)" }}>
           No timeline entries yet.
         </p>
       ) : (

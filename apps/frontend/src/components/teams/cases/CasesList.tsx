@@ -347,7 +347,7 @@ function CaseTrailingColumns({
               key={column}
               value={row.identifier}
               label="case ID"
-              className="font-mono text-xs text-[var(--fg-mute)]"
+              className="font-mono text-caption text-[var(--fg-mute)]"
               containerClassName="shrink-0"
               stopPropagation
             />
@@ -359,11 +359,11 @@ function CaseTrailingColumns({
               key={column}
               value={row.key}
               label="case key"
-              className="font-mono text-xs text-[var(--fg-mute)]"
+              className="font-mono text-caption text-[var(--fg-mute)]"
               stopPropagation
             />
           ) : (
-            <span key={column} className="min-w-0 truncate text-xs text-[var(--fg-mute)]">None</span>
+            <span key={column} className="min-w-0 truncate text-caption text-[var(--fg-mute)]">None</span>
           );
         }
         if (column === "title") {
@@ -372,7 +372,7 @@ function CaseTrailingColumns({
               key={column}
               className={cn(
                 "min-w-0",
-                treeView ? "flex items-center gap-1.5" : "truncate text-sm",
+                treeView ? "flex items-center gap-1.5" : "truncate text-ui",
                 treeView && treeTitleIndentClass(treeDepth),
               )}
             >
@@ -397,7 +397,7 @@ function CaseTrailingColumns({
                   ) : null}
                 </span>
               ) : null}
-              <span className="min-w-0 truncate text-sm">{row.title}</span>
+              <span className="min-w-0 truncate text-ui">{row.title}</span>
             </span>
           );
         }
@@ -413,20 +413,20 @@ function CaseTrailingColumns({
           );
         }
         if (column === "type") {
-          return <span key={column} className="min-w-0 truncate text-xs text-[var(--fg-mute)]">{row.caseType}</span>;
+          return <span key={column} className="min-w-0 truncate text-caption text-[var(--fg-mute)]">{row.caseType}</span>;
         }
         if (column === "project") {
-          return <span key={column} className="min-w-0 truncate text-xs text-[var(--fg-mute)]">{projectName ?? "No project"}</span>;
+          return <span key={column} className="min-w-0 truncate text-caption text-[var(--fg-mute)]">{projectName ?? "No project"}</span>;
         }
         if (column === "parent") {
           return (
-            <span key={column} className="min-w-0 truncate font-mono text-xs text-[var(--fg-mute)]">
+            <span key={column} className="min-w-0 truncate font-mono text-caption text-[var(--fg-mute)]">
               {row.parentCaseId ? "Parent" : "None"}
             </span>
           );
         }
         return (
-          <span key={column} className="text-right text-xs text-[var(--fg-mute)] tabular-nums">
+          <span key={column} className="text-right text-caption text-[var(--fg-mute)] tabular-nums">
             {timeAgo(column === "created" ? row.createdAt : row.updatedAt)}
           </span>
         );
@@ -467,10 +467,10 @@ function CaseListRow({
       href={href}
       prefetch={false}
       onClick={(e) => handleShellLinkClick(e, href)}
-      className="group flex items-start gap-2 border-b border-[var(--edge)] py-2.5 pl-2 pr-3 text-sm text-inherit no-underline transition-colors last:border-b-0 hover:bg-[var(--plane-raised)] sm:items-center sm:py-2 sm:pl-1"
+      className="group flex min-h-9 items-start gap-2 border-b border-[var(--edge)] py-2.5 pl-2 pr-3 text-ui text-inherit no-underline transition-colors last:border-b-0 hover:bg-[var(--plane-raised)] sm:items-center sm:py-1.5 sm:pl-1"
     >
       <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
-        <span className="line-clamp-2 text-sm sm:hidden">
+        <span className="line-clamp-2 text-ui sm:hidden">
           {visibleColumnSet.has("title") ? row.title : row.identifier}
         </span>
         <span className="flex items-center gap-2 sm:hidden">
@@ -485,7 +485,7 @@ function CaseListRow({
             <CaseCopyableToken
               value={row.identifier}
               label="case ID"
-              className="font-mono text-xs text-[var(--fg-mute)]"
+              className="font-mono text-caption text-[var(--fg-mute)]"
               containerClassName="shrink-0"
               stopPropagation
             />
@@ -494,11 +494,11 @@ function CaseListRow({
             <CaseCopyableToken
               value={row.key}
               label="case key"
-              className="shrink-0 font-mono text-xs text-[var(--fg-mute)]"
+              className="shrink-0 font-mono text-caption text-[var(--fg-mute)]"
               stopPropagation
             />
           ) : null}
-          <span className="text-xs text-[var(--fg-mute)] sm:hidden">{timeAgo(row.updatedAt)}</span>
+          <span className="text-caption text-[var(--fg-mute)] sm:hidden">{timeAgo(row.updatedAt)}</span>
         </span>
       </span>
       {trailingColumns.length > 0 ? (
@@ -565,10 +565,10 @@ function CaseGroup({
               className={cn("h-3.5 w-3.5 shrink-0 text-[var(--fg-mute)] transition-transform", !collapsed && "rotate-90")}
             />
           </span>
-          <span className="truncate text-sm font-semibold uppercase tracking-wide">{label}</span>
+          <span className="truncate text-ui font-semibold uppercase tracking-wide">{label}</span>
         </button>
         <div className="ml-auto">
-          <span className="text-xs text-[var(--fg-mute)] tabular-nums">
+          <span className="text-caption text-[var(--fg-mute)] tabular-nums">
             {count} {count === 1 ? "case" : "cases"}
           </span>
         </div>
@@ -611,7 +611,7 @@ function CaseToolbarButton({
 function FilterField({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="grid gap-1">
-      <div className="text-xs font-medium text-[var(--fg-mute)]">{label}</div>
+      <div className="text-caption font-medium text-[var(--fg-mute)]">{label}</div>
       {children}
     </div>
   );
@@ -627,7 +627,7 @@ function FilterCheckboxRow({
   onCheckedChange: (checked: boolean) => void;
 }) {
   return (
-    <label className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-sm hover:bg-[var(--plane-raised)]">
+    <label className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-ui hover:bg-[var(--plane-raised)]">
       <Checkbox
         checked={checked}
         onCheckedChange={(value) => onCheckedChange(value === true)}
@@ -654,14 +654,14 @@ function CaseColumnPicker({
           <div className="text-2xs font-semibold uppercase tracking-wide text-[var(--fg-mute)]">
             Desktop case rows
           </div>
-          <div className="text-sm font-medium text-[var(--fg)]">Choose visible columns</div>
+          <div className="text-ui font-medium text-[var(--fg)]">Choose visible columns</div>
         </div>
         <div className="space-y-0.5">
           {CASE_COLUMN_ORDER.map((column) => (
             <button
               key={column}
               type="button"
-              className="flex w-full items-center justify-between rounded px-2 py-1.5 text-sm hover:bg-[var(--plane-raised)]"
+              className="flex w-full items-center justify-between rounded px-2 py-1.5 text-ui hover:bg-[var(--plane-raised)]"
               onClick={() => onToggle(column, !visibleColumns.has(column))}
             >
               <span>{CASE_COLUMN_LABELS[column]}</span>
@@ -672,7 +672,7 @@ function CaseColumnPicker({
         <div className="mt-1 border-t border-[var(--edge)] pt-1">
           <button
             type="button"
-            className="flex w-full items-center justify-between rounded px-2 py-1.5 text-sm text-[var(--fg-mute)] hover:bg-[var(--plane-raised)]"
+            className="flex w-full items-center justify-between rounded px-2 py-1.5 text-ui text-[var(--fg-mute)] hover:bg-[var(--plane-raised)]"
             onClick={onReset}
           >
             Reset defaults
@@ -700,7 +700,7 @@ function CaseSortPicker({
             key={field}
             type="button"
             className={cn(
-              "flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm",
+              "flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-ui",
               sortField === field ? "bg-[var(--plane-raised)] text-[var(--fg)]" : "text-[var(--fg-mute)] hover:bg-[var(--plane-raised)]",
             )}
             onClick={() => {
@@ -713,7 +713,7 @@ function CaseSortPicker({
           >
             <span>{CASE_SORT_LABELS[field]}</span>
             {sortField === field ? (
-              <span className="text-xs text-[var(--fg-mute)]">{sortDir === "asc" ? "↑" : "↓"}</span>
+              <span className="text-caption text-[var(--fg-mute)]">{sortDir === "asc" ? "↑" : "↓"}</span>
             ) : null}
           </button>
         ))}
@@ -749,7 +749,7 @@ function FilterBar({
           </button>
         </Badge>
       ))}
-      <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={onClear}>
+      <Button variant="ghost" size="sm" className="h-6 text-caption" onClick={onClear}>
         Clear all
       </Button>
     </div>
@@ -762,17 +762,17 @@ function CasesEmptyHero() {
     <div className="mx-auto flex max-w-xl flex-col items-center gap-4 py-16 text-center">
       <Layers className="h-10 w-10 text-[var(--fg-mute)]" />
       <h2 className="text-lg font-semibold">No cases yet</h2>
-      <p className="text-sm text-[var(--fg-mute)]">
+      <p className="text-ui text-[var(--fg-mute)]">
         Cases are durable work products — blog posts, tweet storms, docs pages — that tasks create and
         iterate on. In v1 they&apos;re created by agents, not from the UI.
       </p>
       <div className="w-full space-y-2 rounded-lg border border-[var(--edge)] bg-[var(--plane-sidebar)] p-4 text-left">
-        <p className="text-sm font-medium">To start creating cases, add this to a skill:</p>
-        <pre className="overflow-x-auto rounded bg-[var(--plane-pane)] p-3 font-mono text-xs text-[var(--fg-mute)]">
+        <p className="text-ui font-medium">To start creating cases, add this to a skill:</p>
+        <pre className="overflow-x-auto rounded bg-[var(--plane-pane)] p-3 font-mono text-caption text-[var(--fg-mute)]">
 {`"Create a case of type blog_post with fields
 {slug, target_audience, publish_url} and key <release>/<slug>."`}
         </pre>
-        <p className="text-xs text-[var(--fg-mute)]">
+        <p className="text-caption text-[var(--fg-mute)]">
           See the paperclip skill → <code className="font-mono">references/cases.md</code> for the API.
         </p>
       </div>
@@ -1003,7 +1003,7 @@ export function CasesList({ storageKey = null }: { storageKey?: string | null })
         {isCasesDisabled(casesQuery.error) ? (
           <CasesNotEnabled />
         ) : (
-          <p role="alert" className="py-16 text-center text-sm text-[var(--alert)]">
+          <p role="alert" className="py-16 text-center text-ui text-[var(--alert)]">
             Couldn&apos;t load cases.
           </p>
         )}
@@ -1055,7 +1055,7 @@ export function CasesList({ storageKey = null }: { storageKey?: string | null })
                 value={viewState.search}
                 onChange={(e) => updateView({ search: e.target.value })}
                 placeholder="Search cases..."
-                className="pl-7 text-xs sm:text-sm"
+                className="pl-7 text-caption sm:text-ui"
                 aria-label="Search cases"
                 data-page-search
               />
@@ -1087,7 +1087,7 @@ export function CasesList({ storageKey = null }: { storageKey?: string | null })
                     <FilterField label="Type">
                       <div className="max-h-40 overflow-y-auto">
                         {distinctTypes.length === 0 ? (
-                          <p className="px-1 py-1 text-xs text-[var(--fg-mute)]">No types yet</p>
+                          <p className="px-1 py-1 text-caption text-[var(--fg-mute)]">No types yet</p>
                         ) : distinctTypes.map((type) => (
                           <FilterCheckboxRow
                             key={type}
@@ -1171,7 +1171,7 @@ export function CasesList({ storageKey = null }: { storageKey?: string | null })
                       key={value}
                       type="button"
                       className={cn(
-                        "flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-sm",
+                        "flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-ui",
                         viewState.groupBy === value ? "bg-[var(--plane-raised)] text-[var(--fg)]" : "text-[var(--fg-mute)] hover:bg-[var(--plane-raised)]",
                       )}
                       onClick={() => updateView({ groupBy: value })}
@@ -1194,11 +1194,11 @@ export function CasesList({ storageKey = null }: { storageKey?: string | null })
               </div>
               {hasActiveFilters ? (
                 <>
-                  <p className="mb-4 text-sm font-medium text-[var(--fg)]">No cases match these filters.</p>
+                  <p className="mb-4 text-ui font-medium text-[var(--fg)]">No cases match these filters.</p>
                   <Button onClick={clearFilters}>Clear filters</Button>
                 </>
               ) : (
-                <p className="text-sm font-medium text-[var(--fg)]">
+                <p className="text-ui font-medium text-[var(--fg)]">
                   No active cases. Completed and cancelled cases are under Filters, Status.
                 </p>
               )}

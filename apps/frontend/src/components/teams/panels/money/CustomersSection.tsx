@@ -13,7 +13,7 @@ const COLUMNS: PanelDataColumn<CustomerRow>[] = [
       <span className="min-w-0">
         {r.name || r.email || <span className="text-[var(--midnight-muted)]">Unnamed</span>}
         {r.name && r.email && (
-          <span className="ml-2 text-xs text-[var(--midnight-muted)]">{r.email}</span>
+          <span className="ml-2 text-caption text-[var(--midnight-muted)]">{r.email}</span>
         )}
       </span>
     ),

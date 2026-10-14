@@ -47,7 +47,7 @@ export function RoomDirectoryRow({ room, label, active, busy, draft, onSelect, o
           : <Icon size={16} aria-hidden="true" />}
       <span className="min-w-0 flex-1">
         <span className="block truncate" title={label}>{label}</span>
-        {room.shared && <span className="block truncate text-xs text-muted-foreground">{SHARED_ROOM_HINT}</span>}
+        {room.shared && <span className="block truncate text-caption text-muted-foreground">{SHARED_ROOM_HINT}</span>}
         <span className="sr-only">{roomKindLabel[room.kind]}</span>
       </span>
       {/* Same tag the roster rows carry, so an agent reads as an agent whether or not a DM exists yet. */}

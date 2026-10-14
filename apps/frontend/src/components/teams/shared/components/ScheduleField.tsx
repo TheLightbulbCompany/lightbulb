@@ -69,7 +69,7 @@ export function ScheduleField({
   if (advanced) {
     return (
       <div className="block">
-        <span className="text-sm text-[var(--midnight-soft)]">Schedule</span>
+        <span className="text-ui text-[var(--midnight-soft)]">Schedule</span>
         <input
           value={value}
           onChange={(e) => onChange(e.target.value)}
@@ -80,7 +80,7 @@ export function ScheduleField({
         <div className="flex items-center justify-between gap-2">
           {/* describeCron echoes the expression back when it can't read it —
               show the field's purpose instead of the same string twice. */}
-          <span className="text-xs text-[var(--midnight-muted)]">
+          <span className="text-caption text-[var(--midnight-muted)]">
             {describeCron(value) === value.trim()
               ? "Cron expression — when the automation fires."
               : describeCron(value)}
@@ -94,7 +94,7 @@ export function ScheduleField({
               if (parseCron(value) === null) onChange(buildCron(DEFAULT_SCHEDULE));
               setAdvanced(false);
             }}
-            className="shrink-0 text-xs text-[var(--midnight)] hover:underline"
+            className="shrink-0 text-caption text-[var(--midnight)] hover:underline"
           >
             Use the picker
           </button>
@@ -105,7 +105,7 @@ export function ScheduleField({
 
   return (
     <div className="block">
-      <span className="text-sm text-[var(--midnight-soft)]">Schedule</span>
+      <span className="text-ui text-[var(--midnight-soft)]">Schedule</span>
       <div className="mt-1 flex flex-wrap items-center gap-2">
         <EditorialSelect
           className="w-[150px]"
@@ -133,11 +133,11 @@ export function ScheduleField({
         />
       </div>
       <div className="flex items-center justify-between gap-2">
-        <span className="text-xs text-[var(--midnight-muted)]">{describeCron(value)}</span>
+        <span className="text-caption text-[var(--midnight-muted)]">{describeCron(value)}</span>
         <button
           type="button"
           onClick={() => setAdvanced(true)}
-          className="shrink-0 text-xs text-[var(--midnight)] hover:underline"
+          className="shrink-0 text-caption text-[var(--midnight)] hover:underline"
         >
           Use a cron expression
         </button>

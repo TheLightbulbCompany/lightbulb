@@ -122,9 +122,9 @@ function SelectOption({
         ) : null}
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block text-sm font-medium leading-5 text-[var(--midnight)]">{label}</span>
+        <span className="block text-ui font-medium leading-5 text-[var(--midnight)]">{label}</span>
         {description ? (
-          <span className="block text-xs leading-4 text-[var(--midnight-muted)]">{description}</span>
+          <span className="block text-caption leading-4 text-[var(--midnight-muted)]">{description}</span>
         ) : null}
       </span>
     </button>
@@ -175,7 +175,7 @@ export function QuestionForm({
   const allValid = Object.values(validationErrors).every((value) => value == null);
   const question = questionSet.questions[page];
   if (!question) {
-    return <p className="text-sm text-[var(--midnight-muted)]">No answerable questions were provided.</p>;
+    return <p className="text-ui text-[var(--midnight-muted)]">No answerable questions were provided.</p>;
   }
   const answer = answers[question.id] ?? {};
   const selected = answer.selectedOptionIds ?? [];
@@ -281,7 +281,7 @@ export function QuestionForm({
 
   const pagination =
     questionSet.questions.length > 1 ? (
-      <nav className="flex shrink-0 items-center gap-1 text-xs text-[var(--midnight-muted)]" aria-label="Question pagination">
+      <nav className="flex shrink-0 items-center gap-1 text-caption text-[var(--midnight-muted)]" aria-label="Question pagination">
         <EditorialButton
           type="button"
           size="icon"
@@ -326,7 +326,7 @@ export function QuestionForm({
       }}
     >
       {questionSet.description ? (
-        <p className="mb-3 text-sm text-[var(--midnight-muted)]">{questionSet.description}</p>
+        <p className="mb-3 text-ui text-[var(--midnight-muted)]">{questionSet.description}</p>
       ) : null}
       {pagination ? (
         takeoverActions ? (
@@ -337,18 +337,18 @@ export function QuestionForm({
       ) : null}
       <div>
         {question.header ? (
-          <p className="mb-1 text-xs font-medium text-[var(--midnight-muted)]">{question.header}</p>
+          <p className="mb-1 text-caption font-medium text-[var(--midnight-muted)]">{question.header}</p>
         ) : null}
         <p
           ref={promptRef}
           tabIndex={-1}
           id={`${id}-${question.id}-prompt`}
-          className="text-sm font-medium leading-5 text-[var(--midnight)]"
+          className="text-ui font-medium leading-5 text-[var(--midnight)]"
         >
           {question.prompt}
         </p>
         {question.helpText ? (
-          <p className="mt-1 text-xs leading-4 text-[var(--midnight-muted)]">{question.helpText}</p>
+          <p className="mt-1 text-caption leading-4 text-[var(--midnight-muted)]">{question.helpText}</p>
         ) : null}
       </div>
       <div
@@ -393,18 +393,18 @@ export function QuestionForm({
                     progressOrSubmit();
                   }
                 }}
-                className="min-h-16 resize-y text-sm"
+                className="min-h-16 resize-y text-ui"
               />
             ) : null}
           </div>
         ) : null}
       </div>
       {currentError && answerHasValue(answer) ? (
-        <p className="mt-2 text-xs text-[var(--err)]">{currentError}</p>
+        <p className="mt-2 text-caption text-[var(--err)]">{currentError}</p>
       ) : null}
       <div aria-live="assertive">
         {error ? (
-          <div className="mt-2 rounded-sm border border-[var(--err)] px-2.5 py-2 text-sm text-[var(--err)]">{error}</div>
+          <div className="mt-2 rounded-sm border border-[var(--err)] px-2.5 py-2 text-ui text-[var(--err)]">{error}</div>
         ) : null}
       </div>
       <div className="mt-3 flex flex-wrap items-center justify-end gap-2">

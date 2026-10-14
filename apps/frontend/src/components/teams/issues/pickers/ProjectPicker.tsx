@@ -49,7 +49,7 @@ export function ProjectPicker({
         <button
           type="button"
           className={cn(
-            "inline-flex items-center gap-2 text-sm hover:underline",
+            "inline-flex items-center gap-2 text-ui hover:underline",
             className,
           )}
           style={{ color: selected ? "var(--midnight)" : "var(--midnight-muted)" }}
@@ -72,7 +72,7 @@ export function ProjectPicker({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search projects..."
-          className="w-full px-2 py-1.5 text-xs bg-transparent mb-1 rounded-sm"
+          className="w-full px-2 py-1.5 text-caption bg-transparent mb-1 rounded-sm"
           style={{ borderBottom: "1px solid var(--edge)" }}
         />
         <ul className="max-h-48 overflow-y-auto" role="listbox">
@@ -80,7 +80,7 @@ export function ProjectPicker({
             <button
               type="button"
               onClick={() => handleSelect(null)}
-              className="w-full text-left px-2 py-1.5 text-sm rounded-sm hover:bg-[var(--cream-deep)]"
+              className="w-full text-left px-2 py-1.5 text-ui rounded-sm hover:bg-[var(--cream-deep)]"
               style={{ color: "var(--midnight-muted)" }}
             >
               Clear project
@@ -95,7 +95,7 @@ export function ProjectPicker({
               <button
                 type="button"
                 onClick={() => handleSelect(project.id)}
-                className="w-full text-left px-2 py-1.5 text-sm rounded-sm hover:bg-[var(--cream-deep)]"
+                className="w-full text-left px-2 py-1.5 text-ui rounded-sm hover:bg-[var(--cream-deep)]"
               >
                 {project.name}
               </button>
@@ -103,7 +103,7 @@ export function ProjectPicker({
           ))}
           {visibleProjects.length === 0 && (
             <li
-              className="px-2 py-2 text-xs"
+              className="px-2 py-2 text-caption"
               style={{ color: "var(--midnight-muted)" }}
             >
               No matches

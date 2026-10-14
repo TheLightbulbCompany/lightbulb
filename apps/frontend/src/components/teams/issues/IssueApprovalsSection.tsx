@@ -18,12 +18,12 @@ export function IssueApprovalsSection({ issueId }: { issueId: string }) {
     <section className="flex flex-col gap-3 pt-4" style={{ borderTop: "1px solid var(--edge)" }}>
       <h2 className="section-label"><b>Approvals</b></h2>
       {error && (
-        <p className="text-xs" style={{ color: "var(--err)" }}>
+        <p className="text-caption" style={{ color: "var(--err)" }}>
           Couldn&apos;t load approvals.
         </p>
       )}
       {isLoading && approvals.length === 0 && !error && (
-        <p className="text-xs italic" style={{ color: "var(--midnight-muted)" }}>
+        <p className="text-caption italic" style={{ color: "var(--midnight-muted)" }}>
           Loading approvals…
         </p>
       )}

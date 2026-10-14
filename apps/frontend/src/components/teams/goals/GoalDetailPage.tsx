@@ -119,7 +119,7 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
   if (isLoading && !goal) {
     return (
       <div
-        className="flex h-full items-center justify-center p-8 text-sm italic"
+        className="flex h-full items-center justify-center p-8 text-ui italic"
         style={{
           fontFamily: "var(--font-serif), serif",
           color: "var(--midnight-muted)",
@@ -134,7 +134,7 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
     return (
       <div
         role="alert"
-        className="flex h-full flex-col items-center justify-center p-8 text-sm"
+        className="flex h-full flex-col items-center justify-center p-8 text-ui"
         style={{ color: "var(--err)" }}
       >
         <p>Failed to load goal.</p>
@@ -150,7 +150,7 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
   if (!goal) {
     return (
       <div
-        className="flex h-full items-center justify-center p-8 text-sm italic"
+        className="flex h-full items-center justify-center p-8 text-ui italic"
         style={{
           fontFamily: "var(--font-serif), serif",
           color: "var(--midnight-muted)",
@@ -174,7 +174,7 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
     >
       <main className="flex flex-col gap-6 min-w-0">
         <nav
-          className="flex items-center gap-1 text-xs"
+          className="flex items-center gap-1 text-caption"
           style={{ color: "var(--midnight-muted)" }}
           aria-label="Breadcrumb"
         >
@@ -232,7 +232,7 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
 
         {goal.description && (
           <div
-            className="text-sm whitespace-pre-wrap pl-3"
+            className="text-ui whitespace-pre-wrap pl-3"
             style={{
               borderLeft: "2px solid var(--edge)",
               color: "var(--midnight-soft)",
@@ -247,7 +247,7 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
             <b>Sub-goals ({childGoals.length})</b>
           </h2>
           {childGoals.length === 0 ? (
-            <p className="text-sm italic" style={{ color: "var(--midnight-muted)" }}>
+            <p className="text-ui italic" style={{ color: "var(--midnight-muted)" }}>
               No sub-goals.
             </p>
           ) : (
@@ -271,7 +271,7 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
                   >
                     <GoalStatusIcon status={child.status} />
                     <span
-                      className="min-w-0 flex-1 truncate text-sm"
+                      className="min-w-0 flex-1 truncate text-ui"
                       style={{ color: "var(--midnight)" }}
                     >
                       {child.title}
@@ -298,7 +298,7 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
             // single-row goal fetch, and an unresolved fetch normalizes to []
             // — so without this the section asserts "No tasks" for a goal that
             // has plenty, until the list arrives.
-            <p className="text-sm italic" style={{ color: "var(--midnight-muted)" }}>
+            <p className="text-ui italic" style={{ color: "var(--midnight-muted)" }}>
               {issuesLoading
                 ? "Loading…"
                 : "No tasks. Link one from its Goal row on the task page."}
@@ -325,14 +325,14 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
                     <StatusIcon status={task.status} />
                     {task.identifier && (
                       <span
-                        className="shrink-0 text-xs tabular-nums"
+                        className="shrink-0 text-caption tabular-nums"
                         style={{ color: "var(--midnight-muted)" }}
                       >
                         {task.identifier}
                       </span>
                     )}
                     <span
-                      className="min-w-0 flex-1 truncate text-sm"
+                      className="min-w-0 flex-1 truncate text-ui"
                       style={{ color: "var(--midnight)" }}
                     >
                       {task.title}
@@ -349,7 +349,7 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
             <b>Linked projects ({linkedProjects.length})</b>
           </h2>
           {linkedProjects.length === 0 ? (
-            <p className="text-sm italic" style={{ color: "var(--midnight-muted)" }}>
+            <p className="text-ui italic" style={{ color: "var(--midnight-muted)" }}>
               No linked projects.
             </p>
           ) : (
@@ -376,7 +376,7 @@ export function GoalDetailPage({ goalId }: GoalDetailPageProps) {
                       style={{ color: "var(--midnight-muted)" }}
                     />
                     <span
-                      className="min-w-0 flex-1 truncate text-sm"
+                      className="min-w-0 flex-1 truncate text-ui"
                       style={{ color: "var(--midnight)" }}
                     >
                       {project.name}

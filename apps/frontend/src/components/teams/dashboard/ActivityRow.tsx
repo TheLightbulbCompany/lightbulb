@@ -180,7 +180,7 @@ export function ActivityRow({ event, agentNames, className }: ActivityRowProps) 
   );
 
   const classes = cn(
-    "px-4 py-2.5 text-sm transition-colors",
+    "px-4 py-2.5 text-ui transition-colors",
     link && "cursor-pointer hover:bg-[color:var(--cream-deep)]",
     className,
   );

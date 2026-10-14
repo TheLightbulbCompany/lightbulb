@@ -228,7 +228,7 @@ const BADGE: Record<CardTone, string> = {
 const BADGE_BASE =
   "inline-flex items-center rounded-full border px-2 py-0.5 text-2xs font-semibold uppercase tracking-wide";
 const INLINE_LINK = "font-medium text-[var(--link)] underline-offset-2 hover:underline";
-const NOTE = "rounded-lg border border-[var(--edge)] bg-[var(--plane-raised)] px-3 py-2 text-xs text-[var(--fg-mute)]";
+const NOTE = "rounded-lg border border-[var(--edge)] bg-[var(--plane-raised)] px-3 py-2 text-caption text-[var(--fg-mute)]";
 
 /** An in-shell link: a real href, committed client-side on a plain click. */
 function ShellLink({ href, className, children }: { href: string; className?: string; children: ReactNode }) {
@@ -244,7 +244,7 @@ function IssueLink({ link }: { link: DecisionIssueRef | null }) {
   return (
     <ShellLink
       href={link.href}
-      className="inline-flex items-center gap-1 rounded-sm border border-[var(--edge)] bg-[var(--plane-pane)] px-1.5 py-0.5 text-xs font-medium text-[var(--fg)] hover:border-[var(--link)] hover:text-[var(--link)]"
+      className="inline-flex items-center gap-1 rounded-sm border border-[var(--edge)] bg-[var(--plane-pane)] px-1.5 py-0.5 text-caption font-medium text-[var(--fg)] hover:border-[var(--link)] hover:text-[var(--link)]"
     >
       {issueLabel(link, link.id)}
       <ExternalLink className="h-3 w-3" aria-hidden />
@@ -358,7 +358,7 @@ export function DecisionCard({
   return (
     <div
       className={cn(
-        "rounded-2xl border bg-[var(--plane-pane)] p-4 text-sm",
+        "rounded-2xl border bg-[var(--plane-pane)] p-4 text-ui",
         SHELL[tone],
         dimmed && "opacity-80",
         className,
@@ -379,7 +379,7 @@ export function DecisionCard({
       </div>
 
       {/* Provenance */}
-      <p className="mt-1 text-xs text-[var(--fg-mute)]">
+      <p className="mt-1 text-caption text-[var(--fg-mute)]">
         Proposed by <span className="font-medium text-[var(--fg)]">{originAgentName ?? "an agent"}</span>
         {originIssue && (
           <>
@@ -416,7 +416,7 @@ export function DecisionCard({
 
       {/* Body */}
       {decision.body?.trim() && (
-        <div className="mt-3 text-sm leading-6 text-[var(--fg)]">
+        <div className="mt-3 text-ui leading-6 text-[var(--fg)]">
           <MarkdownView>{decision.body}</MarkdownView>
         </div>
       )}
@@ -424,11 +424,11 @@ export function DecisionCard({
       {/* Stale-target warning (open only) */}
       {open && isStale && (
         <div className="mt-3 rounded-lg border border-[var(--warn)] bg-[var(--warn)]/10 px-3 py-2 text-[var(--warn)]">
-          <div className="flex items-center gap-2 text-sm font-medium">
+          <div className="flex items-center gap-2 text-ui font-medium">
             <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden />
             {pluralize(staleTargetIds.length, "target")} changed since this was proposed
           </div>
-          <ul className="mt-1.5 space-y-1 text-xs">
+          <ul className="mt-1.5 space-y-1 text-caption">
             {staleTargetIds.map((id) => {
               const current = resolveIssue(id);
               const from = snapshots[id];
@@ -442,7 +442,7 @@ export function DecisionCard({
               );
             })}
           </ul>
-          <p className="mt-1.5 text-xs">
+          <p className="mt-1.5 text-caption">
             Options that require an unchanged target are disabled below.
           </p>
         </div>
@@ -453,7 +453,7 @@ export function DecisionCard({
         <div className="mt-3 space-y-2">
           {(decision.inputs ?? []).map((field) => (
             <label key={field.id} className="block">
-              <span className="text-xs font-medium text-[var(--fg-mute)]">
+              <span className="text-caption font-medium text-[var(--fg-mute)]">
                 {field.label}
                 {field.required && <span className="text-[var(--alert)]"> *</span>}
               </span>
@@ -462,7 +462,7 @@ export function DecisionCard({
                 onChange={(event) => setInputValues((prev) => ({ ...prev, [field.id]: event.target.value }))}
                 placeholder={field.placeholder ?? undefined}
                 maxLength={field.maxLength ?? undefined}
-                className="mt-1 min-h-16 bg-[var(--plane-pane)] text-sm"
+                className="mt-1 min-h-16 bg-[var(--plane-pane)] text-ui"
               />
             </label>
           ))}
@@ -502,7 +502,7 @@ export function DecisionCard({
                   )}
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className={cn("text-sm font-medium", destructive && "text-[var(--alert)]")}>
+                    <span className={cn("text-ui font-medium", destructive && "text-[var(--alert)]")}>
                       {option.label}
                     </span>
                     {blockedStale && (
@@ -512,7 +512,7 @@ export function DecisionCard({
                     )}
                   </div>
                   {option.description && (
-                    <div className="mt-1 text-sm leading-6 text-[var(--fg-mute)]">{option.description}</div>
+                    <div className="mt-1 text-ui leading-6 text-[var(--fg-mute)]">{option.description}</div>
                   )}
                   {option.effects.length > 0 && (
                     <ul className="mt-2 space-y-0.5">
@@ -520,7 +520,7 @@ export function DecisionCard({
                         <li
                           key={index}
                           className={cn(
-                            "flex items-start gap-1.5 text-xs",
+                            "flex items-start gap-1.5 text-caption",
                             effect.type === "cancel_issue_tree" ? "text-[var(--alert)]" : "text-[var(--fg-mute)]",
                           )}
                         >
@@ -535,15 +535,15 @@ export function DecisionCard({
                 {/* Destructive cancel-tree confirm gate */}
                 {confirming && cancelTree && (
                   <div className="rounded-lg border border-[var(--alert)] bg-[var(--alert)]/5 p-3">
-                    <div className="flex items-center gap-2 text-sm font-semibold text-[var(--alert)]">
+                    <div className="flex items-center gap-2 text-ui font-semibold text-[var(--alert)]">
                       <Ban className="h-4 w-4" aria-hidden /> This cancels an entire issue tree
                     </div>
                     {previewRows && previewRows.length > 0 ? (
                       <>
-                        <p className="mt-1 text-xs text-[var(--fg-mute)]">
+                        <p className="mt-1 text-caption text-[var(--fg-mute)]">
                           {pluralize(previewRows.length, "issue")} will be cancelled:
                         </p>
-                        <ul className="mt-1 max-h-40 space-y-0.5 overflow-auto text-xs">
+                        <ul className="mt-1 max-h-40 space-y-0.5 overflow-auto text-caption">
                           {previewRows.map((row) => (
                             <li key={row.id} className="flex items-center gap-1.5">
                               <Ban className="h-3 w-3 shrink-0 text-[var(--alert)]" aria-hidden />
@@ -556,11 +556,11 @@ export function DecisionCard({
                         </ul>
                       </>
                     ) : (
-                      <p className="mt-1 text-xs text-[var(--fg-mute)]">
+                      <p className="mt-1 text-caption text-[var(--fg-mute)]">
                         This issue and every sub-issue beneath it will be cancelled.
                       </p>
                     )}
-                    <p className="mt-2 text-xs text-[var(--fg-mute)]">
+                    <p className="mt-2 text-caption text-[var(--fg-mute)]">
                       Type <span className="font-mono font-medium text-[var(--fg)]">{confirmToken}</span> to confirm.
                     </p>
                     <Input
@@ -601,13 +601,13 @@ export function DecisionCard({
           {/* Always-present zero-effect Dismiss (telemetered "no", distinct from expiry) */}
           {!decision.options.some((option) => option.effects.length === 0) && (
             <div className="flex items-center justify-between gap-2 pt-1">
-              <span className="text-xs text-[var(--fg-mute)]">Not now?</span>
+              <span className="text-caption text-[var(--fg-mute)]">Not now?</span>
               <Button variant="ghost" size="sm" disabled={busy} onClick={() => onDismiss?.()}>
                 Dismiss — no effects
               </Button>
             </div>
           )}
-          {errorMessage && <p className="text-xs text-[var(--alert)]">{errorMessage}</p>}
+          {errorMessage && <p className="text-caption text-[var(--alert)]">{errorMessage}</p>}
         </div>
       )}
 
@@ -643,14 +643,14 @@ export function DecisionCard({
                   return (
                     <li key={row.key} className="flex items-start gap-2">
                       {RESULT_ICON[row.status]}
-                      <span className="min-w-0 flex-1 text-sm text-[var(--fg)]">{row.summary}</span>
+                      <span className="min-w-0 flex-1 text-ui text-[var(--fg)]">{row.summary}</span>
                       <IssueLink link={row.link} />
                     </li>
                   );
                 })}
               </ul>
               {decision.executionStatus !== "succeeded" && (
-                <p className="text-xs text-[var(--fg-mute)]">
+                <p className="text-caption text-[var(--fg-mute)]">
                   Some effects may already have been applied. Review the results before asking the proposer to re-propose.
                 </p>
               )}

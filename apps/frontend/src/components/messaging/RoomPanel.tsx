@@ -139,8 +139,8 @@ function AgentResponse({ participant, selectId, onChange }: {
   onChange?: (agentId: string, mode: ListenMode) => void;
 }) {
   const mode = participant.listenMode ?? "mentions";
-  if (!onChange) return <span className="text-sm text-muted-foreground">Response: {LISTEN_MODE_LABELS[mode]}</span>;
-  return <><span className="text-sm text-muted-foreground">Response</span><select id={selectId} aria-label={`Response for ${participant.displayName}`} className="room-listen-mode" value={mode}
+  if (!onChange) return <span className="text-ui text-muted-foreground">Response: {LISTEN_MODE_LABELS[mode]}</span>;
+  return <><span className="text-ui text-muted-foreground">Response</span><select id={selectId} aria-label={`Response for ${participant.displayName}`} className="room-listen-mode" value={mode}
     onChange={(event) => onChange(participant.id, event.target.value as ListenMode)}>
     {listenModeOptions().map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></>;
 }
@@ -149,7 +149,7 @@ function WorkStatus({ state }: { state: WorkState }) {
   const tone = state === "completed" ? "text-ok" : state === "failed" ? "text-err"
     : state === "working" || state === "queued" ? "text-info" : state === "needs-approval" || state === "paused" ? "text-warn" : "text-muted-foreground";
   const Icon = state === "completed" ? Check : state === "failed" || state === "needs-approval" ? CircleAlert : Circle;
-  return <span role="status" aria-label="Work status" className={`inline-flex items-center gap-1 text-sm ${tone}`}><Icon size={14} aria-hidden="true" />{workLabel[state]}</span>;
+  return <span role="status" aria-label="Work status" className={`inline-flex items-center gap-1 text-ui ${tone}`}><Icon size={14} aria-hidden="true" />{workLabel[state]}</span>;
 }
 
 const roomMarkdown: Partial<Components> = {
@@ -675,7 +675,7 @@ function RoomContent({
               copiedTimer.current = setTimeout(() => setCopied((current) => current === message.messageId ? null : current), 2000);
             }
           }}><Link aria-hidden="true" /></Button>
-        {copyError === message.messageId && <p role="alert" className="text-sm text-err">Could not copy the link.</p>}
+        {copyError === message.messageId && <p role="alert" className="text-ui text-err">Could not copy the link.</p>}
       </> : undefined} />;
     // The seeded CEO welcome streams in until a human has written (client-side, cosmetic).
     if (revealStarter && !inThread && message.messageSeq === 1 && message.author.kind === "agent") {
@@ -731,7 +731,7 @@ function RoomContent({
           {/* Labelled, at the far right of the header row: a bare square on its own line read as an empty
               checkbox (prod 2026-09-25). "Stopping…" holds until the run's own run_ended. */}
           {run.state === "running" && onAbortRun && <Button type="button" variant="ghost" size="sm"
-            className="ml-auto h-6 shrink-0 gap-1 self-center px-2 text-xs text-muted-foreground hover:text-foreground [&_svg:not([class*='size-'])]:size-3"
+            className="ml-auto h-6 shrink-0 gap-1 self-center px-2 text-caption text-muted-foreground hover:text-foreground [&_svg:not([class*='size-'])]:size-3"
             disabled={!actionable || stopping.has(run.runId)}
             aria-label={stopping.has(run.runId) ? `Stopping ${agentName}…` : `Stop ${agentName}`}
             title={stopping.has(run.runId) ? `Stopping ${agentName}…` : `Stop ${agentName}`}
@@ -744,7 +744,7 @@ function RoomContent({
           return delegationId ? <DelegateCard key={t.id} state={subagents} agentId={run.agentId} delegationId={delegationId} agentLive={run.state === "running"} /> : null;
         })}
         {run.state === "running" && <RunBrowserPreview agentName={agentName} run={run} />}
-        {run.forcedStop && <p className="text-sm text-muted-foreground" role="status">Stopped (the agent may finish its current step)</p>}
+        {run.forcedStop && <p className="text-ui text-muted-foreground" role="status">Stopped (the agent may finish its current step)</p>}
       </div>
     </article>;
   }
@@ -821,18 +821,18 @@ function RoomContent({
           </> : null}
           empty={!historyComplete ? <p className="room-empty">Load older messages to see the start of this conversation.</p> : null}>
           {pendingMessages.filter((message) => message.threadRootMessageId === null).map((message) => <article key={message.clientMessageId} className="room-message opacity-60" aria-label={`Pending message from ${viewer?.displayName ?? "You"}`}>
-            <Identity name={viewer?.displayName ?? "You"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{viewer?.displayName ?? "You"}</span><span className="text-sm text-muted-foreground">Sending…</span></div><MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{linkifyMentions(message.text, message.mentions, participants)}</MarkdownView></div>
+            <Identity name={viewer?.displayName ?? "You"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{viewer?.displayName ?? "You"}</span><span className="text-ui text-muted-foreground">Sending…</span></div><MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{linkifyMentions(message.text, message.mentions, participants)}</MarkdownView></div>
           </article>)}
           {placeRuns(mainRuns, mainMessages).tail.map(renderRun)}
         </RoomTimeline>
       </div>
-      <p className="room-typing room-typing-live text-sm text-muted-foreground" role="status">{typingMembers.length > 0 ? `${typingMembers.slice(0, 3).map((member) => member.displayName).join(", ")}${typingMembers.length > 3 ? " and others" : ""} ${typingMembers.length === 1 ? "is" : "are"} typing…` : ""}</p>
+      <p className="room-typing room-typing-live text-ui text-muted-foreground" role="status">{typingMembers.length > 0 ? `${typingMembers.slice(0, 3).map((member) => member.displayName).join(", ")}${typingMembers.length > 3 ? " and others" : ""} ${typingMembers.length === 1 ? "is" : "are"} typing…` : ""}</p>
       {copied && <p role="status" aria-label="Link copied" className="sr-only">Link copied</p>}
-      {messageActionError && <p role="alert" className="room-typing text-sm text-err">{messageActionError}</p>}
+      {messageActionError && <p role="alert" className="room-typing text-ui text-err">{messageActionError}</p>}
       {!visibleRoom?.archivedAt && <RoomLimitBar account={billing} />}
       {showFirstReplies && <FirstReplyChips onPick={(text) => { if (composer.text.trim() === "") composer.onTextChange(text); setFocusToken((t) => t + 1); }} />}
       {visibleRoom?.archivedAt ? <div className="room-composer room-archived" role="status">
-        <p className="text-sm text-muted-foreground">
+        <p className="text-ui text-muted-foreground">
           {canUnarchive ? `This ${roomNoun} is archived. Unarchive it to post.` : `This ${roomNoun} is archived.`}
         </p>
         {canUnarchive && <Button type="button" size="sm" variant="outline" disabled={!actionable || messageActionPending}
@@ -876,16 +876,16 @@ function RoomContent({
           </div>
           {visibleRoom?.isDefault && participants.filter((p) => p.kind === "human").length === 1 && (() => {
             const agents = participants.filter((p) => p.kind === "agent").length;
-            return <p className="text-sm text-muted-foreground">1 person · {agents} AI {agents === 1 ? "employee" : "employees"} ·{" "}
+            return <p className="text-ui text-muted-foreground">1 person · {agents} AI {agents === 1 ? "employee" : "employees"} ·{" "}
               <button type="button" className="underline" onClick={openInviteDialog}>Invite people</button></p>;
           })()}
-          {onCopyJoinLink && <p className="text-sm text-muted-foreground">Someone not in the workspace yet?{" "}
+          {onCopyJoinLink && <p className="text-ui text-muted-foreground">Someone not in the workspace yet?{" "}
             <button type="button" className="underline" disabled={inviteBusy} onClick={() => void copyJoinLink()}>Copy the workspace join link</button> and send it to them.
             {inviteNote && <span role="status"> {inviteNote}</span>}</p>}
           <ul>{participants.map((participant) => <li key={`${participant.kind}:${participant.id}`} className="room-member flex-wrap">
             <ParticipantAvatar participant={participant} size="sm" />
             <ParticipantProfile participant={participant} currentUserId={currentUserId} onMessage={onSelectParticipant} disabled={!actionable} className="flex-1 min-w-24" />
-            <span className="text-sm text-muted-foreground">{participant.kind === "agent" ? "Agent" : "Person"}</span>
+            <span className="text-ui text-muted-foreground">{participant.kind === "agent" ? "Agent" : "Person"}</span>
             {canManageMembers && onRemoveMember && participant.role !== "owner" && !(visibleRoom?.shared && participant.kind === "human") && <Button type="button" variant="ghost" size="sm" disabled={!actionable}
               aria-label={`Remove ${participant.displayName}`} onClick={(event) => openManagement({ kind: participant.kind, id: participant.id }, event.currentTarget)}>Remove</Button>}
             {participant.kind === "agent" && <AgentResponse participant={participant} selectId={`${id}-context-${participant.id}-mode`} onChange={onListenModeChange} />}
@@ -895,24 +895,24 @@ function RoomContent({
             <input id={`${id}-member-search`} type="search" className="room-input" placeholder="Search people" value={memberQuery}
               onChange={(event) => setMemberQuery(event.target.value)} />
             {filteredCurrentMembers.length > 0 && <section aria-label="Current members">
-              <p className="text-sm font-medium">Current members</p>
+              <p className="text-ui font-medium">Current members</p>
               <ul>{filteredCurrentMembers.map((member) => <li key={`${member.kind}:${member.id}`} className="room-member-choice text-muted-foreground">
-                <ParticipantAvatar participant={member} size="sm" /><span>{member.displayName}</span><span className="text-sm">Already here</span>
+                <ParticipantAvatar participant={member} size="sm" /><span>{member.displayName}</span><span className="text-ui">Already here</span>
               </li>)}</ul>
             </section>}
-            {addMemberCandidates.length === 0 ? <p className="text-sm text-muted-foreground">Everyone in your workspace is already here.</p>
-              : <><fieldset disabled={addingMembers}><legend className="text-sm font-medium">Eligible people</legend>
+            {addMemberCandidates.length === 0 ? <p className="text-ui text-muted-foreground">Everyone in your workspace is already here.</p>
+              : <><fieldset disabled={addingMembers}><legend className="text-ui font-medium">Eligible people</legend>
                 {filteredAddMemberCandidates.length === 0
-                  ? <p className="text-sm text-muted-foreground">No eligible people match your search.</p>
+                  ? <p className="text-ui text-muted-foreground">No eligible people match your search.</p>
                   : filteredAddMemberCandidates.map((candidate) => {
                     const key = `${candidate.kind}:${candidate.id}`;
                     return <label key={key} className="room-member-choice"><input type="checkbox" aria-label={candidate.displayName} checked={selectedMembers.includes(key)}
                       onChange={(event) => setSelectedMembers((current) => event.target.checked ? [...current, key] : current.filter((item) => item !== key))} />
-                      <ParticipantAvatar participant={candidate} size="sm" /><span>{candidate.displayName}</span><span className="text-sm text-muted-foreground">{candidate.kind === "agent" ? "Agent" : "Person"}</span></label>;
+                      <ParticipantAvatar participant={candidate} size="sm" /><span>{candidate.displayName}</span><span className="text-ui text-muted-foreground">{candidate.kind === "agent" ? "Agent" : "Person"}</span></label>;
                   })}
               </fieldset>
               <Button type="button" disabled={selectedMembers.length === 0 || addingMembers} onClick={() => void addSelectedMembers()}>{addingMembers ? "Adding…" : "Add selected"}</Button></>}
-            {memberError && <p role="alert" className="text-sm text-err">{memberError}</p>}
+            {memberError && <p role="alert" className="text-ui text-err">{memberError}</p>}
           </div>}
         </section>} />
     </aside>}
@@ -947,7 +947,7 @@ function RoomContent({
           <DialogDescription className="break-words">{`Remove ${removalTarget?.displayName ?? "this member"} from ${roomName}? They will lose access to this channel and its messages.`}</DialogDescription>
         </DialogHeader>
         <form className="grid gap-4" onSubmit={(event) => { event.preventDefault(); void saveManagement(); }}>
-          {managementError && <p role="alert" className="text-sm text-err break-words">{managementError}</p>}
+          {managementError && <p role="alert" className="text-ui text-err break-words">{managementError}</p>}
           <DialogFooter className="gap-2"><Button ref={managementCancel} type="button" variant="outline" disabled={managementPending} onClick={() => setManagement(null)}>Cancel</Button>
             <Button type="submit" variant="destructive" disabled={!actionable || managementPending || !removalTarget}>
               {managementPending ? "Removing…" : "Remove member"}

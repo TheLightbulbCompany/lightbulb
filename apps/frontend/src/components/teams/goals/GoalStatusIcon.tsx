@@ -70,7 +70,7 @@ export function GoalStatusIcon({
     return showLabel ? (
       <span className="inline-flex items-center gap-1.5">
         {circle}
-        <span className="text-sm">{statusLabel(status)}</span>
+        <span className="text-ui">{statusLabel(status)}</span>
       </span>
     ) : (
       circle
@@ -79,7 +79,7 @@ export function GoalStatusIcon({
   const trigger = showLabel ? (
     <button className="inline-flex items-center gap-1.5 cursor-pointer hover:bg-[var(--cream-deep)] rounded-sm px-1 -mx-1 py-0.5 transition-colors">
       {circle}
-      <span className="text-sm">{statusLabel(status)}</span>
+      <span className="text-ui">{statusLabel(status)}</span>
     </button>
   ) : (
     circle
@@ -103,7 +103,7 @@ export function GoalStatusIcon({
             variant="ghost"
             size="sm"
             className={cn(
-              "w-full justify-start gap-2 text-xs",
+              "w-full justify-start gap-2 text-caption",
               s === status && "bg-[var(--cream-deeper)]",
             )}
             onClick={() => {

@@ -156,7 +156,7 @@ export function AgentSpendSection() {
                   {headline.partial && <span className="label-caps rounded-sm border border-[var(--edge)] px-1.5 py-0.5 text-[var(--midnight-muted)]">Partial</span>}
                 </div>
                 <p className={headline.money ? "font-editorial-serif text-3xl leading-none tabular-nums text-[var(--midnight)]" : "font-editorial-serif text-xl italic leading-tight text-[var(--midnight)]"}>{headline.figure}</p>
-                <p className="mt-1 max-w-[52ch] text-xs text-[var(--midnight-muted)]">{headline.caption}</p>
+                <p className="mt-1 max-w-[52ch] text-caption text-[var(--midnight-muted)]">{headline.caption}</p>
               </div>
               {usage && (
                 <div className="text-right">

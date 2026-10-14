@@ -83,7 +83,7 @@ function SortControl({
   ];
   return (
     <div
-      className="flex items-center gap-1 rounded-md border p-0.5 text-xs"
+      className="flex items-center gap-1 rounded-md border p-0.5 text-caption"
       style={{ borderColor: "var(--edge)" }}
       role="group"
       aria-label="Sort deliverables"
@@ -284,12 +284,12 @@ export function ArtifactsPanel() {
       />
 
       {!isRecent && isExpanded ? (
-        <div className="flex flex-wrap items-center gap-2 text-sm">
+        <div className="flex flex-wrap items-center gap-2 text-ui">
           <button
             type="button"
             onClick={() => setExpandedIssueId(null)}
             data-testid="artifact-stack-back"
-            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors hover:bg-[var(--cream-deep)]"
+            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-caption font-medium transition-colors hover:bg-[var(--cream-deep)]"
             style={{ color: "var(--midnight-muted)" }}
           >
             <ArrowLeft size={16} aria-hidden="true" />
@@ -423,7 +423,7 @@ export function ArtifactsPanel() {
                 setDeleteError(null);
               }}
               disabled={deleting}
-              className="rounded-md px-3 py-1.5 text-sm disabled:opacity-50"
+              className="rounded-md px-3 py-1.5 text-ui disabled:opacity-50"
               style={{ background: "var(--edge)", color: "var(--midnight)" }}
             >
               Cancel
@@ -432,7 +432,7 @@ export function ArtifactsPanel() {
               type="button"
               onClick={confirmDelete}
               disabled={deleting}
-              className="rounded-md bg-destructive px-3 py-1.5 text-sm text-destructive-foreground disabled:opacity-50"
+              className="rounded-md bg-destructive px-3 py-1.5 text-ui text-destructive-foreground disabled:opacity-50"
             >
               {deleting ? "Deleting…" : "Delete"}
             </button>
@@ -440,7 +440,7 @@ export function ArtifactsPanel() {
         }
       >
         {deleteError ? (
-          <p role="alert" className="text-sm" style={{ color: "var(--err)" }}>
+          <p role="alert" className="text-ui" style={{ color: "var(--err)" }}>
             {deleteError}
           </p>
         ) : null}

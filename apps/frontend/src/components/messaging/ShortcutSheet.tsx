@@ -42,7 +42,7 @@ export function ShortcutSheet({ open, onOpenChange }: { open: boolean; onOpenCha
       {GROUPS.map((group) => <section key={group.name} aria-label={group.name}>
         <h4 className="font-semibold">{group.name}</h4>
         <dl className="room-shortcuts">{group.rows.map(([chord, description]) => <div key={chord}>
-          <dt><kbd className="room-kbd">{chord}</kbd></dt><dd className="text-sm text-muted-foreground">{description}</dd>
+          <dt><kbd className="room-kbd">{chord}</kbd></dt><dd className="text-ui text-muted-foreground">{description}</dd>
         </div>)}</dl>
       </section>)}
     </DialogContent>

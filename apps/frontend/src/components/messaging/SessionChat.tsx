@@ -104,8 +104,8 @@ export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRo
     </header>
     {rooms.accessRemoved
       // Sharing paused (or the reader left the workspace) while the column was open: the room panel's words.
-      ? <p role="status" className="p-4 text-sm text-muted-foreground">Access removed. You can no longer view this conversation.</p>
-      : error ? <p role="status" className="p-4 text-sm text-muted-foreground">{error}</p> : <>
+      ? <p role="status" className="p-4 text-ui text-muted-foreground">Access removed. You can no longer view this conversation.</p>
+      : error ? <p role="status" className="p-4 text-ui text-muted-foreground">{error}</p> : <>
       <RoomTimeline roomId={roomId ?? "opening"} messages={messages} readSeq={null} ownLastSentSeq={null}
         renderMessage={renderMessage} historyComplete={rooms.historyComplete} historyLoading={rooms.historyLoading}
         historyError={rooms.historyErrorMessage} onLoadOlder={() => void rooms.loadOlder()}
@@ -114,7 +114,7 @@ export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRo
           <p key={m.clientMessageId} className="room-message opacity-60">{m.text}</p>)}
       </RoomTimeline>
       {archived
-        ? <p role="status" className="room-composer room-archived text-sm text-muted-foreground">This session ended. Its chat is read-only.</p>
+        ? <p role="status" className="room-composer room-archived text-ui text-muted-foreground">This session ended. Its chat is read-only.</p>
         : <RoomComposer text={text} onTextChange={setText} members={members} clientMessageId={clientMessageId}
           sendState={rooms.sendState(clientMessageId)} onSubmit={send} onRetry={send}
           onReconcile={(id) => rooms.reconcileSend(id)} onUploadAttachment={rooms.uploadAttachment} disabled={!roomId || !rooms.httpReady} label="Message the people here" placeholder="Message the people here" roomKind="channel" />}

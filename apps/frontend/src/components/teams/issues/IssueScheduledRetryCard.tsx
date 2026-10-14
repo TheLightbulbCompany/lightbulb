@@ -150,7 +150,7 @@ function WorkspaceBusyBanner() {
     >
       <div className="flex items-start gap-2.5">
         <Clock className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-        <div className="space-y-1 text-sm">
+        <div className="space-y-1 text-ui">
           <p className="font-medium leading-tight">Waiting for workspace</p>
           <div className="leading-snug opacity-90">
             Another task is using this workspace. Work starts automatically when it is available.
@@ -216,7 +216,7 @@ export function IssueScheduledRetryCard({
     >
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2 text-xs">
+          <div className="flex flex-wrap items-center gap-2 text-caption">
             <Badge variant="outline" className="border-info/30 bg-info/10 text-info">
               <Clock className="h-3 w-3" aria-hidden="true" />
               {badgeLabel}
@@ -228,9 +228,9 @@ export function IssueScheduledRetryCard({
               <span className="text-muted-foreground">{reason}</span>
             ) : null}
           </div>
-          <div className="mt-1 text-sm font-medium text-foreground">{title}</div>
+          <div className="mt-1 text-ui font-medium text-foreground">{title}</div>
           {(absolute || scheduledRetry.retryOfRunId) ? (
-            <div className="mt-0.5 text-xs text-muted-foreground">
+            <div className="mt-0.5 text-caption text-muted-foreground">
               {absolute ? <span>{absolute}</span> : null}
               {absolute && scheduledRetry.retryOfRunId ? <span>{" · "}</span> : null}
               {scheduledRetry.retryOfRunId ? (
@@ -247,7 +247,7 @@ export function IssueScheduledRetryCard({
             </div>
           ) : null}
           {scheduledRetry.error ? (
-            <div className="mt-1 text-xs text-muted-foreground">
+            <div className="mt-1 text-caption text-muted-foreground">
               Last attempt failed: {scheduledRetry.error}. Paperclip will retry automatically.
             </div>
           ) : null}
@@ -288,7 +288,7 @@ export function IssueScheduledRetryCard({
               </span>
             )}
           </Button>
-          <span className="text-right text-xs text-muted-foreground sm:max-w-48">
+          <span className="text-right text-caption text-muted-foreground sm:max-w-48">
             {retryNow.isPending
               ? "Promoting scheduled retry"
               : isSuccessTransient
@@ -314,7 +314,7 @@ export function RetryErrorBand({ error, onRetry, className }: RetryErrorBandProp
   return (
     <div
       className={cn(
-        "mt-2 flex items-start gap-2 rounded-md border border-err/30 bg-err/5 px-2 py-1.5 text-xs text-err",
+        "mt-2 flex items-start gap-2 rounded-md border border-err/30 bg-err/5 px-2 py-1.5 text-caption text-err",
         className,
       )}
       role="alert"

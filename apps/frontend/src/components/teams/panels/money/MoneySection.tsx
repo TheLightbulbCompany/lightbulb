@@ -11,7 +11,7 @@ export function MoneySection({ id, label, right, children }: { id: string; label
     <section id={`money-${id}`} aria-label={label} className="flex min-w-0 flex-col gap-2 scroll-mt-4">
       <div className="flex items-baseline justify-between gap-3 border-b border-[var(--edge-soft)] pb-1.5">
         <p className="label-caps text-[var(--midnight-muted)]">{label}</p>
-        {right && <div className="flex items-center gap-3 text-xs text-[var(--midnight-muted)]">{right}</div>}
+        {right && <div className="flex items-center gap-3 text-caption text-[var(--midnight-muted)]">{right}</div>}
       </div>
       {children}
     </section>

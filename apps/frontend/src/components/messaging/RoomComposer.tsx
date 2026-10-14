@@ -539,18 +539,18 @@ function ComposerAttempt({
         aria-label={controlLabel} aria-keyshortcuts={keys} title={controlLabel} disabled={!editable}
         onFocus={() => setToolbarIndex(index)} onClick={() => format(style)}><Icon aria-hidden="true" /></Button>)}
     </div>}
-    {dropping && <p className="room-drop-hint text-sm text-muted-foreground" role="status">Drop files to attach</p>}
+    {dropping && <p className="room-drop-hint text-ui text-muted-foreground" role="status">Drop files to attach</p>}
     <label className="sr-only" htmlFor={fieldId}>{label}</label>
     {mentionOpen && <TypeaheadList id={`${fieldId}-targets`} label={sessionTargets.length ? "Mention a room member or session" : "Mention a room member"} items={options} activeIndex={activeIndex}
       optionId={(index) => `${fieldId}-option-${index}`} onHover={setActiveIndex} onPick={(index) => choose(options[index])}
       renderRow={(entry) => entry.kind === "member" ? <>
         <ParticipantAvatar participant={entry.member} size="sm" />
         <span className="min-w-0 flex-1 text-left"><span className="block truncate" title={entry.member.displayName}>{entry.member.displayName}</span>
-          <span className="text-muted-foreground text-sm">{entry.member.mentionHandle ? `@${entry.member.mentionHandle}` : "Person"}</span></span>
+          <span className="text-muted-foreground text-ui">{entry.member.mentionHandle ? `@${entry.member.mentionHandle}` : "Person"}</span></span>
       </> : <>
         <span className="flex size-8 items-center justify-center rounded-md bg-muted" aria-hidden="true"><SessionToolIcon provider={entry.option.candidate.session.provider} /></span>
         <span className="min-w-0 flex-1 text-left"><span className="block truncate" title={sessionTitle(entry.option.candidate.session)}>{entry.option.candidate.session.provider === "claude" ? "Claude Code" : "Codex"} · {sessionTitle(entry.option.candidate.session)}</span>
-          <span className="block truncate text-muted-foreground text-sm">{entry.option.ownerName}{entry.option.candidate.collided ? ` · ${entry.option.candidate.session.cwdName ? `${entry.option.candidate.session.cwdName} · ` : ""}${entry.option.candidate.session.sessionId.slice(0, 8)}` : ""}</span></span>
+          <span className="block truncate text-muted-foreground text-ui">{entry.option.ownerName}{entry.option.candidate.collided ? ` · ${entry.option.candidate.session.cwdName ? `${entry.option.candidate.session.cwdName} · ` : ""}${entry.option.candidate.session.sessionId.slice(0, 8)}` : ""}</span></span>
       </>} />}
     {emojiOpen && <TypeaheadList id={`${fieldId}-targets`} label="Insert an emoji" items={emojiOptions} activeIndex={activeIndex}
       optionId={(index) => `${fieldId}-option-${index}`} onHover={setActiveIndex} onPick={(index) => chooseEmoji(emojiOptions[index].emoji)}
@@ -623,13 +623,13 @@ function ComposerAttempt({
       : <div key={item.key} className="room-file-preview">
         <FileText aria-hidden="true" />
         <span className="min-w-0 flex-1"><strong className="block truncate" title={item.file.name}>{item.file.name}</strong>
-          <span className="block text-sm text-muted-foreground">{supportedType(item.file) ?? (item.file.type || "Unknown type")} · {formatBytes(item.file.size)}</span>
-          <span role="status" className={item.error ? "block text-sm text-err" : "block text-sm text-muted-foreground"}>{item.error ?? (item.attachment ? "Ready" : "Uploading…")}</span></span>
+          <span className="block text-ui text-muted-foreground">{supportedType(item.file) ?? (item.file.type || "Unknown type")} · {formatBytes(item.file.size)}</span>
+          <span role="status" className={item.error ? "block text-ui text-err" : "block text-ui text-muted-foreground"}>{item.error ?? (item.attachment ? "Ready" : "Uploading…")}</span></span>
         {item.error && !validationError(item.file) && <Button type="button" variant="ghost" size="icon-sm" aria-label={`Retry ${item.file.name}`} disabled={!editable} onClick={() => uploadItem(item.key, item.file)}><RotateCcw aria-hidden="true" /></Button>}
         <Button type="button" variant="ghost" size="icon-sm" aria-label={`Remove ${item.file.name}`} disabled={!editable} onClick={() => removeAttachment(item.key)}><X aria-hidden="true" /></Button>
       </div>)}</div>}
-    {attachmentError && <p role="alert" className="text-sm text-err">{attachmentError}</p>}
-    {staleKey && staleNotice === staleKey && <p role="alert" className="text-sm text-warn">
+    {attachmentError && <p role="alert" className="text-ui text-err">{attachmentError}</p>}
+    {staleKey && staleNotice === staleKey && <p role="alert" className="text-ui text-warn">
       {staleHandles.map((handle) => `@${handle}`).join(", ")} no longer {staleHandles.length === 1 ? "matches" : "match"} a shared session. Remove it or send anyway.{" "}
       <Button type="button" variant="link" size="sm" className="h-auto p-0" onClick={() => submit(false, true, true)}>Send anyway</Button></p>}
     <div className="room-composer-actions">
@@ -652,9 +652,9 @@ function ComposerAttempt({
         }}><AtSign aria-hidden="true" /><span className="sr-only">Mention</span></Button>
       <Button type="submit" size="icon-sm" className="room-send" disabled={!canSend} aria-label="Send message"><Send aria-hidden="true" /><span className="sr-only">Send</span></Button>
     </div>
-    {showHint && <p id={`${fieldId}-respond`} className="room-respond-hint text-sm text-muted-foreground">{hint}</p>}
-    <p id={`${fieldId}-help`} className={error ? "text-sm text-err" : "sr-only"}>{error || "Enter to send · Shift+Enter for a new line."}</p>
-    <p id={`${fieldId}-status`} role="status" className={uncertain ? "text-sm text-warn" : effectiveState === "rejected" ? "text-sm text-err" : "text-sm text-muted-foreground"}>{status}</p>
+    {showHint && <p id={`${fieldId}-respond`} className="room-respond-hint text-ui text-muted-foreground">{hint}</p>}
+    <p id={`${fieldId}-help`} className={error ? "text-ui text-err" : "sr-only"}>{error || "Enter to send · Shift+Enter for a new line."}</p>
+    <p id={`${fieldId}-status`} role="status" className={uncertain ? "text-ui text-warn" : effectiveState === "rejected" ? "text-ui text-err" : "text-ui text-muted-foreground"}>{status}</p>
     {uncertain && onReconcile && <Button type="button" variant="outline" disabled={disabled} onClick={() => onReconcile(clientMessageId)}>Check message status</Button>}
     {!uncertain && effectiveState === "rejected" && onRetry && <Button type="button" variant="outline" disabled={disabled || !!error || uploading || (!text.trim() && !attachments.some((item) => item.attachment)) || retryPending} onClick={() => submit(true)}>Retry message</Button>}
   </form>;

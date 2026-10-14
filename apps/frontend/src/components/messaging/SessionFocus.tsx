@@ -199,13 +199,13 @@ export function SessionFocus({ focus, entries, loading, hintRevision, client, re
         </Button>}
         <Button className={showChat ? undefined : "ml-auto"} variant="ghost" size="icon-sm" aria-label="Close session" onClick={onClose}><X aria-hidden="true" /></Button>
       </header>
-      {!hasListedSession && session && resolvedFallback?.error && <div className="p-4 text-sm text-muted-foreground">
+      {!hasListedSession && session && resolvedFallback?.error && <div className="p-4 text-ui text-muted-foreground">
         <p role="status">Could not refresh this session.</p>
         <Button variant="ghost" onClick={retryFallback}>Try again</Button>
       </div>}
       {session && owner ? <LocalSessionPanel key={sessionViewKey(session)} session={session} ownerName={owner.ownerName} own={owner.own}
         client={client} revision={hintRevision} onAccessLost={onAccessLost} participants={participants} onMessageOwner={messageOwner} onEvent={onEvent} nameOf={id => resolveSessionOwner(id).ownerName} />
-        : <div className="p-4 text-sm text-muted-foreground">
+        : <div className="p-4 text-ui text-muted-foreground">
           <p role="status">{resolvedFallback?.notFound ? "This session is no longer shared." : resolvedFallback?.error ? "Could not load this session." : "Opening session…"}</p>
           {resolvedFallback?.error && <Button variant="ghost" onClick={retryFallback}>Try again</Button>}
         </div>}

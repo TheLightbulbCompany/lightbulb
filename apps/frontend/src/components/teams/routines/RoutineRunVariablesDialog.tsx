@@ -33,7 +33,7 @@ import type {
 } from "@/components/teams/shared/types";
 
 const FIELD_CLASS =
-  "w-full rounded-sm border border-[var(--edge)] bg-[var(--cream)] px-3 py-2 text-sm text-[var(--midnight)]";
+  "w-full rounded-sm border border-[var(--edge)] bg-[var(--cream)] px-3 py-2 text-ui text-[var(--midnight)]";
 
 function buildInitialValues(variables: RoutineVariable[]) {
   return Object.fromEntries(variables.map((variable) => [variable.name, variable.defaultValue ?? ""]));
@@ -152,11 +152,11 @@ export function RoutineRunVariablesDialog({
       footer={
         <>
           {!selection.assigneeAgentId ? (
-            <p className="mr-auto text-xs" style={{ color: "var(--warn)" }}>
+            <p className="mr-auto text-caption" style={{ color: "var(--warn)" }}>
               Default agent required for this run.
             </p>
           ) : missingRequired.length > 0 ? (
-            <p className="mr-auto text-xs" style={{ color: "var(--warn)" }}>
+            <p className="mr-auto text-caption" style={{ color: "var(--warn)" }}>
               Missing: {missingRequired.join(", ")}
             </p>
           ) : (
@@ -183,13 +183,13 @@ export function RoutineRunVariablesDialog({
     >
       <div className="flex flex-col gap-4">
         {error && (
-          <p role="alert" className="text-sm" style={{ color: "var(--err)" }}>
+          <p role="alert" className="text-ui" style={{ color: "var(--err)" }}>
             {error}
           </p>
         )}
         <div className="grid gap-4 md:grid-cols-2">
           <div className="flex flex-col gap-1.5">
-            <span className="text-xs text-[var(--midnight-soft)]">Agent *</span>
+            <span className="text-caption text-[var(--midnight-soft)]">Agent *</span>
             <AssigneePicker
               agents={assignableAgents}
               selectedAgentId={selection.assigneeAgentId || null}
@@ -200,7 +200,7 @@ export function RoutineRunVariablesDialog({
             />
           </div>
           <div className="flex flex-col gap-1.5">
-            <span className="text-xs text-[var(--midnight-soft)]">Project</span>
+            <span className="text-caption text-[var(--midnight-soft)]">Project</span>
             <ProjectPicker
               projects={projects}
               selectedProjectId={selection.projectId || null}
@@ -217,7 +217,7 @@ export function RoutineRunVariablesDialog({
           const raw = values[variable.name];
           return (
             <div key={variable.name} className="flex flex-col gap-1.5">
-              <label htmlFor={id} className="text-xs text-[var(--midnight-soft)]">
+              <label htmlFor={id} className="text-caption text-[var(--midnight-soft)]">
                 {label}
               </label>
               {variable.type === "textarea" ? (

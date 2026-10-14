@@ -79,7 +79,7 @@ function InlineBanner({
     >
       <div className="flex items-start gap-2.5">
         {Icon && <Icon className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />}
-        <div className="space-y-1 text-sm">
+        <div className="space-y-1 text-ui">
           {title && <p className="font-medium leading-tight">{title}</p>}
           {children && <div className="leading-snug opacity-90">{children}</div>}
         </div>
@@ -289,13 +289,13 @@ export function IssueMonitorComposerStrip({
         <div className="flex min-w-0 items-start gap-2">
           <Clock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
           <div className="min-w-0">
-            <div className="text-sm font-medium text-foreground">{copy.stripTitle}</div>
-            <div className="text-xs text-muted-foreground">{copy.stripMeta.join(" · ")}</div>
+            <div className="text-ui font-medium text-foreground">{copy.stripTitle}</div>
+            <div className="text-caption text-muted-foreground">{copy.stripMeta.join(" · ")}</div>
           </div>
         </div>
         {onCheckNow && !copy.workspaceWait ? <CheckNowButton onCheckNow={onCheckNow} checkingNow={checkingNow} /> : null}
       </div>
-      <p className="mt-1.5 text-xs text-muted-foreground">
+      <p className="mt-1.5 text-caption text-muted-foreground">
         {copy.workspaceWait
           ? "You can keep sending instructions while the agent waits."
           : "Sending a reply wakes the agent now — before the scheduled check."}

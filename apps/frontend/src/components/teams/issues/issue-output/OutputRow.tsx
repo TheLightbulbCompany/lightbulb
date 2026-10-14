@@ -36,10 +36,10 @@ export function OutputRow({ item, creatorName }: OutputRowProps) {
     <div className="flex items-center gap-2.5 rounded-md p-2" style={{ border: "1px solid var(--edge)" }}>
       <OutputFileTile contentType={meta?.contentType} />
       <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium" style={{ color: "var(--midnight)" }} title={filename}>
+        <p className="truncate text-ui font-medium" style={{ color: "var(--midnight)" }} title={filename}>
           {filename}
         </p>
-        <p className="truncate text-xs" style={{ color: item.degraded ? "var(--err)" : "var(--midnight-muted)" }}>
+        <p className="truncate text-caption" style={{ color: item.degraded ? "var(--err)" : "var(--midnight-muted)" }}>
           {item.degraded ? "File details unavailable" : metaBits.join(" · ")}
         </p>
       </div>

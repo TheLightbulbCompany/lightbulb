@@ -120,7 +120,7 @@ export function SessionShareLink({ session, client }: { session: LocalSession; c
   };
   const shown: Who = armed ? "me" : who;
   // Only me is the session's own state; the other two are the link's, and that is not read yet.
-  if (!known && shared) return <div className="flex flex-col gap-2 text-sm">
+  if (!known && shared) return <div className="flex flex-col gap-2 text-ui">
     <label htmlFor={whoId} className="session-setting-label">Who can see this</label>
     <select id={whoId} className="room-input w-auto" value="" disabled><option value="">{readFailed ? "Not loaded" : "Loading…"}</option></select>
     {readFailed && <>
@@ -128,7 +128,7 @@ export function SessionShareLink({ session, client }: { session: LocalSession; c
       <Button type="button" variant="outline" size="sm" className="self-start" onClick={() => setReadRound(n => n + 1)}>Try again</Button>
     </>}
   </div>;
-  return <div className="flex flex-col gap-2 text-sm">
+  return <div className="flex flex-col gap-2 text-ui">
     <label htmlFor={whoId} className="session-setting-label">Who can see this</label>
     <select id={whoId} className="room-input w-auto" value={shown} disabled={busy} onChange={e => void choose(e.target.value as Who)}>
       {client.setLocalSessionSharing && <option value="me">Only me</option>}
@@ -144,7 +144,7 @@ export function SessionShareLink({ session, client }: { session: LocalSession; c
     {who !== "me" && !armed && <>
       {/* The audience above, the link and its Copy together: what is copied is always next to who can open it. */}
       <div className="flex items-center gap-2">
-        {link?.url && <input aria-label="Session link" readOnly className="room-input min-w-0 flex-1 font-mono text-xs" value={link.url} onFocus={e => e.currentTarget.select()} />}
+        {link?.url && <input aria-label="Session link" readOnly className="room-input min-w-0 flex-1 font-mono text-caption" value={link.url} onFocus={e => e.currentTarget.select()} />}
         <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => void copy()}><Link2 aria-hidden="true" />Copy link</Button>
       </div>
       {/* D2: on by default for Anyone sessions; the owner can turn it off for this one. */}

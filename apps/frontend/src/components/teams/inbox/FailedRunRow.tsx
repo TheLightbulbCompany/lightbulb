@@ -73,13 +73,13 @@ export function FailedRunRow({
           )}
         </span>
       </div>
-      {run.startedAt && <span className="text-xs text-[var(--midnight-muted)]">{timeAgo(run.startedAt)}</span>}
+      {run.startedAt && <span className="text-caption text-[var(--midnight-muted)]">{timeAgo(run.startedAt)}</span>}
       <div className="flex items-center gap-2">
         <a
           href={teamsDetailUrl("run", run.id)}
           onClick={(e) => handleShellLinkClick(e, teamsDetailUrl("run", run.id))}
           aria-label={`View run ${run.id}`}
-          className="text-xs hover:underline"
+          className="text-caption hover:underline"
           style={{ color: "var(--midnight)" }}
         >
           View

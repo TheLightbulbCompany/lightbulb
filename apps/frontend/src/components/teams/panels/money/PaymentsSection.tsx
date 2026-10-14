@@ -59,7 +59,7 @@ const COLUMNS: PanelDataColumn<PaymentRow>[] = [
           href={r.receipt_url}
           target="_blank"
           rel="noopener noreferrer"
-          className="text-xs underline text-[var(--midnight)]"
+          className="text-caption underline text-[var(--midnight)]"
         >
           Receipt
         </a>

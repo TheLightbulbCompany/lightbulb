@@ -55,7 +55,7 @@ export function KanbanColumn({
           {statusLabel(status)}
         </span>
         <span
-          className="text-xs ml-auto tabular-nums"
+          className="text-caption ml-auto tabular-nums"
           style={{ color: "var(--midnight-muted)" }}
         >
           {issues.length}

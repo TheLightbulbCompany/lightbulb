@@ -38,7 +38,7 @@ export function ParticipantProfile({ participant, currentUserId, onMessage, disa
         <DialogTitle className="break-words pr-6">{participant.displayName}</DialogTitle>
         <DialogDescription>{participant.kind === "agent" ? "Agent" : isSelf ? "You" : "Workspace member"}</DialogDescription>
       </div>
-      <dl className="space-y-3 text-sm">
+      <dl className="space-y-3 text-ui">
         {participant.mentionHandle && <div><dt className="text-muted-foreground">Mention</dt><dd className="break-words">@{participant.mentionHandle}</dd></div>}
         <div><dt className="text-muted-foreground">Role in this conversation</dt><dd>{participant.role === "owner" ? "Owner" : participant.role === "admin" ? "Admin" : "Member"}</dd></div>
         {joined && <div><dt className="text-muted-foreground">Joined this conversation</dt><dd><time dateTime={participant.joinedAt}>{new Date(participant.joinedAt).toLocaleDateString([], { month: "long", day: "numeric", year: "numeric" })}</time></dd></div>}
@@ -50,7 +50,7 @@ export function ParticipantProfile({ participant, currentUserId, onMessage, disa
         catch { setError(true); }
         finally { setBusy(false); }
       }}><MessageCircle size={16} aria-hidden="true" />{busy ? "Opening conversation…" : "Message"}</Button>}
-      {error && <p role="alert" className="text-sm text-err">Could not open this conversation. Try again.</p>}
+      {error && <p role="alert" className="text-ui text-err">Could not open this conversation. Try again.</p>}
     </DialogContent>
   </Dialog>;
 }

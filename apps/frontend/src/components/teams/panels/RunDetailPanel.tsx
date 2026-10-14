@@ -82,7 +82,7 @@ function Prop({ label, children }: { label: string; children: React.ReactNode })
       <dt className="label-caps" style={{ color: "var(--midnight-muted)" }}>
         {label}
       </dt>
-      <dd className="text-sm break-words text-[var(--midnight)]">{children}</dd>
+      <dd className="text-ui break-words text-[var(--midnight)]">{children}</dd>
     </div>
   );
 }
@@ -155,7 +155,7 @@ export function RunDetailPanel({ runId }: { runId: string }) {
   if (isLoading) {
     return (
       <div
-        className="flex h-full items-center justify-center p-8 text-sm italic"
+        className="flex h-full items-center justify-center p-8 text-ui italic"
         style={{ fontFamily: "var(--font-serif), serif", color: "var(--midnight-muted)" }}
       >
         Loading…
@@ -167,7 +167,7 @@ export function RunDetailPanel({ runId }: { runId: string }) {
     return (
       <div
         role="alert"
-        className="flex h-full flex-col items-center justify-center p-8 text-sm"
+        className="flex h-full flex-col items-center justify-center p-8 text-ui"
         style={{ color: "var(--err)" }}
       >
         <p>Failed to load run.</p>
@@ -274,7 +274,7 @@ export function RunDetailPanel({ runId }: { runId: string }) {
           <h1 className="font-editorial-serif text-2xl font-medium leading-tight text-[var(--midnight)]">
             Run — {agentName}
           </h1>
-          <div className="flex items-center gap-2 text-sm">
+          <div className="flex items-center gap-2 text-ui">
             {isActiveStatus(run.status) && (
               // Decorative: the status text right next to it already reads
               // "running" / "queued" / "scheduled retry" — the dot would
@@ -291,7 +291,7 @@ export function RunDetailPanel({ runId }: { runId: string }) {
               {statusLabel}
             </span>
             {run.startedAt && (
-              <span className="text-xs" style={{ color: "var(--midnight-muted)" }}>
+              <span className="text-caption" style={{ color: "var(--midnight-muted)" }}>
                 started {timeAgo(run.startedAt)}
               </span>
             )}
@@ -314,7 +314,7 @@ export function RunDetailPanel({ runId }: { runId: string }) {
             )}
           </div>
           {actionError && (
-            <p className="text-xs" style={{ color: "var(--err)" }}>
+            <p className="text-caption" style={{ color: "var(--err)" }}>
               {actionError}
             </p>
           )}
@@ -331,7 +331,7 @@ export function RunDetailPanel({ runId }: { runId: string }) {
             <p className="font-medium">
               {silenceLevel === "critical" ? "Stale-run watchdog alert" : "Output silence warning"}
             </p>
-            <p className="text-xs" style={{ color: "var(--midnight-muted)" }}>
+            <p className="text-caption" style={{ color: "var(--midnight-muted)" }}>
               This run has been silent for {formatSilenceAgeMs(silence?.silenceAgeMs ?? null) ?? "an extended period"}.
             </p>
             <div className="flex flex-wrap items-center gap-2">
@@ -350,7 +350,7 @@ export function RunDetailPanel({ runId }: { runId: string }) {
 
         {(run.error || run.retryExhaustedReason || (runFailed && stderrText)) && (
           <section
-            className="flex flex-col gap-1 rounded-sm px-3 py-2 text-sm"
+            className="flex flex-col gap-1 rounded-sm px-3 py-2 text-ui"
             style={{
               border: "1px solid var(--err)",
               background: "var(--cream)",
@@ -361,7 +361,7 @@ export function RunDetailPanel({ runId }: { runId: string }) {
               <p style={{ color: "var(--err)" }}>{run.retryExhaustedReason}</p>
             )}
             {runFailed && stderrText && (
-              <pre className="whitespace-pre-wrap text-xs" style={{ color: "var(--midnight-muted)" }}>
+              <pre className="whitespace-pre-wrap text-caption" style={{ color: "var(--midnight-muted)" }}>
                 {stderrText}
               </pre>
             )}
@@ -369,7 +369,7 @@ export function RunDetailPanel({ runId }: { runId: string }) {
         )}
 
         {!runFailed && stderrText && (
-          <details className="text-xs" style={{ color: "var(--midnight-muted)" }}>
+          <details className="text-caption" style={{ color: "var(--midnight-muted)" }}>
             <summary className="cursor-pointer">Log</summary>
             <pre className="whitespace-pre-wrap">{stderrText}</pre>
           </details>
@@ -378,12 +378,12 @@ export function RunDetailPanel({ runId }: { runId: string }) {
         <section className="flex flex-col gap-3">
           <h2 className="section-label"><b>Transcript</b></h2>
           {transcript.truncated && (
-            <p className="text-xs italic" style={{ color: "var(--midnight-muted)" }}>
+            <p className="text-caption italic" style={{ color: "var(--midnight-muted)" }}>
               Log is larger than one read — showing the last 256 KiB.
             </p>
           )}
           {renderGroups.length === 0 ? (
-            <p className="text-sm italic" style={{ color: "var(--midnight-muted)" }}>
+            <p className="text-ui italic" style={{ color: "var(--midnight-muted)" }}>
               {transcript.isLoading ? "Loading transcript…" : "No transcript captured."}
             </p>
           ) : (
@@ -406,12 +406,12 @@ export function RunDetailPanel({ runId }: { runId: string }) {
         <section className="flex flex-col gap-3">
           <h2 className="section-label"><b>Events</b></h2>
           {events.length >= RUN_EVENTS_LIMIT && (
-            <p className="text-xs italic" style={{ color: "var(--midnight-muted)" }}>
+            <p className="text-caption italic" style={{ color: "var(--midnight-muted)" }}>
               Showing the first 1,000 events.
             </p>
           )}
           {events.length === 0 ? (
-            <p className="text-sm italic" style={{ color: "var(--midnight-muted)" }}>
+            <p className="text-ui italic" style={{ color: "var(--midnight-muted)" }}>
               No events recorded.
             </p>
           ) : (
@@ -419,7 +419,7 @@ export function RunDetailPanel({ runId }: { runId: string }) {
               {events.map((e) => (
                 <li
                   key={e.seq}
-                  className="flex items-baseline gap-2 px-3 py-1.5 text-xs"
+                  className="flex items-baseline gap-2 px-3 py-1.5 text-caption"
                   style={{ borderBottom: "1px solid var(--edge)" }}
                 >
                   <span

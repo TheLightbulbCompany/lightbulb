@@ -18,7 +18,7 @@ export function IssueParentBreadcrumb({ parentId }: { parentId: string }) {
       href={parentUrl}
       prefetch={false}
       onClick={(e) => handleShellLinkClick(e, parentUrl)}
-      className="inline-flex items-center gap-1 text-sm hover:underline"
+      className="inline-flex items-center gap-1 text-ui hover:underline"
       style={{ color: "var(--midnight)" }}
     >
       <ChevronUp size={16} />

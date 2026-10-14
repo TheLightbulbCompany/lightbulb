@@ -260,7 +260,7 @@ export function IssuesPanel({
                 role="switch"
                 aria-checked={showRoutineTasks}
                 onClick={() => setShowRoutineTasks((v) => !v)}
-                className="inline-flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1 text-xs transition-colors"
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1 text-caption transition-colors"
                 style={{
                   border: "1px solid var(--edge)",
                   background: showRoutineTasks
@@ -280,7 +280,7 @@ export function IssuesPanel({
       {agentFilter ? (
         <div className="flex items-center gap-2">
           <span
-            className="inline-flex items-center gap-1.5 rounded-full py-0.5 pl-3 pr-1.5 text-xs"
+            className="inline-flex items-center gap-1.5 rounded-full py-0.5 pl-3 pr-1.5 text-caption"
             style={{
               border: "1px solid var(--edge)",
               background: "var(--cream-deep)",
@@ -383,7 +383,7 @@ function ApprovalsEntry() {
         Approvals
         {pending > 0 && (
           <span
-            className="min-w-[1.125rem] rounded-full px-1 text-center text-[11px] font-semibold leading-[1.125rem] tabular-nums"
+            className="min-w-[1.125rem] rounded-full px-1 text-center text-2xs font-semibold leading-[1.125rem] tabular-nums"
             style={{ background: "var(--bulb)", color: "var(--midnight)" }}
           >
             {pending}

@@ -65,7 +65,7 @@ export function CreateGoalDialog({
     >
       <div className="flex flex-col gap-3">
         <label className="block">
-          <span className="text-sm text-[var(--midnight-soft)]">Title</span>
+          <span className="text-ui text-[var(--midnight-soft)]">Title</span>
           <input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
@@ -73,7 +73,7 @@ export function CreateGoalDialog({
           />
         </label>
         <label className="block">
-          <span className="text-sm text-[var(--midnight-soft)]">Description</span>
+          <span className="text-ui text-[var(--midnight-soft)]">Description</span>
           <textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
@@ -85,7 +85,7 @@ export function CreateGoalDialog({
             — resolves from the existing /goals list (mirrors the issues
             AssigneePicker/ProjectPicker idiom). */}
         <div className="block">
-          <span className="text-sm text-[var(--midnight-soft)]">Parent goal</span>
+          <span className="text-ui text-[var(--midnight-soft)]">Parent goal</span>
           <div className="mt-1">
             <GoalPicker
               goals={goals}
@@ -97,7 +97,7 @@ export function CreateGoalDialog({
         </div>
         <div className="grid grid-cols-2 gap-3">
           <label className="block">
-            <span className="text-sm text-[var(--midnight-soft)]">Level</span>
+            <span className="text-ui text-[var(--midnight-soft)]">Level</span>
             <select
               value={level}
               onChange={(e) => setLevel(e.target.value as GoalLevel)}
@@ -111,7 +111,7 @@ export function CreateGoalDialog({
             </select>
           </label>
           <label className="block">
-            <span className="text-sm text-[var(--midnight-soft)]">Status</span>
+            <span className="text-ui text-[var(--midnight-soft)]">Status</span>
             <select
               value={status}
               onChange={(e) => setStatus(e.target.value as GoalStatus)}
@@ -127,7 +127,7 @@ export function CreateGoalDialog({
         </div>
         {err && (
           <div
-            className="text-[var(--err)] text-sm rounded-sm px-3 py-2"
+            className="text-[var(--err)] text-ui rounded-sm px-3 py-2"
             style={{
               border:
                 "1px solid var(--err)",

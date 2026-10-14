@@ -65,7 +65,7 @@ function PayloadField({ label, value }: { label: string; value: unknown }) {
   if (!value) return null;
   return (
     <div className="flex items-center gap-2">
-      <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs">{label}</span>
+      <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-caption">{label}</span>
       <span>{String(value)}</span>
     </div>
   );
@@ -81,7 +81,7 @@ function SkillList({ values }: { values: unknown }) {
 
   return (
     <div className="flex items-start gap-2">
-      <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs pt-0.5">Skills</span>
+      <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-caption pt-0.5">Skills</span>
       <div className="flex flex-wrap gap-1.5">
         {items.map((item) => (
           <span
@@ -98,9 +98,9 @@ function SkillList({ values }: { values: unknown }) {
 
 export function HireAgentPayload({ payload }: { payload: Record<string, unknown> }) {
   return (
-    <div className="mt-3 space-y-1.5 text-sm">
+    <div className="mt-3 space-y-1.5 text-ui">
       <div className="flex items-center gap-2">
-        <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs">Name</span>
+        <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-caption">Name</span>
         <span className="font-medium">{String(payload.name ?? "—")}</span>
       </div>
       <PayloadField label="Role" value={payload.role} />
@@ -108,14 +108,14 @@ export function HireAgentPayload({ payload }: { payload: Record<string, unknown>
       <PayloadField label="Icon" value={payload.icon} />
       {!!payload.capabilities && (
         <div className="flex items-start gap-2">
-          <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs pt-0.5">Capabilities</span>
+          <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-caption pt-0.5">Capabilities</span>
           <span className="text-muted-foreground">{String(payload.capabilities)}</span>
         </div>
       )}
       {!!payload.adapterType && (
         <div className="flex items-center gap-2">
-          <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs">Adapter</span>
-          <span className="font-mono text-xs bg-muted px-1.5 py-0.5 rounded">
+          <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-caption">Adapter</span>
+          <span className="font-mono text-caption bg-muted px-1.5 py-0.5 rounded">
             {String(payload.adapterType)}
           </span>
         </div>
@@ -128,15 +128,15 @@ export function HireAgentPayload({ payload }: { payload: Record<string, unknown>
 export function CeoStrategyPayload({ payload }: { payload: Record<string, unknown> }) {
   const plan = payload.plan ?? payload.description ?? payload.strategy ?? payload.text;
   return (
-    <div className="mt-3 space-y-1.5 text-sm">
+    <div className="mt-3 space-y-1.5 text-ui">
       <PayloadField label="Title" value={payload.title} />
       {!!plan && (
-        <div className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-sm text-muted-foreground whitespace-pre-wrap font-mono text-xs max-h-48 overflow-y-auto">
+        <div className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-ui text-muted-foreground whitespace-pre-wrap font-mono text-caption max-h-48 overflow-y-auto">
           {String(plan)}
         </div>
       )}
       {!plan && (
-        <pre className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground overflow-x-auto max-h-48">
+        <pre className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-caption text-muted-foreground overflow-x-auto max-h-48">
           {JSON.stringify(payload, null, 2)}
         </pre>
       )}
@@ -148,12 +148,12 @@ export function BudgetOverridePayload({ payload }: { payload: Record<string, unk
   const budgetAmount = typeof payload.budgetAmount === "number" ? payload.budgetAmount : null;
   const observedAmount = typeof payload.observedAmount === "number" ? payload.observedAmount : null;
   return (
-    <div className="mt-3 space-y-1.5 text-sm">
+    <div className="mt-3 space-y-1.5 text-ui">
       <PayloadField label="Scope" value={payload.scopeName ?? payload.scopeType} />
       <PayloadField label="Window" value={payload.windowKind} />
       <PayloadField label="Metric" value={payload.metric} />
       {(budgetAmount !== null || observedAmount !== null) ? (
-        <div className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+        <div className="rounded-md bg-muted/40 px-3 py-2 text-caption text-muted-foreground">
           Limit {budgetAmount !== null ? formatCents(budgetAmount) : "—"} · Observed {observedAmount !== null ? formatCents(observedAmount) : "—"}
         </div>
       ) : null}
@@ -199,7 +199,7 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
   const proposedComment = firstNonEmptyString(payload.proposedComment);
 
   return (
-    <div className="mt-4 space-y-3.5 text-sm">
+    <div className="mt-4 space-y-3.5 text-ui">
       {title && (
         <div className="space-y-1">
           <p className="label-caps text-muted-foreground">Title</p>
@@ -229,7 +229,7 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
       {risks.length > 0 && (
         <div className="space-y-1.5">
           <p className="label-caps text-muted-foreground">Risks</p>
-          <ul className="space-y-1 text-sm text-muted-foreground">
+          <ul className="space-y-1 text-ui text-muted-foreground">
             {risks.map((risk, index) => (
               <li key={`${index}-${risk}`} className="flex items-start gap-2">
                 <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/60" />
@@ -244,7 +244,7 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
           <p className="label-caps text-muted-foreground">
             Proposed comment
           </p>
-          <pre className="max-h-48 overflow-auto rounded-lg border border-border/60 bg-muted/50 px-3.5 py-3 font-mono text-xs leading-5 text-muted-foreground whitespace-pre-wrap">
+          <pre className="max-h-48 overflow-auto rounded-lg border border-border/60 bg-muted/50 px-3.5 py-3 font-mono text-caption leading-5 text-muted-foreground whitespace-pre-wrap">
             {proposedComment}
           </pre>
         </div>

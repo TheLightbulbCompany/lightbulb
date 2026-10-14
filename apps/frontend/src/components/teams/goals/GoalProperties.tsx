@@ -43,7 +43,7 @@ function PropertyRow({
 }) {
   return (
     <div
-      className="grid grid-cols-[100px_1fr] gap-3 items-baseline py-2 text-sm"
+      className="grid grid-cols-[100px_1fr] gap-3 items-baseline py-2 text-ui"
       style={{
         color: "var(--midnight-soft)",
         borderBottom: "1px solid var(--edge)",
@@ -97,7 +97,7 @@ function LevelPicker({
             variant="ghost"
             size="sm"
             className={cn(
-              "w-full justify-start text-xs",
+              "w-full justify-start text-caption",
               l === level && "bg-[var(--cream-deeper)]",
             )}
             onClick={() => {

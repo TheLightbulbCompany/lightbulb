@@ -83,7 +83,7 @@ export function ExternalObjectPill({
 
   const interactive = !inert && Boolean(object.url);
   const classNames = cn(
-    "inline-flex max-w-full items-center gap-1 rounded-full border border-[var(--edge)] px-2 py-0.5 text-xs no-underline",
+    "inline-flex max-w-full items-center gap-1 rounded-full border border-[var(--edge)] px-2 py-0.5 text-caption no-underline",
     overlay,
     interactive
       && "hover:bg-[var(--cream-deep)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--link)]",
@@ -116,7 +116,7 @@ export function ExternalObjectPill({
         {labelText}
       </span>
       {typeof sourceCount === "number" && sourceCount > 1 ? (
-        <span className="tabular-nums text-[10px] font-medium opacity-80">×{sourceCount}</span>
+        <span className="tabular-nums text-2xs font-medium opacity-80">×{sourceCount}</span>
       ) : null}
     </>
   );

@@ -74,7 +74,7 @@ export function IssueHeader({ issue, onTitleSave }: IssueHeaderProps) {
     <div className="flex items-baseline gap-3">
       {issue.identifier && (
         <span
-          className="text-xs font-mono shrink-0"
+          className="text-caption font-mono shrink-0"
           style={{ color: "var(--midnight-muted)" }}
         >
           {issue.identifier}

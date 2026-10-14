@@ -18,7 +18,7 @@ function group(issue: Issue): (typeof GROUPS)[number] {
 
 export function RoomTasks({ tasks, onOpenAll }: { tasks: readonly Issue[]; onOpenAll: () => void }) {
   return <>
-    {tasks.length === 0 ? <p className="text-sm text-muted-foreground">No tasks mentioned in this room yet.</p>
+    {tasks.length === 0 ? <p className="text-ui text-muted-foreground">No tasks mentioned in this room yet.</p>
       : GROUPS.map((name) => {
         const issues = tasks.filter((issue) => group(issue) === name);
         return issues.length > 0 && <section key={name}>
@@ -26,7 +26,7 @@ export function RoomTasks({ tasks, onOpenAll }: { tasks: readonly Issue[]; onOpe
           <TaskRowList issues={issues} label={name} />
         </section>;
       })}
-    <button type="button" className="mt-4 block text-sm text-[var(--midnight-muted)] hover:underline" onClick={onOpenAll}>
+    <button type="button" className="mt-4 block text-ui text-[var(--midnight-muted)] hover:underline" onClick={onOpenAll}>
       All tasks in Tasks <span aria-hidden="true">→</span>
     </button>
   </>;

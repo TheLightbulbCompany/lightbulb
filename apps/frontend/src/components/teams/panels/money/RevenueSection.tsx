@@ -132,10 +132,10 @@ export function RevenueSection({ day, onDayCleared }: { day: string | null; onDa
         <p className="font-editorial-serif text-4xl leading-none tabular-nums text-[var(--midnight)]">
           {formatMicrocents(sum(days))}
         </p>
-        <p className="text-xs text-[var(--midnight-muted)]">{comparison(sum(days), previous, span)}</p>
+        <p className="text-caption text-[var(--midnight-muted)]">{comparison(sum(days), previous, span)}</p>
         <RevenueBars days={days} selectedDay={day} className="mt-2 h-24 w-full" />
         {!day && (
-          <p className="text-xs text-[var(--midnight-muted)]">
+          <p className="text-caption text-[var(--midnight-muted)]">
             Pick a day to see the payments that landed on it.
           </p>
         )}

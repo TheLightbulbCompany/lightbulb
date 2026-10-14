@@ -73,7 +73,7 @@ export function DocumentRevisionMenu({
       <DropdownMenuContent align="end" className="max-h-80 overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         <DropdownMenuItem
           onSelect={() => onSelectRevision(null)}
-          className="text-xs"
+          className="text-caption"
           data-active={selectedRevisionId === null || undefined}
         >
           Current · rev {latestRevisionNumber}
@@ -84,14 +84,14 @@ export function DocumentRevisionMenu({
             <DropdownMenuItem
               key={revision.id}
               onSelect={() => onSelectRevision(revision.id)}
-              className="text-xs"
+              className="text-caption"
             >
               rev {revision.revisionNumber} · {timeAgo(revision.createdAt)} · {actorOf(revision)}
             </DropdownMenuItem>
           ))}
         {hasHistory ? <DropdownMenuSeparator /> : null}
         {hasHistory ? (
-          <DropdownMenuItem onSelect={onOpenDiff} className="gap-2 text-xs">
+          <DropdownMenuItem onSelect={onOpenDiff} className="gap-2 text-caption">
             <GitCompare size={16} />
             Compare revisions…
           </DropdownMenuItem>

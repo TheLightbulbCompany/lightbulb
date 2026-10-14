@@ -395,7 +395,7 @@ function DirectoryContent({
       })}
       {!collapsed && <div id={listId}>
         {live.length === 0
-          ? <div className="room-directory-session-empty"><p className="text-xs text-muted-foreground">No one is sharing a session.</p><StartSessionDialog /></div>
+          ? <div className="room-directory-session-empty"><p className="text-caption text-muted-foreground">No one is sharing a session.</p><StartSessionDialog /></div>
           : <ul>{shown.map((entry) => <SessionListRow key={entry.session.sessionId} entry={entry}
               current={entry.session.sessionId === currentSessionId} onSelect={onSelectSession} onRename={onRenameSession} oneLine />)}</ul>}
         {live.length > SIDEBAR_SESSION_CAP && <button type="button" className="room-directory-subgroup" aria-expanded={sessionsExpanded}
@@ -496,13 +496,13 @@ function DirectoryContent({
         {onCreate && <DialogTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="New conversation" disabled={creationBusy}><Plus aria-hidden="true" /></Button></DialogTrigger>}
       </div>
     </div>
-    {creationError && !creating && <p role="alert" className="px-2 text-sm text-err">{creationError}</p>}
-    {unreadError && <p role="alert" className="px-2 text-sm text-err">Could not mark {unreadError.label} unread. <Button variant="outline" disabled={markingUnread !== null}
+    {creationError && !creating && <p role="alert" className="px-2 text-ui text-err">{creationError}</p>}
+    {unreadError && <p role="alert" className="px-2 text-ui text-err">Could not mark {unreadError.label} unread. <Button variant="outline" disabled={markingUnread !== null}
       onClick={() => void markRoomUnread(unreadError.roomId, unreadError.label)}>Try again</Button></p>}
-    {partialError && <div role="alert" className="px-2 text-sm text-err">Some conversation details could not be loaded. {onRetry && <Button variant="outline" onClick={onRetry}>Try again</Button>}</div>}
-    {savePrefs.error && <p role="alert" className="px-2 text-sm text-err">{savePrefs.error}</p>}
-    {saveSections.error && !managing && <p role="alert" className="px-2 text-sm text-err">{saveSections.error}</p>}
-    {groups.length === 0 && <p className="text-sm text-muted-foreground px-2">Create a channel, or start a conversation with a person or agent.</p>}
+    {partialError && <div role="alert" className="px-2 text-ui text-err">Some conversation details could not be loaded. {onRetry && <Button variant="outline" onClick={onRetry}>Try again</Button>}</div>}
+    {savePrefs.error && <p role="alert" className="px-2 text-ui text-err">{savePrefs.error}</p>}
+    {saveSections.error && !managing && <p role="alert" className="px-2 text-ui text-err">{saveSections.error}</p>}
+    {groups.length === 0 && <p className="text-ui text-muted-foreground px-2">Create a channel, or start a conversation with a person or agent.</p>}
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={reorderSections} accessibility={{ announcements }}>
     <SortableContext items={sections.map((section) => section.id)} strategy={verticalListSortingStrategy}>
     {groups.filter((group) => !TAIL_GROUPS.has(group.id)).map(renderGroup)}
@@ -547,9 +547,9 @@ function DirectoryContent({
       </select>
       {kind !== "dm" && <><label htmlFor={`${id}-name`}>{kind === "channel" ? "Channel name" : "Group chat name (optional)"}</label>
         <input id={`${id}-name`} className="room-input" value={name} maxLength={80} disabled={creationBusy} onChange={(event) => setName(event.target.value)} /></>}
-      <p className="text-sm text-muted-foreground">Only selected workspace members can read this conversation.</p>
+      <p className="text-ui text-muted-foreground">Only selected workspace members can read this conversation.</p>
       <div className="room-picker">
-        <p className="text-sm font-semibold">People and agents · {selected.size} selected</p>
+        <p className="text-ui font-semibold">People and agents · {selected.size} selected</p>
         <label htmlFor={`${id}-search`} className="sr-only">Find people and agents</label>
         <input id={`${id}-search`} className="room-input" type="search" placeholder="Find a person or agent…" value={query} onChange={(event) => setQuery(event.target.value)} />
         <div className="room-picker-list">{visibleParticipants.map((participant) => {
@@ -559,7 +559,7 @@ function DirectoryContent({
             <input aria-label={`Select ${participant.displayName}`} type="checkbox" checked={!!selection} disabled={creationBusy || (!selection && selected.size >= 31)} onChange={(event) => toggleParticipant(participant, event.target.checked)} />
             <Identity name={participant.displayName} avatarOnly size="sm" />
             <span className="min-w-0 flex-1"><span className="block truncate" title={participant.displayName}>{participant.displayName}</span>
-              <span className="text-sm text-muted-foreground">{participant.kind === "agent" ? participant.mentionHandle ? `@${participant.mentionHandle}` : "Agent" : "Person"}</span></span>
+              <span className="text-ui text-muted-foreground">{participant.kind === "agent" ? participant.mentionHandle ? `@${participant.mentionHandle}` : "Agent" : "Person"}</span></span>
             {selection?.kind === "agent" && <label className="sr-only" htmlFor={`${id}-${participant.id}-listen`}>Response for {participant.displayName}</label>}
             {selection?.kind === "agent" && <select id={`${id}-${participant.id}-listen`} className="room-listen-mode" value={selection.listenMode ?? "mentions"} disabled={creationBusy}
               onChange={(event) => setListenMode(participant, event.target.value as ListenMode)}>
@@ -567,11 +567,11 @@ function DirectoryContent({
             </select>}</>;
           return <div className="room-choice" key={key}>{content}</div>;
         })}</div>
-        {visibleParticipants.length === 0 && <p className="text-sm text-muted-foreground">No matching people or agents.</p>}
+        {visibleParticipants.length === 0 && <p className="text-ui text-muted-foreground">No matching people or agents.</p>}
       </div>
       </div>
       <div className="room-creation-footer">
-        {creationError && <p role="alert" className="text-sm text-err">{creationError}</p>}
+        {creationError && <p role="alert" className="text-ui text-err">{creationError}</p>}
         {/* Not room-composer-actions: that class forces 28px icon-button squares
             for the message composer's toolbar, which clipped and overlapped these
             full-width text buttons. DialogFooter is the pattern every other dialog
@@ -612,11 +612,11 @@ function DirectoryContent({
             disabled={saveSections.pending || !!deleting} onChange={(event) => setNewSection(event.target.value)} />
           <Button type="submit" variant="outline" disabled={!newSection.trim() || sections.length >= MAX_SECTIONS || saveSections.pending || !!deleting || blankName}>Add section</Button>
         </form>
-        {sections.length >= MAX_SECTIONS && <p className="text-sm text-muted-foreground">You can keep up to {MAX_SECTIONS} sections.</p>}
-        {blankName && <p id={blankHintId} className="text-sm text-muted-foreground">Every section needs a name.</p>}
-        {saveSections.error && <p role="alert" className="text-sm text-err break-words">{saveSections.error}</p>}
+        {sections.length >= MAX_SECTIONS && <p className="text-ui text-muted-foreground">You can keep up to {MAX_SECTIONS} sections.</p>}
+        {blankName && <p id={blankHintId} className="text-ui text-muted-foreground">Every section needs a name.</p>}
+        {saveSections.error && <p role="alert" className="text-ui text-err break-words">{saveSections.error}</p>}
         {deleting && <div role="alert" className="room-section-confirm">
-          <p className="text-sm">Delete {deleting.name}? Its conversations move back to Team, Channels, or External connections.</p>
+          <p className="text-ui">Delete {deleting.name}? Its conversations move back to Team, Channels, or External connections.</p>
           <DialogFooter className="gap-2">
             <Button ref={deleteCancel} type="button" variant="outline" disabled={saveSections.pending} onClick={() => { setDeleting(null); saveSections.reset(); }}>Cancel</Button>
             <Button type="button" variant="destructive" disabled={saveSections.pending || blankName}
@@ -639,7 +639,7 @@ function DirectoryContent({
         <DialogHeader><DialogTitle className="break-words">Leave {leaving ? roomDisplayName(leaving, leaving.participants) : ""}?</DialogTitle>
           <DialogDescription>You will stop receiving its messages and lose access to its history.{leaving?.kind === "group-dm" ? "" : " An admin can add you back."}</DialogDescription>
         </DialogHeader>
-        {leave.error && <p role="alert" className="text-sm text-err break-words">{leave.error}</p>}
+        {leave.error && <p role="alert" className="text-ui text-err break-words">{leave.error}</p>}
         <DialogFooter className="gap-2">
           <Button ref={leaveCancel} type="button" variant="outline" disabled={leave.pending} onClick={() => { setLeaving(null); leave.reset(); }}>Cancel</Button>
           <Button type="button" variant="destructive" disabled={leave.pending}

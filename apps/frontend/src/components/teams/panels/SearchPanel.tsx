@@ -177,7 +177,7 @@ export function SearchPanel() {
             <p className="font-editorial-serif text-base italic" style={{ color: "var(--midnight-muted)" }}>
               Search across tasks, comments, docs, artifacts, agents, and projects.
             </p>
-            <p className="text-xs" style={{ color: "var(--midnight-muted)" }}>
+            <p className="text-caption" style={{ color: "var(--midnight-muted)" }}>
               Use operators like{" "}
               <code className="font-mono">status:todo</code>,{" "}
               <code className="font-mono">assignee:me</code>,{" "}
@@ -203,13 +203,13 @@ export function SearchPanel() {
               No matches for this search.
             </p>
             {data?.zeroResults && data.zeroResults.unfilteredTotal > 0 ? (
-              <p className="text-xs" style={{ color: "var(--midnight-muted)" }}>
+              <p className="text-caption" style={{ color: "var(--midnight-muted)" }}>
                 {data.zeroResults.unfilteredTotal} result
                 {data.zeroResults.unfilteredTotal === 1 ? "" : "s"} match the text without the
                 active filters — loosen a filter to see them.
               </p>
             ) : (
-              <p className="text-xs" style={{ color: "var(--midnight-muted)" }}>
+              <p className="text-caption" style={{ color: "var(--midnight-muted)" }}>
                 Try a different term or fewer filters.
               </p>
             )}
@@ -220,7 +220,7 @@ export function SearchPanel() {
               <SearchResultRow key={result.id} result={result} agentsById={agentsById} />
             ))}
             {data?.hasMore ? (
-              <p className="pt-2 text-center text-xs" style={{ color: "var(--midnight-muted)" }}>
+              <p className="pt-2 text-center text-caption" style={{ color: "var(--midnight-muted)" }}>
                 Showing the top {results.length} matches — refine your search to narrow further.
               </p>
             ) : null}

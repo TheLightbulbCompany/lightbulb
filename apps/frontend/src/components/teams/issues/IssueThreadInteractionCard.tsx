@@ -328,7 +328,7 @@ function TaskTreeNode({
                       className="mt-px"
                     />
                   ) : null}
-                  <div className="min-w-0 truncate text-sm font-medium text-[var(--midnight)]">
+                  <div className="min-w-0 truncate text-ui font-medium text-[var(--midnight)]">
                     {node.task.title}
                   </div>
                 </div>
@@ -338,7 +338,7 @@ function TaskTreeNode({
                   </div>
                 ) : null}
                 {node.task.description ? (
-                  <p className="mt-0.5 text-sm leading-5 text-[var(--midnight-muted)]">
+                  <p className="mt-0.5 text-ui leading-5 text-[var(--midnight-muted)]">
                     {node.task.description}
                   </p>
                 ) : null}
@@ -534,7 +534,7 @@ function SuggestTasksCard({
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--midnight-muted)]">
+      <div className="flex flex-wrap items-center gap-2 text-caption text-[var(--midnight-muted)]">
         <span>{totalTasks === 1 ? "1 draft issue" : `${totalTasks} draft issues`}</span>
         {interaction.payload.defaultParentId ? (
           <TaskField label="Default parent" value={interaction.payload.defaultParentId} tone="subtle" />
@@ -587,7 +587,7 @@ function SuggestTasksCard({
       {interaction.status === "pending" ? (
         <div className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--midnight-muted)]">
+            <div className="flex flex-wrap items-center gap-2 text-caption text-[var(--midnight-muted)]">
               <span>
                 {selectedCount === totalTasks
                   ? `All ${totalTasks} draft ${totalTasks === 1 ? "issue" : "issues"} selected`
@@ -646,7 +646,7 @@ function SuggestTasksCard({
                 value={rejectReason}
                 onChange={(event) => setRejectReason(event.target.value)}
                 placeholder="Add a short reason for rejecting this suggestion"
-                className="min-h-24 text-sm"
+                className="min-h-24 text-ui"
                 style={{
                   background: "var(--cream-deep)",
                   border: "1px solid var(--edge)",
@@ -708,13 +708,13 @@ function QuestionOptionButton({
       id={id}
       onClick={onClick}
     >
-      <div className="text-sm font-medium text-[var(--midnight)]">
+      <div className="text-ui font-medium text-[var(--midnight)]">
         {label}
       </div>
       {description ? (
         <div
           className={cn(
-            "mt-1 text-sm leading-6",
+            "mt-1 text-ui leading-6",
             selected ? "text-[var(--midnight-soft)]" : "text-[var(--midnight-muted)]",
           )}
         >
@@ -865,7 +865,7 @@ function AskUserQuestionsCard({
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--midnight-muted)]">
+      <div className="flex flex-wrap items-center gap-2 text-caption text-[var(--midnight-muted)]">
         <span className="inline-flex items-center gap-1 rounded-full border border-[var(--edge)] bg-[var(--cream-deep)] px-2.5 py-1 label-caps text-[var(--midnight-soft)]">
           <MessageSquareQuote size={12} strokeWidth={1.75} />
           Ask user questions
@@ -891,12 +891,12 @@ function AskUserQuestionsCard({
                   </div>
                   <div
                     id={`${interaction.id}-${question.id}-prompt`}
-                    className="mt-1 text-sm font-semibold text-[var(--midnight)]"
+                    className="mt-1 text-ui font-semibold text-[var(--midnight)]"
                   >
                     {question.prompt}
                   </div>
                   {question.helpText ? (
-                    <p className="mt-1 text-sm leading-6 text-[var(--midnight-muted)]">
+                    <p className="mt-1 text-ui leading-6 text-[var(--midnight-muted)]">
                       {question.helpText}
                     </p>
                   ) : null}
@@ -932,7 +932,7 @@ function AskUserQuestionsCard({
                   id={`${interaction.id}-${question.id}-other`}
                   aria-expanded={otherActiveQuestions[question.id] === true}
                   className={cn(
-                    "text-sm font-medium underline underline-offset-4 transition-colors",
+                    "text-ui font-medium underline underline-offset-4 transition-colors",
                     otherActiveQuestions[question.id]
                       ? "text-[var(--midnight)] hover:text-[var(--midnight)]"
                       : "text-[var(--midnight-muted)] hover:text-[var(--midnight)]",
@@ -952,7 +952,7 @@ function AskUserQuestionsCard({
                         [question.id]: event.target.value,
                       }))}
                     placeholder="Type your answer"
-                    className="min-h-24 text-sm"
+                    className="min-h-24 text-ui"
                     style={{
                       background: "var(--cream-deep)",
                       border: "1px solid var(--edge)",
@@ -965,7 +965,7 @@ function AskUserQuestionsCard({
           ))}
 
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--edge)] bg-[var(--cream-deep)] p-4">
-            <div className="text-sm text-[var(--midnight-muted)]">
+            <div className="text-ui text-[var(--midnight-muted)]">
               Submit once after you finish the full form.
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -1027,7 +1027,7 @@ function AskUserQuestionsCard({
                 key={question.id}
                 className="rounded-xl border border-[var(--edge)] bg-[var(--cream-deep)] p-4"
               >
-                <div className="text-sm font-semibold text-[var(--midnight)]">
+                <div className="text-ui font-semibold text-[var(--midnight)]">
                   {question.prompt}
                 </div>
                 <div className="mt-2 flex flex-wrap gap-2">
@@ -1036,7 +1036,7 @@ function AskUserQuestionsCard({
                       <TaskField key={label} label="Answer" value={label} />
                     ))
                   ) : (
-                    <span className="text-sm text-[var(--midnight-muted)]">No answer recorded.</span>
+                    <span className="text-ui text-[var(--midnight-muted)]">No answer recorded.</span>
                   )}
                 </div>
               </div>
@@ -1129,7 +1129,7 @@ function ConfirmationDeclinedBlock({
 }) {
   return (
     <div className="space-y-2">
-      <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-[var(--midnight)]">
+      <div className="flex flex-wrap items-center gap-2 text-ui leading-6 text-[var(--midnight)]">
         <span className="font-medium">Declined</span>
         <RequestConfirmationTargetChip issueId={issueId} target={target} />
       </div>
@@ -1168,7 +1168,7 @@ function ConfirmationExpiredBlock({
       {expiredByComment && result?.commentId ? (
         <a
           href={`#comment-${result.commentId}`}
-          className="border border-warn inline-flex h-7 items-center rounded-sm px-2 text-xs font-medium text-warn transition-colors hover:bg-cream-deep"
+          className="border border-warn inline-flex h-7 items-center rounded-sm px-2 text-caption font-medium text-warn transition-colors hover:bg-cream-deep"
         >
           Jump to comment
         </a>
@@ -1192,7 +1192,7 @@ function ConfirmationExpiredBlock({
 
 function ConfirmationFailedBlock() {
   return (
-    <p className="text-sm leading-6 text-[var(--midnight-muted)]">
+    <p className="text-ui leading-6 text-[var(--midnight-muted)]">
       This request could not be resolved. Try again or create a new request.
     </p>
   );
@@ -1207,7 +1207,7 @@ function RequestConfirmationResolution({
 
   if (interaction.status === "accepted") {
     return (
-      <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-[var(--midnight)]">
+      <div className="flex flex-wrap items-center gap-2 text-ui leading-6 text-[var(--midnight)]">
         <span className="font-medium">Confirmed</span>
         <RequestConfirmationTargetChip issueId={interaction.issueId} target={target} />
       </div>
@@ -1313,11 +1313,11 @@ function RequestConfirmationCard({
     <div className="space-y-4">
       {interaction.status === "pending" ? (
         <div className="space-y-3 rounded-sm border border-[var(--edge)] bg-[var(--cream-deep)] p-4">
-          <div className="text-sm leading-6 text-[var(--midnight)]">
+          <div className="text-ui leading-6 text-[var(--midnight)]">
             {interaction.payload.prompt}
           </div>
           {interaction.payload.detailsMarkdown ? (
-            <div className="border-t border-[var(--edge)] pt-3 text-sm">
+            <div className="border-t border-[var(--edge)] pt-3 text-ui">
               <MarkdownView>{interaction.payload.detailsMarkdown}</MarkdownView>
             </div>
           ) : null}
@@ -1372,7 +1372,7 @@ function RequestConfirmationCard({
                 onChange={(event) => setRejectReason(event.target.value)}
                 placeholder={declineReasonPlaceholder}
                 aria-invalid={rejectAttempted && declineReasonInvalid}
-                className="min-h-24 text-sm"
+                className="min-h-24 text-ui"
                 style={{
                   background: "var(--cream-deep)",
                   border: `1px solid ${rejectAttempted && declineReasonInvalid ? "var(--err)" : "var(--edge)"}`,
@@ -1380,7 +1380,7 @@ function RequestConfirmationCard({
                 }}
               />
               {rejectAttempted && declineReasonInvalid ? (
-                <p className="text-xs text-[var(--err)]">A decline reason is required.</p>
+                <p className="text-caption text-[var(--err)]">A decline reason is required.</p>
               ) : null}
               <div className="flex flex-wrap justify-end gap-2">
                 <EditorialButton
@@ -1416,7 +1416,7 @@ function RequestConfirmationCard({
           ) : null}
 
           {actionError ? (
-            <div className="rounded-sm border border-[var(--err)] bg-[var(--cream-deep)] px-3 py-2 text-sm text-[var(--err)]">
+            <div className="rounded-sm border border-[var(--err)] bg-[var(--cream-deep)] px-3 py-2 text-ui text-[var(--err)]">
               {actionError}
             </div>
           ) : null}
@@ -1455,7 +1455,7 @@ function RequestCheckboxConfirmationResolution({
 
     return (
       <div className="space-y-3">
-        <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-[var(--midnight)]">
+        <div className="flex flex-wrap items-center gap-2 text-ui leading-6 text-[var(--midnight)]">
           <span className="font-medium">
             {selectedCount === 0
               ? "Confirmed with no options selected"
@@ -1547,9 +1547,9 @@ function CheckboxOptionRow({
         className="mt-0.5 border-[var(--edge)] data-[state=checked]:border-[var(--midnight)] data-[state=checked]:bg-[var(--midnight)] data-[state=checked]:text-[var(--cream)]"
       />
       <div className="min-w-0 flex-1">
-        <div className="text-sm font-medium leading-5 text-[var(--midnight)]">{label}</div>
+        <div className="text-ui font-medium leading-5 text-[var(--midnight)]">{label}</div>
         {description ? (
-          <p className="mt-0.5 text-sm leading-5 text-[var(--midnight-muted)]">{description}</p>
+          <p className="mt-0.5 text-ui leading-5 text-[var(--midnight-muted)]">{description}</p>
         ) : null}
       </div>
     </label>
@@ -1703,9 +1703,9 @@ function RequestCheckboxConfirmationCard({
   return (
     <div className="space-y-4">
       <div className="space-y-3 rounded-sm border border-[var(--edge)] bg-[var(--cream-deep)] p-4">
-        <div className="text-sm leading-6 text-[var(--midnight)]">{interaction.payload.prompt}</div>
+        <div className="text-ui leading-6 text-[var(--midnight)]">{interaction.payload.prompt}</div>
         {interaction.payload.detailsMarkdown ? (
-          <div className="border-t border-[var(--edge)] pt-3 text-sm">
+          <div className="border-t border-[var(--edge)] pt-3 text-ui">
             <MarkdownView>{interaction.payload.detailsMarkdown}</MarkdownView>
           </div>
         ) : null}
@@ -1717,7 +1717,7 @@ function RequestCheckboxConfirmationCard({
 
       <div className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--midnight-muted)]">
+          <div className="flex flex-wrap items-center gap-2 text-caption text-[var(--midnight-muted)]">
             <span>{selectionSummary}</span>
             {boundsHint ? <span>{boundsHint}</span> : null}
           </div>
@@ -1765,7 +1765,7 @@ function RequestCheckboxConfirmationCard({
         </div>
 
         {acceptAttempted && validationMessage ? (
-          <p className="text-xs text-[var(--err)]">{validationMessage}</p>
+          <p className="text-caption text-[var(--err)]">{validationMessage}</p>
         ) : null}
 
         <div className="flex flex-wrap items-center justify-end gap-2">
@@ -1810,7 +1810,7 @@ function RequestCheckboxConfirmationCard({
               onChange={(event) => setRejectReason(event.target.value)}
               placeholder={declineReasonPlaceholder}
               aria-invalid={rejectAttempted && declineReasonInvalid}
-              className="min-h-24 text-sm"
+              className="min-h-24 text-ui"
               style={{
                 background: "var(--cream-deep)",
                 border: `1px solid ${rejectAttempted && declineReasonInvalid ? "var(--err)" : "var(--edge)"}`,
@@ -1818,7 +1818,7 @@ function RequestCheckboxConfirmationCard({
               }}
             />
             {rejectAttempted && declineReasonInvalid ? (
-              <p className="text-xs text-[var(--err)]">A reason is required.</p>
+              <p className="text-caption text-[var(--err)]">A reason is required.</p>
             ) : null}
             <div className="flex flex-wrap justify-end gap-2">
               <EditorialButton
@@ -1854,7 +1854,7 @@ function RequestCheckboxConfirmationCard({
         ) : null}
 
         {actionError ? (
-          <div className="rounded-sm border border-[var(--err)] bg-[var(--cream-deep)] px-3 py-2 text-sm text-[var(--err)]">
+          <div className="rounded-sm border border-[var(--err)] bg-[var(--cream-deep)] px-3 py-2 text-ui text-[var(--err)]">
             {actionError}
           </div>
         ) : null}
@@ -1928,14 +1928,14 @@ export function IssueThreadInteractionCard({
                       : "Confirmation requested")}
           </div>
           {interaction.summary ? (
-            <p className="mt-2 max-w-3xl text-sm leading-6 text-[var(--midnight-muted)]">
+            <p className="mt-2 max-w-3xl text-ui leading-6 text-[var(--midnight-muted)]">
               {interaction.summary}
             </p>
           ) : null}
         </div>
 
         {/* Tooltip dropped in the editorial port — created-by / date render bare. */}
-        <div className="rounded-sm border border-[var(--edge)] bg-transparent px-3 py-2 text-right text-xs text-[var(--midnight-muted)]">
+        <div className="rounded-sm border border-[var(--edge)] bg-transparent px-3 py-2 text-right text-caption text-[var(--midnight-muted)]">
           <div className="font-medium text-[var(--midnight)]">{formatShortDate(interaction.createdAt)}</div>
           <div>proposed by {createdByLabel}</div>
         </div>
@@ -1965,7 +1965,7 @@ export function IssueThreadInteractionCard({
         ) : interaction.kind === "request_item_verdicts" ? (
           // Classic has no per-item verdict form; the task chat's ported
           // ItemVerdictsCard (task-chat/TaskChatCompactInteractionCard) owns it.
-          <p className="text-sm leading-6 text-[var(--midnight)]">
+          <p className="text-ui leading-6 text-[var(--midnight)]">
             {interaction.payload.prompt}{" "}
             <span className="text-[var(--midnight-muted)]">
               {buildIssueThreadInteractionSummary(interaction)} — open the task to review.
@@ -1981,7 +1981,7 @@ export function IssueThreadInteractionCard({
       </div>
 
       {resolvedByLabel ? (
-        <div className="mt-4 border-t border-[var(--edge)] pt-3 text-xs text-[var(--midnight-muted)]">
+        <div className="mt-4 border-t border-[var(--edge)] pt-3 text-caption text-[var(--midnight-muted)]">
           Resolved by <span className="font-medium text-[var(--midnight)]">{resolvedByLabel}</span>
           {interaction.resolvedAt ? ` on ${formatShortDate(interaction.resolvedAt)}` : ""}
         </div>

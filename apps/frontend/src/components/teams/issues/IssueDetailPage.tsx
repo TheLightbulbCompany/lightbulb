@@ -107,7 +107,7 @@ function IssueDetailStatus({ isLoading, error }: { isLoading: boolean; error: Er
   if (isLoading) {
     return (
       <div
-        className="flex h-full items-center justify-center p-8 text-sm italic"
+        className="flex h-full items-center justify-center p-8 text-ui italic"
         style={{
           fontFamily: "var(--font-serif), serif",
           color: "var(--midnight-muted)",
@@ -122,7 +122,7 @@ function IssueDetailStatus({ isLoading, error }: { isLoading: boolean; error: Er
     return (
       <div
         role="alert"
-        className="flex h-full flex-col items-center justify-center p-8 text-sm"
+        className="flex h-full flex-col items-center justify-center p-8 text-ui"
         style={{ color: "var(--err)" }}
       >
         <p>Failed to load issue.</p>
@@ -137,7 +137,7 @@ function IssueDetailStatus({ isLoading, error }: { isLoading: boolean; error: Er
 
   return (
     <div
-      className="flex h-full items-center justify-center p-8 text-sm italic"
+      className="flex h-full items-center justify-center p-8 text-ui italic"
       style={{
         fontFamily: "var(--font-serif), serif",
         color: "var(--midnight-muted)",
@@ -277,7 +277,7 @@ function IssueDetailView({ issueId, routeId }: { issueId: string; routeId: strin
               it the page renders as a normal task and silently stays invisible. */}
           {issue.hiddenAt && (
             <div
-              className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-sm px-3 py-2 text-sm"
+              className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-sm px-3 py-2 text-ui"
               style={{
                 border: "1px solid var(--edge)",
                 background: "var(--cream-deep)",
@@ -592,7 +592,7 @@ function IssueDetailView({ issueId, routeId }: { issueId: string; routeId: strin
           </>
         }
       >
-        <p className="text-sm" style={{ color: "var(--midnight-soft)" }}>
+        <p className="text-ui" style={{ color: "var(--midnight-soft)" }}>
           {issue.identifier ? `${issue.identifier}: ` : ""}
           {issue.title}
         </p>

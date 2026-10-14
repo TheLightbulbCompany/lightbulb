@@ -92,9 +92,16 @@
   --shadow-xl: var(--shadow-lift);
   --shadow-2xl: var(--shadow-lift);
 
-  /* ── Type scale additions. With Tailwind's xs (12) / sm (14) / base (16) /
-     lg (18) / xl (20) / 2xl (24) these make the seven UI steps:
-     10 · 11 · 12 · 13 · 14 · 16 · 22. Arbitrary `text-[Npx]` is a bug. */
+  /* ── Tracking is size-specific: display tightens, small caps open. Body 0. */
+  --tracking-display: -0.02em;
+  --tracking-caps: 0.12em;
+}
+
+/* ── Type scale additions, NOT `inline`: the utilities read var(--text-*), so
+   the app scale on :root[data-chat-theme] below reaches every `text-ui` /
+   `text-caption` class while marketing and /admin keep these defaults.
+   Arbitrary `text-[Npx]` is a bug. */
+@theme static {
   --text-2xs: 0.625rem;
   --text-2xs--line-height: 1.4;
   --text-caption: 0.6875rem;
@@ -103,10 +110,6 @@
   --text-ui--line-height: 1.4;
   --text-title: 1.375rem;
   --text-title--line-height: 1.15;
-
-  /* ── Tracking is size-specific: display tightens, small caps open. Body 0. */
-  --tracking-display: -0.02em;
-  --tracking-caps: 0.12em;
 }
 
 /*
@@ -171,6 +174,18 @@
  * hand-edit that breaks one fails the build rather than shipping.
  */
 :root[data-chat-theme] {
+  /* The product's type scale (stage-2 step 6, "more like Slack"): body 15/22
+     for messages, list rows and inputs; meta 13/18 for times, status and group
+     labels; small 11/14 for badges and rail labels. --text-title keeps its
+     22px base: it styles display headings, and shrinking them restyles the
+     product. src/__tests__/typeScale.test.ts pins these. */
+  --text-2xs: 11px;
+  --text-2xs--line-height: 14px;
+  --text-caption: 13px;
+  --text-caption--line-height: 18px;
+  --text-ui: 15px;
+  --text-ui--line-height: 22px;
+
   --plane-rail:    #DEDEDE;
   --plane-sidebar: #EFEFEF;
   --plane-pane:    #FFFFFF;

@@ -43,7 +43,7 @@ function WorkDetails({ sessionId }: Props) {
       if (alive.current) setError(true);
     } finally { if (alive.current) setBusy(false); }
   }
-  return <div className="space-y-2 text-sm">
+  return <div className="space-y-2 text-ui">
     <p className="text-muted-foreground">Optional reference only. Closing work does not stop this session; finishing the session does not close work.</p>
     {(read.isLoading || read.isValidating || busy) && <p role="status">Checking linked work…</p>}
     {(read.error || error || data?.state === "unavailable") && <p role="status">Linked work unavailable.</p>}

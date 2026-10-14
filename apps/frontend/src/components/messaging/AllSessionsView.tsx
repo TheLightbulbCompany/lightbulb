@@ -59,7 +59,7 @@ export function AllSessionsView({ entries, loading, onOpenSession, onClose, onRe
             <ul>{group.rows.map(row)}</ul>
           </section>)}
         </section>}
-        {live.length === 0 && endedCount === 0 && <p role="status" className="text-sm text-muted-foreground">
+        {live.length === 0 && endedCount === 0 && <p role="status" className="text-ui text-muted-foreground">
           {loading && entries.length === 0 ? "Loading sessions…" : query.trim() ? "No sessions match." : "No sessions yet."}</p>}
       </div>
     </div>

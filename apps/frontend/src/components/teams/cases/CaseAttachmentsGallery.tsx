@@ -120,7 +120,7 @@ export function CaseAttachmentsGallery({
   attachments: CaseAttachmentRef[];
 }) {
   if (attachments.length === 0) {
-    return <p className="text-xs text-[var(--fg-mute)]">No attachments.</p>;
+    return <p className="text-caption text-[var(--fg-mute)]">No attachments.</p>;
   }
 
   return (

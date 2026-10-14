@@ -76,7 +76,7 @@ export function IssueWriteDenialNotice({
       data-testid="issue-write-denial-notice"
       data-denial-code={copy.code}
       data-denial-tone={copy.tone}
-      className={cn("rounded-md border px-3 py-2.5 text-sm shadow-sm", tone.surface, className)}
+      className={cn("rounded-md border px-3 py-2.5 text-ui shadow-sm", tone.surface, className)}
     >
       <div className="flex items-start gap-2">
         <Icon className={cn("mt-0.5 size-4 shrink-0", tone.icon)} aria-hidden="true" />
@@ -90,7 +90,7 @@ export function IssueWriteDenialNotice({
           {/* Inline flow, not flex rows: a flex `dd` is an unbreakable line box,
               so a long value drops whole and orphans its label. Inline keeps the
               label and the first words of the value together at every width. */}
-          <dl className={cn("space-y-0.5 text-xs leading-5", tone.action)}>
+          <dl className={cn("space-y-0.5 text-caption leading-5", tone.action)}>
             <div className="min-w-0">
               <dt className="inline font-medium">Who can act:</dt>{" "}
               <dd className="inline">{copy.whoCanAct}</dd>

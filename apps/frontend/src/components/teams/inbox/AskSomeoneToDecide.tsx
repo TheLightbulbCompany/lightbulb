@@ -18,10 +18,10 @@ export function AskSomeoneToDecide({ approvalId, decision }: { approvalId: strin
   const [sentTo, setSentTo] = useState<string | null>(null);
 
   if (!organization || organization.membersCount !== 1) return null;
-  if (sentTo) return <p role="status" className="text-sm">Asked {sentTo}. The card opens for them as soon as they sign up.</p>;
+  if (sentTo) return <p role="status" className="text-ui">Asked {sentTo}. The card opens for them as soon as they sign up.</p>;
   if (!open) {
     return (
-      <button type="button" className="self-start text-sm underline text-[var(--midnight-muted)]" onClick={() => setOpen(true)}>
+      <button type="button" className="self-start text-ui underline text-[var(--midnight-muted)]" onClick={() => setOpen(true)}>
         Ask someone else to decide
       </button>
     );
@@ -57,7 +57,7 @@ export function AskSomeoneToDecide({ approvalId, decision }: { approvalId: strin
         style={{ borderBottom: "1px solid var(--edge)", color: "var(--midnight)" }}
       />
       <EditorialButton size="sm" type="submit" disabled={busy || !email.trim()}>Send invite</EditorialButton>
-      {note && <p role="status" className="w-full text-sm text-[var(--midnight-muted)]">{note}</p>}
+      {note && <p role="status" className="w-full text-ui text-[var(--midnight-muted)]">{note}</p>}
     </form>
   );
 }

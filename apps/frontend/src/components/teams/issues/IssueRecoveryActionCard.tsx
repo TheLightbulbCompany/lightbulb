@@ -470,9 +470,9 @@ function BranchFacet({
       <div className="mt-1 flex items-center gap-1.5">
         <GitBranch className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
         {branch ? (
-          <code className="truncate font-mono text-xs text-foreground/90">{branch}</code>
+          <code className="truncate font-mono text-caption text-foreground/90">{branch}</code>
         ) : (
-          <span className="text-xs italic text-muted-foreground">detached / unknown</span>
+          <span className="text-caption italic text-muted-foreground">detached / unknown</span>
         )}
       </div>
       <div className="mt-0.5 pl-5 font-mono text-caption text-muted-foreground">
@@ -525,12 +525,12 @@ function DivergenceDiagnosis({
         />
       </div>
       {divergence.plainLanguageReason ? (
-        <p className="text-xs leading-5 text-foreground/80">{divergence.plainLanguageReason}</p>
+        <p className="text-caption leading-5 text-foreground/80">{divergence.plainLanguageReason}</p>
       ) : null}
       {divergence.contention ? (
         <p
           data-testid="recovery-contention-notice"
-          className="flex items-start gap-1.5 rounded-md border border-warn/40 bg-warn/5 px-2.5 py-1.5 text-xs leading-5 text-warn"
+          className="flex items-start gap-1.5 rounded-md border border-warn/40 bg-warn/5 px-2.5 py-1.5 text-caption leading-5 text-warn"
         >
           <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
           <span>
@@ -603,7 +603,7 @@ function BreakGlassOverride({
             <OctagonAlert className="h-3.5 w-3.5" aria-hidden />
             Break-glass reconciliation
           </div>
-          <p className="text-xs leading-5 text-muted-foreground">
+          <p className="text-caption leading-5 text-muted-foreground">
             This overrides Paperclip&apos;s safety check and points the recorded workspace at the live
             branch{" "}
             <span className="font-medium text-foreground/80">without an ancestry proof</span>. Confirm
@@ -642,7 +642,7 @@ function BreakGlassOverride({
             value={reason}
             onChange={(event) => setReason(event.target.value)}
             placeholder="e.g. Verified the live branch carries only the intended follow-up commits; safe to adopt."
-            className="min-h-20 text-xs"
+            className="min-h-20 text-caption"
             data-testid="recovery-breakglass-reason"
             aria-required="true"
           />
@@ -740,7 +740,7 @@ function RepairWorkspace({
             <Wrench className="h-3.5 w-3.5" aria-hidden />
             Repair workspace
           </div>
-          <p className="text-xs leading-5 text-muted-foreground">
+          <p className="text-caption leading-5 text-muted-foreground">
             This is lossless — no reason required. Your uncommitted changes are committed onto a fresh
             rescue branch, then the recorded branch is restored so the task can resume. The live branch
             is left exactly as it is.
@@ -854,7 +854,7 @@ function MetadataRow({
   children: React.ReactNode;
 }) {
   return (
-    <div className="grid grid-cols-[7.5rem_1fr] gap-x-3 gap-y-0 px-3 py-1.5 text-xs sm:px-4">
+    <div className="grid grid-cols-[7.5rem_1fr] gap-x-3 gap-y-0 px-3 py-1.5 text-caption sm:px-4">
       <dt className="truncate text-caption font-medium uppercase tracking-[0.08em] text-muted-foreground">
         {label}
       </dt>
@@ -1163,7 +1163,7 @@ export function IssueRecoveryActionCard({
       data-recovery-kind={action.kind}
       data-recovery-lane={lineage?.lane}
       className={cn(
-        "relative w-full overflow-hidden rounded-lg border text-sm shadow-xs",
+        "relative w-full overflow-hidden rounded-lg border text-ui shadow-xs",
         tone.containerClass,
         className,
       )}
@@ -1194,7 +1194,7 @@ export function IssueRecoveryActionCard({
               </>
             ) : null}
           </div>
-          <p className="mt-1 text-sm leading-6">{headline}</p>
+          <p className="mt-1 text-ui leading-6">{headline}</p>
         </div>
       </header>
       {variant === "compact" ? null : (
@@ -1332,7 +1332,7 @@ export function IssueRecoveryActionCard({
                 {evidenceSummary.text}
               </span>
             ) : (
-              <span className="text-xs leading-5 text-foreground/80">{evidenceSummary.text}</span>
+              <span className="text-caption leading-5 text-foreground/80">{evidenceSummary.text}</span>
             )
           ) : (
             <MissingValue />
@@ -1397,7 +1397,7 @@ export function IssueRecoveryActionCard({
                       type="button"
                       onClick={() => onResolve?.(option.outcome)}
                       className={cn(
-                        "flex flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+                        "flex flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left text-ui transition-colors",
                         "hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
                         option.destructive ? "text-destructive" : null,
                       )}
@@ -1468,7 +1468,7 @@ export function IssueRecoveryActionCard({
                   <div className="text-caption font-semibold uppercase tracking-[0.14em] text-muted-foreground">
                     Re-issue on isolated workspace
                   </div>
-                  <p className="text-xs leading-5 text-muted-foreground">
+                  <p className="text-caption leading-5 text-muted-foreground">
                     Creates a fresh copy of this task on an isolated git worktree based on the live
                     branch. Your current workspace and its commits are left untouched.
                   </p>

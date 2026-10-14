@@ -15,25 +15,25 @@ function SearchResults({ roomId, query, countRef, onPick }: { roomId: string; qu
   const { hits, state } = useMessageSearch(query, { enabled: true, roomId, limit: 50 });
   useEffect(() => { countRef.current = hits.length; }, [countRef, hits.length]);
   return <>
-    <div role="status" className="text-sm text-muted-foreground">
+    <div role="status" className="text-ui text-muted-foreground">
       {state === "loading" ? "Searching…"
         : state === "warming" ? "Search is starting up. This can take a few seconds."
           : state === "error" ? "Search failed. Try again."
             : state === "done" ? `${hits.length} ${hits.length === 1 ? "message" : "messages"} found`
               : "Search the message text, including thread replies. Use quotes for an exact phrase."}
     </div>
-    {state === "done" && hits.length === 0 && <p className="text-sm">No matching messages. Try a different word or phrase.</p>}
+    {state === "done" && hits.length === 0 && <p className="text-ui">No matching messages. Try a different word or phrase.</p>}
     {hits.length > 0 && <ul aria-label="Search results" className="max-h-[50dvh] overflow-y-auto -mx-2">
       {hits.map((hit) => {
         const validDate = !Number.isNaN(Date.parse(hit.createdAt));
         return <li key={hit.messageId}>
           <button type="button" className="w-full rounded-sm p-3 text-left hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             onClick={() => onPick(hit)}>
-            <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm"><span className="font-semibold">{hit.authorName || "Unknown author"}</span>
+            <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-ui"><span className="font-semibold">{hit.authorName || "Unknown author"}</span>
               {validDate && <time dateTime={hit.createdAt} className="text-muted-foreground">{new Date(hit.createdAt).toLocaleString([], { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" })}</time>}
               {hit.threadRootMessageId && <span className="text-muted-foreground">Thread reply</span>}
             </span>
-            <span className="mt-1 block whitespace-pre-wrap break-words text-sm"><SearchSnippet snippet={hit.snippet} /></span>
+            <span className="mt-1 block whitespace-pre-wrap break-words text-ui"><SearchSnippet snippet={hit.snippet} /></span>
           </button>
         </li>;
       })}

@@ -100,7 +100,7 @@ export function StageParticipantPicker({
       {selected.map((value) => (
         <span
           key={value}
-          className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-xs"
+          className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-caption"
           style={CHIP_STYLE}
         >
           <User size={12} strokeWidth={1.75} className="shrink-0" style={{ color: "var(--midnight-muted)" }} />
@@ -117,7 +117,7 @@ export function StageParticipantPicker({
         <PopoverTrigger asChild>
           <button
             type="button"
-            className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-xs transition-colors hover:underline"
+            className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-caption transition-colors hover:underline"
             style={{ border: "1px solid var(--edge)", color: "var(--midnight-muted)" }}
           >
             <Plus size={12} strokeWidth={1.75} />
@@ -143,7 +143,7 @@ export function StageParticipantPicker({
                 : `Search agents...`
             }
             aria-label={`Search ${noun}s`}
-            className="w-full px-2 py-1.5 text-xs bg-transparent mb-1 rounded-sm"
+            className="w-full px-2 py-1.5 text-caption bg-transparent mb-1 rounded-sm"
             style={{ borderBottom: "1px solid var(--edge)" }}
           />
           <ul
@@ -167,7 +167,7 @@ export function StageParticipantPicker({
                     type="button"
                     onClick={() => toggle(value)}
                     className={cn(
-                      "flex w-full items-center gap-2 px-2 py-1.5 text-left text-sm rounded-sm hover:bg-[var(--cream-deep)]",
+                      "flex w-full items-center gap-2 px-2 py-1.5 text-left text-ui rounded-sm hover:bg-[var(--cream-deep)]",
                       isSelected && "bg-[var(--cream-deeper)]",
                     )}
                   >
@@ -183,7 +183,7 @@ export function StageParticipantPicker({
               );
             })}
             {visibleAgents.length === 0 && (
-              <li className="px-2 py-1.5 text-xs" style={{ color: "var(--midnight-muted)" }}>
+              <li className="px-2 py-1.5 text-caption" style={{ color: "var(--midnight-muted)" }}>
                 No matching agents.
               </li>
             )}
@@ -230,7 +230,7 @@ export function StageParticipantPicker({
                 })}
                 {visibleMembers.length === 0 && (
                   <li
-                    className="px-2 py-1.5 text-xs"
+                    className="px-2 py-1.5 text-caption"
                     style={{ color: "var(--midnight-muted)" }}
                   >
                     No matching people.

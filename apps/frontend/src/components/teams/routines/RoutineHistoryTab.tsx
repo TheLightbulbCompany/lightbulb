@@ -68,13 +68,13 @@ function revNumber(revision: RoutineRevision): number {
   return revision.revisionNumber ?? 0;
 }
 
-const CAPS = "text-xs font-medium uppercase tracking-wide text-[var(--midnight-muted)]";
+const CAPS = "text-caption font-medium uppercase tracking-wide text-[var(--midnight-muted)]";
 
 function Tag({ tone, children }: { tone?: "warn" | "ok" | "err"; children: React.ReactNode }) {
   const color = tone ? `var(--${tone})` : "var(--midnight-muted)";
   return (
     <span
-      className="label-caps inline-flex items-center rounded-sm border px-1.5 text-[10px]"
+      className="label-caps inline-flex items-center rounded-sm border px-1.5 text-2xs"
       style={{ borderColor: color, color }}
     >
       {children}
@@ -159,7 +159,7 @@ export function RoutineHistoryTab({ routine, agents, projects, onRestored }: Pro
 
   if (revisionsQuery.isLoading && !revisionsQuery.data) {
     return (
-      <p className="text-sm italic" style={{ color: "var(--midnight-muted)" }}>
+      <p className="text-ui italic" style={{ color: "var(--midnight-muted)" }}>
         Loading revisions…
       </p>
     );
@@ -173,8 +173,8 @@ export function RoutineHistoryTab({ routine, agents, projects, onRestored }: Pro
         style={{ borderColor: "var(--edge)", borderLeft: "2px solid var(--err)" }}
       >
         <div>
-          <p className="text-sm font-medium">Could not load revisions</p>
-          <p className="text-xs text-[var(--midnight-muted)]">
+          <p className="text-ui font-medium">Could not load revisions</p>
+          <p className="text-caption text-[var(--midnight-muted)]">
             {revisionsQuery.error instanceof Error
               ? revisionsQuery.error.message
               : "Unknown error loading revisions."}
@@ -207,8 +207,8 @@ export function RoutineHistoryTab({ routine, agents, projects, onRestored }: Pro
         {onlyBootstrapRevision ? (
           <div className="flex flex-col items-center gap-2 py-6 text-center">
             <HistoryIcon size={20} aria-hidden="true" className="text-[var(--midnight-muted)]" />
-            <p className="text-sm font-medium">No edits yet</p>
-            <p className="text-xs text-[var(--midnight-muted)]">
+            <p className="text-ui font-medium">No edits yet</p>
+            <p className="text-caption text-[var(--midnight-muted)]">
               Revision 1 is the only history this routine has. Saving an edit creates the first
               additional revision.
             </p>
@@ -293,10 +293,10 @@ function HistoricalPreviewBanner({
     <div className="rounded-md border px-4 py-3" style={{ borderColor: "var(--warn)" }}>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex flex-col gap-1">
-          <p className="text-sm font-medium" style={{ color: "var(--warn)" }}>
+          <p className="text-ui font-medium" style={{ color: "var(--warn)" }}>
             Viewing revision {revisionNumber} (read-only)
           </p>
-          <p className="text-xs text-[var(--midnight-muted)]">
+          <p className="text-caption text-[var(--midnight-muted)]">
             Restoring this revision creates a new revision {nextRevisionNumber} with the same
             content. History stays append-only.
           </p>
@@ -338,7 +338,7 @@ function RevisionList({
     <aside className="flex flex-col gap-1">
       <header className="flex items-center justify-between pb-2">
         <p className={CAPS}>Revisions</p>
-        <span className="text-xs text-[var(--midnight-muted)]">{totalRevisions} total</span>
+        <span className="text-caption text-[var(--midnight-muted)]">{totalRevisions} total</span>
       </header>
       {revisions.map((revision) => {
         const isSelected = revision.id === selectedRevisionId;
@@ -363,12 +363,12 @@ function RevisionList({
             }}
             data-testid={`revision-row-${revision.revisionNumber}`}
           >
-            <div className="flex items-center gap-2 text-sm font-medium">
+            <div className="flex items-center gap-2 text-ui font-medium">
               <span>rev {revision.revisionNumber}</span>
               {isCurrent && <Tag>Current</Tag>}
               {revision.restoredFromRevisionId && <Tag tone="warn">Restored</Tag>}
             </div>
-            <div className="truncate text-xs text-[var(--midnight-muted)]">
+            <div className="truncate text-caption text-[var(--midnight-muted)]">
               {revision.createdAt ? timeAgo(revision.createdAt) : "—"} • {getActorLabel(revision)}
               {revision.changeSummary ? ` • ${revision.changeSummary}` : ""}
             </div>
@@ -473,8 +473,8 @@ function RevisionPreview({
       <header className={`${cardClass} flex flex-col gap-2 p-4`} style={cardStyle}>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex min-w-0 flex-col gap-1">
-            <p className="text-sm font-medium">rev {revision.revisionNumber}</p>
-            <p className="truncate text-xs text-[var(--midnight-muted)]">
+            <p className="text-ui font-medium">rev {revision.revisionNumber}</p>
+            <p className="truncate text-caption text-[var(--midnight-muted)]">
               Saved {revision.createdAt ? timeAgo(revision.createdAt) : "—"} by{" "}
               {getActorLabel(revision)}
               {revision.changeSummary ? ` · ${revision.changeSummary}` : ""}
@@ -504,10 +504,10 @@ function RevisionPreview({
         <div className="grid gap-3 md:grid-cols-2">
           {fieldRows.map((row) => (
             <div key={row.key} className="flex flex-col gap-1 p-2">
-              <p className="text-xs uppercase tracking-wide text-[var(--midnight-muted)]">
+              <p className="text-caption uppercase tracking-wide text-[var(--midnight-muted)]">
                 {row.label}
               </p>
-              <p className="text-sm">
+              <p className="text-ui">
                 {row.value || <span className="text-[var(--midnight-muted)]">—</span>}
                 {row.differs && (
                   <span className="ml-2">
@@ -522,7 +522,7 @@ function RevisionPreview({
 
       <div className={`${cardClass} flex flex-col gap-2 p-3`} style={cardStyle}>
         <p className={CAPS}>Description</p>
-        <div className="rounded-md p-3 text-sm leading-7">
+        <div className="rounded-md p-3 text-ui leading-7">
           {snapshot.description ? (
             <MarkdownView>{snapshot.description}</MarkdownView>
           ) : (
@@ -534,22 +534,22 @@ function RevisionPreview({
       <div className={`${cardClass} flex flex-col gap-2 p-3`} style={cardStyle}>
         <p className={CAPS}>Triggers ({triggers.length})</p>
         {triggers.length === 0 ? (
-          <p className="text-sm text-[var(--midnight-muted)]">No triggers in this revision.</p>
+          <p className="text-ui text-[var(--midnight-muted)]">No triggers in this revision.</p>
         ) : (
           <ul>
             {triggers.map((trigger) => (
               <li
                 key={trigger.id}
-                className="flex flex-wrap items-center gap-2 py-2 text-sm"
+                className="flex flex-wrap items-center gap-2 py-2 text-ui"
                 style={{ borderBottom: "1px solid var(--edge)" }}
               >
                 <Tag>{trigger.kind}</Tag>
                 <span className="font-medium">{trigger.label ?? trigger.kind}</span>
-                <span className="text-xs text-[var(--midnight-muted)]">
+                <span className="text-caption text-[var(--midnight-muted)]">
                   {summarizeTriggerSnapshot(trigger)}
                 </span>
                 <span
-                  className="ml-auto text-xs"
+                  className="ml-auto text-caption"
                   style={{ color: trigger.enabled ? "var(--ok)" : "var(--midnight-muted)" }}
                 >
                   {trigger.enabled ? "enabled" : "disabled"}
@@ -558,7 +558,7 @@ function RevisionPreview({
             ))}
           </ul>
         )}
-        <p className="text-xs text-[var(--midnight-muted)]">
+        <p className="text-caption text-[var(--midnight-muted)]">
           Webhook secrets are not stored in revisions. If a restored webhook trigger needs
           re-creation, Paperclip mints fresh secret material at restore time.
         </p>
@@ -571,11 +571,11 @@ function RevisionPreview({
             {variables.map((variable) => (
               <li
                 key={variable.name}
-                className="flex items-center justify-between py-2 text-sm"
+                className="flex items-center justify-between py-2 text-ui"
                 style={{ borderBottom: "1px solid var(--edge)" }}
               >
-                <span className="font-mono text-xs">{variable.name}</span>
-                <span className="text-xs text-[var(--midnight-muted)]">
+                <span className="font-mono text-caption">{variable.name}</span>
+                <span className="text-caption text-[var(--midnight-muted)]">
                   default: {formatVariableDefault(variable)}
                 </span>
               </li>
@@ -637,7 +637,7 @@ function RestoreConfirmDialog({
         </>
       }
     >
-      <ul className="flex flex-col gap-2 text-sm">
+      <ul className="flex flex-col gap-2 text-ui">
         <li className="flex items-start gap-2">
           {bullet("var(--ok)")}
           Routine field values, variables, and schedule cron will revert.
@@ -734,11 +734,11 @@ function RoutineRevisionDiffModal({
       <section className="flex flex-col gap-2">
         <p className={CAPS}>Field changes</p>
         {fieldChanges.length === 0 ? (
-          <p className="text-sm text-[var(--midnight-muted)]">No structural field changes.</p>
+          <p className="text-ui text-[var(--midnight-muted)]">No structural field changes.</p>
         ) : (
-          <table className="w-full overflow-hidden rounded-md border text-sm" style={{ borderColor: "var(--edge)" }}>
+          <table className="w-full overflow-hidden rounded-md border text-ui" style={{ borderColor: "var(--edge)" }}>
             <thead>
-              <tr className="text-xs uppercase tracking-wide text-[var(--midnight-muted)]">
+              <tr className="text-caption uppercase tracking-wide text-[var(--midnight-muted)]">
                 <th className="px-3 py-2 text-left">Field</th>
                 <th className="px-3 py-2 text-left">Old value</th>
                 <th className="px-3 py-2 text-left">New value</th>
@@ -747,11 +747,11 @@ function RoutineRevisionDiffModal({
             <tbody>
               {fieldChanges.map((change) => (
                 <tr key={change.field} style={{ borderTop: "1px solid var(--edge)" }}>
-                  <td className="px-3 py-2 align-top text-xs font-medium">{change.field}</td>
-                  <td className="px-3 py-2 align-top text-xs" style={{ color: "var(--err)" }}>
+                  <td className="px-3 py-2 align-top text-caption font-medium">{change.field}</td>
+                  <td className="px-3 py-2 align-top text-caption" style={{ color: "var(--err)" }}>
                     {change.oldValue ?? "—"}
                   </td>
-                  <td className="px-3 py-2 align-top text-xs" style={{ color: "var(--ok)" }}>
+                  <td className="px-3 py-2 align-top text-caption" style={{ color: "var(--ok)" }}>
                     {change.newValue ?? "—"}
                   </td>
                 </tr>
@@ -788,7 +788,7 @@ function RevisionPicker({
         value={value}
         onChange={(event) => onChange(event.target.value)}
         aria-label={`${label} revision`}
-        className="h-8 min-w-48 rounded-md border bg-[var(--cream)] px-2 text-xs"
+        className="h-8 min-w-48 rounded-md border bg-[var(--cream)] px-2 text-caption"
         style={{ borderColor: "var(--edge)" }}
       >
         {revisions.map((revision) => (
@@ -804,10 +804,10 @@ function RevisionPicker({
 
 function DiffTable({ rows }: { rows: DiffRow[] }) {
   if (rows.length === 0) {
-    return <p className="text-sm text-[var(--midnight-muted)]">No description on either revision.</p>;
+    return <p className="text-ui text-[var(--midnight-muted)]">No description on either revision.</p>;
   }
   if (rows.every((row) => row.kind === "context")) {
-    return <p className="text-sm text-[var(--midnight-muted)]">Descriptions are identical.</p>;
+    return <p className="text-ui text-[var(--midnight-muted)]">Descriptions are identical.</p>;
   }
   const colorByKind: Record<DiffRow["kind"], string | undefined> = {
     context: undefined,
@@ -824,11 +824,11 @@ function DiffTable({ rows }: { rows: DiffRow[] }) {
   const gridCols = "grid grid-cols-[3rem_3rem_1.5rem_minmax(0,1fr)]";
   return (
     <div
-      className="overflow-hidden rounded-md border font-mono text-xs leading-6"
+      className="overflow-hidden rounded-md border font-mono text-caption leading-6"
       style={{ borderColor: "var(--edge)" }}
     >
       <div
-        className={`${gridCols} px-3 py-2 text-xs uppercase tracking-wide text-[var(--midnight-muted)]`}
+        className={`${gridCols} px-3 py-2 text-caption uppercase tracking-wide text-[var(--midnight-muted)]`}
         style={{ borderBottom: "1px solid var(--edge)" }}
       >
         <span>Old</span>

@@ -150,14 +150,14 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={handleKeyDown}
-          className="flex-1 h-11 bg-transparent border-0 outline-none px-0 text-sm placeholder:text-[color:var(--midnight-muted)]"
+          className="flex-1 h-11 bg-transparent border-0 outline-none px-0 text-ui placeholder:text-[color:var(--midnight-muted)]"
           style={{ color: "var(--midnight)" }}
         />
       </div>
       <div className="max-h-[60vh] overflow-y-auto py-2" style={{ background: "var(--cream)" }}>
           {flatItems.length === 0 ? (
             <div
-              className="px-4 py-8 text-center text-sm italic"
+              className="px-4 py-8 text-center text-ui italic"
               style={{
                 color: "var(--midnight-muted)",
                 fontFamily: "var(--font-serif), Georgia, serif",
@@ -274,7 +274,7 @@ function Group({ label, children }: { label: string; children: React.ReactNode }
   return (
     <div className="py-1">
       <div
-        className="px-3 py-1 text-[10px] uppercase"
+        className="px-3 py-1 text-2xs uppercase"
         style={{
           color: "var(--midnight-muted)",
           fontFamily: "var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace",
@@ -312,7 +312,7 @@ function Row({
       data-cmd-row
       onMouseEnter={onMouseEnter}
       onClick={onClick}
-      className="flex items-center gap-2 px-3 py-1.5 text-sm cursor-pointer transition-colors"
+      className="flex items-center gap-2 px-3 py-1.5 text-ui cursor-pointer transition-colors"
       style={{
         background: selected ? "var(--cream-deeper)" : "transparent",
         borderLeft: selected ? "2px solid var(--midnight)" : "2px solid transparent",

@@ -15,15 +15,15 @@ async function sha256Hex(text: string): Promise<string> {
 
 /** The call as the Mac shipped it, every key of it: a command and its flags, each edit apart, or the whole JSON. */
 function CallInput({ tool, input }: { tool: string; input: Record<string, unknown> }) {
-  const pre = "my-2 max-h-72 overflow-y-auto whitespace-pre-wrap break-all rounded bg-muted p-2 font-mono text-xs";
+  const pre = "my-2 max-h-72 overflow-y-auto whitespace-pre-wrap break-all rounded bg-muted p-2 font-mono text-caption";
   const view = approvalInputView(tool, input);
   if (view.kind === "json") return <pre className={pre}>{view.text}</pre>;
-  if (view.kind === "bash") return <div className="my-2 text-xs">
+  if (view.kind === "bash") return <div className="my-2 text-caption">
     {view.outsideSandbox && <p className="font-medium text-warn">Runs outside the sandbox</p>}
     <pre className={pre}>{view.command}</pre>
     {view.notes.map(note => <p key={note} className="whitespace-pre-wrap break-all text-muted-foreground">{note}</p>)}
   </div>;
-  return <div className="my-2 text-xs">
+  return <div className="my-2 text-caption">
     <p className="whitespace-pre-wrap break-all font-mono">{view.path}</p>
     {view.edits.map((edit, i) => <div key={i} className={i ? "mt-2 border-t pt-2" : ""}>
       {view.edits.length > 1 && <p className="font-medium">Edit {i + 1} of {view.edits.length}</p>}
@@ -74,11 +74,11 @@ export function SessionApprovalCard({ session, client, own, ownerName }: {
   const current = state?.approvalId === pending.approvalId ? state : null;
   const busy = current?.status === "sending" || current?.status === "sent";
   const where = own ? "your" : `${ownerName}'s`;
-  return <section className="mx-3 my-2 rounded-md border border-warn p-3 text-sm" aria-label="Permission prompt">
+  return <section className="mx-3 my-2 rounded-md border border-warn p-3 text-ui" aria-label="Permission prompt">
     <p className="font-medium">Claude wants to use {pending.tool}</p>
     {pending.input && !privateSend ? <CallInput tool={pending.tool} input={pending.input} />
-      : pending.summary && <pre className="my-2 whitespace-pre-wrap break-all rounded bg-muted p-2 font-mono text-xs">{pending.summary}</pre>}
-    {shown && <div className="my-2 rounded bg-muted p-2 text-xs"><p className="font-medium">To: {shown.destination}</p><p className="text-muted-foreground">Request ID: {shown.requestId}</p><pre className="mt-2 max-h-72 overflow-y-auto whitespace-pre-wrap break-words font-mono">{shown.text}</pre></div>}
+      : pending.summary && <pre className="my-2 whitespace-pre-wrap break-all rounded bg-muted p-2 font-mono text-caption">{pending.summary}</pre>}
+    {shown && <div className="my-2 rounded bg-muted p-2 text-caption"><p className="font-medium">To: {shown.destination}</p><p className="text-muted-foreground">Request ID: {shown.requestId}</p><pre className="mt-2 max-h-72 overflow-y-auto whitespace-pre-wrap break-words font-mono">{shown.text}</pre></div>}
     {!allowed ? <p className="text-muted-foreground">Waiting on {where} approval{privateSend ? "." : " in the terminal."}</p> : <>
       {!canApprove && <p className="text-muted-foreground">{privateSend
         ? failedFor === detailKey ? "Could not load the exact message. Retry, or approve on your Mac." : "Loading the exact message…"

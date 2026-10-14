@@ -46,7 +46,7 @@ export function PanelMasthead({
           {meta && (
             <p
               data-testid="panel-masthead-meta"
-              className="text-xs tabular-nums font-mono text-[var(--midnight-muted)]"
+              className="text-caption tabular-nums font-mono text-[var(--midnight-muted)]"
             >
               {meta}
             </p>

@@ -192,7 +192,7 @@ export function SessionDetails({ open, onOpenChange, onClosed, tab, onTab, sessi
     {/* Focus lands on the dialog, not its first tab: a ring on "About" would read as the open tab. */}
     <DialogContent tabIndex={-1} onOpenAutoFocus={event => { event.preventDefault(); (event.currentTarget as HTMLElement | null)?.focus(); }}
       onCloseAutoFocus={event => { event.preventDefault(); onClosed?.(); }}
-      className="session-details max-w-[calc(100%-2rem)] sm:max-w-lg max-h-[calc(100dvh-2rem)] overflow-y-auto text-sm outline-none">
+      className="session-details max-w-[calc(100%-2rem)] sm:max-w-lg max-h-[calc(100dvh-2rem)] overflow-y-auto text-ui outline-none">
       <DialogHeader>
         <DialogTitle className="room-wrap">{sessionTitle(session)}</DialogTitle>
         <DialogDescription>{sessionToolName(session.provider)} session, {own ? "yours" : `owned by ${ownerName}`}.</DialogDescription>

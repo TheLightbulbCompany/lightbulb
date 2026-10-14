@@ -32,7 +32,7 @@ export function CaseChildrenTree({
 }) {
   const [expanded, setExpanded] = useState(false);
   if (cases.length === 0) {
-    return <p className="text-xs text-[var(--fg-mute)]">No child cases.</p>;
+    return <p className="text-caption text-[var(--fg-mute)]">No child cases.</p>;
   }
 
   const shouldCap = maxVisible != null && cases.length > maxVisible;
@@ -48,12 +48,12 @@ export function CaseChildrenTree({
               href={caseHref(child.identifier)}
               prefetch={false}
               onClick={(e) => handleShellLinkClick(e, caseHref(child.identifier))}
-              className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm transition-colors hover:bg-[var(--plane-raised)]"
+              className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-ui transition-colors hover:bg-[var(--plane-raised)]"
             >
               <CaseCopyableToken
                 value={child.identifier}
                 label="case ID"
-                className="shrink-0 font-mono text-xs text-[var(--fg-mute)]"
+                className="shrink-0 font-mono text-caption text-[var(--fg-mute)]"
                 containerClassName="shrink-0"
                 stopPropagation
               />
@@ -69,7 +69,7 @@ export function CaseChildrenTree({
           type="button"
           variant="ghost"
           size="sm"
-          className="h-7 gap-1 px-2 text-xs text-[var(--fg-mute)]"
+          className="h-7 gap-1 px-2 text-caption text-[var(--fg-mute)]"
           onClick={() => setExpanded(true)}
         >
           <ChevronDown className="h-3.5 w-3.5" />

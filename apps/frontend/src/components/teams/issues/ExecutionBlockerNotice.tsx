@@ -77,7 +77,7 @@ export function ExecutionBlockerNotice({ issueId, blocker, onRetried }: {
   };
 
   return (
-    <div role="status" aria-label="Task recovery" className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted px-3 py-2 text-sm text-foreground">
+    <div role="status" aria-label="Task recovery" className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted px-3 py-2 text-ui text-foreground">
       <span>{blocker.cause === "legacy_execution_requires_reconciliation" ? "Automatic recovery of this task stopped." : blocker.nextAction}</span>
       {failedRun && (
         <Button variant="outline" size="sm" disabled={isPending} onClick={() => void retry()}>

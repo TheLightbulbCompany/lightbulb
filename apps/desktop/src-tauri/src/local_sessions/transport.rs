@@ -83,9 +83,47 @@ impl Rpc {
 /// checks the envelope size before validating, so the byte budget bites first.
 const HEARTBEAT_SESSIONS_MAX: usize = 24;
 
-/// One discovery pass: the sessions, the listed conversations, and the holders born before this
-/// login session (`holder::manager::stranded`).
-type Discovered = (Vec<NativeSession>, BTreeSet<String>, Vec<crate::holder::manager::HolderInfo>);
+/// One discovery pass: the sessions, the listed conversations, the holders born before this
+/// login session (`holder::manager::stranded`), and the ones no terminal or panel is on
+/// (`holder::manager::unattached`).
+/// How long a held session nobody is on stays idle before it is stopped (`Host::stop_idle`): about
+/// an hour, as Claude Code's own background sessions.
+const IDLE_STOP_AFTER: Duration = Duration::from_secs(60 * 60);
+/// The same while macOS is short of memory: Claude stops idle sessions sooner then too.
+const IDLE_STOP_PRESSED: Duration = Duration::from_secs(20 * 60);
+
+/// An idle stop is due: the session is idle (not working, not waiting on its person, not
+/// unknown), nobody watches it, and it has been quiet long enough. `quiet`: None is not known.
+fn idle_stop_due(status: &str, watched: bool, quiet: Option<Duration>, pressed: bool) -> bool {
+    let after = if pressed { IDLE_STOP_PRESSED } else { IDLE_STOP_AFTER };
+    status == "idle" && !watched && quiet.is_some_and(|quiet| quiet >= after)
+}
+
+/// How long since the session last did something: its transcript (Claude's JSONL, Codex's rollout)
+/// was last written then. Never the time since it started.
+fn quiet_for(mirror: &Mirror, now: SystemTime) -> Option<Duration> {
+    let written = fs::metadata(mirror.native.transcript.as_ref()?).ok()?.modified().ok()?;
+    now.duration_since(written).ok()
+}
+
+/// macOS says memory is short: `kern.memorystatus_vm_pressure_level` is warn (2) or critical (4).
+#[cfg(target_os = "macos")]
+fn memory_pressed() -> bool {
+    let mut level: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>();
+    let name = b"kern.memorystatus_vm_pressure_level\0";
+    let read = unsafe {
+        libc::sysctlbyname(name.as_ptr().cast(), (&mut level as *mut libc::c_int).cast(), &mut len, std::ptr::null_mut(), 0)
+    };
+    read == 0 && level > 1
+}
+
+#[cfg(not(target_os = "macos"))]
+fn memory_pressed() -> bool {
+    false
+}
+
+type Discovered = (Vec<NativeSession>, BTreeSet<String>, Vec<crate::holder::manager::HolderInfo>, Vec<crate::holder::manager::HolderInfo>);
 
 pub(super) struct Host {
     workspace_at: Instant,
@@ -1058,6 +1096,48 @@ impl Host {
         Ok(())
     }
 
+    /// Claude Code's own rule for its background sessions (code.claude.com/docs/en/agent-view): a
+    /// held session that is idle IDLE_STOP_AFTER (IDLE_STOP_PRESSED while macOS is short of
+    /// memory), with no terminal or panel on its holder and nobody watching it in Lightbulb, has
+    /// its provider stopped. Its conversation stays on disk; it ends as "idle-stopped", recorded
+    /// first as a stranded end is, and the row offers Resume. Busy or waiting sessions, attached or
+    /// watched ones, and every session Lightbulb does not hold are never touched.
+    fn stop_idle(&mut self, unattached: Vec<crate::holder::manager::HolderInfo>) -> Result<()> {
+        if unattached.is_empty() || !super::session_states::reads_idle_stopped() {
+            return Ok(());
+        }
+        let pressed = memory_pressed();
+        let now = SystemTime::now();
+        for holder in unattached {
+            let keys: Vec<String> = self
+                .mirrors
+                .iter()
+                .filter(|(_, m)| {
+                    m.ended_at.is_none()
+                        && m.deferred_end_reason.is_none()
+                        && m.native.holder.as_deref() == Some(holder.id.as_str())
+                })
+                .map(|(k, _)| k.clone())
+                .collect();
+            // END stops everything the holder runs: every session in it must be due.
+            let due = !keys.is_empty()
+                && keys.iter().all(|key| {
+                    let m = &self.mirrors[key];
+                    let watched = m.session_id.as_deref().is_some_and(super::screen::watched);
+                    idle_stop_due(&m.native.status, watched, quiet_for(m, now), pressed)
+                });
+            if !due {
+                continue;
+            }
+            for key in keys {
+                self.end_session(&key, super::lifecycle::IDLE_STOPPED)?;
+            }
+            // END blocks up to 2 s per holder: off the host thread.
+            std::thread::spawn(move || crate::holder::manager::end(&holder));
+        }
+        Ok(())
+    }
+
     fn finish_deferred_end(&mut self, key: &str) -> Result<()> {
         let reason = {
             let Some(mirror) = self.mirrors.get_mut(key) else {
@@ -1267,9 +1347,10 @@ impl Host {
             tokio::select! {
                 result=&mut remote=>return result,
                 update=updates.recv()=>{
-                    let (update, listed, stranded) = update.ok_or("discovery stopped")?;
+                    let (update, listed, stranded, unattached) = update.ok_or("discovery stopped")?;
                     self.observe(update, &listed)?;
                     self.end_stranded(stranded)?;
+                    self.stop_idle(unattached)?;
                 }
             }
         }
@@ -1392,10 +1473,11 @@ impl Host {
                 }
                 // Every session is tracked; this names the held ones (rulings 2026-10-04).
                 // One process table for both: the list and which of it is stranded.
-                let (holders, stranded) = tokio::task::spawn_blocking(|| {
+                let (holders, stranded, unattached) = tokio::task::spawn_blocking(|| {
                     let holders = crate::holder::manager::list();
                     let stranded = crate::holder::manager::stranded(&holders);
-                    (holders, stranded)
+                    let unattached = crate::holder::manager::unattached(&holders);
+                    (holders, stranded, unattached)
                 })
                 .await
                 .unwrap_or_default();
@@ -1412,7 +1494,7 @@ impl Host {
                 }
                 // Every provider failed: this pass proves nothing. Keep the state we
                 // have -- an empty listing would otherwise read as "all quiet".
-                if failures.len() < providers && tx.send((found, conversations, stranded)).await.is_err() {
+                if failures.len() < providers && tx.send((found, conversations, stranded, unattached)).await.is_err() {
                     break;
                 }
                 last_failures = failures;
@@ -1836,12 +1918,13 @@ impl Host {
                 },
                 update = updates.recv() => {
                     arm = laps.woke("discovery update");
-                    let Some((update, listed, stranded)) = update else {return Err("discovery stopped".into());};
+                    let Some((update, listed, stranded, unattached)) = update else {return Err("discovery stopped".into());};
                     for key in self.observe(update, &listed)? {
                         registered.remove(&key);
                         recovering_ended.remove(&key);
                     }
                     self.end_stranded(stranded)?;
+                    self.stop_idle(unattached)?;
                 },
                 Some(frame) = screens.recv() => {
                     arm = laps.woke("screen frame");
@@ -4424,6 +4507,69 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn local_sessions_an_idle_stop_is_due_only_for_an_unwatched_session_idle_long_enough() {
+        let min = |m: u64| Some(Duration::from_secs(m * 60));
+        assert!(idle_stop_due("idle", false, min(60), false), "idle an hour, nobody on it");
+        assert!(!idle_stop_due("idle", false, min(59), false), "not yet");
+        assert!(!idle_stop_due("idle", false, None, false), "no transcript: quiet for an unknown time");
+        for status in ["busy", "waiting-approval", "unknown", "offline", "ended"] {
+            assert!(!idle_stop_due(status, false, min(600), false), "{status} is never stopped");
+        }
+        assert!(!idle_stop_due("idle", true, min(600), false), "someone watches it in Lightbulb");
+        // Under memory pressure the wait is shorter, and still never for a watched or busy one.
+        assert!(idle_stop_due("idle", false, min(20), true));
+        assert!(!idle_stop_due("idle", false, min(19), true));
+        assert!(!idle_stop_due("idle", true, min(20), true));
+        assert!(!idle_stop_due("busy", false, min(20), true));
+    }
+
+    #[test]
+    fn local_sessions_a_held_session_idle_an_hour_with_nobody_on_it_ends_idle_stopped() {
+        let dir = tempfile::tempdir().unwrap();
+        let hour_ago = SystemTime::now() - Duration::from_secs(61 * 60);
+        let transcript = |name: &str, at: SystemTime| {
+            let path = dir.path().join(name);
+            fs::write(&path, "{}\n").unwrap();
+            fs::File::options().write(true).open(&path).unwrap().set_modified(at).unwrap();
+            path
+        };
+        let held = |holder: &str, status: &str, written: PathBuf| {
+            let mut m = test_mirror(&format!("thread-{holder}"), "generation-1");
+            // Claude: a held Codex's end waits to learn how its provider left (`awaits_exit`).
+            m.native.provider = "claude".into();
+            m.native.holder = Some(holder.into());
+            m.native.status = status.into();
+            m.native.transcript = Some(written);
+            m
+        };
+        let idle = held("1d1e0001", "idle", transcript("idle.jsonl", hour_ago));
+        let busy = held("1d1e0002", "busy", transcript("busy.jsonl", hour_ago));
+        let fresh = held("1d1e0003", "idle", transcript("fresh.jsonl", SystemTime::now()));
+        let (k_idle, k_busy, k_fresh) = (native_key(&idle.native), native_key(&busy.native), native_key(&fresh.native));
+        let mut host = test_host(dir.path(), vec![(k_idle.as_str(), idle), (k_busy.as_str(), busy), (k_fresh.as_str(), fresh)]);
+        // Never pid 0 or 1, and never a real pid (above macOS's pid limit): a failed END stops the
+        // holder, which signals its process group.
+        let holder = |id: &str, pid: u32| crate::holder::manager::HolderInfo { id: id.into(), socket: dir.path().join("none.sock"),
+            pid, provider_pid: pid + 1, argv: vec![], cwd: dir.path().into(), watch: true, type_input: true };
+        let unattached = vec![holder("1d1e0001", 2_147_483_100), holder("1d1e0002", 2_147_483_102), holder("1d1e0003", 2_147_483_104)];
+        // A relay that cannot read the reason: nothing is stopped.
+        super::super::session_states::set_reads_idle_stopped(false);
+        host.stop_idle(unattached.clone()).unwrap();
+        assert!(host.ended_pending.is_empty());
+        super::super::session_states::set_reads_idle_stopped(true);
+        host.stop_idle(unattached).unwrap();
+        assert_eq!(host.mirrors[&k_idle].ended_reason.as_deref(), Some("idle-stopped"));
+        assert_eq!(host.ended_pending, vec![k_idle.clone()], "only the idle one an hour quiet");
+        assert!(host.mirrors[&k_busy].ended_at.is_none() && host.mirrors[&k_fresh].ended_at.is_none());
+        // The provider's own exit, reported next (hook or pid), cannot relabel it, and the app's END
+        // is not its person's.
+        host.end_session(&k_idle, "exited").unwrap();
+        crate::holder::manager::end_asked_now("1d1e0001");
+        assert_eq!(super::super::session_states::end_reason(&host.mirrors[&k_idle]), "idle-stopped");
+        crate::holder::manager::end_asked_forget("1d1e0001");
+    }
+
+    #[test]
     fn local_sessions_a_holder_born_before_the_login_session_ends_with_that_reason_first() {
         let dir = tempfile::tempdir().unwrap();
         let mut mirror = test_mirror(SID, "generation-1");
@@ -5511,10 +5657,10 @@ pub(super) mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let (recovered, offline) = tokio::sync::oneshot::channel();
         let producer = tokio::spawn(async move {
-            tx.send((vec![], BTreeSet::new(), vec![])).await.unwrap();
-            tx.send((vec![], BTreeSet::new(), vec![])).await.unwrap();
-            tx.send((vec![native], BTreeSet::new(), vec![])).await.unwrap();
-            tx.send((vec![], BTreeSet::new(), vec![])).await.unwrap();
+            tx.send((vec![], BTreeSet::new(), vec![], vec![])).await.unwrap();
+            tx.send((vec![], BTreeSet::new(), vec![], vec![])).await.unwrap();
+            tx.send((vec![native], BTreeSet::new(), vec![], vec![])).await.unwrap();
+            tx.send((vec![], BTreeSet::new(), vec![], vec![])).await.unwrap();
             // Wait until the exited-session pass is consumed, not just queued.
             let permit = tx.reserve().await.unwrap();
             drop(permit);
@@ -5995,7 +6141,7 @@ pub(super) mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         // The same session under a new process: discovery parks it as a
         // successor while registration is frozen.
-        tx.send((vec![native], BTreeSet::new(), vec![])).await.unwrap();
+        tx.send((vec![native], BTreeSet::new(), vec![], vec![])).await.unwrap();
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}"))
             .await
             .unwrap();
@@ -7142,7 +7288,7 @@ pub(super) mod tests {
             // is news the relay has not heard.
             let mut resumed = test_native(SID);
             resumed.process.pid = 2_147_483_000; // and this one is already gone
-            tx.send((vec![resumed], BTreeSet::new(), vec![])).await.unwrap();
+            tx.send((vec![resumed], BTreeSet::new(), vec![], vec![])).await.unwrap();
             // It may register before the liveness tick finds that pid dead; either
             // order ends with the second end on the wire.
             let second = loop {
@@ -7488,7 +7634,7 @@ pub(super) mod tests {
             // Still unacknowledged: resume the session and let its new process die.
             let mut resumed = test_native(SID);
             resumed.process.pid = 2_147_483_000;
-            tx.send((vec![resumed], BTreeSet::new(), vec![])).await.unwrap();
+            tx.send((vec![resumed], BTreeSet::new(), vec![], vec![])).await.unwrap();
             let mut tick = tokio::time::interval(Duration::from_millis(20));
             tokio::time::timeout(Duration::from_secs(3), async {
                 loop {

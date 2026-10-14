@@ -403,12 +403,28 @@ pub fn ended_at(socket: &Path) -> Option<u64> {
 /// `ended_at`, and whether the provider left by itself with status 0 (`/exit`, quit): a crash, a
 /// kill or a hang-up is never 0. A holder from a build before `endedCode` never says so.
 pub fn ended(socket: &Path) -> Option<(u64, bool)> {
+    let facts = facts(socket)?;
+    Some((facts["endedAt"].as_u64()?, facts["endedCode"] == 0))
+}
+
+/// The holder's HELLO facts, asked on a short-lived `origin` connection (it gets nothing else).
+fn facts(socket: &Path) -> Option<serde_json::Value> {
     let mut conn = UnixStream::connect(socket).ok()?;
     conn.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
     conn.write_all(&encode(HELLO, br#"{"role":"origin"}"#)).ok()?;
     let (kind, facts) = read_frame(&mut conn).ok()?;
-    let facts = serde_json::from_slice::<serde_json::Value>(&facts).ok().filter(|_| kind == HELLO)?;
-    Some((facts["endedAt"].as_u64()?, facts["endedCode"] == 0))
+    serde_json::from_slice::<serde_json::Value>(&facts).ok().filter(|_| kind == HELLO)
+}
+
+/// Held sessions no terminal and no app panel has the keyboard of: what an idle stop may end
+/// (`transport::Host::stop_idle`). Never an attach holder (a view onto the provider's own daemon)
+/// or an ended one. A holder from a build before `"attached"` never says so, and is left be.
+pub fn unattached(holders: &[HolderInfo]) -> Vec<HolderInfo> {
+    holders
+        .iter()
+        .filter(|h| attach_job(h).is_none() && facts(&h.socket).is_some_and(|f| f["attached"] == false && f["ended"] != true))
+        .cloned()
+        .collect()
 }
 
 /// Whether this holder's provider exited and it only shows the final screen.
@@ -503,6 +519,41 @@ mod tests {
                 conn.write_all(&encode(HELLO, facts.to_string().as_bytes())).unwrap();
             });
             assert_eq!(ended(&path), expected);
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn unattached_is_only_a_live_session_that_says_no_keyboard_is_taken() {
+        use std::os::unix::net::UnixListener;
+        let dir = tempfile::tempdir().unwrap();
+        let session = |id: &str| HolderInfo { id: id.into(), socket: dir.path().join(format!("{id}.sock")), pid: 2_147_483_000,
+            provider_pid: 2_147_483_001, argv: vec!["/bin/sh".into(), "-c".into(), "exec claude".into()], cwd: "/".into(), watch: true, type_input: true };
+        let mut servers = vec![];
+        let mut holders = vec![];
+        for (id, facts) in [
+            ("free0001", serde_json::json!({"attached":false,"ended":false})),
+            // A terminal (`lightbulb claude`) or the app's panel has the keyboard.
+            ("term0001", serde_json::json!({"attached":true,"ended":false})),
+            // A holder from a build before `attached`: never stopped.
+            ("old00001", serde_json::json!({"ended":false})),
+            // Already only the final screen.
+            ("done0001", serde_json::json!({"attached":false,"ended":true})),
+        ] {
+            let holder = session(id);
+            let listener = UnixListener::bind(&holder.socket).unwrap();
+            servers.push(std::thread::spawn(move || {
+                let (mut conn, _) = listener.accept().unwrap();
+                assert_eq!(read_frame(&mut conn).unwrap(), (HELLO, br#"{"role":"origin"}"#.to_vec()));
+                conn.write_all(&encode(HELLO, facts.to_string().as_bytes())).unwrap();
+            }));
+            holders.push(holder);
+        }
+        // An attach holder is a view onto the provider's daemon: never asked, never stopped.
+        holders.push(HolderInfo { id: "attach01".into(), argv: attach_argv(Path::new("/usr/local/bin/claude"), "ab12cd34"), ..session("attach01") });
+        let got = unattached(&holders);
+        assert_eq!(got.iter().map(|h| h.id.as_str()).collect::<Vec<_>>(), vec!["free0001"]);
+        for server in servers {
             server.join().unwrap();
         }
     }

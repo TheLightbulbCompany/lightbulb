@@ -427,6 +427,12 @@ pub(super) fn was_nudged(sid: &str) -> bool {
     NUDGED.lock().is_ok_and(|nudged| nudged.contains(sid))
 }
 
+/// Someone watches this session in Lightbulb now: the last heartbeat ack (`offer`) or a
+/// `local.session.watch` (`nudge`) runs its relay.
+pub(super) fn watched(sid: &str) -> bool {
+    RELAYS.lock().is_ok_and(|relays| relays.get(sid).is_some_and(|ctl| !ctl.stopped()))
+}
+
 /// The running relay of a session this Mac holds at `body`'s generation: what remote input
 /// may reach. None when nobody watches it (nobody types blind), or it is another generation.
 pub(super) fn live_relay(body: &Value) -> Option<(String, Arc<Ctl>)> {

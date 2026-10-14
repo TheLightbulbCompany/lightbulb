@@ -236,6 +236,27 @@ fn holder_manager_lists_live_holders_and_drops_dead_sockets() {
     assert!(!dir.join("dead0000.sock").exists(), "a socket nobody listens on is removed");
 }
 
+/// An idle stop may end a holder only while no terminal or panel has its keyboard; a watcher
+/// (the app's live-view relay) does not count as one.
+#[test]
+fn holder_says_whether_a_terminal_is_attached() {
+    let dir = temp_dir();
+    start_cat(&dir);
+    let unattached = || manager::unattached(&manager::list_in(&dir)).len();
+    assert_eq!(unattached(), 1, "nobody on it");
+    let watch = attach(dir.join("held.sock").as_path(), "watch");
+    assert_eq!(unattached(), 1, "a watcher is not a terminal");
+    let window = attach(dir.join("held.sock").as_path(), "interactive");
+    assert_eq!(unattached(), 0, "a terminal has the keyboard");
+    drop(window);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while unattached() == 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(unattached(), 1, "the terminal closed");
+    drop(watch);
+}
+
 #[test]
 fn holder_keeps_serving_its_window_when_another_client_stops_reading() {
     let socket = start_cat(&temp_dir());

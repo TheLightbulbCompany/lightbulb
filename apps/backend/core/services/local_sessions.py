@@ -30,7 +30,9 @@ STATUSES = Literal["idle", "busy", "waiting-approval", "unknown", "offline", "en
 TerminalReason = Literal["plain", "no-daemon", "app", "sdk", "unknown"]
 # Why an ended session ended. "login-session-ended": the Mac found the holder older than its
 # loginwindow (its provider lost DNS and the keychain for good while still reporting Idle).
-EndedReason = Literal["exited", "process-exited", "on-purpose", "login-session-ended"]
+# "idle-stopped": the Mac stopped a held session idle about an hour with nobody on it, as Claude
+# Code does its background sessions; the conversation stays and it resumes.
+EndedReason = Literal["exited", "process-exited", "on-purpose", "login-session-ended", "idle-stopped"]
 # What a device may claim. `offline` is the backend's verdict on a lapsed lease and
 # `ended` is written by the ended frame; neither is ever a status the device reports.
 INPUT_STATUSES = Literal["idle", "busy", "waiting-approval", "unknown"]

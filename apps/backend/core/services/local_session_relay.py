@@ -131,6 +131,8 @@ FEATURES = [
     "agentMessageAsks",
     "endedOnPurpose",
     "approvalInput",
+    # The Mac stops a held session left idle with nobody on it only once this is listed.
+    "endedIdleStopped",
 ]
 
 

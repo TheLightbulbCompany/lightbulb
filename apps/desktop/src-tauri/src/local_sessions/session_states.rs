@@ -23,6 +23,9 @@ static READS_ENDED_SCREENS: AtomicBool = AtomicBool::new(false);
 static READS_TERMINAL_REASON: AtomicBool = AtomicBool::new(false);
 /// The relay lists `endedOnPurpose`: an end may say `reason: "on-purpose"`.
 static READS_ON_PURPOSE: AtomicBool = AtomicBool::new(false);
+/// The relay lists `endedIdleStopped`: an end may say `reason: "idle-stopped"`. Until it does, no
+/// idle session is stopped (`Host::stop_idle`): its row would read as an ordinary exit.
+static READS_IDLE_STOPPED: AtomicBool = AtomicBool::new(false);
 /// `DeviceHeartbeat.screens`' cap on the relay.
 const SCREENS_MAX: usize = 24;
 /// How often holders no mirror names are looked for.
@@ -116,6 +119,18 @@ pub(super) fn read_features(listed: &Value) {
     READS_ENDED_SCREENS.store(screens, SeqCst);
     READS_TERMINAL_REASON.store(reason, SeqCst);
     READS_ON_PURPOSE.store(listed.as_array().is_some_and(|f| f.iter().any(|x| x == "endedOnPurpose")), SeqCst);
+    READS_IDLE_STOPPED.store(listed.as_array().is_some_and(|f| f.iter().any(|x| x == "endedIdleStopped")), SeqCst);
+}
+
+/// The relay this Mac talks to now reads an `idle-stopped` end.
+pub(super) fn reads_idle_stopped() -> bool {
+    READS_IDLE_STOPPED.load(SeqCst)
+}
+
+/// Only this flag: `read_features` would reset the others under parallel tests.
+#[cfg(test)]
+pub(super) fn set_reads_idle_stopped(on: bool) {
+    READS_IDLE_STOPPED.store(on, SeqCst);
 }
 
 /// The reason `local.session.ended` gives. "on-purpose" when its person ended it: the provider's
@@ -147,8 +162,8 @@ fn awaits_exit_if(mirror: &Mirror, end: &impl Fn(&str) -> Option<u64>, now_ms: u
 fn end_reason_if<'a>(reads: bool, mirror: &'a Mirror, asked: &impl Fn(&str) -> Option<u64>, left: &impl Fn(&str) -> Option<u64>) -> &'a str {
     let on_purpose = super::lifecycle::ON_PURPOSE;
     let stored = mirror.ended_reason.as_deref().unwrap_or("exited");
-    // The app's own END of a stranded holder marks it asked; that is not a person's End.
-    if stored == super::lifecycle::LOGIN_SESSION_ENDED {
+    // The app's own END of a stranded or idle holder marks it asked; that is not a person's End.
+    if stored == super::lifecycle::LOGIN_SESSION_ENDED || stored == super::lifecycle::IDLE_STOPPED {
         return stored;
     }
     let holder = mirror.native.holder.as_deref();
@@ -488,6 +503,9 @@ mod tests {
         stranded.native.provider = "codex".into();
         stranded.ended_reason = Some("login-session-ended".into());
         assert_eq!(end_reason_if(true, &stranded, &asked, &left), "login-session-ended");
+        // So is the app's END of a session left idle with nobody on it.
+        stranded.ended_reason = Some("idle-stopped".into());
+        assert_eq!(end_reason_if(true, &stranded, &asked, &left), "idle-stopped");
     }
 
     #[test]

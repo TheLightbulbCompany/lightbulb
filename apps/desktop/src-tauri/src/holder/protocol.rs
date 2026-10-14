@@ -7,7 +7,8 @@ use std::io::{Error, ErrorKind, Read, Result};
 /// when it takes `type` ones, `"joined": true` when a `join` client found an interactive one,
 /// `"origin": true` when it takes OWNER_INPUT and reports `"lastInput"`: who wrote the last bytes
 /// to the pty, `"owner"`, `"teammate"` (a `type` client's plain INPUT) or null), `"end": true`
-/// when it takes END. An `origin` client gets the facts and nothing else: it is how the app asks
+/// when it takes END, `"attached"`: an interactive client (a terminal or the app's panel) has the
+/// keyboard. An `origin` client gets the facts and nothing else: it is how the app asks
 /// for `lastInput`.
 /// An interactive `join` client never takes the keyboard from another: while one is attached it
 /// watches and types at that client's size (its RESIZE is ignored), and gets PROMOTED when that

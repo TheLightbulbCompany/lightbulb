@@ -23,9 +23,13 @@ export const sessionStatus: Record<LocalSession["status"], string> = {
   idle: "Idle", busy: "Working", "waiting-approval": "Waiting for input", unknown: "Online", offline: "Offline", ended: "Ended",
 };
 
-/** Why an ended session ended, when it is not the ordinary leave. `mac` is "your Mac" or "Leo's Mac"; the phone passes its curly ’ as `apostrophe`. */
-export const endedWhy = (s: Pick<LocalSession, "status" | "endedReason">, mac: string, apostrophe = "'"): string | null =>
-  s.status === "ended" && s.endedReason === "login-session-ended" ? `${mac}${apostrophe}s login session restarted` : null;
+/** Why an ended session ended, when it is not the ordinary leave. `mac` is "your Mac" or "Leo's Mac"; the phone passes its curly ’ as `apostrophe`.
+ *  "stopped while idle": the Mac stopped it after an idle hour with nobody on it (sooner when short of memory), as Claude's background sessions; Resume continues it. */
+export const endedWhy = (s: Pick<LocalSession, "status" | "endedReason">, mac: string, apostrophe = "'"): string | null => {
+  if (s.status !== "ended") return null;
+  if (s.endedReason === "login-session-ended") return `${mac}${apostrophe}s login session restarted`;
+  return s.endedReason === "idle-stopped" ? "stopped while idle" : null;
+};
 
 export const unavailableReason: Record<NonNullable<LocalSession["controlUnavailableReason"]>, string> = {
   // Owner ruling 2026-10-04: a person never reads "not verified" about their own session.

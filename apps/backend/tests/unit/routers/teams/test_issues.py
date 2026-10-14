@@ -1193,3 +1193,22 @@ def test_a_person_moving_an_agents_task_is_a_handoff(client, monkeypatch):
     task_moved.assert_not_called()
     assert client.patch(url, json={"status": "done"}, headers={"Authorization": "Bearer x"}).status_code == 200
     task_moved.assert_called_once_with(workspace_id="o1", user_id="u1", issue=moved, status="done")
+
+
+def test_completing_and_unassigning_an_agents_task_in_one_patch_is_still_a_handoff(client, monkeypatch):
+    admin = MagicMock()
+    admin.get_issue = AsyncMock(return_value={"id": "iss_1", "assigneeAgentId": "agent_1", "status": "in_progress"})
+    admin.patch_issue = AsyncMock(return_value={"id": "iss_1", "assigneeAgentId": None, "status": "done"})
+    from routers.teams import agents as agents_mod
+    from routers.teams import issues as issues_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    task_moved = MagicMock()
+    monkeypatch.setattr(issues_mod.handoff_analytics, "task_moved", task_moved)
+    r = client.patch(
+        "/api/v1/teams/issues/11111111-1111-1111-1111-111111111111",
+        json={"status": "done", "assigneeAgentId": None},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    assert task_moved.call_args.kwargs["issue"]["assigneeAgentId"] == "agent_1"

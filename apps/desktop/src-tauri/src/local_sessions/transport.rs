@@ -4598,12 +4598,11 @@ pub(super) mod tests {
             assert!(host.mirrors[key].ended_at.is_none() && host.mirrors[key].ended_reason.is_none());
         }
         assert!(host.mirrors[&k_joined].ended_at.is_none() && host.mirrors[&k_only_me].ended_at.is_none());
-        // The provider's own exit, reported next (hook or pid), cannot relabel it, and the app's END
-        // is not its person's.
+        // The provider's own exit, reported next (hook or pid), cannot relabel it. (That the app's
+        // END is not its person's is session_states' test; `end_reason` reads a relay-feature global
+        // other tests flip in parallel, so it is not asserted here.)
         host.end_session(&k_idle, "exited").unwrap();
-        crate::holder::manager::end_asked_now("1d1e0001");
-        assert_eq!(super::super::session_states::end_reason(&host.mirrors[&k_idle]), "idle-stopped");
-        crate::holder::manager::end_asked_forget("1d1e0001");
+        assert_eq!(host.mirrors[&k_idle].ended_reason.as_deref(), Some("idle-stopped"));
     }
 
     #[test]

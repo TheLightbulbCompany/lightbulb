@@ -12,7 +12,7 @@ Lightbulb is for a team that shares work: two or more people, and the AI employe
 
 ## 2. Create the workspace
 
-Sign up at [thelightbulb.company/sign-up](/sign-up) and name the workspace after your company or team. You also choose the address your agents email from: your CEO sends as `ceo@<your-workspace>.thelightbulb.company`. Every new workspace starts with six AI employees, **CEO**, **Engineering**, **Finance**, **Growth**, **Analytics** and **Customer Operations**, and a **#general** channel where all of them are members. Every name is yours to change.
+Sign up at [thelightbulb.company/sign-up](/sign-up) and name the workspace after your company or team. Your agents share one team email address, `agents@<your-workspace>.thelightbulb.company`, and each signs with its own name. Every new workspace starts with six AI employees, **CEO**, **Engineering**, **Finance**, **Growth**, **Analytics** and **Customer Operations**, and a **#general** channel where all of them are members. Every name is yours to change.
 
 ## 3. Brief your CEO
 

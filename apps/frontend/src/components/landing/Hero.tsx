@@ -1,6 +1,6 @@
 import Image from "next/image";
 
-import { HEADLINES, type HeadlineVariant } from "@/lib/headlineVariant";
+import { HEADLINES, headlineCookieScript, type HeadlineVariant } from "@/lib/headlineVariant";
 
 import { HeroCtas } from "./HeroCtas";
 
@@ -19,6 +19,7 @@ import { HeroCtas } from "./HeroCtas";
 export function Hero({ variant = "A" }: { variant?: HeadlineVariant }) {
   return (
     <header className="lb-hero">
+      <script dangerouslySetInnerHTML={{ __html: headlineCookieScript(variant) }} />
       <div className="lb-hero-copy">
         <div>
           <h1>

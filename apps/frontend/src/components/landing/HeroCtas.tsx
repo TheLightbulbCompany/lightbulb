@@ -4,20 +4,15 @@ import Link from "next/link";
 import { useEffect } from "react";
 
 import { register } from "@/lib/analytics";
-import { HEADLINE_COOKIE, readHeadlineVariantCookie, type HeadlineVariant } from "@/lib/headlineVariant";
+import { headlineVariantProps, type HeadlineVariant } from "@/lib/headlineVariant";
 import { captureSignupCta } from "@/lib/signupFlow";
 
 import { Arrow } from "./Arrow";
 
-const NINETY_DAYS_S = 60 * 60 * 24 * 90;
-
-/** The hero's two doors, and the place a first visit keeps its headline variant. */
+/** The hero's two doors. The cookie is set by Hero's inline script; this re-registers it as a backstop. */
 export function HeroCtas({ variant }: { variant: HeadlineVariant }) {
   useEffect(() => {
-    if (!readHeadlineVariantCookie()) {
-      document.cookie = `${HEADLINE_COOKIE}=${variant}; Path=/; Max-Age=${NINETY_DAYS_S}; SameSite=Lax`;
-    }
-    register({ headline_variant: variant });
+    register({ headline_variant: variant, ...headlineVariantProps() });
   }, [variant]);
 
   const track = (ctaId: string, label: string, destination: string) => () =>

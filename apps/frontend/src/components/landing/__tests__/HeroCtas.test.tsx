@@ -10,6 +10,7 @@ vi.mock("@/lib/analytics", () => ({ register: (p: unknown) => register(p) }));
 vi.mock("next/image", () => ({ default: () => null }));
 
 import { Hero } from "../Hero";
+import { headlineCookieScript, headlineVariantProps } from "@/lib/headlineVariant";
 
 beforeEach(() => {
   captureSignupCta.mockReset();
@@ -33,15 +34,18 @@ describe("hero: two doors and the headline test", () => {
     ]);
   });
 
-  it("keeps the first variant in a cookie and on every event", () => {
-    render(<Hero variant="A" />);
+  it("keeps the first variant in a cookie before PostHog starts, and never overwrites it", () => {
+    new Function(headlineCookieScript("A"))();
     expect(document.cookie).toContain("lb_hv=A");
-    expect(register).toHaveBeenCalledWith({ headline_variant: "A" });
+    expect(headlineVariantProps()).toEqual({ headline_variant: "A" });
+    new Function(headlineCookieScript("B"))();
+    expect(document.cookie).toContain("lb_hv=A");
+    expect(document.cookie).not.toContain("lb_hv=B");
   });
 
-  it("never overwrites a variant the visitor already has", () => {
-    document.cookie = "lb_hv=B; Path=/";
-    render(<Hero variant="A" />);
-    expect(document.cookie).toContain("lb_hv=B");
+  it("renders the cookie script in the hero and registers the variant", () => {
+    const { container } = render(<Hero variant="B" />);
+    expect(container.querySelector("script")?.innerHTML).toBe(headlineCookieScript("B"));
+    expect(register).toHaveBeenCalledWith({ headline_variant: "B" });
   });
 });

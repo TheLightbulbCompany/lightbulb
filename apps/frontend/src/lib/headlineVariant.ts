@@ -27,3 +27,20 @@ export function readHeadlineVariantCookie(): string {
   const m = document.cookie.match(new RegExp(`(?:^|; )${HEADLINE_COOKIE}=([^;]*)`));
   return parseHeadlineVariant(m?.[1]) ?? "";
 }
+
+const NINETY_DAYS_S = 60 * 60 * 24 * 90;
+
+/**
+ * An inline script for the hero: it keeps the server-picked variant in the
+ * cookie while the HTML is still parsing, so PostHog's init (an effect, later)
+ * can register it before the first `$pageview` / `landing_viewed`.
+ */
+export function headlineCookieScript(variant: HeadlineVariant): string {
+  return `if(!/(?:^|; )${HEADLINE_COOKIE}=[AB](?:;|$)/.test(document.cookie))document.cookie="${HEADLINE_COOKIE}=${variant}; Path=/; Max-Age=${NINETY_DAYS_S}; SameSite=Lax"`;
+}
+
+/** Super properties for PostHog: the visitor's variant, once assigned. */
+export function headlineVariantProps(): { headline_variant?: HeadlineVariant } {
+  const v = parseHeadlineVariant(readHeadlineVariantCookie());
+  return v ? { headline_variant: v } : {};
+}

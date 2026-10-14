@@ -388,6 +388,9 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  apps/frontend/src/components/launch/{SheetCard,TeamInterestForm}.tsx
   - Email (one shared team address) references/email.md
                               <- /app/skills/lightbulb/scripts/lightbulb-mail.sh + backend routers/agent_mail.py + core/services/agent_mail_send.py (one send door; policy table in its docstring)
+  - Welcome mails as the CEO .. references/email.md ("Sending")
+                              <- backend core/services/welcome_email.py (owner: user_provision after #general;
+                                 teammate: routers/webhooks.py membership.created) + agent_mail_owner_send.send_to_member
   - Meetings (invite the team address) references/email.md ("Meetings")
                               <- backend core/services/meeting_invites.py (handle_team_mail: member's Meet invite -> hidden room with every agent, RSVP, bot; output_room; advance for series),
                                  meeting_bots.py (bot_name), routers/meetings.py (Recall status, endedAt, roster relay), meeting_notes.py (transcript + notes run to the

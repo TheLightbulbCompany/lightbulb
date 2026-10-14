@@ -1,99 +1,71 @@
-"""send_welcome_email renders the template and calls the email seam."""
+"""The CEO's welcome: true copy (08 §5), no emoji, sent through the agent-mail doors."""
 
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from core.config import settings
 from core.services import welcome_email
 
-
-@pytest.mark.asyncio
-async def test_send_welcome_calls_seam_with_expected_fields(monkeypatch):
-    monkeypatch.setattr(settings, "FRONTEND_URL", "https://app.example.co")
-
-    with patch(
-        "core.services.welcome_email.email_service.send_email",
-        new=AsyncMock(return_value="email_xyz"),
-    ) as mock_send:
-        result = await welcome_email.send_welcome_email(to_email="newuser@example.com", first_name="Ada")
-
-    assert result == "email_xyz"
-    mock_send.assert_awaited_once()
-    kwargs = mock_send.await_args.kwargs
-    assert kwargs["to"] == "newuser@example.com"
-    assert kwargs["from_addr"] == settings.EMAIL_FROM_WELCOME
-    assert kwargs["reply_to"] == settings.EMAIL_SUPPORT_ADDRESS
-    assert kwargs["kind"] == "welcome"
-    assert "Ada" in kwargs["html"]
-    assert "https://app.example.co/chat" in kwargs["html"]
+URL = "https://app.example.com/chat?panel=chat&room=r1"
 
 
-@pytest.mark.asyncio
-async def test_send_welcome_without_first_name_uses_fallback(monkeypatch):
-    with patch(
-        "core.services.welcome_email.email_service.send_email",
-        new=AsyncMock(return_value="email_xyz"),
-    ) as mock_send:
-        await welcome_email.send_welcome_email(to_email="newuser@example.com", first_name=None)
+def test_owner_version_is_the_ceo_speaking_and_promises_nothing_false():
+    subject, text = welcome_email.owner_welcome(first_name="Ada", workspace="Acme", url=URL)
+    assert subject == "Your team at Acme is ready"
+    assert text.startswith("Hi Ada,\n\nI'm your CEO.")
+    assert f"Open #general: {URL}" in text
+    assert text.rstrip().endswith("— CEO, Acme")
+    for false_claim in ("container", "Nothing is\nshared", "marketplace", "overnight"):
+        assert false_claim not in text
+    assert all(ord(ch) < 0x2000 or ch in "—" for ch in subject + text)  # no emoji
 
-    html = mock_send.await_args.kwargs["html"]
-    assert "there" in html  # "Hi there," fallback greeting
+
+def test_teammate_version_names_the_inviter_when_known():
+    subject, text = welcome_email.teammate_welcome(first_name="Sam", inviter="Ada", workspace="Acme", url=URL)
+    assert subject == "You're in Acme on Lightbulb"
+    assert "Ada added you to Acme." in text
+    _, anonymous = welcome_email.teammate_welcome(first_name=None, inviter=None, workspace="Acme", url=URL)
+    assert anonymous.startswith("Hi,\n\nYou've been added to Acme.")
 
 
 @pytest.mark.asyncio
-async def test_send_welcome_escapes_html_in_first_name():
-    """A first_name with markup must be escaped, not injected into the email."""
-    with patch(
-        "core.services.welcome_email.email_service.send_email",
-        new=AsyncMock(return_value="email_xyz"),
-    ) as mock_send:
-        await welcome_email.send_welcome_email(to_email="x@y.com", first_name="<script>alert(1)</script>")
-
-    body = mock_send.await_args.kwargs["html"]
-    assert "<script>" not in body
-    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in body
-
-
-@pytest.mark.asyncio
-async def test_send_welcome_includes_plaintext_alternative(monkeypatch):
-    """HTML-only mail is a deliverability penalty and renders badly in some
-    clients, so the welcome email must carry a text/plain part carrying the
-    same links — not an empty string, which would produce a blank part."""
-    monkeypatch.setattr(settings, "FRONTEND_URL", "https://app.example.co")
-
-    with patch(
-        "core.services.welcome_email.email_service.send_email",
-        new=AsyncMock(return_value="email_xyz"),
-    ) as mock_send:
-        await welcome_email.send_welcome_email(to_email="x@y.com", first_name="Ada")
-
-    text = mock_send.await_args.kwargs["text"]
-    assert text and text.strip()
-    assert "Ada" in text
-    assert "<" not in text, "the plain-text part must not contain markup"
-    for link in (
-        "https://app.example.co/chat",
-        "https://app.example.co/marketplace",
-        "https://app.example.co/blog",
-        "https://app.example.co/docs",
+async def test_owner_welcome_is_the_ceos_first_contact():
+    with (
+        patch.object(welcome_email.clerk_admin, "get_user", new=AsyncMock(return_value={"first_name": "Ada"})),
+        patch.object(welcome_email.clerk_admin, "get_organization", new=AsyncMock(return_value={"name": "Acme"})),
+        patch("core.services.agent_mail_owner_send.send_to_owner", new=AsyncMock(return_value="sent")) as send,
     ):
-        assert link in text
-        assert link in mock_send.await_args.kwargs["html"]
+        assert await welcome_email.send_owner_welcome("org_1", "user_1") == "sent"
+    kwargs = send.call_args.kwargs
+    assert kwargs["owner_id"] == "org_1"
+    assert kwargs["purpose"] == "first_contact"
+    assert kwargs["subject"] == "Your team at Acme is ready"
 
 
 @pytest.mark.asyncio
-async def test_send_welcome_does_not_double_slash_urls(monkeypatch):
-    """FRONTEND_URL with a trailing slash must not yield //chat."""
-    monkeypatch.setattr(settings, "FRONTEND_URL", "https://app.example.co/")
+async def test_teammate_welcome_names_who_let_them_in():
+    with (
+        patch.object(welcome_email.clerk_admin, "get_organization", new=AsyncMock(return_value={"name": "Acme"})),
+        patch.object(welcome_email.clerk_admin, "get_user", new=AsyncMock(return_value={"first_name": "Ada"})) as user,
+        patch(
+            "core.services.join_analytics._read_join_via",
+            new=AsyncMock(return_value={"via": "invite", "invited_by": "user_ada"}),
+        ),
+        patch("core.services.agent_mail_owner_send.send_to_member", new=AsyncMock(return_value="sent")) as send,
+    ):
+        await welcome_email.send_teammate_welcome("org_1", user_id="user_2", email="sam@x.com", first_name="Sam")
+    user.assert_awaited_once_with("user_ada")
+    assert "Ada added you to Acme." in send.call_args.kwargs["body_text"]
 
-    with patch(
-        "core.services.welcome_email.email_service.send_email",
-        new=AsyncMock(return_value="email_xyz"),
-    ) as mock_send:
-        await welcome_email.send_welcome_email(to_email="x@y.com")
 
-    kwargs = mock_send.await_args.kwargs
-    assert "https://app.example.co/chat" in kwargs["html"]
-    assert "//chat" not in kwargs["html"].replace("https://", "")
-    assert "//chat" not in kwargs["text"].replace("https://", "")
+@pytest.mark.asyncio
+async def test_teammate_welcome_goes_to_the_member():
+    with (
+        patch("core.services.join_analytics._read_join_via", new=AsyncMock(return_value={})),
+        patch.object(welcome_email.clerk_admin, "get_organization", new=AsyncMock(return_value=None)),
+        patch("core.services.agent_mail_owner_send.send_to_member", new=AsyncMock(return_value="sent")) as send,
+    ):
+        await welcome_email.send_teammate_welcome("org_1", user_id="user_2", email="sam@x.com", first_name="Sam")
+    kwargs = send.call_args.kwargs
+    assert kwargs["email"] == "sam@x.com"
+    assert kwargs["subject"] == "You're in your workspace on Lightbulb"

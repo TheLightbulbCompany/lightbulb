@@ -453,9 +453,19 @@ async def _ensure_paperclip_for_owner(
             )
             if fresh_or_partial and complete:
                 try:
-                    await ensure_default_room(owner_id, owner_user_id)
+                    room_id = await ensure_default_room(owner_id, owner_user_id)
                 except Exception:  # noqa: BLE001 — partial retries reconcile again
+                    room_id = None
                     logger.exception("ensure_user_ready: default room creation failed for owner=%s", owner_id)
+                if room_id:
+                    # The owner's welcome, from the CEO, now that #general exists. Once-only via
+                    # send_to_owner's first-contact claim, so a re-run here sends nothing.
+                    from core.services.welcome_email import send_owner_welcome
+
+                    try:
+                        await send_owner_welcome(owner_id, owner_user_id)
+                    except Exception:  # noqa: BLE001 — a welcome must never fail provisioning
+                        logger.exception("ensure_user_ready: owner welcome failed for owner=%s", owner_id)
         except PaperclipApiError as exc:
             # 409: a CONCURRENT provision_org (the previous ~3s
             # attempt) is mid-flight and hasn't written the

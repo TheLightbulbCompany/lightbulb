@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from core.auth import is_org_owner_id
 from core.config import settings
 from core.observability.metrics import put_metric
-from core.repositories import agent_mail_inbox_repo, container_repo
+from core.repositories import agent_email_repo, agent_mail_inbox_repo, container_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import ses_email
 from core.services.agent_email import (
@@ -239,6 +239,77 @@ async def send_to_owner(
         logger.exception("owner_send failed for owner_id=%s", owner_id)
         put_metric("agent_email.owner_send", dimensions={"purpose": purpose, "result": "error"})
         return "error"
+
+
+async def send_to_member(*, owner_id: str, user_id: str, email: str, subject: str, body_text: str) -> str:
+    """One email from the CEO, on the team address, to a workspace member who is not the owner
+    (the teammate welcome; later the away email). Same daily cap and transport as
+    ``send_to_owner``, and the member becomes a verified sender so their reply wakes the CEO
+    even when the owner has closed the address to strangers.
+
+    Returns "sent", "disabled", "rate_limited", "no_address" or "error". Never raises.
+    ``user_id`` is a log/metric subject only; ``email`` comes from the caller (the Clerk
+    membership event carries it). The address is PII: it is never logged.
+    """
+    result = "error"
+    try:
+        if not (settings.AGENT_EMAIL_DOMAIN or "").strip():
+            result = "disabled"
+            return result
+        email = (email or "").strip().lower()
+        onboarding = await PaperclipRepo(table_name="paperclip-companies").get_onboarding_state(owner_id) or {}
+        company_id = onboarding.get("company_id")
+        agent_id = await resolve_apex_ceo_agent_id(owner_id=owner_id) or onboarding.get("friday_agent_id")
+        if not email or not company_id or not agent_id:
+            return result
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if not await container_repo.try_consume_daily_email_send(owner_id, day=day, cap=DAILY_SEND_CAP):
+            result = "rate_limited"
+            return result
+        owner_email = await lookup_owner_email(
+            org_id=owner_id if is_org_owner_id(owner_id) else None,
+            fallback_user_id=onboarding.get("user_id") or owner_id,
+        )
+        address, reason = await ensure_team_address(owner_id, owner_email)
+        if not address:
+            result = "no_address" if reason in ("slug_allocation_failed", "mint_failed") else "error"
+            return result
+        row = await agent_email_repo.get_by_address(address) or {}
+        senders = row.get("verified_senders") or []
+        if email not in senders:
+            # ponytail: read-modify-write; a concurrent owner edit of the list can lose one entry.
+            await agent_email_repo.update_settings(address, verified_senders=[*senders, email])
+        sent_subject = _env_subject(subject)
+        agent_name = await resolve_agent_name(agent_id=agent_id, company_id=company_id)
+        message_id = await ses_email.send_ses_reply(
+            from_addr=await from_header(owner_id, agent_id, address, agent_name=agent_name),
+            to=email,
+            subject=sent_subject,
+            body_text=body_text,
+            body_html=None,
+            headers=dict(AGENT_AUTHORED_HEADERS),
+        )
+        if message_id is None:
+            return result
+        if agent_name:
+            await agent_mail_inbox_repo.put_sent(
+                address=address,
+                message_id=message_id,
+                owner_id=owner_id,
+                agent_id=agent_id,
+                to=email,
+                subject=sent_subject,
+                text=body_text,
+            )
+        logger.info("member_send: sent for %s to member %s", owner_id, user_id)
+        result = "sent"
+        return result
+    except Exception:
+        logger.exception("member_send failed for owner_id=%s", owner_id)
+        result = "error"
+        return result
+    finally:
+        put_metric("agent_email.member_send", dimensions={"result": result})
 
 
 def _env_subject(subject: str) -> str:

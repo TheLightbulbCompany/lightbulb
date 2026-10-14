@@ -22,7 +22,7 @@ export function buildMissionControlLayout(api: DockviewApi): void {
   api.addPanel({
     id: MESSAGES_PANEL_ID,
     component: "chat",
-    title: "Messages",
+    title: "Chat",
     params: { agentId: DEFAULT_AGENT_SENTINEL },
     renderer: "always",
   });

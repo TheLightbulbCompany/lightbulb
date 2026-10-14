@@ -20,7 +20,7 @@ describe("buildMissionControlLayout", () => {
     buildMissionControlLayout(api);
 
     expect(calls.map((c) => c.id)).toEqual([MESSAGES_PANEL_ID, "teams-inbox"]);
-    expect(calls[0]).toMatchObject({ component: "chat", renderer: "always", params: { agentId: DEFAULT_AGENT_SENTINEL } });
+    expect(calls[0]).toMatchObject({ component: "chat", title: "Chat", renderer: "always", params: { agentId: DEFAULT_AGENT_SENTINEL } });
     expect(calls[1]).toMatchObject({ component: "teams", params: { teamsKey: "inbox" } });
 
     // The shell is tabs-only: NO panel may carry a `position`, because a

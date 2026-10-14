@@ -131,7 +131,7 @@ describe("panelRegistry", () => {
     expect(d).toEqual({
       panelId: MESSAGES_PANEL_ID,
       component: "chat",
-      title: "Messages",
+      title: "Chat",
       params: { agentId: "a-9" },
       renderer: "always",
     });

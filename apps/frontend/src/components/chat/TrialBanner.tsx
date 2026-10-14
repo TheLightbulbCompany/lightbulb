@@ -71,7 +71,7 @@ export function TrialBanner() {
     return null;
   }
   // Pin UTC: trial_end is a UTC instant, so a host-local render shows the date
-  // a day early west of UTC. Matches HomeRollupStrip/SpendPanel.
+  // a day early west of UTC. Matches Money (money.ts, AgentSpendSection).
   const chargeDate = new Date(data.trial_end * 1000).toLocaleDateString(undefined, {
     timeZone: "UTC",
   });

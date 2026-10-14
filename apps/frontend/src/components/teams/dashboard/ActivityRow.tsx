@@ -122,7 +122,7 @@ function isAgentEntity(entityType: string | null | undefined): boolean {
 
 export interface ActivityRowProps {
   event: ActivityEvent;
-  /** ``agentId → name`` roster map (from DashboardPanel's ``/agents`` read).
+  /** ``agentId → name`` roster map (from the caller's ``/agents`` read).
    *  Used to resolve agent actors + agent entity references to names. */
   agentNames?: ReadonlyMap<string, string>;
   className?: string;
@@ -152,7 +152,7 @@ export function ActivityRow({ event, agentNames, className }: ActivityRowProps) 
         <Identity name={actorName} size="xs" className="align-middle" />
         <span className="ml-1" style={{ color: "var(--midnight-muted)" }}>{verb}</span>
         {/* Entity reference. Agent entities resolve to a roster name (passed
-            down from DashboardPanel's /agents read); other entity types have
+            down from the caller's /agents read); other entity types have
             no name source wired yet, so they keep the "{type}: {shortId}"
             form rather than dumping a full raw UUID. */}
         {event.entityType && event.entityId && (

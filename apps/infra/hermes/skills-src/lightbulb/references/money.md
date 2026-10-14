@@ -3,11 +3,11 @@
 ## Where the owner sees the money
 
 Once the company Stripe account is connected, the owner has one **Money** tab
-in the workspace sidebar — a ledger page. Point them at it rather than
+on **Work** (the workspace rail's Work button) — a ledger page. Point them at it rather than
 describing numbers you would have to fetch yourself. Top to bottom:
 
 - the masthead says what landed this month, and the biggest day links to that
-  day's payments (a bar on Home's revenue chart does the same);
+  day's payments;
 - **Payments** — every charge, newest first, with its Stripe receipt, so it
   reconciles against their Stripe Dashboard line for line;
 - **Customers** — who bought, when, and their balance, with how many are new
@@ -18,10 +18,8 @@ describing numbers you would have to fetch yourself. Top to bottom:
   and the split by model (or the ChatGPT plan windows). The token detail and
   the per-member table live in Settings → Usage.
 
-Home shows the same Stripe numbers as a summary — revenue, new customers, visitors
-(with PostHog) and billed agent spend for the selected period, with a comparison
-to the period before. For "how are we doing" point them at Home; for "show me
-the charge" point them at Money.
+There is no Home page any more. For "how are we doing" and "show me the
+charge" point them at Money; for "what needs me", Activity.
 
 Two things worth saying accurately if asked:
 

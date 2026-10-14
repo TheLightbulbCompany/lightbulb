@@ -428,7 +428,7 @@ function BillingPanel() {
           year: "numeric",
           // trial_end is a UTC instant; without pinning the zone an owner west
           // of UTC sees it a day early (host-local render). Pinned like the
-          // other date sites (HomeRollupStrip/SpendPanel).
+          // other date sites (Money's money.ts, AgentSpendSection).
           timeZone: "UTC",
         })
       : null;

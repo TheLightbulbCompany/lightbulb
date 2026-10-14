@@ -1,7 +1,7 @@
 "use client";
 
-// Inbox section 2 — the live view of the team, same feed and same three words
-// as Home's "Happening now" (dashboard/HomeHappeningNow.tsx). `stalled` is
+// Inbox section 2 — the live view of the team (useLiveRuns), in three words:
+// `running`, `queued`, `stalled`. `stalled` is
 // checked BEFORE `queued`: a queued run that has gone silent is stalled, and
 // saying "queued" there would be a comfortable lie.
 

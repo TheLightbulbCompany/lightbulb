@@ -29,8 +29,7 @@ export const RETIRED_PANEL_ALIASES: Readonly<Record<string, string>> = {
   "teams-costs": "activity",
   // Money is ONE page, and Payments/Products/Customers/Spend are its sections.
   // They alias to its key so the dock (which dedupes by panel id) opens ONE
-  // "Money" tab no matter which of the five keys a link carries — Home's tiles
-  // link three of them. describePanel synthesizes `section` from the RAW key
+  // "Money" tab no matter which of the five keys a link carries. describePanel synthesizes `section` from the RAW key
   // below.
   "teams-payments": "teams-money",
   "teams-products": "teams-money",
@@ -249,7 +248,7 @@ export function describePanel(
       return {
         panelId: MESSAGES_PANEL_ID,
         component: "chat",
-        title: "Messages",
+        title: "Chat",
         params: { agentId },
         renderer: "always",
       };
@@ -260,13 +259,13 @@ export function describePanel(
     // task-7a's report.
     // A session is workspace-scoped: a `room` riding along (old links) is ignored.
     if (params.session) {
-      return { panelId: MESSAGES_PANEL_ID, component: "chat", title: "Messages", params: { sessionId: params.session }, renderer: "always" };
+      return { panelId: MESSAGES_PANEL_ID, component: "chat", title: "Chat", params: { sessionId: params.session }, renderer: "always" };
     }
     if (params.room) {
       return {
         panelId: MESSAGES_PANEL_ID,
         component: "chat",
-        title: "Messages",
+        title: "Chat",
         params: { roomId: params.room, ...(params.message ? { messageId: params.message } : {}) },
         renderer: "always",
       };
@@ -370,7 +369,7 @@ export function describePanel(
         // list, which lives on Tasks — those land at the top of Inbox.
         else if (params.tab === "approvals") p.section = "needs-you";
       }
-      // ?day scopes the Payments section to one UTC day — the hero bar on Home links here.
+      // ?day scopes the Payments section to one UTC day (Money's biggest-day link).
       if (teamsKey === "money" && params.day) p.day = params.day;
       // The four absorbed keys (teams-payments/products/customers/spend) alias
       // to teams-money, so the section they meant survives only if it is read

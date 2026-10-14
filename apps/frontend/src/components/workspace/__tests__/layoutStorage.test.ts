@@ -484,7 +484,7 @@ describe("layoutStorage", () => {
     const clean = sanitizeLayout(chatLayout(), ["friday", "atlas"]);
     expect(Object.keys(clean.panels).sort()).toEqual([MESSAGES_PANEL_ID, "file-viewer"].sort());
     expect(clean.panels[MESSAGES_PANEL_ID]).toMatchObject({
-      id: MESSAGES_PANEL_ID, params: { agentId: "atlas" }, title: "Messages",
+      id: MESSAGES_PANEL_ID, params: { agentId: "atlas" }, title: "Chat",
     });
     expect(clean.panels["file-viewer"]).toEqual(chatLayout().panels["file-viewer"]);
     expect(clean.grid.root.type).toBe("leaf");
@@ -539,9 +539,16 @@ describe("layoutStorage", () => {
 
   it("preserves a generic Messages selection across persistence", () => {
     const dirty = leafLayout([MESSAGES_PANEL_ID], MESSAGES_PANEL_ID, {
-      [MESSAGES_PANEL_ID]: { id: MESSAGES_PANEL_ID, contentComponent: "chat", title: "Messages", params: {} },
+      [MESSAGES_PANEL_ID]: { id: MESSAGES_PANEL_ID, contentComponent: "chat", title: "Chat", params: {} },
     });
     expect(sanitizeLayout(dirty, ["friday"])).toEqual(dirty);
+  });
+
+  it("heals a saved chat tab titled Messages to Chat, matching the rail", () => {
+    const dirty = leafLayout([MESSAGES_PANEL_ID], MESSAGES_PANEL_ID, {
+      [MESSAGES_PANEL_ID]: { id: MESSAGES_PANEL_ID, contentComponent: "chat", title: "Messages", params: {} },
+    });
+    expect(sanitizeLayout(dirty, ["friday"]).panels[MESSAGES_PANEL_ID].title).toBe("Chat");
   });
 
   it("sanitizer keeps the default-agent sentinel panel (it resolves at render time)", () => {

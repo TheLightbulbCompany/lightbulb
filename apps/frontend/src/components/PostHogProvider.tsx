@@ -51,7 +51,11 @@ const SIGNUP_STARTED_IDENTIFIED_PREFIX = "isol8:signup_started_identified:";
  */
 export function resolveEnvironment(hostname: string | undefined): "prod" | "launch" | "dev" {
   const host = (hostname ?? "").toLowerCase();
-  if (host === "thelightbulb.company" || host === "www.thelightbulb.company") return "prod";
+  // admin.thelightbulb.company is the prod admin dashboard; the readout's $host filter keeps it
+  // out of the product funnel.
+  if (host === "thelightbulb.company" || host === "www.thelightbulb.company" || host === "admin.thelightbulb.company") {
+    return "prod";
+  }
   if (host === "flickmeon.ai" || host === "www.flickmeon.ai") return "launch";
   return "dev";
 }

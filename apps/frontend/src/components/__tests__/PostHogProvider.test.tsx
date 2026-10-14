@@ -413,6 +413,7 @@ describe("PostHogProvider", () => {
       const { resolveEnvironment } = await import("../PostHogProvider");
       expect(resolveEnvironment("thelightbulb.company")).toBe("prod");
       expect(resolveEnvironment("www.thelightbulb.company")).toBe("prod");
+      expect(resolveEnvironment("admin.thelightbulb.company")).toBe("prod");
     });
 
     it("is launch on flickmeon.ai", async () => {
@@ -420,10 +421,10 @@ describe("PostHogProvider", () => {
       expect(resolveEnvironment("flickmeon.ai")).toBe("launch");
     });
 
-    it("is dev for dev hosts, admin, localhost, and an unknown host", async () => {
+    it("is dev for dev hosts, the dev admin, localhost, and an unknown host", async () => {
       const { resolveEnvironment } = await import("../PostHogProvider");
       expect(resolveEnvironment("dev.thelightbulb.company")).toBe("dev");
-      expect(resolveEnvironment("admin.thelightbulb.company")).toBe("dev");
+      expect(resolveEnvironment("admin.dev.thelightbulb.company")).toBe("dev");
       expect(resolveEnvironment("localhost")).toBe("dev");
       expect(resolveEnvironment(undefined)).toBe("dev");
     });

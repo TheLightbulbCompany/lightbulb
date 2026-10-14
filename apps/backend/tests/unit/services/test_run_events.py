@@ -788,15 +788,24 @@ async def test_working_expires_with_the_heartbeat_timeout_idle_does_not_and_neit
 
 
 @pytest.mark.asyncio
-async def test_a_room_run_emits_agent_run_completed_on_its_requester(metrics):
-    """T01: room runs reach agent_run_completed, keyed on the human whose message started them."""
+@pytest.mark.parametrize("closer", ["bridge", "stop"])
+async def test_a_room_run_emits_agent_run_completed_on_its_requester(metrics, closer):
+    """T01: every close (the bridge's run.ended, a Stop, the sweeper) reaches agent_run_completed,
+    keyed on the human whose message started the run."""
     trigger = {"author": {"kind": "human", "id": "user_bob"}}
+    aborted = {**ROW, "outcome": "aborted"}
     with (
+        patch.object(messaging.messaging_repo, "end_run", AsyncMock(return_value=aborted)),
         patch.object(messaging.messaging_repo, "get_message_by_id", AsyncMock(return_value=trigger)),
         patch.object(messaging, "record_usage", AsyncMock()),
+        patch.object(messaging, "get_live_event_publisher"),
         patch.object(messaging.run_analytics, "schedule_run_completed") as schedule,
     ):
-        await messaging._after_run_ended("org_1", ROW, "aborted", USAGE)
+        if closer == "bridge":
+            await messaging.handle_run_event("org_1", _event(type="run.ended", outcome="aborted", usage=USAGE))
+        else:
+            await messaging.close_aborted_run("org_1", RUN, forced=True)
+    schedule.assert_called_once()
     kwargs = schedule.call_args.kwargs
     assert kwargs["owner_id"] == "org_1"
     assert kwargs["person_id"] == "user_bob"

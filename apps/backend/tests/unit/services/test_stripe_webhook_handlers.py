@@ -758,6 +758,14 @@ class TestSubscriptionActivationDelegatesToLaunchReferral:
             await _run_state(mock_repo, "trial_local", "active")
         hook.assert_awaited_once_with("org_x")
 
+    async def test_a_card_trial_waits_for_its_first_charge(self, mock_repo):
+        """T05: trial_local -> trialing has paid nothing; trialing -> active is the first payment."""
+        with patch.object(handlers, "on_entering_live", new_callable=AsyncMock) as hook:
+            await _run_state(mock_repo, "trial_local", "trialing")
+            hook.assert_not_awaited()
+            await _run_state(mock_repo, "trialing", "active")
+        hook.assert_awaited_once_with("org_x")
+
     async def test_invoice_paid_is_not_a_handled_event(self):
         assert "invoice.paid" not in handlers.STRIPE_WEBHOOK_HANDLERS
 
@@ -936,3 +944,10 @@ async def test_stripe_going_live_over_live_apple_emits_the_dual_provider_metric(
 async def test_no_dual_provider_metric_when_apple_is_not_live(mock_repo):
     names = await _run_with_apple(mock_repo, "canceled", "active")
     assert "billing.dual_provider_live" not in names
+
+
+@pytest.mark.asyncio
+async def test_a_stale_trialing_event_after_the_charge_is_ignored(mock_repo):
+    """A reordered trialing delivery must not put a charged workspace back on its trial (T05)."""
+    await _run_state(mock_repo, "active", "trialing")
+    mock_repo.set_subscription.assert_not_awaited()

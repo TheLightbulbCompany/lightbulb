@@ -436,7 +436,10 @@ async def _transact(items: list[dict]) -> None:
     if len(items) > _TRANSACT_LIMIT:
         raise MessagingRepoError(f"transaction has {len(items)} actions (limit {_TRANSACT_LIMIT})")
     table = _table()
-    await run_in_thread(table.meta.client.transact_write_items, TransactItems=items)
+    # Every caller's values, not just ours: a shared session's tool call input is free JSON, and
+    # one `"scale": 0.6` made boto3 refuse the whole batch -- which the Mac then resent forever
+    # (prod 2026-10-12..13, ~16k failures in three hours, each session's history frozen there).
+    await run_in_thread(table.meta.client.transact_write_items, TransactItems=_ddb_safe(items))
 
 
 def _is_cancelled(exc: ClientError) -> bool:

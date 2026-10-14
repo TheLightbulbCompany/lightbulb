@@ -1777,6 +1777,37 @@ async def test_session_revision_contention_retries_without_rejecting_authorized_
 
 
 @pytest.mark.asyncio
+async def test_a_tool_call_with_a_float_argument_is_stored(transport):
+    """A float anywhere in a tool's input or result (a screenshot's scale, a wait's seconds) used to
+    make DynamoDB refuse the batch, so the Mac resent it forever and the session's history froze."""
+    sid = await start(transport)
+    call = {
+        "kind": "tool",
+        "role": "assistant",
+        "text": "screenshot",
+        "itemId": "toolu_02",
+        "tool": {
+            "name": "computer",
+            "status": "done",
+            "input": {"scale": 0.6, "region": [0, 0.5]},
+            "result": {"took": 1.25},
+        },
+    }
+    body = {
+        "type": "local.session.events",
+        "sessionId": sid,
+        "generation": "generation-1",
+        "batchId": "f1",
+        "afterSeq": 0,
+        "events": [call],
+    }
+    ack = await relay(transport).handle_message("conn-1", body)
+    assert ack["afterSeq"] == 1
+    tool = (await service.list_events(BOB, ROOM, sid)).model_dump(by_alias=True, exclude_none=True)["events"][0]["tool"]
+    assert tool["input"] == {"scale": 0.6, "region": [0, 0.5]} and tool["result"] == {"took": 1.25}
+
+
+@pytest.mark.asyncio
 async def test_rich_events_round_trip_and_old_shape_still_accepted(transport):
     sid = await start(transport)
     call = {

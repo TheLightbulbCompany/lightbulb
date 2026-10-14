@@ -66,12 +66,12 @@ describe("WorkspaceHeader", () => {
     expect(recordMessagesNavigation).toHaveBeenCalled();
   });
 
-  it("offers Hire right after Tasks and opens the marketplace, not a panel", () => {
+  it("offers Hire right after Work and opens the marketplace, not a panel", () => {
     render(<WorkspaceHeader chatReady={false} />);
     const labels = within(screen.getByRole("navigation", { name: "Workspace" }))
       .getAllByRole("button")
       .map((b) => b.getAttribute("aria-label"));
-    expect(labels.indexOf("Hire an agent")).toBe(labels.indexOf("Tasks") + 1);
+    expect(labels.indexOf("Hire an agent")).toBe(labels.indexOf("Work") + 1);
     const hire = screen.getByRole("button", { name: "Hire an agent" });
     expect(hire).not.toBeDisabled();
     expect(screen.getByRole("button", { name: "Mail" })).not.toBeDisabled(); // the mailbox needs no runtime
@@ -99,7 +99,7 @@ describe("WorkspaceHeader", () => {
     mailState.newCount = 0;
   });
 
-  it.each([["Home", "teams-dashboard"], ["Activity", "activity"], ["Mail", "mail"], ["Tasks", "teams-issues"], ["Library", "teams-artifacts"]])("opens %s and marks the active destination", (label, panel) => {
+  it.each([["Home", "teams-dashboard"], ["Activity", "activity"], ["Mail", "mail"], ["Library", "teams-artifacts"]])("opens %s and marks the active destination", (label, panel) => {
     activePanelId = panel;
     render(<WorkspaceHeader />);
     const button = screen.getByRole("button", { name: label });
@@ -143,10 +143,18 @@ describe("WorkspaceHeader", () => {
     shared.statusLoaded = false;
   });
 
-  it("shows active team runs on Tasks without covering workspace content", () => {
+  it("opens Work on Tasks and marks it active while any Work page is open", () => {
+    activePanelId = "teams-work";
+    render(<WorkspaceHeader />);
+    const work = screen.getByRole("button", { name: "Work" });
+    expect(work).toHaveAttribute("aria-current", "page");
+    fireEvent.click(work);
+    expect(openPanel).toHaveBeenCalledWith("teams-issues", {}, { pushUrl: true });
+  });
+  it("shows active team runs on Work without covering workspace content", () => {
     act(() => trackTeamRunActivity("teams.heartbeat.run.queued", { runId: "run-1" }));
     render(<WorkspaceHeader />);
-    const tasks = screen.getByRole("button", { name: "Tasks, 1 active team run" });
+    const tasks = screen.getByRole("button", { name: "Work, 1 active team run" });
     expect(within(tasks).getByText("1")).toBeInTheDocument();
     fireEvent.click(tasks);
     expect(openPanel).toHaveBeenCalledWith("teams-issues", {}, { pushUrl: true });

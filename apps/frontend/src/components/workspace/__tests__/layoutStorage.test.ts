@@ -94,7 +94,33 @@ describe("layoutStorage", () => {
     expect(clean.floatingGroups).toBeUndefined();
     expect(clean.popoutGroups).toBeUndefined();
     expect((clean as unknown as Record<string, unknown>).edgeGroups).toBeUndefined();
-    expect(clean.panels["teams-issues"].params).toEqual({ teamsKey: "issues", agent: "a-1" });
+    expect(clean.panels["teams-work"].params).toEqual({ teamsKey: "issues", agent: "a-1" });
+  });
+
+  it("sanitizer folds a saved task-board tab into the one Work tab", () => {
+    const dirty = minimalLayout({
+      "teams-projects": { id: "teams-projects", contentComponent: "teams", title: "Projects", params: { teamsKey: "projects" } },
+      "teams-payments": { id: "teams-payments", contentComponent: "teams", title: "Payments", params: { teamsKey: "payments" } },
+    });
+    const clean = sanitizeLayout(dirty);
+    expect(Object.keys(clean.panels)).toContain("teams-work");
+    expect(clean.panels["teams-work"]).toMatchObject({ title: "Work", params: { teamsKey: "projects" } });
+    // A second saved Work page cannot share the id; it is dropped, not merged.
+    expect(clean.panels["teams-projects"]).toBeUndefined();
+    expect(clean.panels["teams-payments"]).toBeUndefined();
+  });
+
+  it("Work migration keeps the task-board page that was active", () => {
+    const dirty = minimalLayout({
+      "teams-issues": { id: "teams-issues", contentComponent: "teams", title: "Tasks", params: { teamsKey: "issues" } },
+      "teams-projects": { id: "teams-projects", contentComponent: "teams", title: "Projects", params: { teamsKey: "projects" } },
+    });
+    dirty.grid.root = {
+      type: "branch",
+      data: [{ type: "leaf", data: { id: "g1", views: ["teams-issues", "teams-projects"], activeView: "teams-projects" } }],
+    } as unknown as SerializedDockview["grid"]["root"];
+    const clean = sanitizeLayout(dirty);
+    expect(clean.panels["teams-work"]).toMatchObject({ params: { teamsKey: "projects" } });
   });
 
   it("sanitizer heals a stale serialized tab title from the registry", () => {
@@ -285,7 +311,7 @@ describe("layoutStorage", () => {
     expect(leafData.activeView).toBe("teams-dashboard");
   });
 
-  it("sanitizer migrates a persisted teams-spend panel to teams-money", () => {
+  it("sanitizer migrates a persisted teams-spend panel to Money in the Work tab", () => {
     // Money absorbed Payments/Products/Customers/Spend, so a layout saved
     // before that carries a panel id the registry no longer knows.
     const dirty = leafLayout(["teams-spend"], "teams-spend", {
@@ -297,8 +323,8 @@ describe("layoutStorage", () => {
     });
     const clean = sanitizeLayout(dirty);
     expect(clean.panels["teams-spend"]).toBeUndefined();
-    expect(clean.panels["teams-money"]).toMatchObject({
-      id: "teams-money",
+    expect(clean.panels["teams-work"]).toMatchObject({
+      id: "teams-work",
       contentComponent: "teams",
       params: { teamsKey: "money" },
     });

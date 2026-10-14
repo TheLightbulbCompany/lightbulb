@@ -95,7 +95,7 @@ describe("Tasks placement", () => {
     attachDockviewApi(api, () => "a1");
     openPanel("teams-issues", {}, { pushUrl: true });
     expect(api.addPanel).toHaveBeenCalledWith(expect.objectContaining({
-      id: "teams-issues",
+      id: "teams-work",
       position: { referencePanel: MESSAGES_PANEL_ID, direction: "right" },
     }));
     expect(pushSearchParams).toHaveBeenCalledTimes(1);
@@ -109,7 +109,7 @@ describe("Tasks placement", () => {
     openPanel("teams-issues");
     openPanel("teams-issues");
     expect(api.addPanel).toHaveBeenCalledTimes(1);
-    const tasks = api.getPanel("teams-issues") as unknown as FakePanel;
+    const tasks = api.getPanel("teams-work") as unknown as FakePanel;
     expect(tasks.api.setActive).toHaveBeenCalled();
     expect(tasks.api.moveTo).not.toHaveBeenCalled();
   });
@@ -119,7 +119,7 @@ describe("Tasks placement", () => {
     attachDockviewApi(api, () => "a1");
     openPanel("teams-issues");
     setTasksPlacement("tab");
-    const tasks = api.getPanel("teams-issues") as unknown as FakePanel;
+    const tasks = api.getPanel("teams-work") as unknown as FakePanel;
     expect(tasks.api.moveTo).toHaveBeenCalledWith({ group: main, position: "center" });
     expect(tasks.group).toBe(main);
     expect(window.localStorage.getItem(TASKS_PLACEMENT_KEY)).toBe("tab");
@@ -132,7 +132,7 @@ describe("Tasks placement", () => {
     const { api, main } = makeApi();
     attachDockviewApi(api, () => "a1");
     openPanel("teams-issues");
-    const tasks = api.getPanel("teams-issues") as unknown as FakePanel;
+    const tasks = api.getPanel("teams-work") as unknown as FakePanel;
     expect(tasks.group).not.toBe(main);
     // Not laid out yet: leave the split alone.
     (api as unknown as { width: number }).width = 0;
@@ -179,7 +179,7 @@ describe("Tasks placement", () => {
     attachDockviewApi(api, () => "a1");
     openPanel("teams-issues");
     setTasksPlacement("tab");
-    const tasks = api.getPanel("teams-issues") as unknown as FakePanel;
+    const tasks = api.getPanel("teams-work") as unknown as FakePanel;
     tasks.api.moveTo.mockClear();
     // A resize on a wide dock must not read the "split" fallback and undo it.
     refitSplits();
@@ -192,7 +192,7 @@ describe("Tasks placement", () => {
     attachDockviewApi(api, () => "a1");
     openPanel("teams-issues");
     setTasksPlacement("tab");
-    const tasks = api.getPanel("teams-issues") as unknown as FakePanel;
+    const tasks = api.getPanel("teams-work") as unknown as FakePanel;
     tasks.api.moveTo.mockClear();
     refitSplits();
     expect(tasks.api.moveTo).not.toHaveBeenCalled();

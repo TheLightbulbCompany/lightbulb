@@ -5,12 +5,10 @@ import "./workspace.css";
 
 import { useEffect, useState } from "react";
 import { useUser } from "@clerk/nextjs";
-import { UsersRound } from "lucide-react";
 
 import { GallerySection } from "@/components/chat/GallerySection";
 import { HealthIndicator } from "@/components/chat/HealthIndicator";
 import { useBilling } from "@/hooks/useBilling";
-import { COMPANY_SECTIONS } from "@/components/chat/companySections";
 import { MessagingDirectory } from "@/components/messaging/MessagingWorkspace";
 import { planLabel, isFreeTierExpired } from "@/lib/planLabel";
 import { FreeTierNote } from "@/components/chat/FreeTierNote";
@@ -18,7 +16,7 @@ import { TrialRecapCard } from "@/components/messaging/TrialRecapCard";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { DesktopUpdater } from "@/components/desktop/DesktopUpdater";
 import { NodeStatusPill } from "@/components/desktop/NodeStatusPill";
-import { activateMessagesPanel, openPanel, useWorkspaceState } from "./workspaceController";
+import { activateMessagesPanel } from "./workspaceController";
 
 
 interface WorkspaceSidebarProps {
@@ -29,16 +27,9 @@ interface WorkspaceSidebarProps {
   onNavigate?: () => void;
 }
 
-export function WorkspaceSidebar({ onRecoveryReprovision, chatReady, onNavigate }: WorkspaceSidebarProps): React.ReactElement {
+export function WorkspaceSidebar({ onRecoveryReprovision, onNavigate }: WorkspaceSidebarProps): React.ReactElement {
   const { user } = useUser();
   const { account, isSubscribed } = useBilling();
-  const { activePanelId } = useWorkspaceState();
-  const moreItems = [
-    { panel: "teams-agents", label: "Agents", Icon: UsersRound },
-    ...COMPANY_SECTIONS
-      .flatMap((section) => section.items)
-      .filter(({ panel }) => !["teams-dashboard", "teams-search", "teams-inbox", "mail", "teams-issues", "teams-artifacts"].includes(panel)),
-  ];
 
   // Captured once so the footer's expiry check is stable across re-renders.
   const [nowMs] = useState(() => Date.now());
@@ -74,24 +65,6 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady, onNavigate 
         {/* Messaging never needs the container, so conversations never wait on it. */}
         <TrialRecapCard />
         <MessagingDirectory onOpenRoom={() => { activateMessagesPanel(); onNavigate?.(); }} />
-        <details className="workspace-more-nav">
-          <summary>More</summary>
-          <nav aria-label="More workspace destinations">
-            {moreItems.map(({ panel, label, Icon }) => (
-              <button
-                key={panel}
-                type="button"
-                aria-current={activePanelId === panel ? "page" : undefined}
-                disabled={!chatReady}
-                title={chatReady ? undefined : "Available once your workspace is ready"}
-                onClick={() => { openPanel(panel, {}, { pushUrl: true }); onNavigate?.(); }}
-              >
-                <Icon size={16} aria-hidden="true" />
-                <span>{label}</span>
-              </button>
-            ))}
-          </nav>
-        </details>
       </div>
 
 

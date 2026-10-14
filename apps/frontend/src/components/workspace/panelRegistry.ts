@@ -154,6 +154,16 @@ const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   leads: "Leads",
 };
 
+// The Work page: these task-board pages share ONE dock tab, "Work", and a tab
+// strip inside it switches between them (panels/WorkTabs.tsx). Opening any of
+// them re-targets that tab instead of adding a tab per page.
+export const WORK_PANEL_ID = "teams-work";
+export const WORK_TEAMS_KEYS = ["issues", "projects", "goals", "routines", "cases", "agents", "money"] as const;
+const WORK_KEY_SET: ReadonlySet<string> = new Set(WORK_TEAMS_KEYS);
+export function isWorkTeamsKey(teamsKey: string): boolean {
+  return WORK_KEY_SET.has(teamsKey);
+}
+
 const TEAMS_DETAIL_KEYS: Readonly<Record<string, string>> = {
   "issue-detail": "Task",
   "routine-detail": "Automation",
@@ -351,6 +361,7 @@ export function describePanel(
         if (MONEY_SECTIONS.has(raw)) p.section = raw;
         else if (params.section && MONEY_SECTIONS.has(params.section)) p.section = params.section;
       }
+      if (isWorkTeamsKey(teamsKey)) return { panelId: WORK_PANEL_ID, component: "teams", title: "Work", params: p };
       return { panelId: key, component: "teams", title: TEAMS_LIST_KEYS[teamsKey], params: p };
     }
     return null;
@@ -378,10 +389,8 @@ export function durableParamsFor(panelId: string): string[] {
   if (panelId === "file-viewer") return ["panel", "path", "agent"];
   if (panelId === "agent-inspector") return ["panel", "agent", "inspectorTab"];
   if (panelId === "control:agents") return ["panel", "agent"];
-  if (panelId === "teams-agents") return ["panel", "view"];
-  if (panelId === "teams-issues") return ["panel", "agent", "groupBy"];
+  if (panelId === WORK_PANEL_ID) return ["panel", "agent", "groupBy", "view", "day", "section"];
   if (panelId === "teams-inbox") return ["panel", "section"];
-  if (panelId === "teams-money") return ["panel", "day", "section"];
   if (panelId === "activity") return ["panel", "filter", "focus"];
   if (panelId === "mail") return ["panel", "item"];
   if (/^teams-(issue|routine|project|goal|case|run)-detail:/.test(panelId)) return ["panel", "detailId"];
@@ -399,10 +408,8 @@ export function clearablePanelParamKeys(panelId: string): string[] {
   // must clear a stale room target and vice versa, or the two grammars fight
   // (see openMessagePanel / openChatPanel in workspaceController.ts).
   if (panelId === MESSAGES_PANEL_ID) return ["agentId", "agentSelection", "roomId", "messageId", "sessionId", "sessionIntent"];
-  if (panelId === "teams-agents") return ["view"];
-  if (panelId === "teams-issues") return ["agent", "groupBy"];
+  if (panelId === WORK_PANEL_ID) return ["agent", "groupBy", "view", "day", "section"];
   if (panelId === "teams-inbox") return ["section"];
-  if (panelId === "teams-money") return ["day", "section"];
   if (panelId === "activity") return ["filter", "focus"];
   if (panelId === "mail") return ["item"];
   if (panelId === "file-viewer") return ["path", "agent"];

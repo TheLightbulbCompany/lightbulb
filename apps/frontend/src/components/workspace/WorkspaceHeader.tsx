@@ -25,7 +25,8 @@ const DESTINATIONS = [
   { panel: "activity", label: "Activity", Icon: Bell },
   // The workspace's shared agent mailbox. Not "Inbox": that is the company inbox tab.
   { panel: "mail", label: "Mail", Icon: Mail },
-  { panel: "teams-issues", label: "Tasks", Icon: ListTodo },
+  // Every task-board page lives on Work; the rail opens it on Tasks.
+  { panel: "teams-issues", label: "Work", Icon: ListTodo },
   // Every document and deliverable, one click away (stock Paperclip puts
   // Artifacts beside Tasks too). Chat's document cards are the usual way in.
   { panel: "teams-artifacts", label: "Library", Icon: Images },
@@ -64,7 +65,7 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
         // (Connections) opens as `control:connections`. Resolve through the
         // registry so the active marker follows the id the dock actually uses.
         const panelId = describePanel(panel, {})?.panelId ?? panel;
-        // Team runs are team work, so their count rides on Tasks; Activity badges what needs you.
+        // Team runs are team work, so their count rides on Work; Activity badges what needs you.
         const runs = panel === "teams-issues" ? activeTeamRunCount : 0;
         const unseen = panel === "activity" ? attentionCount : 0;
         const mail = panel === "mail" ? newMail : 0;

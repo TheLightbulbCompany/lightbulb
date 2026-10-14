@@ -157,7 +157,7 @@ describe("TeamsDockPanel — scroll-container wrapper", () => {
 describe("TeamsDockPanel — durable-param clear strips the URL", () => {
   it("dismissing the agent filter clears ?agent when the URL names this panel", () => {
     window.history.replaceState(null, "", "/chat?panel=teams-issues&agent=a-1");
-    const { props } = makePanelProps("teams-issues", { teamsKey: "issues", agent: "a-1" });
+    const { props } = makePanelProps("teams-work", { teamsKey: "issues", agent: "a-1" });
     render(<TeamsDockPanel {...props} />);
 
     const onUpdateDurableParam = lastRouterProps().onUpdateDurableParam as (

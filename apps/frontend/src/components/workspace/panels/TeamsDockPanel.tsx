@@ -11,6 +11,8 @@ import {
 import { replaceSearchParams } from "@/lib/shellNav";
 import { clearDurableParamFromUrl } from "../urlChannel";
 import { useDockPanelParams } from "./useDockPanelParams";
+import { WorkTabs } from "./WorkTabs";
+import { isWorkTeamsKey } from "../panelRegistry";
 
 interface TeamsDockPanelParams {
   teamsKey: string; // "inbox" | "issues" | … | "issue-detail" | …
@@ -49,6 +51,7 @@ export function TeamsDockPanel(props: IDockviewPanelProps<TeamsDockPanelParams>)
     // scroll container — it collapses editorial-page's viewport min-height
     // to the dock slot and lets descendants size against the slot (cqh).
     <div className="editorial-page workspace-panel-page h-full overflow-auto">
+      {!params.detailId && isWorkTeamsKey(params.teamsKey) && <WorkTabs teamsKey={params.teamsKey} />}
       <TeamsPanelRouter
         panel={params.teamsKey}
         detailId={params.detailId ?? null}

@@ -308,7 +308,9 @@ export function isPrivateRoute(pathname: string | null | undefined): boolean {
 const JOIN_ROUTE = /^\/join(\/|$)/;
 // Clerk forwards its invitation ticket to /sign-up and /sign-in (and the invite
 // page passes it on): drop those params anywhere, keep the rest (UTM).
-const SECRET_PARAMS = ["__clerk_ticket", "__clerk_status", "inviter", "workspace", "decision", "approval"];
+// redirect_url: the invite page points it at the approval card the invitation carries
+// (/chat?panel=teams-approval-detail&detailId=…), which is the workspace's private id.
+const SECRET_PARAMS = ["__clerk_ticket", "__clerk_status", "inviter", "workspace", "decision", "approval", "redirect_url"];
 
 export function withoutChatQuery(value: string): string {
   try {

@@ -96,6 +96,11 @@ describe("analytics.capture", () => {
     expect(withoutChatQuery("https://x.co/sign-up?__clerk_ticket=t&__clerk_status=sign_up&utm_source=hn"))
       .toBe("https://x.co/sign-up?utm_source=hn");
     expect(withoutChatQuery("/sign-in?__clerk_ticket=t")).toBe("/sign-in");
+    // T09: the approval card an invitation opens after sign-up is a private id.
+    const card = encodeURIComponent("/chat?panel=teams-approval-detail&detailId=ap-secret");
+    expect(withoutChatQuery(`https://x.co/sign-up?__clerk_ticket=t&redirect_url=${card}&utm_source=hn`))
+      .toBe("https://x.co/sign-up?utm_source=hn");
+    expect(withoutChatQuery(`/sign-in?redirect_url=${card}`)).toBe("/sign-in");
   });
 
   it("captureException forwards to posthog.captureException when loaded", async () => {

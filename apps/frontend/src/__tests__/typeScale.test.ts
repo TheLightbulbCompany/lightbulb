@@ -60,9 +60,9 @@ describe("type scale", () => {
       "--text-caption--line-height": "18px",
       "--text-ui": "15px",
       "--text-ui--line-height": "22px",
-      "--text-title": "18px",
-      "--text-title--line-height": "24px",
     });
+    // Title keeps its 22px base everywhere: it styles display headings.
+    expect(css).toMatch(/--text-title: 1\.375rem;\s*--text-title--line-height: 1\.15;/);
   });
 
   it("text-* utilities read the variables, so the override reaches them", async () => {
@@ -83,7 +83,10 @@ describe("type scale", () => {
     expect(messaging).toMatch(/\.room-context-header \{[^}]*min-height: 48px;/);
     expect(messaging).toMatch(/\.room-directory-entry \{[^}]*min-height: 28px;/);
     expect(messaging).toMatch(/\.room-history \{ --room-gutter: 20px;/);
-    expect(workspace).toMatch(/\.workspace-header \{[^}]*height: 48px;/);
+    expect(workspace).toMatch(/\.workspace-header \{[^}]*height: 48px;\s*padding: 0 20px;/);
+    expect(messaging).toMatch(/\.room-context-header \{[^}]*padding: 8px 20px;/);
+    expect(messaging).toMatch(/\.room-context-body \{[^}]*padding: 12px 20px;/);
+    expect(messaging).toMatch(/\.room-details-tabs \{[^}]*padding: 8px 20px;/);
     expect(workspace).toMatch(/\.sidebar-header \{\s*height: 48px;/);
   });
 

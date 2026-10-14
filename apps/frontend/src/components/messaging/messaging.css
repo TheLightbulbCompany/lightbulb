@@ -17,7 +17,7 @@
 .room-view { width: auto; min-width: 32px; height: 32px; gap: 4px; padding: 0 8px; color: var(--muted-foreground); font-size: var(--text-caption); font-variant-numeric: tabular-nums; }
 .room-view[aria-current="page"] { color: var(--foreground); background: var(--accent); }
 .room-title { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1 1 160px; }
-.room-header h2 { font-size: var(--text-title); line-height: var(--text-title--line-height); font-weight: 700; }
+.room-header h2 { font-size: 1rem; font-weight: 700; }
 .room-topic { max-width: 32ch; gap: 4px; height: 28px; padding: 0 6px; color: var(--muted-foreground); font-size: var(--text-ui); font-weight: 400; }
 .room-topic-dot { color: var(--muted-foreground); }
 .room-topic-form { display: flex; align-items: center; gap: 4px; flex: 1 1 200px; min-width: 0; }
@@ -130,15 +130,15 @@
 .room-context-host > .room-context { display: flex; flex: 1 1 auto; width: auto; border-left: 0; }
 .room-context { display: none; width: 344px; flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid var(--border); background: var(--background); }
 .room-details-toggle { display: none; }
-.room-context-header { display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 8px 16px; border-bottom: 1px solid var(--border); }
+.room-context-header { display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 8px 20px; border-bottom: 1px solid var(--border); }
 .room-context .room-composer { margin: 8px 12px 16px; }
-.room-details-tabs { display: flex; flex-wrap: wrap; flex-shrink: 0; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--border); }
+.room-details-tabs { display: flex; flex-wrap: wrap; flex-shrink: 0; gap: 12px; padding: 8px 20px; border-bottom: 1px solid var(--border); }
 .room-details-tabs button { padding: 4px 2px; font-size: var(--text-ui); color: var(--muted-foreground); border-bottom: 2px solid transparent; border-radius: 0; cursor: pointer; }
 .room-details-tabs button:hover { color: var(--foreground); }
 .room-details-tabs button[aria-selected="true"] { color: var(--foreground); font-weight: 600; border-bottom-color: var(--foreground); }
 .room-details-row { display: flex; align-items: flex-start; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--border); }
 .room-details-row p { min-width: 0; overflow-wrap: anywhere; }
-.room-context-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 12px 16px; }
+.room-context-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 12px 20px; }
 .room-context-body > section + section { margin-top: 16px; }
 .room-context-record { margin: 12px 0 20px; overflow-wrap: anywhere; }
 .room-resource-owner + .room-resource-owner { border-top: 1px solid var(--border); padding-top: 16px; }

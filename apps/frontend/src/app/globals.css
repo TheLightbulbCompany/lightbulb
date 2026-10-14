@@ -176,16 +176,15 @@
 :root[data-chat-theme] {
   /* The product's type scale (stage-2 step 6, "more like Slack"): body 15/22
      for messages, list rows and inputs; meta 13/18 for times, status and group
-     labels; small 11/14 for badges and rail labels; title 18/24 for the page
-     name. src/__tests__/typeScale.test.ts pins these. */
+     labels; small 11/14 for badges and rail labels. --text-title keeps its
+     22px base: it styles display headings, and shrinking them restyles the
+     product. src/__tests__/typeScale.test.ts pins these. */
   --text-2xs: 11px;
   --text-2xs--line-height: 14px;
   --text-caption: 13px;
   --text-caption--line-height: 18px;
   --text-ui: 15px;
   --text-ui--line-height: 22px;
-  --text-title: 18px;
-  --text-title--line-height: 24px;
 
   --plane-rail:    #DEDEDE;
   --plane-sidebar: #EFEFEF;

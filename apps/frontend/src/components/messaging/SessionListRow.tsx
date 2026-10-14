@@ -1,22 +1,31 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { endedWhy, sessionEndable, sessionLabel, sessionLive, sessionStatus, sessionTitle } from "@lightbulb/shared";
 import { SessionToolIcon } from "./SessionToolIcon";
 import { SessionRenameButton } from "./SessionRenameButton";
 import { SessionRemoveButton } from "./SessionRemoveButton";
 import type { SidebarSession } from "./roomSections";
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-/** Happy's list clock: a time today, a weekday this week, then a date. */
+/** Happy's list clock, by the viewer's calendar: a time today, a weekday within the week, then a date. */
 export function sessionListTime(iso: string | null | undefined, now = Date.now()): string {
   const at = Date.parse(iso ?? "");
   if (!at) return "";
   const date = new Date(at);
-  if (now - at < DAY_MS) return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  if (now - at < 7 * DAY_MS) return date.toLocaleDateString([], { weekday: "short" });
+  const midnight = new Date(now);
+  midnight.setHours(0, 0, 0, 0);
+  if (at >= midnight.getTime()) return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  midnight.setDate(midnight.getDate() - 6);
+  if (at >= midnight.getTime()) return date.toLocaleDateString([], { weekday: "short" });
   const thisYear = date.getFullYear() === new Date(now).getFullYear();
   return date.toLocaleDateString([], thisYear ? { month: "numeric", day: "numeric" } : { month: "numeric", day: "numeric", year: "2-digit" });
+}
+
+/** The viewer's own clock and locale, so it waits for the browser: the server's would not match. */
+function SessionListTime({ at }: { at: string | null | undefined }) {
+  const [text, setText] = useState("");
+  useEffect(() => setText(sessionListTime(at)), [at]);
+  return <span className="session-row-time" aria-hidden="true">{text}</span>;
 }
 
 /**
@@ -51,7 +60,7 @@ export function SessionListRow({ entry: { session, ownerName, own, unread }, cur
       {!!session.chatUnread && <span className="session-chat-unread" aria-hidden="true">{session.chatUnread > 99 ? "99+" : session.chatUnread}</span>}
       {waiting ? <span className="session-unread session-unread--waiting" aria-hidden="true" />
         : unread && live ? <span className={`session-unread session-unread--${unread}`} aria-hidden="true" />
-          : <span className="session-row-time" aria-hidden="true">{sessionListTime(session.lastEventAt ?? session.endedAt)}</span>}
+          : <SessionListTime at={session.lastEventAt ?? session.endedAt} />}
     </button>
     {own && onRename && <SessionRenameButton session={session} onRename={onRename} icon />}
     {own && onRemove && (session.status === "ended" || sessionEndable(session))

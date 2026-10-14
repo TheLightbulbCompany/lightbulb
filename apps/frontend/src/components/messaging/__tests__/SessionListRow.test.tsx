@@ -22,7 +22,7 @@ it("shows no status words: a shimmering title while working, an orange dot while
   expect(container.querySelector(".session-title--working")).toHaveTextContent("Load test");
   expect(container).toHaveTextContent("Alice · web");
   expect(container).not.toHaveTextContent(/Working|Idle|Online|unavailable/);
-  expect(container.querySelector(".session-row-time")).not.toBeEmptyDOMElement();
+  expect(container.querySelector(".session-row-time")).toBeInTheDocument();
   unmount();
   const waiting = row({ status: "waiting-approval" });
   expect(waiting.container.querySelector(".session-unread--waiting")).not.toBeNull();
@@ -39,6 +39,9 @@ it("shows no status words: a shimmering title while working, an orange dot while
 it("tells the time like Happy: a clock today, a weekday this week, then a date", () => {
   const now = new Date(2026, 9, 13, 19, 30).getTime();
   expect(sessionListTime(new Date(2026, 9, 13, 17, 5).toISOString(), now)).toMatch(/5:05/);
+  // Yesterday evening is yesterday, not "today" by a rolling 24 hours.
+  expect(sessionListTime(new Date(2026, 9, 12, 20, 0).toISOString(), new Date(2026, 9, 13, 8, 0).getTime()))
+    .toBe(new Date(2026, 9, 12).toLocaleDateString([], { weekday: "short" }));
   expect(sessionListTime(new Date(2026, 9, 10, 9, 0).toISOString(), now)).toBe(new Date(2026, 9, 10).toLocaleDateString([], { weekday: "short" }));
   expect(sessionListTime(new Date(2026, 8, 1).toISOString(), now)).toBe(new Date(2026, 8, 1).toLocaleDateString([], { month: "numeric", day: "numeric" }));
   expect(sessionListTime(null, now)).toBe("");

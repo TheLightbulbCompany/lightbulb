@@ -787,6 +787,8 @@ it("lists only live sessions, marks the open and unread ones, and links to All s
       { session: makeSession("b", "Ship docs", "idle"), ownerName: "Alice", own: false, unread: "finished" },
       { session: makeSession("c", "Gone quiet", "offline"), ownerName: "Alice", own: false },
       { session: makeSession("d", "Old refactor", "ended"), ownerName: "Alice", own: false },
+      // Offline for days: All sessions does not list it, so the count does not either.
+      { session: { ...makeSession("e", "Lost Mac", "offline"), lastEventAt: "2026-01-01T00:00:00Z" }, ownerName: "Alice", own: false },
     ]} />);
   const section = screen.getByRole("region", { name: "Sessions" });
   expect(within(section).getAllByRole("button", { name: /^Open / }).map((b) => b.getAttribute("aria-label"))).toEqual([

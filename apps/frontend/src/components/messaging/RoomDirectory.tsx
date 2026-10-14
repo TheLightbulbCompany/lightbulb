@@ -5,7 +5,7 @@ import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, us
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { ChevronDown, ChevronRight, GripVertical, History, MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
-import { listenModeOptions, roomDisplayName, soleChannelOwner, SIDEBAR_SESSION_CAP, sessionLive, type ListenMode, type MemberPrefsRequest, type RoomKind, type RoomSection } from "@lightbulb/shared";
+import { listenModeOptions, roomDisplayName, soleChannelOwner, SIDEBAR_SESSION_CAP, sessionArchived, sessionLive, type ListenMode, type MemberPrefsRequest, type RoomKind, type RoomSection } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -406,6 +406,8 @@ function DirectoryContent({
       // Only what the desktop is mirroring right now; everything else is under All sessions.
       // Already ordered: mine first, then people by name, each busy → waiting → idle (see workspaceSections in shared).
       const live = sessions.filter((entry) => sessionLive(entry.session));
+      // What All sessions lists: everything but the long-lost (offline for days).
+      const listed = sessions.filter((entry) => !sessionArchived(entry.session)).length;
       // Collapsed to the cap, it still keeps the session you are reading on screen.
       const shown = sessionsExpanded ? live : live.filter((entry, index) => index < SIDEBAR_SESSION_CAP || entry.session.sessionId === currentSessionId);
       return <section aria-label="Sessions">
@@ -422,9 +424,9 @@ function DirectoryContent({
             aria-controls={listId} onClick={() => setSessionsExpanded((open) => !open)}>
             {sessionsExpanded ? "Show fewer" : `+${live.length - SIDEBAR_SESSION_CAP} more`}
           </button>}
-          {onOpenAllSessions && sessions.length > 0 && <button type="button" className="room-directory-subgroup"
+          {onOpenAllSessions && listed > 0 && <button type="button" className="room-directory-subgroup"
             aria-current={allSessionsOpen ? "page" : undefined} onClick={onOpenAllSessions}>
-            <History aria-hidden="true" />All sessions<span className="text-muted-foreground">{sessions.length}</span>
+            <History aria-hidden="true" />All sessions<span className="text-muted-foreground">{listed}</span>
           </button>}
         </div>}
       </section>;

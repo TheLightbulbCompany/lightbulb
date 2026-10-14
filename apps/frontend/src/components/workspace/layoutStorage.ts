@@ -11,6 +11,9 @@ import {
   DEFAULT_AGENT_SENTINEL,
   MESSAGES_PANEL_ID,
   describePanel,
+  WORK_PANEL_ID,
+  isWorkTeamsKey,
+  resolvePanelAlias,
 } from "./panelRegistry";
 
 // v3: the shell is tabs-only — splitting is gone, so a persisted v2 blob is a
@@ -62,6 +65,8 @@ interface StoredLayout {
 function migrateRetiredPanelId(
   id: string,
 ): { id: string; teamsKey?: string; controlKey?: string; component?: "teams" } | null {
+  const work = migrateToWorkPanel(id);
+  if (work) return work;
   if (Object.hasOwn(RETIRED_PANEL_ALIASES, id)) {
     const target = RETIRED_PANEL_ALIASES[id];
     if (target.startsWith("teams-")) {
@@ -85,6 +90,15 @@ function migrateRetiredPanelId(
     }
   }
   return null;
+}
+
+// A tab saved before the Work page (one tab per task-board page, or a retired
+// alias of one such as teams-payments) becomes the one Work tab.
+function migrateToWorkPanel(id: string): { id: string; teamsKey: string; component: "teams" } | null {
+  if (!id.startsWith("teams-")) return null;
+  const target = resolvePanelAlias(id);
+  const teamsKey = target.slice("teams-".length);
+  return isWorkTeamsKey(teamsKey) ? { id: WORK_PANEL_ID, teamsKey, component: "teams" } : null;
 }
 
 type GridNode = SerializedDockview["grid"]["root"];

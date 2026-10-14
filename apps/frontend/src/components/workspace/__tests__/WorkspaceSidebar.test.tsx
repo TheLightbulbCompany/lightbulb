@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, act, within } from "@testing-library/react";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 import type { DirectoryRoom } from "@/components/messaging/types";
 
 const openPanel = vi.fn();
@@ -79,28 +79,15 @@ describe("WorkspaceSidebar", () => {
     fireEvent.click(screen.getByRole("button", { name: label }));
     expect(activateMessagesPanel).toHaveBeenCalledWith();
   });
-  it("keeps secondary destinations in native More", () => {
+  it("has no More list: the task-board pages live on the Work page", () => {
     render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
-    const details = screen.getByText("More").closest("details")!;
-    expect(details).not.toHaveAttribute("open");
-    fireEvent.click(screen.getByText("More"));
-    expect(details).toHaveAttribute("open");
-    // Mail is on the rail, like Tasks, so More does not repeat it.
-    expect(within(details).getAllByRole("button").map((button) => button.textContent)).toEqual(["Agents", "Money", "Projects", "Automations", "Goals", "Cases", "Accounts"]);
-    fireEvent.click(within(details).getByRole("button", { name: "Agents" }));
-    expect(openPanel).toHaveBeenCalledWith("teams-agents", {}, { pushUrl: true });
-    expect(screen.queryByText("Leads")).not.toBeInTheDocument();
-    expect(screen.queryByText("Domain & Site")).not.toBeInTheDocument();
-  });
-  it("disables container-backed destinations but keeps conversations while agents start", () => {
-    render(<WorkspaceSidebar chatReady={false} onRecoveryReprovision={vi.fn()} />);
-    fireEvent.click(screen.getByText("More"));
-    for (const name of ["Agents", "Money"]) {
-      const button = screen.getByRole("button", { name });
-      expect(button).toBeDisabled();
-      fireEvent.click(button);
+    expect(screen.queryByText("More")).not.toBeInTheDocument();
+    for (const name of ["Agents", "Money", "Projects", "Automations", "Goals", "Cases", "Accounts"]) {
+      expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
     }
-    expect(openPanel).not.toHaveBeenCalled();
+  });
+  it("keeps conversations while agents start", () => {
+    render(<WorkspaceSidebar chatReady={false} onRecoveryReprovision={vi.fn()} />);
     // Messaging never needs the container.
     expect(screen.getByRole("navigation", { name: "Conversations" })).toBeInTheDocument();
     expect(screen.queryByText(/Conversations are available when/)).not.toBeInTheDocument();

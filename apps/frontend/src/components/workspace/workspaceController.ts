@@ -18,6 +18,7 @@ import {
   clearablePanelParamKeys,
   DEFAULT_AGENT_SENTINEL,
   type PanelDescriptor,
+  WORK_PANEL_ID,
 } from "./panelRegistry";
 import { buildPanelUrl } from "./urlChannel";
 import { readTasksPlacement, writeTasksPlacement, type TasksPlacement } from "./layoutStorage";
@@ -232,7 +233,7 @@ function addOrFocus(descriptor: PanelDescriptor, extraParams?: Record<string, st
 
 // The Tasks list panel is the only one that splits. Its detail panels
 // (teams-issues:<id>) keep today's tab behaviour.
-export const TASKS_PANEL_ID = "teams-issues";
+export const TASKS_PANEL_ID = WORK_PANEL_ID;
 const TASKS_SPLIT_FRACTION = 0.4;
 // ponytail: a fixed floor on the dock width, not a measured content minimum.
 // Below it the conversation and the list would both be too cramped to read,

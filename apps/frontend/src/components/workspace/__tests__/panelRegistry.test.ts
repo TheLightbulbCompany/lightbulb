@@ -28,7 +28,7 @@ describe("panelRegistry", () => {
     expect(resolvePanelAlias("teams-org-chart")).toBe("teams-agents");
     // The removed Support placeholder lands on Cases (links + saved layouts).
     expect(resolvePanelAlias("teams-support")).toBe("teams-cases");
-    expect(describePanel("teams-support", {})?.panelId).toBe("teams-cases");
+    expect(describePanel("teams-support", {})?.params.teamsKey).toBe("cases");
     expect(describePanel("teams-case-detail", { detailId: "LB-C7" })?.panelId).toBe("teams-case-detail:LB-C7");
   });
 
@@ -111,7 +111,6 @@ describe("panelRegistry", () => {
   it("names durable params per panel id for clear-on-close", () => {
     expect(durableParamsFor("teams-issue-detail:ADM-1")).toEqual(["panel", "detailId"]);
     expect(durableParamsFor("agent-inspector")).toEqual(["panel", "agent", "inspectorTab"]);
-    expect(durableParamsFor("teams-issues")).toEqual(["panel", "agent", "groupBy"]);
     expect(durableParamsFor("teams-inbox")).toEqual(["panel", "section"]);
     // ?panel=file-viewer&path=… is registered grammar — close must clear the
     // path (and any agent binding), not just ?panel.
@@ -124,7 +123,6 @@ describe("panelRegistry", () => {
   });
 
   it("names the clearable PANEL params a plain re-open must reset", () => {
-    expect(clearablePanelParamKeys("teams-issues")).toEqual(["agent", "groupBy"]);
     expect(clearablePanelParamKeys("teams-inbox")).toEqual(["section"]);
     expect(clearablePanelParamKeys("file-viewer")).toEqual(["path", "agent"]);
     expect(clearablePanelParamKeys("agent-inspector")).toEqual(["agentId", "initialTab"]);
@@ -193,11 +191,9 @@ describe("panelRegistry", () => {
 
   it("describes the money panel with a durable ?day deep link", () => {
     expect(describePanel("teams-money", { day: "2026-09-05" })).toEqual({
-      panelId: "teams-money", component: "teams", title: "Money", params: { teamsKey: "money", day: "2026-09-05" },
+      panelId: "teams-work", component: "teams", title: "Work", params: { teamsKey: "money", day: "2026-09-05" },
     });
     expect(describePanel("teams-money", {})!.params).toEqual({ teamsKey: "money" });
-    expect(durableParamsFor("teams-money")).toEqual(["panel", "day", "section"]);
-    expect(clearablePanelParamKeys("teams-money")).toEqual(["day", "section"]);
   });
 
   it("describes an absorbed Money key as ONE Money panel carrying its section", () => {
@@ -205,7 +201,7 @@ describe("panelRegistry", () => {
     // dock opens one tab — with the section synthesized off the RAW key, the
     // way ?panel=teams-org-chart carries the Agents chart view.
     expect(describePanel("teams-spend", {})).toEqual({
-      panelId: "teams-money", component: "teams", title: "Money",
+      panelId: "teams-work", component: "teams", title: "Work",
       params: { teamsKey: "money", section: "spend" },
     });
     for (const k of ["payments", "products", "customers"]) {
@@ -225,9 +221,9 @@ describe("panelRegistry", () => {
     // Same reason as Money's four keys: the dock dedupes by panel id, so a
     // router-level mapping would open a second tab also titled "Agents".
     expect(describePanel("teams-org-chart", {})).toEqual({
-      panelId: "teams-agents",
+      panelId: "teams-work",
       component: "teams",
-      title: "Agents",
+      title: "Work",
       params: { teamsKey: "agents", view: "chart" },
     });
     // A plain Agents open carries no view — the panel's stored preference wins.
@@ -242,8 +238,6 @@ describe("panelRegistry", () => {
     });
     // The raw key wins: it is what the owner actually clicked.
     expect(describePanel("teams-org-chart", { view: "list" })!.params.view).toBe("chart");
-    expect(durableParamsFor("teams-agents")).toEqual(["panel", "view"]);
-    expect(clearablePanelParamKeys("teams-agents")).toEqual(["view"]);
   });
 
   it("aliases teams-activity onto Inbox, pre-scrolled to Recently", () => {
@@ -276,19 +270,10 @@ describe("panelRegistry", () => {
     });
   });
 
-  it("resolves Goals and Projects as their own panels, not aliased onto Tasks", () => {
-    const tasks = describePanel("teams-issues", {})?.panelId;
-
+  it("opens Goals and Projects as their own pages inside the Work tab", () => {
     const goals = describePanel("teams-goals", {});
-    expect(goals?.panelId).toBe("teams-goals");
-    expect(goals?.panelId).not.toBe(tasks);
-    expect(goals?.title).toBe("Goals");
     expect(goals?.params).toEqual({ teamsKey: "goals" });
-
     const projects = describePanel("teams-projects", {});
-    expect(projects?.panelId).toBe("teams-projects");
-    expect(projects?.panelId).not.toBe(tasks);
-    expect(projects?.title).toBe("Projects");
     expect(projects?.params).toEqual({ teamsKey: "projects" });
   });
 
@@ -319,3 +304,21 @@ describe("panelRegistry", () => {
   });
 
 });
+
+describe("Work page: one dock tab for every task-board page", () => {
+  it.each(["issues", "projects", "goals", "routines", "cases", "agents", "money"])("teams-%s opens in the Work tab", (key) => {
+    const d = describePanel(`teams-${key}`, {})!;
+    expect(d.panelId).toBe("teams-work");
+    expect(d.title).toBe("Work");
+    expect(d.params.teamsKey).toBe(key);
+  });
+  it("other Teams pages keep their own tab", () => {
+    expect(describePanel("teams-artifacts", {})!.panelId).toBe("teams-artifacts");
+    expect(describePanel("teams-inbox", {})!.panelId).toBe("teams-inbox");
+  });
+  it("Work owns the union of its pages' durable params", () => {
+    expect(durableParamsFor("teams-work")).toEqual(["panel", "agent", "groupBy", "view", "day", "section"]);
+    expect(clearablePanelParamKeys("teams-work")).toEqual(["agent", "groupBy", "view", "day", "section"]);
+  });
+});
+

@@ -14,7 +14,7 @@ import {
 describe("parseCommand", () => {
   it("parses a teams list command", () => {
     const c = parseCommand("?panel=teams-issues&agent=a-1");
-    expect(c?.descriptor.panelId).toBe("teams-issues");
+    expect(c?.descriptor.panelId).toBe("teams-work");
     expect(c?.descriptor.params).toEqual({ teamsKey: "issues", agent: "a-1" });
     expect(c?.oneShots).toEqual({});
   });
@@ -30,7 +30,7 @@ describe("parseCommand", () => {
     expect(parseCommand("?panel=credits")?.descriptor.panelId).toBe("control:llm");
     // The org chart is a view of the roster now.
     const chartCmd = parseCommand("?panel=teams-org-chart");
-    expect(chartCmd?.descriptor.panelId).toBe("teams-agents");
+    expect(chartCmd?.descriptor.panelId).toBe("teams-work");
     expect(chartCmd?.descriptor.params).toEqual({ teamsKey: "agents", view: "chart" });
   });
 
@@ -158,7 +158,7 @@ describe("clearClosedPanelFromUrl (Messages singleton)", () => {
 
 describe("clearDurableParamFromUrl", () => {
   it("strips the param when the URL command names the panel", () => {
-    expect(clearDurableParamFromUrl("?panel=teams-issues&agent=a-1", "teams-issues", "agent")).toBe(
+    expect(clearDurableParamFromUrl("?panel=teams-issues&agent=a-1", "teams-work", "agent")).toBe(
       "panel=teams-issues",
     );
   });

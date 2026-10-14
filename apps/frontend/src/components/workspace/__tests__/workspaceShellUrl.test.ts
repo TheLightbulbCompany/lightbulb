@@ -255,7 +255,7 @@ describe("retired-alias deep links keep their meaning end to end", () => {
     // 1. reconciler → 2. openPanel → 3. the params dockview mounts the panel with
     const d = deriveReconcilerAction("?panel=teams-org-chart", null)!;
     openPanel(d.panelKey!, d.durableParams, { oneShots: d.command!.oneShots });
-    const mounted = api.getPanel("teams-agents")!.params as Record<string, string>;
+    const mounted = api.getPanel("teams-work")!.params as Record<string, string>;
     expect(mounted).toEqual({ teamsKey: "agents", view: "chart" });
 
     // 4. the router turns those params into the panel's seed view. Invoked

@@ -73,9 +73,9 @@ describe("?panel=teams-spend resolves and mounts through the reconciler seam", (
     expect(decision).not.toBeNull();
     expect(decision!.panelKey).toBe("teams-spend");
     expect(decision!.command?.descriptor).toEqual({
-      panelId: "teams-money",
+      panelId: "teams-work",
       component: "teams",
-      title: "Money",
+      title: "Work",
       params: { teamsKey: "money", section: "spend" },
     });
   });
@@ -89,7 +89,7 @@ describe("?panel=teams-spend resolves and mounts through the reconciler seam", (
 
     expect(addPanel).toHaveBeenCalledTimes(1);
     expect(addPanel.mock.calls[0][0]).toMatchObject({
-      id: "teams-money",
+      id: "teams-work",
       component: "teams",
       params: { teamsKey: "money", section: "spend" },
     });

@@ -152,7 +152,7 @@ describe("workspaceController", () => {
     // clear the stale agent filter with an explicit undefined — dockview's
     // updateParameters merges, so omission alone would keep the filter.
     openPanel("teams-issues", {});
-    const panel = api.getPanel("teams-issues") as unknown as {
+    const panel = api.getPanel("teams-work") as unknown as {
       api: { updateParameters: ReturnType<typeof vi.fn> };
     };
     // toEqual/toHaveBeenCalledWith ignore undefined-valued keys, but the
@@ -169,7 +169,7 @@ describe("workspaceController", () => {
     attachDockviewApi(api, () => undefined);
     openPanel("teams-issues", { agent: "A" });
     openPanel("teams-issues", { agent: "B" });
-    const panel = api.getPanel("teams-issues") as unknown as {
+    const panel = api.getPanel("teams-work") as unknown as {
       api: { updateParameters: ReturnType<typeof vi.fn> };
     };
     expect(panel.api.updateParameters).toHaveBeenCalledWith({
@@ -334,7 +334,7 @@ describe("workspaceController", () => {
     expect(replaceSearchParams).toHaveBeenCalled(); // URL → list, replace not push
     expect(suppressedDuringClose).toBe(true);       // clear-on-close listener must skip
     expect(api.getPanel("teams-issue-detail:ADM-1")).toBeUndefined();
-    expect(api.getPanel("teams-issues")).toBeDefined();
+    expect(api.getPanel("teams-work")).toBeDefined();
     expect(isShellOperationInProgress()).toBe(false);
   });
 

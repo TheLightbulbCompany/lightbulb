@@ -228,6 +228,25 @@ describe("PostHogProvider", () => {
     expect(JSON.stringify(sent)).not.toContain("53123");
   });
 
+  it("never records or autocaptures an invitation page, which names people and carries a ticket", async () => {
+    process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
+    mockRouterState.pathname = "/join/invite";
+    window.history.replaceState({}, "", "/join/invite?inviter=Sam&workspace=Acme&__clerk_ticket=tk");
+    const mod = await import("../PostHogProvider");
+    render(<mod.PostHogProvider><div>Sam invited you to Acme.</div></mod.PostHogProvider>);
+
+    const options = mockInit.mock.calls[0][1] as Record<string, unknown>;
+    expect(options.disable_session_recording).toBe(true);
+    expect(document.body.classList.contains("ph-no-capture")).toBe(true);
+    expect(mockStopRecording).toHaveBeenCalled();
+    const ignore = (options.autocapture as { url_ignorelist: RegExp[] }).url_ignorelist;
+    expect(ignore.some(r => r.test("https://thelightbulb.company/join/invite?inviter=Sam"))).toBe(true);
+    expect(ignore.some(r => r.test("https://thelightbulb.company/join/org_1#tok"))).toBe(true);
+    expect(ignore.some(r => r.test("https://thelightbulb.company/joinery"))).toBe(false);
+    const beforeSend = options.before_send as (event: { event: string; properties: Record<string, unknown> }) => unknown;
+    expect(beforeSend({ event: "$snapshot", properties: { $snapshot_data: [] } })).toBeNull();
+  });
+
   it("stops replay when navigation enters chat from onboarding", async () => {
     process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
     mockRouterState.pathname = "/onboarding";

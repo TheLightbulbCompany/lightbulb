@@ -278,9 +278,10 @@ function externalReferrer(): { referrer: string | null; domain: string | null } 
   }
 }
 
-/** Routes whose DOM is a customer's conversation: never recorded, never autocaptured. */
+/** Routes whose DOM is a customer's conversation (/chat, /s) or names people and carries an
+ *  invitation credential (/join/*): never recorded, never autocaptured. */
 export function isPrivateRoute(pathname: string | null | undefined): boolean {
-  return pathname === "/chat" || pathname === "/s";
+  return pathname === "/chat" || pathname === "/s" || pathname === "/join" || !!pathname?.startsWith("/join/");
 }
 
 // /chat deep links can carry file paths in `?path=`, and /s carries a session

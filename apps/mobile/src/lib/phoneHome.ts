@@ -1,4 +1,4 @@
-import type { RoomSummary } from "@lightbulb/shared/messaging";
+import type { RoomSummary } from "@lightbulb/shared";
 
 export function findCeoDm(
   rooms: RoomSummary[],

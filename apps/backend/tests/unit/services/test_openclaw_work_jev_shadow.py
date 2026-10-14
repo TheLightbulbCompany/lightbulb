@@ -287,6 +287,9 @@ MEMBERS3 = [
 ]
 
 
+CREATED_FIELDS: list = []
+
+
 async def _dispatch(monkeypatch, event_kind, *, agent="a1", message=MESSAGE, route=None, follow_up=None, meta=META):
     posted: list = []
     created: list = []
@@ -310,6 +313,7 @@ async def _dispatch(monkeypatch, event_kind, *, agent="a1", message=MESSAGE, rou
 
     async def create_run(owner, run_id, **fields):
         created.append(run_id)
+        CREATED_FIELDS.append(fields)
         return True
 
     monkeypatch.setattr(work.messaging_repo, "create_run", create_run)
@@ -1025,3 +1029,23 @@ async def test_posts_since_the_question_reach_jev_instead_of_cancelling_it(
     got = await jev.route({**META, "lastSeq": 6}, "a1", MESSAGE, latest=MESSAGE, members=MEMBERS, history=[])
     assert decide.await_args.args[0]["after"][0]["text"] == later["text"]
     assert got.get("forced") == forced
+
+
+@pytest.mark.parametrize(
+    ("event_kind", "route", "meta", "routed_by", "p"),
+    [
+        ("room_event", AsyncMock(return_value=_decision("a1", 0.82)), META, "jev", 0.82),
+        ("room_event", AsyncMock(return_value={"fallback": True}), META, "fallback", None),
+        ("user_request", None, META, "mention", None),
+        ("user_request", None, {**META, "kind": "dm"}, "dm", None),
+    ],
+)
+@pytest.mark.asyncio
+async def test_every_run_records_who_routed_it(monkeypatch, event_kind, route, meta, routed_by, p):
+    """T35: the ledger row says whether Jev, the fallback, a mention or a DM started the run."""
+    CREATED_FIELDS.clear()
+    lone = {**MESSAGE, "dispatchTargets": [{"agentId": "a1", "eventKind": event_kind}]}
+    _, created, _ = await _dispatch(monkeypatch, event_kind, route=route, meta=meta, message=lone)
+    assert len(created) == 1
+    assert CREATED_FIELDS[0]["routed_by"] == routed_by
+    assert CREATED_FIELDS[0]["routing_p"] == p

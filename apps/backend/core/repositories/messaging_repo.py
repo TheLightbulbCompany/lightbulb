@@ -2532,10 +2532,14 @@ async def create_run(
     trigger_message_id: str,
     event_kind: str,
     thread_root_id: str | None = None,
+    routed_by: str | None = None,
+    routing_p: float | None = None,
 ) -> bool:
     """Put the ledger row as ``dispatched``. False when it already exists (redelivery).
     ``threadRootId`` is the thread the run answers in (None: the main conversation) -- what a
-    follow-up is matched against to be steered into this run."""
+    follow-up is matched against to be steered into this run. ``routedBy`` is who started the
+    run (``jev`` / ``fallback`` / ``mention`` / ``dm`` / ``follow_up``) and ``routingP`` Jev's
+    probability for this agent when Jev picked it (T35)."""
     now = utc_now_iso()
     item = {
         "pk": owner_pk(owner_id),
@@ -2548,6 +2552,8 @@ async def create_run(
         "triggerMessageId": trigger_message_id,
         "eventKind": event_kind,
         "threadRootId": thread_root_id,
+        "routedBy": routed_by,
+        **({"routingP": Decimal(str(round(float(routing_p), 4)))} if routing_p is not None else {}),
         "status": "dispatched",
         "dispatchedAt": now,
         "updatedAt": now,
@@ -2870,13 +2876,13 @@ async def list_open_runs_for_room(owner_id: str, room_id: str) -> list[dict]:
     to 7 days — exactly like ``has_open_runs`` below.
     """
     rows = await _query(owner_pk(owner_id), begins_with="RUN#")
-    return [row for row in rows if "sweep" in row and row.get("roomId") == room_id]
+    return [row for row in rows if row.get("sweep") == "open" and row.get("roomId") == room_id]
 
 
 async def has_open_runs(owner_id: str) -> bool:
-    """Any ledger row still carrying the sweep marker (removed by ``end_run``)."""
+    """Any ledger row still marked open (``end_run`` moves it to ``followup``)."""
     rows = await _query(owner_pk(owner_id), begins_with="RUN#")
-    return any("sweep" in row for row in rows)
+    return any(row.get("sweep") == "open" for row in rows)
 
 
 async def _run_update(owner_id: str, run_id: str, **kwargs: Any) -> dict | None:
@@ -2952,21 +2958,27 @@ async def add_steered_message(owner_id: str, run_id: str, message_id: str, *, am
     return row is not None
 
 
-async def request_abort(owner_id: str, run_id: str) -> bool:
+async def request_abort(
+    owner_id: str, run_id: str, *, stopped_by: str | None = None, stop_after_s: int | None = None
+) -> bool:
     """The runtime accepted a Stop: the run stays open until its own run.ended(aborted), but
     only for RUN_ABORT_GRACE_S -- heartbeats no longer extend it, so the sweeper closes it if
-    the backend's own timer (routers/messaging.abort_run) never fires. First Stop wins."""
+    the backend's own timer (routers/messaging.abort_run) never fires. First Stop wins.
+    ``stoppedBy`` / ``stopAfterS`` (seconds since run.started) feed the Stop ledger (T35)."""
     now = utc_now_iso()
     row = await _run_update(
         owner_id,
         run_id,
-        UpdateExpression="SET abortRequestedAt = :now, deadlineAt = :deadline, updatedAt = :now",
+        UpdateExpression="SET abortRequestedAt = :now, deadlineAt = :deadline, updatedAt = :now, "
+        "stoppedBy = :by, stopAfterS = :after",
         ConditionExpression="attribute_exists(sk) AND #s <> :ended AND attribute_not_exists(abortRequestedAt)",
         ExpressionAttributeNames={"#s": "status"},
         ExpressionAttributeValues={
             ":ended": "ended",
             ":now": now,
             ":deadline": int(time.time()) + RUN_ABORT_GRACE_S,
+            ":by": stopped_by,
+            ":after": stop_after_s,
         },
     )
     return row is not None
@@ -2991,6 +3003,8 @@ async def end_run(
         ":ek": error_kind,
         ":usage": _ddb_safe(usage),
         ":now": now,
+        ":followup": "followup",
+        ":check_at": int(time.time()) + RUN_FOLLOWUP_CHECK_S,
     }
     condition = "attribute_exists(sk) AND #s <> :ended"
     if expected_deadline_at is not None:
@@ -2999,19 +3013,27 @@ async def end_run(
     return await _run_update(
         owner_id,
         run_id,
-        UpdateExpression="SET #s = :ended, outcome = :outcome, errorKind = :ek, #u = :usage, endedAt = :now, updatedAt = :now REMOVE sweep, deadlineAt",
+        # The row stays on the sweep index as ``followup`` until the 30-minute check labels it
+        # (T35, ``run_feedback``); ``list_overdue_runs`` reads only ``open``.
+        UpdateExpression="SET #s = :ended, outcome = :outcome, errorKind = :ek, #u = :usage, endedAt = :now, "
+        "updatedAt = :now, sweep = :followup, deadlineAt = :check_at",
         ConditionExpression=condition,
         ExpressionAttributeNames={"#s": "status", "#u": "usage"},
         ExpressionAttributeValues=values,
     )
 
 
-async def list_overdue_runs(now_epoch: int, page_size: int = 100) -> list[dict]:
-    """All overdue open runs, reading the sparse GSI in bounded pages."""
+#: An ended run is checked this long after it ends: replied, reacted, re-asked or ignored (T35).
+RUN_FOLLOWUP_CHECK_S = 30 * 60
+
+
+async def list_overdue_runs(now_epoch: int, page_size: int = 100, *, marker: str = "open") -> list[dict]:
+    """All overdue runs carrying ``marker`` (``open``: unfinished; ``followup``: ended and
+    due for the 30-minute check), reading the sparse GSI in bounded pages."""
     query = {
         "IndexName": GSI_BY_RUN_DEADLINE,
         "KeyConditionExpression": "sweep = :open AND deadlineAt < :now",
-        "ExpressionAttributeValues": {":open": "open", ":now": int(now_epoch)},
+        "ExpressionAttributeValues": {":open": marker, ":now": int(now_epoch)},
         "Limit": page_size,
     }
     refs: list[dict] = []
@@ -3026,6 +3048,18 @@ async def list_overdue_runs(now_epoch: int, page_size: int = 100) -> list[dict]:
         if not last:
             return refs
         query["ExclusiveStartKey"] = last
+
+
+async def label_run_followup(owner_id: str, run_id: str, follow_up: str) -> dict | None:
+    """Write the 30-minute check and take the row off the sweep index. Once: None when
+    another sweeper pass already labelled it."""
+    return await _run_update(
+        owner_id,
+        run_id,
+        UpdateExpression="SET followUp = :label, followUpAt = :now, updatedAt = :now REMOVE sweep, deadlineAt",
+        ConditionExpression="attribute_exists(sk) AND sweep = :followup",
+        ExpressionAttributeValues={":label": follow_up, ":now": utc_now_iso(), ":followup": "followup"},
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -4179,6 +4179,14 @@ async def close_aborted_run(owner_id: str, run_id: str, *, forced: bool = False)
         logger.exception("aborted run frame failed")
 
 
+def seconds_since(iso: Any) -> int | None:
+    """Whole seconds from an ISO timestamp to now (the Stop ledger's ``stopAfterS``)."""
+    if not iso:
+        return None
+    ms = _ms_between(iso, datetime.now(timezone.utc).isoformat())
+    return None if ms is None else int(ms // 1000)
+
+
 def _ms_between(start: Any, end: Any) -> float | None:
     try:
         return max(0.0, (datetime.fromisoformat(str(end)) - datetime.fromisoformat(str(start))).total_seconds() * 1000)

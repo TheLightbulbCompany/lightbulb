@@ -1190,8 +1190,8 @@ async def test_transitions_are_conditional(table):
     assert (
         ended["status"] == "ended"
         and ended["usage"]["inputTokens"] == 1200
-        and "sweep" not in ended
-        and "deadlineAt" not in ended
+        and ended["sweep"] == "followup"
+        and ended["deadlineAt"] >= int(time.time()) + repo.RUN_FOLLOWUP_CHECK_S - 5
     )
     assert await repo.end_run("owner_1", run_id, outcome="error", error_kind="late") is None
     assert not await repo.heartbeat_run("owner_1", run_id)
@@ -1527,3 +1527,26 @@ async def test_a_meeting_notes_mail_is_claimed_once(table):
     assert not await repo.claim_meeting_notes_mail("owner_1", "msg-1")
     await repo.put_meeting_notes_request("owner_1", "msg-1", {"roomId": "r1", "occurrence": 1790972400})  # a retry
     assert not await repo.claim_meeting_notes_mail("owner_1", "msg-1")
+
+
+@pytest.mark.asyncio
+async def test_an_ended_run_waits_for_its_followup_label_then_leaves_the_index(table):
+    """T35: end_run parks the row as ``followup``; it is not open, and the label is written once."""
+    run_id, _ = await _dispatched()
+    await repo.end_run("owner_1", run_id, outcome="completed")
+    assert not await repo.has_open_runs("owner_1")
+    assert await repo.list_overdue_runs(int(time.time()) + 10) == []
+    due = await repo.list_overdue_runs(int(time.time()) + repo.RUN_FOLLOWUP_CHECK_S + 10, marker="followup")
+    assert due == [{"ownerId": "owner_1", "runId": run_id}]
+    labelled = await repo.label_run_followup("owner_1", run_id, "replied")
+    assert labelled["followUp"] == "replied" and "sweep" not in labelled and "deadlineAt" not in labelled
+    assert await repo.label_run_followup("owner_1", run_id, "ignored") is None
+
+
+@pytest.mark.asyncio
+async def test_a_stop_records_who_and_when(table):
+    run_id, _ = await _dispatched()
+    assert await repo.start_run("owner_1", run_id, session_key="k")
+    assert await repo.request_abort("owner_1", run_id, stopped_by="user_1", stop_after_s=12)
+    row = await repo.get_run("owner_1", run_id)
+    assert row["stoppedBy"] == "user_1" and row["stopAfterS"] == 12

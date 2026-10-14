@@ -197,7 +197,7 @@ async def test_abort_goes_through_the_runtime_transport_seam():
     # Accepted is not stopped: the run stays open for the bridge's run.ended(aborted), with a
     # grace deadline and a timer that force-closes it if that never comes.
     close.assert_not_awaited()
-    request_abort.assert_awaited_once_with("org_1", "run-1")
+    request_abort.assert_awaited_once_with("org_1", "run-1", stopped_by="user_1", stop_after_s=None)
     force_later.assert_called_once_with("org_1", "run-1")
     assert result == AbortRunResponse(run_id="run-1", state="aborting")
     assert captured["container"] is agentcore_container

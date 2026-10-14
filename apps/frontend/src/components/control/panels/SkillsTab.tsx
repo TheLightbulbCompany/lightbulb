@@ -404,14 +404,14 @@ export function SkillsTab({ agentId }: { agentId?: string }) {
 
 /**
  * "works with X" chip for skills that pair with a curated integration.
- * Deep-links to the Connections panel where the account can be connected.
+ * Deep-links to Settings → Connections, where the account can be connected.
  */
 function IntegrationChip({ skillName }: { skillName: string }) {
   const integration = SKILL_INTEGRATIONS[skillName];
   if (!integration) return null;
   return (
     <Link
-      href="/chat?panel=connections"
+      href="/settings?panel=connections"
       className="inline-flex items-center px-2 py-0.5 rounded-full text-2xs font-medium bg-cream-deep text-[var(--midnight-soft)] hover:text-[var(--midnight)] shrink-0"
       title="Connect this account under Connections"
     >

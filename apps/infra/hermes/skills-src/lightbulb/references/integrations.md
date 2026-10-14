@@ -1,13 +1,12 @@
 # Integrations and channels (connecting external services)
 
-**Connections** (the plug icon on the workspace rail at thelightbulb.company/chat;
-Settings → Connections lands there too, and the Control Panel's Integrations
-tab shows the same rows) is where the owner connects external services.
+**Connections** (Settings → Connections; the plug icon on the workspace rail at
+thelightbulb.company/chat opens it) is where the owner connects external services.
 **Channels** (chat surfaces): Slack: one click from
 the agent's Channels tab (Add to Slack); Telegram/Discord: the bot wizard.
 
 **Integrations arrive on one of three rails — check the `actor` field, never
-assume.** Each catalog entry (and each row in the Integrations tab) declares
+assume.** Each catalog entry (and each row in Connections) declares
 its rail, and each rail surfaces differently to you:
 
 - **`actor: "mcp"`** — an MCP server. Once connected, its tools appear in

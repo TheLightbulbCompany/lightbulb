@@ -15,14 +15,12 @@ export interface PanelDescriptor {
 
 export const DEFAULT_AGENT_SENTINEL = "__default__";
 
-// Merged from ControlPanelRouter (credits→llm) and TeamsPanelRouter
+// Merged from ControlPanelRouter and TeamsPanelRouter
 // (RETIRED_PANEL_ALIASES) — applied replace-only in the URL resolver so a
 // Back landing on a retired key canonicalizes in place instead of pushing
 // (the old ControlPanelRouter remap pushed, trapping Back on ?panel=credits).
 export const RETIRED_PANEL_ALIASES: Readonly<Record<string, string>> = {
-  credits: "llm",
   "teams-approvals": "teams-inbox",
-  "teams-members": "teams-settings",
   "teams-skills": "teams-dashboard",
   "teams-costs": "teams-dashboard",
   // Money is ONE page, and Payments/Products/Customers/Spend are its sections.
@@ -132,14 +130,9 @@ const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   cases: "Cases",
   routines: "Automations",
   artifacts: "Library",
-  accounts: "Accounts",
   search: "Search",
-  settings: "Team Settings",
   // The one ledger page. The four keys it absorbed live in
   // RETIRED_PANEL_ALIASES, not here — one page, one panel id.
-  // CONTROL_KEYS.usage stays exactly as it is: `?panel=usage` links are
-  // already in the wild, and Money's Agent spend section is a different,
-  // smaller surface than that panel.
   money: "Money",
   // Deleted tabs (2026-10-14, stage 1 of the product simplification). The keys
   // stay so an old link or a mobile-built `?panel=teams-<key>` still opens a
@@ -174,22 +167,45 @@ const TEAMS_DETAIL_KEYS: Readonly<Record<string, string>> = {
   "approval-detail": "Approval",
 };
 
-// Legacy control keys kept for URL grammar parity (ChatErrorCard links to
-// ?panel=llm; the agent detail view to ?panel=agents&agent=…). They open as
-// dock panels but are NOT in the sidebar — /settings remains their home.
+// The agent detail view (?panel=agents&agent=…). The other control panels
+// moved to the Settings page — see SETTINGS_SECTION_FOR below.
 const CONTROL_KEYS: Readonly<Record<string, string>> = {
-  overview: "Overview",
-  usage: "Usage",
   agents: "Agents",
-  skills: "Skills",
-  llm: "Model & Credits",
-  integrations: "Integrations",
-  // Third-party connect/disconnect. Unlike its neighbours this one IS in the
-  // sidebar — the workspace rail, under Browser and Files — and /settings no
-  // longer carries it. The /settings/connections route survives as a redirector
-  // because the backend's Stripe return URL points at it.
-  connections: "Connections",
 };
+
+// Panel keys the one Settings page took (product simplification, 2026-10-14),
+// mapped to the Settings section that holds them now ("" = the page itself:
+// Overview was a status page, not a setting). Old links, mobile "Manage on web"
+// links and the backend's action_href still carry these keys, so /chat sends
+// them on instead of opening a dead tab (SettingsRedirect, app/chat/page.tsx).
+const SETTINGS_SECTION_FOR: Readonly<Record<string, string>> = {
+  overview: "",
+  usage: "usage",
+  skills: "skills",
+  integrations: "connections",
+  connections: "connections",
+  llm: "providers",
+  credits: "providers",
+  "teams-settings": "workspace",
+  "teams-members": "members",
+  "teams-accounts": "connections",
+};
+
+/** The Settings URL a `?panel=` search now belongs to, every other param kept
+ *  (OAuth/Stripe returns, `?provider=`, `?action=change-provider`); null when
+ *  the search names no key Settings took. */
+export function settingsHrefFor(search: string): string | null {
+  const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
+  const key = params.get("panel");
+  if (key === null || !Object.hasOwn(SETTINGS_SECTION_FOR, key)) return null;
+  const section = SETTINGS_SECTION_FOR[key];
+  const out = new URLSearchParams(section ? { panel: section } : {});
+  params.forEach((v, k) => {
+    if (k !== "panel") out.append(k, v);
+  });
+  const qs = out.toString();
+  return qs ? `/settings?${qs}` : "/settings";
+}
 
 export const PANEL_COMPONENT_KEYS: ReadonlySet<string> = new Set([
   "chat",

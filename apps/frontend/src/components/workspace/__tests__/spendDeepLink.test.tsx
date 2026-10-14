@@ -130,13 +130,7 @@ describe("?panel=teams-spend resolves and mounts through the reconciler seam", (
     expect(screen.queryByTestId("money-panel")).toBeNull();
   });
 
-  it("?panel=usage still resolves to the control panel — the old key was not stolen", () => {
-    const decision = deriveReconcilerAction("?panel=usage", null)!;
-    expect(decision.command?.descriptor).toEqual({
-      panelId: "control:usage",
-      component: "control",
-      title: "Usage",
-      params: { controlKey: "usage" },
-    });
+  it("?panel=usage opens no dock tab — Usage lives on the Settings page", () => {
+    expect(deriveReconcilerAction("?panel=usage", null)!.command).toBeNull();
   });
 });

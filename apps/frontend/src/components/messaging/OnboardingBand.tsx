@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type R
 import { Check, CheckSquare, Cpu, FileText, MessageSquare, Users, Pencil, Plus, X } from "lucide-react";
 import useSWR from "swr";
 import { useOrganization } from "@clerk/nextjs";
+import { useRouter } from "next/navigation";
 
 import { useApi } from "@/lib/api";
 import { useConnections } from "@/hooks/useConnections";
@@ -86,6 +87,7 @@ const ANSWERED = new Set(["approved", "rejected"]);
 export function OnboardingBand({ participants, humanSpoke = false }: OnboardingBandProps): ReactElement | null {
   const { connections, startOAuth, isLoading: connectionsLoading, error: connectionsError } = useConnections();
   const { organization, membership } = useOrganization();
+  const router = useRouter();
   const teams = useTeamsApi();
   // Same SWR key MessagingWorkspaceContext already reads, so this shares its
   // cache entry rather than issuing a second request.
@@ -259,7 +261,7 @@ export function OnboardingBand({ participants, humanSpoke = false }: OnboardingB
           type="button"
           className="onboarding-card"
           data-more="true"
-          onClick={() => openPanel("connections", {}, { pushUrl: true })}
+          onClick={() => router.push("/settings?panel=connections")}
         >
           <Plus size={26} aria-hidden="true" strokeWidth={1.75} />
           <span className="onboarding-card-label">See more connections</span>

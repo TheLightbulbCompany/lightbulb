@@ -31,16 +31,6 @@ export const INTEGRATION_RECEIPTS: Record<string, IntegrationReceipt> = {
   },
   attio: { delivers: "CRM record search & editing across your Attio workspace" },
   apollo: { delivers: "read-only Apollo access — people, company & contact search plus contact enrichment" },
-  // The paired API-key rows. Without a receipt line these were the only two
-  // rows in the list with no "delivers" text — on precisely the rows asking the
-  // owner for a SECOND credential to a vendor they have already connected. Say
-  // what the second one buys, or the ask looks redundant.
-  attio_api: {
-    delivers: "an Attio key the workspace holds for dashboard reads; nothing reads it today",
-  },
-  apollo_api: {
-    delivers: "an Apollo key the workspace holds for dashboard reads; nothing reads it today",
-  },
   cloudflare: {
     delivers: "generated-JS access to your Cloudflare account — DNS, Workers, R2 & Zero Trust — instead of a fixed tool list",
   },

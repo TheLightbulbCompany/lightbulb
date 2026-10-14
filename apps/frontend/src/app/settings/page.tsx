@@ -2,7 +2,7 @@
 
 import "./settings.css";
 import React, { Suspense, useEffect, useState, useCallback } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 
 import { capture } from "@/lib/analytics";
@@ -24,11 +24,12 @@ import { UsagePanel } from "@/components/control/panels/UsagePanel";
 import { LLMPanel } from "@/components/control/panels/LLMPanel";
 import { IntegrationsPanel } from "@/components/control/panels/IntegrationsPanel";
 import { SkillsTab } from "@/components/control/panels/SkillsTab";
+import { ConnectionsPanel } from "@/components/control/panels/ConnectionsPanel";
+import { SettingsPanel as CompanySettingsPanel } from "@/components/teams/panels/SettingsPanel";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { SettingsNav } from "@/components/settings/SettingsNav";
 import {
   ADMIN_ONLY_PANELS,
-  RELOCATED_PANEL_HREFS,
   SETTINGS_NAV_SECTIONS,
   type NavItem,
 } from "@/components/settings/settings-nav-config";
@@ -37,15 +38,15 @@ import {
 // Types & Navigation
 //
 // The nav sections, the NavItem type, and NavIcon live in the shared
-// settings-nav-config module so /settings and /settings/connections render
-// the identical sidebar from ONE source. This page re-imports the section
-// consts + NavItem above; the connections route imports the same module via
-// <SettingsNav>.
+// settings-nav-config module. This page re-imports the section consts +
+// NavItem above; <SettingsNav> imports the same module.
 // =============================================================================
 
 type Panel =
   | "profile"
+  | "workspace"
   | "members"
+  | "connections"
   | "billing"
   | "usage"
   | "providers"
@@ -293,6 +294,42 @@ function MembersPanel() {
       </p>
       <WorkspaceMembersSection />
     </div>
+  );
+}
+
+// =============================================================================
+// Workspace Panel (the company's name and description, from Team Settings)
+// =============================================================================
+
+function WorkspacePanel() {
+  return (
+    <div className="settings-panel" id="panel-workspace" role="tabpanel">
+      <h1 className="settings-page-title">Workspace</h1>
+      <p className="settings-page-desc">The company&apos;s name and description, as your agents see it.</p>
+      <CompanySettingsPanel />
+    </div>
+  );
+}
+
+// =============================================================================
+// Model Panel — `?action=change-provider` (the provision gate, ChatErrorCard)
+// opens the provider picker once, then leaves the URL.
+// =============================================================================
+
+function ModelPanel() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const action = searchParams.get("action") === "change-provider" ? "change-provider" : null;
+  return (
+    <LLMPanel
+      initialAction={action}
+      onActionConsumed={() => {
+        const rest = new URLSearchParams(searchParams.toString());
+        rest.delete("action");
+        router.replace(`${pathname}?${rest.toString()}`);
+      }}
+    />
   );
 }
 
@@ -664,14 +701,13 @@ function MarketplaceProfileEditor() {
 
 const PANELS: Record<Panel, () => React.ReactElement> = {
   profile: ProfilePanel,
+  workspace: WorkspacePanel,
   members: MembersPanel,
+  connections: ConnectionsPanel,
   billing: BillingPanel,
   usage: UsagePanel,
-  providers: LLMPanel,
-  // Settings variant: renders inside the shared `.settings-panel` frame so MCP
-  // servers reads as the same surface as the other Settings panels (the Control
-  // tab keeps the default full-bleed variant via ControlPanelRouter).
-  mcp: () => <IntegrationsPanel variant="settings" />,
+  providers: ModelPanel,
+  mcp: IntegrationsPanel,
   desktop: DesktopSettings,
   // Desktop-app-only: MCP servers running on the user's own Mac, driven by the
   // Tauri local_mcp_* commands. Renders a download prompt in a browser.
@@ -698,8 +734,8 @@ export default function SettingsPage() {
 }
 
 function SettingsPageInner() {
-  // The Settings consolidation: 6-group nav + the config panels relocated from
-  // the Control tab (Usage, Model & Credits, MCP servers, the ENGINE ROOM rows).
+  // The one Settings page: Control's panels, Team Settings and Accounts, in six
+  // groups (settings-nav-config.tsx).
   const navSections = SETTINGS_NAV_SECTIONS;
 
   // Personal owners are admins; org members are admins only with org:admin.
@@ -725,22 +761,22 @@ function SettingsPageInner() {
   // Derived, not latched: isAdmin reads false until Clerk knows the membership,
   // so the deep-linked tab re-resolves once it does. A click wins from then on.
   const [chosenPanel, setActivePanel] = useState<Panel | null>(null);
+  // A later ?panel= change (an in-page link, e.g. Skills → Connections) wins
+  // over an earlier click: drop the click when the param moves.
+  const [seenParam, setSeenParam] = useState(initialPanelParam);
+  if (seenParam !== initialPanelParam) {
+    setSeenParam(initialPanelParam);
+    setActivePanel(null);
+  }
   const activePanel = chosenPanel ?? initialPanel;
   const ActivePanelComponent = PANELS[activePanel];
 
-  // …but a `?panel=` value can also name a destination that is NOT a tab here:
-  // an outbound nav row (`href`), or a panel that has since moved out of
-  // Settings altogether — Connections now lives on the workspace rail. Either
-  // way it names nothing in PANELS and would fall back to Profile silently,
-  // with no way to tell a typo from a real destination. Forward it instead.
+  // …but a `?panel=` value can also name an outbound nav row (`href`), which
+  // names nothing in PANELS and would fall back to Profile silently. Forward it.
   const router = useRouter();
-  const outboundHref =
-    SETTINGS_NAV_SECTIONS.flatMap((s) => s.items).find(
-      (n) => n.href !== undefined && n.id === initialPanelParam,
-    )?.href ??
-    (initialPanelParam !== null && Object.hasOwn(RELOCATED_PANEL_HREFS, initialPanelParam)
-      ? RELOCATED_PANEL_HREFS[initialPanelParam]
-      : undefined);
+  const outboundHref = SETTINGS_NAV_SECTIONS.flatMap((s) => s.items).find(
+    (n) => n.href !== undefined && n.id === initialPanelParam,
+  )?.href;
   useEffect(() => {
     if (!outboundHref) return;
     // Forward the rest of the query too (?checkout=, ?connected=, ?action= …): the

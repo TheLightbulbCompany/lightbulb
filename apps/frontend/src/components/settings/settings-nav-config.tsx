@@ -5,18 +5,14 @@ import React from "react";
 // =============================================================================
 // Settings nav config — the single source of truth for the Settings sidebar.
 //
-// Extracted from settings/page.tsx so BOTH /settings (page.tsx, interactive
-// tabs) and /settings/connections (connections/page.tsx, link mode) render the
-// identical 6-group nav from one definition. Keep the section consts, the
+// Read by /settings (page.tsx) and SettingsNav. Keep the section consts, the
 // NavItem type, and NavIcon here only — page.tsx re-imports them.
 // =============================================================================
 
 // A nav item is either an in-page tab (sets activePanel) or an outbound
-// link to a sibling settings route (`href`). NO row uses `href` today:
-// Connections was the only one, and it moved out of Settings entirely onto the
-// workspace rail (see RELOCATED_PANEL_HREFS below). The field and SettingsNav's
-// matching link mode are left in place rather than torn out with it — they are
-// the generic escape hatch for the next row that needs to be a route.
+// link to a sibling settings route (`href`). NO row uses `href` today; the
+// field and SettingsNav's matching link mode are the generic escape hatch for
+// the next row that needs to be a route.
 export type NavItem = {
   id: string;
   name: string;
@@ -41,21 +37,32 @@ export type NavSection = { label: string; items: NavItem[] };
 // admin may see or mint one (the panel and the backend both re-check).
 export const ADMIN_ONLY_PANELS = new Set(["usage", "members"]);
 
-// Six intent-ordered groups (design.md §5). The relocated Control config panels
-// (Usage, Model & Credits, MCP servers, the ENGINE ROOM rows) live here
-// alongside the original Account-group panels.
+// The one Settings page (product simplification, 2026-10-14): Control's panels,
+// the Teams Settings tab and the Accounts tab all live here, in six groups.
 export const SETTINGS_NAV_SECTIONS: NavSection[] = [
   {
-    label: "ACCOUNT",
+    label: "YOU",
+    items: [{ id: "profile", name: "Profile", icon: "profile", panel: "profile" }],
+  },
+  {
+    label: "WORKSPACE",
     items: [
-      { id: "profile", name: "Profile", icon: "profile", panel: "profile" },
-      // Workspace membership — the roster and the join link. Admin-gated via
-      // ADMIN_ONLY_PANELS, same as Usage.
+      // The company's name and description (was the Teams Settings tab).
+      { id: "workspace", name: "Workspace", icon: "workspace", panel: "workspace" },
+      // The roster and the join link. Admin-gated via ADMIN_ONLY_PANELS.
       { id: "members", name: "Members", icon: "members", panel: "members" },
     ],
   },
   {
-    label: "BILLING & USAGE",
+    label: "CONNECTIONS",
+    items: [
+      // What the team is connected to and what agents may do with it: the
+      // dock's Integrations, Connections and Accounts tabs, as one list.
+      { id: "connections", name: "Connections", icon: "connections", panel: "connections" },
+    ],
+  },
+  {
+    label: "PLAN AND USAGE",
     items: [
       { id: "billing", name: "Billing", icon: "billing", panel: "billing" },
       // Admin-gated: hidden from non-admin org members via ADMIN_ONLY_PANELS.
@@ -63,7 +70,7 @@ export const SETTINGS_NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
-    label: "MODEL & PROVIDERS",
+    label: "MODEL",
     items: [
       // LLMPanel verbatim — it already embeds CreditsSection, so there is NO
       // separate Credits row.
@@ -71,39 +78,18 @@ export const SETTINGS_NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
-    label: "WIRING",
-    items: [
-      // MCP servers (owner-level mcp.servers) — the IntegrationsPanel tab.
-      // Connections, its dedup counterpart, is no longer a Settings row at all:
-      // it lives on the workspace rail under Browser and Files.
-      { id: "mcp", name: "MCP servers", icon: "mcp", panel: "mcp" },
-      { id: "desktop", name: "Desktop", icon: "desktop", panel: "desktop" },
-      // MCP servers on the user's own Mac — desktop-app-only, so it sits with
-      // the other Desktop row rather than with the container-side `mcp` tab.
-      { id: "local-mcp", name: "Local MCP servers", icon: "mcp", panel: "local-mcp" },
-    ],
-  },
-  {
-    label: "ENGINE ROOM",
+    label: "ADVANCED",
     items: [
       { id: "skills", name: "Skills", icon: "skills", panel: "skills" },
-    ],
-  },
-  {
-    label: "SELLER",
-    items: [
+      // MCP servers (owner-level mcp.servers).
+      { id: "mcp", name: "MCP servers", icon: "mcp", panel: "mcp" },
+      // MCP servers on the user's own Mac — desktop-app-only.
+      { id: "local-mcp", name: "Local MCP servers", icon: "mcp", panel: "local-mcp" },
+      { id: "desktop", name: "Desktop", icon: "desktop", panel: "desktop" },
       { id: "marketplace", name: "Marketplace", icon: "marketplace", panel: "marketplace" },
     ],
   },
 ];
-
-// Panels that used to be Settings tabs/routes and now live elsewhere in the
-// app. `/settings?panel=<id>` forwards here instead of silently falling back to
-// Profile, so links and bookmarks minted while the panel lived in Settings
-// still land on it.
-export const RELOCATED_PANEL_HREFS: Readonly<Record<string, string>> = {
-  connections: "/chat?panel=connections",
-};
 
 // =============================================================================
 // Icons
@@ -116,6 +102,14 @@ export function NavIcon({ icon }: { icon: string }) {
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
           <circle cx="12" cy="7" r="4" />
+        </svg>
+      );
+    case "workspace":
+      return (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <rect x="4" y="2" width="16" height="20" rx="2" />
+          <path d="M9 22v-4h6v4" />
+          <path d="M8 6h.01M16 6h.01M12 6h.01M12 10h.01M12 14h.01M16 10h.01M16 14h.01M8 10h.01M8 14h.01" />
         </svg>
       );
     case "members":

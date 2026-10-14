@@ -29,7 +29,10 @@ const h = vi.hoisted(() => ({
   setContext: vi.fn(),
   approvals: [] as { id: string; status: string }[],
   openInviteDialog: vi.fn(),
+  routerPush: vi.fn(),
 }));
+
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: h.routerPush }) }));
 
 // The context card's done-state is the band's one SWR read; mocked like its
 // other reads so every render stays synchronous.
@@ -160,10 +163,10 @@ describe("OnboardingBand", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("opens the Connections panel from the See more card", async () => {
+  it("opens Settings at Connections from the See more card", async () => {
     render(<OnboardingBand participants={FRESH} />);
     await userEvent.click(screen.getByRole("button", { name: /See more connections/ }));
-    expect(h.openPanel).toHaveBeenCalledWith("connections", {}, { pushUrl: true });
+    expect(h.routerPush).toHaveBeenCalledWith("/settings?panel=connections");
   });
 
   it("never counts See more toward completion — it is a link, not a task", () => {

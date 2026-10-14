@@ -8,7 +8,7 @@ import { recordRequestId } from "@/lib/requestIdLog";
 import { webVisibilityAdapter } from "@/lib/visibility";
 
 // Deliberately NOT `import { BACKEND_URL } from "@/lib/api"`: this hook is
-// mounted (transitively, via WorkspaceShell/OverviewPanel/useSystemHealth) by
+// mounted (transitively, via WorkspaceShell/useSystemHealth) by
 // ~20 existing test suites that `vi.mock("@/lib/api", () => ({ useApi: ...
 // }))` with a minimal factory carrying no `BACKEND_URL` export — Vitest's
 // mock-export guard throws on ANY read of a name the factory didn't return,
@@ -76,7 +76,7 @@ export interface ProvisioningStateResult {
  * SWR instance — with its own two-phase (5s/30s) pending-cadence state
  * machine, its own `pendingGen`/`slowAfterGen` timers, and a per-consumer
  * `refreshInterval`/`revalidateOnFocus` override — into a single shared
- * fetch that every consumer (this hook, `useSystemHealth`, `OverviewPanel`)
+ * fetch that every consumer (this hook, `useSystemHealth`)
  * rides for free. There is no polling: the status is fetched on mount,
  * visible and reconnect, and refetched when `LiveEventsProvider` sees a
  * `runtime.resource.invalidated{resource:"onboarding"}` event — see

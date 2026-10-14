@@ -27,7 +27,8 @@ describe("parseCommand", () => {
 
   it("resolves retired aliases", () => {
     expect(parseCommand("?panel=teams-approvals")?.descriptor.panelId).toBe("teams-inbox");
-    expect(parseCommand("?panel=credits")?.descriptor.panelId).toBe("control:llm");
+    // Settings took the Model panel: ?panel=credits names no dock panel.
+    expect(parseCommand("?panel=credits")).toBeNull();
     // The org chart is a view of the roster now.
     const chartCmd = parseCommand("?panel=teams-org-chart");
     expect(chartCmd?.descriptor.panelId).toBe("teams-work");

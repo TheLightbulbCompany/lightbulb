@@ -10,6 +10,7 @@ import { MarketplaceDrawerProvider } from "@/components/marketplace/drawer/Marke
 import { MarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawer";
 import { MarketplaceToast } from "@/components/marketplace/drawer/MarketplaceToast";
 import { RunNotifications } from "@/components/notifications/RunNotifications";
+import { SettingsRedirect } from "@/components/workspace/SettingsRedirect";
 
 // Matches WorkspaceShell's own onboarding-gate spinner, which is what it
 // renders on first mount anyway (useOnboardingGate starts at "loading"), so
@@ -37,6 +38,7 @@ export default function ChatPage() {
   // the pane colour so any suspension reads as the page settling.
   return (
     <Suspense fallback={<div className="h-dvh w-full" style={{ background: "var(--cream)" }} />}>
+      <SettingsRedirect>
       <MarketplaceDrawerProvider>
         <LiveEventsProvider>
           {/* Live is held above the shell, so it survives navigation inside /chat. */}
@@ -52,6 +54,7 @@ export default function ChatPage() {
           <SharedLiveViewHost />
         </LiveEventsProvider>
       </MarketplaceDrawerProvider>
+      </SettingsRedirect>
     </Suspense>
   );
 }

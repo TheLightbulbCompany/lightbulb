@@ -22,7 +22,7 @@ import { makeAdapter } from "../../../lib/adapter";
 // non-admin org members on the web, and the by-member table is gated again
 // inline. On mobile we render a clean pointer to the web for non-admins and
 // mirror the server's 403 as the same restricted state.
-const USAGE_WEB_URL = `${WEB_ORIGIN}/chat?panel=usage`;
+const USAGE_WEB_URL = `${WEB_ORIGIN}/settings?panel=usage`;
 
 // ---------------------------------------------------------------------------
 // Contract shapes (w3-control-contract §6 Usage; schemas/billing.py)

@@ -5,6 +5,7 @@ import { UserButton } from "@clerk/nextjs";
 import { Fragment } from "react";
 import { Bell, Chrome, FolderOpen, HelpCircle, Home, Images, ListTodo, Mail, MessageSquare, Plug, Search, Send, Settings, UserPlus } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useStatusLoaded } from "@lightbulb/shared";
 import { capture } from "@/lib/analytics";
 import { useActiveTeamRunCount } from "@/components/notifications/teamRunActivity";
@@ -32,8 +33,10 @@ const DESTINATIONS = [
   { panel: "teams-artifacts", label: "Library", Icon: Images },
   { panel: "browser", label: "Browser", Icon: Chrome },
   { panel: "file-viewer", label: "Browse workspace files", Icon: FolderOpen },
+  // A section of the Settings page, not a dock tab: it opens /settings there.
   { panel: "connections", label: "Connections", Icon: Plug },
 ] as const;
+const CONNECTIONS_HREF = "/settings?panel=connections";
 
 /** The global rail stays available when Messages hides the dock tabs. */
 export function WorkspaceHeader({ chatReady = true, onNavigate }: {
@@ -41,6 +44,7 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
   /** A destination was picked: the shell closes the phone drawer. */
   onNavigate?: () => void;
 }): React.ReactElement {
+  const router = useRouter();
   const { openSupport } = useSupport();
   const { setOpen } = useCommandPalette();
   const { open: openMarketplace } = useMarketplaceDrawer();
@@ -61,9 +65,9 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
         <Search size={20} aria-hidden="true" />
       </button>
       {destinations.map(({ panel, label, Icon }) => {
-        // The panel KEY is not always the panel ID — a control-key destination
-        // (Connections) opens as `control:connections`. Resolve through the
-        // registry so the active marker follows the id the dock actually uses.
+        // The panel KEY is not always the panel ID (Tasks opens the Work tab).
+        // Resolve through the registry so the active marker follows the id the
+        // dock actually uses.
         const panelId = describePanel(panel, {})?.panelId ?? panel;
         // Team runs are team work, so their count rides on Work; Activity badges what needs you.
         const runs = panel === "teams-issues" ? activeTeamRunCount : 0;
@@ -82,6 +86,7 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
             if (panel === "file-viewer") capture("file_browser_opened");
             if (panel === "browser") capture("browser_view_opened");
             if (panel === MESSAGES_PANEL_ID) { activateMessagesPanel(); recordMessagesNavigation(); }
+            else if (panel === "connections") router.push(CONNECTIONS_HREF);
             else openPanel(panel, {}, { pushUrl: true });
             onNavigate?.();
           }}>

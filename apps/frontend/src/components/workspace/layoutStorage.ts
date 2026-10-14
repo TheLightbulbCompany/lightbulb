@@ -244,6 +244,15 @@ const RETIRED_PANEL_IDS: ReadonlySet<string> = new Set([
   "control:dreams",
   "control:sessions",
   "control:channels",
+  // Moved to the one Settings page (2026-10-14); their URLs redirect there.
+  "control:overview",
+  "control:usage",
+  "control:skills",
+  "control:integrations",
+  "control:connections",
+  "control:llm",
+  "teams-settings",
+  "teams-accounts",
 ]);
 
 export function sanitizeLayout(

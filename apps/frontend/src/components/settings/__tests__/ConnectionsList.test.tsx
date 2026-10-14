@@ -287,41 +287,19 @@ describe("ConnectionsList — the Projects resources facet", () => {
   });
 });
 
-describe("ConnectionsList — display-name overrides", () => {
+// The two "dashboard access" paste rows (attio_api, apollo_api) asked for a
+// second key nothing reads. The registry keeps them; the list does not offer them.
+describe("ConnectionsList — dashboard-access paste rows", () => {
   beforeEach(resetRail);
 
-  // Some pages put this list next to something that shares a provider's brand
-  // name. On the Accounts panel a bare "Stripe" row sits below the company's
-  // own Stripe account, so its "Not connected" reads as a verdict on the
-  // money. The caller relabels the row so a connection status can only ever be
-  // read as being about the agent grant.
-  it("renders the caller's label instead of the server's display name", () => {
+  it("lists neither attio_api nor apollo_api, and keeps their agent rows", () => {
     h.connections = [
-      { provider: "stripe", display_name: "Stripe", acquisition: "direct_oauth", status: "disconnected" },
-    ];
-    render(<ConnectionsList canManage labels={{ stripe: "Stripe for your agents" }} />);
-
-    expect(screen.getByText("Stripe for your agents")).toBeInTheDocument();
-    // The bare brand name must not survive anywhere as a row label.
-    expect(screen.queryByText("Stripe")).toBeNull();
-  });
-
-  it("leaves providers the caller did not name alone", () => {
-    h.connections = [
-      { provider: "stripe", display_name: "Stripe", acquisition: "direct_oauth", status: "disconnected" },
-      { provider: "github", display_name: "GitHub", acquisition: "paste_token", status: "connected" },
-    ];
-    render(<ConnectionsList canManage labels={{ stripe: "Stripe for your agents" }} />);
-
-    expect(screen.getByText("GitHub")).toBeInTheDocument();
-  });
-
-  it("is optional — with no overrides the server's names are used verbatim", () => {
-    h.connections = [
-      { provider: "stripe", display_name: "Stripe", acquisition: "direct_oauth", status: "disconnected" },
+      { provider: "attio", display_name: "Attio", acquisition: "paste_token", status: "disconnected" },
+      { provider: "attio_api", display_name: "Attio (dashboard access)", acquisition: "paste_token", status: "disconnected" },
+      { provider: "apollo_api", display_name: "Apollo (dashboard access)", acquisition: "paste_token", status: "connected" },
     ];
     render(<ConnectionsList canManage />);
-
-    expect(screen.getByText("Stripe")).toBeInTheDocument();
+    expect(screen.getByText("Attio")).toBeInTheDocument();
+    expect(screen.queryByText(/dashboard access/)).toBeNull();
   });
 });

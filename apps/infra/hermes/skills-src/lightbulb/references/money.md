@@ -30,7 +30,7 @@ Two things worth saying accurately if asked:
 - Before onboarding is finished the page says so explicitly ("Your Stripe
   onboarding isn't finished" / "Stripe is still reviewing your account") rather
   than showing an empty table. If the owner reports one of those, the answer is
-  to finish setup in Accounts, not to wait.
+  to finish setup in Settings → Connections, not to wait.
 
 **Only workspace admins can open Money.** An ordinary org member gets
 a permission message, not an error — do not tell them to retry.

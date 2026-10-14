@@ -43,8 +43,8 @@ export function SettingsPanel() {
   }
 
   return (
-    <div className="editorial-page p-8 max-w-2xl space-y-4">
-      <h1 className="font-editorial-serif text-4xl text-[var(--midnight)]">Settings</h1>
+    // The Workspace section of the Settings page, which supplies the heading.
+    <div className="max-w-2xl space-y-4">
       <label className="block">
         <span className="text-sm text-[var(--midnight-soft)]">Display name</span>
         <input

@@ -7,6 +7,7 @@ import { SignInButton, SignUpButton, useAuth } from "@clerk/nextjs";
 import { AppSyncEventsClient, createMessagingClient, type LiveEvent, type SessionLinkCode, type SessionLinkPage, type SessionLinkViewing } from "@lightbulb/shared";
 import { ApiError, BACKEND_URL, useApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { capture } from "@/lib/analytics";
 import { copyText, sessionPermalink } from "@/components/messaging/messageLinks";
 import { SessionTerminalView } from "@/components/messaging/SessionTerminalView";
 // For .session-state-panel: this route is outside /chat, which is where the sheet is otherwise loaded.
@@ -63,6 +64,15 @@ async function publicPost<T>(path: string, body: unknown, token: string | null):
 const refusal = (e: unknown) => e instanceof ApiError && (e.status === 403 || e.status === 404 || e.status === 410);
 
 const VIEWING_RETRY_MS = 15_000;
+
+/** The link's viewer cap answered (409 LOCAL_SESSION_VIEWERS_FULL): the full state, with the count
+ *  when the server gave one (a burst of opens past the link's ten-minute budget gives none). */
+export function fullOf(e: unknown): { watching: number | null; note: string } | null {
+  const body = e instanceof ApiError ? (e.body as { code?: string; details?: { watching?: unknown } } | null) : null;
+  if (body?.code !== "LOCAL_SESSION_VIEWERS_FULL") return null;
+  const watching = typeof body.details?.watching === "number" ? body.details.watching : null;
+  return { watching, note: watching ? `Full: ${watching} people are watching. Try again in a minute.` : "This session is full. Try again in a minute." };
+}
 const noop = () => {};
 
 /** An "Anyone with the link" session's live terminal, view only, with no sign-in (owner ruling
@@ -76,6 +86,7 @@ function LinkTerminal({ token, onTrouble }: { token: string; onTrouble: () => vo
   // Bumped to take a seat again: after a failure, or when the link was made public anew (a new channel).
   const [round, setRound] = useState(0);
   const lease = useRef<string | null>(null);
+  const fullSeen = useRef(false);
   const leaseOf = useRef(token);
   const handlers = useRef(new Set<(event: LiveEvent) => void>());
   // Whether this seat has drawn a snapshot. Until it has, every renewal asks for one: the server
@@ -154,7 +165,10 @@ function LinkTerminal({ token, onTrouble }: { token: string; onTrouble: () => vo
       setSeat({ view, client });
     }, (e) => {
       if (!alive) return;
-      setNote(e instanceof ApiError ? e.message : "Could not reach this session. Trying again.");
+      const full = fullOf(e);
+      // Once per page load: a full link is retried every 15 s, and each retry is the same view.
+      if (full && !fullSeen.current) { fullSeen.current = true; capture("share_link_full_viewed", { watching: full.watching }); }
+      setNote(full ? full.note : e instanceof ApiError ? e.message : "Could not reach this session. Trying again.");
       if (!refusal(e)) retry = setTimeout(() => setRound((n) => n + 1), VIEWING_RETRY_MS); // a refused link is the page poll's to show
     });
     return () => { alive = false; clearTimeout(retry); client?.close(); setSeat(null); setLiveChannels([]); };

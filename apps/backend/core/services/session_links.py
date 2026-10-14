@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import secrets
 import tarfile
 import tempfile
@@ -267,7 +268,9 @@ async def open_page(auth: AuthContext | None, token: str, *, refresh: bool = Fal
 
 # ponytail: counted, not locked: two viewers racing for the last seat both get in, and a viewer
 # who stops renewing keeps an open subscription uncounted until the page closes.
-MAX_LINK_VIEWERS = 20
+# ponytail: dev runs the load-test ceiling (T18, scripts/load/k6/link_viewers.js); prod stays at 20
+# until that test's number is set for both.
+MAX_LINK_VIEWERS = 20 if os.environ.get("ENVIRONMENT") == "prod" else 100
 # A lease connects once and subscribes once (the authorizer consumes it), so every connection
 # and every subscription costs a seat taken here, and a link gives out at most this many per ten minutes: what bounds the sockets a link
 # holder can pile up on one channel (AppSync never asks the authorizer again once a subscription
@@ -441,9 +444,13 @@ async def viewing(token: str, lease: str | None, fresh: bool, retake: bool = Fal
                         batch.delete_item(Key=key)
 
             await run_in_thread(drop)
-        if len(seats) - len(lapsed) >= MAX_LINK_VIEWERS:
+        watching = len(seats) - len(lapsed)
+        if watching >= MAX_LINK_VIEWERS:
+            # `watching` is a count, nothing else: the page says "Full: N people are watching".
             raise ApiProblem(
-                "LOCAL_SESSION_VIEWERS_FULL", f"This session already has {MAX_LINK_VIEWERS} people watching by link."
+                "LOCAL_SESSION_VIEWERS_FULL",
+                f"This session already has {watching} people watching by link.",
+                details={"watching": watching},
             )
         # The link's budget first: a seat it refuses costs the channel nothing. Counted once, so
         # not again on the way to a new channel.

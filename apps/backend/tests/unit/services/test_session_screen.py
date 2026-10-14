@@ -653,6 +653,7 @@ async def test_link_viewers_are_capped_and_a_renewal_keeps_its_seat(transport, m
     with pytest.raises(ApiProblem) as full:
         await session_links.viewing(token, None, False)
     assert full.value.error.code == "LOCAL_SESSION_VIEWERS_FULL"
+    assert full.value.error.details == {"watching": 2}  # the page's "Full: 2 people are watching"
     assert (await session_links.viewing(token, first.lease, False)).lease == first.lease
     with pytest.raises(ApiProblem):  # a made-up key is no seat: it counts as a new viewer
         await session_links.viewing(token, first.lease + "x", False)

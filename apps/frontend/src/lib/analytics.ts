@@ -63,6 +63,7 @@ export type AnalyticsEvent =
   // Growth: the door into a workspace and the sharing surface (2026-09-30)
   | "join_link_copied"
   | "session_opened"
+  | "share_link_full_viewed"
   // Agent lifecycle
   | "agent_create_chooser"
   | "agent_created"

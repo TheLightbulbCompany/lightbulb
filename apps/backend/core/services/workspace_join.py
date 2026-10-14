@@ -162,6 +162,12 @@ async def redeem_join_link(org_id: str, token: str, *, user_id: str) -> dict:
         logger.info("orgs.join_link.rejected org_id=%s user_id=%s", org_id, user_id)
         raise HTTPException(status_code=404, detail=_INVALID_LINK)
 
+    from core.services import join_analytics
+
+    # Before the membership exists: the organizationMembership.created webhook reads it.
+    await join_analytics.mark_join_via(
+        org_id, via="join_link", user_id=user_id, invited_by=(row or {}).get("created_by")
+    )
     result = await clerk_admin.create_organization_membership(
         org_id=org_id,
         user_id=user_id,

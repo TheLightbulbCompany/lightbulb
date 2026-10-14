@@ -905,9 +905,12 @@ it("puts the CEO's DM first in Team, by agent id, whether or not the DM exists y
 
 it("ends the list with an Invite someone row that opens the invite dialog, and no separate lone-founder nudge", async () => {
   openInviteDialog.mockClear();
+  const onNavigate = vi.fn();
   render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[base]} participants={[atlas]}
-    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} />);
+    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onNavigate={onNavigate} />);
   expect(screen.queryByText(/just you and your AI employees/)).not.toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Invite someone" }));
   expect(openInviteDialog).toHaveBeenCalledTimes(1);
+  // Closes the phone drawer, like the rail's Invite.
+  expect(onNavigate).toHaveBeenCalledTimes(1);
 });

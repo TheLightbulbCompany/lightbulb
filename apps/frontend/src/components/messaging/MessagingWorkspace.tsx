@@ -9,10 +9,11 @@ import { SessionFocus } from "./SessionFocus";
 import type { DirectoryRoom } from "./types";
 import "./messaging.css";
 
-export function MessagingDirectory({ onOpenRoom }: { onOpenRoom?: (room?: DirectoryRoom) => void }) {
+export function MessagingDirectory({ onOpenRoom, onNavigate }: { onOpenRoom?: (room?: DirectoryRoom) => void; onNavigate?: () => void }) {
   const { directoryProps, openNewSession } = useMessagingWorkspace();
   return <RoomDirectory
     {...directoryProps}
+    onNavigate={onNavigate}
     headerActions={<NewSessionButton onOpen={() => { onOpenRoom?.(); openNewSession(); }} />}
     onSelectRoom={(roomId) => {
       directoryProps.onSelectRoom(roomId);

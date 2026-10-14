@@ -70,6 +70,8 @@ export interface RoomDirectoryProps {
   headerActions?: ReactNode;
   /** The starter roster's CEO agent (by role, from the agent roster): its DM leads Team. */
   ceoAgentId?: string;
+  /** A destination was picked: the shell closes the phone drawer (the Invite row uses it). */
+  onNavigate?: () => void;
 }
 
 // Mirrors the backend's own limits (`core/services/messaging.py`) so the
@@ -132,6 +134,7 @@ function DirectoryContent({
   currentUserId,
   onAddPeople,
   ceoAgentId,
+  onNavigate,
 }: RoomDirectoryProps) {
   const id = useId();
   const [creating, setCreating] = useState(false);
@@ -521,7 +524,7 @@ function DirectoryContent({
         </li>;
       })}</ul>
     </section>}
-    <button type="button" className="room-directory-entry" onClick={openInviteDialog}><Plus size={16} aria-hidden="true" />Invite someone</button>
+    <button type="button" className="room-directory-entry" onClick={() => { openInviteDialog(); onNavigate?.(); }}><Plus size={16} aria-hidden="true" />Invite someone</button>
     <DialogContent className="room-creation-dialog" showCloseButton={!creationBusy}>
     <form aria-label="Create conversation" className="room-creation" aria-busy={creationBusy}
       onSubmit={async (event) => {

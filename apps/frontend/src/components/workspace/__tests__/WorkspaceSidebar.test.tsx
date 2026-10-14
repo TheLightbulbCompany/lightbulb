@@ -12,8 +12,9 @@ vi.mock("../workspaceController", () => ({
   useWorkspaceState: () => ({ activePanelId }),
 }));
 vi.mock("@/components/messaging/MessagingWorkspace", () => ({
-  MessagingDirectory: ({ onOpenRoom }: { onOpenRoom: (room?: DirectoryRoom) => void }) => (
+  MessagingDirectory: ({ onOpenRoom, onNavigate }: { onOpenRoom: (room?: DirectoryRoom) => void; onNavigate?: () => void }) => (
     <nav aria-label="Conversations">
+      <button onClick={onNavigate}>Invite someone</button>
       {(["dm", "channel", "group-dm", "human"] as const).map((kind) => (
         <button key={kind} onClick={() => onOpenRoom({
           roomId: kind, name: null, roomRevision: 1, lastMessageSeq: 0,
@@ -91,6 +92,12 @@ describe("WorkspaceSidebar", () => {
     render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: label }));
     expect(activateMessagesPanel).toHaveBeenCalledWith();
+  });
+  it("hands the drawer-close to the directory for its Invite row", () => {
+    const onNavigate = vi.fn();
+    render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} onNavigate={onNavigate} />);
+    fireEvent.click(screen.getByRole("button", { name: "Invite someone" }));
+    expect(onNavigate).toHaveBeenCalledOnce();
   });
   it("has no More list: the task-board pages live on the Work page", () => {
     render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);

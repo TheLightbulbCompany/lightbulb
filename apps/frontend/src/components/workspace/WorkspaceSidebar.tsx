@@ -67,7 +67,7 @@ export function WorkspaceSidebar({ onRecoveryReprovision, onNavigate }: Workspac
       <div className="sidebar-scroll">
         {/* Messaging never needs the container, so conversations never wait on it. */}
         <TrialRecapCard />
-        <MessagingDirectory onOpenRoom={() => { activateMessagesPanel(); onNavigate?.(); }} />
+        <MessagingDirectory onOpenRoom={() => { activateMessagesPanel(); onNavigate?.(); }} onNavigate={onNavigate} />
       </div>
 
 

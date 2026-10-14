@@ -142,48 +142,6 @@
   min-width: 0;
 }
 
-.workspace-shell .workspace-primary-nav {
-  padding: 8px 12px;
-}
-
-.workspace-shell .workspace-primary-nav {
-  display: grid;
-  gap: 2px;
-}
-
-.workspace-shell .workspace-primary-nav button {
-  min-height: 36px;
-  border-radius: 4px;
-  padding: 6px 8px;
-  color: var(--midnight-soft);
-  font-size: var(--text-ui);
-  cursor: pointer;
-}
-
-.workspace-shell .workspace-primary-nav button {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  text-align: left;
-}
-
-.workspace-shell .workspace-primary-nav button:enabled:hover,
-.workspace-shell .workspace-primary-nav button[aria-current="page"] {
-  background: var(--cream-deeper);
-  color: var(--midnight);
-}
-
-.workspace-shell .workspace-primary-nav button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.workspace-shell .workspace-primary-nav button:focus-visible {
-  outline: 2px solid var(--midnight);
-  outline-offset: 2px;
-}
-
 /* The sidebar owns the scroll; the shared mobile directory keeps its layout. */
 .workspace-shell .sidebar-scroll > .room-directory {
   height: auto;

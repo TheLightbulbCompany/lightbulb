@@ -97,6 +97,21 @@ mod tests {
     }
 
     #[test]
+    fn holder_size_follows_the_latest_user_and_a_stale_client_is_only_remembered() {
+        let mut latest = None;
+        // The Mac's terminal attaches: it is the latest user.
+        assert_eq!(latest_user(&mut latest, 1, true, (176, 63)), Some((176, 63)));
+        // The app's panel resizes without using the session (a layout change): not applied.
+        assert_eq!(latest_user(&mut latest, 2, false, (120, 40)), None);
+        // The panel is opened or typed into: it wins.
+        assert_eq!(latest_user(&mut latest, 2, true, (120, 40)), Some((120, 40)));
+        // Now the panel's own resizes apply without a claim, and the terminal's stale ones do not.
+        assert_eq!(latest_user(&mut latest, 2, false, (100, 30)), Some((100, 30)));
+        assert_eq!(latest_user(&mut latest, 1, false, (176, 63)), None);
+        assert_eq!(latest, Some(2));
+    }
+
+    #[test]
     fn holder_input_origin_is_a_teammate_only_for_a_type_client_s_plain_input() {
         assert_eq!(input_origin(INPUT, false), "owner");
         assert_eq!(input_origin(INPUT, true), "teammate");
@@ -440,6 +455,10 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
     let mut joined: Vec<u64> = vec![];
     // `type` clients: a remote teammate's keys, relayed by the app (also typists).
     let mut remote: HashSet<u64> = HashSet::new();
+    // The size each client last asked for, and the client that used the session last: the pty is
+    // that client's size (tmux's `window-size latest`, owner ruling 2026-10-14). `latest_user`.
+    let mut asked: HashMap<u64, (u16, u16)> = HashMap::new();
+    let mut latest: Option<u64> = None;
     // Who wrote the last bytes to the pty (HELLO's `lastInput`).
     let mut last_input: Option<&'static str> = None;
     let mut exited: Option<(String, u32, Instant)> = None;
@@ -528,10 +547,10 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 } else if role["role"] == "interactive" && !ended {
                     // Take the window's size first, so its snapshot is drawn at that size.
                     if let (Some(cols), Some(rows)) = (role["cols"].as_u64(), role["rows"].as_u64()) {
-                        let (cols, rows) = (cols.clamp(1, 1000) as u16, rows.clamp(1, 500) as u16);
-                        let _ = pair.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
-                        model.resize(rows, cols);
-                        tell(&clients, &watchers, &size_frame(cols, rows));
+                        let size = (cols.clamp(1, 1000) as u16, rows.clamp(1, 500) as u16);
+                        asked.insert(id, size);
+                        latest = Some(id);
+                        resize_to(&*pair.master, &mut model, &clients, &watchers, size);
                     }
                     if let Some(previous) = interactive.replace(id).filter(|p| *p != id) {
                         if let Some(c) = clients.get(&previous) {
@@ -576,6 +595,14 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 // Not once End was taken: nothing typed after it may reach a provider that is shutting down.
                 if !ended && !ending && (interactive == Some(id) || typists.contains(&id)) && !is_probe_reply(&payload) =>
             {
+                // The terminal's own keys take the size back (`latest_user`); a `type` client's
+                // keys do not: the app sends its size with them when it has one.
+                if interactive == Some(id) && latest != Some(id) {
+                    latest = Some(id);
+                    if let Some(size) = asked.get(&id) {
+                        resize_to(&*pair.master, &mut model, &clients, &watchers, *size);
+                    }
+                }
                 last_input = Some(input_origin(kind, remote.contains(&id)));
                 model.typed(&payload, Instant::now());
                 let _ = pty.write_all(&payload);
@@ -587,12 +614,17 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 model.ending();
                 hang_up(provider_pid, &reaped);
             }
-            Event::Frame(id, RESIZE, payload) if !ended && interactive == Some(id) && payload.len() == 4 => {
-                let cols = u16::from_be_bytes([payload[0], payload[1]]).max(1);
-                let rows = u16::from_be_bytes([payload[2], payload[3]]).max(1);
-                let _ = pair.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
-                model.resize(rows, cols);
-                tell(&clients, &watchers, &size_frame(cols, rows));
+            Event::Frame(id, RESIZE, payload)
+                if !ended && (interactive == Some(id) || remote.contains(&id)) && matches!(payload.len(), 4 | 5) =>
+            {
+                let cols = u16::from_be_bytes([payload[0], payload[1]]).clamp(1, 1000);
+                let rows = u16::from_be_bytes([payload[2], payload[3]]).clamp(1, 500);
+                asked.insert(id, (cols, rows));
+                // The terminal's window resized: it is used. A `type` client claims only with its flag.
+                let claim = interactive == Some(id) || payload.get(4) == Some(&1);
+                if let Some(size) = latest_user(&mut latest, id, claim, (cols, rows)) {
+                    resize_to(&*pair.master, &mut model, &clients, &watchers, size);
+                }
             }
             Event::Frame(id, SNAPSHOT, _) if watchers.contains(&id) => {
                 if let Some(client) = clients.get(&id) {
@@ -626,6 +658,14 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 typists.remove(&id);
                 remote.remove(&id);
                 joined.retain(|j| *j != id);
+                asked.remove(&id);
+                // The latest user left: the terminal's size again, as tmux falls back to the clients left.
+                if latest == Some(id) {
+                    latest = interactive.filter(|i| *i != id && asked.contains_key(i));
+                    if let Some(size) = latest.and_then(|i| asked.get(&i)) {
+                        resize_to(&*pair.master, &mut model, &clients, &watchers, *size);
+                    }
+                }
                 if interactive == Some(id) {
                     interactive = None;
                     // The oldest joined client takes the keyboard and then sends its own size.
@@ -683,6 +723,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 ended = true;
                 ended_picture = kept;
                 interactive = None;
+                latest = None;
                 typists.clear();
                 remote.clear();
                 joined.clear();
@@ -709,6 +750,27 @@ fn size_frame(cols: u16, rows: u16) -> Vec<u8> {
     let mut payload = cols.to_be_bytes().to_vec();
     payload.extend_from_slice(&rows.to_be_bytes());
     encode(RESIZE, &payload)
+}
+
+/// Whether `id`'s RESIZE to `size` applies (owner ruling 2026-10-14, tmux's `window-size latest`):
+/// a client that uses the session (`claim`: a terminal's own window, or the app's panel opened or
+/// typed into) becomes the latest user; only the latest user's size is the pty's. A resize from
+/// any other client is only remembered, for when it uses the session again.
+pub(crate) fn latest_user(latest: &mut Option<u64>, id: u64, claim: bool, size: (u16, u16)) -> Option<(u16, u16)> {
+    if claim {
+        *latest = Some(id);
+    }
+    (*latest == Some(id)).then_some(size)
+}
+
+/// The pty, the model and every watcher at `(cols, rows)`; nothing when it is that size already.
+fn resize_to(master: &dyn portable_pty::MasterPty, model: &mut Model, clients: &HashMap<u64, Client>, watchers: &HashSet<u64>, (cols, rows): (u16, u16)) {
+    if model.size() == (rows, cols) {
+        return;
+    }
+    let _ = master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
+    model.resize(rows, cols);
+    tell(clients, watchers, &size_frame(cols, rows));
 }
 
 fn tell(clients: &HashMap<u64, Client>, watchers: &HashSet<u64>, frame: &[u8]) {

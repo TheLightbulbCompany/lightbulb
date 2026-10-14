@@ -133,6 +133,8 @@ FEATURES = [
     "approvalInput",
     # The Mac stops a held session left idle with nobody on it only once this is listed.
     "endedIdleStopped",
+    # The Mac advertises remoteResize (its holders take the app panel's size) only once this is listed.
+    "remoteResize",
 ]
 
 
@@ -154,6 +156,9 @@ class DeviceHeartbeat(ContractModel):
     # on every listed session's META as `deviceFeatures` (session_screen reads it).
     live_terminal: bool = False
     remote_input: bool = False
+    # This Mac's holders take the app panel's size on `local.session.input` (owner ruling
+    # 2026-10-14: the session takes the size of whoever used it last, tmux's `window-size latest`).
+    remote_resize: bool = False
     session_presence: bool = False
     # This Mac's terminal names a pick-up request as one (spec 2026-10-05-ask-to-pick-up). An
     # older Mac would show it as a join request, so presence leaves pick-ups out for it.

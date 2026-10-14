@@ -498,13 +498,37 @@ TYPED_BURST_GAP_S = 10
 TYPED_TTL_S = 30 * 24 * 3600
 
 
+#: The Mac's feature for `SessionInput.size` (owner ruling 2026-10-14).
+REMOTE_RESIZE_FEATURE = "remoteResize"
+
+
+class SessionSize(ContractModel):
+    """The app panel's terminal size. The session takes the size of whoever used it last, as
+    tmux's `window-size latest`: `claim` says the panel is used now (opened, shown or typed into);
+    without it the size applies only while the panel is already the latest user (the holder decides)."""
+
+    cols: int = Field(ge=40, le=300)
+    rows: int = Field(ge=10, le=120)
+    claim: bool = False
+
+
 class SessionInput(ContractModel):
-    data: str = Field(min_length=1, max_length=4 * ((INPUT_MAX_RAW + 2) // 3))
+    # Empty only with a `size`: a resize alone.
+    data: str = Field(default="", max_length=4 * ((INPUT_MAX_RAW + 2) // 3))
     epoch: int = Field(ge=0, lt=2**53)
+    size: SessionSize | None = None
+
+    @model_validator(mode="after")
+    def _something(self) -> SessionInput:
+        if not self.data and self.size is None:
+            raise ValueError("data or size is required")
+        return self
 
     @field_validator("data")
     @classmethod
     def _base64(cls, value: str) -> str:
+        if value == "":
+            return value
         try:
             raw = base64.b64decode(value, validate=True)
         except (binascii.Error, ValueError) as exc:
@@ -588,6 +612,10 @@ async def type_into(auth: AuthContext, session_id: str, body: SessionInput) -> N
     if "remoteInput" not in row.get("deviceFeatures", ()):
         raise sessions.ApiProblem("LOCAL_SESSION_UNSUPPORTED", "This Mac cannot take typing from elsewhere yet.")
     size = len(base64.b64decode(body.data))
+    # A Mac too old to take the panel's size (or a relay before the feature) gets the keys alone.
+    resize = body.size if REMOTE_RESIZE_FEATURE in row.get("deviceFeatures", ()) else None
+    if not size and resize is None:
+        return
     sid, user = row["sessionId"], auth.user_id
     typist = _typist(sid, user, now)
     if not _admit(typist, size, now):
@@ -604,7 +632,9 @@ async def type_into(auth: AuthContext, session_id: str, body: SessionInput) -> N
         # and mouse reports there, so only the owner can operate the terminal's Claude band.
         "fromOwner": user == row["humanUserId"],
     }
-    if user != row["humanUserId"]:
+    if resize is not None:
+        envelope["size"] = resize.model_dump()
+    if size and user != row["humanUserId"]:
         # Who typed: the Mac's Claude terminal labels a prompt a teammate submitted with their
         # name. `_name` keeps its own short cache, so nothing is kept here: a failed lookup (the
         # bare id, or its "A teammate" fallback) sends this frame without a name and the next asks again.
@@ -612,14 +642,27 @@ async def type_into(auth: AuthContext, session_id: str, body: SessionInput) -> N
         if name not in (user, "A teammate"):
             envelope["actor"] = {"userId": user, "name": name}
     check_envelope(envelope)
+    if size:
+        await _audit_typing(row, user, typist, size, now)
+    try:
+        sent = await get_local_session_relay().management.send_message_async(row["connectionId"], envelope)
+    except Exception as exc:  # noqa: BLE001 -- reported as offline; the content is never logged
+        logger.info("session input not delivered error=%s", type(exc).__name__)
+        sent = False
+    if not sent:
+        raise sessions.ApiProblem("LOCAL_SESSION_OFFLINE", "The desktop session is offline.", retryable=True)
+
+
+async def _audit_typing(row: dict, user: str, typist: _Typist, size: int, now: float) -> None:
+    """Audited before it is sent: a keystroke that reached the Mac always has its row. A resize
+    alone types nothing, so it has none and marks nobody typing."""
     new_burst = not typist.burst or now - typist.last > TYPED_BURST_GAP_S
     if new_burst:
         typist.burst = int(now)
     typist.last = now
-    # Audited before it is sent: a keystroke that reached the Mac always has its row.
     await store.run_in_thread(
         store._table().update_item,
-        Key={"pk": repo.session_pk(row["ownerId"], sid), "sk": f"TYPED#{user}#{typist.burst}"},
+        Key={"pk": repo.session_pk(row["ownerId"], row["sessionId"]), "sk": f"TYPED#{user}#{typist.burst}"},
         UpdateExpression="SET userId = :u, startedAt = if_not_exists(startedAt, :s), lastAt = :t, "
         "expiresAt = :e ADD #b :n",
         ExpressionAttributeNames={"#b": "bytes"},
@@ -633,10 +676,3 @@ async def type_into(auth: AuthContext, session_id: str, body: SessionInput) -> N
     )
     # The owner's mark too: their keys put the plain cursor back on every view (`_cursor_typist`).
     await _mark_typing(row, user, int(now))
-    try:
-        sent = await get_local_session_relay().management.send_message_async(row["connectionId"], envelope)
-    except Exception as exc:  # noqa: BLE001 -- reported as offline; the content is never logged
-        logger.info("session input not delivered error=%s", type(exc).__name__)
-        sent = False
-    if not sent:
-        raise sessions.ApiProblem("LOCAL_SESSION_OFFLINE", "The desktop session is offline.", retryable=True)

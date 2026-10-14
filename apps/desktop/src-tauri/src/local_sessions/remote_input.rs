@@ -12,7 +12,7 @@
 //! writer thread, which closes its `type` client when the relay stops.
 
 use super::screen::{self, Ctl};
-use crate::holder::protocol::{encode, read_frame, HELLO, INPUT, OWNER_INPUT};
+use crate::holder::protocol::{encode, read_frame, HELLO, INPUT, OWNER_INPUT, RESIZE};
 use base64::Engine;
 use serde_json::Value;
 use std::io::Write;
@@ -163,31 +163,44 @@ pub(crate) fn cursor_typist(holder: &str, now: Instant) -> Option<(Typist, Insta
     CURSOR.lock().ok()?.get(holder).filter(|(_, at)| now.saturating_duration_since(*at) < CURSOR_FOR).cloned()
 }
 
-/// Keys for the holder, whether the session's owner typed them, and the teammate who did.
-pub(super) type Typed = (Vec<u8>, bool, Option<Typist>);
+/// The app's panel size: (cols, rows, whether the panel is used now: opened or typed into).
+pub(super) type PanelSize = (u16, u16, bool);
+/// Keys for the holder, whether the session's owner typed them, the teammate who did, and the
+/// panel's size when the frame carries one (owner ruling 2026-10-14: the session takes the size of
+/// whoever used it last, tmux's `window-size latest`; the holder keeps that rule, `run::latest_user`).
+pub(super) type Typed = (Vec<u8>, bool, Option<Typist>, Option<PanelSize>);
 
 /// A `local.session.input` frame from the relay. Never blocks, never replies.
 pub(super) fn offer(body: &Value) {
-    let Some((sid, generation, ctl, mut keys)) = admit(body, screen::live_relay) else { return };
+    let Some((sid, generation, ctl, mut keys, size)) = admit(body, screen::live_relay) else { return };
     let from_owner = body["fromOwner"] == true;
     let typist = typist_of(body);
     let Ok(mut slot) = ctl.typist.lock() else { return };
     if let Some(tx) = slot.as_ref() {
-        match tx.try_send((keys, from_owner, typist.clone())) {
+        match tx.try_send((keys, from_owner, typist.clone(), size)) {
             Ok(()) | Err(TrySendError::Full(_)) => return,
             // Its writer is gone: start another.
             Err(TrySendError::Disconnected((back, ..))) => keys = back,
         }
     }
     let (tx, rx) = sync_channel(QUEUE);
-    let _ = tx.try_send((keys, from_owner, typist));
+    let _ = tx.try_send((keys, from_owner, typist, size));
     *slot = Some(tx);
     let theirs = ctl.clone();
     std::thread::spawn(move || write(&sid, &generation, &theirs, &rx));
 }
 
-/// (session id, generation, its relay, the keys to write) when the frame may reach the holder.
-fn admit(body: &Value, relay_of: impl Fn(&Value) -> Option<(String, Arc<Ctl>)>) -> Option<(String, String, Arc<Ctl>, Vec<u8>)> {
+/// The frame's `size`, when it is one a terminal can be.
+fn panel_size(body: &Value) -> Option<PanelSize> {
+    let size = &body["size"];
+    let cols = size["cols"].as_u64().filter(|c| (1..=1000).contains(c))?;
+    let rows = size["rows"].as_u64().filter(|r| (1..=500).contains(r))?;
+    Some((cols as u16, rows as u16, size["claim"] == true))
+}
+
+/// (session id, generation, its relay, the keys to write, the panel's size) when the frame may
+/// reach the holder: keys, a size, or both.
+fn admit(body: &Value, relay_of: impl Fn(&Value) -> Option<(String, Arc<Ctl>)>) -> Option<(String, String, Arc<Ctl>, Vec<u8>, Option<PanelSize>)> {
     let data = body["data"].as_str().filter(|d| d.len() <= MAX_INPUT.div_ceil(3) * 4)?;
     let epoch = body["epoch"].as_u64().filter(|e| *e != 0)?;
     let generation = body["generation"].as_str()?.to_owned();
@@ -198,7 +211,8 @@ fn admit(body: &Value, relay_of: impl Fn(&Value) -> Option<(String, Arc<Ctl>)>) 
     let raw = base64::engine::general_purpose::STANDARD.decode(data).ok().filter(|r| r.len() <= MAX_INPUT)?;
     // A missing `fromOwner` (an older backend) strips: the safe default.
     let keys = strip_remote(&raw, body["fromOwner"] != true);
-    (!keys.is_empty()).then_some((sid, generation, ctl, keys))
+    let size = panel_size(body);
+    (!keys.is_empty() || size.is_some()).then_some((sid, generation, ctl, keys, size))
 }
 
 /// The relay's writer: one `type` client, reattached after an error, closed when the relay stops.
@@ -212,12 +226,13 @@ fn write_with(sid: &str, generation: &str, ctl: &Ctl, inputs: &Receiver<Typed>, 
     let mut tried: Option<Instant> = None;
     let mut carry = Carry::default();
     while !ctl.stopped() {
-        let (keys, from_owner, typist) = match inputs.recv_timeout(TICK) {
-            Ok((keys, from_owner, typist)) => (carry.feed(&keys, from_owner), from_owner, typist),
+        let (keys, from_owner, typist, size) = match inputs.recv_timeout(TICK) {
+            // A size alone feeds nothing: a held escape stays held for the next keys.
+            Ok((keys, from_owner, typist, size)) => (if keys.is_empty() { keys } else { carry.feed(&keys, from_owner) }, from_owner, typist, size),
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
         };
-        if keys.is_empty() {
+        if keys.is_empty() && size.is_none() {
             continue;
         }
         for _ in 0..2 {
@@ -231,13 +246,24 @@ fn write_with(sid: &str, generation: &str, ctl: &Ctl, inputs: &Receiver<Typed>, 
             if ctl.stopped() {
                 break;
             }
-            // Recorded first: a decide that reads it between the write and the record is refused.
-            wrote(sid, from_owner, Instant::now());
-            typed(sid, from_owner, typist.clone(), &keys, Instant::now());
-            cursor_typed(holder, from_owner, typist.clone(), Instant::now());
-            // An older holder takes only INPUT, and reports no origin to mark.
-            let kind = if from_owner && *origin { OWNER_INPUT } else { INPUT };
-            if c.write_all(&encode(kind, &keys)).is_ok() {
+            // The size first: keys typed in the panel are drawn at the panel's size. An older
+            // holder ignores a `type` client's RESIZE.
+            let resized = size.is_none_or(|(cols, rows, claim)| {
+                let mut payload = cols.to_be_bytes().to_vec();
+                payload.extend_from_slice(&rows.to_be_bytes());
+                payload.push(claim as u8);
+                c.write_all(&encode(RESIZE, &payload)).is_ok()
+            });
+            let typed_ok = resized && (keys.is_empty() || {
+                // Recorded first: a decide that reads it between the write and the record is refused.
+                wrote(sid, from_owner, Instant::now());
+                typed(sid, from_owner, typist.clone(), &keys, Instant::now());
+                cursor_typed(holder, from_owner, typist.clone(), Instant::now());
+                // An older holder takes only INPUT, and reports no origin to mark.
+                let kind = if from_owner && *origin { OWNER_INPUT } else { INPUT };
+                c.write_all(&encode(kind, &keys)).is_ok()
+            });
+            if typed_ok {
                 break;
             }
             // The holder went away or restarted: reattach once, now.
@@ -460,7 +486,7 @@ mod tests {
         peer.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
         let ctl = Ctl::new(0);
         let (tx, rx) = sync_channel(QUEUE);
-        tx.send((b"rm -rf".to_vec(), true, None)).unwrap();
+        tx.send((b"rm -rf".to_vec(), true, None, None)).unwrap();
         drop(tx); // nothing more comes: the writer ends even if it never attaches
         // Sharing is stopped while the writer attaches to the holder.
         let holder = std::cell::RefCell::new(Some(holder));
@@ -717,7 +743,8 @@ mod tests {
             }
         };
         let watched = || relay(BTreeMap::from([(SID.to_owned(), ctl.clone())]));
-        let (sid, generation, _, keys) = admit(&frame(SID, "gen-1", 7, b"ls\r\x1b[?62;22c"), watched()).unwrap();
+        let (sid, generation, _, keys, size) = admit(&frame(SID, "gen-1", 7, b"ls\r\x1b[?62;22c"), watched()).unwrap();
+        assert_eq!(size, None, "no size: keys only, as before");
         assert_eq!((sid.as_str(), generation.as_str(), keys.as_slice()), (SID, "gen-1", b"ls\r".as_slice()));
         assert!(admit(&frame(SID, "gen-1", 7, b"ls\r"), relay(BTreeMap::new())).is_none(), "nobody watches it");
         assert!(admit(&frame(SID, "gen-0", 7, b"ls\r"), watched()).is_none(), "another generation");
@@ -732,6 +759,17 @@ mod tests {
         owner["fromOwner"] = json!(false);
         assert!(admit(&owner, watched()).is_none(), "a teammate's do not");
         assert!(admit(&json!({"type": "local.session.input", "sessionId": SID, "generation": "gen-1", "epoch": 7, "data": "%%"}), watched()).is_none());
+        // The app's panel size (owner ruling 2026-10-14): alone or with keys, never out of range.
+        let mut sized = frame(SID, "gen-1", 7, b"");
+        sized["size"] = json!({"cols": 120, "rows": 40, "claim": true});
+        assert_eq!(admit(&sized, watched()).unwrap().4, Some((120, 40, true)), "a size alone reaches the holder");
+        sized["size"] = json!({"cols": 120, "rows": 40});
+        assert_eq!(admit(&sized, watched()).unwrap().4, Some((120, 40, false)), "no claim: a resize only");
+        sized["size"] = json!({"cols": 0, "rows": 40, "claim": true});
+        assert!(admit(&sized, watched()).is_none(), "a size no terminal can be: nothing to send");
+        sized["epoch"] = json!(6);
+        sized["size"] = json!({"cols": 120, "rows": 40, "claim": true});
+        assert!(admit(&sized, watched()).is_none(), "a size from a stale epoch is dropped as keys are");
         ctl.epoch.store(0, SeqCst);
         assert!(admit(&frame(SID, "gen-1", 0, b"ls\r"), watched()).is_none(), "a relay that has not started streaming");
     }
@@ -758,11 +796,27 @@ mod tests {
     }
 
     #[test]
+    fn remote_input_writes_the_panel_size_before_its_keys_and_a_size_alone() {
+        let (holder, mut peer) = UnixStream::pair().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let ctl = Ctl::new(0);
+        let (tx, rx) = sync_channel(QUEUE);
+        tx.send((b"ls\r".to_vec(), true, None, Some((120, 40, true)))).unwrap();
+        tx.send((vec![], false, None, Some((100, 30, false)))).unwrap();
+        drop(tx);
+        let holder = std::cell::RefCell::new(Some(holder));
+        write_with("sid", "gen", &ctl, &rx, |_, _| holder.borrow_mut().take().map(|conn| (conn, true, "h".to_owned())));
+        assert_eq!(read_frame(&mut peer).unwrap(), (RESIZE, vec![0, 120, 0, 40, 1]));
+        assert_eq!(read_frame(&mut peer).unwrap(), (OWNER_INPUT, b"ls\r".to_vec()));
+        assert_eq!(read_frame(&mut peer).unwrap(), (RESIZE, vec![0, 100, 0, 30, 0]), "a size alone, no keys");
+    }
+
+    #[test]
     fn remote_input_writer_closes_its_type_client_when_the_relay_stops() {
         let ctl = Ctl::new(0);
         ctl.stop.store(true, SeqCst);
         let (tx, rx) = sync_channel(1);
-        tx.send((b"never".to_vec(), false, None)).unwrap();
+        tx.send((b"never".to_vec(), false, None, None)).unwrap();
         let started = Instant::now();
         write(SID, "gen-1", &ctl, &rx);
         assert!(started.elapsed() < Duration::from_secs(1));

@@ -2972,6 +2972,11 @@ fn device_heartbeats_with_controls(
         }
         if remote_input {
             frame["remoteInput"] = json!(true);
+            // This Mac's holders take the app panel's size with remote input: the session takes the
+            // size of whoever used it last (owner ruling 2026-10-14). Only to a relay that lists it.
+            if super::session_states::reads_remote_resize() {
+                frame["remoteResize"] = json!(true);
+            }
         }
         if presence {
             frame["sessionPresence"] = json!(true);

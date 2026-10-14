@@ -26,6 +26,9 @@ static READS_ON_PURPOSE: AtomicBool = AtomicBool::new(false);
 /// The relay lists `endedIdleStopped`: an end may say `reason: "idle-stopped"`. Until it does, no
 /// idle session is stopped (`Host::stop_idle`): its row would read as an ordinary exit.
 static READS_IDLE_STOPPED: AtomicBool = AtomicBool::new(false);
+/// The relay lists `remoteResize`: it reads `remoteResize` on a heartbeat and may send a
+/// `local.session.input` with the app panel's `size` (owner ruling 2026-10-14).
+static READS_REMOTE_RESIZE: AtomicBool = AtomicBool::new(false);
 /// `DeviceHeartbeat.screens`' cap on the relay.
 const SCREENS_MAX: usize = 24;
 /// How often holders no mirror names are looked for.
@@ -120,6 +123,12 @@ pub(super) fn read_features(listed: &Value) {
     READS_TERMINAL_REASON.store(reason, SeqCst);
     READS_ON_PURPOSE.store(listed.as_array().is_some_and(|f| f.iter().any(|x| x == "endedOnPurpose")), SeqCst);
     READS_IDLE_STOPPED.store(listed.as_array().is_some_and(|f| f.iter().any(|x| x == "endedIdleStopped")), SeqCst);
+    READS_REMOTE_RESIZE.store(listed.as_array().is_some_and(|f| f.iter().any(|x| x == "remoteResize")), SeqCst);
+}
+
+/// The relay this Mac talks to now reads `remoteResize`.
+pub(super) fn reads_remote_resize() -> bool {
+    READS_REMOTE_RESIZE.load(SeqCst)
 }
 
 /// The relay this Mac talks to now reads an `idle-stopped` end.

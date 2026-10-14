@@ -442,3 +442,74 @@ async def test_frames_name_the_teammate_who_typed_last_for_four_seconds_and_the_
     await session_screen.type_into(BOB, sid, body())
     await session_screen.type_into(ALICE, sid, body())
     assert await typist(now + 1) is None, "the owner's keys put the plain cursor back"
+
+
+# The session takes the size of whoever used it last (owner ruling 2026-10-14, tmux's
+# `window-size latest`): the app panel's size rides the input path, authorized exactly as typing.
+PANEL = {"cols": 120, "rows": 40, "claim": True}
+
+
+def sized(data="", size=PANEL, epoch=3):
+    return session_screen.SessionInput.model_validate({"data": data, "epoch": epoch, "size": size})
+
+
+async def resizable(transport, sid):
+    frame = heartbeat(sid)
+    frame["remoteResize"] = True
+    await relay(transport).handle_message("conn-1", frame)
+
+
+def test_a_size_is_bounded_and_a_call_carries_keys_or_a_size():
+    from pydantic import ValidationError
+
+    from core.services.local_session_relay import FEATURES
+
+    assert sized().data == "" and sized().size.claim is True
+    assert (
+        session_screen.SessionInput.model_validate({"epoch": 3, "size": {"cols": 80, "rows": 24}}).size.claim is False
+    )
+    for bad in (
+        {"cols": 39, "rows": 40},
+        {"cols": 301, "rows": 40},
+        {"cols": 80, "rows": 9},
+        {"cols": 80, "rows": 121},
+    ):
+        with pytest.raises(ValidationError):
+            sized(size=bad)
+    with pytest.raises(ValidationError):
+        session_screen.SessionInput.model_validate({"data": "", "epoch": 3})
+    assert session_screen.REMOTE_RESIZE_FEATURE in FEATURES
+
+
+@pytest.mark.asyncio
+async def test_a_panel_size_reaches_a_resizable_mac_with_no_typing_audit(transport, db):
+    sid = await start(transport)
+    await resizable(transport, sid)
+    await admit(sid)
+    transport[3].clear()
+    await session_screen.type_into(BOB, sid, sized())
+    await session_screen.type_into(BOB, sid, sized(data=KEYS))
+    frames = sent(transport)
+    assert [(b["data"], b["size"]) for b in frames] == [("", PANEL), (KEYS, PANEL)]
+    assert "actor" not in frames[0], "a resize alone names nobody typing"
+    assert sum(int(r["bytes"]) for r in typed_rows(db, sid)) == len(b"ls -la\r"), "only keys are audited"
+
+
+@pytest.mark.asyncio
+async def test_a_view_only_teammate_s_resize_is_refused_and_nothing_reaches_the_mac(transport):
+    sid = await start(transport)
+    await resizable(transport, sid)
+    await session_screen.watch(BOB, sid)  # may watch, may not type
+    transport[3].clear()
+    await refused("LOCAL_SESSION_FORBIDDEN", transport, BOB, sid, sized())
+
+
+@pytest.mark.asyncio
+async def test_a_mac_without_remote_resize_gets_the_keys_alone_and_no_resize(transport):
+    sid = await start(transport)
+    await capable(transport, sid)
+    await admit(sid)
+    transport[3].clear()
+    await session_screen.type_into(BOB, sid, sized())  # nothing to send: no error, no frame
+    await session_screen.type_into(BOB, sid, sized(data=KEYS))
+    assert [("size" in b, b["data"]) for b in sent(transport)] == [(False, KEYS)]

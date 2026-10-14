@@ -13,6 +13,7 @@ import codecs
 import gzip
 import hashlib
 import hmac
+import html
 import json
 import logging
 import os
@@ -160,6 +161,15 @@ class LinkCode(ContractModel):
 class LinkMe(ContractModel):
     signed_in: bool
     member: bool
+    # "Ask to join" from the page (D1/D2): whether this viewer may ask, and their ask's state. Set
+    # only for a signed-out or outside viewer of an "Anyone" link. `allowed`: the owner let them in;
+    # the page then gets the ids it needs to open the session (`session_id`, `workspace_id`).
+    can_ask: bool = False
+    join: Literal["pending", "allowed"] | None = None
+
+    @model_serializer(mode="wrap")
+    def wire(self, handler, info):
+        return _drop_none(self, handler(self), info, ("join",))
 
 
 class LinkPage(ContractModel):
@@ -172,10 +182,12 @@ class LinkPage(ContractModel):
     me: LinkMe
     # Members only: their in-app paths (Watch, Pick up) need it.
     session_id: str | None = None
+    # Only once the owner let an outside viewer in: the workspace to switch to before opening it.
+    workspace_id: str | None = None
 
     @model_serializer(mode="wrap")
     def wire(self, handler, info):
-        return _drop_none(self, handler(self), info, ("session_id",))
+        return _drop_none(self, handler(self), info, ("session_id", "workspace_id"))
 
 
 def code_line(row: dict, manifest: dict | None, member: bool) -> LinkCode:
@@ -248,6 +260,8 @@ async def open_page(auth: AuthContext | None, token: str, *, refresh: bool = Fal
             state=_state(row),
             **({} if signed_in else {"$process_person_profile": False}),
         )
+    me = LinkMe(signed_in=auth is not None, member=member, **_ask_state(auth, row, link, member))
+    let_in = me.join == "allowed"
     return LinkPage(
         title=_title(row, member),
         owner_first_name=await _name(row["humanUserId"], first=True),
@@ -255,9 +269,129 @@ async def open_page(auth: AuthContext | None, token: str, *, refresh: bool = Fal
         state=_state(row),
         code=code_line(row, manifest, member),
         continuable=continuable,
-        me=LinkMe(signed_in=auth is not None, member=member),
-        session_id=row["sessionId"] if member else None,
+        me=me,
+        session_id=row["sessionId"] if member or let_in else None,
+        workspace_id=row["ownerId"] if let_in else None,
     )
+
+
+# --- Ask to join from the page (06 §2, D1/D2) ---------------------------------------------------
+#
+# The same ask teammates make (local_sessions.request_join), opened to a signed-in person outside
+# the workspace on an "Anyone with the link" page. The row is the session's own `joinRequests`,
+# marked `outsider` and carrying the label the owner sees. The owner's Allow
+# (local_sessions.decide_join) makes them a workspace member, then lets them use the session.
+
+#: Outside asks waiting on one session at once: what an open public link can put in front of its owner.
+MAX_OUTSIDER_ASKS = 20
+
+
+def _ask_state(auth: AuthContext | None, row: dict, link: dict, member: bool) -> dict:
+    if member or not sessions.public_id(link, row) or row.get("endedAt") is not None:
+        return {}
+    if auth is not None and auth.user_id in sessions.allowed_senders(row):
+        return {"join": "allowed"}
+    request = (row.get("joinRequests") or {}).get(auth.user_id) if auth is not None else None
+    if request and request.get("state") == "pending":
+        return {"join": "pending"}
+    # A declined ask reads as never asked (a decline is not announced); they may ask again.
+    return {"can_ask": not row.get("askToJoinOff")}
+
+
+class JoinAsk(ContractModel):
+    join: Literal["pending", "allowed", "member"]
+
+
+async def _outsider_label(user_id: str) -> str:
+    from core.services import clerk_admin
+    from core.services.messaging import human_display_name
+
+    name = await human_display_name(user_id)
+    try:
+        email = await clerk_admin.get_primary_email(user_id)
+    except Exception:  # noqa: BLE001 -- the name alone still says who asked
+        email = None
+    if name == user_id:  # no name on the account: the address is the name
+        return email or "Someone"
+    return f"{name} ({email})" if email else name
+
+
+async def ask_to_join(auth: AuthContext, token: str) -> JoinAsk:
+    """A signed-in viewer of an "Anyone" page asks the owner to let them in. Asking again while
+    pending changes nothing. Every refusal of the link reads as `resolve`'s."""
+    from core.services.local_session_relay import publish_resources_changed
+
+    me = auth.user_id
+    label: str | None = None
+    for _ in range(6):
+        row, link, member = await resolve(auth, token)
+        if member:
+            return JoinAsk(join="member")
+        state = _ask_state(auth, row, link, member)
+        if state.get("join"):
+            return JoinAsk(join=state["join"])
+        if not state.get("can_ask"):
+            raise _gone() if row.get("endedAt") is None else ApiProblem("LOCAL_SESSION_OFFLINE", "This session ended.")
+        requests = dict(row.get("joinRequests") or {})
+        if sum(1 for r in requests.values() if r.get("outsider") and r.get("state") == "pending") >= MAX_OUTSIDER_ASKS:
+            raise ApiProblem("RATE_LIMITED", "Too many people are waiting to join this session. Try again later.")
+        label = label or await _outsider_label(me)
+        requests[me] = {**sessions._new_request(), "outsider": True, "name": label}
+        updated = {**row, "joinRequests": requests, "revision": str(uuid.uuid4())}
+        audit = sessions.audit_row(row["ownerId"], row["sessionId"], auth, "join_requested", detail="session_link")
+        enrollment = await sessions._enrolled(row["ownerId"], row["humanUserId"], row["deviceId"])
+        try:
+            await repo.put_session(
+                updated, row, enrollment, extra=[{"Put": {"TableName": store._table().name, "Item": audit}}]
+            )
+        except ClientError as exc:
+            if not store._is_cancelled(exc):
+                raise
+            continue
+        sessions._capture_growth(updated, "workspace_join_requested", me, via="session_link")
+        await sessions._notify_join_request(updated, me)
+        await _email_owner(updated, label)
+        await sessions._push_presence(updated)
+        await publish_resources_changed(row["ownerId"], row["humanUserId"])
+        return JoinAsk(join="pending")
+    raise ApiProblem("LOCAL_SESSION_CONFLICT", "Session changed. Try again.")
+
+
+async def _email_owner(row: dict, label: str) -> None:
+    """The ask, by email too (06 §2): the owner is often not in the app when a stranger asks.
+    Best effort; the Activity item and the push already went."""
+    from core.config import settings
+    from core.services import clerk_admin, email_service, notification_copy as copy
+    from core.services.daily_digest import _email_allowed, activity_url
+
+    try:
+        to = await clerk_admin.get_primary_email(row["humanUserId"])
+        if not _email_allowed(to):
+            return
+        session = copy.line(row.get("displayTitle") or row.get("title"), 60) or "your session"
+        subject = f'{label} watched "{session}" and asks to join'
+        url = activity_url()
+        text = (
+            f"{subject}.\n\nAllow makes them a member of your workspace and lets them use this session. "
+            f"Decline, and they are not told.\n\nAnswer in Activity: {url}\n"
+        )
+        e = html.escape
+        body = (
+            f'<div style="font-family:sans-serif;max-width:520px"><p><strong>{e(subject)}.</strong></p>'
+            "<p>Allow makes them a member of your workspace and lets them use this session. "
+            "Decline, and they are not told.</p>"
+            f'<p><a href="{e(url)}">Answer in Activity</a></p></div>'
+        )
+        await email_service.send_email(
+            to=to,
+            subject=subject,
+            html=body,
+            text=text,
+            from_addr=settings.EMAIL_FROM_WELCOME,
+            kind="session_join_request",
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("session join request email failed", exc_info=True)
 
 
 # --- Watching (owner ruling 2026-10-08: an "Anyone" link shows the live terminal, view only) ---

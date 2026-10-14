@@ -321,6 +321,12 @@ class LocalSession(ContractModel):
     pickup_requested_at: str | None = None
     # The owner's own view only: who is waiting for an answer, so the session itself can offer Allow/Decline.
     pending_joins: list[str] | None = None
+    # The owner's own view only: names for the people asking from the public page, who are not in the
+    # workspace yet ("Priya Shah (priya@acme.com)"), so the owner knows who they would let in.
+    pending_join_names: dict[str, str] | None = None
+    # "Viewers can ask to join" (D2): people outside the workspace who watch an "Anyone with the link"
+    # page may ask. On unless the owner turned it off for this session.
+    ask_to_join: bool = True
     # Request id per waiting person, so an answer from the session names the request it saw.
     pending_join_ids: dict[str, str] | None = None
     # The READER's own ask to pick up, while pick-up is off; absent otherwise.
@@ -385,6 +391,7 @@ class LocalSession(ContractModel):
                 "join_request_closed",
                 "pickup_requested_at",
                 "pending_joins",
+                "pending_join_names",
                 "pending_join_ids",
                 "pickup_request",
                 "pending_pickups",
@@ -856,6 +863,7 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
     if not row["capabilitiesVerified"]:
         public["capabilities"] = Capabilities().model_dump(by_alias=True)
     public["teamControl"] = team_control_on(row)
+    public["askToJoin"] = not row.get("askToJoinOff")
     public["allowedSenders"] = allowed_senders(row)
     ended = row.get("endedAt") is not None
     empty = ended_empty(row["provider"], public["status"], row.get("eventSeq", 0), row.get("controlUnavailableReason"))
@@ -888,6 +896,9 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
         if waiting:
             public["pendingJoins"] = sorted(waiting)
             public["pendingJoinIds"] = waiting
+            names = {who: r["name"] for who, r in row["joinRequests"].items() if who in waiting and r.get("name")}
+            if names:
+                public["pendingJoinNames"] = names
     from core.services import session_pickup  # lazy: it imports this module
 
     lapsed = session_pickup._expired(row)  # an expired snapshot leaves nothing to ask for or allow
@@ -2739,10 +2750,14 @@ async def decide_join(
     pins the answer to the request the owner saw, so it never lands on a newer one."""
     user_id = _valid_user(user_id)
     answered: dict = {}
+    if decision == "allow":
+        await _admit_outsider(auth, session_id, user_id, request_id)
 
     def change(row: dict) -> dict | None:
         if auth.user_id != row["humanUserId"]:
             raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can answer a request to join.")
+        asked = (row.get("joinRequests") or {}).get(user_id) or {}
+        answered.update(outsider=bool(asked.get("outsider")), askedAt=asked.get("askedAt"))
         requests = dict(row.get("joinRequests") or {})
         current = requests.get(user_id) or {}
         answered["requestId"] = current.get("requestId")
@@ -2763,9 +2778,54 @@ async def decide_join(
     action = "join_allowed" if decision == "allow" else "join_declined"
     row, audit = await _change_session(auth, session_id, change, action, user_id)
     if audit is not None:  # only a write that landed; a repeated answer is a no-op
-        _capture_growth(row, "session_join_decided", auth.user_id, decision=decision)
-        await _notify_join_answer(row, user_id, action, answered["requestId"])
+        if answered.get("outsider"):  # 06 §2's funnel: a stranger's ask from the public page
+            latency = int(time.time()) - int(answered["askedAt"]) if answered.get("askedAt") else None
+            _capture_growth(row, "workspace_join_decided", auth.user_id, decision=decision, latency_s=latency)
+        else:
+            _capture_growth(row, "session_join_decided", auth.user_id, decision=decision)
+        if decision == "allow" or not answered.get("outsider"):  # 06 §2: a decline to an outsider is not announced
+            await _notify_join_answer(row, user_id, action, answered["requestId"])
         await _push_presence(row)
+    return _session_public(row, auth.user_id)
+
+
+async def _admit_outsider(auth: AuthContext, session_id: str, user_id: str, request_id: str | None) -> None:
+    """D1: Allow on an ask from the public page also makes that person a workspace member, as the
+    join link does (``org:member``, never more). Before the session write, so a refused membership
+    leaves the request pending for the owner to try again. A teammate's ask is not touched."""
+    from core.services import clerk_admin
+
+    row, _ = await authorize_session(auth, None, session_id)
+    if auth.user_id != row["humanUserId"]:
+        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can answer a request to join.")
+    current = (row.get("joinRequests") or {}).get(user_id) or {}
+    if not current.get("outsider") or current.get("state") != "pending":
+        return
+    if request_id is not None and current.get("requestId") != request_id:
+        raise ApiProblem("LOCAL_SESSION_CONFLICT", "That request was already answered.")
+    await clerk_admin.create_organization_membership(org_id=row["ownerId"], user_id=user_id, role="org:member")
+
+
+class AskToJoinSwitch(ContractModel):
+    enabled: bool
+
+
+async def set_ask_to_join(auth: AuthContext, session_id: str, enabled: bool) -> LocalSession:
+    """The owner's per-session "Viewers can ask to join" (D2: on by default)."""
+
+    def change(row: dict) -> dict | None:
+        if auth.user_id != row["humanUserId"]:
+            raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can change this.")
+        if (not row.get("askToJoinOff")) == enabled:
+            return None
+        updated = {**row}
+        if enabled:
+            updated.pop("askToJoinOff", None)
+        else:
+            updated["askToJoinOff"] = True
+        return updated
+
+    row, _ = await _change_session(auth, session_id, change, "ask_to_join_on" if enabled else "ask_to_join_off", None)
     return _session_public(row, auth.user_id)
 
 
@@ -2908,12 +2968,15 @@ async def _notify_join_request(row: dict, requester: str, *, kind: str = "join")
     request_id, created = request["requestId"], request["createdAt"]
     again = bool(request.get("reminded"))
     try:
-        name = await human_display_name(requester)
+        name = request.get("name") or await human_display_name(requester)
     except Exception:
         name = "A teammate"
     if pickup:
         title = pickup_request_title(name, row, again=again)
         body = PICKUP_ALLOW_COPY
+    elif request.get("outsider"):
+        title = join_request_title(name, row, again=again)
+        body = "They watched it from its public link. Allow makes them a member of this workspace and lets them use this session."
     else:
         title = join_request_title(name, row, again=again)
         body = "Allow them to send follow-ups and answer prompts in this session."

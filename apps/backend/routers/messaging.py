@@ -595,6 +595,23 @@ async def view_session_link(body: session_links.ViewingRequest):
     return await session_links.viewing(body.token, body.lease, body.fresh, body.retake)
 
 
+@router.post("/public/session-links/join-request", response_model=session_links.JoinAsk)
+async def ask_to_join_session_link(
+    body: session_links.LinkTokenRequest, auth: AuthContext = Depends(get_human_session)
+):
+    """A signed-in viewer of an "Anyone" page asks the session's owner to let them in (D1). No
+    workspace needed. Under /public/ for its throttle bucket; the Clerk session is still required."""
+    return await session_links.ask_to_join(auth, body.token)
+
+
+@router.put("/messaging/sessions/{session_id}/ask-to-join", response_model=local_sessions.LocalSession)
+async def set_local_session_ask_to_join(
+    session_id: str, body: local_sessions.AskToJoinSwitch, auth: AuthContext = Depends(get_current_user)
+):
+    """Owner-only "Viewers can ask to join" for an "Anyone with the link" session (D2: on by default)."""
+    return await local_sessions.set_ask_to_join(auth, session_id, body.enabled)
+
+
 class SessionPickupSwitch(ContractModel):
     enabled: bool
 

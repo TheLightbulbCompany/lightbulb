@@ -437,6 +437,10 @@ export interface LocalSession {
   chatUnread?: number;
   /** The owner's own view only: each waiting person's request id, sent back with the answer. */
   pendingJoinIds?: Record<string, string>;
+  /** The owner's own view only: names for people who asked from the public page and are not in the workspace yet. */
+  pendingJoinNames?: Record<string, string>;
+  /** "Viewers can ask to join" on an "Anyone with the link" session: on unless the owner turned it off. */
+  askToJoin?: boolean;
   /** The READER's own ask to pick this session up: pending, or declined by the owner. */
   pickupRequest?: "pending" | "declined" | null;
   /** The owner's own view only: teammates waiting for an answer to "Ask to pick up", and their request ids. */
@@ -566,8 +570,15 @@ export interface SessionLink { url: string | null; audience: SessionLinkAudience
 export interface SessionLinkCode { visibility: "public" | "private" | "none" | "workspace"; remote?: string; branch?: string; commit?: string }
 export interface SessionLinkPage {
   title: string | null; ownerFirstName: string; provider: "claude" | "codex"; state: "live" | "ended" | "offline";
-  code: SessionLinkCode; continuable: boolean; me: { signedIn: boolean; member: boolean }; sessionId?: string;
+  code: SessionLinkCode; continuable: boolean;
+  /** `canAsk`: this outside viewer may Ask to join; `join`: their ask, pending or allowed. */
+  me: { signedIn: boolean; member: boolean; canAsk?: boolean; join?: "pending" | "allowed" };
+  sessionId?: string;
+  /** Only once the owner let an outside viewer in: the workspace to switch to before opening the session. */
+  workspaceId?: string;
 }
+/** POST /public/session-links/join-request: the viewer's ask, or "member" when they already are one. */
+export interface SessionLinkJoinAsk { join: "pending" | "allowed" | "member" }
 export interface SessionCopyCode { code: string }
 /** A link viewer's seat on an "Anyone with the link" session's live terminal (POST /public/session-links/viewing).
  *  `lease` is the AppSync token for `channel` alone; `watchId` stands in for the session's id and generation in its frames. */

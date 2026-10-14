@@ -27,8 +27,10 @@ vi.mock("@lightbulb/shared", async (importOriginal) => {
   return { ...actual, AppSyncEventsClient };
 });
 const auth = vi.hoisted(() => ({ isSignedIn: false }));
+const clerk = vi.hoisted(() => ({ setActive: vi.fn(async () => undefined) }));
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ isLoaded: true, isSignedIn: auth.isSignedIn, orgId: null, getToken: async () => "jwt" }),
+  useClerk: () => ({ setActive: clerk.setActive }),
   SignInButton: ({ children }: { children: React.ReactNode }) => children,
   SignUpButton: ({ children }: { children: React.ReactNode }) => children,
 }));
@@ -484,14 +486,39 @@ describe("session link page", () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string) => ({ ok: true, status: 200, json: async () => url.endsWith("/viewing") ? seat : model({}) }) as Response));
     const { unmount } = render(<SessionLinkPageRoute />);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-    const door = screen.getByRole("region", { name: "Start your own" });
+    const door = screen.getByRole("region", { name: "Join" });
     expect(door.textContent).toContain("Ada is working with their team and AI employees in Lightbulb.");
     expect(screen.getByRole("button", { name: "Start your own workspace" })).toBeTruthy();
     unmount();
     window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok", port: 4321, challenge: "c".repeat(43) }));
     render(<SessionLinkPageRoute />);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-    expect(screen.queryByRole("region", { name: "Start your own" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Join" })).toBeNull();
+  });
+
+  it("lets a signed-in outsider ask to join, says it is waiting, and opens the session once allowed (T17)", async () => {
+    vi.useFakeTimers();
+    auth.isSignedIn = true;
+    window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
+    let me: object = { signedIn: true, member: false, canAsk: true };
+    let extra: object = {};
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith("/viewing")) return { ok: true, status: 200, json: async () => seat } as Response;
+      if (url.endsWith("/join-request")) return { ok: true, status: 200, json: async () => ({ join: "pending" }) } as Response;
+      return { ok: true, status: 200, json: async () => model({ me, ...extra }) } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SessionLinkPageRoute />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    await act(async () => { screen.getByRole("button", { name: "Ask to join Ada's workspace" }).click(); await vi.advanceTimersByTimeAsync(0); });
+    const [, init] = fetchMock.mock.calls.find(([u]) => String(u).endsWith("/join-request"))!;
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({ token: "tok" });
+    expect(screen.getByRole("region", { name: "Join" }).textContent).toContain("Ada has your request.");
+    me = { signedIn: true, member: false, join: "allowed" };
+    extra = { sessionId: "s-1", workspaceId: "org_ada" };
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    await act(async () => { screen.getByRole("button", { name: "Open in Lightbulb" }).click(); await vi.advanceTimersByTimeAsync(0); });
+    expect(clerk.setActive).toHaveBeenCalledWith({ organization: "org_ada" });
   });
 
   // Round 18: a signed-out person saw only "Sign up to continue", and nothing about the Mac app or the command.

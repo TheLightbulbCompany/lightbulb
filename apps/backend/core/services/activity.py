@@ -530,7 +530,8 @@ async def _run_join_action(
         row = {
             "request": "pickup" if pickup else "join",
             "requesterId": requester,
-            "requesterName": await messaging.human_display_name(requester),
+            # An ask from the public page carries its own label (name and email): not a member yet.
+            "requesterName": entry.get("name") or await messaging.human_display_name(requester),
             "requestId": request_id,
             "createdAt": entry.get("createdAt") or utc_now_iso(),
         }

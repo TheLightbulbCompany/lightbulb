@@ -165,3 +165,18 @@ it("a session inside an app has no terminal, so it is never Anyone with the link
   expect(screen.getByText("Sessions inside an app can be shared with your workspace only.")).toBeInTheDocument();
   expect(screen.queryByRole("note")).toBeNull();
 });
+
+it("offers Viewers can ask to join, on by default, only for an Anyone link (T17, D2)", async () => {
+  const client = { ...make("anyone"), setLocalSessionAskToJoin: vi.fn(async (_: string, enabled: boolean) => ({ ...session, askToJoin: enabled }) as LocalSession) };
+  const { unmount } = render(<SessionShareLink session={session} client={client} />);
+  await who();
+  const toggle = screen.getByRole("switch", { name: "Viewers can ask to join" });
+  expect(toggle).toBeChecked();
+  await userEvent.click(toggle);
+  expect(client.setLocalSessionAskToJoin).toHaveBeenCalledWith("s1", false);
+  await waitFor(() => expect(screen.getByRole("switch", { name: "Viewers can ask to join" })).not.toBeChecked());
+  unmount();
+  render(<SessionShareLink session={session} client={{ ...make("workspace"), setLocalSessionAskToJoin: client.setLocalSessionAskToJoin }} />);
+  await who();
+  expect(screen.queryByRole("switch", { name: "Viewers can ask to join" })).toBeNull();
+});

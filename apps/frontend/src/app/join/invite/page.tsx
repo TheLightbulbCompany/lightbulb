@@ -9,8 +9,8 @@ import { Button } from "@/components/ui/button";
 // Clerk appends `__clerk_ticket` (the grant) and `__clerk_status` (`sign_up`
 // for a new address, `sign_in` for an existing account, `complete` once used)
 // to the redirect URL the backend set in `workspace_invitations.send`. This
-// page only explains why the person is here and hands the WHOLE query on to
-// /sign-up or /sign-in, whose prebuilt Clerk forms consume the ticket exactly
+// page only explains why the person is here and hands Clerk's ticket and status on
+// to /sign-up or /sign-in, whose prebuilt Clerk forms consume the ticket exactly
 // as they did when the email linked there directly. The two names are
 // display-only text from that same URL; nothing here grants anything.
 // =============================================================================
@@ -33,8 +33,11 @@ function inviteHeadline(inviter: string, workspace: string): string {
 export default async function InvitationPage({ searchParams }: { searchParams: Promise<Search> }) {
   const search = await searchParams;
   const query = new URLSearchParams();
-  for (const [key, value] of Object.entries(search)) {
-    for (const v of Array.isArray(value) ? value : value === undefined ? [] : [value]) query.append(key, v);
+  // Only what Clerk's form needs: its ticket and status. The names stay on this page.
+  for (const key of ["__clerk_ticket", "__clerk_status"]) {
+    const raw = search[key];
+    const v = Array.isArray(raw) ? raw[0] : raw; // never truncated: a ticket is a long JWT
+    if (v) query.set(key, v);
   }
   const qs = query.toString() ? `?${query}` : "";
   const status = one(search.__clerk_status);

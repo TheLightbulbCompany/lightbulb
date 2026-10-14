@@ -285,12 +285,24 @@ export function isPrivateRoute(pathname: string | null | undefined): boolean {
 
 // /chat deep links can carry file paths in `?path=`, and /s carries a session
 // link's token in its fragment (a read credential) and the CLI's loopback port.
-// The route is enough for analytics; keep the query string and fragment out of
-// pageviews, replay URLs and SDK defaults.
+// /join/{org}#token carries a join-link credential in its fragment, and
+// /join/invite carries Clerk's invitation ticket plus the inviter's and the
+// workspace's names. The route is enough for analytics; keep the query string
+// and fragment out of pageviews, replay URLs and SDK defaults.
+const JOIN_ROUTE = /^\/join(\/|$)/;
+// Clerk forwards its invitation ticket to /sign-up and /sign-in (and the invite
+// page passes it on): drop those params anywhere, keep the rest (UTM).
+const SECRET_PARAMS = ["__clerk_ticket", "__clerk_status", "inviter", "workspace", "decision", "approval"];
+
 export function withoutChatQuery(value: string): string {
   try {
     const url = new URL(value, "https://thelightbulb.company");
-    return isPrivateRoute(url.pathname) ? value.split(/[?#]/, 1)[0] : value;
+    if (isPrivateRoute(url.pathname) || JOIN_ROUTE.test(url.pathname)) return value.split(/[?#]/, 1)[0];
+    if (!SECRET_PARAMS.some((key) => url.searchParams.has(key))) return value;
+    for (const key of SECRET_PARAMS) url.searchParams.delete(key);
+    const absolute = /^[a-z]+:\/\//i.test(value);
+    const rest = `${url.pathname}${url.search}${url.hash}`;
+    return absolute ? `${url.origin}${rest}` : rest;
   } catch {
     return value;
   }

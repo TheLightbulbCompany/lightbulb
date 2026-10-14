@@ -22,7 +22,18 @@ describe("/join/invite", () => {
     expect(screen.getByRole("heading")).toHaveTextContent("Sam invited you to Acme.");
     const href = screen.getByRole("link", { name: "Sign up to join" }).getAttribute("href")!;
     expect(href.startsWith("/sign-up?")).toBe(true);
-    expect(new URLSearchParams(href.split("?")[1]).get("__clerk_ticket")).toBe("tk_1");
+    const forwarded = new URLSearchParams(href.split("?")[1]);
+    expect(forwarded.get("__clerk_ticket")).toBe("tk_1");
+    // The names stay on this page; /sign-up gets only what Clerk's form needs.
+    expect(forwarded.has("inviter")).toBe(false);
+    expect(forwarded.has("workspace")).toBe(false);
+  });
+
+  it("forwards a full-length ticket untruncated", async () => {
+    const ticket = "x".repeat(600);
+    await renderPage({ __clerk_ticket: ticket, __clerk_status: "sign_up" });
+    const href = screen.getByRole("link", { name: "Sign up to join" }).getAttribute("href")!;
+    expect(new URLSearchParams(href.split("?")[1]).get("__clerk_ticket")).toBe(ticket);
   });
 
   it("sends an existing account to /sign-in", async () => {

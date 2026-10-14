@@ -28,5 +28,6 @@ describe("one plan pricing", () => {
     expect(ordinal(21)).toBe("21st");
     expect(ordinal(12)).toBe("12th");
     expect(markupPercent("1.2")).toBe(20);
+    expect(markupPercent("1.025")).toBe(2.5);
   });
 });

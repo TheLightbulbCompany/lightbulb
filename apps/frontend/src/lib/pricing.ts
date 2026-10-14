@@ -50,9 +50,9 @@ export function ordinal(n: number): string {
   return `${n}${({ 1: "st", 2: "nd", 3: "rd" } as Record<number, string>)[n % 10] ?? "th"}`;
 }
 
-/** "plus 20%" for a markup of "1.2". */
+/** "plus 20%" for a markup of "1.2", "plus 2.5%" for "1.025": exact to 0.01%, never rounded to whole. */
 export function markupPercent(markup: string): number {
-  return Math.round((Number(markup) - 1) * 100);
+  return Number(((Number(markup) - 1) * 100).toFixed(2));
 }
 
 /** /pricing copy (10 §B), shared by the page, /pricing.md and the FAQ JSON-LD. */

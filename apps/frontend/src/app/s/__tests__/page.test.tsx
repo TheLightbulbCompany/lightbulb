@@ -33,7 +33,8 @@ vi.mock("@clerk/nextjs", () => ({
   SignUpButton: ({ children }: { children: React.ReactNode }) => children,
 }));
 
-import SessionLinkPageRoute from "../page";
+import SessionLinkPageRoute, { fullOf } from "../page";
+import { ApiError } from "@/lib/api";
 
 const model = (over: object) => ({
   provider: "claude", state: "live", ownerFirstName: "Ada", code: { visibility: "none" },
@@ -498,19 +499,24 @@ describe("session link page", () => {
     expect(screen.getByRole("region", { name: "Continue" }).textContent).not.toContain("lightbulb continue '");
   });
 
+  it("reads a burst refusal with no count as plainly full", () => {
+    expect(fullOf(new ApiError(409, { code: "LOCAL_SESSION_VIEWERS_FULL" }, "Too many"))?.note).toBe("This session is full. Try again in a minute.");
+    expect(fullOf(new ApiError(409, { code: "LOCAL_SESSION_OFFLINE" }, "x"))).toBeNull();
+  });
+
   it("says why there is no terminal, and tries again later", async () => {
     vi.useFakeTimers();
     window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok" }));
     let full = true;
     const fetchMock = vi.fn(async (url: string) => {
       if (!url.endsWith("/viewing")) return { ok: true, status: 200, json: async () => model({}) } as Response;
-      return full ? { ok: false, status: 409, json: async () => ({ code: "LOCAL_SESSION_VIEWERS_FULL", message: "This session already has 20 people watching by link." }) } as Response
+      return full ? { ok: false, status: 409, json: async () => ({ code: "LOCAL_SESSION_VIEWERS_FULL", message: "This session already has 20 people watching by link.", details: { watching: 20 } }) } as Response
         : { ok: true, status: 200, json: async () => seat } as Response;
     });
     vi.stubGlobal("fetch", fetchMock);
     render(<SessionLinkPageRoute />);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-    expect(screen.getByLabelText("Session state").textContent).toBe("This session already has 20 people watching by link.");
+    expect(screen.getByLabelText("Session state").textContent).toBe("Full: 20 people are watching. Try again in a minute.");
     full = false;
     await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
     expect(screen.getByTestId("terminal")).toBeTruthy();

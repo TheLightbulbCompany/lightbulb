@@ -60,7 +60,9 @@ async def list_pending(org_id: str) -> list[dict]:
     return [_view(r) for r in rows]
 
 
-async def _landing_url(org_id: str, inviter: str) -> str:
+async def _landing_url(
+    org_id: str, inviter: str, *, approval_id: str | None = None, decision: str | None = None
+) -> str:
     """``/join/invite?workspace=…&inviter=…`` — the page the invitation email opens.
 
     The names are for display only: the ticket Clerk appends is what grants
@@ -71,13 +73,25 @@ async def _landing_url(org_id: str, inviter: str) -> str:
     params = {
         "workspace": (org.get("name") or "").strip()[:80],
         "inviter": (user.get("first_name") or "").strip()[:80],
+        # T09: the invitation names the decision and opens its card after sign-up.
+        "approval": approval_id or "",
+        "decision": " ".join((decision or "").split())[:120] if approval_id else "",
     }
     query = urlencode({k: v for k, v in params.items() if v})
     base = f"{settings.FRONTEND_URL.rstrip('/')}/join/invite"
     return f"{base}?{query}" if query else base
 
 
-async def send(org_id: str, email: str, *, inviter: str, by_admin: bool = False, source: str | None = None) -> dict:
+async def send(
+    org_id: str,
+    email: str,
+    *,
+    inviter: str,
+    by_admin: bool = False,
+    source: str | None = None,
+    approval_id: str | None = None,
+    decision: str | None = None,
+) -> dict:
     """Invite ``email`` to ``org_id``. 409 if they are a member or already invited.
 
     Both checks run HERE, before Clerk, because Clerk does not document the
@@ -106,14 +120,19 @@ async def send(org_id: str, email: str, *, inviter: str, by_admin: bool = False,
         org_id=org_id,
         email=email,
         inviter_user_id=inviter,
-        redirect_url=await _landing_url(org_id, inviter),
+        redirect_url=await _landing_url(org_id, inviter, approval_id=approval_id, decision=decision),
     )
     put_metric("orgs.invitation.sent")
     logger.info("orgs.invitation.sent org_id=%s inviter=%s", org_id, inviter)
     capture_product_event(
         distinct_id=inviter,
         event="invitation_sent",
-        properties={"workspace_id": org_id, "by_admin": by_admin, "source": source or "unknown"},
+        properties={
+            "workspace_id": org_id,
+            "by_admin": by_admin,
+            "source": source or "unknown",
+            "carries_card": bool(approval_id),
+        },
     )
     view = _view(inv)
     view["email"] = view["email"] or email

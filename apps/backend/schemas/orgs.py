@@ -54,11 +54,18 @@ class RedeemJoinLinkResponse(BaseModel):
 
 
 class CreateInvitationRequest(BaseModel):
-    """Body for POST /api/v1/orgs/{org_id}/invitations. Lower-cased by the service."""
+    """Body for POST /api/v1/orgs/{org_id}/invitations. Lower-cased by the service.
+
+    ``source`` labels ``invitation_sent`` (which door). ``approval_id`` and
+    ``decision`` come from "Ask someone else to decide" on an approval card: the
+    landing page names the decision and the invitee lands on that card after
+    sign-up. ``decision`` is display-only text the inviter's own card showed.
+    """
 
     email: EmailStr
-    # Which door sent it (invite card in chat, the band, Settings…): an ``invitation_sent`` label.
     source: str | None = Field(default=None, pattern=r"^[a-z_]{1,32}$")
+    approval_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    decision: str | None = Field(default=None, max_length=200)
 
 
 class Invitation(BaseModel):

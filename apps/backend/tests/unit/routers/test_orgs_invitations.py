@@ -132,7 +132,7 @@ def test_admin_sends_an_invitation_and_the_metric_and_event_fire(app, admin_auth
     capture.assert_called_once_with(
         distinct_id="user_admin",
         event="invitation_sent",
-        properties={"workspace_id": "org_test", "by_admin": True, "source": "unknown"},
+        properties={"workspace_id": "org_test", "by_admin": True, "source": "unknown", "carries_card": False},
     )
     assert "cofounder@example.com" not in "\n".join(r.getMessage() for r in caplog.records)
 
@@ -273,3 +273,24 @@ def test_the_door_an_invitation_came_from_is_recorded(app, admin_auth, clerk):
         "/api/v1/orgs/org_test/invitations", json={"email": "s@x.com", "source": "Bad Label!"}
     )
     assert bad.status_code == 422
+
+
+def test_an_approval_invitation_names_the_decision_and_carries_the_card(app, admin_auth, clerk):
+    """T09: "Ask someone else to decide" -- the landing page names the decision and opens its card."""
+    with patch.object(workspace_invitations, "capture_product_event") as capture:
+        resp = _as(app, admin_auth).post(
+            "/api/v1/orgs/org_test/invitations",
+            json={"email": "sam@x.com", "source": "approval", "approval_id": "ap-1", "decision": "Start  outreach?"},
+        )
+    assert resp.status_code == 201
+    url = json.loads(clerk.requests[-1].content)["redirect_url"]
+    assert url.endswith("&approval=ap-1&decision=Start+outreach%3F")
+    props = capture.call_args.kwargs["properties"]
+    assert (props["source"], props["carries_card"]) == ("approval", True)
+
+
+def test_an_approval_id_that_is_not_an_id_is_422(app, admin_auth, clerk):
+    resp = _as(app, admin_auth).post(
+        "/api/v1/orgs/org_test/invitations", json={"email": "sam@x.com", "approval_id": "../x"}
+    )
+    assert resp.status_code == 422

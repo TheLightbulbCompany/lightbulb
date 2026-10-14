@@ -27,6 +27,7 @@ import {
   usageLimitOf,
 } from "@/components/teams/inbox/ProvisioningConsentActions";
 import { ProvisioningInformationForm } from "@/components/teams/inbox/ProvisioningInformationForm";
+import { AskSomeoneToDecide } from "@/components/teams/inbox/AskSomeoneToDecide";
 import type { Approval } from "@/components/teams/shared/types";
 
 const POPUP_BLOCKED_MSG =
@@ -323,6 +324,7 @@ export function ApprovalRow({
       {isActionable && !rejecting && isProviderInformationApproval(approval) && (
         <ProvisioningInformationForm approval={approval} busy={busy} run={run} approve={approve} />
       )}
+      {isActionable && !rejecting && <AskSomeoneToDecide approvalId={approval.id} decision={title} />}
       {isActionable && rejecting && (
         <div className="flex items-center gap-2">
           <input

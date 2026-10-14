@@ -215,8 +215,10 @@ export default function JoinWorkspacePage() {
   if (!isSignedIn) {
     return (
       <main className="mx-auto flex min-h-screen max-w-md flex-col items-center justify-center gap-4 px-6 text-center">
-        <h1 className="font-serif text-2xl text-midnight">Join this workspace</h1>
-        <p className="text-ui text-midnight-muted">Sign in first, then we&apos;ll add you.</p>
+        <h1 className="font-serif text-2xl text-midnight">You&apos;re invited to a team on Lightbulb</h1>
+        <p className="text-ui text-midnight-muted">
+          Sign in, or create a free account if you&apos;re new. We&apos;ll add you to the workspace right after.
+        </p>
         {/* A brand-new Google/Apple account finishes its sign-up on /sign-in's
             SSO callback, whose default is /chat. Pin both redirects back here,
             where the parked token is waiting. The path carries no token. */}
@@ -225,7 +227,7 @@ export default function JoinWorkspacePage() {
           forceRedirectUrl={`/join/${encodeURIComponent(orgId)}`}
           signUpForceRedirectUrl={`/join/${encodeURIComponent(orgId)}`}
         >
-          <Button type="button">Sign in to join</Button>
+          <Button type="button">Continue to join</Button>
         </SignInButton>
       </main>
     );

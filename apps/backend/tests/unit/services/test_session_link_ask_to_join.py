@@ -139,3 +139,14 @@ async def test_activity_says_allow_grants_workspace_membership(transport):
     [item] = [i for i in items.items if i.subtype == "join_request"]
     assert item.summary.reason == OUTSIDER_ALLOW_COPY
     assert "Priya Shah (priya@acme.com)" in item.summary.title
+
+
+@pytest.mark.asyncio
+async def test_a_lost_membership_response_is_settled_by_asking_again(transport):
+    sid, token = await public_session(transport)
+    await session_links.ask_to_join(PRIYA, token)
+    replies = AsyncMock(side_effect=[TimeoutError("lost"), {"status": "already_member"}])
+    with patch("core.services.clerk_admin.create_organization_membership", replies):
+        await decide(ALICE, sid, PRIYA.user_id, "allow", pushes=[])
+    assert replies.await_count == 2
+    assert service.may_control(await repo.get_session(OWNER, sid), PRIYA.user_id)

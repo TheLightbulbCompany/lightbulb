@@ -2799,8 +2799,13 @@ async def _admit_outsider(auth: AuthContext, session_id: str, user_id: str, row:
     pending again) and the error stands, so the owner can try again."""
     from core.services import clerk_admin
 
+    # The call is idempotent (an existing member reads as `already_member`), so a lost response is
+    # settled by asking again: only a second refusal is a real one, and only then is the Allow undone.
     try:
-        await clerk_admin.create_organization_membership(org_id=row["ownerId"], user_id=user_id, role="org:member")
+        try:
+            await clerk_admin.create_organization_membership(org_id=row["ownerId"], user_id=user_id, role="org:member")
+        except Exception:
+            await clerk_admin.create_organization_membership(org_id=row["ownerId"], user_id=user_id, role="org:member")
     except Exception:
 
         def undo(current: dict) -> dict | None:

@@ -1,6 +1,7 @@
 {
   "name": "lightbulb",
   "owner": { "name": "Lightbulb" },
+  "metadata": { "description": "Lightbulb for Claude Code and Codex: share a session with your team, and read and send messages in your Lightbulb workspace." },
   "plugins": [{ "name": "lightbulb", "source": "./lightbulb", "description": "Lightbulb in Claude Code: the lightbulb MCP server, the session-sharing skill, and the session-sharing band." }],
   "renames": { "lightbulb-sessions": "lightbulb" }
 }

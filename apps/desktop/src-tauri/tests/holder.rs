@@ -550,6 +550,60 @@ fn holder_join_client_shares_a_terminal_and_takes_it_only_when_that_terminal_lea
     }
 }
 
+/// Waits for the pty to be `size`, or panics with `why`.
+fn wait_size(socket: &Path, size: (u64, u64), why: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while size_of(socket) != size {
+        assert!(Instant::now() < deadline, "{why}: {:?}", size_of(socket));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Owner ruling 2026-10-14, tmux's `window-size latest`: the pty is the size of whichever client
+/// used the session last.
+#[test]
+fn holder_session_takes_the_size_of_whoever_used_it_last() {
+    let socket = start_cat(&temp_dir());
+    let mut cli = UnixStream::connect(&socket).unwrap();
+    cli.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    cli.write_all(&encode(HELLO, br#"{"role":"interactive","cols":50,"rows":10}"#)).unwrap();
+    assert_eq!(read_frame(&mut cli).unwrap().0, HELLO);
+    assert_eq!(read_frame(&mut cli).unwrap().0, SNAPSHOT);
+    let mut t = UnixStream::connect(&socket).unwrap();
+    t.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    t.write_all(&encode(HELLO, br#"{"role":"type"}"#)).unwrap();
+    assert_eq!(read_frame(&mut t).unwrap().0, HELLO);
+    let listed = manager::list_in(socket.parent().unwrap());
+    assert!(manager::takes_resize(&listed[0].id), "this holder says it takes the panel's size");
+
+    // The app's panel opens (a claiming RESIZE): its size applies.
+    t.write_all(&encode(RESIZE, &[0, 90, 0, 30, 1])).unwrap();
+    wait_size(&socket, (90, 30), "the remote panel's claim applies");
+    // While it is the latest user, its plain resizes apply too.
+    t.write_all(&encode(RESIZE, &[0, 80, 0, 25])).unwrap();
+    wait_size(&socket, (80, 25), "the latest user's resize applies");
+    // A key in the Mac's terminal takes the size back.
+    cli.write_all(&encode(INPUT, b"mac\r")).unwrap();
+    read_until(&mut cli, b"mac");
+    wait_size(&socket, (50, 10), "the terminal's keystroke reclaims its size");
+    // The panel is no longer the latest user: its plain resize is remembered, not applied, and its
+    // keys alone take nothing (the app sends a claim with them).
+    t.write_all(&encode(RESIZE, &[0, 70, 0, 20])).unwrap();
+    t.write_all(&encode(INPUT, b"stale\r")).unwrap();
+    read_until(&mut cli, b"stale");
+    assert_eq!(size_of(&socket), (50, 10), "a stale client's resize is ignored");
+    // The panel claims again; then the terminal's window resizes (its SIGWINCH): always a use.
+    t.write_all(&encode(RESIZE, &[0, 90, 0, 30, 1])).unwrap();
+    wait_size(&socket, (90, 30), "the panel claims again");
+    cli.write_all(&encode(RESIZE, &[0, 60, 0, 12])).unwrap();
+    wait_size(&socket, (60, 12), "the terminal's own resize reclaims");
+    // The latest user leaving puts the terminal's size back.
+    t.write_all(&encode(RESIZE, &[0, 90, 0, 30, 1])).unwrap();
+    wait_size(&socket, (90, 30), "the panel claims once more");
+    drop(t);
+    wait_size(&socket, (60, 12), "the panel left: the terminal's size again");
+}
+
 #[test]
 fn holder_join_client_with_nobody_attached_is_the_interactive_client() {
     let socket = start_cat(&temp_dir());

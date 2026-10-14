@@ -111,6 +111,10 @@ class HeartbeatSession(ContractModel):
     terminal: Literal["held", "attach", "none"] | None = None
     # Why `terminal` is "none" (spec 2026-10-07 §5.1). Sent only once FEATURES lists terminalReason.
     terminal_reason: sessions.TerminalReason | None = None
+    # This session's holder takes the app panel's size (owner ruling 2026-10-14). Per session: a
+    # holder an older build started keeps running after the Mac updates and ignores it. Sent only
+    # once FEATURES lists remoteResize.
+    terminal_resize: bool = False
 
 
 #: What this relay reads beyond the frozen frames; the desktop sends a field only once listed.
@@ -133,6 +137,8 @@ FEATURES = [
     "approvalInput",
     # The Mac stops a held session left idle with nobody on it only once this is listed.
     "endedIdleStopped",
+    # The Mac advertises remoteResize (its holders take the app panel's size) only once this is listed.
+    "remoteResize",
 ]
 
 
@@ -154,6 +160,9 @@ class DeviceHeartbeat(ContractModel):
     # on every listed session's META as `deviceFeatures` (session_screen reads it).
     live_terminal: bool = False
     remote_input: bool = False
+    # This Mac's holders take the app panel's size on `local.session.input` (owner ruling
+    # 2026-10-14: the session takes the size of whoever used it last, tmux's `window-size latest`).
+    remote_resize: bool = False
     session_presence: bool = False
     # This Mac's terminal names a pick-up request as one (spec 2026-10-05-ask-to-pick-up). An
     # older Mac would show it as a join request, so presence leaves pick-ups out for it.
@@ -917,6 +926,7 @@ class LocalSessionRelay:
                         deviceFeatures=message.device_features(),
                         **labels,
                     )
+                    updated["terminalResize"] = item.terminal_resize
                     if item.terminal is not None:
                         updated["terminal"] = item.terminal
                         if item.terminal == "none" and item.terminal_reason is not None:
@@ -963,9 +973,14 @@ class LocalSessionRelay:
                         updated["lastEventAt"] = now
                     scanned = row.get("workspace") != updated.get("workspace")
                     controls_changed = row.get("capabilities") != updated.get("capabilities")
-                    terminal_changed = (row.get("terminal"), row.get("terminalReason")) != (
+                    terminal_changed = (
+                        row.get("terminal"),
+                        row.get("terminalReason"),
+                        bool(row.get("terminalResize")),
+                    ) != (
                         updated.get("terminal"),
                         updated.get("terminalReason"),
+                        bool(updated.get("terminalResize")),
                     )
                     try:
                         async with writes:

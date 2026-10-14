@@ -18,8 +18,14 @@ pub const HELLO: u8 = 1;
 pub const OUTPUT: u8 = 2;
 /// Interactive or `type` client → holder: bytes for the pty.
 pub const INPUT: u8 = 3;
-/// Interactive client → holder (a `type` client's is ignored), and holder → watch clients after a size change:
-/// `u16 BE cols`, `u16 BE rows`.
+/// Interactive or `type` client → holder, and holder → watch clients after a size change:
+/// `u16 BE cols`, `u16 BE rows`, and from a `type` client an optional `u8` 1: it uses the
+/// session now (the app's panel opened or typed into). The pty is the size of the client that
+/// used the session last (tmux's `window-size latest`, owner ruling 2026-10-14): an interactive
+/// client's RESIZE and INPUT are uses, a `type` client's only with that byte; any other client's
+/// RESIZE is remembered for when it next uses the session. A holder that does this says
+/// `"resize": true` in its HELLO; an older one ignores a `type` client's (and any 5-byte one), so
+/// its session is never reported resizable (`manager::takes_resize`).
 pub const RESIZE: u8 = 4;
 /// Holder → client: the provider exited, `{"status":"…","code":N}`.
 pub const EXIT: u8 = 5;

@@ -257,6 +257,10 @@ class ResumeStatus(ContractModel):
         return _drop_none(self, handler(self), info, ("reason",))
 
 
+#: The Mac's feature for the panel size on /input (`session_screen.SessionInput.size`).
+REMOTE_RESIZE_FEATURE = "remoteResize"
+
+
 class LocalSession(ContractModel):
     workspace: WorkspaceSummary = Field(default_factory=WorkspaceSummary)
     session_id: str
@@ -356,6 +360,10 @@ class LocalSession(ContractModel):
     # A request is pending and the owner's older Mac (no bandOwnerOnly) drops remote typing
     # until it is answered.
     input_paused: bool = False
+    # The live terminal takes the viewer's panel size on /input (owner ruling 2026-10-14: the session
+    # takes the size of whoever used it last): the session's Mac advertised remoteResize and its own
+    # holder said it takes the size (an older holder does not). A web view sends a size only then.
+    terminal_resize: bool = False
     # The viewer's seat in this session's chat, once they are in it (PR #3807).
     chat_room_id: str | None = None
     chat_unread: int | None = None
@@ -920,6 +928,9 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
         and session_presence.FEATURE in features
         and session_presence.BAND_OWNER_ONLY_FEATURE not in features
         and public["terminal"] is not None
+    )
+    public["terminalResize"] = (
+        REMOTE_RESIZE_FEATURE in features and bool(row.get("terminalResize")) and public["terminal"] is not None
     )
     stats = row.get("stats") or {}
     for key in ("model", "permissionMode"):

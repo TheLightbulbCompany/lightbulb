@@ -291,6 +291,17 @@ pub fn list_in(dir: &Path) -> Vec<HolderInfo> {
 }
 
 /// Connect as an output-only client and read the holder's facts.
+/// Holders whose HELLO said `"resize": true`: they size the pty to the app's panel while it is the
+/// latest user (`run::latest_user`). A holder started by an older build keeps running after the app
+/// updates and says nothing, so its session is never reported resizable.
+// ponytail: an id stays after its holder is gone (a few bytes each, ids are never reused).
+static RESIZE_HOLDERS: std::sync::Mutex<std::collections::BTreeSet<String>> = std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+/// Whether the holder `id` said, at its last HELLO, that it takes the app's panel size.
+pub fn takes_resize(id: &str) -> bool {
+    RESIZE_HOLDERS.lock().is_ok_and(|ids| ids.contains(id))
+}
+
 pub fn hello(socket: &Path) -> Option<HolderInfo> {
     let mut conn = UnixStream::connect(socket).ok()?;
     let peer = super::identity::peer(&conn)?;
@@ -303,8 +314,12 @@ pub fn hello(socket: &Path) -> Option<HolderInfo> {
     let v: serde_json::Value = serde_json::from_slice(&payload).ok()?;
     let pid = u32::try_from(v["pid"].as_u64()?).ok()?;
     if pid != peer.pid || super::identity::read(pid) != Some(peer) { return None; }
+    let id = socket.file_stem()?.to_string_lossy().into_owned();
+    if let Ok(mut ids) = RESIZE_HOLDERS.lock() {
+        if v["resize"] == true { ids.insert(id.clone()) } else { ids.remove(&id) };
+    }
     Some(HolderInfo {
-        id: socket.file_stem()?.to_string_lossy().into_owned(),
+        id,
         socket: socket.to_path_buf(),
         pid,
         provider_pid: u32::try_from(v["providerPid"].as_u64()?).ok()?,
@@ -595,6 +610,7 @@ mod tests {
         });
         let info = hello(&path).expect("an older holder is listed");
         assert!(info.watch && info.type_input && info.provider_pid == 63976);
+        assert!(!takes_resize("737019b6"), "an older holder ignores the panel's size: never reported resizable");
         assert_eq!(info.start_id(), Some("ced8346d-3b2a-4a09-966b-6ebf14e11638"));
         assert!(!ask_end(&path), "it does not take END: the caller stops it instead");
         assert_eq!(server.join().unwrap(), [None, None], "and is never sent a frame it does not know");

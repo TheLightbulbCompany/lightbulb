@@ -151,12 +151,12 @@ class TestApprovalPushCopy:
                 "request_board_approval", {"title": "Pilot X auto-replies", "summary": "Reply to mentions for a week"}
             )
         )
-        assert title == "Growth · Approval"
+        assert title == "Growth · needs your OK"
         assert body == "Needs your approval: Pilot X auto-replies"
 
     def test_a_title_that_already_names_the_ask_is_kept(self):
         title, body = _copy(_approval("hire_agent", {"name": "Designer"}))
-        assert (title, body) == ("Growth · Approval", "Wants to hire Designer")
+        assert (title, body) == ("Growth · needs your OK", "Wants to hire Designer")
 
     def test_untitled_board_approval(self):
         _, body = _copy(_approval("request_board_approval", {}))
@@ -462,7 +462,7 @@ async def test_approval_push_names_agent_and_title(async_client, secret_set):
         )
     assert resp.status_code == 200
     _, title, body, data = sent.await_args.args
-    assert (title, body) == ("Growth · Approval", "Needs your approval: Pilot X auto-replies")
+    assert (title, body) == ("Growth · needs your OK", "Needs your approval: Pilot X auto-replies")
     assert data["approvalId"] == "ent-1"
 
 

@@ -9,6 +9,10 @@ def test_title_is_who_and_where():
     assert copy.room_where("group-dm", None) == "Group chat"
 
 
+def test_approval_title_is_a_named_single_action():
+    assert copy.approval_title("Finance") == "Finance · needs your OK"
+
+
 def test_line_is_the_first_plain_line_clipped():
     assert copy.line("\n## Plan\n- step one") == "Plan"
     assert copy.line("- **Bold** and `code`") == "Bold and code"

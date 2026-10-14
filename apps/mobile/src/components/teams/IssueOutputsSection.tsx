@@ -1,6 +1,6 @@
 import { Image } from "expo-image";
+import { router } from "expo-router";
 import { SymbolView, type SFSymbol } from "expo-symbols";
-import * as WebBrowser from "expo-web-browser";
 import { useState } from "react";
 import {
   ActivityIndicator,
@@ -100,7 +100,10 @@ export function WorkProductsSection({
               </View>
               {href ? (
                 <Pressable
-                  onPress={() => void WebBrowser.openBrowserAsync(href)}
+                  onPress={() => router.push({
+                    pathname: "/(app)/library",
+                    params: { title: wp.title, url: href, summary: wp.summary ?? "", type: wp.type },
+                  })}
                   hitSlop={6}
                   accessibilityRole="button"
                   accessibilityLabel={`Open ${wp.title}`}

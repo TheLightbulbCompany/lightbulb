@@ -17,11 +17,12 @@ vi.mock("@/lib/api", async () => {
   return { ApiError, useApi: () => ({ get: clerk.apiGet, post: clerk.apiPost }) };
 });
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace: clerk.replace, push: clerk.replace }), useSearchParams: () => new URLSearchParams() }));
-const analytics = vi.hoisted(() => ({ capture: vi.fn() }));
+const analytics = vi.hoisted(() => ({ capture: vi.fn(), clearWorkspaceDoor: vi.fn() }));
 vi.mock("@/lib/analytics", () => ({
   capture: analytics.capture,
   touchPayload: () => ({ first_touch: { utm_source: "reddit" }, last_touch: {} }),
   readWorkspaceDoor: () => null,
+  clearWorkspaceDoor: analytics.clearWorkspaceDoor,
 }));
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ isLoaded: clerk.loaded, isSignedIn: true, orgId: clerk.orgId }),
@@ -106,6 +107,7 @@ describe("workspace onboarding", () => {
     expect(clerk.apiPost).toHaveBeenCalledWith("/company/source", {
       answer: "reddit", detail: "r/startups", door: "sign_up", first_touch: { utm_source: "reddit" }, last_touch: {},
     });
+    expect(analytics.clearWorkspaceDoor).toHaveBeenCalled(); // the door was this visit's, not history
     expect(analytics.capture).toHaveBeenCalledWith("source_reported", expect.objectContaining({
       surface: "sign_up", answer: "reddit", has_detail: true, workspace_id: "org_new", $set_once: { self_reported_source: "reddit" },
     }));

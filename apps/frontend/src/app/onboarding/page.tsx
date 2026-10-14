@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { JoinTeamBlock } from "@/components/onboarding/JoinTeamBlock";
 import { SourceQuestion, reportSource, type SourceAnswer } from "@/components/onboarding/SourceQuestion";
-import { readWorkspaceDoor, touchPayload } from "@/lib/analytics";
+import { clearWorkspaceDoor, readWorkspaceDoor, touchPayload } from "@/lib/analytics";
 import { useNameGate } from "@/hooks/useNameGate";
 import { ApiError, useApi } from "@/lib/api";
 import { safeReturnTo } from "@/lib/returnTo";
@@ -74,6 +74,7 @@ function CreateWorkspaceForm() {
         .catch(() => undefined);
       await api.post("/company/slug/hold", { slug });
       const org = await createOrganization({ name: name.trim() });
+      clearWorkspaceDoor();
       reportSource("sign_up", source, { workspace_id: org.id });
       await setActive({ organization: org.id });
       // Hand the hold to the new workspace now (consistent, keyed); the organization.created

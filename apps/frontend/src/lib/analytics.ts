@@ -353,6 +353,15 @@ export function markWorkspaceDoor(door: "session_link"): void {
   }
 }
 
+/** Forget the door once a workspace was created from it: it describes this visit, not history. */
+export function clearWorkspaceDoor(): void {
+  try {
+    window.localStorage.removeItem(WORKSPACE_DOOR_KEY);
+  } catch {
+    // analytics only
+  }
+}
+
 export function readWorkspaceDoor(): string | null {
   try {
     return window.localStorage.getItem(WORKSPACE_DOOR_KEY);

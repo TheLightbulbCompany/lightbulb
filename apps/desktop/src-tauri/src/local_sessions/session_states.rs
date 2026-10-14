@@ -138,7 +138,13 @@ pub(super) fn set_reads_idle_stopped(on: bool) {
 /// runs it) at or before the end, or a held Codex that quit by itself. Only for a relay that reads
 /// it; an older one hears "exited" (or "process-exited") as before.
 pub(super) fn end_reason(mirror: &Mirror) -> &str {
-    end_reason_if(READS_ON_PURPOSE.load(SeqCst), mirror, &manager::end_asked, &left_clean)
+    idle_reason_if(READS_IDLE_STOPPED.load(SeqCst), end_reason_if(READS_ON_PURPOSE.load(SeqCst), mirror, &manager::end_asked, &left_clean))
+}
+
+/// Only a relay that said it reads `idle-stopped` is sent it: a reconnect clears the negotiated
+/// features, and an older relay rejects a reason it does not know (as `on-purpose` falls back).
+fn idle_reason_if(reads: bool, reason: &str) -> &str {
+    if reason == super::lifecycle::IDLE_STOPPED && !reads { "exited" } else { reason }
 }
 
 /// When this holder's provider left by itself with status 0 (unix ms), as last asked.
@@ -506,6 +512,10 @@ mod tests {
         // So is the app's END of a session left idle with nobody on it.
         stranded.ended_reason = Some("idle-stopped".into());
         assert_eq!(end_reason_if(true, &stranded, &asked, &left), "idle-stopped");
+        // Sent only to a relay that said it reads it; otherwise a reason every relay knows.
+        assert_eq!(idle_reason_if(true, "idle-stopped"), "idle-stopped");
+        assert_eq!(idle_reason_if(false, "idle-stopped"), "exited");
+        assert_eq!(idle_reason_if(false, "on-purpose"), "on-purpose");
     }
 
     #[test]

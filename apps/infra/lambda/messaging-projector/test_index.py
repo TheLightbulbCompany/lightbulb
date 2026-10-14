@@ -843,7 +843,8 @@ class PushTests(unittest.TestCase):
         return publish, urlopen
 
     def test_dm_push_reads_like_a_text_from_the_named_teammate(self):
-        copy = index._push_copy(push_message("invoice 1042 is ready to send. OK?", ()), {"kind": "dm"}, False)
+        message = push_message("invoice 1042 is ready to send. OK?", ())
+        copy = index._render_push(message, {"kind": "dm"}, False)
         self.assertEqual(copy["title"], "Alice")
         self.assertEqual(copy["body"], "invoice 1042 is ready to send. OK?")
 
@@ -895,7 +896,7 @@ class PushTests(unittest.TestCase):
         _, urlopen = self.project(push_world(kind="dm", muted=(BOB_ID,)))
         messages = json.loads(urlopen.call_args.args[0].data)
         self.assertEqual([m["to"] for m in messages], ["tok-carol"])
-        self.assertEqual(messages[0]["title"], "Alice · DM")
+        self.assertEqual(messages[0]["title"], "Alice")
         # Desktop gets the phone's exact banner; a muted reader gets none.
         publish, _ = self.project(push_world(kind="dm", muted=(BOB_ID,)))
         payloads = {c.args[0]: c.args[1]["payload"] for c in publish.call_args_list}

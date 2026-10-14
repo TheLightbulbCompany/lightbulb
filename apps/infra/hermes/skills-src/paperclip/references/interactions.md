@@ -11,49 +11,35 @@ with the answer. These are NOT approvals, and never stand in for one:
 - an issue left `blocked` with no approval on it.
 
 When a person asks for "an approval", "a sign-off" or "something in Needs you",
-raise an approval in that turn. Pick the type:
+call the **`request_approval`** tool in that turn. It is the only way to raise
+one: no helper command, no hand-built body.
 
-| Type | When |
-|---|---|
-| `approve_ceo_strategy` | Root CEO only: its plan or strategy for the company (a CEO's first plan for a new workspace always ends with one). |
-| `request_board_approval` | Any other sign-off: prices, spend, a launch, a public post, a vendor. A specialist answering the first message uses this for its plan's first concrete action. |
+```
+request_approval(title="Approve pricing packages",
+                 summary="Starter $49/mo, Studio $149/mo, Custom quoted. Details: [Pricing](/WAL/issues/WAL-6#document-pricing)",
+                 tasks=["WAL-6"],
+                 recommendedAction="Publish the pricing page.")
+```
+
+- `title` is the decision; `summary` is what the person needs to decide it,
+  with the document link. The long detail stays in the linked document.
+- `tasks` takes identifiers like `WAL-6`; the tool links them and moves each to
+  `in_review` (a linked approval is a real review path). A task it could not
+  move is listed under `notMovedToInReview`.
+- `companyPlan: true` only for your plan or strategy for the whole company. The
+  tool files that as `approve_ceo_strategy` when you are the root CEO, and as
+  `request_board_approval` for everyone and everything else. A CEO's first plan
+  for a new workspace always ends with one.
+
+It returns `approvalId` and `link`. Then:
+
+- tell the person in one line what you asked and give the link ("I've put the
+  pricing sign-off in Needs you: <link>"); it renders as an Approve card;
+- do not raise a second approval for the same decision; `GET
+  /api/companies/{companyId}/approvals?status=pending` shows what is open.
 
 `hire_agent` is Lightbulb's own (never file it; see the Hiring rule) and
 `budget_override_required` is raised by Paperclip, not by you.
-
-Build the body with `jq -n` and send it through the helper (works from a room
-turn with no run id). `issueIds` takes issue **UUIDs** (the `id` field), not
-identifiers like `WAL-4`; link the task that carries the plan or document:
-
-```bash
-jq -n --arg agent "$PAPERCLIP_AGENT_ID" --arg issue "<issue uuid>" \
-  --arg plan "Two-week plan: [Plan](/WAL/issues/WAL-4#document-plan). Week 1: pricing and outreach list. Week 2: first ten calls." \
-  '{type: "approve_ceo_strategy", requestedByAgentId: $agent, issueIds: [$issue],
-    payload: {title: "Two-week launch plan", summary: "Approve to start week 1.", plan: $plan}}' |
-/app/skills/paperclip/scripts/paperclip-api.sh raw POST "/api/companies/$PAPERCLIP_COMPANY_ID/approvals"
-```
-
-```bash
-jq -n --arg agent "$PAPERCLIP_AGENT_ID" --arg issue "<issue uuid>" \
-  '{type: "request_board_approval", requestedByAgentId: $agent, issueIds: [$issue],
-    payload: {title: "Approve pricing packages",
-              summary: "Starter $49/mo, Studio $149/mo, Custom quoted.",
-              recommendedAction: "Approve and I will publish them on the site.",
-              nextActionOnApproval: "Publish the pricing page.",
-              risks: ["Studio may be underpriced for agencies."]}}' |
-/app/skills/paperclip/scripts/paperclip-api.sh raw POST "/api/companies/$PAPERCLIP_COMPANY_ID/approvals"
-```
-
-Keep the payload decision-ready: the title is the decision, the summary is what
-the person needs to decide it, and the long detail stays in the linked document.
-The response's `id` gives the link `<app_url>/<PREFIX>/approvals/<id>` (it
-renders as an Approve card in chat; `app_url` is in the facts file). Then:
-
-- put the linked task in `in_review` (a linked approval is a real review path);
-- tell the person in one line what you asked and where ("I've put the pricing
-  sign-off in Needs you: <link>");
-- do not raise a second approval for the same decision; `GET
-  /api/companies/{companyId}/approvals?status=pending` shows what is open.
 
 Approval wakes you with `PAPERCLIP_APPROVAL_ID`/`PAPERCLIP_APPROVAL_STATUS`
 (`references/heartbeat.md` Step 2). A reject does **not** wake you; the person's

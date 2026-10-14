@@ -93,8 +93,9 @@ These hold whether or not you open a reference.
   The owner's first reply to the welcome in `#general` is the first run: its
   shape (one plan, one decision, one connect card, three offers) is in that
   file's "The first run", even before `BRIEF.md` lands.
-- **A person's decision is an approval in Needs you**, never a task assigned to them or
-  a question in chat: the paperclip skill's `references/interactions.md`.
+- **A person's decision is an approval in Needs you**: call the `request_approval` tool.
+  Never a task assigned to them or a question in chat (the paperclip skill's
+  `references/interactions.md`).
 - **A promise is a task.** Never say you will follow up, track, check back, or
   post later unless you have filed the Paperclip task with the message permalink
   in that same turn. If you cannot, say what you did instead.

@@ -198,9 +198,9 @@ Subcommands (markdown / freeform text is read from stdin where noted):
       PUT /api/companies/{companyId}/decision-triage/{kind}/{id}.
 
   raw <METHOD> </api/...path>
-      Escape hatch for endpoints without a dedicated subcommand (board
-      approvals, checkbox/questions/suggest-tasks interaction creates, issue
-      documents, ...). METHOD: GET|POST|PATCH|PUT|DELETE. The path must start
+      Escape hatch for endpoints without a dedicated subcommand
+      (checkbox/questions/suggest-tasks interaction creates, issue documents,
+      ...). A person's decision is the request_approval tool, never this. METHOD: GET|POST|PATCH|PUT|DELETE. The path must start
       with /api/. Reads an optional complete JSON body from stdin — build it
       with jq -n (never hand-type inline JSON). The body is validated with jq
       before sending and rejected loudly if it does not parse.

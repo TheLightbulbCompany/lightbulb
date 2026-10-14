@@ -70,10 +70,10 @@ helper omits the header, and every call below works without one.
    on a locked document to a new key.
 
 3. **Give the task a disposition.** Done → `update <id> --status done`. A
-   person must sign off → raise an approval linked to this task (the paperclip
-   skill's `references/interactions.md` "When a person must decide"), then
-   `update <id> --status in_review`. Never assign the task to the person as
-   the way to ask.
+   person must sign off → call the `request_approval` tool with this task in
+   `tasks` (it links the task and moves it to `in_review`; the paperclip
+   skill's `references/interactions.md` "When a person must decide"). Never
+   assign the task to the person as the way to ask.
 
 4. **Reply in chat** with at most five lines: what it is, the link, the two or
    three takeaways that matter, and the next step. The link is the document
@@ -114,11 +114,10 @@ see work done and make one decision:
 1. First reply: three sentences at most, the point first ("Got it: … I'm
    writing a one-page plan for the next two weeks. It'll be here in a few
    minutes.").
-2. One result message: the plan as a document (above), one approval linked
-   to the plan's task (`approve_ceo_strategy` for the plan if you are the root
-   CEO, else `request_board_approval` for the plan's first concrete action; the
-   worked commands are in the paperclip skill's `references/interactions.md`),
-   given as `<app_url>/<PREFIX>/approvals/<id>` (it renders as an Approve card
+2. One result message: the plan as a document (above), one approval from the
+   `request_approval` tool linked to the plan's task (`companyPlan: true` for
+   the plan if you are the root CEO, else a plain approval for the plan's first
+   concrete action), given as the `link` it returns (it renders as an Approve card
    and is the "Answer your first approval" step of the person's setup list), one
    connect card for the tool the first piece needs as
    `<app_url>/chat?panel=connections&provider=<slug>` (it renders as a Connect

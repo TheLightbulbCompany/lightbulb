@@ -77,7 +77,9 @@ def test_our_own_plugin_tool_names_are_still_referenced(skills):
     instead, which is what a renamer is meant to read -- asserting them against the built
     tree only ever matched that same maintainer note, which the image does not ship.
     """
-    assert "lightbulb_local_sessions" in "\n".join(_texts(skills).values())
+    built = "\n".join(_texts(skills).values())
+    assert "lightbulb_local_sessions" in built
+    assert "request_approval" in built  # the one way the skills tell an agent to ask a person
 
     anchors = (REPO / "apps/infra/hermes/skills-src/lightbulb/MAINTENANCE.md").read_text()
     assert "send_room_message" in anchors

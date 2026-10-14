@@ -178,7 +178,7 @@ def test_render_brief_md_carries_the_first_run_result_contract():
     )
     assert "three sentences at most" in md
     assert "approve_ceo_strategy" in md
-    assert "/approvals/<id>" in md
+    assert "request_approval" in md
     assert "chat?panel=connections&provider=<slug>" in md
     assert "Three offers" in md
     assert "Only you speak" in md
@@ -192,7 +192,7 @@ def test_render_brief_md_specialist_target_files_a_board_approval_not_a_ceo_stra
     )
     assert "approve_ceo_strategy" not in md
     assert "request_board_approval" in md
-    assert "/approvals/<id>" in md
+    assert "request_approval" in md
 
 
 def test_is_root_ceo_is_role_keyed_not_name_keyed():

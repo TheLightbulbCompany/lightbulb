@@ -353,10 +353,23 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       a task assigned to the person instead, and other agents asked in chat; the
       approvals list stayed empty, so the setup list's "Answer your first
       approval" step (apps/frontend OnboardingBand.tsx, any answered approval)
-      could not be done. The commands use `raw POST
-      /api/companies/:id/approvals` (fork server/src/routes/approvals.ts: agents
-      may create from a room turn, `requestedByAgentId` defaults to the actor,
-      `issueIds` are UUIDs per createApprovalSchema). `approve_ceo_strategy` is
+      could not be done. The raw `POST /api/companies/:id/approvals` + jq
+      commands that first replaced it were not used either (dev 2026-10-14,
+      image h-2026.10.14-f8eebfc: "Reply 'Plan approved' here", no approval),
+      so the section now names ONE tool, `request_approval`
+      (apps/infra/hermes/plugins/lightbulb/__init__.py _request_approval; also
+      SKILL.md's rule, hot-routes.md's first "Anything else" row,
+      api-reference.md "CEO strategy approval", heartbeat.md's blocked-on-a-
+      human bullet). It calls fork server/src/routes/approvals.ts with the
+      agent's own key (agents may create from a room turn; `issueIds` are
+      UUIDs per createApprovalSchema, so it resolves WAL-6 through GET
+      /api/issues/:id, whose router.param accepts identifiers), then PATCHes
+      each linked issue to in_review (the linked approval is the review path).
+      Like paperclip-api.sh it binds each linked issue to the room conversation
+      (write_binding's file + format, before the create, so the approval's wake
+      routes to the room) and sends the bridge-attached run id
+      (.lightbulb-turn/paperclip-run.<issue>) on the in_review PATCH; keep the
+      two in step with the helper's write_binding/attached_run_id. `approve_ceo_strategy` is
       the ROOT CEO's first-plan decision (a first message dispatched to a
       specialist gets `request_board_approval` instead: onboarding_brief.py
       is_root_ceo picks the brief's decision by role, never by name): no server side effect on approve beyond the

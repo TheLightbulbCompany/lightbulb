@@ -707,7 +707,7 @@ route and nowhere else, and teardown never reaches it (spec §3.6, proved by
 **The rail is OFF by default** — `STRIPE_PROVISIONING_ENABLED` (CDK env, default
 `false` in both envs) refuses `start()`/`on_approved()`, freezes `advance()`,
 empties the CEO agent's catalog with `reason: provisioning_unavailable`, and hides the
-Connect doors + the Domain & Site panel. It stays off until Stripe ships
+Connect doors (the Domain & Site panel was deleted 2026-10-14 with the dead Growth/Company tabs). It stays off until Stripe ships
 delegated connected-account creation + KYC (isol8, Inc. is the Connect
 platform and cannot connect to itself, and `POST /v2/provisioning/*` 500s for
 us). Everything else a company-Stripe binding powers — the Money tabs, the

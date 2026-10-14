@@ -15,6 +15,7 @@ const router = { replace };
 vi.mock("next/navigation", () => ({
   useRouter: () => router,
   useSearchParams: () => new URLSearchParams(search),
+  usePathname: () => "/settings",
 }));
 vi.mock("@/hooks/useIsWorkspaceAdmin", () => ({ useIsWorkspaceAdmin: () => true }));
 vi.mock("@/hooks/useConnections", () => ({
@@ -32,6 +33,9 @@ vi.mock("@/components/control/panels/WebsiteLoginsSection", () => ({
 }));
 vi.mock("@/components/control/panels/BrowserExtensionsSection", () => ({
   BrowserExtensionsSection: () => <div />,
+}));
+vi.mock("@/components/settings/AgentGuardrails", () => ({
+  AgentGuardrails: () => <div data-testid="agent-guardrails" />,
 }));
 
 import { ConnectionsPanel } from "../ConnectionsPanel";
@@ -60,8 +64,8 @@ describe("ConnectionsPanel", () => {
     expect(screen.queryByTestId("google-accounts")).toBeNull();
   });
 
-  // The OAuth/Stripe return params land on /chat now that the old page is a
-  // redirector, so this panel owns the banner AND the strip.
+  // The OAuth/Stripe return params land on Settings → Connections (the old
+  // page is a redirector), so this panel owns the banner AND the strip.
   it("announces an OAuth return, refreshes the list, and strips the params", () => {
     search = "?panel=connections&connected=Notion";
     render(<ConnectionsPanel />);
@@ -69,7 +73,7 @@ describe("ConnectionsPanel", () => {
     expect(mutate).toHaveBeenCalled();
     // The strip keeps every other param — losing ?panel would close the panel
     // that is showing the banner.
-    expect(replace).toHaveBeenCalledWith("/chat?panel=connections");
+    expect(replace).toHaveBeenCalledWith("/settings?panel=connections");
     // ONCE. useSearchParams() hands back a fresh object each render, so an
     // effect keyed on that object re-fires on the re-render its own setBanner
     // causes and loops until the heap dies. Keyed on the query string it runs
@@ -85,14 +89,14 @@ describe("ConnectionsPanel", () => {
       "We couldn't verify the sign-in. Please try connecting again.",
     );
     expect(mutate).not.toHaveBeenCalled();
-    expect(replace).toHaveBeenCalledWith("/chat?panel=connections");
+    expect(replace).toHaveBeenCalledWith("/settings?panel=connections");
   });
 
   it("announces a Stripe Connect return", () => {
     search = "?panel=connections&stripe=return&stripe_connect=connected";
     render(<ConnectionsPanel />);
     expect(screen.getByRole("status")).toHaveTextContent("Connected your Stripe account.");
-    expect(replace).toHaveBeenCalledWith("/chat?panel=connections");
+    expect(replace).toHaveBeenCalledWith("/settings?panel=connections");
   });
 
   // `stripe=refresh` means the hosted onboarding link expired. There is nothing
@@ -102,7 +106,18 @@ describe("ConnectionsPanel", () => {
     search = "?panel=connections&stripe=refresh";
     render(<ConnectionsPanel />);
     expect(screen.queryByRole("status")).toBeNull();
-    expect(replace).toHaveBeenCalledWith("/chat?panel=connections");
+    expect(replace).toHaveBeenCalledWith("/settings?panel=connections");
+  });
+
+  // Accounts folded in: one list of what the team is connected to, then what
+  // agents may do with it.
+  it("renders as a Settings section and ends with the agent guardrails", () => {
+    const { container } = render(<ConnectionsPanel />);
+    expect(container.querySelector("#panel-connections")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Connections" })).toBeInTheDocument();
+    const list = screen.getByTestId("connections-list");
+    const guardrails = screen.getByTestId("agent-guardrails");
+    expect(list.compareDocumentPosition(guardrails) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("leaves the URL alone when there is no return to handle", () => {

@@ -54,7 +54,7 @@ machine you run on.
 
 ## Telling the owner
 
-The owner's own view is the **Skills tab** (Control Panel, thelightbulb.company/chat):
+The owner's own view is **Settings → Skills** (thelightbulb.company/settings):
 it lists what is installed and lets them enable or disable one. It shows no
 per-skill requirements, because Hermes has no dependency manifest — a skill is a
 `SKILL.md`, and whatever it shells out to is the image's business, so nothing is

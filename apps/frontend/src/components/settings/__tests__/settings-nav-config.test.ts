@@ -4,6 +4,21 @@ import { SETTINGS_NAV_SECTIONS } from "../settings-nav-config";
 const ids = SETTINGS_NAV_SECTIONS.flatMap((section) => section.items.map((item) => item.id));
 
 describe("SETTINGS_NAV_SECTIONS", () => {
+  // The one Settings page (product simplification, 2026-10-14): Control's
+  // panels, Team Settings and Accounts all live here, grouped by intent.
+  it("groups every row as the owner approved", () => {
+    expect(
+      SETTINGS_NAV_SECTIONS.map((s) => [s.label, s.items.map((i) => i.id)]),
+    ).toEqual([
+      ["YOU", ["profile"]],
+      ["WORKSPACE", ["workspace", "members"]],
+      ["CONNECTIONS", ["connections"]],
+      ["PLAN AND USAGE", ["billing", "usage"]],
+      ["MODEL", ["providers"]],
+      ["ADVANCED", ["skills", "mcp", "local-mcp", "desktop", "marketplace"]],
+    ]);
+  });
+
   // Channel wiring, the read-only channel-status engine room, and Dreams/Memory
   // have no Hermes equivalent, so the rows are GONE rather than gated.
   it("offers no row for a surface the runtime cannot serve", () => {
@@ -12,9 +27,8 @@ describe("SETTINGS_NAV_SECTIONS", () => {
     expect(ids).not.toContain("dreams");
   });
 
-  it("keeps the sibling WIRING and ENGINE ROOM rows", () => {
-    expect(ids).toContain("mcp");
-    expect(ids).toContain("skills");
+  it("is all in-page tabs: no row navigates away", () => {
+    expect(SETTINGS_NAV_SECTIONS.flatMap((s) => s.items).filter((i) => i.href)).toEqual([]);
   });
 
   it("never lists a row twice", () => {

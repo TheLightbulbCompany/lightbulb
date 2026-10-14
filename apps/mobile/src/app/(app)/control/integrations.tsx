@@ -27,9 +27,9 @@ import { LogoMark } from "../../../components/LogoMark";
 
 // Adding / removing an MCP server is a HIGH-risk config mutation (arbitrary
 // command + env, gateway restart). v1 is read-only; management deep-links out
-// to the web control panel.
+// to Settings → MCP servers on the web.
 // from=app: the connect finishes in Safari, so the web asks OAuth to hand the user back to the app.
-const MANAGE_INTEGRATIONS_URL = `${WEB_ORIGIN}/chat?panel=integrations&from=app`;
+const MANAGE_INTEGRATIONS_URL = `${WEB_ORIGIN}/settings?panel=mcp&from=app`;
 
 // ---------------------------------------------------------------------------
 // Contract shapes (w3-control-contract §8 Integrations — MCP servers)

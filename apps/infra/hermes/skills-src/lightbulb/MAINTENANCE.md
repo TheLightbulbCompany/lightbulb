@@ -69,7 +69,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               Scopes + review: DM = private to that person (phase 1), other rooms = team;
                                  "Confirmed by a person:" <- core/services/workspace_memory.CONFIRMED_PREFIX;
                                  people review/delete/Share <- routers/memory.py, frontend AgentMemoryTab
-                                 (Inspect agent -> Memory tab, references/surfaces.md "Control Panel" row), mobile
+                                 (Inspect agent -> Memory tab, references/surfaces.md "Agent inspector" row), mobile
                                  MemoriesCard; the agent cannot delete (no tool), MEMORY.md is editable in
                                  AgentInstructionsTab.
   - Website sign-ins .......... references/boundaries.md ("Type a website password" row; names the web AND iPhone doors) + references/surfaces.md (Browser row)
@@ -141,7 +141,8 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  the ask's Activity item in core/services/activity.py; frontend
                                  BrowserExtensionsSection + WebsiteLoginsSection (Connections, and the
                                  Browser panel bar popovers in BrowserDockPanel).
-  - Control Panel tabs ...... references/surfaces.md
+  - Agent inspector + Settings groups ... references/surfaces.md
+                              <- apps/frontend/src/components/settings/settings-nav-config.tsx (SETTINGS_NAV_SECTIONS)
   - Paired Mac browser ...... references/surfaces.md ("Browser on a paired Mac": use_browser routing for
                               localhost/LAN/"my Mac", the "Lightbulb agent" window, show only for a login/2FA/CAPTCHA
                               ask, Paperclip asks in the issue thread; "Paired Mac tools" + "Local browser setup" rows)
@@ -382,7 +383,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  ISOL8_OWNER_ID + OPENCLAW_HOOK_TOKEN env in hermes_profiles.build_profile_env);
                                  /app/skills/lightbulb/scripts/lightbulb-connect.sh (the mint door — never an inline header, see the redaction note)
   - Connections door ........ references/integrations.md + references/surfaces.md + references/boundaries.md table
-                              <- apps/frontend/src/components/control/panels/ConnectionsPanel.tsx (rail panel); apps/frontend/src/components/workspace/WorkspaceHeader.tsx (rail label)
+                              <- apps/frontend/src/components/control/panels/ConnectionsPanel.tsx (Settings → Connections) + components/settings/AgentGuardrails.tsx; apps/frontend/src/components/workspace/WorkspaceHeader.tsx (rail button)
   - Paperclip org model ..... references/company-and-plans.md
                               <- TheLightbulbCompany/paperclip fork: server/src/services/agent-permissions.ts,
                                  services/agents.ts (getChainOfCommand), adapters/registry.ts (hermes_gateway)

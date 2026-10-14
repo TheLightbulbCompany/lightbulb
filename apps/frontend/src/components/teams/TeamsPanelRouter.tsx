@@ -37,9 +37,7 @@ const PANEL_LOADERS: Record<string, () => Promise<React.ComponentType>> = {
   projects: () => import("./panels/ProjectsListPanel").then((m) => m.ProjectsListPanel),
   cases: () => import("./panels/CasesPanel").then((m) => m.CasesPanel),
   artifacts: () => import("./panels/ArtifactsPanel").then((m) => m.ArtifactsPanel),
-  accounts: () => import("./panels/AccountsPanel").then((m) => m.AccountsPanel),
   search: () => import("./panels/SearchPanel").then((m) => m.SearchPanel),
-  settings: () => import("./panels/SettingsPanel").then((m) => m.SettingsPanel),
   money: () => import("./panels/MoneyPanel").then((m) => m.MoneyPanel),
 };
 

@@ -1,15 +1,9 @@
 "use client";
 
-// apps/frontend/src/components/teams/panels/AccountsPanel.tsx
-//
-// The owner's answer to: "what does my company have accounts with, which of
-// those did an agent set up on my behalf, and how do I stop it." Composition
-// only — every read here is already owned by a Settings surface, and SWR
-// dedupes the shared keys, so mounting this panel costs no extra requests
-// beyond the policy row.
-//
-// Structural pattern: ArtifactsPanel.tsx (editorial-page wrapper + PanelMasthead
-// + one section per concern).
+// What agents may do, and the kill switch. This is what remains of the retired
+// Accounts tab: its other two sections (where money lands, what agents can use)
+// were already on Connections, so this sits at the foot of Settings →
+// Connections, under the one list of what the team is connected to.
 //
 // ⚠️ HONESTY NOTE — the Guardrails switches are RECORDED, NOT ENFORCED.
 // `routers/company_policy.py` lines 3-6 state it outright: the map is stored on
@@ -22,13 +16,9 @@
 
 import { useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
-import { Plug, ShieldAlert } from "lucide-react";
+import { ShieldAlert } from "lucide-react";
 
-import { PanelMasthead, PanelSection, PanelEmptyState, EditorialDialog, EditorialButton, EditorialInput } from "@/components/teams/shell";
-import { CompanyStripeSection } from "@/components/settings/CompanyStripeSection";
-import { ConnectionsList } from "@/components/settings/ConnectionsList";
-import { useProvisioningRail } from "@/components/settings/ProvisionedResources";
-import { useConnections } from "@/hooks/useConnections";
+import { PanelSection, EditorialDialog, EditorialButton, EditorialInput } from "@/components/teams/shell";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 import { useApi } from "@/lib/api";
 import { notifyApiError, notifyError, notifySuccess } from "@/lib/notify";
@@ -96,21 +86,18 @@ function PolicySwitch({
   );
 }
 
-export function AccountsPanel() {
+export function AgentGuardrails() {
   const api = useApi();
   const { mutate: globalMutate } = useSWRConfig();
   // UX gate only — every write below is re-enforced server-side (403 for a
   // non-admin org member, `company_policy._owner`).
   const canManage = useIsWorkspaceAdmin();
 
-  const [open, setOpen] = useState({ account: true, connected: true, guardrails: true });
+  const [open, setOpen] = useState(true);
   const [revokeOpen, setRevokeOpen] = useState(false);
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const { connections } = useConnections();
-  // Same SWR keys ConnectionsList reads — deduped, not a second round trip.
-  const rail = useProvisioningRail();
   const policy = useSWR<CapabilityPolicy>(
     POLICY_PATH,
     (p: string) => api.get(p) as Promise<CapabilityPolicy>,
@@ -118,15 +105,6 @@ export function AccountsPanel() {
 
   // Hoisted so the JSX below narrows — a property read off the SWR result does not.
   const policyMap = policy.data;
-
-  // What the masthead counts: providers with something actually wired — a
-  // connected OAuth row, or a resource this rail created on the owner's own
-  // account. The company Stripe account is its own section right below, so it
-  // is deliberately not folded into this number.
-  const wired = new Set([
-    ...connections.filter((c) => c.status === "connected" && c.runtime_supported !== false).map((c) => c.provider),
-    ...rail.providers,
-  ]);
 
   async function togglePolicy(key: keyof CapabilityPolicy, next: boolean) {
     const current = policy.data;
@@ -171,85 +149,11 @@ export function AccountsPanel() {
   }
 
   return (
-    <div className="editorial-page p-4 sm:p-5 lg:p-6 flex flex-col gap-4 max-w-4xl mx-auto w-full">
-      <PanelMasthead
-        overline="Company"
-        title="Accounts"
-        meta={`${wired.size} connected`}
-      />
-
-      {/* Two rails, one brand. The company account below is the owner's own
-          Stripe Connect merchant account — backend-only credential, revenue
-          lands there. The "Stripe" row in the next section is a direct_oauth
-          MCP grant whose token lives in the container. Framed as "Company
-          account" over "Connected" they read as one thing in two states, and
-          an owner duly concluded their Stripe integration was connected
-          because this page said so. Both sections are therefore labelled by
-          what they DO, and each says in the owner's own language that it is
-          not the other. Same vocabulary as StripeSection on
-          /settings/connections — that component can't be reused here, its
-          `.settings-card` classes live in the route-scoped settings.css and
-          are never loaded on /chat (see TeamBillingCard's styling note).
-
-          THE RULE TO KEEP: while these two share a page they must not share a
-          vocabulary. The bare word "Stripe" may never be the label a
-          connection status hangs off, or "Not connected" reads as a verdict on
-          the owner's money — see the ConnectionsList `labels` call below. */}
-      <PanelSection
-        label="Where money lands"
-        open={open.account}
-        onOpenChange={(v) => setOpen((s) => ({ ...s, account: v }))}
-      >
-        <div className="flex flex-col gap-3 py-3">
-          <p className="text-caption" style={{ color: "var(--midnight-muted)" }}>
-            Your own Stripe account. Revenue lands here, and anything we set up for you is billed
-            to it. This is not an integration — your agents never hold its credentials.
-          </p>
-          <CompanyStripeSection canManage={canManage} />
-        </div>
-      </PanelSection>
-
-      {/* No `count` here on purpose. Under "Connected" the bare number read as
-          "N connected"; under a what-it-does label it would be a number
-          against no denominator, next to a list where most rows are not
-          connected. The masthead already carries "N connected". */}
-      <PanelSection
-        label="What your agents can use"
-        open={open.connected}
-        onOpenChange={(v) => setOpen((s) => ({ ...s, connected: v }))}
-      >
-        <div className="flex flex-col gap-3 py-3">
-          <p className="text-caption" style={{ color: "var(--midnight-muted)" }}>
-            Separate sign-ins your agents use to do work. Each is its own connection — none of
-            them is your company account above, and connecting one never changes where your
-            revenue lands.
-          </p>
-          {/* The one thing this page says with no data: your agents have not
-              set anything up on your behalf. Reassurance, not an error — so it
-              sits above the catalog rather than replacing it. */}
-          {rail.providers.length === 0 && !rail.error && (
-            <PanelEmptyState
-              icon={Plug}
-              headline="Nothing provisioned yet."
-              supporting="When your CEO sets up a service for you, it lands here with a link to that provider's own dashboard."
-              className="py-8"
-            />
-          )}
-          {/* The row must survive being read on its own, because the status
-              sits right next to it: "Stripe · Not connected" one section under
-              a company Stripe account is how an owner concludes the upgrade
-              they just paid for failed, and then "fixes" it by connecting the
-              MCP grant — which leaves them OAuth-connected with still no
-              company account. The brand name alone never carries a status
-              here. */}
-          <ConnectionsList canManage={canManage} labels={{ stripe: "Stripe for your agents" }} />
-        </div>
-      </PanelSection>
-
+    <div className="flex flex-col gap-4">
       <PanelSection
         label="Guardrails"
-        open={open.guardrails}
-        onOpenChange={(v) => setOpen((s) => ({ ...s, guardrails: v }))}
+        open={open}
+        onOpenChange={setOpen}
       >
         <div className="flex flex-col gap-3 py-3">
           {/* Not a footnote. The switches below are a recorded preference, and

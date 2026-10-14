@@ -7,6 +7,8 @@ const openPanel = vi.fn();
 const activateMessagesPanel = vi.fn();
 let activePanelId = "teams-dashboard";
 const shared = vi.hoisted(() => ({ statusLoaded: false }));
+const routerPush = vi.hoisted(() => vi.fn());
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: routerPush }) }));
 
 // Partial mock: WorkspaceHeader reads only `useStatusLoaded` from the barrel, but
 // the rest of this module graph pulls plenty else out of it.
@@ -107,16 +109,15 @@ describe("WorkspaceHeader", () => {
     fireEvent.click(button);
     expect(openPanel).toHaveBeenCalledWith(panel, {}, { pushUrl: true });
   });
-  // Connections opens as a CONTROL-key panel, so its dock id ("control:connections")
-  // is not its rail key — the active marker has to resolve through the registry
-  // or it silently never lights up.
-  it("opens Connections under Files and marks it active by its dock id", () => {
-    activePanelId = "control:connections";
+  // Connections is a section of the one Settings page, not a dock tab.
+  it("opens Connections under Files on the Settings page", () => {
+    openPanel.mockClear();
     render(<WorkspaceHeader />);
     const button = screen.getByRole("button", { name: "Connections" });
-    expect(button).toHaveAttribute("aria-current", "page");
+    expect(button).not.toHaveAttribute("aria-current");
     fireEvent.click(button);
-    expect(openPanel).toHaveBeenCalledWith("connections", {}, { pushUrl: true });
+    expect(routerPush).toHaveBeenCalledWith("/settings?panel=connections");
+    expect(openPanel).not.toHaveBeenCalled();
 
     // Order matters: the ask was "under workspace files".
     const rail = screen.getByRole("navigation", { name: "Workspace" });

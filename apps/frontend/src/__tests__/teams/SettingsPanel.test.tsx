@@ -35,6 +35,13 @@ vi.mock("@/hooks/useTeamsApi", () => ({
 import { SettingsPanel } from "@/components/teams/panels/SettingsPanel";
 
 describe("SettingsPanel", () => {
+  // It is the Workspace section of the Settings page now; the page supplies
+  // the heading, so the panel carries no "Settings" title of its own.
+  it("renders no heading of its own", () => {
+    render(<SettingsPanel />);
+    expect(screen.queryByRole("heading")).toBeNull();
+  });
+
   it("hydrates fields from server data", () => {
     render(<SettingsPanel />);
     expect(screen.getByLabelText("Display name")).toHaveValue("Acme Co");

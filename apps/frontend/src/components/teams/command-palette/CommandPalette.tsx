@@ -7,6 +7,7 @@
 // (NewIssueDialog) merges.
 
 import { useState, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import { Dialog, DialogPortal, DialogTitle } from "@/components/ui/dialog";
 import { Search } from "lucide-react";
@@ -71,6 +72,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
 }
 
 function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
+  const router = useRouter();
   const [query, setQuery] = useState("");
   const [rawSelectedIndex, setSelectedIndex] = useState(0);
 
@@ -110,10 +112,11 @@ function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
   const select = (item: FlatItem) => {
     onOpenChange(false);
     if (item.run) { item.run(); return; }
-    // Palette targets are all in-shell `/chat?...` URLs — commit them through
-    // the History API (same mechanism as handleShellLinkClick) so a jump
-    // costs no RSC round-trip on the force-dynamic /chat route.
-    navigateShell(item.path);
+    // In-shell `/chat?...` targets commit through the History API (same
+    // mechanism as handleShellLinkClick) so a jump costs no RSC round-trip on
+    // the force-dynamic /chat route. Settings is its own route.
+    if (item.path.startsWith("/chat")) navigateShell(item.path);
+    else router.push(item.path);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {

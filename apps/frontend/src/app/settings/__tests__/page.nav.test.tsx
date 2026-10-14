@@ -1,16 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import React from "react";
 
-// The Settings consolidation (6-group nav + 7 relocated config panels) is the
-// permanent /settings surface. This test asserts the nav structure and that the
-// relocated config panels are deep-linkable.
+// The one Settings page (product simplification, 2026-10-14): Control's panels,
+// Team Settings and Accounts live here, in six intent groups. This test asserts
+// the nav structure and that every section is deep-linkable.
 
 // Mutable ?panel= param so deep-link-guard tests can drive the initial panel.
-const nav = vi.hoisted(() => ({ panel: null as string | null, replace: vi.fn() }));
+const nav = vi.hoisted(() => ({ panel: null as string | null, extra: "", replace: vi.fn() }));
 vi.mock("next/navigation", () => ({
-  useSearchParams: () => new URLSearchParams(nav.panel ? { panel: nav.panel } : {}),
+  useSearchParams: () => {
+    const p = new URLSearchParams(nav.extra);
+    if (nav.panel) p.set("panel", nav.panel);
+    return p;
+  },
   useRouter: () => ({ replace: nav.replace }),
+  usePathname: () => "/settings",
 }));
 
 // The Settings page composes several gateway-bound Control panels. Stub them all
@@ -20,7 +25,15 @@ vi.mock("@/components/control/panels/UsagePanel", () => ({
   UsagePanel: () => <div data-testid="usage-panel" />,
 }));
 vi.mock("@/components/control/panels/LLMPanel", () => ({
-  LLMPanel: () => <div data-testid="llm-panel" />,
+  LLMPanel: ({ initialAction }: { initialAction?: string | null }) => (
+    <div data-testid="llm-panel" data-action={initialAction ?? ""} />
+  ),
+}));
+vi.mock("@/components/control/panels/ConnectionsPanel", () => ({
+  ConnectionsPanel: () => <div id="panel-connections" data-testid="connections-panel" />,
+}));
+vi.mock("@/components/teams/panels/SettingsPanel", () => ({
+  SettingsPanel: () => <div data-testid="company-settings" />,
 }));
 vi.mock("@/components/control/panels/IntegrationsPanel", () => ({
   IntegrationsPanel: () => <div data-testid="integrations-panel" />,
@@ -64,11 +77,12 @@ vi.mock("@/hooks/useBilling", () => ({
 
 import SettingsPage from "../page";
 
-describe("Settings nav — 6 intent-ordered groups", () => {
+describe("Settings nav — the six groups of the one Settings page", () => {
   beforeEach(() => {
     clerk.membership = null; // default: personal owner = admin
     clerk.isLoaded = true;
     nav.panel = null;
+    nav.extra = "";
     nav.replace.mockClear();
   });
 
@@ -80,22 +94,24 @@ describe("Settings nav — 6 intent-ordered groups", () => {
       container.querySelectorAll(".settings-nav-section-label"),
     ).map((el) => el.textContent?.toUpperCase());
     expect(labels).toEqual([
-      "ACCOUNT",
-      "BILLING & USAGE",
-      "MODEL & PROVIDERS",
-      "WIRING",
-      "ENGINE ROOM",
-      "SELLER",
+      "YOU",
+      "WORKSPACE",
+      "CONNECTIONS",
+      "PLAN AND USAGE",
+      "MODEL",
+      "ADVANCED",
     ]);
   });
 
   it("buckets the existing panels into their new groups", () => {
     render(<SettingsPage />);
     const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
-    expect(within(navEl).getByText("Profile")).toBeInTheDocument(); // ACCOUNT
-    expect(within(navEl).getByText("Billing")).toBeInTheDocument(); // BILLING & USAGE
-    expect(within(navEl).getByText("Desktop")).toBeInTheDocument(); // WIRING
-    expect(within(navEl).getByText("Marketplace")).toBeInTheDocument(); // SELLER
+    expect(within(navEl).getByText("Profile")).toBeInTheDocument(); // YOU
+    expect(within(navEl).getByText("Workspace")).toBeInTheDocument(); // WORKSPACE
+    expect(within(navEl).getByText("Connections")).toBeInTheDocument(); // CONNECTIONS
+    expect(within(navEl).getByText("Billing")).toBeInTheDocument(); // PLAN AND USAGE
+    expect(within(navEl).getByText("Desktop")).toBeInTheDocument(); // ADVANCED
+    expect(within(navEl).getByText("Marketplace")).toBeInTheDocument(); // ADVANCED
   });
 
   it("renders Desktop as an icon-bearing action rather than a section label", () => {
@@ -122,8 +138,8 @@ describe("Settings nav — 6 intent-ordered groups", () => {
     expect(within(navEl).queryByText("Usage")).not.toBeInTheDocument();
   });
 
-  // --- Members (admin-gated, ACCOUNT) — the workspace invite door ---
-  it("registers the Members row in ACCOUNT for an admin", () => {
+  // --- Members (admin-gated, WORKSPACE) — the workspace invite door ---
+  it("registers the Members row in WORKSPACE for an admin", () => {
     clerk.membership = null; // personal owner = admin
     render(<SettingsPage />);
     const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
@@ -187,14 +203,14 @@ describe("Settings nav — 6 intent-ordered groups", () => {
     expect(within(navEl).queryByText("Credits")).not.toBeInTheDocument();
   });
 
-  // --- MCP servers (WIRING) + ENGINE ROOM trio ---
-  it("registers the MCP servers row in WIRING", () => {
+  // --- MCP servers + Skills (ADVANCED) ---
+  it("registers the MCP servers row in ADVANCED", () => {
     render(<SettingsPage />);
     const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
     expect(within(navEl).getByText("MCP servers")).toBeInTheDocument();
   });
 
-  it("registers the ENGINE ROOM Skills panel", () => {
+  it("registers the Skills row in ADVANCED", () => {
     render(<SettingsPage />);
     const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
     expect(within(navEl).getByText("Skills")).toBeInTheDocument();
@@ -222,26 +238,39 @@ describe("Settings nav — 6 intent-ordered groups", () => {
     },
   );
 
-  // --- The Connections row is gone from Settings entirely ---
-  it("no longer offers Connections as a Settings row", () => {
-    render(<SettingsPage />);
-    const navEl = screen.getByRole("navigation", { name: /settings navigation/i });
-    expect(within(navEl).queryByText("Connections")).toBeNull();
-  });
-
-  // --- Deep link to a panel that MOVED OUT of Settings ---
-  it("forwards ?panel=connections to the workspace rail instead of falling back to Profile", () => {
-    // Connections lives on the workspace rail now, so the key isn't in PANELS.
-    // Links and bookmarks minted while it was a Settings row must still land on
-    // it rather than silently on Profile.
+  // --- Connections, Workspace and the Model action live here now ---
+  it("opens ?panel=connections on the Connections section, not a redirect", () => {
     nav.panel = "connections";
-    const { container } = render(<SettingsPage />);
-    expect(nav.replace).toHaveBeenCalledWith("/chat?panel=connections");
-    // …and nothing is painted on the way out — no Profile flash.
-    expect(container.querySelector("#panel-profile")).not.toBeInTheDocument();
+    nav.extra = "connected=Notion";
+    render(<SettingsPage />);
+    expect(screen.getByTestId("connections-panel")).toBeInTheDocument();
+    expect(nav.replace).not.toHaveBeenCalled();
   });
 
-  it("leaves a real tab key alone — only relocated/href rows redirect", () => {
+  it("opens ?panel=workspace on the company name and description", () => {
+    nav.panel = "workspace";
+    const { container } = render(<SettingsPage />);
+    expect(container.querySelector("#panel-workspace")).toBeInTheDocument();
+    expect(screen.getByTestId("company-settings")).toBeInTheDocument();
+  });
+
+  it("hands ?action=change-provider to the Model panel", () => {
+    nav.panel = "providers";
+    nav.extra = "action=change-provider";
+    render(<SettingsPage />);
+    expect(screen.getByTestId("llm-panel")).toHaveAttribute("data-action", "change-provider");
+  });
+
+  it("follows a later ?panel= change after a nav click (an in-page link)", () => {
+    const { container, rerender } = render(<SettingsPage />);
+    fireEvent.click(within(screen.getByRole("navigation", { name: /settings navigation/i })).getByText("Skills"));
+    expect(screen.getByTestId("skills-tab")).toBeInTheDocument();
+    nav.panel = "connections";
+    rerender(<SettingsPage />);
+    expect(container.querySelector("#panel-connections")).toBeInTheDocument();
+  });
+
+  it("leaves a real tab key alone", () => {
     nav.panel = "skills";
     render(<SettingsPage />);
     expect(nav.replace).not.toHaveBeenCalled();

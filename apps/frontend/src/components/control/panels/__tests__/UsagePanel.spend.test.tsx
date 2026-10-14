@@ -36,7 +36,7 @@ vi.mock("@clerk/nextjs", () => ({ useOrganization: () => ({ membership: null }) 
 
 // UsagePanel's own useSWR("/billing/usage", fetchUsage) call needs the
 // fixture back synchronously (matches the convention used by sibling panel
-// tests, e.g. OverviewPanel.test.tsx, which mock swr directly rather than
+// tests, which mock swr directly rather than
 // mocking useBilling's SWR cache key).
 vi.mock("swr", () => ({
   default: (key: string) => {

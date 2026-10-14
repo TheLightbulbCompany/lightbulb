@@ -1,26 +1,25 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { ConnectionsList } from "@/components/settings/ConnectionsList";
 import { StripeSection } from "@/components/settings/StripeSection";
 import { GoogleAccountsSection } from "@/components/control/panels/GoogleAccountsSection";
 import { WebsiteLoginsSection } from "@/components/control/panels/WebsiteLoginsSection";
 import { BrowserExtensionsSection } from "@/components/control/panels/BrowserExtensionsSection";
+import { AgentGuardrails } from "@/components/settings/AgentGuardrails";
 import { useConnections } from "@/hooks/useConnections";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 
 /**
- * Connections — the workspace rail's third-party connect/disconnect surface,
- * sitting under Browser and Files.
+ * Settings → Connections: one list of what the team is connected to, and what
+ * its agents may do with it. It absorbed the dock's Integrations and Accounts
+ * tabs (2026-10-14); the rail's Connections button opens it.
  *
- * This used to be the /settings/connections PAGE. It moved into the dock so
- * connecting a tool reads as part of the workspace rather than a trip into
- * Settings, and the Settings nav no longer carries the row. The route still
- * exists as a redirector into this panel, because it is the fixed landing URL
- * for OAuth consent AND for the backend's `STRIPE_COMPANY_RETURN_URL` — so the
- * return params arrive here, on /chat, and this panel owns them.
+ * /settings/connections redirects here, because it is the fixed landing URL for
+ * OAuth consent AND for the backend's `STRIPE_COMPANY_RETURN_URL` — so the
+ * return params arrive here and this panel owns them.
  */
 export function ConnectionsPanel() {
   // UX hint only — connect/disconnect is enforced server-side (403), which
@@ -38,16 +37,14 @@ export function ConnectionsPanel() {
   );
 
   return (
-    <div className="bg-[var(--cream)] min-h-full">
-      <div className="p-6 space-y-5">
-        <div>
-          <h2 className="font-editorial-serif text-title">Connections</h2>
-          <p className="text-sm text-[var(--midnight-muted)] mt-0.5">
-            Connect third-party tools so your agents can act on your behalf. API-key
-            integrations take a token you paste; OAuth integrations send you to the
-            provider to sign in.
-          </p>
-        </div>
+    <div className="settings-panel" id="panel-connections" role="tabpanel">
+      <h1 className="settings-page-title">Connections</h1>
+      <p className="settings-page-desc">
+        Connect third-party tools so your agents can act on your behalf. API-key
+        integrations take a token you paste; OAuth integrations send you to the
+        provider to sign in.
+      </p>
+      <div className="space-y-5">
 
         <ConnectionsReturnBanner onConnected={mutate} />
 
@@ -71,6 +68,10 @@ export function ConnectionsPanel() {
         <BrowserExtensionsSection />
 
         <ConnectionsList canManage={canManage} exclude={["stripe"]} />
+
+        {/* What agents may do with all of the above, and the kill switch
+            (from the retired Accounts tab). */}
+        <AgentGuardrails />
       </div>
     </div>
   );
@@ -78,9 +79,7 @@ export function ConnectionsPanel() {
 
 type Banner = { kind: "success" | "error"; message: string } | null;
 
-/** The five params an OAuth or Stripe return can land on /chat carrying. They
- *  are in the registry's NON_COMMAND_PARAMS, so stripping them below never
- *  churns the workspace reconciler's command signature. */
+/** The five params an OAuth or Stripe return can land on Settings carrying. */
 const RETURN_PARAMS = ["connected", "error", "stripe", "stripe_connect", "stripe_error"] as const;
 
 export function returnBannerFor(params: URLSearchParams): Banner {
@@ -123,6 +122,7 @@ export function returnBannerFor(params: URLSearchParams): Banner {
  */
 function ConnectionsReturnBanner({ onConnected }: { onConnected: () => void }) {
   const router = useRouter();
+  const pathname = usePathname();
   // The STRING, not the object: useSearchParams() returns a fresh instance on
   // every render, so an object dep would re-run this effect on the very
   // re-render its own setBanner causes — an unbounded loop that exhausts the
@@ -142,8 +142,8 @@ function ConnectionsReturnBanner({ onConnected }: { onConnected: () => void }) {
 
     for (const k of RETURN_PARAMS) params.delete(k);
     const query = params.toString();
-    router.replace(query ? `/chat?${query}` : "/chat");
-  }, [search, router, onConnected]);
+    router.replace(query ? `${pathname}?${query}` : pathname);
+  }, [search, router, pathname, onConnected]);
 
   if (!banner) return null;
   return (

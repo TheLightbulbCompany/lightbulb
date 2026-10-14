@@ -16,7 +16,6 @@ import {
   Repeat,
   Images,
   Search,
-  Plug,
   CreditCard,
   Layers,
 } from "lucide-react";
@@ -74,18 +73,6 @@ export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem
       // Stock Paperclip's Cases page (same Layers icon as its sidebar). It
       // replaced the Support placeholder; `teams-support` aliases to it.
       { panel: "teams-cases", label: "Cases", Icon: Layers },
-    ],
-  },
-  {
-    label: "Company",
-    items: [
-      // The org chart moved INSIDE the Agents panel as its second view — same
-      // roster, drawn as a tree. `teams-org-chart` still resolves and opens
-      // Agents on the chart (RETIRED_PANEL_ALIASES).
-      // What the company has accounts with, what agents set up on its behalf,
-      // and the kill switch. Sits in Company, not Settings, because it is the
-      // page an owner opens the first time an agent does something surprising.
-      { panel: "teams-accounts", label: "Accounts", Icon: Plug },
     ],
   },
 ];

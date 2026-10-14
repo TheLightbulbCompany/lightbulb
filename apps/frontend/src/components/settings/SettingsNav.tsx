@@ -15,8 +15,8 @@ import {
 // SettingsNav — the shared <nav className="settings-nav"> sidebar.
 //
 // Two modes. /settings is the only caller today, in "tabs" mode; "links" mode
-// existed for the /settings/connections page, which became a redirector when
-// Connections moved to the workspace rail. Both are kept so a future sibling
+// existed for the /settings/connections page, which is now a redirector into
+// the Connections section. Both are kept so a future sibling
 // route gets the full nav instead of a minimal back-link stub.
 //
 //   mode="tabs" (/settings) — panel items are interactive <li role="tab">

@@ -8,13 +8,12 @@ import {
   DEFAULT_AGENT_SENTINEL,
   MESSAGES_PANEL_ID,
   PANEL_COMPONENT_KEYS,
+  settingsHrefFor,
 } from "../panelRegistry";
 
 describe("panelRegistry", () => {
   it("resolves retired aliases (both routers' maps, merged)", () => {
-    expect(resolvePanelAlias("credits")).toBe("llm");
     expect(resolvePanelAlias("teams-approvals")).toBe("teams-inbox");
-    expect(resolvePanelAlias("teams-members")).toBe("teams-settings");
     expect(resolvePanelAlias("teams-skills")).toBe("teams-dashboard");
     expect(resolvePanelAlias("teams-costs")).toBe("teams-dashboard");
     expect(resolvePanelAlias("teams-inbox")).toBe("teams-inbox");
@@ -79,22 +78,50 @@ describe("panelRegistry", () => {
     });
   });
 
-  it("describes legacy control keys (grammar parity for existing links)", () => {
-    const d = describePanel("llm", {});
-    expect(d).toEqual({
-      panelId: "control:llm",
+  it("keeps the agent detail control panel", () => {
+    expect(describePanel("agents", { agent: "a-1" })).toEqual({
+      panelId: "control:agents",
       component: "control",
-      title: "Model & Credits",
-      params: { controlKey: "llm" },
+      title: "Agents",
+      params: { controlKey: "agents", agentId: "a-1" },
     });
   });
 
+  // The one Settings page took these: none is a dock tab any more.
+  it.each(["overview", "usage", "skills", "integrations", "connections", "llm", "credits", "teams-settings", "teams-members", "teams-accounts"])(
+    "describes no dock panel for ?panel=%s",
+    (key) => {
+      expect(describePanel(key, {})).toBeNull();
+    },
+  );
+
+  it.each([
+    ["?panel=overview", "/settings"],
+    ["?panel=usage", "/settings?panel=usage"],
+    ["?panel=skills", "/settings?panel=skills"],
+    ["?panel=integrations&from=app", "/settings?panel=connections&from=app"],
+    ["?panel=connections&provider=notion", "/settings?panel=connections&provider=notion"],
+    ["?panel=connections&connected=Notion", "/settings?panel=connections&connected=Notion"],
+    ["?panel=llm&action=change-provider", "/settings?panel=providers&action=change-provider"],
+    ["?panel=credits", "/settings?panel=providers"],
+    ["?panel=teams-settings", "/settings?panel=workspace"],
+    ["?panel=teams-members", "/settings?panel=members"],
+    ["?panel=teams-accounts", "/settings?panel=connections"],
+  ])("sends %s to %s", (search, href) => {
+    expect(settingsHrefFor(search)).toBe(href);
+  });
+
+  it.each(["", "?panel=teams-issues", "?panel=agents&agent=a-1", "?panel=constructor", "?room=r1"])(
+    "leaves %s on the shell",
+    (search) => {
+      expect(settingsHrefFor(search)).toBeNull();
+    },
+  );
+
   it("one label per panel — dock titles match the sidebar's IA labels", () => {
     // Clicking "Library" in the sidebar must not open a tab titled "Artifacts";
-    // the llm panel converges on mobile's name, "Model & Credits".
     expect(describePanel("teams-dashboard", {})?.title).toBe("Home");
     expect(describePanel("teams-artifacts", {})?.title).toBe("Library");
-    expect(describePanel("llm", {})?.title).toBe("Model & Credits");
   });
 
   it("describes chat panels with renderer always", () => {

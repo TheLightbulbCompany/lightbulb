@@ -18,42 +18,14 @@ function PanelSkeleton() {
 
 interface ControlPanelRouterProps {
   panel: string;
-  onPanelChange?: (panel: string) => void;
   // Params the shell feeds the panels from its dockview params:
-  // { agentId?, initialTab?, action? }.
-  // Legacy keys (e.g. credits→llm) are resolved by the shell/registry before
-  // reaching here.
+  // { agentId?, initialTab? }.
   panelParams?: Record<string, string>;
-  onConsumeOneShot?: (key: "action") => void;
 }
 
-// Propless panels — rendered as <Panel /> with no params. Panels that take
-// params (agents, llm, agent-inspector) are special-cased in the body below.
-// Loaders are declared apart from their dynamic() wrappers so the whole
-// code-split set reads as one block.
-const PANEL_LOADERS: Record<string, () => Promise<React.ComponentType>> = {
-  overview: () => import("./panels/OverviewPanel").then((m) => m.OverviewPanel),
-  usage: () => import("./panels/UsagePanel").then((m) => m.UsagePanel),
-  skills: () => import("./panels/SkillsTab").then((m) => m.SkillsTab),
-  integrations: () => import("./panels/IntegrationsPanel").then((m) => m.IntegrationsPanel),
-  connections: () => import("./panels/ConnectionsPanel").then((m) => m.ConnectionsPanel),
-};
-
-const PANELS: Record<string, React.ComponentType> = Object.fromEntries(
-  Object.entries(PANEL_LOADERS).map(([key, loader]) => [
-    key,
-    dynamic(loader, { loading: PanelSkeleton }),
-  ]),
-);
-
-// Panels that take params/callbacks (unlike the propless entries in PANELS)
-// get their own prop-typed dynamic wrappers. Overview is reachable both ways —
-// its wrapper points at the same chunk as the PANELS entry, so the fallback
-// path and the callback path never load it twice.
-const OverviewPanel = dynamic(
-  () => import("./panels/OverviewPanel").then((m) => m.OverviewPanel),
-  { loading: PanelSkeleton },
-);
+// The control dock keeps only the agent detail views. Overview, Usage, Skills,
+// Integrations, Connections and Model live on the Settings page; their URL keys
+// redirect there (panelRegistry.settingsHrefFor) before a router sees them.
 const AgentsPanel = dynamic(
   () => import("./panels/AgentsPanel").then((m) => m.AgentsPanel),
   { loading: PanelSkeleton },
@@ -62,24 +34,8 @@ const AgentInspectorPanel = dynamic(
   () => import("./panels/AgentInspectorPanel").then((m) => m.AgentInspectorPanel),
   { loading: PanelSkeleton },
 );
-const LLMPanel = dynamic(
-  () => import("./panels/LLMPanel").then((m) => m.LLMPanel),
-  { loading: PanelSkeleton },
-);
 
-export function ControlPanelRouter({
-  panel,
-  onPanelChange,
-  panelParams,
-  onConsumeOneShot,
-}: ControlPanelRouterProps) {
-  // OverviewPanel is the only propless panel that takes the panel-switch
-  // callback — its summary cards deep-link into other panels.
-  if (panel === "overview") {
-    return <OverviewPanel onPanelChange={onPanelChange} />;
-  }
-
-  // Param-taking panels — threaded from panelParams.
+export function ControlPanelRouter({ panel, panelParams }: ControlPanelRouterProps) {
   if (panel === "agents") {
     return <AgentsPanel initialAgentId={panelParams?.agentId ?? null} />;
   }
@@ -91,17 +47,5 @@ export function ControlPanelRouter({
       />
     );
   }
-  if (panel === "llm") {
-    return (
-      <LLMPanel
-        initialAction={
-          panelParams?.action === "change-provider" ? "change-provider" : null
-        }
-        onActionConsumed={() => onConsumeOneShot?.("action")}
-      />
-    );
-  }
-
-  const Panel = PANELS[panel] || PANELS.overview;
-  return <Panel />;
+  return null;
 }

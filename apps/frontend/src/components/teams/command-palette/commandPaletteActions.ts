@@ -57,7 +57,8 @@ export function navActions(): CommandPaletteAction[] {
       Icon: Bot,
       keywords: ["bot", "roster", "org chart", "network", "hierarchy"],
     },
-    { id: "go-settings", label: "Settings", path: teamsPanelUrl("settings"), Icon: Settings },
+    // Its own route, not a dock tab: the palette navigates there by router.
+    { id: "go-settings", label: "Settings", path: "/settings", Icon: Settings },
   ];
 }
 

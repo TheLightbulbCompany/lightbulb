@@ -108,7 +108,6 @@ describe("deriveReconcilerAction — lastApplied latch", () => {
   it("hands openPanel the RAW ?panel value — describePanel owns alias resolution", () => {
     // Pre-resolving here would hide the pre-alias key from describePanel, which
     // branches on it to carry a retired panel's meaning onto its successor.
-    expect(deriveReconcilerAction("?panel=credits", null)!.panelKey).toBe("credits");
     expect(deriveReconcilerAction("?panel=teams-org-chart", null)!.panelKey).toBe(
       "teams-org-chart",
     );
@@ -195,11 +194,11 @@ describe("deriveReconcilerAction — warm first mount reads live window.location
 describe("deriveReconcilerAction — cold-load one-shots apply once when the dock is ready", () => {
   // The shell runs nothing until the dock is ready, then onReady runs the
   // reconciler with the latch reset to null; the strip's own URL churn re-runs it.
-  it("?panel=llm&action=change-provider hands the action to the LLM panel once", () => {
-    const first = deriveReconcilerAction("?panel=llm&action=change-provider", null)!;
-    expect(first.panelKey).toBe("llm");
-    expect(first.command?.oneShots).toEqual({ action: "change-provider" });
-    expect(first.strippedSearch).toBe("panel=llm");
+  it("?panel=teams-issues&new=task hands the one-shot to Work once", () => {
+    const first = deriveReconcilerAction("?panel=teams-issues&new=task", null)!;
+    expect(first.panelKey).toBe("teams-issues");
+    expect(first.command?.oneShots).toEqual({ new: "task" });
+    expect(first.strippedSearch).toBe("panel=teams-issues");
     expect(deriveReconcilerAction(first.strippedSearch!, first.nextSignature)).toBeNull();
   });
 

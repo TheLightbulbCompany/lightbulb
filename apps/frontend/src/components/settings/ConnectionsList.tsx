@@ -16,20 +16,9 @@ interface ConnectionsListProps {
   /**
    * Providers rendered elsewhere on the same surface (e.g. Stripe's
    * consolidated section in the Connections panel) — dropped from this list so
-   * one brand never shows up twice. Omitted everywhere else (the Control dashboard's
-   * IntegrationsPanel keeps the full server-driven catalog).
+   * one brand never shows up twice. Omitted everywhere else.
    */
   exclude?: string[];
-  /**
-   * Display-name overrides, keyed by provider. For pages that render this list
-   * beside something else wearing the same brand: on the Accounts panel a bare
-   * "Stripe" row sits under the company's own Stripe account, so its "Not
-   * connected" reads as a verdict on where the owner's money lands. Relabelling
-   * the row keeps a connection status attached to the agent grant and only the
-   * agent grant. Sibling of `exclude` — same idea, one step short of hiding the
-   * row. Omitted everywhere else, so the server's `display_name` stands.
-   */
-  labels?: Record<string, string>;
 }
 
 /**
@@ -46,6 +35,13 @@ const KIND_LABELS: Record<string, string> = {
 };
 
 /**
+ * The two "dashboard access" paste rows: a second Attio/Apollo key the
+ * workspace would hold for dashboard reads nothing makes. The registry keeps
+ * them (its tests pin their wiring); no list offers them.
+ */
+const HIDDEN_PROVIDERS: ReadonlySet<string> = new Set(["attio_api", "apollo_api"]);
+
+/**
  * Renders one row per provider returned by GET /connections: a status dot
  * (connected = green / disconnected = muted), the provider's display name,
  * and the right action via ConnectButton. The provider list is fully
@@ -56,7 +52,7 @@ const KIND_LABELS: Record<string, string> = {
  * Connections panel re-mutates this same SWR key after an OAuth return so a
  * freshly-connected provider flips to green without a reload.
  */
-export function ConnectionsList({ canManage, exclude, labels }: ConnectionsListProps) {
+export function ConnectionsList({ canManage, exclude }: ConnectionsListProps) {
   const { connections, isLoading, error, mutate, connectPaste, startOAuth, disconnect } =
     useConnections();
   // The second facet. Its providers are NOT the OAuth registry's: this rail
@@ -77,7 +73,7 @@ export function ConnectionsList({ canManage, exclude, labels }: ConnectionsListP
       } as Connection,
       railOnly: true,
     })),
-  ].filter((r) => !exclude?.includes(r.connection.provider));
+  ].filter((r) => !exclude?.includes(r.connection.provider) && !HIDDEN_PROVIDERS.has(r.connection.provider));
 
   if (error) {
     return (
@@ -146,7 +142,7 @@ export function ConnectionsList({ canManage, exclude, labels }: ConnectionsListP
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2">
                 <p className="text-sm font-medium text-midnight">
-                  {labels?.[connection.provider] ?? connection.display_name}
+                  {connection.display_name}
                 </p>
                 {connection.actor && KIND_LABELS[connection.actor] && (
                   <span className="shrink-0 rounded-sm border border-[var(--edge)] px-1.5 py-0.5 text-2xs font-medium text-[var(--midnight-muted)]">

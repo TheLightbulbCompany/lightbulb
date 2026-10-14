@@ -1,9 +1,9 @@
 import { SITE_URL } from "@/lib/domain";
 import {
   PRICING_FOUNDING,
-  PRICING_INFERENCE,
   PRICING_TRIAL,
   getPricing,
+  pricingInference,
   ordinal,
   pricingFaq,
   teamIncludes,
@@ -26,8 +26,7 @@ export async function GET() {
     `| Each person from the ${ordinal(p.includedMembers + 1)} | +$${p.seatPriceUsd} a month | The same workspace, one more person |`,
     "| Enterprise | Talk to us | Custom pricing for special cases |",
     "",
-    PRICING_INFERENCE,
-    "",
+      "",
     `**${p.trialDays} days free.** ${PRICING_TRIAL}`,
     "",
     `**Founding teams: ten spots.** ${PRICING_FOUNDING} Request a guided setup: ${SITE_URL}/request-setup`,

@@ -53,7 +53,7 @@ export const docsFaq = [
   {
     question: "How much does Lightbulb cost?",
     answer:
-      "One plan: a flat monthly price for the workspace and its first people, then a per-person price for each member after. Agents' AI is billed separately: Lightbulb-managed at the model provider's price × 1.2, or your own ChatGPT account or API key, billed by them. Current prices are on /pricing.",
+      "One plan: a flat monthly price for the workspace and its first people, then a per-person price for each member after. Agents' AI is billed separately: Lightbulb-managed as prepaid credits, or your own ChatGPT account or API key, billed by them. Current prices are on /pricing.",
   },
   {
     question: "Which agents do I get when I sign up?",

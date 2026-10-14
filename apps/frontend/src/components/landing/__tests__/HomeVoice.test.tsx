@@ -19,7 +19,7 @@ import { ProofStories } from "../ProofStories";
 import { WorkspaceBand } from "../WorkspaceBand";
 import { ASK_AI_PROMPT } from "../askAiPrompt";
 
-const PRICING = { teamPriceUsd: 50, includedMembers: 5, seatPriceUsd: 20, trialDays: 30 };
+const PRICING = { teamPriceUsd: 50, includedMembers: 5, seatPriceUsd: 20, trialDays: 30, managedMarkup: "1.2" };
 const BANNED = /multiplayer|AI-native|orchestration|\bbots?\b|\bprompts?\b|autonomous|Paperclip|Hermes|AgentCore|\bJev\b/i;
 
 describe("homepage voice", () => {

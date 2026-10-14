@@ -1,6 +1,6 @@
 import Link from "next/link";
 
-import { ordinal, type Pricing } from "@/lib/pricing";
+import { markupPercent, ordinal, type Pricing } from "@/lib/pricing";
 
 import { Arrow } from "./Arrow";
 
@@ -9,10 +9,12 @@ import { Arrow } from "./Arrow";
  * agents as a plain row (no pill, no per-card buttons, no art). Prices come from
  * the billing API via the page (lib/pricing.getPricing); null shows no number.
  */
-const OPTIONS = [
+const options = (p: Pricing | null) => [
   {
     title: "Lightbulb-managed.",
-    body: "Nothing to set up. Billed as credits at the model provider's price plus 20%.",
+    body: p
+      ? `Nothing to set up. Billed as credits at the model provider's price plus ${markupPercent(p.managedMarkup)}%.`
+      : "Nothing to set up. Billed as prepaid credits.",
   },
   { title: "Your ChatGPT account.", body: "Sign in once; your agents run on your ChatGPT plan." },
   { title: "Your own key.", body: "OpenAI or Anthropic. Your provider bills you directly." },
@@ -38,7 +40,7 @@ export function PricingThreeCard({ pricing: p }: { pricing: Pricing | null }) {
           </>
         )}
         <div className="lb-plans">
-          {OPTIONS.map((o) => (
+          {options(p).map((o) => (
             <article key={o.title} className="lb-plan">
               <div className="lb-plan-b">
                 <p className="lb-blurb">

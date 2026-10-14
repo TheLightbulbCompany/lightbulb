@@ -25,7 +25,7 @@ beforeEach(() => {
   vi.stubGlobal(
     "fetch",
     vi.fn(async () =>
-      json({ workspace_price_usd: 50, included_members: 5, seat_price_usd: 20, trial_days: 30 }),
+      json({ workspace_price_usd: 50, included_members: 5, seat_price_usd: 20, trial_days: 30, managed_markup: "1.2" }),
     ),
   );
 });

@@ -41,6 +41,7 @@ export interface BillingAccount {
   // seat_price_usd a month for each member past them. Optional for old fixtures.
   seat_price_usd?: number;
   included_members?: number;
+  managed_markup?: string | null;
   // The managed model's per-key daily limit tripped today (UTC); clears at the rollover.
   capped_today?: boolean;
   // Epoch seconds the workspace's own provider plan (ChatGPT, BYO key) is back from a usage

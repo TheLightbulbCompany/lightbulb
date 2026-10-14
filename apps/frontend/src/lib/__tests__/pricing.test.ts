@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { BUILD_FALLBACK, getPricing, ordinal, pricingFaq, teamMonthlyUsd } from "../pricing";
+import { getPricing, markupPercent, ordinal, pricingFaq, teamMonthlyUsd } from "../pricing";
 
 const json = (body: unknown) => new Response(JSON.stringify(body));
-const API = { workspace_price_usd: 50, included_members: 5, seat_price_usd: 20, trial_days: 30 };
-const P = { teamPriceUsd: 50, includedMembers: 5, seatPriceUsd: 20, trialDays: 30 };
+const API = { workspace_price_usd: 50, included_members: 5, seat_price_usd: 20, trial_days: 30, managed_markup: "1.2" };
+const P = { teamPriceUsd: 50, includedMembers: 5, seatPriceUsd: 20, trialDays: 30, managedMarkup: "1.2" };
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -14,13 +14,11 @@ describe("one plan pricing", () => {
     expect(await getPricing()).toEqual(P);
   });
 
-  it("prefers the server, and falls back only when the API is unreachable or malformed", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => json({ ...API, workspace_price_usd: 60 })));
-    expect((await getPricing()).teamPriceUsd).toBe(60);
+  it("returns null, never a guessed number, when the API is unreachable or malformed", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("down", { status: 503 })));
-    expect(await getPricing()).toBe(BUILD_FALLBACK);
-    vi.stubGlobal("fetch", vi.fn(async () => json({ workspace_price_usd: 50 })));
-    expect(await getPricing()).toBe(BUILD_FALLBACK);
+    expect(await getPricing()).toBeNull();
+    vi.stubGlobal("fetch", vi.fn(async () => json({ ...API, managed_markup: null })));
+    expect(await getPricing()).toBeNull();
   });
 
   it("bills the flat price up to the allowance and the seat price after", () => {
@@ -29,5 +27,6 @@ describe("one plan pricing", () => {
     expect(ordinal(6)).toBe("6th");
     expect(ordinal(21)).toBe("21st");
     expect(ordinal(12)).toBe("12th");
+    expect(markupPercent("1.2")).toBe(20);
   });
 });

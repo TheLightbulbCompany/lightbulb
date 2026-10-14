@@ -14,7 +14,7 @@ const OFFER = [
   "A say in what we build next",
 ];
 
-export function FoundingTeams({ pricing: p }: { pricing: Pricing }) {
+export function FoundingTeams({ pricing: p }: { pricing: Pricing | null }) {
   return (
     <section className="lb-founding" id="founding-teams">
       <div className="lb-wrap">
@@ -26,7 +26,9 @@ export function FoundingTeams({ pricing: p }: { pricing: Pricing }) {
         </p>
         <ul className="lb-founding-list">
           {[
-            `${p.trialDays} days free, then $${p.teamPriceUsd} a month for up to ${p.includedMembers} people and $${p.seatPriceUsd} a member from the ${ordinal(p.includedMembers + 1)}`,
+            p
+              ? `${p.trialDays} days free, then $${p.teamPriceUsd} a month for up to ${p.includedMembers} people and $${p.seatPriceUsd} a member from the ${ordinal(p.includedMembers + 1)}`
+              : "30 days free",
             ...OFFER,
           ].map((item) => (
             <li key={item}>{item}</li>

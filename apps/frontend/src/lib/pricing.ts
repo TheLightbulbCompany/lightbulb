@@ -2,27 +2,26 @@
  * The one plan's public price, read from the backend that bills it
  * (`GET /billing/prices`: WORKSPACE_PRICE_USD, SEATS_INCLUDED, SEAT_PRICE_USD,
  * the trial length), so the site never carries a second copy of a price. Server
- * side only, cached 5 minutes. When the API cannot be read (a build with no
- * backend reachable), `BUILD_FALLBACK` stands in until the next revalidation
- * replaces it with the server's values.
+ * side only, cached 5 minutes. `null` when the API cannot be read: callers show
+ * neutral copy rather than present a number as current terms.
  */
 export type Pricing = {
   teamPriceUsd: number;
   includedMembers: number;
   seatPriceUsd: number;
   trialDays: number;
+  /** Managed AI is billed at the model provider's price times this (openrouter-pricing.json). */
+  managedMarkup: string;
 };
 
 export const PRICING_REVALIDATE_S = 300;
 
-/** Build-time stand-in only; the server's /billing/prices overrides it on the next revalidation. */
-export const BUILD_FALLBACK: Pricing = { teamPriceUsd: 50, includedMembers: 5, seatPriceUsd: 20, trialDays: 30 };
 const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
 
-export async function getPricing(): Promise<Pricing> {
+export async function getPricing(): Promise<Pricing | null> {
   try {
     const res = await fetch(`${BACKEND_URL}/billing/prices`, { next: { revalidate: PRICING_REVALIDATE_S } });
-    if (!res.ok) return BUILD_FALLBACK;
+    if (!res.ok) return null;
     const body = (await res.json()) as Record<string, unknown>;
     const n = (k: string) => (typeof body[k] === "number" ? (body[k] as number) : null);
     const [team, included, seat, trial] = [
@@ -31,10 +30,11 @@ export async function getPricing(): Promise<Pricing> {
       n("seat_price_usd"),
       n("trial_days"),
     ];
-    if (team === null || included === null || seat === null || trial === null) return BUILD_FALLBACK;
-    return { teamPriceUsd: team, includedMembers: included, seatPriceUsd: seat, trialDays: trial };
+    const markup = typeof body.managed_markup === "string" ? body.managed_markup : null;
+    if (team === null || included === null || seat === null || trial === null || markup === null) return null;
+    return { teamPriceUsd: team, includedMembers: included, seatPriceUsd: seat, trialDays: trial, managedMarkup: markup };
   } catch {
-    return BUILD_FALLBACK;
+    return null;
   }
 }
 
@@ -50,11 +50,10 @@ export function ordinal(n: number): string {
   return `${n}${({ 1: "st", 2: "nd", 3: "rd" } as Record<number, string>)[n % 10] ?? "th"}`;
 }
 
-/**
- * Managed AI markup as copy. Its one billed copy is repo-root openrouter-pricing.json
- * (the gate and settlement read it); the site states it, it does not charge it.
- */
-export const MANAGED_MARKUP_TEXT = "1.2";
+/** "plus 20%" for a markup of "1.2". */
+export function markupPercent(markup: string): number {
+  return Math.round((Number(markup) - 1) * 100);
+}
 
 /** /pricing copy (10 §B), shared by the page, /pricing.md and the FAQ JSON-LD. */
 export function pricingFaq(p: Pricing): { q: string; a: string }[] {
@@ -76,7 +75,7 @@ export function pricingFaq(p: Pricing): { q: string; a: string }[] {
     {
       q: "What does managed AI cost?",
       a:
-        `The model provider's price plus ${Math.round((Number(MANAGED_MARKUP_TEXT) - 1) * 100)}%, drawn from prepaid ` +
+        `The model provider's price plus ${markupPercent(p.managedMarkup)}%, drawn from prepaid ` +
         "credits you top up. Usage shows in the workspace, and nothing runs past your balance.",
     },
     {
@@ -89,9 +88,13 @@ export function pricingFaq(p: Pricing): { q: string; a: string }[] {
   ];
 }
 
-export const PRICING_INFERENCE =
-  `Your agents' AI is billed separately, your choice: Lightbulb-managed at the model provider's price × ${MANAGED_MARKUP_TEXT}, ` +
-  "as prepaid credits, or bring your own: your ChatGPT account or an OpenAI or Anthropic key, billed by them.";
+export function pricingInference(p: Pricing | null): string {
+  const managed = p ? `at the model provider's price × ${p.managedMarkup}, ` : "";
+  return (
+    `Your agents' AI is billed separately, your choice: Lightbulb-managed ${managed}as prepaid credits, ` +
+    "or bring your own: your ChatGPT account or an OpenAI or Anthropic key, billed by them."
+  );
+}
 export const PRICING_TRIAL =
   "No card to start; add one when the month ends. Founding teams put a card on file at their setup session, " +
   "and the first charge is on day 31. Your agents run on Lightbulb-managed AI with a daily allowance meanwhile.";

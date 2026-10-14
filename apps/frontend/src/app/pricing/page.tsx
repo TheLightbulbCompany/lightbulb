@@ -5,9 +5,9 @@ import { Navbar } from "@/components/landing/Navbar";
 import { PricingCtas } from "@/components/pricing/PricingCtas";
 import {
   PRICING_FOUNDING,
-  PRICING_INFERENCE,
   PRICING_TRIAL,
   getPricing,
+  pricingInference,
   ordinal,
   pricingFaq,
   teamIncludes,
@@ -24,8 +24,8 @@ export async function generateMetadata() {
     title: "Pricing — Lightbulb",
     description: p
       ? `$${p.teamPriceUsd} a month for your workspace, up to ${p.includedMembers} people, then $${p.seatPriceUsd} a person. ` +
-        `Managed AI at provider price × 1.2, or bring your own. ${p.trialDays} days free.`
-      : "One price for the workspace and your first people, then a per-person price. Managed AI at provider price × 1.2, or bring your own.",
+        `Managed AI at provider price × ${p.managedMarkup}, or bring your own. ${p.trialDays} days free.`
+      : "One price for the workspace and your first people, then a per-person price. Managed AI, or bring your own.",
     path: "/pricing",
   });
 }
@@ -118,7 +118,7 @@ export default async function PricingPage() {
         )}
 
         <div className="mt-10 space-y-4 text-base leading-7 text-[var(--midnight-soft)]">
-          <p>{PRICING_INFERENCE}</p>
+          <p>{pricingInference(p)}</p>
           <p>
             <strong className="text-[var(--midnight)]">{p ? `${p.trialDays} days free.` : "A free month."}</strong>{" "}
             {PRICING_TRIAL}

@@ -1,7 +1,7 @@
 import { getAllPosts } from "@/content/blog";
 import { docsFaq, getAllDocs } from "@/content/docs";
 import { SITE_URL } from "@/lib/domain";
-import { getPricing } from "@/lib/pricing";
+import { getPricing, pricingInference } from "@/lib/pricing";
 import { seoLandingPages } from "@/lib/seo";
 
 /**
@@ -47,7 +47,7 @@ export async function GET() {
     p
       ? `- Team plan: $${p.teamPriceUsd}/month for the workspace and up to ${p.includedMembers} people, then $${p.seatPriceUsd}/month for each person after. One plan; details at ${SITE_URL}/pricing.`
       : `- Team plan: one plan, a flat monthly price for the workspace and its first people, then a per-person price. Details at ${SITE_URL}/pricing.`,
-    "- Agents' AI is billed separately: Lightbulb-managed at the model provider's price × 1.2 as prepaid credits, or your own ChatGPT account or OpenAI/Anthropic key, billed by them.",
+    `- ${pricingInference(p)}`,
     "- Inference providers: Lightbulb-managed models (DeepSeek within a daily allowance; more via prepaid credits), your own ChatGPT account via OAuth, or a bring-your-own Anthropic or OpenAI API key.",
     "- Surfaces: web app, a macOS desktop app, and an iOS app.",
     "",

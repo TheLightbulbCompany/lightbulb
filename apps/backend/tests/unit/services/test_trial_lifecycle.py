@@ -60,9 +60,14 @@ async def test_one_pause_moves_the_trial_30_days_and_never_twice(monkeypatch):
     monkeypatch.setattr(trial_lifecycle.billing_repo, "claim_once", AsyncMock(side_effect=lambda *a: next(claims)))
     extend = AsyncMock()
     monkeypatch.setattr(trial_lifecycle.billing_repo, "extend_trial", extend)
+    from core.services import user_provision
+
+    arm = AsyncMock(return_value="armed")
+    monkeypatch.setattr(user_provision, "arm_nightly_ceo", arm)
 
     assert await trial_lifecycle.pause_once("org_1", NOW) == {"status": "paused", "until": NOW + 30 * DAY}
     extend.assert_awaited_once_with("org_1", trial_end=NOW + 30 * DAY)
+    arm.assert_awaited_once_with("org_1")  # the expired trial's paused automation comes back
     assert await trial_lifecycle.pause_once("org_1", NOW) == {"status": "pause_used"}
 
 
@@ -77,3 +82,14 @@ async def test_pause_on_a_live_subscription_pauses_collection(monkeypatch):
     monkeypatch.setattr(stripe.Subscription, "modify", modify)
     await trial_lifecycle.pause_once("org_1", NOW)
     assert modify.call_args.kwargs["pause_collection"] == {"behavior": "void", "resumes_at": NOW + 30 * DAY}
+
+
+@pytest.mark.asyncio
+async def test_a_failed_rearm_falls_back_to_a_durable_reconcile(monkeypatch):
+    from core.services import provision_dispatch, user_provision
+
+    monkeypatch.setattr(user_provision, "arm_nightly_ceo", AsyncMock(side_effect=RuntimeError("paperclip down")))
+    reconcile = AsyncMock(return_value=True)
+    monkeypatch.setattr(provision_dispatch, "dispatch_reconcile", reconcile)
+    await trial_lifecycle._rearm_automation("org_1")
+    reconcile.assert_awaited_once_with("org_1")

@@ -90,7 +90,20 @@ thelightbulb.company/settings. Changing the plan of a workspace that already
 pays needs the owner to confirm it there; nothing is charged at that moment, and
 the prorated difference for the rest of the period goes on the next invoice. There is also a **free trial** (no card, 30 days; an admin may add a card
 early, and the first charge is still on the trial's last day) on
-Lightbulb-managed DeepSeek within a daily allowance. Inference runs on one of
+Lightbulb-managed DeepSeek within a daily allowance.
+
+**How a trial ends.** On days 28-30 every member sees a recap card with the
+team's own numbers (handoffs, approvals, agents, people); admins can keep the
+team from it. The owner also gets one email from the CEO's address on day 27.
+If nobody picks the plan, the workspace becomes **reading-only** after the trial:
+every message, file, board task, memory and agent profile stays, and people can
+still message each other; agents stop until an admin picks the plan. A company
+gets **one 30-day pause** for a timing lapse (a founder applies it). After **90
+days** reading-only, the owner gets a deletion notice before anything is
+deleted; nothing is deleted automatically. Never tell anyone their work will be
+lost when the trial ends.
+
+Inference runs on one of
 three provider paths chosen by the owner:
 **Lightbulb-managed** (DeepSeek within the plan's daily allowance; prepaid
 credits for more models are coming soon), **ChatGPT OAuth** (the owner's own

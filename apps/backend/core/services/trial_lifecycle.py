@@ -85,6 +85,21 @@ async def notices(owner_id: str, account: dict, now: int | None = None) -> None:
         )
 
 
+async def _rearm_automation(owner_id: str) -> None:
+    """An expired trial's sweep paused its routines and heartbeats; the extension turns them
+    back on through the same seam that converges them (``arm_nightly_ceo`` resumes what the
+    pause took, then re-applies the heartbeats). If that fails, a durable reconcile retries it."""
+    from core.services.user_provision import arm_nightly_ceo
+
+    try:
+        await arm_nightly_ceo(owner_id)
+    except Exception:
+        logger.exception("pause: re-arming automation failed for %s; dispatching a reconcile", owner_id)
+        from core.services.provision_dispatch import dispatch_reconcile
+
+        await dispatch_reconcile(owner_id)
+
+
 async def pause_once(owner_id: str, now: int | None = None) -> dict:
     """The one 30-day pause per company (A12). A trial moves its end 30 days out (from now, if it
     already ended); a live Stripe subscription has collection paused for 30 days."""
@@ -105,6 +120,7 @@ async def pause_once(owner_id: str, now: int | None = None) -> dict:
         if trial:
             end = max(int(account.get("trial_end") or now), now) + PAUSE_DAYS * DAY
             await billing_repo.extend_trial(owner_id, trial_end=end)
+            await _rearm_automation(owner_id)
             return {"status": "paused", "until": end}
         until = now + PAUSE_DAYS * DAY
         stripe.Subscription.modify(

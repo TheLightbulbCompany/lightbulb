@@ -111,6 +111,10 @@ class HeartbeatSession(ContractModel):
     terminal: Literal["held", "attach", "none"] | None = None
     # Why `terminal` is "none" (spec 2026-10-07 §5.1). Sent only once FEATURES lists terminalReason.
     terminal_reason: sessions.TerminalReason | None = None
+    # This session's holder takes the app panel's size (owner ruling 2026-10-14). Per session: a
+    # holder an older build started keeps running after the Mac updates and ignores it. Sent only
+    # once FEATURES lists remoteResize.
+    terminal_resize: bool = False
 
 
 #: What this relay reads beyond the frozen frames; the desktop sends a field only once listed.
@@ -922,6 +926,7 @@ class LocalSessionRelay:
                         deviceFeatures=message.device_features(),
                         **labels,
                     )
+                    updated["terminalResize"] = item.terminal_resize
                     if item.terminal is not None:
                         updated["terminal"] = item.terminal
                         if item.terminal == "none" and item.terminal_reason is not None:
@@ -968,9 +973,14 @@ class LocalSessionRelay:
                         updated["lastEventAt"] = now
                     scanned = row.get("workspace") != updated.get("workspace")
                     controls_changed = row.get("capabilities") != updated.get("capabilities")
-                    terminal_changed = (row.get("terminal"), row.get("terminalReason")) != (
+                    terminal_changed = (
+                        row.get("terminal"),
+                        row.get("terminalReason"),
+                        bool(row.get("terminalResize")),
+                    ) != (
                         updated.get("terminal"),
                         updated.get("terminalReason"),
+                        bool(updated.get("terminalResize")),
                     )
                     try:
                         async with writes:

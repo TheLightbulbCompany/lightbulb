@@ -530,7 +530,7 @@ pub fn run_with_env(socket: &Path, argv: &[String], cwd: &Path, env: Vec<(String
                 let (rows, cols) = model.size();
                 let facts = serde_json::json!({"protocol": 1, "pid": std::process::id(),
                     "providerPid": provider_pid, "argv": argv, "cwd": cwd, "rows": rows, "cols": cols,
-                    "watch": true, "type": true, "joined": joining, "origin": true, "lastInput": last_input, "end": true, "history": classic || inline,
+                    "watch": true, "type": true, "joined": joining, "origin": true, "lastInput": last_input, "end": true, "history": classic || inline, "resize": true,
                     "ended": ended, "endedAt": ended.then_some(exited_at_ms), "endedCode": ended.then_some(exit_code),
                     // A terminal (`lightbulb claude`) or the app's panel has the keyboard: an idle stop leaves it be.
                     "attached": interactive.is_some(), "idleEnded": idle_end});

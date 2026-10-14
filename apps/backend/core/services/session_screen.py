@@ -621,8 +621,9 @@ async def type_into(auth: AuthContext, session_id: str, body: SessionInput) -> N
     if "remoteInput" not in row.get("deviceFeatures", ()):
         raise sessions.ApiProblem("LOCAL_SESSION_UNSUPPORTED", "This Mac cannot take typing from elsewhere yet.")
     size = len(base64.b64decode(body.data))
-    # A Mac too old to take the panel's size (or a relay before the feature) gets the keys alone.
-    resize = body.size if REMOTE_RESIZE_FEATURE in row.get("deviceFeatures", ()) else None
+    # A Mac or holder too old to take the panel's size gets the keys alone.
+    resizable = REMOTE_RESIZE_FEATURE in row.get("deviceFeatures", ()) and row.get("terminalResize")
+    resize = body.size if resizable else None
     if not size and resize is None:
         return
     sid, user = row["sessionId"], auth.user_id

@@ -3025,6 +3025,14 @@ fn device_heartbeats_with_controls(
             entry["terminal"] = json!(m.native.terminal());
             super::session_states::add_reason(&mut entry, &m.native);
         }
+        // This session's own holder takes the app panel's size (its HELLO said so): a holder an
+        // older build started does not, though this Mac advertises remoteResize. Only to a relay
+        // that lists remoteResize.
+        if remote_input && super::session_states::reads_remote_resize()
+            && m.native.holder.as_deref().is_some_and(crate::holder::manager::takes_resize)
+        {
+            entry["terminalResize"] = json!(true);
+        }
         if ascii_wire_len(&envelope(std::slice::from_ref(&entry)))? > 16384 {
             // One session too big to travel even alone would make every frame it
             // lands in oversized, and `send` takes the connection down over it.

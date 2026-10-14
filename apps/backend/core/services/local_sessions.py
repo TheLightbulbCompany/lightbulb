@@ -355,8 +355,8 @@ class LocalSession(ContractModel):
     # until it is answered.
     input_paused: bool = False
     # The live terminal takes the viewer's panel size on /input (owner ruling 2026-10-14: the session
-    # takes the size of whoever used it last): this relay reads it and the session's Mac advertised
-    # remoteResize. A web view sends a size only when this is true.
+    # takes the size of whoever used it last): the session's Mac advertised remoteResize and its own
+    # holder said it takes the size (an older holder does not). A web view sends a size only then.
     terminal_resize: bool = False
     # The viewer's seat in this session's chat, once they are in it (PR #3807).
     chat_room_id: str | None = None
@@ -918,7 +918,9 @@ def _session_public(row: dict, viewer: str | None = None) -> LocalSession:
         and session_presence.BAND_OWNER_ONLY_FEATURE not in features
         and public["terminal"] is not None
     )
-    public["terminalResize"] = REMOTE_RESIZE_FEATURE in features and public["terminal"] is not None
+    public["terminalResize"] = (
+        REMOTE_RESIZE_FEATURE in features and bool(row.get("terminalResize")) and public["terminal"] is not None
+    )
     stats = row.get("stats") or {}
     for key in ("model", "permissionMode"):
         if stats.get(key):

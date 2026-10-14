@@ -453,9 +453,11 @@ def sized(data="", size=PANEL, epoch=3):
     return session_screen.SessionInput.model_validate({"data": data, "epoch": epoch, "size": size})
 
 
-async def resizable(transport, sid):
+async def resizable(transport, sid, holder=True):
     frame = heartbeat(sid)
     frame["remoteResize"] = True
+    if holder:  # the session's own holder said it takes the size
+        frame["sessions"][0]["terminalResize"] = True
     await relay(transport).handle_message("conn-1", frame)
 
 
@@ -505,6 +507,17 @@ async def test_a_view_only_teammate_s_resize_is_refused_and_nothing_reaches_the_
     await session_screen.watch(BOB, sid)  # may watch, may not type
     transport[3].clear()
     await refused("LOCAL_SESSION_FORBIDDEN", transport, BOB, sid, sized())
+
+
+@pytest.mark.asyncio
+async def test_a_session_whose_holder_predates_resize_gets_the_keys_alone(transport):
+    sid = await start(transport)
+    await resizable(transport, sid, holder=False)  # an updated Mac, a holder an older build started
+    await admit(sid)
+    transport[3].clear()
+    await session_screen.type_into(BOB, sid, sized())
+    await session_screen.type_into(BOB, sid, sized(data=KEYS))
+    assert [("size" in b, b["data"]) for b in sent(transport)] == [(False, KEYS)]
 
 
 @pytest.mark.asyncio

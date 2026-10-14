@@ -227,8 +227,11 @@ def test_terminal_resize_only_for_a_live_terminal_on_a_mac_that_advertised_remot
         activeTurnId=None,
         capabilities={},
     )
-    resizable = {"deviceFeatures": ["liveTerminal", "remoteInput", "remoteResize"]}
+    resizable = {"deviceFeatures": ["liveTerminal", "remoteInput", "remoteResize"], "terminalResize": True}
     assert sessions._session_public({**base, **resizable}, "user_aden").terminal_resize is True
+    # A holder an older build started (the heartbeat did not say terminalResize) on an updated Mac.
+    old_holder = {**resizable, "terminalResize": False}
+    assert sessions._session_public({**base, **old_holder}, "user_aden").terminal_resize is False
     assert sessions._session_public({**base, "deviceFeatures": ["remoteInput"]}, "user_aden").terminal_resize is False
     terminal = None
     assert sessions._session_public({**base, **resizable}, "user_aden").terminal_resize is False

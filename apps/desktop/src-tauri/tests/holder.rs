@@ -573,6 +573,8 @@ fn holder_session_takes_the_size_of_whoever_used_it_last() {
     t.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     t.write_all(&encode(HELLO, br#"{"role":"type"}"#)).unwrap();
     assert_eq!(read_frame(&mut t).unwrap().0, HELLO);
+    let listed = manager::list_in(socket.parent().unwrap());
+    assert!(manager::takes_resize(&listed[0].id), "this holder says it takes the panel's size");
 
     // The app's panel opens (a claiming RESIZE): its size applies.
     t.write_all(&encode(RESIZE, &[0, 90, 0, 30, 1])).unwrap();

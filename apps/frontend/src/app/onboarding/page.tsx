@@ -6,6 +6,8 @@ import { OrganizationList, useAuth, useOrganization, useOrganizationList } from 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { JoinTeamBlock } from "@/components/onboarding/JoinTeamBlock";
+import { SourceQuestion, reportSource, type SourceAnswer } from "@/components/onboarding/SourceQuestion";
+import { readWorkspaceDoor, touchPayload } from "@/lib/analytics";
 import { useNameGate } from "@/hooks/useNameGate";
 import { ApiError, useApi } from "@/lib/api";
 import { safeReturnTo } from "@/lib/returnTo";
@@ -36,6 +38,8 @@ function CreateWorkspaceForm() {
   const [check, setCheck] = useState<SlugCheck | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [editingSlug, setEditingSlug] = useState(false);
+  const [source, setSource] = useState<SourceAnswer>({ answer: "", detail: "" });
   const slug = typedSlug || slugify(name); // clearing the field goes back to the suggestion
 
   useEffect(() => {
@@ -58,8 +62,19 @@ function CreateWorkspaceForm() {
     setBusy(true);
     setError(null);
     try {
+      // Where they came from, stashed BEFORE the org exists: the organization.created webhook
+      // moves it onto the workspace. Never blocks creating the workspace.
+      await api
+        .post("/company/source", {
+          answer: source.answer || null,
+          detail: source.detail || null,
+          door: readWorkspaceDoor() ?? "sign_up",
+          ...touchPayload(),
+        })
+        .catch(() => undefined);
       await api.post("/company/slug/hold", { slug });
       const org = await createOrganization({ name: name.trim() });
+      reportSource("sign_up", source, { workspace_id: org.id });
       await setActive({ organization: org.id });
       // Hand the hold to the new workspace now (consistent, keyed); the organization.created
       // webhook repeats it, so a failure here is not the user's problem.
@@ -80,24 +95,40 @@ function CreateWorkspaceForm() {
         Workspace name
         <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Workspace name" autoFocus maxLength={64} />
       </label>
-      <label className="flex flex-col gap-1.5 text-sm font-medium">
-        Agent email address
-        <Input
-          value={slug}
-          onChange={(e) => setTypedSlug(e.target.value.toLowerCase())}
-          placeholder="your-team"
-          maxLength={32}
-          spellCheck={false}
-          autoCapitalize="none"
-          aria-describedby="slug-status"
-        />
-      </label>
-      <p id="slug-status" className="-mt-2 text-sm text-muted-foreground" aria-live="polite">
-        {!slug ? "Your agents' email address comes from this."
-          : current?.reason ? <span className="text-destructive">{SLUG_PROBLEM[current.reason]}</span>
-          : current ? <>Your CEO will email as <span className="font-mono text-foreground">ceo@{slug}.{current.domain}</span></>
-          : "Checking…"}
-      </p>
+      {editingSlug || current?.reason ? (
+        <>
+          <label className="flex flex-col gap-1.5 text-sm font-medium">
+            Agent email address
+            <Input
+              value={slug}
+              onChange={(e) => { setEditingSlug(true); setTypedSlug(e.target.value.toLowerCase()); }}
+              placeholder="your-team"
+              maxLength={32}
+              spellCheck={false}
+              autoCapitalize="none"
+              aria-describedby="slug-status"
+            />
+          </label>
+          <p id="slug-status" className="-mt-2 text-sm text-muted-foreground" aria-live="polite">
+            {!slug ? "Your agents' email address comes from this."
+              : current?.reason ? <span className="text-destructive">{SLUG_PROBLEM[current.reason]}</span>
+              : current ? <>Your CEO will email as <span className="font-mono text-foreground">ceo@{slug}.{current.domain}</span></>
+              : "Checking…"}
+          </p>
+        </>
+      ) : (
+        <p id="slug-status" className="-mt-2 flex items-center gap-2 text-sm text-muted-foreground" aria-live="polite">
+          {!slug ? "Your agents' email address comes from the name."
+            : current ? <span>Your CEO will email as <span className="font-mono text-foreground">ceo@{slug}.{current.domain}</span></span>
+            : "Checking…"}
+          {slug && (
+            <button type="button" className="text-foreground underline underline-offset-2" onClick={() => setEditingSlug(true)}>
+              Change
+            </button>
+          )}
+        </p>
+      )}
+      <SourceQuestion value={source} onChange={setSource} />
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
       <Button type="submit" disabled={!ready} className="self-end">
         {busy ? "Creating…" : "Create workspace"}

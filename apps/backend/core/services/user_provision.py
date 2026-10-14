@@ -98,10 +98,13 @@ async def _ensure_trial_row(workspace_id: str, actor_user_id: str | None = None)
         raise
 
     if created:
+        from core.services.workspace_source import adopt_for_workspace
+
+        source = await adopt_for_workspace(workspace_id, actor_user_id or "")
         capture_product_event(
             distinct_id=actor_user_id or workspace_id,
             event="trial_started",
-            properties={"owner_type": "org", "workspace_id": workspace_id},
+            properties={**source, "owner_type": "org", "workspace_id": workspace_id},
             event_uuid=str(uuid.uuid5(_TRIAL_STARTED_NAMESPACE, f"{workspace_id}:{utc_today()}")),
         )
 

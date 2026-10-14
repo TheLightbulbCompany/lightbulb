@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, act } from "@testing-library/react";
+import { render, screen, act, fireEvent } from "@testing-library/react";
 
 // A freshly shared Claude session opens before the Mac commits its pick-up snapshot: the page
 // must re-open itself while it is not continuable, and stop once it is.
@@ -488,7 +488,10 @@ describe("session link page", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     const door = screen.getByRole("region", { name: "Join" });
     expect(door.textContent).toContain("Ada is working with their team and AI employees in Lightbulb.");
-    expect(screen.getByRole("button", { name: "Start your own workspace" })).toBeTruthy();
+    window.localStorage.removeItem("lightbulb:workspace_door");
+    fireEvent.click(screen.getByRole("button", { name: "Start your own workspace" }));
+    // T12: the workspace form sends this door, so workspace_created says {source: session_link}.
+    expect(window.localStorage.getItem("lightbulb:workspace_door")).toBe("session_link");
     unmount();
     window.sessionStorage.setItem("lightbulb:session-link", JSON.stringify({ token: "tok", port: 4321, challenge: "c".repeat(43) }));
     render(<SessionLinkPageRoute />);

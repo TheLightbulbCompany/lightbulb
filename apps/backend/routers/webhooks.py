@@ -362,9 +362,11 @@ async def _handle_organization_created(data: dict) -> None:
         org_id,
         owner_user_id,
     )
-    from core.services import join_analytics
+    from core.services import join_analytics, workspace_source
 
-    join_analytics.workspace_created(org_id, owner_user_id)
+    join_analytics.workspace_created(
+        org_id, owner_user_id, await workspace_source.adopt_for_workspace(org_id, owner_user_id)
+    )
     # Hand the agent-email slug the owner held at "Create your workspace" to the workspace
     # BEFORE provisioning (routers/company_slug.py). Idempotent, so a Svix redelivery is safe.
     from core.repositories import company_slug_repo

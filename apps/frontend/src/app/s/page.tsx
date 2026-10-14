@@ -7,7 +7,7 @@ import { SignInButton, SignUpButton, useAuth, useClerk } from "@clerk/nextjs";
 import { AppSyncEventsClient, createMessagingClient, type LiveEvent, type SessionLinkCode, type SessionLinkJoinAsk, type SessionLinkPage, type SessionLinkViewing } from "@lightbulb/shared";
 import { ApiError, BACKEND_URL, useApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
-import { capture } from "@/lib/analytics";
+import { capture, markWorkspaceDoor } from "@/lib/analytics";
 import { copyText, sessionPermalink } from "@/components/messaging/messageLinks";
 import { SessionTerminalView } from "@/components/messaging/SessionTerminalView";
 // For .session-state-panel: this route is outside /chat, which is where the sheet is otherwise loaded.
@@ -396,8 +396,8 @@ export default function SessionLinkPageRoute() {
       {page.me.join !== "allowed" && !(isSignedIn && (orgId || canContinue)) && <div className="flex flex-wrap items-center gap-2">
         {(page.me.canAsk || page.me.join) && <span>Not on {page.ownerFirstName}&apos;s team?</span>}
         {isSignedIn
-          ? <Button type="button" variant={page.me.canAsk ? "outline" : "default"} className="self-start" onClick={() => { capture("share_link_cta_clicked", { cta: "start_own", signed_in: true }); router.push("/onboarding"); }}>Start your own workspace</Button>
-          : <SignUpButton mode="modal" forceRedirectUrl="/onboarding"><Button type="button" variant={page.me.canAsk ? "outline" : "default"} className="self-start" onClick={() => capture("share_link_cta_clicked", { cta: "start_own", signed_in: false })}>Start your own workspace</Button></SignUpButton>}
+          ? <Button type="button" variant={page.me.canAsk ? "outline" : "default"} className="self-start" onClick={() => { capture("share_link_cta_clicked", { cta: "start_own", signed_in: true }); markWorkspaceDoor("session_link"); router.push("/onboarding"); }}>Start your own workspace</Button>
+          : <SignUpButton mode="modal" forceRedirectUrl="/onboarding"><Button type="button" variant={page.me.canAsk ? "outline" : "default"} className="self-start" onClick={() => { capture("share_link_cta_clicked", { cta: "start_own", signed_in: false }); markWorkspaceDoor("session_link"); }}>Start your own workspace</Button></SignUpButton>}
       </div>}
     </section>}
     {canContinue && <section aria-label="Continue" className="mb-4 flex flex-col gap-2">

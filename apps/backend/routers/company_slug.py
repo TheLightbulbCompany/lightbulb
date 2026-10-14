@@ -48,6 +48,34 @@ async def hold_slug(body: HoldBody, auth: Annotated[AuthContext, Depends(get_cur
     return {"slug": body.slug}
 
 
+class SourceBody(BaseModel):
+    """ "How did you first hear about us?" plus the browser's stored touches (T12)."""
+
+    answer: str | None = Field(default=None, max_length=32)
+    door: str | None = Field(default=None, max_length=32)
+    detail: str | None = Field(default=None, max_length=500)
+    first_touch: dict | None = None
+    last_touch: dict | None = None
+
+
+@router.post("/source")
+async def stash_source(body: SourceBody, auth: Annotated[AuthContext, Depends(get_current_user)]):
+    """Stash where this person came from before their workspace exists; the
+    ``organization.created`` webhook moves it onto the workspace. Unknown answers and touch
+    keys are dropped, never refused: this must not stand between a person and a workspace."""
+    from core.services import workspace_source
+
+    await workspace_source.stash_for_user(
+        auth.user_id,
+        answer=body.answer,
+        detail=body.detail,
+        first_touch=body.first_touch,
+        last_touch=body.last_touch,
+        door=body.door or "sign_up",
+    )
+    return {"ok": True}
+
+
 @router.post("/slug/claim")
 async def claim_slug(body: HoldBody, auth: Annotated[AuthContext, Depends(get_current_user)]):
     """The page calls this with the NEW workspace's token right after creating it: a keyed,

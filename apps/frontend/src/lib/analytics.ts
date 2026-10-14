@@ -162,6 +162,7 @@ export type AnalyticsEvent =
   | "signup_cta_clicked"
   | "signup_exit"
   | "signup_started"
+  | "source_reported"
   // Skills
   | "skill_api_key_saved"
   | "skill_installed"
@@ -338,6 +339,33 @@ export function refreshAttribution(): StoredAttribution | null {
   const next = { ...previous, last_touch: touch };
   writeStoredAttribution(next);
   return next;
+}
+
+const WORKSPACE_DOOR_KEY = "lightbulb:workspace_door";
+
+/** The door a person used on the way to "Create your workspace" (T16's session page marks
+ *  `session_link`); the workspace form sends it with the source (T12). */
+export function markWorkspaceDoor(door: "session_link"): void {
+  try {
+    window.localStorage.setItem(WORKSPACE_DOOR_KEY, door);
+  } catch {
+    // analytics only
+  }
+}
+
+export function readWorkspaceDoor(): string | null {
+  try {
+    return window.localStorage.getItem(WORKSPACE_DOOR_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** The stored first- and last-touch records, for a form that hands them to the backend
+ *  (the workspace form, T12; the setup form, T22). Empty objects when nothing is stored. */
+export function touchPayload(): { first_touch: AttributionPayload; last_touch: AttributionPayload } {
+  const stored = readStoredAttribution();
+  return { first_touch: stored?.first_touch ?? {}, last_touch: stored?.last_touch ?? {} };
 }
 
 export function attributionProperties(): Record<string, unknown> {

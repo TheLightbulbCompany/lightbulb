@@ -17,7 +17,12 @@ vi.mock("@/lib/api", async () => {
   return { ApiError, useApi: () => ({ get: clerk.apiGet, post: clerk.apiPost }) };
 });
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace: clerk.replace, push: clerk.replace }), useSearchParams: () => new URLSearchParams() }));
-vi.mock("@/lib/analytics", () => ({ capture: vi.fn() }));
+const analytics = vi.hoisted(() => ({ capture: vi.fn() }));
+vi.mock("@/lib/analytics", () => ({
+  capture: analytics.capture,
+  touchPayload: () => ({ first_touch: { utm_source: "reddit" }, last_touch: {} }),
+  readWorkspaceDoor: () => null,
+}));
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ isLoaded: clerk.loaded, isSignedIn: true, orgId: clerk.orgId }),
   useUser: () => ({ isLoaded: clerk.loaded, user: { unsafeMetadata: {}, update: clerk.update, firstName: clerk.firstName } }),
@@ -89,11 +94,21 @@ describe("workspace onboarding", () => {
     clerk.createOrganization.mockResolvedValue({ id: "org_new" });
     render(<OnboardingPage />);
     fireEvent.change(screen.getByLabelText("Workspace name"), { target: { value: "Bench Club!" } });
-    expect(screen.getByLabelText("Agent email address")).toHaveValue("bench-club");
+    // The address is one line with "Change", not a second field to fill in.
     await waitFor(() => expect(screen.getByText("ceo@bench-club.dev.thelightbulb.company")).toBeInTheDocument());
+    expect(screen.queryByLabelText("Agent email address")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/How did you first hear about us/), { target: { value: "reddit" } });
+    fireEvent.change(screen.getByLabelText("Tell us more"), { target: { value: "r/startups" } });
     fireEvent.click(screen.getByRole("button", { name: "Create workspace" }));
     await waitFor(() => expect(clerk.setActive).toHaveBeenCalledWith({ organization: "org_new" }));
     expect(clerk.apiPost).toHaveBeenCalledWith("/company/slug/hold", { slug: "bench-club" });
+    // Where they came from is stashed before the org exists (the webhook adopts it).
+    expect(clerk.apiPost).toHaveBeenCalledWith("/company/source", {
+      answer: "reddit", detail: "r/startups", door: "sign_up", first_touch: { utm_source: "reddit" }, last_touch: {},
+    });
+    expect(analytics.capture).toHaveBeenCalledWith("source_reported", expect.objectContaining({
+      surface: "sign_up", answer: "reddit", workspace_id: "org_new", $set_once: { self_reported_source: "reddit" },
+    }));
     await waitFor(() => expect(clerk.apiPost).toHaveBeenCalledWith("/company/slug/claim", { slug: "bench-club" }));
     expect(clerk.apiPost.mock.invocationCallOrder[0]).toBeLessThan(clerk.createOrganization.mock.invocationCallOrder[0]);
     expect(clerk.createOrganization).toHaveBeenCalledWith({ name: "Bench Club!" });
@@ -105,6 +120,7 @@ describe("workspace onboarding", () => {
     });
     render(<OnboardingPage />);
     fireEvent.change(screen.getByLabelText("Workspace name"), { target: { value: "Acme" } });
+    // A taken address opens the field by itself.
     await waitFor(() => expect(screen.getByText("That address is taken. Try another.")).toBeInTheDocument());
     expect(screen.getByRole("button", { name: "Create workspace" })).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Agent email address"), { target: { value: "acme-labs" } });
@@ -112,6 +128,15 @@ describe("workspace onboarding", () => {
     expect(screen.getByRole("button", { name: "Create workspace" })).toBeEnabled();
     // Clearing the field goes back to the name's suggestion.
     fireEvent.change(screen.getByLabelText("Agent email address"), { target: { value: "" } });
+    expect(screen.getByLabelText("Agent email address")).toHaveValue("acme");
+  });
+  it("opens the address field on Change", async () => {
+    clerk.apiGet.mockImplementation(async (path: string) => ({
+      slug: new URLSearchParams(path.split("?")[1]).get("slug"), available: true, reason: null, domain: "thelightbulb.company",
+    }));
+    render(<OnboardingPage />);
+    fireEvent.change(screen.getByLabelText("Workspace name"), { target: { value: "Acme" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Change" }));
     expect(screen.getByLabelText("Agent email address")).toHaveValue("acme");
   });
   it("ignores an availability answer for a slug the user has already typed past", async () => {

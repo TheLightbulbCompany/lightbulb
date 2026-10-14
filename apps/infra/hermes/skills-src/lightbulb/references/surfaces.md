@@ -271,7 +271,11 @@ person outside the workspace needs **Anyone with the link**. An "anyone" link op
 sign-in and shows the session's title, owner, tool, state and its **live
 terminal, view only**: they cannot type, and they see everything it prints. A
 workspace member who opens a link lands in the app's session view. An ended or
-offline session shows its state and no terminal. The link only shows the
+offline session shows its state and no terminal. An outside visitor with no
+workspace of their own also sees **Start your own workspace** under the header
+(sign-up, then a workspace of their own); it is not shown in the confirm step of
+`lightbulb continue`. The owner's **Anyone with the link** choice warns that the
+viewer sees everything the terminal prints. The link only shows the
 session: **Continue** appears only when the owner turned **Let people continue
 this session** on (Claude Code sessions).
 **Continue** takes a copy into the person's own Claude Code: they need the

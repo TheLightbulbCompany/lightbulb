@@ -177,3 +177,13 @@ def test_the_in_review_move_carries_the_run_attached_to_this_conversation(paperc
     lightbulb._request_approval({"title": "t", "summary": "s", "tasks": ["WAL-6"]}, session_id=ROOM_KEY)
     assert ("PATCH", f"/api/issues/{ISSUE}", {"status": "in_review"}, "run-attached") in paperclip["calls"]
     assert _created(paperclip)[0][3] is None  # the create is not an issue write
+
+
+def test_a_failed_create_restores_another_rooms_binding_byte_for_byte(paperclip, tmp_path):
+    room_a = '{"sessionKey": "agent:ceo:lightbulb:channel:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "boundAt": 1}\n'
+    _binding(tmp_path).parent.mkdir(parents=True)
+    _binding(tmp_path).write_text(room_a)
+    before = _binding(tmp_path).read_bytes()
+    paperclip["fail"][("POST", f"/api/companies/{COMPANY}/approvals")] = _http_error(500, {})
+    lightbulb._request_approval({"title": "t", "summary": "s", "tasks": ["WAL-6"]}, session_id=ROOM_KEY)
+    assert _binding(tmp_path).read_bytes() == before

@@ -435,17 +435,22 @@ def _http_error_text(exc: urllib.error.HTTPError) -> str:
     return f"HTTP {exc.code}" + (f": {str(detail)[:200]}" if detail else "")
 
 
-def _bind_issue_to_room(session_id: str, issue_id: str) -> Path | None:
+def _bind_issue_to_room(session_id: str, issue_id: str) -> tuple[Path, bytes | None] | None:
     """paperclip-api.sh's write_binding, same file and format: the issue belongs to this room
     conversation, so turn._route_paperclip_run lands the approval's wake here. Returns the path
-    when this call created it (undone if the approval is not created), else None."""
+    and its exact prior bytes (None: there was no file), so a failed create can put it back."""
     from bridge import turn
 
     room = _scope_secret("LIGHTBULB_ROOM_SESSION_KEY") or session_id
     if not turn.ROOM_SESSION_RE.match(room or "") or not _ISSUE_FILE_RE.match(issue_id):
         return None
     path = turn_context._home() / turn.ISSUE_BINDINGS_DIR / f"{issue_id}.json"
-    created = not path.exists()
+    try:
+        prior = path.read_bytes()
+    except FileNotFoundError:
+        prior = None
+    except OSError:
+        return None
     binding = {"sessionKey": room, "boundAt": int(time.time())}
     if session_id != room:
         binding["origin"] = session_id
@@ -454,7 +459,7 @@ def _bind_issue_to_room(session_id: str, issue_id: str) -> Path | None:
         path.write_text(json.dumps(binding), encoding="utf-8")
     except OSError:
         return None
-    return path if created else None
+    return path, prior
 
 
 def _attached_run_id(issue_id: str) -> str | None:
@@ -511,12 +516,18 @@ def _request_approval(args: dict, *, session_id: str = "", **_kw) -> str:
     except Exception as exc:  # noqa: BLE001
         return f"Approval not created: {type(exc).__name__}."
     # Bind BEFORE the create: an approval can be answered at once, and its wake must find the room.
-    new_bindings = [p for p in (_bind_issue_to_room(session_id, i["id"]) for i in issues) if p]
+    bound = [b for b in (_bind_issue_to_room(session_id, i["id"]) for i in issues) if b]
     try:
         approval = _paperclip_call("POST", f"{base}/api/companies/{company_id}/approvals", key, body, run_id)
     except Exception as exc:  # noqa: BLE001
-        for path in new_bindings:
-            path.unlink(missing_ok=True)
+        for path, prior in bound:  # put back another room's binding byte for byte
+            try:
+                if prior is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.write_bytes(prior)
+            except OSError:
+                pass
         if isinstance(exc, urllib.error.HTTPError):
             return f"Approval not created: {_http_error_text(exc)}."
         return f"Approval not created: {type(exc).__name__}."

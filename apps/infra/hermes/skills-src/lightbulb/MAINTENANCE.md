@@ -398,6 +398,12 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  /internal/messaging/agent-posts; the GET agent-messages/.../receipts/{eventId} pre-check is what prints "Already posted:") + core/services/messaging.py (resolve_agent_post_room — the
                                  room > user/handle > issue creator > #general order; then create_agent_message)
   - Chat vs document ........ references/chat-vs-document.md + SKILL.md (non-negotiable + routing row)
+                              First-run result contract ("The first run" section, pointed at from SKILL.md's
+                                 deliverable bullet and company-and-plans.md, because the first room turn can run
+                                 before fulfilment stages BRIEF.md) mirrors
+                                 apps/backend/core/services/onboarding_brief.py _BRIEF_TEMPLATE; edit both together.
+                                 The connect link (also references/integrations.md) is the app-link kind `connect` in
+                                 apps/frontend/src/components/messaging/appLinks.ts, rendered by RoomAppLinks.tsx with ConnectButton.
                               <- paperclip fork server/src/routes/issues.ts (PUT /issues/:id/documents/:key:
                                  assertAgentIssueMutationAllowed — own/unassigned idle issue, no run id needed;
                                  lockedDocumentStrategy create_new_document, hence "link the returned key");

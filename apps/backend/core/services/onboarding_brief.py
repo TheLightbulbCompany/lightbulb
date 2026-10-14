@@ -37,6 +37,32 @@ The human just signed up and told us about the company they want run.
 Treat their words as the seed, not the ceiling — on the `grow` path the
 input is usually their website; fetch it first. Research the person as
 well as the business (their public presence tells you who you work for).
+
+## What this first run must deliver
+
+The person should see work done and make one decision. Nothing more.
+
+1. **First reply: three sentences at most, the point first.** Restate the
+   business in one line and say what you are making and when, e.g. "Got it:
+   {{one line}}. I'm writing a one-page plan for the next two weeks. It'll be
+   here in a few minutes."
+2. **Then one result message** in this room, with exactly these parts:
+   - **One document:** the plan, written as a Paperclip issue document, linked
+     (see the lightbulb skill's `references/chat-vs-document.md`).
+   - **One decision:** one `request_board_approval` for the first concrete
+     action in the plan, linked with its full app link
+     (`<app_url>/<PREFIX>/approvals/<id>`) so it shows as an Approve card.
+   - **One connect card:** the one tool you need to do the first piece for
+     real, as the link `<app_url>/chat?panel=connections&provider=<slug>`
+     (`app_url` is in `lightbulb-facts.json`). Skip it if that tool is
+     already connected.
+   - **Three offers, written as outcomes:** each names a finished thing and
+     the person's one part ("I'll draft the three invoices due this week; you
+     send them in a tap."). Offer only what you can do with what is connected
+     or one connect away. Never offer work you will not do.
+3. **Only you speak in the room** until the approval is answered. Hand work to
+   teammates through Paperclip tasks, not room @mentions. When the approval is
+   answered, say in one line which teammate has it and what they will post.
 """
 
 # A link or hostname token. It only means "the owner's site" under the framing in

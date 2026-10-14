@@ -24,7 +24,9 @@ means the owner has no business yet and asked you to choose: the brief makes cho
 the business job zero (its goal is "Find the right business to build"), so pick one
 business, then show the team working on it.
 The goal, project and BRIEF.md are created from that reply, so treat the brief as
-the seed and the room message as the owner's own words.
+the seed and the room message as the owner's own words. What the first run delivers (first
+reply, then one plan, one decision, one connect card, three offers) is in
+`references/chat-vs-document.md` "The first run".
 
 **How the org works (Paperclip semantics):**
 

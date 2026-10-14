@@ -2441,7 +2441,24 @@ def _observe_prompt(agent_id: str, body: dict) -> str:
             "- One person's yes or thanks answers for the whole group; do not wait for the others."
             + ("\n- If a question to the room is one you can't answer, say so briefly and name who can."
                "\n- If this message doesn't need anything from you, reply exactly [SILENT] and nothing else."
-               if body.get("eventKind") == "room_event" else ""))
+               if body.get("eventKind") == "room_event" else "")
+            + (FIRST_RUN_LINE if _first_run(body) else ""))
+
+
+#: T13: the first run's shape reaches its very first turn, which can run before the backend stages
+#: BRIEF.md (onboarding_brief fulfilment runs after dispatch). The contract itself lives in the
+#: lightbulb skill's chat-vs-document.md "The first run" and in onboarding_brief._BRIEF_TEMPLATE.
+FIRST_RUN_LINE = ("\n- This is the owner's first message in this workspace: the first run. Reply in three "
+                  "sentences at most, then deliver what the lightbulb skill's references/chat-vs-document.md "
+                  "\"The first run\" describes: one plan document, one approval, one connect card, three offers.")
+
+
+def _first_run(body: dict) -> bool:
+    """A person's first message in a channel whose earlier history is only agents' (the seeded
+    welcome): the shape of a fresh workspace's #general when its owner first answers."""
+    history = body.get("recentHistory") or []
+    return ((body.get("sender") or {}).get("kind") == "human" and (body.get("room") or {}).get("kind") == "channel"
+            and bool(history) and all((m.get("author") or {}).get("kind") == "agent" for m in history))
 
 
 def _is_own(m: dict, agent_id: str) -> bool:

@@ -72,6 +72,16 @@ def test_only_room_event_turns_are_offered_silence():
     assert "[SILENT]" not in turn._observe_prompt("a", {"eventKind": "user_request"})
 
 
+def test_the_first_run_line_reaches_only_the_owners_first_message():
+    welcome = [{"author": {"kind": "agent", "id": "ceo"}, "text": "Welcome"}]
+    first = {"eventKind": "user_request", "sender": {"kind": "human"}, "room": {"kind": "channel"}, "recentHistory": welcome}
+    assert turn.FIRST_RUN_LINE in turn._observe_prompt("ceo", first)
+    later = {**first, "recentHistory": [*welcome, {"author": {"kind": "human"}, "text": "hi"}]}
+    assert turn.FIRST_RUN_LINE not in turn._observe_prompt("ceo", later)
+    assert turn.FIRST_RUN_LINE not in turn._observe_prompt("ceo", {**first, "room": {"kind": "dm"}})
+    assert turn.FIRST_RUN_LINE not in turn._observe_prompt("ceo", {**first, "recentHistory": []})
+
+
 def test_group_manners_reach_every_turn_and_the_room_question_rule_only_ambient_ones():
     ambient, addressed = (turn._observe_prompt("a", {"eventKind": k}) for k in ("room_event", "user_request"))
     for line in ("correct it once and cite your source", "phrased as \"we\"", "yes or thanks answers"):

@@ -16,6 +16,7 @@ export type AppLink = { href: string } & (
   | { kind: "message"; roomId: string; messageId: string }
   | { kind: "room"; roomId: string }
   | { kind: "session"; sessionId: string }
+  | { kind: "connect"; provider: string }
   | { kind: "other" }
 );
 
@@ -47,6 +48,7 @@ export function appLinkTarget(raw: string | null | undefined, origin = typeof wi
   const panel = p.get("panel");
   if (panel === "teams-issue-detail" && detailId) return { kind: "issue", id: detailId, href: shell };
   if (panel === "teams-approval-detail" && detailId) return { kind: "approval", id: detailId, href: shell };
+  if (panel === "connections" && p.get("provider")) return { kind: "connect", provider: p.get("provider")!, href: shell };
   if (panel === "agent-inspector" && p.get("agent")) return { kind: "agent", id: p.get("agent")!, href: shell };
   const session = parseSessionPermalink(shellUrl.href, shellUrl.origin);
   if (session) return { kind: "session", sessionId: session.sessionId, href: shell };

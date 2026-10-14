@@ -158,7 +158,7 @@ describe("JoinWorkspacePage", () => {
     clerk.isSignedIn = false;
     render(<JoinWorkspacePage />);
 
-    expect(await screen.findByRole("button", { name: /sign in to join/i })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /continue to join/i })).toBeInTheDocument();
     expect(window.location.hash).toBe("");
     expect(window.sessionStorage.getItem("lightbulb:workspace-join:org_1")).toBe("s3cr3t-token");
     expect(post).not.toHaveBeenCalled();
@@ -168,7 +168,7 @@ describe("JoinWorkspacePage", () => {
     clerk.isSignedIn = false;
     render(<JoinWorkspacePage />);
 
-    await screen.findByRole("button", { name: /sign in to join/i });
+    await screen.findByRole("button", { name: /continue to join/i });
     expect(clerk.signInButtonProps).toEqual({
       mode: "modal",
       forceRedirectUrl: "/join/org_1",

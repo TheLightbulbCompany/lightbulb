@@ -4,6 +4,8 @@ import { RoomLimitBar } from "../RoomLimitBar";
 import type { BillingAccount } from "@/hooks/useBilling";
 
 vi.mock("@/hooks/useBilling", () => ({ useBilling: () => ({ account: null }) }));
+const role = vi.hoisted(() => ({ admin: true }));
+vi.mock("@/hooks/useIsWorkspaceAdmin", () => ({ useIsWorkspaceAdmin: () => role.admin }));
 
 const account = (over: Partial<BillingAccount>): BillingAccount => ({
   is_subscribed: false, current_spend: 0, lifetime_spend: 0, subscription_status: "trial_local", trial_end: null,
@@ -23,6 +25,15 @@ describe("RoomLimitBar", () => {
     expect(bar).toHaveTextContent(line);
     expect(bar).toHaveTextContent(/Messages to people still send\.|people can still message/);
     expect(screen.getByRole("link", { name: cta })).toHaveAttribute("href", href);
+  });
+
+  it("shows a member the reason without a billing button they cannot use", () => {
+    role.admin = false;
+    try {
+      render(<RoomLimitBar account={account({ block_reason: "trial_daily_cap" })} />);
+      expect(screen.getByRole("status")).toHaveTextContent("Daily free limit reached");
+      expect(screen.queryByRole("link")).toBeNull();
+    } finally { role.admin = true; }
   });
 
   it("leaves out_of_credits to the shell's OutOfCreditsBanner", () => {

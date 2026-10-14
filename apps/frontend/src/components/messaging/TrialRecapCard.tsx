@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useState } from "react";
 import useSWR from "swr";
 
+import { Button } from "@/components/ui/button";
 import { useBilling } from "@/hooks/useBilling";
 import { useApi } from "@/lib/api";
 
@@ -100,9 +101,9 @@ export function TrialRecapCard() {
       )}
       <div className="mt-2 flex items-center gap-3">
         {isAdmin ? (
-          <button
+          <Button
             type="button"
-            className="settings-btn-save"
+            size="sm"
             disabled={pending}
             onClick={async () => {
               setPending(true);
@@ -114,7 +115,7 @@ export function TrialRecapCard() {
             }}
           >
             {pending ? "Starting…" : "Keep the team"}
-          </button>
+          </Button>
         ) : (
           <span className="text-[var(--fg-soft)]">Ask an admin to keep the team.</span>
         )}

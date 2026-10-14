@@ -5,6 +5,7 @@ import { AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { handleShellLinkClick } from "@/lib/shellNav";
 import { useBilling, type BillingAccount } from "@/hooks/useBilling";
+import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 
 /**
  * Typed error card rendered when an agent run terminates with an error.
@@ -178,6 +179,8 @@ export function describeError(
 export function ChatErrorCard({ message, code }: ChatErrorCardProps) {
   const { account } = useBilling();
   const { title, description, action } = describeError(code, message, account);
+  // Every action here is a billing or provider setting only an admin can change.
+  const isAdmin = useIsWorkspaceAdmin();
 
   return (
     <div
@@ -192,7 +195,7 @@ export function ChatErrorCard({ message, code }: ChatErrorCardProps) {
           <p className="text-sm font-medium leading-tight">{title}</p>
           <p className="mt-1 text-sm leading-snug whitespace-pre-wrap break-words text-[var(--midnight-soft)]">{description}</p>
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            {action && (
+            {action && isAdmin && (
               <Button
                 asChild
                 size="sm"

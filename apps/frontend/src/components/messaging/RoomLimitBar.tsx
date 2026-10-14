@@ -7,6 +7,7 @@ import { describeError } from "@/components/chat/ChatErrorCard";
 import { Button } from "@/components/ui/button";
 import { handleShellLinkClick } from "@/lib/shellNav";
 import type { BillingAccount } from "@/hooks/useBilling";
+import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
 
 /** What the block means for the room: agent turns stop, people can still talk. */
 const AGENTS_LINE: Partial<Record<NonNullable<BillingAccount["block_reason"]>, string>> = {
@@ -22,6 +23,7 @@ const AGENTS_LINE: Partial<Record<NonNullable<BillingAccount["block_reason"]>, s
  * and a message to a person still goes through; only agent turns are refused.
  */
 export function RoomLimitBar({ account }: { account?: BillingAccount | null }): ReactElement | null {
+  const isAdmin = useIsWorkspaceAdmin();
   const reason = account?.block_reason;
   // out_of_credits is the shell's OutOfCreditsBanner's job, not the room's.
   const line = reason && AGENTS_LINE[reason];
@@ -33,7 +35,7 @@ export function RoomLimitBar({ account }: { account?: BillingAccount | null }): 
       <span className="font-medium">{title}.</span> {line}
       {reason === "trial_expired" ? "" : " Messages to people still send."}
     </p>
-    {action && <Button asChild size="sm" variant="outline">
+    {action && isAdmin && <Button asChild size="sm" variant="outline">
       {action.crossRoute
         ? <Link href={action.href}>{action.label}</Link>
         : <a href={action.href} onClick={(event) => handleShellLinkClick(event, action.href)}>{action.label}</a>}

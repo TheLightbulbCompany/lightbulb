@@ -265,7 +265,7 @@ export const COMPARE_PAGES: ComparePage[] = [
     faq: [
       {
         q: "Can my teammate continue my Claude Code session?",
-        a: "In Lightbulb, yes: watch it and join it, and pick up a Claude Code session with the full history. Delta and Lody also support continuing a session.",
+        a: "In Lightbulb, yes: watch it and join it, and, once you allow it, pick up a Claude Code session with the full history. Delta and Lody also support continuing a session.",
       },
       {
         q: "Do I need to switch from Claude Code or Codex?",

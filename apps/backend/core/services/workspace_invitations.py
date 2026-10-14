@@ -78,6 +78,10 @@ async def send(org_id: str, email: str, *, inviter: str) -> dict:
     if any((p.get("email_address") or "").lower() == email for p in pending):
         raise HTTPException(status_code=409, detail=clerk_admin.ALREADY_INVITED)
 
+    from core.services import join_analytics
+
+    # Before Clerk can create the membership: the membership webhook reads it by email.
+    await join_analytics.mark_join_via(org_id, via="invite", email=email, invited_by=inviter)
     inv = await clerk_admin.create_organization_invitation(
         org_id=org_id,
         email=email,

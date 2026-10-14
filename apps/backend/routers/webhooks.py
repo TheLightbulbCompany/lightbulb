@@ -362,6 +362,9 @@ async def _handle_organization_created(data: dict) -> None:
         org_id,
         owner_user_id,
     )
+    from core.services import join_analytics
+
+    join_analytics.workspace_created(org_id, owner_user_id)
     # Hand the agent-email slug the owner held at "Create your workspace" to the workspace
     # BEFORE provisioning (routers/company_slug.py). Idempotent, so a Svix redelivery is safe.
     from core.repositories import company_slug_repo
@@ -464,6 +467,12 @@ async def _handle_organization_membership_created(
     except Exception:
         logger.exception("membership.created: default room join failed org=%s user=%s", org_id, user_id)
         put_metric("messaging.default_room.error")
+
+    from core.services import join_analytics
+
+    await join_analytics.member_joined(
+        org_id, user_id, email=email, creator_id=owner_user_id, membership_id=data.get("id") or ""
+    )
 
 
 async def _handle_organization_membership_deleted(

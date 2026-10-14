@@ -454,8 +454,14 @@ impl Host {
                 // person (Happy's rule). The restart's "unknown" is only cleared by a hook or a
                 // listing, and an idle session gets neither: Claude leaves some live processes
                 // out of `claude agents`, and a Codex thread's rollout can be gone. A hook still
-                // moves it to busy or waiting when it next works.
-                if m.ended_at.is_none() && native.status == "unknown" && still_running(&native.process) {
+                // moves it to busy or waiting when it next works. Not while a prompt is open and
+                // unresolved (`waiting`, e.g. a hold whose delivery failed): the terminal may still
+                // be blocked on it, so it stays unknown until the provider says otherwise.
+                if m.ended_at.is_none()
+                    && native.status == "unknown"
+                    && m.waiting.is_none()
+                    && still_running(&native.process)
+                {
                     native.status = "idle".into();
                 }
                 native
@@ -3913,6 +3919,14 @@ pub(super) mod tests {
             Some("runtime-unverified"),
             "online is a status, not verified control"
         );
+        // A prompt whose remote hold was dropped is unresolved: the terminal may still be
+        // blocked on it, so it is not called idle.
+        let mut asking = test_mirror("dddd0000-0000-4000-8000-000000000000", "gen-1");
+        asking.waiting = Some(WaitingPrompt { summary: "Run tests?".into(), ..Default::default() });
+        let key = native_key(&asking.native);
+        let mut host = test_host(dir.path(), vec![(key.as_str(), asking)]);
+        host.observe(vec![], &BTreeSet::new()).unwrap();
+        assert_eq!(host.mirrors[&key].native.status, "unknown");
     }
 
     #[test]

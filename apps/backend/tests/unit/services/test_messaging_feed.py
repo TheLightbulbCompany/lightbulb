@@ -2,6 +2,7 @@
 identified by id, its topic the team's brief; agents post to it with ``feed: true`` and a reason."""
 
 import asyncio
+import threading
 import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -131,9 +132,23 @@ async def test_the_first_reader_is_a_member_and_the_workspace_creator_owns_the_f
 
 
 @pytest.mark.asyncio
-async def test_two_different_users_racing_get_one_room_one_welcome_no_error(workspace):
+async def test_two_different_users_racing_get_one_room_one_welcome_no_error(workspace, monkeypatch):
     from core.auth import AuthContext
 
+    # moto restores the whole table on a failed transaction and is not thread-safe: a losing
+    # create's restore can wipe the winner's rows, which DynamoDB never does. One call at a time
+    # (test_messaging_repo's pattern); the readers still interleave between awaits.
+    atomic = threading.Lock()
+    real = repo.run_in_thread
+
+    async def run_in_thread(call, *args, **kwargs):
+        def locked(*a, **kw):
+            with atomic:
+                return call(*a, **kw)
+
+        return await real(locked, *args, **kwargs)
+
+    monkeypatch.setattr(repo, "run_in_thread", run_in_thread)
     results = await asyncio.gather(
         messaging.get_feed(AuthContext(user_id="user_B", org_id=OWNER)),
         messaging.get_feed(AuthContext(user_id="user_A", org_id=OWNER)),
@@ -576,3 +591,22 @@ async def test_a_failed_undo_still_frees_the_feed_marker_for_a_later_rejoin(work
         await messaging.join_feed_room(OWNER, "user_C")
     # The marker is free: claiming it again succeeds.
     assert await repo.claim_autojoin(FEED, "user_C") is True
+
+
+@pytest.mark.asyncio
+async def test_a_failed_marker_release_never_hides_the_undo_error(workspace, monkeypatch):
+    await messaging.ensure_feed_room(OWNER)
+    await repo.ensure_user_stream(OWNER, "user_C")
+    real_upsert = repo.upsert_member
+
+    async def removed_meanwhile(**kwargs):
+        meta = await real_upsert(**kwargs)
+        await repo.deactivate_user_stream(OWNER, "user_C")
+        return meta
+
+    monkeypatch.setattr(messaging.messaging_repo, "upsert_member", removed_meanwhile)
+    monkeypatch.setattr(messaging.messaging_repo, "remove_member", AsyncMock(side_effect=_cancelled()))
+    monkeypatch.setattr(messaging.messaging_repo, "release_autojoin", AsyncMock(side_effect=RuntimeError("release")))
+    with pytest.raises(Exception) as exc:
+        await messaging.join_feed_room(OWNER, "user_C")
+    assert "revision" in str(exc.value)  # the undo's TransactionCanceledException, not "release"

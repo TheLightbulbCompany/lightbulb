@@ -1938,11 +1938,17 @@ async def _autojoin(owner_id: str, room_id: str, user_id: str) -> bool:
     if not (stream and stream.get("active")):
         try:
             await _remove_human_seat(owner_id, room_id, user_id)
-        finally:
-            # Freed even if the undo raised: the stream is off, so no read can re-seat them now,
-            # and revoke's second pass still removes the seat.
+        except Exception:
+            # Free the feed marker even so: the stream is off, so no read can re-seat them, and
+            # revoke's second pass still removes the seat. Logged, never hiding the undo's error.
             if is_feed_room(meta):
-                await messaging_repo.release_autojoin(room_id, user_id)
+                try:
+                    await messaging_repo.release_autojoin(room_id, user_id)
+                except Exception:
+                    logger.exception("feed autojoin release failed owner=%s user=%s", owner_id, user_id)
+            raise
+        if is_feed_room(meta):
+            await messaging_repo.release_autojoin(room_id, user_id)
         return False
     _emit_member_added(owner_id, user_id, "human", by="system")
     await _publish_room_metadata(meta)

@@ -2,20 +2,19 @@
 
 import Link from "next/link";
 
+import { ordinal, type Pricing } from "@/lib/pricing";
 import { captureSignupCta } from "@/lib/signupFlow";
 
 import { Arrow } from "./Arrow";
 
-// The plan's price line ("then $50 a month…") joins this list with /pricing
-// (T30); until then the homepage names no price.
+// The first line carries the plan's price, read from the billing API by the page.
 const OFFER = [
-  "30 days free",
   "Your price locked for two years",
   "A shared channel with us inside your workspace, and fixes within days",
   "A say in what we build next",
 ];
 
-export function FoundingTeams() {
+export function FoundingTeams({ pricing: p }: { pricing: Pricing }) {
   return (
     <section className="lb-founding" id="founding-teams">
       <div className="lb-wrap">
@@ -26,7 +25,10 @@ export function FoundingTeams() {
           workflow, invite your second person, and answer your first approval card.
         </p>
         <ul className="lb-founding-list">
-          {OFFER.map((item) => (
+          {[
+            `${p.trialDays} days free, then $${p.teamPriceUsd} a month for up to ${p.includedMembers} people and $${p.seatPriceUsd} a member from the ${ordinal(p.includedMembers + 1)}`,
+            ...OFFER,
+          ].map((item) => (
             <li key={item}>{item}</li>
           ))}
         </ul>

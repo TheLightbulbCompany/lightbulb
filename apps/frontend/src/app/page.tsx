@@ -42,6 +42,7 @@ export default async function LandingPage() {
   // Reading the cookie makes this page render per request: the headline test
   // needs each visitor to keep the variant they were first shown.
   const variant = parseHeadlineVariant((await cookies()).get(HEADLINE_COOKIE)?.value) ?? pickHeadlineVariant();
+  const pricing = await getPricing();
   return (
     <main className="ld-page min-h-screen">
       <JsonLd data={homeJsonLd} />
@@ -56,8 +57,8 @@ export default async function LandingPage() {
       <WorkspaceBand />
       <ProofStories />
       <ProofBand />
-      <Pricing pricing={await getPricing()} />
-      <FoundingTeams />
+      <Pricing pricing={pricing} />
+      <FoundingTeams pricing={pricing} />
       <HomeFaq />
       <AskAI />
       <Footer />

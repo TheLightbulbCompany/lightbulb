@@ -19,10 +19,11 @@ import { ProofStories } from "../ProofStories";
 import { WorkspaceBand } from "../WorkspaceBand";
 import { ASK_AI_PROMPT } from "../askAiPrompt";
 
+const PRICING = { teamPriceUsd: 50, includedMembers: 5, seatPriceUsd: 20, trialDays: 30 };
 const BANNED = /multiplayer|AI-native|orchestration|\bbots?\b|\bprompts?\b|autonomous|Paperclip|Hermes|AgentCore|\bJev\b/i;
 
 describe("homepage voice", () => {
-  it("uses none of the banned words or internal names, and names no price", () => {
+  it("uses none of the banned words or internal names, and names a price only in the founding line", () => {
     const { container } = render(
       <>
         <Hero variant="A" />
@@ -30,7 +31,7 @@ describe("homepage voice", () => {
         <HowItWorks />
         <WorkspaceBand />
         <ProofStories />
-        <FoundingTeams />
+        <FoundingTeams pricing={PRICING} />
         <HomeFaq />
         <AskAI />
         <Footer />
@@ -38,7 +39,9 @@ describe("homepage voice", () => {
     );
     const text = `${container.textContent} ${ASK_AI_PROMPT}`;
     expect(text).not.toMatch(BANNED);
-    expect(text).not.toMatch(/\$\s?(20|50)\b/);
+    // The founding line's price comes from the billing API; retired plan prices never appear.
+    expect(text).not.toMatch(/\$\s?150\b|\bUltra\b|\bBase\b/);
+    expect(text).toContain("30 days free, then $50 a month for up to 5 people and $20 a member from the 6th");
     expect(text).toContain("Anna’s Frozen Treats");
     expect(text).toContain("Second Catch");
     expect(text).toContain("in your team’s channels");
@@ -53,7 +56,7 @@ describe("homepage voice", () => {
   });
 
   it("tracks the founding-teams door", () => {
-    render(<FoundingTeams />);
+    render(<FoundingTeams pricing={PRICING} />);
     fireEvent.click(screen.getByRole("link", { name: /Request a guided setup/ }));
     expect(captureSignupCta.mock.calls.map(([o]) => o.ctaId)).toEqual(["founding_setup"]);
   });

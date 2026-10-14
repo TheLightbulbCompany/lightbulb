@@ -65,7 +65,7 @@ export type SessionFrames = {
 };
 const accessGone = (e: unknown) => e instanceof ApiError && (e.status === 403 || e.status === 404);
 
-export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType, input, admitted = false, kept = false, frames }: {
+export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType, input, admitted = false, resizable = false, kept = false, frames }: {
   session: Pick<LocalSession, "sessionId" | "generation">;
   /** Absent, frames are read off `onEvent` with no subscription of this view's own (tests). */
   frames?: SessionFrames;
@@ -77,6 +77,9 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
    *  used it last (owner ruling 2026-10-14, tmux's `window-size latest`). Sent only while the person can type. */
   input?: (data: Uint8Array, epoch: number, size?: PanelSize) => Promise<unknown>;
   admitted?: boolean;
+  /** The session says its Mac takes this panel's size (`terminalResize`). Without it no size is ever sent:
+   *  the key requests are exactly the ones an older backend takes. */
+  resizable?: boolean;
   onEvent: (handler: (event: LiveEvent) => void) => () => void;
   /** `fresh`: this view just mounted and has no screen, so the Mac is asked for one now. */
   watch: (sessionId: string, fresh?: boolean) => Promise<unknown>;
@@ -114,12 +117,13 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
   const key = `${session.sessionId}:${session.generation}`;
   const canType = !!input && admitted && refusedFor !== key;
   useEffect(() => { onCanType?.(canType); }, [canType, onCanType]);
-  const typing = useRef({ canType, input, session, refuse: (k: string) => setRefusedFor(k) });
-  typing.current = { canType, input, session, refuse: (k: string) => setRefusedFor(k) };
+  const typing = useRef({ canType, resizable, input, session, refuse: (k: string) => setRefusedFor(k) });
+  typing.current = { canType, resizable, input, session, refuse: (k: string) => setRefusedFor(k) };
   const termRef = useRef<Terminal | null>(null);
   // Asks the Mac for this panel's size (set by the terminal effect below); `claim`: the person uses it now.
   const sendSize = useRef<(claim: boolean) => void>(() => {});
   useEffect(() => { if (termRef.current) termRef.current.options.disableStdin = !canType; if (canType) sendSize.current(false); }, [canType]);
+  useEffect(() => { if (resizable) sendSize.current(false); }, [resizable]);
   // The screen this view last asked for (a session's, or its kept one): `watch` may change identity
   // between renders, and each fresh ask costs every viewer a history burst.
   const asked = useRef("");
@@ -264,7 +268,7 @@ export function SessionTerminalView({ session, onEvent, watch, onLive, onCanType
     let resizeTimer: ReturnType<typeof setTimeout> | undefined;
     const panelSize = (claim: boolean): PanelSize | undefined => {
       const shown = host.current?.querySelector<HTMLElement>(".xterm-screen");
-      if (!term || !order.synced || !shown?.offsetWidth || !shown.offsetHeight || !around?.clientWidth || !around.clientHeight) return undefined;
+      if (!typing.current.resizable || !term || !order.synced || !shown?.offsetWidth || !shown.offsetHeight || !around?.clientWidth || !around.clientHeight) return undefined;
       return { ...panelGrid({ w: shown.offsetWidth, h: shown.offsetHeight }, { cols: term.cols, rows: term.rows }, { w: around.clientWidth, h: around.clientHeight }), claim };
     };
     sendSize.current = (claim: boolean) => {

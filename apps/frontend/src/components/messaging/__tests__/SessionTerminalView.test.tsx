@@ -695,10 +695,10 @@ describe("the session takes this panel's size while its person uses it", () => {
     size = { w: 660, h: 390 };
   });
   afterEach(() => { vi.unstubAllGlobals(); });
-  const open = async (admitted: boolean) => {
+  const open = async (admitted: boolean, resizable = true) => {
     hooks.screen = { w: 800, h: 510 }; // the Mac's 100 x 30 grid: 8 x 17 px cells at 13 px
     const input = vi.fn(async () => undefined);
-    const view = await mountView({ input, admitted });
+    const view = await mountView({ input, admitted, resizable });
     const el = document.querySelector<HTMLElement>(".session-terminal-scroll")!;
     Object.defineProperty(el, "clientWidth", { configurable: true, get: () => size.w });
     Object.defineProperty(el, "clientHeight", { configurable: true, get: () => size.h });
@@ -727,6 +727,34 @@ describe("the session takes this panel's size while its person uses it", () => {
     act(() => { hooks.data!("ls"); });
     await act(async () => { await vi.advanceTimersByTimeAsync(50); });
     expect(sizes(input)[2]).toEqual([2, { cols: 102, rows: 23, claim: true }]); // typing is using
+  });
+
+  it("sends no size at all, and keys exactly as before, when the session lacks the capability", async () => {
+    const { input } = await open(true, false);
+    size = { w: 820, h: 400 };
+    act(() => { resized(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(input).not.toHaveBeenCalled(); // no size alone
+    act(() => { hooks.data!("ls"); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+    expect(input).toHaveBeenCalledTimes(1);
+    expect(input.mock.calls[0][2]).toBeUndefined(); // no `size` on the key batch
+  });
+
+  it("ignores a failed size alone and keeps typing", async () => {
+    const input = vi.fn(async (d: Uint8Array) => { if (!d.length) throw new ApiError(422, null); });
+    hooks.screen = { w: 800, h: 510 };
+    const view = await mountView({ input, admitted: true, resizable: true });
+    const el = document.querySelector<HTMLElement>(".session-terminal-scroll")!;
+    Object.defineProperty(el, "clientWidth", { configurable: true, get: () => size.w });
+    Object.defineProperty(el, "clientHeight", { configurable: true, get: () => size.h });
+    view.emit(screenEvent("s1"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    act(() => { hooks.data!("a"); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+    act(() => { hooks.data!("b"); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+    expect(input.mock.calls.filter(([d]) => (d as Uint8Array).length).length).toBe(2);
   });
 
   it("sends nothing for a viewer who cannot type", async () => {

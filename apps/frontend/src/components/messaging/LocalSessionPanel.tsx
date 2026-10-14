@@ -347,7 +347,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       </div>}
       {showBrowser && <SessionBrowserTab sessionId={session.sessionId} frames={frames} canType={control && running && session.shared !== false && !(session.inputPaused && !own)} />}
       {watchRemote && <div className="session-terminal-slot" hidden={showBrowser} onScrollCapture={endedScreen ? openAtTop : undefined}><SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} frames={frames} onLive={setScreenLive} onCanType={setTermCanType} kept={endedScreen}
-        admitted={running && control && session.shared !== false && !(session.inputPaused && !own)}
+        admitted={running && control && session.shared !== false && !(session.inputPaused && !own)} resizable={session.terminalResize === true}
         input={client.sendLocalSessionInput ? (bytes, epoch, size) => client.sendLocalSessionInput!(session.sessionId, toBase64(bytes), epoch, size) : undefined} /></div>}
       {terminalLive && control && !own && session.inputPaused && <p className="text-sm text-muted-foreground">Paused while {ownerName} answers a request to join.</p>}
       {liveTerminal && !showBrowser && <div className="local-session-feedback">{feedback}</div>}

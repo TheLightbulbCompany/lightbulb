@@ -431,6 +431,9 @@ export interface LocalSession {
   pendingJoins?: string[];
   /** A request is pending and the owner's older Mac (no bandOwnerOnly) has paused remote typing until it is answered. A newer Mac never pauses. */
   inputPaused?: boolean;
+  /** The live terminal takes the viewer's panel size on /input (owner ruling 2026-10-14: the session takes the
+   *  size of whoever used it last). Absent from an older backend or for a Mac that cannot: then no size is sent. */
+  terminalResize?: boolean;
   /** The viewer's seat in this session's chat, once they are in it. */
   chatRoomId?: string;
   /** Top-level chat messages above the viewer's read point, capped at 99. */

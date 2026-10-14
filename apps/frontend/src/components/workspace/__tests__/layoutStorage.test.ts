@@ -110,6 +110,19 @@ describe("layoutStorage", () => {
     expect(clean.panels["teams-payments"]).toBeUndefined();
   });
 
+  it("Work migration keeps the task-board page that was active", () => {
+    const dirty = minimalLayout({
+      "teams-issues": { id: "teams-issues", contentComponent: "teams", title: "Tasks", params: { teamsKey: "issues" } },
+      "teams-projects": { id: "teams-projects", contentComponent: "teams", title: "Projects", params: { teamsKey: "projects" } },
+    });
+    dirty.grid.root = {
+      type: "branch",
+      data: [{ type: "leaf", data: { id: "g1", views: ["teams-issues", "teams-projects"], activeView: "teams-projects" } }],
+    } as unknown as SerializedDockview["grid"]["root"];
+    const clean = sanitizeLayout(dirty);
+    expect(clean.panels["teams-work"]).toMatchObject({ params: { teamsKey: "projects" } });
+  });
+
   it("sanitizer heals a stale serialized tab title from the registry", () => {
     const dirty = minimalLayout({
       "teams-artifacts": {

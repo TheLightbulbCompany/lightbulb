@@ -267,7 +267,12 @@ export function sanitizeLayout(
   // the first in `panels`, leaving a duplicate view id in the grid tree.
   const claimedTargets = new Set<string>();
 
-  for (const [id, state] of Object.entries(rawPanels)) {
+  // The visible tab goes first so, when several former task-board tabs fold
+  // into the one Work tab, the page the user was on is the one that survives.
+  const entries = Object.entries(rawPanels).sort(
+    ([a], [b]) => Number(b === activeView) - Number(a === activeView),
+  );
+  for (const [id, state] of entries) {
     // Docked session panels were retired in favor of a middle-pane focus
     // placement (SessionFocus). Unlike an ordinary unrecognized
     // contentComponent, this is a KNOWN retired shape: remapping it to

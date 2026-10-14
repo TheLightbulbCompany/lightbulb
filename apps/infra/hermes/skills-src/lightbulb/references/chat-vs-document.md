@@ -114,5 +114,6 @@ see work done and make one decision:
    button; skip it when that tool is connected), and three offers written as
    outcomes that name the person's one part ("I'll draft the three invoices due
    this week; you send them in a tap."). Never offer work you will not do.
-3. Only the CEO speaks in the room until the approval is answered; hand work to
-   teammates through tasks, then say in one line who has it.
+3. Only you (the agent whose home holds `BRIEF.md`) speak in the room until the
+   approval is answered; hand work to teammates through tasks, then say in one
+   line who has it.

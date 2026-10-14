@@ -1932,6 +1932,14 @@ async def _autojoin(owner_id: str, room_id: str, user_id: str) -> bool:
     except Exception:
         await messaging_repo.release_autojoin(room_id, user_id)
         raise
+    # A workspace removal that finished while we seated them (session_chat's re-check): undo the
+    # seat, which rotates the key they may have seen. The feed marker is freed for a later rejoin.
+    stream = await messaging_repo.get_user_stream(owner_id, user_id)
+    if not (stream and stream.get("active")):
+        await _remove_member_with_notices(meta, "human", user_id)
+        if is_feed_room(meta):
+            await messaging_repo.release_autojoin(room_id, user_id)
+        return False
     _emit_member_added(owner_id, user_id, "human", by="system")
     await _publish_room_metadata(meta)
     return True
@@ -2023,17 +2031,38 @@ async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
     return room_id
 
 
-async def ensure_feed_room(owner_id: str, owner_user_id: str | None = None) -> str | None:
+async def _feed_owner(owner_id: str, company, people: list[dict], requester: str | None) -> str | None:
+    """The feed's owner: the FIRST ACTIVE workspace member among the company's provisioner, the
+    Clerk org's ``created_by``, any org admin, then the requester. Active = in the Clerk org
+    and no deactivated stream (``revoke_human_membership`` turns it off before Clerk may catch
+    up). Never a departed user: the human guard would make them unremovable."""
+    present = {row["user_id"] for row in people}
+    org = await clerk_admin.get_organization(owner_id) or {}
+    candidates = [
+        getattr(company, "provisioner_user_id", ""),
+        org.get("created_by"),
+        *(row["user_id"] for row in people if row.get("role") in ("org:admin", "admin")),
+        requester,
+    ]
+    for user_id in candidates:
+        if user_id and user_id in present:
+            stream = await messaging_repo.get_user_stream(owner_id, user_id)
+            if stream is None or stream.get("active"):
+                return user_id
+    return None
+
+
+async def ensure_feed_room(owner_id: str, requester_user_id: str | None = None) -> str | None:
     """Create the workspace feed once, with the CEO's welcome post (spec 2026-10-14 §4.2).
 
     Modelled on ``ensure_default_room``: a room with a message returns at once (one consistent
     ``get_room``), so the Activity page can call it on every read and a workspace that predates
     the feed gets it lazily, with no backfill. Every roster agent sits on ``mentions`` (a plain
     post wakes nobody); every workspace human is seated through the ``AUTOJOIN#`` marker, so a
-    later teammate joins the same way. The room is always created as the WORKSPACE creator (the
-    company row's provisioner, else ``owner_user_id``, else the Clerk org's ``created_by``), never
-    whoever reads first: the create receipt is per creator, so one identity is what lets racing
-    callers converge. Returns None until the company is active."""
+    later teammate joins the same way. Its owner is chosen by ``_feed_owner`` (the requester only
+    as a last resort): the create receipt is per creator, so one identity lets racing callers
+    converge. Returns None until the company is active; raises ``ROOM_NOT_FOUND`` (404) for a
+    workspace with no active human, and a retryable 503 while Clerk cannot be read."""
     from core.repositories.paperclip_repo import PaperclipRepo
     from core.services.user_provision import ceo_agent_id
 
@@ -2051,14 +2080,16 @@ async def ensure_feed_room(owner_id: str, owner_user_id: str | None = None) -> s
     if ceo_id not in agents:
         return None
     client_room_id = f"workspace-feed-v1:{owner_id}"
+    try:
+        people = await clerk_admin.list_organization_members(owner_id, strict=True)
+    except Exception as exc:
+        raise ApiProblem(
+            "RUNTIME_UNAVAILABLE", "Workspace members are unavailable.", retryable=True, retry_after=3
+        ) from exc
     if existing_room is None:
-        owner_user_id = (
-            getattr(company, "provisioner_user_id", "")
-            or owner_user_id
-            or (await clerk_admin.get_organization(owner_id) or {}).get("created_by")
-        )
+        owner_user_id = await _feed_owner(owner_id, company, people, requester_user_id)
         if not owner_user_id:
-            return None
+            raise ApiProblem("ROOM_NOT_FOUND", "This workspace has no active member to own a feed.")
         handles = mention_handles(roster)
         seated = [ceo_id, *(agent_id for agent_id in agents if agent_id != ceo_id)][:FEED_AGENT_SEATS]
         members = [
@@ -2102,14 +2133,11 @@ async def ensure_feed_room(owner_id: str, owner_user_id: str | None = None) -> s
             if await messaging_repo.get_room(room_id) is None:
                 raise
     # Every current teammate, before the welcome: a room with a message is the "done" signal.
-    try:
-        for row in await clerk_admin.list_organization_members(owner_id):
-            try:
-                await join_feed_room(owner_id, row["user_id"])
-            except Exception:  # noqa: BLE001 -- one teammate never blocks the feed
-                logger.exception("feed seat failed owner=%s user=%s", owner_id, row.get("user_id"))
-    except Exception:  # noqa: BLE001 -- the Activity read seats its own caller
-        logger.exception("feed roster read failed owner=%s", owner_id)
+    for row in people:
+        try:
+            await join_feed_room(owner_id, row["user_id"])
+        except Exception:  # noqa: BLE001 -- one teammate never blocks the feed
+            logger.exception("feed seat failed owner=%s user=%s", owner_id, row.get("user_id"))
     await messaging_repo.create_message(
         room_id=room_id,
         owner_id=owner_id,
@@ -2137,7 +2165,7 @@ class FeedResponse(ContractModel):
 async def get_feed(auth: AuthContext) -> FeedResponse:
     """The Activity page's read: ensure the feed, seat the caller, return its id and brief."""
     owner_id = resolve_owner_id(auth)
-    room_id = await ensure_feed_room(owner_id)
+    room_id = await ensure_feed_room(owner_id, auth.user_id)
     if room_id is None:
         raise ApiProblem("RUNTIME_UNAVAILABLE", "The feed is not ready yet.", retryable=True, retry_after=3)
     await join_feed_room(owner_id, auth.user_id)
@@ -2728,15 +2756,11 @@ async def _remove_member_with_notices(meta: dict, kind: str, member_id: str) -> 
         # A channel never loses its owner: leaving or a workspace removal hands it on.
         new_owner_id=_channel_heir(meta, members, member_id),
     )
-    if meta["roomId"] == default_room_id(meta["ownerId"]):
-        # A removal (or leave) must stick: join_default_room never re-seats a marked user.
+    if meta["roomId"] == default_room_id(meta["ownerId"]) or is_feed_room(meta):
+        # A removal (or leave) must stick: the autojoin never re-seats a marked user. For the
+        # feed (only a workspace removal reaches here) revoke_human_membership frees it again
+        # once the stream is off, so a real rejoin re-seats them.
         await _mark_removed(meta, member_id)
-    elif is_feed_room(meta):
-        # Only a workspace removal reaches here: a rejoin to the workspace re-seats them.
-        try:
-            await messaging_repo.release_autojoin(meta["roomId"], member_id)
-        except Exception:
-            logger.exception("feed autojoin release failed room=%s member=%s", meta["roomId"], member_id)
     # The same revocation for the room's huddle: best effort, never raises.
     await livekit_huddles.remove_participant(meta["roomId"], member_id)
     return new_meta
@@ -2844,6 +2868,11 @@ async def revoke_human_membership(owner_id: str, user_id: str) -> None:
     except Exception:
         logger.warning("workspace.access.removed notice failed")
     await messaging_repo.deactivate_user_stream(owner_id, user_id)
+    # Only now, with the stream off: a feed read in the window above found the marker held.
+    try:
+        await messaging_repo.release_autojoin(messaging_repo.feed_room_id(owner_id), user_id)
+    except Exception:
+        logger.exception("feed autojoin release failed owner=%s user=%s", owner_id, user_id)
     if own_session_chats:
         # Their sessions' chats go silent for everyone: the person they were about is gone. After
         # the stream is off, which the chat door reads once it has seated someone: a seat that

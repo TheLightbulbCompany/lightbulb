@@ -20,6 +20,8 @@ def repo(monkeypatch):
         "release_autojoin": AsyncMock(),
         "upsert_member": AsyncMock(return_value={**META, "revision": 3}),
         "ensure_user_stream": AsyncMock(return_value="key"),
+        # The post-seat re-check (a removal that landed meanwhile undoes the seat).
+        "get_user_stream": AsyncMock(return_value={"active": True, "channelKey": "key"}),
     }
     for name, fake in fakes.items():
         monkeypatch.setattr(messaging.messaging_repo, name, fake)

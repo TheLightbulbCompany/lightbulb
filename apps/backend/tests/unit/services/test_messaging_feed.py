@@ -111,11 +111,13 @@ async def test_a_later_teammate_joins_once_and_workspace_membership_alone_decide
     assert await messaging.join_feed_room(OWNER, "user_C") is True
     assert await messaging.join_feed_room(OWNER, "user_C") is False
     before = await repo.get_room(FEED)
-    # A workspace removal (revoke_human_membership's call) still removes and rotates the key...
-    await messaging._remove_member_with_notices(before, "human", "user_C")
+    # A workspace removal still removes and rotates the key...
+    await messaging.revoke_human_membership(OWNER, "user_C")
     assert await repo.get_member(FEED, "human", "user_C") is None
     assert (await repo.get_room(FEED))["deliveryKey"] != before["deliveryKey"]
-    # ...and leaves no marker: rejoining the workspace re-seats them (the stream gate holds a removed one out).
+    assert await messaging.join_feed_room(OWNER, "user_C") is False  # stream off: no seat
+    # ...and a real rejoin to the workspace re-seats them.
+    await repo.ensure_user_stream(OWNER, "user_C", rejoin=True)
     assert await messaging.join_feed_room(OWNER, "user_C") is True
 
 
@@ -356,3 +358,94 @@ async def test_the_agent_read_returns_top_level_posts_only(workspace):
     )
     feed = await messaging.agent_feed(OWNER)
     assert [p["text"] for p in feed["posts"]] == [messaging.FEED_WELCOME]
+
+
+# ---- round 2: removal window, feed owner choice ----------------------------
+
+
+async def _seated_c():
+    await messaging.ensure_feed_room(OWNER)
+    assert await messaging.join_feed_room(OWNER, "user_C") is True
+    return await repo.get_room(FEED)
+
+
+def _active(stream) -> bool:
+    return bool(stream and stream.get("active"))
+
+
+@pytest.mark.asyncio
+async def test_a_feed_read_inside_the_removal_window_does_not_reseat(workspace, monkeypatch):
+    """Keys rotate before the stream goes off; a read landing in between must not re-seat."""
+    await _seated_c()
+    real_deactivate = repo.deactivate_user_stream
+
+    async def read_first(owner_id, user_id):
+        await messaging.join_feed_room(OWNER, "user_C")  # the removed user's still-valid JWT reads Activity
+        return await real_deactivate(owner_id, user_id)
+
+    monkeypatch.setattr(messaging.messaging_repo, "deactivate_user_stream", read_first)
+    await messaging.revoke_human_membership(OWNER, "user_C")
+    assert await repo.get_member(FEED, "human", "user_C") is None
+    assert not _active(await repo.get_user_stream(OWNER, "user_C"))
+    # A real rejoin (stream back on) re-seats them: the marker is free again.
+    await repo.ensure_user_stream(OWNER, "user_C", rejoin=True)
+    assert await messaging.join_feed_room(OWNER, "user_C") is True
+
+
+@pytest.mark.asyncio
+async def test_a_seat_that_lands_as_the_stream_goes_off_is_undone(workspace, monkeypatch):
+    await messaging.ensure_feed_room(OWNER)
+    await repo.ensure_user_stream(OWNER, "user_C")
+    before = await repo.get_room(FEED)
+    real_upsert = repo.upsert_member
+
+    async def removed_meanwhile(**kwargs):
+        meta = await real_upsert(**kwargs)
+        await repo.deactivate_user_stream(OWNER, "user_C")  # revoke finishes right here
+        return meta
+
+    monkeypatch.setattr(messaging.messaging_repo, "upsert_member", removed_meanwhile)
+    assert await messaging.join_feed_room(OWNER, "user_C") is False
+    assert await repo.get_member(FEED, "human", "user_C") is None
+    assert (await repo.get_room(FEED))["deliveryKey"] != before["deliveryKey"]
+
+
+@pytest.mark.asyncio
+async def test_a_departed_creator_never_owns_the_feed(workspace, monkeypatch):
+    # The provisioner (user_A) and Clerk's created_by (user_X) have both left; user_B is an admin.
+    monkeypatch.setattr(
+        messaging.clerk_admin,
+        "list_organization_members",
+        AsyncMock(return_value=[{"user_id": "user_C"}, {"user_id": "user_B", "role": "org:admin"}]),
+    )
+    monkeypatch.setattr(messaging.clerk_admin, "get_organization", AsyncMock(return_value={"created_by": "user_X"}))
+    assert await messaging.ensure_feed_room(OWNER) == FEED
+    roles = {row["id"]: row["role"] for row in await repo.list_members(FEED) if row["kind"] == "human"}
+    assert roles == {"user_B": "owner", "user_C": "member"}
+
+
+@pytest.mark.asyncio
+async def test_an_inactive_stream_is_not_an_owner_and_the_reader_is_the_last_resort(workspace, monkeypatch):
+    from core.auth import AuthContext
+
+    await repo.ensure_user_stream(OWNER, "user_A")
+    await repo.deactivate_user_stream(OWNER, "user_A")  # removed, Clerk not caught up yet
+    monkeypatch.setattr(messaging.clerk_admin, "get_organization", AsyncMock(return_value={}))
+    await messaging.get_feed(AuthContext(user_id="user_B", org_id=OWNER))
+    roles = {row["id"]: row["role"] for row in await repo.list_members(FEED) if row["kind"] == "human"}
+    assert roles == {"user_B": "owner"}
+
+
+@pytest.mark.asyncio
+async def test_a_workspace_with_no_active_human_has_no_feed_404_not_503(workspace, monkeypatch):
+    from core.auth import AuthContext
+
+    monkeypatch.setattr(messaging.clerk_admin, "list_organization_members", AsyncMock(return_value=[]))
+    for call in (
+        messaging.get_feed(AuthContext(user_id="user_Z", org_id=OWNER)),
+        messaging.agent_feed(OWNER),
+    ):
+        with pytest.raises(messaging.ApiProblem) as exc:
+            await call
+        assert exc.value.error.code == "ROOM_NOT_FOUND"
+    assert await repo.get_room(FEED) is None

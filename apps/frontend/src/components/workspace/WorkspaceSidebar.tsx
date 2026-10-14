@@ -3,10 +3,9 @@
 // Desktop navigation shares canonical room state with the Messages dock panel.
 import "./workspace.css";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { useUser } from "@clerk/nextjs";
 
-import { GallerySection } from "@/components/chat/GallerySection";
 import { HealthIndicator } from "@/components/chat/HealthIndicator";
 import { useBilling } from "@/hooks/useBilling";
 import { MessagingDirectory } from "@/components/messaging/MessagingWorkspace";
@@ -16,8 +15,10 @@ import { TrialRecapCard } from "@/components/messaging/TrialRecapCard";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { DesktopUpdater } from "@/components/desktop/DesktopUpdater";
 import { NodeStatusPill } from "@/components/desktop/NodeStatusPill";
+import { isDesktopApp } from "@/lib/desktopNotify";
 import { activateMessagesPanel } from "./workspaceController";
 
+const noSubscribe = () => () => {};
 
 interface WorkspaceSidebarProps {
   onRecoveryReprovision: () => void;
@@ -30,6 +31,8 @@ interface WorkspaceSidebarProps {
 export function WorkspaceSidebar({ onRecoveryReprovision, onNavigate }: WorkspaceSidebarProps): React.ReactElement {
   const { user } = useUser();
   const { account, isSubscribed } = useBilling();
+  // The server has no Tauri bridge, so it renders the browser answer and the client corrects it.
+  const desktop = useSyncExternalStore(noSubscribe, isDesktopApp, () => false);
 
   // Captured once so the footer's expiry check is stable across re-renders.
   const [nowMs] = useState(() => Date.now());
@@ -69,6 +72,11 @@ export function WorkspaceSidebar({ onRecoveryReprovision, onNavigate }: Workspac
 
 
       <div className="sidebar-footer">
+        {/* Renders only when the workspace is not healthy. */}
+        {(isSubscribed || subscriptionStatus === "trial_local") && (
+          <HealthIndicator onRecoveryReprovision={onRecoveryReprovision} />
+        )}
+        {desktop && <><NodeStatusPill /><DesktopUpdater /></>}
         <div className="user-row">
           <div className="user-avatar">{userInitials}</div>
           <div className="user-info">
@@ -79,15 +87,6 @@ export function WorkspaceSidebar({ onRecoveryReprovision, onNavigate }: Workspac
           )}
         </div>
         <FreeTierNote />
-        <details className="workspace-status">
-          <summary>Workspace tools</summary>
-          <GallerySection />
-          {(isSubscribed || subscriptionStatus === "trial_local") && (
-            <HealthIndicator onRecoveryReprovision={onRecoveryReprovision} />
-          )}
-          <NodeStatusPill />
-          <DesktopUpdater />
-        </details>
       </div>
     </div>
   );

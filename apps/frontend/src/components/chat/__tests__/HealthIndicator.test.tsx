@@ -37,17 +37,12 @@ describe("HealthIndicator", () => {
   });
 
 
-  it("HEALTHY renders the green dot with 'Connected' label and no recover button", () => {
+  it("HEALTHY renders nothing: the sidebar shows health only when something is wrong", () => {
     mockHealth.mockReturnValue(
       buildHealth({ state: "HEALTHY", reason: "Connected" }),
     );
     const { container } = render(<HealthIndicator />);
-    expect(screen.getByText("Connected")).toBeInTheDocument();
-    // The ok dot. Verifying class presence covers the visual contract — the
-    // test owns the ok-vs-warn-vs-err invariant, not the literal colour.
-    const dot = container.querySelector("span.rounded-full");
-    expect(dot?.className).toContain("bg-ok");
-    expect(screen.queryByRole("button")).toBeNull();
+    expect(container).toBeEmptyDOMElement();
   });
 
   it("GATEWAY_BUSY renders a yellow pulsing dot with 'Agent thinking...' and no recover CTA", () => {

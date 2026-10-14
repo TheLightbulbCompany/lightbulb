@@ -518,11 +518,7 @@
 .workspace-shell .sidebar-header { flex: none; }
 .workspace-shell .workspace-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .9375rem; font-weight: 700; color: var(--midnight); }
 .workspace-shell .sidebar-footer { padding: 12px 16px; }
-.workspace-shell .workspace-status { margin-top: 12px; font-size: var(--text-caption); color: var(--midnight-muted); }
-.workspace-shell .workspace-status summary { cursor: pointer; }
-.workspace-shell :is(.workspace-more-nav, .workspace-status) summary::marker { font-size: .75em; color: var(--midnight-muted); }
-.workspace-shell .workspace-status summary:focus-visible { outline: 2px solid var(--midnight); }
-.workspace-shell .workspace-status > :not(summary) { margin-top: 12px; }
+.workspace-shell .workspace-more-nav summary::marker { font-size: .75em; color: var(--midnight-muted); }
 .workspace-shell[data-messages-active="true"] .dv-tabs-and-actions-container { display: none; }
 .workspace-shell[data-messages-active="true"] .dockview-theme-lightbulb {
   --dv-tabs-and-actions-container-height: 0px;

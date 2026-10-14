@@ -11,11 +11,12 @@ export interface RoomGroup {
 
 /**
  * The sidebar's groups, in display order: Starred · the owner's custom
- * sections · Channels · External connections · Direct messages (both `dm`
- * and `group-dm` — the spec has no separate "Group chats" section) · Archived
- * (an archived room lands there whatever else it is). Every room lands in exactly one
+ * sections · Team (both `dm` and `group-dm` — there is no separate "Group
+ * chats" section) · Channels · External connections · Archived (an archived
+ * room lands there whatever else it is). Every room lands in exactly one
  * group, and empty groups are dropped unless named in `alwaysShow` (the
- * sidebar keeps Direct messages for the roster even before any DM exists).
+ * sidebar keeps Team for the roster even before any DM exists). The sidebar
+ * shows Sessions between Channels and External connections.
  */
 export function groupRooms(
   rooms: readonly DirectoryRoom[],
@@ -30,9 +31,9 @@ export function groupRooms(
   const order: RoomGroup[] = [
     { id: "starred", label: "Starred", rooms: [], custom: false },
     ...sections.map((section) => ({ id: section.id, label: section.name, rooms: [], custom: true })),
+    { id: "direct", label: "Team", rooms: [], custom: false },
     { id: "channels", label: "Channels", rooms: [], custom: false },
     { id: "external", label: "External connections", rooms: [], custom: false },
-    { id: "direct", label: "Direct messages", rooms: [], custom: false },
     { id: "archived", label: "Archived", rooms: [], custom: false },
   ];
   const byId = new Map(order.map((group) => [group.id, group]));

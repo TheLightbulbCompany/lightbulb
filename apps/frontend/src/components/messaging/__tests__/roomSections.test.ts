@@ -25,17 +25,18 @@ describe("groupRooms", () => {
     ]);
   });
 
-  it("orders starred, custom sections, channels, then direct messages", () => {
+  it("orders starred, custom sections, Team, channels, external connections, then archived", () => {
     const groups = groupRooms(
-      [room("beta"), room("alpha", { starred: true }), room("dm-1", { kind: "dm" }), room("shipping", { sectionId: "s-1" })],
+      [room("beta"), room("alpha", { starred: true }), room("dm-1", { kind: "dm" }), room("shipping", { sectionId: "s-1" }),
+        room("ext", { shared: true }), room("old", { archivedAt: "2026-09-23T00:00:00Z" })],
       [{ id: "s-1", name: "Ship" }],
       { sort: "name", nameOf },
     );
-    expect(groups.map((group) => group.label)).toEqual(["Starred", "Ship", "Channels", "Direct messages"]);
+    expect(groups.map((group) => group.label)).toEqual(["Starred", "Ship", "Team", "Channels", "External connections", "Archived"]);
     expect(groups[0].rooms.map((value) => value.roomId)).toEqual(["alpha"]);
     expect(groups[1].rooms.map((value) => value.roomId)).toEqual(["shipping"]);
-    expect(groups[2].rooms.map((value) => value.roomId)).toEqual(["beta"]);
-    expect(groups[3].rooms.map((value) => value.roomId)).toEqual(["dm-1"]);
+    expect(groups[2].rooms.map((value) => value.roomId)).toEqual(["dm-1"]);
+    expect(groups[3].rooms.map((value) => value.roomId)).toEqual(["beta"]);
   });
 
   it("separates shared channels into External connections using the canonical attribute", () => {
@@ -56,9 +57,9 @@ describe("groupRooms", () => {
       .toEqual(["Channels"]);
   });
 
-  it("keeps group DMs inside Direct messages", () => {
+  it("keeps group DMs inside Team", () => {
     const groups = groupRooms([room("g", { kind: "group-dm" }), room("d", { kind: "dm" })], [], { sort: "name", nameOf });
-    expect(groups.map((group) => group.label)).toEqual(["Direct messages"]);
+    expect(groups.map((group) => group.label)).toEqual(["Team"]);
     expect(groups[0].rooms.map((value) => value.roomId)).toEqual(["d", "g"]);
   });
 
@@ -101,13 +102,13 @@ describe("archived rooms", () => {
     expect(groups[1].rooms.map((value) => value.roomId)).toEqual(["fav", "kept", "old"]);
   });
 
-  it("move an archived group chat out of Direct messages", () => {
+  it("move an archived group chat out of Team", () => {
     const groups = groupRooms(
       [room("dm-1", { kind: "dm" }), room("trio", { kind: "group-dm", archivedAt: "2026-09-23T00:00:00Z" })],
       [],
       { sort: "name", nameOf },
     );
     expect(groups.map((group) => [group.label, group.rooms.map((value) => value.roomId)]))
-      .toEqual([["Direct messages", ["dm-1"]], ["Archived", ["trio"]]]);
+      .toEqual([["Team", ["dm-1"]], ["Archived", ["trio"]]]);
   });
 });

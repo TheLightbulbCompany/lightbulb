@@ -19,6 +19,7 @@ import { SessionListRow } from "./SessionListRow";
 import { StartSessionDialog } from "./StartSessionDialog";
 import { readSidebarPrefs, writeSidebarPrefs, type SidebarPrefs } from "./sidebarPrefs";
 import { useAsyncAction } from "./useAsyncAction";
+import { openInviteDialog } from "@/components/workspace/workspaceController";
 import type { DirectoryParticipant, ParticipantSelection, DirectoryRoom } from "./types";
 import "./messaging.css";
 
@@ -69,6 +70,8 @@ export interface RoomDirectoryProps {
   onInvitePeople?: () => void;
   /** Extra header buttons (e.g. "New session"), rendered before "New conversation". */
   headerActions?: ReactNode;
+  /** The starter roster's CEO agent (by role, from the agent roster): its DM leads Team. */
+  ceoAgentId?: string;
 }
 
 // Mirrors the backend's own limits (`core/services/messaging.py`) so the
@@ -76,6 +79,8 @@ export interface RoomDirectoryProps {
 // 422 the owner cannot act on.
 const SECTION_NAME_MAX_CHARS = 40;
 const MAX_SECTIONS = 20;
+// Groups shown below Sessions; everything else sits above it.
+const TAIL_GROUPS = new Set(["external", "archived"]);
 
 export function RoomDirectory(props: RoomDirectoryProps) {
   // Keyed on the owner scope alone: every dependent read (active=, the
@@ -129,6 +134,7 @@ function DirectoryContent({
   currentUserId,
   onAddPeople,
   onInvitePeople,
+  ceoAgentId,
 }: RoomDirectoryProps) {
   const id = useId();
   const [creating, setCreating] = useState(false);
@@ -372,6 +378,103 @@ function DirectoryContent({
     });
   }
 
+  const sessionsSection = (onSelectSession || sessions.length > 0) && (() => {
+    const collapsed = prefs.collapsed.includes("sessions");
+    const listId = `${id}-group-sessions`;
+    // Only what the desktop is mirroring right now; everything else is under All sessions.
+    // Already ordered: mine first, then people by name, each newest activity first (see workspaceSections in shared).
+    const live = sessions.filter((entry) => sessionLive(entry.session));
+    // What All sessions lists: everything but the long-lost (offline for days).
+    const listed = sessions.filter((entry) => !sessionArchived(entry.session)).length;
+    // Collapsed to the cap, it still keeps the session you are reading on screen.
+    const shown = sessionsExpanded ? live : live.filter((entry, index) => index < SIDEBAR_SESSION_CAP || entry.session.sessionId === currentSessionId);
+    return <section aria-label="Sessions">
+      {groupHeader({
+        id: "sessions", label: "Sessions", listId, collapsed,
+        badge: collapsed && live.length > 0 && <span className="room-count" aria-label={`${live.length} live session${live.length === 1 ? "" : "s"}`}>{live.length}</span>,
+      })}
+      {!collapsed && <div id={listId}>
+        {live.length === 0
+          ? <div className="room-directory-session-empty"><p className="text-xs text-muted-foreground">No one is sharing a session.</p><StartSessionDialog /></div>
+          : <ul>{shown.map((entry) => <SessionListRow key={entry.session.sessionId} entry={entry}
+              current={entry.session.sessionId === currentSessionId} onSelect={onSelectSession} onRename={onRenameSession} oneLine />)}</ul>}
+        {live.length > SIDEBAR_SESSION_CAP && <button type="button" className="room-directory-subgroup" aria-expanded={sessionsExpanded}
+          aria-controls={listId} onClick={() => setSessionsExpanded((open) => !open)}>
+          {sessionsExpanded ? "Show fewer" : `+${live.length - SIDEBAR_SESSION_CAP} more`}
+        </button>}
+        {onOpenAllSessions && listed > 0 && <button type="button" className="room-directory-subgroup"
+          aria-current={allSessionsOpen ? "page" : undefined} onClick={onOpenAllSessions}>
+          <History aria-hidden="true" />All sessions<span className="text-muted-foreground">{listed}</span>
+        </button>}
+      </div>}
+    </section>;
+  })();
+  const renderGroup = (group: RoomGroup) => {
+    // Archived starts collapsed, so for it alone a listed id means "expanded".
+    const collapsed = prefs.collapsed.includes(group.id) !== (group.id === "archived");
+    // Collapsing hides rooms, never activity or your place: the header keeps
+    // the group's unread count, and the room you are reading stays on screen
+    // so `aria-current` survives a ⌘K / next-unread / permalink jump into a
+    // collapsed group.
+    const unread = group.rooms.reduce((total, room) => total + (room.muted ? 0 : room.unreadCount), 0);
+    const visible = collapsed ? group.rooms.filter((room) => room.roomId === currentRoomId) : group.rooms;
+    const listId = `${id}-group-${group.id}`;
+    const body = (grip?: ReactNode) => {
+      const rows: Array<{ key: string; label: string; room?: DirectoryRoom; participant?: DirectoryParticipant }> = [
+        ...visible.map((room) => ({ key: room.roomId, label: roomDisplayName(room, room.participants), room })),
+        ...(group.id === "direct" && !collapsed ? roster.map((participant) => ({ key: `${participant.kind}:${participant.id}`, label: participant.displayName, participant })) : []),
+      ];
+      if (group.id === "direct") {
+        const unreadOf = (row: typeof rows[number]) => row.room && !row.room.muted ? row.room.unreadCount : 0;
+        rows.sort((left, right) => prefs.sort === "unread" && unreadOf(left) !== unreadOf(right)
+          ? unreadOf(right) - unreadOf(left) : left.label.localeCompare(right.label));
+        // The CEO's DM leads Team, whether it is a room yet or still a roster row.
+        const ceo = rows.findIndex((row) => row.participant ? row.participant.kind === "agent" && row.participant.id === ceoAgentId
+          : row.room?.kind === "dm" && row.room.participants.length === 1 && row.room.participants[0].kind === "agent" && row.room.participants[0].id === ceoAgentId);
+        if (ceoAgentId && ceo > 0) rows.unshift(...rows.splice(ceo, 1));
+      }
+      return <>
+      {groupHeader({
+        id: group.id, label: group.label, listId, collapsed, grip,
+        badge: collapsed && unread > 0 && <span className="room-count" aria-label={`${unread} unread messages in ${group.label}`}>{unread}</span>,
+      })}
+      <ul id={listId}>{rows.map(({ key, label, room, participant }) => {
+        // A roster row is someone with no DM yet. It carries no overflow menu
+        // (star, mute, mark-unread and copy-link all need a room), but it
+        // must still reserve that control's width -- see
+        // .room-directory-row--roster. Without it the label and the "Agent"
+        // tag sit ~36px further right than every real row's, and jump left
+        // the instant a first click creates the room.
+        if (!room) return <li key={key} className="room-directory-row room-directory-row--roster">
+          <button type="button" className="room-directory-entry" aria-busy={openingParticipant === key}
+            disabled={openingParticipant === key} onClick={() => onSelectParticipant(participant!)}>
+            <ParticipantAvatar participant={participant!} size="xs" />
+            <span className="min-w-0 flex-1"><span className="block truncate" title={label}>{label}</span></span>
+            {participant!.kind === "agent" && <span className="room-directory-tag">Agent</span>}
+          </button>
+        </li>;
+        return <RoomDirectoryRow key={room.roomId} room={room} label={label} sections={sections}
+          active={room.roomId === currentRoomId} draft={draftRoomIds.includes(room.roomId)}
+          busy={markingUnread === room.roomId || (savePrefs.pending && actingRoomId === room.roomId)}
+          onSelect={() => onSelectRoom(room.roomId)}
+          onToggleStar={onSetPrefs && (() => setRoomPrefs(room.roomId, { starred: !room.starred }, `Could not ${room.starred ? "unstar" : "star"} ${label}.`))}
+          onToggleMute={onSetPrefs && (() => setRoomPrefs(room.roomId, { muted: !room.muted }, `Could not ${room.muted ? "unmute" : "mute"} ${label}.`))}
+          onMarkUnread={onMarkUnread && (() => void markRoomUnread(room.roomId, label))}
+          onMoveToSection={onSetPrefs && sections.length > 0
+            ? (sectionId) => setRoomPrefs(room.roomId, { sectionId }, `Could not move ${label}.`) : undefined}
+          onLeave={onLeaveRoom && (room.kind === "channel" || room.kind === "group-dm") && !room.shared && !soleChannelOwner(room, currentUserId) ? (trigger) => { leave.reset(); leaveTrigger.current = trigger; setLeaving(room); } : undefined}
+          onCopyLink={() => void copyText(roomPermalink(room.roomId))}
+          onAddPeople={onAddPeople && canAddPeople(room) ? () => onAddPeople(room.roomId) : undefined} />;
+      })}</ul>
+    </>;
+    };
+    // No grip at all when the caller cannot save an order — a drag handle
+    // that silently does nothing is worse than no handle.
+    return group.custom && onSaveSections
+      ? <SortableSection key={group.id} id={group.id} label={group.label}>{body}</SortableSection>
+      : <section key={group.id} aria-label={group.label}>{body()}</section>;
+  };
+
   return <Dialog open={creating} onOpenChange={(open) => { if (!creationBusy) setCreating(open); }}><nav ref={directoryRef} className="room-directory" aria-label="Conversations">
     <div className="room-directory-heading"><h2 className="font-semibold">Conversations</h2>
       <div className="room-directory-heading-actions">
@@ -400,100 +503,11 @@ function DirectoryContent({
     {savePrefs.error && <p role="alert" className="px-2 text-sm text-err">{savePrefs.error}</p>}
     {saveSections.error && !managing && <p role="alert" className="px-2 text-sm text-err">{saveSections.error}</p>}
     {groups.length === 0 && <p className="text-sm text-muted-foreground px-2">Create a channel, or start a conversation with a person or agent.</p>}
-    {(onSelectSession || sessions.length > 0) && (() => {
-      const collapsed = prefs.collapsed.includes("sessions");
-      const listId = `${id}-group-sessions`;
-      // Only what the desktop is mirroring right now; everything else is under All sessions.
-      // Already ordered: mine first, then people by name, each newest activity first (see workspaceSections in shared).
-      const live = sessions.filter((entry) => sessionLive(entry.session));
-      // What All sessions lists: everything but the long-lost (offline for days).
-      const listed = sessions.filter((entry) => !sessionArchived(entry.session)).length;
-      // Collapsed to the cap, it still keeps the session you are reading on screen.
-      const shown = sessionsExpanded ? live : live.filter((entry, index) => index < SIDEBAR_SESSION_CAP || entry.session.sessionId === currentSessionId);
-      return <section aria-label="Sessions">
-        {groupHeader({
-          id: "sessions", label: "Sessions", listId, collapsed,
-          badge: collapsed && live.length > 0 && <span className="room-count" aria-label={`${live.length} live session${live.length === 1 ? "" : "s"}`}>{live.length}</span>,
-        })}
-        {!collapsed && <div id={listId}>
-          {live.length === 0
-            ? <div className="room-directory-session-empty"><p className="text-xs text-muted-foreground">No one is sharing a session.</p><StartSessionDialog /></div>
-            : <ul>{shown.map((entry) => <SessionListRow key={entry.session.sessionId} entry={entry}
-                current={entry.session.sessionId === currentSessionId} onSelect={onSelectSession} onRename={onRenameSession} />)}</ul>}
-          {live.length > SIDEBAR_SESSION_CAP && <button type="button" className="room-directory-subgroup" aria-expanded={sessionsExpanded}
-            aria-controls={listId} onClick={() => setSessionsExpanded((open) => !open)}>
-            {sessionsExpanded ? "Show fewer" : `+${live.length - SIDEBAR_SESSION_CAP} more`}
-          </button>}
-          {onOpenAllSessions && listed > 0 && <button type="button" className="room-directory-subgroup"
-            aria-current={allSessionsOpen ? "page" : undefined} onClick={onOpenAllSessions}>
-            <History aria-hidden="true" />All sessions<span className="text-muted-foreground">{listed}</span>
-          </button>}
-        </div>}
-      </section>;
-    })()}
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={reorderSections} accessibility={{ announcements }}>
     <SortableContext items={sections.map((section) => section.id)} strategy={verticalListSortingStrategy}>
-    {groups.map((group) => {
-      // Archived starts collapsed, so for it alone a listed id means "expanded".
-      const collapsed = prefs.collapsed.includes(group.id) !== (group.id === "archived");
-      // Collapsing hides rooms, never activity or your place: the header keeps
-      // the group's unread count, and the room you are reading stays on screen
-      // so `aria-current` survives a ⌘K / next-unread / permalink jump into a
-      // collapsed group.
-      const unread = group.rooms.reduce((total, room) => total + (room.muted ? 0 : room.unreadCount), 0);
-      const visible = collapsed ? group.rooms.filter((room) => room.roomId === currentRoomId) : group.rooms;
-      const listId = `${id}-group-${group.id}`;
-      const body = (grip?: ReactNode) => {
-        const rows: Array<{ key: string; label: string; room?: DirectoryRoom; participant?: DirectoryParticipant }> = [
-          ...visible.map((room) => ({ key: room.roomId, label: roomDisplayName(room, room.participants), room })),
-          ...(group.id === "direct" && !collapsed ? roster.map((participant) => ({ key: `${participant.kind}:${participant.id}`, label: participant.displayName, participant })) : []),
-        ];
-        if (group.id === "direct") {
-          const unreadOf = (row: typeof rows[number]) => row.room && !row.room.muted ? row.room.unreadCount : 0;
-          rows.sort((left, right) => prefs.sort === "unread" && unreadOf(left) !== unreadOf(right)
-            ? unreadOf(right) - unreadOf(left) : left.label.localeCompare(right.label));
-        }
-        return <>
-        {groupHeader({
-          id: group.id, label: group.label, listId, collapsed, grip,
-          badge: collapsed && unread > 0 && <span className="room-count" aria-label={`${unread} unread messages in ${group.label}`}>{unread}</span>,
-        })}
-        <ul id={listId}>{rows.map(({ key, label, room, participant }) => {
-          // A roster row is someone with no DM yet. It carries no overflow menu
-          // (star, mute, mark-unread and copy-link all need a room), but it
-          // must still reserve that control's width -- see
-          // .room-directory-row--roster. Without it the label and the "Agent"
-          // tag sit ~36px further right than every real row's, and jump left
-          // the instant a first click creates the room.
-          if (!room) return <li key={key} className="room-directory-row room-directory-row--roster">
-            <button type="button" className="room-directory-entry" aria-busy={openingParticipant === key}
-              disabled={openingParticipant === key} onClick={() => onSelectParticipant(participant!)}>
-              <ParticipantAvatar participant={participant!} size="xs" />
-              <span className="min-w-0 flex-1"><span className="block truncate" title={label}>{label}</span></span>
-              {participant!.kind === "agent" && <span className="room-directory-tag">Agent</span>}
-            </button>
-          </li>;
-          return <RoomDirectoryRow key={room.roomId} room={room} label={label} sections={sections}
-            active={room.roomId === currentRoomId} draft={draftRoomIds.includes(room.roomId)}
-            busy={markingUnread === room.roomId || (savePrefs.pending && actingRoomId === room.roomId)}
-            onSelect={() => onSelectRoom(room.roomId)}
-            onToggleStar={onSetPrefs && (() => setRoomPrefs(room.roomId, { starred: !room.starred }, `Could not ${room.starred ? "unstar" : "star"} ${label}.`))}
-            onToggleMute={onSetPrefs && (() => setRoomPrefs(room.roomId, { muted: !room.muted }, `Could not ${room.muted ? "unmute" : "mute"} ${label}.`))}
-            onMarkUnread={onMarkUnread && (() => void markRoomUnread(room.roomId, label))}
-            onMoveToSection={onSetPrefs && sections.length > 0
-              ? (sectionId) => setRoomPrefs(room.roomId, { sectionId }, `Could not move ${label}.`) : undefined}
-            onLeave={onLeaveRoom && (room.kind === "channel" || room.kind === "group-dm") && !room.shared && !soleChannelOwner(room, currentUserId) ? (trigger) => { leave.reset(); leaveTrigger.current = trigger; setLeaving(room); } : undefined}
-            onCopyLink={() => void copyText(roomPermalink(room.roomId))}
-            onAddPeople={onAddPeople && canAddPeople(room) ? () => onAddPeople(room.roomId) : undefined} />;
-        })}</ul>
-      </>;
-      };
-      // No grip at all when the caller cannot save an order — a drag handle
-      // that silently does nothing is worse than no handle.
-      return group.custom && onSaveSections
-        ? <SortableSection key={group.id} id={group.id} label={group.label}>{body}</SortableSection>
-        : <section key={group.id} aria-label={group.label}>{body()}</section>;
-    })}
+    {groups.filter((group) => !TAIL_GROUPS.has(group.id)).map(renderGroup)}
+    {sessionsSection}
+    {groups.filter((group) => TAIL_GROUPS.has(group.id)).map(renderGroup)}
     </SortableContext>
     </DndContext>
     {draftedRooms.length > 0 && <section aria-label="Drafts">
@@ -512,6 +526,7 @@ function DirectoryContent({
     </section>}
     {onInvitePeople && <p className="px-2 text-sm text-muted-foreground">It&apos;s just you and your AI employees. Invite one person who should see their work.{" "}
       <button type="button" className="underline" onClick={onInvitePeople}>Invite</button></p>}
+    <button type="button" className="room-directory-entry" onClick={openInviteDialog}><Plus size={16} aria-hidden="true" />Invite someone</button>
     <DialogContent className="room-creation-dialog" showCloseButton={!creationBusy}>
     <form aria-label="Create conversation" className="room-creation" aria-busy={creationBusy}
       onSubmit={async (event) => {
@@ -572,7 +587,7 @@ function DirectoryContent({
       <DialogContent className="room-section-dialog max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto"
         onCloseAutoFocus={(event) => { if (manageTrigger.current?.isConnected) { event.preventDefault(); manageTrigger.current.focus(); } }}>
         <DialogHeader><DialogTitle>Manage sections</DialogTitle>
-          <DialogDescription>Group conversations however you work. Deleting a section returns its conversations to Channels, External connections, or Direct messages.</DialogDescription>
+          <DialogDescription>Group conversations however you work. Deleting a section returns its conversations to Team, Channels, or External connections.</DialogDescription>
         </DialogHeader>
         {sections.length > 0 && <ul className="grid gap-2">{sections.map((section) => <li key={section.id} className="room-section-edit">
           {/* Both accessible names stay on the SAVED name: a control whose name
@@ -603,7 +618,7 @@ function DirectoryContent({
         {blankName && <p id={blankHintId} className="text-sm text-muted-foreground">Every section needs a name.</p>}
         {saveSections.error && <p role="alert" className="text-sm text-err break-words">{saveSections.error}</p>}
         {deleting && <div role="alert" className="room-section-confirm">
-          <p className="text-sm">Delete {deleting.name}? Its conversations move back to Channels, External connections, or Direct messages.</p>
+          <p className="text-sm">Delete {deleting.name}? Its conversations move back to Team, Channels, or External connections.</p>
           <DialogFooter className="gap-2">
             <Button ref={deleteCancel} type="button" variant="outline" disabled={saveSections.pending} onClick={() => { setDeleting(null); saveSections.reset(); }}>Cancel</Button>
             <Button type="button" variant="destructive" disabled={saveSections.pending || blankName}

@@ -48,12 +48,12 @@ export function HealthIndicator({
     }
   };
 
+  // Healthy is the normal case: the sidebar shows health only when something is wrong.
+  if (state === "HEALTHY") return null;
+
   return (
     <div
-      className={cn(
-        "flex items-center gap-2 px-3 py-2 rounded-md text-xs",
-        state === "HEALTHY" ? "opacity-80" : "opacity-100",
-      )}
+      className="flex items-center gap-2 px-3 py-2 rounded-md text-xs"
       title={reason}
     >
       {/* Status dot */}
@@ -63,9 +63,7 @@ export function HealthIndicator({
 
       {/* Label */}
       <span className={cn("truncate flex-1", LABEL_STYLES[state])}>
-        {state === "HEALTHY"
-          ? "Connected"
-          : state === "RECOVERING"
+        {state === "RECOVERING"
             ? reason
             : state === "STARTING"
               ? "Starting..."

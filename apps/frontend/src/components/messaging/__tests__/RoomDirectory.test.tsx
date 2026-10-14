@@ -6,6 +6,12 @@ import userEvent from "@testing-library/user-event";
 import { RoomDirectory } from "../RoomDirectory";
 import type { DirectoryParticipant, DirectoryRoom } from "../types";
 
+const openInviteDialog = vi.hoisted(() => vi.fn());
+vi.mock("@/components/workspace/workspaceController", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/components/workspace/workspaceController")>(),
+  openInviteDialog,
+}));
+
 const friday: DirectoryParticipant = { kind: "agent", id: "friday", displayName: "Friday", mentionHandle: null, agentActivity: "running" };
 const alice: DirectoryParticipant = { kind: "human", id: "alice", displayName: "Alice", mentionHandle: null };
 const atlas: DirectoryParticipant = { kind: "agent", id: "atlas", displayName: "Atlas", mentionHandle: "atlas" };
@@ -61,7 +67,7 @@ it("separates channels from direct messages, keeping group DMs — with stacked 
     { ...base, roomId: "group", kind: "group-dm", name: "Launch crew", participants: [alice, atlas] },
   ]} />);
   expect(within(screen.getByRole("region", { name: "Channels" })).getByRole("button", { name: /^Launch/ })).toBeInTheDocument();
-  const directMessages = within(screen.getByRole("region", { name: "Direct messages" }));
+  const directMessages = within(screen.getByRole("region", { name: "Team" }));
   // The facepile is decorative — the row already announces "Launch crew" — so
   // the avatars are found with `hidden`.
   const groupRow = directMessages.getByRole("button", { name: /^Launch crew/ });
@@ -121,7 +127,7 @@ it("lists every person and agent under Direct messages, once each, and opens the
   const onSelectParticipant = vi.fn();
   render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" onSelectRoom={vi.fn()} onSelectParticipant={onSelectParticipant}
     rooms={[{ ...base, roomId: "atlas-dm", kind: "dm", name: null, participants: [atlas] }]} participants={[friday, alice, atlas]} />);
-  const directMessages = within(screen.getByRole("region", { name: "Direct messages" }));
+  const directMessages = within(screen.getByRole("region", { name: "Team" }));
   // Atlas already has a DM room, so he is the room row and not a second roster row.
   expect(directMessages.getAllByRole("button", { name: /^Atlas/ })).toHaveLength(1);
   // Friday (roster row) and Atlas (DM room row) are agents; Alice is not.
@@ -137,7 +143,7 @@ it("lists every person and agent under Direct messages, once each, and opens the
 it("marks people who are online with a presence dot, never agents", () => {
   render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()}
     participants={[{ ...alice, online: true }, { ...alice, id: "bob", displayName: "Bob", online: false }, friday]} />);
-  const directMessages = within(screen.getByRole("region", { name: "Direct messages" }));
+  const directMessages = within(screen.getByRole("region", { name: "Team" }));
   const aliceRow = directMessages.getByRole("button", { name: /^Alice/ });
   expect(within(aliceRow).getByText("Online")).toBeInTheDocument();
   expect(within(aliceRow).getByRole("img", { name: "Alice" }).parentElement).toHaveAttribute("data-presence", "online");
@@ -744,16 +750,19 @@ it("keeps the selected external channel visible when External connections is col
   expect(screen.getByRole("button", { name: "Expand External connections" })).toHaveAttribute("aria-expanded", "false");
 });
 
-it("lists live sessions above the room groups, hides the section without a session door, and opens one on click", async () => {
+it("lists live sessions below Channels, hides the section without a session door, and opens one on click", async () => {
   const onSelectSession = vi.fn();
   const session = { sessionId: "s1", deviceId: "d", humanUserId: "alice", provider: "claude" as const, providerVersion: "2", generation: "g", status: "busy" as const, activeTurnId: null,
-    capabilities: { sendMode: "queue" as const, steer: false, interrupt: false }, capabilitiesVerified: true, controlUnavailableReason: null, latestEventSeq: 3, title: "Fix login", lastEventAt: new Date().toISOString() };
+    capabilities: { sendMode: "queue" as const, steer: false, interrupt: false }, capabilitiesVerified: true, controlUnavailableReason: null, latestEventSeq: 3, title: "Fix login", cwdName: "web", lastEventAt: new Date().toISOString() };
   const { rerender } = render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[base]} participants={[]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()}
     sessions={[{ session, ownerName: "Alice", own: false }]} onSelectSession={onSelectSession} />);
   const section = screen.getByRole("region", { name: "Sessions" });
-  expect(section.compareDocumentPosition(screen.getByRole("region", { name: "Channels" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  const row = within(section).getByRole("button", { name: /Open Claude · Fix login, Alice, Working/ });
+  expect(section.compareDocumentPosition(screen.getByRole("region", { name: "Channels" })) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+  // One line: badge, name, dot. Owner and folder stay in the accessible label only.
+  const row = within(section).getByRole("button", { name: /Open Claude · Fix login, Alice, in web, Working/ });
   expect(row).not.toHaveTextContent("Claude ·");
+  expect(row).not.toHaveTextContent("Alice");
+  expect(row).not.toHaveTextContent("web");
   expect(within(row).getByText("Fix login")).toBeInTheDocument();
   expect(row.querySelector(".session-title--working")).toHaveTextContent("Fix login");
   await userEvent.click(row);
@@ -874,4 +883,42 @@ it("offers Add people in a row's menu only where the viewer may add, and asks fo
   await userEvent.keyboard("{Escape}");
   await userEvent.click((await menuFor("Mine"))!);
   expect(onAddPeople).toHaveBeenCalledWith("mine");
+});
+
+it("orders the sidebar Starred, custom sections, Team, Channels, Sessions, External connections, Archived", () => {
+  window.localStorage.clear();
+  render(<RoomDirectory ownerScopeId="org-order" state="ready" sections={[{ id: "s-1", name: "Ship" }]} participants={[]}
+    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onSelectSession={vi.fn()} sessions={[]} rooms={[
+      base,
+      { ...base, roomId: "fav", name: "Fav", starred: true },
+      { ...base, roomId: "shipping", name: "Shipping", sectionId: "s-1" },
+      { ...base, roomId: "atlas-dm", kind: "dm", name: null, participants: [atlas] },
+      { ...base, roomId: "ext", name: "Partner", shared: true },
+      { ...base, roomId: "old", name: "Old", archivedAt: "2026-09-23T00:00:00Z" },
+    ]} />);
+  expect(screen.getAllByRole("region").map((region) => region.getAttribute("aria-label")))
+    .toEqual(["Starred", "Ship", "Team", "Channels", "Sessions", "External connections", "Archived"]);
+});
+
+it("puts the CEO's DM first in Team, by agent id, whether or not the DM exists yet", () => {
+  const ceo: DirectoryParticipant = { kind: "agent", id: "agent-ceo", displayName: "Zed", mentionHandle: null };
+  const firstRow = () => within(screen.getByRole("region", { name: "Team" })).getAllByRole("button", { name: /^(Alice|Atlas|Friday|Zed)/ })[0];
+  const { rerender } = render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[]} participants={[alice, atlas, friday, ceo]}
+    ceoAgentId="agent-ceo" onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} />);
+  expect(firstRow()).toHaveAccessibleName(/^Zed/);
+  rerender(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" participants={[alice, atlas, friday, ceo]} ceoAgentId="agent-ceo"
+    rooms={[{ ...base, roomId: "zed-dm", kind: "dm", name: null, participants: [ceo] }]} onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} />);
+  expect(firstRow()).toHaveAccessibleName(/^Zed/);
+  // Without a known CEO the group keeps its own order.
+  rerender(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[]} participants={[alice, atlas, friday, ceo]}
+    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} />);
+  expect(firstRow()).toHaveAccessibleName(/^Alice/);
+});
+
+it("ends the list with an Invite someone row that opens the invite dialog", async () => {
+  openInviteDialog.mockClear();
+  render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[base]} participants={[atlas, alice]}
+    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} />);
+  await userEvent.click(screen.getByRole("button", { name: "Invite someone" }));
+  expect(openInviteDialog).toHaveBeenCalledTimes(1);
 });

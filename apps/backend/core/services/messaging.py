@@ -4305,6 +4305,26 @@ async def _after_run_ended(owner_id: str, row: dict, outcome: str, usage: RunUsa
         await _record_run_usage(
             owner_id, member_user_id or owner_id, usage, room_turn=True, event_kind=row.get("eventKind")
         )
+    # agent_run_completed for room runs (T01): the requester is the person. Reached once
+    # per run -- end_run_and_announce returns the row only to the call that closed it.
+    try:
+        started_at, ended_at = row.get("startedAt"), row.get("endedAt")
+        duration = _ms_between(started_at, ended_at) if started_at and ended_at else None
+        run_analytics.schedule_run_completed(
+            owner_id=owner_id,
+            parsed={"source": "room", "agent_id": row.get("agentId"), "room_id": row.get("roomId")},
+            payload={
+                "runId": row.get("runId"),
+                "data": {
+                    "aborted": outcome == "aborted",
+                    **({"durationMs": int(duration)} if duration is not None else {}),
+                },
+            },
+            phase="error" if outcome == "error" else "end",
+            person_id=member_user_id if member_user_id and member_user_id.startswith("user_") else None,
+        )
+    except Exception:
+        logger.exception("room run analytics scheduling failed")
     # A completed reply is pushed by the projector on room.message.created, and so is the
     # failure note (post_run_failure_message) wherever it notifies the trigger's author: a
     # DM or group chat, or the thread they wrote in. Only a top-level channel trigger's

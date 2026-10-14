@@ -87,16 +87,20 @@ def _coarse_source(source: str) -> str:
     the autonomous-work bucket to alarm on)."""
     if source in ("dm", "group", "channel"):
         return "channel"
-    if source in ("webchat", "cron", "paperclip"):
+    if source in ("webchat", "cron", "paperclip", "room"):
         return source
     return "unknown"
 
 
-def schedule_run_completed(*, owner_id: str, parsed: dict, payload: dict, phase: str) -> asyncio.Task | None:
+def schedule_run_completed(
+    *, owner_id: str, parsed: dict, payload: dict, phase: str, person_id: str | None = None
+) -> asyncio.Task | None:
     """Emit a run-completion terminal to CloudWatch and PostHog (both gated).
 
     ``parsed`` is the ``_parse_session_key`` dict for the event's sessionKey;
-    ``phase`` is ``"end"`` or ``"error"``. Deduped on ``owner:run_id`` so a run
+    ``phase`` is ``"end"`` or ``"error"``. ``person_id`` is the human the run
+    answered (a room run's requester); without one the workspace's creator is the
+    person (``capture_product_event``'s identity rule). Deduped on ``owner:run_id`` so a run
     seen by both the chat reader loop and the operator relay tap emits once.
     Fires the ``run.completed`` CloudWatch metric; returns the PostHog
     enrichment+capture task (for the caller's drain set), or None when the run
@@ -157,6 +161,9 @@ def schedule_run_completed(*, owner_id: str, parsed: dict, payload: dict, phase:
     needs_enrichment = False
     if source == "webchat":
         props["run_source"] = "webchat"
+    elif source == "room":
+        props["run_source"] = "room"
+        props["room_id"] = parsed.get("room_id")
     elif source in ("dm", "group", "channel"):
         props["run_source"] = "channel"
         props["channel"] = parsed.get("channel")
@@ -177,10 +184,15 @@ def schedule_run_completed(*, owner_id: str, parsed: dict, payload: dict, phase:
     else:
         props["run_source"] = "unknown"
 
-    return asyncio.create_task(_enrich_and_capture(owner_id=owner_id, props=props, needs_enrichment=needs_enrichment))
+    props["workspace_id"] = owner_id
+    return asyncio.create_task(
+        _enrich_and_capture(owner_id=owner_id, props=props, needs_enrichment=needs_enrichment, person_id=person_id)
+    )
 
 
-async def _enrich_and_capture(*, owner_id: str, props: dict, needs_enrichment: bool) -> None:
+async def _enrich_and_capture(
+    *, owner_id: str, props: dict, needs_enrichment: bool, person_id: str | None = None
+) -> None:
     """Task body — never raises (same posture as the billing task wrapper)."""
     try:
         if needs_enrichment:
@@ -211,7 +223,7 @@ async def _enrich_and_capture(*, owner_id: str, props: dict, needs_enrichment: b
         props["is_internal"] = await _is_internal_owner(owner_id)
         run_id = props.get("run_id")
         capture_product_event(
-            distinct_id=owner_id,
+            distinct_id=person_id or owner_id,
             event=EVENT_NAME,
             properties=props,
             event_uuid=str(uuid.uuid5(_CAPTURE_UUID_NS, f"{owner_id}:{run_id}")) if run_id else None,

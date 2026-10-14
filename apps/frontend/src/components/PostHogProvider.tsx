@@ -44,21 +44,20 @@ const SIGNUP_INTENT_KEY = "isol8:signup_intent:v1";
 const SIGNUP_STARTED_IDENTIFIED_PREFIX = "isol8:signup_started_identified:";
 
 /**
- * The PostHog project is shared by dev and prod, so client events carry no
- * environment on their own — a dev session pollutes prod funnels unless
- * every event is tagged. `NEXT_PUBLIC_API_URL` is baked in per-deploy (see
- * CLAUDE.md's "API URL by environment"), so its host is the one build-time
- * signal for which environment this bundle is running in.
+ * The PostHog project is shared by dev, prod and the launch site, so every
+ * client event carries `environment`. It comes from the page's own host, not
+ * the build: a dev host can serve a prod-built bundle (both are Vercel
+ * production domains), which once tagged dev pageviews `prod`.
  */
-export function resolveEnvironment(apiUrl: string | undefined): "prod" | "dev" {
-  try {
-    return new URL(apiUrl ?? "").hostname === "api.thelightbulb.company" ? "prod" : "dev";
-  } catch {
-    return "dev";
-  }
+export function resolveEnvironment(hostname: string | undefined): "prod" | "launch" | "dev" {
+  const host = (hostname ?? "").toLowerCase();
+  if (host === "thelightbulb.company" || host === "www.thelightbulb.company") return "prod";
+  if (host === "flickmeon.ai" || host === "www.flickmeon.ai") return "launch";
+  return "dev";
 }
 
-const ENVIRONMENT = resolveEnvironment(process.env.NEXT_PUBLIC_API_URL);
+const currentEnvironment = () =>
+  resolveEnvironment(typeof window === "undefined" ? undefined : window.location.hostname);
 
 function safeStorageGet(key: string): string | null {
   if (typeof window === "undefined") return null;
@@ -221,7 +220,7 @@ function PostHogInit() {
     // the browser context names in-app webviews that `$browser` reports
     // indistinguishably as "Mobile Safari". Must come after init() —
     // register() no-ops until the SDK has loaded.
-    register({ signup_flow_id: signupFlowId(), environment: ENVIRONMENT, ...browserContext() });
+    register({ signup_flow_id: signupFlowId(), environment: currentEnvironment(), ...browserContext() });
   }, []);
   return null;
 }
@@ -398,7 +397,7 @@ function PostHogIdentify() {
       // — reset() clears super properties, and the next person to sign up on
       // this browser must not inherit the previous journey's id.
       rotateSignupFlowId();
-      register({ signup_flow_id: signupFlowId(), environment: ENVIRONMENT, ...browserContext() });
+      register({ signup_flow_id: signupFlowId(), environment: currentEnvironment(), ...browserContext() });
     }
   }, [isSignedIn, userId, user]);
 

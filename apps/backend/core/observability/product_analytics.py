@@ -26,7 +26,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
+
+import httpx
 
 from core.config import settings
 from core.services.trial_cap import utc_today
@@ -76,6 +79,10 @@ def capture_product_event(
 ) -> None:
     """Capture one PostHog product event keyed on the subscriber's Clerk id.
 
+    Identity rule (the workspace is the unit, the person is a human): an ``org_``
+    ``distinct_id`` is moved onto the ``workspace_id`` property and the org's
+    creator becomes the person.
+
     ``set_person`` is merged into ``$set`` so the person profile carries current
     billing state (subscription_status / is_subscribed / trial_end /
     provider_choice) for segmentation. ``event_uuid`` is forwarded as the
@@ -97,6 +104,20 @@ def capture_product_event(
     props.setdefault("environment", settings.ENVIRONMENT or "local")
     if set_person:
         props["$set"] = {**props.get("$set", {}), **set_person}
+    if distinct_id.startswith("org_"):
+        # The identity rule: a workspace is never a PERSON. The org id becomes the
+        # ``workspace_id`` property and the workspace's creator is the person.
+        props.setdefault("workspace_id", distinct_id)
+        creator = _org_creators.get(distinct_id)
+        if creator is None:
+            # Unknown creator: one Clerk read, off the caller's thread/loop.
+            _RESOLVER.submit(_resolve_then_send, client, distinct_id, event, props, event_uuid)
+            return
+        distinct_id = creator
+    _send(client, distinct_id, event, props, event_uuid)
+
+
+def _send(client: Any, distinct_id: str, event: str, props: dict, event_uuid: str | None) -> None:
     try:
         if event_uuid:
             client.capture(distinct_id, event, props, uuid=event_uuid)
@@ -104,6 +125,51 @@ def capture_product_event(
             client.capture(distinct_id, event, props)
     except Exception:
         logger.warning("PostHog capture failed (event=%s owner=%s)", event, distinct_id, exc_info=True)
+
+
+# org id -> creator user id (Clerk ``created_by``, immutable). Bounded FIFO.
+_ORG_CREATOR_CAP = 4096
+_org_creators: dict[str, str] = {}
+_RESOLVER = ThreadPoolExecutor(max_workers=2, thread_name_prefix="posthog-org-creator")
+
+
+def remember_org_creator(org_id: str, user_id: str | None) -> None:
+    """Seed the org -> creator cache from a caller that already knows it (the
+    ``organization.created`` webhook), so that workspace's events never need a Clerk read."""
+    if not org_id or not user_id:
+        return
+    _org_creators[org_id] = user_id
+    while len(_org_creators) > _ORG_CREATOR_CAP:
+        del _org_creators[next(iter(_org_creators))]
+
+
+def _fetch_org_creator(org_id: str) -> str | None:
+    """Synchronous Clerk read (runs on ``_RESOLVER``). None on any failure."""
+    if not settings.CLERK_SECRET_KEY:
+        return None
+    try:
+        response = httpx.get(
+            f"https://api.clerk.com/v1/organizations/{org_id}",
+            headers={"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"},
+            timeout=5.0,
+        )
+        if response.status_code >= 400:
+            return None
+        return response.json().get("created_by") or None
+    except Exception:
+        logger.warning("PostHog org-creator lookup failed for %s", org_id, exc_info=True)
+        return None
+
+
+def _resolve_then_send(client: Any, org_id: str, event: str, props: dict, event_uuid: str | None) -> None:
+    creator = _fetch_org_creator(org_id)
+    if creator:
+        remember_org_creator(org_id, creator)
+    else:
+        # ponytail: Clerk unreachable -> the event still lands, on the org id; the
+        # readout counts workspace_id, so only the person view degrades.
+        logger.warning("PostHog: no creator for %s; event %s keyed on the workspace", org_id, event)
+    _send(client, creator or org_id, event, props, event_uuid)
 
 
 # Bounded in-process dedup for once-per-owner-per-day capture events
@@ -135,8 +201,8 @@ def capture_once_per_owner_per_day(
     as ``workspace_id``; the PostHog PERSON is ``distinct_id`` — the human who
     hit the door — so the event lands on the same timeline as the browser's
     ``$identify``. Callers with no human in hand (server-side wake paths)
-    omit it and the workspace id is used, which mints an org-shaped person:
-    acceptable there, never where a user is in scope.
+    omit it and the workspace's creator becomes the person (see the identity
+    rule in ``capture_product_event``).
     """
     key = (event, owner_id, utc_today())
     if key in _daily_dedup_seen:

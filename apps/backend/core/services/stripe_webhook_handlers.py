@@ -287,7 +287,12 @@ def _bridge_subscription_state(
     capture_product_event(
         distinct_id=_subscriber_distinct_id(account, event_data),
         event=event,
-        properties={"provider_choice": provider, "from_status": old_status, "to_status": new_status},
+        properties={
+            "workspace_id": account.get("owner_id"),
+            "provider_choice": provider,
+            "from_status": old_status,
+            "to_status": new_status,
+        },
         set_person=set_person,
     )
 
@@ -510,6 +515,7 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
             distinct_id=_subscriber_distinct_id(account, event_data),
             event="trial_converted",
             properties={
+                "workspace_id": account["owner_id"],
                 "from_status": old_status,
                 "to_status": new_status,
                 # Same persisted-only rule as the bridge below: claim the metadata provider
@@ -592,7 +598,7 @@ async def handle_trial_will_end(event: dict[str, Any], billing_service: BillingS
         capture_product_event(
             distinct_id=_subscriber_distinct_id(account, event_data),
             event="trial_will_end",
-            properties={"trial_end": event_data.get("trial_end")},
+            properties={"workspace_id": account.get("owner_id"), "trial_end": event_data.get("trial_end")},
         )
     return None
 
@@ -613,6 +619,7 @@ async def handle_subscription_deleted(event: dict[str, Any], billing_service: Bi
         distinct_id=_subscriber_distinct_id(account, event_data),
         event="subscription_cancelled",
         properties={
+            "workspace_id": account.get("owner_id"),
             "was_trialing": account.get("subscription_status") == "trialing",
             "provider_choice": account.get("provider_choice"),
             "cancel_at_period_end": bool(event_data.get("cancel_at_period_end")),

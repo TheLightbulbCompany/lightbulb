@@ -562,3 +562,24 @@ async def test_failed_timer_lookup_keeps_the_paperclip_other_category():
     ):
         props = (await _emit(_RUN_PARSED, payload=_payload(run_id="hb-fail")))["properties"]
     assert (props["run_source"], props["enrichment_failed"]) == ("paperclip_other", False)
+
+
+@pytest.mark.asyncio
+async def test_room_run_is_keyed_on_the_requester_with_the_workspace_as_a_property():
+    with (
+        patch.object(run_analytics, "capture_product_event") as mock_capture,
+        patch.object(run_analytics, "_is_internal_owner", AsyncMock(return_value=False)),
+    ):
+        task = run_analytics.schedule_run_completed(
+            owner_id="org_w",
+            parsed={"source": "room", "agent_id": "a1", "room_id": "r1"},
+            payload=_payload(run_id="room-run"),
+            phase="end",
+            person_id="user_bob",
+        )
+        await task
+    kwargs = mock_capture.call_args.kwargs
+    assert kwargs["distinct_id"] == "user_bob"
+    assert kwargs["properties"]["workspace_id"] == "org_w"
+    assert kwargs["properties"]["run_source"] == "room"
+    assert kwargs["properties"]["initiation_type"] == "human"

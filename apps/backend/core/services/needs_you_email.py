@@ -295,7 +295,7 @@ async def check_one(row: dict, now: datetime) -> bool:
     shown = (message or {}).get("editedText") if "editedText" in (message or {}) else (message or {}).get("text")
     content = render(row, author=author, text=shown or "", room=room, sent=now_epoch)
     text, body, headers = _email_parts(content, unsubscribe_url(user_id))
-    await email_service.send_email(
+    message_id = await email_service.send_email(
         to=email,
         subject=content["subject"],
         html=body,
@@ -304,6 +304,13 @@ async def check_one(row: dict, now: datetime) -> bool:
         kind="away_email",
         headers=headers,
     )
+    if not message_id:
+        # SES down or unconfigured (send_email returns None, never raises): give the room slot
+        # back and try again next pass.
+        await run_in_thread(webhook_dedup._table().delete_item, Key={"event_id": f"away-slot:{user_id}:{slot}"})
+        await messaging_repo.defer_away_check(row["pk"], row["sk"], now_epoch + _TICK_SECONDS)
+        put_metric("away_email.outcome", dimensions={"outcome": "send_failed", "kind": kind or "unknown"})
+        return False
     await _done(row, "sent")
     capture_product_event(
         distinct_id=user_id,

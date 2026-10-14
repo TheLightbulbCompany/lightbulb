@@ -76,6 +76,18 @@ async def test_an_unread_dm_while_away_is_emailed_once_with_the_event(world):
 
 
 @pytest.mark.asyncio
+async def test_a_failed_send_is_retried_not_marked_sent(world, monkeypatch):
+    world.send.return_value = None
+    table = MagicMock()
+    monkeypatch.setattr(away.webhook_dedup, "_table", lambda: table)
+    assert await away.check_one(ROW, NOW) is False
+    world.finish.assert_not_awaited()
+    world.capture.assert_not_called()
+    world.defer.assert_awaited_once_with("AWAY#user_b", "M#room1#m1", EPOCH + away._TICK_SECONDS)
+    table.delete_item.assert_called_once_with(Key={"event_id": "away-slot:user_b:room1"})
+
+
+@pytest.mark.asyncio
 async def test_a_read_message_sends_nothing(world):
     world.cursor.return_value = 7
     assert await away.check_one(ROW, NOW) is False

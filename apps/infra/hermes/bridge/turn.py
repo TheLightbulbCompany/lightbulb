@@ -2453,12 +2453,20 @@ FIRST_RUN_LINE = ("\n- This is the owner's first message in this workspace: the 
                   "\"The first run\" describes: one plan document, one approval, one connect card, three offers.")
 
 
+def default_room_id(owner_id: str) -> str:
+    """The fresh workspace's #general: mirrors core.services.messaging.default_room_id; edit both together."""
+    return str(_uuid.uuid5(_uuid.NAMESPACE_URL, f"lightbulb-default-room|{owner_id}"))
+
+
 def _first_run(body: dict) -> bool:
-    """A person's first message in a channel whose earlier history is only agents' (the seeded
-    welcome): the shape of a fresh workspace's #general when its owner first answers."""
+    """A person's first message in the canonical #general (by id) whose WHOLE history (it starts at seq 1, so nothing was
+    trimmed) is only agents': a fresh workspace's #general, where seq 1 is the seeded welcome, when
+    its owner first answers. A busy room's window never starts at seq 1."""
     history = body.get("recentHistory") or []
-    return ((body.get("sender") or {}).get("kind") == "human" and (body.get("room") or {}).get("kind") == "channel"
-            and bool(history) and all((m.get("author") or {}).get("kind") == "agent" for m in history))
+    return ((body.get("sender") or {}).get("kind") == "human"
+            and (body.get("room") or {}).get("id") == default_room_id(OWNER)
+            and any(m.get("messageSeq") == 1 for m in history)
+            and all((m.get("author") or {}).get("kind") == "agent" for m in history))
 
 
 def _is_own(m: dict, agent_id: str) -> bool:

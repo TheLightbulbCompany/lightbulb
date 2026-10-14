@@ -40,6 +40,7 @@ export function Footer() {
             <div className="lb-foot-col">
               <h4>Company</h4>
               <Link href="/blog">Blog</Link>
+              <Link href="/security">Your data</Link>
               <Link href="/privacy">Privacy Policy</Link>
               <Link href="/terms">Terms of Service</Link>
               <Link href="/support">Support</Link>

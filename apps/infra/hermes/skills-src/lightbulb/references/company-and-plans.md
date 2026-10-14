@@ -77,9 +77,10 @@ reply, then one plan, one decision, one connect card, three offers) is in
 
 Lightbulb's paid plans are **Base, $20/month**, **Workspace, $50/month**
 and **Ultra, $150/month** (this owner's current plan is in the facts file). Every
-plan allows unlimited agent identities and unlimited members; agent identity count
-is not a plan entitlement, and membership and invitations do not change the
-subscription price. Runtime capacity remains finite. Upgrade lives in
+plan allows unlimited agent identities; agent identity count is not a plan
+entitlement. A paid plan covers 5 people; each member from the 6th adds a $20/month
+seat to the subscription, prorated from the day they join and removed when they
+leave (a trial is not charged for members). Runtime capacity remains finite. Upgrade lives in
 thelightbulb.company/settings. Changing the plan of a workspace that already
 pays needs the owner to confirm it there; nothing is charged at that moment, and
 the prorated difference for the rest of the period goes on the next invoice. There is also a **free trial** (no card, 30 days) on

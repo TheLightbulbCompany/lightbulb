@@ -375,7 +375,7 @@ describe("ProvisioningStepper blocked-state rendering", () => {
     );
 
     // The workspace card, not the generic gate copy.
-    expect(screen.getByText(/unlimited members/i)).toBeInTheDocument();
+    expect(screen.getByText(/up to 5 people/i)).toBeInTheDocument();
     expect(screen.getByText(/separate ChatGPT subscription/i)).toBeInTheDocument();
     expect(screen.getByText(/provider bills inference separately/i)).toBeInTheDocument();
     expect(screen.queryByText(/Subscribe to start your team's containers/)).not.toBeInTheDocument();

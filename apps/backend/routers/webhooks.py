@@ -377,6 +377,20 @@ async def _handle_organization_created(data: dict) -> None:
     await provision_new_workspace(org_id, created_by=owner_user_id)
 
 
+async def _sync_seats(org_id: str) -> None:
+    """Seat billing follows membership (T04). A failure RAISES: the lifecycle claims stay open
+    and Clerk redelivers the event. Every step before this is idempotent, and the sync itself
+    sets an absolute quantity, so the replay is safe."""
+    from core.services.billing_service import sync_seat_quantity
+
+    try:
+        await sync_seat_quantity(org_id)
+    except Exception:
+        logger.exception("membership: seat sync failed org=%s; Clerk will redeliver", org_id)
+        put_metric("billing.seat_sync", dimensions={"outcome": "error"})
+        raise
+
+
 async def _handle_organization_membership_created(
     data: dict,
     *,
@@ -932,6 +946,7 @@ async def handle_clerk_webhook(request: Request):
         if not user_id or not org_id:
             raise HTTPException(status_code=400, detail="Clerk membership creation target unavailable")
         await _handle_organization_membership_created(data, lifecycle_claim_id=membership_claim)
+        await _sync_seats(org_id)
 
     elif event_type == "organizationMembership.deleted":
         await _handle_organization_membership_deleted(
@@ -939,6 +954,7 @@ async def handle_clerk_webhook(request: Request):
             lifecycle_claim_id=membership_claim,
             lifecycle_event_id=lifecycle_id if membership_claim is not None else None,
         )
+        await _sync_seats(membership_owner_id)
 
     elif event_type == "organization.deleted":
         await _handle_organization_deleted(data)

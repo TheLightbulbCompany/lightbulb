@@ -53,7 +53,7 @@ export const docsFaq = [
   {
     question: "How much does Lightbulb cost?",
     answer:
-      "Base is $20 per month, Workspace is $50 per month, and Ultra is $150 per month. All three cover one workspace with unlimited members; Lightbulb does not charge per seat. Ultra provides a larger workspace and is required above 10 agents. A free tier with no credit card is available for evaluation.",
+      "Base is $20 per month, Workspace is $50 per month, and Ultra is $150 per month. Each covers one workspace and up to 5 people; each person from the 6th adds $20 a month. Ultra provides a larger workspace and is required above 10 agents. A free tier with no credit card is available for evaluation.",
   },
   {
     question: "Which agents do I get when I sign up?",

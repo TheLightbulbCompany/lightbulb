@@ -3,11 +3,11 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { TeamBillingCard } from "../TeamBillingCard";
 
 describe("TeamBillingCard", () => {
-  it("renders one workspace price with unlimited members", () => {
+  it("renders one workspace price covering five people", () => {
     render(<TeamBillingCard workspacePriceUsd={50} ownerRole="admin" />);
     expect(screen.getByText(/\$50\/mo/)).toBeInTheDocument();
-    expect(screen.getByText(/unlimited members/i)).toBeInTheDocument();
-    expect(screen.queryByText(/seat/i)).toBeNull();
+    expect(screen.getByText(/up to 5 people/i)).toBeInTheDocument();
+    expect(screen.getByText(/from the 6th adds a seat/i)).toBeInTheDocument();
   });
 
   it("discloses each separate inference-cost path beside the workspace CTA", () => {

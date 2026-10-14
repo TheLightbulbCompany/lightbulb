@@ -305,7 +305,13 @@ def _workspace_plan_from_subscription_items(event_data: dict[str, Any]) -> str |
     accepting an unknown or multi-item payload can mask an unsupported
     recurring charge.
     """
-    items = (event_data.get("items") or {}).get("data") or []
+    seat_price = settings.STRIPE_SEAT_PRICE_ID
+    items = [
+        item
+        for item in (event_data.get("items") or {}).get("data") or []
+        # The per-member seat item (T04) is the one allowed second item.
+        if not (seat_price and ((item or {}).get("price") or {}).get("id") == seat_price)
+    ]
     if len(items) != 1:
         reason = "missing_or_multiple_items"
     else:
@@ -575,6 +581,19 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
 
         if not await dispatch_reconcile(account["owner_id"]):
             raise RuntimeError(f"reconcile dispatch failed for owner {account['owner_id']}; Stripe will redeliver")
+    if new_status in ("active", "trialing"):
+        # Seats follow the roster (T04). LAST, and a failure RAISES so Stripe redelivers: every
+        # step above is idempotent and the sync sets an absolute quantity. Our own seat modify
+        # fires .updated, which re-syncs against a fresh roster, so racing membership events
+        # converge.
+        from core.services.billing_service import sync_seat_quantity
+
+        try:
+            await sync_seat_quantity(account["owner_id"])
+        except Exception:
+            put_metric("billing.seat_sync", dimensions={"outcome": "error"})
+            logger.exception("Seat sync failed for owner %s; Stripe will redeliver", account["owner_id"])
+            raise
     return None
 
 

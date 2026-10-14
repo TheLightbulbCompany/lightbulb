@@ -287,8 +287,9 @@ function MembersPanel() {
       <h1 className="settings-page-title">Members</h1>
       <p className="settings-page-desc">
         Who&apos;s in this workspace, and the link that lets someone else in. Everyone
-        shares the same agents, rooms, and subscription — the plan is per workspace, not
-        per seat, so there is no per-person cost and no seat to grant.
+        shares the same agents, rooms, and subscription. The plan covers five people; each
+        member from the 6th adds one seat to the workspace&apos;s bill, prorated from the day
+        they join.
       </p>
       <WorkspaceMembersSection />
     </div>
@@ -491,7 +492,7 @@ function BillingPanel() {
           />
         )}
         <p className="settings-card-desc" style={{ marginBottom: 12 }}>
-          One price per workspace, with unlimited members.
+          One price per workspace for up to 5 people; each member from the 6th adds a seat.
         </p>
         <PlanChooser account={account} subscribed={false} startCheckout={startCheckout} />
       </div>

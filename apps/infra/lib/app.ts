@@ -178,6 +178,9 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
       // both secrets are populated.
       STRIPE_ULTRA_PRICE_ID_DEV: "${{ secrets.STRIPE_ULTRA_PRICE_ID_DEV }}",
       STRIPE_ULTRA_PRICE_ID_PROD: "${{ secrets.STRIPE_ULTRA_PRICE_ID_PROD }}",
+      // $20/month per member from the 6th (T04). Empty = seat billing fails closed.
+      STRIPE_SEAT_PRICE_ID_DEV: "${{ secrets.STRIPE_SEAT_PRICE_ID_DEV }}",
+      STRIPE_SEAT_PRICE_ID_PROD: "${{ secrets.STRIPE_SEAT_PRICE_ID_PROD }}",
       OPENROUTER_WORKSPACE_ID_DEV: "${{ vars.OPENROUTER_WORKSPACE_ID_DEV }}",
       OPENROUTER_WORKSPACE_ID_PROD: "${{ vars.OPENROUTER_WORKSPACE_ID_PROD }}",
       OPENROUTER_MANAGED_MODEL_ID_DEV: "${{ vars.OPENROUTER_MANAGED_MODEL_ID_DEV }}",

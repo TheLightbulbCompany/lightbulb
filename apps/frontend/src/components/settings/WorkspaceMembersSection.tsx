@@ -15,7 +15,8 @@ import type { CompanyMember } from "@/components/teams/shared/types";
 // Workspace members — who is here, email invitations, and the link that lets
 // someone else in.
 //
-// Billing is per workspace, not per seat, so an invitation carries no role:
+// Seats are billed automatically from the 6th member
+// (billing_service.sync_seat_quantity), so an invitation carries no role:
 // everyone joins as a member (roles are Clerk's, below). Email invitations came
 // back on 2026-10-08 because people expected an email, not a link hidden here;
 // `InvitePeoplePanel` is the same UI the rail's Invite dialog shows, and it owns

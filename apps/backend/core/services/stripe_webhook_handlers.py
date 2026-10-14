@@ -512,7 +512,9 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         or provider_persisted
         or (plan_persisted and account.get("plan") != new_plan)
     )
-    if old_status == "trial_local" and new_status in ("trialing", "active"):
+    if old_status == "trial_local" and new_status == "active":
+        # A card-on-file trial (trial_local -> trialing, T05) has paid nothing yet; its
+        # conversion is the bridge's trialing -> active "trial_converted" below.
         # Trial funnel telemetry: the free-tier trial converting to paid billing -- distinct
         # from the generic trialing->active "trial_converted" the bridge below may also emit for
         # a REAL (card-collected) Stripe trial. Several events per subscription change can each

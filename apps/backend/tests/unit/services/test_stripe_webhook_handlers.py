@@ -559,19 +559,14 @@ async def _run_state_capturing_telemetry(mock_repo, prior_status, new_status):
 
 
 @pytest.mark.asyncio
-async def test_trial_local_to_trialing_fires_trial_converted_telemetry(mock_repo):
+async def test_card_on_file_trial_is_not_a_conversion(mock_repo):
+    """trial_local -> trialing is a card on file with nothing paid (T05): the conversion is the
+    later trialing -> active, which the bridge reports."""
     mock_capture = await _run_state_capturing_telemetry(mock_repo, "trial_local", "trialing")
 
-    trial_converted_calls = [c for c in mock_capture.call_args_list if c.kwargs.get("event") == "trial_converted"]
-    assert len(trial_converted_calls) == 1
-    call = trial_converted_calls[0]
-    assert call.kwargs["distinct_id"] == "org_x"
-    assert call.kwargs["properties"] == {
-        "workspace_id": "org_x",
-        "from_status": "trial_local",
-        "to_status": "trialing",
-        "provider_choice": None,
-    }
+    events = [c.kwargs.get("event") for c in mock_capture.call_args_list]
+    assert "trial_converted" not in events
+    assert "trial_started" in events
 
 
 @pytest.mark.asyncio

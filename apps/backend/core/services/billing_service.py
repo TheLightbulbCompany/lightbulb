@@ -37,7 +37,12 @@ stripe.api_key = settings.STRIPE_SECRET_KEY
 
 # Bump whenever the shared Checkout body changes; Stripe idempotency compares
 # the complete request body for a reused key.
-_CHECKOUT_BODY_VERSION = 8
+_CHECKOUT_BODY_VERSION = 9
+
+# Stripe refuses a trial_end less than 48 hours out; an hour of margin for the bucket.
+_STRIPE_MIN_TRIAL_S = 49 * 3600
+# Founding teams' price lock (owner ruling 2026-10-13: two years).
+_PRICE_LOCK_DAYS = 730
 
 # Members included in the plan price; each human member past this is one seat
 # on STRIPE_SEAT_PRICE_ID (owner ruling: $50 for up to 5, $20 a member from the 6th).
@@ -343,6 +348,10 @@ async def create_workspace_checkout(
             "purpose": "workspace_subscription_v2",
             "return_to": return_to,
         }
+        bucket_start = checkout_bucket * 300
+        trial_end = _checkout_trial_end(account, bucket_start)
+        if account.get("founding_team"):
+            metadata["price_lock_until"] = price_lock_until(bucket_start)
         if return_to == "app":
             # Stripe's app-to-web flow: the app opens this in Safari; these URLs are
             # claimed by the iOS app's universal link (apple-app-site-association
@@ -369,6 +378,9 @@ async def create_workspace_checkout(
             owner_id=owner_id,
             line_items=line_items,
             metadata=metadata,
+            trial_end=trial_end,
+            # No typed codes: internal coupons are applied by a founder in the Dashboard.
+            allow_promotion_codes=False,
             **urls,
             idempotency_key=(
                 f"workspace_checkout:v{_CHECKOUT_BODY_VERSION}:{owner_id}:{plan}:{clerk_user_id}:{checkout_bucket}"
@@ -376,8 +388,8 @@ async def create_workspace_checkout(
                 # Workspace -> Ultra -> Workspace inside one bucket replays the
                 # first (now expired) session.
                 f":{pending_id or ''}"
-                # The seat quantity is part of the body.
-                f":{seats}"
+                # The seat quantity and trial end are part of the body.
+                f":{seats}:{trial_end or ''}"
                 # Web and app sessions differ in body (return URLs, origin_context);
                 # sharing a key would make Stripe reject the second as a mismatch.
                 f":{return_to}"
@@ -400,6 +412,57 @@ async def create_workspace_checkout(
             await billing_repo.release_checkout_slot(owner_id, token=claim_token)
         except Exception:
             logger.exception("Failed to release workspace checkout slot for owner %s", owner_id)
+
+
+def _checkout_trial_end(account: dict, now_s: int) -> int | None:
+    """Card now, first charge on the workspace's own day 31 (T05).
+
+    A ``trial_local`` workspace checks out into a Stripe trial ending where its
+    free trial does, so adding the card early never shortens the free month. An
+    unarmed trial (workspace not ready yet) gets the full 30 days from now. Near
+    the end the trial is stretched to Stripe's 48-hour minimum rather than
+    charging early. An expired trial, or any other row, is billed at once.
+    ``now_s`` is the checkout bucket start, so retries send an identical body.
+    """
+    if account.get("subscription_status") != "trial_local":
+        return None
+    end = account.get("trial_end")
+    end = int(end) if end is not None else now_s + billing_repo._TRIAL_LOCAL_DURATION_SECONDS
+    if end <= now_s:
+        return None
+    return max(end, now_s + _STRIPE_MIN_TRIAL_S)
+
+
+def price_lock_until(now_s: int) -> str:
+    """The founding-team price lock date (ISO date), two years from ``now_s``."""
+    import datetime as dt
+
+    return (dt.datetime.fromtimestamp(now_s, dt.UTC) + dt.timedelta(days=_PRICE_LOCK_DAYS)).date().isoformat()
+
+
+async def mark_founding_team(owner_id: str) -> dict:
+    """Admin: mark a workspace as a founding team (two-year price lock).
+
+    Its next Checkout carries ``price_lock_until`` in subscription metadata; a
+    subscription that is already live is stamped now. An existing lock is kept,
+    never moved. Any future price change must skip a subscription whose lock
+    has not passed.
+    """
+    account = await billing_repo.get_by_owner_id(owner_id)
+    if not account:
+        return {"status": "no_billing_account"}
+    await billing_repo.set_founding_team(owner_id)
+    sub_id = account.get("stripe_subscription_id")
+    if not sub_id:
+        return {"status": "marked"}
+    with timing("stripe.api.latency", {"op": "subscription.retrieve"}):
+        subscription = stripe.Subscription.retrieve(sub_id)
+    lock = (subscription.get("metadata") or {}).get("price_lock_until")
+    if not lock:
+        lock = price_lock_until(int(time.time()))
+        with timing("stripe.api.latency", {"op": "subscription.modify"}):
+            stripe.Subscription.modify(sub_id, metadata={"price_lock_until": lock})
+    return {"status": "marked", "subscription_id": sub_id, "price_lock_until": lock}
 
 
 def _retrieve_checkout_session(session_id: str):
@@ -576,6 +639,7 @@ async def _build_subscription_checkout(
     expires_at: int | None = None,
     allow_promotion_codes: bool = True,
     origin_context: str | None = None,
+    trial_end: int | None = None,
 ) -> stripe.checkout.Session:
     """Single builder for subscription-mode Stripe Checkout sessions.
 
@@ -589,6 +653,8 @@ async def _build_subscription_checkout(
         raise BillingServiceError(f"No Stripe customer for owner_id={owner_id}")
 
     subscription_data: dict = {"metadata": metadata}
+    if trial_end is not None:
+        subscription_data["trial_end"] = trial_end
 
     kwargs: dict = dict(
         customer=account["stripe_customer_id"],

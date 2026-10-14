@@ -83,7 +83,8 @@ seat to the subscription, prorated from the day they join and removed when they
 leave (a trial is not charged for members). Runtime capacity remains finite. Upgrade lives in
 thelightbulb.company/settings. Changing the plan of a workspace that already
 pays needs the owner to confirm it there; nothing is charged at that moment, and
-the prorated difference for the rest of the period goes on the next invoice. There is also a **free trial** (no card, 30 days) on
+the prorated difference for the rest of the period goes on the next invoice. There is also a **free trial** (no card, 30 days; an admin may add a card
+early, and the first charge is still on the trial's last day) on
 Lightbulb-managed DeepSeek within a daily allowance. Inference runs on one of
 three provider paths chosen by the owner:
 **Lightbulb-managed** (DeepSeek within the plan's daily allowance; prepaid

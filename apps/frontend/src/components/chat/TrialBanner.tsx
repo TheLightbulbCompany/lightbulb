@@ -31,10 +31,9 @@ type BillingAccount = {
   workspace_price_usd?: number;
 };
 
-// LEGACY: checkout no longer creates Stripe trials (billed immediately since
-// 2026-07-17), so `subscription_status === "trialing"` can only come from a
-// pre-cutover subscription still mid-trial. This component renders nothing
-// once the last such row converts or cancels — safe to delete after that.
+// `subscription_status === "trialing"` is a card-on-file trial: a free-tier
+// workspace that checked out early (T05), whose Stripe trial ends on its own
+// trial_end, so the first charge is on day 31.
 //
 // Only surface the in-app banner in the FINAL stretch of the trial: a quiet
 // heads-up in the last few days avoids surprise-charge disputes without

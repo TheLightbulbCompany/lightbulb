@@ -30,7 +30,7 @@ def checkout_slot(monkeypatch):
     ("plan", "price_id"),
     [("base", "price_base"), ("workspace", "price_workspace"), ("ultra", "price_ultra")],
 )
-async def test_workspace_checkout_has_one_recurring_item_and_manual_promotion_codes(monkeypatch, plan, price_id):
+async def test_workspace_checkout_has_one_recurring_item_and_no_promotion_codes(monkeypatch, plan, price_id):
     monkeypatch.setattr(billing_service.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
     monkeypatch.setattr(billing_service.settings, "STRIPE_BASE_PRICE_ID", "price_base")
     monkeypatch.setattr(billing_service.settings, "STRIPE_ULTRA_PRICE_ID", "price_ultra")
@@ -50,7 +50,7 @@ async def test_workspace_checkout_has_one_recurring_item_and_manual_promotion_co
     assert result == {"checkout_url": "https://checkout.test/cs_1"}
     kwargs = create.call_args.kwargs
     assert kwargs["line_items"] == [{"price": price_id, "quantity": 1}]
-    assert kwargs["allow_promotion_codes"] is True
+    assert kwargs["allow_promotion_codes"] is False
     assert kwargs["payment_method_collection"] == "always"
     assert kwargs["metadata"] == {
         "workspace_id": "org_1",

@@ -306,7 +306,7 @@ def included_daily_cap_gate(owner_role: str) -> Gate:
 
 
 def trial_expired_gate(owner_role: str) -> Gate:
-    """The blocked-gate a trial_local owner sees once their 3-day window
+    """The blocked-gate a trial_local owner sees once their 30-day window
     (``trial_end``, armed by the first canonical ready status poll) has
     passed. Mirrors ``trial_daily_cap_gate`` field-for-field
     so the provision gate and gate_chat's Layer 2 render an identical

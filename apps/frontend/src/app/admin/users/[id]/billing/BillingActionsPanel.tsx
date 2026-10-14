@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import {
   cancelSubscription,
   issueCredit,
+  markFoundingTeam,
   markInvoiceResolved,
   pauseSubscription,
   resumeSubscription,
@@ -84,6 +85,13 @@ export function BillingActionsPanel({ userId, email }: BillingActionsPanelProps)
     clearStatus();
     const result = await resumeSubscription(userId);
     applyResult("Resume subscription", result.ok, result.error);
+  }
+
+  async function handleFounding() {
+    clearStatus();
+    const result = await markFoundingTeam(userId);
+    const lock = (result.data as { price_lock_until?: string } | undefined)?.price_lock_until;
+    applyResult(lock ? `Founding team (price locked until ${lock})` : "Founding team", result.ok, result.error);
   }
 
   async function handleCredit() {
@@ -174,6 +182,15 @@ export function BillingActionsPanel({ userId, email }: BillingActionsPanelProps)
           >
             <Button type="button" variant="outline" size="sm" disabled={subscriptionDisabled}>
               Resume subscription
+            </Button>
+          </ConfirmActionDialog>
+          <ConfirmActionDialog
+            confirmText={userId}
+            actionLabel="Mark founding team (two-year price lock)"
+            onConfirm={handleFounding}
+          >
+            <Button type="button" variant="outline" size="sm">
+              Mark founding team
             </Button>
           </ConfirmActionDialog>
         </div>

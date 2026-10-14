@@ -150,7 +150,7 @@ describe("useBilling", () => {
       ),
     );
     const { result } = renderHook(() => useBilling(), { wrapper });
-    await result.current.startCheckout("ultra");
+    await result.current.startCheckout("workspace");
     const call = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.find((c) =>
       String(c[0]).includes("/billing/checkout"),
     );
@@ -177,7 +177,7 @@ describe("useBilling", () => {
       );
     });
     const { result } = renderHook(() => useBilling(), { wrapper });
-    await result.current.startCheckout("ultra");
+    await result.current.startCheckout("workspace");
     const post = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.find((c) =>
       String(c[0]).includes("/billing/checkout"),
     );

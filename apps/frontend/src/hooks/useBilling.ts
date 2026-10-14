@@ -37,6 +37,10 @@ export interface BillingAccount {
   workspace_price_usd: number;
   base_price_usd: number;
   ultra_price_usd: number;
+  // The one plan: workspace_price_usd covers included_members people, then
+  // seat_price_usd a month for each member past them. Optional for old fixtures.
+  seat_price_usd?: number;
+  included_members?: number;
   // The managed model's per-key daily limit tripped today (UTC); clears at the rollover.
   capped_today?: boolean;
   // Epoch seconds the workspace's own provider plan (ChatGPT, BYO key) is back from a usage
@@ -121,7 +125,7 @@ export function useBilling() {
 
   // `confirm` is required to change a live subscription's plan; without it the
   // server changes nothing and answers `confirm_required`.
-  const startCheckout = useCallback(async (plan: "base" | "workspace" | "ultra", confirm = false) => {
+  const startCheckout = useCallback(async (plan: "workspace", confirm = false) => {
     const res = (await api.post("/billing/checkout", { plan, confirm })) as {
       checkout_url?: string;
       updated?: boolean;

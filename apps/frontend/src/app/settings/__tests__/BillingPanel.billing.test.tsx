@@ -164,7 +164,7 @@ describe("BillingPanel — workspace billing", () => {
 
     render(<SettingsPage />);
 
-    expect(screen.getByRole("button", { name: /choose workspace/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^continue/i })).toBeInTheDocument();
     expect(screen.queryByText("Lightbulb plan")).not.toBeInTheDocument();
   });
 
@@ -254,7 +254,7 @@ describe("BillingPanel — org trial_local conversion", () => {
     billing.startCheckout = vi.fn().mockResolvedValue(undefined);
   });
 
-  it("offers the whole plan ladder, with no second stray upgrade button", async () => {
+  it("offers the one plan, with no second stray upgrade button", async () => {
     billing.isSubscribed = false;
     billing.account = {
       is_subscribed: false,
@@ -265,18 +265,19 @@ describe("BillingPanel — org trial_local conversion", () => {
       provider_choice: null,
       byo_provider: null,
       workspace_price_usd: 50,
-      ultra_price_usd: 150,
+      seat_price_usd: 20,
+      included_members: 5,
     };
 
     render(<SettingsPage />);
 
-    // One chooser, no plan marked current on the trial; each card starts that plan.
+    // One plan, not marked current on the trial; its button starts it.
     expect(screen.getByTestId("plan-chooser")).toBeInTheDocument();
     expect(screen.queryByText("Current plan")).toBeNull();
-    expect(screen.getAllByRole("button", { name: /^Choose / })).toHaveLength(3);
+    expect(screen.queryByText(/Ultra|Base/)).toBeNull();
     expect(screen.queryByRole("button", { name: /subscribe workspace|upgrade to base/i })).toBeNull();
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Choose Workspace" }));
+      fireEvent.click(screen.getByRole("button", { name: "Continue for $50 a month" }));
     });
     expect(billing.startCheckout).toHaveBeenCalledWith("workspace", false);
     // The Bedrock card is gone (#2932); managed inference shows only when available.

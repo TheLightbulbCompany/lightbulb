@@ -40,6 +40,10 @@ class BillingAccountResponse(BaseModel):
     # the router still supplies the server-owned configured value when present.
     base_price_usd: int = 20
     ultra_price_usd: int
+    # The one plan (T06): workspace_price_usd covers ``included_members`` people,
+    # then seat_price_usd a month for each member past them.
+    seat_price_usd: int
+    included_members: int
     # Which channel the live subscription was bought through: "apple_iap", or
     # absent/None for the Stripe path (the default, and every pre-IAP row).
     #

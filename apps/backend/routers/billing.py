@@ -22,7 +22,7 @@ from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, usage_repo
 from core.services import apple_iap, openrouter_keys, trial_cap
-from core.services.billing_service import BillingService
+from core.services.billing_service import SEATS_INCLUDED, BillingService
 from core.services.chat_gate import budget_block_reason
 from core.services.stripe_webhook_handlers import STRIPE_WEBHOOK_HANDLERS
 from core.services.provision_gate import (
@@ -139,8 +139,10 @@ async def get_billing_account(
         workspace_price_usd=settings.WORKSPACE_PRICE_USD,
         base_price_usd=settings.BASE_PRICE_USD,
         ultra_price_usd=settings.ULTRA_PRICE_USD,
+        seat_price_usd=settings.SEAT_PRICE_USD,
+        included_members=SEATS_INCLUDED,
         subscription_source=(account.get("subscription_source") if account else None),
-        apple_iap_product_ids=list(apple_iap.PRODUCT_PLANS) if settings.APPLE_IAP_SELLING else [],
+        apple_iap_product_ids=list(apple_iap.SELLING_PRODUCTS) if settings.APPLE_IAP_SELLING else [],
         capped_today=bool(account) and account.get("openrouter_capped_day") == trial_cap.utc_today(),
         # Only capped owners have a daily allowance; omitted (None) when OpenRouter can't be read.
         allowance=await openrouter_keys.owner_allowance(owner_id) if trial_cap.is_managed_capped(account) else None,
@@ -276,7 +278,9 @@ async def create_portal(
 
 
 class CheckoutRequest(BaseModel):
-    plan: Literal["base", "workspace", "ultra"]
+    # One plan (T06): Base and Ultra are retired and no longer sold. Existing
+    # rows on them keep billing until moved; the webhook still reads their prices.
+    plan: Literal["workspace"] = "workspace"
     return_to: Literal["web", "app"] = "web"
     # Required to change the plan of a live subscription; without it the
     # response is ``confirm_required`` with the cost and nothing is changed.

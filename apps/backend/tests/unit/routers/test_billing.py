@@ -153,7 +153,7 @@ class TestGetBillingAccount:
 
         response = await async_client.get("/api/v1/billing/account")
         assert response.status_code == 200
-        expected = sorted(apple_iap.PRODUCT_PLANS) if selling else []
+        expected = sorted(apple_iap.SELLING_PRODUCTS) if selling else []
         assert sorted(response.json()["apple_iap_product_ids"]) == expected
 
 

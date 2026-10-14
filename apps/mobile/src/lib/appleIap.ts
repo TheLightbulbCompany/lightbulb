@@ -72,6 +72,8 @@ type WebPrices = {
   base_price_usd?: number;
   workspace_price_usd?: number;
   ultra_price_usd?: number;
+  seat_price_usd?: number;
+  included_members?: number;
   subscription_source?: string | null;
 };
 

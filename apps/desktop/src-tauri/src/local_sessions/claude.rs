@@ -162,7 +162,7 @@ pub(super) async fn capture(home: &Path, program: &Path, row: &Value) -> Result<
     if process(pid)? != execution {
         return Err("process changed during discovery".into());
     }
-    let title = title.or_else(|| row["name"].as_str().map(|n| n.chars().take(120).collect()));
+    // The listing's `name` is never the title: see `latest_title`.
     let cwd_name = basename(row["cwd"].as_str());
     Ok(NativeSession {
         provider: "claude".into(),
@@ -438,15 +438,17 @@ pub(super) fn sender_handle(own: bool, handle: Option<&str>) -> String {
 
 /// Claude's own word for the session. `state` (2.1.289, background rows) is the sharper one:
 /// `blocked` is waiting on its person. A prompt Lightbulb holds open is layered on by the
-/// transport, never inferred here.
+/// transport, never inferred here. A background job whose turn is over says `state: done` while
+/// its `status` can stay `busy` for hours; its registry then says `shell` (sitting at its shell).
 pub(super) fn listing_status(row: &Value) -> &'static str {
     match row["state"].as_str() {
         Some("working") => return "busy",
         Some("blocked") => return "waiting-approval",
+        Some("done" | "idle") => return "idle",
         _ => {}
     }
     match row["status"].as_str() {
-        Some("idle") => "idle",
+        Some("idle" | "shell") => "idle",
         Some("busy") => "busy",
         // A Claude session that is waiting is waiting on its human, whatever
         // `waitingFor` says (a permission prompt, a pending question, ...).
@@ -456,29 +458,52 @@ pub(super) fn listing_status(row: &Value) -> &'static str {
 }
 
 /// The conversation's name from the transcript's final 2 MiB: the last name its person gave it
-/// (`/rename` writes `custom-title`), else the last title Claude generated (`ai-title`). The
-/// listing's own `name` (`<folder>-<hex>` until a title exists) is the caller's last fallback.
+/// (`/rename` writes `custom-title`), else the last title Claude generated (`ai-title`) from this
+/// conversation's own prompts. Claude names a new session at launch, before any prompt, by
+/// copying another session's name in the same folder, and re-appends that name later on: an
+/// `ai-title` equal to the one written before the first prompt is not this session's title. No
+/// title is `None` (the clients show "New chat"); the listing's `name` is never used, since it
+/// is that same inherited name or the `<folder>-<hex>` placeholder.
 pub(super) fn latest_title(path: &Path) -> Option<String> {
+    // The first prompt is in the first few KiB; the head is read apart from the tail window.
+    const WINDOW: u64 = 2 * 1024 * 1024;
+    const HEAD: u64 = 256 * 1024;
     let mut file = secure_file(path).ok()?;
     let len = file.metadata().ok()?.len();
-    let offset = len.saturating_sub(2 * 1024 * 1024);
-    file.seek(SeekFrom::Start(offset)).ok()?;
-    let mut reader = BufReader::new(file.take(2 * 1024 * 1024));
-    if offset > 0 {
-        let mut partial = String::new();
-        reader.read_line(&mut partial).ok()?;
-    }
+    let offset = len.saturating_sub(WINDOW);
+    let rows = |file: &mut fs::File, from: u64, limit: u64| -> Option<Vec<Value>> {
+        file.seek(SeekFrom::Start(from)).ok()?;
+        let mut reader = BufReader::new(file.take(limit));
+        if from > 0 {
+            let mut partial = String::new();
+            reader.read_line(&mut partial).ok()?;
+        }
+        Some(reader.lines().map_while(|l| l.ok()).filter_map(|l| serde_json::from_str(&l).ok()).collect())
+    };
+    let text = |row: &Value, field: &str| -> Option<String> {
+        row[field].as_str().filter(|t| !t.trim().is_empty()).map(|t| t.chars().take(120).collect())
+    };
+    let prompt = |row: &Value| row["type"] == "user" && row["isMeta"] != true;
+    // The launch name: the last `ai-title` before the first prompt. None at all while no prompt
+    // was written: every generated title is then the launch name.
+    let head = rows(&mut file, 0, HEAD)?;
+    let first_prompt = head.iter().position(prompt);
+    let inherited = head[..first_prompt.unwrap_or(head.len())]
+        .iter()
+        .filter(|row| row["type"] == "ai-title")
+        .filter_map(|row| text(row, "aiTitle"))
+        .last();
+    // (A head that holds no prompt but is not the whole file is unusual: its titles still count.)
+    let whole = len <= HEAD;
+    let tail = if whole { head } else { rows(&mut file, offset, WINDOW)? };
     let (mut custom, mut generated) = (None, None);
-    for line in reader.lines().map_while(|l| l.ok()) {
-        if let Ok(row) = serde_json::from_str::<Value>(&line) {
-            let (slot, field) = match row["type"].as_str() {
-                Some("custom-title") => (&mut custom, "customTitle"),
-                Some("ai-title") => (&mut generated, "aiTitle"),
-                _ => continue,
-            };
-            if let Some(t) = row[field].as_str().filter(|t| !t.trim().is_empty()) {
-                *slot = Some(t.chars().take(120).collect());
+    for row in &tail {
+        match row["type"].as_str() {
+            Some("custom-title") => custom = text(row, "customTitle").or(custom),
+            Some("ai-title") if first_prompt.is_some() || !whole => {
+                generated = text(row, "aiTitle").filter(|t| Some(t) != inherited.as_ref()).or(generated);
             }
+            _ => {}
         }
     }
     custom.or(generated)
@@ -1945,6 +1970,9 @@ mod tests {
         assert_eq!(listing_status(&json!({"status":"idle","state":"blocked"})), "waiting-approval");
         assert_eq!(listing_status(&json!({"status":"busy","state":"working"})), "busy");
         assert_eq!(listing_status(&json!({"status":"idle","state":"done"})), "idle");
+        // A finished background job: its listing keeps a stale `busy` beside `state: done`.
+        assert_eq!(listing_status(&json!({"status":"busy","state":"done"})), "idle");
+        assert_eq!(listing_status(&json!({"status":"shell"})), "idle");
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.jsonl");
         fs::write(&path, "{\"type\":\"ai-title\",\"aiTitle\":\"First\"}\n{\"type\":\"user\"}\n{\"type\":\"ai-title\",\"aiTitle\":\"Desktop and mobile notifications\"}\n").unwrap();
@@ -1957,6 +1985,24 @@ mod tests {
         writeln!(file, "{{\"type\":\"custom-title\",\"customTitle\":\"Release train\"}}").unwrap();
         writeln!(file, "{{\"type\":\"ai-title\",\"aiTitle\":\"Something newer\"}}").unwrap();
         assert_eq!(latest_title(&path).as_deref(), Some("Release train"));
+    }
+
+    #[test]
+    fn local_sessions_claude_a_name_given_before_the_first_prompt_is_not_the_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        // Claude copies another session's name at launch and re-appends it after the prompt.
+        let launch = "{\"type\":\"ai-title\",\"aiTitle\":\"Someone else's job\"}\n{\"type\":\"agent-name\",\"agentName\":\"Someone else's job\"}\n";
+        fs::write(&path, launch).unwrap();
+        assert_eq!(latest_title(&path), None, "no prompt yet: New chat");
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, "{{\"type\":\"user\",\"isMeta\":true}}").unwrap();
+        writeln!(file, "{{\"type\":\"user\",\"message\":{{\"content\":\"fix the login bug\"}}}}").unwrap();
+        write!(file, "{launch}").unwrap();
+        assert_eq!(latest_title(&path), None, "the launch name re-appended is still not its title");
+        writeln!(file, "{{\"type\":\"ai-title\",\"aiTitle\":\"Login bug fix\"}}").unwrap();
+        write!(file, "{launch}").unwrap();
+        assert_eq!(latest_title(&path).as_deref(), Some("Login bug fix"));
     }
 
     #[test]

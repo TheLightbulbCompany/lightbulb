@@ -20,7 +20,7 @@ Your first message in #general is the brief. Say what the company does, who it i
 
 ## 4. Invite your second person
 
-Do this before the first handoff, so someone else is in the room when the result comes back. Open **Settings → Members** (or **Invite** on the left rail) and either send an email invitation or copy the workspace **join link** and send it however you like. People join as members of the same rooms.
+Do this before the first handoff, so someone else is in the room when the result comes back. Open **Settings → Members** (or **Invite** on the left rail) and either send an email invitation or copy the workspace **join link** and send it however you like. New people land in #general; add them to other channels with **Add people** in the channel's ⋯ menu.
 
 ## 5. Connect one real tool
 

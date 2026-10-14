@@ -71,8 +71,15 @@ export default async function BlogPostPage({
     dateModified: post.date,
     image: `${SITE_URL}/og-lightbulb.png`,
     author: { "@type": "Person", name: post.author },
-    publisher: { "@id": `${SITE_URL}/#organization` },
-    about: { "@id": `${SITE_URL}/#software` },
+    // Inline, not a bare @id: the entities are defined on the homepage only.
+    publisher: {
+      "@type": "Organization",
+      "@id": `${SITE_URL}/#organization`,
+      name: "Lightbulb",
+      url: SITE_URL,
+      logo: { "@type": "ImageObject", url: `${SITE_URL}/icon.png` },
+    },
+    about: { "@type": "SoftwareApplication", "@id": `${SITE_URL}/#software`, name: "Lightbulb", url: SITE_URL },
     mainEntityOfPage: { "@type": "WebPage", "@id": `${SITE_URL}/blog/${post.slug}` },
     keywords: post.tags.join(", "),
   };

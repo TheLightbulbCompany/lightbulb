@@ -173,3 +173,44 @@ describe("ProfilePanel — delete account", () => {
     expect(screen.getByRole("button", { name: /delete account/i })).toBeInTheDocument();
   });
 });
+
+// Covers WorkspaceExportCard: only a 200 ZIP is saved; a 202 (workspace still
+// provisioning, JSON body) shows a retry message and records no export.
+const analytics = vi.hoisted(() => ({ capture: vi.fn() }));
+vi.mock("@/lib/analytics", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/analytics")>()),
+  capture: analytics.capture,
+}));
+
+describe("ProfilePanel — workspace export", () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    nav.panel = null;
+    billing.account = null;
+    clerk.organization = null;
+    analytics.capture.mockClear();
+    fetchMock.mockReset();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  it("does not save a 202 provisioning response as the ZIP", async () => {
+    fetchMock.mockImplementation(async (url: string) =>
+      String(url).includes("/teams/workspace/export")
+        ? new Response(JSON.stringify({ status: "provisioning" }), {
+            status: 202,
+            headers: { "Content-Type": "application/json" },
+          })
+        : new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<SettingsPage />);
+    fireEvent.click(screen.getByRole("button", { name: /download workspace zip/i }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("Your workspace is still setting up. Try again in a minute."),
+      ).toBeInTheDocument(),
+    );
+    expect(analytics.capture).not.toHaveBeenCalledWith("workspace_export_downloaded");
+  });
+});

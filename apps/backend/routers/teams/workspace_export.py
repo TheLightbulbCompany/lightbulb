@@ -28,11 +28,7 @@ _INTERNAL_KEYS = {"pk", "sk", "gsi1pk", "gsi1sk", "gsi2pk", "gsi2sk"}
 def _public_record(value: Any) -> Any:
     """Remove DynamoDB keys while retaining the complete user-facing record."""
     if isinstance(value, dict):
-        return {
-            key: _public_record(item)
-            for key, item in value.items()
-            if key not in _INTERNAL_KEYS
-        }
+        return {key: _public_record(item) for key, item in value.items() if key not in _INTERNAL_KEYS}
     if isinstance(value, list):
         return [_public_record(item) for item in value]
     return value
@@ -59,20 +55,23 @@ async def _all_messages(room_id: str) -> list[dict[str, Any]]:
 
 
 async def _all_tasks(ctx: TeamsContext) -> list[dict[str, Any]]:
+    # Keyset pagination on the issue id: offsets skip or repeat rows when the
+    # board changes mid-export. The Paperclip fork accepts afterId only with
+    # sortField=id, sortDir=asc and no offset.
     tasks: list[dict[str, Any]] = []
-    offset = 0
     limit = 500
     admin = _agents._admin()
+    params = {"limit": str(limit), "sortField": "id", "sortDir": "asc"}
     while True:
         page = await admin.list_issues(
             company_id=ctx.company_id,
             session_cookie=ctx.session_cookie,
-            params={"limit": str(limit), "offset": str(offset)},
+            params=params,
         )
         tasks.extend(page)
         if len(page) < limit:
             return tasks
-        offset += len(page)
+        params = {**params, "afterId": str(page[-1]["id"])}
 
 
 @router.get("/workspace/export")

@@ -184,7 +184,16 @@ function WorkspaceExportCard() {
       const response = await fetch(`${BACKEND_URL}/teams/workspace/export`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
-      if (!response.ok) throw new Error(`Export failed (${response.status})`);
+      // 202 means the workspace is still provisioning and the body is JSON, not
+      // a ZIP; only a 200 carrying a ZIP is a finished export.
+      if (response.status === 202) {
+        setError("Your workspace is still setting up. Try again in a minute.");
+        return;
+      }
+      const contentType = response.headers.get("content-type") ?? "";
+      if (response.status !== 200 || !contentType.includes("application/zip")) {
+        throw new Error(`Export failed (${response.status})`);
+      }
       const blob = await response.blob();
       const disposition = response.headers.get("content-disposition") ?? "";
       const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? "lightbulb-workspace.zip";

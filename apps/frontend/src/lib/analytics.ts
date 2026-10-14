@@ -73,6 +73,8 @@ export type AnalyticsEvent =
   // Billing
   | "billing_portal_opened"
   | "billing_plan_chosen"
+  // Settings → Profile: an owner saved the workspace ZIP export.
+  | "workspace_export_downloaded"
   // Paired with `first_run_failed_notice_shown` {cause: "credits"}: without a
   // click event, the question the credits branch was built to answer — do
   // out-of-credits owners self-serve instead of emailing us — cannot be

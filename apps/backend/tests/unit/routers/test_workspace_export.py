@@ -1,12 +1,13 @@
 import io
 import json
 import zipfile
-from unittest.mock import AsyncMock, call, patch
+from unittest.mock import call, create_autospec, patch
 
 import pytest
 from fastapi import HTTPException
 
 from core.auth import AuthContext
+from core.services.paperclip_admin_client import PaperclipAdminClient
 from routers.teams.deps import TeamsContext
 from routers.teams.workspace_export import export_workspace
 
@@ -36,12 +37,12 @@ async def test_export_zip_contains_all_room_messages_and_board_tasks():
     auth = AuthContext(user_id="user_owner", org_id="org_1", org_role="org:admin")
     page_1 = ([{"messageId": "m1", "messageSeq": 1, "body": "hello", "pk": "internal"}], 1)
     page_2 = ([{"messageId": "m2", "messageSeq": 2, "body": "goodbye", "sk": "internal"}], None)
-    admin = AsyncMock()
+    admin = create_autospec(PaperclipAdminClient, instance=True)
     first_task_page = [
-        {"id": f"i{index}", "title": f"Task {index}", "status": "done"}
+        {"id": f"00000000-0000-0000-0000-{index:012d}", "title": f"Task {index}", "status": "done"}
         for index in range(500)
     ]
-    final_task = {"id": "i500", "title": "Retain records", "status": "done"}
+    final_task = {"id": "00000000-0000-0000-0001-000000000000", "title": "Retain records", "status": "done"}
     admin.list_issues.side_effect = [first_task_page, [final_task]]
 
     with (
@@ -64,7 +65,7 @@ async def test_export_zip_contains_all_room_messages_and_board_tasks():
     assert all("pk" not in message and "sk" not in message for message in room["messages"])
     tasks = json.loads(archive.read("board/tasks.json"))["tasks"]
     assert len(tasks) == 501
-    assert tasks[-1]["id"] == "i500"
+    assert tasks[-1]["id"] == final_task["id"]
     get_room.assert_awaited_once_with("room-1")
     assert list_messages.await_args_list == [
         call("room-1", 0, 100),
@@ -74,11 +75,16 @@ async def test_export_zip_contains_all_room_messages_and_board_tasks():
         call(
             company_id="company_1",
             session_cookie="session=opaque",
-            params={"limit": "500", "offset": "0"},
+            params={"limit": "500", "sortField": "id", "sortDir": "asc"},
         ),
         call(
             company_id="company_1",
             session_cookie="session=opaque",
-            params={"limit": "500", "offset": "500"},
+            params={
+                "limit": "500",
+                "sortField": "id",
+                "sortDir": "asc",
+                "afterId": "00000000-0000-0000-0000-000000000499",
+            },
         ),
     ]

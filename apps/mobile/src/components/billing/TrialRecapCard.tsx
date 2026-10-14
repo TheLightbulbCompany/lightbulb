@@ -2,6 +2,10 @@
  * Day-28 recap on the phone's home list (T19, docs/marketing/15 §B): the team's
  * own numbers before the ask. Admins open Plans; members are pointed at an
  * admin. "Not now" hides it for three days on this device.
+ *
+ * While the server sells no plan in the app (IAP off), the card shows no price
+ * and no plan button: a price or purchase prompt in the iPhone app without
+ * In-App Purchase is an App Store 3.1.1 rejection.
  */
 import { useAuth, useOrganization } from "@clerk/expo";
 import { router } from "expo-router";
@@ -11,6 +15,7 @@ import { createApiClient } from "@lightbulb/shared";
 
 import { fonts, radii, spacing, useChatPalette } from "../../config/theme";
 import { makeAdapter } from "../../lib/adapter";
+import { paywallProductIds } from "../../lib/appleIap";
 import { LocalStore } from "../../lib/localStore";
 
 type Recap = {
@@ -22,7 +27,11 @@ type Recap = {
   people?: number;
   top_item?: string | null;
 };
-type Prices = { workspace_price_usd?: number; included_members?: number };
+type Prices = {
+  workspace_price_usd?: number;
+  included_members?: number;
+  apple_iap_product_ids?: string[] | null;
+};
 
 const store = new LocalStore<{ dismissedUntil?: number }>("lightbulb.trialRecap");
 const DISMISS_MS = 3 * 86_400_000;
@@ -68,6 +77,7 @@ export function TrialRecapCard() {
 
   if (!recap?.show || hidden || recap.trial_end == null) return null;
   const line = recapLine(recap);
+  const sellsInApp = paywallProductIds(prices).length > 0;
   const nothingFinished = !recap.handoffs && !recap.approvals;
   const ends = new Date(recap.trial_end * 1000).toLocaleDateString(undefined, {
     timeZone: "UTC",
@@ -92,13 +102,13 @@ export function TrialRecapCard() {
           {recap.top_item ? <Text style={text}>{recap.top_item}</Text> : null}
         </>
       )}
-      {prices?.workspace_price_usd != null && (
+      {sellsInApp && prices?.workspace_price_usd != null && (
         <Text style={[text, { color: palette.fg }]}>
           {`Keep going for $${prices.workspace_price_usd} a month. People are free up to ${prices.included_members ?? 5}.`}
         </Text>
       )}
       <View style={styles.row}>
-        {membership?.role === "org:admin" ? (
+        {!sellsInApp ? null : membership?.role === "org:admin" ? (
           <Pressable accessibilityRole="button" onPress={() => router.push("/plans")}>
             <Text style={{ color: palette.fg, fontFamily: fonts.sansMedium, fontSize: 15 }}>Keep the team</Text>
           </Pressable>
@@ -116,7 +126,9 @@ export function TrialRecapCard() {
         </Pressable>
       </View>
       <Text style={[text, { fontSize: 12 }]}>
-        {`Your trial ends ${ends}. After that everything stays readable; agents stop until someone picks the plan.`}
+        {sellsInApp
+          ? `Your trial ends ${ends}. After that everything stays readable; agents stop until someone picks the plan.`
+          : `Your trial ends ${ends}. After that everything stays readable.`}
       </Text>
     </View>
   );

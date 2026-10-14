@@ -63,7 +63,7 @@ function DecisionMeta({ item }: { item: AttentionItem }) {
   const waited = waitedMs(item);
   const overdue = waited >= OVERDUE_MS;
   return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-caption">
       <span
         className="rounded-sm px-1.5 py-0.5 font-medium"
         style={{ background: "var(--cream-deep)", color: "var(--midnight)" }}
@@ -107,10 +107,10 @@ function UnhydratedRow({
   return (
     <div className="flex items-start gap-2">
       <div className="min-w-0 flex-1">
-        <p className="truncate text-sm" style={{ color: "var(--midnight)" }}>
+        <p className="truncate text-ui" style={{ color: "var(--midnight)" }}>
           {item.subject.title ?? sourceLabel(item)}
         </p>
-        <p className="text-xs" style={{ color: "var(--midnight-muted)" }}>
+        <p className="text-caption" style={{ color: "var(--midnight-muted)" }}>
           {item.whyNow}
         </p>
       </div>
@@ -118,7 +118,7 @@ function UnhydratedRow({
         <button
           type="button"
           onClick={() => onOpenIssue(issueId)}
-          className="flex items-center gap-1 text-xs underline-offset-2 hover:underline"
+          className="flex items-center gap-1 text-caption underline-offset-2 hover:underline"
           style={{ color: "var(--midnight)" }}
         >
           Open thread
@@ -222,7 +222,7 @@ export function AttentionList({
     return (
       <div
         role="alert"
-        className="rounded-md border px-4 py-3 text-sm"
+        className="rounded-md border px-4 py-3 text-ui"
         style={{
           borderColor: "var(--err)",
           background: "var(--cream)",

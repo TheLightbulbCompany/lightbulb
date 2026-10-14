@@ -50,8 +50,8 @@ function AttachmentRow({
       style={{ border: "1px solid var(--edge)", borderRadius: 6 }}
     >
       <Paperclip size={16} className="shrink-0" style={{ color: "var(--midnight-muted)" }} />
-      <span className="flex-1 truncate text-sm text-[var(--midnight)]">{name}</span>
-      <span className="text-xs shrink-0" style={{ color: "var(--midnight-muted)" }}>
+      <span className="flex-1 truncate text-ui text-[var(--midnight)]">{name}</span>
+      <span className="text-caption shrink-0" style={{ color: "var(--midnight-muted)" }}>
         {formatBytes(attachment.byteSize)}
         {attachment.createdAt ? ` · ${timeAgo(attachment.createdAt)}` : ""}
       </span>
@@ -138,7 +138,7 @@ export function IssueAttachmentsSection({ issueId }: { issueId: string }) {
           void handleFiles(e.dataTransfer.files);
         }}
         disabled={uploading}
-        className="flex flex-col items-center justify-center gap-1 rounded-sm px-3 py-5 text-sm transition-colors disabled:opacity-50"
+        className="flex flex-col items-center justify-center gap-1 rounded-sm px-3 py-5 text-ui transition-colors disabled:opacity-50"
         style={{
           border: "1px dashed var(--edge)",
           background: dragOver ? "var(--cream-deep)" : "transparent",
@@ -150,22 +150,22 @@ export function IssueAttachmentsSection({ issueId }: { issueId: string }) {
       </button>
 
       {uploadError && (
-        <p className="text-xs" style={{ color: "var(--err)" }} role="alert">
+        <p className="text-caption" style={{ color: "var(--err)" }} role="alert">
           {uploadError}
         </p>
       )}
       {isError && (
-        <p className="text-xs" style={{ color: "var(--err)" }}>
+        <p className="text-caption" style={{ color: "var(--err)" }}>
           Couldn&apos;t load attachments.
         </p>
       )}
       {isLoading && attachments.length === 0 && !isError && (
-        <p className="text-xs italic" style={{ color: "var(--midnight-muted)" }}>
+        <p className="text-caption italic" style={{ color: "var(--midnight-muted)" }}>
           Loading attachments…
         </p>
       )}
       {!isLoading && attachments.length === 0 && !isError && (
-        <p className="text-xs italic" style={{ color: "var(--midnight-muted)" }}>
+        <p className="text-caption italic" style={{ color: "var(--midnight-muted)" }}>
           No attachments yet.
         </p>
       )}

@@ -213,7 +213,7 @@ export function NewIssueDialog({
     >
       <div className="flex flex-col gap-3">
         {parentId && (
-          <p className="text-sm" style={{ color: "var(--midnight-muted)" }}>
+          <p className="text-ui" style={{ color: "var(--midnight-muted)" }}>
             Parent: <span style={{ color: "var(--midnight)" }}>{parentLabel ?? parentId}</span>
           </p>
         )}
@@ -268,7 +268,7 @@ export function NewIssueDialog({
             value={priority}
             onChange={(e) => setPriority(e.target.value as IssuePriority)}
             disabled={submitting}
-            className="w-full rounded-sm px-3 py-2 text-sm"
+            className="w-full rounded-sm px-3 py-2 text-ui"
             style={selectStyle}
           >
             {PRIORITY_OPTIONS.map((opt) => (
@@ -291,7 +291,7 @@ export function NewIssueDialog({
             value={status}
             onChange={(e) => setStatus(e.target.value as IssueStatus)}
             disabled={submitting}
-            className="w-full rounded-sm px-3 py-2 text-sm"
+            className="w-full rounded-sm px-3 py-2 text-ui"
             style={selectStyle}
           >
             {STATUS_OPTIONS.map((opt) => (
@@ -329,7 +329,7 @@ export function NewIssueDialog({
                   aria-checked={active}
                   onClick={() => setWorkMode(opt.value)}
                   disabled={submitting}
-                  className="flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition-colors"
+                  className="flex-1 rounded-md px-3 py-1.5 text-ui font-medium transition-colors"
                   style={{
                     background: active ? "var(--midnight)" : "transparent",
                     color: active ? "var(--cream)" : "var(--midnight)",
@@ -340,7 +340,7 @@ export function NewIssueDialog({
               );
             })}
           </div>
-          <p className="mt-1 text-xs" style={labelStyle}>
+          <p className="mt-1 text-caption" style={labelStyle}>
             Auto does the work; Plan writes a plan for you to accept first; Ask answers without doing the work.
           </p>
         </div>
@@ -358,7 +358,7 @@ export function NewIssueDialog({
               value={assignee}
               onChange={(e) => setAssignee(e.target.value)}
               disabled={submitting}
-              className="w-full rounded-sm px-3 py-2 text-sm"
+              className="w-full rounded-sm px-3 py-2 text-ui"
               style={selectStyle}
             >
               <option value="">Unassigned</option>
@@ -397,7 +397,7 @@ export function NewIssueDialog({
               value={projectId}
               onChange={(e) => setProjectId(e.target.value)}
               disabled={submitting}
-              className="w-full rounded-sm px-3 py-2 text-sm"
+              className="w-full rounded-sm px-3 py-2 text-ui"
               style={selectStyle}
             >
               <option value="">No project</option>
@@ -431,7 +431,7 @@ export function NewIssueDialog({
               value={goalId}
               onChange={(e) => setGoalId(e.target.value)}
               disabled={submitting}
-              className="w-full rounded-sm px-3 py-2 text-sm"
+              className="w-full rounded-sm px-3 py-2 text-ui"
               style={selectStyle}
             >
               <option value="">No goal</option>
@@ -446,7 +446,7 @@ export function NewIssueDialog({
         {error && (
           <p
             role="alert"
-            className="text-sm"
+            className="text-ui"
             style={{ color: "var(--err)" }}
           >
             {error}

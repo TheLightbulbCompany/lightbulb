@@ -152,7 +152,7 @@ export function DocumentAnnotationPanel({
         className="flex items-center justify-between px-3 py-1.5"
         style={{ borderBottom: "1px solid var(--edge)" }}
       >
-        <span className="text-xs font-medium" style={{ color: "var(--midnight)" }}>
+        <span className="text-caption font-medium" style={{ color: "var(--midnight)" }}>
           Comments {visibleThreads.length > 0 ? `(${visibleThreads.length})` : ""}
         </span>
         <button
@@ -183,7 +183,7 @@ export function DocumentAnnotationPanel({
 
       <div className="flex max-h-96 flex-col gap-2 overflow-y-auto px-3 py-2">
         {visibleThreads.length === 0 ? (
-          <p className="text-xs italic" style={{ color: "var(--midnight-muted)" }}>
+          <p className="text-caption italic" style={{ color: "var(--midnight-muted)" }}>
             No comments yet. Select text in the document to add one.
           </p>
         ) : (
@@ -213,7 +213,7 @@ export function DocumentAnnotationPanel({
                   </span>
                 ) : null}
                 <blockquote
-                  className="mx-3 mt-2 rounded-sm px-2 py-1 text-xs italic [overflow-wrap:anywhere]"
+                  className="mx-3 mt-2 rounded-sm px-2 py-1 text-caption italic [overflow-wrap:anywhere]"
                   style={{ background: "var(--edge)", color: "var(--midnight-muted)" }}
                 >
                   {truncate(thread.selectedText, 119)}
@@ -232,7 +232,7 @@ export function DocumentAnnotationPanel({
                           </span>
                           <span style={{ color: "var(--midnight-muted)" }}>{timeAgo(comment.createdAt)}</span>
                         </div>
-                        <div className="text-sm">
+                        <div className="text-ui">
                           <MarkdownView>{comment.body}</MarkdownView>
                         </div>
                       </div>
@@ -245,7 +245,7 @@ export function DocumentAnnotationPanel({
                         setReplyDrafts((current) => ({ ...current, [thread.id]: e.target.value }))
                       }
                       placeholder="Reply…"
-                      className="w-full resize-y rounded-md px-2 py-1 text-sm"
+                      className="w-full resize-y rounded-md px-2 py-1 text-ui"
                       style={{ border: "1px solid var(--edge)", background: "var(--bg)" }}
                     />
                     <div className="flex items-center justify-end gap-2">
@@ -253,7 +253,7 @@ export function DocumentAnnotationPanel({
                         type="button"
                         onClick={() => toggleResolve(thread)}
                         disabled={busy}
-                        className="flex items-center gap-1 rounded-sm px-2 py-1 text-xs disabled:opacity-50"
+                        className="flex items-center gap-1 rounded-sm px-2 py-1 text-caption disabled:opacity-50"
                         style={{ border: "1px solid var(--edge)", color: "var(--midnight)" }}
                       >
                         {thread.status === "resolved" ? (
@@ -270,7 +270,7 @@ export function DocumentAnnotationPanel({
                         type="button"
                         onClick={() => submitReply(thread.id)}
                         disabled={busy || !(replyDrafts[thread.id] ?? "").trim()}
-                        className="rounded-sm px-2 py-1 text-xs disabled:opacity-50"
+                        className="rounded-sm px-2 py-1 text-caption disabled:opacity-50"
                         style={{ background: "var(--midnight)", color: "var(--cream)" }}
                       >
                         Reply
@@ -278,7 +278,7 @@ export function DocumentAnnotationPanel({
                     </div>
                   </div>
                 ) : (
-                  <p className="px-3 py-2 text-xs" style={{ color: "var(--midnight-muted)" }}>
+                  <p className="px-3 py-2 text-caption" style={{ color: "var(--midnight-muted)" }}>
                     <span style={{ color: "var(--midnight)" }}>
                       {thread.comments.length} comment{thread.comments.length === 1 ? "" : "s"}
                     </span>
@@ -294,7 +294,7 @@ export function DocumentAnnotationPanel({
       {pendingAnchor ? (
         <div className="flex flex-col gap-2 px-3 py-2" style={{ borderTop: "1px solid var(--edge)" }}>
           <blockquote
-            className="rounded-sm px-2 py-1 text-xs italic [overflow-wrap:anywhere]"
+            className="rounded-sm px-2 py-1 text-caption italic [overflow-wrap:anywhere]"
             style={{ background: "var(--edge)", color: "var(--midnight-muted)" }}
           >
             {truncate(pendingAnchor.selectedText, 159)}
@@ -306,7 +306,7 @@ export function DocumentAnnotationPanel({
             onChange={(e) => setComposer(e.target.value)}
             placeholder="Write a comment…"
             disabled={newCommentDisabled}
-            className="w-full resize-y rounded-md px-2 py-1 text-sm"
+            className="w-full resize-y rounded-md px-2 py-1 text-ui"
             style={{ border: "1px solid var(--edge)", background: "var(--bg)" }}
           />
           <div className="flex items-center justify-end gap-2">
@@ -316,7 +316,7 @@ export function DocumentAnnotationPanel({
                 onClearPendingAnchor();
                 setComposer("");
               }}
-              className="rounded-sm px-2 py-1 text-xs"
+              className="rounded-sm px-2 py-1 text-caption"
               style={{ color: "var(--midnight-muted)" }}
             >
               Cancel
@@ -325,7 +325,7 @@ export function DocumentAnnotationPanel({
               type="button"
               onClick={createThread}
               disabled={busy || !composer.trim() || newCommentDisabled || !baseRevisionId}
-              className="rounded-sm px-2 py-1 text-xs disabled:opacity-50"
+              className="rounded-sm px-2 py-1 text-caption disabled:opacity-50"
               style={{ background: "var(--midnight)", color: "var(--cream)" }}
             >
               {busy ? "Posting…" : "Comment"}

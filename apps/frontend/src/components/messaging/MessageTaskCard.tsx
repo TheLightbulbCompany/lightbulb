@@ -75,7 +75,7 @@ function TaskRows({ ids }: { ids: string[] }) {
     <section aria-label="Tasks in this message" className="editorial-card mt-1.5 max-w-xl px-1 py-0.5">
       <TaskRowList issues={matched.slice(0, MAX_ROWS)} />
       {rest > 0 && (
-        <Link href={tasksUrl} prefetch={false} className="block px-2 py-1.5 text-xs text-[var(--midnight-muted)] hover:underline"
+        <Link href={tasksUrl} prefetch={false} className="block px-2 py-1.5 text-caption text-[var(--midnight-muted)] hover:underline"
           onClick={(e: MouseEvent<HTMLAnchorElement>) => handleShellLinkClick(e, tasksUrl)}>
           +{rest} more
         </Link>

@@ -69,7 +69,7 @@ function Link({ to, className, children }: { to: string; className?: string; chi
 function StatusPill({ status }: { status?: string | null }) {
   if (!status) return null;
   return (
-    <span className="rounded-full border border-[var(--edge)] px-2 py-0.5 text-[11px] capitalize text-[var(--midnight-soft)]">
+    <span className="rounded-full border border-[var(--edge)] px-2 py-0.5 text-2xs capitalize text-[var(--midnight-soft)]">
       {status.replace(/_/g, " ")}
     </span>
   );
@@ -78,7 +78,7 @@ function StatusPill({ status }: { status?: string | null }) {
 function SummaryRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-center justify-between">
-      <span className="text-xs text-[var(--midnight-muted)]">{label}</span>
+      <span className="text-caption text-[var(--midnight-muted)]">{label}</span>
       <div className="flex items-center gap-1">{children}</div>
     </div>
   );
@@ -175,7 +175,7 @@ function LatestRunCard({
     <div className="space-y-3">
       <div className="flex w-full items-center justify-between">
         <Link to={runHref} className="no-underline">
-          <h3 className="flex items-center gap-2 text-sm font-medium text-[var(--midnight)]">
+          <h3 className="flex items-center gap-2 text-ui font-medium text-[var(--midnight)]">
             {isLive && (
               <span className="relative flex h-2 w-2">
                 <span className="absolute inline-flex h-full w-full animate-pulse rounded-full bg-[var(--ok)] opacity-75" />
@@ -183,7 +183,7 @@ function LatestRunCard({
               </span>
             )}
             <span>{isLive ? "Live Run" : "Latest Run"}</span>
-            <span className="font-mono text-xs font-normal text-[var(--midnight-muted)]">
+            <span className="font-mono text-caption font-normal text-[var(--midnight-muted)]">
               &middot; {run.id.slice(0, 8)}
             </span>
           </h3>
@@ -203,24 +203,24 @@ function LatestRunCard({
           {task ? (
             <>
               <StatusIcon status={task.status} />
-              <span className="font-mono text-xs text-[var(--midnight-muted)]">
+              <span className="font-mono text-caption text-[var(--midnight-muted)]">
                 {task.identifier ?? task.id.slice(0, 8)}
               </span>
-              <span className="truncate text-xs">{task.title}</span>
+              <span className="truncate text-caption">{task.title}</span>
             </>
           ) : (
             <>
-              <span className="font-mono text-xs text-[var(--midnight-muted)]">{run.id.slice(0, 8)}</span>
+              <span className="font-mono text-caption text-[var(--midnight-muted)]">{run.id.slice(0, 8)}</span>
               <SourceBadge source={run.invocationSource} />
             </>
           )}
-          <span className="ml-auto text-xs text-[var(--midnight-muted)]">
+          <span className="ml-auto text-caption text-[var(--midnight-muted)]">
             {run.createdAt ? timeAgo(run.createdAt) : ""}
           </span>
         </div>
 
         {summary && (
-          <div className="max-h-16 overflow-hidden text-sm">
+          <div className="max-h-16 overflow-hidden text-ui">
             <MarkdownView>{summary}</MarkdownView>
           </div>
         )}
@@ -260,49 +260,49 @@ export function AgentDashboardTab({
       <div className="grid gap-4 md:grid-cols-2">
         <section className="rounded-lg border border-[var(--edge)] p-4" aria-labelledby="agent-identity-heading">
           <div className="mb-4 flex items-center justify-between gap-3">
-            <h3 id="agent-identity-heading" className="text-sm font-medium">Identity</h3>
+            <h3 id="agent-identity-heading" className="text-ui font-medium">Identity</h3>
             <StatusPill status={agent.status} />
           </div>
           <div className="space-y-3">
             <SummaryRow label="Role">
-              <span className="text-sm">{agent.role ? roleLabels[agent.role] ?? agent.role : "Not set"}</span>
+              <span className="text-ui">{agent.role ? roleLabels[agent.role] ?? agent.role : "Not set"}</span>
             </SummaryRow>
-            <SummaryRow label="Title"><span className="text-sm">{agent.title ?? "Not set"}</span></SummaryRow>
+            <SummaryRow label="Title"><span className="text-ui">{agent.title ?? "Not set"}</span></SummaryRow>
             <SummaryRow label="Reports to">
               {reportsToAgent ? (
-                <Link className="text-sm hover:underline" to={agentInspectorUrl(reportsToAgent.id)}>
+                <Link className="text-ui hover:underline" to={agentInspectorUrl(reportsToAgent.id)}>
                   {reportsToAgent.name}
                 </Link>
-              ) : <span className="text-sm">Board</span>}
+              ) : <span className="text-ui">Board</span>}
             </SummaryRow>
-            <SummaryRow label="Direct reports"><span className="text-sm tabular-nums">{directReportCount}</span></SummaryRow>
+            <SummaryRow label="Direct reports"><span className="text-ui tabular-nums">{directReportCount}</span></SummaryRow>
           </div>
         </section>
 
         <section className="rounded-lg border border-[var(--edge)] p-4" aria-labelledby="agent-capabilities-heading">
-          <h3 id="agent-capabilities-heading" className="mb-3 text-sm font-medium">Capabilities</h3>
+          <h3 id="agent-capabilities-heading" className="mb-3 text-ui font-medium">Capabilities</h3>
           {agent.capabilities?.trim() ? (
-            <div className="text-sm">
+            <div className="text-ui">
               <MarkdownView>{agent.capabilities}</MarkdownView>
             </div>
           ) : (
-            <p className="text-sm text-[var(--midnight-muted)]">No capability summary has been added.</p>
+            <p className="text-ui text-[var(--midnight-muted)]">No capability summary has been added.</p>
           )}
         </section>
       </div>
 
       <section className="space-y-3" aria-labelledby="agent-recent-tasks-heading">
         <div className="flex items-center justify-between">
-          <h3 id="agent-recent-tasks-heading" className="text-sm font-medium">Recent Tasks</h3>
+          <h3 id="agent-recent-tasks-heading" className="text-ui font-medium">Recent Tasks</h3>
           <Link
             to={teamsPanelUrl("issues")}
-            className="text-xs text-[var(--midnight-muted)] transition-colors hover:text-[var(--midnight)]"
+            className="text-caption text-[var(--midnight-muted)] transition-colors hover:text-[var(--midnight)]"
           >
             See All &rarr;
           </Link>
         </div>
         {assignedIssues.length === 0 ? (
-          <p className="text-sm text-[var(--midnight-muted)]">No recent tasks.</p>
+          <p className="text-ui text-[var(--midnight-muted)]">No recent tasks.</p>
         ) : (
           <div className="overflow-hidden rounded-lg border border-[var(--edge)]">
             {assignedIssues.slice(0, 6).map((issue) => (
@@ -313,7 +313,7 @@ export function AgentDashboardTab({
               />
             ))}
             {assignedIssues.length > 6 && (
-              <div className="border-t border-[var(--edge)] px-3 py-2 text-center text-xs text-[var(--midnight-muted)]">
+              <div className="border-t border-[var(--edge)] px-3 py-2 text-center text-caption text-[var(--midnight-muted)]">
                 +{assignedIssues.length - 6} more tasks
               </div>
             )}

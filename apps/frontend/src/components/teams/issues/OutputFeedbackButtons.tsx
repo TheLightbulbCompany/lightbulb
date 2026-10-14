@@ -120,7 +120,7 @@ export function OutputFeedbackButtons({
           className="rounded-md p-3"
           style={{ border: "1px solid var(--edge)", background: "var(--cream-deep)" }}
         >
-          <div className="mb-2 text-sm font-medium" style={{ color: "var(--midnight)" }}>
+          <div className="mb-2 text-ui font-medium" style={{ color: "var(--midnight)" }}>
             What could have been better?
           </div>
           <Textarea

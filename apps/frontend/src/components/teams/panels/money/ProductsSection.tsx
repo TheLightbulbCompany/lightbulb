@@ -23,7 +23,7 @@ const COLUMNS: PanelDataColumn<ProductRow>[] = [
       <span>
         {r.name}
         {r.description && (
-          <span className="ml-2 text-xs text-[var(--midnight-muted)]">{r.description}</span>
+          <span className="ml-2 text-caption text-[var(--midnight-muted)]">{r.description}</span>
         )}
       </span>
     ),

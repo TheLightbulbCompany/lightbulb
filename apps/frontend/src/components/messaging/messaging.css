@@ -4,7 +4,7 @@
   color: var(--foreground);
   background: var(--background);
   font-family: var(--font-sans);
-  font-size: .9375rem;
+  font-size: var(--text-ui);
   min-width: 0;
   min-height: 0;
 }
@@ -12,12 +12,12 @@
 .room-panel { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); height: 100%; overflow: hidden; }
 .room-conversation { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .room-conversation[hidden] { display: none; }
-.room-header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; min-height: 56px; padding: 8px 24px; }
+.room-header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; min-height: 48px; padding: 4px 20px; }
 .room-views { display: flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 8px; }
-.room-view { width: auto; min-width: 32px; height: 32px; gap: 4px; padding: 0 8px; color: var(--muted-foreground); font-size: .75rem; font-variant-numeric: tabular-nums; }
+.room-view { width: auto; min-width: 32px; height: 32px; gap: 4px; padding: 0 8px; color: var(--muted-foreground); font-size: var(--text-caption); font-variant-numeric: tabular-nums; }
 .room-view[aria-current="page"] { color: var(--foreground); background: var(--accent); }
 .room-title { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1 1 160px; }
-.room-header h2 { font-size: 1rem; font-weight: 700; }
+.room-header h2 { font-size: var(--text-title); line-height: var(--text-title--line-height); font-weight: 700; }
 .room-topic { max-width: 32ch; gap: 4px; height: 28px; padding: 0 6px; color: var(--muted-foreground); font-size: var(--text-ui); font-weight: 400; }
 .room-topic-dot { color: var(--muted-foreground); }
 .room-topic-form { display: flex; align-items: center; gap: 4px; flex: 1 1 200px; min-width: 0; }
@@ -29,7 +29,7 @@
 .room-facepile > .room-facepile-more { margin-left: 2px; } /* the faces overlap; the count must not, or "+2" reads "-2" */
 .room-live { display: inline-flex; align-items: center; }
 .room-live-dot { width: 8px; height: 8px; border-radius: 9999px; background: var(--live); flex: none; }
-.room-history { --room-gutter: 24px; position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; padding: 16px var(--room-gutter); }
+.room-history { --room-gutter: 20px; position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; padding: 16px var(--room-gutter); }
 .room-history > :first-child { margin-top: auto; }
 .room-timeline { position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; }
 .room-timeline-item { outline: none; border-radius: 6px; }
@@ -48,15 +48,15 @@
    strip is transparent and click-through; only the pill is solid and hit. */
 .room-day { position: relative; }
 .room-day:has(> .room-date-divider)::before { content: ""; position: absolute; top: 16px; left: 0; right: 0; border-top: 1px solid var(--border); }
-.room-date-divider { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: center; height: 32px; margin: 0; pointer-events: none; font-size: .75rem; font-weight: 500; color: var(--muted-foreground); }
+.room-date-divider { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: center; height: 32px; margin: 0; pointer-events: none; font-size: var(--text-caption); font-weight: 500; color: var(--muted-foreground); }
 .room-date-divider span { pointer-events: auto; padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--background); box-shadow: var(--shadow-sm); }
-.room-new-line { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; font-size: .75rem; font-weight: 600; color: var(--info); }
+.room-new-line { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; font-size: var(--text-caption); font-weight: 600; color: var(--info); }
 .room-new-line::after { content: ""; flex: 1; border-top: 1px solid var(--info); }
 .room-new-pill { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 3; gap: 6px; border-radius: 999px; }
 .room-message { position: relative; display: flex; align-items: flex-start; gap: 12px; padding: 8px 0; }
 /* Slack's 36px rounded-square avatar on message rows only; the halo ring follows the shape. */
 .room-message > .participant-avatar { border-radius: 6px; }
-.room-message [role="img"] > .overflow-hidden { width: 36px; height: 36px; border-radius: 6px; font-size: .8125rem; }
+.room-message [role="img"] > .overflow-hidden { width: 36px; height: 36px; border-radius: 6px; font-size: var(--text-caption); }
 .room-history .room-message { margin: 0 calc(-1 * var(--room-gutter)); padding-inline: var(--room-gutter); }
 .room-message:hover, .room-message:focus-within { background: var(--plane-hover); }
 .room-message-actions { position: absolute; top: -14px; right: var(--room-gutter, 0px); z-index: 3; display: flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 6px; background: var(--background); opacity: 0; pointer-events: none; }
@@ -64,14 +64,14 @@
 .room-message-actions button { border-radius: 4px; }
 .room-quick-reactions { display: inline-flex; gap: 2px; }
 .room-quick-reactions button { min-width: 28px; }
-.room-message-content { flex: 1; min-width: 0; line-height: 1.47; }
-.room-message-content > :is(.prose, [class*="prose"]) { font-family: var(--font-sans); font-size: .9375rem; line-height: 1.47; }
-.room-message-content p { margin-top: 0; margin-bottom: 4px; font-size: .9375rem; line-height: 1.47; }
+.room-message-content { flex: 1; min-width: 0; line-height: var(--text-ui--line-height); }
+.room-message-content > :is(.prose, [class*="prose"]) { font-family: var(--font-sans); font-size: var(--text-ui); line-height: var(--text-ui--line-height); }
+.room-message-content p { margin-top: 0; margin-bottom: 4px; font-size: var(--text-ui); line-height: var(--text-ui--line-height); }
 .room-author { cursor: pointer; text-align: left; font-weight: 700; }
 .room-author:hover { text-decoration: underline; }
-.room-agent-label { font-size: .6875rem; line-height: 1.5; font-weight: 500; color: var(--muted-foreground); background: var(--cream-deeper); border-radius: 4px; padding: 0 5px; }
+.room-agent-label { font-size: var(--text-2xs); line-height: 1.5; font-weight: 500; color: var(--muted-foreground); background: var(--cream-deeper); border-radius: 4px; padding: 0 5px; }
 .room-message-byline { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-.room-message-byline time { white-space: nowrap; font-size: .75rem; }
+.room-message-byline time { white-space: nowrap; font-size: var(--text-caption); }
 .room-message-byline > span:first-child { min-width: 0; }
 .room-message-content pre { max-width: 100%; }
 .room-mention { display: inline-block; padding: 0 4px; border-radius: 4px; font-weight: 600; color: var(--info); background: color-mix(in srgb, var(--info) 12%, transparent); }
@@ -79,11 +79,11 @@
    -8px/+8px keeps the content column where every other row puts it, in the
    room (which otherwise bleeds by --room-gutter) and in the thread pane alike. */
 .room-message.room-message-mentions-me { margin-inline: -8px; padding-inline: 8px; border-radius: 6px; background: color-mix(in srgb, var(--bulb) 12%, transparent); box-shadow: inset 3px 0 0 var(--bulb); }
-.room-reply { margin-top: 2px; margin-left: -12px; color: var(--info); font-size: .875rem; min-height: 28px; height: auto; max-width: 100%; white-space: normal; text-align: left; }
-.room-reply-avatars [role="img"] > .overflow-hidden { width: 20px; height: 20px; border-radius: 4px; font-size: .625rem; }
+.room-reply { margin-top: 2px; margin-left: -12px; color: var(--info); font-size: var(--text-ui); min-height: 28px; height: auto; max-width: 100%; white-space: normal; text-align: left; }
+.room-reply-avatars [role="img"] > .overflow-hidden { width: 20px; height: 20px; border-radius: 4px; font-size: var(--text-2xs); }
 .room-reply-avatars { display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0; }
 .room-work-link { margin: 8px 8px 0 0; max-width: 100%; white-space: normal; height: auto; min-height: 36px; text-align: left; overflow-wrap: anywhere; }
-.room-typing { padding: 0 24px; overflow-wrap: anywhere; }
+.room-typing { padding: 0 20px; overflow-wrap: anywhere; }
 /* Typing overlays the bottom edge of the history instead of reserving a line:
    it takes 20px and pulls itself up 20px, so it appears and disappears with no layout jump. */
 .room-typing-live { position: relative; z-index: 2; height: 20px; margin-top: -20px; line-height: 20px; pointer-events: none; }
@@ -93,10 +93,10 @@
 .room-limit-bar { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin: 0 20px 8px; padding: 8px 10px; border: 1px solid var(--err); border-radius: 8px; background: var(--plane-raised); }
 .room-composer[data-dropping] { border-color: var(--ring); border-style: dashed; }
 .room-drop-hint { padding: 0 4px; }
-.room-composer textarea { min-height: 24px; max-height: 200px; resize: none; overflow-y: auto; box-shadow: none; border: 0; padding: 2px 4px; border-radius: 0; background: transparent; font-size: .9375rem; line-height: 1.47; caret-color: var(--foreground); }
+.room-composer textarea { min-height: 24px; max-height: 200px; resize: none; overflow-y: auto; box-shadow: none; border: 0; padding: 2px 4px; border-radius: 0; background: transparent; font-size: var(--text-ui); line-height: var(--text-ui--line-height); caret-color: var(--foreground); }
 .room-composer textarea:focus-visible { outline: none; box-shadow: none; }
-.room-composer-help { font-size: .75rem; padding: 0 4px; }
-.room-respond-hint { padding: 0 4px; font-size: .75rem; }
+.room-composer-help { font-size: var(--text-caption); padding: 0 4px; }
+.room-respond-hint { padding: 0 4px; font-size: var(--text-caption); }
 .room-composer-actions { display: flex; align-items: center; justify-content: flex-start; gap: 2px; }
 .room-composer-actions > button { width: 28px; height: 28px; border-radius: 6px; }
 .room-send { margin-left: auto; }
@@ -130,10 +130,10 @@
 .room-context-host > .room-context { display: flex; flex: 1 1 auto; width: auto; border-left: 0; }
 .room-context { display: none; width: 344px; flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid var(--border); background: var(--background); }
 .room-details-toggle { display: none; }
-.room-context-header { display: flex; align-items: center; gap: 8px; min-height: 56px; padding: 8px 16px; border-bottom: 1px solid var(--border); }
+.room-context-header { display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 8px 16px; border-bottom: 1px solid var(--border); }
 .room-context .room-composer { margin: 8px 12px 16px; }
 .room-details-tabs { display: flex; flex-wrap: wrap; flex-shrink: 0; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--border); }
-.room-details-tabs button { padding: 4px 2px; font-size: .875rem; color: var(--muted-foreground); border-bottom: 2px solid transparent; border-radius: 0; cursor: pointer; }
+.room-details-tabs button { padding: 4px 2px; font-size: var(--text-ui); color: var(--muted-foreground); border-bottom: 2px solid transparent; border-radius: 0; cursor: pointer; }
 .room-details-tabs button:hover { color: var(--foreground); }
 .room-details-tabs button[aria-selected="true"] { color: var(--foreground); font-weight: 600; border-bottom-color: var(--foreground); }
 .room-details-row { display: flex; align-items: flex-start; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--border); }
@@ -159,15 +159,15 @@
 .local-session-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 /* Waiting on the owner's terminal: impossible to miss, but no remote approve. */
 .local-session-waiting { display: grid; gap: 4px; justify-items: start; margin: 8px 16px 0; padding: 10px 12px; border: 1px solid var(--warn); border-radius: 6px; background: color-mix(in srgb, var(--warn) 8%, var(--background)); color: var(--foreground); }
-.local-session-waiting-reason { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: .8125rem; overflow-wrap: anywhere; }
+.local-session-waiting-reason { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: var(--text-caption); overflow-wrap: anywhere; }
 .local-session-composer label { overflow-wrap: anywhere; }
 .local-session-composer textarea { flex-shrink: 0; }
 /* Prose reads in the UI sans; mono is only for glyphs, tool headers, output and diffs. */
-.native-session { font-size: .9375rem; line-height: 1.55; padding: 4px 0 12px; }
+.native-session { font-size: var(--text-ui); line-height: 1.55; padding: 4px 0 12px; }
 .native-session-row { padding: 6px 0; overflow-wrap: anywhere; }
 .native-session-line { display: flex; gap: 8px; align-items: flex-start; }
 .native-session-glyph { flex: 0 0 1ch; color: var(--muted-foreground); font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; }
-.native-session-tool { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: .8125rem; }
+.native-session-tool { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: var(--text-caption); }
 .native-session-row[data-status="done"] > .native-session-line > .native-session-glyph { color: var(--ok); }
 .native-session-row[data-status="error"] > .native-session-line > .native-session-glyph, .native-session-error { color: var(--err); }
 .native-session-prose > * + * { margin-top: .6em; }
@@ -182,10 +182,10 @@
 .native-session-chip[data-tone="ok"] { border-color: var(--ok); color: var(--ok); }
 .native-session-chip[data-tone="warn"] { border-color: var(--warn); color: var(--warn); }
 .native-session-chip[data-tone="error"] { border-color: var(--err); color: var(--err); }
-.native-session-meta { padding-left: calc(1ch + 8px); font-size: .75rem; color: var(--muted-foreground); }
-.native-session-output { margin: 2px 0 0 calc(1ch + 8px); padding: 0; white-space: pre-wrap; color: var(--muted-foreground); font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: .8125rem; line-height: 1.45; max-height: 20rem; overflow: auto; }
-.native-session-more { margin-left: calc(1ch + 8px); font-size: .75rem; color: var(--muted-foreground); cursor: pointer; text-decoration: underline dotted; }
-.native-session-toggle { display: inline-flex; align-items: center; gap: 4px; padding: 0; font-size: .8125rem; color: var(--muted-foreground); cursor: pointer; text-align: left; }
+.native-session-meta { padding-left: calc(1ch + 8px); font-size: var(--text-caption); color: var(--muted-foreground); }
+.native-session-output { margin: 2px 0 0 calc(1ch + 8px); padding: 0; white-space: pre-wrap; color: var(--muted-foreground); font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: var(--text-caption); line-height: 1.45; max-height: 20rem; overflow: auto; }
+.native-session-more { margin-left: calc(1ch + 8px); font-size: var(--text-caption); color: var(--muted-foreground); cursor: pointer; text-decoration: underline dotted; }
+.native-session-toggle { display: inline-flex; align-items: center; gap: 4px; padding: 0; font-size: var(--text-caption); color: var(--muted-foreground); cursor: pointer; text-align: left; }
 .native-session-toggle:hover { color: var(--foreground); }
 .native-session-chevron { display: inline-block; transition: transform .15s ease; }
 .native-session-toggle[aria-expanded="true"] .native-session-chevron { transform: rotate(90deg); }
@@ -211,9 +211,9 @@
 .native-session-output-hang { padding-left: 2ch; text-indent: -2ch; }
 /* What a run of calls did, in the terminal's words. Claude Code prints it with no bullet. */
 .native-session-activity { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; }
-.native-session-turn-end { padding: 6px 0; font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: .8125rem; }
+.native-session-turn-end { padding: 6px 0; font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: var(--text-caption); }
 /* The line a terminal keeps under its prompt: the mode it is in, the model it runs. */
-.native-session-footer { margin: 4px 0 0 calc(1ch + 8px); font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: .75rem; color: var(--muted-foreground); }
+.native-session-footer { margin: 4px 0 0 calc(1ch + 8px); font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: var(--text-caption); color: var(--muted-foreground); }
 .local-session-readonly { display: grid; gap: 6px; }
 .local-session-readonly > div { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .local-session-readonly .native-session-footer { margin: 0; }
@@ -226,14 +226,14 @@
 /* The pane can be narrow (a docked panel, a phone): the actions drop under the line
    before the line is squeezed into a column beside them. */
 .session-status { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-height: 40px; padding: 4px 8px 4px 16px; border-bottom: 1px solid var(--border); }
-.session-status-line { display: flex; flex: 1 1 18rem; flex-wrap: wrap; align-items: center; row-gap: 2px; min-width: 0; font-size: .8125rem; color: var(--muted-foreground); }
+.session-status-line { display: flex; flex: 1 1 18rem; flex-wrap: wrap; align-items: center; row-gap: 2px; min-width: 0; font-size: var(--text-caption); color: var(--muted-foreground); }
 .session-status-line > .native-session-dot { flex: none; margin-right: 8px; }
 /* The separator trails its part, so a line that wraps never starts with one. */
 .session-status-line > :not(.native-session-dot):not(:last-child)::after { content: "·"; margin: 0 6px; color: var(--muted-foreground); }
 .session-status-link { padding: 0; font: inherit; color: inherit; cursor: pointer; }
 .session-status-link:hover, .session-status-link:focus-visible { color: var(--foreground); }
 .session-status-actions { display: flex; flex: none; align-items: center; gap: 4px; margin-left: auto; }
-.session-notices { display: grid; gap: 2px; padding: 6px 16px; border-bottom: 1px solid var(--border); font-size: .8125rem; color: var(--muted-foreground); }
+.session-notices { display: grid; gap: 2px; padding: 6px 16px; border-bottom: 1px solid var(--border); font-size: var(--text-caption); color: var(--muted-foreground); }
 /* A value as its terminal prints it: a model id, a branch, a path, a token count. */
 .session-fact-value { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: .9em; }
 .session-details-tab { display: grid; gap: 12px; padding-top: 12px; }
@@ -249,7 +249,7 @@
 .session-setting-stacked { flex-direction: column; align-items: stretch; gap: 10px; }
 .session-setting-text { display: grid; gap: 4px; min-width: 0; }
 .session-setting-text > label, .session-setting-label { font-weight: 600; }
-.session-setting-about { display: grid; gap: 6px; font-size: .8125rem; color: var(--muted-foreground); }
+.session-setting-about { display: grid; gap: 6px; font-size: var(--text-caption); color: var(--muted-foreground); }
 /* The one thing the owner must read before switching pick-up on. */
 .session-setting-warning { padding-left: 10px; border-left: 2px solid var(--warn); color: var(--foreground); }
 .session-setting-state { color: var(--foreground); }
@@ -328,8 +328,8 @@
 .room-directory-row--roster:has(.session-rename-trigger)::after { display: none; }
 .room-directory-row:hover .room-directory-actions, .room-directory-actions:focus-visible, .room-directory-actions[data-state="open"] { opacity: 1; }
 @media (hover: none) { .room-directory-actions { opacity: 1; } }
-.room-directory-group { font-size: .6875rem; font-weight: 600; letter-spacing: .02em; color: var(--muted-foreground); margin: 0 4px 4px 0; }
-.room-directory-entry { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 28px; padding: 2px 8px; font-size: .875rem; text-align: left; border-radius: 6px; cursor: pointer; }
+.room-directory-group { font-size: var(--text-2xs); font-weight: 600; letter-spacing: .02em; color: var(--muted-foreground); margin: 0 4px 4px 0; }
+.room-directory-entry { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 28px; padding: 2px 8px; font-size: var(--text-ui); text-align: left; border-radius: 6px; cursor: pointer; }
 .room-directory-entry:disabled { cursor: default; opacity: .6; }
 .room-directory-entry:hover { background: color-mix(in srgb, var(--midnight) 5%, transparent); }
 .room-directory-entry[aria-current="page"] { background: color-mix(in srgb, var(--midnight) 9%, transparent); }
@@ -340,7 +340,7 @@
    loud dot; the title shimmers while it works; a session that is gone is faded; rename and
    remove wait for hover, as Happy keeps them behind a swipe. */
 .session-unread--waiting { background: var(--warn); }
-.session-row-time { flex: none; font-size: .75rem; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.session-row-time { flex: none; font-size: var(--text-caption); color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .session-row--gone .room-directory-entry { opacity: .6; }
 .session-row--gone .session-tool-badge { filter: grayscale(1); }
 .session-row .session-rename-trigger { opacity: 0; }
@@ -349,16 +349,16 @@
 .session-title--working { color: transparent; background: linear-gradient(90deg, var(--muted-foreground) 35%, var(--foreground) 50%, var(--muted-foreground) 65%) 0 0 / 250% 100%; -webkit-background-clip: text; background-clip: text; animation: session-title-shimmer 2s linear infinite; }
 @keyframes session-title-shimmer { from { background-position: 100% 0; } to { background-position: -150% 0; } }
 @media (prefers-reduced-motion: reduce) { .session-title--working { animation: none; color: inherit; background: none; } }
-.all-sessions-toggle { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; font-size: .75rem; font-weight: 600; color: var(--muted-foreground); border-radius: 6px; cursor: pointer; }
+.all-sessions-toggle { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; font-size: var(--text-caption); font-weight: 600; color: var(--muted-foreground); border-radius: 6px; cursor: pointer; }
 .all-sessions-toggle:hover { color: var(--foreground); }
 .all-sessions-toggle svg { width: 12px; height: 12px; }
 .room-directory-session-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 2px 8px 6px; }
-.room-directory-subgroup { display: flex; align-items: center; gap: 4px; width: 100%; padding: 2px 8px; font-size: .75rem; font-weight: 600; color: var(--muted-foreground); border-radius: 6px; }
+.room-directory-subgroup { display: flex; align-items: center; gap: 4px; width: 100%; padding: 2px 8px; font-size: var(--text-caption); font-weight: 600; color: var(--muted-foreground); border-radius: 6px; }
 .room-directory-subgroup svg { width: 12px; height: 12px; }
 .all-sessions { overflow: auto; padding: 12px 16px 24px; display: grid; align-content: start; gap: 12px; max-width: 48rem; width: 100%; }
-.all-sessions-search { width: 100%; padding: 6px 10px; font-size: .875rem; border: 1px solid var(--border); border-radius: 6px; background: transparent; }
-.all-sessions-day { padding: 0 8px 4px; font-size: .75rem; font-weight: 600; color: var(--muted-foreground); }
-.room-count { display: inline-block; min-width: 18px; padding: 0 6px; border-radius: 999px; font-size: .6875rem; font-weight: 600; line-height: 18px; text-align: center; color: var(--on-info); background: var(--info); font-variant-numeric: tabular-nums; }
+.all-sessions-search { width: 100%; padding: 6px 10px; font-size: var(--text-ui); border: 1px solid var(--border); border-radius: 6px; background: transparent; }
+.all-sessions-day { padding: 0 8px 4px; font-size: var(--text-caption); font-weight: 600; color: var(--muted-foreground); }
+.room-count { display: inline-block; min-width: 18px; padding: 0 6px; border-radius: 999px; font-size: var(--text-2xs); font-weight: 600; line-height: 18px; text-align: center; color: var(--on-info); background: var(--info); font-variant-numeric: tabular-nums; }
 .room-creation-dialog { width: min(520px, calc(100vw - 32px)); max-width: 520px; padding: 0; overflow: hidden; border-radius: 8px; font-family: var(--font-sans); }
 .room-creation { display: flex; flex-direction: column; max-height: calc(100dvh - 32px); min-height: 0; }
 .room-creation-header { display: grid; gap: 8px; padding: 24px 48px 16px 24px; flex-shrink: 0; }
@@ -373,10 +373,10 @@
 .room-directory :is(button, input, select):focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 .room-panel ::selection, .room-context-host ::selection, .room-directory ::selection { color: var(--primary-foreground); background: var(--primary); }
 
-.room-listen-mode { border: 1px solid var(--input); border-radius: 4px; padding: 4px 6px; background: var(--background); color: var(--foreground); font: inherit; font-size: .875rem; }
+.room-listen-mode { border: 1px solid var(--input); border-radius: 4px; padding: 4px 6px; background: var(--background); color: var(--foreground); font: inherit; font-size: var(--text-ui); }
 .room-live-run { border-left: 2px solid var(--info); padding-left: 10px; }
 /* left padding aligns with the avatar column (36px .room-message-gutter + 12px .room-message gap = 48px) */
-.room-run-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 4px 0 4px 48px; font-size: .875rem; }
+.room-run-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 4px 0 4px 48px; font-size: var(--text-ui); }
 /* The run line wraps; its tool trace takes a full row of its own. */
 .room-run-line .room-run-trace { flex-basis: 100%; }
 
@@ -429,7 +429,7 @@
 }
 
 .room-message-collapsed { padding-top: 2px; padding-bottom: 2px; min-height: 40px; }
-.room-message-gutter { flex: none; width: 36px; padding-top: 4px; font-size: .75rem; line-height: 1.5; text-align: right; color: var(--muted-foreground); font-variant-numeric: tabular-nums; opacity: 0; }
+.room-message-gutter { flex: none; width: 36px; padding-top: 4px; font-size: var(--text-caption); line-height: 1.5; text-align: right; color: var(--muted-foreground); font-variant-numeric: tabular-nums; opacity: 0; }
 .room-message:hover .room-message-gutter, .room-message:focus-within .room-message-gutter { opacity: 1; }
 
 /* Positioned after the .room-message-gutter/.room-message-actions base rules above
@@ -455,7 +455,7 @@
 .room-shortcuts { display: grid; gap: 4px; margin: 8px 0 16px; }
 .room-shortcuts > div { display: flex; align-items: baseline; gap: 12px; }
 .room-shortcuts dt { flex: none; min-width: 88px; }
-.room-kbd { display: inline-block; padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px; font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: .75rem; color: var(--foreground); }
+.room-kbd { display: inline-block; padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px; font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: var(--text-caption); color: var(--foreground); }
 
 .room-directory-group-header { display: flex; align-items: center; gap: 2px; }
 .room-directory-group-header > button { width: 20px; height: 20px; color: var(--muted-foreground); }
@@ -471,7 +471,7 @@
 .room-section-confirm { display: grid; gap: 8px; padding: 8px; border: 1px solid var(--border); border-radius: 4px; }
 .room-directory-muted { color: var(--muted-foreground); }
 .room-directory-star { flex: none; color: var(--muted-foreground); }
-.room-directory-tag { flex: none; font-size: .75rem; color: var(--muted-foreground); }
+.room-directory-tag { flex: none; font-size: var(--text-caption); color: var(--muted-foreground); }
 .room-directory-faces { display: inline-flex; flex: none; }
 .room-directory-faces > :nth-child(2) { margin-left: -6px; }
 
@@ -496,8 +496,8 @@
    behaviour is the platform's, not ours. */
 .onboarding-band { display: grid; gap: 12px; padding: 8px 0 24px; max-width: 72ch; }
 .onboarding-band-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.onboarding-band-head h3 { font-size: 0.9375rem; font-weight: 700; }
-.onboarding-band-head p { margin-top: 2px; color: var(--muted-foreground); font-size: 0.875rem; }
+.onboarding-band-head h3 { font-size: var(--text-ui); font-weight: 700; }
+.onboarding-band-head p { margin-top: 2px; color: var(--muted-foreground); font-size: var(--text-ui); }
 .onboarding-band-dismiss { flex: none; color: var(--muted-foreground); }
 
 .onboarding-band-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
@@ -530,24 +530,24 @@
   color: var(--muted-foreground);
 }
 .onboarding-card[data-more="true"]:hover { color: var(--foreground); }
-.onboarding-card-label { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 0.875rem; }
+.onboarding-card-label { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: var(--text-ui); }
 /* The vendor mark keeps its own colour; the done-state tint below deliberately
    recolours only the text and the check, never the logo. */
 .onboarding-card-label svg { flex: none; }
 .onboarding-card[data-done="true"] .onboarding-card-label { color: var(--ok); }
 .onboarding-card[data-done="true"] .onboarding-card-label svg:not([role="img"]) { color: var(--ok); }
-.onboarding-card-detail { color: var(--muted-foreground); font-size: 0.8125rem; }
+.onboarding-card-detail { color: var(--muted-foreground); font-size: var(--text-caption); }
 /* The invite step carries its own form (RoomInviteCard), so it is a block, not a button. */
 .onboarding-band-invite { display: grid; gap: 6px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; }
 
 .onboarding-names { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; }
-.onboarding-names p { color: var(--muted-foreground); font-size: 0.875rem; max-width: 60ch; }
+.onboarding-names p { color: var(--muted-foreground); font-size: var(--text-ui); max-width: 60ch; }
 .onboarding-names ul { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .onboarding-names li { display: grid; gap: 4px; }
-.onboarding-names label { color: var(--muted-foreground); font-size: 0.75rem; }
-.onboarding-names-error { color: var(--err); font-size: 0.8125rem; }
+.onboarding-names label { color: var(--muted-foreground); font-size: var(--text-caption); }
+.onboarding-names-error { color: var(--err); font-size: var(--text-caption); }
 @media (max-width: 640px) { .onboarding-names ul { grid-template-columns: minmax(0, 1fr); } }
-.onboarding-context-file { display: grid; gap: 4px; color: var(--muted-foreground); font-size: 0.8125rem; }
+.onboarding-context-file { display: grid; gap: 4px; color: var(--muted-foreground); font-size: var(--text-caption); }
 
 /* Rich link previews (RoomLinkPreviews): compact cards under a message. */
 .room-link-previews { display: grid; gap: 8px; margin-top: 6px; max-width: 400px; }
@@ -560,14 +560,14 @@
 .room-link-card-body { display: grid; flex: 1; gap: 2px; padding: 8px 12px 10px; min-width: 0; }
 .room-link-card-author { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .room-link-card-avatar { width: 20px; height: 20px; border-radius: 999px; flex: none; }
-.room-link-card-title { font-weight: 600; font-size: .875rem; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-.room-link-card-description { font-size: .8125rem; line-height: 1.35; color: var(--muted-foreground); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.room-link-card-text { font-size: .875rem; line-height: 1.4; white-space: pre-line; display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
-.room-link-card-meta { font-size: .75rem; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.room-link-card-title { font-weight: 600; font-size: var(--text-ui); line-height: 1.3; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.room-link-card-description { font-size: var(--text-caption); line-height: 1.35; color: var(--muted-foreground); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.room-link-card-text { font-size: var(--text-ui); line-height: 1.4; white-space: pre-line; display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
+.room-link-card-meta { font-size: var(--text-caption); color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Own-app links (RoomAppLinks): a compact chip for a room, agent, session or
    message; a quoted message is a link card with a left rule. */
-.room-app-chip { display: inline-flex; align-items: center; gap: 6px; justify-self: start; max-width: 100%; min-height: 28px; padding: 2px 10px 2px 6px; border: 1px solid var(--border); border-radius: 999px; background: var(--card); color: var(--foreground); font-size: .8125rem; text-decoration: none; }
+.room-app-chip { display: inline-flex; align-items: center; gap: 6px; justify-self: start; max-width: 100%; min-height: 28px; padding: 2px 10px 2px 6px; border: 1px solid var(--border); border-radius: 999px; background: var(--card); color: var(--foreground); font-size: var(--text-caption); text-decoration: none; }
 .room-app-chip:hover { background: var(--plane-hover); }
 .room-app-chip:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 .room-app-chip > svg { flex: none; color: var(--muted-foreground); }
@@ -578,9 +578,9 @@
 .room-doc-card { width: 100%; text-align: left; font: inherit; cursor: pointer; }
 .room-doc-card-head { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--foreground); }
 .room-doc-card-head > svg { flex: none; color: var(--muted-foreground); }
-.room-doc-card-preview { margin-top: 2px; font-size: .8125rem; line-height: 1.4; color: var(--muted-foreground); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.room-doc-card-preview { margin-top: 2px; font-size: var(--text-caption); line-height: 1.4; color: var(--muted-foreground); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .room-doc-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
-.room-doc-card-open { flex: none; font-size: .75rem; font-weight: 600; color: var(--link); }
+.room-doc-card-open { flex: none; font-size: var(--text-caption); font-weight: 600; color: var(--link); }
 
 /* react-tweet's card, re-pointed at our tokens (its own palette is Twitter blue on white). */
 .room-link-previews .room-tweet :where(.react-tweet-theme) {
@@ -614,19 +614,19 @@
 .local-session-overview summary::after { content: "›"; display: inline-block; margin-left: 2px; transition: transform .15s ease; }
 .local-session-overview details[open] > summary::after { transform: rotate(90deg); }
 @media (prefers-reduced-motion: reduce) { .local-session-overview summary::after { transition: none; } }
-.local-session-plan, .local-session-changes { margin: 4px 0 4px calc(1ch + 8px); display: grid; gap: 2px; font-size: .8125rem; }
+.local-session-plan, .local-session-changes { margin: 4px 0 4px calc(1ch + 8px); display: grid; gap: 2px; font-size: var(--text-caption); }
 .local-session-plan li { display: flex; gap: 8px; overflow-wrap: anywhere; }
 .native-session-subagent { background: none; border: 0; padding: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; }
 .native-session-subagent:hover, .native-session-subagent:focus-visible { text-decoration: underline; }
 /* A subagent inline where it was launched; opened, its own transcript nests under it. */
 .native-session-agent-toggle { color: inherit; font-size: inherit; }
-.native-session-tag { margin-left: 6px; padding: 0 5px; border-radius: 4px; background: var(--muted); color: var(--muted-foreground); font-size: .6875rem; }
+.native-session-tag { margin-left: 6px; padding: 0 5px; border-radius: 4px; background: var(--muted); color: var(--muted-foreground); font-size: var(--text-2xs); }
 .native-session-agent-status { color: var(--muted-foreground); }
 .native-session-agent[data-state="running"] .native-session-agent-status { color: inherit; }
 .native-session-agent:focus { outline: 2px solid var(--ring); outline-offset: 2px; }
 .native-session-nested { margin-left: calc(1ch + 8px); padding-left: 8px; border-left: 1px solid var(--border); }
 /* Terminal grammar: monospace, tight rhythm, no cards. */
-.native-session { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: .8125rem; line-height: 1.5; }
+.native-session { font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: var(--text-caption); line-height: 1.5; }
 .native-session .native-session-row { padding: 2px 0; }
 .native-session .native-session-prompt { background: none; border: 0; border-radius: 0; padding: 2px 0; margin: 12px 0 2px; }
 .native-session .native-session-prompt-text { font-weight: 600; }
@@ -637,12 +637,12 @@
 .native-session-inline-more { margin-left: 6px; text-decoration: none; }
 .native-session-spinner { color: var(--brass, var(--warn)); }
 /* The panel Claude Code pins above its prompt. */
-.native-session-panel { padding: 4px 16px; border-top: 1px solid var(--border); font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: .75rem; }
+.native-session-panel { padding: 4px 16px; border-top: 1px solid var(--border); font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace; font-size: var(--text-caption); }
 .native-session-panel-row { display: flex; width: 100%; gap: 8px; align-items: baseline; padding: 1px 0; background: none; border: 0; color: inherit; text-align: left; font: inherit; }
 button.native-session-panel-row { cursor: pointer; }
 button.native-session-panel-row:hover .native-session-panel-activity { color: var(--foreground); }
 .native-session-panel-dot { color: var(--ok); }
-.room-subagent-strip { padding: 4px 16px; border-top: 1px solid var(--border); font-size: .8125rem; }
+.room-subagent-strip { padding: 4px 16px; border-top: 1px solid var(--border); font-size: var(--text-caption); }
 .room-subagent-heading { background: none; border: 0; color: var(--fg-soft); font: inherit; font-weight: 600; padding: 2px 0; cursor: pointer; }
 .room-subagent-row { display: flex; width: 100%; gap: 8px; align-items: baseline; padding: 2px 0; background: none; border: 0; color: inherit; text-align: left; font: inherit; cursor: pointer; }
 .room-subagent-spinner { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--live); border-top-color: transparent; animation: room-subagent-spin 1s linear infinite; flex: none; align-self: center; }
@@ -656,10 +656,10 @@ button.native-session-panel-row:hover .native-session-panel-activity { color: va
 .room-subagent-steer { display: flex; gap: 6px; }
 .room-subagent-steer input { flex: 1; min-width: 0; }
 .room-subagent-note { color: var(--fg-soft); margin: 4px 0; }
-.room-subagent-tail { max-height: 16rem; overflow: auto; white-space: pre-wrap; font-size: .75rem; background: var(--plane-raised); padding: 8px; border-radius: 6px; }
+.room-subagent-tail { max-height: 16rem; overflow: auto; white-space: pre-wrap; font-size: var(--text-caption); background: var(--plane-raised); padding: 8px; border-radius: 6px; }
 .room-message-delegations { padding: 0 0 4px 48px; } /* the saved reply's cards, under its content column */
 .room-delegate-card { margin: 4px 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; }
-.room-delegate-row { display: flex; gap: 8px; align-items: baseline; font-size: .8125rem; }
+.room-delegate-row { display: flex; gap: 8px; align-items: baseline; font-size: var(--text-caption); }
 .room-delegate-goal { font-weight: 600; }
 .room-delegate-meta, .room-delegate-activity { color: var(--fg-mute); }
 .room-delegate-activity { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -687,7 +687,7 @@ button.native-session-panel-row:hover .native-session-panel-activity { color: va
    teammate's window went blank the moment they opened a live session. */
 .session-terminal-view[data-live="false"] { flex: none; height: 0; padding: 0; visibility: hidden; }
 /* No frame yet, or none for 30 s: the terminal stays collapsed above; this says why. */
-.session-terminal-wait { flex: 1; min-height: 240px; display: grid; place-content: center; background: var(--terminal-bg); color: var(--fg-mute); font-size: 14px; }
+.session-terminal-wait { flex: 1; min-height: 240px; display: grid; place-content: center; background: var(--terminal-bg); color: var(--fg-mute); font-size: var(--text-ui); }
 /* The body of a session with no terminal: ended, offline, or not started through Lightbulb. */
 .session-state-panel { flex: 1; min-height: 160px; display: grid; place-content: center; justify-items: center; gap: 6px; padding: 24px; text-align: center; color: var(--fg-mute); background: var(--plane-pane); }
 .session-state-panel .session-state-title { color: var(--fg); font-weight: 600; }
@@ -704,7 +704,7 @@ button.native-session-panel-row:hover .native-session-panel-activity { color: va
 .session-terminal-frame { display: flex; flex-direction: column; }
 .session-terminal-size { flex: none; display: flex; justify-content: flex-end; gap: 2px; padding-bottom: 4px; }
 /* The terminal is dark in both themes, so the switch is drawn from the terminal's own tokens. */
-.session-terminal-size button { padding: 2px 8px; border-radius: 4px; font-size: 12px; line-height: 16px; color: color-mix(in srgb, var(--terminal-fg) 65%, var(--terminal-bg)); }
+.session-terminal-size button { padding: 2px 8px; border-radius: 4px; font-size: var(--text-caption); line-height: 16px; color: color-mix(in srgb, var(--terminal-fg) 65%, var(--terminal-bg)); }
 .session-terminal-size button:hover { color: var(--terminal-fg); }
 .session-terminal-size button[aria-pressed="true"] { color: var(--terminal-fg); background: color-mix(in srgb, var(--terminal-fg) 16%, var(--terminal-bg)); }
 .session-terminal-size button:focus-visible { outline: 2px solid var(--terminal-fg); outline-offset: 1px; }
@@ -716,15 +716,15 @@ button.native-session-panel-row:hover .native-session-panel-activity { color: va
 .session-terminal-slot[hidden] { display: none; }
 /* Terminal | Browser above a shared session's view while it browses. */
 .session-view-tabs { display: flex; flex: none; gap: 4px; padding: 4px 12px; border-bottom: 1px solid var(--border); }
-.session-view-tabs button { padding: 2px 8px; border-radius: 6px; font-size: 13px; color: var(--fg-soft); }
+.session-view-tabs button { padding: 2px 8px; border-radius: 6px; font-size: var(--text-caption); color: var(--fg-soft); }
 .session-view-tabs button[aria-selected="true"] { background: var(--plane-raised); color: var(--fg); }
 /* Ended · <time> above an ended session's final screen (spec 2026-10-07 §5.4). */
-.session-ended-line { flex: none; margin: 0; padding: 6px 12px; font-size: 13px; color: var(--fg-mute); }
+.session-ended-line { flex: none; margin: 0; padding: 6px 12px; font-size: var(--text-caption); color: var(--fg-mute); }
 
 /* Session chat (2026-10-07-session-chat): people talk beside the terminal. New classes only. */
 .session-chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid var(--border); background: var(--background); }
 .session-chat .room-composer { margin: 8px 12px 16px; }
-.session-chat-unread { min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--link); color: var(--on-link); font-size: .75rem; line-height: 18px; text-align: center; }
+.session-chat-unread { min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--link); color: var(--on-link); font-size: var(--text-caption); line-height: 18px; text-align: center; }
 .session-chat .room-message[data-person] .room-message-byline > :first-child,
 .session-chat .room-message[data-person] .room-message-byline > :first-child * { color: var(--person-color); }
 .session-chat .room-message[data-person="owner"] { --person-color: var(--fg-soft); }
@@ -749,4 +749,4 @@ button.native-session-panel-row:hover .native-session-panel-activity { color: va
 .room-session-focus.session-chat-screen > .session-chat { border-left: 0; }
 
 /* Readable only, while the picture is wider than the box: says where the rest of each line is. */
-.session-terminal-hint { margin-right: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; line-height: 20px; color: color-mix(in srgb, var(--terminal-fg) 65%, var(--terminal-bg)); }
+.session-terminal-hint { margin-right: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-caption); line-height: 20px; color: color-mix(in srgb, var(--terminal-fg) 65%, var(--terminal-bg)); }

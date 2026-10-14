@@ -119,7 +119,7 @@ export function IssueFiltersPopover({
         <Button
           variant={buttonVariant}
           size={iconOnly ? "icon" : "sm"}
-          className={`text-xs ${iconOnly ? "relative h-8 w-8 shrink-0" : ""}`}
+          className={`text-caption ${iconOnly ? "relative h-8 w-8 shrink-0" : ""}`}
           style={
             activeFilterCount > 0 ? { color: "var(--midnight)" } : undefined
           }
@@ -159,11 +159,11 @@ export function IssueFiltersPopover({
       >
         <div className="space-y-3 p-3">
           <div className="flex items-center justify-between">
-            <span className="text-sm font-medium">Filters</span>
+            <span className="text-ui font-medium">Filters</span>
             {activeFilterCount > 0 ? (
               <button
                 type="button"
-                className="text-xs text-[var(--midnight-muted)] hover:text-[var(--midnight)]"
+                className="text-caption text-[var(--midnight-muted)] hover:text-[var(--midnight)]"
                 onClick={() => onChange(defaultIssueFilterState)}
               >
                 Clear
@@ -172,7 +172,7 @@ export function IssueFiltersPopover({
           </div>
 
           <div className="space-y-1.5">
-            <span className="text-xs text-[var(--midnight-muted)]">Quick filters</span>
+            <span className="text-caption text-[var(--midnight-muted)]">Quick filters</span>
             <div className="flex flex-wrap gap-1.5">
               {issueQuickFilterPresets.map((preset) => {
                 const isActive = issueFilterArraysEqual(state.statuses, preset.statuses);
@@ -180,7 +180,7 @@ export function IssueFiltersPopover({
                   <button
                     key={preset.label}
                     type="button"
-                    className={`rounded-full border px-2.5 py-1 text-xs transition-colors ${
+                    className={`rounded-full border px-2.5 py-1 text-caption transition-colors ${
                       isActive
                         ? "border-[var(--midnight)] bg-[var(--midnight)] text-[var(--cream)]"
                         : "border-[var(--edge)] text-[var(--midnight-muted)] hover:border-[var(--midnight-muted)] hover:text-[var(--midnight)]"
@@ -199,7 +199,7 @@ export function IssueFiltersPopover({
           <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
             <div className="min-w-0 space-y-3">
               <div className="space-y-1">
-                <span className="text-xs text-[var(--midnight-muted)]">Status</span>
+                <span className="text-caption text-[var(--midnight-muted)]">Status</span>
                 <div className="space-y-0.5">
                   {issueStatusOrder.map((status) => (
                     <label
@@ -213,14 +213,14 @@ export function IssueFiltersPopover({
                         }
                       />
                       <StatusIcon status={status} />
-                      <span className="text-sm">{issueFilterLabel(status)}</span>
+                      <span className="text-ui">{issueFilterLabel(status)}</span>
                     </label>
                   ))}
                 </div>
               </div>
 
               <div className="space-y-1">
-                <span className="text-xs text-[var(--midnight-muted)]">Priority</span>
+                <span className="text-caption text-[var(--midnight-muted)]">Priority</span>
                 <div className="space-y-0.5">
                   {issuePriorityOrder.map((priority) => (
                     <label
@@ -234,7 +234,7 @@ export function IssueFiltersPopover({
                         }
                       />
                       <PriorityIcon priority={priority} />
-                      <span className="text-sm">{issueFilterLabel(priority)}</span>
+                      <span className="text-ui">{issueFilterLabel(priority)}</span>
                     </label>
                   ))}
                 </div>
@@ -243,7 +243,7 @@ export function IssueFiltersPopover({
 
             <div className="min-w-0 space-y-3">
               <div className="space-y-1">
-                <span className="text-xs text-[var(--midnight-muted)]">Assignee</span>
+                <span className="text-caption text-[var(--midnight-muted)]">Assignee</span>
                 <div className="max-h-32 space-y-0.5 overflow-y-auto">
                   <label className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 hover:bg-[var(--cream-deep)]">
                     <Checkbox
@@ -254,7 +254,7 @@ export function IssueFiltersPopover({
                         })
                       }
                     />
-                    <span className="text-sm">No assignee</span>
+                    <span className="text-ui">No assignee</span>
                   </label>
                   {currentUserId ? (
                     <label className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 hover:bg-[var(--cream-deep)]">
@@ -265,7 +265,7 @@ export function IssueFiltersPopover({
                         }
                       />
                       <User size={16} className="text-[var(--midnight-muted)]" />
-                      <span className="text-sm">Me</span>
+                      <span className="text-ui">Me</span>
                     </label>
                   ) : null}
                   {(agents ?? []).map((agent) => (
@@ -281,7 +281,7 @@ export function IssueFiltersPopover({
                           })
                         }
                       />
-                      <span className="text-sm">{agent.name}</span>
+                      <span className="text-ui">{agent.name}</span>
                     </label>
                   ))}
                 </div>
@@ -289,7 +289,7 @@ export function IssueFiltersPopover({
 
               {creatorOptions.length > 0 ? (
                 <div className="space-y-1">
-                  <span className="text-xs text-[var(--midnight-muted)]">Creator</span>
+                  <span className="text-caption text-[var(--midnight-muted)]">Creator</span>
                   {selectedCreatorOptions.length > 0 ? (
                     <div className="flex flex-wrap gap-1">
                       {selectedCreatorOptions.map((creator) => (
@@ -322,7 +322,7 @@ export function IssueFiltersPopover({
                       value={creatorSearch}
                       onChange={(event) => setCreatorSearch(event.target.value)}
                       placeholder="Search creators..."
-                      className="h-8 pl-7 text-xs"
+                      className="h-8 pl-7 text-caption"
                     />
                   </div>
                   <div className="max-h-32 space-y-0.5 overflow-y-auto">
@@ -333,7 +333,7 @@ export function IssueFiltersPopover({
                           <button
                             key={creator.id}
                             type="button"
-                            className={`flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm ${
+                            className={`flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-ui ${
                               selected
                                 ? "bg-[var(--cream-deeper)] text-[var(--midnight)]"
                                 : "text-[var(--midnight-muted)] hover:bg-[var(--cream-deep)] hover:text-[var(--midnight)]"
@@ -355,7 +355,7 @@ export function IssueFiltersPopover({
                         );
                       })
                     ) : (
-                      <div className="px-2 py-1 text-xs text-[var(--midnight-muted)]">
+                      <div className="px-2 py-1 text-caption text-[var(--midnight-muted)]">
                         No creators match.
                       </div>
                     )}
@@ -365,7 +365,7 @@ export function IssueFiltersPopover({
 
               {projects && projects.length > 0 ? (
                 <div className="space-y-1">
-                  <span className="text-xs text-[var(--midnight-muted)]">Project</span>
+                  <span className="text-caption text-[var(--midnight-muted)]">Project</span>
                   <div className="max-h-32 space-y-0.5 overflow-y-auto">
                     {projects.map((project) => (
                       <label
@@ -380,7 +380,7 @@ export function IssueFiltersPopover({
                             })
                           }
                         />
-                        <span className="text-sm">{project.name}</span>
+                        <span className="text-ui">{project.name}</span>
                       </label>
                     ))}
                   </div>
@@ -391,7 +391,7 @@ export function IssueFiltersPopover({
             <div className="min-w-0 space-y-3">
               {labels && labels.length > 0 ? (
                 <div className="space-y-1">
-                  <span className="text-xs text-[var(--midnight-muted)]">Labels</span>
+                  <span className="text-caption text-[var(--midnight-muted)]">Labels</span>
                   <div className="max-h-32 space-y-0.5 overflow-y-auto">
                     {labels.map((label) => (
                       <label
@@ -408,7 +408,7 @@ export function IssueFiltersPopover({
                           className="h-2.5 w-2.5 rounded-full"
                           style={{ backgroundColor: label.color }}
                         />
-                        <span className="text-sm">{label.name}</span>
+                        <span className="text-ui">{label.name}</span>
                       </label>
                     ))}
                   </div>
@@ -417,7 +417,7 @@ export function IssueFiltersPopover({
 
               {workspaces && workspaces.length > 0 ? (
                 <div className="space-y-1">
-                  <span className="text-xs text-[var(--midnight-muted)]">Workspace</span>
+                  <span className="text-caption text-[var(--midnight-muted)]">Workspace</span>
                   <div className="max-h-32 space-y-0.5 overflow-y-auto">
                     {workspaces.map((workspace) => (
                       <label
@@ -433,7 +433,7 @@ export function IssueFiltersPopover({
                           }
                         />
                         <HardDrive size={16} className="text-[var(--midnight-muted)]" />
-                        <span className="text-sm">{workspace.name}</span>
+                        <span className="text-ui">{workspace.name}</span>
                       </label>
                     ))}
                   </div>
@@ -441,13 +441,13 @@ export function IssueFiltersPopover({
               ) : null}
 
               <div className="space-y-1">
-                <span className="text-xs text-[var(--midnight-muted)]">Visibility</span>
+                <span className="text-caption text-[var(--midnight-muted)]">Visibility</span>
                 <label className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 hover:bg-[var(--cream-deep)]">
                   <Checkbox
                     checked={state.liveOnly}
                     onCheckedChange={(checked) => onChange({ liveOnly: checked === true })}
                   />
-                  <span className="text-sm">Live runs only</span>
+                  <span className="text-ui">Live runs only</span>
                 </label>
                 {enableRoutineVisibilityFilter ? (
                   <label className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 hover:bg-[var(--cream-deep)]">
@@ -457,7 +457,7 @@ export function IssueFiltersPopover({
                         onChange({ hideRoutineExecutions: checked === true })
                       }
                     />
-                    <span className="text-sm">Hide routine runs</span>
+                    <span className="text-ui">Hide routine runs</span>
                   </label>
                 ) : null}
               </div>

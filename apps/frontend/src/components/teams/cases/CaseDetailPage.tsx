@@ -123,13 +123,13 @@ function CaseRelationshipsSection({
     <section className="space-y-3" aria-label="Case relationships">
       {parent ? (
         <div className="space-y-1">
-          <h2 className="text-xs font-medium text-[var(--fg-mute)]">Parent</h2>
+          <h2 className="text-caption font-medium text-[var(--fg-mute)]">Parent</h2>
           <CaseChildrenTree cases={[parent]} />
         </div>
       ) : null}
       {childCases.length > 0 ? (
         <div className="space-y-1">
-          <h2 className="text-xs font-medium text-[var(--fg-mute)]">Children {childCases.length}</h2>
+          <h2 className="text-caption font-medium text-[var(--fg-mute)]">Children {childCases.length}</h2>
           <CaseChildrenTree cases={childCases} maxVisible={5} />
         </div>
       ) : null}
@@ -141,7 +141,7 @@ function CaseRelationshipsSection({
 function PropertySection({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="space-y-1 border-t border-[var(--edge)] pt-3 first:border-t-0 first:pt-0">
-      <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--fg-mute)]">{title}</h3>
+      <h3 className="text-caption font-semibold uppercase tracking-wide text-[var(--fg-mute)]">{title}</h3>
       {children}
     </div>
   );
@@ -149,7 +149,7 @@ function PropertySection({ title, children }: { title: string; children: ReactNo
 
 function PropertyChip({ children }: { children: ReactNode }) {
   return (
-    <span className="inline-flex items-center rounded-full border border-[var(--edge)] px-2 py-0.5 text-xs text-[var(--fg-soft)]">
+    <span className="inline-flex items-center rounded-full border border-[var(--edge)] px-2 py-0.5 text-caption text-[var(--fg-soft)]">
       {children}
     </span>
   );
@@ -173,7 +173,7 @@ function CasePropertyRow({
     >
       <span
         className={cn(
-          "shrink-0 break-words text-xs text-[var(--fg-mute)]",
+          "shrink-0 break-words text-caption text-[var(--fg-mute)]",
           mode === "compact" ? "w-20" : "w-40",
           wrap && "mt-0.5",
         )}
@@ -214,14 +214,14 @@ function CasePropertiesContent({
             <CaseCopyableToken
               value={caseData.key}
               label="case key"
-              className="font-mono text-xs text-[var(--fg-mute)]"
+              className="font-mono text-caption text-[var(--fg-mute)]"
               truncate={!isFull}
             />
           </CasePropertyRow>
         ) : null}
         <CasePropertyRow label="Labels" wrap mode={mode}>
           <LabelPicker selected={caseData.labels} onChange={onLabelIdsChange} />
-          {labelsPending ? <span className="text-xs text-[var(--fg-mute)]">Saving...</span> : null}
+          {labelsPending ? <span className="text-caption text-[var(--fg-mute)]">Saving...</span> : null}
         </CasePropertyRow>
       </PropertySection>
 
@@ -234,7 +234,7 @@ function CasePropertiesContent({
               wrap={isFull || Array.isArray(value) || (typeof value === "object" && value !== null)}
               mode={mode}
             >
-              <span className={cn("min-w-0 text-sm", !isFull && "truncate")}>
+              <span className={cn("min-w-0 text-ui", !isFull && "truncate")}>
                 <CaseFieldValue value={value} fieldKey={key} variant={mode} />
               </span>
             </CasePropertyRow>
@@ -245,7 +245,7 @@ function CasePropertiesContent({
       <PropertySection title="Linked tasks">
         {caseData.issueLinks.length === 0 ? (
           <CasePropertyRow label="Tasks" mode={mode}>
-            <span className="text-xs text-[var(--fg-mute)]">None yet</span>
+            <span className="text-caption text-[var(--fg-mute)]">None yet</span>
           </CasePropertyRow>
         ) : (
           <CasePropertyRow label="Tasks" wrap mode={mode}>
@@ -265,7 +265,7 @@ function CasePropertiesContent({
       {caseData.attachments.length > 0 ? (
         <PropertySection title="Attachments">
           <CasePropertyRow label="Files" mode={mode}>
-            <span className="text-xs text-[var(--fg-mute)]">
+            <span className="text-caption text-[var(--fg-mute)]">
               {caseData.attachments.length} {caseData.attachments.length === 1 ? "file" : "files"}
             </span>
           </CasePropertyRow>
@@ -295,12 +295,12 @@ export function CaseDetailPage({ caseId }: { caseId: string }) {
     if (!caseQuery.error) return <PageSkeleton />;
     return (
       <div className="mx-auto max-w-md py-16 text-center">
-        <p className="text-sm text-[var(--fg-mute)]">Case not found.</p>
+        <p className="text-ui text-[var(--fg-mute)]">Case not found.</p>
         <Link
           href={backHref}
           prefetch={false}
           onClick={(e) => handleShellLinkClick(e, backHref)}
-          className="mt-2 inline-block text-sm text-[var(--link)] hover:underline"
+          className="mt-2 inline-block text-ui text-[var(--link)] hover:underline"
         >
           ← Back to cases
         </Link>
@@ -353,7 +353,7 @@ export function CaseDetailPage({ caseId }: { caseId: string }) {
   return (
     <div className="grid grid-cols-1 gap-6 p-4 text-[var(--fg)] sm:p-6 @3xl:grid-cols-[minmax(0,1fr)_320px]">
       <main className="min-w-0 space-y-6">
-        <nav className="flex items-center gap-1 text-xs text-[var(--fg-mute)]" aria-label="Breadcrumb">
+        <nav className="flex items-center gap-1 text-caption text-[var(--fg-mute)]" aria-label="Breadcrumb">
           <Link
             href={backHref}
             prefetch={false}
@@ -396,7 +396,7 @@ export function CaseDetailPage({ caseId }: { caseId: string }) {
                 <PopoverContent align="end" className="w-48 p-1">
                   <button
                     type="button"
-                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-[var(--plane-raised)]"
+                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-caption hover:bg-[var(--plane-raised)]"
                     onClick={() => copyCaseToClipboard(caseData)}
                   >
                     {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
@@ -427,14 +427,14 @@ export function CaseDetailPage({ caseId }: { caseId: string }) {
             {/* Upstream's detail page never shows `summary` (the case's one-line
                 gist), so a case without documents left Overview empty. */}
             {caseData.summary ? (
-              <div className="text-sm text-[var(--fg-soft)]">
+              <div className="text-ui text-[var(--fg-soft)]">
                 <MarkdownView>{caseData.summary}</MarkdownView>
               </div>
             ) : null}
 
             {documents.length > 0 ? (
               <section className="space-y-2">
-                <h2 className="text-sm font-semibold">Documents</h2>
+                <h2 className="text-ui font-semibold">Documents</h2>
                 <ul className="flex flex-col gap-2">
                   {documents.map((doc) => (
                     <DocumentRow
@@ -452,7 +452,7 @@ export function CaseDetailPage({ caseId }: { caseId: string }) {
 
             {description ? (
               <section className="space-y-2">
-                <h2 className="text-sm font-semibold">Description</h2>
+                <h2 className="text-ui font-semibold">Description</h2>
                 <div className="rounded-lg border border-[var(--edge)] px-4 py-3">
                   <CaseFieldValue value={description} />
                 </div>
@@ -461,7 +461,7 @@ export function CaseDetailPage({ caseId }: { caseId: string }) {
 
             {caseData.attachments.length > 0 && (
               <section className="space-y-2">
-                <h2 className="text-sm font-semibold">Attachments ({caseData.attachments.length})</h2>
+                <h2 className="text-ui font-semibold">Attachments ({caseData.attachments.length})</h2>
                 <CaseAttachmentsGallery caseId={caseData.id} attachments={caseData.attachments} />
               </section>
             )}

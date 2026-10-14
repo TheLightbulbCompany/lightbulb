@@ -26,7 +26,7 @@ export function PanelBand({ id, label, right, children }: PanelBandProps) {
       <div className="flex items-baseline justify-between gap-3 border-b border-[var(--edge-soft)] pb-1.5">
         <p className="label-caps text-[var(--midnight-muted)]">{label}</p>
         {right && (
-          <div className="flex items-center gap-3 text-xs text-[var(--midnight-muted)]">{right}</div>
+          <div className="flex items-center gap-3 text-caption text-[var(--midnight-muted)]">{right}</div>
         )}
       </div>
       {children}

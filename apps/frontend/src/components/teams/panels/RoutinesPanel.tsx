@@ -206,7 +206,7 @@ function RoutineToggle({
         />
       </button>
       <span
-        className="text-sm tabular-nums"
+        className="text-ui tabular-nums"
         style={{ color: enabled ? "var(--midnight)" : "var(--midnight-muted)" }}
       >
         {enabled ? "Active" : "Paused"}
@@ -415,7 +415,7 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
             <div className="font-medium text-[var(--midnight)]">
               {routineName(r)}
             </div>
-            <div className="text-xs text-[var(--midnight-muted)]">
+            <div className="text-caption text-[var(--midnight-muted)]">
               {routineTriggerSentence(r)}
               {" · "}
               {agentName(routineAgentId(r))}
@@ -438,7 +438,7 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
           />
           {isAutoPaused(r) && (
             <span
-              className="inline-flex items-center gap-1 text-xs"
+              className="inline-flex items-center gap-1 text-caption"
               style={{ color: "var(--warn)" }}
               title="Auto-paused after repeated failures"
             >
@@ -471,7 +471,7 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
           <button
             onClick={() => remove(r.id)}
             disabled={busy === r.id}
-            className="text-sm text-[var(--midnight-muted)] hover:text-[var(--err)] hover:underline"
+            className="text-ui text-[var(--midnight-muted)] hover:text-[var(--err)] hover:underline"
           >
             Delete
           </button>
@@ -487,7 +487,7 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
           <button
             type="button"
             onClick={() => nav.openDetail("routine-detail", r.id)}
-            className="text-sm text-[var(--midnight)] hover:underline"
+            className="text-ui text-[var(--midnight)] hover:underline"
           >
             Open →
           </button>
@@ -497,7 +497,7 @@ export function RoutinesPanel({ agentId }: { agentId?: string } = {}) {
             onClick={(e) =>
               handleShellLinkClick(e, teamsDetailUrl("routine", r.id))
             }
-            className="text-sm text-[var(--midnight)] hover:underline"
+            className="text-ui text-[var(--midnight)] hover:underline"
           >
             Open →
           </a>
@@ -682,7 +682,7 @@ function SortMenu({
           >
             <span>{label}</span>
             {value === field ? (
-              <span className="text-xs text-[var(--midnight-muted)]">
+              <span className="text-caption text-[var(--midnight-muted)]">
                 {dir === "asc" ? "↑" : "↓"}
               </span>
             ) : (
@@ -874,7 +874,7 @@ function CreateRoutineDialog({
         {rung !== "connected_app" && (
           <>
             <label className="block">
-              <span className="text-sm text-[var(--midnight-soft)]">Title</span>
+              <span className="text-ui text-[var(--midnight-soft)]">Title</span>
               <input
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
@@ -886,7 +886,7 @@ function CreateRoutineDialog({
                 Assignee is optional upstream (a routine can be created
                 unassigned). */}
             <div className="block">
-              <span className="text-sm text-[var(--midnight-soft)]">Assignee</span>
+              <span className="text-ui text-[var(--midnight-soft)]">Assignee</span>
               <div className="mt-1">
                 <AssigneePicker
                   agents={agents}
@@ -898,7 +898,7 @@ function CreateRoutineDialog({
               </div>
             </div>
             <div className="block">
-              <span className="text-sm text-[var(--midnight-soft)]">Reviewer</span>
+              <span className="text-ui text-[var(--midnight-soft)]">Reviewer</span>
               <div className="mt-1">
                 <AssigneePicker
                   agents={reviewerAgents}
@@ -923,7 +923,7 @@ function CreateRoutineDialog({
                 append a clearly-marked block, disclosed below). */}
             {conn.eventIds.length > 0 && routines.length > 0 && (
               <label className="block">
-                <span className="text-sm text-[var(--midnight-soft)]">Automation</span>
+                <span className="text-ui text-[var(--midnight-soft)]">Automation</span>
                 <div className="mt-1">
                   <EditorialSelect
                     options={[
@@ -937,7 +937,7 @@ function CreateRoutineDialog({
                     onValueChange={setConnRoutineId}
                   />
                 </div>
-                <span className="text-xs text-[var(--midnight-muted)]">
+                <span className="text-caption text-[var(--midnight-muted)]">
                   {!attachRoutineId
                     ? "Writes a new automation from this event's template."
                     : conn.attachDisclosure
@@ -954,7 +954,7 @@ function CreateRoutineDialog({
         {rung === "webhook" && (
           <>
             <label className="block">
-              <span className="text-sm text-[var(--midnight-soft)]">
+              <span className="text-ui text-[var(--midnight-soft)]">
                 Signing mode
               </span>
               <div className="mt-1">
@@ -967,14 +967,14 @@ function CreateRoutineDialog({
                   onValueChange={setSigningMode}
                 />
               </div>
-              <span className="text-xs text-[var(--midnight-muted)]">
+              <span className="text-caption text-[var(--midnight-muted)]">
                 The external app signs each request with this secret; Lightbulb
                 verifies it.
               </span>
             </label>
             {showReplayWindow && (
               <label className="block">
-                <span className="text-sm text-[var(--midnight-soft)]">
+                <span className="text-ui text-[var(--midnight-soft)]">
                   Replay window (seconds)
                 </span>
                 <input
@@ -992,7 +992,7 @@ function CreateRoutineDialog({
 
         {rung !== "connected_app" && (
           <label className="block">
-            <span className="text-sm text-[var(--midnight-soft)]">
+            <span className="text-ui text-[var(--midnight-soft)]">
               Description
             </span>
             <textarea
@@ -1005,7 +1005,7 @@ function CreateRoutineDialog({
         )}
         {shownErr && (
           <div
-            className="text-[var(--err)] text-sm rounded-sm px-3 py-2"
+            className="text-[var(--err)] text-ui rounded-sm px-3 py-2"
             style={{
               border:
                 "1px solid var(--err)",

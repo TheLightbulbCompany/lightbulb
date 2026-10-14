@@ -68,7 +68,7 @@ export function ProjectsListPanel() {
       key: "description",
       header: "Description",
       cell: (p) => (
-        <span className="text-sm text-[var(--midnight-soft)]">
+        <span className="text-ui text-[var(--midnight-soft)]">
           {p.description ?? "—"}
         </span>
       ),
@@ -82,7 +82,7 @@ export function ProjectsListPanel() {
           <button
             type="button"
             onClick={() => nav.openDetail("project-detail", p.id)}
-            className="text-sm hover:underline"
+            className="text-ui hover:underline"
             style={{ color: "var(--midnight)" }}
           >
             Open →
@@ -93,7 +93,7 @@ export function ProjectsListPanel() {
             onClick={(e) =>
               handleShellLinkClick(e, teamsDetailUrl("project", p.id))
             }
-            className="text-sm hover:underline"
+            className="text-ui hover:underline"
             style={{ color: "var(--midnight)" }}
           >
             Open →

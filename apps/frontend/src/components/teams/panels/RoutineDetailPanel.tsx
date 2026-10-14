@@ -205,7 +205,7 @@ function DialogError({ message }: { message: string | null }) {
   return (
     <div
       role="alert"
-      className="text-sm rounded-sm px-3 py-2"
+      className="text-ui rounded-sm px-3 py-2"
       style={{
         color: "var(--err)",
         border: "1px solid var(--err)",
@@ -255,7 +255,7 @@ function RoutineStatusIcon({
   return (
     <span className="inline-flex items-center gap-1.5">
       {circle}
-      <span className="text-sm">{autoPaused ? "Auto-paused" : statusLabel(status)}</span>
+      <span className="text-ui">{autoPaused ? "Auto-paused" : statusLabel(status)}</span>
     </span>
   );
 }
@@ -288,7 +288,7 @@ function PropertyRow({
 }) {
   return (
     <div
-      className="grid grid-cols-[100px_1fr] gap-3 items-baseline py-2 text-sm"
+      className="grid grid-cols-[100px_1fr] gap-3 items-baseline py-2 text-ui"
       style={{ color: "var(--midnight-soft)", borderBottom: "1px solid var(--edge)" }}
     >
       <dt className="section-label" style={{ marginTop: 0, marginBottom: 0 }}>
@@ -453,7 +453,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
   if (isLoading && !routine) {
     return (
       <div
-        className="flex h-full items-center justify-center p-8 text-sm italic"
+        className="flex h-full items-center justify-center p-8 text-ui italic"
         style={{
           fontFamily: "var(--font-serif), serif",
           color: "var(--midnight-muted)",
@@ -468,7 +468,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
     return (
       <div
         role="alert"
-        className="flex h-full flex-col items-center justify-center p-8 text-sm"
+        className="flex h-full flex-col items-center justify-center p-8 text-ui"
         style={{ color: "var(--err)" }}
       >
         <p>Failed to load automation.</p>
@@ -484,7 +484,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
   if (!routine) {
     return (
       <div
-        className="flex h-full items-center justify-center p-8 text-sm italic"
+        className="flex h-full items-center justify-center p-8 text-ui italic"
         style={{
           fontFamily: "var(--font-serif), serif",
           color: "var(--midnight-muted)",
@@ -514,7 +514,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
     >
       <main className="flex flex-col gap-6 min-w-0">
         <nav
-          className="flex items-center gap-1 text-xs"
+          className="flex items-center gap-1 text-caption"
           style={{ color: "var(--midnight-muted)" }}
           aria-label="Breadcrumb"
         >
@@ -539,7 +539,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
             </h1>
             {routine.description && (
               <p
-                className="text-sm whitespace-pre-wrap pl-3"
+                className="text-ui whitespace-pre-wrap pl-3"
                 style={{
                   borderLeft: "2px solid var(--edge)",
                   color: "var(--midnight-soft)",
@@ -589,7 +589,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
         {isAutoPaused(routine) && (
           <div
             role="status"
-            className="rounded-lg border px-4 py-3 text-sm flex items-center justify-between gap-3"
+            className="rounded-lg border px-4 py-3 text-ui flex items-center justify-between gap-3"
             style={{
               borderColor: "var(--warn)",
               backgroundColor: "var(--cream)",
@@ -644,13 +644,13 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
             </EditorialButton>
           </div>
           {triggers.length === 0 ? (
-            <p className="text-sm italic" style={{ color: "var(--midnight-muted)" }}>
+            <p className="text-ui italic" style={{ color: "var(--midnight-muted)" }}>
               No triggers.
             </p>
           ) : (
             <ul className="flex flex-col gap-1">
               {triggers.map((t) => (
-                <li key={t.id} className="flex flex-col gap-1.5 text-sm">
+                <li key={t.id} className="flex flex-col gap-1.5 text-ui">
                   <div className="flex items-center gap-2">
                     <span
                       className="label-caps font-mono px-1.5 py-0.5 rounded-sm shrink-0"
@@ -659,25 +659,25 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
                       {t.kind}
                     </span>
                     <div className="flex min-w-0 flex-col gap-0.5">
-                      <span className="truncate text-xs text-[var(--midnight)]">
+                      <span className="truncate text-caption text-[var(--midnight)]">
                         {triggerTitle(t)}
                       </span>
                       {triggerDetail(t) && (
-                        <span className="truncate font-mono text-xs text-[var(--midnight-muted)]">
+                        <span className="truncate font-mono text-caption text-[var(--midnight-muted)]">
                           {triggerDetail(t)}
                         </span>
                       )}
                     </div>
                     {t.timezone && (
-                      <span className="text-xs text-[var(--midnight-muted)]">{t.timezone}</span>
+                      <span className="text-caption text-[var(--midnight-muted)]">{t.timezone}</span>
                     )}
                     {t.nextRunAt && (
-                      <span className="text-xs text-[var(--midnight-muted)]">
+                      <span className="text-caption text-[var(--midnight-muted)]">
                         · next {nextRunLabel(t.nextRunAt)}
                       </span>
                     )}
                     {t.enabled === false && (
-                      <span className="text-xs text-[var(--midnight-muted)]">· paused</span>
+                      <span className="text-caption text-[var(--midnight-muted)]">· paused</span>
                     )}
                     <span className="flex-1" />
                     {t.kind === "schedule" && (
@@ -793,11 +793,11 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
               }}
             />
           ) : runsError ? (
-            <p role="alert" className="text-sm" style={{ color: "var(--err)" }}>
+            <p role="alert" className="text-ui" style={{ color: "var(--err)" }}>
               Failed to load run history.
             </p>
           ) : runs.length === 0 ? (
-            <p className="text-sm italic" style={{ color: "var(--midnight-muted)" }}>
+            <p className="text-ui italic" style={{ color: "var(--midnight-muted)" }}>
               No runs yet.
             </p>
           ) : (
@@ -830,13 +830,13 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
                         <LiveRunDot decorative testId={`routine-run-live-dot-${r.id}`} />
                       )}
                       <span
-                        className="text-xs capitalize shrink-0"
+                        className="text-caption capitalize shrink-0"
                         style={{ color: runStatusColor(r.status) }}
                       >
                         {r.status.replace(/_/g, " ")}
                       </span>
                       {r.trigger && (
-                        <span className="text-xs text-[var(--midnight-muted)] truncate">
+                        <span className="text-caption text-[var(--midnight-muted)] truncate">
                           {r.trigger.label ?? r.trigger.kind}
                         </span>
                       )}
@@ -844,7 +844,7 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
                         <a
                           href={linkedIssueUrl}
                           onClick={(e) => handleShellLinkClick(e, linkedIssueUrl)}
-                          className="text-xs hover:underline"
+                          className="text-caption hover:underline"
                           style={{ color: "var(--midnight)" }}
                         >
                           {r.linkedIssue.identifier ?? r.linkedIssue.id.slice(0, 8)}
@@ -852,13 +852,13 @@ export function RoutineDetailPanel({ routineId }: { routineId: string }) {
                       )}
                       <span className="flex-1" />
                       {when && (
-                        <span className="text-xs text-[var(--midnight-muted)] shrink-0">
+                        <span className="text-caption text-[var(--midnight-muted)] shrink-0">
                           {timeAgo(when)}
                         </span>
                       )}
                     </div>
                     {r.failureReason && (
-                      <div className="text-xs pl-1" style={{ color: "var(--err)" }}>
+                      <div className="text-caption pl-1" style={{ color: "var(--err)" }}>
                         {r.failureReason}
                       </div>
                     )}
@@ -1338,7 +1338,7 @@ function EditRoutineDialog({
       <div className="flex flex-col gap-3">
         <DialogError message={error} />
         <label className="block">
-          <span className="text-sm text-[var(--midnight-soft)]">Title</span>
+          <span className="text-ui text-[var(--midnight-soft)]">Title</span>
           <input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
@@ -1346,7 +1346,7 @@ function EditRoutineDialog({
           />
         </label>
         <div className="block">
-          <span className="text-sm text-[var(--midnight-soft)]">Assignee</span>
+          <span className="text-ui text-[var(--midnight-soft)]">Assignee</span>
           <div className="mt-1">
             <AssigneePicker
               agents={agents}
@@ -1358,7 +1358,7 @@ function EditRoutineDialog({
           </div>
         </div>
         <div className="block">
-          <span className="text-sm text-[var(--midnight-soft)]">Reviewer</span>
+          <span className="text-ui text-[var(--midnight-soft)]">Reviewer</span>
           <div className="mt-1">
             <AssigneePicker
               agents={reviewerAgents}
@@ -1372,7 +1372,7 @@ function EditRoutineDialog({
         </div>
         <div className="grid grid-cols-2 gap-3">
           <label className="block">
-            <span className="text-sm text-[var(--midnight-soft)]">Status</span>
+            <span className="text-ui text-[var(--midnight-soft)]">Status</span>
             <div className="mt-1">
               <EditorialSelect
                 options={STATUS_OPTIONS.map(([value, label]) => ({ value, label }))}
@@ -1382,7 +1382,7 @@ function EditRoutineDialog({
             </div>
           </label>
           <label className="block">
-            <span className="text-sm text-[var(--midnight-soft)]">Priority</span>
+            <span className="text-ui text-[var(--midnight-soft)]">Priority</span>
             <div className="mt-1">
               <EditorialSelect
                 options={PRIORITY_OPTIONS.map(([value, label]) => ({ value, label }))}
@@ -1393,7 +1393,7 @@ function EditRoutineDialog({
           </label>
         </div>
         <label className="block">
-          <span className="text-sm text-[var(--midnight-soft)]">Description</span>
+          <span className="text-ui text-[var(--midnight-soft)]">Description</span>
           <textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
@@ -1404,14 +1404,14 @@ function EditRoutineDialog({
 
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between">
-            <span className="text-sm text-[var(--midnight-soft)]">Variables</span>
+            <span className="text-ui text-[var(--midnight-soft)]">Variables</span>
             <EditorialButton variant="ghost" size="sm" onClick={addVar}>
               <Plus size={16} aria-hidden="true" />
               Add variable
             </EditorialButton>
           </div>
           {unreferenced.length > 0 && (
-            <p role="alert" className="text-xs" style={{ color: "var(--err)" }}>
+            <p role="alert" className="text-caption" style={{ color: "var(--err)" }}>
               {unreferenced.map((v) => `{{${v.name.trim()}}}`).join(", ")}{" "}
               {unreferenced.length === 1 ? "is" : "are"} not used in the title or
               description. Add the placeholder there, or remove the variable — an
@@ -1419,7 +1419,7 @@ function EditRoutineDialog({
             </p>
           )}
           {vars.length === 0 ? (
-            <p className="text-xs italic" style={{ color: "var(--midnight-muted)" }}>
+            <p className="text-caption italic" style={{ color: "var(--midnight-muted)" }}>
               No variables. Add one — and reference it as {"{{name}}"} in the title
               or description — to prompt for input at dispatch time.
             </p>
@@ -1435,7 +1435,7 @@ function EditRoutineDialog({
                       value={v.name}
                       onChange={(e) => setVar(i, { name: e.target.value })}
                       placeholder="name"
-                      className="border border-[var(--edge)] bg-[var(--cream)] rounded-md px-2 py-1 text-sm text-[var(--midnight)]"
+                      className="border border-[var(--edge)] bg-[var(--cream)] rounded-md px-2 py-1 text-ui text-[var(--midnight)]"
                     />
                     <div className="w-32">
                       <EditorialSelect
@@ -1467,24 +1467,24 @@ function EditRoutineDialog({
                     value={v.label}
                     onChange={(e) => setVar(i, { label: e.target.value })}
                     placeholder="label (optional)"
-                    className="border border-[var(--edge)] bg-[var(--cream)] rounded-md px-2 py-1 text-sm text-[var(--midnight)]"
+                    className="border border-[var(--edge)] bg-[var(--cream)] rounded-md px-2 py-1 text-ui text-[var(--midnight)]"
                   />
                   {v.type === "select" && (
                     <input aria-label="Variable options"
                       value={v.options}
                       onChange={(e) => setVar(i, { options: e.target.value })}
                       placeholder="options, comma-separated"
-                      className="border border-[var(--edge)] bg-[var(--cream)] rounded-md px-2 py-1 text-sm text-[var(--midnight)]"
+                      className="border border-[var(--edge)] bg-[var(--cream)] rounded-md px-2 py-1 text-ui text-[var(--midnight)]"
                     />
                   )}
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-[var(--midnight-muted)] w-14">Default</span>
+                    <span className="text-caption text-[var(--midnight-muted)] w-14">Default</span>
                     <VarDefaultInput
                       v={v}
                       onChange={(next) => setVar(i, { defaultValue: next })}
                     />
                   </div>
-                  <label className="flex items-center gap-2 text-xs text-[var(--midnight-soft)]">
+                  <label className="flex items-center gap-2 text-caption text-[var(--midnight-soft)]">
                     <input
                       type="checkbox"
                       checked={v.required}
@@ -1532,7 +1532,7 @@ function VarDefaultInput({
       type={inputType}
       value={v.defaultValue}
       onChange={(e) => onChange(e.target.value)}
-      className="flex-1 border border-[var(--edge)] bg-[var(--cream)] rounded-md px-2 py-1 text-sm text-[var(--midnight)]"
+      className="flex-1 border border-[var(--edge)] bg-[var(--cream)] rounded-md px-2 py-1 text-ui text-[var(--midnight)]"
     />
   );
 }
@@ -1694,7 +1694,7 @@ function TriggerDialog({
           <>
             <ScheduleField value={cron} onChange={setCron} />
             <label className="block">
-              <span className="text-sm text-[var(--midnight-soft)]">Timezone</span>
+              <span className="text-ui text-[var(--midnight-soft)]">Timezone</span>
               <input
                 value={timezone}
                 onChange={(e) => setTimezone(e.target.value)}
@@ -1706,7 +1706,7 @@ function TriggerDialog({
         ) : (
           <>
             <label className="block">
-              <span className="text-sm text-[var(--midnight-soft)]">Signing mode</span>
+              <span className="text-ui text-[var(--midnight-soft)]">Signing mode</span>
               <select
                 value={signingMode}
                 onChange={(e) => setSigningMode(e.target.value)}
@@ -1718,14 +1718,14 @@ function TriggerDialog({
                   </option>
                 ))}
               </select>
-              <span className="text-xs text-[var(--midnight-muted)]">
+              <span className="text-caption text-[var(--midnight-muted)]">
                 The external app signs each request with this secret; Lightbulb
                 verifies it.
               </span>
             </label>
             {showReplayWindow && (
               <label className="block">
-                <span className="text-sm text-[var(--midnight-soft)]">
+                <span className="text-ui text-[var(--midnight-soft)]">
                   Replay window (seconds)
                 </span>
                 <input
@@ -1736,7 +1736,7 @@ function TriggerDialog({
                   onChange={(e) => setReplayWindowSec(e.target.value)}
                   className={INPUT_CLASS}
                 />
-                <span className="text-xs text-[var(--midnight-muted)]">
+                <span className="text-caption text-[var(--midnight-muted)]">
                   How long a signed delivery stays valid (30–86400s).
                 </span>
               </label>
@@ -1748,14 +1748,14 @@ function TriggerDialog({
         {!isConnectedApp && (
           <>
             <label className="block">
-              <span className="text-sm text-[var(--midnight-soft)]">Label (optional)</span>
+              <span className="text-ui text-[var(--midnight-soft)]">Label (optional)</span>
               <input
                 value={label}
                 onChange={(e) => setLabel(e.target.value)}
                 className={INPUT_CLASS}
               />
             </label>
-            <label className="flex items-center gap-2 text-sm text-[var(--midnight-soft)]">
+            <label className="flex items-center gap-2 text-ui text-[var(--midnight-soft)]">
               <input
                 type="checkbox"
                 checked={enabled}
@@ -1816,7 +1816,7 @@ function SetSigningSecretDialog({
       <div className="flex flex-col gap-3">
         <DialogError message={error} />
         <label className="block">
-          <span className="text-sm text-[var(--midnight-soft)]">Signing secret</span>
+          <span className="text-ui text-[var(--midnight-soft)]">Signing secret</span>
           <input
             type="password"
             value={value}

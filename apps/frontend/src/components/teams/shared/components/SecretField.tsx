@@ -35,7 +35,7 @@ export function SecretField({
   return (
     <div>
       <div className="flex items-center justify-between gap-2">
-        <span className="text-sm text-[var(--midnight-soft)]">{label}</span>
+        <span className="text-ui text-[var(--midnight-soft)]">{label}</span>
         <button
           type="button"
           aria-label={`Copy ${copyLabel ?? label}`}
@@ -51,7 +51,7 @@ export function SecretField({
         </button>
       </div>
       <code
-        className="mt-1 block break-all rounded-sm px-3 py-2 font-mono text-sm"
+        className="mt-1 block break-all rounded-sm px-3 py-2 font-mono text-ui"
         style={{ background: "var(--cream-deep)", color: "var(--midnight)" }}
       >
         {value}

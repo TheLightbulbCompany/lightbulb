@@ -22,7 +22,7 @@ interface OutputFileTileProps {
 }
 
 /** Square file-type tile showing a short MIME-derived label, colorised by tone. */
-export function OutputFileTile({ contentType, className, sizeClassName = "h-8 w-8 text-[10px]" }: OutputFileTileProps) {
+export function OutputFileTile({ contentType, className, sizeClassName = "h-8 w-8 text-2xs" }: OutputFileTileProps) {
   const glyph = getOutputFileGlyph(contentType);
   const tone = TONE_VARS[glyph.tone];
   const style: CSSProperties = {

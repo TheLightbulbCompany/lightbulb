@@ -144,7 +144,7 @@ export function EmojiPicker({ onPick, disabled = false, triggerLabel = "Add reac
                   </button>
                 ))}
               </div>
-              {section.entries.length === 0 && <p className="text-sm text-muted-foreground">No matching emoji.</p>}
+              {section.entries.length === 0 && <p className="text-ui text-muted-foreground">No matching emoji.</p>}
             </section>
           ))}
         </div>

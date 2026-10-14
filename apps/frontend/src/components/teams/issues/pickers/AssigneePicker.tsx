@@ -233,8 +233,8 @@ export function AssigneePicker({
 
   const triggerClass =
     variant === "inline"
-      ? "inline-flex items-center gap-1.5 rounded-sm px-2 py-1 text-xs hover:bg-[var(--cream-deep)]"
-      : "inline-flex items-center gap-2 text-sm hover:underline";
+      ? "inline-flex items-center gap-1.5 rounded-sm px-2 py-1 text-caption hover:bg-[var(--cream-deep)]"
+      : "inline-flex items-center gap-2 text-ui hover:underline";
 
   return (
     <Popover open={open} onOpenChange={handleOpenChange}>
@@ -279,7 +279,7 @@ export function AssigneePicker({
           aria-activedescendant={
             activeIndex >= 0 ? `${listboxId}-option-${activeIndex}` : undefined
           }
-          className="w-full px-2 py-1.5 text-xs bg-transparent mb-1 rounded-sm"
+          className="w-full px-2 py-1.5 text-caption bg-transparent mb-1 rounded-sm"
           style={{ borderBottom: "1px solid var(--edge)" }}
         />
         <ul id={listboxId} className="max-h-56 overflow-y-auto" role="listbox">
@@ -297,7 +297,7 @@ export function AssigneePicker({
               onClick={() => handleOptionClick({ kind: "clear" })}
               onMouseEnter={() => setActiveIndex(0)}
               className={cn(
-                "w-full text-left px-2 py-1.5 text-sm rounded-sm hover:bg-[var(--cream-deep)]",
+                "w-full text-left px-2 py-1.5 text-ui rounded-sm hover:bg-[var(--cream-deep)]",
                 activeIndex === 0 && "bg-[var(--cream-deeper)]",
               )}
               style={{ color: "var(--midnight-muted)" }}
@@ -331,7 +331,7 @@ export function AssigneePicker({
                   onClick={() => handleOptionClick(option)}
                   onMouseEnter={() => setActiveIndex(optionIndex)}
                   className={cn(
-                    "w-full text-left px-2 py-1.5 text-sm rounded-sm hover:bg-[var(--cream-deep)]",
+                    "w-full text-left px-2 py-1.5 text-ui rounded-sm hover:bg-[var(--cream-deep)]",
                     activeIndex === optionIndex && "bg-[var(--cream-deeper)]",
                   )}
                 >
@@ -383,7 +383,7 @@ export function AssigneePicker({
                 );
               })}
               {visibleMembers.length === 0 && (
-                <li className="px-2 py-1.5 text-xs" style={{ color: "var(--midnight-muted)" }}>
+                <li className="px-2 py-1.5 text-caption" style={{ color: "var(--midnight-muted)" }}>
                   No people
                 </li>
               )}
@@ -391,7 +391,7 @@ export function AssigneePicker({
           )}
           {visibleAgents.length === 0 && !peopleEnabled && (
             <li
-              className="px-2 py-2 text-xs"
+              className="px-2 py-2 text-caption"
               style={{ color: "var(--midnight-muted)" }}
             >
               No matches

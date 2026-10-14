@@ -137,7 +137,7 @@ export function SearchResultRow({ result, agentsById }: SearchResultRowProps) {
           <HighlightedText
             text={titleText}
             highlights={titleHighlights}
-            className="min-w-0 flex-1 text-sm font-medium leading-snug"
+            className="min-w-0 flex-1 text-ui font-medium leading-snug"
           />
         </div>
         {bodySnippets.map((snippet, i) => {
@@ -145,7 +145,7 @@ export function SearchResultRow({ result, agentsById }: SearchResultRowProps) {
           return (
             <div
               key={`${snippet.field}-${i}`}
-              className="mt-1.5 flex min-w-0 items-start gap-1.5 text-xs"
+              className="mt-1.5 flex min-w-0 items-start gap-1.5 text-caption"
               style={{ color: "var(--midnight-muted)" }}
             >
               <Icon size={12} className="mt-0.5 shrink-0" />
@@ -164,7 +164,7 @@ export function SearchResultRow({ result, agentsById }: SearchResultRowProps) {
           );
         })}
       </div>
-      <div className="ml-2 hidden shrink-0 flex-col items-end gap-1 text-xs sm:flex" style={{ color: "var(--midnight-muted)" }}>
+      <div className="ml-2 hidden shrink-0 flex-col items-end gap-1 text-caption sm:flex" style={{ color: "var(--midnight-muted)" }}>
         {assigneeName ? <span className="truncate">{assigneeName}</span> : null}
         {updated ? <span className="tabular-nums">{updated}</span> : null}
       </div>

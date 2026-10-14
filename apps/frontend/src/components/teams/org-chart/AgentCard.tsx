@@ -144,7 +144,7 @@ export function AgentCard({
       </div>
 
       {/* Subtitle: title or role */}
-      <div className="text-xs capitalize truncate" style={{ color: "var(--midnight-muted)" }}>
+      <div className="text-caption capitalize truncate" style={{ color: "var(--midnight-muted)" }}>
         {subtitle}
       </div>
 

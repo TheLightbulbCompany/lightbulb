@@ -27,7 +27,7 @@ interface OutputPrimaryCardProps {
 }
 
 export const OUTPUT_ACTION_CLASS =
-  "inline-flex items-center justify-center gap-1.5 rounded-sm px-2.5 py-1 text-xs font-medium transition-colors hover:bg-[var(--cream-deep)] max-md:flex-1";
+  "inline-flex items-center justify-center gap-1.5 rounded-sm px-2.5 py-1 text-caption font-medium transition-colors hover:bg-[var(--cream-deep)] max-md:flex-1";
 
 /**
  * Full-width primary output card: media region (video / image / generic file)
@@ -67,13 +67,13 @@ export function OutputPrimaryCard({ item, creatorName }: OutputPrimaryCardProps)
       {/* Metadata strip */}
       <div className="flex flex-col gap-2 p-3 md:flex-row md:items-center md:justify-between">
         <div className="min-w-0 flex-1">
-          <p className="break-words text-sm font-semibold" style={{ color: "var(--midnight)" }}>{filename}</p>
+          <p className="break-words text-ui font-semibold" style={{ color: "var(--midnight)" }}>{filename}</p>
           {item.degraded ? (
-            <p className="mt-0.5 text-xs" style={{ color: "var(--err)" }}>
+            <p className="mt-0.5 text-caption" style={{ color: "var(--err)" }}>
               Output metadata is unavailable — this file can’t be played or downloaded here.
             </p>
           ) : (
-            <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs" style={{ color: "var(--midnight-muted)" }}>
+            <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-caption" style={{ color: "var(--midnight-muted)" }}>
               {item.isPrimary && (
                 <span className="label-caps rounded-sm px-1.5 py-0" style={{ border: "1px solid var(--edge)", color: "var(--warn)" }}>
                   Primary

@@ -31,7 +31,7 @@ export function CopiedFlash() {
     <span
       role="status"
       aria-live="polite"
-      className="pointer-events-none absolute bottom-full left-1/2 mb-1.5 inline-flex -translate-x-1/2 items-center gap-1 rounded-md bg-[var(--fg)] px-2 py-1 text-xs whitespace-nowrap text-[var(--plane-pane)]"
+      className="pointer-events-none absolute bottom-full left-1/2 mb-1.5 inline-flex -translate-x-1/2 items-center gap-1 rounded-md bg-[var(--fg)] px-2 py-1 text-caption whitespace-nowrap text-[var(--plane-pane)]"
     >
       <Check className="h-3 w-3 shrink-0" />
       Copied
@@ -103,7 +103,7 @@ export function CaseIdentifierKey({
       <CaseCopyableToken
         value={identifier}
         label="case ID"
-        className="shrink-0 font-mono text-xs text-[var(--fg-mute)]"
+        className="shrink-0 font-mono text-caption text-[var(--fg-mute)]"
         containerClassName="shrink-0"
         stopPropagation={stopPropagation}
       />
@@ -111,7 +111,7 @@ export function CaseIdentifierKey({
         <CaseCopyableToken
           value={caseKey}
           label="case key"
-          className="font-mono text-xs text-[var(--fg-mute)]"
+          className="font-mono text-caption text-[var(--fg-mute)]"
           stopPropagation={stopPropagation}
         />
       ) : null}

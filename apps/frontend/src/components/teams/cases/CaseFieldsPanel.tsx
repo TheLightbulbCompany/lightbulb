@@ -48,7 +48,7 @@ export function IssueReferencePill({
       prefetch={false}
       onClick={(e) => handleShellLinkClick(e, href)}
       title={issue.title}
-      className="inline-flex max-w-full items-center gap-1 rounded-full border border-[var(--edge)] px-2 py-0.5 text-xs text-[var(--fg-soft)] transition-colors hover:bg-[var(--plane-raised)]"
+      className="inline-flex max-w-full items-center gap-1 rounded-full border border-[var(--edge)] px-2 py-0.5 text-caption text-[var(--fg-soft)] transition-colors hover:bg-[var(--plane-raised)]"
     >
       {issue.status ? <StatusIcon status={issue.status} className="h-3 w-3" /> : null}
       <span className="shrink-0 font-mono">{issue.identifier}</span>
@@ -122,7 +122,7 @@ function StringValue({ value, variant }: { value: string; variant: "compact" | "
         target="_blank"
         rel="noreferrer"
         className={cn(
-          "inline-flex max-w-full items-center gap-0.5 text-sm text-[var(--link)] hover:underline",
+          "inline-flex max-w-full items-center gap-0.5 text-ui text-[var(--link)] hover:underline",
           variant === "compact" ? "truncate" : "break-all",
         )}
         title={trimmed}
@@ -138,7 +138,7 @@ function StringValue({ value, variant }: { value: string; variant: "compact" | "
         href={caseHref(trimmed)}
         prefetch={false}
         onClick={(e) => handleShellLinkClick(e, caseHref(trimmed))}
-        className="font-mono text-sm text-[var(--link)] hover:underline"
+        className="font-mono text-ui text-[var(--link)] hover:underline"
       >
         {trimmed}
       </Link>
@@ -146,12 +146,12 @@ function StringValue({ value, variant }: { value: string; variant: "compact" | "
   }
   if (variant === "compact") {
     return (
-      <CopyableCompactValue value={value} className="text-sm">
+      <CopyableCompactValue value={value} className="text-ui">
         {value}
       </CopyableCompactValue>
     );
   }
-  return <span className="text-sm break-words">{value}</span>;
+  return <span className="text-ui break-words">{value}</span>;
 }
 
 export function CaseFieldValue({
@@ -179,15 +179,15 @@ export function CaseFieldValue({
   if (typeof value === "string") return <StringValue value={value} variant={variant} />;
 
   if (typeof value === "number") {
-    if (!Number.isFinite(value)) return <span className="text-sm">{String(value)}</span>;
+    if (!Number.isFinite(value)) return <span className="text-ui">{String(value)}</span>;
     if (variant === "compact") {
       return (
-        <CopyableCompactValue value={value} className="text-sm tabular-nums">
+        <CopyableCompactValue value={value} className="text-ui tabular-nums">
           {value.toLocaleString()}
         </CopyableCompactValue>
       );
     }
-    return <span className="text-sm tabular-nums">{value.toLocaleString()}</span>;
+    return <span className="text-ui tabular-nums">{value.toLocaleString()}</span>;
   }
 
   if (typeof value === "boolean") {
@@ -204,7 +204,7 @@ export function CaseFieldValue({
     if (value.length === 0) return <EmptyValue />;
     if (variant === "compact") {
       return (
-        <CopyableCompactValue value={value} className="text-sm text-[var(--fg-mute)]">
+        <CopyableCompactValue value={value} className="text-ui text-[var(--fg-mute)]">
           {stringifyCopyValue(value)}
         </CopyableCompactValue>
       );
@@ -225,17 +225,17 @@ export function CaseFieldValue({
   if (isPlainObject(value)) {
     if (variant === "compact") {
       return (
-        <CopyableCompactValue value={value} className="font-mono text-xs text-[var(--fg-mute)]">
+        <CopyableCompactValue value={value} className="font-mono text-caption text-[var(--fg-mute)]">
           {JSON.stringify(value)}
         </CopyableCompactValue>
       );
     }
     return (
-      <pre className="max-w-full whitespace-pre-wrap break-words font-mono text-xs text-[var(--fg-mute)]">
+      <pre className="max-w-full whitespace-pre-wrap break-words font-mono text-caption text-[var(--fg-mute)]">
         {JSON.stringify(value, null, 2)}
       </pre>
     );
   }
 
-  return <span className="text-sm">{String(value)}</span>;
+  return <span className="text-ui">{String(value)}</span>;
 }

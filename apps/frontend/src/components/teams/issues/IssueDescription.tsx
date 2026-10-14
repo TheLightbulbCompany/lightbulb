@@ -3,7 +3,7 @@
 // Ported from upstream Paperclip's issue-body description editor
 // (ui/src/pages/IssueDetail.tsx @ c6f5a4d2 on isol8/2026.916-rebase — the
 // `<InlineEditor value={issue.description} as="p" multiline
-// placeholder="Add a description..." className="text-sm leading-7">` under the
+// placeholder="Add a description..." className="text-ui leading-7">` under the
 // title; MIT, (c) 2025 Paperclip AI). The description is the issue's body, not
 // a thread entry: markdown prose under the title, click to edit.
 //
@@ -78,7 +78,7 @@ export function IssueDescription({
             setEditing(false);
           }
         }}
-        className="text-sm leading-7"
+        className="text-ui leading-7"
         style={{ border: "1px solid var(--edge)", background: "var(--cream)", color: "var(--midnight)" }}
       />
     );
@@ -89,7 +89,7 @@ export function IssueDescription({
       <button
         type="button"
         onClick={() => setEditing(true)}
-        className="w-full rounded-sm px-1 py-1 text-left text-sm leading-7 transition-colors hover:bg-[var(--cream-deep)]"
+        className="w-full rounded-sm px-1 py-1 text-left text-ui leading-7 transition-colors hover:bg-[var(--cream-deep)]"
         style={{ color: "var(--midnight-muted)" }}
       >
         Add a description...
@@ -99,7 +99,7 @@ export function IssueDescription({
 
   return (
     <div className="group/description relative" data-testid="issue-description">
-      <div className="text-sm leading-7" style={{ color: "var(--midnight)" }}>
+      <div className="text-ui leading-7" style={{ color: "var(--midnight)" }}>
         <TaskChatMarkdown>{description}</TaskChatMarkdown>
       </div>
       <button

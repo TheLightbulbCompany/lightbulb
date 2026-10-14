@@ -92,14 +92,14 @@ function ContentBody({ artifact, path }: { artifact: CompanyArtifact; path: stri
 
   if (state.status === "loading") {
     return (
-      <p className="text-sm italic" style={{ color: "var(--midnight-muted)" }}>
+      <p className="text-ui italic" style={{ color: "var(--midnight-muted)" }}>
         Loading…
       </p>
     );
   }
   if (state.status === "error") {
     return (
-      <p role="alert" className="text-sm italic" style={{ color: "var(--err)" }}>
+      <p role="alert" className="text-ui italic" style={{ color: "var(--err)" }}>
         Could not load this file.
       </p>
     );
@@ -138,7 +138,7 @@ function ContentBody({ artifact, path }: { artifact: CompanyArtifact; path: stri
       <MarkdownView>{state.text}</MarkdownView>
     ) : (
       <pre
-        className="whitespace-pre-wrap break-words text-xs leading-5"
+        className="whitespace-pre-wrap break-words text-caption leading-5"
         style={{ color: "var(--midnight-soft)" }}
       >
         {state.text}
@@ -149,7 +149,7 @@ function ContentBody({ artifact, path }: { artifact: CompanyArtifact; path: stri
     <a
       href={state.url}
       download={artifact.title || "attachment"}
-      className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm"
+      className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-ui"
       style={{ background: "var(--midnight)", color: "var(--cream)" }}
     >
       <Download size={16} />
@@ -173,21 +173,21 @@ function DocumentBody({
 
   if (!key) {
     return (
-      <p role="alert" className="text-sm italic" style={{ color: "var(--err)" }}>
+      <p role="alert" className="text-ui italic" style={{ color: "var(--err)" }}>
         This document can’t be opened.
       </p>
     );
   }
   if (isLoading && !data) {
     return (
-      <p className="text-sm italic" style={{ color: "var(--midnight-muted)" }}>
+      <p className="text-ui italic" style={{ color: "var(--midnight-muted)" }}>
         Loading document…
       </p>
     );
   }
   if (error && !data) {
     return (
-      <p role="alert" className="text-sm italic" style={{ color: "var(--err)" }}>
+      <p role="alert" className="text-ui italic" style={{ color: "var(--err)" }}>
         Could not load this document.
       </p>
     );
@@ -195,7 +195,7 @@ function DocumentBody({
   const body = data?.body?.trim();
   if (!body) {
     return (
-      <p className="text-sm italic" style={{ color: "var(--midnight-muted)" }}>
+      <p className="text-ui italic" style={{ color: "var(--midnight-muted)" }}>
         (empty document)
       </p>
     );
@@ -238,7 +238,7 @@ function WorkProductBody({
   // a cached miss is not confirmation the output is gone. Keep showing loading.
   if (!wp && (isLoading || isValidating)) {
     return (
-      <p className="text-sm italic" style={{ color: "var(--midnight-muted)" }}>
+      <p className="text-ui italic" style={{ color: "var(--midnight-muted)" }}>
         Loading output…
       </p>
     );
@@ -255,7 +255,7 @@ function WorkProductBody({
     return (
       <div className="flex flex-col gap-2">
         {error || data ? (
-          <p role="alert" className="text-sm italic" style={{ color: "var(--err)" }}>
+          <p role="alert" className="text-ui italic" style={{ color: "var(--err)" }}>
             Could not load this output.
           </p>
         ) : null}
@@ -271,7 +271,7 @@ function WorkProductBody({
       {wp.summary?.trim() ? (
         <MarkdownView>{wp.summary}</MarkdownView>
       ) : contentPath ? null : (
-        <p className="text-sm italic" style={{ color: "var(--midnight-muted)" }}>
+        <p className="text-ui italic" style={{ color: "var(--midnight-muted)" }}>
           No summary provided.
         </p>
       )}
@@ -280,7 +280,7 @@ function WorkProductBody({
           href={wp.url}
           target="_blank"
           rel="noopener noreferrer"
-          className="inline-flex items-center gap-1.5 text-sm underline"
+          className="inline-flex items-center gap-1.5 text-ui underline"
           style={{ color: "var(--midnight)" }}
         >
           <ExternalLink size={16} />
@@ -337,7 +337,7 @@ export function ArtifactViewerDialog({
             <Link
               href={taskUrl}
               onClick={openTask}
-              className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm"
+              className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-ui"
               style={{ background: "var(--edge)", color: "var(--midnight)" }}
             >
               <ExternalLink size={16} />
@@ -348,7 +348,7 @@ export function ArtifactViewerDialog({
             <button
               type="button"
               onClick={() => onRequestDelete(artifact)}
-              className="inline-flex items-center gap-1.5 rounded-md bg-destructive px-3 py-1.5 text-sm text-destructive-foreground"
+              className="inline-flex items-center gap-1.5 rounded-md bg-destructive px-3 py-1.5 text-ui text-destructive-foreground"
             >
               <Trash2 size={16} />
               Delete
@@ -371,7 +371,7 @@ export function ArtifactViewerDialog({
               path={artifactContentPath(artifact)!}
             />
           ) : (
-            <p role="alert" className="text-sm italic" style={{ color: "var(--err)" }}>
+            <p role="alert" className="text-ui italic" style={{ color: "var(--err)" }}>
               This can’t be opened here.
             </p>
           )}

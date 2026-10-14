@@ -63,7 +63,7 @@ export function CaseEventRow({ event, compact = false }: { event: CaseEvent; com
       : "";
   const issue = event.issue;
   return (
-    <div className={cn("flex items-start gap-2 text-xs", compact ? "py-1.5" : "py-2")}>
+    <div className={cn("flex items-start gap-2 text-caption", compact ? "py-1.5" : "py-2")}>
       <span className="mt-1"><ActorIcon event={event} /></span>
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-baseline gap-x-1.5">
@@ -121,13 +121,13 @@ export function CaseActivityFeed({ events }: { events: CaseEvent[] }) {
       : `${active.size} filters`;
 
   if (events.length === 0) {
-    return <p className="py-6 text-center text-sm text-[var(--fg-mute)]">No activity yet.</p>;
+    return <p className="py-6 text-center text-ui text-[var(--fg-mute)]">No activity yet.</p>;
   }
 
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-xs text-[var(--fg-mute)]">
+        <p className="text-caption text-[var(--fg-mute)]">
           {filtered.length} of {events.length} events
         </p>
         <DropdownMenu>
@@ -157,7 +157,7 @@ export function CaseActivityFeed({ events }: { events: CaseEvent[] }) {
         </DropdownMenu>
       </div>
       {filtered.length === 0 ? (
-        <p className="py-6 text-center text-sm text-[var(--fg-mute)]">No events match this filter.</p>
+        <p className="py-6 text-center text-ui text-[var(--fg-mute)]">No events match this filter.</p>
       ) : (
         <div className="divide-y divide-[var(--edge)]">
           {filtered.map((event) => (

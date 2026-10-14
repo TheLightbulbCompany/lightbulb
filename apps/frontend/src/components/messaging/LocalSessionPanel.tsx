@@ -275,7 +275,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const settings = isDesktopApp()
     ? <Link className="underline underline-offset-4" href="/settings?panel=desktop#share-every-session-live">Settings</Link> : "Settings";
   // No terminal here yet: what gets its screen shared (spec 2026-10-07 §4 f, g). One line over the conversation.
-  const hint = reason && <p role="status" className="session-live-hint text-sm text-muted-foreground">{reason === "plain"
+  const hint = reason && <p role="status" className="session-live-hint text-ui text-muted-foreground">{reason === "plain"
     ? own ? <>Press ← in its terminal to share this one live, or turn on Share every session live in {settings} to make every new session live.</> : `Ask ${ownerName} to press ← in their terminal.`
     : own ? <>Start it again with <code>lightbulb codex</code> to share its screen.</> : <>Ask {ownerName} to start it again with <code>lightbulb codex</code>.</>}</p>;
 
@@ -295,12 +295,12 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       <div className="session-status-actions">
         {!own && canPickUp(session) && <SessionPickup session={session} ownerName={ownerName} own={false} client={client} />}
         {!own && !canPickUp(session) && session.provider === "claude" && session.pickup?.allowed === true && (session.pickup.state === "unavailable"
-          ? <span role="status" className="text-sm text-muted-foreground">{pickupStatus(session.pickup, timeAgo)}</span>
+          ? <span role="status" className="text-ui text-muted-foreground">{pickupStatus(session.pickup, timeAgo)}</span>
           : <Button type="button" variant="outline" size="sm" disabled>Preparing…</Button>)}
         {!own && !canPickUp(session) && session.provider === "claude" && !session.pickup?.allowed && askPickup.supported &&
           <Button type="button" variant="outline" size="sm" disabled={askPickup.saving || (askPickup.state === "pending" && !askPickup.again)} onClick={() => void askPickup.ask()}>
             {askPickup.again ? "No answer yet. Ask again" : askPickup.state === "pending" ? "Requested" : askPickup.state === "declined" ? `${ownerName} declined. Ask again` : "Ask to pick up"}</Button>}
-        {command.attempt?.request.kind === "end" && command.chip && <span role="status" className="text-sm"><ReceiptChip chip={command.chip} /></span>}
+        {command.attempt?.request.kind === "end" && command.chip && <span role="status" className="text-ui"><ReceiptChip chip={command.chip} /></span>}
         {/* The app's own terminal on this Mac has End in its bar; this is the same control everywhere else. */}
         {command.canEnd && local !== "local" && <Button type="button" variant="outline" size="sm" disabled={command.locked}
           onClick={() => { if (endArmed) command.end(); setEndArmed(!endArmed); }}>{endArmed ? `Click again to end “${sessionTitle(session)}”` : "End session"}</Button>}
@@ -324,8 +324,8 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       <p className="font-semibold">{own ? "Waiting on you in your terminal" : `Waiting on ${ownerName} in their terminal`}</p>
       {waitingOn && <p className="local-session-waiting-reason">{waitingOn}</p>}
       {liveTerminal && termCanType && control && session.shared !== false && client.sendLocalSessionInput
-        ? <p className="text-sm">Answer it in the live terminal below.</p>
-        : own ? <p className="text-sm">Answer it in your terminal; this prompt can&apos;t be answered from here.</p> : messageOwner}
+        ? <p className="text-ui">Answer it in the live terminal below.</p>
+        : own ? <p className="text-ui">Answer it in your terminal; this prompt can&apos;t be answered from here.</p> : messageOwner}
     </div>}
     {local !== "none"
       ? <>{audience && <div className="session-terminal-size local-session-audience"><span className="session-terminal-hint">{audience}</span></div>}
@@ -351,7 +351,7 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       {watchRemote && <div className="session-terminal-slot" hidden={showBrowser} onScrollCapture={endedScreen ? openAtTop : undefined}><SessionTerminalView session={session} onEvent={onEvent!} watch={client.watchLocalSession!} frames={frames} onLive={setScreenLive} onCanType={setTermCanType} kept={endedScreen}
         admitted={running && control && session.shared !== false && !(session.inputPaused && !own)} resizable={session.terminalResize === true}
         input={client.sendLocalSessionInput ? (bytes, epoch, size) => client.sendLocalSessionInput!(session.sessionId, toBase64(bytes), epoch, size) : undefined} /></div>}
-      {terminalLive && control && !own && session.inputPaused && <p className="text-sm text-muted-foreground">Paused while {ownerName} answers a request to join.</p>}
+      {terminalLive && control && !own && session.inputPaused && <p className="text-ui text-muted-foreground">Paused while {ownerName} answers a request to join.</p>}
       {liveTerminal && !showBrowser && <div className="local-session-feedback">{feedback}</div>}
       {/* One child in a reversed column: the browser keeps the newest row in view as the conversation grows. */}
       {showBrowser ? null : convo && !convoEmpty ? <div className="local-session-feedback local-session-conversation" role="log" aria-label="Session conversation"><div>{feedback}</div></div>
@@ -369,27 +369,27 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
       {(command.canSteer || command.canInterrupt) && <div className="local-session-actions">
         {command.canSteer && <Button type="button" variant="outline" size="sm" disabled={command.locked || !text.trim()} onClick={() => command.steer(text)}>Steer now</Button>}
         {command.canInterrupt && <Button type="button" variant="outline" size="sm" disabled={command.locked} onClick={command.interrupt}>Stop turn</Button>}
-        <span className="text-xs text-muted-foreground">Send waits for the next turn.</span>
+        <span className="text-caption text-muted-foreground">Send waits for the next turn.</span>
       </div>}
-      {session.status === "offline" && !blocked && <p className="text-sm text-muted-foreground">Mac offline. Follow-ups wait up to 24 hours for this session to reconnect.</p>}
+      {session.status === "offline" && !blocked && <p className="text-ui text-muted-foreground">Mac offline. Follow-ups wait up to 24 hours for this session to reconnect.</p>}
       {command.canCancel && <Button type="button" variant="outline" size="sm" disabled={command.checking} onClick={() => void command.cancel()}>Cancel queued follow-up</Button>}
-      {blocked && <p className="text-sm text-warn">{blocked}</p>}
-      {command.attempt?.state === "rejected" && !command.attempt.receipt && command.attempt.error && <p role="alert" className="text-sm text-warn">{command.attempt.error}</p>}
+      {blocked && <p className="text-ui text-warn">{blocked}</p>}
+      {command.attempt?.state === "rejected" && !command.attempt.receipt && command.attempt.error && <p role="alert" className="text-ui text-warn">{command.attempt.error}</p>}
       {/* Once the harness has echoed the prompt the pending row is gone; a warning still needs a home. */}
-      {!pendingText && command.chip && (command.chip.tone === "warn" || command.chip.tone === "error" || command.attempt?.request.kind === "interrupt") && command.attempt?.receipt && <p className="text-sm"><ReceiptChip chip={command.chip} /></p>}
+      {!pendingText && command.chip && (command.chip.tone === "warn" || command.chip.tone === "error" || command.attempt?.request.kind === "interrupt") && command.attempt?.receipt && <p className="text-ui"><ReceiptChip chip={command.chip} /></p>}
       {(command.canCheck || command.attempt?.state === "uncertain") && <div className="local-session-actions">
         {command.canCheck && <Button type="button" variant="outline" size="sm" disabled={command.checking} onClick={() => void command.checkDelivery()}>Check delivery</Button>}
         {command.attempt?.state === "uncertain" && <Button type="button" variant="outline" size="sm" disabled={!command.canSend || command.checking} onClick={() => command.retry()}>Retry same request</Button>}
       </div>}
     </form> : <div className="room-composer local-session-readonly">
       <div>
-        <p className="text-sm text-muted-foreground">{terminalLive && "Watching · "}{asking.line}</p>
+        <p className="text-ui text-muted-foreground">{terminalLive && "Watching · "}{asking.line}</p>
         <div className="local-session-actions">
           {join.supported && <Button type="button" variant="outline" size="sm" disabled={asking.disabled}
             onClick={() => void join.ask()}>{asking.button}</Button>}
           {waitingOn === null && !(notStarted && convo) && messageOwner}
         </div>
-        {join.error && <p role="alert" className="text-sm text-warn">{join.error}</p>}
+        {join.error && <p role="alert" className="text-ui text-warn">{join.error}</p>}
       </div>
       {footer && <p className="native-session-footer">{footer}</p>}
     </div>}
@@ -420,7 +420,7 @@ function OpenInTerminal({ sessionId, onEvent }: { sessionId: string; onEvent?: S
   return <div className="local-session-actions">
     <Button type="button" variant="outline" size="sm" disabled={open?.phase === "opening"} onClick={() => void start()}>
       {open?.phase === "opening" ? "Opening…" : "Open in a terminal"}</Button>
-    <p role="status" className="text-sm text-muted-foreground">{open?.phase === "opened" ? "Opened. It is in your sessions as a new terminal session."
+    <p role="status" className="text-ui text-muted-foreground">{open?.phase === "opened" ? "Opened. It is in your sessions as a new terminal session."
       : open?.phase === "failed" ? open.error ?? "It did not open." : "Opens this conversation in a live terminal on your Mac. The app keeps its copy."}</p>
   </div>;
 }

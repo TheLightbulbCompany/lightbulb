@@ -41,7 +41,7 @@ export function SessionRemoveButton({ name, onRemove, icon = false, live = false
             {" "}Shared links stop working, and it cannot be resumed from Lightbulb. Nothing on your Mac is deleted.
           </DialogDescription>
         </DialogHeader>
-        {error && <p role="alert" className="text-sm text-err">{error}</p>}
+        {error && <p role="alert" className="text-ui text-err">{error}</p>}
         <DialogFooter>
           <Button type="button" variant="outline" disabled={saving} onClick={() => setOpen(false)}>Cancel</Button>
           <Button type="button" variant="destructive" disabled={saving} onClick={() => void remove()}>{saving ? "Removing…" : live ? "End and remove" : "Remove"}</Button>

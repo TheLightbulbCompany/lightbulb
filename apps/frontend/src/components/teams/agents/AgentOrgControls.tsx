@@ -96,9 +96,9 @@ export function AgentOrgControls({
     <div className="flex flex-col gap-6">
       <section className="editorial-card p-4 flex flex-col gap-1">
         <span className="label-caps text-[var(--midnight-muted)]">Origin</span>
-        <span className="text-sm font-medium text-[var(--midnight)]">{agent.origin ?? "Custom"}</span>
+        <span className="text-ui font-medium text-[var(--midnight)]">{agent.origin ?? "Custom"}</span>
         {marketplaceLabel ? (
-          <span className="text-xs text-[var(--midnight-muted)]" title={`Listing ${agent.marketplace?.listingId}`}>
+          <span className="text-caption text-[var(--midnight-muted)]" title={`Listing ${agent.marketplace?.listingId}`}>
             {marketplaceLabel}
           </span>
         ) : null}
@@ -106,7 +106,7 @@ export function AgentOrgControls({
 
       <section className="editorial-card p-4 flex flex-col gap-2">
         <h3 className="font-editorial-serif text-base">Display name</h3>
-        <p className="text-xs text-[var(--midnight-muted)]">
+        <p className="text-caption text-[var(--midnight-muted)]">
           Renaming keeps this agent&apos;s history, routing, integrations, and permissions.
         </p>
         {renaming ? (
@@ -126,7 +126,7 @@ export function AgentOrgControls({
               disabled={busy}
               maxLength={80}
               autoFocus
-              className="min-w-[12rem] flex-1 rounded border border-[var(--edge)] bg-[var(--paper)] px-3 py-2 text-sm"
+              className="min-w-[12rem] flex-1 rounded border border-[var(--edge)] bg-[var(--paper)] px-3 py-2 text-ui"
             />
             <EditorialButton size="sm" disabled={busy} type="submit">
               {busy ? "Saving…" : "Save"}
@@ -152,7 +152,7 @@ export function AgentOrgControls({
             </EditorialButton>
           </div>
         )}
-        {renameError ? <p role="alert" className="text-xs text-[var(--err)]">{renameError}</p> : null}
+        {renameError ? <p role="alert" className="text-caption text-[var(--err)]">{renameError}</p> : null}
       </section>
 
       {/* Reporting line — editable here */}
@@ -200,7 +200,7 @@ export function AgentOrgControls({
         ) : null}
         {confirmDelete ? (
           <>
-            <span className="text-sm text-[var(--err)]">Delete {agent.name}?</span>
+            <span className="text-ui text-[var(--err)]">Delete {agent.name}?</span>
             <EditorialButton
               size="sm"
               disabled={busy}
@@ -232,16 +232,16 @@ export function AgentOrgControls({
           Neither dispatches an inference run, so no spend gate applies. */}
       <section className="editorial-card p-4 flex flex-col gap-2">
         <h3 className="font-editorial-serif text-base">Recovery</h3>
-        <p className="text-xs text-[var(--midnight-muted)]">
+        <p className="text-caption text-[var(--midnight-muted)]">
           Get a stuck agent unstuck without deleting it.
         </p>
         {agent.status ? (
-          <p className="text-xs text-[var(--midnight-muted)]">
+          <p className="text-caption text-[var(--midnight-muted)]">
             Reported status: <span className="font-mono">{agent.status}</span>
           </p>
         ) : null}
         {live ? (
-          <p className="text-xs text-[var(--midnight-soft)]">
+          <p className="text-caption text-[var(--midnight-soft)]">
             {agent.name} is shown as working everywhere it appears. If no run is actually in
             flight, that is a stale status on the agent record rather than real work. Reset
             session clears {agent.name}&apos;s runtime session state without starting a run or
@@ -270,7 +270,7 @@ export function AgentOrgControls({
             </EditorialButton>
           ) : (
             <>
-              <span className="text-sm text-[var(--midnight-soft)]">
+              <span className="text-ui text-[var(--midnight-soft)]">
                 Reset {agent.name}&apos;s session?
               </span>
               <EditorialButton

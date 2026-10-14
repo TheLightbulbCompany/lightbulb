@@ -76,7 +76,7 @@ export function TrialRecapCard() {
 
   return (
     <section
-      className="mx-2 mb-2 rounded-lg border border-[var(--plane-edge)] bg-[var(--plane-raised)] p-3 text-sm"
+      className="mx-2 mb-2 rounded-lg border border-[var(--plane-edge)] bg-[var(--plane-raised)] p-3 text-ui"
       aria-label="Your trial so far"
       data-testid="trial-recap"
     >
@@ -123,7 +123,7 @@ export function TrialRecapCard() {
           Not now
         </button>
       </div>
-      <p className="mt-2 text-xs text-[var(--fg-mute)]">
+      <p className="mt-2 text-caption text-[var(--fg-mute)]">
         Your trial ends {ends}. After that everything stays readable; agents stop until someone picks the plan.
       </p>
     </section>

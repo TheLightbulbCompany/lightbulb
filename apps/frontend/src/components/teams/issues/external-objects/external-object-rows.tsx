@@ -27,7 +27,7 @@ const EXTERNAL_OBJECT_PROPERTY_PREVIEW_COUNT = 5;
 function PropertyRow({ label, children }: { label: ReactNode; children: ReactNode }) {
   return (
     <div
-      className="grid grid-cols-[100px_1fr] gap-3 items-baseline py-2 text-sm"
+      className="grid grid-cols-[100px_1fr] gap-3 items-baseline py-2 text-ui"
       style={{ color: "var(--midnight-soft)", borderBottom: "1px solid var(--edge)" }}
     >
       <dt className="section-label" style={{ marginTop: 0, marginBottom: 0 }}>
@@ -88,7 +88,7 @@ function ExternalObjectPropertyValue({ group }: { group: IssueExternalObjectGrou
     </>
   );
   const className = cn(
-    "inline-flex min-w-0 max-w-full items-center gap-1.5 text-sm no-underline",
+    "inline-flex min-w-0 max-w-full items-center gap-1.5 text-ui no-underline",
     pill.url ? "hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--link)]" : "",
   );
   const style = { color: externalObjectColor(merged ? "merged" : pill.statusCategory) };
@@ -141,7 +141,7 @@ export function ExternalObjectRows({
   if (externalObjectsError) {
     return (
       <PropertyRow label="External objects">
-        <span className="text-xs text-[var(--fg-mute)]">
+        <span className="text-caption text-[var(--fg-mute)]">
           Couldn&apos;t load external objects.
           {onRetryExternalObjects ? (
             <>
@@ -188,7 +188,7 @@ export function ExternalObjectRows({
         <PropertyRow label="References">
           <button
             type="button"
-            className="inline-flex items-center gap-1 rounded-full border border-[var(--edge)] px-2 py-0.5 text-xs text-[var(--fg-mute)] transition-colors hover:bg-[var(--cream-deep)] hover:text-[var(--fg)]"
+            className="inline-flex items-center gap-1 rounded-full border border-[var(--edge)] px-2 py-0.5 text-caption text-[var(--fg-mute)] transition-colors hover:bg-[var(--cream-deep)] hover:text-[var(--fg)]"
             onClick={() => setExpanded((next) => !next)}
             aria-label={expanded ? "Show fewer items" : `Show ${hiddenExternalObjectCount} more items`}
           >

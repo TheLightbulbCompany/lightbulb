@@ -165,7 +165,7 @@ export function RoomHeader({
       <Button type="button" variant="ghost" className="room-facepile" aria-label={`View members, ${participantCount} in this conversation`}
         onClick={() => onOpenDetails("members")}>
         {faces.map((participant) => <ParticipantAvatar key={`${participant.kind}:${participant.id}`} participant={participant} size="sm" showPresence={false} />)}
-        {overflow > 0 && <span className="room-facepile-more text-sm text-muted-foreground">+{overflow}</span>}
+        {overflow > 0 && <span className="room-facepile-more text-ui text-muted-foreground">+{overflow}</span>}
       </Button>
       {views}
       <DropdownMenu>
@@ -191,7 +191,7 @@ export function RoomHeader({
         </DropdownMenuContent>
       </DropdownMenu>
     </div>
-    {error && !renaming && !leaving && !archiving && !deleting && <p role="alert" className="room-header-error text-sm text-err">{error}</p>}
+    {error && !renaming && !leaving && !archiving && !deleting && <p role="alert" className="room-header-error text-ui text-err">{error}</p>}
     <Dialog open={renaming} onOpenChange={(open) => { if (!open && !pending) { setRenaming(false); reset(); } }}>
       <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto"
         onOpenAutoFocus={(event) => { event.preventDefault(); renameInput.current?.focus(); }}
@@ -204,11 +204,11 @@ export function RoomHeader({
           void run(async () => { await onRenameRoom!(nameDraft.trim()); }, "The name could not be saved.", () => setRenaming(false));
         }}>
           <div className="grid gap-2">
-            <label htmlFor={`${id}-rename`} className="text-sm font-medium">Conversation name</label>
+            <label htmlFor={`${id}-rename`} className="text-ui font-medium">Conversation name</label>
             <input ref={renameInput} id={`${id}-rename`} className="room-input" value={nameDraft} maxLength={200} required disabled={pending}
               onChange={(event) => setNameDraft(event.target.value)} />
           </div>
-          {error && <p role="alert" className="text-sm text-err break-words">{error}</p>}
+          {error && <p role="alert" className="text-ui text-err break-words">{error}</p>}
           <DialogFooter className="gap-2">
             <Button type="button" variant="outline" disabled={pending} onClick={() => { setRenaming(false); reset(); }}>Cancel</Button>
             <Button type="submit" disabled={!actionable || pending || !nameDraft.trim()}>{pending ? "Saving…" : "Save name"}</Button>
@@ -228,7 +228,7 @@ export function RoomHeader({
                 : "You will lose access to this conversation and its messages."}
           </DialogDescription>
         </DialogHeader>
-        {error && <p role="alert" className="text-sm text-err break-words">{error}</p>}
+        {error && <p role="alert" className="text-ui text-err break-words">{error}</p>}
         <DialogFooter className="gap-2">
           <Button ref={leaveCancel} type="button" variant="outline" disabled={pending} onClick={() => { setLeaving(false); reset(); }}>Cancel</Button>
           {ownerCannotLeave
@@ -247,7 +247,7 @@ export function RoomHeader({
         <DialogHeader><DialogTitle className="break-words">Archive {roomName}?</DialogTitle>
           <DialogDescription>Members keep its history, but nobody can post and agents stop responding until it is unarchived.</DialogDescription>
         </DialogHeader>
-        {error && <p role="alert" className="text-sm text-err break-words">{error}</p>}
+        {error && <p role="alert" className="text-ui text-err break-words">{error}</p>}
         <DialogFooter className="gap-2">
           <Button type="button" variant="outline" disabled={pending} onClick={() => { setArchiving(false); reset(); }}>Cancel</Button>
           <Button type="button" disabled={!actionable || pending}
@@ -269,11 +269,11 @@ export function RoomHeader({
           void run(async () => { await onDeleteRoom!(); }, "The channel could not be deleted.", () => setDeleting(false));
         }}>
           <div className="grid gap-2">
-            <label htmlFor={`${id}-delete`} className="text-sm font-medium">Type <strong className="break-words">{roomName}</strong> to confirm</label>
+            <label htmlFor={`${id}-delete`} className="text-ui font-medium">Type <strong className="break-words">{roomName}</strong> to confirm</label>
             <input id={`${id}-delete`} className="room-input" autoComplete="off" value={deleteDraft} disabled={pending}
               onChange={(event) => setDeleteDraft(event.target.value)} />
           </div>
-          {error && <p role="alert" className="text-sm text-err break-words">{error}</p>}
+          {error && <p role="alert" className="text-ui text-err break-words">{error}</p>}
           <DialogFooter className="gap-2">
             <Button type="button" variant="outline" disabled={pending} onClick={() => { setDeleting(false); reset(); }}>Cancel</Button>
             <Button type="submit" variant="destructive" disabled={!actionable || pending || deleteDraft !== roomName}>

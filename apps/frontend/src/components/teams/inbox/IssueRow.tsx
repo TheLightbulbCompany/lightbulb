@@ -149,7 +149,7 @@ export function IssueRow({
   const hasChecklistStep = checklistStepNumber !== null;
   const checklistStep = hasChecklistStep ? (
     <span
-      className="shrink-0 font-mono text-xs text-[var(--midnight-muted)]"
+      className="shrink-0 font-mono text-caption text-[var(--midnight-muted)]"
       aria-hidden="true"
     >
       {checklistStepNumber}.
@@ -169,7 +169,7 @@ export function IssueRow({
       }
       onClick={handleOpen}
       className={cn(
-        "group flex items-start gap-2 border-b border-[var(--edge)] py-2.5 pl-2 pr-3 text-ui no-underline text-inherit transition-colors last:border-b-0 sm:items-center sm:py-2 sm:pl-1",
+        "group flex min-h-9 items-start gap-2 border-b border-[var(--edge)] py-2.5 pl-2 pr-3 text-ui no-underline text-inherit transition-colors last:border-b-0 sm:items-center sm:py-1.5 sm:pl-1",
         selected
           ? "hover:bg-transparent"
           : checklistCurrentStep
@@ -195,7 +195,7 @@ export function IssueRow({
       <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
         <span
           className={cn(
-            "line-clamp-2 text-sm sm:order-2 sm:min-w-0 sm:flex-1 sm:truncate sm:line-clamp-none",
+            "line-clamp-2 text-ui sm:order-2 sm:min-w-0 sm:flex-1 sm:truncate sm:line-clamp-none",
             titleClassName,
           )}
         >
@@ -223,7 +223,7 @@ export function IssueRow({
                 {productivityReviewIndicator}
               </span>
               {checklistStep}
-              <span className="shrink-0 font-mono text-xs text-[var(--midnight-muted)]">
+              <span className="shrink-0 font-mono text-caption text-[var(--midnight-muted)]">
                 {identifier}
               </span>
             </>
@@ -231,12 +231,12 @@ export function IssueRow({
           {mobileMeta ? (
             <>
               <span
-                className="text-xs text-[var(--midnight-muted)] sm:hidden"
+                className="text-caption text-[var(--midnight-muted)] sm:hidden"
                 aria-hidden="true"
               >
                 &middot;
               </span>
-              <span className="text-xs text-[var(--midnight-muted)] sm:hidden">
+              <span className="text-caption text-[var(--midnight-muted)] sm:hidden">
                 {mobileMeta}
               </span>
             </>
@@ -247,7 +247,7 @@ export function IssueRow({
         <span className="ml-auto hidden shrink-0 items-center gap-2 sm:order-3 sm:flex sm:gap-3">
           {desktopTrailing}
           {trailingMeta ? (
-            <span className="text-xs text-[var(--midnight-muted)]">{trailingMeta}</span>
+            <span className="text-caption text-[var(--midnight-muted)]">{trailingMeta}</span>
           ) : null}
         </span>
       ) : null}

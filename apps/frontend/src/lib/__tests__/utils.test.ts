@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { formatBytes, truncate } from "../utils";
+import { cn, formatBytes, truncate } from "../utils";
 
 describe("truncate", () => {
   it("returns the value untouched when it fits", () => {
@@ -51,5 +51,13 @@ describe("formatBytes", () => {
     expect(formatBytes(-1)).toBe("0 B");
     expect(formatBytes(Number.NaN)).toBe("0 B");
     expect(formatBytes(Number.POSITIVE_INFINITY)).toBe("0 B");
+  });
+});
+
+describe("cn", () => {
+  it("keeps a theme type step beside a colour class", () => {
+    expect(cn("text-ui", "text-[var(--midnight)]")).toBe("text-ui text-[var(--midnight)]");
+    expect(cn("text-caption text-muted-foreground")).toBe("text-caption text-muted-foreground");
+    expect(cn("text-sm", "text-caption")).toBe("text-caption");
   });
 });

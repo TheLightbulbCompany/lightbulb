@@ -27,7 +27,7 @@ export function CaseStatusBadge({ status }: { status: string }) {
   const color = STATUS_COLOR[status] ?? "var(--fg-mute)";
   return (
     <span
-      className="inline-flex shrink-0 items-center rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap"
+      className="inline-flex shrink-0 items-center rounded-full px-2.5 py-0.5 text-caption font-medium whitespace-nowrap"
       style={{ color, background: `color-mix(in srgb, ${color} 12%, transparent)` }}
     >
       {status.replace(/[_-]/g, " ")}

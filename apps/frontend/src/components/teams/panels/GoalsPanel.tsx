@@ -112,7 +112,7 @@ function GoalRow({
             )}
           </div>
           {node.description && (
-            <div className="text-xs text-[var(--midnight-muted)] mt-0.5">{node.description}</div>
+            <div className="text-caption text-[var(--midnight-muted)] mt-0.5">{node.description}</div>
           )}
         </button>
         <DropdownMenu>
@@ -326,7 +326,7 @@ function EditGoalDialog({
     <EditorialDialog open onOpenChange={(o) => !o && onClose()} title="Edit goal">
       <div className="flex flex-col gap-3">
         <label className="block">
-          <span className="text-sm text-[var(--midnight-soft)]">Title</span>
+          <span className="text-ui text-[var(--midnight-soft)]">Title</span>
           <input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
@@ -334,7 +334,7 @@ function EditGoalDialog({
           />
         </label>
         <label className="block">
-          <span className="text-sm text-[var(--midnight-soft)]">Description</span>
+          <span className="text-ui text-[var(--midnight-soft)]">Description</span>
           <textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
@@ -343,7 +343,7 @@ function EditGoalDialog({
           />
         </label>
         <label className="block">
-          <span className="text-sm text-[var(--midnight-soft)]">Status</span>
+          <span className="text-ui text-[var(--midnight-soft)]">Status</span>
           <select
             value={status}
             onChange={(e) => setStatus(e.target.value)}
@@ -356,7 +356,7 @@ function EditGoalDialog({
         </label>
         {err && (
           <div
-            className="text-[var(--err)] text-sm rounded-sm px-3 py-2"
+            className="text-[var(--err)] text-ui rounded-sm px-3 py-2"
             style={{
               border:
                 "1px solid var(--err)",

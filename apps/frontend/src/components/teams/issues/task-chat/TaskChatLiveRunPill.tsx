@@ -82,7 +82,7 @@ export function TaskChatLiveRunPill({
 
   return (
     <div className="flex min-w-0 items-center gap-2 py-2" data-testid="task-chat-live-run-pill">
-      <span className="inline-flex items-center gap-2 text-sm font-medium" style={{ color: "var(--midnight-soft)" }}>
+      <span className="inline-flex items-center gap-2 text-ui font-medium" style={{ color: "var(--midnight-soft)" }}>
         <span className="flex size-5 shrink-0 items-center justify-center">
           {active ? (
             <Loader2 className="size-4 animate-spin" style={{ color: "var(--midnight-muted)" }} />
@@ -96,7 +96,7 @@ export function TaskChatLiveRunPill({
         {active ? <span className="animate-pulse">{verb}</span> : verb}
       </span>
       {suffix ? (
-        <span className="text-xs" style={{ color: "var(--midnight-muted)" }}>
+        <span className="text-caption" style={{ color: "var(--midnight-muted)" }}>
           {suffix}
         </span>
       ) : null}
@@ -147,11 +147,11 @@ export function TaskChatRunTail({ run, onStop }: { run: IssueLiveRun; onStop?: (
           </EditorialButton>
         ) : null}
       </div>
-      <div className="px-1 pb-1 text-xs" style={{ color: "var(--midnight-muted)" }}>
+      <div className="px-1 pb-1 text-caption" style={{ color: "var(--midnight-muted)" }}>
         {run.status === "queued" ? "Waiting to start..." : run.currentStatusMessage || "Waiting for transcript..."}
       </div>
       {stopError ? (
-        <p role="alert" className="px-1 pb-1 text-xs" style={{ color: "var(--err)" }}>
+        <p role="alert" className="px-1 pb-1 text-caption" style={{ color: "var(--err)" }}>
           {stopError}
         </p>
       ) : null}

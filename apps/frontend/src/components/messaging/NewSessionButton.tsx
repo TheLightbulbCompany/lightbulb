@@ -243,10 +243,10 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
         <h3 className="font-semibold">New session</h3>
         <Button variant="ghost" size="icon-sm" className="ml-auto" aria-label="Close new session" onClick={onClose}><X aria-hidden="true" /></Button>
       </header>
-      {held ? <p role="status" className="new-session-status text-sm text-muted-foreground">{pending?.tool === "codex"
+      {held ? <p role="status" className="new-session-status text-ui text-muted-foreground">{pending?.tool === "codex"
         ? "Running on this Mac. It joins Sessions after your first prompt. Quit Codex to start a different session."
         : "Running on this Mac. It moves to Sessions when it reports in."}</p>
-        : busy && <div className="new-session-body text-sm text-muted-foreground">
+        : busy && <div className="new-session-body text-ui text-muted-foreground">
           <p role="status">{pending?.phase === "unknown" ? pending.error
             : pending?.phase === "opened" ? `Opened on ${where}. Waiting for the session…` : `Starting on ${where}…`}</p>
           {pending?.phase === "unknown" && <Button variant="outline" size="sm" onClick={dismiss}>Dismiss and start another</Button>}
@@ -259,7 +259,7 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
           <DialogTitle>New session</DialogTitle>
           <DialogDescription>{`Opens a live terminal on ${macName} that your workspace can watch.`}</DialogDescription>
         </DialogHeader>
-        <div className="grid gap-3 text-sm">
+        <div className="grid gap-3 text-ui">
           {/* The Mac picker stays even when this Mac is blocked: another one may not be. */}
           {macs && macs.length > 1 && <label className="grid gap-1">Mac
             <select className="room-input" value={mac?.deviceId} onChange={(e) => { setDeviceId(e.target.value); setFolder(""); }}>
@@ -309,8 +309,8 @@ export function NewSessionView({ sessions, onEvent, onOpenSession, onClose }: {
               <Button disabled={!canStart} onClick={() => void start(selected)}>{`Start ${selected.label}`}</Button>
             </div>
           </>}
-          {localMac?.cli && <p className="text-xs text-muted-foreground">Or in any terminal, inside an approved folder: <code>lightbulb claude</code> or <code>lightbulb codex</code>.</p>}
-          {localMac?.cli?.pathLine && <p className="text-xs text-muted-foreground">First add it to your PATH, then open a new terminal: <code className="select-all">{localMac.cli.pathLine}</code></p>}
+          {localMac?.cli && <p className="text-caption text-muted-foreground">Or in any terminal, inside an approved folder: <code>lightbulb claude</code> or <code>lightbulb codex</code>.</p>}
+          {localMac?.cli?.pathLine && <p className="text-caption text-muted-foreground">First add it to your PATH, then open a new terminal: <code className="select-all">{localMac.cli.pathLine}</code></p>}
         </div>
       </DialogContent>
     </Dialog>

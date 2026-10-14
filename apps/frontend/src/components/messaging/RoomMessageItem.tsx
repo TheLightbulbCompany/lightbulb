@@ -68,7 +68,7 @@ function SessionCard({ sessionId, label, session, onOpen }: {
   const name = session ? sessionLabel(session) : label?.split(" · ").slice(0, -1).join(" · ") || "Session";
   // Open always routes by the stored id: a session that left the workspace list (ended more
   // than a week ago) still opens by id, and the detail view says so when access is really gone.
-  return <span className="flex flex-wrap items-center gap-2 rounded-md border px-2 py-1 text-xs" data-session-card={sessionId}>
+  return <span className="flex flex-wrap items-center gap-2 rounded-md border px-2 py-1 text-caption" data-session-card={sessionId}>
     <span className="font-medium">{name}</span>
     {session && <span className="text-muted-foreground">{sessionStatus[session.status]}</span>}
     {onOpen && <Button type="button" variant="ghost" size="sm" aria-label={`Open session ${name}`} onClick={() => onOpen(sessionId)}>Open session</Button>}
@@ -103,7 +103,7 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
         ? <ParticipantProfile participant={participant} currentUserId={currentUserId} onMessage={onSelectParticipant} disabled={!actionable} />
         : <span className="font-semibold truncate" title={name}>{name}</span>}
         {message.author.kind === "agent" && <span className="room-agent-label">Agent</span>}
-        {timestamp && <time className="text-sm text-muted-foreground" dateTime={timestamp} title={new Date(timestamp).toLocaleString()}>{time}</time>}
+        {timestamp && <time className="text-ui text-muted-foreground" dateTime={timestamp} title={new Date(timestamp).toLocaleString()}>{time}</time>}
       </div>}
       <RoomMessageContent message={message} currentUserId={currentUserId} actionable={actionable} onUpdate={onUpdateMessage} startEditing={startEditing} onEditingClosed={onEditingClosed} actions={actions} menuExtras={menuExtras}>
         <MarkdownView skipHtml components={markdown} urlTransform={urlTransform}>{text}</MarkdownView>
@@ -124,15 +124,15 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
             disabled={!actionable || reactionPending} onClick={() => onToggleReaction(emoji)}>{emoji}<span>{users.length}</span></Button>;
         })}
       </div>}
-      {receipt && <p role="status" className="text-xs text-muted-foreground">{receipt}</p>}
-      {reactionError && <p role="alert" className="text-sm text-err">Could not update reaction. Try again.</p>}
+      {receipt && <p role="status" className="text-caption text-muted-foreground">{receipt}</p>}
+      {reactionError && <p role="alert" className="text-ui text-err">Could not update reaction. Try again.</p>}
       {!message.deletedAt && !!message.attachments?.length && onDownloadAttachment && <RoomImageAttachments roomId={message.roomId} attachments={message.attachments} download={onDownloadAttachment} attachmentUrl={onAttachmentUrl} />}
       {!inThread && (replyCount > 0 || working) && onOpenThread && <Button type="button" variant="ghost" className="room-reply" disabled={!actionable}
         aria-label={`Reply in thread, ${threadLabel}`}
         onClick={(event) => onOpenThread(event.currentTarget)}>
         <span className="room-reply-avatars">{threadParticipants.slice(0, 4).map(member =>
           <ParticipantAvatar key={`${member.kind}:${member.id}`} participant={{ ...member, agentActivity: undefined }} size="xs" showPresence={false} />)}
-          {threadParticipants.length > 4 && <span className="text-xs text-muted-foreground">+{threadParticipants.length - 4}</span>}
+          {threadParticipants.length > 4 && <span className="text-caption text-muted-foreground">+{threadParticipants.length - 4}</span>}
         </span>
         <span role={working ? "status" : undefined}>{threadLabel}</span>
       </Button>}

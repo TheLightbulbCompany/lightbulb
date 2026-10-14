@@ -106,12 +106,12 @@ function InteractionShell({
   const title = (
     <div className="flex min-w-0 items-center gap-2">
       <Icon aria-hidden className="h-4 w-4 shrink-0 text-[var(--midnight-muted)]" />
-      <strong className="min-w-0 truncate text-sm font-medium text-[var(--midnight)]">
+      <strong className="min-w-0 truncate text-ui font-medium text-[var(--midnight)]">
         {interaction.title ?? kind.fallbackTitle}
       </strong>
       {interaction.status !== "pending" ? (
         <span
-          className="inline-flex shrink-0 items-center gap-1 text-xs capitalize text-[var(--midnight-muted)]"
+          className="inline-flex shrink-0 items-center gap-1 text-caption capitalize text-[var(--midnight-muted)]"
           data-testid="interaction-status-badge"
         >
           <StatusIcon status={interaction.status} />
@@ -138,10 +138,10 @@ function Details({ children }: { children?: ReactNode }) {
   if (!children) return null;
   return (
     <details className="mt-2">
-      <summary className="flex cursor-pointer list-none items-center gap-1 text-xs font-medium text-[var(--midnight-muted)]">
+      <summary className="flex cursor-pointer list-none items-center gap-1 text-caption font-medium text-[var(--midnight-muted)]">
         <ChevronDown aria-hidden className="h-3.5 w-3.5" /> Details
       </summary>
-      <div className="mt-2 rounded-sm bg-[var(--cream-deep)] px-2.5 py-2 text-sm text-[var(--midnight-muted)]">
+      <div className="mt-2 rounded-sm bg-[var(--cream-deep)] px-2.5 py-2 text-ui text-[var(--midnight-muted)]">
         {children}
       </div>
     </details>
@@ -209,11 +209,11 @@ function ReceiptDisclosure({ interaction, compact = false }: { interaction: Issu
           ].filter((value): value is string => Boolean(value));
           return (
             <div key={question.id}>
-              <p className="text-sm text-[var(--midnight)]">{question.prompt}</p>
+              <p className="text-ui text-[var(--midnight)]">{question.prompt}</p>
               {question.helpText ? (
-                <p className="mt-0.5 text-xs text-[var(--midnight-muted)]">{question.helpText}</p>
+                <p className="mt-0.5 text-caption text-[var(--midnight-muted)]">{question.helpText}</p>
               ) : null}
-              <p className="mt-1 text-sm font-medium text-[var(--midnight)]">
+              <p className="mt-1 text-ui font-medium text-[var(--midnight)]">
                 Answer: {values.length > 0 ? values.join(", ") : "No answer"}
               </p>
             </div>
@@ -226,14 +226,14 @@ function ReceiptDisclosure({ interaction, compact = false }: { interaction: Issu
     const selectedLabels = interaction.payload.options.filter((option) => selected.has(option.id)).map((o) => o.label);
     request = (
       <div>
-        <p className="text-sm text-[var(--midnight)]">{interaction.payload.prompt}</p>
+        <p className="text-ui text-[var(--midnight)]">{interaction.payload.prompt}</p>
         {interaction.status === "accepted" ? (
-          <p className="mt-1 text-sm font-medium text-[var(--midnight)]">
+          <p className="mt-1 text-ui font-medium text-[var(--midnight)]">
             Answer: {selectedLabels.length > 0 ? selectedLabels.join(", ") : "No options selected"}
           </p>
         ) : null}
         {interaction.payload.detailsMarkdown ? (
-          <div className="mt-2 text-sm">
+          <div className="mt-2 text-ui">
             <TaskChatMarkdown>{interaction.payload.detailsMarkdown}</TaskChatMarkdown>
           </div>
         ) : null}
@@ -244,9 +244,9 @@ function ReceiptDisclosure({ interaction, compact = false }: { interaction: Issu
     const decidedItems = interaction.payload.items.filter((item) => verdicts.has(item.id));
     request = (
       <div>
-        <p className="text-sm text-[var(--midnight)]">{interaction.payload.prompt}</p>
+        <p className="text-ui text-[var(--midnight)]">{interaction.payload.prompt}</p>
         {decidedItems.length > 0 ? (
-          <ul className="mt-2 grid gap-1 text-sm">
+          <ul className="mt-2 grid gap-1 text-ui">
             {decidedItems.map((item) => {
               const verdict = verdicts.get(item.id);
               return (
@@ -258,10 +258,10 @@ function ReceiptDisclosure({ interaction, compact = false }: { interaction: Issu
             })}
           </ul>
         ) : (
-          <p className="mt-1 text-sm font-medium text-[var(--midnight)]">No verdicts submitted</p>
+          <p className="mt-1 text-ui font-medium text-[var(--midnight)]">No verdicts submitted</p>
         )}
         {interaction.payload.detailsMarkdown ? (
-          <div className="mt-2 text-sm">
+          <div className="mt-2 text-ui">
             <TaskChatMarkdown>{interaction.payload.detailsMarkdown}</TaskChatMarkdown>
           </div>
         ) : null}
@@ -272,7 +272,7 @@ function ReceiptDisclosure({ interaction, compact = false }: { interaction: Issu
     const createdTasks = interaction.payload.tasks.filter((task) => created.has(task.clientKey));
     request =
       createdTasks.length > 0 ? (
-        <ul className="grid gap-1 text-sm">
+        <ul className="grid gap-1 text-ui">
           {createdTasks.map((task) => (
             <li key={task.clientKey} className="font-medium">
               {task.title}
@@ -280,14 +280,14 @@ function ReceiptDisclosure({ interaction, compact = false }: { interaction: Issu
           ))}
         </ul>
       ) : interaction.status === "accepted" ? (
-        <p className="text-sm font-medium text-[var(--midnight)]">No tasks created</p>
+        <p className="text-ui font-medium text-[var(--midnight)]">No tasks created</p>
       ) : null;
   } else {
     request = (
       <div className="grid gap-2">
-        <p className="text-sm text-[var(--midnight)]">{interaction.payload.prompt}</p>
+        <p className="text-ui text-[var(--midnight)]">{interaction.payload.prompt}</p>
         {interaction.payload.detailsMarkdown ? (
-          <div className="text-sm">
+          <div className="text-ui">
             <TaskChatMarkdown>{interaction.payload.detailsMarkdown}</TaskChatMarkdown>
           </div>
         ) : null}
@@ -299,7 +299,7 @@ function ReceiptDisclosure({ interaction, compact = false }: { interaction: Issu
     <div className={compact ? "space-y-3 pb-3 pl-7 pr-1" : "mt-2 space-y-3 border-t border-[var(--edge-soft)] pt-3"}>
       {request}
       {reason ? (
-        <p className="text-sm text-[var(--midnight-muted)]">
+        <p className="text-ui text-[var(--midnight-muted)]">
           <span className="font-medium">Reason:</span> {reason}
         </p>
       ) : null}
@@ -314,7 +314,7 @@ function ReceiptDisclosure({ interaction, compact = false }: { interaction: Issu
         className="group"
         data-testid={answered ? "task-chat-answered-questions-receipt" : "task-chat-interaction-receipt"}
       >
-        <summary className="flex min-h-8 cursor-pointer list-none items-center gap-2 rounded-sm px-1 py-1.5 text-sm leading-5 text-[var(--midnight-muted)] transition-colors hover:text-[var(--midnight)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]">
+        <summary className="flex min-h-8 cursor-pointer list-none items-center gap-2 rounded-sm px-1 py-1.5 text-ui leading-5 text-[var(--midnight-muted)] transition-colors hover:text-[var(--midnight)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]">
           <span className="flex w-6 shrink-0 items-center justify-center">
             <Icon aria-hidden className="h-3.5 w-3.5 shrink-0" />
           </span>
@@ -331,7 +331,7 @@ function ReceiptDisclosure({ interaction, compact = false }: { interaction: Issu
 
   return (
     <details className="mt-2">
-      <summary className="cursor-pointer text-xs font-medium text-[var(--midnight-muted)]">
+      <summary className="cursor-pointer text-caption font-medium text-[var(--midnight-muted)]">
         View original request and resolution
       </summary>
       {detail}
@@ -431,7 +431,7 @@ function ItemVerdictsCard({
   }, [items, resolvedById]);
 
   const item = items[page];
-  if (!item) return <p className="text-sm text-[var(--midnight-muted)]">No review items were provided.</p>;
+  if (!item) return <p className="text-ui text-[var(--midnight-muted)]">No review items were provided.</p>;
   const resolved = resolvedById.get(item.id);
   const draft = drafts.get(item.id);
   const rawHref = item.href ? normalizeRequestConfirmationTargetHref(item.href) : null;
@@ -508,10 +508,10 @@ function ItemVerdictsCard({
 
   return (
     <div data-testid="item-verdicts-card">
-      <div className="mb-2 flex items-center text-xs text-[var(--midnight-muted)]">
+      <div className="mb-2 flex items-center text-caption text-[var(--midnight-muted)]">
         <span>{drafts.size + resolvedById.size} decided</span>
         <TaskChatComposerTakeoverControls>
-          <nav className="flex shrink-0 items-center gap-1 text-xs text-[var(--midnight-muted)]" aria-label="Item pagination">
+          <nav className="flex shrink-0 items-center gap-1 text-caption text-[var(--midnight-muted)]" aria-label="Item pagination">
             <EditorialButton
               type="button"
               size="icon"
@@ -540,28 +540,28 @@ function ItemVerdictsCard({
       </div>
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium leading-5 text-[var(--midnight)]">{item.label}</p>
+          <p className="text-ui font-medium leading-5 text-[var(--midnight)]">{item.label}</p>
           {item.description ? (
-            <p className="text-xs leading-4 text-[var(--midnight-muted)]">{item.description}</p>
+            <p className="text-caption leading-4 text-[var(--midnight-muted)]">{item.description}</p>
           ) : null}
         </div>
         {itemHref ? (
           <a
             href={itemHref}
             onClick={shellHref ? (e) => handleShellLinkClick(e, shellHref) : undefined}
-            className="text-xs font-medium text-[var(--link)] hover:underline"
+            className="text-caption font-medium text-[var(--link)] hover:underline"
           >
             Open
           </a>
         ) : null}
       </div>
       {item.previewMarkdown ? (
-        <div className="mt-2 rounded-sm bg-[var(--cream-deep)] px-2.5 py-2 text-xs">
+        <div className="mt-2 rounded-sm bg-[var(--cream-deep)] px-2.5 py-2 text-caption">
           <TaskChatMarkdown>{item.previewMarkdown}</TaskChatMarkdown>
         </div>
       ) : null}
       {resolved ? (
-        <p className="mt-3 inline-flex rounded-sm border border-[var(--edge)] px-2 py-1 text-xs capitalize text-[var(--midnight-muted)]">
+        <p className="mt-3 inline-flex rounded-sm border border-[var(--edge)] px-2 py-1 text-caption capitalize text-[var(--midnight-muted)]">
           {resolved.verdict}
           {resolved.reason ? ` · ${resolved.reason}` : ""}
         </p>
@@ -594,7 +594,7 @@ function ItemVerdictsCard({
       )}
       {!resolved && draft && requireReasonOn.has(draft.verdict) ? (
         <div className="mt-2 space-y-1.5">
-          <label htmlFor={`${interaction.id}-${item.id}-reason`} className="text-xs font-medium text-[var(--midnight)]">
+          <label htmlFor={`${interaction.id}-${item.id}-reason`} className="text-caption font-medium text-[var(--midnight)]">
             {interaction.payload.reasonLabel ?? "Reason"}
           </label>
           <Textarea
@@ -602,7 +602,7 @@ function ItemVerdictsCard({
             value={draft.reason}
             onChange={(event) => setReason(event.target.value)}
             placeholder="Add a short reason"
-            className="min-h-16 resize-y text-sm"
+            className="min-h-16 resize-y text-ui"
             autoFocus
           />
           <div className="flex justify-end">
@@ -625,7 +625,7 @@ function ItemVerdictsCard({
       ) : null}
       <div aria-live="assertive" data-testid="interaction-action-error">
         {actionError ? (
-          <div className="mt-2 rounded-sm border border-[var(--err)] px-2.5 py-2 text-sm text-[var(--err)]">{actionError}</div>
+          <div className="mt-2 rounded-sm border border-[var(--err)] px-2.5 py-2 text-ui text-[var(--err)]">{actionError}</div>
         ) : null}
       </div>
       <div className="mt-3 flex flex-wrap items-center justify-end gap-2">

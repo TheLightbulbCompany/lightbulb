@@ -137,7 +137,7 @@ export function IssueTreeControlSection({ issueId }: { issueId: string }) {
 
       {paused ? (
         <div className="flex flex-col gap-2">
-          <p className="text-xs" style={{ color: "var(--warn)" }}>
+          <p className="text-caption" style={{ color: "var(--warn)" }}>
             {pausedAtRoot
               ? "This subtree is paused. Held work stays frozen until you resume it."
               : "Paused by an ancestor subtree hold — resume it from the root task."}
@@ -202,7 +202,7 @@ export function IssueTreeControlSection({ issueId }: { issueId: string }) {
         }
       >
         {totals && (
-          <p className="text-sm" style={{ color: "var(--midnight-soft)" }}>
+          <p className="text-ui" style={{ color: "var(--midnight-soft)" }}>
             Affects {totals.affectedIssues} of {totals.totalIssues} task
             {totals.totalIssues === 1 ? "" : "s"}, interrupting {totals.activeRuns}{" "}
             active and {totals.queuedRuns} queued run
@@ -224,7 +224,7 @@ export function IssueTreeControlSection({ issueId }: { issueId: string }) {
           }}
         />
         {actionError && (
-          <p className="text-xs" style={{ color: "var(--err)" }}>
+          <p className="text-caption" style={{ color: "var(--err)" }}>
             {actionError}
           </p>
         )}

@@ -26,7 +26,7 @@ export function ProvisioningOverlay() {
           Teams panel shows for the whole provisioning window, and a lone
           spinner there says nothing about what is being waited on. */}
       <p
-        className="mt-3 flex items-center gap-2 text-sm text-[var(--midnight-soft)]"
+        className="mt-3 flex items-center gap-2 text-ui text-[var(--midnight-soft)]"
         role="status"
         aria-live="polite"
       >
@@ -43,7 +43,7 @@ export function SubscribeOverlay() {
       <h1 className="font-editorial-serif text-2xl leading-tight text-[var(--midnight)]">
         <em className="italic">Subscribe</em> to enable Teams.
       </h1>
-      <p className="mt-3 text-sm text-[var(--midnight-soft)]">
+      <p className="mt-3 text-ui text-[var(--midnight-soft)]">
         Teams runs on top of your agent container. Start a subscription from the
         chat page first, then come back.
       </p>

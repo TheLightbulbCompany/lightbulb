@@ -67,7 +67,7 @@ export function GoalPicker({
         <button
           type="button"
           className={cn(
-            "inline-flex items-center gap-2 text-sm hover:underline",
+            "inline-flex items-center gap-2 text-ui hover:underline",
             className,
           )}
           style={{ color: selected ? "var(--midnight)" : "var(--midnight-muted)" }}
@@ -90,7 +90,7 @@ export function GoalPicker({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search goals..."
-          className="w-full px-2 py-1.5 text-xs bg-transparent mb-1"
+          className="w-full px-2 py-1.5 text-caption bg-transparent mb-1"
           style={{ borderBottom: "1px solid var(--edge)" }}
         />
         <ul className="max-h-48 overflow-y-auto" role="listbox">
@@ -98,7 +98,7 @@ export function GoalPicker({
             <button
               type="button"
               onClick={() => handleSelect(null)}
-              className="w-full text-left px-2 py-1.5 text-sm rounded-sm hover:bg-[var(--cream-deep)]"
+              className="w-full text-left px-2 py-1.5 text-ui rounded-sm hover:bg-[var(--cream-deep)]"
               style={{ color: "var(--midnight-muted)" }}
             >
               {emptyLabel}
@@ -113,14 +113,14 @@ export function GoalPicker({
               <button
                 type="button"
                 onClick={() => handleSelect(goal.id)}
-                className="w-full text-left px-2 py-1.5 text-sm rounded-sm hover:bg-[var(--cream-deep)]"
+                className="w-full text-left px-2 py-1.5 text-ui rounded-sm hover:bg-[var(--cream-deep)]"
               >
                 {goal.title}
               </button>
             </li>
           ))}
           {visibleGoals.length === 0 && (
-            <li className="px-2 py-2 text-xs" style={{ color: "var(--midnight-muted)" }}>
+            <li className="px-2 py-2 text-caption" style={{ color: "var(--midnight-muted)" }}>
               No matches
             </li>
           )}

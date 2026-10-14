@@ -716,7 +716,7 @@ function TaskRow({
       prefetch={false}
       onClick={handleClick}
       draggable={false}
-      className="group flex items-center gap-2 border-b border-[var(--edge)] py-2.5 pr-2 text-sm no-underline transition-colors last:border-b-0 hover:bg-[var(--cream-deep)]"
+      className="group flex min-h-9 items-center gap-2 border-b border-[var(--edge)] py-2.5 pr-2 text-ui sm:py-1.5 no-underline transition-colors last:border-b-0 hover:bg-[var(--cream-deep)]"
       style={{
         color: "var(--midnight)",
         paddingLeft: depth > 0 ? `${8 + depth * 18}px` : "8px",
@@ -755,7 +755,7 @@ function TaskRow({
       </span>
 
       {/* ISO-N identifier */}
-      <span className="shrink-0 font-mono text-xs text-[var(--midnight-muted)]">
+      <span className="shrink-0 font-mono text-caption text-[var(--midnight-muted)]">
         {identifier}
       </span>
 
@@ -767,7 +767,7 @@ function TaskRow({
       <span className="min-w-0 flex-1 truncate">
         {issue.title}
         {hasChildren && !expanded && descendantCount > 0 ? (
-          <span className="ml-1.5 text-xs text-[var(--midnight-muted)]">
+          <span className="ml-1.5 text-caption text-[var(--midnight-muted)]">
             ({descendantCount} sub-task{descendantCount !== 1 ? "s" : ""})
           </span>
         ) : null}
@@ -818,13 +818,13 @@ function TaskRow({
           />
         </span>
       ) : (
-        <span className="hidden shrink-0 text-xs text-[var(--midnight-muted)] lg:inline">
+        <span className="hidden shrink-0 text-caption text-[var(--midnight-muted)] lg:inline">
           Unassigned
         </span>
       )}
 
       {/* Relative activity timestamp */}
-      <span className="shrink-0 text-xs text-[var(--midnight-muted)]">{updatedLabel}</span>
+      <span className="shrink-0 text-caption text-[var(--midnight-muted)]">{updatedLabel}</span>
 
       {/* Row-level overflow menu — revealed on row hover. Like the status
           circle, every handler stops propagation so opening the menu or
@@ -1106,7 +1106,7 @@ export function TasksList({
               options={SORT_OPTIONS}
               selected={sortField}
               trailing={() => (
-                <span className="text-xs text-[var(--midnight-muted)]">
+                <span className="text-caption text-[var(--midnight-muted)]">
                   {sortDir === "asc" ? "↑" : "↓"}
                 </span>
               )}

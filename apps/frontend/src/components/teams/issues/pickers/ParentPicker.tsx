@@ -105,7 +105,7 @@ export function ParentPicker({
           className="inline-flex min-w-0 items-baseline gap-1.5 hover:underline"
           style={{ color: "var(--midnight)" }}
         >
-          <span className="font-mono text-xs shrink-0">{parentLabel}</span>
+          <span className="font-mono text-caption shrink-0">{parentLabel}</span>
           {parentTitle && <span className="truncate">{parentTitle}</span>}
         </Link>
       )}
@@ -119,7 +119,7 @@ export function ParentPicker({
         <PopoverTrigger asChild>
           <button
             type="button"
-            className="text-xs hover:underline shrink-0"
+            className="text-caption hover:underline shrink-0"
             style={{ color: "var(--midnight-muted)" }}
           >
             {parentId ? "Change" : "Set parent"}
@@ -139,7 +139,7 @@ export function ParentPicker({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search issues..."
-            className="w-full px-2 py-1.5 text-xs bg-transparent mb-1 rounded-sm"
+            className="w-full px-2 py-1.5 text-caption bg-transparent mb-1 rounded-sm"
             style={{ borderBottom: "1px solid var(--edge)" }}
             aria-label="Search issues to set as parent"
           />
@@ -148,7 +148,7 @@ export function ParentPicker({
               <button
                 type="button"
                 onClick={() => select(null)}
-                className="w-full text-left px-2 py-1.5 text-sm rounded-sm hover:bg-[var(--cream-deep)]"
+                className="w-full text-left px-2 py-1.5 text-ui rounded-sm hover:bg-[var(--cream-deep)]"
                 style={{ color: "var(--midnight-muted)" }}
               >
                 Clear parent
@@ -162,7 +162,7 @@ export function ParentPicker({
                     type="button"
                     onClick={() => select(candidate.id)}
                     className={cn(
-                      "flex w-full items-center gap-2 px-2 py-1.5 text-left text-sm rounded-sm hover:bg-[var(--cream-deep)]",
+                      "flex w-full items-center gap-2 px-2 py-1.5 text-left text-ui rounded-sm hover:bg-[var(--cream-deep)]",
                       isSelected && "bg-[var(--cream-deeper)]",
                     )}
                   >
@@ -185,7 +185,7 @@ export function ParentPicker({
               );
             })}
             {candidates.length === 0 && (
-              <li className="px-2 py-2 text-xs" style={{ color: "var(--midnight-muted)" }}>
+              <li className="px-2 py-2 text-caption" style={{ color: "var(--midnight-muted)" }}>
                 No matching issues.
               </li>
             )}

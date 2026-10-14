@@ -237,7 +237,7 @@ export function IssueActivityEventRow({
     responsibleUserName: evt.responsibleUserId ? (resolveUserLabel?.(evt.responsibleUserId) ?? null) : null,
   });
   return (
-    <div className={cn("space-y-1.5 rounded-lg border px-3 py-2 text-xs", tone.className)}>
+    <div className={cn("space-y-1.5 rounded-lg border px-3 py-2 text-caption", tone.className)}>
       <div className="flex items-center gap-1.5">
         {isHandoffWarning ? <AlertTriangle className={cn("h-3.5 w-3.5 shrink-0", tone.iconClassName)} /> : null}
         <ActorIdentity evt={evt} agentMap={agentMap} resolveUserLabel={resolveUserLabel} />

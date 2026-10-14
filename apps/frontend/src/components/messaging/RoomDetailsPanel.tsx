@@ -134,7 +134,7 @@ export function RoomDetailsPanel({
   const links = useMemo(() => extractLinks(messages), [messages]);
   const activeWork = <section aria-labelledby={`${id}-runs`}>
     <h4 id={`${id}-runs`} className="font-semibold">Active work</h4>
-    {activeRuns.length === 0 ? <p className="text-sm text-muted-foreground">No active runs.</p>
+    {activeRuns.length === 0 ? <p className="text-ui text-muted-foreground">No active runs.</p>
       : activeRuns.map((activeRun) => <p key={activeRun.runId} className="room-wrap">
         {participants.find((participant) => participant.kind === "agent" && participant.id === activeRun.agentId)?.displayName ?? "Agent"} is working</p>)}
   </section>;
@@ -149,7 +149,7 @@ export function RoomDetailsPanel({
       {tab === "members" && <>{members}{activeWork}</>}
 
       {tab === "pins" && (pinnedMessageIds.length === 0
-        ? <p className="text-sm text-muted-foreground">No pinned messages yet.</p>
+        ? <p className="text-ui text-muted-foreground">No pinned messages yet.</p>
         : <ul aria-label="Pinned messages">{[...pinnedMessageIds].reverse().map((messageId) => {
           const found = messages.find((candidate) => candidate.messageId === messageId);
           // A deleted message keeps its pin row -- the row is the only way to
@@ -160,12 +160,12 @@ export function RoomDetailsPanel({
           return <li key={messageId} className="room-details-row">
             {message
               ? <div className="flex-1 min-w-0">
-                <p className="text-sm text-muted-foreground">{authorName(message)} · {messageTime(message.createdAt)}</p>
+                <p className="text-ui text-muted-foreground">{authorName(message)} · {messageTime(message.createdAt)}</p>
                 <p className="room-wrap">{message.text.slice(0, 120)}</p>
               </div>
               // A pin older than the loaded window still has to be reachable --
               // Jump hands it to the shipped scroll/highlight path.
-              : <p className="flex-1 text-sm text-muted-foreground">{found ? "Message deleted" : "Message not loaded yet"}</p>}
+              : <p className="flex-1 text-ui text-muted-foreground">{found ? "Message deleted" : "Message not loaded yet"}</p>}
             {jump(messageId, message)}
             {onUnpin && <Button type="button" variant="ghost" size="icon-sm" aria-label={busy ? "Unpinning…" : "Unpin this message"}
               disabled={!actionable || pending} aria-busy={busy}
@@ -174,18 +174,18 @@ export function RoomDetailsPanel({
         })}</ul>)}
 
       {tab === "files" && (files.length === 0
-        ? <p className="text-sm text-muted-foreground">No files in the messages loaded so far. Scroll back in the conversation to load more.</p>
+        ? <p className="text-ui text-muted-foreground">No files in the messages loaded so far. Scroll back in the conversation to load more.</p>
         : <ul aria-label="Shared files">{files.map((message) => <li key={message.messageId} className="room-details-row">
           <Paperclip size={14} aria-hidden="true" className="mt-1" />
           <div className="flex-1 min-w-0">
             <p className="room-wrap">{(message.attachments ?? []).map((attachment) => attachment.fileName).join(", ")}</p>
-            <p className="text-sm text-muted-foreground">{authorName(message)} · {messageTime(message.createdAt)}</p>
+            <p className="text-ui text-muted-foreground">{authorName(message)} · {messageTime(message.createdAt)}</p>
           </div>
           {jump(message.messageId, message)}
         </li>)}</ul>)}
 
       {tab === "links" && (links.length === 0
-        ? <p className="text-sm text-muted-foreground">No links in the messages loaded so far. Scroll back in the conversation to load more.</p>
+        ? <p className="text-ui text-muted-foreground">No links in the messages loaded so far. Scroll back in the conversation to load more.</p>
         : <ul aria-label="Shared links">{links.map((link) => <li key={link.href} className="room-details-row">
           <p className="room-wrap flex-1"><a href={link.href} target="_blank" rel="noopener noreferrer"
             className="text-info underline underline-offset-4">{link.label}</a></p>
@@ -196,7 +196,7 @@ export function RoomDetailsPanel({
         <section aria-labelledby={`${id}-about`}>
           <h4 id={`${id}-about`} className="font-semibold">About {roomName}</h4>
           <p className="room-wrap">{room?.topic ?? "No topic yet."}</p>
-          <p className="text-sm text-muted-foreground">{participants.length} members</p>
+          <p className="text-ui text-muted-foreground">{participants.length} members</p>
         </section>
         {activeWork}
         {/* Leaving is irreversible for a private channel, so it confirms here the way
@@ -215,10 +215,10 @@ export function RoomDetailsPanel({
             action that would 400. Deleting it is reachable from the header's
             "..." menu, which already carries the typed-confirmation flow. */}
         {!onLeaveRoom && ownerCannotLeave
-          && <p className="text-sm text-muted-foreground mt-4">You are the only person in this {noun}. Delete it from the conversation options menu.</p>}
+          && <p className="text-ui text-muted-foreground mt-4">You are the only person in this {noun}. Delete it from the conversation options menu.</p>}
       </>}
 
-      {error && <p role="alert" className="text-sm text-err">{error}</p>}
+      {error && <p role="alert" className="text-ui text-err">{error}</p>}
     </div>
   </>;
 }

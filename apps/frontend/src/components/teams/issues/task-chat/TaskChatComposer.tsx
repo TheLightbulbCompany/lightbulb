@@ -160,7 +160,7 @@ export function TaskChatComposer({
         <div className="mb-3 flex min-w-0 items-center gap-2" data-testid="task-chat-composer-takeover-header">
           <div className="min-w-0 flex-1">
             {!takeoverHeaderClaimed ? (
-              <strong className="block truncate text-sm font-medium" style={{ color: "var(--midnight)" }}>
+              <strong className="block truncate text-ui font-medium" style={{ color: "var(--midnight)" }}>
                 {takeover.label}
               </strong>
             ) : null}
@@ -199,7 +199,7 @@ export function TaskChatComposer({
           </TaskChatComposerTakeoverActionsContext.Provider>
         </div>
         {takeoverError ? (
-          <p className="mt-2 text-sm" role="alert" style={{ color: "var(--err)" }}>
+          <p className="mt-2 text-ui" role="alert" style={{ color: "var(--err)" }}>
             {takeoverError}
           </p>
         ) : null}
@@ -215,7 +215,7 @@ export function TaskChatComposer({
       {pendingTakeover ? (
         <button
           type="button"
-          className="mb-1 flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs transition-colors hover:bg-[var(--cream-deeper)]"
+          className="mb-1 flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-caption transition-colors hover:bg-[var(--cream-deeper)]"
           style={{ background: "var(--cream-deep)", color: "var(--midnight-muted)" }}
           onClick={pendingTakeover.onOpen}
           data-testid="task-chat-pending-input-indicator"
@@ -230,7 +230,7 @@ export function TaskChatComposer({
           id={listboxId}
           role="listbox"
           aria-label="Mention an agent"
-          className="absolute bottom-full left-2 z-20 mb-1 min-w-48 overflow-hidden rounded-md py-1 text-sm shadow-md"
+          className="absolute bottom-full left-2 z-20 mb-1 min-w-48 overflow-hidden rounded-md py-1 text-ui shadow-md"
           style={{ background: "var(--cream)", border: "1px solid var(--edge)" }}
         >
           {options.map((agent, i) => (
@@ -308,7 +308,7 @@ export function TaskChatComposer({
               pickMention(options[highlight]);
             }
           }}
-          className="max-h-[28dvh] min-h-[60px] resize-none border-none px-1 py-1 text-sm shadow-none focus-visible:ring-0"
+          className="max-h-[28dvh] min-h-[60px] resize-none border-none px-1 py-1 text-ui shadow-none focus-visible:ring-0"
           style={{ background: "transparent", color: "var(--midnight)" }}
         />
       </div>

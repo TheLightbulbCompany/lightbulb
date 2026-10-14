@@ -115,24 +115,24 @@ export function ProvisioningConsentActions({
   }
 
   return (
-    <div className="flex flex-col gap-1 pl-6 text-sm">
+    <div className="flex flex-col gap-1 pl-6 text-ui">
       <span className="text-[var(--midnight)]">
         {payloadString(payload, "provider")} · {payloadString(payload, "service")}
         {price ? ` · ${price}` : ""}
       </span>
       {description && <p className="text-[var(--midnight-muted)]">{description}</p>}
       {reason && <p className="text-[var(--midnight-muted)]">Your CEO asked because: {reason}</p>}
-      {facts && <p className="text-xs text-[var(--midnight-muted)]">{facts}</p>}
+      {facts && <p className="text-caption text-[var(--midnight-muted)]">{facts}</p>}
       {configuration.length > 0 && (
-        <p className="text-xs text-[var(--midnight-muted)]">
+        <p className="text-caption text-[var(--midnight-muted)]">
           Configuration: {configuration.join(", ")}
         </p>
       )}
       {constraints.length > 0 && (
-        <p className="text-xs text-[var(--midnight-muted)]">Constraints: {constraints.join(", ")}</p>
+        <p className="text-caption text-[var(--midnight-muted)]">Constraints: {constraints.join(", ")}</p>
       )}
       {(terms || privacy || website) && (
-        <p className="flex gap-3 text-sm">
+        <p className="flex gap-3 text-ui">
           {terms && (
             <a className="underline" href={terms} target="_blank" rel="noopener noreferrer">
               Terms
@@ -152,7 +152,7 @@ export function ProvisioningConsentActions({
       )}
       {limit &&
         (editable ? (
-          <span className="flex items-center gap-2 text-sm">
+          <span className="flex items-center gap-2 text-ui">
             <label htmlFor={inputId} className="text-[var(--midnight-muted)]">
               Spending limit ($ / {limit.recurring_interval})
             </label>
@@ -169,7 +169,7 @@ export function ProvisioningConsentActions({
             />
           </span>
         ) : (
-          <p className="text-sm text-[var(--midnight-muted)]">
+          <p className="text-ui text-[var(--midnight-muted)]">
             Spending limit: {formatUsageLimit(limit)}
             {note ? ` — ${note}` : ""}
           </p>

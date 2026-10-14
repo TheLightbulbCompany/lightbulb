@@ -46,7 +46,7 @@ export function SettingsPanel() {
     // The Workspace section of the Settings page, which supplies the heading.
     <div className="max-w-2xl space-y-4">
       <label className="block">
-        <span className="text-sm text-[var(--midnight-soft)]">Display name</span>
+        <span className="text-ui text-[var(--midnight-soft)]">Display name</span>
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -54,7 +54,7 @@ export function SettingsPanel() {
         />
       </label>
       <label className="block">
-        <span className="text-sm text-[var(--midnight-soft)]">Description</span>
+        <span className="text-ui text-[var(--midnight-soft)]">Description</span>
         <textarea
           value={desc}
           onChange={(e) => setDesc(e.target.value)}
@@ -74,7 +74,7 @@ export function SettingsPanel() {
       >
         {saving ? "Saving…" : "Save"}
       </button>
-      <p className="text-xs text-[var(--midnight-muted)] pt-4 border-t border-[var(--edge)] italic">
+      <p className="text-caption text-[var(--midnight-muted)] pt-4 border-t border-[var(--edge)] italic">
         Adapter, plugin, and instance settings are operator-controlled and not
         editable here.
       </p>

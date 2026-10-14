@@ -98,7 +98,7 @@ export function LabelPicker({ selected, onChange, className }: LabelPickerProps)
       {selected.map((label) => (
         <span
           key={label.id}
-          className="group inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-xs"
+          className="group inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-caption"
           style={CHIP_STYLE}
         >
           <span className="truncate">{label.name}</span>
@@ -124,7 +124,7 @@ export function LabelPicker({ selected, onChange, className }: LabelPickerProps)
         <PopoverTrigger asChild>
           <button
             type="button"
-            className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-xs transition-colors hover:underline"
+            className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-caption transition-colors hover:underline"
             style={{ border: "1px solid var(--edge)", color: "var(--midnight-muted)" }}
           >
             <Plus size={12} strokeWidth={1.75} />
@@ -153,7 +153,7 @@ export function LabelPicker({ selected, onChange, className }: LabelPickerProps)
               }
             }}
             placeholder="Search or create labels..."
-            className="w-full px-2 py-1.5 text-xs bg-transparent mb-1 rounded-sm"
+            className="w-full px-2 py-1.5 text-caption bg-transparent mb-1 rounded-sm"
             style={{ borderBottom: "1px solid var(--edge)" }}
             aria-label="Search labels"
           />
@@ -166,7 +166,7 @@ export function LabelPicker({ selected, onChange, className }: LabelPickerProps)
                     type="button"
                     onClick={() => toggle(label.id)}
                     className={cn(
-                      "flex w-full items-center gap-2 px-2 py-1.5 text-left text-sm rounded-sm hover:bg-[var(--cream-deep)]",
+                      "flex w-full items-center gap-2 px-2 py-1.5 text-left text-ui rounded-sm hover:bg-[var(--cream-deep)]",
                       isSelected && "bg-[var(--cream-deeper)]",
                     )}
                   >
@@ -182,7 +182,7 @@ export function LabelPicker({ selected, onChange, className }: LabelPickerProps)
               );
             })}
             {candidates.length === 0 && !canCreate && (
-              <li className="px-2 py-2 text-xs" style={{ color: "var(--midnight-muted)" }}>
+              <li className="px-2 py-2 text-caption" style={{ color: "var(--midnight-muted)" }}>
                 {trimmedQuery ? "No matching labels." : "No labels yet — type to create one."}
               </li>
             )}
@@ -192,7 +192,7 @@ export function LabelPicker({ selected, onChange, className }: LabelPickerProps)
                   type="button"
                   onClick={() => void createAndApply()}
                   disabled={creating}
-                  className="flex w-full items-center gap-2 px-2 py-1.5 text-left text-sm rounded-sm hover:bg-[var(--cream-deep)]"
+                  className="flex w-full items-center gap-2 px-2 py-1.5 text-left text-ui rounded-sm hover:bg-[var(--cream-deep)]"
                 >
                   <Plus size={16} className="shrink-0" aria-hidden="true" />
                   <span className="truncate">

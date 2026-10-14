@@ -76,8 +76,8 @@ function OutputMediaPreview({
         className="absolute inset-x-0 bottom-0 px-2 py-1.5 text-left"
         style={{ background: "color-mix(in srgb, var(--midnight) 65%, transparent)" }}
       >
-        <p className="truncate text-xs font-medium" style={{ color: "var(--cream)" }} title={filename}>{filename}</p>
-        <p className="truncate text-[10px]" style={{ color: "var(--cream-deep)" }}>{metaBits.join(" · ")}</p>
+        <p className="truncate text-caption font-medium" style={{ color: "var(--cream)" }} title={filename}>{filename}</p>
+        <p className="truncate text-2xs" style={{ color: "var(--cream-deep)" }}>{metaBits.join(" · ")}</p>
       </div>
     </button>
   );
@@ -107,7 +107,7 @@ export function IssueOutputSection({ workProducts, resolveCreatorName }: IssueOu
         <h2 className="section-label">
           <b>Output</b>
         </h2>
-        <span className="text-xs" style={{ color: "var(--midnight-muted)" }}>{count}</span>
+        <span className="text-caption" style={{ color: "var(--midnight-muted)" }}>{count}</span>
       </div>
 
       {/* Stable anchor target so company Artifacts cards can deep-link to a

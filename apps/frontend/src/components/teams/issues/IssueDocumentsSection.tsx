@@ -37,12 +37,12 @@ export function IssueDocumentsSection({
         <b>Documents</b>
       </h2>
       {error && (
-        <p className="text-xs" style={{ color: "var(--err)" }}>
+        <p className="text-caption" style={{ color: "var(--err)" }}>
           Couldn&apos;t load documents.
         </p>
       )}
       {isLoading && documents.length === 0 && !error && (
-        <p className="text-xs italic" style={{ color: "var(--midnight-muted)" }}>
+        <p className="text-caption italic" style={{ color: "var(--midnight-muted)" }}>
           Loading documents…
         </p>
       )}

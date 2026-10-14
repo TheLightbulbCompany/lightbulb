@@ -98,7 +98,7 @@ export function RunStatusIcon({ status, className }: { status?: string | null; c
 export function SourceBadge({ source }: { source?: string | null }) {
   if (!source) return null;
   return (
-    <span className="rounded bg-[var(--cream-deep)] px-1.5 text-[10px] text-[var(--midnight-soft)]">
+    <span className="rounded bg-[var(--cream-deep)] px-1.5 text-2xs text-[var(--midnight-soft)]">
       {sourceLabels[source] ?? source}
     </span>
   );
@@ -118,17 +118,17 @@ function RunListItem({ run }: { run: HeartbeatRun }) {
     >
       <div className="flex items-center gap-2">
         <RunStatusIcon status={run.status} />
-        <span className="font-mono text-xs text-[var(--midnight-muted)]">{run.id.slice(0, 8)}</span>
+        <span className="font-mono text-caption text-[var(--midnight-muted)]">{run.id.slice(0, 8)}</span>
         <SourceBadge source={run.invocationSource} />
-        <span className="ml-auto shrink-0 text-[11px] text-[var(--midnight-muted)]">
+        <span className="ml-auto shrink-0 text-2xs text-[var(--midnight-muted)]">
           {run.createdAt ? timeAgo(run.createdAt) : ""}
         </span>
       </div>
       {summary && (
-        <span className="truncate pl-5.5 text-xs text-[var(--midnight-muted)]">{summary.slice(0, 60)}</span>
+        <span className="truncate pl-5.5 text-caption text-[var(--midnight-muted)]">{summary.slice(0, 60)}</span>
       )}
       {totalTokens > 0 && (
-        <div className="flex items-center gap-2 pl-5.5 text-[11px] tabular-nums text-[var(--midnight-muted)]">
+        <div className="flex items-center gap-2 pl-5.5 text-2xs tabular-nums text-[var(--midnight-muted)]">
           <span>{formatTokens(totalTokens)} tok</span>
         </div>
       )}
@@ -143,14 +143,14 @@ export function AgentRunsTab({ agentId }: { agentId: string }) {
   );
 
   if (error) {
-    return <p className="py-4 text-sm text-[var(--err)]">Couldn&apos;t load runs.</p>;
+    return <p className="py-4 text-ui text-[var(--err)]">Couldn&apos;t load runs.</p>;
   }
   if (isLoading && !data) {
-    return <p className="py-4 text-sm italic text-[var(--midnight-muted)]">Loading runs…</p>;
+    return <p className="py-4 text-ui italic text-[var(--midnight-muted)]">Loading runs…</p>;
   }
   const runs = data?.runs ?? [];
   if (runs.length === 0) {
-    return <p className="py-4 text-sm text-[var(--midnight-muted)]">No runs yet.</p>;
+    return <p className="py-4 text-ui text-[var(--midnight-muted)]">No runs yet.</p>;
   }
 
   return (

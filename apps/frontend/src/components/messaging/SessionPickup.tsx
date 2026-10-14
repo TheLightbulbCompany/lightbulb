@@ -45,7 +45,7 @@ export function SessionPickup({ session, ownerName, own, client, variant = "defa
       <ArrowDownToLine aria-hidden="true" />Pick up
     </Button>
     <Dialog open={open} onOpenChange={close}>
-      <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto text-sm"
+      <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto text-ui"
         onCloseAutoFocus={event => { event.preventDefault(); trigger.current?.focus(); }}>
         <DialogHeader>
           <DialogTitle>{state.phase === "done" ? "Picked up" : "Pick up this session"}</DialogTitle>

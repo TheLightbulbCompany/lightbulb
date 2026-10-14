@@ -32,9 +32,9 @@ export function SessionRenameButton({ session, onRename, icon = false }: {
       <DialogContent className="sm:max-w-sm">
         <DialogHeader><DialogTitle>Rename session</DialogTitle><DialogDescription>This name appears anywhere the session is shared in Lightbulb.</DialogDescription></DialogHeader>
         <form onSubmit={event => { event.preventDefault(); void save(); }}>
-          <label htmlFor={`rename-${session.sessionId}`} className="text-sm font-medium">Session name</label>
+          <label htmlFor={`rename-${session.sessionId}`} className="text-ui font-medium">Session name</label>
           <input id={`rename-${session.sessionId}`} className="room-input mt-2 w-full" value={title} maxLength={120} autoFocus disabled={saving} onChange={event => setTitle(event.target.value)} />
-          {error && <p role="alert" className="mt-2 text-sm text-err">{error}</p>}
+          {error && <p role="alert" className="mt-2 text-ui text-err">{error}</p>}
           <DialogFooter className="mt-4">{session.displayTitle && <Button type="button" variant="ghost" disabled={saving} onClick={() => void save(true)}>Use original title</Button>}
             <Button type="button" variant="outline" disabled={saving} onClick={() => setOpen(false)}>Cancel</Button>
             <Button type="submit" disabled={saving || !title.trim() || title.trim() === sessionTitle(session)}>{saving ? "Saving…" : "Save"}</Button></DialogFooter>

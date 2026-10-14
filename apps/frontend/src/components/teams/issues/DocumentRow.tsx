@@ -210,7 +210,7 @@ export function DocumentRow({
             <span className="flex-1" />
           )}
           {when && (
-            <span className="text-xs text-[var(--midnight-muted)] shrink-0">
+            <span className="text-caption text-[var(--midnight-muted)] shrink-0">
               updated {timeAgo(when)}
               {agentName ? ` · ${agentName}` : ""}
             </span>
@@ -270,7 +270,7 @@ export function DocumentRow({
         >
           {historicalPreview ? (
             <div
-              className="flex items-center justify-between gap-2 rounded-sm px-2 py-1 text-xs"
+              className="flex items-center justify-between gap-2 rounded-sm px-2 py-1 text-caption"
               style={{ background: "var(--edge)", color: "var(--midnight)" }}
             >
               <span>
@@ -298,7 +298,7 @@ export function DocumentRow({
                 {shownBody && shownBody.trim() ? (
                   <MarkdownView>{shownBody}</MarkdownView>
                 ) : (
-                  <p className="pt-2 text-xs text-[var(--midnight-muted)]">(empty document)</p>
+                  <p className="pt-2 text-caption text-[var(--midnight-muted)]">(empty document)</p>
                 )}
               </div>
               {reviewEnabled && !historicalPreview && latestRevisionId ? (

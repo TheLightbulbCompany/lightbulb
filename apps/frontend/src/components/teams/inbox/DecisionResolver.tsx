@@ -180,7 +180,7 @@ export function DecisionResolver({ decisionId, originIssue, agentMap, originAgen
 
   if (isLoading && !decision) {
     return (
-      <div className="flex items-center gap-2 py-3 text-xs text-[var(--fg-mute)]">
+      <div className="flex items-center gap-2 py-3 text-caption text-[var(--fg-mute)]">
         <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading decision…
       </div>
     );
@@ -191,7 +191,7 @@ export function DecisionResolver({ decisionId, originIssue, agentMap, originAgen
   // can fail too): the card stays, still actionable, with its inline error.
   if (!decision) {
     return (
-      <p className="py-3 text-xs text-[var(--fg-mute)]">
+      <p className="py-3 text-caption text-[var(--fg-mute)]">
         This decision is no longer available — it may have been resolved elsewhere.
       </p>
     );

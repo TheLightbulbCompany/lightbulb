@@ -26,7 +26,7 @@ export function IssueCasesPanel({ issueId }: { issueId: string }) {
 
   return (
     <section className="space-y-2">
-      <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--fg-mute)]">Cases</h3>
+      <h3 className="text-caption font-semibold uppercase tracking-wide text-[var(--fg-mute)]">Cases</h3>
       <div className="space-y-1">
         {links.map((link) => (
           <Link
@@ -34,9 +34,9 @@ export function IssueCasesPanel({ issueId }: { issueId: string }) {
             href={caseHref(link.case.identifier)}
             prefetch={false}
             onClick={(e) => handleShellLinkClick(e, caseHref(link.case.identifier))}
-            className="flex items-center gap-2 rounded-md border border-[var(--edge)] px-2.5 py-1.5 text-sm transition-colors hover:bg-[var(--plane-raised)]"
+            className="flex items-center gap-2 rounded-md border border-[var(--edge)] px-2.5 py-1.5 text-ui transition-colors hover:bg-[var(--plane-raised)]"
           >
-            <span className="shrink-0 font-mono text-xs text-[var(--fg-mute)]">{link.case.identifier}</span>
+            <span className="shrink-0 font-mono text-caption text-[var(--fg-mute)]">{link.case.identifier}</span>
             <span className="min-w-0 flex-1 truncate" title={link.case.title}>{link.case.title}</span>
             <Badge variant="secondary" className="shrink-0">{link.role}</Badge>
             <CaseStatusBadge status={link.case.status} />

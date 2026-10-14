@@ -19,7 +19,7 @@ export function SessionBrowserTab({ sessionId, frames, canType }: { sessionId: s
   return (
     <div className="relative min-h-[320px] flex-1" role="region" aria-label="Session browser">
       <BrowserFrameView session={{ sessionId, canType }}
-        empty={<p role="status" className="text-sm text-[var(--fg-mute)]">Waiting for the session&apos;s page…</p>} />
+        empty={<p role="status" className="text-ui text-[var(--fg-mute)]">Waiting for the session&apos;s page…</p>} />
     </div>
   );
 }

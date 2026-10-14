@@ -38,8 +38,8 @@ export function RoomInviteCard({ source = "chat", offerJustMe = true }: { source
   const [note, setNote] = useState<string | null>(null);
 
   if (!orgId) return null;
-  if (dismissed && offerJustMe) return <p className="text-sm text-muted-foreground">You can invite people any time from Get started.</p>;
-  if (sentTo) return <p role="status" className="text-sm">Invite sent to {sentTo}. They&apos;ll land in this channel.</p>;
+  if (dismissed && offerJustMe) return <p className="text-ui text-muted-foreground">You can invite people any time from Get started.</p>;
+  if (sentTo) return <p role="status" className="text-ui">Invite sent to {sentTo}. They&apos;ll land in this channel.</p>;
 
   async function send(event: FormEvent) {
     event.preventDefault();
@@ -76,7 +76,7 @@ export function RoomInviteCard({ source = "chat", offerJustMe = true }: { source
         <Button type="button" variant="outline" size="sm" disabled={busy} onClick={copy}>Copy join link</Button>
         {offerJustMe && <Button type="button" variant="ghost" size="sm" onClick={dismiss}>Just me for now</Button>}
       </div>
-      {note && <p role="status" className="text-sm text-muted-foreground">{note}</p>}
+      {note && <p role="status" className="text-ui text-muted-foreground">{note}</p>}
     </section>
   );
 }

@@ -182,7 +182,7 @@ export function PanelDataTable<Row>({
                 : undefined
             }
             className={cn(
-              "border-b border-[var(--edge)] transition-colors",
+              "h-9 border-b border-[var(--edge)] transition-colors",
               onRowClick &&
                 "cursor-pointer hover:bg-[var(--edge)]",
             )}
@@ -191,7 +191,7 @@ export function PanelDataTable<Row>({
               <TableCell
                 key={col.key}
                 className={cn(
-                  "text-ui text-[var(--midnight)]",
+                  "py-1.5 text-ui text-[var(--midnight)]",
                   // Primary column: a long issue/agent title used to widen the
                   // column until the trailing metadata columns were pushed out
                   // of the panel. Cap it and ellipsize instead.

@@ -126,7 +126,7 @@ function PropertyRow({
 }) {
   return (
     <div
-      className="grid grid-cols-[100px_1fr] gap-3 items-baseline py-2 text-sm"
+      className="grid grid-cols-[100px_1fr] gap-3 items-baseline py-2 text-ui"
       style={{
         color: "var(--midnight-soft)",
         borderBottom: "1px solid var(--edge)",
@@ -233,7 +233,7 @@ function ParentLink({ parentId }: { parentId: string }) {
       className="inline-flex min-w-0 items-baseline gap-1.5 hover:underline"
       style={{ color: "var(--midnight)" }}
     >
-      <span className="font-mono text-xs shrink-0">{label}</span>
+      <span className="font-mono text-caption shrink-0">{label}</span>
       {title && <span className="truncate">{title}</span>}
     </Link>
   );
@@ -368,18 +368,18 @@ function MonitorRow({
         color: "var(--midnight)",
       }}
     >
-      <label className="block text-xs mb-2" style={{ color: "var(--midnight-soft)" }}>
+      <label className="block text-caption mb-2" style={{ color: "var(--midnight-soft)" }}>
         Re-check at
         <input
           type="datetime-local"
           value={whenLocal}
           onChange={(e) => setWhenLocal(e.target.value)}
           aria-label="Re-check at"
-          className="mt-1 w-full px-2 py-1.5 text-xs rounded-sm bg-transparent"
+          className="mt-1 w-full px-2 py-1.5 text-caption rounded-sm bg-transparent"
           style={{ border: "1px solid var(--edge)", color: "var(--midnight)" }}
         />
       </label>
-      <label className="block text-xs mb-2" style={{ color: "var(--midnight-soft)" }}>
+      <label className="block text-caption mb-2" style={{ color: "var(--midnight-soft)" }}>
         External service
         <input
           type="text"
@@ -388,11 +388,11 @@ function MonitorRow({
           placeholder="e.g. GitHub Actions"
           aria-label="External service"
           maxLength={120}
-          className="mt-1 w-full px-2 py-1.5 text-xs rounded-sm bg-transparent"
+          className="mt-1 w-full px-2 py-1.5 text-caption rounded-sm bg-transparent"
           style={{ border: "1px solid var(--edge)", color: "var(--midnight)" }}
         />
       </label>
-      <label className="block text-xs mb-2" style={{ color: "var(--midnight-soft)" }}>
+      <label className="block text-caption mb-2" style={{ color: "var(--midnight-soft)" }}>
         Notes
         <input
           type="text"
@@ -401,7 +401,7 @@ function MonitorRow({
           placeholder="What to look for"
           aria-label="Monitor notes"
           maxLength={500}
-          className="mt-1 w-full px-2 py-1.5 text-xs rounded-sm bg-transparent"
+          className="mt-1 w-full px-2 py-1.5 text-caption rounded-sm bg-transparent"
           style={{ border: "1px solid var(--edge)", color: "var(--midnight)" }}
         />
       </label>
@@ -438,17 +438,17 @@ function MonitorRow({
             </time>
           </span>
           {monitor.serviceName && (
-            <span className="text-xs" style={{ color: "var(--midnight-muted)" }}>
+            <span className="text-caption" style={{ color: "var(--midnight-muted)" }}>
               {monitor.serviceName}
             </span>
           )}
           {monitor.notes && (
-            <span className="text-xs" style={{ color: "var(--midnight-muted)" }}>
+            <span className="text-caption" style={{ color: "var(--midnight-muted)" }}>
               {monitor.notes}
             </span>
           )}
           {progress && (
-            <span className="text-xs" style={{ color: "var(--midnight-muted)" }}>
+            <span className="text-caption" style={{ color: "var(--midnight-muted)" }}>
               {progress}
             </span>
           )}
@@ -458,7 +458,7 @@ function MonitorRow({
                 type="button"
                 onClick={() => void checkNow()}
                 disabled={checkState === "checking"}
-                className="text-xs hover:underline disabled:opacity-50"
+                className="text-caption hover:underline disabled:opacity-50"
                 style={{ color: "var(--midnight)" }}
               >
                 {checkState === "checking"
@@ -476,7 +476,7 @@ function MonitorRow({
                 <PopoverTrigger asChild>
                   <button
                     type="button"
-                    className="text-xs hover:underline"
+                    className="text-caption hover:underline"
                     style={{ color: "var(--midnight-muted)" }}
                   >
                     Edit
@@ -489,7 +489,7 @@ function MonitorRow({
               <button
                 type="button"
                 onClick={onMonitorClear}
-                className="text-xs hover:underline"
+                className="text-caption hover:underline"
                 style={{ color: "var(--midnight-muted)" }}
               >
                 Clear
@@ -533,7 +533,7 @@ function MonitorRow({
             <PopoverTrigger asChild>
               <button
                 type="button"
-                className="text-xs hover:underline"
+                className="text-caption hover:underline"
                 style={{ color: "var(--midnight-muted)" }}
               >
                 Schedule
@@ -596,7 +596,7 @@ function StageRow({
           {values.map((value) => (
             <span
               key={value}
-              className="rounded-sm px-1.5 py-0.5 text-xs"
+              className="rounded-sm px-1.5 py-0.5 text-caption"
               style={CHIP_STYLE}
             >
               {valueLabel(value)}
@@ -650,7 +650,7 @@ function WorkModeRow({
             aria-haspopup="menu"
             aria-expanded={open}
             className={cn(
-              "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold transition-colors",
+              "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-caption font-semibold transition-colors",
               current.classes.chip,
             )}
           >
@@ -669,7 +669,7 @@ function WorkModeRow({
                 type="button"
                 aria-pressed={active}
                 className={cn(
-                  "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-[var(--cream-deep)]",
+                  "flex w-full items-center gap-2 rounded px-2 py-1.5 text-caption hover:bg-[var(--cream-deep)]",
                   active && "bg-[var(--cream-deeper)]",
                   option.classes.menuItem,
                 )}
@@ -792,7 +792,7 @@ function WatchdogRow({
         </span>
       ) : null}
       {watchdog.status === "disabled" ? (
-        <span className="shrink-0 text-xs" style={EMPTY_DASH_STYLE}>
+        <span className="shrink-0 text-caption" style={EMPTY_DASH_STYLE}>
           (disabled)
         </span>
       ) : null}
@@ -825,14 +825,14 @@ function WatchdogRow({
               style={POPOVER_STYLE}
             >
               <label
-                className="block text-xs font-medium"
+                className="block text-caption font-medium"
                 style={{ color: "var(--midnight)" }}
               >
                 Watchdog agent
                 <select
                   value={agentInput}
                   onChange={(e) => setAgentInput(e.target.value)}
-                  className="mt-1.5 w-full px-2 py-1.5 text-xs font-normal rounded-sm bg-transparent"
+                  className="mt-1.5 w-full px-2 py-1.5 text-caption font-normal rounded-sm bg-transparent"
                   style={{ border: "1px solid var(--edge)", color: "var(--midnight)" }}
                 >
                   <option value="">Select agent</option>
@@ -848,7 +848,7 @@ function WatchdogRow({
                 </select>
               </label>
               <label
-                className="block text-xs font-medium"
+                className="block text-caption font-medium"
                 style={{ color: "var(--midnight)" }}
               >
                 Instructions{" "}
@@ -860,12 +860,12 @@ function WatchdogRow({
                   onChange={(e) => setInstructionsInput(e.target.value)}
                   placeholder="What should the watchdog watch for and how should it keep work moving?"
                   rows={4}
-                  className="mt-1.5 w-full px-2 py-1.5 text-xs font-normal rounded-sm bg-transparent"
+                  className="mt-1.5 w-full px-2 py-1.5 text-caption font-normal rounded-sm bg-transparent"
                   style={{ border: "1px solid var(--edge)", color: "var(--midnight)" }}
                 />
               </label>
               {watchdogIssue && watchdogIssueUrl ? (
-                <div className="text-xs" style={EMPTY_DASH_STYLE}>
+                <div className="text-caption" style={EMPTY_DASH_STYLE}>
                   Watchdog task:{" "}
                   <Link
                     href={watchdogIssueUrl}
@@ -881,7 +881,7 @@ function WatchdogRow({
               {error ? (
                 <div
                   role="alert"
-                  className="rounded-sm px-2 py-1 text-xs"
+                  className="rounded-sm px-2 py-1 text-caption"
                   style={{ border: "1px solid var(--err)", color: "var(--err)" }}
                 >
                   {error}
@@ -890,7 +890,7 @@ function WatchdogRow({
               <div className="flex items-center justify-between">
                 <button
                   type="button"
-                  className="text-xs hover:underline disabled:opacity-50"
+                  className="text-caption hover:underline disabled:opacity-50"
                   style={EMPTY_DASH_STYLE}
                   disabled={pending !== null || (!watchdog && !agentInput)}
                   onClick={remove}
@@ -1010,7 +1010,7 @@ export function IssueProperties({
             {labels.map((l) => (
               <span
                 key={l.id}
-                className="rounded-sm px-1.5 py-0.5 text-xs"
+                className="rounded-sm px-1.5 py-0.5 text-caption"
                 style={CHIP_STYLE}
               >
                 {l.name}
@@ -1063,7 +1063,7 @@ export function IssueProperties({
             {relatedIdentifiers.map((identifier) => (
               <span
                 key={identifier}
-                className="rounded-sm px-1.5 py-0.5 text-xs font-mono"
+                className="rounded-sm px-1.5 py-0.5 text-caption font-mono"
                 style={CHIP_STYLE}
               >
                 {identifier}

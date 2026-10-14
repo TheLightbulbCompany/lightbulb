@@ -86,7 +86,7 @@ function StatusPicker({
             variant="ghost"
             size="sm"
             className={cn(
-              "w-full justify-start text-xs",
+              "w-full justify-start text-caption",
               s === status && "bg-[var(--cream-deeper)]",
             )}
             onClick={() => {
@@ -169,7 +169,7 @@ function GoalsEditor({
       {linkedGoals.map((goal) => (
         <span
           key={goal.id}
-          className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-xs"
+          className="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-caption"
           style={{
             background: "var(--cream-deep)",
             border: "1px solid var(--edge)",
@@ -204,7 +204,7 @@ function GoalsEditor({
               type="button"
               disabled={availableGoals.length === 0}
               className={cn(
-                "inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-xs hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed",
+                "inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-caption hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed",
               )}
               style={{ color: "var(--midnight-soft)", border: "1px solid var(--edge)" }}
             >
@@ -226,7 +226,7 @@ function GoalsEditor({
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search goals..."
-              className="mb-1 w-full bg-transparent px-2 py-1.5 text-xs"
+              className="mb-1 w-full bg-transparent px-2 py-1.5 text-caption"
               style={{ borderBottom: "1px solid var(--edge)" }}
             />
             <ul className="max-h-48 overflow-y-auto" role="listbox">
@@ -242,7 +242,7 @@ function GoalsEditor({
                 </li>
               ))}
               {visible.length === 0 && (
-                <li className="px-2 py-2 text-xs" style={{ color: "var(--midnight-muted)" }}>
+                <li className="px-2 py-2 text-caption" style={{ color: "var(--midnight-muted)" }}>
                   {availableGoals.length === 0 ? "All goals linked." : "No matches"}
                 </li>
               )}
@@ -277,7 +277,7 @@ function PropertyRow({
 }) {
   return (
     <div
-      className="grid grid-cols-[100px_1fr] gap-3 items-baseline py-2 text-sm"
+      className="grid grid-cols-[100px_1fr] gap-3 items-baseline py-2 text-ui"
       style={{
         color: "var(--midnight-soft)",
         borderBottom: "1px solid var(--edge)",

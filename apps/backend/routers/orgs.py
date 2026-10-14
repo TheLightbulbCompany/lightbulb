@@ -189,7 +189,13 @@ async def create_invitation(
 ) -> Invitation:
     _require_member_of(auth, org_id)
     sent = await workspace_invitations.send(
-        org_id, body.email, inviter=auth.user_id, by_admin=auth.is_org_admin, source=body.source
+        org_id,
+        body.email,
+        inviter=auth.user_id,
+        by_admin=auth.is_org_admin,
+        source=body.source,
+        approval_id=body.approval_id,
+        decision=body.decision,
     )
     return Invitation(**sent)
 

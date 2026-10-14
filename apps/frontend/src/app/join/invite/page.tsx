@@ -23,7 +23,7 @@ export const metadata: Metadata = {
 type Search = Record<string, string | string[] | undefined>;
 
 const one = (value: string | string[] | undefined): string =>
-  (Array.isArray(value) ? value[0] : value)?.trim().slice(0, 80) ?? "";
+  (Array.isArray(value) ? value[0] : value)?.trim().slice(0, 120) ?? "";
 
 function inviteHeadline(inviter: string, workspace: string): string {
   const who = inviter || "Your teammate";
@@ -39,12 +39,21 @@ export default async function InvitationPage({ searchParams }: { searchParams: P
     const v = Array.isArray(raw) ? raw[0] : raw; // never truncated: a ticket is a long JWT
     if (v) query.set(key, v);
   }
+  // T09: an invitation from an approval card lands the new teammate on that card.
+  const approval = /^[A-Za-z0-9_-]{1,64}$/.test(one(search.approval)) ? one(search.approval) : "";
+  const decision = one(search.decision);
+  if (approval) {
+    query.set("redirect_url", `/chat?panel=teams-approval-detail&detailId=${approval}`);
+  }
   const qs = query.toString() ? `?${query}` : "";
   const status = one(search.__clerk_status);
+  const headline = approval && decision
+    ? `${one(search.inviter) || "Your teammate"} asked you to decide: ${decision}`
+    : inviteHeadline(one(search.inviter), one(search.workspace));
 
   return (
     <main className="mx-auto flex min-h-screen max-w-md flex-col items-center justify-center gap-4 px-6 text-center">
-      <h1 className="font-serif text-2xl text-midnight">{inviteHeadline(one(search.inviter), one(search.workspace))}</h1>
+      <h1 className="font-serif text-2xl text-midnight">{headline}</h1>
       {status === "complete" ? (
         <>
           <p className="text-ui text-midnight-muted">You already accepted this invitation.</p>
@@ -53,7 +62,9 @@ export default async function InvitationPage({ searchParams }: { searchParams: P
       ) : (
         <>
           <p className="text-ui text-midnight-muted">
-            Sign up to see what the team and its AI employees are working on.
+            {approval && decision
+              ? "Sign up to see it and answer. It opens the moment you're in."
+              : "Sign up to see what the team and its AI employees are working on."}
           </p>
           {status === "sign_in" ? (
             <Button asChild><Link href={`/sign-in${qs}`}>Sign in to join</Link></Button>

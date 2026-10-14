@@ -3,7 +3,7 @@ import path from "node:path";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type LiveEvent } from "@lightbulb/shared";
-import { SessionTerminalView, terminalScale } from "../SessionTerminalView";
+import { panelGrid, SessionTerminalView, terminalScale } from "../SessionTerminalView";
 
 const writes: Uint8Array[] = [];
 const hooks: { data?: (d: string) => void; key?: (e: unknown) => boolean; term?: { cols: number; rows: number };
@@ -670,17 +670,72 @@ it("a ping ahead of the screen (a frame was lost) does not keep it live", async 
   expect(onLive).toHaveBeenLastCalledWith(false); // still waiting for a snapshot
 });
 
-it("the viewer's own size never reaches the Mac or changes the terminal's size", async () => {
+it("the view never resizes its own terminal: only the Mac's frames set its grid", async () => {
   let resized: () => void = () => {};
   vi.stubGlobal("ResizeObserver", class { constructor(cb: () => void) { resized = cb; } observe() {} disconnect() {} });
   const input = vi.fn(async () => undefined);
   const { emit, watch } = await mountView({ input, admitted: true });
   emit(screenEvent("s1"));
   act(() => { resized(); resized(); });
-  expect(input).not.toHaveBeenCalled();
+  expect(input).not.toHaveBeenCalled(); // jsdom lays nothing out: no size to send
   expect(watch).toHaveBeenCalledTimes(1);
   expect([hooks.term?.cols, hooks.term?.rows]).toEqual([100, 30]);
   vi.unstubAllGlobals();
+});
+
+// Owner ruling 2026-10-14: the session takes the size of whoever used it last (tmux's `window-size latest`).
+describe("the session takes this panel's size while its person uses it", () => {
+  let resized: () => void = () => {};
+  let size = { w: 660, h: 390 };
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubGlobal("requestAnimationFrame", (cb: () => void) => setTimeout(cb, 0));
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => clearTimeout(id));
+    vi.stubGlobal("ResizeObserver", class { constructor(cb: () => void) { resized = cb; } observe() {} disconnect() {} });
+    size = { w: 660, h: 390 };
+  });
+  afterEach(() => { vi.unstubAllGlobals(); });
+  const open = async (admitted: boolean) => {
+    hooks.screen = { w: 800, h: 510 }; // the Mac's 100 x 30 grid: 8 x 17 px cells at 13 px
+    const input = vi.fn(async () => undefined);
+    const view = await mountView({ input, admitted });
+    const el = document.querySelector<HTMLElement>(".session-terminal-scroll")!;
+    Object.defineProperty(el, "clientWidth", { configurable: true, get: () => size.w });
+    Object.defineProperty(el, "clientHeight", { configurable: true, get: () => size.h });
+    view.emit(screenEvent("s1"));
+    return { input, ...view };
+  };
+  const sizes = (input: ReturnType<typeof vi.fn>) => input.mock.calls.map(([d, , s]) => [(d as Uint8Array).length, s]);
+
+  it("fits the box at the terminal's own cell size, within the backend's bounds", () => {
+    expect(panelGrid({ w: 800, h: 510 }, { cols: 100, rows: 30 }, { w: 660, h: 390 })).toEqual({ cols: 82, rows: 22 });
+    expect(panelGrid({ w: 800, h: 510 }, { cols: 100, rows: 30 }, { w: 100, h: 50 })).toEqual({ cols: 40, rows: 10 });
+    expect(panelGrid({ w: 800, h: 510 }, { cols: 100, rows: 30 }, { w: 9000, h: 9000 })).toEqual({ cols: 300, rows: 120 });
+  });
+
+  it("claims on open, follows the box debounced, and sends a size with the keys", async () => {
+    const { input } = await open(true);
+    expect(sizes(input)).toEqual([[0, { cols: 82, rows: 22, claim: true }]]); // opened: the person uses it
+    size = { w: 820, h: 400 };
+    act(() => { resized(); resized(); });
+    expect(input).toHaveBeenCalledTimes(1); // not on every observer tick
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(sizes(input)[1]).toEqual([0, { cols: 102, rows: 23, claim: false }]); // applies only while it is still the latest user
+    act(() => { resized(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(input).toHaveBeenCalledTimes(2); // the same size is not sent again
+    act(() => { hooks.data!("ls"); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+    expect(sizes(input)[2]).toEqual([2, { cols: 102, rows: 23, claim: true }]); // typing is using
+  });
+
+  it("sends nothing for a viewer who cannot type", async () => {
+    const { input } = await open(false);
+    size = { w: 820, h: 400 };
+    act(() => { resized(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(input).not.toHaveBeenCalled();
+  });
 });
 
 describe("a readable terminal in a narrow pane", () => {

@@ -315,4 +315,9 @@ it("posts an admitted viewer's keystrokes with the screen epoch to /input", asyn
   const client = createMessagingClient({ post } as unknown as ApiMethods);
   await client.sendLocalSessionInput("s 1", "aGk=", 3);
   expect(post).toHaveBeenCalledWith("/messaging/sessions/s%201/input", { data: "aGk=", epoch: 3 });
+  // The panel's size, alone or with keys (owner ruling 2026-10-14).
+  await client.sendLocalSessionInput("s 1", "", 3, { cols: 120, rows: 40, claim: true });
+  expect(post).toHaveBeenLastCalledWith("/messaging/sessions/s%201/input", { epoch: 3, size: { cols: 120, rows: 40, claim: true } });
+  await client.sendLocalSessionInput("s 1", "aGk=", 3, { cols: 120, rows: 40, claim: true });
+  expect(post).toHaveBeenLastCalledWith("/messaging/sessions/s%201/input", { data: "aGk=", epoch: 3, size: { cols: 120, rows: 40, claim: true } });
 });

@@ -16,11 +16,17 @@ export type Pricing = {
 
 export const PRICING_REVALIDATE_S = 300;
 
+// A stalled billing API must not hold the marketing pages: give up fast and render neutral copy.
+const PRICING_FETCH_TIMEOUT_MS = 2500;
+
 const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
 
 export async function getPricing(): Promise<Pricing | null> {
   try {
-    const res = await fetch(`${BACKEND_URL}/billing/prices`, { next: { revalidate: PRICING_REVALIDATE_S } });
+    const res = await fetch(`${BACKEND_URL}/billing/prices`, {
+      next: { revalidate: PRICING_REVALIDATE_S },
+      signal: AbortSignal.timeout(PRICING_FETCH_TIMEOUT_MS),
+    });
     if (!res.ok) return null;
     const body = (await res.json()) as Record<string, unknown>;
     const n = (k: string) => (typeof body[k] === "number" ? (body[k] as number) : null);

@@ -40,10 +40,11 @@ async def test_a_human_message_in_week_four_emits_once(world):
     page = [_msg("human", FORMED + 22 * DAY), _msg("agent", FORMED + 29 * DAY)]
     with patch.object(week4_active.messaging_repo, "list_messages_before_page", AsyncMock(return_value=(page, None))):
         assert await week4_active.check_workspace("org_1", FORMED + 28 * DAY + 60) is True
+        claim.return_value = webhook_dedup.WebhookDedupResult.ALREADY_SEEN
+        assert await week4_active.check_workspace("org_1", FORMED + 29 * DAY) is False
+    assert capture.call_count == 1
     assert capture.call_args.kwargs["event"] == "week4_active"
     assert capture.call_args.kwargs["properties"]["workspace_id"] == "org_1"
-    claim.return_value = webhook_dedup.WebhookDedupResult.ALREADY_SEEN
-    assert await week4_active.check_workspace("org_1", FORMED + 29 * DAY) is False
 
 
 @pytest.mark.asyncio

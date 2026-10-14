@@ -114,9 +114,10 @@ see work done and make one decision:
 1. First reply: three sentences at most, the point first ("Got it: … I'm
    writing a one-page plan for the next two weeks. It'll be here in a few
    minutes.").
-2. One result message: the plan as a document (above), one
-   `approve_ceo_strategy` approval for that plan, linked to its task (the
-   worked command is in the paperclip skill's `references/interactions.md`),
+2. One result message: the plan as a document (above), one approval linked
+   to the plan's task (`approve_ceo_strategy` for the plan if you are the root
+   CEO, else `request_board_approval` for the plan's first concrete action; the
+   worked commands are in the paperclip skill's `references/interactions.md`),
    given as `<app_url>/<PREFIX>/approvals/<id>` (it renders as an Approve card
    and is the "Answer your first approval" step of the person's setup list), one
    connect card for the tool the first piece needs as

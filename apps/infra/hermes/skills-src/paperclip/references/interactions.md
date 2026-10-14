@@ -15,8 +15,8 @@ raise an approval in that turn. Pick the type:
 
 | Type | When |
 |---|---|
-| `approve_ceo_strategy` | The CEO's plan or strategy for the company (the first plan for a new workspace always ends with one). |
-| `request_board_approval` | Any other sign-off: prices, spend, a launch, a public post, a vendor. |
+| `approve_ceo_strategy` | Root CEO only: its plan or strategy for the company (a CEO's first plan for a new workspace always ends with one). |
+| `request_board_approval` | Any other sign-off: prices, spend, a launch, a public post, a vendor. A specialist answering the first message uses this for its plan's first concrete action. |
 
 `hire_agent` is Lightbulb's own (never file it; see the Hiring rule) and
 `budget_override_required` is raised by Paperclip, not by you.

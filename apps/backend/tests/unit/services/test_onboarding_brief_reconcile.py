@@ -280,6 +280,9 @@ async def test_goal_and_project_use_captured_dispatch_target_not_starter_ceo(env
     assert env.admin.create_goal.await_args.kwargs["body"]["ownerAgentId"] == specialist["id"]
     assert env.admin.create_project.await_args.kwargs["body"]["leadAgentId"] == specialist["id"]
     assert env.stage.await_args.args[1:3] == ("engineering-uuid", "BRIEF.md")
+    # Only the root CEO files approve_ceo_strategy; a specialist's one decision is a board approval.
+    assert "request_board_approval" in env.stage.await_args.args[3]
+    assert "approve_ceo_strategy" not in env.stage.await_args.args[3]
 
 
 async def test_drain_claims_seeds_stages_completes_and_retires_without_synthetic_dispatch(env):
@@ -305,6 +308,7 @@ async def test_drain_claims_seeds_stages_completes_and_retires_without_synthetic
     assert brief_call.args[0] == "org_abc"  # owner id -- the profile prefix
     assert brief_call.args[1:3] == ("friday-uuid", "BRIEF.md")
     assert "acme.com" in brief_call.args[3]
+    assert "approve_ceo_strategy" in brief_call.args[3]  # the target is the root CEO
     env.repo.complete_funnel_submission.assert_awaited_once_with("org_abc", onboarding_generation="01GEN")
     env.repo.delete_pending_brief.assert_awaited_once_with("org_abc")
 

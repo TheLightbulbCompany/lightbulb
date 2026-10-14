@@ -357,7 +357,9 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       /api/companies/:id/approvals` (fork server/src/routes/approvals.ts: agents
       may create from a room turn, `requestedByAgentId` defaults to the actor,
       `issueIds` are UUIDs per createApprovalSchema). `approve_ceo_strategy` is
-      the CEO's first-plan decision: no server side effect on approve beyond the
+      the ROOT CEO's first-plan decision (a first message dispatched to a
+      specialist gets `request_board_approval` instead: onboarding_brief.py
+      is_root_ceo picks the brief's decision by role, never by name): no server side effect on approve beyond the
       requester wake, and the BFF renders title/summary/plan
       (core/services/activity.py, ApprovalPayload.tsx CeoStrategyPayload). The
       old api-reference line "must be approved before you can move tasks to

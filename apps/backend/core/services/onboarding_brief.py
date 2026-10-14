@@ -49,12 +49,7 @@ The person should see work done and make one decision. Nothing more.
 2. **Then one result message** in this room, with exactly these parts:
    - **One document:** the plan, written as a Paperclip issue document, linked
      (see the lightbulb skill's `references/chat-vs-document.md`).
-   - **One decision:** one `approve_ceo_strategy` approval for the plan,
-     linked to the plan's task and given with its full app link
-     (`<app_url>/<PREFIX>/approvals/<id>`) so it shows as an Approve card
-     (the paperclip skill's `references/interactions.md` has the command).
-     Any later sign-off is a `request_board_approval`, never a task assigned
-     to the person.
+{decision_block}
    - **One connect card:** the one tool you need to do the first piece for
      real, as the link `<app_url>/chat?panel=connections&provider=<slug>`
      (`app_url` is in `lightbulb-facts.json`). Skip it if that tool is
@@ -140,6 +135,27 @@ judgment anyway — do not stall waiting for them to answer.
 """
 
 
+# The first run's one decision. Only the root CEO files ``approve_ceo_strategy``;
+# the first message can be dispatched to a specialist (whichever target the room
+# picked), and a specialist's decision is a plain board approval.
+_CEO_DECISION = """   - **One decision:** one `approve_ceo_strategy` approval for the plan,
+     linked to the plan's task and given with its full app link
+     (`<app_url>/<PREFIX>/approvals/<id>`) so it shows as an Approve card
+     (the paperclip skill's `references/interactions.md` has the command).
+     Any later sign-off is a `request_board_approval`, never a task assigned
+     to the person."""
+_SPECIALIST_DECISION = """   - **One decision:** one `request_board_approval` for the plan's first
+     concrete action, linked to the plan's task and given with its full app
+     link (`<app_url>/<PREFIX>/approvals/<id>`) so it shows as an Approve card
+     (the paperclip skill's `references/interactions.md` has the command).
+     Never a task assigned to the person."""
+
+
+def is_root_ceo(agent: dict | None) -> bool:
+    """The root CEO by role, never by display name: ``role: ceo`` and no manager."""
+    return bool(agent) and agent.get("role") == "ceo" and not agent.get("reportsTo")
+
+
 def render_brief_md(
     *,
     path: str,
@@ -147,6 +163,7 @@ def render_brief_md(
     detail: str | None,
     display_name: str,
     email: str,
+    target_is_ceo: bool,
 ) -> str:
     """Render BRIEF.md. ``user_input`` is None on the "you pick" button."""
     idea_block = _IDEA_LINE.format(user_input=user_input) if user_input else _NO_IDEA_BLOCK
@@ -157,6 +174,7 @@ def render_brief_md(
         detail_line=detail_line,
         display_name=display_name,
         email=email,
+        decision_block=_CEO_DECISION if target_is_ceo else _SPECIALIST_DECISION,
     )
 
 
@@ -605,10 +623,7 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
         # Briefs persisted by the retired onboarding endpoint predate room
         # dispatch targets. Fulfil only those legacy rows through the existing
         # root CEO; current chat capture always persists an explicit target.
-        target_agent = next(
-            (agent for agent in agents if agent.get("role") == "ceo" and not agent.get("reportsTo")),
-            None,
-        )
+        target_agent = next((agent for agent in agents if is_root_ceo(agent)), None)
     if target_agent is None:
         # The selected dispatch target (or a legacy row's existing root CEO)
         # has not landed yet.
@@ -662,6 +677,7 @@ async def _fulfil_pending_brief(owner_id: str) -> DrainOutcome:
                 detail=detail,
                 display_name=first_name,
                 email=email or "",
+                target_is_ceo=is_root_ceo(target_agent),
             ),
         )
         completed = await repo.complete_funnel_submission(

@@ -39,9 +39,10 @@ const NON_ADMIN_HINT = "Ask an admin";
 
 type InviteState = "idle" | "working" | "shared" | "failed" | "legacy";
 
-function inviteStatus(state: InviteState): string | undefined {
+function inviteStatus(state: InviteState, isAdmin: boolean): string | undefined {
   if (state === "working") return "Getting the link…";
-  if (state === "legacy") return "Reset the link in Settings";
+  // Settings → Members is admin-only, so a member is sent to an admin instead.
+  if (state === "legacy") return isAdmin ? "Reset the link in Settings" : "Ask an admin to reset the link";
   if (state === "shared") return "Link shared";
   if (state === "failed") return "Couldn’t get the link — try again";
   return undefined;
@@ -247,7 +248,7 @@ export function OnboardingBand({ participants }: { participants: readonly SetupP
         <SymbolView accessibilityElementsHidden name="plus" size={16} tintColor={palette.fg} />
         <Text style={[styles.label, { color: palette.fg }]}>More connections</Text>
       </Pressable>
-      {actions.map((step) => card(step, step.id === "invite" ? inviteStatus(invite) : undefined, step.id === "invite" && invite === "working"))}
+      {actions.map((step) => card(step, step.id === "invite" ? inviteStatus(invite, isAdmin) : undefined, step.id === "invite" && invite === "working"))}
 
       {invite === "legacy" && (
         <Text style={[styles.detail, { color: palette.fgMute }]}>{LEGACY_JOIN_LINK_TEXT}</Text>

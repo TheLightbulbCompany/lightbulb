@@ -65,7 +65,7 @@ export async function getJoinLink(api: ApiMethods, orgId: string): Promise<strin
 }
 
 export const LEGACY_JOIN_LINK_TEXT =
-  "This workspace's link can't be shown here. Regenerate it on the web under Settings → Members.";
+  "This workspace's link can't be shown here. A workspace admin can regenerate it on the web under Settings → Members.";
 
 /** Copies the join link; the status line to show. Throws when the request fails. */
 export async function copyJoinLink(api: ApiMethods, orgId: string): Promise<string> {

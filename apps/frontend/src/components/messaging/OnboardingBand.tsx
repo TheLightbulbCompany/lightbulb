@@ -246,7 +246,7 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
             isAdmin={isAdmin}
             wide
             icon={ACTION_ICONS[step.id]}
-            status={step.id === "invite" ? inviteStatus(invite) : undefined}
+            status={step.id === "invite" ? inviteStatus(invite, isAdmin) : undefined}
             onSelect={onStep}
           />
         ))}
@@ -293,9 +293,10 @@ const ACTION_ICONS: Partial<Record<SetupStepId, ReactElement>> = {
 
 type InviteState = "idle" | "working" | "copied" | "failed" | "legacy";
 
-function inviteStatus(state: InviteState): string | undefined {
+function inviteStatus(state: InviteState, isAdmin: boolean): string | undefined {
   if (state === "working") return "Copying…";
-  if (state === "legacy") return "Reset the link in Settings";
+  // Settings → Members is admin-only, so a member is sent to an admin instead.
+  if (state === "legacy") return isAdmin ? "Reset the link in Settings" : "Ask an admin to reset the link";
   if (state === "copied") return "Link copied";
   if (state === "failed") return "Couldn’t copy — try again";
   return undefined;

@@ -15,6 +15,7 @@ from core.services.onboarding_brief import (
     capture_first_workspace_message,
     derive_goal_title,
     first_message_intake,
+    is_root_ceo,
     project_name_for,
     render_brief_md,
     seed_goal_and_project,
@@ -160,6 +161,7 @@ def test_render_brief_md_contains_all_fields():
         detail="residential builds in Austin",
         display_name="Max",
         email="max@acme.com",
+        target_is_ceo=True,
     )
     assert "# BRIEF.md" in md
     assert "grow" in md
@@ -171,14 +173,33 @@ def test_render_brief_md_contains_all_fields():
 
 def test_render_brief_md_carries_the_first_run_result_contract():
     """T13: the first run ends with one document, one decision, one connect card, three offers."""
-    md = render_brief_md(path="new", user_input="a bakery", detail=None, display_name="Ann", email="a@x.com")
+    md = render_brief_md(
+        path="new", user_input="a bakery", detail=None, display_name="Ann", email="a@x.com", target_is_ceo=True
+    )
     assert "three sentences at most" in md
-    assert "request_board_approval" in md
+    assert "approve_ceo_strategy" in md
     assert "/approvals/<id>" in md
     assert "chat?panel=connections&provider=<slug>" in md
     assert "Three offers" in md
     assert "Only you speak" in md
     assert "{one line}" in md  # format() escapes rendered, not raised
+
+
+def test_render_brief_md_specialist_target_files_a_board_approval_not_a_ceo_strategy():
+    """The first message can be dispatched to a specialist; only the root CEO files approve_ceo_strategy."""
+    md = render_brief_md(
+        path="new", user_input="a bakery", detail=None, display_name="Ann", email="a@x.com", target_is_ceo=False
+    )
+    assert "approve_ceo_strategy" not in md
+    assert "request_board_approval" in md
+    assert "/approvals/<id>" in md
+
+
+def test_is_root_ceo_is_role_keyed_not_name_keyed():
+    assert is_root_ceo({"id": "a", "role": "ceo", "name": "Engineering"})
+    assert not is_root_ceo({"id": "b", "role": "engineer", "name": "CEO"})
+    assert not is_root_ceo({"id": "c", "role": "ceo", "reportsTo": "a"})
+    assert not is_root_ceo(None)
 
 
 def test_render_brief_md_omits_detail_line_when_none():
@@ -188,6 +209,7 @@ def test_render_brief_md_omits_detail_line_when_none():
         detail=None,
         display_name="Ben",
         email="ben@x.com",
+        target_is_ceo=True,
     )
     assert "Extra detail" not in md
 
@@ -200,6 +222,7 @@ def test_render_brief_md_no_idea_tells_friday_to_pick_one():
         detail=None,
         display_name="Prabuddha",
         email="prabuddha@gmail.com",
+        target_is_ceo=True,
     )
     assert "job zero" in md
     # She must know she has a lead (the email) and a way to follow it.

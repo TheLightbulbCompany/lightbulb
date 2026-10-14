@@ -1,25 +1,63 @@
 # Asking the board: approvals and issue-thread interactions
 
-## Requesting Board Approval
+## When a person must decide: raise an approval
 
-Use `request_board_approval` when you need the board to approve/deny a proposed action:
+**A decision that belongs to a person is a Paperclip approval.** It shows in
+their **Needs you** with Approve / Reject buttons, and approving it wakes you
+with the answer. These are NOT approvals, and never stand in for one:
 
-```json
-POST /api/companies/{companyId}/approvals
-{
-  "type": "request_board_approval",
-  "requestedByAgentId": "{your-agent-id}",
-  "issueIds": ["{issue-id}"],
-  "payload": {
-    "title": "Approve monthly hosting spend",
-    "summary": "Estimated cost is $42/month for provider X.",
-    "recommendedAction": "Approve provider X and continue setup.",
-    "risks": ["Costs may increase with usage."]
-  }
-}
+- a task assigned to the person ("Approve pricing packages", assigned to them);
+- a question in chat or a comment ("Can you sign off on this?");
+- an issue left `blocked` with no approval on it.
+
+When a person asks for "an approval", "a sign-off" or "something in Needs you",
+raise an approval in that turn. Pick the type:
+
+| Type | When |
+|---|---|
+| `approve_ceo_strategy` | Root CEO only: its plan or strategy for the company (a CEO's first plan for a new workspace always ends with one). |
+| `request_board_approval` | Any other sign-off: prices, spend, a launch, a public post, a vendor. A specialist answering the first message uses this for its plan's first concrete action. |
+
+`hire_agent` is Lightbulb's own (never file it; see the Hiring rule) and
+`budget_override_required` is raised by Paperclip, not by you.
+
+Build the body with `jq -n` and send it through the helper (works from a room
+turn with no run id). `issueIds` takes issue **UUIDs** (the `id` field), not
+identifiers like `WAL-4`; link the task that carries the plan or document:
+
+```bash
+jq -n --arg agent "$PAPERCLIP_AGENT_ID" --arg issue "<issue uuid>" \
+  --arg plan "Two-week plan: [Plan](/WAL/issues/WAL-4#document-plan). Week 1: pricing and outreach list. Week 2: first ten calls." \
+  '{type: "approve_ceo_strategy", requestedByAgentId: $agent, issueIds: [$issue],
+    payload: {title: "Two-week launch plan", summary: "Approve to start week 1.", plan: $plan}}' |
+/app/skills/paperclip/scripts/paperclip-api.sh raw POST "/api/companies/$PAPERCLIP_COMPANY_ID/approvals"
 ```
 
-`issueIds` links the approval into the issue thread. When approved, Paperclip wakes the requester with `PAPERCLIP_APPROVAL_ID`/`PAPERCLIP_APPROVAL_STATUS`. Keep the payload concise and decision-ready.
+```bash
+jq -n --arg agent "$PAPERCLIP_AGENT_ID" --arg issue "<issue uuid>" \
+  '{type: "request_board_approval", requestedByAgentId: $agent, issueIds: [$issue],
+    payload: {title: "Approve pricing packages",
+              summary: "Starter $49/mo, Studio $149/mo, Custom quoted.",
+              recommendedAction: "Approve and I will publish them on the site.",
+              nextActionOnApproval: "Publish the pricing page.",
+              risks: ["Studio may be underpriced for agencies."]}}' |
+/app/skills/paperclip/scripts/paperclip-api.sh raw POST "/api/companies/$PAPERCLIP_COMPANY_ID/approvals"
+```
+
+Keep the payload decision-ready: the title is the decision, the summary is what
+the person needs to decide it, and the long detail stays in the linked document.
+The response's `id` gives the link `<app_url>/<PREFIX>/approvals/<id>` (it
+renders as an Approve card in chat; `app_url` is in the facts file). Then:
+
+- put the linked task in `in_review` (a linked approval is a real review path);
+- tell the person in one line what you asked and where ("I've put the pricing
+  sign-off in Needs you: <link>");
+- do not raise a second approval for the same decision; `GET
+  /api/companies/{companyId}/approvals?status=pending` shows what is open.
+
+Approval wakes you with `PAPERCLIP_APPROVAL_ID`/`PAPERCLIP_APPROVAL_STATUS`
+(`references/heartbeat.md` Step 2). A reject does **not** wake you; the person's
+next message or comment will.
 
 ## MCP Tool Approval Gates
 

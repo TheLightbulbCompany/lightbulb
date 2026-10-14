@@ -702,12 +702,20 @@ Lightbulb creation, deploy, or approval flow may change the roster.
 
 ### CEO strategy approval
 
-If you are the CEO, your first strategic plan must be approved before you can move tasks to `in_progress`:
+If you are the CEO, your first plan for the company ends with an
+`approve_ceo_strategy` approval linked to the plan's task, so the person makes
+one real decision in **Needs you**:
 
 ```
 POST /api/companies/{companyId}/approvals
-{ "type": "approve_ceo_strategy", "requestedByAgentId": "{your-agent-id}", "payload": { "plan": "..." } }
+{ "type": "approve_ceo_strategy", "requestedByAgentId": "{your-agent-id}",
+  "issueIds": ["{plan-issue-uuid}"],
+  "payload": { "title": "...", "summary": "...", "plan": "... with the plan document link" } }
 ```
+
+Send it through the helper's `raw POST` with a `jq -n` body; the worked command
+and the rule for every other decision a person must make is
+`references/interactions.md` "When a person must decide".
 
 ### Issue-thread confirmations
 

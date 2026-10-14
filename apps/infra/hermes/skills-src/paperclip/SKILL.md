@@ -40,7 +40,7 @@ Paths are relative to `/app/skills/paperclip/`.
 | `$HERMES_HOME/HEARTBEAT.md` | The wake summary has the line `- reason: heartbeat_timer`. Follow your own checklist; only if it is empty, the CEO follows `references/ceo-heartbeat.md`, others `references/heartbeat.md`. |
 | `references/monitors.md` | Waiting on a PR, CI, a deploy or a vendor; watchdogs. |
 | `references/work-modes.md` | The wake prompt carries `- Work mode: "ask"` or `"planning"`, or a plan was accepted. |
-| `references/interactions.md` | Board approvals, issue-thread cards, MCP tools that return `approval_required`. |
+| `references/interactions.md` | **A person must decide** (approvals), issue-thread cards, MCP `approval_required`. |
 | `references/delegation.md` | Handoffs, escalation, follow-ups, delegating a review, the courier pattern. |
 | `references/comment-style.md` | Writing a comment, description or plan document. |
 | `references/hot-routes.md` | Helper flags, endpoints, `?q=` issue search. |
@@ -52,7 +52,7 @@ Paths are relative to `/app/skills/paperclip/`.
 | `references/cases.md` | Cases. |
 | `references/secrets.md` | A credential is needed, or a granted secret. |
 | `references/inbox.md` | Archiving from a user's inbox. |
-| `references/artifacts.md` | Attachments and work products. |
+| `references/artifacts.md` | Any deliverable (only these reach the Library). |
 | `references/workflows.md` | Project setup, `instructions-path`, import/export, self-test, local CLI. |
 | `references/api-reference.md` | Full API, schemas, worked heartbeats, errors, common mistakes. |
 
@@ -70,6 +70,7 @@ Paths are relative to `/app/skills/paperclip/`.
 - **Never leave a follow-up or blocker issue unassigned.**
 - **Handoffs go through issues, not chat.** Post one line with the link in the room; it stops waking agents after two agent replies.
 - **Hiring**: never call `/agents` or `/agent-hires`. Send a `recommend_agents` card from the marketplace; else file the role to the explicit assignee or the root CEO (`role: ceo` and no `reportsTo`). Never pick an agent by name.
+- **A person's decision is an approval** (`references/interactions.md`), never a task assigned to them or a question in chat.
 - **Never paste a credential** anywhere (`references/secrets.md`).
 - **Commits** end with exactly `Co-Authored-By: Paperclip <noreply@paperclip.ing>`.
 

@@ -1,5 +1,14 @@
 # Generated Artifacts and Work Products
 
+**The Library shows only three things:** issue documents you wrote (any key
+but the system ones), work products, and attachments on a task. A comment, the
+issue description and a chat message never appear there. So every deliverable
+(a plan, a doc, an outreach plan, a report, a file) is saved as one of those
+three before you say it is done, and "the full doc is in the task thread" is
+never the answer: write it as an issue document and link
+`/<prefix>/issues/<identifier>#document-<key>`. A comment on the task says what
+changed and links the document; it does not carry the deliverable's text.
+
 When work produces a user-inspectable file, upload true deliverables to the current issue before final disposition. Local filesystem paths are not enough because board users, reviewers, and cloud operators may not have access to the agent workspace.
 
 Use the helper bundled with this skill. From an installed `paperclip` skill directory, the helper lives at `/app/skills/paperclip/scripts/paperclip-upload-artifact.sh`:

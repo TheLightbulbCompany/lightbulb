@@ -1,7 +1,4 @@
 import Image from "next/image";
-import Link from "next/link";
-
-import { Arrow } from "./Arrow";
 
 /**
  * "A complete workspace" — a product shot sitting on a painting.
@@ -15,18 +12,12 @@ export function WorkspaceBand() {
   return (
     <section className="lb-platform" id="workspace">
       <div className="lb-wrap">
-        <p className="lb-eyebrow">A complete workspace</p>
+        <p className="lb-eyebrow">See the work, not a summary</p>
         <h2 className="lb-h2">
-          Everything you need{" "}
+          Everything an agent does,{" "}
           <br className="lb-brk" />
-          to run the company.
+          where your team can see it.
         </h2>
-        <div className="lb-platform-cta">
-          <Link href="/sign-up" className="lb-btn lb-btn-p lb-btn-xl">
-            Get started free
-            <Arrow />
-          </Link>
-        </div>
       </div>
 
       <div className="lb-band">
@@ -82,7 +73,7 @@ export function WorkspaceBand() {
                 </span>
               </div>
               <div className="lb-mfeed">
-                <Msg who="Mara" at="8:41" avatar="MR" kind="hu">Morning — pricing page is live on prod.</Msg>
+                <Msg who="Mara" at="8:41" avatar="MR" kind="hu">Morning. The pricing page is live on prod.</Msg>
                 <Msg who="Engineering" at="8:44" avatar="E" kind="ag">Confirmed, it&apos;s serving. Checkout smoke test passed.</Msg>
                 <Msg who="Aden" at="9:02" avatar="DK" kind="hu">
                   Onboarding emails still link to the old sign-up URL.{" "}
@@ -130,7 +121,7 @@ export function WorkspaceBand() {
                       <time>9:06</time>
                       <span className="lb-tag">needs you</span>
                     </div>
-                    <p className="lb-tx">That one&apos;s a legal claim — I&apos;d rather you approve the wording than have me guess.</p>
+                    <p className="lb-tx">That one&apos;s a legal claim, so I&apos;d rather you approve the wording than have me guess.</p>
                   </div>
                 </div>
               </div>
@@ -151,14 +142,24 @@ export function WorkspaceBand() {
                   <i />
                 </div>
               </div>
-              <p className="lb-mh2">This month</p>
-              <div className="lb-mcard">
-                <b>128 runs</b>
-                <p>41 needed a person</p>
-              </div>
+              <p className="lb-mh2">Needs you · 2</p>
             </aside>
           </div>
         </div>
+      </div>
+
+      <div className="lb-wrap lb-captions">
+        <p>
+          <b>Shared sessions.</b> Watch a teammate&rsquo;s Claude Code or Codex session live from the Mac app, and
+          pick up a Claude Code session where they stopped.
+        </p>
+        <p>
+          <b>Approval cards.</b> When an agent needs a yes (a plan, a spend, a new hire), it asks in the room and
+          waits for a person.
+        </p>
+        <p>
+          <b>Library.</b> Every document an agent makes is kept in one place the whole team can find.
+        </p>
       </div>
     </section>
   );

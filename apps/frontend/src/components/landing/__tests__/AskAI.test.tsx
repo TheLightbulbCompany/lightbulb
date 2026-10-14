@@ -75,7 +75,7 @@ describe("AskAI", () => {
 
   it("copies and confirms on the copy-prompt button", async () => {
     render(<AskAI />);
-    fireEvent.click(screen.getByRole("button", { name: /Copy prompt/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Copy the question/ }));
     expect(writeText).toHaveBeenCalledWith(ASK_AI_PROMPT);
     await waitFor(() => expect(screen.getByText("Copied")).toBeInTheDocument());
   });
@@ -83,7 +83,7 @@ describe("AskAI", () => {
   it("does not claim success when the clipboard is blocked", async () => {
     writeText.mockRejectedValue(new Error("denied"));
     render(<AskAI />);
-    fireEvent.click(screen.getByRole("button", { name: /Copy prompt/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Copy the question/ }));
     await waitFor(() => expect(writeText).toHaveBeenCalled());
     expect(screen.queryByText("Copied")).not.toBeInTheDocument();
   });
@@ -98,8 +98,8 @@ describe("AskAI", () => {
       writable: true,
     });
     render(<AskAI />);
-    fireEvent.click(screen.getByRole("button", { name: /Copy prompt/ }));
-    await waitFor(() => expect(screen.getByRole("button", { name: /Copy prompt/ })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /Copy the question/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Copy the question/ })).toBeInTheDocument());
     expect(screen.queryByText("Copied")).not.toBeInTheDocument();
   });
 

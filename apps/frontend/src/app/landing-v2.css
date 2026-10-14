@@ -331,8 +331,10 @@
 .ld-page .lb-foot-in { position: relative; z-index: 2; max-width: var(--lb-maxw); margin: 0 auto; padding: clamp(64px,7vw,104px) var(--lb-edge) clamp(26px,3vw,40px); }
 .ld-page .lb-foot-top { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: clamp(32px,5vw,80px); }
 @media (max-width: 880px) { .ld-page .lb-foot-top { grid-template-columns: 1fr; } }
-.ld-page .lb-foot-cta h2 { font-family: var(--font-lora-serif), Georgia, serif; font-weight: 400; color: #fff; font-size: clamp(1.8rem,2.6vw,2.7rem); line-height: 1.14; letter-spacing: -0.004em; margin: 0; max-width: 14ch; }
+.ld-page .lb-foot-cta h2 { font-family: var(--font-lora-serif), Georgia, serif; font-weight: 400; color: #fff; font-size: clamp(1.8rem,2.6vw,2.7rem); line-height: 1.14; letter-spacing: -0.004em; margin: 0; max-width: 22ch; }
 .ld-page .lb-foot-cta h2 em { font-style: italic; }
+.ld-page .lb-foot-btns { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; }
+.ld-page .lb-foot-cta .lb-btn.lb-btn-ghost { background: transparent; color: #fff; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.5); }
 .ld-page .lb-foot-cta .lb-btn { margin-top: 1.6rem; background: #fff; color: #0f1a2b; border-radius: 999px; padding: 0.78rem 1.5rem; font-size: 0.95rem; }
 .ld-page .lb-foot-cols { display: grid; grid-template-columns: repeat(3,minmax(120px,auto)); gap: clamp(28px,4vw,72px); }
 @media (max-width: 560px) { .ld-page .lb-foot-cols { grid-template-columns: 1fr 1fr; gap: 24px; } }
@@ -391,3 +393,23 @@
 @media (prefers-reduced-motion: reduce) {
   .ld-page .lb-askai-tile, .ld-page .lb-askai-mark, .ld-page .lb-askai-human a { transition: none; }
 }
+
+/* ── Problem, proof stories, captions, founding teams, FAQ (10 Section A) ── */
+.ld-page .lb-problem, .ld-page .lb-stories, .ld-page .lb-founding, .ld-page .lb-faq { padding: clamp(56px, 8vw, 112px) 0; }
+.ld-page .lb-problem .lb-h2 { max-width: 30ch; }
+.ld-page .lb-problem-body, .ld-page .lb-founding-body { margin: 1.4rem auto 0; text-align: center; max-width: 62ch; font-size: 1.08rem; line-height: 1.7; color: var(--lb-ink-soft); }
+.ld-page .lb-stories-grid { display: grid; gap: 1.5rem; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.ld-page .lb-story { margin: 0; padding: 1.6rem 1.7rem; border: 1px solid var(--rule); border-radius: 14px; background: var(--cream-deep); }
+.ld-page .lb-story blockquote { margin: 0; font-family: var(--font-lora-serif), Georgia, serif; font-size: 1.18rem; line-height: 1.55; color: var(--lb-ink); }
+.ld-page .lb-story figcaption { margin-top: 1rem; font-size: 0.92rem; line-height: 1.5; color: var(--lb-ink-mute); }
+.ld-page .lb-captions { display: grid; gap: 1.2rem 2rem; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); margin-top: 2.2rem; }
+.ld-page .lb-captions p { margin: 0; font-size: 0.98rem; line-height: 1.6; color: var(--lb-ink-soft); }
+.ld-page .lb-captions b { color: var(--lb-ink); }
+.ld-page .lb-founding .lb-wrap { text-align: center; }
+.ld-page .lb-founding-list { width: fit-content; text-align: left; margin: 1.4rem auto 0; padding-left: 1.2rem; display: grid; gap: 0.45rem; color: var(--lb-ink); }
+.ld-page .lb-founding-note { margin: 1rem auto 0; font-size: 0.95rem; color: var(--lb-ink-mute); max-width: 62ch; }
+.ld-page .lb-founding .lb-btn { margin-top: 1.8rem; }
+.ld-page .lb-faq-list { margin: 1.8rem auto 0; display: grid; gap: 1.4rem; max-width: 72ch; }
+.ld-page .lb-faq-item dt { font-weight: 600; color: var(--lb-ink); }
+.ld-page .lb-faq-item dd { margin: 0.4rem 0 0; line-height: 1.65; color: var(--lb-ink-soft); }
+.ld-page .lb-faq-item dd a { text-decoration: underline; }

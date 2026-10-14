@@ -129,9 +129,8 @@ export function AskAI() {
           <p className="lb-eyebrow">Ask AI</p>
           <h2 className="lb-h2">Still not sure?</h2>
           <p className="lb-askai-sub">
-            Don&rsquo;t just take our word for it. Ask your favourite AI what
-            Lightbulb is and whether it suits your team — the question is
-            already written.
+            Ask your own AI what Lightbulb is and whether it fits your team. The
+            question is already written.
           </p>
         </div>
 
@@ -153,7 +152,7 @@ export function AskAI() {
 
             <button type="button" className="lb-askai-tile" onClick={onCopyClick}>
               <Mark id="copy" />
-              <span aria-live="polite">{copied ? "Copied" : "Copy prompt"}</span>
+              <span aria-live="polite">{copied ? "Copied" : "Copy the question"}</span>
             </button>
           </div>
 

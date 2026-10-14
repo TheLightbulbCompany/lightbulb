@@ -2,7 +2,7 @@
 title: "How AI agents can use browser automation when there is no native integration"
 description: "Native connectors are best, but browser automation lets AI agents operate UI-only tools, marketing platforms, and niche apps when APIs are missing."
 date: "2026-08-24"
-author: "Lightbulb"
+author: "Prasiddha Parthsarthy"
 tags: ["browser automation","ai agent integrations","connectors","marketing automation"]
 ---
 
@@ -36,7 +36,7 @@ A growth agent can combine several paths:
 - a native connector for Instagram or Meta Ads when available,
 - a browser workflow for tools that require UI interaction,
 - webhooks for lead or conversion events,
-- Paperclip tasks for campaign planning and review,
+- tasks for campaign planning and review,
 - approval cards before spend or public-facing changes.
 
 That structure lets the agent help with content calendars, campaign QA, reporting, and creative operations without giving it uncontrolled authority over budget or brand voice.

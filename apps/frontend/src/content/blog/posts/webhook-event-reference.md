@@ -2,7 +2,7 @@
 title: "Webhook event reference: 480 verified triggers across 10 providers"
 description: "A source-backed reference for Lightbulb webhook triggers: 480 verified event types across 10 inbound-trigger providers, plus the five connected providers that do not currently expose inbound trigger blocks."
 date: "2026-08-20"
-author: "The Lightbulb team"
+author: "Prasiddha Parthsarthy"
 tags: ["webhooks","integrations","automation","providers"]
 ---
 

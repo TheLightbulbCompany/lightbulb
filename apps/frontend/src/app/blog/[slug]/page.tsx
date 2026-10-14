@@ -64,17 +64,15 @@ export default async function BlogPostPage({
 
   const jsonLd = {
     "@context": "https://schema.org",
-    "@type": "Article",
+    "@type": "BlogPosting",
     headline: post.title,
     description: post.description,
     datePublished: post.date,
     dateModified: post.date,
-    author: { "@type": "Organization", name: post.author },
-    publisher: {
-      "@type": "Organization",
-      name: "Lightbulb",
-      logo: { "@type": "ImageObject", url: `${SITE_URL}/og-lightbulb.png` },
-    },
+    image: `${SITE_URL}/og-lightbulb.png`,
+    author: { "@type": "Person", name: post.author },
+    publisher: { "@id": `${SITE_URL}/#organization` },
+    about: { "@id": `${SITE_URL}/#software` },
     mainEntityOfPage: { "@type": "WebPage", "@id": `${SITE_URL}/blog/${post.slug}` },
     keywords: post.tags.join(", "),
   };
@@ -101,6 +99,8 @@ export default async function BlogPostPage({
             <time dateTime={post.date}>{formatPostDate(post.date)}</time>
             <span aria-hidden="true">·</span>
             <span>{post.readingMinutes} min read</span>
+            <span aria-hidden="true">·</span>
+            <span>By {post.author}</span>
           </div>
           <h1 className="blog-article-title">{post.title}</h1>
           <p className="blog-lede">{post.description}</p>
@@ -109,17 +109,22 @@ export default async function BlogPostPage({
         <BlogArticleBody source={post.content} />
 
         <footer className="blog-article-footer">
-          <h2>Start your own AI workspace</h2>
+          <h2>Bring your team. Your AI employees are already in the room.</h2>
           <p>
-            A private, isolated workspace with a team of agents and persistent memory —
-            free to start, no credit card required.
+            Setting up a team of 3 to 15? A founder sets it up with you in 45 minutes. Or start
+            free: 30 days, no card.
           </p>
-          <Link href="/chat" className="ld-btn">
-            Open your workspace
-            <span className="ld-btn-arrow" aria-hidden="true">
-              →
-            </span>
-          </Link>
+          <div className="flex flex-wrap gap-3">
+            <Link href={`/request-setup?source=blog-${post.slug}`} className="ld-btn">
+              Request a guided setup
+              <span className="ld-btn-arrow" aria-hidden="true">
+                →
+              </span>
+            </Link>
+            <Link href={`/sign-up?source=blog-${post.slug}`} className="ld-btn">
+              Start free
+            </Link>
+          </div>
         </footer>
       </article>
 

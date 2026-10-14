@@ -478,6 +478,9 @@ async def request_pickup(auth: AuthContext, session_id: str, pickup_id: str) -> 
         # same id is the same pick-up, so PostHog dedupes it to one row.
         event_uuid=str(uuid.uuid5(_ANALYTICS_NS, f"{row['ownerId']}:{row['sessionId']}:{pickup_id}:session_picked_up")),
     )
+    from core.services import handoff_analytics
+
+    handoff_analytics.handoff(workspace_id=row["ownerId"], user_id=auth.user_id, kind="session_picked_up")
     return await run_in_thread(_ticket, row, manifest, pickup_id)
 
 

@@ -1175,3 +1175,21 @@ async def test_an_explicit_status_or_an_unassign_never_reads_the_issue():
         await patch_issue(issue_id="iss_1", body=PatchIssueBody(assignee_agent_id=None), ctx=ctx)
     fake_admin.get_issue.assert_not_awaited()
     assert fake_admin.patch_issue.call_args_list[0].kwargs["body"] == {"assigneeAgentId": "a", "status": "blocked"}
+
+
+def test_a_person_moving_an_agents_task_is_a_handoff(client, monkeypatch):
+    """T03: a status change on an agent-assigned task emits task_moved; other edits do not."""
+    admin = MagicMock()
+    moved = {"id": "iss_1", "assigneeAgentId": "agent_1", "status": "done"}
+    admin.patch_issue = AsyncMock(return_value=moved)
+    from routers.teams import agents as agents_mod
+    from routers.teams import issues as issues_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    task_moved = MagicMock()
+    monkeypatch.setattr(issues_mod.handoff_analytics, "task_moved", task_moved)
+    url = "/api/v1/teams/issues/11111111-1111-1111-1111-111111111111"
+    assert client.patch(url, json={"title": "x"}, headers={"Authorization": "Bearer x"}).status_code == 200
+    task_moved.assert_not_called()
+    assert client.patch(url, json={"status": "done"}, headers={"Authorization": "Bearer x"}).status_code == 200
+    task_moved.assert_called_once_with(workspace_id="o1", user_id="u1", issue=moved, status="done")

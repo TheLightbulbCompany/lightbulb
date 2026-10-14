@@ -14,7 +14,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path
 
-from core.services import marketplace_hire
+from core.services import handoff_analytics, marketplace_hire
 
 from . import agents as _agents
 from .deps import TeamsContext, envelope_list
@@ -91,6 +91,9 @@ async def approve(
         note=body.note,
         session_cookie=ctx.session_cookie,
     )
+    handoff_analytics.approval_answered(
+        workspace_id=ctx.owner_id, user_id=ctx.user_id, approval_id=approval_id, decision="approved"
+    )
     await marketplace_hire.deploy_for_approval(approval=approved, owner_id=ctx.owner_id)
     return approved
 
@@ -101,12 +104,16 @@ async def reject(
     body: RejectApprovalBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
-    """Reject a pending approval. ``reason`` is required."""
-    return await _agents._admin().reject_approval(
+    """Reject a pending approval. ``reason`` is required. A rejection is a handoff (D12)."""
+    rejected = await _agents._admin().reject_approval(
         approval_id=approval_id,
         reason=body.reason,
         session_cookie=ctx.session_cookie,
     )
+    handoff_analytics.approval_answered(
+        workspace_id=ctx.owner_id, user_id=ctx.user_id, approval_id=approval_id, decision="rejected"
+    )
+    return rejected
 
 
 @router.get("/approvals/{approval_id}")

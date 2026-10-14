@@ -19,6 +19,7 @@ from fastapi.responses import StreamingResponse
 # subclasses); isinstance-check against the base so it matches both.
 from starlette.datastructures import UploadFile
 
+from core.services import handoff_analytics
 from core.services.paperclip_admin_client import ISSUE_ID_PATTERN
 
 from . import agents as _agents
@@ -263,11 +264,18 @@ async def patch_issue(
         current = await admin.get_issue(issue_id=issue_id, session_cookie=ctx.session_cookie)
         if (current or {}).get("status") == "blocked":
             payload["status"] = "todo"
-    return await admin.patch_issue(
+    patched = await admin.patch_issue(
         issue_id=issue_id,
         body=payload,
         session_cookie=ctx.session_cookie,
     )
+    if "status" in body.model_fields_set:
+        # A person moved an agent's task: a handoff (T03). Only the caller's own status change,
+        # not the unblock this route adds on reassignment.
+        handoff_analytics.task_moved(
+            workspace_id=ctx.owner_id, user_id=ctx.user_id, issue=patched, status=payload["status"]
+        )
+    return patched
 
 
 @router.delete("/issues/{issue_id}")

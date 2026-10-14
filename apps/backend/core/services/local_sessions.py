@@ -2484,6 +2484,9 @@ AUDIT_ACTIONS = Literal[
     "join_requested",
     "join_allowed",
     "join_declined",
+    "join_allow_undone",
+    "ask_to_join_on",
+    "ask_to_join_off",
     "pickup_requested",
     "pickup_request_declined",
     "sender_removed",
@@ -2750,14 +2753,12 @@ async def decide_join(
     pins the answer to the request the owner saw, so it never lands on a newer one."""
     user_id = _valid_user(user_id)
     answered: dict = {}
-    if decision == "allow":
-        await _admit_outsider(auth, session_id, user_id, request_id)
 
     def change(row: dict) -> dict | None:
         if auth.user_id != row["humanUserId"]:
             raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can answer a request to join.")
         asked = (row.get("joinRequests") or {}).get(user_id) or {}
-        answered.update(outsider=bool(asked.get("outsider")), askedAt=asked.get("askedAt"))
+        answered.update(outsider=bool(asked.get("outsider")), askedAt=asked.get("askedAt"), request=asked)
         requests = dict(row.get("joinRequests") or {})
         current = requests.get(user_id) or {}
         answered["requestId"] = current.get("requestId")
@@ -2777,6 +2778,8 @@ async def decide_join(
 
     action = "join_allowed" if decision == "allow" else "join_declined"
     row, audit = await _change_session(auth, session_id, change, action, user_id)
+    if audit is not None and decision == "allow" and answered.get("outsider"):
+        await _admit_outsider(auth, session_id, user_id, row, answered["request"])
     if audit is not None:  # only a write that landed; a repeated answer is a no-op
         if answered.get("outsider"):  # 06 §2's funnel: a stranger's ask from the public page
             latency = int(time.time()) - int(answered["askedAt"]) if answered.get("askedAt") else None
@@ -2789,21 +2792,32 @@ async def decide_join(
     return _session_public(row, auth.user_id)
 
 
-async def _admit_outsider(auth: AuthContext, session_id: str, user_id: str, request_id: str | None) -> None:
+async def _admit_outsider(auth: AuthContext, session_id: str, user_id: str, row: dict, request: dict) -> None:
     """D1: Allow on an ask from the public page also makes that person a workspace member, as the
-    join link does (``org:member``, never more). Before the session write, so a refused membership
-    leaves the request pending for the owner to try again. A teammate's ask is not touched."""
+    join link does (``org:member``, never more). After the Allow committed, so a decline or an end
+    that won the race never grants membership; if Clerk refuses, the Allow is undone (the ask is
+    pending again) and the error stands, so the owner can try again."""
     from core.services import clerk_admin
 
-    row, _ = await authorize_session(auth, None, session_id)
-    if auth.user_id != row["humanUserId"]:
-        raise ApiProblem("LOCAL_SESSION_FORBIDDEN", "Only the session's owner can answer a request to join.")
-    current = (row.get("joinRequests") or {}).get(user_id) or {}
-    if not current.get("outsider") or current.get("state") != "pending":
-        return
-    if request_id is not None and current.get("requestId") != request_id:
-        raise ApiProblem("LOCAL_SESSION_CONFLICT", "That request was already answered.")
-    await clerk_admin.create_organization_membership(org_id=row["ownerId"], user_id=user_id, role="org:member")
+    try:
+        await clerk_admin.create_organization_membership(org_id=row["ownerId"], user_id=user_id, role="org:member")
+    except Exception:
+
+        def undo(current: dict) -> dict | None:
+            if user_id not in (current.get("allowedSenders") or []):
+                return None
+            requests = {**(current.get("joinRequests") or {}), user_id: request}
+            senders = [u for u in current.get("allowedSenders") or [] if u != user_id]
+            return {**current, "joinRequests": requests, "allowedSenders": senders}
+
+        await _change_session(auth, session_id, undo, "join_allow_undone", user_id, allow_ended=True)
+        raise
+
+
+#: What Allow on an outside ask grants, said where the owner decides (Activity, the push).
+OUTSIDER_ALLOW_COPY = (
+    "They watched it from its public link. Allow makes them a member of your workspace and lets them use this session."
+)
 
 
 class AskToJoinSwitch(ContractModel):
@@ -2976,7 +2990,7 @@ async def _notify_join_request(row: dict, requester: str, *, kind: str = "join")
         body = PICKUP_ALLOW_COPY
     elif request.get("outsider"):
         title = join_request_title(name, row, again=again)
-        body = "They watched it from its public link. Allow makes them a member of this workspace and lets them use this session."
+        body = OUTSIDER_ALLOW_COPY
     else:
         title = join_request_title(name, row, again=again)
         body = "Allow them to send follow-ups and answer prompts in this session."

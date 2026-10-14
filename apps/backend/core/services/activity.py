@@ -469,7 +469,12 @@ def render_join_request(row: dict, session: dict, *, seen: str | None) -> Activi
     """A teammate's ask to join one of the viewer's sessions (``local_sessions.request_join``),
     or to pick it up (``request_pickup_access``, ``request: "pickup"`` on the row), open while
     THAT ask is still pending on the session row."""
-    from core.services.local_sessions import PICKUP_ALLOW_COPY, join_request_title, pickup_request_title
+    from core.services.local_sessions import (
+        OUTSIDER_ALLOW_COPY,
+        PICKUP_ALLOW_COPY,
+        join_request_title,
+        pickup_request_title,
+    )
 
     sid, requester = session["sessionId"], row["requesterId"]
     pickup = row.get("request") == "pickup"
@@ -500,6 +505,8 @@ def render_join_request(row: dict, session: dict, *, seen: str | None) -> Activi
             requester=actor,
             reason=PICKUP_ALLOW_COPY
             if pickup
+            else OUTSIDER_ALLOW_COPY
+            if current.get("outsider")
             else "Allow lets just them send follow-ups and answer prompts, until the session ends.",
             links=[ActivityLink(kind="session", id=sid, label="Session")],
         ),

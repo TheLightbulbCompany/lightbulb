@@ -188,6 +188,9 @@ const ACTION_LINE: Record<LocalSessionAuditEntry["action"], string> = {
   join_requested: "asked to join this session",
   join_allowed: "",
   join_declined: "",
+  join_allow_undone: "",
+  ask_to_join_on: "let people watching the link ask to join",
+  ask_to_join_off: "stopped people watching the link from asking to join",
   sender_removed: "",
   resume_requested: "asked to resume this session",
   resume_revoked: "",
@@ -199,6 +202,7 @@ const SUBJECT_LINE: Partial<Record<LocalSessionAuditEntry["action"], (subject: s
   join_allowed: subject => `let ${subject} send to this session`,
   pickup_request_declined: subject => `declined ${possessive(subject)} request to pick up this session`,
   join_declined: subject => `declined ${possessive(subject)} request to join`,
+  join_allow_undone: subject => `could not add ${subject} to the workspace, so ${possessive(subject)} request is open again`,
   sender_removed: subject => `removed ${subject} from this session`,
   resume_revoked: subject => `stopped ${subject} from resuming this session`,
 };

@@ -553,7 +553,7 @@ export interface LocalSessionAuditEntry {
   action: "native_send_requested" | "native_send_approved" | "native_send_denied" | "native_send_cancelled" | "send" | "interrupt" | "end" | "approve" | "deny" | "cancel" | "team_control_on" | "team_control_off" | "team_control_ended" | "share_link_created" | "share_link_revoked"
     | "share_link_audience" | "session_copied"
     | "pickup_on" | "pickup_off" | "picked_up" | "pickup_expired"
-    | "pickup_requested" | "pickup_request_declined" | "join_requested" | "join_allowed" | "join_declined" | "sender_removed"
+    | "pickup_requested" | "pickup_request_declined" | "join_requested" | "join_allowed" | "join_declined" | "join_allow_undone" | "ask_to_join_on" | "ask_to_join_off" | "sender_removed"
     | "resume_requested" | "resume_revoked";
   actorUserId?: string;
   /** Whom an owner's join decision or removal was about. */

@@ -50,6 +50,7 @@ async def test_an_outsider_asks_and_the_owner_sees_who_they_are(transport, outsi
     assert (await session_links.ask_to_join(PRIYA, token)).join == "pending"
     assert (await session_links.ask_to_join(PRIYA, token)).join == "pending"  # asking again changes nothing
     assert (await session_links.open_page(PRIYA, token, refresh=True)).me.join == "pending"
+    assert not service.may_control(await repo.get_session(OWNER, sid), PRIYA.user_id)  # the Allow was undone
     owner_view = service._session_public(await repo.get_session(OWNER, sid), ALICE.user_id)
     assert owner_view.pending_joins == [PRIYA.user_id]
     assert owner_view.pending_join_names == {PRIYA.user_id: "Priya Shah (priya@acme.com)"}
@@ -113,3 +114,28 @@ async def test_a_workspace_link_takes_no_outside_ask(transport):
     with pytest.raises(ApiProblem) as refused:
         await session_links.ask_to_join(PRIYA, token)
     assert refused.value.error.code == "LOCAL_SESSION_NOT_FOUND"
+
+
+@pytest.mark.asyncio
+async def test_a_decline_that_lands_first_never_grants_membership(transport):
+    sid, token = await public_session(transport)
+    await session_links.ask_to_join(PRIYA, token)
+    await decide(ALICE, sid, PRIYA.user_id, "decline", pushes=[])
+    with patch("core.services.clerk_admin.create_organization_membership", AsyncMock()) as join:
+        with pytest.raises(ApiProblem):
+            await decide(ALICE, sid, PRIYA.user_id, "allow", pushes=[])
+    join.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_activity_says_allow_grants_workspace_membership(transport):
+    from core.services import activity
+    from core.services.local_sessions import OUTSIDER_ALLOW_COPY
+
+    sid, token = await public_session(transport)
+    await session_links.ask_to_join(PRIYA, token)
+    teams = lambda: (_ for _ in ()).throw(RuntimeError("no paperclip"))  # noqa: E731
+    items = await activity.list_activity(ALICE, cursor=None, limit=30, teams_ctx=teams)
+    [item] = [i for i in items.items if i.subtype == "join_request"]
+    assert item.summary.reason == OUTSIDER_ALLOW_COPY
+    assert "Priya Shah (priya@acme.com)" in item.summary.title

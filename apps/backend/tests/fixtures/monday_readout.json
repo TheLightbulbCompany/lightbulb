@@ -1,0 +1,43 @@
+{
+  "now": "2026-10-14T12:00:00+00:00",
+  "organizations": {
+    "org_setup_a": "Acme",
+    "org_setup_b": "Beta",
+    "org_formed": "Formed Co",
+    "org_solo": "Solo Co",
+    "org_handoff": "Handoff Co",
+    "org_week4": "Week Four Co",
+    "org_paid_old": "Old Paid",
+    "org_paid_new": "New Paid",
+    "org_excluded": "Lightbulb"
+  },
+  "membership_counts": {"org_formed": 2, "org_solo": 1},
+  "excluded": ["org_excluded"],
+  "events": [
+    {"event":"setup_requested","timestamp":"2026-10-06T10:00:00+00:00","workspace_id":"org_setup_a","self_reported_source":"friend","first_touch_source":"flickmeon.ai","last_touch_source":"direct"},
+    {"event":"setup_requested","timestamp":"2026-10-07T10:00:00+00:00","workspace_id":"org_setup_b","self_reported_source":"search","first_touch_source":"google","last_touch_source":"google"},
+    {"event":"setup_requested","timestamp":"2026-10-08T10:00:00+00:00","workspace_id":"org_excluded","self_reported_source":"internal","first_touch_source":"direct","last_touch_source":"direct"},
+
+    {"event":"workspace_created","timestamp":"2026-10-04T12:00:00+00:00","workspace_id":"org_formed"},
+    {"event":"team_formed","timestamp":"2026-10-05T11:00:00+00:00","workspace_id":"org_formed"},
+    {"event":"workspace_created","timestamp":"2026-10-04T13:00:00+00:00","workspace_id":"org_solo"},
+    {"event":"team_formed","timestamp":"2026-10-05T12:00:00+00:00","workspace_id":"org_solo"},
+
+    {"event":"workspace_created","timestamp":"2026-09-30T08:00:00+00:00","workspace_id":"org_handoff"},
+    {"event":"session_picked_up","timestamp":"2026-10-02T08:00:00+00:00","workspace_id":"org_handoff"},
+
+    {"event":"team_formed","timestamp":"2026-09-12T09:00:00+00:00","workspace_id":"org_week4"},
+    {"event":"room_message_sent","timestamp":"2026-10-05T09:00:00+00:00","workspace_id":"org_week4"},
+
+    {"event":"landing_viewed","timestamp":"2026-10-06T08:00:00+00:00","workspace_id":"org_setup_a","source":"flickmeon.ai","host":"thelightbulb.company"},
+    {"event":"setup_cta_clicked","timestamp":"2026-10-06T08:05:00+00:00","workspace_id":"org_setup_a","source":"flickmeon.ai","host":"thelightbulb.company"},
+    {"event":"landing_viewed","timestamp":"2026-10-07T08:00:00+00:00","workspace_id":"org_setup_b","source":"google","host":"www.thelightbulb.company"},
+    {"event":"signup_started","timestamp":"2026-10-07T08:06:00+00:00","workspace_id":"org_setup_b","source":"google","host":"www.thelightbulb.company"}
+  ],
+  "invoices": [
+    {"workspace_id":"org_paid_old","paid_at":"2026-09-01T00:00:00+00:00","amount_paid":1000,"discounts":[],"billing_reason":"subscription_cycle"},
+    {"workspace_id":"org_paid_new","paid_at":"2026-10-08T00:00:00+00:00","amount_paid":1000,"discounts":[],"billing_reason":"subscription_create"},
+    {"workspace_id":"org_setup_a","paid_at":"2026-10-08T00:00:00+00:00","amount_paid":1000,"discounts":["coupon"],"billing_reason":"subscription_create"},
+    {"workspace_id":"org_excluded","paid_at":"2026-10-08T00:00:00+00:00","amount_paid":1000,"discounts":[],"billing_reason":"subscription_create"}
+  ]
+}

@@ -11,7 +11,7 @@ export const JOIN_LINK_COPIED = "Copied. Anyone who opens it and signs in joins 
 /** What to tell the person after a copy attempt failed. One copy of these words for every surface. */
 export function joinLinkNote(error: unknown): string {
   if (error instanceof ApiError && error.status === 403) return "Couldn't get the join link. Ask a workspace admin to copy it from Settings → Members.";
-  if (error instanceof JoinLinkCopyError && error.reason === "unavailable") return "This workspace's link can't be shown here. Regenerate it under Settings → Members (that turns the old link off).";
+  if (error instanceof JoinLinkCopyError && error.reason === "unavailable") return "This workspace's link can't be shown here. A workspace admin can regenerate it under Settings → Members (that turns the old link off).";
   if (error instanceof JoinLinkCopyError && error.reason === "clipboard") return "Couldn't copy automatically. Copy it from Settings → Members.";
   return "Couldn't get the join link. Try again, or copy it from Settings → Members.";
 }

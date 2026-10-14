@@ -592,7 +592,7 @@ it("sends an admin to Regenerate when the link cannot be shown, instead of rotat
 
   await user.click(screen.getByRole("button", { name: /^Details/ }));
   await user.click(screen.getByRole("button", { name: "Copy the workspace join link" }));
-  expect(await screen.findByText(/Regenerate it under Settings → Members/)).toBeInTheDocument();
+  expect(await screen.findByText(/can regenerate it under Settings → Members/)).toBeInTheDocument();
 });
 
 it("takes one copy at a time so a double click cannot mint two links", async () => {

@@ -252,12 +252,16 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
         ))}
       </div>
 
-      {invite === "legacy" && (
+      {invite === "legacy" && (isAdmin ? (
         <p className="onboarding-card-detail">
           This workspace&apos;s link can&apos;t be shown here. Reset it in{" "}
           <Link href="/settings?panel=members">Settings → Members</Link>.
         </p>
-      )}
+      ) : (
+        <p className="onboarding-card-detail">
+          This workspace&apos;s link can&apos;t be shown here. Ask a workspace admin to reset it.
+        </p>
+      ))}
 
       <ContextDialog
         open={sharing}

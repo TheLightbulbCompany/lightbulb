@@ -116,11 +116,11 @@ async def create_join_link(
     So a member may mint only the FIRST link; replacing one is an admin's call.
     """
     _require_member_of(auth, org_id)
-    # ponytail: check-then-mint, so two members racing on a link-less workspace both mint and the
-    # first link dies within milliseconds of being shown; a conditional put if that ever matters.
-    if not auth.is_org_admin and await workspace_join.describe_join_link(org_id):
+    # A member's mint is an atomic create: losing a race (or meeting an existing link) returns
+    # the live link instead of replacing it.
+    minted = await workspace_join.mint_join_link(org_id, created_by=auth.user_id, replace=auth.is_org_admin)
+    if not minted or not minted.get("join_url"):
         raise HTTPException(403, "Only a workspace admin can replace the join link")
-    minted = await workspace_join.mint_join_link(org_id, created_by=auth.user_id)
     return CreateJoinLinkResponse(**minted)
 
 

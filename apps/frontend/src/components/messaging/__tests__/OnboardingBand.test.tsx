@@ -380,6 +380,15 @@ describe("copying the join link", () => {
     expect(h.post).not.toHaveBeenCalled();
     expect(clipboard).not.toHaveBeenCalled();
   });
+
+  it("tells a member to ask an admin, since Settings → Members is admin-only", async () => {
+    h.role = "org:member";
+    h.get.mockResolvedValue({ exists: true, join_url: null });
+    render(<OnboardingBand participants={FRESH} />);
+    invite();
+    expect(await screen.findByText(/Ask a workspace admin to reset it/)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Settings → Members/ })).not.toBeInTheDocument();
+  });
 });
 
 describe("starter-model card", () => {

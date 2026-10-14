@@ -28,7 +28,11 @@ class FakeJoinRepo:
     async def get_link(self, org_id: str):
         return self.rows.get(org_id)
 
-    async def put_link(self, org_id: str, *, token_hash: str, token_enc: str, created_by: str) -> dict:
+    async def put_link(
+        self, org_id: str, *, token_hash: str, token_enc: str, created_by: str, only_if_absent: bool = False
+    ) -> dict | None:
+        if only_if_absent and org_id in self.rows:
+            return None
         row = {
             "org_id": org_id,
             "token_hash": token_hash,
@@ -253,11 +257,22 @@ def test_a_member_may_copy_and_mint_the_first_link_but_not_replace_or_revoke_it(
     assert first.status_code == 201
     assert client.get("/api/v1/orgs/org_test/join-link").json()["join_url"] == first.json()["join_url"]
 
+    # A second mint (another member racing, or a stale "no link" read) never replaces: it hands
+    # back the live link.
     again = client.post("/api/v1/orgs/org_test/join-link")
-    assert again.status_code == 403
-    assert again.json()["detail"] == "Only a workspace admin can replace the join link"
+    assert again.status_code == 201
+    assert again.json()["join_url"] == first.json()["join_url"]
     assert client.delete("/api/v1/orgs/org_test/join-link").status_code == 403
     assert client.get("/api/v1/orgs/org_test/join-link").json()["join_url"] == first.json()["join_url"]
+
+
+def test_a_member_cannot_replace_a_link_that_cannot_be_shown(app, member_auth, repo):
+    _override_auth(app, member_auth)
+    repo.rows["org_test"] = {"org_id": "org_test", "token_hash": "h", "created_by": "user_admin", "created_at": "x"}
+    resp = TestClient(app).post("/api/v1/orgs/org_test/join-link")
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "Only a workspace admin can replace the join link"
+    assert repo.rows["org_test"]["token_hash"] == "h"
 
 
 def test_personal_caller_is_rejected_before_any_write(app, personal_auth, repo):

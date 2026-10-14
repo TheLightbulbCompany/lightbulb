@@ -169,3 +169,12 @@ def test_subscription_events_accept_the_seat_item(monkeypatch):
         }
     }
     assert stripe_webhook_handlers._workspace_plan_from_subscription_items(event) == "standard"
+
+
+@pytest.mark.asyncio
+async def test_membership_seat_sync_failure_raises_for_redelivery(monkeypatch):
+    from routers import webhooks
+
+    monkeypatch.setattr(billing_service, "sync_seat_quantity", AsyncMock(side_effect=RuntimeError("stripe down")))
+    with pytest.raises(RuntimeError):
+        await webhooks._sync_seats("org_1")

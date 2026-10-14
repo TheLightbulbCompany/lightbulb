@@ -86,7 +86,7 @@ export function TeamBillingCard({
         ) : (
           <>
             <strong className="font-semibold text-[var(--midnight)]">${workspacePriceUsd}/mo</strong> for
-            your workspace, with unlimited members.
+            your workspace, up to 5 people; each member from the 6th adds a seat.
           </>
         )}
       </p>

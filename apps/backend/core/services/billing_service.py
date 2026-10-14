@@ -507,19 +507,17 @@ async def sync_seat_quantity(owner_id: str) -> str:
     from core.services.apple_iap import stripe_is_live
     from core.services.provision_gate import LIVE_SUBSCRIPTION_STATUSES
 
+    seat_price = settings.STRIPE_SEAT_PRICE_ID
+    if not seat_price:
+        # Fail closed: charge nothing rather than guess a price.
+        put_metric("billing.seat_price_unconfigured")
+        logger.error("seat price unconfigured; no seats billed for owner %s", owner_id)
+        return "seat_price_unconfigured"
     account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
     sub_id = (account or {}).get("stripe_subscription_id")
     if not sub_id or not stripe_is_live(account) or account.get("subscription_source") == "apple_iap":
         return "not_stripe_billed"
     seats = await seats_for_workspace(owner_id)
-    seat_price = settings.STRIPE_SEAT_PRICE_ID
-    if not seat_price:
-        if seats:
-            # Fail closed: charge nothing rather than guess a price.
-            put_metric("billing.seat_price_unconfigured")
-            logger.error("seat price unconfigured; owner %s has %d unbilled seats", owner_id, seats)
-            return "seat_price_unconfigured"
-        return "unchanged"
     with timing("stripe.api.latency", {"op": "subscription.retrieve"}):
         subscription = stripe.Subscription.retrieve(sub_id)
     if subscription.get("status") not in LIVE_SUBSCRIPTION_STATUSES:

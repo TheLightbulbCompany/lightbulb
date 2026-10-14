@@ -375,15 +375,17 @@ async def _handle_organization_created(data: dict) -> None:
 
 
 async def _sync_seats(org_id: str) -> None:
-    """Seat billing follows membership (T04). Never fails the membership event: the sync is
-    absolute, and every live subscription event re-runs it."""
+    """Seat billing follows membership (T04). A failure RAISES: the lifecycle claims stay open
+    and Clerk redelivers the event. Every step before this is idempotent, and the sync itself
+    sets an absolute quantity, so the replay is safe."""
     from core.services.billing_service import sync_seat_quantity
 
     try:
         await sync_seat_quantity(org_id)
     except Exception:
-        logger.exception("membership: seat sync failed org=%s", org_id)
+        logger.exception("membership: seat sync failed org=%s; Clerk will redeliver", org_id)
         put_metric("billing.seat_sync", dimensions={"outcome": "error"})
+        raise
 
 
 async def _handle_organization_membership_created(

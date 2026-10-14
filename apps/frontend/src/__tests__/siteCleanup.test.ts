@@ -29,3 +29,19 @@ describe("noindex outside the production host", () => {
     expect(host.test("thelightbulbXcompany")).toBe(false);
   });
 });
+
+describe("flickmeon.ai, the retired domain", () => {
+  async function targetFor(host: string): Promise<string[]> {
+    const redirects = await nextConfig.redirects!();
+    return redirects
+      .filter((r) => r.has?.some((h) => h.type === "host" && new RegExp(h.value!).test(host)))
+      .map((r) => `${r.source} -> ${r.destination} ${r.permanent}`);
+  }
+
+  it("308s every path, static files included, to the same path on the product site", async () => {
+    expect(await targetFor("flickmeon.ai")).toEqual(["/:path* -> https://thelightbulb.company/:path* true"]);
+    expect(await targetFor("www.flickmeon.ai")).toEqual(["/:path* -> https://thelightbulb.company/:path* true"]);
+    expect(await targetFor("dev.flickmeon.ai")).toEqual(["/:path* -> https://dev.thelightbulb.company/:path* true"]);
+    expect(await targetFor("thelightbulb.company")).toEqual([]);
+  });
+});

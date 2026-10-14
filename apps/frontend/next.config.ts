@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 import withBundleAnalyzer from "@next/bundle-analyzer";
 import path from "path";
 
-import { PRODUCT_DOMAINS, ROOT_DOMAIN } from "./src/lib/domain";
+import { LAUNCH_HOSTS, PRODUCT_DOMAINS, ROOT_DOMAIN, SITE_URL } from "./src/lib/domain";
 import { AWS_REGION } from "./src/lib/aws";
 
 // AgentCore Browser's DCV live view: the presigned URL the backend mints is
@@ -198,7 +198,19 @@ const nextConfig: NextConfig = {
   },
 
   async redirects() {
-    return RETIRED_PAGE_REDIRECTS.map((r) => ({ ...r, permanent: true }));
+    return [
+      // flickmeon.ai, the retired product domain: every path, static files
+      // included (middleware's matcher skips those), 308s to the same path on
+      // the product site; the query string carries over. Redirects run before
+      // middleware, so Clerk never sees these hosts.
+      ...LAUNCH_HOSTS.map((host) => ({
+        source: "/:path*",
+        has: [{ type: "host" as const, value: `^${host.replace(/\./g, "\\.")}$` }],
+        destination: `${host.startsWith("dev.") ? `https://dev.${ROOT_DOMAIN}` : SITE_URL}/:path*`,
+        permanent: true,
+      })),
+      ...RETIRED_PAGE_REDIRECTS.map((r) => ({ ...r, permanent: true })),
+    ];
   },
 
   turbopack: {

@@ -9,7 +9,6 @@ import {
 import {
   decideAdminHostRouting,
   decideCanonicalHostRedirect,
-  decideLaunchHostRedirect,
   decidePaperclipLinkRedirect,
 } from '@/middleware';
 
@@ -216,23 +215,5 @@ describe('decidePaperclipLinkRedirect (agent Paperclip-link redirect)', () => {
     expect(decidePaperclipLinkRedirect('/agents/cto')).toBeNull();
     expect(decidePaperclipLinkRedirect('/projects/growth')).toBeNull();
     expect(decidePaperclipLinkRedirect('/goals/g-142')).toBeNull();
-  });
-});
-
-describe('decideLaunchHostRedirect (retired product domain)', () => {
-  it('ignores the product domain', () => {
-    expect(decideLaunchHostRedirect('thelightbulb.company', '/chat', '')).toBeNull();
-    expect(decideLaunchHostRedirect('admin.thelightbulb.company', '/admin', '')).toBeNull();
-  });
-
-  it('redirects every path, the root and /launch included, keeping path and query', () => {
-    expect(decideLaunchHostRedirect('flickmeon.ai', '/blog/x', '?a=1')).toBe('https://thelightbulb.company/blog/x?a=1');
-    expect(decideLaunchHostRedirect('flickmeon.ai', '/', '')).toBe('https://thelightbulb.company/');
-    expect(decideLaunchHostRedirect('WWW.flickmeon.ai', '/launch', '')).toBe('https://thelightbulb.company/launch');
-    expect(decideLaunchHostRedirect('flickmeon.ai', '/', '?ref=ABC12345')).toBe('https://thelightbulb.company/?ref=ABC12345');
-  });
-
-  it('sends the old dev host to the new dev host', () => {
-    expect(decideLaunchHostRedirect('dev.flickmeon.ai', '/chat', '')).toBe('https://dev.thelightbulb.company/chat');
   });
 });

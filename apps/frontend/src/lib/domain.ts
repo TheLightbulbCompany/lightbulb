@@ -82,7 +82,7 @@ export const PAPERCLIP_HOSTS = PRODUCT_DOMAINS.flatMap((d) => [
 
 /**
  * The retired product domain, still attached to this Vercel project. Every
- * request on these hosts is 308d by `decideLaunchHostRedirect` in
- * `src/middleware.ts` before Clerk runs: there is no Clerk session here.
+ * request on these hosts, static files included, is 308d to the product
+ * site by `redirects()` in `next.config.ts`, which runs before middleware.
  */
 export const LAUNCH_HOSTS = ["flickmeon.ai", "www.flickmeon.ai", "dev.flickmeon.ai"];

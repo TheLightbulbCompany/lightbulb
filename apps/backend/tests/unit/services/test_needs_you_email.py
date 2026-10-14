@@ -46,7 +46,9 @@ def world(monkeypatch):
     w.user = dict(USER)
     monkeypatch.setattr(repo, "get_read_cursor", w.cursor)
     monkeypatch.setattr(repo, "get_message_by_id", AsyncMock(return_value=MESSAGE))
-    monkeypatch.setattr(repo, "get_room", AsyncMock(return_value={"kind": "dm"}))
+    w.room = AsyncMock(return_value={"kind": "dm"})
+    monkeypatch.setattr(repo, "get_room", w.room)
+    monkeypatch.setattr(away, "_still_in_workspace", AsyncMock(return_value=True))
     w.member = AsyncMock(return_value={"id": "user_b"})
     monkeypatch.setattr(repo, "get_member", w.member)
     monkeypatch.setattr(repo, "finish_away_check", w.finish)
@@ -90,6 +92,22 @@ async def test_a_member_removed_from_the_room_is_never_sent_its_messages(world):
 
 
 @pytest.mark.asyncio
+async def test_a_deleted_room_sends_nothing(world):
+    world.room.return_value = {"kind": "channel", "deletedAt": "2026-10-14T14:58:00+00:00"}
+    assert await away.check_one(ROW, NOW) is False
+    world.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_edited_message_is_emailed_as_edited(world, monkeypatch):
+    edited = {**MESSAGE, "editedText": "never mind"}
+    monkeypatch.setattr(away.messaging_repo, "get_message_by_id", AsyncMock(return_value=edited))
+    assert await away.check_one(ROW, NOW) is True
+    text = world.send.await_args.kwargs["text"]
+    assert "never mind" in text and "deck" not in text
+
+
+@pytest.mark.asyncio
 async def test_a_person_in_the_app_is_deferred_not_emailed(world):
     world.user["last_active_at"] = EPOCH - 30
     assert await away.check_one(ROW, NOW) is False
@@ -120,6 +138,9 @@ async def test_an_answered_approval_sends_nothing_and_a_pending_one_uses_e4b(wor
         "title": "Growth · LB-12",
         "body": "Needs your approval: Launch email",
     }
+    monkeypatch.setattr(away, "_still_in_workspace", AsyncMock(return_value=False))
+    assert await away.check_one(row, NOW) is False  # left the workspace meanwhile
+    monkeypatch.setattr(away, "_still_in_workspace", AsyncMock(return_value=True))
     monkeypatch.setattr(away, "_approval_pending", AsyncMock(return_value=False))
     assert await away.check_one(row, NOW) is False
     monkeypatch.setattr(away, "_approval_pending", AsyncMock(return_value=True))

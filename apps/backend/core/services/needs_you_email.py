@@ -227,6 +227,13 @@ async def _approval_pending(approval_id: str) -> bool:
     return isinstance(approval, dict) and approval.get("status") == "pending"
 
 
+async def _still_in_workspace(owner_id: str, user_id: str) -> bool:
+    from core.repositories.paperclip_repo import PaperclipRepo
+
+    ws = await PaperclipRepo(table_name="paperclip-companies").get_workspace(owner_id) if owner_id else None
+    return ws is not None and user_id in (ws.member_user_ids or set())
+
+
 async def _done(row: dict, reason: str) -> None:
     await messaging_repo.finish_away_check(row["pk"], row["sk"])
     put_metric("away_email.outcome", dimensions={"outcome": reason, "kind": row.get("kind") or "unknown"})
@@ -237,11 +244,19 @@ async def check_one(row: dict, now: datetime) -> bool:
     now_epoch = int(now.timestamp())
     user_id, kind = row["userId"], row.get("kind")
     message: dict | None = None
+    room: dict | None = None
     if kind == "approval":
+        if not await _still_in_workspace(row.get("ownerId") or "", user_id):
+            await _done(row, "not_member")
+            return False
         if not await _approval_pending(row["approvalId"]):
             await _done(row, "seen")
             return False
     else:
+        room = await messaging_repo.get_room(row["roomId"])
+        if room is None or room.get("deletedAt"):
+            await _done(row, "gone")  # a deleted room keeps its rows; its content is not readable
+            return False
         if await messaging_repo.get_read_cursor(row["roomId"], user_id) >= int(row["seq"]):
             await _done(row, "seen")
             return False
@@ -275,9 +290,10 @@ async def check_one(row: dict, now: datetime) -> bool:
     if not await _claim_room_slot(user_id, slot, now_epoch):
         await _done(row, "room_cap")
         return False
-    room = None if message is None else await messaging_repo.get_room(row["roomId"])
     author = ((message or {}).get("author") or {}).get("displayName") or "Someone"
-    content = render(row, author=author, text=(message or {}).get("text") or "", room=room, sent=now_epoch)
+    # The text the chat shows: an edit replaces the original (the canonical projection's rule).
+    shown = (message or {}).get("editedText") if "editedText" in (message or {}) else (message or {}).get("text")
+    content = render(row, author=author, text=shown or "", room=room, sent=now_epoch)
     text, body, headers = _email_parts(content, unsubscribe_url(user_id))
     await email_service.send_email(
         to=email,

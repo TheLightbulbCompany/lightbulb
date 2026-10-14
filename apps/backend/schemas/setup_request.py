@@ -46,6 +46,15 @@ class SetupRequest(BaseModel):
     def _strip(cls, v):
         return v.strip() if isinstance(v, str) else v
 
+    @field_validator("name", "email", "company", "agents_other", "source_other", "thread_link")
+    @classmethod
+    def _one_line(cls, v: str) -> str:
+        # Single-line fields reach mail headers (the subject carries the
+        # company); a CR/LF would make the send fail silently after a 201.
+        if "\r" in v or "\n" in v:
+            raise ValueError("must be a single line")
+        return v
+
     @field_validator("attribution")
     @classmethod
     def _bounded_values(cls, v: dict[str, str]) -> dict[str, str]:

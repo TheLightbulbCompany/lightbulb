@@ -69,6 +69,7 @@ async def test_stores_emails_and_captures(unauthenticated_async_client):
         {"team_size": "7"},
         {"agents": []},
         {"name": "   "},
+        {"company": "Acme\r\nBcc: x@y.z"},
         {"first_handoff": ""},
     ],
 )

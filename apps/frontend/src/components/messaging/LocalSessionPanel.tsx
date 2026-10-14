@@ -177,7 +177,9 @@ export function LocalSessionPanel({ session, ownerName, own, client, revision, o
   const id = useId();
   const people = useMemo(() => [{ kind: "human" as const, id: session.humanUserId, displayName: ownerName }, ...participants], [session.humanUserId, ownerName, participants]);
   const agentName = useCallback((agentId: string) => people.find(p => p.id === agentId)?.displayName ?? "Agent", [people]);
-  const personName = useCallback((who: string) => nameOf?.(who) ?? people.find(p => p.id === who)?.displayName ?? "A teammate", [nameOf, people]);
+  // An ask from the public page (T17) names someone not in the workspace yet: the server sends their label.
+  const asked = session.pendingJoinNames;
+  const personName = useCallback((who: string) => asked?.[who] ?? nameOf?.(who) ?? people.find(p => p.id === who)?.displayName ?? "A teammate", [nameOf, people, asked]);
   const command = useSessionCommand(client, session, { uuid: () => crypto.randomUUID(), onAccessLost, onSent: () => setText(""), agentName, allowInterrupt: own || !!session.teamControl, allowOffline: true, allowEnd: own });
   // Two clicks, as in the Mac's own terminal bar: a stray one never ends a session.
   const [endArmed, setEndArmed] = useState(false);

@@ -250,6 +250,7 @@ export type {
   SessionLinkAudience,
   SessionLinkCode,
   SessionLinkPage,
+  SessionLinkJoinAsk,
   LocalSessionPickup,
   LocalSessionPickupOutcome,
   LocalSessionPickupPart,

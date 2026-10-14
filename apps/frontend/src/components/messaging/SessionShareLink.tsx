@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { copyText, copyTextWhenReady } from "./messageLinks";
 
-type Client = Partial<Pick<ReturnType<typeof createMessagingClient>, "getLocalSessionLink" | "putLocalSessionLink" | "setLocalSessionSharing" | "setLocalSessionPickup">>;
+type Client = Partial<Pick<ReturnType<typeof createMessagingClient>, "getLocalSessionLink" | "putLocalSessionLink" | "setLocalSessionSharing" | "setLocalSessionPickup" | "setLocalSessionAskToJoin">>;
 type Who = "me" | SessionLinkAudience;
 
 const ABOUT: Record<Who, string> = {
@@ -40,8 +40,11 @@ export function SessionShareLink({ session, client }: { session: LocalSession; c
   useEffect(() => { setShared(session.shared !== false); }, [session.shared]);
   const [continues, setContinues] = useState(!!session.pickup?.allowed);
   useEffect(() => { setContinues(!!session.pickup?.allowed); }, [session.pickup?.allowed]);
+  const [asks, setAsks] = useState(session.askToJoin !== false);
+  useEffect(() => { setAsks(session.askToJoin !== false); }, [session.askToJoin]);
   const whoId = useId();
   const continueId = useId();
+  const askId = useId();
   useEffect(() => {
     let alive = true;
     const started = writes.current;
@@ -109,6 +112,12 @@ export function SessionShareLink({ session, client }: { session: LocalSession; c
     catch { setStatus("Could not change that. Try again."); }
     finally { setBusy(false); }
   };
+  const setAsk = async (enabled: boolean) => {
+    setBusy(true); setStatus(null);
+    try { setAsks((await client.setLocalSessionAskToJoin!(session.sessionId, enabled)).askToJoin !== false); }
+    catch { setStatus("Could not change that. Try again."); }
+    finally { setBusy(false); }
+  };
   const shown: Who = armed ? "me" : who;
   // Only me is the session's own state; the other two are the link's, and that is not read yet.
   if (!known && shared) return <div className="flex flex-col gap-2 text-sm">
@@ -138,6 +147,16 @@ export function SessionShareLink({ session, client }: { session: LocalSession; c
         {link?.url && <input aria-label="Session link" readOnly className="room-input min-w-0 flex-1 font-mono text-xs" value={link.url} onFocus={e => e.currentTarget.select()} />}
         <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => void copy()}><Link2 aria-hidden="true" />Copy link</Button>
       </div>
+      {/* D2: on by default for Anyone sessions; the owner can turn it off for this one. */}
+      {who === "anyone" && client.setLocalSessionAskToJoin && <div className="session-setting">
+        <div className="session-setting-text">
+          <label htmlFor={askId}>Viewers can ask to join</label>
+          <div id={`${askId}-about`} className="session-setting-about">
+            People watching from the link can ask you to let them in. Allow makes them a member of your workspace with this session&apos;s controls.
+          </div>
+        </div>
+        <Switch id={askId} checked={asks} disabled={busy} onCheckedChange={next => void setAsk(next)} aria-describedby={`${askId}-about`} />
+      </div>}
       {session.provider === "claude" && client.setLocalSessionPickup && <div className="session-setting">
         <div className="session-setting-text">
           <label htmlFor={continueId}>Let people continue this session</label>

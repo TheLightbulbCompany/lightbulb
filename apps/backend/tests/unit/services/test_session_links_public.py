@@ -78,7 +78,7 @@ async def test_anyone_link_page_names_no_ids_and_shows_a_public_repo(transport, 
         "state": "live",
         "code": {"visibility": "public", "remote": "github.com/acme/app", "branch": "main", "commit": "a" * 40},
         "continuable": True,
-        "me": {"signedIn": False, "member": False},
+        "me": {"signedIn": False, "member": False, "canAsk": True},
     }
     text = json.dumps(page)
     assert OWNER not in text and ALICE.user_id not in text and sid not in text

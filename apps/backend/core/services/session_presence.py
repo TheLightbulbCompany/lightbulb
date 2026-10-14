@@ -35,6 +35,11 @@ def pending_joins(row: dict) -> dict[str, str]:
     return {u: r["requestId"] for u, r in (row.get("joinRequests") or {}).items() if r.get("state") == "pending"}
 
 
+def _asked_as(row: dict, user: str) -> str | None:
+    """The label an outsider's ask stored (name and email): they are not in the workspace yet."""
+    return ((row.get("joinRequests") or {}).get(user) or {}).get("name")
+
+
 def shown_pickups(row: dict) -> dict[str, str]:
     """Pending pick-up requests the Mac may show. Only a Mac that advertises pickupRequests gets
     them: an older one would label each "asked to join", and its Allow would share far more."""
@@ -100,7 +105,7 @@ async def entry(row: dict, at: int) -> dict:
         ],
         "joinRequests": sorted(
             [
-                {"userId": u, "name": await _name(u), "requestId": rid, "kind": kind}
+                {"userId": u, "name": _asked_as(row, u) or await _name(u), "requestId": rid, "kind": kind}
                 for kind, pending in (("join", pending_joins(row)), ("pickup", shown_pickups(row)))
                 for u, rid in pending.items()
             ]

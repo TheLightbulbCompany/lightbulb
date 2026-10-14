@@ -288,6 +288,15 @@ private repository, its name hidden. A public repository is cloned for them; a
 private one comes as the conversation only. The original session never changes. You cannot make or change
 a link: tell the owner to use **Who can see this** under **Access**.
 
+**Ask to join from the public page**: on an **Anyone with the link** page a
+person outside the workspace sees **Ask to join** (signed out, it signs them up
+first). The owner gets the same Needs-you item, naming them with their email,
+plus an email. **Allow** also makes them a member of the workspace (an ordinary
+member, never an admin) with that session's controls; a **Decline** is not
+announced to them. The owner turns this off per session with **Viewers can ask
+to join** under **Who can see this** (on by default). There is no join link on
+the page.
+
 **Ask to join**: a teammate who cannot send to someone's session taps **Ask to
 join** (it then reads **Requested**, with "Waiting for <owner> to answer."). A
 request does not time out: it stays open until the owner answers or the session

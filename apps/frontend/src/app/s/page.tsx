@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { SignInButton, SignUpButton, useAuth } from "@clerk/nextjs";
-import { AppSyncEventsClient, createMessagingClient, type LiveEvent, type SessionLinkCode, type SessionLinkPage, type SessionLinkViewing } from "@lightbulb/shared";
+import { SignInButton, SignUpButton, useAuth, useClerk } from "@clerk/nextjs";
+import { AppSyncEventsClient, createMessagingClient, type LiveEvent, type SessionLinkCode, type SessionLinkJoinAsk, type SessionLinkPage, type SessionLinkViewing } from "@lightbulb/shared";
 import { ApiError, BACKEND_URL, useApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { capture } from "@/lib/analytics";
@@ -16,6 +16,8 @@ import "@/components/messaging/messaging.css";
 // The link's credential lives in the fragment, kept in this tab across sign-up (Clerk's modal
 // on this page) and onboarding, never in a URL a server sees (spec §3.7).
 const KEY = "lightbulb:session-link";
+/** Set by a signed-out "Ask to join": the request goes once they are back from signing up. */
+const ASK_KEY = "lightbulb:session-link-ask";
 const POLL_MS = 5000;
 /** While the terminal is up: its own 15 s renewal already hears a refusal, an end or an offline Mac
  *  (and asks for a re-open then), so this poll only follows the title and the Continue switch.
@@ -228,6 +230,9 @@ export default function SessionLinkPageRoute() {
   const api = useApi();
   const client = useMemo(() => createMessagingClient(api), [api]);
   const { isLoaded, isSignedIn, orgId, getToken } = useAuth();
+  const { setActive } = useClerk();
+  const [asking, setAsking] = useState(false);
+  const [askError, setAskError] = useState<string | null>(null);
   const raw = useSyncExternalStore(onHash, readStash, () => null);
   const stash = useMemo<Stash | null>(() => { try { return raw ? JSON.parse(raw) as Stash : null; } catch { return null; } }, [raw]);
   const [page, setPage] = useState<SessionLinkPage | null>(null);
@@ -303,6 +308,31 @@ export default function SessionLinkPageRoute() {
   const memberAt = page?.me.member && !stash?.port ? page.sessionId : undefined;
   useEffect(() => { if (memberAt) router.replace(sessionPermalink(memberAt, "")); }, [memberAt, router]);
 
+  // T17 / D1: an outside viewer asks the owner to let them in. Allow makes them a member.
+  const token = stash?.token;
+  const ask = useCallback(async () => {
+    if (!token) return;
+    setAsking(true); setAskError(null);
+    try {
+      const { join } = await publicPost<SessionLinkJoinAsk>("/public/session-links/join-request", { token }, await tokenOf.current());
+      setPage(p => p && { ...p, me: { ...p.me, canAsk: false, join: join === "member" ? undefined : join } });
+      if (join === "member") reopen.current();
+    } catch (e) {
+      setAskError(e instanceof ApiError && e.message ? e.message : "Could not send your request. Try again.");
+    } finally { setAsking(false); }
+  }, [token]);
+  const canAsk = !!page?.me.canAsk;
+  useEffect(() => {
+    if (!isSignedIn || !canAsk) return;
+    let waiting = false;
+    try { waiting = window.sessionStorage.getItem(ASK_KEY) === "1"; window.sessionStorage.removeItem(ASK_KEY); } catch { /* storage blocked */ }
+    if (waiting) void ask();
+  }, [isSignedIn, canAsk, ask]);
+  const openAllowed = async (sessionId: string, workspaceId?: string) => {
+    if (workspaceId) await setActive({ organization: workspaceId });
+    router.push(sessionPermalink(sessionId, ""));
+  };
+
   const confirmContinue = async () => {
     if (!stash?.port || !stash.challenge) return;
     setBusy(true); setContinueError(null);
@@ -343,13 +373,32 @@ export default function SessionLinkPageRoute() {
       <CodeLine code={page.code} />
       {page.me.member && page.sessionId && <a href={sessionPermalink(page.sessionId)}>Open in Lightbulb</a>}
     </header>
-    {/* The stranger's door (06 §2): every non-member who has no workspace of their own, except in
-        the CLI's confirm mode and where Continue already offers "Create your free workspace". */}
-    {!page.me.member && !stash.port && !(isSignedIn && (orgId || canContinue)) && <section aria-label="Start your own" className="mb-4 flex flex-col gap-2 rounded-lg border p-3">
+    {/* The outsider's doors (06 §2): Ask to join (T17, D1/D2) and Start your own workspace (T16), for
+        every non-member, except in the CLI's confirm mode. Start your own is for people with no
+        workspace, and not where Continue already offers "Create your free workspace". */}
+    {!page.me.member && !stash.port && (page.me.canAsk || page.me.join || !(isSignedIn && (orgId || canContinue))) && <section aria-label="Join" className="mb-4 flex flex-col gap-2 rounded-lg border p-3">
       <p className="font-semibold">{page.ownerFirstName} is working with their team and AI employees in Lightbulb.</p>
-      {isSignedIn
-        ? <Button type="button" className="self-start" onClick={() => { capture("share_link_cta_clicked", { cta: "start_own", signed_in: true }); router.push("/onboarding"); }}>Start your own workspace</Button>
-        : <SignUpButton mode="modal" forceRedirectUrl="/onboarding"><Button type="button" className="self-start" onClick={() => capture("share_link_cta_clicked", { cta: "start_own", signed_in: false })}>Start your own workspace</Button></SignUpButton>}
+      {page.me.join === "allowed" && page.sessionId ? <>
+          <p role="status">You&apos;re in.</p>
+          <Button type="button" className="self-start" onClick={() => void openAllowed(page.sessionId!, page.workspaceId)}>Open in Lightbulb</Button>
+        </>
+        : page.me.join === "pending" ? <p role="status">{page.ownerFirstName} has your request. This page lets you in when {page.ownerFirstName} says yes. You can keep watching.</p>
+        : page.me.canAsk ? <>
+          <p>Join {page.ownerFirstName}&apos;s workspace to type in this session{page.provider === "claude" ? ", pick it up on your Mac," : ""} or see the rest of the work.</p>
+          {isSignedIn
+            ? <Button type="button" className="self-start" disabled={asking} onClick={() => { capture("share_link_cta_clicked", { cta: "ask_to_join", signed_in: true }); void ask(); }}>Ask to join {page.ownerFirstName}&apos;s workspace</Button>
+            : <SignUpButton mode="modal" forceRedirectUrl="/s"><Button type="button" className="self-start" onClick={() => {
+                capture("share_link_cta_clicked", { cta: "ask_to_join", signed_in: false });
+                try { window.sessionStorage.setItem(ASK_KEY, "1"); } catch { /* storage blocked: they ask again after signing up */ }
+              }}>Ask to join</Button></SignUpButton>}
+          {askError && <p role="alert">{askError}</p>}
+        </> : null}
+      {page.me.join !== "allowed" && !(isSignedIn && (orgId || canContinue)) && <div className="flex flex-wrap items-center gap-2">
+        {(page.me.canAsk || page.me.join) && <span>Not on {page.ownerFirstName}&apos;s team?</span>}
+        {isSignedIn
+          ? <Button type="button" variant={page.me.canAsk ? "outline" : "default"} className="self-start" onClick={() => { capture("share_link_cta_clicked", { cta: "start_own", signed_in: true }); router.push("/onboarding"); }}>Start your own workspace</Button>
+          : <SignUpButton mode="modal" forceRedirectUrl="/onboarding"><Button type="button" variant={page.me.canAsk ? "outline" : "default"} className="self-start" onClick={() => capture("share_link_cta_clicked", { cta: "start_own", signed_in: false })}>Start your own workspace</Button></SignUpButton>}
+      </div>}
     </section>}
     {canContinue && <section aria-label="Continue" className="mb-4 flex flex-col gap-2">
       {/* Signed out with no CLI waiting: the steps to continue, in order. `lightbulb continue` opens this

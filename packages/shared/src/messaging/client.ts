@@ -134,6 +134,7 @@ export interface MessagingClient {
   createSessionCopy(token: string, challenge: string): Promise<SessionCopyCode>;
   /** Owner-only: let workspace members see this session's token meter. */
   setLocalSessionUsageSharing(sessionId: string, enabled: boolean): Promise<LocalSession>;
+  setLocalSessionAskToJoin(sessionId: string, enabled: boolean): Promise<LocalSession>;
   /** Short-lived links to a session's snapshot, for the Mac that will continue it. Safe to repeat with the same id. */
   requestLocalSessionPickup(sessionId: string, pickupId: string): Promise<LocalSessionPickupTicket>;
   reportLocalSessionPickupOutcome(sessionId: string, pickupId: string, outcome: LocalSessionPickupOutcome): Promise<void>;
@@ -224,6 +225,7 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     // POST: the token rides in the body, never a URL a log would keep.
     createSessionCopy: (token, challenge) => api.post("/session-links/copies", { token, challenge }) as Promise<SessionCopyCode>,
     setLocalSessionUsageSharing: (sessionId, enabled) => api.put(`${sessionPath(sessionId)}/usage-sharing`, { enabled }) as Promise<LocalSession>,
+    setLocalSessionAskToJoin: (sessionId, enabled) => api.put(`${sessionPath(sessionId)}/ask-to-join`, { enabled }) as Promise<LocalSession>,
     requestLocalSessionPickup: (sessionId, pickupId) => api.post(`${sessionPath(sessionId)}/pickups`, { pickupId }) as Promise<LocalSessionPickupTicket>,
     reportLocalSessionPickupOutcome: async (sessionId, pickupId, outcome) => { await api.post(`${sessionPath(sessionId)}/pickups/${encodeURIComponent(pickupId)}/outcome`, outcome); },
     listLocalSessionAudit: (sessionId) => api.get(`${sessionPath(sessionId)}/audit`) as Promise<{ entries: LocalSessionAuditEntry[] }>,

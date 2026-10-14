@@ -8,6 +8,7 @@ import { ProofBand } from "@/components/landing/ProofBand";
 import { HowItWorks } from "@/components/landing/HowItWorks";
 import { WorkspaceBand } from "@/components/landing/WorkspaceBand";
 import { PricingThreeCard as Pricing } from "@/components/landing/PricingThreeCard";
+import { getPricing } from "@/lib/pricing";
 import { AskAI } from "@/components/landing/AskAI";
 import { FoundingTeams } from "@/components/landing/FoundingTeams";
 import { HomeFaq } from "@/components/landing/HomeFaq";
@@ -55,7 +56,7 @@ export default async function LandingPage() {
       <WorkspaceBand />
       <ProofStories />
       <ProofBand />
-      <Pricing />
+      <Pricing pricing={await getPricing()} />
       <FoundingTeams />
       <HomeFaq />
       <AskAI />

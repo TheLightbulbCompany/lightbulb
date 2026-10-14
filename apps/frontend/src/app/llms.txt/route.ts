@@ -1,7 +1,7 @@
 import { getAllPosts } from "@/content/blog";
 import { docsFaq, getAllDocs } from "@/content/docs";
 import { SITE_URL } from "@/lib/domain";
-import { INCLUDED_MEMBERS, SEAT_PRICE_USD, TEAM_PRICE_USD } from "@/lib/pricing";
+import { getPricing } from "@/lib/pricing";
 import { seoLandingPages } from "@/lib/seo";
 
 /**
@@ -14,18 +14,19 @@ import { seoLandingPages } from "@/lib/seo";
  * hand-maintain a list here — add the doc or post and it appears.
  *
  * Every factual claim below is verified against the product, not marketing
- * copy: the one plan's prices come from `lib/pricing` (lockstep with
- * `WORKSPACE_PRICE_USD` / `SEAT_PRICE_USD` in the backend), and the free tier is the
+ * copy: the one plan's prices come from the billing API (`lib/pricing.getPricing`),
+ * and the free tier is the
  * `trial_local` path — a 30-day no-card window on the server-selected free
  * model. There is no 14-day trial; it was removed 2026-07-17.
  */
-export const dynamic = "force-static";
+export const revalidate = 300;
 
 function line(name: string, path: string, description: string) {
   return `- [${name}](${SITE_URL}${path}): ${description}`;
 }
 
-export function GET() {
+export async function GET() {
+  const p = await getPricing();
   const docs = getAllDocs();
   const posts = getAllPosts();
 
@@ -43,7 +44,9 @@ export function GET() {
     "",
     "- Product site: " + SITE_URL,
     "- Free tier: no credit card, 30 days on the server-selected free model. The workspace sleeps when idle and wakes when opened.",
-    `- Team plan: $${TEAM_PRICE_USD}/month for the workspace and up to ${INCLUDED_MEMBERS} people, then $${SEAT_PRICE_USD}/month for each person from the 6th. One plan; details at ${SITE_URL}/pricing.`,
+    p
+      ? `- Team plan: $${p.teamPriceUsd}/month for the workspace and up to ${p.includedMembers} people, then $${p.seatPriceUsd}/month for each person after. One plan; details at ${SITE_URL}/pricing.`
+      : `- Team plan: one plan, a flat monthly price for the workspace and its first people, then a per-person price. Details at ${SITE_URL}/pricing.`,
     "- Agents' AI is billed separately: Lightbulb-managed at the model provider's price × 1.2 as prepaid credits, or your own ChatGPT account or OpenAI/Anthropic key, billed by them.",
     "- Inference providers: Lightbulb-managed models (DeepSeek within a daily allowance; more via prepaid credits), your own ChatGPT account via OAuth, or a bring-your-own Anthropic or OpenAI API key.",
     "- Surfaces: web app, a macOS desktop app, and an iOS app.",

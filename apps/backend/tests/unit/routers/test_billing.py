@@ -592,3 +592,17 @@ class TestStripeWebhook:
         assert response.status_code == 200
         mock_repo.set_subscription.assert_awaited_once()
         assert mock_repo.set_subscription.await_args.kwargs["owner_id"] == "org_legacy"
+
+
+@pytest.mark.asyncio
+async def test_public_prices_need_no_sign_in_and_match_checkout(async_client):
+    from core.config import settings
+
+    response = await async_client.get("/api/v1/billing/prices")
+    assert response.status_code == 200
+    assert response.json() == {
+        "workspace_price_usd": settings.WORKSPACE_PRICE_USD,
+        "included_members": 5,
+        "seat_price_usd": settings.SEAT_PRICE_USD,
+        "trial_days": 30,
+    }

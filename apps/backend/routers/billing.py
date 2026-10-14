@@ -119,6 +119,26 @@ async def get_trial_recap(
 
 
 @router.get(
+    "/prices",
+    summary="The public plan price",
+    description=(
+        "Unauthenticated. The one plan's price as checkout bills it: the workspace price, the "
+        "members it covers, the per-member seat price past them, and the free-trial length. "
+        "The marketing site renders /pricing from this."
+    ),
+    operation_id="get_public_prices",
+)
+async def get_public_prices(response: Response):
+    response.headers["Cache-Control"] = "public, max-age=300"
+    return {
+        "workspace_price_usd": settings.WORKSPACE_PRICE_USD,
+        "included_members": SEATS_INCLUDED,
+        "seat_price_usd": settings.SEAT_PRICE_USD,
+        "trial_days": billing_repo._TRIAL_LOCAL_DURATION_SECONDS // 86400,
+    }
+
+
+@router.get(
     "/account",
     response_model=BillingAccountResponse,
     summary="Get billing account",

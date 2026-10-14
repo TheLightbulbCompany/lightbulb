@@ -1,13 +1,13 @@
 import Link from "next/link";
 
-import { INCLUDED_MEMBERS, SEAT_PRICE_USD, TEAM_PRICE_USD, TRIAL_DAYS } from "@/lib/pricing";
+import { ordinal, type Pricing } from "@/lib/pricing";
 
 import { Arrow } from "./Arrow";
 
 /**
  * Homepage price block (10 §A.5): one price, then the three ways to power the
- * agents as a plain row (no pill, no per-card buttons, no art). Every number
- * comes from lib/pricing.
+ * agents as a plain row (no pill, no per-card buttons, no art). Prices come from
+ * the billing API via the page (lib/pricing.getPricing); null shows no number.
  */
 const OPTIONS = [
   {
@@ -18,20 +18,25 @@ const OPTIONS = [
   { title: "Your own key.", body: "OpenAI or Anthropic. Your provider bills you directly." },
 ];
 
-export function PricingThreeCard() {
+export function PricingThreeCard({ pricing: p }: { pricing: Pricing | null }) {
   return (
     <section id="pricing" className="lb-pricing">
       <div className="lb-wrap">
         <h2 className="lb-h2">Any model. One price.</h2>
-        <p className="lb-price-hero">
-          <b>
-            ${TEAM_PRICE_USD} a month for your workspace, up to {numberWord(INCLUDED_MEMBERS)} people.
-          </b>
-        </p>
-        <p className="lb-price-free">
-          Then ${SEAT_PRICE_USD} a month for each person from the sixth. {TRIAL_DAYS} days free, no card to start;
-          founding teams put a card on file at their setup session and the first charge is on day 31.
-        </p>
+        {p && (
+          <>
+            <p className="lb-price-hero">
+              <b>
+                ${p.teamPriceUsd} a month for your workspace, up to {numberWord(p.includedMembers)} people.
+              </b>
+            </p>
+            <p className="lb-price-free">
+              Then ${p.seatPriceUsd} a month for each person from the {ordinal(p.includedMembers + 1)}. {p.trialDays}{" "}
+              days free, no card to start; founding teams put a card on file at their setup session and the first charge
+              is on day 31.
+            </p>
+          </>
+        )}
         <div className="lb-plans">
           {OPTIONS.map((o) => (
             <article key={o.title} className="lb-plan">

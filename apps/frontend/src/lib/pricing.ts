@@ -1,60 +1,104 @@
 /**
- * The one plan's public price (T06/T30): every price line on the marketing site
- * reads these. In-app surfaces read the same numbers from /billing/account
- * (workspace_price_usd, seat_price_usd, included_members), which is what Stripe
- * actually bills; keep these in lockstep with the backend settings
- * WORKSPACE_PRICE_USD / SEAT_PRICE_USD and billing_service.SEATS_INCLUDED.
+ * The one plan's public price, read from the backend that bills it
+ * (`GET /billing/prices`: WORKSPACE_PRICE_USD, SEATS_INCLUDED, SEAT_PRICE_USD,
+ * the trial length), so the site never carries a second copy of a price. Server
+ * side only, cached 5 minutes. When the API cannot be read (a build with no
+ * backend reachable), `BUILD_FALLBACK` stands in until the next revalidation
+ * replaces it with the server's values.
  */
-export const TEAM_PRICE_USD = 50;
-export const SEAT_PRICE_USD = 20;
-export const INCLUDED_MEMBERS = 5;
-export const TRIAL_DAYS = 30;
-/** Managed AI is billed at the model provider's price times this. */
-export const MANAGED_MARKUP = 1.2;
-export const PRICE_LOCK_YEARS = 2;
+export type Pricing = {
+  teamPriceUsd: number;
+  includedMembers: number;
+  seatPriceUsd: number;
+  trialDays: number;
+};
 
-/** What a team of `people` pays a month on the one plan. */
-export function teamMonthlyUsd(people: number): number {
-  return TEAM_PRICE_USD + Math.max(0, people - INCLUDED_MEMBERS) * SEAT_PRICE_USD;
+export const PRICING_REVALIDATE_S = 300;
+
+/** Build-time stand-in only; the server's /billing/prices overrides it on the next revalidation. */
+export const BUILD_FALLBACK: Pricing = { teamPriceUsd: 50, includedMembers: 5, seatPriceUsd: 20, trialDays: 30 };
+const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
+
+export async function getPricing(): Promise<Pricing> {
+  try {
+    const res = await fetch(`${BACKEND_URL}/billing/prices`, { next: { revalidate: PRICING_REVALIDATE_S } });
+    if (!res.ok) return BUILD_FALLBACK;
+    const body = (await res.json()) as Record<string, unknown>;
+    const n = (k: string) => (typeof body[k] === "number" ? (body[k] as number) : null);
+    const [team, included, seat, trial] = [
+      n("workspace_price_usd"),
+      n("included_members"),
+      n("seat_price_usd"),
+      n("trial_days"),
+    ];
+    if (team === null || included === null || seat === null || trial === null) return BUILD_FALLBACK;
+    return { teamPriceUsd: team, includedMembers: included, seatPriceUsd: seat, trialDays: trial };
+  } catch {
+    return BUILD_FALLBACK;
+  }
 }
 
+/** What a team of `people` pays a month on the one plan. */
+export function teamMonthlyUsd(p: Pricing, people: number): number {
+  return p.teamPriceUsd + Math.max(0, people - p.includedMembers) * p.seatPriceUsd;
+}
+
+/** 6 -> "6th": the first paid member's ordinal. */
+export function ordinal(n: number): string {
+  const tens = n % 100;
+  if (tens >= 11 && tens <= 13) return `${n}th`;
+  return `${n}${({ 1: "st", 2: "nd", 3: "rd" } as Record<number, string>)[n % 10] ?? "th"}`;
+}
+
+/**
+ * Managed AI markup as copy. Its one billed copy is repo-root openrouter-pricing.json
+ * (the gate and settlement read it); the site states it, it does not charge it.
+ */
+export const MANAGED_MARKUP_TEXT = "1.2";
+
 /** /pricing copy (10 §B), shared by the page, /pricing.md and the FAQ JSON-LD. */
-export const PRICING_FAQ: { q: string; a: string }[] = [
-  {
-    q: `Why $${TEAM_PRICE_USD} flat?`,
-    a:
-      "What your team gets grows with the work its agents do, not with headcount. So you pay for the workspace " +
-      `and the agents' work, and people up to five cost nothing. An eight-person team pays $${teamMonthlyUsd(8)} a month.`,
-  },
-  {
-    q: "What happens at the 6th person?",
-    a:
-      `Your bill goes up by $${SEAT_PRICE_USD} a month for each person from the sixth, prorated from the day they join. ` +
-      "When someone leaves, it goes back down.",
-  },
-  {
-    q: "What does managed AI cost?",
-    a:
-      "The model provider's price plus 20%, drawn from prepaid credits you top up. Usage shows in the workspace, " +
-      "and nothing runs past your balance.",
-  },
-  {
-    q: "Can we bring our own key?",
-    a:
-      "Yes. Sign in with your ChatGPT account, or add an OpenAI or Anthropic key, after your plan is active. " +
-      "Your provider bills you directly and we charge nothing for inference.",
-  },
-  { q: "What if it doesn't stick?", a: "Cancel any time. We help you take your work with you." },
-];
+export function pricingFaq(p: Pricing): { q: string; a: string }[] {
+  const firstPaid = ordinal(p.includedMembers + 1);
+  return [
+    {
+      q: `Why $${p.teamPriceUsd} flat?`,
+      a:
+        "What your team gets grows with the work its agents do, not with headcount. So you pay for the workspace " +
+        `and the agents' work, and people up to ${p.includedMembers} cost nothing. ` +
+        `An eight-person team pays $${teamMonthlyUsd(p, 8)} a month.`,
+    },
+    {
+      q: `What happens at the ${firstPaid} person?`,
+      a:
+        `Your bill goes up by $${p.seatPriceUsd} a month for each person from the ${firstPaid}, prorated from the ` +
+        "day they join. When someone leaves, it goes back down.",
+    },
+    {
+      q: "What does managed AI cost?",
+      a:
+        `The model provider's price plus ${Math.round((Number(MANAGED_MARKUP_TEXT) - 1) * 100)}%, drawn from prepaid ` +
+        "credits you top up. Usage shows in the workspace, and nothing runs past your balance.",
+    },
+    {
+      q: "Can we bring our own key?",
+      a:
+        "Yes. Sign in with your ChatGPT account, or add an OpenAI or Anthropic key, after your plan is active. " +
+        "Your provider bills you directly and we charge nothing for inference.",
+    },
+    { q: "What if it doesn't stick?", a: "Cancel any time. We help you take your work with you." },
+  ];
+}
 
 export const PRICING_INFERENCE =
-  "Your agents' AI is billed separately, your choice: Lightbulb-managed at the model provider's price × 1.2, " +
+  `Your agents' AI is billed separately, your choice: Lightbulb-managed at the model provider's price × ${MANAGED_MARKUP_TEXT}, ` +
   "as prepaid credits, or bring your own: your ChatGPT account or an OpenAI or Anthropic key, billed by them.";
 export const PRICING_TRIAL =
   "No card to start; add one when the month ends. Founding teams put a card on file at their setup session, " +
   "and the first charge is on day 31. Your agents run on Lightbulb-managed AI with a daily allowance meanwhile.";
-export const PRICING_FOUNDING =
-  "A founder sets your team up with you, and your price is locked for two years.";
-export const TEAM_INCLUDES =
-  "Up to 5 people · six AI employees (CEO, Engineering, Finance, Growth, Analytics, Customer Operations) · " +
-  "channels, DMs, task board, Library, shared browser, team email · Mac app; iPhone app on TestFlight";
+export const PRICING_FOUNDING = "A founder sets your team up with you, and your price is locked for two years.";
+export function teamIncludes(p: Pricing): string {
+  return (
+    `Up to ${p.includedMembers} people · six AI employees (CEO, Engineering, Finance, Growth, Analytics, Customer Operations) · ` +
+    "channels, DMs, task board, Library, shared browser, team email · Mac app; iPhone app on TestFlight"
+  );
+}

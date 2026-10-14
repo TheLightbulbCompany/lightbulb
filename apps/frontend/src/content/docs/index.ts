@@ -1,5 +1,4 @@
 import { loadMarkdownDir } from "../markdown";
-import { INCLUDED_MEMBERS, MANAGED_MARKUP, SEAT_PRICE_USD, TEAM_PRICE_USD, TRIAL_DAYS } from "../../lib/pricing";
 
 /** A doc is `src/content/docs/pages/<slug>.md`: JSON frontmatter + GFM body. */
 export interface DocPage {
@@ -49,12 +48,12 @@ export const docsFaq = [
   {
     question: "Is Lightbulb free to try?",
     answer:
-      `Yes. The free tier needs no credit card and runs for ${TRIAL_DAYS} days on the server-selected free model. The workspace sleeps when idle and wakes when you open it. After that, the Team plan is $${TEAM_PRICE_USD} a month for up to ${INCLUDED_MEMBERS} people and $${SEAT_PRICE_USD} a month for each person from the 6th.`,
+      "Yes. The free tier needs no credit card and runs for 30 days on the server-selected free model. The workspace sleeps when idle and wakes when you open it. After that there is one plan; see /pricing.",
   },
   {
     question: "How much does Lightbulb cost?",
     answer:
-      `One plan: $${TEAM_PRICE_USD} a month for the workspace, up to ${INCLUDED_MEMBERS} people, then $${SEAT_PRICE_USD} a month for each person from the 6th. Agents' AI is billed separately: Lightbulb-managed at the model provider's price × ${MANAGED_MARKUP}, or your own ChatGPT account or API key, billed by them. The first ${TRIAL_DAYS} days are free with no card. See /pricing.`,
+      "One plan: a flat monthly price for the workspace and its first people, then a per-person price for each member after. Agents' AI is billed separately: Lightbulb-managed at the model provider's price × 1.2, or your own ChatGPT account or API key, billed by them. Current prices are on /pricing.",
   },
   {
     question: "Which agents do I get when I sign up?",

@@ -149,3 +149,5 @@ jobs:
         with:
           files: apps/backend/coverage.xml
           fail_ci_if_error: false
+
+# ci probe 2026-10-14: full run of main after the offline-runner merges (do not merge)

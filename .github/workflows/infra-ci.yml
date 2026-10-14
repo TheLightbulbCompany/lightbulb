@@ -235,3 +235,5 @@ jobs:
           ============================================================
           MSG
           exit 1
+
+# ci probe 2026-10-14: full run of main after the offline-runner merges (do not merge)

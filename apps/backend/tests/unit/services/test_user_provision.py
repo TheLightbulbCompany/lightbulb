@@ -279,7 +279,8 @@ async def test_ensure_paperclip_for_owner_calls_provision_org():
     fake_provisioning = MagicMock()
     fake_provisioning.get_workspace = AsyncMock(return_value=None)
     fake_provisioning.provision_org = AsyncMock(return_value=MagicMock(status="active", starter_agent_ids=starter_ids))
-    ensure_default_room = AsyncMock()
+    ensure_default_room = AsyncMock(return_value="room_general")
+    owner_welcome = AsyncMock(return_value="sent")
     with (
         patch(
             "core.services.user_provision.build_paperclip_provisioning",
@@ -290,6 +291,7 @@ async def test_ensure_paperclip_for_owner_calls_provision_org():
             new=AsyncMock(),
         ),
         patch("core.services.messaging.ensure_default_room", ensure_default_room),
+        patch("core.services.welcome_email.send_owner_welcome", owner_welcome),
     ):
         await _ensure_paperclip_for_owner(
             owner_id="org_p",
@@ -302,6 +304,8 @@ async def test_ensure_paperclip_for_owner_calls_provision_org():
         owner_email="p@example.com",
     )
     ensure_default_room.assert_awaited_once_with("org_p", "user_p")
+    # T14: the CEO's welcome goes out once #general exists.
+    owner_welcome.assert_awaited_once_with("org_p", "user_p")
 
 
 @pytest.mark.asyncio

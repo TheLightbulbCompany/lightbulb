@@ -97,6 +97,7 @@ def wired(monkeypatch):
 
     async def _send(*, from_addr, to, subject, body_text, body_html, headers, tenant_name=None):
         st.ses_calls += 1
+        st.sent_tenant = tenant_name
         st.sent_subject = subject
         st.sent_to = to
         st.sent_from = from_addr
@@ -433,3 +434,69 @@ async def test_send_to_owner_falls_back_to_stored_ceo_identity(wired):
 
 def test_daily_cap_is_fifty():
     assert mod.DAILY_SEND_CAP == 50
+
+
+# --- send_to_member (T14: the teammate welcome; later the away email) --------------------------
+
+
+@pytest.fixture
+def member_wired(wired, monkeypatch):
+    wired.row = {"address": wired.minted, "verified_senders": ["owner@example.com"]}
+    wired.update = AsyncMock(return_value={})
+    monkeypatch.setattr(mod.agent_email_repo, "get_by_address", AsyncMock(side_effect=lambda _a: wired.row))
+    monkeypatch.setattr(mod.agent_email_repo, "update_settings", wired.update)
+    wired.tenant = AsyncMock(return_value="tenant-org_a")
+    monkeypatch.setattr(mod, "ensure_tenant", wired.tenant)
+    return wired
+
+
+async def _send_member(email="Sam@Example.com"):
+    return await mod.send_to_member(owner_id="org_a", user_id="user_s", email=email, subject="Hi", body_text="body")
+
+
+@pytest.mark.asyncio
+async def test_member_send_reaches_the_member_and_lets_them_reply(member_wired):
+    assert await _send_member() == "sent"
+    assert member_wired.sent_to == "sam@example.com"
+    assert member_wired.sent_headers == {"Auto-Submitted": "auto-generated"}
+    member_wired.update.assert_awaited_once_with(
+        member_wired.minted, verified_senders=["owner@example.com", "sam@example.com"]
+    )
+    # Never the owner's first-contact slot: a teammate's mail is not the owner's hello.
+    assert member_wired.claimed is False and member_wired.settled is None
+
+
+@pytest.mark.asyncio
+async def test_member_send_does_not_relist_a_known_sender(member_wired):
+    member_wired.row["verified_senders"] = ["sam@example.com"]
+    assert await _send_member() == "sent"
+    member_wired.update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_member_send_shares_the_daily_cap(member_wired):
+    member_wired.cap_allows = False
+    assert await _send_member() == "rate_limited"
+    assert member_wired.ses_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_member_send_before_provisioning_sends_nothing(member_wired):
+    member_wired.company_id = None
+    assert await _send_member() == "error"
+    assert member_wired.ses_calls == 0 and member_wired.cap_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_member_send_goes_through_the_owners_ses_tenant(member_wired):
+    assert await _send_member() == "sent"
+    member_wired.tenant.assert_awaited_once_with("org_a")
+    assert member_wired.sent_tenant == "tenant-org_a"
+
+
+@pytest.mark.asyncio
+async def test_member_send_honours_the_complaint_pause(member_wired):
+    member_wired.row["outbound_disabled"] = "complaint"
+    assert await _send_member() == "outbound_disabled"
+    assert member_wired.ses_calls == 0
+    member_wired.update.assert_not_awaited()

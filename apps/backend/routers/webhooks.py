@@ -489,6 +489,15 @@ async def _handle_organization_membership_created(
     await join_analytics.member_joined(
         org_id, user_id, email=email, creator_id=owner_user_id, membership_id=data.get("id") or ""
     )
+    # The teammate welcome, from the CEO's address (D9, D10). The creator's own membership is
+    # skipped: the owner version goes out when provisioning finishes (user_provision).
+    if user_id != owner_user_id:
+        from core.services.welcome_email import send_teammate_welcome
+
+        try:
+            await send_teammate_welcome(org_id, user_id=user_id, email=email, first_name=pud.get("first_name"))
+        except Exception:
+            logger.exception("membership.created: teammate welcome failed org=%s user=%s", org_id, user_id)
 
 
 async def _handle_organization_membership_deleted(
@@ -856,21 +865,9 @@ async def handle_clerk_webhook(request: Request):
                 # back to Clerk admin API. Logging is enough.
                 logger.exception("user_repo.put failed for user.created %s", user_id)
 
-            # Best-effort welcome email — the sender already swallows its own
-            # errors; we also guard here so a blowup can never 500 the
-            # webhook (which would trigger a Clerk retry storm). Competition
-            # sign-up-sheet membership is explicit (POST /launch/join, inside
-            # the product) — signup joins nothing.
-            if email:
-                try:
-                    from core.services.welcome_email import send_welcome_email
-
-                    await send_welcome_email(
-                        to_email=email,
-                        first_name=data.get("first_name"),
-                    )
-                except Exception:
-                    logger.exception("welcome email send raised for user.created %s", user_id)
+            # No welcome here: it comes from the workspace's CEO once a workspace exists
+            # (core/services/welcome_email.py). Sign-up joins nothing either -- competition
+            # sign-up-sheet membership is explicit (POST /launch/join, inside the product).
 
     elif event_type == "user.updated":
         user_id = data.get("id", "")

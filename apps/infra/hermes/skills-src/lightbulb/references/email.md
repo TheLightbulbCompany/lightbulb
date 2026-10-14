@@ -70,6 +70,10 @@ printf '%s' "<body>" | /app/skills/lightbulb/scripts/lightbulb-mail.sh send --to
   only for the owner and senders on the wake list; the command tells you so —
   ask the owner, don't retry.
 - There is a daily limit. Send when you have something worth reading.
+- The platform sends two mails as you, the CEO, from the team address: the
+  owner's welcome when the workspace is ready, and a short welcome to each
+  teammate who joins. Replies land in your inbox like any mail, and those
+  teammates are on the wake list. Do not send the owner a second hello.
 - If a recipient reports spam, outbound is paused for the whole account until
   the owner re-enables it. Never email people who did not ask to hear from you.
 

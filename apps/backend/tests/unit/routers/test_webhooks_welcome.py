@@ -1,91 +1,76 @@
-"""user.created fires a best-effort welcome email, unconditionally; failures
-never 500. Sign-up joins NOTHING — competition-sheet membership is the
-explicit POST /launch/join only."""
+"""The welcome comes from the workspace's CEO once a workspace exists (T14, D10):
+user.created sends nothing; a teammate's membership sends the teammate version;
+the creator's own membership does not (their version goes out after provisioning)."""
 
-from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
-_PAYLOAD = {
-    "type": "user.created",
-    "data": {
-        "id": "u_new",
-        "first_name": "Ada",
-        "email_addresses": [{"id": "ea_1", "email_address": "ada@example.com"}],
-        "primary_email_address_id": "ea_1",
-    },
-}
 
 _HEADERS = {"svix-id": "msg_welcome", "svix-timestamp": "1", "svix-signature": "ignored"}
 
 
 @pytest.mark.asyncio
-async def test_user_created_sends_welcome(async_client, monkeypatch):
+async def test_user_created_sends_no_welcome(async_client, monkeypatch):
     monkeypatch.setattr("routers.webhooks._verify_svix_signature", lambda body, headers: None)
-
+    payload = {
+        "type": "user.created",
+        "data": {
+            "id": "u_new",
+            "first_name": "Ada",
+            "email_addresses": [{"id": "ea_1", "email_address": "ada@example.com"}],
+            "primary_email_address_id": "ea_1",
+        },
+    }
     with (
         patch("core.repositories.user_repo.put", new=AsyncMock(return_value=None)),
-        patch(
-            "core.services.welcome_email.send_welcome_email",
-            new=AsyncMock(return_value="email_1"),
-        ) as mock_welcome,
+        patch("core.services.welcome_email.send_teammate_welcome", new=AsyncMock()) as teammate,
+        patch("core.services.welcome_email.send_owner_welcome", new=AsyncMock()) as owner,
+        patch("core.repositories.launch_waitlist_repo.join", new=AsyncMock()) as join,
     ):
-        resp = await async_client.post("/api/v1/webhooks/clerk", json=_PAYLOAD, headers=_HEADERS)
+        resp = await async_client.post("/api/v1/webhooks/clerk", json=payload, headers=_HEADERS)
 
     assert resp.status_code == 200
-    mock_welcome.assert_awaited_once_with(to_email="ada@example.com", first_name="Ada")
+    teammate.assert_not_awaited()
+    owner.assert_not_awaited()
+    join.assert_not_awaited()
+
+
+def _membership(user_id: str) -> dict:
+    return {
+        "organization": {"id": "org_x", "created_by": "user_owner"},
+        "public_user_data": {"user_id": user_id, "identifier": "m@example.com", "first_name": "Sam"},
+    }
 
 
 @pytest.mark.asyncio
-async def test_user_created_welcome_failure_is_non_fatal(async_client, monkeypatch):
-    monkeypatch.setattr("routers.webhooks._verify_svix_signature", lambda body, headers: None)
+@pytest.mark.parametrize("user_id, sends", [("user_member", True), ("user_owner", False)])
+async def test_membership_created_welcomes_a_teammate_but_not_the_creator(user_id, sends):
+    from routers.webhooks import _handle_organization_membership_created
 
     with (
-        patch("core.repositories.user_repo.put", new=AsyncMock(return_value=None)),
-        patch(
-            "core.services.welcome_email.send_welcome_email",
-            new=AsyncMock(side_effect=RuntimeError("boom")),
-        ),
+        patch("core.services.user_provision._ensure_paperclip_for_member", new=AsyncMock()),
+        patch("core.repositories.messaging_repo.ensure_user_stream", new=AsyncMock()),
+        patch("core.services.messaging.on_org_member_joined", new=AsyncMock()),
+        patch("core.services.messaging.join_default_room", new=AsyncMock()),
+        patch("core.services.welcome_email.send_teammate_welcome", new=AsyncMock(return_value="sent")) as teammate,
     ):
-        resp = await async_client.post("/api/v1/webhooks/clerk", json=_PAYLOAD, headers=_HEADERS)
+        await _handle_organization_membership_created(_membership(user_id))
 
-    # A welcome-send blowup must not 500 the webhook (Clerk would retry).
-    assert resp.status_code == 200
+    if sends:
+        teammate.assert_awaited_once_with("org_x", user_id="user_member", email="m@example.com", first_name="Sam")
+    else:
+        teammate.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_user_created_sends_welcome_even_while_the_sheet_is_open(async_client, monkeypatch, launch_schedule):
-    """The launch feature being live changes NOTHING about signup: still the
-    generic welcome email, still no sheet row minted."""
-    monkeypatch.setattr("routers.webhooks._verify_svix_signature", lambda body, headers: None)
-    headers = {**_HEADERS, "svix-id": "msg_sheet_open"}
-    closes = datetime.now(timezone.utc) + timedelta(days=10)
+async def test_a_teammate_welcome_failure_never_fails_the_webhook():
+    from routers.webhooks import _handle_organization_membership_created
 
     with (
-        launch_schedule(closes),
-        patch("core.repositories.user_repo.put", new=AsyncMock(return_value=None)),
-        patch("core.services.welcome_email.send_welcome_email", new=AsyncMock(return_value="email_1")) as welcome,
-        patch("core.repositories.launch_waitlist_repo.join", new=AsyncMock()) as mock_join,
+        patch("core.services.user_provision._ensure_paperclip_for_member", new=AsyncMock()),
+        patch("core.repositories.messaging_repo.ensure_user_stream", new=AsyncMock()),
+        patch("core.services.messaging.on_org_member_joined", new=AsyncMock()),
+        patch("core.services.messaging.join_default_room", new=AsyncMock()),
+        patch("core.services.welcome_email.send_teammate_welcome", new=AsyncMock(side_effect=RuntimeError("boom"))),
     ):
-        resp = await async_client.post("/api/v1/webhooks/clerk", json=_PAYLOAD, headers=headers)
-
-    assert resp.status_code == 200
-    welcome.assert_awaited_once()
-    mock_join.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_user_created_without_email_sends_nothing(async_client, monkeypatch):
-    monkeypatch.setattr("routers.webhooks._verify_svix_signature", lambda body, headers: None)
-    payload = {"type": "user.created", "data": {"id": "u_new", "email_addresses": []}}
-    headers = {**_HEADERS, "svix-id": "msg_no_email"}
-
-    with (
-        patch("core.repositories.user_repo.put", new=AsyncMock(return_value=None)),
-        patch("core.services.welcome_email.send_welcome_email", new=AsyncMock()) as welcome,
-    ):
-        resp = await async_client.post("/api/v1/webhooks/clerk", json=payload, headers=headers)
-
-    assert resp.status_code == 200
-    welcome.assert_not_awaited()
+        await _handle_organization_membership_created(_membership("user_member"))

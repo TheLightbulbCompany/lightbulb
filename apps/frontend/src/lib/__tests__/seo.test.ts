@@ -26,10 +26,7 @@ describe('homepage entity graph', () => {
       legalName: 'Isol8 Inc.',
       alternateName: ['Lightbulb', 'The Lightbulb Company'],
       url: 'https://thelightbulb.company',
-      sameAs: expect.arrayContaining([
-        'https://x.com/lightbulbai',
-        'https://www.linkedin.com/company/isol8ai/',
-      ]),
+      sameAs: ['https://x.com/lightbulbai'],
     });
 
     expect(websiteJsonLd).toMatchObject({

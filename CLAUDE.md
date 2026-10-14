@@ -16,7 +16,7 @@ Each workspace gets its own AgentCore runtime; the backend reaches it with `Invo
 
 ## Product domain — moved to `thelightbulb.company` on 2026-10-02
 
-The product now runs on **`thelightbulb.company`** in both environments (`api.`/`api-dev.`, `ws.`/`ws-dev.`, `bv.`/`bv-dev.`, `admin.`, `admin.dev.`, `dev.`, Clerk's `clerk.`/`accounts.`/`clkmail.`), the SAME domain that carries mail. **`flickmeon.ai` is the launch-competition site**: Vercel only, its root serves `/launch` and every other path 308s to the product domain; it has no API hosts and no mail. The holding-company page is `about.thelightbulb.company`.
+The product now runs on **`thelightbulb.company`** in both environments (`api.`/`api-dev.`, `ws.`/`ws-dev.`, `bv.`/`bv-dev.`, `admin.`, `admin.dev.`, `dev.`, Clerk's `clerk.`/`accounts.`/`clkmail.`), the SAME domain that carries mail. **`flickmeon.ai` is retired** (the launch competition is not set up; T27): Vercel only, and every path on it (the root included) 308s to the same path on the product domain; it has no API hosts and no mail. The holding-company page is `about.thelightbulb.company`.
 
 Because product hosts and company slugs (`{agent}@{slug}.thelightbulb.company`) now share one namespace, **every new product host must be added to `RESERVED_SLUGS`** (`core/services/company_identity.py`) before its DNS record exists.
 

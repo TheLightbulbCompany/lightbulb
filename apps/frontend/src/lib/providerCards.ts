@@ -73,7 +73,6 @@ export const PROVIDER_CARDS: ProviderCard[] = [
     trialNote: "Choose a provider after workspace billing is active",
     bullets: [
       "GPT-5.5 included via your ChatGPT account",
-      "All channels (Telegram, Discord, WhatsApp)",
       "Always-on workspace",
     ],
     cta: "Get started",

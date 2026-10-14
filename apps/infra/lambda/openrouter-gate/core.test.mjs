@@ -121,12 +121,26 @@ test('an upstream 402 for a capped owner stamps the capped day and returns the d
   assert.equal(capHit.tier, 'base');
   assert.ok(f.calls.updates.some(u => u.TableName === 'requests' && u.ExpressionAttributeValues[':released']));
 });
-test('OpenRouter\'s live per-key limit shape (403 "Key limit exceeded") is the daily cap', async () => {
-  const live = '{"error":{"message":"Key limit exceeded (daily limit). Manage it using https://openrouter.ai/settings/keys","code":403}}';
-  const f = await runDs(cappedOwners.trial, dsBody(), f => { f.deps.forwardImpl = async p => { p.writeHead(403, { 'content-type': 'application/json' }); p.write(Buffer.from('{"error":{"message":"Upstream returned 403"}}')); p.end(live); return { status: 403, preGeneration: true }; }; });
+const liveKeyLimit = '{"error":{"message":"Key limit exceeded (daily limit). Manage it using https://openrouter.ai/settings/keys","code":403}}';
+const keyLimit403 = (keyInfoImpl) => f => { f.deps.keyInfoImpl = keyInfoImpl; f.deps.forwardImpl = async p => { p.writeHead(403, { 'content-type': 'application/json' }); p.write(Buffer.from('{"error":{"message":"Upstream returned 403"}}')); p.end(liveKeyLimit); return { status: 403, preGeneration: true }; }; };
+test('"Key limit exceeded" on a key that really spent its day is the daily cap', async () => {
+  const f = await runDs(cappedOwners.trial, dsBody(), keyLimit403(async () => ({ limit: 0.25, limit_remaining: 0.001 })));
   assert.equal(f.calls.head.status, 429);
   assert.equal(JSON.parse(Buffer.concat(f.calls.chunks).toString()).error.code, 'trial_daily_cap');
   assert.equal(f.calls.updates.find(u => u.TableName === 'billing').ExpressionAttributeValues[':day'].S, today());
+});
+test('"Key limit exceeded" on a key with money left (an empty account) is a 503, not a day-long cap', async () => {
+  const f = await runDs(cappedOwners.trial, dsBody(), keyLimit403(async () => ({ limit: 0.25, limit_remaining: 0.2485 })));
+  assert.equal(f.calls.head.status, 503);
+  assert.equal(JSON.parse(Buffer.concat(f.calls.chunks).toString()).error.code, 'provider_unavailable');
+  assert.equal(f.calls.updates.some(u => u.TableName === 'billing'), false);
+  assert.ok(f.calls.logs.some(entry => entry['openrouter.gate.account_refused'] === 1));
+  assert.equal(f.calls.logs.some(entry => entry['openrouter.gate.cap_hit'] === 1), false);
+});
+test('a failed key check never stamps a whole day', async () => {
+  const f = await runDs(cappedOwners.trial, dsBody(), keyLimit403(async () => { throw new Error('timeout'); }));
+  assert.equal(f.calls.head.status, 503);
+  assert.equal(f.calls.updates.some(u => u.TableName === 'billing'), false);
 });
 test('any other capped 403 (e.g. a disabled key) passes through unstamped', async () => {
   const f = await runDs(cappedOwners.trial, dsBody(), f => { f.deps.forwardImpl = async p => { p.writeHead(403, { 'content-type': 'application/json' }); p.write(Buffer.from('{"error":{"message":"Upstream returned 403"}}')); p.end('{"error":{"message":"Key is disabled","code":403}}'); return { status: 403, preGeneration: true }; }; });

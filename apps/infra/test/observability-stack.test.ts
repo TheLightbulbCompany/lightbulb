@@ -210,6 +210,8 @@ const EMITTED_DIMENSION_SETS: Record<string, string[][]> = {
   "messaging.run.first_turn_failed": [[]],
   // apps/infra/lambda/openrouter-settlement/index.py Store.commit (EMF, own service); W81.
   "openrouter.settlement.overshoot_microcents": [[]],
+  // apps/infra/lambda/openrouter-gate/core.mjs (EMF, own service); P34.
+  "openrouter.gate.account_refused": [[]],
   // --- messaging platform (emitters ship with the 2026-09-12 backend tasks) ---
   // core/services/messaging.py — create_human_message / create_agent_message.
   "messaging.message.created": [["author_kind", "has_targets", "room_kind"]],
@@ -290,6 +292,7 @@ const ROLLUP_DIMENSIONS = [
 const EMITTING_SERVICE: Record<string, string> = {
   "messaging.projector.push": "messaging-projector",
   "openrouter.settlement.overshoot_microcents": "openrouter-settlement",
+  "openrouter.gate.account_refused": "openrouter-gate",
 };
 const DEFAULT_EMITTING_SERVICE = "lightbulb-backend";
 

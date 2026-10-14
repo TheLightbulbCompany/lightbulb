@@ -478,6 +478,21 @@ async def admin_billing_resume_subscription(
 
 
 @router.post(
+    "/users/{user_id}/billing/founding-team",
+    description="Mark the workspace a founding team: a two-year price lock on its subscription.",
+)
+@idempotency()
+@audit_admin_action("billing.founding_team")
+async def admin_billing_founding_team(
+    user_id: str,
+    request: Request,
+    auth: AuthContext = Depends(require_platform_admin),
+):
+    owner_id, _ = await resolve_admin_owner_id(user_id)
+    return _refuse_billing_noop(await billing_service.mark_founding_team(owner_id))
+
+
+@router.post(
     "/users/{user_id}/billing/issue-credit",
     description="Apply a credit to the user's Stripe customer balance (cents).",
 )

@@ -373,7 +373,11 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
     # trial->paid moment).
     old_status = account.get("subscription_status")
     new_status = event_data.get("status", "active")
-    if new_status in ("incomplete", "incomplete_expired") and old_status in ("trial_local", "active", "trialing"):
+    if (new_status in ("incomplete", "incomplete_expired") and old_status in ("trial_local", "active", "trialing")) or (
+        # A subscription never re-enters its trial, and Checkout only opens a trial for a
+        # trial_local row: a trialing event over a post-trial status is a stale, reordered delivery.
+        new_status == "trialing" and old_status in ("active", "past_due", "unpaid", "canceled")
+    ):
         # Checkout bills immediately (no Stripe trial), so a Checkout-born
         # subscription can surface here as `incomplete` (.created fires before
         # the first invoice settles) or `incomplete_expired` (checkout
@@ -482,7 +486,11 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
                 account["owner_id"],
             )
 
-    if entering_live:
+    # First-PAID side effects (referral credit, company-Stripe workflow): a card-on-file trial
+    # (trial_local -> trialing, T05) has paid nothing, so they wait for its trialing -> active.
+    # Any arrival at "active" from a non-active status counts (trial charge, or its recovery from
+    # past_due); the hook is deduped inside, so a repeat for an old customer is a no-op.
+    if new_status == "active" and (entering_live or old_status != "active"):
         # The Metronome customer is NOT created here: this transition dispatches a durable
         # reconcile (below), and ``reconcile_runtime`` ensures the customer for a ledger-eligible
         # non-ChatGPT/BYO owner -- an SFN execution a backend deploy cannot kill, where the old
@@ -512,7 +520,9 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
         or provider_persisted
         or (plan_persisted and account.get("plan") != new_plan)
     )
-    if old_status == "trial_local" and new_status in ("trialing", "active"):
+    if old_status == "trial_local" and new_status == "active":
+        # A card-on-file trial (trial_local -> trialing, T05) has paid nothing yet; its
+        # conversion is the bridge's trialing -> active "trial_converted" below.
         # Trial funnel telemetry: the free-tier trial converting to paid billing -- distinct
         # from the generic trialing->active "trial_converted" the bridge below may also emit for
         # a REAL (card-collected) Stripe trial. Several events per subscription change can each

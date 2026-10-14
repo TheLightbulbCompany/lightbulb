@@ -1122,6 +1122,17 @@ async def claim_oauth_connector(owner_id: str, *, connector_user_id: str) -> Non
         raise
 
 
+async def set_founding_team(owner_id: str) -> None:
+    """Mark the workspace a founding team (two-year price lock at its checkout)."""
+    await run_in_thread(
+        _get_table().update_item,
+        Key={"owner_id": owner_id},
+        UpdateExpression="SET founding_team = :t, updated_at = :u",
+        ExpressionAttributeValues={":t": True, ":u": utc_now_iso()},
+        ConditionExpression="attribute_exists(owner_id)",
+    )
+
+
 async def set_nightly_ceo_opted_out(owner_id: str, opted_out: bool) -> None:
     """Set/clear the durable nightly-CEO opt-out flag.
 

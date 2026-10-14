@@ -113,8 +113,10 @@ export interface MessagingClient {
   /** `fresh`: the view just mounted with no screen; the backend asks the Mac for one now. */
   /** Answers with how many people watch while some watch by an "Anyone" link (counts, never who); nothing from an older backend. */
   watchLocalSession(sessionId: string, fresh?: boolean): Promise<{ watching: number; viaLink: number } | undefined>;
-  /** An admitted viewer's keystrokes (base64, at most 4096 raw bytes) for the live terminal screen `epoch` they are looking at. */
-  sendLocalSessionInput(sessionId: string, data: string, epoch: number): Promise<void>;
+  /** An admitted viewer's keystrokes (base64, at most 4096 raw bytes) for the live terminal screen `epoch` they are looking at.
+   *  `size`: their panel's cols x rows, with keys or alone (`data` ""); `claim` when they use the panel now. The session
+   *  takes the size of whoever used it last (owner ruling 2026-10-14, tmux's `window-size latest`). */
+  sendLocalSessionInput(sessionId: string, data: string, epoch: number, size?: { cols: number; rows: number; claim: boolean }): Promise<void>;
   /** The owner allows or declines one person's ask. Allow lets just that person send. */
   decideLocalSessionJoin(sessionId: string, userId: string, decision: "allow" | "decline", requestId?: string): Promise<LocalSession>;
   /** The owner takes one allowed person's access back. */
@@ -211,7 +213,7 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     decideLocalSessionPickup: (sessionId, userId, decision, requestId) =>
       api.post(`${sessionPath(sessionId)}/pickup-requests/${encodeURIComponent(userId)}`, { decision, ...(requestId ? { requestId } : {}) }) as Promise<LocalSession>,
     watchLocalSession: (sessionId, fresh) => api.post(`${sessionPath(sessionId)}/viewing`, fresh === true ? { fresh: true } : {}) as Promise<{ watching: number; viaLink: number } | undefined>,
-    sendLocalSessionInput: async (sessionId, data, epoch) => { await api.post(`${sessionPath(sessionId)}/input`, { data, epoch }); },
+    sendLocalSessionInput: async (sessionId, data, epoch, size) => { await api.post(`${sessionPath(sessionId)}/input`, { ...(data ? { data } : {}), epoch, ...(size ? { size } : {}) }); },
     decideLocalSessionJoin: (sessionId, userId, decision, requestId) =>
       api.post(`${sessionPath(sessionId)}/join-requests/${encodeURIComponent(userId)}`, { decision, ...(requestId ? { requestId } : {}) }) as Promise<LocalSession>,
     removeLocalSessionSender: (sessionId, userId) =>

@@ -91,6 +91,7 @@ def build_posthog_query(start: datetime, end: datetime, excluded: set[str]) -> s
     if excluded:
         exclusion = f"\n  AND toString(properties.workspace_id) NOT IN ({', '.join(_sql(v) for v in sorted(excluded))})"
     return f"""SELECT
+  toString(uuid) AS event_id,
   event,
   timestamp,
   toString(properties.workspace_id) AS workspace_id,
@@ -112,7 +113,7 @@ WHERE event IN ({event_names})
     OR (event NOT IN ({client_names})
         AND notEmpty(toString(properties.workspace_id)){exclusion})
   )
-ORDER BY timestamp"""
+ORDER BY timestamp, event_id"""
 
 
 def _ids(ids: Iterable[str], organizations: dict[str, str]) -> dict[str, Any]:
@@ -407,20 +408,43 @@ def resolve_organizations(clerk: Clerk, admin_ids: set[str]) -> tuple[dict[str, 
     return by_id, excluded
 
 
-def fetch_events(api_key: str, query: str) -> list[dict[str, Any]]:
-    payload = _request(
-        "POST",
-        POSTHOG_URL,
-        headers={"Authorization": f"Bearer {api_key}"},
-        body={"query": {"kind": "HogQLQuery", "query": query}},
-    )
-    columns = payload.get("columns") or payload.get("results", {}).get("columns")
-    rows = payload.get("results")
-    if isinstance(rows, dict):
-        rows = rows.get("results")
-    if not columns or rows is None:
-        raise RuntimeError("PostHog returned an unexpected query result")
-    return [dict(zip(columns, row, strict=True)) for row in rows]
+def fetch_events(
+    api_key: str,
+    query: str,
+    *,
+    page_size: int = 50_000,
+    max_pages: int = 20,
+) -> list[dict[str, Any]]:
+    """Fetch a stable, bounded PostHog event window without accepting truncation."""
+    events: list[dict[str, Any]] = []
+    expected_columns: list[str] | None = None
+    for page_number in range(max_pages):
+        offset = page_number * page_size
+        payload = _request(
+            "POST",
+            POSTHOG_URL,
+            headers={"Authorization": f"Bearer {api_key}"},
+            body={
+                "query": {
+                    "kind": "HogQLQuery",
+                    "query": f"{query}\nLIMIT {page_size} OFFSET {offset}",
+                }
+            },
+        )
+        columns = payload.get("columns") or payload.get("results", {}).get("columns")
+        rows = payload.get("results")
+        if isinstance(rows, dict):
+            rows = rows.get("results")
+        if not columns or rows is None:
+            raise RuntimeError("PostHog returned an unexpected query result")
+        if expected_columns is None:
+            expected_columns = columns
+        elif columns != expected_columns:
+            raise RuntimeError("PostHog changed columns between paginated results")
+        events.extend(dict(zip(columns, row, strict=True)) for row in rows)
+        if len(rows) < page_size:
+            return events
+    raise RuntimeError("PostHog event query reached its pagination limit; refusing an incomplete readout")
 
 
 def fetch_invoices(secret: str) -> list[dict[str, Any]]:

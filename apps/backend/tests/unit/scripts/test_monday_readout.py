@@ -92,6 +92,46 @@ def test_hogql_keeps_anonymous_acquisition_visitors_and_filters_workspace_metric
     )
     assert "OR (event NOT IN ('landing_viewed', 'setup_cta_clicked', 'signup_cta_clicked', 'signup_started')" in query
     assert "AND notEmpty(toString(properties.workspace_id))" in query
+    assert "ORDER BY timestamp, event_id" in query
+    assert "LIMIT" not in query
+
+
+def test_fetch_events_pages_until_posthog_returns_a_short_page(monkeypatch):
+    queries = []
+    pages = [
+        {"columns": ["event_id"], "results": [["1"], ["2"]]},
+        {"columns": ["event_id"], "results": [["3"]]},
+    ]
+
+    def fake_request(method, url, *, headers=None, body=None):
+        queries.append(body["query"]["query"])
+        return pages.pop(0)
+
+    monkeypatch.setattr(monday_readout, "_request", fake_request)
+
+    assert monday_readout.fetch_events("key", "SELECT event_id FROM events", page_size=2) == [
+        {"event_id": "1"},
+        {"event_id": "2"},
+        {"event_id": "3"},
+    ]
+    assert queries == [
+        "SELECT event_id FROM events\nLIMIT 2 OFFSET 0",
+        "SELECT event_id FROM events\nLIMIT 2 OFFSET 2",
+    ]
+
+
+def test_fetch_events_refuses_to_publish_when_bounded_pagination_is_exhausted(monkeypatch):
+    def fake_request(method, url, *, headers=None, body=None):
+        return {"columns": ["event_id"], "results": [["1"], ["2"]]}
+
+    monkeypatch.setattr(monday_readout, "_request", fake_request)
+
+    try:
+        monday_readout.fetch_events("key", "SELECT event_id FROM events", page_size=2, max_pages=2)
+    except RuntimeError as error:
+        assert "pagination limit" in str(error)
+    else:
+        raise AssertionError("expected a full bounded result set to fail closed")
 
 
 def test_anonymous_funnel_events_do_not_enter_workspace_metrics():

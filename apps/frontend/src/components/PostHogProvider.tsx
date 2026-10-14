@@ -56,7 +56,8 @@ export function resolveEnvironment(hostname: string | undefined): "prod" | "laun
   if (host === "thelightbulb.company" || host === "www.thelightbulb.company" || host === "admin.thelightbulb.company") {
     return "prod";
   }
-  if (host === "flickmeon.ai" || host === "www.flickmeon.ai") return "launch";
+  // The launch site and its dev twin (LAUNCH_HOSTS): its own line, never the product funnel.
+  if (host === "flickmeon.ai" || host.endsWith(".flickmeon.ai")) return "launch";
   return "dev";
 }
 

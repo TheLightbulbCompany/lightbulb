@@ -419,6 +419,7 @@ describe("PostHogProvider", () => {
     it("is launch on flickmeon.ai", async () => {
       const { resolveEnvironment } = await import("../PostHogProvider");
       expect(resolveEnvironment("flickmeon.ai")).toBe("launch");
+      expect(resolveEnvironment("dev.flickmeon.ai")).toBe("launch");
     });
 
     it("is dev for dev hosts, the dev admin, localhost, and an unknown host", async () => {

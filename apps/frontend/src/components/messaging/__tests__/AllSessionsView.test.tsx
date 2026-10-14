@@ -17,7 +17,7 @@ it("lists live sessions first, newest first; ended ones under a collapsed Ended,
     make("older", "Older run", "busy", 2),
     make("now", "Fix relay", "busy", 0),
     make("ended", "Ship docs", "ended", 24 * 10),
-    make("gone", "Billing audit", "offline", 1),
+    make("gone", "Billing audit", "offline", 0), // 0 h: cannot cross midnight into "Yesterday"
   ]} />);
   const view = screen.getByRole("region", { name: "All sessions" });
   expect(within(within(view).getByRole("list", { name: "Live" })).getAllByRole("button").map((b) => b.getAttribute("aria-label"))).toEqual([

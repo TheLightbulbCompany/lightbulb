@@ -4,8 +4,8 @@ import {
   agentRingState,
   mergeChats,
   roomDisplayName,
-  sessionLabel,
   sessionLive,
+  sessionMatches,
   sessionUnread,
   useWorkspaceSessions,
   type LocalSession,
@@ -212,8 +212,7 @@ export default function Chats() {
       if (!needle) return true;
       return entry.kind === "room"
         ? roomDisplayName(entry.room, otherMembers(entry.room, userId)).toLowerCase().includes(needle)
-        : sessionLabel(entry.session).toLowerCase().includes(needle) ||
-          ownerName(entry.session.humanUserId).toLowerCase().includes(needle);
+        : sessionMatches(entry.session, needle, ownerName(entry.session.humanUserId));
     });
   }, [rooms.rooms, sessions, archived, filter, needle, userId, ownerName]);
 

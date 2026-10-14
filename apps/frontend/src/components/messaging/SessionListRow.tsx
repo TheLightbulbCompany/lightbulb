@@ -60,7 +60,7 @@ export function SessionListRow({ entry: { session, ownerName, own, unread }, cur
       </span>
       {!!session.chatUnread && <span className="session-chat-unread" aria-hidden="true">{session.chatUnread > 99 ? "99+" : session.chatUnread}</span>}
       {waiting ? <span className="session-unread session-unread--waiting" aria-hidden="true" />
-        : unread && live ? <span className={`session-unread session-unread--${unread}`} aria-hidden="true" />
+        : unread ? <span className={`session-unread session-unread--${unread}`} aria-hidden="true" />
           : <SessionListTime at={session.lastEventAt ?? session.endedAt} />}
     </button>
     {own && onRename && <SessionRenameButton session={session} onRename={onRename} icon />}

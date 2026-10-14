@@ -1240,16 +1240,16 @@ sign up a Paperclip user, or seed agents. Config repair ≠ provisioning.
 
 ### Plan model
 
-The public billing contract is workspace-first: `GET /billing/account` exposes server-owned `base_price_usd`, `workspace_price_usd` and `ultra_price_usd`, never membership counts or per-seat pricing. Public web/mobile copy must read those fields or use neutral/loading copy; do not bake a workspace price into a client release.
+The public billing contract is server-owned: `GET /billing/prices` (public, cached 5 minutes) and `GET /billing/account` expose `workspace_price_usd`, `included_members`, `seat_price_usd`, `trial_days` and `managed_markup`. Public web/mobile copy must read those fields (`apps/frontend/src/lib/pricing.ts`) or show neutral copy when they cannot be read; never bake a price into a client release.
 
-| plan | stored `plan` | Stripe price | display amount | owner |
-|---|---|---|---|---|
-| **Base** | `base` | `STRIPE_BASE_PRICE_ID` | `BASE_PRICE_USD` (currently 20), echoed by `/billing/account` | one workspace, unlimited members |
-| **Workspace** | `standard` | `STRIPE_WORKSPACE_PRICE_ID` | `WORKSPACE_PRICE_USD` (currently 50), echoed by `/billing/account` | one workspace, unlimited members |
-| **Ultra** | `ultra_pro` | `STRIPE_ULTRA_PRICE_ID` | `ULTRA_PRICE_USD` (currently 150), echoed by `/billing/account` | one workspace, unlimited members |
+**One plan since 2026-10-14 (T06): Team.** $50 a month covers the workspace and its first five human members; each member from the 6th adds a $20 seat (T04). Base and Ultra are retired: checkout refuses them (`plan_retired`), and the rows that still carry them keep working until they change plan.
 
-Workspace billing is seat-free: those three are the only recurring Stripe
-subscription prices (`billing_service.create_workspace_checkout`).
+| item | stored `plan` | Stripe price | display amount |
+|---|---|---|---|
+| **Team** (workspace) | `standard` | `STRIPE_WORKSPACE_PRICE_ID` | `WORKSPACE_PRICE_USD` (currently 50) |
+| **Seat** (per member from the 6th) | n/a, second subscription item | `STRIPE_SEAT_PRICE_ID` | `SEAT_PRICE_USD` (currently 20) |
+
+Seat quantity is `max(0, human members - 5)`, kept in step on membership join/leave and on every live subscription event, prorated. Apple-billed workspaces are excluded from seat counting (owner ruling; IAP selling is off in prod). With no seat price configured, billing fails closed: a 6+ member checkout is refused and nothing is charged (`billing.seat_price_unconfigured`). `scripts/sync_seats` backfills seat quantities after the price goes live. Founding teams get a two-year `price_lock_until` (admin "Mark founding team"); checkout has `allow_promotion_codes=False`. A trial workspace that checks out gets a Stripe trial ending on its own `trial_end`, so the first charge is day 31 (T05).
 
 **Apple IAP sells Base/Workspace/Ultra via StoreKit 2** — `apple_iap.PRODUCT_PLANS` maps the three product ids to `plan` values `base`/`standard`/`ultra_pro`. Admin-only `POST /billing/apple/purchase-intent` (404 while `APPLE_IAP_SELLING` is off; 409 `stripe_managed`) hands back the `appAccountToken` a purchase must carry; admin-only `POST /billing/apple/link` verifies the signed transaction, writes `plan`, and fires the same first-paid side effects as Stripe's `on_entering_live` — it never writes `provider_choice`. Both intent and link first retire the workspace's pending Stripe Checkout under the checkout slot claim (open → expired; completed into a live subscription → `stripe_managed`), and `handle_subscription_state` emits `billing.dual_provider_live` if Stripe still goes live over a live Apple subscription. `APPLE_IAP_SELLING` gates only purchase-intent and the product list: it is on in dev, off in prod until the Paid Apps Agreement is active, while `/billing/apple/link` and `/webhooks/apple-iap` are live in prod regardless (a charged purchase must always be linkable). **Sandbox transactions verify in prod by design** — App Review buys with sandbox against the production backend — and the TestFlight link is public, so anyone can grant themselves a sandbox plan; that is bounded by expiry: `billing_repo.apple_lapsed` makes an Apple `active` whose `apple_expires_at` has passed read as canceled (sandbox periods are minutes long and their notifications never reach prod). `APPLE_IAP_ACCEPT_XCODE` (dev-only) accepts Xcode's local StoreKit-testing certificate — see `docs/runbooks/ios-iap-local-storekit-testing.md`. iOS prices ($23.99/$59.99/$179.99) live in App Store Connect; web stays $20/$50/$150. `POST /billing/checkout` 409s `apple_managed` for an Apple-billed workspace.
 

@@ -46,3 +46,13 @@ it("tells the time like Happy: a clock today, a weekday this week, then a date",
   expect(sessionListTime(new Date(2026, 8, 1).toISOString(), now)).toBe(new Date(2026, 8, 1).toLocaleDateString([], { month: "numeric", day: "numeric" }));
   expect(sessionListTime(null, now)).toBe("");
 });
+
+it("keeps the sidebar row to one line, with owner and folder only in its accessible label", () => {
+  const { container } = render(<ul><SessionListRow entry={{ session: { ...session, cwdName: "web" }, ownerName: "Alice", own: false, unread: "unread" }} current={false} oneLine /></ul>);
+  const row = screen.getByRole("button");
+  expect(row).toHaveAccessibleName(/^Open .*Load test, Alice, in web, Working, new output$/);
+  expect(row).not.toHaveTextContent("Alice");
+  expect(row).not.toHaveTextContent("web");
+  expect(container.querySelector(".session-tool-badge")).not.toBeNull();
+  expect(container.querySelector(".session-unread--unread")).not.toBeNull();
+});

@@ -12,8 +12,9 @@ vi.mock("../workspaceController", () => ({
   useWorkspaceState: () => ({ activePanelId }),
 }));
 vi.mock("@/components/messaging/MessagingWorkspace", () => ({
-  MessagingDirectory: ({ onOpenRoom }: { onOpenRoom: (room?: DirectoryRoom) => void }) => (
+  MessagingDirectory: ({ onOpenRoom, onNavigate }: { onOpenRoom: (room?: DirectoryRoom) => void; onNavigate?: () => void }) => (
     <nav aria-label="Conversations">
+      <button onClick={onNavigate}>Invite someone</button>
       {(["dm", "channel", "group-dm", "human"] as const).map((kind) => (
         <button key={kind} onClick={() => onOpenRoom({
           roomId: kind, name: null, roomRevision: 1, lastMessageSeq: 0,
@@ -61,23 +62,42 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("WorkspaceSidebar", () => {
-  it("renders message-first navigation and preserves marketplace and account exits", () => {
+  it("renders message-first navigation with the account row and no Workspace tools block", () => {
     render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
     expect(screen.getAllByRole("navigation", { name: "Conversations" })).toHaveLength(1);
     expect(screen.queryByText("New session")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "New agent" })).not.toBeInTheDocument();
     expect(screen.getByText("Ada Lovelace")).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Workspace tools"));
-    expect(screen.getByText("Check for updates")).toBeInTheDocument();
-    expect(screen.getByText("Local tools available")).toBeInTheDocument();
-    expect(screen.getByText("Marketplace")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Browse" }));
-    expect(openMarketplace).toHaveBeenCalledWith({ view: "browse" });
+    expect(screen.queryByText("Workspace tools")).not.toBeInTheDocument();
+    expect(screen.queryByText("Marketplace")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Browse" })).not.toBeInTheDocument();
+  });
+  it("shows the Mac node status and updater only inside the desktop app, above the user row", () => {
+    const { unmount } = render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
+    expect(screen.queryByText("Check for updates")).not.toBeInTheDocument();
+    expect(screen.queryByText("Local tools available")).not.toBeInTheDocument();
+    unmount();
+    (window as unknown as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke: vi.fn() } };
+    try {
+      render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
+      const user = screen.getByText("Ada Lovelace");
+      for (const text of ["Check for updates", "Local tools available"]) {
+        expect(screen.getByText(text).compareDocumentPosition(user) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      }
+    } finally {
+      delete (window as unknown as { __TAURI__?: unknown }).__TAURI__;
+    }
   });
   it.each(["dm", "channel", "group-dm", "human", "New conversation"])("opens %s without issuing another agent selection", (label) => {
     render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: label }));
     expect(activateMessagesPanel).toHaveBeenCalledWith();
+  });
+  it("hands the drawer-close to the directory for its Invite row", () => {
+    const onNavigate = vi.fn();
+    render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} onNavigate={onNavigate} />);
+    fireEvent.click(screen.getByRole("button", { name: "Invite someone" }));
+    expect(onNavigate).toHaveBeenCalledOnce();
   });
   it("has no More list: the task-board pages live on the Work page", () => {
     render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
@@ -97,9 +117,17 @@ describe("WorkspaceSidebar", () => {
     billingAccount = { subscription_status: "trial_local" };
     const recover = vi.fn();
     render(<WorkspaceSidebar chatReady onRecoveryReprovision={recover} />);
-    fireEvent.click(screen.getByText("Workspace tools"));
-    fireEvent.click(screen.getByRole("button", { name: "Recover workspace" }));
+    const button = screen.getByRole("button", { name: "Recover workspace" });
+    // One line directly above the user row, never tucked away.
+    expect(button.compareDocumentPosition(screen.getByText("Ada Lovelace")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(button);
     expect(recover).toHaveBeenCalledOnce();
+  });
+  it("keeps health off the footer for a workspace with no plan", () => {
+    isSubscribed = false;
+    billingAccount = { subscription_status: null };
+    render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "Recover workspace" })).not.toBeInTheDocument();
   });
   it("clears the marketplace installation marker", () => {
     vi.useFakeTimers();

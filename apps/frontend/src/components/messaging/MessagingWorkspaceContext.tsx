@@ -10,7 +10,8 @@ import { useAgents } from "@/hooks/useAgents";
 import { useRosterEntries } from "@/components/agents/useRosterEntries";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import type { CompanyAgent, CompanyMember } from "@/components/teams/shared/types";
-import { activateMessagesPanel, getWorkspaceSnapshot, openInviteDialog, openPanel } from "@/components/workspace/workspaceController";
+import { resolveCeoAgentId } from "@/components/getstarted/getStartedFirstTask";
+import { activateMessagesPanel, getWorkspaceSnapshot, openPanel } from "@/components/workspace/workspaceController";
 import { MessageNotifications } from "@/components/notifications/MessageNotifications";
 import { UnreadTitleBadge } from "@/components/notifications/UnreadTitleBadge";
 import { hasBlockingShortcutDialog } from "@/components/teams/shared/lib/keyboardShortcuts";
@@ -798,6 +799,7 @@ export function MessagingWorkspaceProvider({
     rooms: directoryRooms,
     sections: rooms.sections,
     participants: directoryParticipants,
+    ceoAgentId: resolveCeoAgentId(agentRoster?.agents ?? []),
     state: directoryState,
     currentRoomId: rooms.activeRoomId ?? undefined,
     // Picking any conversation leaves focus placement — the session goes back
@@ -805,9 +807,6 @@ export function MessagingWorkspaceProvider({
     onSelectRoom: (roomId: string) => { closeSession(); chooseRoom(roomId); },
     currentUserId: userId ?? undefined,
     onAddPeople: (roomId: string) => { closeSession(); chooseRoom(roomId); setAddPeopleRoomId(roomId); },
-    // Only once the roster has loaded, so a workspace with people never flashes "just you".
-    ...(humanRoster?.members && !directoryParticipants.some((participant) => participant.kind === "human")
-      ? { onInvitePeople: openInviteDialog } : {}),
     onSelectParticipant: async (participant: DirectoryParticipant) => { closeSession(); await selectParticipant(participant); },
     openingParticipant,
     onMarkUnread: rooms.markUnread,

@@ -23,10 +23,10 @@ vi.mock("@/hooks/useAgents", () => ({ useAgents: mocks.agents }));
 vi.mock("@/components/agents/useRosterEntries", () => ({ useRosterEntries: mocks.roster }));
 vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: () => ({
   read: (path: string) => ({ data: path === "/agents"
-    ? { agents: [{ id: "agent-friday", name: "Friday" }, { id: "agent-atlas", name: "Atlas" }] }
+    ? { agents: [{ id: "agent-friday", name: "Friday" }, { id: "agent-atlas", name: "Atlas", role: "ceo", origin: "Starter" }] }
     : { members: [{ userId: "owner", name: "Owner" }, { userId: "colleague", name: "Colleague" }] } }),
 }) }));
-vi.mock("@/components/workspace/workspaceController", () => ({ openPanel: vi.fn(), activateMessagesPanel: vi.fn(), getWorkspaceSnapshot: () => ({ activePanelId: null }) }));
+vi.mock("@/components/workspace/workspaceController", () => ({ openPanel: vi.fn(), activateMessagesPanel: vi.fn(), openInviteDialog: vi.fn(), getWorkspaceSnapshot: () => ({ activePanelId: null }) }));
 let directory: RoomDirectoryProps;
 let panel: RoomPanelProps;
 let renderComposer = false;
@@ -134,6 +134,12 @@ it("feeds the directory and conversation from one selected-room owner", () => {
   expect(directory.currentRoomId).toBe(panel.roomId);
   expect(screen.getByRole("navigation", { name: "Conversations" })).toBeInTheDocument();
   expect(screen.getByRole("region", { name: "Messages" })).toBeInTheDocument();
+  view.unmount();
+});
+
+it("names the starter CEO to the directory by role, never by display name", () => {
+  const view = compose();
+  expect(directory.ceoAgentId).toBe("agent-atlas");
   view.unmount();
 });
 

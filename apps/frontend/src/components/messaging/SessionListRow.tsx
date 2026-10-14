@@ -34,10 +34,12 @@ function SessionListTime({ at }: { at: string | null | undefined }) {
  * Happy's (owner ruling 2026-10-13): no status words. The title shimmers while the session
  * works, an orange dot replaces the time while it waits on its person, a blue one while it has
  * output nobody looked at, and a session that is gone is faded. The second line is the folder,
- * and the owner when it is someone else's.
+ * and the owner when it is someone else's; `oneLine` (the sidebar) drops it, and the
+ * accessible label still carries both.
  */
-export function SessionListRow({ entry: { session, ownerName, own, unread }, current, onSelect, onRename, onRemove }: {
+export function SessionListRow({ entry: { session, ownerName, own, unread }, current, onSelect, onRename, onRemove, oneLine = false }: {
   entry: SidebarSession; current: boolean; onSelect?: (sessionId: string) => void;
+  oneLine?: boolean;
   onRename?: (sessionId: string, title: string | null) => Promise<unknown>;
   /** The owner takes a session of their own off the list; a running one is ended first. */
   onRemove?: (sessionId: string) => Promise<unknown>;
@@ -49,10 +51,11 @@ export function SessionListRow({ entry: { session, ownerName, own, unread }, cur
   const news = unread === "finished" ? ", finished since you looked" : unread ? ", new output" : "";
   const chat = session.chatUnread ? `, ${session.chatUnread} unread in chat` : "";
   const waiting = live && session.status === "waiting-approval";
-  const second = [own ? null : ownerName, why ?? session.cwdName].filter(Boolean).join(" · ");
+  const where = why ?? (session.cwdName ? `in ${session.cwdName}` : null);
+  const second = oneLine ? "" : [own ? null : ownerName, why ?? session.cwdName].filter(Boolean).join(" · ");
   return <li className={`room-directory-row room-directory-row--roster session-row${live ? "" : " session-row--gone"}`}>
     <button type="button" className="room-directory-entry" aria-current={current ? "page" : undefined}
-      aria-label={`Open ${label}, ${who}, ${sessionStatus[session.status]}${news}${chat}`} onClick={() => onSelect?.(session.sessionId)}>
+      aria-label={`Open ${label}, ${who}${where ? `, ${where}` : ""}, ${sessionStatus[session.status]}${news}${chat}`} onClick={() => onSelect?.(session.sessionId)}>
       <span className="session-tool-badge" aria-hidden="true"><SessionToolIcon provider={session.provider} /></span>
       <span className="min-w-0 flex-1">
         <span className={`block truncate${unread ? " font-semibold" : ""}${live && session.status === "busy" ? " session-title--working" : ""}`} title={label}>{sessionTitle(session)}</span>

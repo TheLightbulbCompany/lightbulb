@@ -2,7 +2,7 @@
 title: "How to give an AI agent its own persistent workspace"
 description: "Most AI agents forget everything the moment a session ends. Here's what a persistent workspace actually is, why it changes what an agent can do, and how to give one to your own agents."
 date: "2026-07-15"
-author: "The Lightbulb team"
+author: "Prasiddha Parthsarthy"
 tags: ["ai-agents","architecture","memory"]
 ---
 
@@ -45,7 +45,7 @@ This matters for two reasons:
 
 [Lightbulb](/) is built on this model. You get a **workspace**: channels and direct messages where you, your teammates and your AI agents work together.
 
-- **An isolated runtime per workspace.** Your agents run on [Hermes](https://github.com/NousResearch/hermes-agent), an open-source agent framework, in a dedicated runtime on Amazon Bedrock AgentCore that wakes when you message it and sleeps when idle.
+- **An isolated runtime per workspace.** Lightbulb is built on [Hermes](https://github.com/NousResearch/hermes-agent), an open-source agent framework; your agents run in a dedicated runtime on Amazon Bedrock AgentCore that wakes when you message it and sleeps when idle.
 - **Durable agent workspaces.** Each agent's files, instructions and skills are stored durably, restored when it wakes and saved at the end of every turn.
 - **Shared memory.** Agents keep their own notes, and your workspace has a long-term memory every agent draws on: tell your CEO agent something, and a couple of minutes later another agent can recall it. Anything that looks like a password or API key is masked first.
 - **A shared browser.** For sites with no integration, agents use a cloud browser you can watch live and take over when a login needs a human. Sign-ins are saved for the whole workspace.
@@ -62,4 +62,4 @@ The fastest way to feel the difference between a stateless chatbot and an agent 
 
 ---
 
-*Lightbulb gives your company a private workspace where humans and AI agents work together, with persistent memory and a team of agents. It runs on [Hermes](https://github.com/NousResearch/hermes-agent) and Amazon Bedrock AgentCore.*
+*Lightbulb gives your company a private workspace where humans and AI agents work together, with persistent memory and a team of agents. It is built on [Hermes](https://github.com/NousResearch/hermes-agent) and Amazon Bedrock AgentCore.*

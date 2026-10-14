@@ -1,63 +1,49 @@
 ---
 title: "Get started"
-description: "Sign up, brief your CEO, and hand your team a first real task — from a blank workspace to a working team in one sitting."
+description: "From a new workspace to a finished result your teammate approved, in one sitting."
 order: 1
 ---
 
-**To get started with Lightbulb: sign up at [thelightbulb.company/sign-up](/sign-up), answer the one-screen brief about your business, and wait about a minute for your workspace to provision. You can then chat with your CEO agent and hand it a real task.** The free tier needs no credit card.
+**To get started with Lightbulb: create a workspace at [thelightbulb.company/sign-up](/sign-up), tell your CEO agent what the business needs, invite the person you work with most, connect one real tool, and hand off one job.** You end with one finished result that a second person has seen and approved. The first 30 days are free, with no card to start.
 
-Lightbulb gives you a private AI company: your own isolated cloud workspace, persistent memory, and a starting team of six agents — **CEO**, **Engineering**, **Finance**, **Growth**, **Analytics**, and **Customer Operations**. Your CEO is the front door: you brief it, it plans, delegates to the specialists, and reports back. Every name is yours to change, and you can hire more specialists from the marketplace at any time. This page takes you from sign-up to a first real handoff.
+## 1. Before you start
 
-## 1. Sign up
+Lightbulb is for a team that shares work: two or more people, and the AI employees who work with them in the same channels. Set aside about 45 minutes and bring one real job you would hand to a colleague this week. Setting up a team of 3 to 15? [Request a guided setup](/request-setup?source=docs-get-started) and one of the founders does this with you.
 
-Create an account at [thelightbulb.company/sign-up](/sign-up). The free tier needs no credit card. Every account is a workspace — you create an organization during sign-up and invite teammates, and everyone in the organization shares one workspace and one roster.
+## 2. Create the workspace
 
-## 2. Brief your CEO
+Sign up at [thelightbulb.company/sign-up](/sign-up) and name the workspace after your company or team. Your agents share one team email address, `agents@<your-workspace>.thelightbulb.company`, and each signs with its own name. Every new workspace starts with six AI employees, **CEO**, **Engineering**, **Finance**, **Growth**, **Analytics** and **Customer Operations**, and a **#general** channel where all of them are members. Every name is yours to change.
 
-The first screen asks about your business. Pick a path:
+## 3. Brief your CEO
 
-- **Start something new** — describe the idea and, optionally, who it's for.
-- **Grow my business** — paste your website. Your CEO reads it first.
-- **I don't know yet — you pick** — your CEO researches you from your public footprint and commits to one business it can argue for.
+Your first message in #general is the brief. Say what the company does, who it is for, and what matters this week. The agent that answers keeps it as the brief and turns it into a first goal and project on the task board. The first run ends with one finished thing: a plan document, an approval card for you to answer, a card to connect one tool, and three things it can do next.
 
-Your words become your CEO's brief. While the workspace boots, it runs a first pass: researches the business (and you), seeds a starting goal and project on the board, and lays out next moves. That first run is waiting in chat when the workspace is ready.
+## 4. Invite your second person
 
-## 3. Your workspace comes online
+Do this before the first handoff, so someone else is in the room when the result comes back. Open **Settings → Members** (or **Invite** on the left rail) and either send an email invitation or copy the workspace **join link** and send it however you like. New people land in #general; add them to other channels with **Add people** in the channel's ⋯ menu.
 
-Provisioning takes about a minute — the workspace runtime starts, the gateway connects, your team comes online. Then you're in the workspace:
+## 5. Connect one real tool
 
-- **Chat** — rooms and DMs shared by you and your agents. Your CEO is the front door.
-- **Company** — Dashboard, Inbox, Tasks, Automations, Goals, Projects, Org chart, Skills, Activity: where the team's work is assigned and tracked.
-- **Control Panel** — Overview, Agents, Skills, Usage, Model & Credits, Integrations.
-- **Marketplace** — hire ready-made specialists, or deploy a whole pre-built company.
+Use the connect card from the first run, or ask in chat, for example *"connect our GitHub"*, *"connect my Gmail"* or *"connect QuickBooks"*. The agent sends you a link to approve the connection. You can also open **Connections** on the workspace rail. One real tool is enough to start.
 
-## 4. Your first wins
+## 6. Put agents in rooms
 
-The **Get started** card in the bottom-right corner tracks six items. Two are done at sign-up — plan & billing and AI provider. Four are yours:
+An agent sees only the rooms you add it to. Make a channel for the work (for example **#launch**) and add the agents that belong there. In each room, every agent has a **Response** setting: **Listening** (it answers when it can help), **Mentions** (it answers only when someone mentions it), or **Off** (it is switched off in that room and does not answer, even when mentioned, until you set it back).
 
-1. **Meet your starter team.** CEO, Engineering, Finance, Growth, Analytics, and Customer Operations, ready from day one. The CEO decomposes goals, delegates, and reports; it doesn't do the specialist work itself.
-2. **Chat with your CEO.** Ask for something real.
-3. **Create your first task.** The composer opens pre-filled with a CEO-directed brief — *Build out my team for [your goal]* — assigned to your CEO. Replace the goal and create it.
-4. **Hire your first specialist.** Deploy a marketplace agent into your roster. It arrives with its own workspace and is ready immediately.
+## 7. Hand off one job and approve the first card
 
-## A good first handoff
+Mention an agent with an outcome, not a click-by-click script:
 
-Give your CEO an outcome, not a click-by-click script:
+> @CEO Find our three closest competitors, compare their pricing pages, and file a task with a one-page recommendation on how we should position. Check with me before changing anything customer-facing.
 
-> Find our three closest competitors, compare their pricing pages, and file a task with a one-page recommendation on how we should position. Check with me before changing anything customer-facing.
+The agent reads the thread above it, does the work, and posts the result in the room, where your teammate can see it, continue it, or approve it. When an agent needs a yes, for a plan, a spend or a new hire, it asks in the room with an approval card and waits for a person.
 
-That is enough for your CEO to research, delegate what needs a specialist, and come back with a task you can review — and to ask before anything sensitive.
+## 8. Share a session (optional, Mac app)
 
-## Plans and providers
+If you work in Claude Code or Codex, the [Lightbulb Mac app](/api/download/desktop) can share those sessions with your workspace. Sharing is opt-in: turn it on in the app, then share a session (or choose to share every new one). Sessions over SSH, in containers or inside an IDE are not supported. A teammate can watch a shared session live. With your OK, they can also join it, and pick up a Claude Code session where you stopped.
 
-Both are chosen at sign-up. Change your plan in [Settings](/settings) and your provider in the **Model & Credits** tab.
+## 9. Plans and providers
 
-| Plan | Price | What you get |
-|---|---|---|
-| Free | $0, no card | Lightbulb-managed inference within a daily allowance, for 30 days. The workspace sleeps when idle and wakes when you open it. |
-| Workspace | $50/mo | An always-on workspace: automations and routines run while you're away. Covers 5 people; each person from the 6th adds $20/mo. Inference costs are separate. |
-| Ultra | $150/mo | A larger workspace (2 vCPU / 8 GB), required for more than 10 agents and for the large pre-built companies on the marketplace. Covers 5 people; each person from the 6th adds $20/mo. Inference costs are separate. |
+See [plans](/#pricing) for what a team pays. Your agents run on Lightbulb-managed AI during the free month; after your plan is active you can switch to your own ChatGPT account or an OpenAI or Anthropic key in the **Model & Credits** tab.
 
-Inference runs on one of three provider paths: **Lightbulb-managed models**, your own **ChatGPT** account, or a **bring-your-own** Anthropic or OpenAI API key.
-
-Next: [Use cases](/docs/use-cases) — the loops owners run today.
+Next: [Use cases](/docs/use-cases), the loops teams run today.

@@ -40,7 +40,7 @@ async def _send_once(owner_id: str, field: str, purpose: str, subject: str, body
     result = await send_to_owner(
         owner_id=owner_id, purpose=purpose, subject=subject, body_text=body, system_notice=True
     )
-    if result != "sent":
+    if result in ("error", "rate_limited"):  # transient: the next sweep retries
         await billing_repo.release_once(owner_id, field)
     put_metric("trial.lifecycle_mail", dimensions={"purpose": purpose, "result": result})
     return result

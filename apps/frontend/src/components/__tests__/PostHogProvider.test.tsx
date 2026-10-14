@@ -409,32 +409,31 @@ describe("PostHogProvider", () => {
   });
 
   describe("resolveEnvironment", () => {
-    it("is prod only for the prod API host", async () => {
+    it("is prod only on the product hosts", async () => {
       const { resolveEnvironment } = await import("../PostHogProvider");
-      expect(resolveEnvironment("https://api.thelightbulb.company/api/v1")).toBe("prod");
+      expect(resolveEnvironment("thelightbulb.company")).toBe("prod");
+      expect(resolveEnvironment("www.thelightbulb.company")).toBe("prod");
+      expect(resolveEnvironment("admin.thelightbulb.company")).toBe("prod");
     });
 
-    it("is dev for the dev host, localhost, and an unset URL", async () => {
+    it("is launch on flickmeon.ai", async () => {
       const { resolveEnvironment } = await import("../PostHogProvider");
-      expect(resolveEnvironment("https://api-dev.thelightbulb.company/api/v1")).toBe("dev");
-      expect(resolveEnvironment("http://localhost:8000/api/v1")).toBe("dev");
+      expect(resolveEnvironment("flickmeon.ai")).toBe("launch");
+      expect(resolveEnvironment("dev.flickmeon.ai")).toBe("launch");
+    });
+
+    it("is dev for dev hosts, the dev admin, localhost, and an unknown host", async () => {
+      const { resolveEnvironment } = await import("../PostHogProvider");
+      expect(resolveEnvironment("dev.thelightbulb.company")).toBe("dev");
+      expect(resolveEnvironment("admin.dev.thelightbulb.company")).toBe("dev");
+      expect(resolveEnvironment("localhost")).toBe("dev");
       expect(resolveEnvironment(undefined)).toBe("dev");
     });
   });
 
-  it("registers environment=prod as a super property against the prod API host", async () => {
+  it("registers environment=dev on a non-product host (jsdom localhost), even with the prod API URL, and re-registers it after reset() on sign-out", async () => {
     process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
     process.env.NEXT_PUBLIC_API_URL = "https://api.thelightbulb.company/api/v1";
-
-    const mod = await import("../PostHogProvider");
-    render(<mod.PostHogProvider><div>child</div></mod.PostHogProvider>);
-
-    expect(mockRegister).toHaveBeenCalledWith(expect.objectContaining({ environment: "prod" }));
-  });
-
-  it("registers environment=dev against the dev API host, and re-registers it after reset() on sign-out", async () => {
-    process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key_123";
-    process.env.NEXT_PUBLIC_API_URL = "https://api-dev.thelightbulb.company/api/v1";
     mockClerkState.isSignedIn = true;
     mockClerkState.userId = "user_123";
 

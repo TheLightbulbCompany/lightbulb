@@ -4109,10 +4109,45 @@ async def end_run_and_announce(owner_id: str, run_id: str, **kwargs: Any) -> dic
     row = await messaging_repo.end_run(owner_id, run_id, **kwargs)
     if row is not None:
         await announce_run(row, "idle")
+        await _schedule_room_run_analytics(owner_id, row)
         from core.services import meeting_notes  # a meeting's notes run owes its organizer one mail
 
         await meeting_notes.on_notes_run_ended(owner_id, row)
     return row
+
+
+async def _schedule_room_run_analytics(owner_id: str, row: dict) -> None:
+    """``agent_run_completed`` for a room run (T01), keyed on the human whose message started
+    it. Called at the one close door every closer shares (bridge run.ended, Stop, sweeper), and
+    only by the call that closed the row. Never raises."""
+    outcome = row.get("outcome")
+    if outcome not in {"completed", "error", "aborted"}:
+        return
+    try:
+        trigger = (
+            await messaging_repo.get_message_by_id(row["roomId"], row["triggerMessageId"])
+            if row.get("roomId") and row.get("triggerMessageId")
+            else None
+        )
+        author = (trigger or {}).get("author") or {}
+        person = author.get("id") if author.get("kind") == "human" else None
+        started_at, ended_at = row.get("startedAt"), row.get("endedAt")
+        duration = _ms_between(started_at, ended_at) if started_at and ended_at else None
+        run_analytics.schedule_run_completed(
+            owner_id=owner_id,
+            parsed={"source": "room", "agent_id": row.get("agentId"), "room_id": row.get("roomId")},
+            payload={
+                "runId": row.get("runId"),
+                "data": {
+                    "aborted": outcome == "aborted",
+                    **({"durationMs": int(duration)} if duration is not None else {}),
+                },
+            },
+            phase="error" if outcome == "error" else "end",
+            person_id=person if person and person.startswith("user_") else None,
+        )
+    except Exception:
+        logger.exception("room run analytics scheduling failed")
 
 
 async def close_aborted_run(owner_id: str, run_id: str, *, forced: bool = False) -> None:

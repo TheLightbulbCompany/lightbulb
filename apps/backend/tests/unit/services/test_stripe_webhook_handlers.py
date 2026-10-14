@@ -567,6 +567,7 @@ async def test_trial_local_to_trialing_fires_trial_converted_telemetry(mock_repo
     call = trial_converted_calls[0]
     assert call.kwargs["distinct_id"] == "org_x"
     assert call.kwargs["properties"] == {
+        "workspace_id": "org_x",
         "from_status": "trial_local",
         "to_status": "trialing",
         "provider_choice": None,

@@ -1,17 +1,17 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { X } from "lucide-react";
-import { sessionHistory, sessionMatches } from "@lightbulb/shared";
+import { ChevronDown, ChevronRight, X } from "lucide-react";
+import { sessionArchived, sessionHistory, sessionLive, sessionMatches } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { SessionListRow } from "./SessionListRow";
 import { SessionRemoveButton } from "./SessionRemoveButton";
 import type { SidebarSession } from "./roomSections";
 
 /**
- * Every session the workspace lists -- live, offline and recently ended -- in the
- * main pane: searchable, newest activity first, by day. The sidebar shows only
- * live ones; this is where the rest live.
+ * Every session the workspace lists, in the main pane, laid out like Happy's: the live ones
+ * first, newest activity first, with no headings; the ones that have stopped under one
+ * collapsed "Ended", by day. A session offline for days is not listed at all (its Mac lost it).
  */
 export function AllSessionsView({ entries, loading, onOpenSession, onClose, onRename, onRemove, onRemoveEnded }: {
   entries: readonly SidebarSession[]; loading: boolean;
@@ -22,11 +22,22 @@ export function AllSessionsView({ entries, loading, onOpenSession, onClose, onRe
   onRemoveEnded?: () => Promise<unknown>;
 }) {
   const [query, setQuery] = useState("");
-  const groups = useMemo(() => {
+  const [showEnded, setShowEnded] = useState(false);
+  const { live, ended, endedCount } = useMemo(() => {
     const byId = new Map(entries.map((entry) => [entry.session.sessionId, entry]));
-    const matching = entries.filter((entry) => sessionMatches(entry.session, query, entry.ownerName)).map((entry) => entry.session);
-    return sessionHistory(matching).map((group) => ({ ...group, rows: group.data.map((session) => byId.get(session.sessionId)!) }));
+    const rows = (sessions: { sessionId: string }[]) => sessions.map((session) => byId.get(session.sessionId)!);
+    const matching = entries.filter((entry) => !sessionArchived(entry.session) && sessionMatches(entry.session, query, entry.ownerName))
+      .map((entry) => entry.session);
+    const stopped = sessionHistory(matching.filter((session) => !sessionLive(session)));
+    return {
+      live: rows(sessionHistory(matching.filter(sessionLive)).flatMap((group) => group.data)),
+      ended: stopped.map((group) => ({ ...group, rows: rows(group.data) })),
+      endedCount: stopped.reduce((sum, group) => sum + group.data.length, 0),
+    };
   }, [entries, query]);
+  // A search looks everywhere: what it finds is shown, ended or not.
+  const open = showEnded || !!query.trim();
+  const row = (entry: SidebarSession) => <SessionListRow key={entry.session.sessionId} entry={entry} current={false} onSelect={onOpenSession} onRename={onRename} onRemove={onRemove} />;
   return <section className="room-panel room-session-focus" aria-label="All sessions">
     <div className="room-session-main">
       <header className="room-context-header">
@@ -38,11 +49,17 @@ export function AllSessionsView({ entries, loading, onOpenSession, onClose, onRe
       <div className="all-sessions">
         <input type="search" className="all-sessions-search" placeholder="Search sessions" aria-label="Search sessions"
           value={query} onChange={(event) => setQuery(event.target.value)} />
-        {groups.map((group) => <section key={group.key} aria-label={group.title}>
-          <h4 className="all-sessions-day">{group.title}</h4>
-          <ul>{group.rows.map((entry) => <SessionListRow key={entry.session.sessionId} entry={entry} current={false} onSelect={onOpenSession} onRename={onRename} onRemove={onRemove} />)}</ul>
-        </section>)}
-        {groups.length === 0 && <p role="status" className="text-sm text-muted-foreground">
+        {live.length > 0 && <ul aria-label="Live">{live.map(row)}</ul>}
+        {endedCount > 0 && <section aria-label="Ended">
+          <button type="button" className="all-sessions-toggle" aria-expanded={open} onClick={() => setShowEnded((shown) => !shown)}>
+            {open ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}Ended <span className="text-muted-foreground">{endedCount}</span>
+          </button>
+          {open && ended.map((group) => <section key={group.key} aria-label={group.title}>
+            <h4 className="all-sessions-day">{group.title}</h4>
+            <ul>{group.rows.map(row)}</ul>
+          </section>)}
+        </section>}
+        {live.length === 0 && endedCount === 0 && <p role="status" className="text-sm text-muted-foreground">
           {loading && entries.length === 0 ? "Loading sessions…" : query.trim() ? "No sessions match." : "No sessions yet."}</p>}
       </div>
     </div>

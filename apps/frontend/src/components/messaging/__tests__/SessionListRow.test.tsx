@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { expect, it } from "vitest";
 import type { LocalSession } from "@lightbulb/shared";
-import { SessionListRow } from "../SessionListRow";
+import { SessionListRow, sessionListTime } from "../SessionListRow";
 
 const session: LocalSession = { sessionId: "s1", deviceId: "mac", humanUserId: "alice", provider: "claude", providerVersion: "2", generation: "g", status: "busy", activeTurnId: null,
   capabilities: { sendMode: "queue", steer: false, interrupt: false }, capabilitiesVerified: true, controlUnavailableReason: null, latestEventSeq: 0, title: "Load test" };
@@ -13,4 +13,36 @@ it("shows a session's unread chat on its row, and nothing when there is none", (
   rerender(<ul><SessionListRow entry={{ session: { ...session, chatUnread: 0 }, ownerName: "Alice", own: false }} current={false} /></ul>);
   expect(screen.getByRole("button").getAttribute("aria-label")).not.toMatch(/unread in chat/);
   expect(document.querySelector(".session-chat-unread")).toBeNull();
+});
+
+it("shows no status words: a shimmering title while working, an orange dot while waiting, the time otherwise, faded once gone", () => {
+  const at = new Date().toISOString();
+  const row = (changes: Partial<LocalSession>) => render(<ul><SessionListRow entry={{ session: { ...session, cwdName: "web", lastEventAt: at, ...changes }, ownerName: "Alice", own: false }} current={false} /></ul>);
+  const { container, unmount } = row({ status: "busy" });
+  expect(container.querySelector(".session-title--working")).toHaveTextContent("Load test");
+  expect(container).toHaveTextContent("Alice · web");
+  expect(container).not.toHaveTextContent(/Working|Idle|Online|unavailable/);
+  expect(container.querySelector(".session-row-time")).toBeInTheDocument();
+  unmount();
+  const waiting = row({ status: "waiting-approval" });
+  expect(waiting.container.querySelector(".session-unread--waiting")).not.toBeNull();
+  expect(waiting.container.querySelector(".session-row-time")).toBeNull();
+  waiting.unmount();
+  const unknown = row({ status: "unknown" });
+  expect(unknown.container.querySelector(".session-title--working")).toBeNull();
+  expect(screen.getByRole("button").getAttribute("aria-label")).toMatch(/, Online$/);
+  unknown.unmount();
+  const ended = row({ status: "ended" });
+  expect(ended.container.querySelector(".session-row--gone")).not.toBeNull();
+});
+
+it("tells the time like Happy: a clock today, a weekday this week, then a date", () => {
+  const now = new Date(2026, 9, 13, 19, 30).getTime();
+  expect(sessionListTime(new Date(2026, 9, 13, 17, 5).toISOString(), now)).toMatch(/5:05/);
+  // Yesterday evening is yesterday, not "today" by a rolling 24 hours.
+  expect(sessionListTime(new Date(2026, 9, 12, 20, 0).toISOString(), new Date(2026, 9, 13, 8, 0).getTime()))
+    .toBe(new Date(2026, 9, 12).toLocaleDateString([], { weekday: "short" }));
+  expect(sessionListTime(new Date(2026, 9, 10, 9, 0).toISOString(), now)).toBe(new Date(2026, 9, 10).toLocaleDateString([], { weekday: "short" }));
+  expect(sessionListTime(new Date(2026, 8, 1).toISOString(), now)).toBe(new Date(2026, 8, 1).toLocaleDateString([], { month: "numeric", day: "numeric" }));
+  expect(sessionListTime(null, now)).toBe("");
 });

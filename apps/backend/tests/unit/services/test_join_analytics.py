@@ -36,7 +36,9 @@ def test_workspace_created_is_keyed_on_the_creator(capture):
 async def test_member_joined_reads_the_doors_marker_and_forms_a_team(capture):
     marker = {"via": "join_link", "invited_by": "user_c", "ttl": time.time() + 60}
     with (
-        patch.object(webhook_dedup, "_read_event", AsyncMock(side_effect=lambda key: marker if "user_b" in key else {})),
+        patch.object(
+            webhook_dedup, "_read_event", AsyncMock(side_effect=lambda key: marker if "user_b" in key else {})
+        ),
         patch.object(join_analytics.clerk_admin, "get_organization", AsyncMock(return_value=_org(2, 3))),
         patch.object(
             webhook_dedup, "record_event_or_skip", AsyncMock(return_value=webhook_dedup.WebhookDedupResult.RECORDED)
@@ -56,7 +58,9 @@ async def test_member_joined_reads_the_doors_marker_and_forms_a_team(capture):
 async def test_an_email_invite_marker_is_found_by_address(capture):
     marker = {"via": "invite", "invited_by": "user_c", "ttl": time.time() + 60}
     with (
-        patch.object(webhook_dedup, "_read_event", AsyncMock(side_effect=lambda key: marker if "b@x.co" in key else {})),
+        patch.object(
+            webhook_dedup, "_read_event", AsyncMock(side_effect=lambda key: marker if "b@x.co" in key else {})
+        ),
         patch.object(join_analytics.clerk_admin, "get_organization", AsyncMock(return_value=_org(5, 100))),
     ):
         await join_analytics.member_joined("org_1", "user_b", email="B@x.co", creator_id="user_c", membership_id="m1")

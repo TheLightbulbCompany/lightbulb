@@ -45,11 +45,10 @@ async def test_append_agent_mail_footer_is_default_on_and_escapes_html(monkeypat
     )
 
     assert text == (
-        "Hello\n\nSent by Friday <CEO> for Acme & Co with Lightbulb "
-        "(https://lightbulb.example?utm_source=agent_email)."
+        "Hello\n\nSent by Friday <CEO> for Acme & Co with Lightbulb (https://lightbulb.example?utm_source=agent_email)."
     )
     assert rendered_html == (
-        '<p>Hello</p><p>Sent by Friday &lt;CEO&gt; for Acme &amp; Co with '
+        "<p>Hello</p><p>Sent by Friday &lt;CEO&gt; for Acme &amp; Co with "
         '<a href="https://lightbulb.example?utm_source=agent_email">Lightbulb</a>.</p>'
     )
 

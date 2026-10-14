@@ -1099,9 +1099,9 @@ impl Host {
     /// Claude Code's own rule for its background sessions (code.claude.com/docs/en/agent-view): a
     /// held session that is idle IDLE_STOP_AFTER (IDLE_STOP_PRESSED while macOS is short of
     /// memory), with no terminal or panel on its holder and nobody watching it in Lightbulb, has
-    /// its provider stopped. Its conversation stays on disk; it ends as "idle-stopped", recorded
-    /// first as a stranded end is, and the row offers Resume. Busy or waiting sessions, attached or
-    /// watched ones, and every session Lightbulb does not hold are never touched.
+    /// its provider stopped. Its conversation stays on disk; it ends as "idle-stopped" and the row
+    /// offers Resume. Busy or waiting sessions, attached, watched or Only-me ones, and every
+    /// session Lightbulb does not hold are never touched.
     fn stop_idle(&mut self, unattached: Vec<crate::holder::manager::HolderInfo>) -> Result<()> {
         if unattached.is_empty() || !super::session_states::reads_idle_stopped() {
             return Ok(());
@@ -1119,21 +1119,24 @@ impl Host {
                 })
                 .map(|(k, _)| k.clone())
                 .collect();
-            // END stops everything the holder runs: every session in it must be due.
+            // END stops everything the holder runs: every session in it must be due, and shared.
+            // An Only-me session is never stopped here: the workspace would not be told its end.
             let due = !keys.is_empty()
                 && keys.iter().all(|key| {
                     let m = &self.mirrors[key];
                     let watched = m.session_id.as_deref().is_some_and(super::screen::watched);
-                    idle_stop_due(&m.native.status, watched, quiet_for(m, now), pressed)
+                    !m.withheld() && !m.stop_owed && idle_stop_due(&m.native.status, watched, quiet_for(m, now), pressed)
                 });
-            if !due {
+            // The holder checks for a terminal or panel again as it takes the stop (one attached
+            // since discovery looked keeps it running), and only a stop it took is recorded. It is
+            // recorded before the next hook is read, so the provider's own exit cannot claim it.
+            // ponytail: asked on the host thread (up to 2 s, once per due holder); a channel back from a thread if that ever shows.
+            if !due || !crate::holder::manager::end_idle(&holder) {
                 continue;
             }
             for key in keys {
                 self.end_session(&key, super::lifecycle::IDLE_STOPPED)?;
             }
-            // END blocks up to 2 s per holder: off the host thread.
-            std::thread::spawn(move || crate::holder::manager::end(&holder));
         }
         Ok(())
     }
@@ -4545,22 +4548,56 @@ pub(super) mod tests {
         let idle = held("1d1e0001", "idle", transcript("idle.jsonl", hour_ago));
         let busy = held("1d1e0002", "busy", transcript("busy.jsonl", hour_ago));
         let fresh = held("1d1e0003", "idle", transcript("fresh.jsonl", SystemTime::now()));
-        let (k_idle, k_busy, k_fresh) = (native_key(&idle.native), native_key(&busy.native), native_key(&fresh.native));
-        let mut host = test_host(dir.path(), vec![(k_idle.as_str(), idle), (k_busy.as_str(), busy), (k_fresh.as_str(), fresh)]);
-        // Never pid 0 or 1, and never a real pid (above macOS's pid limit): a failed END stops the
-        // holder, which signals its process group.
-        let holder = |id: &str, pid: u32| crate::holder::manager::HolderInfo { id: id.into(), socket: dir.path().join("none.sock"),
-            pid, provider_pid: pid + 1, argv: vec![], cwd: dir.path().into(), watch: true, type_input: true };
-        let unattached = vec![holder("1d1e0001", 2_147_483_100), holder("1d1e0002", 2_147_483_102), holder("1d1e0003", 2_147_483_104)];
+        // A terminal attached after discovery looked: the holder refuses the stop.
+        let joined = held("1d1e0004", "idle", transcript("joined.jsonl", hour_ago));
+        // Switched to Only me: the workspace would never be told its end.
+        let mut only_me = held("1d1e0005", "idle", transcript("only-me.jsonl", hour_ago));
+        only_me.shared = false;
+        let keys: Vec<String> = [&idle, &busy, &fresh, &joined, &only_me].iter().map(|m| native_key(&m.native)).collect();
+        let (k_idle, k_joined, k_only_me) = (keys[0].clone(), keys[3].clone(), keys[4].clone());
+        let mut host = test_host(dir.path(), keys.iter().map(String::as_str).zip([idle, busy, fresh, joined, only_me]).collect());
+        // Fake holders: each answers an idle END as given, and says whether it was ever asked.
+        use std::io::Write;
+        use std::os::unix::net::UnixListener;
+        let holder = |id: &str| crate::holder::manager::HolderInfo { id: id.into(), socket: dir.path().join(format!("{id}.sock")),
+            pid: 2_147_483_100, provider_pid: 2_147_483_101, argv: vec![], cwd: dir.path().into(), watch: true, type_input: true };
+        let answers = |info: &crate::holder::manager::HolderInfo, ended: bool| {
+            let listener = UnixListener::bind(&info.socket).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            std::thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while Instant::now() < deadline {
+                    let Ok((mut conn, _)) = listener.accept() else {
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    };
+                    conn.set_nonblocking(false).unwrap();
+                    let (kind, hello) = crate::holder::protocol::read_frame(&mut conn).unwrap();
+                    assert_eq!((kind, hello.as_slice()), (crate::holder::protocol::HELLO, br#"{"role":"origin","idleEnd":true}"#.as_slice()));
+                    let facts = json!({"idleEnded": ended});
+                    conn.write_all(&crate::holder::protocol::encode(crate::holder::protocol::HELLO, facts.to_string().as_bytes())).unwrap();
+                    return true;
+                }
+                false
+            })
+        };
+        let unattached: Vec<_> = ["1d1e0001", "1d1e0002", "1d1e0003", "1d1e0004", "1d1e0005"].into_iter().map(holder).collect();
         // A relay that cannot read the reason: nothing is stopped.
         super::super::session_states::set_reads_idle_stopped(false);
         host.stop_idle(unattached.clone()).unwrap();
         assert!(host.ended_pending.is_empty());
+        let asked = [answers(&unattached[0], true), answers(&unattached[3], false), answers(&unattached[4], true)];
         super::super::session_states::set_reads_idle_stopped(true);
         host.stop_idle(unattached).unwrap();
+        let [idle_asked, joined_asked, only_me_asked] = asked.map(|t| t.join().unwrap());
+        assert!(idle_asked && joined_asked, "both due holders are asked");
+        assert!(!only_me_asked, "an Only-me session's holder is never asked");
         assert_eq!(host.mirrors[&k_idle].ended_reason.as_deref(), Some("idle-stopped"));
-        assert_eq!(host.ended_pending, vec![k_idle.clone()], "only the idle one an hour quiet");
-        assert!(host.mirrors[&k_busy].ended_at.is_none() && host.mirrors[&k_fresh].ended_at.is_none());
+        assert_eq!(host.ended_pending, vec![k_idle.clone()], "only the idle one an hour quiet, whose holder took the stop");
+        for key in &keys[1..] {
+            assert!(host.mirrors[key].ended_at.is_none() && host.mirrors[key].ended_reason.is_none());
+        }
+        assert!(host.mirrors[&k_joined].ended_at.is_none() && host.mirrors[&k_only_me].ended_at.is_none());
         // The provider's own exit, reported next (hook or pid), cannot relabel it, and the app's END
         // is not its person's.
         host.end_session(&k_idle, "exited").unwrap();

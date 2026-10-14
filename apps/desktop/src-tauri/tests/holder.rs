@@ -257,6 +257,34 @@ fn holder_says_whether_a_terminal_is_attached() {
     drop(watch);
 }
 
+/// An idle stop is refused while a terminal has the keyboard, whatever discovery saw, and taken
+/// once none does: the provider then exits and the holder keeps its final screen.
+#[test]
+fn holder_refuses_an_idle_end_while_a_terminal_is_attached() {
+    let dir = temp_dir();
+    start_cat(&dir);
+    let info = || manager::list_in(&dir).remove(0);
+    let mut window = attach(dir.join("held.sock").as_path(), "interactive");
+    assert!(!manager::end_idle(&info()), "a terminal is on it");
+    window.write_all(&encode(INPUT, b"still-here\r")).unwrap();
+    read_until(&mut window, b"still-here");
+    drop(window);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut taken = false;
+    while !taken && Instant::now() < deadline {
+        taken = manager::end_idle(&info());
+        if !taken {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    assert!(taken, "nobody on it: the holder takes the stop");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while manager::ended_at(&dir.join("held.sock")).is_none() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(manager::ended_at(&dir.join("held.sock")).is_some(), "its provider ended; the holder shows the final screen");
+}
+
 #[test]
 fn holder_keeps_serving_its_window_when_another_client_stops_reading() {
     let socket = start_cat(&temp_dir());

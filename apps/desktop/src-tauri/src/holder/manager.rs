@@ -409,9 +409,20 @@ pub fn ended(socket: &Path) -> Option<(u64, bool)> {
 
 /// The holder's HELLO facts, asked on a short-lived `origin` connection (it gets nothing else).
 fn facts(socket: &Path) -> Option<serde_json::Value> {
+    facts_asking(socket, br#"{"role":"origin"}"#)
+}
+
+/// An idle stop: the holder ends its provider (and keeps its last picture, as after END) only if
+/// no terminal or panel has its keyboard when it reads this, and says whether it did. Never a
+/// stop: a holder that does not answer, or refuses, runs on. Blocks for up to 2 s.
+pub fn end_idle(info: &HolderInfo) -> bool {
+    facts_asking(&info.socket, br#"{"role":"origin","idleEnd":true}"#).is_some_and(|f| f["idleEnded"] == true)
+}
+
+fn facts_asking(socket: &Path, hello: &[u8]) -> Option<serde_json::Value> {
     let mut conn = UnixStream::connect(socket).ok()?;
     conn.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
-    conn.write_all(&encode(HELLO, br#"{"role":"origin"}"#)).ok()?;
+    conn.write_all(&encode(HELLO, hello)).ok()?;
     let (kind, facts) = read_frame(&mut conn).ok()?;
     serde_json::from_slice::<serde_json::Value>(&facts).ok().filter(|_| kind == HELLO)
 }

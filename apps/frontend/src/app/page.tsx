@@ -9,15 +9,17 @@ import { HowItWorks } from "@/components/landing/HowItWorks";
 import { WorkspaceBand } from "@/components/landing/WorkspaceBand";
 import { PricingThreeCard as Pricing } from "@/components/landing/PricingThreeCard";
 import { AskAI } from "@/components/landing/AskAI";
+import { FoundingTeams } from "@/components/landing/FoundingTeams";
+import { HomeFaq } from "@/components/landing/HomeFaq";
+import { ProblemBand } from "@/components/landing/ProblemBand";
+import { ProofStories } from "@/components/landing/ProofStories";
 import { Footer } from "@/components/landing/Footer";
 import {
   HOME_DESCRIPTION,
   HOME_TITLE,
   JsonLd,
-  organizationJsonLd,
+  homeJsonLd,
   pageMetadata,
-  softwareApplicationJsonLd,
-  websiteJsonLd,
 } from "@/lib/seo";
 import { HEADLINE_COOKIE, parseHeadlineVariant, pickHeadlineVariant } from "@/lib/headlineVariant";
 
@@ -27,9 +29,9 @@ export const metadata: Metadata = pageMetadata({
   path: "/",
 });
 
-// Messaging-workspace landing: the hero sells the room (people and agents in
-// one channel), three steps show how it is set up, the band shows the product,
-// and pricing closes.
+// The homepage in the plan's order (docs/marketing 10 Section A): hero, the
+// problem, how it works (team first), see the work, proof, price, founding
+// teams, FAQ, then Ask AI.
 //
 // NOTE: the previous funnel hero captured a brief to sessionStorage which
 // useLandingBriefReplay replayed after activation. That capture was removed
@@ -41,19 +43,21 @@ export default async function LandingPage() {
   const variant = parseHeadlineVariant((await cookies()).get(HEADLINE_COOKIE)?.value) ?? pickHeadlineVariant();
   return (
     <main className="ld-page min-h-screen">
-      <JsonLd data={organizationJsonLd} />
-      <JsonLd data={websiteJsonLd} />
-      <JsonLd data={softwareApplicationJsonLd} />
+      <JsonLd data={homeJsonLd} />
       {/* Invisible: persists `/?ref=CODE` (the backend's referral link target). */}
       <Suspense fallback={null}>
         <LaunchRefCapture />
       </Suspense>
       <Navbar />
       <Hero variant={variant} />
-      <ProofBand />
+      <ProblemBand />
       <HowItWorks />
       <WorkspaceBand />
+      <ProofStories />
+      <ProofBand />
       <Pricing />
+      <FoundingTeams />
+      <HomeFaq />
       <AskAI />
       <Footer />
     </main>

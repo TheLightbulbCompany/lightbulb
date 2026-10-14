@@ -1,13 +1,15 @@
 import type { Metadata } from "next";
 
-import { SITE_URL } from "./domain";
+import { HOME_FAQ } from "./homeFaq";
+
+import { SITE_URL, SUPPORT_EMAIL } from "./domain";
 
 export { SITE_URL };
 export const SITE_NAME = "Lightbulb";
 export const OG_IMAGE = "/og-lightbulb.png";
-export const HOME_TITLE = "Lightbulb AI — Shared Workspace for Humans and AI Agents";
+export const HOME_TITLE = "Lightbulb — Your team and your AI employees, in one place";
 export const HOME_DESCRIPTION =
-  "Lightbulb is a shared workspace where people and AI agents work together in channels, with persistent context, tasks, approvals, and connected tools.";
+  "A team workspace where AI employees are members. Mention one in a channel; the work comes back where everyone can see it, approve it, or pick it up.";
 
 export function absoluteUrl(path = "/") {
   return new URL(path, SITE_URL).toString();
@@ -62,6 +64,10 @@ export const organizationJsonLd = {
   alternateName: ["Lightbulb", "The Lightbulb Company"],
   url: SITE_URL,
   logo: absoluteUrl("/icon.png"),
+  description: "Lightbulb makes a team workspace where people and AI employees work together in channels.",
+  disambiguatingDescription:
+    "Lightbulb (thelightbulb.company) is team software for people and AI employees. Not TheLightbulb.ai, the emotion-AI company, and not The Light Bulb Company (UK), the lighting retailer.",
+  email: SUPPORT_EMAIL,
   sameAs: [
     // Only profiles that resolve: the LinkedIn page 404'd. Add LinkedIn,
     // Crunchbase or Product Hunt here once each returns 200.
@@ -76,9 +82,8 @@ export const websiteJsonLd = {
   name: SITE_NAME,
   alternateName: "Lightbulb AI",
   url: SITE_URL,
+  inLanguage: "en",
   publisher: { "@id": `${SITE_URL}/#organization` },
-  description:
-    "Lightbulb gives companies persistent AI agents, an agent workspace, and an agent marketplace for autonomous operations.",
 };
 
 export const softwareApplicationJsonLd = {
@@ -87,17 +92,54 @@ export const softwareApplicationJsonLd = {
   "@id": `${SITE_URL}/#software`,
   name: "Lightbulb",
   applicationCategory: "BusinessApplication",
-  operatingSystem: "Web",
+  applicationSubCategory: "Team communication",
+  operatingSystem: "Web, macOS, iOS",
   url: SITE_URL,
   brand: { "@id": `${SITE_URL}/#organization` },
   provider: { "@id": `${SITE_URL}/#organization` },
   description:
-    "An AI agent workspace for running company operations with persistent, cloud-isolated agents.",
-  offers: {
-    "@type": "Offer",
-    price: "0",
-    priceCurrency: "USD",
-  },
+    "A team workspace where AI employees are members: put them in a channel, mention one, and the work comes back where the whole team can see it, approve it or pick it up.",
+  featureList: [
+    "Six AI employees in every new workspace: CEO, Engineering, Finance, Growth, Analytics, Customer Operations",
+    "Channels, direct messages and group chats shared by people and AI employees",
+    "Approval cards for plans, spending and new hires",
+    "Shared Claude Code and Codex sessions a teammate can watch and pick up",
+    "Any model: Lightbulb-managed, your ChatGPT account, or your own API key",
+  ],
+  // `offers` ships with /pricing (T30) and says what the visible price says.
+};
+
+function withoutContext(node: Record<string, unknown>) {
+  const rest = { ...node };
+  delete rest["@context"];
+  return rest;
+}
+
+/** The homepage's one `@graph` (05 Part B): its FAQ is the visible HomeFaq, word for word. */
+export const homeJsonLd = {
+  "@context": "https://schema.org",
+  "@graph": [
+    withoutContext(organizationJsonLd),
+    withoutContext(websiteJsonLd),
+    withoutContext(softwareApplicationJsonLd),
+    {
+      "@type": "WebPage",
+      "@id": `${SITE_URL}/#webpage`,
+      url: SITE_URL,
+      name: HOME_TITLE,
+      isPartOf: { "@id": `${SITE_URL}/#website` },
+      about: { "@id": `${SITE_URL}/#software` },
+    },
+    {
+      "@type": "FAQPage",
+      "@id": `${SITE_URL}/#faq`,
+      mainEntity: HOME_FAQ.map(({ q, a }) => ({
+        "@type": "Question",
+        name: q,
+        acceptedAnswer: { "@type": "Answer", text: a },
+      })),
+    },
+  ],
 };
 
 /**

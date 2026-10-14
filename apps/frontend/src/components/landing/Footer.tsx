@@ -16,12 +16,17 @@ export function Footer() {
         <div className="lb-foot-top">
           <div className="lb-foot-cta">
             <h2>
-              Your business is ready when <em>you are.</em>
+              Bring your team. <em>Your AI employees are already in the room.</em>
             </h2>
-            <Link href="/sign-up" className="lb-btn">
-              Start your business
-              <Arrow />
-            </Link>
+            <div className="lb-foot-btns">
+              <Link href="/request-setup" className="lb-btn">
+                Request a guided setup
+                <Arrow />
+              </Link>
+              <Link href="/sign-up" className="lb-btn lb-btn-ghost">
+                Start free
+              </Link>
+            </div>
           </div>
 
           <div className="lb-foot-cols">
@@ -60,7 +65,7 @@ export function Footer() {
           <span>
             © {new Date().getFullYear()} Isol8 Inc., doing business as Lightbulb AI. All rights reserved.
           </span>
-          <span>Autonomous businesses</span>
+          <span>Your team and your AI employees, in one place.</span>
         </div>
       </div>
     </footer>

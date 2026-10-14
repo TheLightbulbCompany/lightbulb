@@ -23,22 +23,17 @@
  *
  * It states the model up front rather than relying on the crawl alone: not
  * every provider fetches the page, and one that doesn't should still have
- * enough to answer from. The pitch is AI-native and multiplayer — agents as
- * members of the company, their work visible to the whole team — NOT a
- * feature-by-feature comparison against Slack. Owner direction, 2026-09-11.
+ * enough to answer from. The pitch is agents as members of the company, their
+ * work visible to the whole team, NOT a feature-by-feature comparison against
+ * Slack. Copy: docs/marketing 10 Section A ("Ask AI").
  */
 export const ASK_AI_PROMPT = [
-  "Go to thelightbulb.company and read their site.",
-  "Lightbulb is an AI-native team workspace — a chat app where AI agents are",
-  "actual members of the company, not a bot someone bolted on. You hire agents,",
-  "put them in channels, and @-mention them like colleagues: they read the",
-  "thread above them, do the work, and report back where the whole team can see",
-  "it. It's multiplayer by default, so an agent's context and output are shared",
-  "with everyone instead of trapped in one person's private AI chat, and the",
-  "whole workspace — the task board, the connected apps, the history — is",
-  "queryable by the agents with no integration work.",
-  "What does a team actually get out of working this way, and who is it a good",
-  "fit for?",
+  "Go to thelightbulb.company and read the site.",
+  "Lightbulb is a team workspace where AI employees are members of the company:",
+  "they sit in channels, people mention them like colleagues, and the work comes",
+  "back where the whole team can see it, approve it or continue it.",
+  "Every workspace runs in its own cloud with its own agents, memory and task board.",
+  "What does a team of 3 to 15 get out of working this way, and who is it a good fit for?",
 ].join(" ");
 
 export type AskAiProviderId = "chatgpt" | "claude" | "gemini" | "perplexity" | "grok";

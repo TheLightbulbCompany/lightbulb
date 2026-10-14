@@ -50,16 +50,16 @@ describe("landing headlines survive .lb-brk being hidden", () => {
     expect(flatten(container)).toContain("Your team and your AI employees, in one place.");
   });
 
-  it("HowItWorks keeps a space between 'you' and 'and'", async () => {
+  it("HowItWorks keeps a space between the two sentences", async () => {
     const { HowItWorks } = await import("../HowItWorks");
     const { container } = render(<HowItWorks />);
-    expect(flatten(container)).toContain("Three steps between you and your next hire.");
+    expect(flatten(container)).toContain("Bring the team first. Then the agents.");
   });
 
-  it("WorkspaceBand keeps a space between 'need' and 'to'", async () => {
+  it("WorkspaceBand keeps a space after the comma", async () => {
     const { WorkspaceBand } = await import("../WorkspaceBand");
     const { container } = render(<WorkspaceBand />);
-    expect(flatten(container)).toContain("Everything you need to run the company.");
+    expect(flatten(container)).toContain("Everything an agent does, where your team can see it.");
   });
 
   it("PricingThreeCard keeps a space after the first sentence", async () => {

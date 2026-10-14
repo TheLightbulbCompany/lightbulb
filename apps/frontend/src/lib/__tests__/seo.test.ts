@@ -3,16 +3,18 @@ import { describe, expect, it } from 'vitest';
 import {
   HOME_DESCRIPTION,
   HOME_TITLE,
+  homeJsonLd,
   organizationJsonLd,
   softwareApplicationJsonLd,
   websiteJsonLd,
 } from '@/lib/seo';
+import { HOME_FAQ } from '@/lib/homeFaq';
 
 describe('homepage search metadata', () => {
   it('uses the exact brand and the product category people can recognize', () => {
-    expect(HOME_TITLE).toBe('Lightbulb AI — Shared Workspace for Humans and AI Agents');
+    expect(HOME_TITLE).toBe('Lightbulb — Your team and your AI employees, in one place');
     expect(HOME_DESCRIPTION).toBe(
-      'Lightbulb is a shared workspace where people and AI agents work together in channels, with persistent context, tasks, approvals, and connected tools.',
+      'A team workspace where AI employees are members. Mention one in a channel; the work comes back where everyone can see it, approve it, or pick it up.',
     );
   });
 });
@@ -39,5 +41,15 @@ describe('homepage entity graph', () => {
       brand: { '@id': 'https://thelightbulb.company/#organization' },
       provider: { '@id': 'https://thelightbulb.company/#organization' },
     });
+  });
+});
+
+describe('homepage @graph', () => {
+  it('carries the visible FAQ word for word and no price before /pricing', () => {
+    const graph = homeJsonLd['@graph'] as Record<string, unknown>[];
+    const faq = graph.find((n) => n['@type'] === 'FAQPage') as { mainEntity: { name: string; acceptedAnswer: { text: string } }[] };
+    expect(faq.mainEntity.map((q) => [q.name, q.acceptedAnswer.text])).toEqual(HOME_FAQ.map(({ q, a }) => [q, a]));
+    expect(JSON.stringify(homeJsonLd)).not.toMatch(/"offers"|"price"/);
+    expect(graph.every((n) => !('@context' in n))).toBe(true);
   });
 });

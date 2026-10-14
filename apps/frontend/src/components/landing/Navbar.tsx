@@ -114,7 +114,7 @@ export function Navbar() {
           Docs
         </Link>
         <Link href="/blog" data-section="blog" className={initialActive("blog")}>
-          Blogs
+          Blog
         </Link>
         <Link href={anchor("pricing")} data-section="pricing" className={initialActive("pricing")}>
           Pricing
@@ -171,16 +171,30 @@ export function Navbar() {
             </Link>
             <Link
               href="/sign-up"
-              className="btn-primary"
+              className="nav-login"
               onClick={() =>
                 captureSignupCta({
                   ctaId: "nav_sign_up",
-                  label: "Sign up",
+                  label: "Start free",
                   surface: "landing_nav",
                 })
               }
             >
-              Get started free
+              Start free
+            </Link>
+            <Link
+              href="/request-setup"
+              className="btn-primary"
+              onClick={() =>
+                captureSignupCta({
+                  ctaId: "nav_request_setup",
+                  label: "Request setup",
+                  surface: "landing_nav",
+                  destination: "/request-setup",
+                })
+              }
+            >
+              Request setup
             </Link>
           </>
         )}

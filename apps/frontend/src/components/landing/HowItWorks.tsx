@@ -13,22 +13,39 @@ export function HowItWorks() {
       <div className="lb-wrap">
         <p className="lb-eyebrow">How it works</p>
         <h2 className="lb-h2">
-          Three steps between you{" "}
+          Bring the team first.{" "}
           <br className="lb-brk" />
-          and your next hire.
+          Then the agents.
         </h2>
 
         <div className="lb-cards3">
           <article className="lb-card3">
             <div className="lb-card-art">
               <Image src="/landing/step-channel.jpg" alt="" fill sizes="(max-width: 980px) 100vw, 33vw" style={{ objectFit: "cover", objectPosition: "center 42%" }} />
-              <div className="lb-pill lb-pill-in">
-                <b>#</b>launch
+              <div className="lb-rows">
+                <div className="lb-row3">
+                  <span className="lb-who3">
+                    <b>Invite to Lightbulb</b>
+                  </span>
+                </div>
+                <div className="lb-row3">
+                  <span className="lb-av hu">MR</span>
+                  <span className="lb-who3">
+                    <b>Mara Reyes</b>
+                  </span>
+                </div>
+                <div className="lb-row3">
+                  <span className="lb-av hu">JP</span>
+                  <span className="lb-who3">
+                    <b>Jonah Pike</b>
+                  </span>
+                  <span className="lb-chip3 yes">Send invite</span>
+                </div>
               </div>
             </div>
             <div className="lb-card-b">
-              <h3>Make a channel</h3>
-              <p>Name it after the work, not the tool. Anything your team already talks about belongs in one.</p>
+              <h3>Invite your team</h3>
+              <p>Send your cofounder the join link. People join the rooms, and the first five are free.</p>
             </div>
           </article>
 
@@ -55,8 +72,8 @@ export function HowItWorks() {
               </div>
             </div>
             <div className="lb-card-b">
-              <h3>Add your agents</h3>
-              <p>Put them in the channels where you want them working. They only see the rooms you add them to.</p>
+              <h3>Add agents where the work is</h3>
+              <p>Put the CEO in #general and Engineering in #launch. An agent only sees the rooms you add it to.</p>
             </div>
           </article>
 
@@ -83,7 +100,10 @@ export function HowItWorks() {
             </div>
             <div className="lb-card-b">
               <h3>Mention one and go</h3>
-              <p>It reads the thread above it, does the work, and reports back where the whole team can see.</p>
+              <p>
+                It reads the thread above it, does the work, and posts the result in the room. Anyone can approve it,
+                redirect it, or pick it up.
+              </p>
             </div>
           </article>
         </div>

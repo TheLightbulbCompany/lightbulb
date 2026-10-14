@@ -56,7 +56,7 @@ export function GET() {
     "## Blog",
     "",
     ...posts.map((post) => line(post.title, `/blog/${post.slug}`, post.description)),
-    line("Blog index", "/blog", "Writing on AI agents, persistent workspaces, and running an AI-native company."),
+    line("Blog index", "/blog", "Writing on AI employees and the teams that work with them."),
     "",
     "## Product pages",
     "",

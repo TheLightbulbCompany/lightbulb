@@ -13,6 +13,12 @@ function withPrivacyLink(text: string) {
   ));
 }
 
+// The comparison page that answers an objection at length (11 task 7).
+const MORE: Record<string, { href: string; label: string }> = {
+  "We already have Slack.": { href: "/compare/slack", label: "Lightbulb vs Slack AI" },
+  "Claude already does this for me.": { href: "/claude-code-session-sharing", label: "Sharing Claude Code sessions with a team" },
+};
+
 /** The four objections, answered. Also emitted as FAQPage JSON-LD on `/`. */
 export function HomeFaq() {
   return (
@@ -24,7 +30,15 @@ export function HomeFaq() {
           {HOME_FAQ.map(({ q, a }) => (
             <div key={q} className="lb-faq-item">
               <dt>{q}</dt>
-              <dd>{withPrivacyLink(a)}</dd>
+              <dd>
+                {withPrivacyLink(a)}
+                {MORE[q] && (
+                  <>
+                    {" "}
+                    <Link href={MORE[q].href}>{MORE[q].label} →</Link>
+                  </>
+                )}
+              </dd>
             </div>
           ))}
         </dl>

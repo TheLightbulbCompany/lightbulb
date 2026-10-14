@@ -3,7 +3,7 @@ import type { MetadataRoute } from "next";
 import { getAllPosts } from "@/content/blog";
 import { getAllDocs } from "@/content/docs";
 import { SITE_URL } from "@/lib/domain";
-import { seoLandingPages } from "@/lib/seo";
+import { COMPARE_PAGES, checkedOn } from "@/content/compare";
 
 /**
  * Public sitemap. Covers the marketing surface + blog. Private app routes
@@ -43,11 +43,15 @@ export default function sitemap(): MetadataRoute.Sitemap {
     priority: 0.7,
   }));
 
-  const seoRoutes: MetadataRoute.Sitemap = seoLandingPages.map((page) => ({
-    url: `${SITE_URL}/${page.slug}`,
-    changeFrequency: "monthly",
-    priority: 0.75,
-  }));
+  const compareRoutes: MetadataRoute.Sitemap = [
+    { url: `${SITE_URL}/compare`, changeFrequency: "monthly", priority: 0.7 },
+    ...COMPARE_PAGES.map((page) => ({
+      url: `${SITE_URL}${page.path}`,
+      lastModified: new Date(`${checkedOn(page)}T00:00:00Z`),
+      changeFrequency: "monthly" as const,
+      priority: 0.75,
+    })),
+  ];
 
-  return [...staticRoutes, ...docsRoutes, ...seoRoutes, ...blogRoutes];
+  return [...staticRoutes, ...docsRoutes, ...compareRoutes, ...blogRoutes];
 }

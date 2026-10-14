@@ -7,7 +7,7 @@ import { captureSignupCta } from "@/lib/signupFlow";
 import { Arrow } from "./Arrow";
 
 /**
- * Footer — shared by the landing, /docs, /blog and /[seoSlug].
+ * Footer — shared by the landing, /docs, /blog and /compare.
  *
  * The backdrop is a CSS gradient rather than a photograph: the illustrations we
  * had were ~900px wide and visibly stretched when bled full width. A gradient
@@ -54,6 +54,7 @@ export function Footer() {
               <Link href="/#workspace">The workspace</Link>
               <Link href="/marketplace">Marketplace</Link>
               <Link href="/docs">Docs</Link>
+              <Link href="/compare">Compare</Link>
               <Link href="/pricing">Pricing</Link>
               {/* API route 302s to the DMG — must be a hard navigation, not a client <Link>. */}
               {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}

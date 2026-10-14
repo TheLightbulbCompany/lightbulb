@@ -6,7 +6,7 @@ import { GET as rss } from "@/app/blog/rss.xml/route";
 import { getAllPosts } from "@/content/blog";
 import { getAllDocs } from "@/content/docs";
 import { SITE_URL } from "@/lib/domain";
-import { seoLandingPages } from "@/lib/seo";
+import { COMPARE_PAGES } from "@/content/compare";
 
 /**
  * These three routes are GENERATED from the same content sources as
@@ -40,8 +40,8 @@ describe("/llms.txt", () => {
     for (const post of getAllPosts()) {
       expect(text).toContain(`${SITE_URL}/blog/${post.slug}`);
     }
-    for (const page of seoLandingPages) {
-      expect(text).toContain(`${SITE_URL}/${page.slug}`);
+    for (const page of COMPARE_PAGES) {
+      expect(text).toContain(`${SITE_URL}${page.path}`);
     }
   });
 

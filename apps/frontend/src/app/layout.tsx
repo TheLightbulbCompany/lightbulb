@@ -72,7 +72,7 @@ export const metadata: Metadata = {
 // a deferred script flashes light then dark. Light is the default, so with
 // nothing stored the attribute is simply absent and the server markup already
 // matches. Only `.ld-page` reads the attribute (landing, /docs, /blog,
-// /[seoSlug]); it cannot reach /chat or admin, so the script runs everywhere.
+// /compare); it cannot reach /chat or admin, so the script runs everywhere.
 // The nav toggle (Navbar.tsx → lampStore) writes the same attribute + key.
 const THEME_SCRIPT =
   "try{if(localStorage.getItem('lightbulb-theme')==='dark')" +

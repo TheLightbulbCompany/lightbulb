@@ -2,7 +2,7 @@
  * Landing redesign — the messaging-workspace direction.
  *
  * SCOPE: every rule here is nested under `.ld-page`, which wraps the landing,
- * /docs, /blog and /[seoSlug] — and deliberately NOT /chat, teams or admin.
+ * /docs, /blog and /compare — and deliberately NOT /chat, teams or admin.
  * That matters because the white ground below is a token REPOINT: `--cream` is
  * read by 213 files and `--color-white` aliases it, so redefining it at :root
  * would repaint the whole product. Scoping it here keeps it to marketing.

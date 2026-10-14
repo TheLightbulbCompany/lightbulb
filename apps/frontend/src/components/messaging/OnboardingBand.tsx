@@ -1,31 +1,26 @@
 "use client";
 
-import { useCallback, useMemo, useState, useSyncExternalStore, type ReactElement } from "react";
-import { Check, Cpu, FileText, Users, Pencil, Plus, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type ReactElement } from "react";
+import { Check, CheckSquare, Cpu, FileText, MessageSquare, Users, Pencil, Plus, X } from "lucide-react";
 import useSWR from "swr";
 import { useOrganization } from "@clerk/nextjs";
-import Link from "next/link";
 
 import { useApi } from "@/lib/api";
-import { capture } from "@/lib/analytics";
 import { useConnections } from "@/hooks/useConnections";
 import { useBilling } from "@/hooks/useBilling";
 import { navigateShell } from "@/lib/shellNav";
 import { PROVIDER_PICKER } from "@/components/chat/ChatErrorCard";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
-import type { CompanyAgent } from "@/components/teams/shared/types";
+import type { Approval, CompanyAgent } from "@/components/teams/shared/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { buildSetupSteps, isBandComplete, type SetupStep, type SetupStepId } from "@lightbulb/shared";
-import { openPanel } from "@/components/workspace/workspaceController";
+import { buildSetupSteps, isBandComplete, isConnectorStep, setupProgress, type SetupStep, type SetupStepId } from "@lightbulb/shared";
+import { openInviteDialog, openPanel } from "@/components/workspace/workspaceController";
 import { ConnectorIcon } from "./ConnectorIcons";
+import { RoomInviteCard } from "./RoomInviteCard";
 import type { RoomParticipant } from "./types";
-import type { JoinLinkStatus } from "@/components/settings/WorkspaceMembersSection";
-
-/** `POST /orgs/{id}/join-link` — the freshly minted link. */
-type CreatedJoinLink = { join_url: string };
 
 /** `GET /company/context` — whether the CEO's Hermes memory holds pasted context. */
 type ContextStatus = { imported: boolean };
@@ -56,6 +51,8 @@ const MAX_CONTEXT_CHARS = 200_000;
 const DISMISS_KEY_PREFIX = "lightbulb.messaging.onboarding-band.dismissed.";
 
 const dismissKey = (ownerId: string) => `${DISMISS_KEY_PREFIX}${ownerId}`;
+/** Set the first time the band renders complete: "All set" shows for that one session, then goes. */
+const allSetKey = (ownerId: string) => `lightbulb.messaging.onboarding-band.all-set.${ownerId}`;
 
 /** Why a card is inert, in the words of the person looking at it. */
 const NON_ADMIN_HINT = "Ask an admin";
@@ -80,9 +77,13 @@ function writeDismissed(ownerId: string): void {
 
 interface OnboardingBandProps {
   participants: readonly RoomParticipant[];
+  /** A person has written in this channel ("Tell your CEO about the business"). */
+  humanSpoke?: boolean;
 }
 
-export function OnboardingBand({ participants }: OnboardingBandProps): ReactElement | null {
+const ANSWERED = new Set(["approved", "rejected"]);
+
+export function OnboardingBand({ participants, humanSpoke = false }: OnboardingBandProps): ReactElement | null {
   const { connections, startOAuth, isLoading: connectionsLoading, error: connectionsError } = useConnections();
   const { organization, membership } = useOrganization();
   const teams = useTeamsApi();
@@ -90,6 +91,9 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
   // cache entry rather than issuing a second request.
   const { data: roster, isLoading: rosterLoading, mutate: refreshRoster } =
     teams.read<{ agents?: CompanyAgent[] }>("/agents");
+  // Every status, not just pending (the BFF passes no filter): "answered" is any approved or rejected.
+  const { data: approvals, error: approvalsError, isLoading: approvalsLoading } =
+    teams.read<{ approvals?: Approval[] }>("/approvals");
   const api = useApi();
   const { account: billing, isLoading: billingLoading } = useBilling();
 
@@ -113,7 +117,6 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
   const [sharing, setSharing] = useState(false);
 
   const [naming, setNaming] = useState(false);
-  const [invite, setInvite] = useState<InviteState>("idle");
   const [connecting, setConnecting] = useState<SetupStepId | null>(null);
   const [connectFailed, setConnectFailed] = useState<SetupStepId | null>(null);
 
@@ -127,36 +130,27 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
       participants, connections, agentNames, workspaceMembers, billing,
       // A failed read drops the card rather than showing one that lies.
       contextImported: contextError ? null : context?.imported,
+      humanSpoke,
+      approvalAnswered: approvalsError ? null : (approvals?.approvals ?? []).some((a) => ANSWERED.has(a.status)),
     }),
-    [participants, connections, agentNames, workspaceMembers, billing, context, contextError],
+    [participants, connections, agentNames, workspaceMembers, billing, context, contextError, humanSpoke, approvals, approvalsError],
   );
+  const complete = isBandComplete(steps);
+  // Read once per mount: the session that first sees the band complete keeps "All set" up.
+  const [allSetSeen] = useState(() => {
+    try { return !!ownerId && window.localStorage.getItem(allSetKey(ownerId)) === "1"; } catch { return false; }
+  });
+  useEffect(() => {
+    if (!complete || !ownerId) return;
+    try { window.localStorage.setItem(allSetKey(ownerId), "1"); } catch { /* storage blocked: shown again next session */ }
+  }, [complete, ownerId]);
 
   const isAdmin = membership?.role === "org:admin";
 
-  const copyJoinLink = useCallback(async () => {
-    if (!organization) return;
-    setInvite("working");
-    try {
-      const path = `/orgs/${encodeURIComponent(organization.id)}/join-link`;
-      const existing = (await api.get(path)) as JoinLinkStatus;
-      // POST is revoke-and-regenerate, so it only runs when there is no link
-      // to strand. `exists` with no `join_url` is a legacy link the backend
-      // cannot show: rotating it would silently break every copy already
-      // shared, so the owner makes that call in Settings, not a copy button.
-      if (existing?.exists && !existing.join_url) return setInvite("legacy");
-      const url = existing?.exists
-        ? existing.join_url!
-        : ((await api.post(path, {})) as CreatedJoinLink).join_url;
-      await navigator.clipboard.writeText(url);
-      capture("join_link_copied", { source: "onboarding_band", workspace_id: organization.id });
-      setInvite("copied");
-    } catch {
-      setInvite("failed");
-    }
-  }, [api, organization]);
-
   const onStep = useCallback((step: SetupStep) => {
-    if (step.id === "invite") return void copyJoinLink();
+    if (step.id === "invite") return openInviteDialog();
+    if (step.id === "tell-ceo") return document.querySelector<HTMLTextAreaElement>(".room-composer textarea")?.focus();
+    if (step.id === "approval") return openPanel("teams-inbox", { section: "needs-you" }, { pushUrl: true });
     if (step.id === "name-agents") return setNaming((open) => !open);
     if (step.id === "context") return setSharing(true);
     if (step.id === "starter-model") return navigateShell(PROVIDER_PICKER);
@@ -167,7 +161,7 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
     startOAuth(step.id)
       .catch(() => setConnectFailed(step.id))
       .finally(() => setConnecting(null));
-  }, [copyJoinLink, startOAuth]);
+  }, [startOAuth]);
 
   // Both reads must have ANSWERED before any judgement about what is left to
   // do. While they are in flight `connections` is [] and `roster` undefined,
@@ -175,20 +169,30 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
   // the whole band on every cold load and then have it vanish.
   // A failed catalog read would derive every connector as outstanding.
   // Billing only has to settle, not succeed: a failed read just omits its card.
-  if (connectionsLoading || connectionsError || rosterLoading || billingLoading || contextLoading || !ownerId) return null;
-  if (storedDismissal || dismissedNow || isBandComplete(steps)) return null;
+  if (connectionsLoading || connectionsError || rosterLoading || billingLoading || contextLoading || approvalsLoading || !ownerId) return null;
+  if (storedDismissal || dismissedNow) return null;
+  if (complete) {
+    return allSetSeen ? null : (
+      <section className="onboarding-band" aria-label="Set up your workspace">
+        <p>All set. Your team can see everything your AI employees do.</p>
+      </section>
+    );
+  }
 
-  const starter = steps.find((step) => step.id === "starter-model");
-  const isAction = (step: SetupStep) => step.id === "invite" || step.id === "name-agents" || step.id === "context";
-  const connectors = steps.filter((step) => !isAction(step) && step !== starter);
-  const actions = steps.filter(isAction);
+  const { done, total } = setupProgress(steps);
+  const byId = (id: SetupStepId) => steps.find((step) => step.id === id);
+  const starter = byId("starter-model");
+  const invite = byId("invite");
+  const connectors = steps.filter(isConnectorStep);
+  const core = (["tell-ceo", "approval"] as const).map(byId).filter((step): step is SetupStep => !!step);
+  const later = steps.filter((step) => step.later);
 
   return (
     <section className="onboarding-band" aria-label="Set up your workspace">
       <header className="onboarding-band-head">
         <div>
-          <h3>Get started</h3>
-          <p>Connect what your team already uses, then bring the rest of them in.</p>
+          <h3>Get started · {done} of {total} done</h3>
+          <p>Bring in the person you work with most, then give your CEO one thing to do.</p>
         </div>
         <Button
           type="button"
@@ -211,6 +215,30 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
         </div>
       )}
 
+      <div className="onboarding-band-actions">
+        <EndowedCard label="Your workspace" detail={`${organization?.name || "Your workspace"} is ready`} />
+        <EndowedCard label="Your AI employees" detail="Six of them, in #general" />
+      </div>
+
+      {invite && (invite.done ? (
+        <div className="onboarding-band-actions">
+          <StepCard step={invite} isAdmin={isAdmin} wide icon={ACTION_ICONS.invite} onSelect={onStep} />
+        </div>
+      ) : (
+        <div className="onboarding-band-invite">
+          <span className="onboarding-card-label"><Users size={16} aria-hidden="true" />{invite.label}</span>
+          <span className="onboarding-card-detail">{invite.detail}</span>
+          <RoomInviteCard source="onboarding_band" offerJustMe={false} />
+        </div>
+      ))}
+
+      <div className="onboarding-band-actions">
+        {core.slice(0, 1).map((step) => (
+          <StepCard key={step.id} step={step} isAdmin={isAdmin} wide icon={ACTION_ICONS[step.id]} onSelect={onStep} />
+        ))}
+      </div>
+
+      {connectors.length > 0 && <p className="onboarding-card-label">Connect one tool</p>}
       <div className="onboarding-band-grid">
         {connectors.map((step) => (
           <StepCard
@@ -239,29 +267,17 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
       </div>
 
       <div className="onboarding-band-actions">
-        {actions.map((step) => (
-          <StepCard
-            key={step.id}
-            step={step}
-            isAdmin={isAdmin}
-            wide
-            icon={ACTION_ICONS[step.id]}
-            status={step.id === "invite" ? inviteStatus(invite, isAdmin) : undefined}
-            onSelect={onStep}
-          />
+        {core.slice(1).map((step) => (
+          <StepCard key={step.id} step={step} isAdmin={isAdmin} wide icon={ACTION_ICONS[step.id]} onSelect={onStep} />
         ))}
       </div>
 
-      {invite === "legacy" && (isAdmin ? (
-        <p className="onboarding-card-detail">
-          This workspace&apos;s link can&apos;t be shown here. Reset it in{" "}
-          <Link href="/settings?panel=members">Settings → Members</Link>.
-        </p>
-      ) : (
-        <p className="onboarding-card-detail">
-          This workspace&apos;s link can&apos;t be shown here. Ask a workspace admin to reset it.
-        </p>
-      ))}
+      {later.length > 0 && <p className="onboarding-card-label">Later</p>}
+      <div className="onboarding-band-actions">
+        {later.map((step) => (
+          <StepCard key={step.id} step={step} isAdmin={isAdmin} wide icon={ACTION_ICONS[step.id]} onSelect={onStep} />
+        ))}
+      </div>
 
       <ContextDialog
         open={sharing}
@@ -287,19 +303,20 @@ export function OnboardingBand({ participants }: OnboardingBandProps): ReactElem
 
 const ACTION_ICONS: Partial<Record<SetupStepId, ReactElement>> = {
   invite: <Users size={16} aria-hidden="true" />,
+  "tell-ceo": <MessageSquare size={16} aria-hidden="true" />,
+  approval: <CheckSquare size={16} aria-hidden="true" />,
   "name-agents": <Pencil size={16} aria-hidden="true" />,
   context: <FileText size={16} aria-hidden="true" />,
 };
 
-type InviteState = "idle" | "working" | "copied" | "failed" | "legacy";
-
-function inviteStatus(state: InviteState, isAdmin: boolean): string | undefined {
-  if (state === "working") return "Copying…";
-  // Settings → Members is admin-only, so a member is sent to an admin instead.
-  if (state === "legacy") return isAdmin ? "Reset the link in Settings" : "Ask an admin to reset the link";
-  if (state === "copied") return "Link copied";
-  if (state === "failed") return "Couldn’t copy — try again";
-  return undefined;
+/** Endowed progress (08 §3): always done, never clickable. */
+function EndowedCard({ label, detail }: { label: string; detail: string }): ReactElement {
+  return (
+    <div className="onboarding-card" data-wide="true" data-done="true">
+      <span className="onboarding-card-label"><Check size={16} aria-hidden="true" />{label}</span>
+      <span className="onboarding-card-detail">{detail}</span>
+    </div>
+  );
 }
 
 function StepCard({ step, isAdmin, onSelect, wide, icon, status, busy }: {

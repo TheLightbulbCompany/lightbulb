@@ -27,7 +27,7 @@ function useDismissed(orgId: string | null | undefined): [boolean, () => void] {
 /** The inline invite a `/chat?panel=invite` link renders as (the CEO's "Who should see this with
  *  you?", 08 §3 screen 6): one email + Send, Copy join link, and "Just me for now". Any member may
  *  invite (D5). */
-export function RoomInviteCard() {
+export function RoomInviteCard({ source = "chat", offerJustMe = true }: { source?: string; offerJustMe?: boolean } = {}) {
   const { orgId } = useAuth();
   const api = useApi();
   const copyJoinLink = useCopyJoinLink();
@@ -38,7 +38,7 @@ export function RoomInviteCard() {
   const [note, setNote] = useState<string | null>(null);
 
   if (!orgId) return null;
-  if (dismissed) return <p className="text-sm text-muted-foreground">You can invite people any time from Get started.</p>;
+  if (dismissed && offerJustMe) return <p className="text-sm text-muted-foreground">You can invite people any time from Get started.</p>;
   if (sentTo) return <p role="status" className="text-sm">Invite sent to {sentTo}. They&apos;ll land in this channel.</p>;
 
   async function send(event: FormEvent) {
@@ -48,7 +48,7 @@ export function RoomInviteCard() {
     setBusy(true);
     setNote(null);
     try {
-      await api.post(`/orgs/${orgId}/invitations`, { email: address, source: "chat" });
+      await api.post(`/orgs/${orgId}/invitations`, { email: address, source });
       setSentTo(address);
     } catch (error) {
       setNote(inviteSendNote(error));
@@ -61,12 +61,12 @@ export function RoomInviteCard() {
     if (busy) return;
     setBusy(true);
     setNote(null);
-    copyJoinLink("chat").then(() => setNote(JOIN_LINK_COPIED), (error: unknown) => setNote(joinLinkNote(error)))
+    copyJoinLink(source).then(() => setNote(JOIN_LINK_COPIED), (error: unknown) => setNote(joinLinkNote(error)))
       .finally(() => setBusy(false));
   }
 
   return (
-    <section aria-label="Invite someone" className="editorial-card flex max-w-xl flex-col gap-2 p-3">
+    <section aria-label="Invite someone" className={offerJustMe ? "editorial-card flex max-w-xl flex-col gap-2 p-3" : "flex flex-col gap-2"}>
       <form onSubmit={send} className="flex flex-wrap gap-2">
         <Input aria-label="Email address" type="email" value={email} onChange={(e) => setEmail(e.target.value)}
           placeholder="name@company.com" className="min-w-0 flex-1" autoComplete="off" spellCheck={false} autoCapitalize="none" />
@@ -74,7 +74,7 @@ export function RoomInviteCard() {
       </form>
       <div className="flex flex-wrap gap-2">
         <Button type="button" variant="outline" size="sm" disabled={busy} onClick={copy}>Copy join link</Button>
-        <Button type="button" variant="ghost" size="sm" onClick={dismiss}>Just me for now</Button>
+        {offerJustMe && <Button type="button" variant="ghost" size="sm" onClick={dismiss}>Just me for now</Button>}
       </div>
       {note && <p role="status" className="text-sm text-muted-foreground">{note}</p>}
     </section>

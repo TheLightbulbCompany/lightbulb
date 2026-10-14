@@ -24,7 +24,7 @@ import { cn } from "@/lib/utils";
 import { roomUrlTransform } from "./markdown";
 import { JOIN_LINK_COPIED, joinLinkNote } from "@/hooks/useCopyJoinLink";
 import { copyText, messagePermalink, parseSessionPermalink } from "./messageLinks";
-import { openSessionPanel, useBrowserThreadHost } from "@/components/workspace/workspaceController";
+import { openInviteDialog, openSessionPanel, useBrowserThreadHost } from "@/components/workspace/workspaceController";
 import { RunBrowserPreview } from "./BrowserRunPreview";
 import { RoomComposer, type RoomComposerProps } from "./RoomComposer";
 import { RoomDetailsPanel, type DetailsTab } from "./RoomDetailsPanel";
@@ -816,7 +816,8 @@ function RoomContent({
             <RoomIntro room={visibleRoom} roomName={roomName} participants={participants} />
             {/* Starter channel only, identified by the backend's `isDefault` —
                 the room is renameable, so "general" is not the test. */}
-            {visibleRoom?.isDefault && <OnboardingBand participants={participants} />}
+            {visibleRoom?.isDefault && <OnboardingBand participants={participants}
+              humanSpoke={pendingMessages.length > 0 || mainMessages.some((message) => message.author.kind === "human")} />}
           </> : null}
           empty={!historyComplete ? <p className="room-empty">Load older messages to see the start of this conversation.</p> : null}>
           {pendingMessages.filter((message) => message.threadRootMessageId === null).map((message) => <article key={message.clientMessageId} className="room-message opacity-60" aria-label={`Pending message from ${viewer?.displayName ?? "You"}`}>
@@ -873,6 +874,11 @@ function RoomContent({
               setMemberPickerOpen(!memberPickerOpen);
             }}>Add members</Button>}
           </div>
+          {visibleRoom?.isDefault && participants.filter((p) => p.kind === "human").length === 1 && (() => {
+            const agents = participants.filter((p) => p.kind === "agent").length;
+            return <p className="text-sm text-muted-foreground">1 person · {agents} AI {agents === 1 ? "employee" : "employees"} ·{" "}
+              <button type="button" className="underline" onClick={openInviteDialog}>Invite people</button></p>;
+          })()}
           {onCopyJoinLink && <p className="text-sm text-muted-foreground">Someone not in the workspace yet?{" "}
             <button type="button" className="underline" disabled={inviteBusy} onClick={() => void copyJoinLink()}>Copy the workspace join link</button> and send it to them.
             {inviteNote && <span role="status"> {inviteNote}</span>}</p>}

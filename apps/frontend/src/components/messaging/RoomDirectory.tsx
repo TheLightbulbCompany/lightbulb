@@ -510,8 +510,8 @@ function DirectoryContent({
         </li>;
       })}</ul>
     </section>}
-    {onInvitePeople && <p className="px-2 text-sm text-muted-foreground">It&apos;s just you and your agents here.{" "}
-      <button type="button" className="underline" onClick={onInvitePeople}>Invite people</button></p>}
+    {onInvitePeople && <p className="px-2 text-sm text-muted-foreground">It&apos;s just you and your AI employees. Invite one person who should see their work.{" "}
+      <button type="button" className="underline" onClick={onInvitePeople}>Invite</button></p>}
     <DialogContent className="room-creation-dialog" showCloseButton={!creationBusy}>
     <form aria-label="Create conversation" className="room-creation" aria-busy={creationBusy}
       onSubmit={async (event) => {

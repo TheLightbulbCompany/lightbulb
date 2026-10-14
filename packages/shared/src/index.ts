@@ -67,6 +67,9 @@ export { canChangeListenMode, LISTEN_MODE_LABELS, listenModeOptions, respondHint
 export {
   buildSetupSteps,
   isBandComplete,
+  isConnectorStep,
+  setupProgress,
+  ENDOWED_STEPS,
   CONNECTOR_STEPS,
   STARTER_AGENT_DEFAULT_NAMES,
 } from "./messaging/onboardingSteps";

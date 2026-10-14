@@ -123,12 +123,6 @@ export type AnalyticsEvent =
   | "cron_job_triggered"
   // First-run funnel
   | "first_run_brief_submitted"
-  // Get started guide
-  | "get_started_article_opened"
-  | "get_started_completed"
-  | "get_started_dismissed"
-  | "get_started_opened"
-  | "get_started_step_clicked"
   // Landing
   | "landing_download_clicked"
   | "landing_viewed"

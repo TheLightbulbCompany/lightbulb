@@ -537,6 +537,8 @@
 .onboarding-card[data-done="true"] .onboarding-card-label { color: var(--ok); }
 .onboarding-card[data-done="true"] .onboarding-card-label svg:not([role="img"]) { color: var(--ok); }
 .onboarding-card-detail { color: var(--muted-foreground); font-size: 0.8125rem; }
+/* The invite step carries its own form (RoomInviteCard), so it is a block, not a button. */
+.onboarding-band-invite { display: grid; gap: 6px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; }
 
 .onboarding-names { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; }
 .onboarding-names p { color: var(--muted-foreground); font-size: 0.875rem; max-width: 60ch; }

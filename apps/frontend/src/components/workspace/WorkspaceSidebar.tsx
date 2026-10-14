@@ -18,7 +18,6 @@ import { FreeTierNote } from "@/components/chat/FreeTierNote";
 import { useMarketplaceDrawer } from "@/components/marketplace/drawer/MarketplaceDrawerProvider";
 import { DesktopUpdater } from "@/components/desktop/DesktopUpdater";
 import { NodeStatusPill } from "@/components/desktop/NodeStatusPill";
-import { emitStep } from "@/components/getstarted/getStartedEvents";
 import { activateMessagesPanel, openPanel, useWorkspaceState } from "./workspaceController";
 
 
@@ -57,11 +56,10 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady, onNavigate 
     .slice(0, 2)
     .toUpperCase();
 
-  // Preserve the hire completion signal and consume the drawer's marker.
+  // Consume the drawer's "freshly installed" marker.
   const { state: drawerState, setFreshlyInstalled } = useMarketplaceDrawer();
   useEffect(() => {
     if (!drawerState.freshlyInstalledAgentId) return;
-    emitStep("hire");
     const handle = setTimeout(() => setFreshlyInstalled(null), 600);
     return () => clearTimeout(handle);
   }, [drawerState.freshlyInstalledAgentId, setFreshlyInstalled]);

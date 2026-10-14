@@ -687,7 +687,7 @@ fn tcp_ends(info: &[u8; SOCKET_FDINFO_SIZE]) -> Option<(SocketAddr, SocketAddr)>
 }
 
 /// The peer's pid and its parents, closest first, this user's processes only, at most 32: the
-/// session's own process is somewhere up there (npx -> node -> claude). Empty (deny) when the
+/// session's own process is somewhere up there (chrome-devtools-mcp's node -> claude). Empty (deny) when the
 /// peer is no longer the process the socket lookup named, before or after the walk.
 pub(crate) fn ancestors(peer: Identity) -> Vec<u32> {
     if identity::read(peer.pid) != Some(peer) {

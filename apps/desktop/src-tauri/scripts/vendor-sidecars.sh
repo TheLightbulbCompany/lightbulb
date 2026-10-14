@@ -4,8 +4,9 @@
 #   - node-<triple>                               (per-arch Mach-O binary)
 #   - openclaw-host-<triple>/                     (per-arch npm install)
 #   - lightbulb-browser-service-<triple>          (per-arch launcher shim)
+#   - chrome-devtools-mcp/                        (pinned npm install, any arch)
 #
-# All three ship as bundle RESOURCES (Contents/Resources/bin/), never
+# All of them ship as bundle RESOURCES (Contents/Resources/bin/), never
 # externalBin: a script in Contents/MacOS is signed via xattrs, which the
 # updater's tarball drops, breaking the app's seal (see lib.rs
 # resolve_node_host_binary).
@@ -45,6 +46,12 @@ set -euo pipefail
 # a mismatch fails at runtime inside the packaged app, not at build.
 NODE_VERSION="22.23.2"
 OPENCLAW_VERSION="2026.8.1"
+# The session browser's MCP server (native_mcp.rs browser_command), run by the
+# bundled node above. Pinned: `npx …@latest` re-resolved it from npm on every
+# session start. It has no dependencies and no native addons (pure JS, so one
+# arch-independent copy and nothing for the pre-sign step to sign); engines
+# wants node ^22.12.0, which NODE_VERSION satisfies.
+CHROME_DEVTOOLS_MCP_VERSION="1.10.1"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TAURI_DIR="$(dirname "$SCRIPT_DIR")"
@@ -131,6 +138,31 @@ LAUNCHER_EOF
     chmod +x "$LAUNCHER"
 }
 
+# Arch-independent: installed once into bin/chrome-devtools-mcp/.
+# --ignore-scripts: nothing from the registry runs at build time.
+vendor_chrome_devtools_mcp() {
+    local DIR="$BIN_DIR/chrome-devtools-mcp"
+    echo "==> Vendoring chrome-devtools-mcp@${CHROME_DEVTOOLS_MCP_VERSION}"
+    rm -rf "$DIR"
+    mkdir -p "$DIR"
+    cat > "$DIR/package.json" <<EOF
+{
+  "name": "lightbulb-chrome-devtools-mcp",
+  "private": true,
+  "version": "0.0.0",
+  "dependencies": {
+    "chrome-devtools-mcp": "${CHROME_DEVTOOLS_MCP_VERSION}"
+  }
+}
+EOF
+    (cd "$DIR" && npm install --omit=dev --ignore-scripts --no-audit --no-fund)
+    local ENTRY="$DIR/node_modules/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js"
+    test -f "$ENTRY" || { echo "chrome-devtools-mcp entry missing: $ENTRY" >&2; exit 1; }
+    local GOT
+    GOT="$(node -p "require('$DIR/node_modules/chrome-devtools-mcp/package.json').version")"
+    [ "$GOT" = "$CHROME_DEVTOOLS_MCP_VERSION" ] || { echo "chrome-devtools-mcp is $GOT, pinned $CHROME_DEVTOOLS_MCP_VERSION" >&2; exit 1; }
+}
+
 # CI passes a single target triple; local dev (no args) vendors both
 # so `cargo tauri dev` works on either arch without re-running.
 TARGET="${1:-}"
@@ -154,6 +186,7 @@ case "$TARGET" in
         exit 1
         ;;
 esac
+vendor_chrome_devtools_mcp
 
 rm -rf "$TMP_DIR"
 echo "==> Sidecars vendored at $BIN_DIR"

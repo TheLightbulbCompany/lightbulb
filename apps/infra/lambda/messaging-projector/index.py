@@ -545,6 +545,8 @@ def _push_title(message: dict[str, Any], meta: dict[str, Any], mentioned: bool) 
     """
     author = message["author"]["displayName"]
     who = f"{author} mentioned you" if mentioned and meta.get("kind") != "dm" else author
+    if meta.get("kind") == "dm":
+        return who
     return f"{who} \u00b7 {_push_where(meta, bool(message.get('threadRootMessageId')))}"
 
 

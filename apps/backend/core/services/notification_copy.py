@@ -28,6 +28,11 @@ def title(who: str, where: str | None = None) -> str:
     return f"{who} · {where}" if where else who
 
 
+def approval_title(who: str) -> str:
+    """A direct, named, one-action approval request."""
+    return title(who, "needs your OK")
+
+
 def room_where(kind: str | None, name: str | None) -> str | None:
     if kind == "dm":
         return "DM"

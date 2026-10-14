@@ -152,10 +152,7 @@ def approval_push_copy(item: "activity.ActivityItem") -> tuple[str, str]:
         what = rest[:1].upper() + rest[1:]
     else:
         what = f"Needs your approval: {title}"
-    where = next((link.label for link in item.summary.links if link.kind == "issue"), None) or (
-        "Approval" if item.subtype == "approval" else None
-    )
-    return activity._clip(copy.title(who, where), _PUSH_TITLE_CHARS), copy.line(what)
+    return activity._clip(copy.approval_title(who), _PUSH_TITLE_CHARS), copy.line(what)
 
 
 async def _run_copy(event: dict, company_id: str) -> tuple[str, str] | None:

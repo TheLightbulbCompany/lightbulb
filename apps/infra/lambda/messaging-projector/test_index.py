@@ -842,6 +842,11 @@ class PushTests(unittest.TestCase):
             index._project_message(message or push_message())
         return publish, urlopen
 
+    def test_dm_push_reads_like_a_text_from_the_named_teammate(self):
+        copy = index._push_copy(push_message("invoice 1042 is ready to send. OK?", ()), {"kind": "dm"}, False)
+        self.assertEqual(copy["title"], "Alice")
+        self.assertEqual(copy["body"], "invoice 1042 is ready to send. OK?")
+
     def test_notified_members_get_one_expo_post_with_every_token(self):
         publish, urlopen = self.project(push_world())
         self.assertEqual(urlopen.call_count, 1)

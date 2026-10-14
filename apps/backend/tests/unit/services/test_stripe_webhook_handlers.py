@@ -643,6 +643,20 @@ async def test_a_coupon_or_free_invoice_is_not_at_list_and_converts_nothing(invo
     assert capture.call_args.kwargs["properties"]["at_list"] is False
 
 
+@pytest.mark.asyncio
+async def test_a_paid_invoice_without_a_subscription_converts_nothing():
+    account = {"owner_id": "org_x", "plan": "standard", "stripe_customer_id": "cus_1"}
+    claim = AsyncMock(return_value=RECORDED_RESULT)
+    with (
+        patch.object(handlers, "resolve_owner_account", AsyncMock(return_value=account)),
+        patch.object(handlers, "capture_product_event") as capture,
+        patch("core.services.webhook_dedup.record_event_or_skip", claim),
+    ):
+        await handlers.handle_invoice_paid(_invoice(parent=None, billing_reason="manual"), MagicMock())
+    assert [c.kwargs["event"] for c in capture.call_args_list] == ["invoice_paid"]
+    claim.assert_not_awaited()
+
+
 def test_invoice_paid_is_handled():
     assert handlers.STRIPE_WEBHOOK_HANDLERS["invoice.paid"] is handlers.handle_invoice_paid
 

@@ -740,7 +740,7 @@ async def handle_invoice_paid(event: dict[str, Any], billing_service: BillingSer
         properties=props,
         event_uuid=str(uuid.uuid5(_INVOICE_PAID_NAMESPACE, str(invoice.get("id")))),
     )
-    if at_list:
+    if at_list and sub_id:  # a subscription's invoice: a credit top-up is not a conversion
         from core.services import webhook_dedup
 
         try:

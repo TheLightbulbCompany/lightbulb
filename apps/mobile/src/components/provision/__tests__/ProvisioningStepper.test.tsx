@@ -327,7 +327,7 @@ describe("ProvisioningStepper children continuity", () => {
     expect(childMounts).toBe(1);
 
     await rerender(tree({ kind: "parked" }));
-    expect(screen.getByText("Waking your agents…")).toBeTruthy();
+    expect(screen.queryByText("Waking your agents…")).toBeNull();
     expect(childMounts).toBe(1);
 
     await rerender(tree({ kind: "starting", phase: "provisioning" }));

@@ -6,7 +6,7 @@
 // (there is no standalone `/teams` route tree).
 
 import { teamsPanelUrl } from "@/lib/shellNav";
-import { visibleCompanySections, type CompanyNavIcon } from "@/components/chat/companySections";
+import { COMPANY_SECTIONS, type CompanyNavIcon } from "@/components/chat/companySections";
 import { Bot, Settings } from "lucide-react";
 
 export interface CommandPaletteAction {
@@ -35,12 +35,12 @@ const KEYWORDS: Record<string, string[]> = {
 };
 
 /**
- * Derived from the SAME filtered sections the sidebar renders, so the palette
+ * Derived from the SAME sections the sidebar renders, so the palette
  * can never offer a tab the sidebar hides (or vice versa).
  */
-export function navActions(opts: { provisioningEnabled: boolean }): CommandPaletteAction[] {
+export function navActions(): CommandPaletteAction[] {
   return [
-    ...visibleCompanySections(opts).flatMap((section) =>
+    ...COMPANY_SECTIONS.flatMap((section) =>
       section.items.map(({ panel, label, Icon }) => {
         const key = panel.replace(/^teams-/, "");
         // Mail is its own panel, not a teams-* one.
@@ -61,14 +61,12 @@ export function navActions(opts: { provisioningEnabled: boolean }): CommandPalet
   ];
 }
 
-/** Everything, for callers that predate the flag (tests, static listings). */
-export const NAV_ACTIONS: CommandPaletteAction[] = navActions({ provisioningEnabled: true });
+export const NAV_ACTIONS: CommandPaletteAction[] = navActions();
 
 export function filterNavActions(
   query: string,
-  opts: { provisioningEnabled: boolean } = { provisioningEnabled: true },
 ): CommandPaletteAction[] {
-  const actions = navActions(opts);
+  const actions = navActions();
   const q = query.trim().toLowerCase();
   if (!q) return actions;
   return actions.filter((action) => {

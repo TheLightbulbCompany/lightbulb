@@ -141,9 +141,9 @@ const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   // already in the wild, and Money's Agent spend section is a different,
   // smaller surface than that panel.
   money: "Money",
-  // Shells with named exits (owner ruling 2026-09-01): the map is complete
-  // before every rail is. Keys are permanent the moment they ship — mobile
-  // builds `?panel=teams-<key>` as a string.
+  // Deleted tabs (2026-10-14, stage 1 of the product simplification). The keys
+  // stay so an old link or a mobile-built `?panel=teams-<key>` still opens a
+  // titled tab that shows the router's "Unknown panel" line instead of nothing.
   publish: "Publish",
   seo: "SEO & AEO",
   ads: "Ads",

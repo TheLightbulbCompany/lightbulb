@@ -36,10 +36,10 @@ export const INTEGRATION_RECEIPTS: Record<string, IntegrationReceipt> = {
   // owner for a SECOND credential to a vendor they have already connected. Say
   // what the second one buys, or the ask looks redundant.
   attio_api: {
-    delivers: "lets your Lightbulb dashboards read Attio directly — needed for the Leads tab to show a table rather than ask an agent",
+    delivers: "an Attio key the workspace holds for dashboard reads; nothing reads it today",
   },
   apollo_api: {
-    delivers: "lets your Lightbulb dashboards run Apollo searches directly — needed for the Leads tab to show a table rather than ask an agent",
+    delivers: "an Apollo key the workspace holds for dashboard reads; nothing reads it today",
   },
   cloudflare: {
     delivers: "generated-JS access to your Cloudflare account — DNS, Workers, R2 & Zero Trust — instead of a fixed tool list",

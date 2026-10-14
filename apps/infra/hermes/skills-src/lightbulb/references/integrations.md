@@ -70,10 +70,11 @@ Read the current catalog live:
 
 - Connectable catalog (public, no auth): `GET $ISOL8_API_URL/api/v1/platform-info`
   - Attio and Apollo each appear TWICE, and the pair is not a duplicate:
-    "(for your agents)" is the MCP connection you use, while "(dashboard
-    access)" is an API key the platform holds so the owner's Leads tab can show
-    a table. If the owner has connected only one, say which is missing rather
-    than reporting the vendor as connected.
+    "(for your agents)" is the MCP connection you use. "(dashboard access)" is
+    an API key the platform holds; no page reads it today, so never send the
+    owner to connect it. If the owner has connected only the dashboard key,
+    say the agent connection is missing rather than reporting the vendor as
+    connected.
   — returns the current integrations (each with its `actor` rail) and channels
   you can offer to connect.
 - What YOU already have connected: read `connected_integrations` in

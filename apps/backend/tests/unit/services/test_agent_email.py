@@ -28,6 +28,49 @@ from unittest.mock import AsyncMock  # noqa: E402
 from core.services import agent_email as ae  # noqa: E402
 
 
+@pytest.mark.asyncio
+async def test_append_agent_mail_footer_is_default_on_and_escapes_html(monkeypatch):
+    monkeypatch.setattr(ae.agent_email_repo, "get_by_address", AsyncMock(return_value={}))
+    monkeypatch.setattr(ae, "PaperclipRepo", _onboarding_repo())
+    monkeypatch.setattr(ae, "resolve_company_name", AsyncMock(return_value="Acme & Co"))
+    monkeypatch.setattr(ae.settings, "FRONTEND_URL", "https://lightbulb.example/")
+
+    text, rendered_html = await ae.append_agent_mail_footer(
+        owner_id="owner_1",
+        agent_id="agent_friday",
+        address=TEAM,
+        body_text="Hello",
+        body_html="<p>Hello</p>",
+        agent_name="Friday <CEO>",
+    )
+
+    assert text == (
+        "Hello\n\nSent by Friday <CEO> for Acme & Co with Lightbulb "
+        "(https://lightbulb.example?utm_source=agent_email)."
+    )
+    assert rendered_html == (
+        '<p>Hello</p><p>Sent by Friday &lt;CEO&gt; for Acme &amp; Co with '
+        '<a href="https://lightbulb.example?utm_source=agent_email">Lightbulb</a>.</p>'
+    )
+
+
+@pytest.mark.asyncio
+async def test_append_agent_mail_footer_honors_owner_opt_out(monkeypatch):
+    monkeypatch.setattr(
+        ae.agent_email_repo,
+        "get_by_address",
+        AsyncMock(return_value={"footer_enabled": False}),
+    )
+
+    assert await ae.append_agent_mail_footer(
+        owner_id="owner_1",
+        agent_id="agent_friday",
+        address=TEAM,
+        body_text="Hello",
+        body_html="<p>Hello</p>",
+    ) == ("Hello", "<p>Hello</p>")
+
+
 def _onboarding_repo(company_id="co_1", friday="agent_friday"):
     """A stand-in for ``PaperclipRepo`` whose ``get_onboarding_state`` returns
     a fixed onboarding row."""

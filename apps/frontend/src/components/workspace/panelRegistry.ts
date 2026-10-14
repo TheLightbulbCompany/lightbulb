@@ -120,7 +120,6 @@ export const NON_COMMAND_PARAMS = [
 ] as const;
 
 const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
-  dashboard: "Home",
   agents: "Agents",
   inbox: "Inbox",
   issues: "Tasks",

@@ -156,7 +156,7 @@ describe("panelRegistry", () => {
     expect(clearablePanelParamKeys("file-viewer")).toEqual(["path", "agent"]);
     expect(clearablePanelParamKeys("agent-inspector")).toEqual(["agentId", "initialTab"]);
     expect(clearablePanelParamKeys("control:agents")).toEqual(["agentId", "initialTab"]);
-    expect(clearablePanelParamKeys("teams-dashboard")).toEqual([]);
+    expect(clearablePanelParamKeys("browser")).toEqual([]);
     expect(clearablePanelParamKeys("chat:a-1")).toEqual([]);
     // roomId/messageId (permalinks) are clearable alongside agentId/
     // agentSelection: an agent open must clear a stale room target, and a

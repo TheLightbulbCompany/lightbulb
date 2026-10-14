@@ -120,7 +120,7 @@ it("a read that lands after the owner's choice does not put the old audience bac
   expect(await who()).toHaveValue("anyone");
   await act(async () => { land({ url, audience: "workspace" }); });
   expect(await who()).toHaveValue("anyone");
-  expect(screen.getByRole("note")).toHaveTextContent("Anyone with the link can watch this terminal live");
+  expect(screen.getByRole("note")).toHaveTextContent("Anyone with the link sees this terminal live, including anything printed in it");
 });
 
 // Codex on #3946: the failed change had cancelled the read in flight, and nothing read again.

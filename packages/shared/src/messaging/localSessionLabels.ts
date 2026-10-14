@@ -27,9 +27,6 @@ export const sessionStatus: Record<LocalSession["status"], string> = {
 export const endedWhy = (s: Pick<LocalSession, "status" | "endedReason">, mac: string, apostrophe = "'"): string | null =>
   s.status === "ended" && s.endedReason === "login-session-ended" ? `${mac}${apostrophe}s login session restarted` : null;
 
-/** List/sidebar ordering, shared by web and mobile: busy → waiting on the owner → idle-ish → gone. */
-const SESSION_STATUS_RANK: Record<LocalSession["status"], number> = { busy: 0, "waiting-approval": 1, idle: 2, unknown: 2, offline: 3, ended: 3 };
-
 export const unavailableReason: Record<NonNullable<LocalSession["controlUnavailableReason"]>, string> = {
   // Owner ruling 2026-10-04: a person never reads "not verified" about their own session.
   "runtime-unverified": "Sending is unavailable for this session.",
@@ -59,18 +56,18 @@ export const sessionViewKey = (session: Pick<LocalSession, "sessionId" | "genera
 
 export interface WorkspaceSection { key: string; title: string; data: LocalSession[] }
 
-/** The sidebar's grouping, shared by web and mobile: one section per person, mine
- *  first; within a person busy → waiting → idle, then by title. Not by last
- *  output: sessions in the same state then traded places every time one of them
- *  wrote something, and the row about to be clicked moved. */
+/** The sidebar's grouping, shared by web and mobile: one section per person, mine first; within a
+ *  person newest activity first, as Happy orders its list (owner ruling 2026-10-13). Not by status:
+ *  ranking "Working" first put a session the Mac wrongly thought busy above everything. */
 export function workspaceSections(sessions: readonly LocalSession[], currentUserId: string | null | undefined, name: (humanUserId: string) => string): WorkspaceSection[] {
   const humans = [...new Set(sessions.map((s) => s.humanUserId))];
   const title = (human: string) => (human === currentUserId ? "You" : name(human));
+  const at = (s: LocalSession) => Date.parse(s.lastEventAt ?? s.endedAt ?? "") || 0;
   humans.sort((a, b) => Number(b === currentUserId) - Number(a === currentUserId) || title(a).localeCompare(title(b)));
   return humans.map((human) => ({
     key: human, title: title(human),
-    data: sessions.filter((s) => s.humanUserId === human).sort((a, b) => SESSION_STATUS_RANK[a.status] - SESSION_STATUS_RANK[b.status]
-      || sessionTitle(a).localeCompare(sessionTitle(b)) || a.sessionId.localeCompare(b.sessionId)),
+    data: sessions.filter((s) => s.humanUserId === human).sort((a, b) => Number(sessionLive(b)) - Number(sessionLive(a))
+      || at(b) - at(a) || a.sessionId.localeCompare(b.sessionId)),
   }));
 }
 

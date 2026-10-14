@@ -52,29 +52,19 @@ describe("workspaceSections", () => {
   });
   const name = (id: string) => ({ alice: "Alice", bob: "Bob" }[id] ?? "Room member");
 
-  it("groups mine first, then people by name, each sorted busy before waiting before idle, then by title", () => {
+  it("groups mine first, then people by name, each live first and newest activity first, never by status", () => {
     const sections = workspaceSections([
       s({ sessionId: "b-idle", humanUserId: "bob", lastEventAt: "2026-09-14T10:00:00Z" }),
       s({ sessionId: "a-idle-old", humanUserId: "alice", lastEventAt: "2026-09-14T09:00:00Z" }),
       s({ sessionId: "a-idle-new", humanUserId: "alice", lastEventAt: "2026-09-14T11:00:00Z" }),
+      // A stale "busy" from hours ago does not jump the queue (owner report 2026-10-13).
       s({ sessionId: "a-busy", humanUserId: "alice", status: "busy", lastEventAt: "2026-09-14T08:00:00Z" }),
-      s({ sessionId: "a-wait", humanUserId: "alice", status: "waiting-approval" }),
+      s({ sessionId: "a-ended", humanUserId: "alice", status: "ended", lastEventAt: "2026-09-14T12:00:00Z" }),
       s({ sessionId: "me", humanUserId: "me", lastEventAt: "2026-09-14T01:00:00Z" }),
     ], "me", name);
     expect(sections.map((section) => section.title)).toEqual(["You", "Alice", "Bob"]);
     expect(sections.flatMap((section) => section.data.map((row) => row.sessionId)))
-      .toEqual(["me", "a-busy", "a-wait", "a-idle-new", "a-idle-old", "b-idle"]);
-  });
-
-  // By last output, two working sessions traded places every time one of them
-  // wrote something: the row about to be clicked moved.
-  it("keeps same-status sessions in one order, whichever wrote last", () => {
-    const rows = (first: string, second: string) => workspaceSections([
-      s({ sessionId: "s-relay", title: "Relay", humanUserId: "alice", status: "busy", lastEventAt: first }),
-      s({ sessionId: "s-billing", title: "Billing", humanUserId: "alice", status: "busy", lastEventAt: second }),
-    ], "me", name)[0].data.map((row) => row.sessionId);
-    expect(rows("2026-09-14T09:00:00Z", "2026-09-14T10:00:00Z")).toEqual(["s-billing", "s-relay"]);
-    expect(rows("2026-09-14T11:00:00Z", "2026-09-14T10:00:00Z")).toEqual(["s-billing", "s-relay"]);
+      .toEqual(["me", "a-idle-new", "a-idle-old", "a-busy", "a-ended", "b-idle"]);
   });
 
   it("falls back to the id for sessions titled alike", () => {

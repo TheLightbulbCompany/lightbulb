@@ -404,7 +404,7 @@ function DirectoryContent({
       const collapsed = prefs.collapsed.includes("sessions");
       const listId = `${id}-group-sessions`;
       // Only what the desktop is mirroring right now; everything else is under All sessions.
-      // Already ordered: mine first, then people by name, each busy → waiting → idle (see workspaceSections in shared).
+      // Already ordered: mine first, then people by name, each newest activity first (see workspaceSections in shared).
       const live = sessions.filter((entry) => sessionLive(entry.session));
       // What All sessions lists: everything but the long-lost (offline for days).
       const listed = sessions.filter((entry) => !sessionArchived(entry.session)).length;

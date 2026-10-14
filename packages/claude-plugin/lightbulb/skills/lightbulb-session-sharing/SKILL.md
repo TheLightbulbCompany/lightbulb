@@ -19,8 +19,8 @@ or files.
 ## Browsing
 
 A shared session browses with the `lightbulb-browser` MCP tools (Google's
-chrome-devtools-mcp, which the Lightbulb Mac app installs; it runs through `npx`, so the Mac
-needs Node.js). They drive the Mac's "Lightbulb agent" Chrome window, which has the workspace's
+chrome-devtools-mcp, which the Lightbulb Mac app bundles and runs with its own Node.js; the
+Mac needs nothing else installed). They drive the Mac's "Lightbulb agent" Chrome window, which has the workspace's
 sign-ins; never your user's everyday Chrome. New pages open in a background window: nothing
 comes to the front.
 If a tool fails with "Share this session to use the Lightbulb browser", this session is

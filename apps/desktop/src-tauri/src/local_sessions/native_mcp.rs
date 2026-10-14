@@ -34,10 +34,55 @@ fn cli_home(command: &mut Command, home: &Path) {
 /// The session browser's MCP entry: Google's chrome-devtools-mcp attached to this
 /// Mac's session-browser port. We write no browser tools of our own.
 pub(super) const BROWSER_SERVER_NAME: &str = "lightbulb-browser";
+const NODE: &str = if cfg!(target_arch = "aarch64") { "node-aarch64-apple-darwin" } else { "node-x86_64-apple-darwin" };
+/// vendor-sidecars.sh installs the pinned package here, beside the bundled `node`.
+const BROWSER_ENTRY: &str = "chrome-devtools-mcp/node_modules/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js";
+/// Node loads it with `--env-file`: `mcp add` takes a command line, not an environment, and the
+/// server checks npm for updates (CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS) and reports usage unless told not to.
+const BROWSER_ENV: &str = "chrome-devtools-mcp/mcp.env";
 
-pub(super) fn browser_command() -> Vec<String> {
-    vec!["npx".into(), "-y".into(), "chrome-devtools-mcp@latest".into(), "--browserUrl".into(),
-        format!("http://127.0.0.1:{}", crate::session_browser::PORT)]
+fn browser_url() -> String {
+    format!("http://127.0.0.1:{}", crate::session_browser::PORT)
+}
+
+/// The app's bundled node running its bundled, pinned chrome-devtools-mcp: one
+/// process per session. Earlier releases used `npx -y chrome-devtools-mcp@latest`,
+/// which added an `npm exec` wrapper, a telemetry watchdog and an npm fetch per
+/// session. Each session keeps its own server: session_browser.rs tells sessions
+/// apart by the CDP client's process tree. `None` when this build ships no bundle.
+pub(super) fn browser_command(executable: &Path) -> Option<Vec<String>> {
+    let macos = executable.parent()?;
+    // Packaged: Contents/MacOS/<exe> -> Contents/Resources/bin. Dev: target/<profile>/bin.
+    let bin = [macos.parent().map(|c| c.join("Resources/bin")), Some(macos.join("bin"))]
+        .into_iter()
+        .flatten()
+        .find(|bin| bin.join(NODE).is_file() && bin.join(BROWSER_ENTRY).is_file() && bin.join(BROWSER_ENV).is_file())?;
+    Some(vec![
+        bin.join(NODE).to_string_lossy().into_owned(),
+        format!("--env-file={}", bin.join(BROWSER_ENV).to_string_lossy()),
+        bin.join(BROWSER_ENTRY).to_string_lossy().into_owned(),
+        "--browserUrl".into(),
+        browser_url(),
+        "--no-usage-statistics".into(),
+    ])
+}
+
+/// Any entry a Lightbulb release wrote: the old npx line, or a bundled line at
+/// any app path. A same-named server of another shape is someone else's.
+fn is_lightbulb_browser(entry: &Value) -> bool {
+    let (Some(command), Some(args)) = (entry["command"].as_str(), entry["args"].as_array()) else {
+        return false;
+    };
+    let args: Vec<&str> = args.iter().filter_map(Value::as_str).collect();
+    let url = browser_url();
+    if command == "npx" && args == ["-y", "chrome-devtools-mcp@latest", "--browserUrl", url.as_str()] {
+        return true;
+    }
+    command.ends_with(&format!("/{NODE}"))
+        && args.len() == 5
+        && args[0].starts_with("--env-file=") && args[0].ends_with(&format!("/{BROWSER_ENV}"))
+        && args[1].ends_with(&format!("/{BROWSER_ENTRY}"))
+        && args[2..] == ["--browserUrl", url.as_str(), "--no-usage-statistics"]
 }
 
 /// The MCP server entry `name` as the provider stores it (`{command, args}`); Null when absent.
@@ -98,24 +143,33 @@ fn change(home: &Path, cli: &Path, provider: &str, verb: &str, name: &str, line:
 }
 
 /// `lightbulb-browser`: added while sharing is on, removed (only if it is ours) when it goes off.
-/// A server of that name that is not ours is left alone and reported.
-fn configure_browser(home: &Path, cli: &Path, provider: &str, enabled: bool, notes: &mut Vec<String>) {
-    let ours = browser_command();
+/// An entry an earlier release wrote (npx, or another app path) is replaced with the
+/// current one. A server of that name that is not ours is left alone and reported.
+fn configure_browser(home: &Path, cli: &Path, provider: &str, executable: &Path, enabled: bool, notes: &mut Vec<String>) {
     let Ok(current) = entry(home, cli, provider, BROWSER_SERVER_NAME) else {
         return notes.push(format!("{provider} MCP settings are unavailable"));
     };
-    let is_ours = current["command"].as_str() == Some(ours[0].as_str()) && current["args"] == json!(&ours[1..]);
+    let is_ours = is_lightbulb_browser(&current);
     if !enabled {
         if is_ours && change(home, cli, provider, "remove", BROWSER_SERVER_NAME, &[]).is_err() {
             notes.push(format!("{provider} {BROWSER_SERVER_NAME} could not be removed"));
         }
         return;
     }
-    if is_ours {
+    if !current.is_null() && !is_ours {
+        return notes.push(format!("{provider} already has a {BROWSER_SERVER_NAME} server that is not Lightbulb's; it was left as it is"));
+    }
+    // Only an unvendored dev build lacks the bundle; it is logged, not shown as a
+    // sharing note, and whatever entry exists is left as it is.
+    let Some(ours) = browser_command(executable) else {
+        return eprintln!("[local-sessions] {BROWSER_SERVER_NAME} is not bundled beside {}", executable.display());
+    };
+    if current["command"].as_str() == Some(ours[0].as_str()) && current["args"] == json!(&ours[1..]) {
         return;
     }
-    if !current.is_null() {
-        return notes.push(format!("{provider} already has a {BROWSER_SERVER_NAME} server that is not Lightbulb's; it was left as it is"));
+    // An earlier release's entry: `mcp add` refuses a taken name, so remove it first.
+    if is_ours && change(home, cli, provider, "remove", BROWSER_SERVER_NAME, &[]).is_err() {
+        return notes.push(format!("{provider} {BROWSER_SERVER_NAME} could not be updated"));
     }
     let line: Vec<&std::ffi::OsStr> = ours.iter().map(std::ffi::OsStr::new).collect();
     if change(home, cli, provider, "add", BROWSER_SERVER_NAME, &line).is_err() {
@@ -219,7 +273,7 @@ pub(super) fn configure(home: &Path, executable: &Path, enabled: bool) -> Vec<St
         let Some(cli) = super::provider_program(home, provider) else {
             continue;
         };
-        configure_browser(home, &cli, provider, enabled, &mut notes);
+        configure_browser(home, &cli, provider, executable, enabled, &mut notes);
         let ours_line = [executable.as_os_str(), std::ffi::OsStr::new("session-mcp")];
         // Any `session-mcp` under the old name is ours, whatever path it named.
         if let Ok(Some(_)) = configured(home, &cli, provider, LEGACY_SERVER_NAME) {
@@ -676,19 +730,83 @@ json.dump(doc, open(p, "w"))
         if super::super::provider_program(h, "claude") != std::fs::canonicalize(&fake).ok() {
             return; // like enable_replaces above: provider discovery may not look in this temp home
         }
-        let exe = Path::new("/Applications/Lightbulb.app/Contents/MacOS/lightbulb-desktop");
+        let app = tempfile::tempdir().unwrap();
+        let exe = bundled_app(app.path());
         let servers = || serde_json::from_str::<Value>(&std::fs::read_to_string(h.join(".claude.json")).unwrap()).unwrap()["mcpServers"].clone();
-        configure(h, exe, true);
-        assert_eq!(servers()[BROWSER_SERVER_NAME], json!({"command": "npx",
-            "args": ["-y", "chrome-devtools-mcp@latest", "--browserUrl", "http://127.0.0.1:39222"]}));
-        configure(h, exe, false);
+        let ours = browser_command(&exe).unwrap();
+        configure(h, &exe, true);
+        assert_eq!(servers()[BROWSER_SERVER_NAME], json!({"command": ours[0], "args": &ours[1..]}));
+        configure(h, &exe, false);
         assert!(servers()[BROWSER_SERVER_NAME].is_null());
-        std::fs::write(h.join(".claude.json"), json!({"mcpServers": {BROWSER_SERVER_NAME: {"command": "/bin/other", "args": []}}}).to_string()).unwrap();
-        let notes = configure(h, exe, true);
-        assert!(notes.iter().any(|n| n.contains("not Lightbulb's")), "{notes:?}");
-        assert_eq!(servers()[BROWSER_SERVER_NAME]["command"], "/bin/other");
-        configure(h, exe, false);
-        assert_eq!(servers()[BROWSER_SERVER_NAME]["command"], "/bin/other", "someone else's is never removed");
+
+        // An existing user's npx entry from an earlier release is replaced, other servers kept.
+        let npx = json!({"command": "npx", "args": ["-y", "chrome-devtools-mcp@latest", "--browserUrl", "http://127.0.0.1:39222"]});
+        std::fs::write(h.join(".claude.json"), json!({"mcpServers": {BROWSER_SERVER_NAME: npx, "chrome-devtools": npx}}).to_string()).unwrap();
+        let notes = configure(h, &exe, true);
+        // (Only Claude's: a CI machine's codex CLI may not install into this temp home at all.)
+        assert!(!notes.iter().any(|n| n.starts_with("claude ") && n.contains(BROWSER_SERVER_NAME)), "{notes:?}");
+        assert_eq!(servers()[BROWSER_SERVER_NAME], json!({"command": ours[0], "args": &ours[1..]}));
+        assert_eq!(servers()["chrome-devtools"], npx, "a server under another name is never touched");
+
+        // The app moved: our bundled entry at the old path follows it.
+        let moved = tempfile::tempdir().unwrap();
+        let moved_exe = bundled_app(moved.path());
+        configure(h, &moved_exe, true);
+        assert_eq!(servers()[BROWSER_SERVER_NAME]["command"], browser_command(&moved_exe).unwrap()[0]);
+        // Disabling with the old path still removes it: any Lightbulb shape is ours.
+        configure(h, &exe, false);
+        assert!(servers()[BROWSER_SERVER_NAME].is_null());
+
+        for foreign in [
+            json!({"command": "/bin/other", "args": []}),
+            // npx chrome-devtools-mcp the person set up themselves, under our name.
+            json!({"command": "npx", "args": ["-y", "chrome-devtools-mcp@latest"]}),
+            json!({"command": "npx", "args": ["-y", "chrome-devtools-mcp@latest", "--browserUrl", "http://127.0.0.1:9222"]}),
+        ] {
+            std::fs::write(h.join(".claude.json"), json!({"mcpServers": {BROWSER_SERVER_NAME: foreign}}).to_string()).unwrap();
+            let notes = configure(h, &exe, true);
+            assert!(notes.iter().any(|n| n.contains("not Lightbulb's")), "{notes:?}");
+            assert_eq!(servers()[BROWSER_SERVER_NAME], foreign);
+            configure(h, &exe, false);
+            assert_eq!(servers()[BROWSER_SERVER_NAME], foreign, "someone else's is never removed");
+        }
+    }
+
+    /// A fake `.app` with the bundled node and chrome-devtools-mcp entry; returns its executable.
+    fn bundled_app(root: &Path) -> PathBuf {
+        let bin = root.join("Lightbulb.app/Contents/Resources/bin");
+        std::fs::create_dir_all(bin.join(BROWSER_ENTRY).parent().unwrap()).unwrap();
+        std::fs::write(bin.join(NODE), b"").unwrap();
+        std::fs::write(bin.join(BROWSER_ENTRY), b"").unwrap();
+        std::fs::write(bin.join(BROWSER_ENV), b"").unwrap();
+        root.join("Lightbulb.app/Contents/MacOS/lightbulb-desktop")
+    }
+
+    #[test]
+    fn browser_command_runs_the_bundled_server_with_bundled_node() {
+        let app = tempfile::tempdir().unwrap();
+        let exe = bundled_app(app.path());
+        let bin = app.path().join("Lightbulb.app/Contents/Resources/bin");
+        assert_eq!(browser_command(&exe).unwrap(), vec![
+            bin.join(NODE).to_string_lossy().into_owned(),
+            format!("--env-file={}", bin.join(BROWSER_ENV).to_string_lossy()),
+            bin.join(BROWSER_ENTRY).to_string_lossy().into_owned(),
+            "--browserUrl".to_owned(),
+            "http://127.0.0.1:39222".to_owned(),
+            "--no-usage-statistics".to_owned(),
+        ]);
+        assert!(is_lightbulb_browser(&json!({"command": browser_command(&exe).unwrap()[0], "args": &browser_command(&exe).unwrap()[1..]})));
+        // Dev build: resources sit in bin/ beside the executable.
+        let dev = tempfile::tempdir().unwrap();
+        let dev_bin = dev.path().join("bin");
+        std::fs::create_dir_all(dev_bin.join(BROWSER_ENTRY).parent().unwrap()).unwrap();
+        std::fs::write(dev_bin.join(NODE), b"").unwrap();
+        std::fs::write(dev_bin.join(BROWSER_ENTRY), b"").unwrap();
+        std::fs::write(dev_bin.join(BROWSER_ENV), b"").unwrap();
+        assert_eq!(browser_command(&dev.path().join("lightbulb-desktop")).unwrap()[0], dev_bin.join(NODE).to_string_lossy());
+        // No bundle (an unvendored build): no command, never a guess.
+        let empty = tempfile::tempdir().unwrap();
+        assert!(browser_command(&empty.path().join("Contents/MacOS/lightbulb-desktop")).is_none());
     }
 
     #[test]

@@ -153,6 +153,10 @@ mod macos {
         Ok(true)
     }
 
+    /// How long a second launch waits for the running app's callback. Tests run on a busy
+    /// self-hosted Mac, where 2 s between two threads was not enough (the restart-lock test flaked).
+    const CALLBACK_WAIT: Duration = if cfg!(test) { Duration::from_secs(30) } else { Duration::from_secs(2) };
+
     fn forward(socket: &Path) -> io::Result<()> {
         if !owned_socket(socket)? {
             return Err(io::Error::new(
@@ -167,7 +171,7 @@ mod macos {
         stream.write_all(std::env::args().collect::<Vec<_>>().join("\0").as_bytes())?;
         stream.flush()?;
         stream.shutdown(Shutdown::Write)?;
-        stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+        stream.set_read_timeout(Some(CALLBACK_WAIT))?;
         let mut byte = [0u8; 1];
         match stream.read(&mut byte) {
             Ok(0) => Ok(()), // The plugin drops its stream after the callback returns.
@@ -385,7 +389,7 @@ mod macos {
                 let mut payload = Vec::new();
                 stream.read_to_end(&mut payload).unwrap();
                 entered_tx.send(()).unwrap();
-                release_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+                release_rx.recv_timeout(CALLBACK_WAIT).unwrap();
             });
             let client_socket = socket.clone();
             let client_lock = restart_path.clone();
@@ -396,7 +400,7 @@ mod macos {
                 unlock(&restart).unwrap();
                 result
             });
-            entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            entered_rx.recv_timeout(CALLBACK_WAIT).unwrap();
             let updater = lock_file(&restart_path).unwrap();
             assert!(!try_lock(&updater).unwrap());
             release_tx.send(()).unwrap();

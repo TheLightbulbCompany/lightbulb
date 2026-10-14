@@ -5,25 +5,11 @@ import { cn } from "@/lib/utils";
 import { useSystemHealth, type HealthState } from "@/hooks/useSystemHealth";
 import { Button } from "@/components/ui/button";
 
-const DOT_STYLES: Record<HealthState, string> = {
-  HEALTHY: "bg-ok",
-  PARKED: "bg-[var(--midnight-faint)]",
-  STARTING: "bg-warn animate-pulse",
-  RECOVERING: "bg-warn animate-pulse",
-  // GATEWAY_BUSY = parked backend WS, agent still working. Calm yellow with
-  // a pulse so the user sees motion (the run is alive); NOT the red alarm
-  // we used to show during a normal long Bedrock turn.
-  GATEWAY_BUSY: "bg-warn animate-pulse",
-  CONTAINER_DOWN: "bg-err",
-};
-
-const LABEL_STYLES: Record<HealthState, string> = {
-  HEALTHY: "text-[var(--midnight-muted)]",
-  PARKED: "text-[var(--midnight-muted)]",
-  STARTING: "text-warn",
-  RECOVERING: "text-warn",
-  GATEWAY_BUSY: "text-warn",
-  CONTAINER_DOWN: "text-err",
+// Only the broken states take a line in the sidebar. Healthy, parked (asleep,
+// wakes on use), starting and mid-turn (GATEWAY_BUSY) are all normal and render nothing.
+const BROKEN: Partial<Record<HealthState, { dot: string; label: string }>> = {
+  RECOVERING: { dot: "bg-warn animate-pulse", label: "text-warn" },
+  CONTAINER_DOWN: { dot: "bg-err", label: "text-err" },
 };
 
 export function HealthIndicator({
@@ -48,8 +34,8 @@ export function HealthIndicator({
     }
   };
 
-  // Healthy is the normal case: the sidebar shows health only when something is wrong.
-  if (state === "HEALTHY") return null;
+  const broken = BROKEN[state];
+  if (!broken) return null;
 
   return (
     <div
@@ -58,19 +44,11 @@ export function HealthIndicator({
     >
       {/* Status dot */}
       <span
-        className={cn("h-2 w-2 rounded-full shrink-0", DOT_STYLES[state])}
+        className={cn("h-2 w-2 rounded-full shrink-0", broken.dot)}
       />
 
       {/* Label */}
-      <span className={cn("truncate flex-1", LABEL_STYLES[state])}>
-        {state === "RECOVERING"
-            ? reason
-            : state === "STARTING"
-              ? "Starting..."
-              : state === "GATEWAY_BUSY"
-                ? "Agent thinking..."
-                : reason}
-      </span>
+      <span className={cn("truncate flex-1", broken.label)}>{reason}</span>
 
       {/* Action button */}
       {isRecovering ? (

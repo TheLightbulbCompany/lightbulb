@@ -845,18 +845,6 @@ it("starts the Archived group collapsed and expands it on request", async () => 
   expect(screen.getByRole("button", { name: /^Old launch/ })).toBeInTheDocument();
 });
 
-it("nudges a lone founder to invite people, and opens the invite dialog from the nudge", async () => {
-  const onInvitePeople = vi.fn();
-  const { rerender } = render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[base]} participants={[atlas]}
-    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} onInvitePeople={onInvitePeople} />);
-  expect(screen.getByText(/just you and your AI employees/)).toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button", { name: "Invite" }));
-  expect(onInvitePeople).toHaveBeenCalledTimes(1);
-  rerender(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[base]} participants={[atlas, alice]}
-    onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} />);
-  expect(screen.queryByText(/just you and your AI employees/)).not.toBeInTheDocument();
-});
-
 it("offers Add people in a row's menu only where the viewer may add, and asks for that room's picker", async () => {
   const me = { kind: "human" as const, id: "me", displayName: "Me", mentionHandle: null, listenMode: null, joinedAt: "2026-09-10T00:00:00Z", joinedSeq: 0 };
   const onAddPeople = vi.fn();
@@ -915,10 +903,11 @@ it("puts the CEO's DM first in Team, by agent id, whether or not the DM exists y
   expect(firstRow()).toHaveAccessibleName(/^Alice/);
 });
 
-it("ends the list with an Invite someone row that opens the invite dialog", async () => {
+it("ends the list with an Invite someone row that opens the invite dialog, and no separate lone-founder nudge", async () => {
   openInviteDialog.mockClear();
-  render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[base]} participants={[atlas, alice]}
+  render(<RoomDirectory ownerScopeId="org" sections={[]} state="ready" rooms={[base]} participants={[atlas]}
     onSelectRoom={vi.fn()} onSelectParticipant={vi.fn()} />);
+  expect(screen.queryByText(/just you and your AI employees/)).not.toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Invite someone" }));
   expect(openInviteDialog).toHaveBeenCalledTimes(1);
 });

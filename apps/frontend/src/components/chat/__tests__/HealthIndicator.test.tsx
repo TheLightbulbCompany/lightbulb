@@ -28,44 +28,18 @@ function buildHealth(overrides: Partial<SystemHealth> & { state: HealthState }):
 }
 
 describe("HealthIndicator", () => {
-  it("renders PARKED as a calm neutral state with no recovery CTA", () => {
-    mockHealth.mockReturnValue(
-      buildHealth({ state: "PARKED", reason: "Agents asleep — they wake when you interact" }),
-    );
-    render(<HealthIndicator />);
-    expect(screen.queryByText(/restart/i)).toBeNull();
-  });
-
-
-  it("HEALTHY renders nothing: the sidebar shows health only when something is wrong", () => {
-    mockHealth.mockReturnValue(
-      buildHealth({ state: "HEALTHY", reason: "Connected" }),
-    );
+  // The sidebar shows health only when something is broken: normal, asleep,
+  // starting and mid-turn are all fine, so they take no space.
+  it.each(["HEALTHY", "PARKED", "STARTING", "GATEWAY_BUSY"] as const)("%s renders nothing", (state) => {
+    mockHealth.mockReturnValue(buildHealth({ state, reason: "fine" }));
     const { container } = render(<HealthIndicator />);
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("GATEWAY_BUSY renders a yellow pulsing dot with 'Agent thinking...' and no recover CTA", () => {
-    // This is the new state introduced by the parked-vs-dead split. During a
-    // long Bedrock turn the backend pushes status_change=GATEWAY_DOWN_LLM_BUSY,
-    // useSystemHealth maps that to GATEWAY_BUSY, and we surface yellow rather
-    // than the historical red banner. Critically there is NO Restart action
-    // here — the agent is presumed alive and tearing it down would kill a
-    // healthy mid-turn run.
-    mockHealth.mockReturnValue(
-      buildHealth({
-        state: "GATEWAY_BUSY",
-        reason: "Agent is still working — keeping the run alive",
-        canRecover: false,
-        actionLabel: null,
-      }),
-    );
-    const { container } = render(<HealthIndicator />);
-    expect(screen.getByText("Agent thinking...")).toBeInTheDocument();
-    const dot = container.querySelector("span.rounded-full");
-    expect(dot?.className).toContain("bg-warn");
-    expect(dot?.className).toContain("animate-pulse");
-    expect(screen.queryByRole("button")).toBeNull();
+  it("RECOVERING renders its one line with the reason", () => {
+    mockHealth.mockReturnValue(buildHealth({ state: "RECOVERING", reason: "Reconnecting live updates" }));
+    render(<HealthIndicator />);
+    expect(screen.getByText("Reconnecting live updates")).toBeInTheDocument();
   });
 
   it("CONTAINER_DOWN renders the red dot with the reason text and a 'Restart Agent' button", () => {

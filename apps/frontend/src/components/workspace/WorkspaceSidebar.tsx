@@ -72,7 +72,7 @@ export function WorkspaceSidebar({ onRecoveryReprovision, onNavigate }: Workspac
 
 
       <div className="sidebar-footer">
-        {/* Renders only when the workspace is not healthy. */}
+        {/* Renders only when the workspace is broken (see HealthIndicator). */}
         {(isSubscribed || subscriptionStatus === "trial_local") && (
           <HealthIndicator onRecoveryReprovision={onRecoveryReprovision} />
         )}

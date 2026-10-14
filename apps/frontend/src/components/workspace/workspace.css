@@ -142,20 +142,16 @@
   min-width: 0;
 }
 
-.workspace-shell .workspace-primary-nav,
-.workspace-shell .workspace-more-nav {
+.workspace-shell .workspace-primary-nav {
   padding: 8px 12px;
 }
 
-.workspace-shell .workspace-primary-nav,
-.workspace-shell .workspace-more-nav nav {
+.workspace-shell .workspace-primary-nav {
   display: grid;
   gap: 2px;
 }
 
-.workspace-shell .workspace-primary-nav button,
-.workspace-shell .workspace-more-nav button,
-.workspace-shell .workspace-more-nav summary {
+.workspace-shell .workspace-primary-nav button {
   min-height: 36px;
   border-radius: 4px;
   padding: 6px 8px;
@@ -164,8 +160,7 @@
   cursor: pointer;
 }
 
-.workspace-shell .workspace-primary-nav button,
-.workspace-shell .workspace-more-nav button {
+.workspace-shell .workspace-primary-nav button {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -174,23 +169,17 @@
 }
 
 .workspace-shell .workspace-primary-nav button:enabled:hover,
-.workspace-shell .workspace-primary-nav button[aria-current="page"],
-.workspace-shell .workspace-more-nav button:enabled:hover,
-.workspace-shell .workspace-more-nav button[aria-current="page"],
-.workspace-shell .workspace-more-nav summary:hover {
+.workspace-shell .workspace-primary-nav button[aria-current="page"] {
   background: var(--cream-deeper);
   color: var(--midnight);
 }
 
-.workspace-shell .workspace-primary-nav button:disabled,
-.workspace-shell .workspace-more-nav button:disabled {
+.workspace-shell .workspace-primary-nav button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
-.workspace-shell .workspace-primary-nav button:focus-visible,
-.workspace-shell .workspace-more-nav button:focus-visible,
-.workspace-shell .workspace-more-nav summary:focus-visible {
+.workspace-shell .workspace-primary-nav button:focus-visible {
   outline: 2px solid var(--midnight);
   outline-offset: 2px;
 }
@@ -518,7 +507,6 @@
 .workspace-shell .sidebar-header { flex: none; }
 .workspace-shell .workspace-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .9375rem; font-weight: 700; color: var(--midnight); }
 .workspace-shell .sidebar-footer { padding: 12px 16px; }
-.workspace-shell .workspace-more-nav summary::marker { font-size: .75em; color: var(--midnight-muted); }
 .workspace-shell[data-messages-active="true"] .dv-tabs-and-actions-container { display: none; }
 .workspace-shell[data-messages-active="true"] .dockview-theme-lightbulb {
   --dv-tabs-and-actions-container-height: 0px;

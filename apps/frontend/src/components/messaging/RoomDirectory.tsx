@@ -66,8 +66,6 @@ export interface RoomDirectoryProps {
   currentUserId?: string;
   /** Opens the room with its member picker open. */
   onAddPeople?: (roomId: string) => void;
-  /** Present only when nobody else is in the workspace: opens the Invite people dialog. */
-  onInvitePeople?: () => void;
   /** Extra header buttons (e.g. "New session"), rendered before "New conversation". */
   headerActions?: ReactNode;
   /** The starter roster's CEO agent (by role, from the agent roster): its DM leads Team. */
@@ -133,7 +131,6 @@ function DirectoryContent({
   headerActions,
   currentUserId,
   onAddPeople,
-  onInvitePeople,
   ceoAgentId,
 }: RoomDirectoryProps) {
   const id = useId();
@@ -524,8 +521,6 @@ function DirectoryContent({
         </li>;
       })}</ul>
     </section>}
-    {onInvitePeople && <p className="px-2 text-sm text-muted-foreground">It&apos;s just you and your AI employees. Invite one person who should see their work.{" "}
-      <button type="button" className="underline" onClick={onInvitePeople}>Invite</button></p>}
     <button type="button" className="room-directory-entry" onClick={openInviteDialog}><Plus size={16} aria-hidden="true" />Invite someone</button>
     <DialogContent className="room-creation-dialog" showCloseButton={!creationBusy}>
     <form aria-label="Create conversation" className="room-creation" aria-busy={creationBusy}

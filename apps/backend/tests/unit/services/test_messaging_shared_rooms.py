@@ -106,7 +106,12 @@ async def test_revoking_an_org_membership_only_touches_rooms_where_that_org_is_h
     monkeypatch.setattr(
         messaging.messaging_repo, "list_rooms_for_member", AsyncMock(side_effect=[discovered, [], discovered, []])
     )
-    monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value=foreign))
+    # Seated in META's room only: revoke also sweeps #general and the feed by id (no seat there).
+    monkeypatch.setattr(
+        messaging.messaging_repo,
+        "get_member",
+        AsyncMock(side_effect=lambda room_id, *_: foreign if room_id == META["roomId"] else None),
+    )
     monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=META))
     monkeypatch.setattr(messaging.messaging_repo, "deactivate_user_stream", AsyncMock())
     monkeypatch.setattr(messaging.messaging_repo, "release_autojoin", AsyncMock())

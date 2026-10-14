@@ -525,3 +525,54 @@ async def test_an_undo_that_cannot_remove_fails_loudly(workspace, monkeypatch):
     monkeypatch.setattr(messaging.messaging_repo, "remove_member", AsyncMock(side_effect=_cancelled()))
     with pytest.raises(ClientError):
         await messaging.join_feed_room(OWNER, "user_C")
+
+
+# ---- round 4: the GSI-backed list can miss a fresh seat; a failed undo frees the marker -----
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("room", ["feed", "general"])
+async def test_revoke_removes_a_feed_or_general_seat_the_member_index_has_not_caught(workspace, monkeypatch, room):
+    """``list_rooms_for_member`` reads an eventually consistent GSI: a seat committed just before
+    stream-off may be missing from it. Revoke removes the feed and #general seats regardless."""
+    await messaging.ensure_feed_room(OWNER)
+    room_id = FEED
+    if room == "general":
+        room_id = messaging.default_room_id(OWNER)
+        owner = {"kind": "human", "id": "user_A", "role": "owner", "listenMode": None, "displayName": "A"}
+        await repo.create_room(
+            owner_id=OWNER,
+            room_id=room_id,
+            client_room_id="general",
+            creator_user_id="user_A",
+            name="general",
+            kind="channel",
+            members=[owner],
+            req_hash=repo.request_hash("general", "channel", [owner]),
+        )
+    await repo.ensure_user_stream(OWNER, "user_C")
+    assert await messaging._autojoin(OWNER, room_id, "user_C") is True
+    before = await repo.get_room(room_id)
+    monkeypatch.setattr(messaging.messaging_repo, "list_rooms_for_member", AsyncMock(return_value=[]))
+    await messaging.revoke_human_membership(OWNER, "user_C")
+    assert await repo.get_member(room_id, "human", "user_C") is None
+    assert (await repo.get_room(room_id))["deliveryKey"] != before["deliveryKey"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_undo_still_frees_the_feed_marker_for_a_later_rejoin(workspace, monkeypatch):
+    await messaging.ensure_feed_room(OWNER)
+    await repo.ensure_user_stream(OWNER, "user_C")
+    real_upsert = repo.upsert_member
+
+    async def removed_meanwhile(**kwargs):
+        meta = await real_upsert(**kwargs)
+        await repo.deactivate_user_stream(OWNER, "user_C")
+        return meta
+
+    monkeypatch.setattr(messaging.messaging_repo, "upsert_member", removed_meanwhile)
+    monkeypatch.setattr(messaging.messaging_repo, "remove_member", AsyncMock(side_effect=_cancelled()))
+    with pytest.raises(Exception):
+        await messaging.join_feed_room(OWNER, "user_C")
+    # The marker is free: claiming it again succeeds.
+    assert await repo.claim_autojoin(FEED, "user_C") is True

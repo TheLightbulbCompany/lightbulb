@@ -1936,9 +1936,13 @@ async def _autojoin(owner_id: str, room_id: str, user_id: str) -> bool:
     # seat, which rotates the key they may have seen. The feed marker is freed for a later rejoin.
     stream = await messaging_repo.get_user_stream(owner_id, user_id)
     if not (stream and stream.get("active")):
-        await _remove_human_seat(owner_id, room_id, user_id)
-        if is_feed_room(meta):
-            await messaging_repo.release_autojoin(room_id, user_id)
+        try:
+            await _remove_human_seat(owner_id, room_id, user_id)
+        finally:
+            # Freed even if the undo raised: the stream is off, so no read can re-seat them now,
+            # and revoke's second pass still removes the seat.
+            if is_feed_room(meta):
+                await messaging_repo.release_autojoin(room_id, user_id)
         return False
     _emit_member_added(owner_id, user_id, "human", by="system")
     await _publish_room_metadata(meta)
@@ -2887,8 +2891,12 @@ async def revoke_human_membership(owner_id: str, user_id: str) -> None:
     await messaging_repo.deactivate_user_stream(owner_id, user_id)
     # Second pass, stream off: a first seat (#general, the feed) that landed after the list above
     # held no marker and passed its own re-check while the stream was still on.
-    for row in await messaging_repo.list_rooms_for_member(owner_id, "human", user_id):
-        await _remove_human_seat(owner_id, row["meta"]["roomId"], user_id)
+    # The list reads an eventually consistent GSI that can miss a seat committed just now, so the
+    # two auto-seated rooms are swept by id as well (consistent reads; a no-op without a seat).
+    swept = {row["meta"]["roomId"] for row in await messaging_repo.list_rooms_for_member(owner_id, "human", user_id)}
+    swept |= {default_room_id(owner_id), messaging_repo.feed_room_id(owner_id)}
+    for room_id in swept:
+        await _remove_human_seat(owner_id, room_id, user_id)
     # Only now, with the stream off: a feed read in the window above found the marker held.
     try:
         await messaging_repo.release_autojoin(messaging_repo.feed_room_id(owner_id), user_id)

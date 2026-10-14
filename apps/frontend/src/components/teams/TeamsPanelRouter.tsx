@@ -41,14 +41,6 @@ const PANEL_LOADERS: Record<string, () => Promise<React.ComponentType>> = {
   search: () => import("./panels/SearchPanel").then((m) => m.SearchPanel),
   settings: () => import("./panels/SettingsPanel").then((m) => m.SettingsPanel),
   money: () => import("./panels/MoneyPanel").then((m) => m.MoneyPanel),
-  publish: () => import("./panels/PublishPanel").then((m) => m.PublishPanel),
-  seo: () => import("./panels/SeoPanel").then((m) => m.SeoPanel),
-  ads: () => import("./panels/AdsPanel").then((m) => m.AdsPanel),
-  identity: () => import("./panels/IdentityPanel").then((m) => m.IdentityPanel),
-  "domain-site": () => import("./panels/DomainSitePanel").then((m) => m.DomainSitePanel),
-  compliance: () => import("./panels/CompliancePanel").then((m) => m.CompliancePanel),
-  contracts: () => import("./panels/ContractsPanel").then((m) => m.ContractsPanel),
-  leads: () => import("./panels/LeadsPanel").then((m) => m.LeadsPanel),
 };
 
 const PANELS: Record<string, React.ComponentType> = Object.fromEntries(

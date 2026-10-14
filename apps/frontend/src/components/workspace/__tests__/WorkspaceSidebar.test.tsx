@@ -29,12 +29,8 @@ vi.mock("@/components/messaging/MessagingWorkspace", () => ({
 }));
 let billingAccount: { subscription_status: string | null; trial_end?: number | null };
 let isSubscribed: boolean;
-let provisioningEnabled: boolean;
 vi.mock("@/components/messaging/TrialRecapCard", () => ({ TrialRecapCard: () => null }));
 vi.mock("@/hooks/useBilling", () => ({ useBilling: () => ({ account: billingAccount, isSubscribed }) }));
-vi.mock("@/components/settings/CompanyStripeSection", () => ({
-  useCompanyStripeStatus: () => ({ data: { provisioning_enabled: provisioningEnabled } }),
-}));
 vi.mock("@clerk/nextjs", () => ({
   useUser: () => ({ user: { fullName: "Ada Lovelace" } }),
 }));
@@ -60,7 +56,6 @@ beforeEach(() => {
   activePanelId = null;
   billingAccount = { subscription_status: "active" };
   isSubscribed = true;
-  provisioningEnabled = false;
   freshlyInstalledAgentId = null;
 });
 afterEach(() => vi.useRealTimers());
@@ -84,21 +79,18 @@ describe("WorkspaceSidebar", () => {
     fireEvent.click(screen.getByRole("button", { name: label }));
     expect(activateMessagesPanel).toHaveBeenCalledWith();
   });
-  it("keeps secondary destinations in native More and respects capability filters", () => {
-    const view = render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
+  it("keeps secondary destinations in native More", () => {
+    render(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
     const details = screen.getByText("More").closest("details")!;
     expect(details).not.toHaveAttribute("open");
     fireEvent.click(screen.getByText("More"));
     expect(details).toHaveAttribute("open");
     // Mail is on the rail, like Tasks, so More does not repeat it.
-    expect(within(details).getAllByRole("button").map((button) => button.textContent)).toEqual(["Agents", "Money", "Projects", "Automations", "Goals", "Cases", "Leads", "Accounts"]);
+    expect(within(details).getAllByRole("button").map((button) => button.textContent)).toEqual(["Agents", "Money", "Projects", "Automations", "Goals", "Cases", "Accounts"]);
     fireEvent.click(within(details).getByRole("button", { name: "Agents" }));
     expect(openPanel).toHaveBeenCalledWith("teams-agents", {}, { pushUrl: true });
+    expect(screen.queryByText("Leads")).not.toBeInTheDocument();
     expect(screen.queryByText("Domain & Site")).not.toBeInTheDocument();
-    provisioningEnabled = true;
-    view.rerender(<WorkspaceSidebar chatReady onRecoveryReprovision={vi.fn()} />);
-    fireEvent.click(within(details).getByRole("button", { name: "Domain & Site" }));
-    expect(openPanel).toHaveBeenCalledWith("teams-domain-site", {}, { pushUrl: true });
   });
   it("disables container-backed destinations but keeps conversations while agents start", () => {
     render(<WorkspaceSidebar chatReady={false} onRecoveryReprovision={vi.fn()} />);

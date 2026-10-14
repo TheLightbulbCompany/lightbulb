@@ -10,8 +10,7 @@ import { UsersRound } from "lucide-react";
 import { GallerySection } from "@/components/chat/GallerySection";
 import { HealthIndicator } from "@/components/chat/HealthIndicator";
 import { useBilling } from "@/hooks/useBilling";
-import { visibleCompanySections } from "@/components/chat/companySections";
-import { useCompanyStripeStatus } from "@/components/settings/CompanyStripeSection";
+import { COMPANY_SECTIONS } from "@/components/chat/companySections";
 import { MessagingDirectory } from "@/components/messaging/MessagingWorkspace";
 import { planLabel, isFreeTierExpired } from "@/lib/planLabel";
 import { FreeTierNote } from "@/components/chat/FreeTierNote";
@@ -34,10 +33,9 @@ export function WorkspaceSidebar({ onRecoveryReprovision, chatReady, onNavigate 
   const { user } = useUser();
   const { account, isSubscribed } = useBilling();
   const { activePanelId } = useWorkspaceState();
-  const { data: stripeStatus } = useCompanyStripeStatus();
   const moreItems = [
     { panel: "teams-agents", label: "Agents", Icon: UsersRound },
-    ...visibleCompanySections({ provisioningEnabled: Boolean(stripeStatus?.provisioning_enabled) })
+    ...COMPANY_SECTIONS
       .flatMap((section) => section.items)
       .filter(({ panel }) => !["teams-dashboard", "teams-search", "teams-inbox", "mail", "teams-issues", "teams-artifacts"].includes(panel)),
   ];

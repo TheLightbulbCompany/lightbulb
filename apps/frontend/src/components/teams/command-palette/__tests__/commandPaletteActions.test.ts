@@ -4,12 +4,12 @@
 
 import { describe, test, expect } from "vitest";
 import { NAV_ACTIONS, filterNavActions } from "../commandPaletteActions";
-import { COMPANY_SECTIONS, visibleCompanySections } from "@/components/chat/companySections";
+import { COMPANY_SECTIONS } from "@/components/chat/companySections";
 
-// NAV_ACTIONS is built from `visibleCompanySections`, so the palette offers
-// exactly what the rail offers — a shell hidden from one is hidden from both,
-// by construction rather than by two lists kept in step by hand.
-const OFFERED = visibleCompanySections({ provisioningEnabled: true });
+// NAV_ACTIONS is built from COMPANY_SECTIONS, so the palette offers
+// exactly what the sidebar offers, by construction rather than by two lists
+// kept in step by hand.
+const OFFERED = COMPANY_SECTIONS;
 
 const byId = Object.fromEntries(NAV_ACTIONS.map((a) => [a.id, a]));
 
@@ -47,24 +47,12 @@ describe("NAV_ACTIONS derives from the sidebar IA", () => {
     expect(NAV_ACTIONS).toHaveLength(offeredCount + 2);
   });
 
-  test("a shell is not offered by the palette either", () => {
-    // The rail stops offering these; ⌘K must not become the back door that
-    // walks an owner into an empty frame.
-    for (const panel of [
-      "teams-publish",
-      "teams-seo",
-      "teams-ads",
-      "teams-identity",
-      "teams-compliance",
-      "teams-contracts",
-    ]) {
-      const key = panel.replace(/^teams-/, "");
-      expect(byId[`go-${key}`], `${panel} should not be offered`).toBeUndefined();
-      expect(filterNavActions(key).map((a) => a.id)).not.toContain(`go-${key}`);
-    }
-    // ...but they are still declared in the IA, so the keys stay real.
+  test("the deleted Growth and Company tabs are offered nowhere", () => {
     const declared = COMPANY_SECTIONS.flatMap((s) => s.items).map((i) => i.panel);
-    expect(declared).toContain("teams-publish");
+    for (const key of ["publish", "seo", "ads", "leads", "identity", "domain-site", "compliance", "contracts"]) {
+      expect(declared).not.toContain(`teams-${key}`);
+      expect(byId[`go-${key}`], `${key} should not be offered`).toBeUndefined();
+    }
   });
 
   test("old labels survive as keyword aliases", () => {

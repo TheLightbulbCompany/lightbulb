@@ -1031,11 +1031,6 @@ from routers import company_money  # noqa: E402
 
 app.include_router(company_money.router, prefix="/api/v1/company", tags=["company-money"])
 
-# Leads: the first backend consumer of a tier-2 (backend_only) credential.
-from routers import company_leads  # noqa: E402
-
-app.include_router(company_leads.router, prefix="/api/v1/company", tags=["company-leads"])
-
 # The "paste your context" door: merges into the CEO's Hermes memories/USER.md.
 from routers import company_context  # noqa: E402
 from routers import company_slug  # noqa: E402

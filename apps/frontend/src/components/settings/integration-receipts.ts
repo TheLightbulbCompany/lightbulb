@@ -39,7 +39,7 @@ export const INTEGRATION_RECEIPTS: Record<string, IntegrationReceipt> = {
     delivers: "lets your Lightbulb dashboards read Attio directly — needed for the Leads tab to show a table rather than ask an agent",
   },
   apollo_api: {
-    delivers: "lets your Lightbulb dashboards run Apollo searches directly — needed for the Leads tab to show a table rather than ask an agent",
+    delivers: "an Apollo key the workspace holds for dashboard reads; nothing reads it today",
   },
   cloudflare: {
     delivers: "generated-JS access to your Cloudflare account — DNS, Workers, R2 & Zero Trust — instead of a fixed tool list",

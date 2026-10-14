@@ -47,6 +47,8 @@ def world(monkeypatch):
     monkeypatch.setattr(repo, "get_read_cursor", w.cursor)
     monkeypatch.setattr(repo, "get_message_by_id", AsyncMock(return_value=MESSAGE))
     monkeypatch.setattr(repo, "get_room", AsyncMock(return_value={"kind": "dm"}))
+    w.member = AsyncMock(return_value={"id": "user_b"})
+    monkeypatch.setattr(repo, "get_member", w.member)
     monkeypatch.setattr(repo, "finish_away_check", w.finish)
     monkeypatch.setattr(repo, "defer_away_check", w.defer)
     monkeypatch.setattr(away.user_repo, "get", AsyncMock(side_effect=lambda _id: w.user))
@@ -77,6 +79,14 @@ async def test_a_read_message_sends_nothing(world):
     assert await away.check_one(ROW, NOW) is False
     world.send.assert_not_awaited()
     world.finish.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_member_removed_from_the_room_is_never_sent_its_messages(world):
+    world.member.return_value = None
+    assert await away.check_one(ROW, NOW) is False
+    world.send.assert_not_awaited()
+    world.member.assert_awaited_once_with("room1", "human", "user_b")
 
 
 @pytest.mark.asyncio

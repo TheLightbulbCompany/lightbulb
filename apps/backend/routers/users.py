@@ -205,6 +205,13 @@ async def digest_unsubscribe(token: str = Query(..., max_length=2048)) -> HTMLRe
     return _unsubscribe_page("You're unsubscribed from the daily summary. Turn it back on in Settings.")
 
 
+@router.post("/me/active", status_code=204, operation_id="mark_me_active")
+async def mark_me_active(auth: AuthContext = Depends(get_current_user)) -> None:
+    """Presence for the away email (T15): web and the phone call this every two minutes
+    while the app is visible / in the foreground, never from a hidden tab."""
+    await user_repo.touch_active(auth.user_id)
+
+
 @router.get("/away-email/unsubscribe", response_class=HTMLResponse, include_in_schema=False)
 async def away_email_unsubscribe_page(token: str = Query(..., max_length=2048)) -> HTMLResponse:
     """The away email's footer link (T15). A GET changes nothing; it shows the POST form."""

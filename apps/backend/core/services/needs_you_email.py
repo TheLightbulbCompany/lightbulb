@@ -12,7 +12,8 @@ Every minute one backend task (pass admission) reads the due rows and, per row:
 drops it if it was seen (read cursor past the message; approval answered), if the
 person turned the email off, or in their quiet hours (22:00-08:00 local, D8); defers it
 while they are in the app (``users.last_active_at`` within five minutes; AppSync has no
-disconnect, so a read or a live-config fetch is the presence signal) up to an hour; and
+disconnect, so the signal is a room read or the visible-app ping ``POST /users/me/active``)
+up to an hour; and
 sends at most one email per (person, room) per 30 minutes (D8). Invited members are
 included (D9). Same send rules as the digest: non-prod mails only test inboxes.
 """
@@ -243,6 +244,10 @@ async def check_one(row: dict, now: datetime) -> bool:
     else:
         if await messaging_repo.get_read_cursor(row["roomId"], user_id) >= int(row["seq"]):
             await _done(row, "seen")
+            return False
+        # Removed from the room in the meantime: its messages are no longer theirs to read.
+        if await messaging_repo.get_member(row["roomId"], "human", user_id) is None:
+            await _done(row, "not_member")
             return False
         message = await messaging_repo.get_message_by_id(row["roomId"], row["messageId"])
         if message is None or message.get("deletedAt"):

@@ -126,6 +126,15 @@ export function LiveEventsProvider({ children }: { children: ReactNode }) {
     );
   }, [httpReady, messaging]);
 
+  // Presence for the away email (T15): every two minutes while the app is in the foreground.
+  useEffect(() => {
+    if (!httpReady || !foreground) return;
+    const ping = () => void Promise.resolve().then(() => api.post("/users/me/active", {})).catch(() => undefined);
+    ping();
+    const timer = setInterval(ping, 120_000);
+    return () => clearInterval(timer);
+  }, [httpReady, foreground, api, userId]);
+
   const refreshConfigRef = useRef(refreshConfig);
   refreshConfigRef.current = refreshConfig;
   useEffect(() => {

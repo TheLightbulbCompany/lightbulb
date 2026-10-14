@@ -785,7 +785,6 @@ async def get_link_preview(
 @router.get("/messaging/live-config", response_model=LiveConfig)
 async def live_config(auth: AuthContext = Depends(get_current_user)):
     owner_id = resolve_owner_id(auth)
-    asyncio.create_task(user_repo.touch_active(auth.user_id))  # presence for the away email (T15)
     key = await messaging_repo.ensure_user_stream(owner_id, auth.user_id)
     if key is None:  # removed from the workspace: a stale JWT never revives the stream
         raise ApiProblem("WORKSPACE_MEMBERSHIP_REQUIRED", "You are no longer a member of this workspace.")

@@ -2,9 +2,9 @@
 
 Once a day (the digest sweeper's loop, its own pass) every active workspace whose
 ``team_formed`` marker (T02, ``team-formed:<org>`` in the webhook-dedup table) is 28-31
-days old is checked once: a human room message in days 21-28 after the team formed emits
-``week4_active``. The three-day window absorbs a missed day; the per-workspace check marker
-makes it once. Week-4 inactive teams emit nothing; ``team_formed`` is the denominator.
+days old is checked: a human room message in days 21-28 after the team formed emits
+``week4_active``, once (a marker taken after the scan). The three-day window absorbs a
+missed day or a failed read. Week-4 inactive teams emit nothing; ``team_formed`` is the denominator.
 """
 
 from __future__ import annotations
@@ -65,25 +65,30 @@ async def check_workspace(org_id: str, now: float) -> bool:
     formed = int(formed)
     if not (formed + _CHECK_WINDOW[0] <= now < formed + _CHECK_WINDOW[1]):
         return False
+    lo, hi = formed + _WEEK4[0], formed + _WEEK4[1]
+    # Scan first, claim after: a failed read leaves nothing taken, so tomorrow's pass retries.
+    active = False
+    for room_id in await messaging_repo.list_owner_room_ids(org_id):
+        if await _human_message_between(room_id, lo, hi):
+            active = True
+            break
+    if not active:
+        return False  # re-scanned on the window's other days; nothing to emit
     if (
         await webhook_dedup.record_event_or_skip(f"week4-checked:{org_id}", source="analytics", ttl_seconds=60 * _DAY)
         is not webhook_dedup.WebhookDedupResult.RECORDED
     ):
         return False
-    lo, hi = formed + _WEEK4[0], formed + _WEEK4[1]
-    for room_id in await messaging_repo.list_owner_room_ids(org_id):
-        if await _human_message_between(room_id, lo, hi):
-            capture_product_event(
-                distinct_id=org_id,  # the identity rule makes the creator the person
-                event="week4_active",
-                properties={
-                    "workspace_id": org_id,
-                    "team_formed_at": datetime.fromtimestamp(formed, timezone.utc).isoformat(),
-                },
-                event_uuid=str(uuid.uuid5(_NS, org_id)),
-            )
-            return True
-    return False
+    capture_product_event(
+        distinct_id=org_id,  # the identity rule makes the creator the person
+        event="week4_active",
+        properties={
+            "workspace_id": org_id,
+            "team_formed_at": datetime.fromtimestamp(formed, timezone.utc).isoformat(),
+        },
+        event_uuid=str(uuid.uuid5(_NS, org_id)),
+    )
+    return True
 
 
 async def run_once(now: float | None = None) -> int:

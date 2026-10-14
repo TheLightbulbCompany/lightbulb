@@ -56,6 +56,15 @@ async def test_only_agents_or_only_earlier_messages_emit_nothing(world):
 
 
 @pytest.mark.asyncio
+async def test_a_failed_read_takes_no_marker(world):
+    claim, _ = world
+    with patch.object(week4_active.messaging_repo, "list_owner_room_ids", AsyncMock(side_effect=RuntimeError("ddb"))):
+        with pytest.raises(RuntimeError):
+            await week4_active.check_workspace("org_1", FORMED + 28 * DAY + 60)
+    claim.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_outside_the_check_window_does_nothing(world):
     claim, _ = world
     assert await week4_active.check_workspace("org_1", FORMED + 10 * DAY) is False

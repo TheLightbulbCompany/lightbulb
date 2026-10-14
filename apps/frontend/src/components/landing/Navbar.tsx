@@ -125,9 +125,20 @@ export function Navbar() {
           Download
         </a>
         {isLoaded && !isSignedIn && (
-          <Link href="/sign-in" className="nav-mobile-login">
-            Log in
-          </Link>
+          <>
+            <Link href="/sign-in" className="nav-mobile-login">
+              Log in
+            </Link>
+            <Link
+              href="/sign-up"
+              className="nav-mobile-login"
+              onClick={() =>
+                captureSignupCta({ ctaId: "nav_mobile_sign_up", label: "Start free", surface: "landing_nav_mobile" })
+              }
+            >
+              Start free
+            </Link>
+          </>
         )}
         {isLoaded && isSignedIn && (
           <Link href="/chat" className="nav-mobile-login">

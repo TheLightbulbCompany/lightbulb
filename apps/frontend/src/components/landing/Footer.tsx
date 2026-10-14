@@ -1,4 +1,8 @@
+"use client";
+
 import Link from "next/link";
+
+import { captureSignupCta } from "@/lib/signupFlow";
 
 import { Arrow } from "./Arrow";
 
@@ -19,11 +23,26 @@ export function Footer() {
               Bring your team. <em>Your AI employees are already in the room.</em>
             </h2>
             <div className="lb-foot-btns">
-              <Link href="/request-setup" className="lb-btn">
+              <Link
+                href="/request-setup"
+                className="lb-btn"
+                onClick={() =>
+                  captureSignupCta({
+                    ctaId: "footer_setup",
+                    label: "Request a guided setup",
+                    surface: "footer",
+                    destination: "/request-setup",
+                  })
+                }
+              >
                 Request a guided setup
                 <Arrow />
               </Link>
-              <Link href="/sign-up" className="lb-btn lb-btn-ghost">
+              <Link
+                href="/sign-up"
+                className="lb-btn lb-btn-ghost"
+                onClick={() => captureSignupCta({ ctaId: "footer_start_free", label: "Start free", surface: "footer" })}
+              >
                 Start free
               </Link>
             </div>

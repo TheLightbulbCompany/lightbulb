@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { render } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("next/image", () => ({ default: () => null }));
-vi.mock("@/lib/signupFlow", () => ({ captureSignupCta: vi.fn() }));
+const captureSignupCta = vi.fn();
+vi.mock("@/lib/signupFlow", () => ({ captureSignupCta: (o: unknown) => captureSignupCta(o) }));
 vi.mock("@/lib/analytics", () => ({ register: vi.fn() }));
 
 import { AskAI } from "../AskAI";
@@ -41,5 +42,12 @@ describe("homepage voice", () => {
     expect(text).toContain("Anna’s Frozen Treats");
     expect(text).toContain("Second Catch");
     expect(text).toContain("in your team’s channels");
+  });
+
+  it("tracks both footer doors", () => {
+    render(<Footer />);
+    fireEvent.click(screen.getByRole("link", { name: /Request a guided setup/ }));
+    fireEvent.click(screen.getByRole("link", { name: "Start free" }));
+    expect(captureSignupCta.mock.calls.map(([o]) => o.ctaId)).toEqual(["footer_setup", "footer_start_free"]);
   });
 });

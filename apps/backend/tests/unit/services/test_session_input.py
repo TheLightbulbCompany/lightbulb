@@ -479,6 +479,9 @@ def test_a_size_is_bounded_and_a_call_carries_keys_or_a_size():
     with pytest.raises(ValidationError):
         session_screen.SessionInput.model_validate({"data": "", "epoch": 3})
     assert session_screen.REMOTE_RESIZE_FEATURE in FEATURES
+    # A size this backend cannot read never fails the keys beside it.
+    for bad in ({"cols": 9999, "rows": 40}, {"width": 1}, "120x40"):
+        assert sized(data=KEYS, size=bad).size is None
 
 
 @pytest.mark.asyncio

@@ -213,6 +213,27 @@ def test_input_paused_only_for_a_presence_mac_without_band_owner_only(monkeypatc
     assert sessions._session_public({**base, **pending, **pickup, **newer}, "user_aden").input_paused is False
 
 
+def test_terminal_resize_only_for_a_live_terminal_on_a_mac_that_advertised_remote_resize(monkeypatch):
+    """The web sends its panel size only when the session says so (owner ruling 2026-10-14)."""
+    terminal = "held"
+    monkeypatch.setattr(sessions, "session_terminal", lambda row: terminal)
+    base = _row(
+        onlineUntil=9_999_999_999,
+        capabilitiesVerified=True,
+        provider="claude",
+        status="idle",
+        lastEventAt=1,
+        providerVersion="1",
+        activeTurnId=None,
+        capabilities={},
+    )
+    resizable = {"deviceFeatures": ["liveTerminal", "remoteInput", "remoteResize"]}
+    assert sessions._session_public({**base, **resizable}, "user_aden").terminal_resize is True
+    assert sessions._session_public({**base, "deviceFeatures": ["remoteInput"]}, "user_aden").terminal_resize is False
+    terminal = None
+    assert sessions._session_public({**base, **resizable}, "user_aden").terminal_resize is False
+
+
 @pytest.mark.asyncio
 async def test_an_ack_sized_just_under_the_limit_still_passes_the_envelope_check(monkeypatch):
     from core.services.local_session_relay import check_envelope

@@ -498,8 +498,7 @@ TYPED_BURST_GAP_S = 10
 TYPED_TTL_S = 30 * 24 * 3600
 
 
-#: The Mac's feature for `SessionInput.size` (owner ruling 2026-10-14).
-REMOTE_RESIZE_FEATURE = "remoteResize"
+REMOTE_RESIZE_FEATURE = sessions.REMOTE_RESIZE_FEATURE
 
 
 class SessionSize(ContractModel):
@@ -517,6 +516,16 @@ class SessionInput(ContractModel):
     data: str = Field(default="", max_length=4 * ((INPUT_MAX_RAW + 2) // 3))
     epoch: int = Field(ge=0, lt=2**53)
     size: SessionSize | None = None
+
+    @field_validator("size", mode="wrap")
+    @classmethod
+    def _tolerant(cls, value, handler):
+        # A size this backend cannot read never costs the keys beside it: it is dropped. (A size
+        # alone then carries nothing, which `_something` refuses.)
+        try:
+            return handler(value)
+        except ValueError:
+            return None
 
     @model_validator(mode="after")
     def _something(self) -> SessionInput:

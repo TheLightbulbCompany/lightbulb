@@ -1565,9 +1565,9 @@ async def test_visible_heartbeat_change_or_recovery_notifies_resources(transport
         response = await relay(transport).handle_message("conn-1", heartbeat(sid, **changes.get(change, {})))
     assert response["type"] == "local.device.heartbeat.ack"
     assert transport[4]
-    # A workspace scan is worth a refetch, but it is not the user doing something.
+    # A workspace scan or a control change is worth a refetch, but it is not the session doing something.
     after = await repo.get_session(OWNER, sid)
-    assert after["lastEventAt"] == (10000 if change in {"workspace", "expired"} else 10010)
+    assert after["lastEventAt"] == (10010 if change in {"status", "active-turn"} else 10000)
 
 
 @pytest.mark.asyncio
@@ -2154,6 +2154,35 @@ async def test_register_and_events_stamp_last_event_at(transport):
             },
         )
     assert (await repo.get_session(OWNER, sid))["lastEventAt"] == 10020
+    # A reconnect re-registers the same run: that is not activity, so the time stays.
+    with patch("time.time", return_value=10050):
+        await relay(transport).handle_message("conn-1", registration())
+    assert (await repo.get_session(OWNER, sid))["lastEventAt"] == 10020
+    # Nor is the Mac becoming unsure of the status after a restart.
+    with patch("time.time", return_value=10060):
+        await relay(transport).handle_message("conn-1", heartbeat(sid, status="unknown"))
+    assert (await repo.get_session(OWNER, sid))["lastEventAt"] == 10020
+    # Nor is the restart's re-check settling it back to idle; a turn starting from unknown is activity.
+    with patch("time.time", return_value=10070):
+        await relay(transport).handle_message("conn-1", heartbeat(sid, status="idle"))
+    assert (await repo.get_session(OWNER, sid))["lastEventAt"] == 10020
+    with patch("time.time", return_value=10080):
+        await relay(transport).handle_message("conn-1", heartbeat(sid, status="unknown"))
+        await relay(transport).handle_message("conn-1", heartbeat(sid, status="busy"))
+    assert (await repo.get_session(OWNER, sid))["lastEventAt"] == 10080
+    # A reconnect that itself carries a turn ending is activity.
+    with patch("time.time", return_value=10090):
+        await relay(transport).handle_message("conn-1", registration(status="idle"))
+    assert (await repo.get_session(OWNER, sid))["lastEventAt"] == 10090
+
+
+def test_session_activity_is_a_turn_starting_or_ending():
+    from core.services.local_sessions import session_activity
+
+    assert session_activity("idle", "busy", None, None) and session_activity("busy", "idle", None, None)
+    assert session_activity("unknown", "busy", None, None) and session_activity("idle", "idle", None, "t1")
+    assert not session_activity("busy", "unknown", None, None) and not session_activity("idle", "offline", None, None)
+    assert not session_activity("unknown", "idle", None, None) and not session_activity("idle", "idle", None, None)
 
 
 @pytest.mark.asyncio

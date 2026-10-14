@@ -302,6 +302,9 @@ class Settings(BaseSettings):
     # without it; CDK-wired in dev/prod. This is the billing source of truth
     # for "$150".
     STRIPE_ULTRA_PRICE_ID: str = ""
+    # $20/month per human member from the 6th (billing_service.SEATS_INCLUDED).
+    # Empty = fail closed: a 6+ member checkout is refused and no seat is billed.
+    STRIPE_SEAT_PRICE_ID: str = ""
     # Display dollars for the Workspace plan, echoed to clients via
     # /billing/account. Kept in lockstep with STRIPE_WORKSPACE_PRICE_ID's unit
     # amount in Stripe. The iOS paywall renders the web price from this, and

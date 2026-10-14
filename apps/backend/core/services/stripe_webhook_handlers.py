@@ -305,7 +305,13 @@ def _workspace_plan_from_subscription_items(event_data: dict[str, Any]) -> str |
     accepting an unknown or multi-item payload can mask an unsupported
     recurring charge.
     """
-    items = (event_data.get("items") or {}).get("data") or []
+    seat_price = settings.STRIPE_SEAT_PRICE_ID
+    items = [
+        item
+        for item in (event_data.get("items") or {}).get("data") or []
+        # The per-member seat item (T04) is the one allowed second item.
+        if not (seat_price and ((item or {}).get("price") or {}).get("id") == seat_price)
+    ]
     if len(items) != 1:
         reason = "missing_or_multiple_items"
     else:
@@ -499,6 +505,17 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
             await relimit_owner_key(account["owner_id"])
         except Exception:
             logger.exception("Failed to relimit OpenRouter key for owner %s", account["owner_id"])
+    if new_status in ("active", "trialing"):
+        # Seats follow the roster. Our own seat modify fires .updated, which lands here and
+        # re-syncs against a fresh roster, so racing membership events converge. Best-effort:
+        # a failure never 500s Stripe; the next membership or subscription event retries.
+        from core.services.billing_service import sync_seat_quantity
+
+        try:
+            await sync_seat_quantity(account["owner_id"])
+        except Exception:
+            put_metric("billing.seat_sync", dimensions={"outcome": "error"})
+            logger.exception("Seat sync failed for owner %s", account["owner_id"])
     # Decided here, dispatched LAST (below): a failed dispatch raises so Stripe redelivers, and
     # everything before it must already have run once.
     reconcile_needed = (

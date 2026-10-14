@@ -1577,6 +1577,11 @@ export class ServiceStack extends cdk.Stack {
         env === "prod"
           ? (process.env.STRIPE_ULTRA_PRICE_ID_PROD ?? "")
           : (process.env.STRIPE_ULTRA_PRICE_ID_DEV ?? ""),
+      // Per-member seat Price (T04), same live/test split. Empty fails closed.
+      STRIPE_SEAT_PRICE_ID:
+        env === "prod"
+          ? (process.env.STRIPE_SEAT_PRICE_ID_PROD ?? "")
+          : (process.env.STRIPE_SEAT_PRICE_ID_DEV ?? ""),
       FRONTEND_URL:
         env === "prod" ? `https://${rootDomain}` : `https://dev.${rootDomain}`,
       // Public-facing base URL of THIS API. Used by /hooks/credentials

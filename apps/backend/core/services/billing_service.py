@@ -37,7 +37,11 @@ stripe.api_key = settings.STRIPE_SECRET_KEY
 
 # Bump whenever the shared Checkout body changes; Stripe idempotency compares
 # the complete request body for a reused key.
-_CHECKOUT_BODY_VERSION = 7
+_CHECKOUT_BODY_VERSION = 8
+
+# Members included in the plan price; each human member past this is one seat
+# on STRIPE_SEAT_PRICE_ID (owner ruling: $50 for up to 5, $20 a member from the 6th).
+SEATS_INCLUDED = 5
 
 
 class BillingServiceError(Exception):
@@ -236,7 +240,8 @@ async def create_workspace_checkout(
 
     if subscription is not None:
         sub_id = subscription.get("id") or sub_id
-        items = subscription["items"]["data"]
+        # The seat item rides along untouched; only the plan item swaps price.
+        items = [i for i in subscription["items"]["data"] if not _is_seat_item(i)]
         if len(items) != 1:
             raise BillingServiceError("This subscription's plan can't be changed automatically")
         item = items[0]
@@ -352,9 +357,17 @@ async def create_workspace_checkout(
                 "success_url": f"{settings.FRONTEND_URL}/settings?panel=billing&checkout=success",
                 "cancel_url": f"{settings.FRONTEND_URL}/settings?panel=billing&checkout=cancel",
             }
+        seats = await seats_for_workspace(owner_id)
+        line_items = [{"price": price_id, "quantity": 1}]
+        if seats:
+            if not settings.STRIPE_SEAT_PRICE_ID:
+                # Fail closed: never sell a 6+ member workspace the 5-member price.
+                put_metric("billing.seat_price_unconfigured")
+                raise BillingServiceError("seat_price_unconfigured")
+            line_items.append({"price": settings.STRIPE_SEAT_PRICE_ID, "quantity": seats})
         session = await _build_subscription_checkout(
             owner_id=owner_id,
-            line_items=[{"price": price_id, "quantity": 1}],
+            line_items=line_items,
             metadata=metadata,
             **urls,
             idempotency_key=(
@@ -363,6 +376,8 @@ async def create_workspace_checkout(
                 # Workspace -> Ultra -> Workspace inside one bucket replays the
                 # first (now expired) session.
                 f":{pending_id or ''}"
+                # The seat quantity is part of the body.
+                f":{seats}"
                 # Web and app sessions differ in body (return URLs, origin_context);
                 # sharing a key would make Stripe reject the second as a mismatch.
                 f":{return_to}"
@@ -459,6 +474,75 @@ def subscription_item_on_price(items: list[dict], price_id: str) -> dict:
     if not price_id:
         return {}
     return next((item for item in items if (item.get("price") or {}).get("id") == price_id), {})
+
+
+def _is_seat_item(item: dict) -> bool:
+    return bool(settings.STRIPE_SEAT_PRICE_ID) and (item.get("price") or {}).get("id") == settings.STRIPE_SEAT_PRICE_ID
+
+
+async def seats_for_workspace(owner_id: str) -> int:
+    """Billable seats: human members past :data:`SEATS_INCLUDED`.
+
+    Every Clerk org member is a human (agents are not Clerk members). STRICT
+    roster read: a Clerk blip raises rather than reading as zero members.
+    """
+    from core.services.clerk_admin import list_organization_members
+
+    return max(0, len(await list_organization_members(owner_id, strict=True)) - SEATS_INCLUDED)
+
+
+async def sync_seat_quantity(owner_id: str) -> str:
+    """Set the workspace subscription's seat item to the current member count.
+
+    Absolute, so idempotent: every caller (membership webhooks, every live
+    subscription event) converges on the same quantity, and our own modify
+    fires ``customer.subscription.updated``, which re-syncs against a fresh
+    roster -- so two racing membership events cannot leave a stale count.
+    Prorated both ways. The seat item is never deleted, only set to 0, so the
+    one-time create key stays valid. Returns an outcome string for logs/tests.
+
+    Only a live STRIPE subscription carries seats; an Apple-billed workspace
+    has no seat product and is skipped.
+    """
+    from core.services.apple_iap import stripe_is_live
+    from core.services.provision_gate import LIVE_SUBSCRIPTION_STATUSES
+
+    account = await billing_repo.get_by_owner_id(owner_id, consistent_read=True)
+    sub_id = (account or {}).get("stripe_subscription_id")
+    if not sub_id or not stripe_is_live(account) or account.get("subscription_source") == "apple_iap":
+        return "not_stripe_billed"
+    seats = await seats_for_workspace(owner_id)
+    seat_price = settings.STRIPE_SEAT_PRICE_ID
+    if not seat_price:
+        if seats:
+            # Fail closed: charge nothing rather than guess a price.
+            put_metric("billing.seat_price_unconfigured")
+            logger.error("seat price unconfigured; owner %s has %d unbilled seats", owner_id, seats)
+            return "seat_price_unconfigured"
+        return "unchanged"
+    with timing("stripe.api.latency", {"op": "subscription.retrieve"}):
+        subscription = stripe.Subscription.retrieve(sub_id)
+    if subscription.get("status") not in LIVE_SUBSCRIPTION_STATUSES:
+        return "not_live"
+    item = subscription_item_on_price(subscription["items"]["data"], seat_price)
+    if int(item.get("quantity") or 0) == seats:
+        return "unchanged"
+    if item:
+        with timing("stripe.api.latency", {"op": "subscription_item.modify"}):
+            stripe.SubscriptionItem.modify(item["id"], quantity=seats, proration_behavior="create_prorations")
+    else:
+        with timing("stripe.api.latency", {"op": "subscription_item.create"}):
+            stripe.SubscriptionItem.create(
+                subscription=sub_id,
+                price=seat_price,
+                quantity=seats,
+                proration_behavior="create_prorations",
+                # Two racing first-seat events must not add two seat items.
+                idempotency_key=f"seat-item:v1:{sub_id}",
+            )
+    put_metric("billing.seat_sync", dimensions={"outcome": "changed"})
+    logger.info("seat sync owner=%s subscription=%s seats=%d", owner_id, sub_id, seats)
+    return "changed"
 
 
 def _checkout_idempotency_key(flow: str, owner_id: str, extra: str | None = None) -> str:

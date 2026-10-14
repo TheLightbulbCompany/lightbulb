@@ -1,4 +1,4 @@
-import type { RoomSummary } from "@lightbulb/shared/messaging";
+import type { RoomSummary } from "@lightbulb/shared";
 import { findCeoDm } from "./phoneHome";
 
 const room = (roomId: string, kind: RoomSummary["kind"], memberId: string, displayName: string): RoomSummary => ({

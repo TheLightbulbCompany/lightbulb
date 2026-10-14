@@ -738,7 +738,7 @@ describe("the session takes this panel's size while its person uses it", () => {
     act(() => { hooks.data!("ls"); });
     await act(async () => { await vi.advanceTimersByTimeAsync(50); });
     expect(input).toHaveBeenCalledTimes(1);
-    expect(input.mock.calls[0][2]).toBeUndefined(); // no `size` on the key batch
+    expect((input.mock.calls[0] as unknown[])[2]).toBeUndefined(); // no `size` on the key batch
   });
 
   it("ignores a failed size alone and keeps typing", async () => {

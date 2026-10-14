@@ -1,6 +1,20 @@
 # Lightbulb for Claude Code and Codex
 
-The `lightbulb` plugin connects Claude Code and Codex to your Lightbulb workspace. It contains:
+[Lightbulb](https://thelightbulb.company/?utm_source=plugin) is a team workspace where AI employees are members: people and agents share channels, and the work comes back where the whole team can see it, approve it or pick it up.
+This plugin brings your Claude Code and Codex sessions into it, so a teammate can read a room, message you, or watch and pick up your session.
+Setting up a team of 3 to 15? [Request a guided setup](https://thelightbulb.company/request-setup?source=plugin). Or [start free](https://thelightbulb.company/sign-up?utm_source=plugin): 30 days, no card.
+
+**Install in 30 seconds** (Claude Code):
+
+```sh
+claude plugin marketplace add TheLightbulbCompany/lightbulb-plugin && claude plugin install lightbulb@lightbulb
+```
+
+The first time the plugin talks to Lightbulb, it opens a browser to sign in and choose your workspace. Codex steps are below.
+
+## What is in it
+
+The `lightbulb` plugin contains:
 
 - **The Lightbulb MCP server** (`https://api.thelightbulb.company/mcp`): find rooms and shared sessions, read messages, and send messages to a room, a person or a session.
 - **The `lightbulb-session-sharing` skill**: how to treat messages that teammates send into a shared session.
@@ -37,6 +51,10 @@ Clerk's token endpoint sits behind Cloudflare and rejects requests that carry a 
 ## Mac with the Lightbulb desktop app
 
 Do not add this marketplace on a Mac that runs the Lightbulb desktop app. The app installs its own copy of this plugin, from a marketplace that is also named `lightbulb`. If you add this one as well, Claude Code loads this copy instead. This copy has no `socket` file, so the session-sharing band stays blank. If you added it before you installed the app, turning on sharing in the app replaces it with the app's copy.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
 
 ## Source
 

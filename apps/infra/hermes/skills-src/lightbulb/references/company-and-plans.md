@@ -116,7 +116,7 @@ key** (owner's Anthropic/OpenAI key, billed by that provider).
 
 ```json
 {
-  "plan": "Workspace ($50/mo)",
+  "plan": "Team ($50/mo for up to 5 people, $20/mo per member from the 6th)",
   "subscription_status": "active",
   "provider": "Lightbulb-managed credits",
   "provider_choice": "openrouter_managed",

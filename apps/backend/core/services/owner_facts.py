@@ -29,12 +29,12 @@ FACTS_FILENAME = "lightbulb-facts.json"
 
 
 def _paid_plan_label(plan: str | None) -> str:
-    """Name and price of a live paid plan. A missing plan is a legacy paid row (Workspace)."""
+    """Name and price of a live paid plan. A missing plan is a legacy paid row (Team)."""
     if plan == "base":
         return f"Base (${settings.BASE_PRICE_USD}/mo)"
     if plan == "ultra_pro":
         return f"Ultra (${settings.ULTRA_PRICE_USD}/mo)"
-    return f"Workspace (${settings.WORKSPACE_PRICE_USD}/mo)"
+    return f"Team (${settings.WORKSPACE_PRICE_USD}/mo for up to 5 people, ${settings.SEAT_PRICE_USD}/mo per member from the 6th)"
 
 
 def format_provider_label(provider_choice: str | None, byo_provider: str | None) -> str:

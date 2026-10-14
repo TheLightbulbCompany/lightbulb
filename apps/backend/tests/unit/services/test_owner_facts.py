@@ -36,7 +36,7 @@ def test_build_owner_facts_legacy_row_without_status_counts_as_subscribed():
     facts = owner_facts.build_owner_facts(
         "user_abc", {"stripe_subscription_id": "sub_1", "provider_choice": "openrouter_managed"}
     )
-    assert facts["plan"] == "Workspace ($50/mo)"
+    assert facts["plan"] == "Team ($50/mo for up to 5 people, $20/mo per member from the 6th)"
 
 
 def test_build_owner_facts_paid_byo_org():
@@ -49,7 +49,7 @@ def test_build_owner_facts_paid_byo_org():
         },
     )
     assert facts["owner_kind"] == "org"
-    assert facts["plan"] == "Workspace ($50/mo)"
+    assert facts["plan"] == "Team ($50/mo for up to 5 people, $20/mo per member from the 6th)"
     assert facts["provider"] == "BYO Anthropic key"
 
 

@@ -28,10 +28,10 @@ describe("ChatErrorCard", () => {
 
   it("links trial expiry to billing and omits a reset line", () => {
     render(<ChatErrorCard code="trial_expired" message="server copy: trial_expired" />);
-    expect(screen.getByText("Your free trial has ended")).toBeInTheDocument();
+    expect(screen.getByText("This workspace is reading-only")).toBeInTheDocument();
     expect(screen.queryByText("server copy: trial_expired")).not.toBeInTheDocument();
     expect(screen.queryByText(/resets at midnight/i)).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /choose a plan/i })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: /see the plan/i })).toHaveAttribute(
       "href",
       "/settings?panel=billing",
     );

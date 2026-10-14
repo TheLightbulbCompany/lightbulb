@@ -324,7 +324,7 @@ describe("LLMPanel", () => {
   });
 
   it.each([
-    [{ subscription_status: "trial_local", trial_end: Math.floor(Date.now() / 1000) - 60 }, /free trial has ended/i],
+    [{ subscription_status: "trial_local", trial_end: Math.floor(Date.now() / 1000) - 60 }, /reading-only/i],
     [{ subscription_status: "canceled", plan: "standard" }, /No active subscription/],
     [{ subscription_status: "past_due", plan: "base" }, /No active subscription/],
     [{}, /No active subscription/],

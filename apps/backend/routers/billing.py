@@ -86,6 +86,39 @@ async def _block_reason(owner_id: str, account: dict | None) -> str | None:
 
 
 @router.get(
+    "/trial-recap",
+    summary="What the team did in its free trial",
+    description="Day-28 recap numbers (T19). show=false outside the trial's last three days.",
+    operation_id="get_trial_recap",
+)
+async def get_trial_recap(
+    request: Request,
+    response: Response,
+    auth: AuthContext = Depends(get_current_user),
+):
+    from core.services import activity, trial_recap
+
+    owner_id = resolve_owner_id(auth)
+    account = await billing_repo.get_by_owner_id(owner_id)
+    trial_end = (account or {}).get("trial_end")
+    if (account or {}).get("subscription_status") != "trial_local" or not trial_recap.in_recap_window(
+        int(trial_end) if trial_end is not None else None
+    ):
+        return {"show": False}
+
+    async def approvals() -> list[dict]:
+        ctx = await activity.teams_context(auth, request, response)
+        upstream = await activity._admin().list_approvals(session_cookie=ctx.session_cookie, company_id=ctx.company_id)
+        return activity._rows(upstream, "approvals")
+
+    try:
+        rows = await asyncio.wait_for(approvals(), activity.PAPERCLIP_BUDGET_S)
+    except Exception:  # noqa: BLE001 -- Paperclip never hides the recap; its numbers just read 0
+        rows = None
+    return {"show": True, **await trial_recap.recap(owner_id, int(trial_end), rows)}
+
+
+@router.get(
     "/account",
     response_model=BillingAccountResponse,
     summary="Get billing account",

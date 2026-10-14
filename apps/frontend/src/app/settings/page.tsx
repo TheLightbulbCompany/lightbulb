@@ -314,7 +314,7 @@ function TrialStatusCard({
   endLabel: string | null;
 }) {
   const title = expired
-    ? "Your free trial has ended"
+    ? "This workspace is reading-only"
     : daysLeft == null
       ? "Free trial"
       : `Free trial — ${daysLeft} day${daysLeft === 1 ? "" : "s"} left`;
@@ -323,7 +323,7 @@ function TrialStatusCard({
       <div className="settings-card-title">{title}</div>
       <div className="settings-card-desc">
         {expired
-          ? "Pick a plan to keep your agents running."
+          ? "Your team's record is all here, and people can still message. Agents start again when an admin picks the plan."
           : `Your agents run on Lightbulb-managed DeepSeek within a daily allowance that resets at midnight UTC.${endLabel ? ` Trial ends ${endLabel}.` : ""}`}
       </div>
     </div>

@@ -707,7 +707,7 @@ describe("ProvisionGate in-app plans at the subscription gate", () => {
         <Text>APP</Text>
       </ProvisionGate>,
     );
-    expect(await screen.findByText("Your free trial has ended, so your agents are paused for now.")).toBeTruthy();
+    expect(await screen.findByText(/Your team's record is all here/)).toBeTruthy();
     await fireEvent.press(screen.getByText("Retry"));
     expect(mockRefetch).toHaveBeenCalled();
     expect(screen.getAllByText("Sign out")).toHaveLength(1);
@@ -756,7 +756,7 @@ describe("ProvisionGate in-app plans at the subscription gate", () => {
         <Text>APP</Text>
       </ProvisionGate>,
     );
-    expect(await screen.findByText("Your free trial has ended, so your agents are paused for now.")).toBeTruthy();
+    expect(await screen.findByText(/Your team's record is all here/)).toBeTruthy();
     expect(screen.queryByText("PAYWALL")).toBeNull();
     expect(screen.queryByText(/Pick a plan/)).toBeNull();
   });

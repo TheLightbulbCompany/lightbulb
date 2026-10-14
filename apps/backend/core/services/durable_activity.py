@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from datetime import datetime
 
@@ -13,6 +14,8 @@ from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.connection_service import ConnectionService
 from core.services.paperclip_agent_lifecycle import pause_owner_automation
 from core.services.trial_cap import is_trial_expired
+
+logger = logging.getLogger(__name__)
 
 TRIAL_IDLE_SECONDS = 180
 _IDLE_CLAIM_LEASE_SECONDS = 300
@@ -77,6 +80,12 @@ async def sweep_trial_idle_once(*, now: int | None = None) -> None:
             # its Paperclip routines and heartbeats. Retried until a pause completes; a
             # subscribe resumes them through arm_nightly_ceo.
             await _pause_expired_trial(owner_id)
+        try:
+            from core.services.trial_lifecycle import notices
+
+            await notices(owner_id, account, now)
+        except Exception:
+            logger.exception("trial lifecycle notice failed for %s", owner_id)
         activity = _activity_epoch(row)
         if activity > now - TRIAL_IDLE_SECONDS:
             continue

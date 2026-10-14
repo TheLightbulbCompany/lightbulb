@@ -137,10 +137,11 @@ export function describeError(
     case "trial_expired":
       // No reset line: trial_cap._is_expired never self-clears.
       return {
-        title: "Your free trial has ended",
-        description: "Your free trial has ended. Choose a plan to keep your agent running.",
+        title: "This workspace is reading-only",
+        description: "Reading-only — agents start again when the plan is on.",
         action: {
-          label: "Choose a plan",
+          label:
+            account?.workspace_price_usd === undefined ? "See the plan" : `Continue for $${account.workspace_price_usd}`,
           href: "/settings?panel=billing",
           crossRoute: true,
         },

@@ -313,9 +313,9 @@ def trial_expired_gate(owner_role: str) -> Gate:
     'trial ended' card instead of a spinner or a generic error."""
     return Gate(
         code="trial_expired",
-        title="Your free trial has ended",
-        message="Your free trial has ended. Pick a plan to keep your agents.",
-        action_label="Upgrade",
+        title="This workspace is reading-only",
+        message="Reading-only — agents start again when the plan is on.",
+        action_label="See the plan",
         action_href="/settings?panel=billing",
         action_admin_only=False,
         owner_role=owner_role,

@@ -30,6 +30,7 @@ vi.mock("@/components/messaging/MessagingWorkspace", () => ({
 let billingAccount: { subscription_status: string | null; trial_end?: number | null };
 let isSubscribed: boolean;
 let provisioningEnabled: boolean;
+vi.mock("@/components/messaging/TrialRecapCard", () => ({ TrialRecapCard: () => null }));
 vi.mock("@/hooks/useBilling", () => ({ useBilling: () => ({ account: billingAccount, isSubscribed }) }));
 vi.mock("@/components/settings/CompanyStripeSection", () => ({
   useCompanyStripeStatus: () => ({ data: { provisioning_enabled: provisioningEnabled } }),

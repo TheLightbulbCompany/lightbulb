@@ -54,7 +54,7 @@ async def test_trial_expired_does_ask_for_payment(sent):
     assert await _call(TRIAL_EXPIRED) is True
     body = sent[0]["body"].lower()
     assert "ended" in body
-    assert "upgrade" in body
+    assert "continues the plan" in body
     assert "resets" not in body
 
 

@@ -265,7 +265,7 @@ async def test_trial_local_expired_returns_trial_expired_gate():
         gate = await evaluate_provision_gate(owner_id="org_x")
     assert gate is not None
     assert gate.code == "trial_expired"
-    assert gate.title == "Your free trial has ended"
+    assert gate.title == "This workspace is reading-only"
     assert gate.action_href == "/settings?panel=billing"
 
 

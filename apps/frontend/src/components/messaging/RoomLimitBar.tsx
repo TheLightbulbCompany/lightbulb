@@ -10,7 +10,7 @@ import type { BillingAccount } from "@/hooks/useBilling";
 
 /** What the block means for the room: agent turns stop, people can still talk. */
 const AGENTS_LINE: Partial<Record<NonNullable<BillingAccount["block_reason"]>, string>> = {
-  trial_expired: "Agents won't reply until you choose a plan.",
+  trial_expired: "Your team's record is all here, and people can still message. Agents start again when an admin picks the plan.",
   trial_daily_cap: "Agents are paused until it resets at 00:00 UTC.",
   included_daily_cap: "Agents are paused until it resets at 00:00 UTC.",
 };
@@ -30,7 +30,8 @@ export function RoomLimitBar({ account }: { account?: BillingAccount | null }): 
   return <div className="room-limit-bar" role="status" data-block-reason={reason}>
     <AlertTriangle className="size-4 shrink-0 text-err" aria-hidden="true" />
     <p className="min-w-0 flex-1 text-sm">
-      <span className="font-medium">{title}.</span> {line} Messages to people still send.
+      <span className="font-medium">{title}.</span> {line}
+      {reason === "trial_expired" ? "" : " Messages to people still send."}
     </p>
     {action && <Button asChild size="sm" variant="outline">
       {action.crossRoute

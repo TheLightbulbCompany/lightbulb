@@ -402,7 +402,7 @@ export function LLMPanel({ initialAction = null, onActionConsumed }: LLMPanelPro
   // Mirrors backend is_managed_capped + TRIAL_EXPIRED for a row with no provider.
   // A null trial_end is NOT expired (it is stamped at first ready).
   const blocked = isFreeTierExpired(status, account?.trial_end, nowMs)
-    ? "Your free trial has ended."
+    ? "This workspace is reading-only."
     : trial || status === "active" || status === "trialing"
       ? null
       : "No active subscription.";

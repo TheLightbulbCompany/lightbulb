@@ -14,6 +14,7 @@ import {
   markFoundingTeam,
   markInvoiceResolved,
   pauseSubscription,
+  pauseThirtyDays,
   resumeSubscription,
 } from "@/app/admin/_actions/billing";
 
@@ -85,6 +86,12 @@ export function BillingActionsPanel({ userId, email }: BillingActionsPanelProps)
     clearStatus();
     const result = await resumeSubscription(userId);
     applyResult("Resume subscription", result.ok, result.error);
+  }
+
+  async function handlePauseOnce() {
+    clearStatus();
+    const result = await pauseThirtyDays(userId);
+    applyResult("30-day pause (once per company)", result.ok, result.error);
   }
 
   async function handleFounding() {
@@ -191,6 +198,15 @@ export function BillingActionsPanel({ userId, email }: BillingActionsPanelProps)
           >
             <Button type="button" variant="outline" size="sm">
               Mark founding team
+            </Button>
+          </ConfirmActionDialog>
+          <ConfirmActionDialog
+            confirmText={subscriptionConfirm}
+            actionLabel="Pause 30 days (the one pause; timing lapses only)"
+            onConfirm={handlePauseOnce}
+          >
+            <Button type="button" variant="outline" size="sm" disabled={subscriptionDisabled}>
+              Pause 30 days
             </Button>
           </ConfirmActionDialog>
         </div>

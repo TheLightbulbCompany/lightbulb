@@ -50,8 +50,8 @@ _DAILY_CAP_BODY = (
 # TRIAL_EXPIRED has nothing to wait for. This is the only state that may
 # present payment as required.
 _TRIAL_EXPIRED_BODY = (
-    "Your free plan has ended, so I can't run right now.\n\n"
-    f"Upgrade and I'll pick this straight back up: {SETTINGS_URL}\n"
+    "This workspace's trial has ended, so I can't work on this.\n\n"
+    f"When an admin continues the plan I'll pick it straight back up: {SETTINGS_URL}\n"
 )
 
 # A paying capped owner: nothing to upgrade out of a free tier, just wait for the reset.

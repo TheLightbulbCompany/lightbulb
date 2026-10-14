@@ -1122,6 +1122,50 @@ async def claim_oauth_connector(owner_id: str, *, connector_user_id: str) -> Non
         raise
 
 
+_ONCE_FLAGS = frozenset({"trial_recap_emailed_at", "deletion_notice_at", "paused_at"})
+
+
+async def claim_once(owner_id: str, field: str, now: int) -> bool:
+    """Set ``field`` to ``now`` only if it was never set. True = this caller won (T19)."""
+    assert field in _ONCE_FLAGS
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET #f = :n, updated_at = :u",
+            ConditionExpression="attribute_exists(owner_id) AND attribute_not_exists(#f)",
+            ExpressionAttributeNames={"#f": field},
+            ExpressionAttributeValues={":n": int(now), ":u": utc_now_iso()},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+    return True
+
+
+async def release_once(owner_id: str, field: str) -> None:
+    """Undo :func:`claim_once` after the guarded action failed, so a later pass retries."""
+    assert field in _ONCE_FLAGS
+    await run_in_thread(
+        _get_table().update_item,
+        Key={"owner_id": owner_id},
+        UpdateExpression="REMOVE #f",
+        ExpressionAttributeNames={"#f": field},
+    )
+
+
+async def extend_trial(owner_id: str, *, trial_end: int) -> None:
+    """Move a trial_local row's ``trial_end`` (the one 30-day pause, T19)."""
+    await run_in_thread(
+        _get_table().update_item,
+        Key={"owner_id": owner_id},
+        UpdateExpression="SET trial_end = :e, updated_at = :u",
+        ConditionExpression="subscription_status = :t",
+        ExpressionAttributeValues={":e": int(trial_end), ":u": utc_now_iso(), ":t": "trial_local"},
+    )
+
+
 async def set_founding_team(owner_id: str) -> None:
     """Mark the workspace a founding team (two-year price lock at its checkout)."""
     await run_in_thread(

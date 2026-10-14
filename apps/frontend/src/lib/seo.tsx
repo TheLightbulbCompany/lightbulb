@@ -103,7 +103,7 @@ export const softwareApplicationJsonLd = {
     "Six AI employees in every new workspace: CEO, Engineering, Finance, Growth, Analytics, Customer Operations",
     "Channels, direct messages and group chats shared by people and AI employees",
     "Approval cards for plans, spending and new hires",
-    "Shared Claude Code and Codex sessions a teammate can watch and pick up",
+    "Shared Claude Code and Codex sessions a teammate can watch, and Claude Code sessions they can pick up",
     "Any model: Lightbulb-managed, your ChatGPT account, or your own API key",
   ],
   // `offers` ships with /pricing (T30) and says what the visible price says.

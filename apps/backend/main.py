@@ -71,6 +71,7 @@ from routers import (
     runtime_rpc,
     ses_inbound,
     settings_keys,
+    setup_requests,
     slack_app,
     support_tickets,
     users,
@@ -939,6 +940,8 @@ app.include_router(slack_app.router, prefix="/api/v1/slack", tags=["slack"])
 # Human operator diagnostics; every route requires a Clerk platform admin.
 app.include_router(ops.router, prefix="/api/v1/ops", tags=["ops"])
 app.include_router(launch.router, prefix="/api/v1/launch", tags=["launch"])
+# Public /request-setup form (unauthenticated, rate-limited per IP).
+app.include_router(setup_requests.router, prefix="/api/v1/setup-requests", tags=["setup-requests"])
 
 # Public connectable catalog (integrations + channels) read live by the baked
 # isol8 skill from inside per-owner containers. No auth — non-sensitive catalog

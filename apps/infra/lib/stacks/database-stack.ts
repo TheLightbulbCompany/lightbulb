@@ -508,6 +508,13 @@ export class DatabaseStack extends cdk.Stack {
       partitionKey: { name: "id", type: dynamodb.AttributeType.STRING },
     });
 
+    // Guided-setup requests from the public /request-setup form, one row per
+    // submission keyed by a random id; the backend writes via
+    // get_table("setup-requests"). Covered by the backend wildcard table grant.
+    createTable("SetupRequestsTable", "setup-requests", {
+      partitionKey: { name: "id", type: dynamodb.AttributeType.STRING },
+    });
+
     new cdk.CfnOutput(this, "DynamoTablePrefix", {
       value: tablePrefix(env),
       exportName: `${this.stackName}-table-prefix`,

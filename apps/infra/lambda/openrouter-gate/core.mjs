@@ -10,6 +10,21 @@ class GateError extends Error {
 const dailyCap = () => new GateError(429, 'Lightbulb: daily limit reached — resets at midnight UTC', 'trial_daily_cap');
 const fail = (status, message) => { throw new GateError(status, message); };
 const S = (item, field) => item?.[field]?.S;
+// OpenRouter answers "Key limit exceeded" both when the key's own daily limit is spent and when
+// the ACCOUNT has no credits left (2026-10-13: a dry account capped every trial with $0 spent).
+// Only the key's own numbers tell them apart, read with the same key.
+const SPENT_BELOW_USD = 0.01;
+export async function keyInfo(key) {
+  const res = await fetch('https://openrouter.ai/api/v1/key', { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(3000) });
+  if (!res.ok) throw new Error(`key info ${res.status}`);
+  return (await res.json())?.data ?? {};
+}
+async function keyIsSpent(key, keyInfoImpl) {
+  try {
+    const remaining = Number((await keyInfoImpl(key))?.limit_remaining);
+    return Number.isFinite(remaining) && remaining < SPENT_BELOW_USD;
+  } catch { return false; } // unproven: never stamp a whole day on a failed check
+}
 
 // Shared by chat and the models-list probe: same bearer -> owner_id -> denied check.
 async function authenticateOwner(event, ddb, env) {
@@ -103,7 +118,7 @@ export function prepareBody(input, policy, ownerId, env) {
   return body;
 }
 
-export async function handleRequest(event, responder, { ddb, secrets, env, forwardImpl = forward, log = console.log }) {
+export async function handleRequest(event, responder, { ddb, secrets, env, forwardImpl = forward, keyInfoImpl = keyInfo, log = console.log }) {
   let ownerId, estimate, requestId, model;
   try {
     const method = event.requestContext?.http?.method ?? event.httpMethod;
@@ -176,24 +191,39 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
       persistedId = id;
     };
     // A capped owner's per-key daily limit: OpenRouter answers 403 "Key limit exceeded"
-    // (402 kept for safety). Answer with the daily-cap 429 the limit card renders. A 403
-    // is held until its body says why: a disabled key must surface as itself, not a cap.
-    let capHit = false, held403 = null;
+    // (402 kept for safety). Answer with the daily-cap 429 the limit card renders. Every 403
+    // is held until its body says why: a disabled key must surface as itself, not a cap, and
+    // "Key limit exceeded" on a key with money left (any owner) means the account is empty.
+    let capHit = false, held403 = null, keyLimit = false;
     const result = await forwardImpl({ body, key: secret,
       writeHead: (upstreamStatus, headers) => {
         if (capped && upstreamStatus === 402) { capHit = true; return responder.writeHead(429, { 'content-type': 'application/json' }); }
-        if (capped && upstreamStatus === 403) { held403 = []; return; }
+        if (upstreamStatus === 403) { held403 = []; return; }
         return responder.writeHead(upstreamStatus, { 'content-type': headers['content-type']?.includes('text/event-stream') ? 'text/event-stream' : 'application/json' });
       },
       write: chunk => capHit || (held403 ? held403.push(chunk) > 0 : responder.write(chunk)),
       waitForDrain: () => { if (!responder.waitForDrain) throw new Error('Client drain unavailable'); return responder.waitForDrain(); }, onGenerationId,
       end: (upstreamBody = '') => {
-        if (held403 && /key limit exceeded/i.test(upstreamBody)) { capHit = true; responder.writeHead(429, { 'content-type': 'application/json' }); }
+        if (held403 && /key limit exceeded/i.test(upstreamBody)) { keyLimit = true; return; } // answered below, once the key's spend is read
         else if (held403) { responder.writeHead(403, { 'content-type': 'application/json' }); held403.forEach(chunk => responder.write(chunk)); }
         if (capHit) responder.write(dailyCap().body());
         responder.end();
       },
       abortSignal: responder.abortSignal });
+    if (keyLimit) {
+      if (await keyIsSpent(secret, keyInfoImpl)) {
+        if (capped) {
+          capHit = true;
+          responder.writeHead(429, { 'content-type': 'application/json' }); responder.write(dailyCap().body()); responder.end();
+        } else { // a paid key's high backstop limit: passed through as it always was
+          responder.writeHead(403, { 'content-type': 'application/json' }); held403.forEach(chunk => responder.write(chunk)); responder.end();
+        }
+      } else {
+        // Owner question: is OpenRouter refusing keys that still have money (an empty account)?
+        log(JSON.stringify({ _aws: { Timestamp: Date.now(), CloudWatchMetrics: [{ Namespace: 'LightbulbAI', Dimensions: [['env', 'service']], Metrics: [{ Name: 'openrouter.gate.account_refused', Unit: 'Count' }] }] }, env: String(env.GATE_ENV), service: 'openrouter-gate', tier, owner_id: ownerId, 'openrouter.gate.account_refused': 1 }));
+        responder.writeHead(503, { 'content-type': 'application/json' }); responder.write(new GateError(503, 'Inference provider unavailable', 'provider_unavailable').body()); responder.end();
+      }
+    }
     if (result.generationId) await onGenerationId(result.generationId);
     if (result.preGeneration === true && !persistedId) {
       if (billingMode === 'paid') await release(ddb, env, ownerId, estimate, requestId);

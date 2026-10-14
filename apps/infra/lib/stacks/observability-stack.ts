@@ -2684,6 +2684,26 @@ def handler(event, context):
       description:
         "PAGE: a Paperclip issue blocked by a platform-failed run (setup_failed/process_lost/timeout) ran out of escalation rungs - the root CEO failed too, or no escalation agent is invokable. The issue stays blocked until a human moves it.",
     });
+
+    // P34: OpenRouter refusing keys that still have daily allowance. The gate
+    // (lambda/openrouter-gate/core.mjs) emits this when "Key limit exceeded" arrives
+    // for a key with money left: the shared OpenRouter ACCOUNT is out of credits, and
+    // every managed workspace is silent. 2026-10-13 it ran a day unnoticed.
+    this.createAlarm({
+      id: "P34",
+      name: "openrouter-account-refused",
+      metricName: "openrouter.gate.account_refused",
+      dimensions: { service: "openrouter-gate" },
+      periodMinutes: 5,
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      severity: "page",
+      description:
+        "PAGE: OpenRouter refused managed requests as 'Key limit exceeded' for a key that still has allowance - the OpenRouter account is likely out of credits. Top it up at openrouter.ai/settings/credits; every managed workspace is silent until then.",
+    });
   }
 
   // =========================================================================

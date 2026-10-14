@@ -191,13 +191,14 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
       persistedId = id;
     };
     // A capped owner's per-key daily limit: OpenRouter answers 403 "Key limit exceeded"
-    // (402 kept for safety). Answer with the daily-cap 429 the limit card renders. A 403
-    // is held until its body says why: a disabled key must surface as itself, not a cap.
+    // (402 kept for safety). Answer with the daily-cap 429 the limit card renders. Every 403
+    // is held until its body says why: a disabled key must surface as itself, not a cap, and
+    // "Key limit exceeded" on a key with money left (any owner) means the account is empty.
     let capHit = false, held403 = null, keyLimit = false;
     const result = await forwardImpl({ body, key: secret,
       writeHead: (upstreamStatus, headers) => {
         if (capped && upstreamStatus === 402) { capHit = true; return responder.writeHead(429, { 'content-type': 'application/json' }); }
-        if (capped && upstreamStatus === 403) { held403 = []; return; }
+        if (upstreamStatus === 403) { held403 = []; return; }
         return responder.writeHead(upstreamStatus, { 'content-type': headers['content-type']?.includes('text/event-stream') ? 'text/event-stream' : 'application/json' });
       },
       write: chunk => capHit || (held403 ? held403.push(chunk) > 0 : responder.write(chunk)),
@@ -211,8 +212,12 @@ export async function handleRequest(event, responder, { ddb, secrets, env, forwa
       abortSignal: responder.abortSignal });
     if (keyLimit) {
       if (await keyIsSpent(secret, keyInfoImpl)) {
-        capHit = true;
-        responder.writeHead(429, { 'content-type': 'application/json' }); responder.write(dailyCap().body()); responder.end();
+        if (capped) {
+          capHit = true;
+          responder.writeHead(429, { 'content-type': 'application/json' }); responder.write(dailyCap().body()); responder.end();
+        } else { // a paid key's high backstop limit: passed through as it always was
+          responder.writeHead(403, { 'content-type': 'application/json' }); held403.forEach(chunk => responder.write(chunk)); responder.end();
+        }
       } else {
         // Owner question: is OpenRouter refusing keys that still have money (an empty account)?
         log(JSON.stringify({ _aws: { Timestamp: Date.now(), CloudWatchMetrics: [{ Namespace: 'LightbulbAI', Dimensions: [['env', 'service']], Metrics: [{ Name: 'openrouter.gate.account_refused', Unit: 'Count' }] }] }, env: String(env.GATE_ENV), service: 'openrouter-gate', tier, owner_id: ownerId, 'openrouter.gate.account_refused': 1 }));

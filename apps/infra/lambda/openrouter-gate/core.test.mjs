@@ -137,6 +137,19 @@ test('"Key limit exceeded" on a key with money left (an empty account) is a 503,
   assert.ok(f.calls.logs.some(entry => entry['openrouter.gate.account_refused'] === 1));
   assert.equal(f.calls.logs.some(entry => entry['openrouter.gate.cap_hit'] === 1), false);
 });
+test('a paid managed owner on an empty account is a 503 and counts toward the page', async () => {
+  const f = fixture({ plan: 'standard' }); f.deps.env = dsEnv; keyLimit403(async () => ({ limit: 50, limit_remaining: 49.9 }))(f);
+  await handleRequest(f.event(dsBody()), f.responder, f.deps);
+  assert.equal(f.calls.head.status, 503);
+  assert.ok(f.calls.logs.some(entry => entry['openrouter.gate.account_refused'] === 1 && entry.tier === 'managed_paid'));
+  assert.equal(f.calls.updates.some(u => u.TableName === 'billing'), false);
+});
+test('a paid managed owner past its backstop limit still gets the upstream 403', async () => {
+  const f = fixture({ plan: 'standard' }); f.deps.env = dsEnv; keyLimit403(async () => ({ limit: 50, limit_remaining: 0 }))(f);
+  await handleRequest(f.event(dsBody()), f.responder, f.deps);
+  assert.equal(f.calls.head.status, 403);
+  assert.equal(f.calls.logs.some(entry => entry['openrouter.gate.account_refused'] === 1), false);
+});
 test('a failed key check never stamps a whole day', async () => {
   const f = await runDs(cappedOwners.trial, dsBody(), keyLimit403(async () => { throw new Error('timeout'); }));
   assert.equal(f.calls.head.status, 503);

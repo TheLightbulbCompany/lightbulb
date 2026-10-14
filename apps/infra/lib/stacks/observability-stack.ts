@@ -2695,14 +2695,14 @@ def handler(event, context):
       metricName: "openrouter.gate.account_refused",
       dimensions: { service: "openrouter-gate" },
       periodMinutes: 5,
-      threshold: 3,
+      threshold: 1,
       evaluationPeriods: 1,
       comparisonOperator:
         cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
       severity: "page",
       description:
-        "PAGE: OpenRouter refused managed requests as 'Key limit exceeded' for keys that still have allowance - the OpenRouter account is likely out of credits. Top it up at openrouter.ai/settings/credits; every managed workspace is silent until then.",
+        "PAGE: OpenRouter refused managed requests as 'Key limit exceeded' for a key that still has allowance - the OpenRouter account is likely out of credits. Top it up at openrouter.ai/settings/credits; every managed workspace is silent until then.",
     });
   }
 

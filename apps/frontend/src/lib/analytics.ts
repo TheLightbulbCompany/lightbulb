@@ -344,10 +344,11 @@ export function refreshAttribution(): StoredAttribution | null {
 const WORKSPACE_DOOR_KEY = "lightbulb:workspace_door";
 
 /** The door a person used on the way to "Create your workspace" (T16's session page marks
- *  `session_link`); the workspace form sends it with the source (T12). */
+ *  `session_link`); the workspace form sends it with the source (T12). Tab-scoped
+ *  (sessionStorage): an abandoned visit must not label a later, unrelated signup. */
 export function markWorkspaceDoor(door: "session_link"): void {
   try {
-    window.localStorage.setItem(WORKSPACE_DOOR_KEY, door);
+    window.sessionStorage.setItem(WORKSPACE_DOOR_KEY, door);
   } catch {
     // analytics only
   }
@@ -356,7 +357,7 @@ export function markWorkspaceDoor(door: "session_link"): void {
 /** Forget the door once a workspace was created from it: it describes this visit, not history. */
 export function clearWorkspaceDoor(): void {
   try {
-    window.localStorage.removeItem(WORKSPACE_DOOR_KEY);
+    window.sessionStorage.removeItem(WORKSPACE_DOOR_KEY);
   } catch {
     // analytics only
   }
@@ -364,7 +365,7 @@ export function clearWorkspaceDoor(): void {
 
 export function readWorkspaceDoor(): string | null {
   try {
-    return window.localStorage.getItem(WORKSPACE_DOOR_KEY);
+    return window.sessionStorage.getItem(WORKSPACE_DOOR_KEY);
   } catch {
     return null;
   }

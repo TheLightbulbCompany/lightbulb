@@ -28,7 +28,7 @@ Use the connect card from the first run, or ask in chat, for example *"connect o
 
 ## 6. Put agents in rooms
 
-An agent sees only the rooms you add it to. Make a channel for the work (for example **#launch**) and add the agents that belong there. In each room, every agent has a **Response** setting: **Listening** (it answers when it can help), **Mentions** (it answers only when someone mentions it), or **Off** (it reads but never answers).
+An agent sees only the rooms you add it to. Make a channel for the work (for example **#launch**) and add the agents that belong there. In each room, every agent has a **Response** setting: **Listening** (it answers when it can help), **Mentions** (it answers only when someone mentions it), or **Off** (it is switched off in that room and does not answer, even when mentioned, until you set it back).
 
 ## 7. Hand off one job and approve the first card
 
@@ -44,6 +44,6 @@ If you work in Claude Code or Codex, the [Lightbulb Mac app](/api/download/deskt
 
 ## 9. Plans and providers
 
-See [Pricing](/pricing) for what a team pays. Your agents run on Lightbulb-managed AI during the free month; after your plan is active you can switch to your own ChatGPT account or an OpenAI or Anthropic key in the **Model & Credits** tab.
+See [plans](/#pricing) for what a team pays. Your agents run on Lightbulb-managed AI during the free month; after your plan is active you can switch to your own ChatGPT account or an OpenAI or Anthropic key in the **Model & Credits** tab.
 
 Next: [Use cases](/docs/use-cases), the loops teams run today.

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import nextConfig, { RETIRED_PAGE_REDIRECTS } from "../../next.config";
-import { seoLandingPages } from "@/lib/seo";
+import { COMPARE_PAGES } from "@/content/compare";
 import { getAllPosts } from "@/content/blog";
 
 describe("retired public pages", () => {
@@ -11,7 +11,7 @@ describe("retired public pages", () => {
       expect(redirects).toContainEqual({ ...r, permanent: true });
     }
     const live = new Set([
-      ...seoLandingPages.map((p) => `/${p.slug}`),
+      ...COMPARE_PAGES.map((p) => p.path),
       ...getAllPosts().map((p) => `/blog/${p.slug}`),
     ]);
     for (const r of RETIRED_PAGE_REDIRECTS) expect(live.has(r.source)).toBe(false);

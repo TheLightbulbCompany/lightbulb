@@ -201,19 +201,3 @@ export function breadcrumbJsonLd(items: { name: string; path: string }[]) {
     })),
   };
 }
-
-// The other nine thin pages were retired with 308s in `next.config.ts`
-// (RETIRED_SEO_REDIRECTS). This one stays until its comparison page ships.
-export const seoLandingPages = [
-  ["ai-agents-for-slack", "AI Agents for Slack Workflows | Lightbulb", "Bring AI agents into Slack-driven operations", "Use Lightbulb to connect agent work with Slack-heavy teams, routing tasks and updates into governed operational workflows.", "Slack workflows", "For teams that live in Slack, Lightbulb provides the agent workspace behind the scenes: task intake, execution, approvals, and status.", ["Slack-aware task routing", "Agent status updates", "Approval-friendly collaboration"]],
-].map(([slug, title, h1, description, kicker, primary, bullets]) => ({ slug, title, h1, description, kicker, primary, bullets })) as {
-  slug: string;
-  title: string;
-  h1: string;
-  description: string;
-  kicker: string;
-  primary: string;
-  bullets: string[];
-}[];
-
-export type SeoLandingPage = (typeof seoLandingPages)[number];

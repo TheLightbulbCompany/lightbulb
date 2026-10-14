@@ -2,7 +2,7 @@ import { getAllPosts } from "@/content/blog";
 import { docsFaq, getAllDocs } from "@/content/docs";
 import { SITE_URL } from "@/lib/domain";
 import { getPricing, pricingInference } from "@/lib/pricing";
-import { seoLandingPages } from "@/lib/seo";
+import { COMPARE_PAGES } from "@/content/compare";
 
 /**
  * `/llms.txt` — a Markdown index of the public site for answer engines and
@@ -10,7 +10,7 @@ import { seoLandingPages } from "@/lib/seo";
  * then link sections with one-line descriptions).
  *
  * Generated from the SAME sources as `sitemap.ts` (`getAllDocs`, `getAllPosts`,
- * `seoLandingPages`) so it cannot drift from what is actually published. Never
+ * `COMPARE_PAGES`) so it cannot drift from what is actually published. Never
  * hand-maintain a list here — add the doc or post and it appears.
  *
  * Every factual claim below is verified against the product, not marketing
@@ -61,9 +61,10 @@ export async function GET() {
     ...posts.map((post) => line(post.title, `/blog/${post.slug}`, post.description)),
     line("Blog index", "/blog", "Writing on AI employees and the teams that work with them."),
     "",
-    "## Product pages",
+    "## Comparisons",
     "",
-    ...seoLandingPages.map((page) => line(page.h1, `/${page.slug}`, page.description)),
+    ...COMPARE_PAGES.map((page) => line(page.h1, page.path, page.description)),
+    line("All comparisons", "/compare", "Lightbulb next to Slack, Microsoft Teams with Copilot, Grok Bot, Bloome and the tools for sharing Claude Code sessions."),
     "",
     "## Common questions",
     "",

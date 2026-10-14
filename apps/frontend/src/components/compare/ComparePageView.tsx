@@ -2,18 +2,11 @@ import Link from "next/link";
 
 import { Footer } from "@/components/landing/Footer";
 import { Navbar } from "@/components/landing/Navbar";
-import { COMPARE_AUTHOR, LIGHTBULB, ROWS, type ComparePage } from "@/content/compare";
+import { COMPARE_AUTHOR, LIGHTBULB, ROWS, checkedOn, type ComparePage } from "@/content/compare";
 import { JsonLd, breadcrumbJsonLd, pageMetadata } from "@/lib/seo";
 
 export function compareMetadata(page: ComparePage) {
   return pageMetadata({ title: page.title, description: page.description, path: page.path });
-}
-
-/** The oldest date any competitor cell was read: what "Checked on" may claim. */
-export function checkedOn(page: ComparePage): string {
-  return page.columns
-    .flatMap((col) => Object.values(col.cells).map((cell) => cell.checkedOn))
-    .sort()[0];
 }
 
 export function ComparePageView({ page }: { page: ComparePage }) {

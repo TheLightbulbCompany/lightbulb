@@ -418,6 +418,13 @@ export const COMPARE_PAGES: ComparePage[] = [
   },
 ];
 
+/** The oldest date any competitor cell was read: what "Checked on" may claim. */
+export function checkedOn(page: ComparePage): string {
+  return page.columns
+    .flatMap((col) => Object.values(col.cells).map((cell) => cell.checkedOn))
+    .sort()[0];
+}
+
 export function getComparePage(slug: string): ComparePage | undefined {
   return COMPARE_PAGES.find((p) => p.slug === slug);
 }

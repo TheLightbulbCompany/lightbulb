@@ -5520,8 +5520,8 @@ pub(super) mod tests {
         let _sender = producer.await.unwrap();
         let stored: Mirror = private_read(&scope.join(format!("{key}.json"))).unwrap();
         assert_eq!(
-            stored.native.status, "unknown",
-            "an empty listing never downgrades a session"
+            stored.native.status, "idle",
+            "an empty listing never ends a live session; with nothing listing it, it is idle, not unknown"
         );
         assert!(stored.cursor.offset > 0);
         assert_eq!(stored.queue[0]["text"], "short-lived public output");

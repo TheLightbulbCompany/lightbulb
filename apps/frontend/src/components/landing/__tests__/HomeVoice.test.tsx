@@ -49,5 +49,12 @@ describe("homepage voice", () => {
     fireEvent.click(screen.getByRole("link", { name: /Request a guided setup/ }));
     fireEvent.click(screen.getByRole("link", { name: "Start free" }));
     expect(captureSignupCta.mock.calls.map(([o]) => o.ctaId)).toEqual(["footer_setup", "footer_start_free"]);
+    captureSignupCta.mockClear();
+  });
+
+  it("tracks the founding-teams door", () => {
+    render(<FoundingTeams />);
+    fireEvent.click(screen.getByRole("link", { name: /Request a guided setup/ }));
+    expect(captureSignupCta.mock.calls.map(([o]) => o.ctaId)).toEqual(["founding_setup"]);
   });
 });

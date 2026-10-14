@@ -1,4 +1,8 @@
+"use client";
+
 import Link from "next/link";
+
+import { captureSignupCta } from "@/lib/signupFlow";
 
 import { Arrow } from "./Arrow";
 
@@ -30,7 +34,18 @@ export function FoundingTeams() {
         <p className="lb-founding-note">
           For teams of 3 to 15 already running two or more agents, such as Claude Code or Codex, for real work.
         </p>
-        <Link href="/request-setup?source=home-founding" className="lb-btn lb-btn-p lb-btn-xl">
+        <Link
+          href="/request-setup?source=home-founding"
+          className="lb-btn lb-btn-p lb-btn-xl"
+          onClick={() =>
+            captureSignupCta({
+              ctaId: "founding_setup",
+              label: "Request a guided setup",
+              surface: "founding_teams",
+              destination: "/request-setup",
+            })
+          }
+        >
           Request a guided setup
           <Arrow />
         </Link>

@@ -3,7 +3,6 @@ import { NextResponse, type NextRequest } from "next/server";
 
 import {
   DEFAULT_ADMIN_HOSTS,
-  LAUNCH_HOSTS,
   PAPERCLIP_HOSTS as PAPERCLIP_HOST_LIST,
   ROOT_DOMAIN,
   SITE_URL,
@@ -116,13 +115,6 @@ export function decidePaperclipLinkRedirect(
 // is the only way to fully bypass it for these hosts.
 const PAPERCLIP_HOSTS = new Set(PAPERCLIP_HOST_LIST);
 
-export type LaunchHostDecision =
-  | { kind: "redirect"; to: string }
-  | { kind: "rewrite"; to: string }
-  | { kind: "passthrough" };
-
-const LAUNCH_HOST_SET = new Set(LAUNCH_HOSTS);
-
 export type CanonicalHostDecision = { kind: "redirect"; to: string } | null;
 
 /**
@@ -137,29 +129,6 @@ export function decideCanonicalHostRedirect(
 ): CanonicalHostDecision {
   if ((host ?? "").toLowerCase() !== `www.${ROOT_DOMAIN}`) return null;
   return { kind: "redirect", to: `${SITE_URL}${pathname}${search}` };
-}
-
-/**
- * Pure host/path -> decision for flickmeon.ai, the launch-competition site: the
- * root serves `/launch`, every other path redirects to the product domain.
- * null = not a launch host. Runs outside clerkMiddleware for the same reason
- * the Paperclip hosts do: browsers still hold Clerk cookies from when this
- * domain was the product, and Clerk would answer them with a handshake redirect.
- */
-export function decideLaunchHostRouting(
-  host: string | null | undefined,
-  pathname: string,
-  search: string,
-): LaunchHostDecision | null {
-  const h = (host ?? "").toLowerCase();
-  if (!LAUNCH_HOST_SET.has(h)) return null;
-  const origin = h.startsWith("dev.") ? `https://dev.${ROOT_DOMAIN}` : SITE_URL;
-  // The root IS the competition site. A referral link (`/?ref=CODE`) still goes to
-  // the product root, where the code is captured before sign-up.
-  const isReferral = new URLSearchParams(search).has("ref");
-  if (pathname === "/" && !isReferral) return { kind: "rewrite", to: "/launch" };
-  if (pathname === "/launch") return { kind: "passthrough" };
-  return { kind: "redirect", to: `${origin}${pathname}${search}` };
 }
 
 const _clerkMiddleware = clerkMiddleware(async (auth, req) => {
@@ -193,14 +162,6 @@ export default function middleware(req: NextRequest, evt: Parameters<typeof _cle
   const host = (req.headers.get("host") ?? "").toLowerCase();
   const canonicalHost = decideCanonicalHostRedirect(host, req.nextUrl.pathname, req.nextUrl.search);
   if (canonicalHost) return NextResponse.redirect(canonicalHost.to, 308);
-  const launch = decideLaunchHostRouting(host, req.nextUrl.pathname, req.nextUrl.search);
-  if (launch?.kind === "redirect") return NextResponse.redirect(launch.to, 308);
-  if (launch?.kind === "rewrite") {
-    const url = req.nextUrl.clone();
-    url.pathname = launch.to;
-    return NextResponse.rewrite(url);
-  }
-  if (launch?.kind === "passthrough") return NextResponse.next();
   // Recall's bot loads /meet-bot in a bare browser: public, and no Clerk handshake.
   if (req.nextUrl.pathname === "/meet-bot" || req.nextUrl.pathname.startsWith("/meet-bot/")) return NextResponse.next();
   if (PAPERCLIP_HOSTS.has(host)) {

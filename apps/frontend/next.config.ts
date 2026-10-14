@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 import withBundleAnalyzer from "@next/bundle-analyzer";
 import path from "path";
 
-import { PRODUCT_DOMAINS, ROOT_DOMAIN } from "./src/lib/domain";
+import { LAUNCH_HOSTS, PRODUCT_DOMAINS, ROOT_DOMAIN, SITE_URL } from "./src/lib/domain";
 import { AWS_REGION } from "./src/lib/aws";
 
 // AgentCore Browser's DCV live view: the presigned URL the backend mints is
@@ -122,6 +122,26 @@ const BUILD_ID = process.env.NEXT_DEPLOYMENT_ID
       .replace(/[^A-Za-z0-9-]/g, "").slice(0, 32)
     : undefined);
 
+// Retired thin landing pages (and one post about channels the product no longer
+// offers), each 308'd to the nearest real page so old links and crawls land.
+export const RETIRED_PAGE_REDIRECTS: { source: string; destination: string }[] = [
+  ["/ai-agent-workspace", "/"],
+  ["/ai-agent-marketplace", "/marketplace"],
+  ["/autonomous-ai-company", "/"],
+  ["/persistent-ai-agents", "/"],
+  ["/ai-agents-for-discord", "/"],
+  ["/ai-agents-for-telegram", "/"],
+  ["/ai-chief-of-staff", "/"],
+  ["/ai-operations-agent", "/"],
+  ["/ai-customer-support-agent", "/"],
+  ["/blog/connect-ai-agent-slack-discord-telegram", "/blog"],
+].map(([source, destination]) => ({ source, destination }));
+
+// Only the production host may be indexed. Keyed on host, not VERCEL_ENV: the
+// dev hosts are attached to the same Vercel project as production domains, so
+// a dev deploy reports VERCEL_ENV=production too.
+const indexableHost = `^${ROOT_DOMAIN.replace(/\./g, "\\.")}$`;
+
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   reactCompiler: true,
@@ -159,6 +179,11 @@ const nextConfig: NextConfig = {
     return [
       { source: "/:path*", headers: securityHeaders },
       {
+        source: "/:path*",
+        missing: [{ type: "host" as const, value: indexableHost }],
+        headers: [{ key: "X-Robots-Tag", value: "noindex" }],
+      },
+      {
         // Apple will not associate the domain unless this file is served as
         // application/json. It deliberately has no file extension, so Next
         // otherwise serves it as application/octet-stream and Universal Links
@@ -169,6 +194,22 @@ const nextConfig: NextConfig = {
         source: "/.well-known/apple-app-site-association",
         headers: [{ key: "Content-Type", value: "application/json" }],
       },
+    ];
+  },
+
+  async redirects() {
+    return [
+      // flickmeon.ai, the retired product domain: every path, static files
+      // included (middleware's matcher skips those), 308s to the same path on
+      // the product site; the query string carries over. Redirects run before
+      // middleware, so Clerk never sees these hosts.
+      ...LAUNCH_HOSTS.map((host) => ({
+        source: "/:path*",
+        has: [{ type: "host" as const, value: `^${host.replace(/\./g, "\\.")}$` }],
+        destination: `${host.startsWith("dev.") ? `https://dev.${ROOT_DOMAIN}` : SITE_URL}/:path*`,
+        permanent: true,
+      })),
+      ...RETIRED_PAGE_REDIRECTS.map((r) => ({ ...r, permanent: true })),
     ];
   },
 

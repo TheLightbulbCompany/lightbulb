@@ -9,7 +9,6 @@ import {
 import {
   decideAdminHostRouting,
   decideCanonicalHostRedirect,
-  decideLaunchHostRouting,
   decidePaperclipLinkRedirect,
 } from '@/middleware';
 
@@ -216,47 +215,5 @@ describe('decidePaperclipLinkRedirect (agent Paperclip-link redirect)', () => {
     expect(decidePaperclipLinkRedirect('/agents/cto')).toBeNull();
     expect(decidePaperclipLinkRedirect('/projects/growth')).toBeNull();
     expect(decidePaperclipLinkRedirect('/goals/g-142')).toBeNull();
-  });
-});
-
-describe('decideLaunchHostRouting (retired product domain)', () => {
-  it('ignores the product domain', () => {
-    expect(decideLaunchHostRouting('thelightbulb.company', '/chat', '')).toBeNull();
-    expect(decideLaunchHostRouting('admin.thelightbulb.company', '/admin', '')).toBeNull();
-  });
-
-  it('redirects every other path to the product domain, keeping path and query', () => {
-    expect(decideLaunchHostRouting('flickmeon.ai', '/blog/x', '?a=1')).toEqual({
-      kind: 'redirect',
-      to: 'https://thelightbulb.company/blog/x?a=1',
-    });
-    expect(decideLaunchHostRouting('flickmeon.ai', '/sign-up', '')).toEqual({
-      kind: 'redirect',
-      to: 'https://thelightbulb.company/sign-up',
-    });
-  });
-
-  it('serves the competition page at the root', () => {
-    expect(decideLaunchHostRouting('flickmeon.ai', '/', '')).toEqual({ kind: 'rewrite', to: '/launch' });
-    expect(decideLaunchHostRouting('WWW.flickmeon.ai', '/', '')).toEqual({ kind: 'rewrite', to: '/launch' });
-    expect(decideLaunchHostRouting('dev.flickmeon.ai', '/', '?utm=x')).toEqual({ kind: 'rewrite', to: '/launch' });
-  });
-
-  it('lets /launch itself through', () => {
-    expect(decideLaunchHostRouting('flickmeon.ai', '/launch', '')).toEqual({ kind: 'passthrough' });
-  });
-
-  it('keeps an old referral link working', () => {
-    expect(decideLaunchHostRouting('flickmeon.ai', '/', '?ref=ABC12345')).toEqual({
-      kind: 'redirect',
-      to: 'https://thelightbulb.company/?ref=ABC12345',
-    });
-  });
-
-  it('sends the old dev host to the new dev host', () => {
-    expect(decideLaunchHostRouting('dev.flickmeon.ai', '/chat', '')).toEqual({
-      kind: 'redirect',
-      to: 'https://dev.thelightbulb.company/chat',
-    });
   });
 });

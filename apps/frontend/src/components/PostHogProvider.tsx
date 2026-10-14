@@ -2,6 +2,7 @@
 
 import { Suspense, useEffect, useLayoutEffect, useRef } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
+import { headlineVariantProps } from "@/lib/headlineVariant";
 import { useAuth, useUser } from "@clerk/nextjs";
 
 import {
@@ -225,7 +226,7 @@ function PostHogInit() {
     // the browser context names in-app webviews that `$browser` reports
     // indistinguishably as "Mobile Safari". Must come after init() —
     // register() no-ops until the SDK has loaded.
-    register({ signup_flow_id: signupFlowId(), environment: currentEnvironment(), ...browserContext() });
+    register({ signup_flow_id: signupFlowId(), environment: currentEnvironment(), ...browserContext(), ...headlineVariantProps() });
   }, []);
   return null;
 }
@@ -410,7 +411,7 @@ function PostHogIdentify() {
       // — reset() clears super properties, and the next person to sign up on
       // this browser must not inherit the previous journey's id.
       rotateSignupFlowId();
-      register({ signup_flow_id: signupFlowId(), environment: currentEnvironment(), ...browserContext() });
+      register({ signup_flow_id: signupFlowId(), environment: currentEnvironment(), ...browserContext(), ...headlineVariantProps() });
     }
   }, [isSignedIn, userId, user]);
 

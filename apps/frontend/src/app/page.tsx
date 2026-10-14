@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { cookies } from "next/headers";
 import { Suspense } from "react";
 import { LaunchRefCapture } from "@/components/launch/LaunchRefCapture";
 import { Navbar } from "@/components/landing/Navbar";
@@ -18,6 +19,7 @@ import {
   softwareApplicationJsonLd,
   websiteJsonLd,
 } from "@/lib/seo";
+import { HEADLINE_COOKIE, parseHeadlineVariant, pickHeadlineVariant } from "@/lib/headlineVariant";
 
 export const metadata: Metadata = pageMetadata({
   title: HOME_TITLE,
@@ -33,7 +35,10 @@ export const metadata: Metadata = pageMetadata({
 // useLandingBriefReplay replayed after activation. That capture was removed
 // with the redesign (owner decision, 2026-09-11) — the hook still exists but
 // has no producer on this page.
-export default function LandingPage() {
+export default async function LandingPage() {
+  // Reading the cookie makes this page render per request: the headline test
+  // needs each visitor to keep the variant they were first shown.
+  const variant = parseHeadlineVariant((await cookies()).get(HEADLINE_COOKIE)?.value) ?? pickHeadlineVariant();
   return (
     <main className="ld-page min-h-screen">
       <JsonLd data={organizationJsonLd} />
@@ -44,7 +49,7 @@ export default function LandingPage() {
         <LaunchRefCapture />
       </Suspense>
       <Navbar />
-      <Hero />
+      <Hero variant={variant} />
       <ProofBand />
       <HowItWorks />
       <WorkspaceBand />

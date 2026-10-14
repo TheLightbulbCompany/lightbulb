@@ -47,7 +47,7 @@ describe("landing headlines survive .lb-brk being hidden", () => {
   it("Hero keeps a space after the comma", async () => {
     const { Hero } = await import("../Hero");
     const { container } = render(<Hero />);
-    expect(flatten(container)).toContain("Your team and your agents, in one place.");
+    expect(flatten(container)).toContain("Your team and your AI employees, in one place.");
   });
 
   it("HowItWorks keeps a space between 'you' and 'and'", async () => {

@@ -1,7 +1,8 @@
 import Image from "next/image";
-import Link from "next/link";
 
-import { Arrow } from "./Arrow";
+import { HEADLINES, headlineCookieScript, type HeadlineVariant } from "@/lib/headlineVariant";
+
+import { HeroCtas } from "./HeroCtas";
 
 /**
  * Landing hero — words left, artwork right.
@@ -15,41 +16,28 @@ import { Arrow } from "./Arrow";
  * The painting sits flush under the navbar and bleeds off the right edge; the
  * product cards are inset INSIDE it and never break the frame.
  */
-export function Hero() {
+export function Hero({ variant = "A" }: { variant?: HeadlineVariant }) {
   return (
     <header className="lb-hero">
+      <script dangerouslySetInnerHTML={{ __html: headlineCookieScript(variant) }} />
       <div className="lb-hero-copy">
         <div>
           <h1>
-            Your team and your agents,{" "}
-            <br className="lb-brk" />
-            in one place.
+            {variant === "A" ? (
+              <>
+                Your team and your AI employees,{" "}
+                <br className="lb-brk" />
+                in one place.
+              </>
+            ) : (
+              HEADLINES.B
+            )}
           </h1>
           <p className="lb-sub">
-            Lightbulb is a messaging workspace where AI agents are members, not
-            tools. Put them in a channel, mention them like anyone else, and the
-            work comes back where the whole team can see it.
+            A CEO, Engineering, Finance and Growth agent in your team&rsquo;s channels. Mention one, it does the
+            work, and the result comes back where everyone can see it, approve it, or pick it up.
           </p>
-          <div className="lb-hero-cta">
-            <Link href="/sign-up" className="lb-btn lb-btn-p lb-btn-xl">
-              Get started free
-              <Arrow />
-            </Link>
-          </div>
-          <div className="lb-ticks">
-            <span className="lb-tick">
-              <i>
-                <Tick />
-              </i>
-              No card required
-            </span>
-            <span className="lb-tick">
-              <i>
-                <Tick />
-              </i>
-              Cancel anytime
-            </span>
-          </div>
+          <HeroCtas variant={variant} />
         </div>
       </div>
 
@@ -70,7 +58,7 @@ export function Hero() {
             <span className="lb-tag">needs you</span>
           </div>
           <div className="lb-ask">
-            <p>Launch post is drafted — want to read it before it goes out?</p>
+            <p>Launch post is drafted. Want to read it before it goes out?</p>
             {/* Decorative: this is a screenshot, not a control. */}
             <div className="lb-ask-r" aria-hidden="true">
               <span className="y">Approve</span>
@@ -152,21 +140,6 @@ export function Hero() {
         </div>
       </div>
     </header>
-  );
-}
-
-function Tick() {
-  return (
-    <svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true">
-      <path
-        d="M2 5l2 2 4-4"
-        fill="none"
-        stroke="#B68235"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
   );
 }
 

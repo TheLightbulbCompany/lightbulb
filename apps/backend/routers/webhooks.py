@@ -476,13 +476,19 @@ async def _handle_organization_membership_created(
 
     # The #general seat for a new teammate (idempotent: one-time AUTOJOIN marker). A
     # member who joins before the room exists is seated by the provision executor.
-    from core.services.messaging import join_default_room
+    from core.services.messaging import join_default_room, join_feed_room
 
     try:
         await join_default_room(org_id, user_id)
     except Exception:
         logger.exception("membership.created: default room join failed org=%s user=%s", org_id, user_id)
         put_metric("messaging.default_room.error")
+    # The feed seat, the same way (a workspace without a feed yet seats them when it is made).
+    try:
+        await join_feed_room(org_id, user_id)
+    except Exception:
+        logger.exception("membership.created: feed join failed org=%s user=%s", org_id, user_id)
+        put_metric("messaging.feed_room.error")
 
     from core.services import join_analytics
 

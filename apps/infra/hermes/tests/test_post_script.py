@@ -66,3 +66,18 @@ def test_an_already_posted_event_id_says_so_and_sends_nothing(tmp_path):
     assert receipt_url == "https://api.x/api/v1/internal/messaging/agent-messages/org_1/receipts/post%3Aagent-1%3Abrief-2026-09-24"
     proc, sent, _ = _run(tmp_path, "--event-id", "brief-2026-09-24")  # 404: not posted yet
     assert proc.stdout.startswith("Posted to room r1") and sent["eventId"] == "post:agent-1:brief-2026-09-24"
+
+
+def test_feed_posts_to_the_workspace_feed_with_a_reason(tmp_path):
+    proc, sent, _ = _run(tmp_path, "--feed", "--why", "Money in is first in the brief.")
+    assert proc.returncode == 0
+    assert sent["feed"] is True and sent["postReason"] == "Money in is first in the brief."
+    assert not {"roomId", "roomName", "userId", "handle"} & set(sent)
+    assert _run(tmp_path)[1]["eventId"] != sent["eventId"]  # the feed is its own target
+
+
+def test_why_rides_any_post_and_feed_is_one_target(tmp_path):
+    _, sent, _ = _run(tmp_path, "--room", "r9", "--why", "A customer asked.")
+    assert sent["postReason"] == "A customer asked." and "feed" not in sent
+    assert _run(tmp_path, "--feed", "--room", "r9")[0].returncode != 0
+    assert _run(tmp_path, "--why")[0].returncode != 0

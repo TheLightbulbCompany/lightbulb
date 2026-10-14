@@ -101,6 +101,24 @@ MAX_SECTIONS = 20
 SECTION_NAME_MAX_CHARS = 40
 EVENT_ID_MAX_BYTES = 256
 DEFAULT_ROOM_NAME = "general"
+# The workspace feed (Activity, spec 2026-10-14 §4.2): one hidden channel whose topic is the
+# team's brief. Identified by id (``is_feed_room``), never by this name.
+FEED_ROOM_NAME = "feed"
+FEED_DEFAULT_TOPIC = "Keep us posted on customers, money and what the team finished. Skip engineering details."
+FEED_POST_REASON_MAX_CHARS = 280
+# ponytail: roster agents seated when the feed is made, CEO first; the rest of the room's 32
+# seats stay for people. A later hire is seated on its first feed post.
+FEED_AGENT_SEATS = 16
+#: The CEO's one welcome post in the feed (idempotent, like #general's).
+FEED_WELCOME = (
+    "**This is our feed.** When something here matters to you (money in or out, a customer, "
+    "a blocker, finished work), one of us posts it here, one thing per post. I look over the "
+    "day three times and post only when something is worth your time.\n\n"
+    "The brief at the top says what you want to hear about. Edit it any time. "
+    "Press Discuss on a post to talk it through with whoever wrote it.\n\n"
+    "Lightbulb has five places: Chat to talk with us, Activity for this feed and what needs you, "
+    "Work for tasks, Ideas for what we could do next, and Library for what we made."
+)
 # Seeded ONCE per workspace as a CEO-authored message (``ensure_default_room``
 # returns early on any room that already has messages): the first thing a new
 # user reads. Refers to the CEO by ROLE, never a name: agent names are user-editable.
@@ -314,6 +332,8 @@ class RoomSummary(ContractModel):
     archived_by: str | None = None
     # A session's chat room (hidden from the room list): the session it talks beside.
     session: SessionRef | None = None
+    # The workspace feed (Activity): listed, but clients hide it from the conversation list.
+    feed: bool = False
 
 
 class ActiveRun(ContractModel):
@@ -493,6 +513,8 @@ class CanonicalMessage(ContractModel):
     in_reply_to: str | None = None
     # A mid-run progress line, not the run's reply (clients keep the run card); absent otherwise.
     progress: bool = False
+    # A feed post's "Why I created this post" line (plain text); absent otherwise.
+    post_reason: str | None = None
     # The agents this message addresses -- a `user_request` dispatch target
     # (an @mention, a name-addressed open, or a DM), not a `room_event` ambient
     # candidate: those are merely eligible for Jev to route, and Jev picks at
@@ -522,6 +544,9 @@ class CanonicalMessage(ContractModel):
             result.pop("in_reply_to", None)
         if not self.progress:
             result.pop("progress", None)
+        if self.post_reason is None:
+            result.pop("postReason", None)
+            result.pop("post_reason", None)
         if not self.session_mentions:
             for key in ("sessionMentions", "session_mentions", "sessionTargetLabels", "session_target_labels"):
                 result.pop(key, None)
@@ -635,8 +660,15 @@ class AgentMessageRequest(ContractModel):
     # A mid-run progress line (the bridge's interim commentary): stored and shown like any agent
     # message, but it wakes nobody, notifies nobody and is not the run's reply.
     progress: bool = False
+    # A feed post's "Why I created this post" (plain text, <= 280 chars); stored on the message.
+    post_reason: str | None = None
     attachments: list[InlineAttachment] = Field(default_factory=list, max_length=ATTACHMENT_MAX_COUNT)
     uploaded_attachments: list[UploadedAttachment] = Field(default_factory=list, max_length=ATTACHMENT_MAX_COUNT)
+
+    @field_validator("post_reason")
+    @classmethod
+    def validate_post_reason(cls, value: str | None) -> str | None:
+        return validate_post_reason(value)
 
     @field_validator("event_id")
     @classmethod
@@ -1023,6 +1055,14 @@ def validate_room_topic(value: str | None) -> str | None:
     return trimmed
 
 
+def validate_post_reason(value: str | None) -> str | None:
+    """Trimmed; blank is None; over ``FEED_POST_REASON_MAX_CHARS`` is refused."""
+    trimmed = (value or "").strip()
+    if len(trimmed) > FEED_POST_REASON_MAX_CHARS:
+        raise ValueError(f"postReason exceeds {FEED_POST_REASON_MAX_CHARS} characters")
+    return trimmed or None
+
+
 def validate_message_text(value: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError("text must not be empty")
@@ -1172,6 +1212,7 @@ def canonical_message(item: dict[str, Any], *, original_request: bool = False) -
         via=item.get("via"),
         in_reply_to=item.get("inReplyTo"),
         progress=item.get("progress") is True,
+        post_reason=item.get("postReason"),
         addressed_agent_ids=[
             t["agentId"]
             for t in item.get("dispatchTargets") or []
@@ -1628,6 +1669,7 @@ def _room_summary_fields(meta: dict, member: dict, read: dict | None, mention_co
         "archived_at": meta.get("archivedAt"),
         "archived_by": meta.get("archivedBy"),
         "session": SessionRef(session_id=meta["session"]["sessionId"]) if meta.get("session") else None,
+        "feed": is_feed_room(meta),
     }
 
 
@@ -1815,6 +1857,12 @@ def is_default_room(meta: dict) -> bool:
     return bool(owner_id) and str(meta.get("roomId")) == default_room_id(owner_id)
 
 
+def is_feed_room(meta: dict) -> bool:
+    """The workspace feed (Activity) -- by id, never by name, like ``is_default_room``."""
+    owner_id = meta.get("ownerId") or ""
+    return bool(owner_id) and str(meta.get("roomId")) == messaging_repo.feed_room_id(owner_id)
+
+
 def is_session_room(meta: dict) -> bool:
     """A session's chat (PR #3807): hidden, and its humans follow session read access."""
     return bool(meta.get("session"))
@@ -1853,7 +1901,15 @@ async def join_default_room(owner_id: str, user_id: str) -> bool:
     the add and never cleared on success, so a member a room admin later removes is never
     restored (reconciliation never undoes a removal). Raises on real errors; callers wrap it.
     """
-    room_id = default_room_id(owner_id)
+    return await _autojoin(owner_id, default_room_id(owner_id), user_id)
+
+
+async def join_feed_room(owner_id: str, user_id: str) -> bool:
+    """``join_default_room`` for the workspace feed: the same one-time ``AUTOJOIN#`` marker."""
+    return await _autojoin(owner_id, messaging_repo.feed_room_id(owner_id), user_id)
+
+
+async def _autojoin(owner_id: str, room_id: str, user_id: str) -> bool:
     if await messaging_repo.get_member(room_id, "human", user_id) is not None:
         return False
     if await messaging_repo.get_room(room_id) is None:
@@ -1870,7 +1926,7 @@ async def join_default_room(owner_id: str, user_id: str) -> bool:
         meta = await messaging_repo.upsert_member(room_id=room_id, owner_id=owner_id, member=member)
     except messaging_repo.MemberLimitExceeded:
         # Keep the marker: a full room must not turn every poll into a retry.
-        logger.warning("default room full; %s not added for owner %s", user_id, owner_id)
+        logger.warning("room %s full; %s not added for owner %s", room_id, user_id, owner_id)
         return False
     except Exception:
         await messaging_repo.release_autojoin(room_id, user_id)
@@ -1964,6 +2020,171 @@ async def ensure_default_room(owner_id: str, owner_user_id: str) -> str | None:
         client_message_id=None,
     )
     return room_id
+
+
+async def ensure_feed_room(owner_id: str, owner_user_id: str | None = None) -> str | None:
+    """Create the workspace feed once, with the CEO's welcome post (spec 2026-10-14 §4.2).
+
+    Modelled on ``ensure_default_room``: a room with a message returns at once (one consistent
+    ``get_room``), so the Activity page can call it on every read and a workspace that predates
+    the feed gets it lazily, with no backfill. Every roster agent sits on ``mentions`` (a plain
+    post wakes nobody); every workspace human is seated through the ``AUTOJOIN#`` marker, so a
+    later teammate joins the same way and a removal sticks. ``owner_user_id`` creates the room;
+    None falls back to the Clerk org's creator. Returns None until the company is active."""
+    from core.repositories.paperclip_repo import PaperclipRepo
+    from core.services.user_provision import ceo_agent_id
+
+    room_id = messaging_repo.feed_room_id(owner_id)
+    existing_room = await messaging_repo.get_room(room_id)
+    if existing_room is not None and int(existing_room.get("lastSeq") or 0) > 0:
+        return room_id
+
+    company = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id, consistent_read=True)
+    if getattr(company, "status", None) != "active":
+        return None
+    ceo_id = ceo_agent_id(company)
+    roster = await load_agent_roster(owner_id)
+    agents = {row["id"]: row for row in roster}
+    if ceo_id not in agents:
+        return None
+    client_room_id = f"workspace-feed-v1:{owner_id}"
+    if existing_room is None:
+        owner_user_id = owner_user_id or (await clerk_admin.get_organization(owner_id) or {}).get("created_by")
+        if not owner_user_id:
+            return None
+        handles = mention_handles(roster)
+        seated = [ceo_id, *(agent_id for agent_id in agents if agent_id != ceo_id)][:FEED_AGENT_SEATS]
+        members = [
+            {
+                "kind": "human",
+                "id": owner_user_id,
+                "displayName": await human_display_name(owner_user_id),
+                "mentionHandle": None,
+                "role": "owner",
+                "listenMode": None,
+            },
+            *(
+                {
+                    "kind": "agent",
+                    "id": agent_id,
+                    "displayName": agents[agent_id]["name"],
+                    "mentionHandle": handles[agent_id],
+                    "role": "member",
+                    "listenMode": "mentions",
+                }
+                for agent_id in seated
+            ),
+        ]
+        await messaging_repo.ensure_user_stream(owner_id, owner_user_id)
+        normalized = [{key: member.get(key) for key in ("kind", "id", "role", "listenMode")} for member in members]
+        try:
+            await messaging_repo.create_room(
+                owner_id=owner_id,
+                room_id=room_id,
+                client_room_id=client_room_id,
+                creator_user_id=owner_user_id,
+                name=FEED_ROOM_NAME,
+                kind="channel",
+                members=members,
+                req_hash=messaging_repo.request_hash(FEED_ROOM_NAME, "channel", normalized),
+                extra={"topic": FEED_DEFAULT_TOPIC},
+            )
+            _emit_room_created(owner_id, owner_user_id, "channel", members[1:], by="system")
+        except messaging_repo.IdempotencyConflict:
+            pass  # another caller (another creator) made it first: same room, carry on
+    # Every current teammate, before the welcome: a room with a message is the "done" signal.
+    try:
+        for row in await clerk_admin.list_organization_members(owner_id):
+            try:
+                await join_feed_room(owner_id, row["user_id"])
+            except Exception:  # noqa: BLE001 -- one teammate never blocks the feed
+                logger.exception("feed seat failed owner=%s user=%s", owner_id, row.get("user_id"))
+    except Exception:  # noqa: BLE001 -- the Activity read seats its own caller
+        logger.exception("feed roster read failed owner=%s", owner_id)
+    await messaging_repo.create_message(
+        room_id=room_id,
+        owner_id=owner_id,
+        idemp_pk=messaging_repo.room_pk(room_id),
+        idemp_sk=messaging_repo.human_idemp_sk("__system__", f"{client_room_id}:welcome"),
+        req_hash=messaging_repo.request_hash(FEED_WELCOME, ceo_id),
+        author={"kind": "agent", "id": ceo_id, "displayName": agents[ceo_id]["name"]},
+        text=FEED_WELCOME,
+        mentions=[],
+        reply_to_message_id=None,
+        thread_root_message_id=None,
+        run_id=None,
+        dispatch_targets=[],
+        source_agent_id=ceo_id,
+        client_message_id=None,
+    )
+    return room_id
+
+
+class FeedResponse(ContractModel):
+    room_id: uuid.UUID
+    topic: str | None
+
+
+async def get_feed(auth: AuthContext) -> FeedResponse:
+    """The Activity page's read: ensure the feed, seat the caller, return its id and brief."""
+    owner_id = resolve_owner_id(auth)
+    room_id = await ensure_feed_room(owner_id, auth.user_id)
+    if room_id is None:
+        raise ApiProblem("RUNTIME_UNAVAILABLE", "The feed is not ready yet.", retryable=True, retry_after=3)
+    await join_feed_room(owner_id, auth.user_id)
+    meta = await messaging_repo.get_room(room_id) or {}
+    return FeedResponse(room_id=room_id, topic=meta.get("topic"))
+
+
+#: How many recent feed posts an agent reads before it writes one.
+FEED_AGENT_READ_LIMIT = 20
+
+
+async def agent_feed(owner_id: str) -> dict[str, Any]:
+    """The feed's brief and latest posts for an agent outside a room turn (a scheduled run has
+    no signed-in person, so ``lightbulb_read_rooms`` reads nothing). Every workspace human is in
+    the feed, so this widens nobody's view."""
+    room_id = await ensure_feed_room(owner_id)
+    if room_id is None:
+        raise ApiProblem("ACTION_UNAVAILABLE", "This workspace has no feed yet.")
+    meta = await messaging_repo.get_room(room_id) or {}
+    rows = await messaging_repo.list_messages_before(room_id, int(meta.get("lastSeq") or 0) + 1, FEED_AGENT_READ_LIMIT)
+    posts = [canonical_message(row) for row in rows if not row.get("deletedAt")]
+    return {
+        "roomId": room_id,
+        "topic": meta.get("topic"),
+        "posts": [
+            {
+                "author": post.author.display_name,
+                "text": post.text,
+                "postReason": post.post_reason,
+                "createdAt": post.created_at.isoformat(),
+            }
+            for post in posts
+        ],
+    }
+
+
+async def _seat_feed_agent(owner_id: str, room_id: str, agent_id: str) -> None:
+    """Seat an agent hired after the feed was made, on ``mentions``, at most once (the
+    ``AUTOJOIN#`` marker): one an admin removed stays out and its post is refused."""
+    if await messaging_repo.get_member(room_id, "agent", agent_id) is not None:
+        return
+    member = await _resolved_member(
+        owner_id,
+        CreateRoomMember(kind="agent", id=agent_id, role="member", listen_mode="mentions"),
+        await load_agent_roster(owner_id),
+    )
+    if not await messaging_repo.claim_autojoin(room_id, agent_id):
+        return
+    try:
+        meta = await messaging_repo.upsert_member(room_id=room_id, owner_id=owner_id, member=member)
+    except messaging_repo.MemberLimitExceeded:
+        return  # keep the marker; the post is refused as not a member
+    except Exception:
+        await messaging_repo.release_autojoin(room_id, agent_id)
+        raise
+    await _publish_room_metadata(meta)
 
 
 def _display_name_from_membership(row: dict) -> str:
@@ -2266,7 +2487,9 @@ async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest)
     # A group DM has no admins -- only its creator holds a role (owner); every other member
     # is a plain member (both clients create it that way) -- and it is their shared
     # conversation, so any member may archive/unarchive one. Everything else is owner/admin.
-    if member.get("role") not in {"owner", "admin"} and (updates or meta.get("kind") != "group-dm"):
+    # The feed's topic is the team's brief: any member edits it, like a channel topic (spec §4.2).
+    feed_brief = is_feed_room(meta) and set(updates) == {"topic"} and request.archived is None
+    if member.get("role") not in {"owner", "admin"} and (updates or meta.get("kind") != "group-dm") and not feed_brief:
         raise ApiProblem("ROOM_FORBIDDEN", "Room owner or admin access required.")
     # A DM's display name is derived from its counterpart; a stored name would
     # shadow it with nothing in the UI able to clear it. (Finding from #2483,
@@ -2277,6 +2500,8 @@ async def patch_room(auth: AuthContext, room_id: str, request: PatchRoomRequest)
         raise ApiProblem("ROOM_FORBIDDEN", "This channel's name is managed by Lightbulb.")
     if "name" in updates and is_session_room(meta):
         raise ApiProblem("ROOM_FORBIDDEN", "This chat is named after its session.")
+    if "name" in updates and is_feed_room(meta):
+        raise ApiProblem("ROOM_FORBIDDEN", "The feed's name is managed by Lightbulb.")
     if request.archived is not None and is_session_room(meta):
         raise ApiProblem("ROOM_NOT_ARCHIVABLE", "This chat opens and closes with its session.")
     if request.archived is not None and request.archived != bool(meta.get("archivedAt")):
@@ -2301,7 +2526,12 @@ def _require_archivable(meta: dict) -> None:
     """A plain channel or a group DM archives; a 1:1 DM does not. #general is where
     join_default_room seats every new teammate and onboarding renders; the shared vendor
     channel is the customer's support line."""
-    if meta.get("kind") not in {"channel", "group-dm"} or is_default_room(meta) or is_vendor_room(meta):
+    if (
+        meta.get("kind") not in {"channel", "group-dm"}
+        or is_default_room(meta)
+        or is_vendor_room(meta)
+        or is_feed_room(meta)
+    ):
         name = "#general" if is_default_room(meta) else "This room"
         raise ApiProblem("ROOM_NOT_ARCHIVABLE", f"{name} can't be archived.")
 
@@ -2434,6 +2664,8 @@ async def leave_room(auth: AuthContext, room_id: str) -> None:
     _deny_vendor_human_change(meta, "human")
     if member.get("role") == "owner" and meta.get("kind") == "dm":
         raise ApiProblem("INVALID_REQUEST", "A direct message cannot be left.")
+    if is_feed_room(meta):
+        raise ApiProblem("INVALID_REQUEST", "The feed cannot be left.")
     if (
         member.get("role") == "owner"
         and meta.get("kind") == "channel"
@@ -2468,6 +2700,8 @@ def _channel_heir(meta: dict, members: list[dict], leaving_id: str) -> str | Non
 async def _remove_member_with_notices(meta: dict, kind: str, member_id: str) -> dict:
     if kind == "agent":
         new_meta = await messaging_repo.remove_member(meta=meta, kind=kind, member_id=member_id)
+        if is_feed_room(meta):
+            await _mark_removed(meta, member_id)  # a later feed post never re-seats it
         await _publish_room_metadata(new_meta)
         return new_meta
 
@@ -2483,16 +2717,20 @@ async def _remove_member_with_notices(meta: dict, kind: str, member_id: str) -> 
         # A channel never loses its owner: leaving or a workspace removal hands it on.
         new_owner_id=_channel_heir(meta, members, member_id),
     )
-    if meta["roomId"] == default_room_id(meta["ownerId"]):
-        # A removal (or leave) must stick: join_default_room never re-seats a marked user.
-        # Best-effort -- the removal already committed; a missed marker only risks one re-seat.
-        try:
-            await messaging_repo.claim_autojoin(meta["roomId"], member_id)
-        except Exception:
-            logger.exception("autojoin marker on removal failed room=%s member=%s", meta["roomId"], member_id)
+    if meta["roomId"] == default_room_id(meta["ownerId"]) or is_feed_room(meta):
+        # A removal (or leave) must stick: the autojoin never re-seats a marked user.
+        await _mark_removed(meta, member_id)
     # The same revocation for the room's huddle: best effort, never raises.
     await livekit_huddles.remove_participant(meta["roomId"], member_id)
     return new_meta
+
+
+async def _mark_removed(meta: dict, member_id: str) -> None:
+    """Best-effort -- the removal already committed; a missed marker only risks one re-seat."""
+    try:
+        await messaging_repo.claim_autojoin(meta["roomId"], member_id)
+    except Exception:
+        logger.exception("autojoin marker on removal failed room=%s member=%s", meta["roomId"], member_id)
 
 
 async def _rotation_notices(
@@ -2537,7 +2775,13 @@ async def delete_room(auth: AuthContext, room_id: str) -> None:
         meta, member = await require_room_member(owner_id, auth.user_id, room_id)
         if member.get("role") != "owner":
             raise ApiProblem("ROOM_FORBIDDEN", "Only the channel's owner can delete it.")
-        if meta.get("kind") != "channel" or is_default_room(meta) or is_vendor_room(meta) or is_session_room(meta):
+        if (
+            meta.get("kind") != "channel"
+            or is_default_room(meta)
+            or is_vendor_room(meta)
+            or is_session_room(meta)
+            or is_feed_room(meta)
+        ):
             name = "#general" if is_default_room(meta) else "This room"
             raise ApiProblem("ROOM_NOT_DELETABLE", f"{name} can't be deleted.")
         new_key = str(uuid.uuid4())
@@ -4612,6 +4856,7 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
             # that ends the run is the one that notifies.
             silent=request.progress,
             progress=request.progress,
+            post_reason=request.post_reason,
         )
     except messaging_repo.ExtraConditionFailed as exc:  # "don't post that" landed before the commit
         put_metric("voice.huddle.late_answer_suppressed")
@@ -4874,9 +5119,11 @@ class AgentPostRequest(ContractModel):
     """An agent posting OUTSIDE a room turn (a Paperclip run, heartbeat or routine).
 
     Target, first that applies: ``roomId`` → that room (membership checked, never
-    auto-joined); ``roomName`` → the one channel of that name the agent is in;
+    auto-joined); ``feed`` → the workspace feed (ensured, the agent seated on ``mentions``);
+    ``roomName`` → the one channel of that name the agent is in;
     ``userId``/``handle`` → that workspace member's DM with the agent;
-    ``issueId`` → the issue creator's DM; otherwise the workspace's #general."""
+    ``issueId`` → the issue creator's DM; otherwise the workspace's #general.
+    ``postReason`` is the post's "Why I created this post" line (any target)."""
 
     event_id: str
     agent_id: uuid.UUID
@@ -4886,6 +5133,13 @@ class AgentPostRequest(ContractModel):
     user_id: str | None = Field(default=None, min_length=1, max_length=256)
     handle: str | None = Field(default=None, min_length=1, max_length=64)
     issue_id: str | None = Field(default=None, min_length=1, max_length=256, pattern=r"^[A-Za-z0-9-]+$")
+    feed: bool = False
+    post_reason: str | None = None
+
+    @field_validator("post_reason")
+    @classmethod
+    def validate_post_reason(cls, value: str | None) -> str | None:
+        return validate_post_reason(value)
 
     @field_validator("event_id")
     @classmethod
@@ -4899,8 +5153,8 @@ class AgentPostRequest(ContractModel):
 
     @model_validator(mode="after")
     def one_target(self) -> "AgentPostRequest":
-        if sum(x is not None for x in (self.room_id, self.room_name, self.user_id, self.handle)) > 1:
-            raise ValueError("name at most one of roomId, roomName, userId, handle")
+        if sum(x is not None for x in (self.room_id, self.room_name, self.user_id, self.handle)) + self.feed > 1:
+            raise ValueError("name at most one of feed, roomId, roomName, userId, handle")
         return self
 
 
@@ -5003,6 +5257,12 @@ async def resolve_agent_post_room(owner_id: str, request: AgentPostRequest) -> s
     agent_id = str(request.agent_id)
     if request.room_id is not None:
         return str(request.room_id)
+    if request.feed:
+        room_id = await ensure_feed_room(owner_id)
+        if room_id is None:
+            raise ApiProblem("ACTION_UNAVAILABLE", "This workspace has no feed yet.")
+        await _seat_feed_agent(owner_id, room_id, agent_id)
+        return room_id
     if request.room_name is not None:
         # Routine descriptions name a channel ("Post results to: #sales"); only channels the
         # agent is already in qualify -- a post never joins a room.
@@ -5051,5 +5311,6 @@ async def post_agent_message(owner_id: str, request: AgentPostRequest) -> AgentM
             text=request.text,
             reply_to_message_id=None,
             thread_root_message_id=None,
+            post_reason=request.post_reason,
         ),
     )

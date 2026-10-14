@@ -296,6 +296,12 @@ def vendor_room_id(owner_id: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-vendor-room|{owner_id}"))
 
 
+def feed_room_id(owner_id: str) -> str:
+    """The workspace's one feed channel (Activity). Mirrored by the messaging projector
+    (apps/infra/lambda/messaging-projector/index.py ``_is_feed_room``): edit both together."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-feed-room|{owner_id}"))
+
+
 def meeting_room_id(owner_id: str, uid: str) -> str:
     """The channel a calendar invite (by its UID) opens in the owner's workspace."""
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-meeting|{owner_id}|{uid}"))
@@ -981,6 +987,7 @@ async def create_message(
     addressing: dict | None = None,
     in_reply_to: str | None = None,
     progress: bool = False,
+    post_reason: str | None = None,
 ) -> tuple[dict, bool]:
     """Strong-read ``META.lastSeq`` then conditionally transact: bump META, put
     the immutable ``MSG``, put the ``IDEMP`` receipt, put one ``WORK#MESSAGE``
@@ -1062,6 +1069,9 @@ async def create_message(
             if progress:
                 # A mid-run progress line: clients keep the run card running under it.
                 message["progress"] = True
+            if post_reason:
+                # A feed post's "Why I created this post" line.
+                message["postReason"] = post_reason
             if agent_hop is not None:
                 # The agent-reply cap reads the trigger's hop (messaging.create_agent_message).
                 message["agentHop"] = agent_hop

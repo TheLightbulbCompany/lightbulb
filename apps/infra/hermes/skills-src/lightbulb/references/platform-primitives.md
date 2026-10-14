@@ -28,11 +28,12 @@ printf '%s' "<text>" | /app/skills/lightbulb/scripts/lightbulb-post.sh --room <r
 printf '%s' "<text>" | /app/skills/lightbulb/scripts/lightbulb-post.sh --room '#sales'      # a channel you are in, by name
 printf '%s' "<text>" | /app/skills/lightbulb/scripts/lightbulb-post.sh --handle aden         # a teammate's DM (or --user <userId>)
 printf '%s' "<text>" | /app/skills/lightbulb/scripts/lightbulb-post.sh --issue "$PAPERCLIP_TASK_ID"  # the issue creator's DM
+printf '%s' "<post>" | /app/skills/lightbulb/scripts/lightbulb-post.sh --feed --why "<reason>"  # the feed: references/feed.md
 ```
 
-- Target order: `--room`, then `--user`/`--handle`, then `--issue` (falls through to
+- Target order: `--feed` or `--room`, then `--user`/`--handle`, then `--issue` (falls through to
   #general when an agent created the issue), then #general. Name at most one of
-  room/user/handle. A DM is created if it does not exist; a named room is NOT joined
+  feed/room/user/handle. A DM is created if it does not exist; a named room is NOT joined
   for you — you must already be a member.
 - A retry of the same post replays instead of doubling. A recurring post whose text
   may repeat (a daily brief) passes `--event-id <something per day>` so tomorrow's

@@ -438,6 +438,15 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- /app/skills/lightbulb/scripts/lightbulb-post.sh + backend routers/messaging.py (post_agent_post,
                                  /internal/messaging/agent-posts; the GET agent-messages/.../receipts/{eventId} pre-check is what prints "Already posted:") + core/services/messaging.py (resolve_agent_post_room — the
                                  room > user/handle > issue creator > #general order; then create_agent_message)
+  - Feed (Activity) ......... references/feed.md + SKILL.md routing row
+                              <- backend core/services/messaging.py (FEED_DEFAULT_TOPIC, FEED_WELCOME, ensure_feed_room,
+                                 agent_feed + routers/messaging.py GET /messaging/feed/u/{owner} = the "read first" call
+                                 and its 20-post window FEED_AGENT_READ_LIMIT, AgentPostRequest.feed/post_reason and
+                                 FEED_POST_REASON_MAX_CHARS = the 280-char --why cap); lightbulb-post.sh --feed/--why;
+                                 the schedule (08:00/13:00/18:00, owner's users.timezone else UTC, CEO-assigned "Feed post
+                                 HH:00" routines) is core/services/user_provision.py FEED_ROUTINE_HOURS /
+                                 FEED_ROUTINE_DESCRIPTION / _ensure_feed_routines; no push for feed posts is
+                                 apps/infra/lambda/messaging-projector/index.py _is_feed_room. Spec 2026-10-14 §4.2.
   - Chat vs document ........ references/chat-vs-document.md + SKILL.md (non-negotiable + routing row)
                               First-run result contract ("The first run" section, pointed at from SKILL.md's
                                  deliverable bullet and company-and-plans.md, because the first room turn can run

@@ -2763,15 +2763,18 @@ class PaperclipAdminClient:
         session_cookie: str,
         company_id: str,
         body: dict,
+        idempotency_key: str | None = None,
     ) -> dict:
         """Create a routine. Body is whitelisted by the BFF.
 
-        Maps to ``POST /api/companies/{companyId}/routines``.
+        Maps to ``POST /api/companies/{companyId}/routines``. With ``idempotency_key`` the
+        fork replays the routine that key already made (200) instead of a duplicate.
         """
         return await self._post(
             f"/api/companies/{company_id}/routines",
             json=body,
             session_cookie=session_cookie,
+            idempotency_key=idempotency_key,
         )
 
     async def create_routine_trigger(

@@ -280,6 +280,7 @@ async def test_ensure_paperclip_for_owner_calls_provision_org():
     fake_provisioning.get_workspace = AsyncMock(return_value=None)
     fake_provisioning.provision_org = AsyncMock(return_value=MagicMock(status="active", starter_agent_ids=starter_ids))
     ensure_default_room = AsyncMock(return_value="room_general")
+    ensure_feed_room = AsyncMock(return_value="room_feed")
     owner_welcome = AsyncMock(return_value="sent")
     with (
         patch(
@@ -291,6 +292,7 @@ async def test_ensure_paperclip_for_owner_calls_provision_org():
             new=AsyncMock(),
         ),
         patch("core.services.messaging.ensure_default_room", ensure_default_room),
+        patch("core.services.messaging.ensure_feed_room", ensure_feed_room),
         patch("core.services.welcome_email.send_owner_welcome", owner_welcome),
     ):
         await _ensure_paperclip_for_owner(
@@ -304,6 +306,8 @@ async def test_ensure_paperclip_for_owner_calls_provision_org():
         owner_email="p@example.com",
     )
     ensure_default_room.assert_awaited_once_with("org_p", "user_p")
+    # Task 8a: the workspace feed is made beside #general.
+    ensure_feed_room.assert_awaited_once_with("org_p", "user_p")
     # T14: the CEO's welcome goes out once #general exists.
     owner_welcome.assert_awaited_once_with("org_p", "user_p")
 
@@ -349,6 +353,7 @@ async def test_fresh_workspace_default_room_seeded_once_across_polls():
         patch("core.services.user_provision.build_paperclip_provisioning", AsyncMock(return_value=fake_provisioning)),
         patch("core.services.user_provision.close_paperclip_provisioning", AsyncMock()),
         patch("core.services.messaging.ensure_default_room", ensure_default_room),
+        patch("core.services.messaging.ensure_feed_room", AsyncMock()),
     ):
         for _ in range(2):
             await _ensure_paperclip_for_owner(
@@ -376,6 +381,7 @@ async def test_partial_starter_workspace_gets_default_room_after_completion():
         patch("core.services.user_provision.build_paperclip_provisioning", AsyncMock(return_value=fake_provisioning)),
         patch("core.services.user_provision.close_paperclip_provisioning", AsyncMock()),
         patch("core.services.messaging.ensure_default_room", ensure_default_room),
+        patch("core.services.messaging.ensure_feed_room", AsyncMock()),
     ):
         await _ensure_paperclip_for_owner(
             owner_id="org_p",
@@ -1112,6 +1118,9 @@ def _arm_provisioning(row):
     fake._repo.resolve_owner_row = AsyncMock(return_value=row)
     fake._admin = MagicMock()  # ._http is just an attribute access
     fake._admin.set_agent_heartbeat = AsyncMock(return_value={})
+    fake._admin.list_routines = AsyncMock(return_value=[])
+    fake._admin.create_routine = AsyncMock(side_effect=lambda **kw: {"id": f"r-{kw['idempotency_key'][-2:]}"})
+    fake._admin.create_routine_trigger = AsyncMock(return_value={})
     # The shared pause/resume seam (paperclip_agent_lifecycle), patched in by _arm.
     fake.pause_automation = AsyncMock(return_value={"agent_ids": [], "routine_ids": []})
     fake.resume_automation = AsyncMock(return_value={"heartbeats_resumed": 0, "routines_resumed": 0})
@@ -1122,10 +1131,13 @@ def _paid_account(**extra):
     return {"owner_id": "org_p", "subscription_status": "active", **extra}
 
 
-def _company_row(company_id="co1", status="active", friday="friday1", starter_ids=None, org_id="org_p"):
+def _company_row(
+    company_id="co1", status="active", friday="friday1", starter_ids=None, org_id="org_p", provisioner_user_id=""
+):
     """``org_id`` is the workspace the row belongs to."""
     return MagicMock(
         org_id=org_id,
+        provisioner_user_id=provisioner_user_id,
         company_id=company_id,
         status=status,
         seeded_agent_ids=[friday] if friday else None,
@@ -1488,3 +1500,103 @@ async def test_provision_new_workspace_ignores_a_non_org_id(monkeypatch):
     await user_provision.provision_new_workspace("user_alone")
     trial.assert_not_awaited()
     dispatch.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Feed schedule (task 8a): three CEO routines at 08:00, 13:00, 18:00, armed by the same path
+# ---------------------------------------------------------------------------
+
+
+def _feed_routines(provisioning):
+    return [c.kwargs for c in provisioning._admin.create_routine.await_args_list]
+
+
+def _feed_triggers(provisioning):
+    return {
+        c.kwargs["routine_id"]: c.kwargs["body"] for c in provisioning._admin.create_routine_trigger.await_args_list
+    }
+
+
+@pytest.mark.asyncio
+async def test_arm_creates_the_three_feed_routines_for_the_ceo():
+    provisioning = _arm_provisioning(_company_row(starter_ids={"ceo": "ceo1", **_SPECIALISTS}))
+    assert await _arm(provisioning, _paid_account()) == "armed"
+    created = _feed_routines(provisioning)
+    assert [c["idempotency_key"] for c in created] == [
+        "lightbulb-feed-routine:v1:org_p:08",
+        "lightbulb-feed-routine:v1:org_p:13",
+        "lightbulb-feed-routine:v1:org_p:18",
+    ]
+    assert all(c["company_id"] == "co1" and c["body"]["assigneeAgentId"] == "ceo1" for c in created)
+    assert [c["body"]["title"] for c in created] == [user_provision.feed_routine_title(h) for h in (8, 13, 18)]
+    assert all("--feed" in c["body"]["description"] and "--why" in c["body"]["description"] for c in created)
+    assert _feed_triggers(provisioning) == {
+        f"r-{h}": {"kind": "schedule", "cronExpression": f"0 {int(h)} * * *", "timezone": "UTC", "enabled": True}
+        for h in ("08", "13", "18")
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_reconcile_does_not_duplicate_the_feed_routines():
+    provisioning = _arm_provisioning(_company_row(starter_ids={"ceo": "ceo1", **_SPECIALISTS}))
+    provisioning._admin.list_routines.return_value = [
+        {
+            "id": f"r{h}",
+            "title": user_provision.feed_routine_title(h),
+            "assigneeAgentId": "ceo1",
+            "status": "active",
+            "triggers": [{"kind": "schedule"}],
+        }
+        for h in (8, 13, 18)
+    ]
+    assert await _arm(provisioning, _paid_account()) == "armed"
+    provisioning._admin.create_routine.assert_not_awaited()
+    provisioning._admin.create_routine_trigger.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_feed_routine_left_without_its_trigger_gets_one():
+    provisioning = _arm_provisioning(_company_row(starter_ids={"ceo": "ceo1", **_SPECIALISTS}))
+    provisioning._admin.list_routines.return_value = {
+        "routines": [
+            {"id": "r8", "title": user_provision.feed_routine_title(8), "assigneeAgentId": "ceo1", "triggers": []}
+        ]
+    }
+    await _arm(provisioning, _paid_account())
+    assert [c["idempotency_key"][-2:] for c in _feed_routines(provisioning)] == ["13", "18"]
+    assert set(_feed_triggers(provisioning)) == {"r8", "r-13", "r-18"}
+
+
+@pytest.mark.asyncio
+async def test_a_replayed_feed_routine_the_owner_renamed_gets_no_second_trigger():
+    provisioning = _arm_provisioning(_company_row(starter_ids={"ceo": "ceo1"}))
+    provisioning._admin.list_routines.return_value = [
+        {"id": f"r-{h:02d}", "title": "Renamed", "assigneeAgentId": "ceo1", "triggers": [{"kind": "schedule"}]}
+        for h in (8, 13, 18)
+    ]
+    await _arm(provisioning, _paid_account())
+    assert len(_feed_routines(provisioning)) == 3  # the key replays the same three
+    provisioning._admin.create_routine_trigger.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_feed_routines_use_the_owners_timezone_when_known():
+    provisioning = _arm_provisioning(_company_row(starter_ids={"ceo": "ceo1"}, provisioner_user_id="user_p"))
+    with patch("core.services.user_provision.user_repo.get", AsyncMock(return_value={"timezone": "Europe/Paris"})):
+        await _arm(provisioning, _paid_account())
+    assert {body["timezone"] for body in _feed_triggers(provisioning).values()} == {"Europe/Paris"}
+
+
+@pytest.mark.asyncio
+async def test_feed_routines_are_not_created_while_automation_is_paused():
+    provisioning = _arm_provisioning(_company_row(starter_ids={"ceo": "ceo1"}))
+    assert await _arm(provisioning, {"owner_id": "org_p", "subscription_status": "canceled"}) == "not_entitled"
+    provisioning._admin.list_routines.assert_not_awaited()
+    provisioning._admin.create_routine.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_feed_routine_failure_never_fails_the_arm():
+    provisioning = _arm_provisioning(_company_row(starter_ids={"ceo": "ceo1"}))
+    provisioning._admin.list_routines.side_effect = RuntimeError("paperclip down")
+    assert await _arm(provisioning, _paid_account()) == "armed"

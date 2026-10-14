@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from collections.abc import Callable
 from typing import Any
-from uuid import UUID, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 import boto3
 import botocore.session
@@ -792,6 +792,12 @@ def _write_away(user_id: str, member: dict[str, Any], owner_id: str, kind: str, 
             raise
 
 
+def _is_feed_room(room_id: str, owner_id: str) -> bool:
+    """The workspace feed, by its id (backend ``messaging_repo.feed_room_id``: edit both together).
+    Feed posts never push: only "Needs you" notifies (spec 2026-10-14 §4.2)."""
+    return room_id == str(uuid5(NAMESPACE_URL, f"lightbulb-feed-room|{owner_id}"))
+
+
 def _notify_members(
     message: dict[str, Any], meta: dict[str, Any], thread_root_seq: Any = None,
     silent: bool = False, actor_user_id: Any = None,
@@ -814,6 +820,7 @@ def _notify_members(
         mentioned.discard(accountable_human)
     last_message = _last_message(message)
     mentioned_ids = sorted(mentioned)[:MAX_MENTIONED_USERS]
+    feed = _is_feed_room(room_id, owner_id)
 
     def notify_one(user_id: str) -> list[tuple[str, bool]]:
         tokens: list[tuple[str, bool]] = []
@@ -845,7 +852,9 @@ def _notify_members(
         if accountable_human:
             payload["accountableHumanId"] = accountable_human
         if notify:
-            if member.get("muted") is True:
+            if feed:
+                _emit_metric("messaging.projector.push", 1, "Count", {"outcome": "feed"})
+            elif member.get("muted") is True:
                 _emit_metric("messaging.projector.push", 1, "Count", {"outcome": "muted"})
             else:
                 at_me = user_id in mentioned

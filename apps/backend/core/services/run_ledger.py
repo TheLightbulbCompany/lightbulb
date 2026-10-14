@@ -10,6 +10,7 @@ import time
 
 from core.observability.metrics import put_metric
 from core.repositories import container_repo, messaging_repo
+from core.services import run_feedback
 from core.services.messaging import (
     close_aborted_run,
     end_run_and_announce,
@@ -83,6 +84,7 @@ async def run_ledger_sweeper(stop: asyncio.Event) -> None:
             # correctness boundary; admission only stops the duplicate GSI query.
             if await admitted("run_ledger", interval_s=_SWEEP_SECONDS):
                 await sweep_runs_once()
+                await run_feedback.label_due_runs_once()
         except Exception:
             put_metric("messaging.run.swept", dimensions={"error": "sweep_error"})
             logger.warning("run ledger sweep failed", exc_info=True)

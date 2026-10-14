@@ -1214,7 +1214,9 @@ async def abort_run(run_id: str, auth: AuthContext = Depends(get_current_user)):
         # follows the interrupt within seconds; the client shows "Stopping…" until then. If it
         # never comes, the backend closes the run itself after the grace -- this timer, and the
         # sweeper (request_abort pins the deadline) if this task dies first.
-        await messaging_repo.request_abort(owner_id, run_id)
+        await messaging_repo.request_abort(
+            owner_id, run_id, stopped_by=auth.user_id, stop_after_s=service.seconds_since(row.get("startedAt"))
+        )
         _force_close_later(owner_id, run_id)
         return AbortRunResponse(run_id=run_id, state="aborting")
     if status in (404, None):

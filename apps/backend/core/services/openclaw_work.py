@@ -515,6 +515,13 @@ class OpenClawWorkWorker:
             allow_oversize=True,
         )
         oversized = body.pop("_oversized", False)
+        # Who started this run (T35): the Stop ledger and the Monday "stop rate after Jev" read it.
+        if follow_up is not None:
+            routed_by, routing_p = "follow_up", None
+        elif event_kind == "user_request":
+            routed_by, routing_p = ("dm" if meta.get("kind") in ("dm", "group-dm") else "mention"), None
+        else:
+            routed_by, routing_p = event_kind, None  # room_event: set below from Jev's decision
         if follow_up is None:
             # Reply where the conversation is: a top-level message in the main channel (or DM), a
             # threaded one in its thread. Without this the bridge threads every channel reply
@@ -595,9 +602,15 @@ class OpenClawWorkWorker:
                 if forced:
                     # Once per message: only the one agent that runs gets here.
                     put_metric("messaging.jev.forced", dimensions={"reason": forced})
+                routed_by = "fallback"
             elif decision.get("who") == member["id"]:
                 # ``who`` is final: jev already decided whether silence was clear.
                 put_metric("messaging.jev.route", dimensions={"outcome": "routed"})
+                routed_by = "jev"
+                try:
+                    routing_p = float((decision.get("whoP") or {}).get(member["id"]))
+                except (TypeError, ValueError):
+                    routing_p = None
                 placement = decision.get("placement")
                 body["routing"] = {"decidedBy": "jev", "placement": placement}
                 # Jev's judgement, not a rule: "thread" joins the trigger's thread (or starts one
@@ -636,6 +649,8 @@ class OpenClawWorkWorker:
             thread_root_id=body.get("replyThreadRootId")
             if follow_up is None
             else message.get("threadRootMessageId") or (None if meta.get("kind") == "dm" else message["messageId"]),
+            routed_by=routed_by,
+            routing_p=routing_p,
         )
         if oversized:
             # Route before reporting failure: Jev may choose another listener

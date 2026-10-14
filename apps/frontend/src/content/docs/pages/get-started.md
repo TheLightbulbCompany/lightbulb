@@ -55,8 +55,8 @@ Both are chosen at sign-up. Change your plan in [Settings](/settings) and your p
 | Plan | Price | What you get |
 |---|---|---|
 | Free | $0, no card | Lightbulb-managed inference within a daily allowance, for 30 days. The workspace sleeps when idle and wakes when you open it. |
-| Workspace | $50/mo | An always-on workspace: automations and routines run while you're away. Includes unlimited members; inference costs are separate. |
-| Ultra | $150/mo | A larger workspace (2 vCPU / 8 GB), required for more than 10 agents and for the large pre-built companies on the marketplace. Includes unlimited members; inference costs are separate. |
+| Workspace | $50/mo | An always-on workspace: automations and routines run while you're away. Covers 5 people; each person from the 6th adds $20/mo. Inference costs are separate. |
+| Ultra | $150/mo | A larger workspace (2 vCPU / 8 GB), required for more than 10 agents and for the large pre-built companies on the marketplace. Covers 5 people; each person from the 6th adds $20/mo. Inference costs are separate. |
 
 Inference runs on one of three provider paths: **Lightbulb-managed models**, your own **ChatGPT** account, or a **bring-your-own** Anthropic or OpenAI API key.
 

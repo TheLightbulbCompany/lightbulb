@@ -41,6 +41,11 @@ def wired(monkeypatch):
         sent_to=None,
         sent_from=None,
         sent_headers=None,
+        sent_body_text=None,
+        sent_body_html=None,
+        footer_calls=[],
+        footer_text_suffix="",
+        footer_html_suffix="",
     )
 
     monkeypatch.setattr(mod.settings, "AGENT_EMAIL_DOMAIN", "isol8.co")
@@ -96,7 +101,16 @@ def wired(monkeypatch):
         st.sent_to = to
         st.sent_from = from_addr
         st.sent_headers = headers
+        st.sent_body_text = body_text
+        st.sent_body_html = body_html
         return st.ses_returns
+
+    async def _append_footer(**kwargs):
+        st.footer_calls.append(kwargs)
+        rendered_html = kwargs["body_html"]
+        if rendered_html is not None:
+            rendered_html += st.footer_html_suffix
+        return kwargs["body_text"] + st.footer_text_suffix, rendered_html
 
     monkeypatch.setattr(mod.container_repo, "try_consume_daily_email_send", _cap)
 
@@ -115,6 +129,7 @@ def wired(monkeypatch):
     monkeypatch.setattr(mod, "from_header", _from)
     st.agent_name = "Agent"
     monkeypatch.setattr(mod, "resolve_agent_name", AsyncMock(side_effect=lambda **_: st.agent_name))
+    monkeypatch.setattr(mod, "append_agent_mail_footer", _append_footer)
     monkeypatch.setattr(mod.agent_mail_inbox_repo, "put_sent", st.put_sent)
     monkeypatch.setattr(mod, "resolve_apex_ceo_agent_id", _live_ceo, raising=False)
     monkeypatch.setattr(mod, "write_owner_facts", _facts)
@@ -148,6 +163,36 @@ async def test_happy_path_sends_and_settles_sent(wired):
 
 
 @pytest.mark.asyncio
+async def test_owner_directed_agent_mail_applies_attribution_footer(wired):
+    wired.footer_text_suffix = "\n\nattribution"
+    wired.footer_html_suffix = "<p>attribution</p>"
+
+    result = await mod.send_to_owner(
+        owner_id="user_a",
+        purpose="routine",
+        subject="Hello",
+        body_text="body",
+        body_html="<p>body</p>",
+        agent_id="agent_atlas",
+    )
+
+    assert result == "sent"
+    assert wired.footer_calls == [
+        {
+            "owner_id": "user_a",
+            "agent_id": "agent_atlas",
+            "address": "agents@acme-robotics.isol8.co",
+            "body_text": "body",
+            "body_html": "<p>body</p>",
+            "agent_name": "Agent",
+        }
+    ]
+    assert wired.sent_body_text == "body\n\nattribution"
+    assert wired.sent_body_html == "<p>body</p><p>attribution</p>"
+    assert wired.put_sent.await_args.kwargs["text"] == "body\n\nattribution"
+
+
+@pytest.mark.asyncio
 async def test_an_unknown_agent_is_never_recorded_as_sender(wired):
     wired.agent_name = None
     assert await _send() == "sent"
@@ -178,6 +223,23 @@ async def test_system_notice_never_claims_the_first_contact_slot(wired):
     assert wired.ses_calls == 1
     assert wired.claimed is False
     assert wired.settled is None
+
+
+@pytest.mark.asyncio
+async def test_system_notice_does_not_apply_attribution_footer(wired):
+    result = await mod.send_to_owner(
+        owner_id="user_a",
+        purpose="routine",
+        subject="Outbound email paused",
+        body_text="platform body",
+        body_html="<p>platform body</p>",
+        system_notice=True,
+    )
+
+    assert result == "sent"
+    assert wired.footer_calls == []
+    assert wired.sent_body_text == "platform body"
+    assert wired.sent_body_html == "<p>platform body</p>"
 
 
 @pytest.mark.asyncio

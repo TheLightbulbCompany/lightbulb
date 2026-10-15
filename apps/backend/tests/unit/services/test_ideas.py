@@ -142,7 +142,7 @@ def paperclip(workspace, monkeypatch):
         list_projects=AsyncMock(return_value=[]),
         list_issues=AsyncMock(return_value=[]),
         create_issue=AsyncMock(side_effect=lambda **_: {"id": f"issue-{admin.create_issue.await_count}"}),
-        get_issue=AsyncMock(return_value={"status": "todo"}),
+        get_issue=AsyncMock(return_value={"status": "backlog"}),
     )
     ctx = SimpleNamespace(owner_id=OWNER, company_id="company-1", session_cookie="cookie")
     monkeypatch.setattr(task_board, "_context", AsyncMock(return_value=ctx))
@@ -368,7 +368,7 @@ async def test_any_start_hides_the_welcome_even_after_its_project_finished(paper
 
 
 @pytest.mark.asyncio
-async def test_a_task_idea_makes_one_todo_task_assigned_to_the_agent_and_links_it(paperclip):
+async def test_a_task_idea_makes_one_backlog_task_assigned_to_the_agent_and_links_it(paperclip):
     idea = ideas.catalog()["claim-refund"]
     assert idea.size == "task"
     first = await ideas.start(AUTH, "claim-refund")
@@ -376,7 +376,8 @@ async def test_a_task_idea_makes_one_todo_task_assigned_to_the_agent_and_links_i
     assert first == again == {"roomId": first["roomId"], "issueId": "issue-1"}
     paperclip.create_project.assert_not_awaited()
     body = paperclip.create_issue.await_args.kwargs["body"]
-    assert body["title"] == idea.title and body["status"] == "todo"
+    # backlog: the DM message is the one wake; the same title may come again after a finished task.
+    assert body["title"] == idea.title and body["status"] == "backlog" and body["allowDuplicate"] is True
     assert body["assigneeAgentId"] == STARTERS["finance"]
     assert idea.why in body["description"] and all(d in body["description"] for d in idea.deliverables)
     assert body["idempotencyKey"].startswith("lightbulb-idea-project:v1:")
@@ -392,7 +393,7 @@ async def test_a_task_idea_makes_one_todo_task_assigned_to_the_agent_and_links_i
 async def test_a_task_runs_with_its_status_and_leaves_running_when_done(paperclip):
     await ideas.start(AUTH, "claim-refund")
     [item] = (await ideas.list_ideas(AUTH))["running"]
-    assert (item["size"], item["issueId"], item["progress"]) == ("task", "issue-1", {"todo": 1})
+    assert (item["size"], item["issueId"], item["progress"]) == ("task", "issue-1", {"backlog": 1})
     paperclip.get_issue.return_value = {"status": "done"}
     assert (await ideas.list_ideas(AUTH))["running"] == []
     # Done: the idea can be started again, as a new task.
@@ -484,3 +485,32 @@ def test_a_suggestion_needs_a_size_and_at_most_three_deliverables():
         _suggestion(size="huge")
     with pytest.raises(ValueError):
         ideas.Suggestion(agent_id="a", title="Three", why="why it", deliverables=["a", "b", "c", "d"], size="task")
+
+
+@pytest.mark.asyncio
+async def test_an_agent_written_title_cannot_add_links_or_break_the_work_link(paperclip):
+    added = await ideas.suggest(OWNER, _suggestion("Fix [this](https://evil.example) *now*", size="task"))
+    started = await ideas.start(AUTH, added["id"])
+    [line] = await _lines(started["roomId"])
+    assert "[this](https://evil.example)" not in line["text"]
+    assert "Fix \\[this\\]\\(https://evil.example\\) \\*now\\*" in line["text"]
+    assert line["text"].endswith(f"({ideas.work_link('task', started['issueId'])})")
+
+
+@pytest.mark.asyncio
+async def test_list_and_start_read_the_roster_once(paperclip, monkeypatch):
+    # The ideas service's own reads (messaging's DM and send paths have theirs).
+    real = ideas._roster
+    calls = []
+
+    async def counted(owner):
+        calls.append(owner)
+        return await real(owner)
+
+    monkeypatch.setattr(ideas, "_roster", counted)
+    await ideas.list_ideas(AUTH)
+    assert len(calls) == 1
+    added = await ideas.suggest(OWNER, _suggestion())
+    calls.clear()
+    await ideas.start(AUTH, added["id"])
+    assert len(calls) == 1

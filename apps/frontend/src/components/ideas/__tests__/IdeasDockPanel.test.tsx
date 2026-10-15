@@ -172,6 +172,13 @@ describe("the CEO welcome's proposal", () => {
     expect(controller.openPanel).toHaveBeenLastCalledWith("ideas", {}, { pushUrl: true });
   });
 
+  it("never proposes an agent's suggestion", async () => {
+    const suggestion: Idea = { ...idea("s-1", "growth", "Growth"), suggested: true };
+    client.listIdeas.mockResolvedValue({ ...catalog, ideas: [suggestion, ...catalog.ideas], running: [] });
+    renderWelcome();
+    await waitFor(() => expect(rowTitles()).toEqual(["Title a"]));
+  });
+
   it("is gone once the workspace has started or hidden an idea", async () => {
     for (const data of [catalog, { ...catalog, running: [], anyStarted: true }, { ...catalog, running: [], anyDismissed: true }]) {
       client.listIdeas.mockResolvedValue(data);

@@ -1,7 +1,8 @@
 /**
  * Ideas (spec 2026-10-14 §4.4): jobs a company usually pays an agency for, done by the team. An
  * idea is a pre-written request (owner, 2026-10-15): Let's do it (POST /ideas/{id}/start) makes
- * its project in Work and posts the person's own message to the agent. GET /ideas, start and
+ * its project or task in Work (by size; a quick idea makes nothing) and posts the person's own
+ * message to the agent. GET /ideas, start and
  * dismiss, shared by web and mobile. No prices: the server never sends them. No DOM here.
  */
 import { useCallback, useMemo } from "react";
@@ -69,7 +70,8 @@ export const ideaEffortLine = (idea: Pick<Idea, "ourTurnaround" | "yourPart">): 
   idea.ourTurnaround && idea.yourPart ? `Your team: ${idea.ourTurnaround} · You: ${idea.yourPart}` : null;
 
 const TASK_STATUS: Record<string, string> = {
-  backlog: "To do", todo: "To do", in_progress: "In progress", in_review: "In review", blocked: "Blocked",
+  // A task idea's issue is created in backlog; the agent moves it to in_progress when it starts.
+  backlog: "Starting", todo: "To do", in_progress: "In progress", in_review: "In review", blocked: "Blocked",
 };
 
 /** A running idea's progress line: a project's done/total tasks, or a task's status. */

@@ -18,7 +18,7 @@ def test_the_skill_routes_ideas_to_a_short_reference(tmp_path):
     assert "Do it like any request" in ideas
     # A project: break it into assigned tasks first, so it continues after the reply.
     assert "break the work into tasks in that\n  project, each assigned to yourself or a teammate" in ideas
-    assert "It links a task:** work it, and close it" in ideas
+    assert "first move the linked task to in_progress (assigned to yourself),\n  then work it and close it with proof" in ideas
     assert "sign-in (live browser only)" in ideas and "`request_approval`" in ideas
     assert "to the feed" in ideas
     # suggest_idea: concrete and company-specific only; never in chat, never on a schedule.

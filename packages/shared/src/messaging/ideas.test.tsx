@@ -37,6 +37,7 @@ describe("ideas helpers", () => {
     expect(runningLine({ size: "project" })).toBe("Planning");
     expect(runningLine({ size: "task", progress: { in_progress: 1 } })).toBe("In progress");
     expect(runningLine({ size: "task" })).toBe("To do");
+    expect(runningLine({ size: "task", progress: { backlog: 1 } })).toBe("Starting");
   });
 
   it("has no effort line for a suggestion without one", () => {

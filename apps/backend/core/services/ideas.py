@@ -138,16 +138,16 @@ def _norm(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
 
 
-async def _workspace(owner_id: str) -> tuple[object | None, dict[str, dict]]:
-    """The workspace row and role -> {id, name} for the starter roster's live agents only (a
-    removed one has no roster row)."""
+async def _workspace(owner_id: str) -> tuple[object | None, dict[str, dict], dict[str, str]]:
+    """The workspace row, role -> {id, name} for the starter roster's live agents only (a removed
+    one has no roster row), and agent id -> name for the whole roster: one roster read."""
     from core.repositories.paperclip_repo import PaperclipRepo
-    from core.services import messaging
 
     row = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
-    names = {a["id"]: a["name"] for a in await messaging.load_agent_roster(owner_id)}
+    names = await _roster(owner_id)
     starters = (row.starter_agent_ids if row else None) or {}
-    return row, {role: {"id": aid, "name": names[aid]} for role, aid in starters.items() if aid in names}
+    agents = {role: {"id": aid, "name": names[aid]} for role, aid in starters.items() if aid in names}
+    return row, agents, names
 
 
 #: Never served: no prices in the app (owner, 2026-10-15). They stay in the YAML for marketing.
@@ -185,7 +185,7 @@ async def _suggestions(owner_id: str, names: dict[str, str]) -> list[dict]:
     return sorted(rows, key=lambda r: r.get("createdAt") or "", reverse=True)
 
 
-async def _job(owner_id: str, idea_id: str, agents: dict[str, dict]) -> Job:
+async def _job(owner_id: str, idea_id: str, agents: dict[str, dict], names: dict[str, str]) -> Job:
     """The catalog idea or this workspace's suggestion; 404 for anything else."""
     idea = catalog().get(idea_id)
     if idea is not None:
@@ -194,7 +194,6 @@ async def _job(owner_id: str, idea_id: str, agents: dict[str, dict]) -> Job:
             raise HTTPException(status_code=409, detail="No teammate owns this idea in this workspace.")
         return Job(idea.id, idea.title, idea.why, list(idea.deliverables), idea.size, agent)
     if idea_id.startswith(SUGGESTION_PREFIX):
-        names = await _roster(owner_id)
         row = next((r for r in await _suggestions(owner_id, names) if r["ideaId"] == idea_id), None)
         if row is not None:
             agent = {"id": row["agentId"], "name": names[row["agentId"]]}
@@ -208,8 +207,7 @@ async def list_ideas(auth: AuthContext) -> dict:
     2026-10-15). ``running`` is the workspace's open starts with a project or a task, with their
     progress when Work answers (never failing the read when it does not)."""
     owner_id = resolve_owner_id(auth)
-    _, agents = await _workspace(owner_id)
-    names = await _roster(owner_id)
+    _, agents, names = await _workspace(owner_id)
     dismissed = await messaging_repo.dismissed_ideas(owner_id)
     shown = [i for i in catalog().values() if i.id not in dismissed and i.owner_role in agents]
     shown.sort(key=lambda i: (i.kind != "agency", i.title))
@@ -327,6 +325,9 @@ async def suggest(owner_id: str, suggestion: Suggestion) -> dict:
     if suggestion.agent_id not in names:
         raise HTTPException(status_code=403, detail="Not an agent on this workspace's team.")
     title = _norm(suggestion.title)
+    # ponytail: dedupe and the cap are read-then-write, so two suggest_idea calls at the same
+    # moment can store a duplicate title or an 11th suggestion; bounded by the agents' turns
+    # (a handful per day). A per-title conditional row would close it if it ever matters.
     stored = await _suggestions(owner_id, names)
     if any(_norm(i.title) == title for i in catalog().values()) or any(_norm(r["title"]) == title for r in stored):
         return {"status": "duplicate"}
@@ -374,13 +375,23 @@ def work_link(kind: str, work_id: str) -> str:
     return f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel={panel}&detailId={work_id}"
 
 
+_MARKDOWN_SPECIAL = re.compile(r"([\\`*_\[\]()<>#!|~])")
+
+
+def _md_text(value: str) -> str:
+    """Plain text inside markdown: an agent-written title or description cannot add a link,
+    emphasis or anything else to the person's own message, or break the Work link."""
+    return _MARKDOWN_SPECIAL.sub(r"\\\1", " ".join(value.split()))
+
+
 def start_text(job: Job, tracked: tuple[str, str] | None) -> str:
     """The person's own message when they press Let's do it: the idea quoted, the ask, and, for a
     project or a task, the Work item tracking it. The link is how the agent learns where this
     start's work goes. Nothing hidden."""
-    text = f"> **{job.title}**\n> {job.why}\n\nLet's do it!"
+    title = _md_text(job.title)
+    text = f"> **{title}**\n> {_md_text(job.why)}\n\nLet's do it!"
     if tracked:
-        text += f"\nTracked in Work: [{job.title}]({work_link(*tracked)})"
+        text += f"\nTracked in Work: [{title}]({work_link(*tracked)})"
     return text
 
 
@@ -411,8 +422,8 @@ async def _start(auth: AuthContext, idea_id: str) -> dict:
     from core.services import messaging, task_board
     from core.services.paperclip_admin_client import shared_admin_client
 
-    row, agents = await _workspace(resolve_owner_id(auth))
-    job = await _job(resolve_owner_id(auth), idea_id, agents)  # an unknown idea is a 404 first
+    row, agents, names = await _workspace(resolve_owner_id(auth))
+    job = await _job(resolve_owner_id(auth), idea_id, agents, names)  # an unknown idea is a 404 first
     ctx = await task_board._context(auth)  # a joined member of this workspace, with a Paperclip session
     owner_id, user_id = ctx.owner_id, auth.user_id
     agent = job.agent
@@ -458,9 +469,15 @@ async def _start(auth: AuthContext, idea_id: str) -> dict:
                 body = {
                     "title": job.title,
                     "description": job.why + "\n\nWhat's included:\n" + "\n".join(f"- {d}" for d in job.deliverables),
-                    "status": "todo",
+                    # backlog, not todo: the DM message is the one wake (an assigned todo would wake
+                    # the agent through Paperclip too and run the job twice). The agent moves it to
+                    # in_progress itself (references/ideas.md).
+                    "status": "backlog",
                     "assigneeAgentId": agent["id"],
                     "idempotencyKey": key,
+                    # The same title may be started again after a finished task; the key still
+                    # replays a retry's issue instead of making a second one.
+                    "allowDuplicate": True,
                 }
                 issue = await admin.create_issue(
                     session_cookie=ctx.session_cookie, company_id=ctx.company_id, body=body
@@ -500,7 +517,7 @@ async def _start(auth: AuthContext, idea_id: str) -> dict:
 
 async def _usable_dm(owner_id: str, user_id: str, agent_id: str) -> str:
     """The starter's DM with the agent, unarchived through the room PATCH path when needed, so
-    the start line can land and the person can answer there."""
+    the person's Let's do it message can land and they can answer there."""
     from core.services import messaging
 
     room_id = await messaging._agent_dm_room_id(owner_id, user_id, agent_id)

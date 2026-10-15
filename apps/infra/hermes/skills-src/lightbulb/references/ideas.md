@@ -6,7 +6,8 @@ and, for bigger jobs, "Tracked in Work: [name](link)". Do it like any request, a
 - **"Tracked in Work" links a project:** before you reply, break the work into tasks in that
   project, each assigned to yourself or a teammate, so it continues after this reply.
   Assigned tasks wake their agent, and the daily check-ins pick up open ones.
-- **It links a task:** work it, and close it when it is done.
+- **It links a task:** first move the linked task to in_progress (assigned to yourself),
+  then work it and close it with proof.
 - **No link:** answer it in one go.
 - Ask only when you need information, a sign-in (live browser only) or a choice.
 - Anything in the person's name (sending, publishing, paying, submitting) is an approval

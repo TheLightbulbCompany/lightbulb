@@ -6,9 +6,7 @@ import {
   stripOneShots,
   buildPanelUrl,
   clearPanelFromUrl,
-  clearClosedPanelFromUrl,
   clearDurableParamFromUrl,
-  clearUnfocusedPanelFromUrl,
 } from "../urlChannel";
 
 describe("parseCommand", () => {
@@ -127,33 +125,33 @@ describe("clearPanelFromUrl", () => {
   });
 });
 
-describe("clearClosedPanelFromUrl (Messages singleton)", () => {
+describe("clearPanelFromUrl (Messages singleton)", () => {
   it("clears ?agent=<concrete default> when Messages closes", () => {
-    expect(clearClosedPanelFromUrl("?agent=friday-id", "chat:__default__")).toBe(
+    expect(clearPanelFromUrl("?agent=friday-id", "chat:__default__")).toBe(
       "",
     );
   });
   it("clears a sentinel-named URL when Messages closes", () => {
     expect(
-      clearClosedPanelFromUrl("?agent=__default__", MESSAGES_PANEL_ID),
+      clearPanelFromUrl("?agent=__default__", MESSAGES_PANEL_ID),
     ).toBe("");
   });
   it("clears an explicit chat URL without resolving the default agent", () => {
     expect(
-      clearClosedPanelFromUrl("?panel=chat&agentId=friday-id&checkout=success", MESSAGES_PANEL_ID),
+      clearPanelFromUrl("?panel=chat&agentId=friday-id&checkout=success", MESSAGES_PANEL_ID),
     ).toBe("checkout=success");
   });
   it("clears Messages for a non-default agent too", () => {
     expect(
-      clearClosedPanelFromUrl("?agent=other-id", "chat:__default__"),
+      clearPanelFromUrl("?agent=other-id", "chat:__default__"),
     ).toBe("");
   });
   it("passes plain (non-sentinel) closes straight through", () => {
-    expect(clearClosedPanelFromUrl("?agent=agent-1", MESSAGES_PANEL_ID)).toBe("");
-    expect(clearClosedPanelFromUrl("?panel=teams-artifacts", "teams-artifacts")).toBe(
+    expect(clearPanelFromUrl("?agent=agent-1", MESSAGES_PANEL_ID)).toBe("");
+    expect(clearPanelFromUrl("?panel=teams-artifacts", "teams-artifacts")).toBe(
       "",
     );
-    expect(clearClosedPanelFromUrl("?panel=teams-artifacts", "teams-issues")).toBeNull();
+    expect(clearPanelFromUrl("?panel=teams-artifacts", "teams-issues")).toBeNull();
   });
 });
 
@@ -180,15 +178,3 @@ describe("commandSignature", () => {
   });
 });
 
-describe("clearUnfocusedPanelFromUrl", () => {
-  it("drops the URL-named panel once another panel is active, keeping non-command params", () => {
-    expect(clearUnfocusedPanelFromUrl("?panel=teams-artifacts&utm_source=x", MESSAGES_PANEL_ID)).toBe("utm_source=x");
-    expect(clearUnfocusedPanelFromUrl("?panel=teams-artifacts", null)).toBe("");
-  });
-  it("leaves the URL alone while its panel is active, or when it names no panel", () => {
-    const id = parseCommand("?panel=teams-artifacts")!.descriptor.panelId;
-    expect(clearUnfocusedPanelFromUrl("?panel=teams-artifacts", id)).toBeNull();
-    expect(clearUnfocusedPanelFromUrl("?checkout=success", MESSAGES_PANEL_ID)).toBeNull();
-    expect(clearUnfocusedPanelFromUrl("", MESSAGES_PANEL_ID)).toBeNull();
-  });
-});

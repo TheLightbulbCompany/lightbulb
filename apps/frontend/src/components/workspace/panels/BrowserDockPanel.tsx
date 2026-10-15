@@ -316,13 +316,13 @@ export function BrowserDockPanel(): React.ReactElement | null {
   }, [slot, api]);
 
   // Each state fills the pane.
-  const docked = (top: React.ReactNode) => <div className="relative min-h-0 flex-1"><div className="absolute inset-0">{top}</div></div>;
+  const fill = (top: React.ReactNode) => <div className="relative min-h-0 flex-1"><div className="absolute inset-0">{top}</div></div>;
 
   const renderCloud = (): React.ReactElement | null => {
     if (!ready) return null;
-    if (!view) return docked(<Notice>Looking for a live browser session…</Notice>);
+    if (!view) return fill(<Notice>Looking for a live browser session…</Notice>);
     if (view.mode === "error") {
-      return docked(
+      return fill(
         <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-[var(--midnight-muted)]">
           <p role="alert" className="text-err">{view.error || "The shared browser needs to restart."}</p>
           <p className="max-w-sm text-xs">Restarting restores the last saved sign-in state. Any page currently open may be lost.</p>
@@ -335,13 +335,13 @@ export function BrowserDockPanel(): React.ReactElement | null {
     }
     if (!view.active || !view.url) {
       if (restarting(view)) {
-        return docked(<Notice>Restarting the browser to load its extensions…</Notice>);
+        return fill(<Notice>Restarting the browser to load its extensions…</Notice>);
       }
       // Someone looking at it is already starting it (the heartbeat above): say so at once and
       // offer nothing to click, because a click could only collide with that start.
       const watching = pageVisible;
       if (pending || view.mode === "transition" || (watching && view.endedReason !== "stopped" && !startError)) {
-        return docked(
+        return fill(
           <div data-testid="browser-starting" className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center text-sm text-[var(--midnight-muted)]">
             <p>Starting the browser…</p>
             {(view.endedReason === "idle" || view.endedReason === "expired") && <p className="max-w-sm text-xs">{stoppedMessage(view)}</p>}
@@ -351,7 +351,7 @@ export function BrowserDockPanel(): React.ReactElement | null {
       // A person stopped it, or the start failed. Any click here starts a fresh session that
       // restores the saved state: never a dead end.
       const error = controlError || startError || view.error;
-      return docked(
+      return fill(
         <div onClick={() => void mutate("/browser/start")} data-testid="browser-stopped" className="flex h-full cursor-pointer flex-col items-center justify-center gap-3 p-6 text-center text-sm text-[var(--midnight-muted)]">
           <p>{stoppedMessage(view)}</p>
           <p className="max-w-sm text-xs">One browser for the whole workspace. Sign in once and it is saved for everyone, agents included. Click to start it again; the saved state comes back.</p>
@@ -394,7 +394,7 @@ export function BrowserDockPanel(): React.ReactElement | null {
           </div>
         </div>
         {controlError && <p role="alert" className="px-3 py-1 text-xs text-err">{controlError}</p>}
-        {docked(ensureDcvMediaShim()
+        {fill(ensureDcvMediaShim()
           ? <div ref={setSlot} className="relative h-full" data-testid="browser-viewer" />
           : <Notice>This device cannot initialize the shared browser viewer.</Notice>)}
         {view.error && <p role="alert" className="px-3 py-2 text-xs text-err">{view.error}</p>}
@@ -432,7 +432,7 @@ export function BrowserDockPanel(): React.ReactElement | null {
             </p>
             {/* Mounted only while the pane shows this panel on a visible page: the view-tier cast
                 (1280 px, 10 fps) and its frames subscription run only for someone who can see them. */}
-            {docked(pageVisible ? <MacRunFrames runId={macRun.runId} roomId={macRun.roomId} deviceId={macBrowser(macRun)?.deviceId} /> : null)}
+            {fill(pageVisible ? <MacRunFrames runId={macRun.runId} roomId={macRun.roomId} deviceId={macBrowser(macRun)?.deviceId} /> : null)}
           </>
         ) : renderCloud()}
       </div></div>

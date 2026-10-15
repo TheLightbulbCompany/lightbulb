@@ -1,6 +1,6 @@
 "use client";
 
-// Desktop navigation shares canonical room state with the Messages dock panel.
+// Desktop navigation shares canonical room state with the conversation (Chat's main view).
 import "./workspace.css";
 
 import { useEffect, useState, useSyncExternalStore } from "react";
@@ -22,7 +22,7 @@ const noSubscribe = () => () => {};
 
 interface WorkspaceSidebarProps {
   onRecoveryReprovision: () => void;
-  /** The dock is available once the runtime is ready or parked. */
+  /** The workspace is available once the runtime is ready or parked. */
   chatReady: boolean;
   /** A destination was picked: the shell closes the phone drawer. */
   onNavigate?: () => void;

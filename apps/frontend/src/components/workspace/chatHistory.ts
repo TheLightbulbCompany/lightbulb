@@ -52,7 +52,7 @@ export function planChatHistoryWrite(
   return { push: target };
 }
 
-// Module state, like workspaceController's dock singleton: one desktop shell per page.
+// Module state, like workspaceController's singleton: one desktop shell per page.
 let current: ChatView | null = null;
 // The new-session composer or the all-sessions list is open: not recorded, so
 // `current` names a view that is not on screen.

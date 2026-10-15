@@ -1,7 +1,6 @@
 // The URL is a ONE-WAY retained command channel (spec §6): inbound ?panel=…
 // is a navigation intent the shell executes as open-or-focus; outbound, only
-// explicit navigations write it. Layout changes never touch it; closing a
-// panel or picking another dock tab only ever CLEARS it, in place.
+// explicit navigations write it. Closing the pane only ever CLEARS it, in place.
 import {
   describePanel,
   durableParamsFor,
@@ -103,18 +102,6 @@ export function clearPanelFromUrl(search: string, closedPanelId: string): string
   const result = params.toString();
   return result === before ? null : result;
 }
-
-// Picking another dock tab clears the URL-named panel the same way, so a reload
-// or a copied link can't reopen a panel the user already left. Null when the
-// URL names no panel or names the tab picked.
-export function clearUnfocusedPanelFromUrl(search: string, activePanelId: string | null): string | null {
-  const command = parseCommand(search);
-  if (!command || command.descriptor.panelId === activePanelId) return null;
-  return clearPanelFromUrl(search, command.descriptor.panelId);
-}
-
-// All chat URL forms now name Messages directly.
-export { clearPanelFromUrl as clearClosedPanelFromUrl };
 
 // Dismissing a durable panel param (the Tasks agent-filter chip) must also
 // strip that param from the URL when the CURRENT URL command names the same

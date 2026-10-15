@@ -1,8 +1,7 @@
 "use client";
 
-// The Work page's tab strip. Every task-board page opens in the one "Work"
-// dock tab (panelRegistry WORK_PANEL_ID); a tab here re-targets that same dock
-// tab, so switching pages never piles up dock tabs.
+// The Work place's tab strip. Every task-board page opens in the one Work main
+// view (panelRegistry WORK_PANEL_ID); a tab here re-targets that same view.
 import { PanelTabs } from "@/components/teams/shell";
 import { WORK_TEAMS_KEYS } from "../panelRegistry";
 import { openPanel } from "../workspaceController";

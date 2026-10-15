@@ -279,8 +279,8 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- apps/frontend/src/components/workspace/WorkspaceHeader.tsx (DESTINATIONS: rail order and labels);
                                  apps/frontend/src/components/workspace/panelRegistry.ts (teams-dashboard, teams-inbox,
                                  teams-approvals, teams-activity → activity aliases);
-                                 apps/frontend/src/components/activity/activityPage.ts (For you: Decide/Reply/Do groups,
-                                 same-source rows) + ForYou.tsx (one button per row, Review for decisions) + TeamFeed.tsx
+                                 apps/frontend/src/components/activity/activityPage.ts (For you: chips, Unread, one row per item,
+                                 where/snippet) + ForYou.tsx (rows, Review for decisions, decline, infinite scroll) + TeamFeed.tsx
                                  (brief, posts, Discuss); apps/frontend/src/components/workspace/panels/ActivityDockPanel.tsx;
                                  apps/frontend/src/components/teams/panels/AgentsListPanel.tsx (Add an AI employee);
                                  apps/frontend/src/components/messaging/RoomDirectory.tsx (Invite someone row at the bottom of the chat sidebar)

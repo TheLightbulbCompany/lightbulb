@@ -1,8 +1,7 @@
 "use client";
 
 // The one right pane: one thing at a time (a thread, a file, the browser, an
-// agent's profile, a task's detail, mail — Ideas joins in Task 10b as one more
-// PanelKind). Resizable from its left edge, closable, and its width is
+// agent's profile, a task's detail, mail, Ideas). Resizable from its left edge, closable, and its width is
 // remembered per person; the browser opens at half the width. Expand gives it
 // the screen beside a narrow chat column (WorkspaceShell). Below 600 px it is a
 // full-screen sheet over the main view (workspace.css).

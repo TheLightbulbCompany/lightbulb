@@ -84,8 +84,9 @@ export function recordChatView(next: ChatView, explicit: boolean): void {
     const write = planChatHistoryWrite(prev, next, window.location.search);
     if (write) apply(write);
   } else if (prev?.sessionId && !next.sessionId && urlShows(window.location.search, prev)) {
-    // A closed session must not reopen on reload: the URL becomes the room it left.
-    replaceSearchParams(new URLSearchParams(chatViewSearch(next)!));
+    // A closed session must not reopen on reload: the URL becomes the room it left, and the
+    // pane beside it stays.
+    replaceSearchParams(new URLSearchParams(withPane(chatViewSearch(next)!, window.location.search)));
   }
   // Set after the write, so shellNav's namer still sees the view being left.
   current = next;

@@ -2,7 +2,7 @@
 
 import { createPortal } from "react-dom";
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
-import { ArrowLeft, Check, Chrome, Circle, CircleAlert, FolderOpen, Link, ListChecks, MessagesSquare, PanelRight, Square } from "lucide-react";
+import { ArrowLeft, Check, Chrome, Circle, CircleAlert, FolderOpen, Lightbulb, Link, ListChecks, MessagesSquare, PanelRight, Square } from "lucide-react";
 import type { Components } from "react-markdown";
 import { LISTEN_MODE_LABELS, listenModeOptions, soleChannelOwner, useStatusLoaded, type CreateMessageRequest, type ListenMode, type MemberPrefsRequest, type MemberRef, type UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
@@ -14,6 +14,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Identity } from "@/components/teams/shared/components/Identity";
+import { WelcomeIdea } from "@/components/ideas/IdeaCard";
+import { DmIdeaPlan, DmPlanContext } from "./PlanApprovalCard";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
 import { roomMarkdown as publicMarkdown } from "./roomMarkdown";
 import { attachmentIdFromHref } from "@/components/teams/shared/lib/attachments";
@@ -259,6 +261,7 @@ function RoomBoundary(props: RoomPanelProps) {
 
 function RoomContent({
   roomId,
+  ownerScopeId,
   currentUserId,
   room,
   readSeqAtOpen,
@@ -635,6 +638,9 @@ function RoomContent({
     }
   }, [onSetReaction, actionable, reactionPending, currentUserId]);
 
+  const welcomeRoom = Boolean(room?.isDefault) && inShell;
+  // An idea started in this DM: its plan card, from GET /ideas (not from a pasted link).
+  const [dmPlanId, setDmPlanId] = useState<string | null>(null);
   const revealStarter = Boolean(room?.isDefault) && !messages.some((m) => m.author.kind === "human");
   const renderMessage = useCallback((message: RoomMessage, inThread = false, collapsed = false) => {
     const participant = participants.find((member) => member.kind === message.author.kind && member.id === message.author.id);
@@ -706,12 +712,14 @@ function RoomContent({
   const delegationState = delegationsByMessage?.size ? subagents : undefined;
   const renderMainMessage = useCallback((message: RoomMessage, collapsed: boolean) => <>
     {renderMessage(message, false, collapsed)}
+    {/* The CEO's welcome carries the top idea as a proposal and points at the 💡 (spec 2026-10-14 §4.4). */}
+    {welcomeRoom && message.messageSeq === 1 && message.author.kind === "agent" && <WelcomeIdea />}
     {savedDelegations(delegationState, delegationsByMessage?.get(message.messageId))}
     {settledRuns.get(message.messageId)?.map(renderRun)}
   </>,
   // An ended run's card reads nothing renderRun closes over that settledRuns does not carry.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  [renderMessage, settledRuns, delegationState, delegationsByMessage]);
+  [renderMessage, settledRuns, delegationState, delegationsByMessage, welcomeRoom]);
 
   function renderRun(run: RoomRunView) {
     const agent = participants.find((participant) => participant.kind === "agent" && participant.id === run.agentId);
@@ -808,6 +816,9 @@ function RoomContent({
             onClick={() => { closeDetail(); setContextCollapsed(!contextCollapsed); }}><PanelRight aria-hidden="true" /></ViewButton>
           {onLinkToWork && <ViewButton label={roomTasks.length > 0 ? `Tasks · ${roomTasks.length}` : "Tasks"} aria-current={showTasks ? "page" : undefined}
             onClick={event => openDetail("tasks", "tasks", event.currentTarget)}><ListChecks aria-hidden="true" />{roomTasks.length > 0 && <span aria-hidden="true">{roomTasks.length}</span>}</ViewButton>}
+          {/* Ideas: from an agent's DM, that agent's ideas come first. */}
+          {inShell && <ViewButton label="Ideas"
+            onClick={() => { capture("ideas_opened"); openPanel("ideas", composer.focusAgentId ? { agent: composer.focusAgentId } : {}, { pushUrl: true }); }}><Lightbulb aria-hidden="true" /></ViewButton>}
           {/* The shared Browser is offered once a status body has landed (it can only show its
               empty state before), the agent's files always. Both open the right pane. */}
           {inShell && browserAvailable && <ViewButton label="Browser"
@@ -818,6 +829,7 @@ function RoomContent({
       {(state === "reconnecting" || !liveConnected) && <div className="room-state"><p role="status" aria-label="Room status">Reconnecting live updates. You can keep sending messages.</p>
         {onRetry && <Button variant="outline" onClick={onRetry}>Check for updates</Button>}</div>}
       <div ref={historyRef} className="contents">
+        <DmPlanContext.Provider value={dmPlanId}>
         <RoomTimeline roomId={roomId} messages={mainMessages} readSeq={sentSinceOpen ? null : newLineSeq} ownLastSentSeq={ownLastSentSeq} sendToken={sendToken}
           historyComplete={historyComplete} historyLoading={historyLoading} historyError={historyErrorMessage} onLoadOlder={onLoadOlder}
           targetMessageId={targetMessageId ?? (activeSearchTarget ? activeSearchTarget.messageId : null)}
@@ -834,8 +846,12 @@ function RoomContent({
           {pendingMessages.filter((message) => message.threadRootMessageId === null).map((message) => <article key={message.clientMessageId} className="room-message opacity-60" aria-label={`Pending message from ${viewer?.displayName ?? "You"}`}>
             <Identity name={viewer?.displayName ?? "You"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{viewer?.displayName ?? "You"}</span><span className="text-ui text-muted-foreground">Sending…</span></div><MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{linkifyMentions(message.text, message.mentions, participants)}</MarkdownView></div>
           </article>)}
+          {inShell && visibleRoom?.kind === "dm" && messagingClient && ownerScopeId &&
+            <DmIdeaPlan client={messagingClient} scope={`${currentUserId}:${ownerScopeId}`} roomId={roomId}
+              userId={currentUserId} onPlan={setDmPlanId} />}
           {placeRuns(mainRuns, mainMessages).tail.map(renderRun)}
         </RoomTimeline>
+        </DmPlanContext.Provider>
       </div>
       <p className="room-typing room-typing-live text-ui text-muted-foreground" role="status">{typingMembers.length > 0 ? `${typingMembers.slice(0, 3).map((member) => member.displayName).join(", ")}${typingMembers.length > 3 ? " and others" : ""} ${typingMembers.length === 1 ? "is" : "are"} typing…` : ""}</p>
       {copied && <p role="status" aria-label="Link copied" className="sr-only">Link copied</p>}

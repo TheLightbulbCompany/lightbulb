@@ -1,4 +1,5 @@
 import type { ApiCallOptions, ApiMethods } from "../api/client";
+import type { IdeaStart, IdeasResponse } from "./ideas";
 import type {
   AbortRunResponse,
   ActivityActionRequest,
@@ -182,6 +183,11 @@ export interface MessagingClient {
   markActivitySeen(upTo: string): Promise<ActivitySeenResponse>;
   /** Run one of an item's non-navigate actions; resolves to the updated item. */
   runActivityAction(itemId: string, actionId: string, request?: ActivityActionRequest): Promise<ActivityItem>;
+  /** The catalog for this workspace (no prices) and the ideas already running. */
+  listIdeas(): Promise<IdeasResponse>;
+  /** Start an idea: its project in Work and the DM where the agent posts the plan. Idempotent while it runs. */
+  startIdea(ideaId: string): Promise<IdeaStart>;
+  dismissIdea(ideaId: string): Promise<void>;
 }
 
 export function createMessagingClient(api: ApiMethods): MessagingClient {
@@ -340,5 +346,8 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
       `/messaging/activity/${encodeURIComponent(itemId)}/actions/${encodeURIComponent(actionId)}`,
       request,
     ) as Promise<ActivityItem>,
+    listIdeas: () => api.get("/ideas") as Promise<IdeasResponse>,
+    startIdea: (ideaId) => api.post(`/ideas/${encodeURIComponent(ideaId)}/start`, {}) as Promise<IdeaStart>,
+    dismissIdea: async (ideaId) => { await api.post(`/ideas/${encodeURIComponent(ideaId)}/dismiss`, {}); },
   };
 }

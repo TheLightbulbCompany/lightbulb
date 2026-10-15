@@ -6,7 +6,8 @@ presses Start on an idea, Lightbulb:
 
 - makes a project for it in Work, with you as the lead (under the company's goal when it has one);
 - puts the idea's guide in your profile at `$HERMES_HOME/ideas/<idea>.md`;
-- posts one line in your DM with that person ("Priya started …") that wakes you.
+- posts one line in your DM with that person ("Priya started …") that wakes you. It
+  names this start's project and room ("Project `<id>`, room `<id>`").
 
 That DM is where the job lives. Everything below happens there unless it says otherwise.
 
@@ -19,8 +20,10 @@ out yourself.
 
 ## 2. Write the plan for THIS company
 
-One short plan, as a document on a task in the idea's project (see
-`references/chat-vs-document.md`). It says:
+One short plan, as a document on a task in **the project the start line names**
+("Project `<id>`"). Two people can start the same idea with you, and each start has its
+own project and DM: always use the project from the line in THIS DM, never one found by
+its title (see `references/chat-vs-document.md`). It says:
 
 - the steps, made specific to this company (its site, its tools, its customers);
 - **every approval the person will give, named up front** (each spend, each public
@@ -45,7 +48,7 @@ never a second approval for the same plan while one is open.
 
 ## 3. On approval: make the steps tasks
 
-When the approval wakes you, create each step as a task in the idea's project, assigned
+When the approval wakes you, create each step as a task in that same project, assigned
 to whoever does it (you, or a teammate through a task, never a chat ping). The person
 watches progress in Work.
 

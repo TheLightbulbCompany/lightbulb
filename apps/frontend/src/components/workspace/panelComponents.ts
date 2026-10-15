@@ -9,6 +9,7 @@ import { FileViewerDockPanel } from "./panels/FileViewerDockPanel";
 import { BrowserDockPanel } from "./panels/BrowserDockPanel";
 import { ActivityDockPanel } from "./panels/ActivityDockPanel";
 import { MailDockPanel } from "./panels/MailDockPanel";
+import { IdeasDockPanel } from "./panels/IdeasDockPanel";
 
 export interface PanelProps {
   /** The slot's panel id (updatePanelParams' key). */
@@ -24,4 +25,5 @@ export const PANEL_COMPONENTS: Record<PanelKind, ComponentType<PanelProps>> = {
   browser: BrowserDockPanel,
   activity: ActivityDockPanel,
   mail: MailDockPanel,
+  ideas: IdeasDockPanel,
 };

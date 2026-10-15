@@ -134,6 +134,13 @@ describe("recordChatView", () => {
     expect(window.history.length).toBe(before);
   });
 
+  it("keeps the pane when the closed session's URL becomes its room", () => {
+    window.history.pushState(null, "", "/chat?panel=chat&session=s1&pane=browser");
+    recordChatView({ roomId: "r1", sessionId: "s1" }, true);
+    recordChatView(room("r1"), false);
+    expect(window.location.search).toBe("?panel=chat&room=r1&pane=browser");
+  });
+
   it("does not rewrite a URL that no longer shows the closed session", () => {
     window.history.pushState(null, "", "/chat?panel=teams-issues");
     recordChatView({ roomId: "r1", sessionId: "s1" }, false);

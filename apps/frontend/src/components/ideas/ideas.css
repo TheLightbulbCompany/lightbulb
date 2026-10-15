@@ -1,0 +1,69 @@
+/* Ideas: the pane, the proposal card and the plan card. Tokens only (brandTokens.test); borders, no shadows; 4px grid. */
+
+.ideas-pane { display: flex; flex-direction: column; gap: 16px; padding: 16px; color: var(--fg); }
+.ideas-pane__heading { margin: 0 0 8px; font-size: var(--text-caption); font-weight: 600; color: var(--fg-mute); }
+.ideas-pane__chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.ideas-pane__chip {
+  padding: 0 12px;
+  min-height: 24px;
+  border: 1px solid var(--plane-edge);
+  border-radius: 12px;
+  font-size: var(--text-caption);
+  color: var(--fg-soft);
+}
+.ideas-pane__chip:hover { color: var(--fg); }
+.ideas-pane__chip[aria-pressed="true"] { border-color: var(--fg); color: var(--fg); font-weight: 600; }
+.ideas-pane__list { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
+.ideas-pane__notice { font-size: var(--text-ui); color: var(--fg-mute); }
+
+/* One line: a running idea, or an idea past the top three. */
+.idea-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--plane-edge);
+}
+.idea-row__title { font-size: var(--text-ui); font-weight: 600; }
+.idea-row__meta { font-size: var(--text-caption); color: var(--fg-mute); }
+.idea-row__actions { display: flex; align-items: center; gap: 4px; }
+
+/* The proposal: who, the outcome, why, three checks, one effort line, Start, a quiet ×. */
+.idea-card { border: 1px solid var(--plane-edge); border-radius: 8px; padding: 16px; display: grid; gap: 8px; max-width: 36rem; }
+.idea-card__who { display: flex; align-items: center; gap: 8px; font-size: var(--text-ui); color: var(--fg-mute); }
+.idea-card__dismiss { margin-left: auto; color: var(--fg-mute); }
+.idea-card__dismiss:hover { color: var(--fg); }
+.idea-card__title { margin: 0; font-size: 1.125rem; line-height: 1.3; font-weight: 700; }
+.idea-card__why { margin: 0; color: var(--fg-soft); }
+.idea-card__checks { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; color: var(--fg-soft); }
+.idea-card__checks li { display: flex; gap: 8px; align-items: baseline; }
+.idea-card__checks svg { flex: none; color: var(--fg-mute); }
+.idea-card__foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--plane-edge);
+}
+.idea-card__effort { flex: 1; font-size: var(--text-ui); color: var(--fg-soft); }
+.idea-welcome { display: grid; gap: 8px; margin-top: 8px; }
+.idea-welcome__pointer { margin: 0; font-size: var(--text-ui); color: var(--fg-soft); }
+
+/* The plan an agent filed for approval, inside its DM. */
+.plan-card { border: 1px solid var(--plane-edge); border-radius: 8px; max-width: 36rem; }
+.plan-card__head { padding: 8px 12px; font-weight: 600; border-bottom: 1px solid var(--plane-edge); }
+.plan-card__body { padding: 8px 12px; color: var(--fg-soft); font-size: var(--text-ui); }
+.plan-card__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--plane-edge);
+  font-size: var(--text-ui);
+  color: var(--fg-mute);
+}
+.plan-card__change { display: grid; gap: 8px; width: 100%; }
+.plan-card__actions { display: flex; gap: 8px; }

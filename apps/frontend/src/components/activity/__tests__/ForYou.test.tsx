@@ -129,6 +129,20 @@ describe("ForYou", () => {
     expect(document.querySelector(".for-you__sentinel")).toBeNull();
   });
 
+  it("looks again for the sentinel when Unread changes, so an empty filtered view still pages", async () => {
+    vi.stubGlobal("IntersectionObserver", FakeObserver);
+    const onLoadMore = vi.fn();
+    render(<ForYou activityItems={[message("m3", maya, true)]} attentionItems={[]} loading={false} onRunAction={vi.fn()}
+      onNavigate={vi.fn()} people={[]} agents={[]} hasMore onLoadMore={onLoadMore} />);
+    const before = observers.length;
+    await userEvent.click(screen.getByRole("button", { name: "Unread" }));
+    expect(rows()).toEqual([]);
+    expect(observers.length).toBeGreaterThan(before);
+    expect(observers.filter((o) => o.live)).toHaveLength(1);
+    scrollToEnd();
+    expect(onLoadMore).toHaveBeenCalledTimes(1);
+  });
+
   it("does not claim all caught up while older pages may still hold items", () => {
     setup({ activityItems: [], hasMore: true, onLoadMore: vi.fn() });
     expect(screen.queryByText("You're all caught up.")).not.toBeInTheDocument();

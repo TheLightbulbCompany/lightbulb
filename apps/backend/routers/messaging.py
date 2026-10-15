@@ -1298,7 +1298,7 @@ async def _subagent_scope(auth: AuthContext, room_id: str, agent_id: str | None 
     meta, _ = await service.require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
     if agent_id is not None:
         agent_id = service.validate_uuid(agent_id, label="agent ID")
-        if await messaging_repo.get_member(room_id, "agent", agent_id) is None:
+        if await service.room_agent(room_id, agent_id, meta) is None:  # the feed: a roster author
             raise ApiProblem("SUBAGENT_NOT_FOUND", "That agent is not in this room.")
     return meta["ownerId"]
 

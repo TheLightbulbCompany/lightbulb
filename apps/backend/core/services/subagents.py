@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from core.dynamodb import run_in_thread
 from core.repositories import container_repo, messaging_repo
 from core.services import container_rpc
-from core.services.messaging import ApiProblem, ContractModel, make_live_event
+from core.services.messaging import ApiProblem, ContractModel, make_live_event, room_agent
 from core.services.session_keys import parse_lightbulb_session_key
 
 logger = logging.getLogger(__name__)
@@ -72,7 +72,7 @@ async def room_and_agent(owner_id: str, session_key: str) -> tuple[str, str]:
     meta = await messaging_repo.get_room(room_id)
     if not meta or meta.get("ownerId") != owner_id:
         raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
-    if await messaging_repo.get_member(room_id, "agent", agent_id) is None:
+    if await room_agent(room_id, agent_id, meta) is None:  # the feed: a roster author, never seated
         raise ApiProblem("RUN_NOT_ACTIVE", "The agent is no longer in this room.")
     return room_id, agent_id
 

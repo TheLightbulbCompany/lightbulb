@@ -75,10 +75,10 @@ export function IdeaDetail({ idea, onBack, onStart, onDismiss }: {
 /** Under the CEO's welcome: the top idea as one row, and the way to the rest. It goes for good
  *  once the workspace has started or hidden an idea: it is a first step, not a banner. */
 export function WelcomeIdea() {
-  const { ideas, running, anyStarted, anyDismissed } = useIdeas();
+  const { ideas, anyStarted, anyDismissed } = useIdeas();
   // A catalog idea: an agent's suggestion is never the welcome's proposal.
   const top = orderIdeas(ideas).find((idea) => !idea.suggested);
-  if (!top || running.length > 0 || anyStarted || anyDismissed) return null;
+  if (!top || anyStarted || anyDismissed) return null;
   return <div className="idea-welcome">
     <ul className="idea-list">
       <IdeaListRow idea={top} onOpen={(ideaId) => openPanel("ideas", { idea: ideaId }, { pushUrl: true })} />

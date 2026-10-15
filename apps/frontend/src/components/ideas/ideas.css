@@ -2,20 +2,7 @@
 
 .ideas-pane { display: flex; flex-direction: column; gap: 16px; padding: 16px; color: var(--fg); }
 .ideas-pane__heading { margin: 0 0 8px; font-size: var(--text-caption); font-weight: 600; color: var(--fg-mute); }
-.ideas-pane__list { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
 .ideas-pane__notice { font-size: var(--text-ui); color: var(--fg-mute); }
-
-/* One line: a running idea, or an idea past the top three. */
-.idea-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--plane-edge);
-}
-.idea-row__title { font-size: var(--text-ui); font-weight: 600; }
-.idea-row__meta { font-size: var(--text-caption); color: var(--fg-mute); }
 
 /* The list, like Muse's Ideas tab: no cards, no borders but a hairline between rows. */
 .idea-list { margin: 0; padding: 0; list-style: none; }

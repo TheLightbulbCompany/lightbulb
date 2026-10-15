@@ -103,7 +103,7 @@ async def test_list_is_agency_first_then_by_title_with_agents_and_no_prices(work
     assert set(first) == {"id", "ownerRole", "title", "why", "deliverables", "ourTurnaround", "yourPart", "kind",
                           "size", "businessTypes", "agentId", "agentName"}  # fmt: skip
     # No prices in the app (owner, 2026-10-15): they stay in the YAML for marketing only.
-    assert set(body) == {"ideas", "running", "anyStarted", "anyDismissed"}
+    assert set(body) == {"ideas", "anyStarted", "anyDismissed"}
     assert body["anyStarted"] is False and body["anyDismissed"] is False
     assert first["agentId"] == STARTERS[first["ownerRole"]]
 
@@ -308,52 +308,12 @@ async def test_a_repeat_start_answers_with_the_stored_ids_when_paperclip_is_down
     assert await ideas.start(AUTH, "books-cleanup") == first
 
 
-@pytest.mark.asyncio
-async def test_get_lists_running_starts_with_progress(paperclip):
-    started = await ideas.start(AUTH, "books-cleanup")
-    paperclip.list_projects.return_value = [{"id": started["projectId"], "status": "in_progress"}]
-    paperclip.list_issues.return_value = [{"status": "todo"}, {"status": "done"}, {"status": "done"}]
-    running = (await ideas.list_ideas(AUTH))["running"]
-    assert running == [
-        {
-            "ideaId": "books-cleanup",
-            "title": ideas.catalog()["books-cleanup"].title,
-            "agentId": STARTERS["finance"],
-            "agentName": "Finance",
-            "roomId": started["roomId"],
-            "size": "project",
-            "projectId": started["projectId"],
-            "issueId": None,
-            "starterId": "user_A",
-            "starterName": "Name user_A",
-            "createdAt": running[0]["createdAt"],
-            "progress": {"todo": 1, "done": 2},
-        }
-    ]
-    assert running[0]["createdAt"]
-    assert paperclip.list_issues.await_args.kwargs["params"]["projectId"] == started["projectId"]
-
-
-@pytest.mark.asyncio
-async def test_get_drops_progress_when_paperclip_fails_and_hides_finished_projects(paperclip, monkeypatch):
-    from core.services.paperclip_admin_client import PaperclipApiError
-
-    started = await ideas.start(AUTH, "books-cleanup")
-    paperclip.list_issues.side_effect = PaperclipApiError("GET /issues -> 500", status_code=500, body="")
-    running = (await ideas.list_ideas(AUTH))["running"]
-    assert running[0]["projectId"] == started["projectId"] and "progress" not in running[0]
-
-    paperclip.list_issues.side_effect = None
-    paperclip.list_projects.return_value = [{"id": started["projectId"], "status": "completed"}]
-    assert (await ideas.list_ideas(AUTH))["running"] == []
-
-
 def test_sales_tax_is_priced_per_state():
     idea = ideas.catalog()["sales-tax-registration"]
     assert idea.price_unit == "state" and "per state" in idea.why
 
 
-# ---- the plan an agent filed for a start ------------------------------------------------------
+# ---- a started idea leaves the list ------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -361,7 +321,7 @@ async def test_any_start_hides_the_welcome_even_after_its_project_finished(paper
     started = await ideas.start(AUTH, "books-cleanup")
     paperclip.list_projects.return_value = [{"id": started["projectId"], "status": "completed"}]
     body = await ideas.list_ideas(AUTH)
-    assert body["running"] == [] and body["anyStarted"] is True
+    assert body["anyStarted"] is True
 
 
 # ---- size: task and quick ---------------------------------------------------------------------
@@ -390,18 +350,6 @@ async def test_a_task_idea_makes_one_backlog_task_assigned_to_the_agent_and_link
 
 
 @pytest.mark.asyncio
-async def test_a_task_runs_with_its_status_and_leaves_running_when_done(paperclip):
-    await ideas.start(AUTH, "claim-refund")
-    [item] = (await ideas.list_ideas(AUTH))["running"]
-    assert (item["size"], item["issueId"], item["progress"]) == ("task", "issue-1", {"backlog": 1})
-    paperclip.get_issue.return_value = {"status": "done"}
-    assert (await ideas.list_ideas(AUTH))["running"] == []
-    # Done: the idea can be started again, as a new task.
-    again = await ideas.start(AUTH, "claim-refund")
-    assert again["issueId"] == "issue-2"
-
-
-@pytest.mark.asyncio
 async def test_a_quick_idea_makes_nothing_in_work_is_never_running_and_can_be_asked_again(paperclip, monkeypatch):
     quick = ideas.catalog()["claim-refund"].model_copy(update={"size": "quick"})
     monkeypatch.setitem(ideas.catalog(), "claim-refund", quick)
@@ -412,7 +360,7 @@ async def test_a_quick_idea_makes_nothing_in_work_is_never_running_and_can_be_as
     [line] = await _lines(first["roomId"])
     assert line["text"] == f"> **{quick.title}**\n> {quick.why}\n\nLet's do it!"
     body = await ideas.list_ideas(AUTH)
-    assert body["running"] == [] and body["anyStarted"] is True
+    assert body["anyStarted"] is True
     await ideas.start(AUTH, "claim-refund")  # answered in one go: Let's do it again asks again
     assert len(await _lines(first["roomId"])) == 2
 
@@ -476,8 +424,8 @@ async def test_a_suggestion_starts_like_a_catalog_idea_with_its_agent(paperclip)
     assert paperclip.create_project.await_args.kwargs["body"]["leadAgentId"] == STARTERS["growth"]
     [line] = await _lines(started["roomId"])
     assert line["text"].startswith("> **Answer the 14 open Shopify reviews**")
-    [item] = (await ideas.list_ideas(AUTH))["running"]
-    assert item["title"] == "Answer the 14 open Shopify reviews"
+    # Started: it leaves the list while its project is open.
+    assert all(c["id"] != added["id"] for c in (await ideas.list_ideas(AUTH))["ideas"])
 
 
 def test_a_suggestion_needs_a_size_and_at_most_three_deliverables():
@@ -533,30 +481,71 @@ def test_a_suggestion_with_blank_text_is_refused(field):
         ideas.Suggestion(**{**good, "deliverables": ["  "]})
 
 
+def _ids(body):
+    return {c["id"] for c in body["ideas"]}
+
+
 @pytest.mark.asyncio
-async def test_a_deleted_task_or_project_is_finished_not_running_and_can_start_again(paperclip):
+async def test_a_started_idea_leaves_the_list_for_everyone_until_its_task_is_closed(paperclip):
+    teammate = AuthContext(user_id="user_B", org_id=OWNER, org_role="org:member")
+    await ideas.start(AUTH, "claim-refund")  # a task, open (backlog)
+    assert "claim-refund" not in _ids(await ideas.list_ideas(AUTH))
+    assert "claim-refund" not in _ids(await ideas.list_ideas(teammate))
+    paperclip.get_issue.return_value = {"status": "done"}
+    assert "claim-refund" in _ids(await ideas.list_ideas(teammate))
+    assert (await ideas.start(AUTH, "claim-refund"))["issueId"] == "issue-2"  # and it can start again
+
+
+@pytest.mark.asyncio
+async def test_a_started_project_comes_back_when_it_is_completed_or_deleted(paperclip):
     from core.services.paperclip_admin_client import PaperclipApiError
 
-    gone = PaperclipApiError("GET -> 404", status_code=404, body="")
-    await ideas.start(AUTH, "claim-refund")  # a task
-    project = await ideas.start(AUTH, "books-cleanup")  # a project
-    paperclip.list_projects.return_value = [{"id": project["projectId"], "status": "in_progress"}]
-    assert {r["ideaId"] for r in (await ideas.list_ideas(AUTH))["running"]} == {"claim-refund", "books-cleanup"}
-
-    paperclip.get_issue.side_effect = gone
-    paperclip.list_projects.return_value = []  # the project is no longer listed...
-    paperclip.get_project.side_effect = gone  # ...because it was deleted
-    assert (await ideas.list_ideas(AUTH))["running"] == []
-    assert (await ideas.start(AUTH, "claim-refund"))["issueId"] == "issue-2"
+    started = await ideas.start(AUTH, "books-cleanup")
+    paperclip.list_projects.return_value = [{"id": started["projectId"], "status": "in_progress"}]
+    assert "books-cleanup" not in _ids(await ideas.list_ideas(AUTH))
+    paperclip.list_projects.return_value = [{"id": started["projectId"], "status": "completed"}]
+    assert "books-cleanup" in _ids(await ideas.list_ideas(AUTH))
+    paperclip.list_projects.return_value = []  # no longer listed...
+    paperclip.get_project.side_effect = PaperclipApiError("GET -> 404", status_code=404, body="")  # ...deleted
+    assert "books-cleanup" in _ids(await ideas.list_ideas(AUTH))
     assert (await ideas.start(AUTH, "books-cleanup"))["projectId"] == "project-2"
 
 
 @pytest.mark.asyncio
-async def test_a_project_this_person_cannot_list_or_read_keeps_running(paperclip):
+async def test_a_deleted_task_brings_the_idea_back(paperclip):
     from core.services.paperclip_admin_client import PaperclipApiError
 
-    started = await ideas.start(AUTH, "books-cleanup")
+    await ideas.start(AUTH, "claim-refund")
+    paperclip.get_issue.side_effect = PaperclipApiError("GET -> 404", status_code=404, body="")
+    assert "claim-refund" in _ids(await ideas.list_ideas(AUTH))
+
+
+@pytest.mark.asyncio
+async def test_a_work_item_that_cannot_be_read_keeps_the_idea_hidden(paperclip):
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    await ideas.start(AUTH, "books-cleanup")
     paperclip.list_projects.return_value = []
     paperclip.get_project.side_effect = PaperclipApiError("GET -> 403", status_code=403, body="")
-    [item] = (await ideas.list_ideas(AUTH))["running"]
-    assert item["projectId"] == started["projectId"]
+    assert "books-cleanup" not in _ids(await ideas.list_ideas(AUTH))
+    paperclip.list_projects.side_effect = PaperclipApiError("GET -> 500", status_code=500, body="")
+    assert "books-cleanup" not in _ids(await ideas.list_ideas(AUTH))
+
+
+@pytest.mark.asyncio
+async def test_a_quick_idea_is_hidden_for_a_day_after_it_is_started(paperclip, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    quick = ideas.catalog()["claim-refund"].model_copy(update={"size": "quick"})
+    monkeypatch.setitem(ideas.catalog(), "claim-refund", quick)
+    await ideas.start(AUTH, "claim-refund")
+    assert "claim-refund" not in _ids(await ideas.list_ideas(AUTH))
+    day_later = datetime.now(timezone.utc) + timedelta(hours=24, minutes=1)
+
+    class Later(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return day_later
+
+    monkeypatch.setattr(ideas, "datetime", Later)
+    assert "claim-refund" in _ids(await ideas.list_ideas(AUTH))

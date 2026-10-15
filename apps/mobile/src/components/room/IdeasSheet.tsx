@@ -1,5 +1,5 @@
 import { useAuth } from "@clerk/expo";
-import { ideaEffortLine, orderIdeas, runningLine, useIdeas, type Idea } from "@lightbulb/shared";
+import { ideaEffortLine, orderIdeas, useIdeas, type Idea } from "@lightbulb/shared";
 import { SymbolView } from "expo-symbols";
 import { useState } from "react";
 import { ActionSheetIOS, ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
@@ -21,21 +21,19 @@ type IdeasSheetProps = {
 /**
  * Ideas on the phone, calm like Muse's Ideas tab (owner, 2026-10-15): every idea as one row (the
  * agent's avatar, a bold title, a few grey lines of why); a row opens its detail in the sheet
- * (what's included, the effort, Let's do it, and "…" → Not interested). Running ideas sit on
- * top (the starter's own open its DM); ideas this person is already running leave the list.
- * No prices (owner ruling and the App Store's).
+ * (what's included, the effort, Let's do it, and "…" → Not interested). A started idea leaves
+ * the list (the server hides it while its work is open). No prices (owner ruling and the App
+ * Store's).
  */
 export function IdeasSheet({ visible, onClose, agentId, onStarted }: IdeasSheetProps) {
   const palette = useChatPalette();
   const { userId, orgId } = useAuth();
   const { messaging } = useLiveEvents();
-  const { ideas, running, loading, error, start, dismiss } = useIdeas(messaging, visible && userId ? `${userId}:${orgId ?? userId}` : null);
+  const { ideas, loading, error, start, dismiss } = useIdeas(messaging, visible && userId ? `${userId}:${orgId ?? userId}` : null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
-  // A start is per person: a teammate running an idea leaves it startable in your own DM.
-  const runningIds = new Set(running.filter((r) => r.starterId === userId).map((r) => r.ideaId));
-  const shown = orderIdeas(ideas.filter((idea) => !runningIds.has(idea.id)), agentId);
+  const shown = orderIdeas(ideas, agentId);
   const open = openId ? ideas.find((idea) => idea.id === openId) : undefined;
 
   const close = () => {
@@ -109,26 +107,6 @@ export function IdeasSheet({ visible, onClose, agentId, onStarted }: IdeasSheetP
             <Text accessibilityRole="header" style={[styles.heading, { color: palette.fg }]}>Ideas</Text>
             {loading ? <ActivityIndicator /> : null}
             <ScrollView>
-              {running.length > 0 ? (
-                <View style={styles.running}>
-                  <Text style={[styles.section, { color: palette.fgMute }]}>Running</Text>
-                  {running.map((item) => {
-                    const mine = item.starterId === userId && !!item.roomId;
-                    const meta = [item.agentName, runningLine(item),
-                      mine ? null : `Started by ${item.starterName}`].filter(Boolean).join(" · ");
-                    return (
-                      // Only the starter opens it: the DM is theirs with the agent.
-                      <Pressable key={`${item.ideaId}:${item.starterId}`} disabled={!mine}
-                        accessibilityRole={mine ? "button" : undefined} accessibilityLabel={mine ? `Open: ${item.title}` : undefined}
-                        onPress={() => item.roomId && onStarted(item.roomId)}
-                        style={({ pressed }) => [styles.runningRow, pressed && styles.dim]}>
-                        <Text numberOfLines={1} style={[styles.title, { color: palette.fg }]}>{item.title}</Text>
-                        <Text numberOfLines={1} style={[styles.why, { color: palette.fgMute }]}>{meta}</Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
-              ) : null}
               {shown.map((idea, index) => (
                 <Pressable key={idea.id} accessibilityRole="button" accessibilityLabel={idea.title} accessibilityHint={idea.why}
                   onPress={() => setOpenId(idea.id)}
@@ -171,8 +149,5 @@ const styles = StyleSheet.create({
   go: { flex: 1, alignItems: "center", borderRadius: radii.md, paddingVertical: spacing.md },
   goText: { fontFamily: fonts.sansMedium, fontSize: 15, lineHeight: 20 },
   dim: { opacity: 0.6 },
-  running: { gap: spacing.sm, paddingBottom: spacing.md },
-  runningRow: { gap: 2 },
-  section: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18 },
   forYou: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18 },
 });

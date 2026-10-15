@@ -17,12 +17,7 @@ const idea = (id: string, agentId: string, agentName: string): Idea => ({
 });
 const mockClient = {
   listIdeas: jest.fn(async () => ({
-    ideas: [idea("a", "eng", "Engineering"), idea("b", "growth", "Growth"), idea("r", "fin", "Finance"),
-      idea("t", "fin", "Finance")],
-    running: [{ ideaId: "r", title: "Title r", size: "project", agentId: "fin", agentName: "Finance", roomId: "room-r",
-      projectId: "p", issueId: null, starterId: "user-a", starterName: "A", createdAt: null },
-    { ideaId: "t", title: "Title t", size: "task", agentId: "fin", agentName: "Finance", roomId: "room-t",
-      projectId: null, issueId: "i-t", starterId: "user-b", starterName: "B", createdAt: null, progress: { in_progress: 1 } }],
+    ideas: [idea("a", "eng", "Engineering"), idea("b", "growth", "Growth"), idea("t", "fin", "Finance")],
   })),
   startIdea: jest.fn(async () => ({ roomId: "room-b", projectId: "p-b" })),
   dismissIdea: jest.fn(async () => {}),
@@ -40,22 +35,12 @@ const renderSheet = async (onStarted = jest.fn()) => {
 
 beforeEach(() => jest.clearAllMocks());
 
-it("shows running ideas on top: the viewer's own opens its DM, a teammate's says who started it", async () => {
-  const onStarted = await renderSheet();
-  expect(await screen.findByText("Running")).toBeTruthy();
-  expect(screen.getByText("Finance · In progress · Started by B")).toBeTruthy();
-  expect(screen.getByText("Finance · Planning")).toBeTruthy();
-  await fireEvent.press(screen.getByRole("button", { name: "Open: Title r" }));
-  expect(onStarted).toHaveBeenCalledWith("room-r");
-  expect(screen.queryByRole("button", { name: "Open: Title t" })).toBeNull();
-});
-
-it("lists every idea as one row (the DM agent's first, the viewer's running ones out), with no price or Start", async () => {
+it("lists every idea the server sends as one row (the DM agent's first), with no Running section, price or Start", async () => {
   await renderSheet();
   expect(await screen.findByRole("button", { name: "Title b" })).toBeTruthy();
-  const rows = screen.getAllByRole("button").map((node) => node.props.accessibilityLabel).filter((l) => !l.startsWith("Open:"));
-  // A teammate's start of "t" leaves it startable here (a start is per person).
+  const rows = screen.getAllByRole("button").map((node) => node.props.accessibilityLabel);
   expect(rows).toEqual(["Title b", "Title a", "Title t"]);
+  expect(screen.queryByText("Running")).toBeNull();
   expect(screen.getByText("Why a")).toBeTruthy();
   expect(screen.queryByText(/\$|Start$|can do this for you/)).toBeNull();
 });
@@ -95,7 +80,6 @@ it("marks an agent's suggestion For you, and its detail has no effort line", asy
   mockOrg = "org-suggestions";
   mockClient.listIdeas.mockResolvedValueOnce({
     ideas: [{ ...idea("s1", "growth", "Growth"), suggested: true, ourTurnaround: undefined, yourPart: undefined }],
-    running: [],
   } as never);
   await render(<IdeasSheet visible onClose={jest.fn()} onStarted={jest.fn()} />);
   expect(await screen.findByText("For you")).toBeTruthy();

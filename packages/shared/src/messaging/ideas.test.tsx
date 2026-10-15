@@ -6,7 +6,7 @@ import type { ReactNode } from "react";
 
 import type { ApiMethods } from "../api/client";
 import { createMessagingClient } from "./client";
-import { ideaEffortLine, ideaProgress, orderIdeas, runningLine, useIdeas, type Idea, type IdeasClient } from "./ideas";
+import { ideaEffortLine, orderIdeas, useIdeas, type Idea, type IdeasClient } from "./ideas";
 
 const idea = (id: string, agentId: string, agentName = agentId): Idea => ({
   id, ownerRole: "growth", kind: "agency", size: "project", businessTypes: ["any"], title: `T ${id}`, why: "w",
@@ -32,26 +32,12 @@ describe("ideas helpers", () => {
     expect(orderIdeas(list, null).map((i) => i.id)).toEqual(["a", "b", "c", "d"]);
   });
 
-  it("writes a running idea's line: a project's tasks done, or a task's status", () => {
-    expect(runningLine({ size: "project", progress: { done: 2, todo: 3 } })).toBe("2 of 5 tasks done");
-    expect(runningLine({ size: "project" })).toBe("Planning");
-    expect(runningLine({ size: "task", progress: { in_progress: 1 } })).toBe("In progress");
-    expect(runningLine({ size: "task" })).toBe("To do");
-    expect(runningLine({ size: "task", progress: { backlog: 1 } })).toBe("Starting");
-  });
-
   it("has no effort line for a suggestion without one", () => {
     expect(ideaEffortLine({})).toBeNull();
   });
 
   it("writes the effort line without prices", () => {
     expect(ideaEffortLine(idea("a", "x"))).toBe("Your team: about 2 days · You: about 5 minutes");
-  });
-
-  it("counts done over every task but cancelled ones", () => {
-    expect(ideaProgress({ done: 2, todo: 3, cancelled: 4 })).toEqual({ done: 2, total: 5 });
-    expect(ideaProgress({})).toBeNull();
-    expect(ideaProgress(undefined)).toBeNull();
   });
 });
 
@@ -62,7 +48,7 @@ describe("useIdeas", () => {
   it("dismisses optimistically and puts the idea back when the server refuses", async () => {
     let refuse = false;
     const client: IdeasClient = {
-      listIdeas: vi.fn(async () => ({ ideas: [idea("a", "x"), idea("b", "x")], running: [] })),
+      listIdeas: vi.fn(async () => ({ ideas: [idea("a", "x"), idea("b", "x")] })),
       startIdea: vi.fn(async () => ({ roomId: "r", projectId: "p" })),
       dismissIdea: vi.fn(async () => { if (refuse) throw new Error("no"); }),
     };

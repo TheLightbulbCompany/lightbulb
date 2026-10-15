@@ -6,7 +6,8 @@ adds one for this company when it notices a real reason during its work. Each ha
 project (a Work project), task (one Work task assigned to the agent), quick (nothing in Work).
 Let's do it records the start, makes the Work item, and posts the person's own message in their
 DM with the agent: the idea quoted, "Let's do it!", and "Tracked in Work: [name](link)". Nothing
-hidden. GET /ideas serves the cards (no prices) and the running starts with their progress.
+hidden. GET /ideas serves the cards (no prices); a started idea leaves the list for everyone while
+its Work item is open (a quick one for a day).
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, get_args
@@ -42,6 +44,8 @@ Size = Literal["project", "task", "quick"]
 CLOSED_PROJECT_STATUSES = frozenset({"completed", "cancelled"})
 #: A task in one of these is finished.
 CLOSED_ISSUE_STATUSES = frozenset({"done", "cancelled"})
+#: A quick idea (nothing in Work) is hidden this long after someone starts it.
+QUICK_HIDDEN = timedelta(hours=24)
 #: A start's project or task was deleted in Work: finished too.
 GONE = "__gone__"
 #: Open agent suggestions per workspace.
@@ -208,64 +212,53 @@ async def _job(owner_id: str, idea_id: str, agents: dict[str, dict], names: dict
 
 async def list_ideas(auth: AuthContext) -> dict:
     """Agents' suggestions for this company (newest first), then the catalog ideas whose role has
-    an agent (agency jobs first, then by title), minus dismissed ones. No prices (owner,
-    2026-10-15). ``running`` is the workspace's open starts with a project or a task, with their
-    progress when Work answers (never failing the read when it does not)."""
+    an agent (agency jobs first, then by title), minus dismissed ones and ideas someone in the
+    workspace has started (owner, 2026-10-15: once you say Let's do it, the idea goes away; you are
+    doing the work). No prices (owner, 2026-10-15)."""
     owner_id = resolve_owner_id(auth)
     _, agents, names = await _workspace(owner_id)
     dismissed = await messaging_repo.dismissed_ideas(owner_id)
-    shown = [i for i in catalog().values() if i.id not in dismissed and i.owner_role in agents]
-    shown.sort(key=lambda i: (i.kind != "agency", i.title))
-    suggested = [r for r in await _suggestions(owner_id, names) if r["ideaId"] not in dismissed]
     rows = await messaging_repo.open_idea_starts(owner_id)
+    hidden = dismissed | await _started(auth, rows)
+    shown = [i for i in catalog().values() if i.id not in hidden and i.owner_role in agents]
+    shown.sort(key=lambda i: (i.kind != "agency", i.title))
+    suggested = [r for r in await _suggestions(owner_id, names) if r["ideaId"] not in hidden]
     return {
         "ideas": [_suggestion_card(r, names) for r in suggested] + [_card(i, agents[i.owner_role]) for i in shown],
-        "running": await _running(auth, rows, names),
-        # The CEO welcome's proposal shows only until the workspace has started (running or
-        # finished: a start stays recorded until it is started again) or hidden an idea.
+        # The CEO welcome's proposal shows only until the workspace has started (a start stays
+        # recorded until it is started again) or hidden an idea.
         "anyStarted": bool(rows),
         "anyDismissed": bool(dismissed),
     }
 
 
-async def _running(auth: AuthContext, rows: list[dict], names: dict[str, str]) -> list[dict]:
-    """Open starts with a Work item: a project with its issue counts, a task with its status. A
-    quick start has nothing in Work and is answered in one go, so it is never running."""
-    from core.services import messaging
-
-    tracked = [r for r in rows if r.get("projectId") or r.get("issueId")]
-    if not tracked:
-        return []
-    statuses, progress = await _work_progress(auth, [r["projectId"] for r in tracked if r.get("projectId")])
-    issues = await _issue_statuses(auth, [r["issueId"] for r in tracked if r.get("issueId")])
-    running = []
-    for r in tracked:
+async def _started(auth: AuthContext, rows: list[dict]) -> set[str]:
+    """Ideas hidden because someone started them: while the start's project or task is open in
+    Work (it comes back once that is finished or deleted), or for QUICK_HIDDEN after a quick one
+    (nothing in Work: it was answered in one go). A Work item that cannot be read counts as open."""
+    issues = await _issue_statuses(auth, [r["issueId"] for r in rows if r.get("issueId")])
+    projects = await _project_statuses(auth, [r["projectId"] for r in rows if r.get("projectId")])
+    now = datetime.now(timezone.utc)
+    started = set()
+    for r in rows:
         if r.get("projectId"):
-            # Finished, or deleted in Work: never running.
-            if (statuses or {}).get(r["projectId"]) in CLOSED_PROJECT_STATUSES | {GONE}:
-                continue
-            counts = progress.get(r["projectId"])
+            open_ = projects.get(r["projectId"]) not in CLOSED_PROJECT_STATUSES | {GONE}
+        elif r.get("issueId"):
+            open_ = issues.get(r["issueId"]) not in CLOSED_ISSUE_STATUSES | {GONE}
         else:
-            if issues.get(r["issueId"]) in CLOSED_ISSUE_STATUSES | {GONE}:
-                continue
-            counts = {issues[r["issueId"]]: 1} if r["issueId"] in issues else None
-        item = {
-            "ideaId": r["ideaId"],
-            "title": r.get("title") or (catalog()[r["ideaId"]].title if r["ideaId"] in catalog() else r["ideaId"]),
-            "size": "project" if r.get("projectId") else "task",
-            "agentId": r.get("agentId"),
-            "agentName": names.get(r.get("agentId")),
-            "roomId": r.get("roomId"),
-            "projectId": r.get("projectId"),
-            "issueId": r.get("issueId"),
-            "starterId": r["userId"],
-            "starterName": await messaging.human_display_name(r["userId"]),
-            "createdAt": r.get("createdAt"),
-        }
-        if counts is not None:
-            item["progress"] = counts
-        running.append(item)
-    return running
+            at = _parse_time(r.get("createdAt"))
+            open_ = at is not None and now - at < QUICK_HIDDEN
+        if open_:
+            started.add(r["ideaId"])
+    return started
+
+
+def _parse_time(value: object) -> datetime | None:
+    try:
+        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
 async def _issue_statuses(auth: AuthContext, issue_ids: list[str]) -> dict[str, str]:
@@ -296,16 +289,14 @@ async def _issue_statuses(auth: AuthContext, issue_ids: list[str]) -> dict[str, 
     return statuses
 
 
-async def _work_progress(auth: AuthContext, project_ids: list[str]) -> tuple[dict[str, str] | None, dict[str, dict]]:
-    """({project: status}, {project: {issue status: count}}) from Paperclip; (None, {}) on any
-    failure, so the Ideas read never fails because Work is slow or the caller has not joined it
-    yet. A project the list leaves out (deleted, or one this caller cannot list) is read on its
-    own: a 404 is GONE; anything else leaves it unknown, so it keeps running."""
-    from collections import Counter
-
+async def _project_statuses(auth: AuthContext, project_ids: list[str]) -> dict[str, str]:
+    """{project: status} from Paperclip; {} when Work does not answer (never failing the read).
+    A project the list leaves out (deleted, or one this caller cannot list) is read on its own: a
+    404 is GONE; anything else leaves it unknown, which counts as open."""
+    if not project_ids:
+        return {}
     from core.services import task_board
     from core.services.paperclip_admin_client import PaperclipApiError, shared_admin_client
-    from core.services.paperclip_agent_lifecycle import list_all_issues
 
     try:
         ctx = await task_board._context(auth)
@@ -318,21 +309,16 @@ async def _work_progress(auth: AuthContext, project_ids: list[str]) -> tuple[dic
             *(admin.get_project(session_cookie=ctx.session_cookie, project_id=pid) for pid in unlisted),
             return_exceptions=True,
         )
-        for pid, found_project in zip(unlisted, read):
-            if isinstance(found_project, PaperclipApiError) and found_project.status_code == 404:
-                statuses[pid] = GONE
-            elif isinstance(found_project, dict) and found_project.get("status"):
-                statuses[pid] = found_project["status"]
-        issues = await asyncio.gather(
-            *(
-                list_all_issues(admin, cookie=ctx.session_cookie, company_id=ctx.company_id, params={"projectId": pid})
-                for pid in project_ids
-            )
-        )
-    except Exception:  # noqa: BLE001 -- progress is optional on this read
-        logger.info("ideas: Work progress unavailable", exc_info=True)
-        return None, {}
-    return statuses, {pid: dict(Counter(i.get("status") for i in found)) for pid, found in zip(project_ids, issues)}
+    except Exception:  # noqa: BLE001 -- an unknown project counts as open
+        logger.info("ideas: Work projects unavailable", exc_info=True)
+        return {}
+    for pid, found_project in zip(unlisted, read):
+        if isinstance(found_project, PaperclipApiError) and found_project.status_code == 404:
+            statuses[pid] = GONE
+        elif isinstance(found_project, dict):
+            archived = bool(found_project.get("archivedAt"))
+            statuses[pid] = "completed" if archived else found_project.get("status")
+    return statuses
 
 
 async def dismiss(auth: AuthContext, idea_id: str) -> None:

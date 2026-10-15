@@ -39,6 +39,7 @@ import { Avatar } from "../../../../components/room/Avatar";
 import { CatchUpSummary } from "../../../../components/room/CatchUpSummary";
 import { SavedDelegations } from "../../../../components/room/DelegateCard";
 import { IdeasSheet } from "../../../../components/room/IdeasSheet";
+import { DmIdeaPlan } from "../../../../components/room/PlanCard";
 import { MessageActionsSheet } from "../../../../components/room/MessageActionsSheet";
 import { LocalMessageRows, MessageGroup } from "../../../../components/room/MessageGroup";
 import { NoticeBanner } from "../../../../components/voice/NoticeBanner";
@@ -524,6 +525,8 @@ function Conversation() {
           // inverted list the HEADER draws at the bottom, under the newest message.
           ListHeaderComponent={
             <View>
+              {/* An idea this person started here: its plan, under the newest message. */}
+              {dmWithAgent && roomId ? <DmIdeaPlan roomId={roomId} /> : null}
               <LocalMessageRows
                 rows={rows}
                 onRetry={(clientMessageId) => void retry(clientMessageId)}

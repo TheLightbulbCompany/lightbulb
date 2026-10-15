@@ -1805,6 +1805,20 @@ export async function approveApproval(
   );
 }
 
+/** GET /teams/approvals/{id} — one approval (the plan card in an idea's DM). */
+export async function getApproval(config: PlatformAdapter, id: string): Promise<TeamsApproval> {
+  return (await createApiClient(config).get(`/teams/approvals/${encodeURIComponent(id)}`)) as TeamsApproval;
+}
+
+/** POST /teams/approvals/{id}/request-revision `{decisionNote}` — what should change (the
+ *  Activity action and the web plan card send the same note). */
+export async function requestApprovalRevision(config: PlatformAdapter, id: string, note: string): Promise<void> {
+  await createApiClient(config).post(
+    `/teams/approvals/${encodeURIComponent(id)}/request-revision`,
+    { decisionNote: note },
+  );
+}
+
 /** POST /teams/approvals/{id}/reject `{reason}` — reason is REQUIRED (1–2000). */
 export async function rejectApproval(
   config: PlatformAdapter,

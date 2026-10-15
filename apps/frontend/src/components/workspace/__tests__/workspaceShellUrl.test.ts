@@ -90,11 +90,11 @@ beforeEach(() => {
 
 describe("deriveReconcilerAction — lastApplied latch", () => {
   it("executes a command once, then latches: same signature twice → no-op", () => {
-    const first = deriveReconcilerAction("?panel=teams-inbox", null);
+    const first = deriveReconcilerAction("?panel=teams-artifacts", null);
     expect(first).not.toBeNull();
-    expect(first!.command?.descriptor.panelId).toBe("teams-inbox");
-    expect(first!.panelKey).toBe("teams-inbox");
-    const second = deriveReconcilerAction("?panel=teams-inbox", first!.nextSignature);
+    expect(first!.command?.descriptor.panelId).toBe("teams-artifacts");
+    expect(first!.panelKey).toBe("teams-artifacts");
+    const second = deriveReconcilerAction("?panel=teams-artifacts", first!.nextSignature);
     expect(second).toBeNull();
   });
 
@@ -140,8 +140,8 @@ describe("deriveReconcilerAction — chat commands defer until the roster settle
   });
 
   it("non-chat commands execute regardless of roster settlement", () => {
-    const d = deriveReconcilerAction("?panel=teams-inbox", null, false);
-    expect(d?.command?.descriptor.panelId).toBe("teams-inbox");
+    const d = deriveReconcilerAction("?panel=teams-artifacts", null, false);
+    expect(d?.command?.descriptor.panelId).toBe("teams-artifacts");
   });
 
   it("non-command URLs still latch while unsettled", () => {
@@ -165,9 +165,9 @@ describe("deriveReconcilerAction — one-shot strip ordering", () => {
   });
 
   it("leaves the latch at the plain signature when there is nothing to strip", () => {
-    const d = deriveReconcilerAction("?panel=teams-inbox", null);
+    const d = deriveReconcilerAction("?panel=teams-artifacts", null);
     expect(d!.strippedSearch).toBeNull();
-    expect(d!.nextSignature).toBe(commandSignature("?panel=teams-inbox"));
+    expect(d!.nextSignature).toBe(commandSignature("?panel=teams-artifacts"));
   });
 });
 
@@ -220,17 +220,17 @@ describe("deriveReconcilerAction — billing returns are not commands", () => {
   });
 
   it("billing params riding along a command don't change its signature", () => {
-    const d = deriveReconcilerAction("?panel=teams-inbox&checkout=success", null);
-    expect(d!.command?.descriptor.panelId).toBe("teams-inbox");
+    const d = deriveReconcilerAction("?panel=teams-artifacts&checkout=success", null);
+    expect(d!.command?.descriptor.panelId).toBe("teams-artifacts");
     // after useCheckoutReturn strips the billing param the signature is unchanged:
-    expect(deriveReconcilerAction("?panel=teams-inbox", d!.nextSignature)).toBeNull();
+    expect(deriveReconcilerAction("?panel=teams-artifacts", d!.nextSignature)).toBeNull();
   });
 });
 
 describe("isCommandTargetOpen (analytics newness check)", () => {
   it("detects an already-open panel by id", () => {
-    const cmd = deriveReconcilerAction("?panel=teams-inbox", null)!.command!;
-    expect(isCommandTargetOpen(cmd, ["teams-inbox"])).toBe(true);
+    const cmd = deriveReconcilerAction("?panel=teams-artifacts", null)!.command!;
+    expect(isCommandTargetOpen(cmd, ["teams-artifacts"])).toBe(true);
     expect(isCommandTargetOpen(cmd, ["teams-issues"])).toBe(false);
   });
 
@@ -294,8 +294,8 @@ describe("INVARIANT: panel open/focus writes zero history entries", () => {
     const api = makeFakeApi();
     attachDockviewApi(api, () => undefined);
 
-    openPanel("teams-inbox"); // add
-    openPanel("teams-inbox"); // focus existing
+    openPanel("teams-artifacts"); // add
+    openPanel("teams-artifacts"); // focus existing
 
     // Reconciler-style execution: URL already carries the command → no pushUrl.
     const d = deriveReconcilerAction("?panel=teams-issues&new=task", null)!;

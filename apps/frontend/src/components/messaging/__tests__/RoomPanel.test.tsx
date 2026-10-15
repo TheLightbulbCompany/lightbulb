@@ -1100,6 +1100,13 @@ it("replaces the composer in an archived channel with an Unarchive action for ad
   expect(screen.queryByRole("button", { name: "Unarchive channel" })).not.toBeInTheDocument();
 });
 
+it("offers no top-level composer in the workspace feed: people reply in a post's thread", () => {
+  const feed = { ...props.room!, kind: "channel" as const, name: "feed", feed: true };
+  render(<RoomPanel {...props} room={feed} />);
+  expect(screen.getByText("Only agents post to the feed. Reply to a post in its thread.")).toBeInTheDocument();
+  expect(screen.queryByRole("textbox", { name: /message/i })).not.toBeInTheDocument();
+});
+
 it("lets a plain member unarchive an archived group chat", async () => {
   const archived = { ...props.room!, kind: "group-dm" as const, name: "Trio", archivedAt: "2026-09-23T00:00:00Z" };
   const onSetArchived = vi.fn().mockResolvedValue(undefined);

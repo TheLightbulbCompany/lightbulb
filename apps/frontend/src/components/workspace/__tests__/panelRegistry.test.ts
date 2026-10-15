@@ -13,13 +13,16 @@ import {
 
 describe("panelRegistry", () => {
   it("resolves retired aliases (both routers' maps, merged)", () => {
-    expect(resolvePanelAlias("teams-approvals")).toBe("teams-inbox");
+    expect(resolvePanelAlias("teams-approvals")).toBe("activity");
+    // The Inbox tab folded into Activity's For you.
+    expect(resolvePanelAlias("teams-inbox")).toBe("activity");
+    expect(resolvePanelAlias("teams-activity")).toBe("activity");
     // Home is no longer a destination: it and the keys it absorbed open Activity.
     expect(resolvePanelAlias("teams-dashboard")).toBe("activity");
     expect(resolvePanelAlias("teams-skills")).toBe("activity");
     expect(resolvePanelAlias("teams-costs")).toBe("activity");
     expect(describePanel("teams-dashboard", {})).toMatchObject({ panelId: "activity", component: "activity", title: "Activity" });
-    expect(resolvePanelAlias("teams-inbox")).toBe("teams-inbox");
+    expect(resolvePanelAlias("teams-artifacts")).toBe("teams-artifacts");
     // Money is ONE page: its four absorbed keys alias to its panel id, or the
     // dock (which dedupes by panel id) opens four sibling tabs all called
     // "Money" — Home links three of them.
@@ -46,12 +49,12 @@ describe("panelRegistry", () => {
   });
 
   it("describes teams list panels as singletons", () => {
-    const d = describePanel("teams-inbox", {});
+    const d = describePanel("teams-artifacts", {});
     expect(d).toEqual({
-      panelId: "teams-inbox",
+      panelId: "teams-artifacts",
       component: "teams",
-      title: "Inbox",
-      params: { teamsKey: "inbox" },
+      title: "Library",
+      params: { teamsKey: "artifacts" },
     });
   });
 
@@ -140,7 +143,6 @@ describe("panelRegistry", () => {
   it("names durable params per panel id for clear-on-close", () => {
     expect(durableParamsFor("teams-issue-detail:ADM-1")).toEqual(["panel", "detailId"]);
     expect(durableParamsFor("agent-inspector")).toEqual(["panel", "agent", "inspectorTab"]);
-    expect(durableParamsFor("teams-inbox")).toEqual(["panel", "section"]);
     // ?panel=file-viewer&path=… is registered grammar — close must clear the
     // path (and any agent binding), not just ?panel.
     expect(durableParamsFor("file-viewer")).toEqual(["panel", "path", "agent"]);
@@ -152,7 +154,7 @@ describe("panelRegistry", () => {
   });
 
   it("names the clearable PANEL params a plain re-open must reset", () => {
-    expect(clearablePanelParamKeys("teams-inbox")).toEqual(["section"]);
+    expect(clearablePanelParamKeys("activity")).toEqual(["filter", "focus"]);
     expect(clearablePanelParamKeys("file-viewer")).toEqual(["path", "agent"]);
     expect(clearablePanelParamKeys("agent-inspector")).toEqual(["agentId", "initialTab"]);
     expect(clearablePanelParamKeys("control:agents")).toEqual(["agentId", "initialTab"]);
@@ -269,34 +271,10 @@ describe("panelRegistry", () => {
     expect(describePanel("teams-org-chart", { view: "list" })!.params.view).toBe("chart");
   });
 
-  it("aliases teams-activity onto Inbox, pre-scrolled to Recently", () => {
-    const d = describePanel("teams-activity", {});
-    expect(d?.panelId).toBe("teams-inbox");
-    expect(d?.title).toBe("Inbox");
-    expect(d?.params.section).toBe("recently");
-  });
-
-  it("keeps one panel id when Activity and Inbox are both opened", () => {
-    expect(describePanel("teams-activity", {})?.panelId).toBe(
-      describePanel("teams-inbox", {})?.panelId,
-    );
-  });
-
-  it("carries an explicit ?section for a fresh Inbox deep link", () => {
-    expect(describePanel("teams-inbox", { section: "happening-now" })?.params.section).toBe(
-      "happening-now",
-    );
-  });
-
-  it("ignores a section that is not a real Inbox band", () => {
-    expect(describePanel("teams-inbox", { section: "constructor" })?.params.section).toBeUndefined();
-  });
-
-  it("lands a legacy ?tab=approvals bookmark on Needs you", () => {
-    expect(describePanel("teams-inbox", { tab: "approvals" })?.params).toEqual({
-      teamsKey: "inbox",
-      section: "needs-you",
-    });
+  it("opens Activity for every old Inbox link: the Inbox tab, its Approvals and Activity keys", () => {
+    for (const key of ["teams-inbox", "teams-approvals", "teams-activity"]) {
+      expect(describePanel(key, { section: "needs-you" })).toEqual({ panelId: "activity", component: "activity", title: "Activity", params: {} });
+    }
   });
 
   it("opens Goals and Projects as their own pages inside the Work tab", () => {
@@ -343,7 +321,6 @@ describe("Work page: one dock tab for every task-board page", () => {
   });
   it("other Teams pages keep their own tab", () => {
     expect(describePanel("teams-artifacts", {})!.panelId).toBe("teams-artifacts");
-    expect(describePanel("teams-inbox", {})!.panelId).toBe("teams-inbox");
   });
   it("Work owns the union of its pages' durable params", () => {
     expect(durableParamsFor("teams-work")).toEqual(["panel", "agent", "groupBy", "view", "day", "section"]);

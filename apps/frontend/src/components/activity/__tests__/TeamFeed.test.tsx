@@ -1,0 +1,120 @@
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { SWRConfig } from "swr";
+import { describe, expect, it, vi } from "vitest";
+import type { RoomDetail } from "@lightbulb/shared";
+import { loadFeedPosts, TeamFeed, type FeedClient, type TeamFeedProps } from "../TeamFeed";
+import { post } from "./fixtures";
+
+vi.mock("@/components/messaging/RoomDocumentCards", () => ({ RoomDocumentCards: () => null }));
+
+const room = {
+  roomId: "feed-1", topic: "Keep us posted on money.", lastMessageSeq: 3, lastReadSeq: 1, feed: true,
+} as RoomDetail;
+
+function setup(over: Partial<TeamFeedProps> = {}) {
+  const today = new Date().toISOString();
+  const client = {
+    getFeed: vi.fn().mockResolvedValue({ roomId: "feed-1", topic: "Keep us posted on money." }),
+    getRoom: vi.fn().mockResolvedValue(room),
+    listMessages: vi.fn().mockResolvedValue({ messages: [
+      post(1, { createdAt: today }),
+      post(2, { createdAt: today, postReason: "Money in is the first thing the brief asks for." }),
+      post(3, { createdAt: today, text: "**Acme paid**\nStripe confirmed it." }),
+      post(4, { createdAt: today, threadRootMessageId: "post-3", author: { kind: "human", id: "u1", displayName: "Ann" } }),
+    ], nextAfterSeq: null }),
+    markRead: vi.fn().mockResolvedValue({ roomId: "feed-1", lastReadSeq: 3 }),
+    updateRoom: vi.fn().mockResolvedValue({ ...room, topic: "Only money." }),
+    setReaction: vi.fn().mockImplementation(async () => post(3, { createdAt: today, text: "**Acme paid**\nStripe confirmed it.", reactions: { "👍": ["me"] } })),
+    downloadAttachment: vi.fn(),
+    attachmentUrl: vi.fn(),
+  } satisfies FeedClient;
+  const onDiscuss = vi.fn();
+  const tree = (props: Partial<TeamFeedProps>) => <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+    <TeamFeed client={client} scope="org-1" currentUserId="me" onDiscuss={onDiscuss} {...over} {...props} />
+  </SWRConfig>;
+  const view = render(tree({}));
+  return { client, onDiscuss, rerender: (props: Partial<TeamFeedProps>) => view.rerender(tree(props)) };
+}
+
+const posts = () => screen.getAllByRole("article");
+
+describe("TeamFeed", () => {
+  it("shows top-level posts newest first, the new ones under New since you looked, with a bold title", async () => {
+    const { client } = setup();
+    await waitFor(() => expect(posts()).toHaveLength(3));
+    expect(client.listMessages).toHaveBeenCalledWith("feed-1", 0, 100, { beforeSeq: 4 });
+    expect(posts().map((article) => article.querySelector(".feed-post__title")?.textContent)).toEqual(["Acme paid", "Post 2 title", "Post 1 title"]);
+    const labels = [...document.querySelectorAll(".team-feed__divider")].map((divider) => divider.textContent);
+    expect(labels).toEqual(["New since you looked", "Today"]);
+    // The divider sits above the two posts after the reader's cursor (seq 1).
+    const list = document.querySelector(".team-feed__list")!;
+    expect([...list.children].map((li) => li.textContent?.includes("New since") ? "new" : li.querySelector("article") ? "post" : "day"))
+      .toEqual(["new", "post", "post", "day", "post"]);
+    // Viewing the feed moves its read cursor; nothing else counts feed posts.
+    await waitFor(() => expect(client.markRead).toHaveBeenCalledWith("feed-1", { lastReadSeq: 3 }));
+  });
+
+  it("keeps Why I created this post closed until the info button opens it", async () => {
+    setup();
+    await waitFor(() => expect(posts()).toHaveLength(3));
+    const second = posts()[1];
+    expect(within(second).queryByText("Money in is the first thing the brief asks for.")).not.toBeInTheDocument();
+    expect(within(posts()[0]).queryByRole("button", { name: "Why I created this post" })).not.toBeInTheDocument();
+    await userEvent.click(within(second).getByRole("button", { name: "Why I created this post" }));
+    expect(within(second).getByText("Money in is the first thing the brief asks for.")).toBeInTheDocument();
+  });
+
+  it("opens Discuss on the post", async () => {
+    const { onDiscuss } = setup();
+    await waitFor(() => expect(posts()).toHaveLength(3));
+    await userEvent.click(within(posts()[0]).getByRole("button", { name: "Discuss" }));
+    expect(onDiscuss).toHaveBeenCalledWith(expect.objectContaining({ messageId: "post-3", roomId: "feed-1" }));
+  });
+
+  it("likes a post with the room reaction", async () => {
+    const { client } = setup();
+    await waitFor(() => expect(posts()).toHaveLength(3));
+    await userEvent.click(within(posts()[0]).getByRole("button", { name: "Like" }));
+    expect(client.setReaction).toHaveBeenCalledWith("feed-1", "post-3", "👍", true);
+    expect(await within(posts()[0]).findByRole("button", { name: "Unlike, 1" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("edits the brief through the room topic", async () => {
+    const { client } = setup();
+    expect(await screen.findByText("Keep us posted on money.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Edit the brief" }));
+    const field = screen.getByRole("textbox", { name: "Brief" });
+    await userEvent.clear(field);
+    await userEvent.type(field, "Only money.");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(client.updateRoom).toHaveBeenCalledWith("feed-1", { topic: "Only money." });
+    expect(await screen.findByText("Only money.")).toBeInTheDocument();
+  });
+
+  it("leaves the read cursor alone while the feed column is hidden (the For you tab on a narrow panel)", async () => {
+    const { client, rerender } = setup({ active: false });
+    await waitFor(() => expect(posts()).toHaveLength(3));
+    expect(client.markRead).not.toHaveBeenCalled();
+    rerender({ active: true });
+    await waitFor(() => expect(client.markRead).toHaveBeenCalledWith("feed-1", { lastReadSeq: 3 }));
+  });
+
+  it("pages back past Discuss replies until it has enough top-level posts", async () => {
+    const reply = (seq: number) => post(seq, { threadRootMessageId: "post-1" });
+    const listMessages = vi.fn()
+      .mockResolvedValueOnce({ messages: [post(200), ...Array.from({ length: 99 }, (_, i) => reply(201 + i))], nextAfterSeq: null, nextBeforeSeq: 200 })
+      .mockResolvedValueOnce({ messages: Array.from({ length: 40 }, (_, i) => post(150 + i)), nextAfterSeq: null, nextBeforeSeq: 150 })
+      .mockResolvedValueOnce({ messages: [post(1)], nextAfterSeq: null, nextBeforeSeq: null });
+    const page = await loadFeedPosts({ listMessages }, "feed-1", 299);
+    expect(listMessages.mock.calls.map(([, , , options]) => options.beforeSeq)).toEqual([300, 200]);
+    expect(page.messages).toHaveLength(41);
+    expect(page.messages.every((message) => message.threadRootMessageId === null)).toBe(true);
+  });
+
+  it("offers no composer: people reply only in Discuss", async () => {
+    setup();
+    await waitFor(() => expect(posts()).toHaveLength(3));
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+  });
+});

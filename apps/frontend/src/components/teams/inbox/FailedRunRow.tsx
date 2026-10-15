@@ -15,6 +15,30 @@ import type { HeartbeatRun } from "@/components/teams/shared/types";
  *  the operator dismisses the (still-acked-separately) row. */
 type RetryPhase = "idle" | "retrying" | "done" | "error";
 
+/** Retry wakes the SAME agent that produced the failed run; without an agent
+ *  id there is nothing to wake (the caller hides the control). A wake failure
+ *  must not crash the row: it falls back to an error phase that lets the
+ *  operator try again. Shared by the Inbox band and Activity's For you. */
+export function useRunRetry(agentId: string | null | undefined): { phase: RetryPhase; retry: () => Promise<void>; label: string } {
+  const { wakeAgent } = useAgentWake();
+  const [phase, setPhase] = useState<RetryPhase>("idle");
+  async function retry() {
+    if (!agentId || phase === "retrying") return;
+    setPhase("retrying");
+    try {
+      await wakeAgent(agentId, { reason: "retry" });
+      setPhase("done");
+    } catch (e) {
+      // The phase alone says "error" with no why; the toast carries the
+      // reason (and, for a trial-gate 402, the upgrade prompt).
+      notifyApiError(e, "Couldn't retry the run");
+      setPhase("error");
+    }
+  }
+  const label = phase === "retrying" ? "Retrying…" : phase === "done" ? "Retried" : phase === "error" ? "Retry failed" : "Retry";
+  return { phase, retry, label };
+}
+
 export function FailedRunRow({
   run,
   agentName,
@@ -28,30 +52,11 @@ export function FailedRunRow({
    *  badge so a flapping heartbeat doesn't flood the band with N copies. */
   count?: number;
 }) {
-  const { wakeAgent } = useAgentWake();
-  const [retry, setRetry] = useState<RetryPhase>("idle");
+  const retry = useRunRetry(run.agentId);
 
   // Title prefers the failure reason (matches the grouping key); fall back
   // to the generic phrase when upstream sent no reason.
   const title = `${agentName} — ${run.failureReason || "heartbeat run failed"}`;
-
-  // Retry wakes the SAME agent that produced the failed run; without an agent
-  // id we have nothing to wake, so the control is hidden. A wake failure must
-  // not crash the row — fall back to an error phase that lets the operator
-  // try again.
-  async function onRetry() {
-    if (!run.agentId || retry === "retrying") return;
-    setRetry("retrying");
-    try {
-      await wakeAgent(run.agentId, { reason: "retry" });
-      setRetry("done");
-    } catch (e) {
-      // The phase alone says "error" with no why; the toast carries the
-      // reason (and, for a trial-gate 402, the upgrade prompt).
-      notifyApiError(e, "Couldn't retry the run");
-      setRetry("error");
-    }
-  }
 
   return (
     <li className="flex items-center gap-2 px-3 py-2">
@@ -88,16 +93,10 @@ export function FailedRunRow({
           <EditorialButton
             variant="secondary"
             size="sm"
-            onClick={onRetry}
-            disabled={retry === "retrying"}
+            onClick={() => void retry.retry()}
+            disabled={retry.phase === "retrying"}
           >
-            {retry === "retrying"
-              ? "Retrying…"
-              : retry === "done"
-                ? "Retried"
-                : retry === "error"
-                  ? "Retry failed"
-                  : "Retry"}
+            {retry.label}
           </EditorialButton>
         )}
         <EditorialButton variant="secondary" size="sm" onClick={onDismiss}>

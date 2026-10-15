@@ -16,6 +16,8 @@ vi.mock("@/components/messaging/TrialRecapCard", () => ({ TrialRecapCard: () => 
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ isLoaded: true, userId: "user-a", orgId: "org-a" }),
   useUser: () => ({ user: { fullName: "Alice" } }),
+  // RoomLimitBar's trial recap (TrialRecapCard) reads the viewer's membership.
+  useOrganization: () => ({ organization: null, membership: null }),
 }));
 let defaultId: string | undefined;
 vi.mock("@/hooks/useAgents", () => ({ useAgents: () => ({ agents: [], defaultId }) }));

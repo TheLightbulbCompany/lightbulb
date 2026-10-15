@@ -8,7 +8,6 @@
 
 import {
   Bell,
-  Inbox,
   ListTodo,
   Mail,
   FolderOpen,
@@ -43,7 +42,6 @@ export const COMPANY_SECTIONS: { label: string | null; items: CompanySectionItem
       // Home was retired into Activity (RETIRED_PANEL_ALIASES), so Activity leads.
       { panel: "activity", label: "Activity", Icon: Bell },
       { panel: "teams-search", label: "Search", Icon: Search },
-      { panel: "teams-inbox", label: "Inbox", Icon: Inbox },
       // The agents' shared mailbox. Not a teams-* key: its own panel, on the
       // desktop rail (so the desktop "More" list skips it, like Tasks).
       { panel: "mail", label: "Mail", Icon: Mail },

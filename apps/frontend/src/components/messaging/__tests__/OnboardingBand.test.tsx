@@ -382,7 +382,7 @@ describe("08 §3 order", () => {
   it("marks the approval step done once any approval was answered, and opens Needs you on click", async () => {
     render(<OnboardingBand participants={FRESH} />);
     await userEvent.click(screen.getByRole("button", { name: /Answer your first approval/ }));
-    expect(h.openPanel).toHaveBeenCalledWith("teams-inbox", { section: "needs-you" }, { pushUrl: true });
+    expect(h.openPanel).toHaveBeenCalledWith("activity", {}, { pushUrl: true });
   });
 
   it("opens the Invite people dialog from a done invite card", async () => {

@@ -169,7 +169,6 @@ export {
   approvalNotificationCopy,
   filterActivity,
   groupActivity,
-  isActivityFilter,
   isNeedsYou,
 } from "./messaging/activityView";
 export type { ActivityFilter, ActivityRowParts, ActivitySection } from "./messaging/activityView";
@@ -301,6 +300,7 @@ export type {
   ActivitySeenResponse,
   ActivitySubtype,
   ActivitySummary,
+  FeedResponse,
 } from "./messaging/types";
 export {
   MESSAGE_ATTACHMENT_ACCEPT,

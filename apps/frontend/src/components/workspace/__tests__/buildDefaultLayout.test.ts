@@ -4,7 +4,7 @@ import { buildMissionControlLayout } from "../buildDefaultLayout";
 import { DEFAULT_AGENT_SENTINEL, MESSAGES_PANEL_ID } from "../panelRegistry";
 
 describe("buildMissionControlLayout", () => {
-  it("opens chat and inbox as ONE tab group — chat active last", () => {
+  it("opens chat and activity as ONE tab group — chat active last", () => {
     const calls: Array<Record<string, unknown>> = [];
     const api = {
       addPanel: vi.fn((opts: Record<string, unknown>) => {
@@ -19,9 +19,9 @@ describe("buildMissionControlLayout", () => {
 
     buildMissionControlLayout(api);
 
-    expect(calls.map((c) => c.id)).toEqual([MESSAGES_PANEL_ID, "teams-inbox"]);
+    expect(calls.map((c) => c.id)).toEqual([MESSAGES_PANEL_ID, "activity"]);
     expect(calls[0]).toMatchObject({ component: "chat", title: "Chat", renderer: "always", params: { agentId: DEFAULT_AGENT_SENTINEL } });
-    expect(calls[1]).toMatchObject({ component: "teams", params: { teamsKey: "inbox" } });
+    expect(calls[1]).toMatchObject({ component: "activity", title: "Activity" });
 
     // The shell is tabs-only: NO panel may carry a `position`, because a
     // position is what splits the dock. Without a position dockview falls back
@@ -30,7 +30,7 @@ describe("buildMissionControlLayout", () => {
       expect(call).not.toHaveProperty("position");
     }
 
-    // Only chat renders while hidden. Inbox stays on dockview's default
+    // Only chat renders while hidden. Activity stays on dockview's default
     // `onlyWhenVisible` renderer so its reads don't fire for every owner on
     // first load.
     expect(calls[1]).not.toHaveProperty("renderer");

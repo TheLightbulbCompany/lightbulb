@@ -81,6 +81,14 @@ export interface RoomSummary {
   deletedAt?: string | null;
   /** A session's chat (hidden from the room list): the session it talks beside. Absent on every other room. */
   session?: { sessionId: string } | null;
+  /** The workspace feed (Activity): listed by the server, hidden from every conversation list and unread count. */
+  feed?: boolean;
+}
+
+/** `GET /messaging/feed`: the workspace feed room (ensured, the caller seated) and its brief. */
+export interface FeedResponse {
+  roomId: string;
+  topic: string | null;
 }
 
 export interface ActiveRoomRun {
@@ -197,6 +205,8 @@ export interface CanonicalRoomMessage {
   sessionMentions?: string[];
   /** "<Provider> · <title> · <owner>" per mentioned session, captured when the message was sent. */
   sessionTargetLabels?: Record<string, string>;
+  /** A feed post's "Why I created this post" (plain text). Absent on every other message. */
+  postReason?: string | null;
 }
 
 export interface MessageAttachment {

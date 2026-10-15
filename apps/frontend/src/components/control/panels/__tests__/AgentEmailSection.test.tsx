@@ -33,6 +33,7 @@ const baseAddress = {
   send_to_anyone: false,
   outbound_disabled: null as string | null,
   status: "active",
+  footer_enabled: true,
 };
 
 describe("AgentEmailSection", () => {
@@ -50,7 +51,8 @@ describe("AgentEmailSection", () => {
 
     await screen.findByText(ADDR);
     expect(screen.getByRole("textbox")).toBeDisabled();
-    expect(screen.getByRole("checkbox")).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: /open email/i })).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: /attribution footer/i })).toBeDisabled();
     expect(screen.queryByRole("button", { name: /^save$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /re-enable/i })).not.toBeInTheDocument();
     expect(screen.getByText("Only a workspace admin can change this.")).toBeInTheDocument();
@@ -119,6 +121,7 @@ describe("AgentEmailSection", () => {
     expect(mockPatch).toHaveBeenCalledWith("/agent-mail/address", {
       verified_senders: ["o@x.y"],
       send_to_anyone: false,
+      footer_enabled: true,
     });
   });
 
@@ -159,7 +162,8 @@ describe("AgentEmailSection", () => {
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
 
     await waitFor(() => expect(screen.getByRole("textbox")).toBeDisabled());
-    expect(screen.getByRole("checkbox")).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: /open email/i })).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: /attribution footer/i })).toBeDisabled();
 
     resolvePatch({});
     await waitFor(() => expect(screen.getByRole("textbox")).not.toBeDisabled());

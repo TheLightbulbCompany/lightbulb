@@ -71,22 +71,19 @@ function viewAgentAction(agentId: string, roomId?: string): { label: string; onC
   };
 }
 
-// Both toast families land on the ONE Inbox page, at the band that matches the
-// toast: attention toasts (approvals, blocked) are decisions → Needs you;
-// background-run toasts (working, success, failure) are history → Recently.
-function viewTeamsAction(section: "needs-you" | "recently"): {
+// An attention toast (an approval, a blocked task) lands on Activity, where For you
+// lists what needs a decision.
+function viewActivityAction(): {
   label: string;
   onClick: () => void;
 } {
   return {
     label: "View",
     onClick: () => {
-      capture("run_notification_clicked", {
-        source: section === "needs-you" ? "approval" : "teams",
-      });
+      capture("run_notification_clicked", { source: "approval" });
       const params = new URLSearchParams(window.location.search);
-      params.set("panel", "teams-inbox");
-      params.set("section", section);
+      params.set("panel", "activity");
+      params.delete("section");
       params.delete("detailId");
       pushSearchParams(params);
     },
@@ -206,9 +203,8 @@ function executeAction(action: RunToastAction, agents: Agent[], ctx: ExecuteCont
     });
     // Native notifications take a title AND a body; the specific line reads
     // better as the body under a short standing title. Native replaces the toast.
-    // Land on the blocked task itself when we know it; the inbox is only the
-    // fallback for approvals, which carry no issue id.
-    const view = action.issueId ? viewIssueAction(action.issueId) : viewTeamsAction("needs-you");
+    // Land on the blocked task itself when we know it; Activity is the fallback.
+    const view = action.issueId ? viewIssueAction(action.issueId) : viewActivityAction();
     void nativeNotify("Waiting on you", action.message, { onClick: view.onClick, tag: action.key }).then((shown) => {
       if (shown) return;
       notifyAttention("Waiting on you", { dedupeKey: action.key, description: action.message, action: view });

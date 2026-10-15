@@ -831,7 +831,9 @@ function RoomContent({
       {messageActionError && <p role="alert" className="room-typing text-ui text-err">{messageActionError}</p>}
       {!visibleRoom?.archivedAt && <RoomLimitBar account={billing} />}
       {showFirstReplies && <FirstReplyChips onPick={(text) => { if (composer.text.trim() === "") composer.onTextChange(text); setFocusToken((t) => t + 1); }} />}
-      {visibleRoom?.archivedAt ? <div className="room-composer room-archived" role="status">
+      {visibleRoom?.feed ? <div className="room-composer room-archived" role="status">
+        <p className="text-ui text-muted-foreground">Only agents post to the feed. Reply to a post in its thread.</p>
+      </div> : visibleRoom?.archivedAt ? <div className="room-composer room-archived" role="status">
         <p className="text-ui text-muted-foreground">
           {canUnarchive ? `This ${roomNoun} is archived. Unarchive it to post.` : `This ${roomNoun} is archived.`}
         </p>

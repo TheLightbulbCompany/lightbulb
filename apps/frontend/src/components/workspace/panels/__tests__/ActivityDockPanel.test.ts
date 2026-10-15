@@ -5,7 +5,8 @@ vi.mock("../../workspaceController", () => ({ openPanel: (...args: unknown[]) =>
 vi.mock("@/hooks/useActivity", () => ({ useActivity: vi.fn() }));
 vi.mock("@/hooks/useTeamsApi", () => ({ useTeamsApi: vi.fn() }));
 
-import { openActivityTarget } from "../ActivityDockPanel";
+import { feedShown, openActivityTarget, openDiscussion } from "../ActivityDockPanel";
+import { draftKey, readDraft, writeDraft } from "@/components/messaging/drafts";
 
 describe("openActivityTarget", () => {
   const opened = vi.fn();
@@ -48,5 +49,43 @@ describe("openActivityTarget", () => {
   it("does nothing for a thread it cannot place in a room", () => {
     openActivityTarget({ kind: "thread", id: "msg-1", roomId: null });
     expect(opened).not.toHaveBeenCalled();
+  });
+});
+
+describe("openDiscussion", () => {
+  const opened = vi.fn();
+  const listen = (event: Event) => opened((event as CustomEvent).detail);
+  const post = {
+    messageId: "post-1", roomId: "feed-1", messageSeq: 3, roomRevision: 1,
+    author: { kind: "agent" as const, id: "agent-fin", displayName: "Finance" },
+    text: "**Paid**", mentions: [], replyToMessageId: null, threadRootMessageId: null, createdAt: "2026-10-15T09:00:00Z", runId: null,
+  };
+  beforeEach(() => {
+    localStorage.clear();
+    opened.mockClear();
+    window.addEventListener("openRoom", listen);
+  });
+  afterEach(() => window.removeEventListener("openRoom", listen));
+
+  it("opens the post's thread with its author @mentioned in the thread composer's draft", () => {
+    openDiscussion("org-1", post);
+    expect(readDraft(draftKey("org-1", "feed-1", "post-1")).text).toBe("@Finance ");
+    expect(opened.mock.calls).toEqual([[{ roomId: "feed-1", threadId: "post-1" }]]);
+  });
+
+  it("keeps a reply the person already started", () => {
+    writeDraft(draftKey("org-1", "feed-1", "post-1"), { text: "half a thought", mentions: [] });
+    openDiscussion("org-1", post);
+    expect(readDraft(draftKey("org-1", "feed-1", "post-1")).text).toBe("half a thought");
+  });
+});
+
+describe("feedShown", () => {
+  it("counts the feed as on screen only once the layout is measured, and on a narrow panel only on its tab", () => {
+    expect(feedShown(null, "feed")).toBe(false);
+    expect(feedShown(null, "for-you")).toBe(false);
+    expect(feedShown(false, "for-you")).toBe(true);
+    expect(feedShown(true, "for-you")).toBe(false);
+    expect(feedShown(true, "feed")).toBe(true);
   });
 });

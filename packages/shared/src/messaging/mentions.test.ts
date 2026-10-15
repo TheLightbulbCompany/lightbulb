@@ -63,6 +63,11 @@ describe("resolveTypedMentions", () => {
   it("is case-insensitive and de-duplicates", () => {
     expect(resolveTypedMentions("@Friday @friday", participants)).toEqual([{ kind: "agent", id: "agent-friday" }]);
   });
+  it("resolves an agent with no handle here (a feed author, never seated) by its name", () => {
+    const feed = [{ kind: "agent" as const, id: "agent-fin", displayName: "Finance Lead", mentionHandle: null }];
+    expect(resolveTypedMentions("@Finance Lead can you send it?", feed)).toEqual([{ kind: "agent", id: "agent-fin" }]);
+    expect(linkifyMentions("@Finance Lead thanks", [], feed)).toBe("[@Finance Lead](mention:agent:agent-fin) thanks");
+  });
   it("ignores tokens inside code spans and fences, and unknown tokens", () => {
     expect(resolveTypedMentions("`@friday` and ```\n@friday\n``` and @nobody", participants)).toEqual([]);
   });

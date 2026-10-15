@@ -26,7 +26,7 @@ describe("parseCommand", () => {
   });
 
   it("resolves retired aliases", () => {
-    expect(parseCommand("?panel=teams-approvals")?.descriptor.panelId).toBe("teams-inbox");
+    expect(parseCommand("?panel=teams-approvals")?.descriptor.panelId).toBe("activity");
     // Settings took the Model panel: ?panel=credits names no dock panel.
     expect(parseCommand("?panel=credits")).toBeNull();
     // The org chart is a view of the roster now.
@@ -73,12 +73,12 @@ describe("parseCommand", () => {
 
 describe("stripOneShots", () => {
   it("removes exactly the one-shot params", () => {
-    expect(stripOneShots("?panel=teams-inbox&newIssue=onboarding&detailId=x")).toBe(
-      "panel=teams-inbox&detailId=x",
+    expect(stripOneShots("?panel=teams-artifacts&newIssue=onboarding&detailId=x")).toBe(
+      "panel=teams-artifacts&detailId=x",
     );
   });
   it("returns null when nothing to strip", () => {
-    expect(stripOneShots("?panel=teams-inbox")).toBeNull();
+    expect(stripOneShots("?panel=teams-artifacts")).toBeNull();
   });
 });
 
@@ -108,7 +108,7 @@ describe("clearPanelFromUrl", () => {
     expect(clearPanelFromUrl("?agent=agent-uuid-1", MESSAGES_PANEL_ID)).toBe("");
   });
   it("returns null when the closed panel is not the URL-named one", () => {
-    expect(clearPanelFromUrl("?panel=teams-inbox", "teams-issues")).toBeNull();
+    expect(clearPanelFromUrl("?panel=teams-artifacts", "teams-issues")).toBeNull();
     expect(
       clearPanelFromUrl("?panel=teams-issue-detail&detailId=OTHER", "teams-issue-detail:ADM-9"),
     ).toBeNull();
@@ -122,8 +122,8 @@ describe("clearPanelFromUrl", () => {
   it("clears ?path when the URL-named file viewer closes", () => {
     expect(clearPanelFromUrl("?panel=file-viewer&path=%2Fnotes.md", "file-viewer")).toBe("");
   });
-  it("clears ?section when the URL-named inbox closes", () => {
-    expect(clearPanelFromUrl("?panel=teams-inbox&section=needs-you", "teams-inbox")).toBe("");
+  it("clears ?focus when the URL-named Activity closes", () => {
+    expect(clearPanelFromUrl("?panel=activity&focus=paperclip%3Aapproval%3Aa1", "activity")).toBe("");
   });
 });
 
@@ -150,10 +150,10 @@ describe("clearClosedPanelFromUrl (Messages singleton)", () => {
   });
   it("passes plain (non-sentinel) closes straight through", () => {
     expect(clearClosedPanelFromUrl("?agent=agent-1", MESSAGES_PANEL_ID)).toBe("");
-    expect(clearClosedPanelFromUrl("?panel=teams-inbox", "teams-inbox")).toBe(
+    expect(clearClosedPanelFromUrl("?panel=teams-artifacts", "teams-artifacts")).toBe(
       "",
     );
-    expect(clearClosedPanelFromUrl("?panel=teams-inbox", "teams-issues")).toBeNull();
+    expect(clearClosedPanelFromUrl("?panel=teams-artifacts", "teams-issues")).toBeNull();
   });
 });
 
@@ -164,7 +164,7 @@ describe("clearDurableParamFromUrl", () => {
     );
   });
   it("returns null when the URL names a different panel", () => {
-    expect(clearDurableParamFromUrl("?panel=teams-inbox", "teams-issues", "agent")).toBeNull();
+    expect(clearDurableParamFromUrl("?panel=teams-artifacts", "teams-issues", "agent")).toBeNull();
     expect(clearDurableParamFromUrl("", "teams-issues", "agent")).toBeNull();
   });
   it("returns null when the param is absent (no identical replaceState)", () => {
@@ -174,20 +174,20 @@ describe("clearDurableParamFromUrl", () => {
 
 describe("commandSignature", () => {
   it("ignores non-command params so billing strips don't retrigger the reconciler", () => {
-    expect(commandSignature("?panel=teams-inbox&checkout=success")).toBe(
-      commandSignature("?panel=teams-inbox"),
+    expect(commandSignature("?panel=teams-artifacts&checkout=success")).toBe(
+      commandSignature("?panel=teams-artifacts"),
     );
   });
 });
 
 describe("clearUnfocusedPanelFromUrl", () => {
   it("drops the URL-named panel once another panel is active, keeping non-command params", () => {
-    expect(clearUnfocusedPanelFromUrl("?panel=teams-inbox&utm_source=x", MESSAGES_PANEL_ID)).toBe("utm_source=x");
-    expect(clearUnfocusedPanelFromUrl("?panel=teams-inbox", null)).toBe("");
+    expect(clearUnfocusedPanelFromUrl("?panel=teams-artifacts&utm_source=x", MESSAGES_PANEL_ID)).toBe("utm_source=x");
+    expect(clearUnfocusedPanelFromUrl("?panel=teams-artifacts", null)).toBe("");
   });
   it("leaves the URL alone while its panel is active, or when it names no panel", () => {
-    const id = parseCommand("?panel=teams-inbox")!.descriptor.panelId;
-    expect(clearUnfocusedPanelFromUrl("?panel=teams-inbox", id)).toBeNull();
+    const id = parseCommand("?panel=teams-artifacts")!.descriptor.panelId;
+    expect(clearUnfocusedPanelFromUrl("?panel=teams-artifacts", id)).toBeNull();
     expect(clearUnfocusedPanelFromUrl("?checkout=success", MESSAGES_PANEL_ID)).toBeNull();
     expect(clearUnfocusedPanelFromUrl("", MESSAGES_PANEL_ID)).toBeNull();
   });

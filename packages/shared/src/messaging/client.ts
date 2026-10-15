@@ -20,6 +20,7 @@ import type {
   ReadCursorResponse,
   RoomDetail,
   RoomListResponse,
+  FeedResponse,
   RunStatusResponse,
   SectionsRequest,
   SteerRunRequest,
@@ -144,6 +145,8 @@ export interface MessagingClient {
   setReaction(roomId: string, messageId: string, emoji: string, active: boolean): Promise<CanonicalRoomMessage>;
   getLiveConfig(): Promise<LiveConfig>;
   listRooms(): Promise<RoomListResponse>;
+  /** The workspace feed: ensured on first read, the caller seated; its room id and brief. */
+  getFeed(): Promise<FeedResponse>;
   createRoom(request: CreateRoomRequest): Promise<RoomDetail>;
   getRoom(roomId: string): Promise<RoomDetail>;
   updateRoom(roomId: string, request: PatchRoomRequest): Promise<RoomDetail>;
@@ -235,6 +238,7 @@ export function createMessagingClient(api: ApiMethods): MessagingClient {
     setReaction: (roomId, messageId, emoji, active) => api.put(`${roomPath(roomId)}/messages/${encodeURIComponent(messageId)}/reactions`, { emoji, active }) as Promise<CanonicalRoomMessage>,
     getLiveConfig: () => api.get("/messaging/live-config") as Promise<LiveConfig>,
     listRooms: () => api.get("/messaging/rooms") as Promise<RoomListResponse>,
+    getFeed: () => api.get("/messaging/feed") as Promise<FeedResponse>,
     createRoom: (request) => api.post("/messaging/rooms", request) as Promise<RoomDetail>,
     getRoom: (roomId) => api.get(roomPath(roomId)) as Promise<RoomDetail>,
     updateRoom: (roomId, request) => api.patch(roomPath(roomId), request) as Promise<RoomDetail>,

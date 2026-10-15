@@ -83,4 +83,21 @@ out="$(curl -sS -w $'\n%{http_code}' -X POST \
   -d "$payload" "${api}/agent-posts/${ISOL8_OWNER_ID}")"
 code="${out##*$'\n'}"; out="${out%$'\n'*}"
 [[ "$code" -ge 200 && "$code" -lt 300 ]] || die "Not posted (HTTP $code): $(jq -r '.message // .detail // .' <<<"$out" 2>/dev/null || printf '%s' "$out")"
-printf 'Posted to room %s.\n' "$(jq -r '.roomId' <<<"$out")"
+message_id="$(jq -r '.messageId // empty' <<<"$out")"
+room_id="$(jq -r '.roomId // empty' <<<"$out")"
+[[ -n "$message_id" && -n "$room_id" ]] || die "Lightbulb returned an invalid delivery receipt: $out"
+
+# Read the durable event receipt back through the agent-authenticated endpoint.
+# The backend checks that the posting agent remains a member of the room.
+encoded_event_id="$(jq -rn --arg e "$event_id" '$e|@uri')"
+verified="$(curl -sS -w $'\n%{http_code}' -H "Authorization: Bearer ${OPENCLAW_HOOK_TOKEN}" \
+  "${api}/agent-messages/${ISOL8_OWNER_ID}/receipts/${encoded_event_id}")"
+verify_code="${verified##*$'\n'}"; verified="${verified%$'\n'*}"
+verified_message_id="$(jq -r '.messageId // empty' <<<"$verified" 2>/dev/null || true)"
+verified_room_id="$(jq -r '.roomId // empty' <<<"$verified" 2>/dev/null || true)"
+[[ "$verify_code" == 200 && "$verified_message_id" == "$message_id" && "$verified_room_id" == "$room_id" ]] \
+  || die "Lightbulb delivery could not be verified (HTTP $verify_code): $verified"
+
+content_sha256="$(if command -v sha256sum >/dev/null; then printf '%s' "$body" | sha256sum; else printf '%s' "$body" | shasum -a 256; fi | cut -c1-64)"
+printf 'Verified Lightbulb event %s: message %s in room %s; content sha256 %s.\n' \
+  "$event_id" "$message_id" "$room_id" "$content_sha256"

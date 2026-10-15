@@ -19,11 +19,14 @@ def _run(tmp_path, *args, body="Morning brief", receipt="404"):
     # The payload follows -d; the URL is the last arg. Answer like the backend: JSON + code.
     fake.write_text(
         "#!/usr/bin/env bash\n"
+        'args="$*"\n'
         'while [[ $# -gt 0 ]]; do case "$1" in -d) printf "%s" "$2" > "$LOG"; shift 2;; *) url="$1"; shift;; esac; done\n'
-        # The receipt pre-check (GET .../receipts/<eventId>) answers with just the status code.
-        'if [[ "$url" == */receipts/* ]]; then printf "%s" "$url" > "$LOG.receipt"; printf "%s" "$RECEIPT"; exit 0; fi\n'
+        # The pre-check discards the body; the post-send readback returns a durable receipt.
+        'if [[ "$url" == */receipts/* ]]; then printf "%s" "$url" > "$LOG.receipt"; '
+        'if [[ " $args " == *" -o /dev/null "* ]]; then printf "%s" "$RECEIPT"; '
+        'else printf "{\\"messageId\\":\\"m1\\",\\"roomId\\":\\"r1\\",\\"createdAt\\":\\"2026-10-15T00:00:00Z\\"}\\n200"; fi; exit 0; fi\n'
         'printf "%s" "$url" > "$LOG.url"\n'
-        "printf '{\"roomId\":\"r1\"}\\n201'\n"
+        "printf '{\"messageId\":\"m1\",\"roomId\":\"r1\",\"createdAt\":\"2026-10-15T00:00:00Z\"}\\n201'\n"
     )
     fake.chmod(0o755)
     env = {**os.environ, "PATH": f"{fake.parent}:{os.environ['PATH']}", "LOG": str(log),
@@ -36,12 +39,22 @@ def _run(tmp_path, *args, body="Morning brief", receipt="404"):
 
 def test_default_posts_to_general_with_a_deterministic_agent_scoped_event_id(tmp_path):
     proc, sent, url = _run(tmp_path)
-    assert proc.returncode == 0 and "Posted to room r1" in proc.stdout
+    assert proc.returncode == 0 and "message m1 in room r1" in proc.stdout
     assert url == "https://api.x/api/v1/internal/messaging/agent-posts/org_1"
     assert set(sent) == {"eventId", "agentId", "text"} and sent["agentId"] == "agent-1"
     assert sent["eventId"].startswith("post:agent-1:")
     assert _run(tmp_path)[1]["eventId"] == sent["eventId"]  # a retry replays
     assert _run(tmp_path, "--handle", "ann")[1]["eventId"] != sent["eventId"]  # another target does not
+
+
+def test_success_reports_verifiable_message_receipt(tmp_path):
+    proc, sent, _ = _run(tmp_path, "--event-id", "smoke-1", body="Routine smoke")
+    assert proc.returncode == 0
+    assert "event post:agent-1:smoke-1" in proc.stdout
+    assert "message m1" in proc.stdout
+    assert "room r1" in proc.stdout
+    assert "content sha256" in proc.stdout
+    assert sent["text"] == "Routine smoke"
 
 
 def test_targets_and_event_id_override(tmp_path):
@@ -65,7 +78,7 @@ def test_an_already_posted_event_id_says_so_and_sends_nothing(tmp_path):
     receipt_url = (tmp_path / "curl.json.receipt").read_text()
     assert receipt_url == "https://api.x/api/v1/internal/messaging/agent-messages/org_1/receipts/post%3Aagent-1%3Abrief-2026-09-24"
     proc, sent, _ = _run(tmp_path, "--event-id", "brief-2026-09-24")  # 404: not posted yet
-    assert proc.stdout.startswith("Posted to room r1") and sent["eventId"] == "post:agent-1:brief-2026-09-24"
+    assert proc.stdout.startswith("Verified Lightbulb event") and sent["eventId"] == "post:agent-1:brief-2026-09-24"
 
 
 def test_feed_posts_to_the_workspace_feed_with_a_reason(tmp_path):

@@ -1,5 +1,6 @@
 import http.server
 import json
+import os
 import shutil
 import subprocess
 import threading
@@ -138,6 +139,28 @@ def test_helper_end_to_end_fetch_then_cache(tmp_path, monkeypatch):
         assert r2.returncode == 0, r2.stderr
         assert json.loads(r2.stdout) == _StubHandler.creds
         assert len(_StubHandler.calls) == 1  # cache hit — no second fetch
+    finally:
+        server.shutdown()
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")
+def test_helper_prefers_runtime_managed_api_base(tmp_path, monkeypatch):
+    """A routine container's injected API base overrides a stale baked public hostname."""
+    _StubHandler.calls = []
+    server = http.server.HTTPServer(("127.0.0.1", 0), _StubHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setattr(aws_cli, "materializer_root", lambda: tmp_path / "org_x")
+        monkeypatch.setattr("core.config.settings.PUBLIC_API_BASE", "https://retired.invalid")
+        aws_cli.write("org_x", "aws", _cred())
+        helper = Path(tmp_path) / "org_x" / ".aws" / aws_cli.HELPER_FILENAME
+        env = {**os.environ, "ISOL8_API_URL": f"http://127.0.0.1:{server.server_port}/"}
+
+        result = subprocess.run(["node", str(helper)], env=env, capture_output=True, text=True, timeout=30)
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == _StubHandler.creds
+        assert len(_StubHandler.calls) == 1
     finally:
         server.shutdown()
 

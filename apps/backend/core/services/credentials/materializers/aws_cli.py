@@ -69,7 +69,10 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const API_BASE = "__API_BASE__";
+// Routine containers inject their reachable managed API base. Prefer that at
+// execution time so a stale public hostname baked during materialization
+// cannot strand credential_process.
+const API_BASE = (process.env.ISOL8_API_URL || process.env.PUBLIC_API_BASE || "__API_BASE__").replace(/\/+$/, "");
 const DIR = dirname(fileURLToPath(import.meta.url));
 const CACHE = join(DIR, "cache.json");
 const REFRESH_MARGIN_MS = 10 * 60 * 1000;

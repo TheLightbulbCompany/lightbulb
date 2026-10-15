@@ -122,9 +122,9 @@ describe("workspaceController", () => {
   it("openPanel adds when missing, focuses when present, never duplicates", () => {
     const api = makeFakeApi();
     attachDockviewApi(api, () => "friday-id");
-    openPanel("teams-inbox");
+    openPanel("teams-artifacts");
     expect(api.addPanel).toHaveBeenCalledTimes(1);
-    openPanel("teams-inbox");
+    openPanel("teams-artifacts");
     expect(api.addPanel).toHaveBeenCalledTimes(1); // focused, not re-added
   });
 
@@ -343,9 +343,9 @@ describe("workspaceController", () => {
     attachDockviewApi(api, () => "friday-id");
     openChatPanel("a-1");
     expect(_snapshotForTests().focusedChatAgentId).toBe("a-1");
-    openPanel("teams-inbox");
+    openPanel("teams-artifacts");
     expect(_snapshotForTests().focusedChatAgentId).toBeNull();
-    expect(_snapshotForTests().activePanelId).toBe("teams-inbox");
+    expect(_snapshotForTests().activePanelId).toBe("teams-artifacts");
   });
 
   it("lastFocusedChatAgentId is sticky across focus moving to a non-chat panel", () => {
@@ -357,7 +357,7 @@ describe("workspaceController", () => {
     openChatPanel("a-1");
     expect(_snapshotForTests().focusedChatAgentId).toBe("a-1");
     expect(_snapshotForTests().lastFocusedChatAgentId).toBe("a-1");
-    openPanel("teams-inbox");
+    openPanel("teams-artifacts");
     expect(_snapshotForTests().focusedChatAgentId).toBeNull();
     expect(_snapshotForTests().lastFocusedChatAgentId).toBe("a-1");
     // Focusing a DIFFERENT chat panel re-points the sticky field.
@@ -420,7 +420,7 @@ describe("workspaceController", () => {
     refreshWorkspaceSnapshot();
     expect(_snapshotForTests()).toBe(before);
     // A real change still publishes a new object.
-    openPanel("teams-inbox");
+    openPanel("teams-artifacts");
     expect(_snapshotForTests()).not.toBe(before);
   });
 
@@ -428,7 +428,7 @@ describe("workspaceController", () => {
     // Mission Control keeps teams panels permanently OPEN — if open counted
     // as visible, teams run toasts would be suppressed forever on the
     // default layout.
-    const teams = { id: "teams-inbox" };
+    const teams = { id: "teams-artifacts" };
     const chatA = { id: "chat:a-1" };
     const stubs = {
       getPanel: () => undefined,
@@ -447,7 +447,7 @@ describe("workspaceController", () => {
       } as unknown as DockviewApi,
       () => undefined,
     );
-    expect(_snapshotForTests().openPanelIds).toContain("teams-inbox");
+    expect(_snapshotForTests().openPanelIds).toContain("teams-artifacts");
     expect(_snapshotForTests().teamsPanelVisible).toBe(false);
     detach();
     // Teams panel is the active tab of a BACKGROUND group (dock focus on chat):

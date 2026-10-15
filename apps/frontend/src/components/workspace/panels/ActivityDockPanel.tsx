@@ -1,14 +1,17 @@
 "use client";
 
 import "@/components/activity/activity.css";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview-react";
 import { useAuth } from "@clerk/nextjs";
 import { newestActivityAt, type CanonicalRoomMessage } from "@lightbulb/shared";
 import { ForYou, type ActivityTarget } from "@/components/activity/ForYou";
 import { TeamFeed } from "@/components/activity/TeamFeed";
 import { draftKey, readDraft, writeDraft } from "@/components/messaging/drafts";
+import { useAcknowledgedRuns } from "@/components/teams/inbox/hooks/useAcknowledgedRuns";
 import { useAttentionFeed } from "@/components/teams/inbox/hooks/useAttentionFeed";
+import { useInboxTriage } from "@/components/teams/inbox/hooks/useInboxTriage";
+import { groupFailedRuns } from "@/components/teams/inbox/lib/groupFailedRuns";
 import type { CompanyAgent, CompanyMember } from "@/components/teams/shared/types";
 import { useActivity } from "@/hooks/useActivity";
 import { useLiveEvents } from "@/hooks/useLiveEvents";
@@ -75,6 +78,21 @@ export function ActivityDockPanel(props: IDockviewPanelProps<{ focus?: string }>
   const roster = useMemo(() => agents?.agents ?? [], [agents]);
   const [tab, setTab] = useState<ActivityTab>("for-you");
   const scope = orgId ?? userId ?? "signed-out";
+  // The Inbox's failed runs, with its local dismissals (same company key as the Inbox panel).
+  const { acknowledgedRunIds, ack } = useAcknowledgedRuns(orgId ?? userId ?? null);
+  const { failedRuns, isError: runsError } = useInboxTriage(acknowledgedRunIds);
+  const runGroups = useMemo(() => groupFailedRuns(failedRuns), [failedRuns]);
+  // Below 900px (the CSS container query) only one column shows: the feed counts as read
+  // only while its tab is the one on screen.
+  const pageRef = useRef<HTMLDivElement>(null);
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    const page = pageRef.current;
+    if (!page || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => setNarrow(entry.contentRect.width <= 900));
+    observer.observe(page);
+    return () => observer.disconnect();
+  }, []);
 
   // Opening Activity clears its badge; a newer item arriving while it is on screen does too.
   const newest = newestActivityAt(activity.items);
@@ -83,7 +101,7 @@ export function ActivityDockPanel(props: IDockviewPanelProps<{ focus?: string }>
     if (newest && pageVisible()) void markSeen(newest).catch(() => {});
   }, [newest, markSeen]);
 
-  return <div className="activity-page" data-tab={tab}>
+  return <div ref={pageRef} className="activity-page" data-tab={tab}>
     <div role="tablist" aria-label="Activity" className="activity-page__tabs">
       {([["for-you", "For you"], ["feed", "Feed"]] as const).map(([value, label]) =>
         <button key={value} type="button" role="tab" aria-selected={tab === value} onClick={() => setTab(value)}>{label}</button>)}
@@ -93,6 +111,9 @@ export function ActivityDockPanel(props: IDockviewPanelProps<{ focus?: string }>
         <ForYou
           activityItems={activity.items}
           attentionItems={attention.items}
+          failedRuns={runGroups}
+          runsError={runsError}
+          onDismissRuns={(ids) => ids.forEach(ack)}
           loading={activity.loading}
           error={Boolean(activity.error)}
           paperclipAvailable={activity.paperclipAvailable}
@@ -105,7 +126,7 @@ export function ActivityDockPanel(props: IDockviewPanelProps<{ focus?: string }>
       </div>
       <div className="activity-page__feed">
         <TeamFeed client={live.messaging} scope={scope} currentUserId={userId ?? ""}
-          onDiscuss={(post) => openDiscussion(scope, post)} isVisible={pageVisible} />
+          onDiscuss={(post) => openDiscussion(scope, post)} isVisible={pageVisible} active={!narrow || tab === "feed"} />
       </div>
     </div>
   </div>;

@@ -85,6 +85,7 @@
   color: var(--fg-soft);
 }
 .for-you-row__line strong { font-weight: 600; color: var(--fg); }
+.for-you-row__controls { display: flex; gap: 4px; }
 .for-you-row__open:hover strong, .for-you-row__open:focus-visible strong { text-decoration: underline; text-underline-offset: 2px; }
 
 .for-you-entry[data-highlighted] > .for-you-row { background: var(--plane-selected); }
@@ -158,7 +159,7 @@
 .feed-post { padding: 12px 0; }
 .feed-post:hover, .feed-post:focus-within { background: transparent; }
 .feed-post__title { font-weight: 600; color: var(--fg); }
-.feed-post__footer { display: flex; align-items: center; gap: 4px; padding-top: 4px; margin-left: -10px; }
+.feed-post__footer { display: flex; align-items: center; gap: 4px; padding-top: 4px; margin-left: -8px; }
 .feed-post__age { padding-left: 4px; font-size: var(--text-caption); color: var(--fg-mute); }
 .feed-post__why-toggle {
   display: inline-flex;

@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { SWRConfig } from "swr";
 import { describe, expect, it, vi } from "vitest";
 import type { RoomDetail } from "@lightbulb/shared";
-import { TeamFeed, type FeedClient } from "../TeamFeed";
+import { loadFeedPosts, TeamFeed, type FeedClient, type TeamFeedProps } from "../TeamFeed";
 import { post } from "./fixtures";
 
 vi.mock("@/components/messaging/RoomDocumentCards", () => ({ RoomDocumentCards: () => null }));
@@ -12,7 +12,7 @@ const room = {
   roomId: "feed-1", topic: "Keep us posted on money.", lastMessageSeq: 3, lastReadSeq: 1, feed: true,
 } as RoomDetail;
 
-function setup() {
+function setup(over: Partial<TeamFeedProps> = {}) {
   const today = new Date().toISOString();
   const client = {
     getFeed: vi.fn().mockResolvedValue({ roomId: "feed-1", topic: "Keep us posted on money." }),
@@ -30,10 +30,11 @@ function setup() {
     attachmentUrl: vi.fn(),
   } satisfies FeedClient;
   const onDiscuss = vi.fn();
-  render(<SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-    <TeamFeed client={client} scope="org-1" currentUserId="me" onDiscuss={onDiscuss} />
-  </SWRConfig>);
-  return { client, onDiscuss };
+  const tree = (props: Partial<TeamFeedProps>) => <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+    <TeamFeed client={client} scope="org-1" currentUserId="me" onDiscuss={onDiscuss} {...over} {...props} />
+  </SWRConfig>;
+  const view = render(tree({}));
+  return { client, onDiscuss, rerender: (props: Partial<TeamFeedProps>) => view.rerender(tree(props)) };
 }
 
 const posts = () => screen.getAllByRole("article");
@@ -89,6 +90,26 @@ describe("TeamFeed", () => {
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(client.updateRoom).toHaveBeenCalledWith("feed-1", { topic: "Only money." });
     expect(await screen.findByText("Only money.")).toBeInTheDocument();
+  });
+
+  it("leaves the read cursor alone while the feed column is hidden (the For you tab on a narrow panel)", async () => {
+    const { client, rerender } = setup({ active: false });
+    await waitFor(() => expect(posts()).toHaveLength(3));
+    expect(client.markRead).not.toHaveBeenCalled();
+    rerender({ active: true });
+    await waitFor(() => expect(client.markRead).toHaveBeenCalledWith("feed-1", { lastReadSeq: 3 }));
+  });
+
+  it("pages back past Discuss replies until it has enough top-level posts", async () => {
+    const reply = (seq: number) => post(seq, { threadRootMessageId: "post-1" });
+    const listMessages = vi.fn()
+      .mockResolvedValueOnce({ messages: [post(200), ...Array.from({ length: 99 }, (_, i) => reply(201 + i))], nextAfterSeq: null, nextBeforeSeq: 200 })
+      .mockResolvedValueOnce({ messages: Array.from({ length: 40 }, (_, i) => post(150 + i)), nextAfterSeq: null, nextBeforeSeq: 150 })
+      .mockResolvedValueOnce({ messages: [post(1)], nextAfterSeq: null, nextBeforeSeq: null });
+    const page = await loadFeedPosts({ listMessages }, "feed-1", 299);
+    expect(listMessages.mock.calls.map(([, , , options]) => options.beforeSeq)).toEqual([300, 200]);
+    expect(page.messages).toHaveLength(41);
+    expect(page.messages.every((message) => message.threadRootMessageId === null)).toBe(true);
   });
 
   it("offers no composer: people reply only in Discuss", async () => {

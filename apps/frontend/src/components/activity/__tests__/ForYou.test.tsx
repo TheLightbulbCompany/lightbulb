@@ -3,8 +3,11 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { ActivityItem } from "@lightbulb/shared";
 import { ForYou, type ForYouProps } from "../ForYou";
-import { approval, attention, failedRun, loginAsk, maya, message } from "./fixtures";
+import { approval, ask, attention, loginAsk, maya, message, runGroup } from "./fixtures";
 
+const wakeAgent = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/components/teams/inbox/hooks/useAgentWake", () => ({ useAgentWake: () => ({ wakeAgent }) }));
+vi.mock("@/lib/notify", () => ({ notifyApiError: vi.fn() }));
 vi.mock("@/components/teams/inbox/DecisionResolver", () => ({
   DecisionResolver: ({ decisionId }: { decisionId: string }) => <div>Decision card {decisionId}</div>,
 }));
@@ -12,7 +15,7 @@ vi.mock("@/components/teams/inbox/DecisionResolver", () => ({
 function setup(over: Partial<ForYouProps> = {}) {
   const props: ForYouProps = {
     activityItems: [approval, message("m1")], attentionItems: [], loading: false, error: false, paperclipAvailable: true,
-    onRunAction: vi.fn().mockResolvedValue(undefined), onNavigate: vi.fn(), people: [], agents: [], ...over,
+    onRunAction: vi.fn().mockResolvedValue(undefined), onNavigate: vi.fn(), onDismissRuns: vi.fn(), people: [], agents: [], ...over,
   };
   render(<ForYou {...props} />);
   return props;
@@ -21,13 +24,51 @@ function setup(over: Partial<ForYouProps> = {}) {
 const group = (name: string) => screen.getByRole("region", { name: new RegExp(`^${name}`) });
 
 describe("ForYou", () => {
-  it("counts what is open and groups it by verb with one action per row", async () => {
-    const props = setup({ activityItems: [approval, message("m1"), failedRun] });
+  it("counts what is open and groups it by verb with one action per row", () => {
+    setup({ activityItems: [approval, message("m1")], failedRuns: [runGroup("g1")] });
     expect(screen.getByRole("heading", { name: "For you · 3 open" })).toBeInTheDocument();
     expect(screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent)).toEqual(["Decide 1", "Reply 1", "Do 1"]);
-    await userEvent.click(within(group("Decide")).getByRole("button", { name: "Approve" }));
-    expect(props.onRunAction).toHaveBeenCalledWith(approval.id, "approve", {});
-    await userEvent.click(within(group("Do")).getByRole("button", { name: "Open run" }));
+  });
+
+  it("never approves from the row: Review opens the approval's own detail with its payload", async () => {
+    const props = setup({ activityItems: [approval] });
+    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Review" }));
+    expect(props.onNavigate).toHaveBeenCalledWith({ kind: "approval", id: "a1", roomId: null });
+    expect(props.onRunAction).not.toHaveBeenCalled();
+  });
+
+  it("reviews a confirmation or a session ask in its own place, and asks once inline when it has none", async () => {
+    const confirm = { ...ask, id: "paperclip:interaction:iss-4:int-2", actions: [
+      { id: "accept", label: "Confirm", style: "primary" as const, confirm: null, input: null, navigate: null },
+      { id: "open", label: "Open task", style: null, confirm: null, input: null, navigate: { kind: "issue" as const, id: "iss-4", roomId: null } },
+    ] };
+    const join = { ...approval, id: "session:join:s1", kind: "session" as const, subtype: "join_request" as const,
+      summary: { ...approval.summary, links: [{ kind: "session" as const, id: "s1", label: "Session" }] },
+      actions: [{ id: "allow", label: "Allow", style: "primary" as const, confirm: null, input: null, navigate: null }] };
+    const extension = { ...approval, id: "extension:e1", kind: "extension" as const, subtype: "extension" as const, actor: maya,
+      summary: { ...approval.summary, links: [] }, actions: [{ id: "add", label: "Add", style: "primary" as const, confirm: null, input: null, navigate: null }] };
+    const props = setup({ activityItems: [confirm, join, extension] });
+    const [first, second, third] = screen.getAllByRole("button", { name: "Review" });
+    await userEvent.click(first);
+    expect(props.onNavigate).toHaveBeenLastCalledWith({ kind: "issue", id: "iss-4", roomId: null });
+    await userEvent.click(second);
+    expect(props.onNavigate).toHaveBeenLastCalledWith({ kind: "session", id: "s1", roomId: null });
+    await userEvent.click(third);
+    expect(props.onRunAction).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(props.onRunAction).toHaveBeenCalledWith("extension:e1", "add", {});
+  });
+
+  it("retries and dismisses a failed run like the Inbox did", async () => {
+    const props = setup({ activityItems: [], failedRuns: [runGroup("g1", "friday", ["r1", "r2"])], agents: [{ id: "friday", name: "Friday" } as never] });
+    expect(screen.getByText("Timed out ×2")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(wakeAgent).toHaveBeenCalledWith("friday", { reason: "retry" });
+    expect(await screen.findByRole("button", { name: "Retried" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(props.onDismissRuns).toHaveBeenCalledWith(["r1", "r2"]);
+    await userEvent.click(screen.getByRole("button", { name: /Friday Timed out/ }));
     expect(props.onNavigate).toHaveBeenCalledWith({ kind: "run", id: "r1", roomId: null });
   });
 
@@ -89,13 +130,17 @@ describe("ForYou", () => {
   });
 
   it("keeps the item and says why when its action fails", async () => {
-    setup({ activityItems: [approval], onRunAction: vi.fn().mockRejectedValue(new Error("Already decided")) });
-    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+    setup({ activityItems: [message("m1")], onRunAction: vi.fn().mockRejectedValue(new Error("Already decided")) });
+    await userEvent.click(screen.getByRole("button", { name: "Reply" }));
+    await userEvent.type(screen.getByRole("textbox", { name: "Reply" }), "ok");
+    await userEvent.click(screen.getAllByRole("button", { name: "Reply" }).at(-1)!);
     expect(await screen.findByRole("alert")).toHaveTextContent("Already decided");
   });
 
-  it("opens and highlights the item a notification points at, even in a collapsed row", () => {
+  it("opens and highlights the item a notification points at, even in a collapsed row, and Hide still closes it", async () => {
     setup({ activityItems: [message("m1"), message("m2")], focusId: "mention:m2" });
     expect(document.querySelector('[data-for-you-id="mention:m2"]')).toHaveAttribute("data-highlighted", "true");
+    await userEvent.click(screen.getByRole("button", { name: "Hide" }));
+    expect(document.querySelector('[data-for-you-id="mention:m2"]')).toBeNull();
   });
 });

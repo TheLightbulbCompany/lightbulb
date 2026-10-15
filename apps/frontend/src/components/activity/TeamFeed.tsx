@@ -26,10 +26,29 @@ export interface TeamFeedProps {
   /** Opens the post's thread with its author @mentioned in the composer. */
   onDiscuss: (post: CanonicalRoomMessage) => void;
   isVisible?: () => boolean;
+  /** False while the feed column is hidden (the For you tab on a narrow panel): the cursor waits. */
+  active?: boolean;
 }
 
 const LIKE = "👍";
 const ALWAYS = () => true;
+/** Enough posts to fill the page; Discuss replies in between never push them out. */
+const FEED_POSTS = 30;
+// ponytail: a feed buried under more than this many pages of Discuss replies shows fewer posts.
+const MAX_PAGES = 10;
+
+/** The latest top-level posts, paging back past thread replies until there are enough. */
+export async function loadFeedPosts(client: Pick<FeedClient, "listMessages">, roomId: string, newest: number): Promise<{ messages: CanonicalRoomMessage[] }> {
+  const messages: CanonicalRoomMessage[] = [];
+  let before: number | null | undefined = newest + 1;
+  for (let page = 0; page < MAX_PAGES && before && messages.length < FEED_POSTS; page += 1) {
+    const result = await client.listMessages(roomId, 0, 100, { beforeSeq: before });
+    messages.push(...result.messages.filter((message) => message.threadRootMessageId === null));
+    before = result.nextBeforeSeq;
+  }
+  return { messages };
+}
+
 // ponytail: the feed polls (agents post a few times a day); subscribe to the room's live channel if that is too slow.
 const REFRESH_MS = 60_000;
 
@@ -38,13 +57,13 @@ const REFRESH_MS = 60_000;
  * "New since you looked" and day dividers. People never post here; they Discuss a post in its
  * thread. Viewing the feed moves its read cursor, which nothing else counts.
  */
-export function TeamFeed({ client, scope, currentUserId, onDiscuss, isVisible = ALWAYS }: TeamFeedProps) {
+export function TeamFeed({ client, scope, currentUserId, onDiscuss, isVisible = ALWAYS, active = true }: TeamFeedProps) {
   const feed = useSWR(["activity-feed", scope], () => client.getFeed());
   const roomId = feed.data?.roomId ?? null;
   const room = useSWR(roomId ? ["activity-feed-room", roomId] : null, () => client.getRoom(roomId!), { refreshInterval: REFRESH_MS });
   const newest = room.data?.lastMessageSeq;
   const posts = useSWR(roomId && newest !== undefined ? ["activity-feed-posts", roomId, newest] : null,
-    () => client.listMessages(roomId!, 0, 100, { beforeSeq: newest! + 1 }));
+    () => loadFeedPosts(client, roomId!, newest!));
 
   // "New since you looked" compares against the cursor as it was when the feed opened.
   const [readAtOpen, setReadAtOpen] = useState<number | null>(null);
@@ -52,10 +71,10 @@ export function TeamFeed({ client, scope, currentUserId, onDiscuss, isVisible = 
   const marked = useRef(0);
   useEffect(() => {
     const current = room.data;
-    if (!current || current.lastMessageSeq <= Math.max(current.lastReadSeq, marked.current) || !isVisible()) return;
+    if (!active || !current || current.lastMessageSeq <= Math.max(current.lastReadSeq, marked.current) || !isVisible()) return;
     marked.current = current.lastMessageSeq;
     void client.markRead(current.roomId, { lastReadSeq: current.lastMessageSeq }).catch(() => { marked.current = 0; });
-  }, [room.data, client, isVisible]);
+  }, [room.data, client, isVisible, active]);
 
   const setRoom = (detail: RoomDetail) => void room.mutate(detail, { revalidate: false });
   const replacePost = (next: CanonicalRoomMessage) => void posts.mutate((page) => page && {

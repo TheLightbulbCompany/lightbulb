@@ -20,7 +20,10 @@ export const DEFAULT_AGENT_SENTINEL = "__default__";
 // Back landing on a retired key canonicalizes in place instead of pushing
 // (the old ControlPanelRouter remap pushed, trapping Back on ?panel=credits).
 export const RETIRED_PANEL_ALIASES: Readonly<Record<string, string>> = {
-  "teams-approvals": "teams-inbox",
+  // The Inbox tab folded into Activity's For you (2026-10-15): it, and the keys it had
+  // absorbed, open Activity. A saved Inbox tab is folded into Activity by layoutStorage.
+  "teams-inbox": "activity",
+  "teams-approvals": "activity",
   // Home is no longer a destination (stage-2 rail trim): it, and the keys it
   // had absorbed, open the viewer's Activity feed. A saved Home tab is folded
   // into Activity by layoutStorage's sanitizer.
@@ -35,10 +38,7 @@ export const RETIRED_PANEL_ALIASES: Readonly<Record<string, string>> = {
   "teams-products": "teams-money",
   "teams-customers": "teams-money",
   "teams-spend": "teams-money",
-  // Activity folded into Inbox's "Recently" band. Aliased, not routed: the
-  // dock dedupes by panel id, so a router-level mapping would leave an
-  // Activity link opening a SECOND tab titled "Inbox".
-  "teams-activity": "teams-inbox",
+  "teams-activity": "activity",
   // NOTE: `teams-goals` and `teams-projects` are deliberately NOT aliased —
   // they are their own panels (GoalsPanel / ProjectsListPanel, TEAMS_LIST_KEYS
   // below), same as stock Paperclip's Goals and Projects pages. They used to
@@ -359,16 +359,6 @@ export function describePanel(
         if (panelKey === "teams-org-chart") p.view = "chart";
         else if (params.view && AGENTS_VIEWS.has(params.view)) p.view = params.view;
       }
-      // Inbox absorbed Activity, so the band a link meant survives only if it
-      // is read off the RAW key — same synthesis, same reason, as `money`.
-      if (teamsKey === "inbox") {
-        if (panelKey === "teams-activity") p.section = "recently";
-        else if (params.section && INBOX_SECTIONS.has(params.section)) p.section = params.section;
-        // Bookmarks predating the pill tabs still carry ?tab=approvals; that
-        // band is now "Needs you". Every other old tab value named an issue
-        // list, which lives on Tasks — those land at the top of Inbox.
-        else if (params.tab === "approvals") p.section = "needs-you";
-      }
       // ?day scopes the Payments section to one UTC day (Money's biggest-day link).
       if (teamsKey === "money" && params.day) p.day = params.day;
       // The four absorbed keys (teams-payments/products/customers/spend) alias
@@ -408,7 +398,6 @@ export function durableParamsFor(panelId: string): string[] {
   if (panelId === "agent-inspector") return ["panel", "agent", "inspectorTab"];
   if (panelId === "control:agents") return ["panel", "agent"];
   if (panelId === WORK_PANEL_ID) return ["panel", "agent", "groupBy", "view", "day", "section"];
-  if (panelId === "teams-inbox") return ["panel", "section"];
   if (panelId === "activity") return ["panel", "filter", "focus"];
   if (panelId === "mail") return ["panel", "item"];
   if (/^teams-(issue|routine|project|goal|case|run)-detail:/.test(panelId)) return ["panel", "detailId"];
@@ -427,7 +416,6 @@ export function clearablePanelParamKeys(panelId: string): string[] {
   // (see openMessagePanel / openChatPanel in workspaceController.ts).
   if (panelId === MESSAGES_PANEL_ID) return ["agentId", "agentSelection", "roomId", "messageId", "sessionId", "sessionIntent"];
   if (panelId === WORK_PANEL_ID) return ["agent", "groupBy", "view", "day", "section"];
-  if (panelId === "teams-inbox") return ["section"];
   if (panelId === "activity") return ["filter", "focus"];
   if (panelId === "mail") return ["item"];
   if (panelId === "file-viewer") return ["path", "agent"];

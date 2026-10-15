@@ -4,9 +4,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ActivityAction, ActivityItem, ActivityLinkKind } from "@lightbulb/shared";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { DecisionResolver } from "@/components/teams/inbox/DecisionResolver";
+import { useRunRetry } from "@/components/teams/inbox/FailedRunRow";
+import type { FailedRunGroup } from "@/components/teams/inbox/lib/groupFailedRuns";
 import type { AttentionItem, CompanyAgent } from "@/components/teams/shared/types";
 import { agentTint } from "@/lib/agentTint";
-import { FOR_YOU_NOUNS, forYouEntries, groupForYou, type ForYouEntry, type ForYouGroup, type ForYouRow } from "./activityPage";
+import { forYouEntries, groupForYou, rowSummary, type ForYouEntry, type ForYouGroup, type ForYouRow } from "./activityPage";
 
 export interface ActivityTarget { kind: ActivityLinkKind; id: string; roomId: string | null }
 export interface ActivityPerson { value: string; label: string }
@@ -27,6 +29,12 @@ export function rowTarget(item: ActivityItem): ActivityTarget | null {
 export interface ForYouProps {
   activityItems: readonly ActivityItem[];
   attentionItems: readonly AttentionItem[];
+  /** The Inbox's failed runs, grouped and minus the dismissed ones. */
+  failedRuns?: readonly FailedRunGroup[];
+  /** The failed-run read failed: For you cannot vouch that nothing broke. */
+  runsError?: boolean;
+  /** Dismiss: acknowledges every run in a group, as the Inbox did. */
+  onDismissRuns?: (runIds: string[]) => void;
   loading: boolean;
   error: boolean;
   /** False when the Paperclip half of Activity could not be read this time. */
@@ -48,8 +56,9 @@ const VISIBLE_ROWS = 3;
  * a group shows its top 3 rows, then "N more". Every button is the item's own action.
  */
 export function ForYou(props: ForYouProps) {
-  const { activityItems, attentionItems, loading, error, paperclipAvailable, focusId } = props;
-  const entries = useMemo(() => forYouEntries(activityItems, attentionItems), [activityItems, attentionItems]);
+  const { activityItems, attentionItems, failedRuns, loading, error, paperclipAvailable, focusId, agents } = props;
+  const entries = useMemo(() => forYouEntries(activityItems, attentionItems, failedRuns,
+    (id) => agents.find((agent) => agent.id === id)?.name ?? "An agent"), [activityItems, attentionItems, failedRuns, agents]);
   const groups = useMemo(() => groupForYou(entries), [entries]);
   const agentMap = useMemo(() => new Map(props.agents.map((agent) => [agent.id, agent])), [props.agents]);
   const listRef = useRef<HTMLDivElement>(null);
@@ -64,6 +73,7 @@ export function ForYou(props: ForYouProps) {
     {!paperclipAvailable && <p role="status" className="for-you__notice">
       Company approvals and tasks couldn&apos;t load right now. Messages are up to date.
     </p>}
+    {props.runsError && <p role="status" className="for-you__notice">Couldn&apos;t check for failed runs just now.</p>}
     <div ref={listRef}>
       {error && entries.length === 0
         ? <p role="alert" className="for-you__empty">Couldn&apos;t load what needs you. Try again in a moment.</p>
@@ -96,16 +106,15 @@ function Avatar({ row }: { row: Pick<ForYouRow, "sourceName" | "sourceKind" | "s
 
 function ForYouRowView({ row, focusId, ...rest }: { row: ForYouRow; agentMap: Map<string, CompanyAgent> } & Omit<ForYouProps, "activityItems" | "attentionItems">) {
   const focused = Boolean(focusId && row.entries.some((entry) => entry.id === focusId));
-  const [open, setOpen] = useState(false);
+  // A row a notification points at starts open; Hide still closes it.
+  const [expanded, setExpanded] = useState(focused);
   if (row.entries.length === 1) return <EntryRow entry={row.entries[0]} highlighted={focused} {...rest} />;
-  const [one, many] = FOR_YOU_NOUNS[row.entries[0].verb];
-  const expanded = open || focused;
   return <li className="for-you-source" data-expanded={expanded || undefined}>
     <div className="for-you-row">
       <span className="for-you-row__avatar"><Avatar row={row} /></span>
-      <p className="for-you-row__line"><strong>{row.sourceName}</strong> · {row.entries.length} {row.entries.length === 1 ? one : many}</p>
+      <p className="for-you-row__line"><strong>{row.sourceName}</strong> · {rowSummary(row)}</p>
       <button type="button" className="editorial-btn editorial-btn--sm editorial-btn--secondary" aria-expanded={expanded}
-        onClick={() => setOpen(!expanded)}>{expanded ? "Hide" : "Show"}</button>
+        onClick={() => setExpanded(!expanded)}>{expanded ? "Hide" : "Show"}</button>
     </div>
     {expanded && <ul className="for-you-source__items">
       {row.entries.map((entry) => <EntryRow key={entry.id} entry={entry} highlighted={entry.id === focusId} {...rest} />)}
@@ -115,6 +124,7 @@ function ForYouRowView({ row, focusId, ...rest }: { row: ForYouRow; agentMap: Ma
 
 function entryTarget(entry: ForYouEntry): ActivityTarget | null {
   if (entry.source.type === "activity") return rowTarget(entry.source.item);
+  if (entry.source.type === "failed_runs") return { kind: "run", id: entry.source.group.representative.id, roomId: null };
   const issue = entry.source.item.relatedIssue;
   return issue ? { kind: "issue", id: issue.id, roomId: null } : null;
 }
@@ -124,9 +134,46 @@ export function primaryAction(item: ActivityItem): ActivityAction | null {
   return item.actions.find((action) => action.style === "primary") ?? item.actions.find((action) => action.style !== "destructive") ?? null;
 }
 
-function EntryRow({ entry, highlighted, onRunAction, onNavigate, people, agentMap }: {
+type EntryProps = {
   entry: ForYouEntry; highlighted: boolean; agentMap: Map<string, CompanyAgent>;
-} & Pick<ForYouProps, "onRunAction" | "onNavigate" | "people">) {
+} & Pick<ForYouProps, "onRunAction" | "onNavigate" | "people" | "onDismissRuns">;
+
+function EntryRow(props: EntryProps) {
+  return props.entry.source.type === "failed_runs" ? <FailedRunEntry {...props} group={props.entry.source.group} /> : <ItemEntry {...props} />;
+}
+
+function RowShell({ entry, highlighted, target, onNavigate, control, below, failure }: {
+  entry: ForYouEntry; highlighted: boolean; target: ActivityTarget | null; onNavigate: ForYouProps["onNavigate"];
+  control: React.ReactNode; below?: React.ReactNode; failure?: string | null;
+}) {
+  return <li className="for-you-entry" data-for-you-id={entry.id} data-highlighted={highlighted || undefined}>
+    <div className="for-you-row">
+      <span className="for-you-row__avatar"><Avatar row={entry} /></span>
+      {target
+        ? <button type="button" className="for-you-row__line for-you-row__open" onClick={() => onNavigate(target)}>
+          <strong>{entry.sourceName}</strong> <span>{entry.text}</span>
+        </button>
+        : <p className="for-you-row__line"><strong>{entry.sourceName}</strong> <span>{entry.text}</span></p>}
+      {control}
+    </div>
+    {below && <div className="for-you-entry__below">{below}</div>}
+    {failure && <p role="alert" className="for-you-entry__error">{failure}</p>}
+  </li>;
+}
+
+/** A failed run (group): Retry wakes its agent and Dismiss acks every run in it, as in the Inbox. */
+function FailedRunEntry({ entry, highlighted, onNavigate, onDismissRuns, group }: EntryProps & { group: FailedRunGroup }) {
+  const retry = useRunRetry(group.representative.agentId);
+  const control = <span className="for-you-row__controls">
+    {group.representative.agentId && <button type="button" className="editorial-btn editorial-btn--sm editorial-btn--secondary"
+      disabled={retry.phase === "retrying"} onClick={() => void retry.retry()}>{retry.label}</button>}
+    {onDismissRuns && <button type="button" className="editorial-btn editorial-btn--sm editorial-btn--ghost"
+      onClick={() => onDismissRuns(group.runs.map((run) => run.id))}>Dismiss</button>}
+  </span>;
+  return <RowShell entry={entry} highlighted={highlighted} target={entryTarget(entry)} onNavigate={onNavigate} control={control} />;
+}
+
+function ItemEntry({ entry, highlighted, onRunAction, onNavigate, people, agentMap }: EntryProps) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
@@ -151,20 +198,24 @@ function EntryRow({ entry, highlighted, onRunAction, onNavigate, people, agentMa
         setBusy(false);
       }
     };
-    if (action) control = <button type="button" className={button} disabled={busy}
-      aria-expanded={action.input || action.confirm ? open : undefined}
+    // A decision with no input (Approve, Confirm, Allow) is never one click from a one-line row:
+    // Review opens the item's own detail (the approval and its payload, the task, the session),
+    // where it is decided. Without a place to open, it asks once inline.
+    const review = Boolean(action && !action.input && !action.navigate);
+    if (action && review && target) control = <button type="button" className={button} onClick={() => onNavigate(target)}>Review</button>;
+    else if (action) control = <button type="button" className={button} disabled={busy}
+      aria-expanded={action.navigate ? undefined : open}
       onClick={() => {
         if (action.navigate) return onNavigate(action.navigate);
-        if (action.input || action.confirm) return setOpen(!open);
-        void run();
-      }}>{action.label}</button>;
+        setOpen(!open);
+      }}>{review ? "Review" : action.label}</button>;
     // The input rides as both fields: the server reads `note` for a decision and `value`
     // for a reply, status or person, so the client keeps no per-action table.
     if (open && action) below = action.input?.kind === "login"
       ? <SecretForm action={action} busy={busy} onCancel={() => setOpen(false)} onSubmit={(value) => void run({ value })} />
       : <ActionForm action={action} busy={busy} people={people} onCancel={() => setOpen(false)}
         onSubmit={(value) => void run(value === undefined ? {} : { note: value, value })} />;
-  } else {
+  } else if (entry.source.type === "attention") {
     const item = entry.source.item;
     if (item.sourceKind === "decision") {
       // The feed row carries no options: the resolver reads the decision and answers it in place.
@@ -176,19 +227,7 @@ function EntryRow({ entry, highlighted, onRunAction, onNavigate, people, agentMa
     }
   }
 
-  return <li className="for-you-entry" data-for-you-id={entry.id} data-highlighted={highlighted || undefined}>
-    <div className="for-you-row">
-      <span className="for-you-row__avatar"><Avatar row={entry} /></span>
-      {target
-        ? <button type="button" className="for-you-row__line for-you-row__open" onClick={() => onNavigate(target)}>
-          <strong>{entry.sourceName}</strong> <span>{entry.text}</span>
-        </button>
-        : <p className="for-you-row__line"><strong>{entry.sourceName}</strong> <span>{entry.text}</span></p>}
-      {control}
-    </div>
-    {below && <div className="for-you-entry__below">{below}</div>}
-    {failure && <p role="alert" className="for-you-entry__error">{failure}</p>}
-  </li>;
+  return <RowShell entry={entry} highlighted={highlighted} target={target} onNavigate={onNavigate} control={control} below={below} failure={failure} />;
 }
 
 /**

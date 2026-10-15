@@ -1,4 +1,5 @@
 import type { ActivityItem, CanonicalRoomMessage } from "@lightbulb/shared";
+import type { FailedRunGroup } from "@/components/teams/inbox/lib/groupFailedRuns";
 import type { AttentionItem } from "@/components/teams/shared/types";
 
 export const growth = { kind: "agent" as const, id: "growth", name: "Growth" };
@@ -16,7 +17,7 @@ export const approval: ActivityItem = {
   actions: [
     { id: "approve", label: "Approve", style: "primary", confirm: null, input: null, navigate: null },
     { id: "reject", label: "Reject", style: "destructive", confirm: "Reject this?", input: null, navigate: null },
-    { id: "open", label: "Open task", style: null, confirm: null, input: null, navigate: { kind: "issue", id: "issue-41", roomId: null } },
+    { id: "open", label: "Open approval", style: null, confirm: null, input: null, navigate: { kind: "approval", id: "a1", roomId: null } },
   ],
 };
 
@@ -62,6 +63,11 @@ export const loginAsk: ActivityItem = {
       input: { kind: "login", label: "Login for supademo.com", required: true, options: null, hint: "Saved to the workspace's website logins." } },
   ],
 };
+
+export function runGroup(key: string, agentId = "friday", runIds = [`run-${key}`], reason = "Timed out") {
+  const runs = runIds.map((id) => ({ id, agentId, status: "failed", failureReason: reason, startedAt: "2026-09-08T08:00:00Z" })) as unknown as FailedRunGroup["runs"];
+  return { key, representative: runs[0], runs, count: runs.length } satisfies FailedRunGroup;
+}
 
 export function attention(id: string, sourceKind: AttentionItem["sourceKind"], agent: string | null = "Finance"): AttentionItem {
   return {

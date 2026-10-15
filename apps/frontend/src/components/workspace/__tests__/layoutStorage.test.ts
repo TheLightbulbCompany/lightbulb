@@ -33,7 +33,7 @@ describe("layoutStorage", () => {
 
   it("round-trips a valid layout", () => {
     const layout = minimalLayout({
-      "teams-inbox": { id: "teams-inbox", contentComponent: "teams", params: { teamsKey: "inbox" } },
+      "teams-artifacts": { id: "teams-artifacts", contentComponent: "teams", params: { teamsKey: "artifacts" } },
     });
     writeLayout("u1", layout);
     expect(readLayout("u1")).toEqual(layout);
@@ -291,6 +291,15 @@ describe("layoutStorage", () => {
     const leafData = (clean.grid.root as unknown as { data: { views: string[]; activeView: string } }).data;
     expect(leafData.views).toEqual(["activity"]);
     expect(leafData.activeView).toBe("activity");
+  });
+
+  it("sanitizer folds a saved Inbox tab into Activity", () => {
+    const dirty = leafLayout(["teams-inbox"], "teams-inbox", {
+      "teams-inbox": { id: "teams-inbox", contentComponent: "teams", params: { teamsKey: "inbox", section: "needs-you" }, title: "Inbox" },
+    });
+    const clean = sanitizeLayout(dirty);
+    expect(Object.keys(clean.panels)).toEqual(["activity"]);
+    expect(clean.panels.activity).toEqual({ id: "activity", contentComponent: "activity", params: {}, title: "Activity" });
   });
 
   it("sanitizer migrates a retired teams-costs layout entry to activity", () => {

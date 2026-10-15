@@ -152,7 +152,7 @@ export function OnboardingBand({ participants, humanSpoke = false }: OnboardingB
   const onStep = useCallback((step: SetupStep) => {
     if (step.id === "invite") return openInviteDialog();
     if (step.id === "tell-ceo") return document.querySelector<HTMLTextAreaElement>(".room-composer textarea")?.focus();
-    if (step.id === "approval") return openPanel("teams-inbox", { section: "needs-you" }, { pushUrl: true });
+    if (step.id === "approval") return openPanel("activity", {}, { pushUrl: true });
     if (step.id === "name-agents") return setNaming((open) => !open);
     if (step.id === "context") return setSharing(true);
     if (step.id === "starter-model") return navigateShell(PROVIDER_PICKER);

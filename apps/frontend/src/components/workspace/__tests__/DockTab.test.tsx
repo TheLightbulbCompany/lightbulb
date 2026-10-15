@@ -16,20 +16,20 @@ function renderTab(id: string) {
 afterEach(() => window.history.replaceState(null, "", "/"));
 
 it("picking another tab drops the ?panel= that named the panel left behind", async () => {
-  window.history.replaceState(null, "", "/chat?panel=teams-inbox&utm_source=x");
+  window.history.replaceState(null, "", "/chat?panel=teams-artifacts&utm_source=x");
   const { tab } = renderTab(MESSAGES_PANEL_ID);
   await userEvent.click(tab);
   expect(window.location.search).toBe("?utm_source=x");
 });
 
 it("leaves the URL alone for the tab it names, and for the close button", async () => {
-  window.history.replaceState(null, "", "/chat?panel=teams-inbox");
-  const { tab } = renderTab("teams-inbox");
+  window.history.replaceState(null, "", "/chat?panel=teams-artifacts");
+  const { tab } = renderTab("teams-artifacts");
   await userEvent.click(tab);
-  expect(window.location.search).toBe("?panel=teams-inbox");
+  expect(window.location.search).toBe("?panel=teams-artifacts");
 
   const other = renderTab("teams-issues");
   await userEvent.click(other.close);
   expect(other.api.close).toHaveBeenCalled();
-  expect(window.location.search).toBe("?panel=teams-inbox");
+  expect(window.location.search).toBe("?panel=teams-artifacts");
 });

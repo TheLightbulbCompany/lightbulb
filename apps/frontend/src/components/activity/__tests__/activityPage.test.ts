@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { dayLabel, feedTimeline, forYouEntries, groupForYou, splitPost } from "../activityPage";
-import { approval, ask, assigned, attention, failedRun, loginAsk, maya, message, post } from "./fixtures";
+import { dayLabel, feedTimeline, forYouEntries, groupForYou, rowSummary, splitPost } from "../activityPage";
+import { approval, ask, assigned, attention, failedRun, loginAsk, maya, message, post, runGroup } from "./fixtures";
 
 describe("For you", () => {
   it("sorts every kind into Decide, Reply or Do and leaves out what is not for you", () => {
@@ -8,19 +8,23 @@ describe("For you", () => {
       [approval, ask, message("m1"), message("m2", maya, true), message("d1", maya, false, "dm"), failedRun, assigned, loginAsk,
         { ...approval, id: "paperclip:approval:done", state: "resolved" }],
       [attention("x1", "decision"), attention("x2", "blocker_attention"), attention("x3", "approval"), attention("x4", "issue_thread_interaction")],
+      [runGroup("g1", "friday", ["r1", "r2"])],
+      (id) => (id === "friday" ? "Friday" : "An agent"),
     );
     expect(entries.map((entry) => [entry.id, entry.verb])).toEqual([
       ["paperclip:approval:a1", "decide"],
       ["paperclip:interaction:iss-4:int-1", "decide"],
       ["mention:m1", "reply"],
       ["dm:d1", "reply"],
-      ["paperclip:failed_run:r1", "do"],
       ["paperclip:assigned_issue:i9", "do"],
       ["login:abc", "do"],
       // Approvals and agents' questions come from Activity already: not listed twice.
       ["attention:x1", "decide"],
       ["attention:x2", "do"],
+      // Failed runs come from the Inbox's own list (every failure, grouped), not Activity's latest-per-agent.
+      ["failed_run:g1", "do"],
     ]);
+    expect(entries.at(-1)).toMatchObject({ sourceName: "Friday", text: "Timed out ×2" });
   });
 
   it("reads like a one-line row: the source, then what it is", () => {
@@ -39,6 +43,18 @@ describe("For you", () => {
     expect(reply.rows.map((row) => [row.sourceName, row.entries.length])).toEqual([["Maya", 3], ["Pat", 1]]);
     // Same person, different verb: a separate row in its own group.
     expect(groups[2].rows[0]).toMatchObject({ sourceName: "Maya", entries: [expect.objectContaining({ id: assigned.id })] });
+  });
+
+  it("names a collapsed row by its kind when every item is one kind, else by the verb", () => {
+    const rows = (entries: ReturnType<typeof forYouEntries>) => groupForYou(entries).flatMap((group) => group.rows);
+    const approvals = rows(forYouEntries([approval, { ...approval, id: "paperclip:approval:a2" }, { ...approval, id: "paperclip:approval:a3" }], []));
+    expect(rowSummary(approvals[0])).toBe("3 approvals");
+    const messages = rows(forYouEntries([message("m1"), message("d1", maya, false, "dm")], []));
+    expect(rowSummary(messages[0])).toBe("2 messages");
+    const runs = rows(forYouEntries([], [], [runGroup("g1"), runGroup("g2", "friday", ["r9"], "Out of credits")]));
+    expect(rowSummary(runs[0])).toBe("2 failed runs");
+    const mixed = rows(forYouEntries([{ ...assigned, actor: { kind: "agent", id: "friday", name: "Friday" } }, loginAsk], [], [runGroup("g1")]));
+    expect(rowSummary(mixed[0])).toBe("3 things to do");
   });
 
   it("is empty when nothing needs you", () => {

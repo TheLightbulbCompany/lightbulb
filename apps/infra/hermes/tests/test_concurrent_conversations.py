@@ -1,5 +1,6 @@
 """Several conversations of one agent run at once in the one microVM; one conversation is still
 one turn at a time (a follow-up steers it), under a microVM-wide cap."""
+import json
 import threading
 import time
 from types import SimpleNamespace
@@ -49,6 +50,21 @@ def test_the_microvm_wide_cap_holds(home, posted, monkeypatch):
     monkeypatch.setattr(turn, "_turn_slots", threading.BoundedSemaphore(2))
     rooms = [f"4444444{i}-4444-4444-8444-444444444444" for i in range(5)]
     assert _run_concurrently(monkeypatch, rooms) == 2
+
+
+def test_each_slot_acquire_and_release_logs_its_cost(home, monkeypatch, caplog, capsys):
+    monkeypatch.setattr(turn, "_turn_slots", threading.BoundedSemaphore(3))
+    caplog.set_level("INFO", logger="bridge")
+    with turn._waiting_turn_lock("ceo", "room-a", None):
+        pass
+    acquired, released = [r.getMessage() for r in caplog.records if "turn slot" in r.getMessage()]
+    assert "acquired agent=ceo slots_in_use=1 slots_max=3 wait_ms=" in acquired
+    assert "released agent=ceo slots_in_use=0 slots_max=3 held_ms=" in released
+    assert "peak_rss_mb=" in acquired
+    emf = [json.loads(ln) for ln in capsys.readouterr().out.splitlines() if ln.startswith("{")]
+    assert [d["bridge.turn_slot.slots_in_use"] for d in emf] == [1, 0]
+    names = {m["Name"] for m in emf[0]["_aws"]["CloudWatchMetrics"][0]["Metrics"]}
+    assert {"bridge.turn_slot.wait_ms", "bridge.turn_slot.peak_rss_mb"} <= names
 
 
 def test_each_conversation_gets_its_own_working_directory(home):

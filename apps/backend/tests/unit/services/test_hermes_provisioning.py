@@ -215,6 +215,16 @@ def test_runtime_env_carries_the_workspace_memory_id_only_when_configured():
     assert "AGENTCORE_MEMORY_ID" not in _env(memory_id="")
 
 
+def test_the_turn_cap_is_a_per_owner_env_key_and_unset_means_the_image_default():
+    assert _env(max_concurrent_turns=6)["LIGHTBULB_MAX_CONCURRENT_TURNS"] == "6"
+    assert "LIGHTBULB_MAX_CONCURRENT_TURNS" not in _env()
+    assert "LIGHTBULB_MAX_CONCURRENT_TURNS" not in _env(max_concurrent_turns=None)
+    # Setting it and clearing it are both drift, so a roll applies either.
+    assert hermes_provisioning._env_drifted(_env(), _env(max_concurrent_turns=6))
+    assert hermes_provisioning._env_drifted(_env(max_concurrent_turns=6), _env())
+    assert not hermes_provisioning._env_drifted(_env(max_concurrent_turns=6), _env(max_concurrent_turns=6))
+
+
 # --- _runtime_status: one status read, never a poll ------------------------------------------
 # Optimistic create: readiness is discovered at first invoke (retry-at-use). The ONLY read
 # here exists so a TERMINAL runtime is swept (deleted + ARN cleared) instead of reused

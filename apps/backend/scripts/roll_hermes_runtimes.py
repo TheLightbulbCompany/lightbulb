@@ -5,6 +5,10 @@ Runs INSIDE the backend task (ECS exec), like ``migrate_workspace_to_hermes``:
     uv run python -m scripts.roll_hermes_runtimes --owner-id <org> [--dry-run]
     uv run python -m scripts.roll_hermes_runtimes --all [--dry-run]
     uv run python -m scripts.roll_hermes_runtimes --all --respec   # model flip: env + profiles
+    uv run python -m scripts.roll_hermes_runtimes --owner-id <org> --max-concurrent-turns 6
+
+``--max-concurrent-turns N`` stores the owner's turn cap on its container row (0 clears it back to
+the image default, 4) and rolls, so the env carries ``LIGHTBULB_MAX_CONCURRENT_TURNS`` from then on.
 
 A ``hermes-version.json`` tag flip changes ``AGENTCORE_HERMES_IMAGE`` for the backend, but an
 existing runtime keeps the image it was created with until ``UpdateAgentRuntime`` moves it --
@@ -66,7 +70,15 @@ async def main(argv: list[str] | None = None) -> int:
     group.add_argument("--all", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--respec", action="store_true", help="re-spec on a current image and rewrite profiles")
+    parser.add_argument("--max-concurrent-turns", type=int, help="set the owner's turn cap (0 = default)")
     args = parser.parse_args(argv)
+    if args.max_concurrent_turns is not None:
+        if not args.owner_id or args.max_concurrent_turns < 0:
+            parser.error("--max-concurrent-turns needs --owner-id and a value >= 0")
+        if not args.dry_run:
+            await container_repo.update_fields(
+                args.owner_id, {"max_concurrent_turns": args.max_concurrent_turns or None}
+            )
 
     failed = 0
     for owner_id in await _targets(args):

@@ -45,7 +45,7 @@ def _wire(monkeypatch, *, current_image, row=ROW):
     monkeypatch.setattr(
         hermes_provisioning,
         "build_runtime_request_for_owner",
-        lambda o, r, *, browser_profile_id="", provider_choice: {
+        lambda o, r, *, browser_profile_id="", provider_choice, max_concurrent_turns=None: {
             "req": o,
             "profile": browser_profile_id,
         },
@@ -99,6 +99,16 @@ async def test_roll_keeps_managed_provider_in_replacement_spec(monkeypatch):
     )
     assert await hermes_provisioning.roll_runtime_image("org_a") == "updated"
     assert calls[0][2]["provider"] == "openrouter_managed"
+
+
+@pytest.mark.asyncio
+async def test_roll_carries_the_owners_turn_cap_from_the_row(monkeypatch):
+    calls = _wire(monkeypatch, current_image="x:old", row={**ROW, "max_concurrent_turns": 6})
+    monkeypatch.setattr(
+        hermes_provisioning, "build_runtime_request_for_owner", lambda *a, **kw: {"cap": kw["max_concurrent_turns"]}
+    )
+    assert await hermes_provisioning.roll_runtime_image("org_a") == "updated"
+    assert calls[0][2] == {"cap": 6}
 
 
 @pytest.mark.asyncio

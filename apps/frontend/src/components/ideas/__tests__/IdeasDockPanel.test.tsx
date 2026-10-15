@@ -19,8 +19,8 @@ vi.mock("@/components/workspace/workspaceController", () => controller);
 import { IdeasDockPanel } from "@/components/workspace/panels/IdeasDockPanel";
 import { WelcomeIdea } from "../IdeaCard";
 
-const idea = (id: string, agentId: string, agentName: string, kind: Idea["kind"] = "agency"): Idea => ({
-  id, ownerRole: "growth", kind, size: kind === "agency" ? "project" : "task", businessTypes: ["any"], title: `Title ${id}`, why: `Why ${id}`,
+const idea = (id: string, agentId: string, agentName: string, kind: Idea["kind"] = "agency", ownerRole = "growth"): Idea => ({
+  id, ownerRole, emoji: `e-${id}`, kind, size: kind === "agency" ? "project" : "task", businessTypes: ["any"], title: `Title ${id}`, why: `Why ${id}`,
   deliverables: [`${id} one`, `${id} two`, `${id} three`], ourTurnaround: "about 2 days", yourPart: "about 5 minutes",
   agentId, agentName,
 });
@@ -47,11 +47,12 @@ beforeEach(() => {
 });
 
 describe("Ideas pane: the list", () => {
-  it("shows every idea as one calm row: avatar, title, why; no cards, kicker, Start, × or chips", async () => {
+  it("shows every idea as one calm row: emoji tile, title, why; no cards, kicker, Start, × or chips", async () => {
     renderPanel();
     await waitFor(() => expect(rowTitles()).toHaveLength(5));
     expect(rowTitles()).toEqual(["Title a", "Title b", "Title c", "Title d", "Title e"]);
     expect(row("Title a")).toHaveAccessibleDescription("Why a");
+    expect(row("Title a").querySelector(".idea-tile--grow")?.textContent).toBe("e-a");
     expect(screen.queryByRole("article")).not.toBeInTheDocument();
     expect(screen.queryByText(/can do this for you/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Start/ })).not.toBeInTheDocument();
@@ -60,7 +61,18 @@ describe("Ideas pane: the list", () => {
     expect(document.body.textContent).not.toMatch(/\$|agency/i);
   });
 
-  it("puts the DM agent's ideas first, then agency jobs, then everyday", async () => {
+  it("groups ideas into sections by role, in a fixed order", async () => {
+    client.listIdeas.mockResolvedValue({ ideas: [idea("x", "eng", "Engineering", "agency", "engineering"),
+      idea("y", "fin", "Finance", "agency", "finance"), idea("z", "ceo", "Friday", "everyday", "ceo"),
+      idea("w", "growth", "Growth")] });
+    renderPanel();
+    await waitFor(() => expect(rowTitles()).toHaveLength(4));
+    expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual(["Money", "Grow", "Run the day", "Build"]);
+    expect(within(screen.getByRole("region", { name: "Money" })).getByRole("button", { name: "Title y" })).toBeInTheDocument();
+    expect(rowTitles()).toEqual(["Title y", "Title w", "Title z", "Title x"]);
+  });
+
+  it("puts the DM agent's ideas first in a section, then agency jobs, then everyday", async () => {
     renderPanel({ agent: "fin" });
     await waitFor(() => expect(rowTitles()).toHaveLength(5));
     expect(rowTitles()).toEqual(["Title e", "Title a", "Title b", "Title c", "Title d"]);
@@ -69,31 +81,35 @@ describe("Ideas pane: the list", () => {
 });
 
 describe("Ideas pane: sizes and suggestions", () => {
-  it("marks an agent's suggestion For you; its detail has no effort line", async () => {
+  it("puts an agent's suggestion under For you, first; its detail has no turnaround or your part", async () => {
     const suggestion: Idea = { ...idea("s-1", "growth", "Growth"), suggested: true, ourTurnaround: undefined, yourPart: undefined };
     client.listIdeas.mockResolvedValue({ ...catalog, ideas: [suggestion, ...catalog.ideas] });
     renderPanel();
     await waitFor(() => expect(rowTitles()).toHaveLength(6));
-    expect(row("Title s-1").textContent).toContain("For you");
-    expect(row("Title a").textContent).not.toContain("For you");
+    const forYou = screen.getByRole("region", { name: "For you" });
+    expect(within(forYou).getAllByRole("button").map((b) => b.getAttribute("aria-labelledby") && b.textContent)).toHaveLength(1);
+    expect(within(forYou).getByRole("button", { name: "Title s-1" })).toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { level: 2 })[0]).toHaveTextContent("For you");
     await userEvent.click(row("Title s-1"));
-    expect(screen.queryByText(/Your team:/)).not.toBeInTheDocument();
+    expect(screen.getByText("Growth takes this")).toBeInTheDocument();
+    expect(screen.queryByText(/Your part:/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Let's do it" })).toBeInTheDocument();
   });
 });
 
 describe("Ideas pane: the detail", () => {
-  it("opens on a row: title, description, what's included with checks, effort, Let's do it; back returns", async () => {
+  it("opens on a row: title, description, who and how fast, what you get, your part, Let's do it; back returns", async () => {
     renderPanel();
     await waitFor(() => expect(rowTitles()).toHaveLength(5));
     await userEvent.click(row("Title b"));
     const detail = screen.getByRole("article", { name: "Title b" });
     expect(within(detail).getByRole("heading", { name: "Title b" })).toBeInTheDocument();
     expect(within(detail).getByText("Why b")).toBeInTheDocument();
-    const included = within(detail).getByRole("region", { name: "What's included" });
+    const included = within(detail).getByRole("region", { name: "What you get" });
     expect(within(included).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["b one", "b two", "b three"]);
     expect(within(included).queryByRole("checkbox")).not.toBeInTheDocument();
-    expect(within(detail).getByText("Your team: about 2 days · You: about 5 minutes")).toBeInTheDocument();
+    expect(within(detail).getByText("Growth takes this · about 2 days")).toBeInTheDocument();
+    expect(within(detail).getByText("Your part: about 5 minutes")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "All ideas" }));
     expect(rowTitles()).toHaveLength(5);
   });

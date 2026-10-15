@@ -3,6 +3,7 @@ owner_role: engineering
 kind: agency
 size: project
 business_types: [any]
+emoji: "♿"
 title: "Your site's accessibility problems fixed in one pull request"
 why: "More people can use the site, and the common problems are gone."
 deliverables:

@@ -3,6 +3,7 @@ owner_role: finance
 kind: agency
 size: project
 business_types: [any]
+emoji: "📚"
 title: "Your books set up, six months categorised and reconciled"
 why: "Clean books your accountant can use, without a catch-up bill."
 deliverables:

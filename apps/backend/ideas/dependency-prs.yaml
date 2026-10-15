@@ -3,6 +3,7 @@ owner_role: engineering
 kind: everyday
 size: task
 business_types: [software]
+emoji: "🔧"
 title: "Weekly: dependency and security updates reviewed and merged"
 why: "Your app stays patched without an engineer spending a day on it."
 deliverables:

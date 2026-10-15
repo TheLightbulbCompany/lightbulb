@@ -3,6 +3,7 @@ owner_role: finance
 kind: everyday
 size: task
 business_types: [any]
+emoji: "🧹"
 title: "Unused software seats removed and unused tools cancelled"
 why: "Seats for people who left and tools nobody opens add up every month."
 deliverables:

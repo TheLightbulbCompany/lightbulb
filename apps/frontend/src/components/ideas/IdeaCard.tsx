@@ -1,11 +1,12 @@
 "use client";
 
-// Ideas, calm like Muse's Ideas tab (owner, 2026-10-15): a list of rows (the agent's avatar, a
-// bold title, a few grey lines of why) and, on a row, a detail view with what's included, the
-// effort line, "Let's do it" (Start) and a "…" menu with "Not interested" (dismiss). No prices.
+// Ideas, a showroom of what the team can do (owner, 2026-10-15): rows you tell apart at a glance
+// (the idea's emoji on its section's tint, a bold outcome, a grey why) and, on a row, a detail
+// that reads as a promise: who takes it and how fast, what you get, your part, "Let's do it", and
+// a "…" menu with "Not interested" (dismiss). No prices.
 import { useId, useState } from "react";
 import { ArrowLeft, Check, MoreHorizontal } from "lucide-react";
-import { ideaEffortLine, orderIdeas, type Idea } from "@lightbulb/shared";
+import { ideaSectionKey, orderIdeas, type Idea } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Identity } from "@/components/teams/shared/components/Identity";
@@ -13,15 +14,21 @@ import { useIdeas } from "@/hooks/useIdeas";
 import { openPanel } from "@/components/workspace/workspaceController";
 import "./ideas.css";
 
+/** The idea's emoji on its section's tint: the picture you scan before the words. */
+export function IdeaTile({ idea, large = false }: { idea: Idea; large?: boolean }) {
+  return <span aria-hidden="true" className={`idea-tile idea-tile--${ideaSectionKey(idea)}${large ? " idea-tile--large" : ""}`}>
+    {idea.emoji}
+  </span>;
+}
+
 /** One idea in the list: the whole row opens it. */
 export function IdeaListRow({ idea, onOpen }: { idea: Idea; onOpen: (ideaId: string) => void }) {
   const id = useId();
   return <li className="idea-item">
     <button type="button" className="idea-item__button" aria-labelledby={`${id}-title`} aria-describedby={`${id}-why`}
       onClick={() => onOpen(idea.id)}>
-      <Identity name={idea.agentName} avatarOnly size="sm" />
+      <IdeaTile idea={idea} />
       <span className="idea-item__text">
-        {idea.suggested && <span className="idea-item__for-you">For you</span>}
         <span id={`${id}-title`} className="idea-item__title">{idea.title}</span>
         <span id={`${id}-why`} className="idea-item__why">{idea.why}</span>
       </span>
@@ -29,7 +36,8 @@ export function IdeaListRow({ idea, onOpen }: { idea: Idea; onOpen: (ideaId: str
   </li>;
 }
 
-/** The idea opened: what it is, what's included, the effort, Let's do it, and "…" → Not interested. */
+/** The idea opened: what it is, who takes it and how fast, what you get, your part, Let's do it,
+ *  and "…" → Not interested. */
 export function IdeaDetail({ idea, onBack, onStart, onDismiss }: {
   idea: Idea;
   onBack: () => void;
@@ -46,15 +54,20 @@ export function IdeaDetail({ idea, onBack, onStart, onDismiss }: {
   };
   return <article className="idea-detail" aria-label={idea.title}>
     <button type="button" className="idea-detail__back" onClick={onBack}><ArrowLeft size={16} aria-hidden="true" />All ideas</button>
+    <IdeaTile idea={idea} large />
     <h2 className="idea-detail__title">{idea.title}</h2>
     <p className="idea-detail__why">{idea.why}</p>
+    <p className="idea-detail__who">
+      <Identity name={idea.agentName} avatarOnly size="xs" />
+      <span>{idea.agentName} takes this{idea.ourTurnaround ? ` · ${idea.ourTurnaround}` : ""}</span>
+    </p>
     <section className="idea-detail__included" aria-labelledby={`included-${idea.id}`}>
-      <h3 id={`included-${idea.id}`} className="idea-detail__heading">What&apos;s included</h3>
+      <h3 id={`included-${idea.id}`} className="idea-detail__heading">What you get</h3>
       <ul>
         {idea.deliverables.map((line) => <li key={line}><span>{line}</span><Check size={16} aria-hidden="true" /></li>)}
       </ul>
     </section>
-    {ideaEffortLine(idea) && <p className="idea-detail__effort">{ideaEffortLine(idea)}</p>}
+    {idea.yourPart && <p className="idea-detail__effort">Your part: {idea.yourPart}</p>}
     {failed && <p role="alert" className="idea-detail__error">{failed}</p>}
     <div className="idea-detail__actions">
       <DropdownMenu>

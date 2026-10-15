@@ -3,6 +3,7 @@ owner_role: customer_operations
 kind: everyday
 size: task
 business_types: [any]
+emoji: "⚡"
 title: "Every new lead answered within minutes, with a call offered"
 why: "The first company to reply usually wins the deal."
 deliverables:

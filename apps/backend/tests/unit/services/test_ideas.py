@@ -101,7 +101,8 @@ async def test_list_is_agency_first_then_by_title_with_agents_and_no_prices(work
     assert cards[0]["kind"] == "agency" and cards[-1]["kind"] == "everyday"
     first = cards[0]
     assert set(first) == {"id", "ownerRole", "title", "why", "deliverables", "ourTurnaround", "yourPart", "kind",
-                          "size", "businessTypes", "agentId", "agentName"}  # fmt: skip
+                          "size", "businessTypes", "emoji", "agentId", "agentName"}  # fmt: skip
+    assert len({c["emoji"] for c in cards}) == 35  # every idea its own picture
     # No prices in the app (owner, 2026-10-15): they stay in the YAML for marketing only.
     assert set(body) == {"ideas", "anyStarted", "anyDismissed"}
     assert body["anyStarted"] is False and body["anyDismissed"] is False
@@ -392,6 +393,9 @@ async def test_a_suggestion_is_stored_and_listed_first_marked_for_you(workspace)
     assert first["id"] == added["id"] and first["suggested"] is True
     assert (first["agentId"], first["agentName"], first["size"]) == (STARTERS["growth"], "Growth", "task")
     assert "ourTurnaround" not in first and "agencyPriceLow" not in first
+    assert first["emoji"] == "💡"  # the agent gave none
+    picked = await ideas.suggest(OWNER, _suggestion("Reply to the 3 refund emails", emoji="📮"))
+    assert next(c for c in (await ideas.list_ideas(AUTH))["ideas"] if c["id"] == picked["id"])["emoji"] == "📮"
 
 
 @pytest.mark.asyncio

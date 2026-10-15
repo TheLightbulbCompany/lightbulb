@@ -51,6 +51,8 @@ GONE = "__gone__"
 #: Open agent suggestions per workspace.
 SUGGESTION_CAP = 10
 SUGGESTION_PREFIX = "s-"
+#: An agent's suggestion with no emoji of its own (and every one stored before emojis).
+DEFAULT_EMOJI = "💡"
 
 
 class Idea(BaseModel):
@@ -63,6 +65,8 @@ class Idea(BaseModel):
     #: answered in one go (nothing in Work). Spec 2026-10-14 §4.4.
     size: Literal["project", "task", "quick"]
     business_types: list[Literal["software", "store", "services", "any"]] = Field(min_length=1)
+    #: The idea's picture in the list (owner, 2026-10-15: tell ideas apart at a glance).
+    emoji: str = Field(min_length=1, max_length=8)
     title: str = Field(min_length=1, max_length=120)
     why: str = Field(min_length=1, max_length=200)
     deliverables: list[str] = Field(min_length=3, max_length=3)
@@ -125,6 +129,7 @@ class Suggestion(BaseModel):
     why: str = Field(min_length=3, max_length=400)
     deliverables: list[str] = Field(min_length=1, max_length=3)
     size: Size
+    emoji: str = Field(default=DEFAULT_EMOJI, min_length=1, max_length=8)
 
     @field_validator("title", "why")
     @classmethod
@@ -178,6 +183,7 @@ def _suggestion_card(row: dict, names: dict[str, str]) -> dict:
         "id": row["ideaId"],
         "title": row["title"],
         "why": row["why"],
+        "emoji": row.get("emoji") or DEFAULT_EMOJI,
         "deliverables": row["deliverables"],
         "size": row["size"],
         "kind": "everyday",
@@ -385,6 +391,7 @@ async def suggest(owner_id: str, suggestion: Suggestion) -> dict:
             "why": suggestion.why,
             "deliverables": suggestion.deliverables,
             "size": suggestion.size,
+            "emoji": suggestion.emoji,
             "createdAt": utc_now_iso(),
         },
     )

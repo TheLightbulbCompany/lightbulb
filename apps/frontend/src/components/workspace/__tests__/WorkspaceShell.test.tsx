@@ -3,7 +3,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { WorkspaceShell } from "../WorkspaceShell";
-import { _resetControllerForTests, activateMessagesPanel, openPanel } from "../workspaceController";
+import { _resetControllerForTests, activateMessagesPanel, closePane, openPanel, useThreadPane } from "../workspaceController";
 import { PANE_DEFAULT_WIDTH, paneWidthKey } from "../RightPane";
 
 const state = vi.hoisted(() => ({
@@ -101,6 +101,20 @@ it("shares one messaging owner across sidebar and conversation, subscribing only
   expect(owner).toHaveAttribute("data-subscribed", "false");
   act(() => activateMessagesPanel());
   expect(owner).toHaveAttribute("data-subscribed", "true");
+});
+
+it("keeps the room subscribed while its thread is in the pane from another place", () => {
+  // The room's side column claims the pane, as RoomPanel does.
+  function ThreadColumn({ open }: { open: boolean }) { useThreadPane(open, () => {}, "Thread · Launch"); return null; }
+  const view = renderReady();
+  const owner = screen.getByRole("region", { name: "Messaging owner" });
+  const thread = render(<ThreadColumn open />);
+  act(() => openPanel("teams-issues"));
+  expect(owner).toHaveAttribute("data-subscribed", "true");
+  act(() => closePane());
+  expect(owner).toHaveAttribute("data-subscribed", "false");
+  thread.unmount();
+  view.unmount();
 });
 
 it("preserves checkout confirmation, readiness and the recovery stepper", () => {

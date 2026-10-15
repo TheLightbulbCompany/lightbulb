@@ -45,7 +45,7 @@ export interface WorkspaceSnapshot {
   lastFocusedChatAgentId: string | null;
   visibleChatAgentIds: string[];
   teamsPanelVisible: boolean;
-  /** The conversation is on screen: the Chat place, or the full-screen pane's chat column. */
+  /** The room is on screen: the Chat place, the full-screen pane's chat column, or a thread in the pane. */
   messagesVisible: boolean;
   browserVisible: boolean;
   openPanelIds: string[];
@@ -87,7 +87,9 @@ function chatAgentId(): string | null {
 function buildSnapshot(previous: WorkspaceSnapshot | null): WorkspaceSnapshot {
   const place = placeOf(_main);
   const fullScreen = _fullScreen && !!_pane;
-  const messagesVisible = _attached && (place === "chat" || fullScreen);
+  // The room is on screen in Chat, beside a full-screen pane, or as a thread in the pane from
+  // any place: each needs the live room subscription and counts as a visible chat.
+  const messagesVisible = _attached && (place === "chat" || fullScreen || _pane?.panelId === THREAD_PANE_ID);
   const agent = _attached ? chatAgentId() : null;
   return {
     ready: _attached,

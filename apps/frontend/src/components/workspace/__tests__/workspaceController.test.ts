@@ -152,6 +152,15 @@ describe("the conversation", () => {
     expect(snap()).toMatchObject({ messagesVisible: true, visibleChatAgentIds: ["agent-a"] });
   });
 
+  it("counts a thread in the pane as the visible room from any place", () => {
+    openChatPanel("agent-a");
+    openPanel("activity");
+    const { rerender } = renderHook(({ open }) => useThreadPane(open, vi.fn(), "Thread · Launch"), { initialProps: { open: true } });
+    expect(snap()).toMatchObject({ place: "activity", messagesVisible: true, visibleChatAgentIds: ["agent-a"] });
+    rerender({ open: false });
+    expect(snap()).toMatchObject({ messagesVisible: false, visibleChatAgentIds: [] });
+  });
+
   it("keeps the same snapshot object when nothing changed", () => {
     const before = snap();
     refreshWorkspaceSnapshot();

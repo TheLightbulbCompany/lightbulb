@@ -42,6 +42,8 @@ Size = Literal["project", "task", "quick"]
 CLOSED_PROJECT_STATUSES = frozenset({"completed", "cancelled"})
 #: A task in one of these is finished.
 CLOSED_ISSUE_STATUSES = frozenset({"done", "cancelled"})
+#: A start's project or task was deleted in Work: finished too.
+GONE = "__gone__"
 #: Open agent suggestions per workspace.
 SUGGESTION_CAP = 10
 SUGGESTION_PREFIX = "s-"
@@ -239,11 +241,12 @@ async def _running(auth: AuthContext, rows: list[dict], names: dict[str, str]) -
     running = []
     for r in tracked:
         if r.get("projectId"):
-            if statuses.get(r["projectId"]) in CLOSED_PROJECT_STATUSES:
+            # Finished, or deleted in Work: never running.
+            if (statuses or {}).get(r["projectId"]) in CLOSED_PROJECT_STATUSES | {GONE}:
                 continue
             counts = progress.get(r["projectId"])
         else:
-            if issues.get(r["issueId"]) in CLOSED_ISSUE_STATUSES:
+            if issues.get(r["issueId"]) in CLOSED_ISSUE_STATUSES | {GONE}:
                 continue
             counts = {issues[r["issueId"]]: 1} if r["issueId"] in issues else None
         item = {
@@ -266,7 +269,8 @@ async def _running(auth: AuthContext, rows: list[dict], names: dict[str, str]) -
 
 
 async def _issue_statuses(auth: AuthContext, issue_ids: list[str]) -> dict[str, str]:
-    """{issue: status} from Paperclip; a missing one is left out (never failing the read)."""
+    """{issue: status} from Paperclip; a deleted one (404) is GONE, one that could not be read is
+    left out (never failing the read)."""
     if not issue_ids:
         return {}
     from core.services import task_board
@@ -281,16 +285,26 @@ async def _issue_statuses(auth: AuthContext, issue_ids: list[str]) -> dict[str, 
     except Exception:  # noqa: BLE001 -- progress is optional on this read
         logger.info("ideas: Work task status unavailable", exc_info=True)
         return {}
-    return {i: f["status"] for i, f in zip(issue_ids, found) if isinstance(f, dict) and f.get("status")}
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    statuses = {}
+    for issue_id, found_issue in zip(issue_ids, found):
+        if isinstance(found_issue, PaperclipApiError) and found_issue.status_code == 404:
+            statuses[issue_id] = GONE
+        elif isinstance(found_issue, dict) and found_issue.get("status"):
+            statuses[issue_id] = found_issue["status"]
+    return statuses
 
 
-async def _work_progress(auth: AuthContext, project_ids: list[str]) -> tuple[dict[str, str], dict[str, dict]]:
-    """({project: status}, {project: {issue status: count}}) from Paperclip; empty on any failure,
-    so the Ideas read never fails because Work is slow or the caller has not joined it yet."""
+async def _work_progress(auth: AuthContext, project_ids: list[str]) -> tuple[dict[str, str] | None, dict[str, dict]]:
+    """({project: status}, {project: {issue status: count}}) from Paperclip; (None, {}) on any
+    failure, so the Ideas read never fails because Work is slow or the caller has not joined it
+    yet. A project the list leaves out (deleted, or one this caller cannot list) is read on its
+    own: a 404 is GONE; anything else leaves it unknown, so it keeps running."""
     from collections import Counter
 
     from core.services import task_board
-    from core.services.paperclip_admin_client import shared_admin_client
+    from core.services.paperclip_admin_client import PaperclipApiError, shared_admin_client
     from core.services.paperclip_agent_lifecycle import list_all_issues
 
     try:
@@ -299,6 +313,16 @@ async def _work_progress(auth: AuthContext, project_ids: list[str]) -> tuple[dic
         projects = await admin.list_projects(session_cookie=ctx.session_cookie, company_id=ctx.company_id)
         rows = projects if isinstance(projects, list) else (projects or {}).get("projects") or []
         statuses = {p["id"]: p.get("status") for p in rows if isinstance(p, dict) and "id" in p}
+        unlisted = [pid for pid in project_ids if pid not in statuses]
+        read = await asyncio.gather(
+            *(admin.get_project(session_cookie=ctx.session_cookie, project_id=pid) for pid in unlisted),
+            return_exceptions=True,
+        )
+        for pid, found_project in zip(unlisted, read):
+            if isinstance(found_project, PaperclipApiError) and found_project.status_code == 404:
+                statuses[pid] = GONE
+            elif isinstance(found_project, dict) and found_project.get("status"):
+                statuses[pid] = found_project["status"]
         issues = await asyncio.gather(
             *(
                 list_all_issues(admin, cookie=ctx.session_cookie, company_id=ctx.company_id, params={"projectId": pid})
@@ -307,7 +331,7 @@ async def _work_progress(auth: AuthContext, project_ids: list[str]) -> tuple[dic
         )
     except Exception:  # noqa: BLE001 -- progress is optional on this read
         logger.info("ideas: Work progress unavailable", exc_info=True)
-        return {}, {}
+        return None, {}
     return statuses, {pid: dict(Counter(i.get("status") for i in found)) for pid, found in zip(project_ids, issues)}
 
 

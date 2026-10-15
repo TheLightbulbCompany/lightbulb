@@ -531,3 +531,32 @@ def test_a_suggestion_with_blank_text_is_refused(field):
         ideas.Suggestion(**{**good, field: " \n a \t "})
     with pytest.raises(ValueError):
         ideas.Suggestion(**{**good, "deliverables": ["  "]})
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_task_or_project_is_finished_not_running_and_can_start_again(paperclip):
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    gone = PaperclipApiError("GET -> 404", status_code=404, body="")
+    await ideas.start(AUTH, "claim-refund")  # a task
+    project = await ideas.start(AUTH, "books-cleanup")  # a project
+    paperclip.list_projects.return_value = [{"id": project["projectId"], "status": "in_progress"}]
+    assert {r["ideaId"] for r in (await ideas.list_ideas(AUTH))["running"]} == {"claim-refund", "books-cleanup"}
+
+    paperclip.get_issue.side_effect = gone
+    paperclip.list_projects.return_value = []  # the project is no longer listed...
+    paperclip.get_project.side_effect = gone  # ...because it was deleted
+    assert (await ideas.list_ideas(AUTH))["running"] == []
+    assert (await ideas.start(AUTH, "claim-refund"))["issueId"] == "issue-2"
+    assert (await ideas.start(AUTH, "books-cleanup"))["projectId"] == "project-2"
+
+
+@pytest.mark.asyncio
+async def test_a_project_this_person_cannot_list_or_read_keeps_running(paperclip):
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    started = await ideas.start(AUTH, "books-cleanup")
+    paperclip.list_projects.return_value = []
+    paperclip.get_project.side_effect = PaperclipApiError("GET -> 403", status_code=403, body="")
+    [item] = (await ideas.list_ideas(AUTH))["running"]
+    assert item["projectId"] == started["projectId"]

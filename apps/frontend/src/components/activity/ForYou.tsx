@@ -106,7 +106,7 @@ export function ForYou(props: ForYouProps) {
     <h2 id="for-you-title" className="for-you__title">For you</h2>
     <div className="for-you__chips" role="group" aria-label="Show">
       {FOR_YOU_FILTERS.map(({ id, label }) => <button key={id} type="button" className="for-you__chip" aria-pressed={filter === id}
-        onClick={() => props.onFilterChange?.(id)}>{label}</button>)}
+        onClick={() => { if (id !== filter) props.onFilterChange?.(id); }}>{label}</button>)}
       <button type="button" className="for-you__chip for-you__unread" aria-pressed={unreadOnly}
         onClick={() => setUnreadOnly(!unreadOnly)}>Unread</button>
     </div>

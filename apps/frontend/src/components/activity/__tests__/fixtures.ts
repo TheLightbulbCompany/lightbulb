@@ -32,7 +32,7 @@ export const ask: ActivityItem = {
 
 export function message(id: string, actor = maya, read = false, kind: ActivityItem["kind"] = "mention"): ActivityItem {
   return {
-    ...approval, id: `${kind}:${id}`, kind, subtype: null, roomId: "room-1", messageId: id, read,
+    ...approval, id: `${kind}:${id}`, kind, subtype: null, roomId: "room-1", roomKind: "channel", messageId: id, read,
     actor, createdAt: "2026-09-08T11:00:00Z",
     summary: { title: `${actor.name} mentioned you in #launch`, requester: actor, reason: null,
       preview: { text: `message ${id}`, destination: null, fields: [] }, links: [{ kind: "room", id: "room-1", label: "#launch" }] },

@@ -58,7 +58,9 @@ describe("ForYou", () => {
     expect(m1.querySelector("time")).toHaveAttribute("dateTime", "2026-09-08T11:00:00Z");
     expect(m1).toHaveAttribute("data-unread", "true");
     expect(document.querySelector('[data-for-you-id="mention:m3"]')).not.toHaveAttribute("data-unread");
-    expect(screen.getAllByRole("img", { name: "Unread" })).toHaveLength(3);
+    // Two unread messages; the approval carries no dot (an ask has no "opened" state).
+    expect(screen.getAllByRole("img", { name: "Unread" })).toHaveLength(2);
+    expect(document.querySelector('[data-for-you-id="paperclip:approval:a1"]')).not.toHaveAttribute("data-unread");
     // No verb groups any more.
     expect(screen.queryByRole("heading", { level: 3 })).not.toBeInTheDocument();
   });
@@ -77,6 +79,10 @@ describe("ForYou", () => {
     expect(rows()).toEqual(["mention:m1"]);
     await userEvent.click(chip("Needs you"));
     expect(rows()).toEqual(["paperclip:approval:a1"]);
+    // Re-picking the selected chip changes nothing (no history entry).
+    onFilter.mockClear();
+    await userEvent.click(chip("Needs you"));
+    expect(onFilter).not.toHaveBeenCalled();
   });
 
   it("starts on the chip the link names", () => {

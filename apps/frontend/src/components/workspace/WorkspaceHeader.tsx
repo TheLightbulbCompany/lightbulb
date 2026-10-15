@@ -34,7 +34,7 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
   const { setOpen } = useCommandPalette();
   const { place: current } = useWorkspaceState();
   const activeTeamRunCount = useActiveTeamRunCount();
-  // Stock Paperclip's inbox badge: open approvals and failed runs always, the rest while unseen.
+  // Activity's badge: every needs-you item, plus unseen mentions, DMs and Paperclip items.
   const { attentionCount } = useActivity();
   return (
     <nav className="workspace-rail" aria-label="Workspace">

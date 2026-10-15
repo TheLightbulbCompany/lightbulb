@@ -113,7 +113,7 @@
 .for-you-entry[data-unread] .for-you-row__text { color: var(--fg); }
 .for-you-row__controls { display: flex; gap: 4px; }
 .for-you-row__open:hover strong, .for-you-row__open:focus-visible strong { text-decoration: underline; text-underline-offset: 2px; }
-.for-you-row__dot { width: 8px; height: 8px; margin-top: 8px; border-radius: 50%; }
+.for-you-row__dot { grid-column: 3; width: 8px; height: 8px; margin-top: 8px; border-radius: 50%; }
 .for-you-entry[data-unread] .for-you-row__dot { background: var(--link); }
 
 .for-you-entry[data-highlighted] > .for-you-row { background: var(--plane-selected); }

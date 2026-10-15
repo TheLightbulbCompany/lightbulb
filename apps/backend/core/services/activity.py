@@ -15,7 +15,7 @@ Two sources, one item shape:
 
 "Needs you" (stock Paperclip's inbox badge: actionable approvals + each agent's
 latest run when it failed) is pinned above everything else on page 1, and
-``attentionCount`` -- the rail badge -- is those plus the unseen rest. Every
+``attentionCount`` -- the rail badge -- is those plus unseen mentions, DMs and Paperclip items. Every
 pending approval is listed: the Activity v1 read went through the viewer's
 attention feed capped at 20 and sorted by recent activity, so older approvals
 fell off behind newer failed runs and blockers and never showed at all.
@@ -169,6 +169,8 @@ class ActivityItem(ContractModel):
     room_id: str | None = None
     message_id: str | None = None
     thread_root_message_id: str | None = None
+    # Message items: the room's kind, so a client can say "in a DM" without parsing labels.
+    room_kind: Literal["channel", "dm", "group-dm"] | None = None
     actor: ActivityActor
     created_at: datetime
     state: Literal["open", "done", "resolved"]
@@ -188,7 +190,8 @@ class ActivityPage(ContractModel):
     next: str | None
     # First page only (None after it): items newer than the seen cursor, capped at 99.
     unseen_count: int | None
-    # First page only: every "needs you" item (see ``needs_you``) plus the unseen rest, capped at 99.
+    # First page only: every "needs you" item (see ``needs_you``) plus unseen mentions, DMs and
+    # Paperclip items, capped at 99. Thread replies never count.
     attention_count: int | None = None
     sources: ActivitySources
 
@@ -308,7 +311,9 @@ def _render_message_item(
     created = _when(row["createdAt"])
     done_at = row.get("doneAt")
     floor = messaging_repo.read_floor(member, read_row)
-    read = bool(done_at) or not _newer_than(created, seen) or (kind in ("mention", "dm") and int(row["seq"]) <= floor)
+    # Read = opened: done, or the room's read cursor passed it (opening the room or thread moves
+    # it). Viewing Activity ("seen") clears the badge, never the dot.
+    read = bool(done_at) or int(row["seq"]) <= floor
     links = [ActivityLink(kind="room", id=room_id, label=_where(meta))]
     if root:
         links.append(ActivityLink(kind="thread", id=root, label="Thread"))
@@ -338,6 +343,7 @@ def _render_message_item(
         room_id=room_id,
         message_id=message_id,
         thread_root_message_id=root,
+        room_kind=meta.get("kind") if meta.get("kind") in ("channel", "dm", "group-dm") else None,
         actor=actor,
         created_at=created,
         state="done" if done_at else "open",

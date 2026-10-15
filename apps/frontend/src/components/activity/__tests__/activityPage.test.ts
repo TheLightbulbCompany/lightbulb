@@ -27,7 +27,8 @@ describe("For you", () => {
       ["failed_run:g1", "do"],
     ]);
     expect(entries.at(-1)).toMatchObject({ sourceName: "Friday", text: "Timed out ×2", where: "in Work" });
-    expect(entries.map((entry) => entry.unread)).toEqual([true, false, true, true, true, true, true, false, false, false]);
+    // The dot is "not opened" and only messages carry it.
+    expect(entries.map((entry) => entry.unread)).toEqual([true, false, true, false, false, false, false, false, false, false]);
   });
 
   it("lists an approval or question from the attention feed only when Activity does not (its Paperclip half was down)", () => {
@@ -74,10 +75,17 @@ describe("For you", () => {
   });
 
   it("reads like Slack: who, where, then the message or the ask", () => {
-    const dm = { ...message("d1", maya, false, "dm"), summary: { ...message("d1").summary, links: [{ kind: "room" as const, id: "room-1", label: "your conversation" }] } };
-    const [mention, direct, issue, decide, login] = forYouEntries([message("m1"), dm, { ...assigned, createdAt: "2026-09-08T10:30:00Z" }, approval, loginAsk], []);
+    const inDm = (item: ReturnType<typeof message>, roomKind: "dm" | "group-dm", label: string) =>
+      ({ ...item, roomKind, summary: { ...item.summary, links: [{ kind: "room" as const, id: "room-1", label }] } });
+    const [mention, direct, dmMention, group, issue, decide, login] = forYouEntries([message("m1"), inDm(message("d1", maya, false, "dm"), "dm", "your conversation"),
+      inDm(message("m9"), "dm", "your conversation"), inDm(message("g1", maya, false, "dm"), "group-dm", "Launch crew"),
+      { ...assigned, createdAt: "2026-09-08T10:30:00Z" }, approval, loginAsk], []);
     expect([mention.sourceName, mention.where, mention.text]).toEqual(["Maya", "in #launch", "message m1"]);
     expect([direct.where, direct.text]).toEqual(["in a DM", "message d1"]);
+    // A mention inside a 1:1 DM is "in a DM" too, never the room's label.
+    expect(dmMention.where).toBe("in a DM");
+    expect(group.where).toBe("in Launch crew");
+    expect(login.where).toBeNull();
     expect([issue.where, issue.text]).toEqual(["in Work", "LB-9 is assigned to you: Send invoices"]);
     expect([decide.sourceName, decide.text]).toEqual(["Growth", "needs your approval · Pilot X auto-replies"]);
     expect([login.sourceName, login.text]).toEqual(["Friday", "needs the login for supademo.com"]);

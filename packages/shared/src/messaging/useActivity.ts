@@ -182,7 +182,7 @@ export function useActivity(client: ActivityClient, platform: ActivityPlatform, 
   return {
     items,
     unseenCount: pages[0]?.unseenCount ?? 0,
-    /** The rail/tab badge: open approvals and failed runs always, the rest while unseen. */
+    /** The rail/tab badge: every needs-you item, plus unseen mentions, DMs and Paperclip items. */
     attentionCount: pages[0]?.attentionCount ?? pages[0]?.unseenCount ?? 0,
     paperclipAvailable: pages[0]?.sources.paperclip !== "unavailable",
     loading: isLoading,

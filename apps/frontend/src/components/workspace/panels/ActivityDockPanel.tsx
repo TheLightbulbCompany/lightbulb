@@ -124,7 +124,8 @@ export function ActivityDockPanel({ params }: PanelProps) {
           loading={activity.loading || attention.isLoading || runsLoading}
           incomplete={Boolean(activity.error) || !activity.paperclipAvailable || attention.isError || runsError}
           onRetry={() => { void activity.refresh(); attention.refresh(); void teams.mutate(INBOX_RUNS_KEY); }}
-          hasMore={activity.hasMore}
+          // A failed page stops the scroll paging (else the sentinel refetches it in a loop); Retry restarts it.
+          hasMore={activity.hasMore && !activity.error}
           loadingMore={activity.loadingMore}
           onLoadMore={activity.loadMore}
           onRunAction={activity.runAction}

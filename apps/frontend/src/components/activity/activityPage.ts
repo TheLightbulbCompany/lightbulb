@@ -30,7 +30,7 @@ export interface ForYouEntry {
   text: string;
   /** ISO time the row shows and sorts by. */
   at: string;
-  /** The server's read state; only Activity items carry one. */
+  /** A message not opened yet (the room's read cursor is behind it). Only message rows carry a dot. */
   unread: boolean;
   source: ForYouSource;
 }
@@ -69,13 +69,14 @@ const ATTENTION_VERBS: Partial<Record<AttentionItem["sourceKind"], ForYouVerb>> 
   recovery_action: "do",
 };
 
-/** Where it happened, Slack-style. The server names a 1:1 DM's room "your conversation". */
+/** Where it happened, Slack-style: a message by its room's kind, the rest by where it lives. */
 function activityWhere(item: ActivityItem): string | null {
   const room = item.summary.links.find((link) => link.kind === "room");
-  if (item.kind === "dm") return room && room.label !== "your conversation" ? `in ${room.label}` : "in a DM";
+  if (item.roomKind === "dm") return "in a DM";
+  if (item.roomKind) return room ? `in ${room.label}` : null;
   if (item.kind === "paperclip") return "in Work";
   if (item.kind === "session") return "in a session";
-  return room && room.label !== "Room" ? `in ${room.label}` : null;
+  return null;
 }
 
 /** A message's own words; an ask's sentence after its actor ("needs your approval · Pilot X"). */
@@ -97,7 +98,7 @@ function activityEntry(item: ActivityItem, verb: ForYouVerb): ForYouEntry {
     where: activityWhere(item),
     text: activityText(item),
     at: item.createdAt,
-    unread: !item.read,
+    unread: verb === "reply" && !item.read,
     source: { type: "activity", item },
   };
 }

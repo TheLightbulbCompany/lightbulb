@@ -189,7 +189,10 @@ async def test_mention_is_self_explaining_and_read_follows_the_room_cursor(world
     assert reply["input"] == {"kind": "text", "label": "Reply to Ann", "required": True, "options": None, "hint": None}
     assert item["actions"][2]["navigate"]["kind"] in {"thread", "room"}
     assert page["unseenCount"] == 1 and page["sources"] == {"paperclip": "unavailable"}
-    # Reading the room clears it.
+    assert item["roomKind"] == "channel"
+    # Viewing Activity (seen) does not clear the dot; opening the room does.
+    await activity.mark_seen(auth(), activity.ActivitySeenRequest(up_to=message["createdAt"]))
+    assert (await feed())["items"][0]["read"] is False
     await repo.set_read_cursor(room_id, USER_B, 1)
     assert (await feed())["items"][0]["read"] is True
     # The author and an unmentioned member see nothing.
@@ -320,7 +323,7 @@ async def test_deleted_messages_drop_and_edits_show_the_current_text(world):
 
 
 @pytest.mark.asyncio
-async def test_seen_cursor_is_monotonic_and_marks_thread_replies_read(world):
+async def test_seen_cursor_is_monotonic_and_leaves_thread_replies_unread_until_opened(world):
     room_id = await _room()
     root = await say(room_id, BOB, "root")
     reply = await say(room_id, ANN, "reply", thread_root=root["messageId"])
@@ -329,7 +332,10 @@ async def test_seen_cursor_is_monotonic_and_marks_thread_replies_read(world):
     seen = await activity.mark_seen(auth(), activity.ActivitySeenRequest(up_to=reply["createdAt"]))
     assert seen.seen_up_to is not None
     page = await feed()
-    assert page["unseenCount"] == 0 and page["items"][0]["read"] is True
+    # Seen clears the badge count, not the dot: the reply is read once the room cursor passes it.
+    assert page["unseenCount"] == 0 and page["items"][0]["read"] is False
+    await repo.set_read_cursor(room_id, USER_B, int(reply["messageSeq"]))
+    assert (await feed())["items"][0]["read"] is True
     # An older upTo never moves the cursor back.
     await activity.mark_seen(auth(), activity.ActivitySeenRequest(up_to="2000-01-01T00:00:00+00:00"))
     assert (await feed())["unseenCount"] == 0

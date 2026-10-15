@@ -237,6 +237,7 @@
 
 /* The place's main view and the one right pane, side by side. */
 .workspace-body {
+  position: relative;
   flex: 1;
   display: flex;
   min-width: 0;
@@ -454,6 +455,22 @@
 @media (min-width: 600px) {
   .workspace-shell[data-sidebar="false"] { grid-template-columns: 56px minmax(0, 1fr); grid-template-areas: "rail main"; }
   .workspace-shell[data-sidebar="false"] > .cream-sidebar { display: none; }
+}
+/* Tablet widths: below 956 px (rail 56 + sidebar 220 + main 360 + pane 320) the main view and
+   the pane cannot both keep their minimums side by side, so the pane opens as a sheet over the
+   main view (with its close button). Full screen still puts it beside the chat column. */
+@media (min-width: 600px) and (max-width: 955px) {
+  .workspace-body:not([data-full]) > .workspace-pane {
+    position: absolute;
+    inset: 0;
+    z-index: var(--z-chrome);
+    width: auto !important;
+    min-width: 0;
+    max-width: none;
+  }
+  .workspace-body:not([data-full]) > .workspace-pane > .workspace-pane__resize { display: none; }
+  .workspace-body[data-full] > .workspace-view--chat { flex: 0 1 360px; }
+  .workspace-body[data-full] > .workspace-pane { min-width: 0; }
 }
 /* Phone widths: one column. The rail and the sidebar leave the grid and open
    together as a drawer from .workspace-phone-bar (WorkspaceShell's navOpen). */

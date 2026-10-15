@@ -6,10 +6,10 @@ import type { ReactNode } from "react";
 
 import type { ApiMethods } from "../api/client";
 import { createMessagingClient } from "./client";
-import { ideaEffortLine, ideaProgress, orderIdeas, useIdeas, type Idea, type IdeasClient } from "./ideas";
+import { ideaEffortLine, ideaProgress, orderIdeas, runningLine, useIdeas, type Idea, type IdeasClient } from "./ideas";
 
 const idea = (id: string, agentId: string, agentName = agentId): Idea => ({
-  id, ownerRole: "growth", kind: "agency", businessTypes: ["any"], title: `T ${id}`, why: "w",
+  id, ownerRole: "growth", kind: "agency", size: "project", businessTypes: ["any"], title: `T ${id}`, why: "w",
   deliverables: ["a", "b", "c"], ourTurnaround: "about 2 days", yourPart: "about 5 minutes", agentId, agentName,
 });
 
@@ -30,6 +30,17 @@ describe("ideas helpers", () => {
     const list = [idea("a", "eng"), idea("b", "growth"), idea("c", "eng"), idea("d", "growth")];
     expect(orderIdeas(list, "growth").map((i) => i.id)).toEqual(["b", "d", "a", "c"]);
     expect(orderIdeas(list, null).map((i) => i.id)).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("writes a running idea's line: a project's tasks done, or a task's status", () => {
+    expect(runningLine({ size: "project", progress: { done: 2, todo: 3 } })).toBe("2 of 5 tasks done");
+    expect(runningLine({ size: "project" })).toBe("Planning");
+    expect(runningLine({ size: "task", progress: { in_progress: 1 } })).toBe("In progress");
+    expect(runningLine({ size: "task" })).toBe("To do");
+  });
+
+  it("has no effort line for a suggestion without one", () => {
+    expect(ideaEffortLine({})).toBeNull();
   });
 
   it("writes the effort line without prices", () => {

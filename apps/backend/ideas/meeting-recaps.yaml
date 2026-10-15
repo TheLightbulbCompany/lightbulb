@@ -1,6 +1,7 @@
 id: meeting-recaps
 owner_role: customer_operations
 kind: everyday
+size: task
 business_types: [any]
 title: "After each meeting, the recap sent and action items on the board"
 why: "Nothing decided in a meeting gets lost."

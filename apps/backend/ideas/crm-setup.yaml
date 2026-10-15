@@ -1,6 +1,7 @@
 id: crm-setup
 owner_role: customer_operations
 kind: agency
+size: project
 business_types: [any]
 title: "Your CRM set up with every contact imported"
 why: "Every lead and customer in one place, with follow-ups that happen on time."

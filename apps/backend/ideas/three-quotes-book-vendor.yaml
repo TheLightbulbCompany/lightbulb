@@ -1,6 +1,7 @@
 id: three-quotes-book-vendor
 owner_role: ceo
 kind: everyday
+size: task
 business_types: [any]
 title: "Three quotes collected and your pick asked to book"
 why: "Insurance, cleaners, accountants or movers compared for you, then requested."

@@ -1,6 +1,7 @@
 id: stripe-subscriptions
 owner_role: engineering
 kind: agency
+size: project
 business_types: [software]
 title: "Subscriptions added to your app, with tests"
 why: "Plans, trials, upgrades and failed-payment emails, so revenue runs on its own."

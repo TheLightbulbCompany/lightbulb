@@ -16,7 +16,7 @@ stale text until it was deleted). Hermes tool names are anchored to its
 `CONFIGURABLE_TOOLSETS`
 (`terminal`, `file`, `web`, `memory`, `skills`, `browser`, `secrets`) plus our
 own plugin tools in `apps/infra/hermes/plugins/lightbulb/__init__.py`
-(`send_room_message`, `hire_suggestion`, `request_approval`, `lightbulb_read_rooms`, `lightbulb_local_sessions` — its direct-or-ask
+(`send_room_message`, `hire_suggestion`, `request_approval`, `suggest_idea`, `lightbulb_read_rooms`, `lightbulb_local_sessions` — its direct-or-ask
 send rule is `agent_command` in `apps/backend/core/services/local_sessions.py`).
 
 MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
@@ -459,12 +459,13 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  authors, never members: messaging.room_agent (roster stand-in) and the feed rule in
                                  select_dispatch_targets (a Discuss @mention wakes that agent). Spec 2026-10-14 §4.2.
   - Ideas ................... references/ideas.md + SKILL.md routing row
-                              <- backend core/services/ideas.py (start: one Paperclip project per start named after the
-                                 idea, owner agent as lead, the claim/idempotency rows IDEA#START; start_text = the person's
-                                 own message via "ideas": the idea quoted, "Let's do it!", "Tracked in Work: [<title>](
-                                 project_link)") + apps/backend/ideas/*.yaml + routers/ideas.py (GET /ideas cards + running
-                                 progress, POST /ideas/{id}/start, POST /ideas/{id}/dismiss). Approvals stay in For you.
-                                 Spec 2026-10-14 §4.4.
+                              <- backend core/services/ideas.py (catalog size: project | task | quick; start: a Paperclip
+                                 project (project), one todo issue assigned to the agent (task) or nothing (quick), claim and
+                                 idempotency rows IDEA#START; start_text = the person's own message via "ideas": the idea
+                                 quoted, "Let's do it!", "Tracked in Work: [<title>](work_link)" for project/task; suggest =
+                                 suggest_idea's store IDEA#SUGGESTED, deduped by title, SUGGESTION_CAP) + apps/backend/ideas/
+                                 *.yaml + routers/ideas.py (GET /ideas, POST start/dismiss, POST /internal/ideas/suggestions
+                                 hook token) + plugins/lightbulb suggest_idea. Approvals stay in For you. Spec 2026-10-14 §4.4.
   - Chat vs document ........ references/chat-vs-document.md + SKILL.md (non-negotiable + routing row)
                               First-run result contract ("The first run" section, pointed at from SKILL.md's
                                  deliverable bullet and company-and-plans.md, because the first room turn can run

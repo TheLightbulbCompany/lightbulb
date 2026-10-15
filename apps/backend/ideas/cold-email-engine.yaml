@@ -1,6 +1,7 @@
 id: cold-email-engine
 owner_role: growth
 kind: agency
+size: project
 business_types: [software, services]
 title: "A cold email engine sending to 200 accounts that fit you"
 why: "Outbound that runs every week on its own domains, so your main address stays safe."

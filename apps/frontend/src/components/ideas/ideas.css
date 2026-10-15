@@ -34,6 +34,7 @@
 .idea-item__text { display: grid; gap: 4px; min-width: 0; }
 .idea-item__title,
 .idea-item__why { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
+.idea-item__for-you { font-size: var(--text-caption); color: var(--fg-mute); }
 .idea-item__title { font-weight: 600; -webkit-line-clamp: 2; line-clamp: 2; }
 .idea-item__why { font-size: var(--text-ui); color: var(--fg-mute); -webkit-line-clamp: 3; line-clamp: 3; }
 

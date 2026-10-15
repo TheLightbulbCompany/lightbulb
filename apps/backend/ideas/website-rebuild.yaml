@@ -1,6 +1,7 @@
 id: website-rebuild
 owner_role: engineering
 kind: agency
+size: project
 business_types: [any]
 title: "Your website rebuilt in code and live on your domain"
 why: "A fast site you can change in minutes, without paying an agency for every edit."

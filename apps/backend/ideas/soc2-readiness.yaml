@@ -1,6 +1,7 @@
 id: soc2-readiness
 owner_role: engineering
 kind: agency
+size: project
 business_types: [software]
 title: "SOC 2 groundwork: policies written, controls checked, gaps fixed"
 why: "The work before an audit done, so the auditor's time is short."

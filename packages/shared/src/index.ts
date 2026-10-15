@@ -160,8 +160,8 @@ export {
   useActivity,
 } from "./messaging/useActivity";
 export type { ActivityClient, ActivityPlatform, UseActivityOptions, UseActivityResult } from "./messaging/useActivity";
-export { ideaEffortLine, ideaProgress, orderIdeas, useIdeas } from "./messaging/ideas";
-export type { Idea, IdeaStart, IdeasClient, IdeasResponse, RunningIdea } from "./messaging/ideas";
+export { ideaEffortLine, ideaProgress, orderIdeas, runningLine, useIdeas } from "./messaging/ideas";
+export type { Idea, IdeaSize, IdeaStart, IdeasClient, IdeasResponse, RunningIdea } from "./messaging/ideas";
 export {
   ACTIVITY_EMPTY_COPY,
   ACTIVITY_FILTERS,

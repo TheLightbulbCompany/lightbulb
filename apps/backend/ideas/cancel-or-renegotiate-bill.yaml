@@ -1,6 +1,7 @@
 id: cancel-or-renegotiate-bill
 owner_role: finance
 kind: everyday
+size: task
 business_types: [any]
 title: "One recurring bill: cancellation requested or a lower price asked for"
 why: "Most companies pay for something they no longer use or overpay for."

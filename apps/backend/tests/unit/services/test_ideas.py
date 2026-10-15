@@ -40,6 +40,18 @@ def workspace(table, monkeypatch):  # noqa: F811
 # ---- the catalog ------------------------------------------------------------------------------
 
 
+def test_every_idea_has_a_size_agency_jobs_are_projects_and_errands_tasks():
+    sizes = {i.id: i.size for i in ideas.catalog().values()}
+    assert set(sizes.values()) <= {"project", "task", "quick"}
+    assert all(i.size == "project" for i in ideas.catalog().values() if i.kind == "agency")
+    assert all(i.size in ("task", "quick") for i in ideas.catalog().values() if i.kind == "everyday")
+    good = ideas.catalog()["crm-setup"].model_dump()
+    with pytest.raises(ValueError):
+        ideas.Idea.model_validate({**good, "size": "epic"})
+    with pytest.raises(ValueError):
+        ideas.Idea.model_validate({k: v for k, v in good.items() if k != "size"})
+
+
 def test_the_catalog_loads_and_every_entry_validates():
     catalog = ideas.catalog()
     assert len(catalog) == 35
@@ -89,7 +101,7 @@ async def test_list_is_agency_first_then_by_title_with_agents_and_no_prices(work
     assert cards[0]["kind"] == "agency" and cards[-1]["kind"] == "everyday"
     first = cards[0]
     assert set(first) == {"id", "ownerRole", "title", "why", "deliverables", "ourTurnaround", "yourPart", "kind",
-                          "businessTypes", "agentId", "agentName"}  # fmt: skip
+                          "size", "businessTypes", "agentId", "agentName"}  # fmt: skip
     # No prices in the app (owner, 2026-10-15): they stay in the YAML for marketing only.
     assert set(body) == {"ideas", "running", "anyStarted", "anyDismissed"}
     assert body["anyStarted"] is False and body["anyDismissed"] is False
@@ -129,6 +141,8 @@ def paperclip(workspace, monkeypatch):
         get_project=AsyncMock(return_value={"status": "in_progress"}),
         list_projects=AsyncMock(return_value=[]),
         list_issues=AsyncMock(return_value=[]),
+        create_issue=AsyncMock(side_effect=lambda **_: {"id": f"issue-{admin.create_issue.await_count}"}),
+        get_issue=AsyncMock(return_value={"status": "todo"}),
     )
     ctx = SimpleNamespace(owner_id=OWNER, company_id="company-1", session_cookie="cookie")
     monkeypatch.setattr(task_board, "_context", AsyncMock(return_value=ctx))
@@ -165,7 +179,7 @@ async def test_start_twice_makes_one_project_one_guide_and_one_line(paperclip):
     assert lines[0]["author"]["kind"] == "human" and lines[0]["author"]["id"] == "user_A"
     assert lines[0]["text"] == (
         f"> **{idea.title}**\n> {idea.why}\n\nLet's do it!\n"
-        f"Tracked in Work: [{idea.title}]({ideas.project_link(first['projectId'])})"
+        f"Tracked in Work: [{idea.title}]({ideas.work_link('project', first['projectId'])})"
     )
     assert "panel=teams-project-detail&detailId=" + first["projectId"] in lines[0]["text"]
     assert "agentNote" not in lines[0]
@@ -280,7 +294,7 @@ async def test_a_paperclip_failure_is_a_clean_502_and_frees_the_claim(paperclip)
     paperclip.create_project.side_effect = PaperclipApiError("POST /projects -> 503", status_code=503, body="")
     with pytest.raises(HTTPException) as err:
         await ideas.start(AUTH, "books-cleanup")
-    assert err.value.status_code == 502 and "Try Start again" in err.value.detail
+    assert err.value.status_code == 502 and "Try again" in err.value.detail
     won, _ = await repo.claim_idea_start(OWNER, "books-cleanup", "user_A")
     assert won
 
@@ -307,7 +321,9 @@ async def test_get_lists_running_starts_with_progress(paperclip):
             "agentId": STARTERS["finance"],
             "agentName": "Finance",
             "roomId": started["roomId"],
+            "size": "project",
             "projectId": started["projectId"],
+            "issueId": None,
             "starterId": "user_A",
             "starterName": "Name user_A",
             "createdAt": running[0]["createdAt"],
@@ -346,3 +362,125 @@ async def test_any_start_hides_the_welcome_even_after_its_project_finished(paper
     paperclip.list_projects.return_value = [{"id": started["projectId"], "status": "completed"}]
     body = await ideas.list_ideas(AUTH)
     assert body["running"] == [] and body["anyStarted"] is True
+
+
+# ---- size: task and quick ---------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_task_idea_makes_one_todo_task_assigned_to_the_agent_and_links_it(paperclip):
+    idea = ideas.catalog()["claim-refund"]
+    assert idea.size == "task"
+    first = await ideas.start(AUTH, "claim-refund")
+    again = await ideas.start(AUTH, "claim-refund")
+    assert first == again == {"roomId": first["roomId"], "issueId": "issue-1"}
+    paperclip.create_project.assert_not_awaited()
+    body = paperclip.create_issue.await_args.kwargs["body"]
+    assert body["title"] == idea.title and body["status"] == "todo"
+    assert body["assigneeAgentId"] == STARTERS["finance"]
+    assert idea.why in body["description"] and all(d in body["description"] for d in idea.deliverables)
+    assert body["idempotencyKey"].startswith("lightbulb-idea-project:v1:")
+    [line] = await _lines(first["roomId"])
+    assert line["text"] == (
+        f"> **{idea.title}**\n> {idea.why}\n\nLet's do it!\n"
+        f"Tracked in Work: [{idea.title}]({ideas.work_link('task', 'issue-1')})"
+    )
+    assert "panel=teams-issue-detail&detailId=issue-1" in line["text"]
+
+
+@pytest.mark.asyncio
+async def test_a_task_runs_with_its_status_and_leaves_running_when_done(paperclip):
+    await ideas.start(AUTH, "claim-refund")
+    [item] = (await ideas.list_ideas(AUTH))["running"]
+    assert (item["size"], item["issueId"], item["progress"]) == ("task", "issue-1", {"todo": 1})
+    paperclip.get_issue.return_value = {"status": "done"}
+    assert (await ideas.list_ideas(AUTH))["running"] == []
+    # Done: the idea can be started again, as a new task.
+    again = await ideas.start(AUTH, "claim-refund")
+    assert again["issueId"] == "issue-2"
+
+
+@pytest.mark.asyncio
+async def test_a_quick_idea_makes_nothing_in_work_is_never_running_and_can_be_asked_again(paperclip, monkeypatch):
+    quick = ideas.catalog()["claim-refund"].model_copy(update={"size": "quick"})
+    monkeypatch.setitem(ideas.catalog(), "claim-refund", quick)
+    first = await ideas.start(AUTH, "claim-refund")
+    assert first == {"roomId": first["roomId"]}
+    paperclip.create_project.assert_not_awaited()
+    paperclip.create_issue.assert_not_awaited()
+    [line] = await _lines(first["roomId"])
+    assert line["text"] == f"> **{quick.title}**\n> {quick.why}\n\nLet's do it!"
+    body = await ideas.list_ideas(AUTH)
+    assert body["running"] == [] and body["anyStarted"] is True
+    await ideas.start(AUTH, "claim-refund")  # answered in one go: Let's do it again asks again
+    assert len(await _lines(first["roomId"])) == 2
+
+
+# ---- suggest_idea -----------------------------------------------------------------------------
+
+
+def _suggestion(title="Answer the 14 open Shopify reviews", size="task", agent=None, **over):
+    return ideas.Suggestion(
+        agent_id=agent or STARTERS["growth"],
+        title=title,
+        why="Fourteen reviews from last month have no reply; answering them shows on your store page.",
+        deliverables=["Every review answered", "Two refunds flagged to you"],
+        size=size,
+        **over,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_suggestion_is_stored_and_listed_first_marked_for_you(workspace):
+    added = await ideas.suggest(OWNER, _suggestion())
+    assert added["status"] == "added" and added["id"].startswith("s-")
+    first = (await ideas.list_ideas(AUTH))["ideas"][0]
+    assert first["id"] == added["id"] and first["suggested"] is True
+    assert (first["agentId"], first["agentName"], first["size"]) == (STARTERS["growth"], "Growth", "task")
+    assert "ourTurnaround" not in first and "agencyPriceLow" not in first
+
+
+@pytest.mark.asyncio
+async def test_suggestions_are_newest_first_deduped_by_title_and_capped(workspace):
+    await ideas.suggest(OWNER, _suggestion("Old one"))
+    await ideas.suggest(OWNER, _suggestion("New one"))
+    titles = [c["title"] for c in (await ideas.list_ideas(AUTH))["ideas"] if c.get("suggested")]
+    assert titles == ["New one", "Old one"]
+    assert (await ideas.suggest(OWNER, _suggestion("  new ONE! ")))["status"] == "duplicate"
+    catalog_title = ideas.catalog()["crm-setup"].title
+    assert (await ideas.suggest(OWNER, _suggestion(catalog_title.upper())))["status"] == "duplicate"
+    for n in range(8):
+        assert (await ideas.suggest(OWNER, _suggestion(f"Job number {n}")))["status"] == "added"
+    assert (await ideas.suggest(OWNER, _suggestion("One too many")))["status"] == "cap"
+    # A dismissed one frees a place.
+    await ideas.dismiss(AUTH, next(c["id"] for c in (await ideas.list_ideas(AUTH))["ideas"] if c.get("suggested")))
+    assert (await ideas.suggest(OWNER, _suggestion("One too many")))["status"] == "added"
+
+
+@pytest.mark.asyncio
+async def test_a_dismissed_suggestion_leaves_the_list_and_an_unknown_agent_is_refused(workspace):
+    added = await ideas.suggest(OWNER, _suggestion())
+    await ideas.dismiss(AUTH, added["id"])
+    assert all(c["id"] != added["id"] for c in (await ideas.list_ideas(AUTH))["ideas"])
+    with pytest.raises(HTTPException) as err:
+        await ideas.suggest(OWNER, _suggestion(agent="not-on-the-team"))
+    assert err.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_a_suggestion_starts_like_a_catalog_idea_with_its_agent(paperclip):
+    added = await ideas.suggest(OWNER, _suggestion(size="project"))
+    started = await ideas.start(AUTH, added["id"])
+    assert started["projectId"] == "project-1"
+    assert paperclip.create_project.await_args.kwargs["body"]["leadAgentId"] == STARTERS["growth"]
+    [line] = await _lines(started["roomId"])
+    assert line["text"].startswith("> **Answer the 14 open Shopify reviews**")
+    [item] = (await ideas.list_ideas(AUTH))["running"]
+    assert item["title"] == "Answer the 14 open Shopify reviews"
+
+
+def test_a_suggestion_needs_a_size_and_at_most_three_deliverables():
+    with pytest.raises(ValueError):
+        _suggestion(size="huge")
+    with pytest.raises(ValueError):
+        ideas.Suggestion(agent_id="a", title="Three", why="why it", deliverables=["a", "b", "c", "d"], size="task")

@@ -1,6 +1,7 @@
 id: interview-scheduling
 owner_role: customer_operations
 kind: everyday
+size: task
 business_types: [any]
 title: "Interviews offered and every candidate kept informed"
 why: "Candidates hear back fast and get interview times from your calendar, without the back and forth."

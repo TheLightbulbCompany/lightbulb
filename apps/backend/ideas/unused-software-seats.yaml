@@ -1,6 +1,7 @@
 id: unused-software-seats
 owner_role: finance
 kind: everyday
+size: task
 business_types: [any]
 title: "Unused software seats removed and unused tools cancelled"
 why: "Seats for people who left and tools nobody opens add up every month."

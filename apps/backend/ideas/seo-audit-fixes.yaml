@@ -1,6 +1,7 @@
 id: seo-audit-fixes
 owner_role: engineering
 kind: agency
+size: project
 business_types: [any]
 title: "An SEO audit, with the fixes shipped in one pull request"
 why: "Agencies sell the report; you get the problems fixed on the site itself."

@@ -1,6 +1,7 @@
 id: hire-pipeline
 owner_role: ceo
 kind: agency
+size: project
 business_types: [any]
 title: "A hiring pipeline: job posted, 50 candidates sourced, interviews offered"
 why: "A full candidate pipeline without paying a recruiter's fee."

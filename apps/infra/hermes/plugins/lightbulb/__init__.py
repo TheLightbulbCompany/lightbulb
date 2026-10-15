@@ -133,6 +133,59 @@ def _voice_profile(args: dict, *, session_id: str = "", **_kw) -> str:
         return f"Voice profile update failed: {type(exc).__name__}"
 
 
+# suggest_idea tool (spec 2026-10-14 §4.4): an idea for THIS company joins the workspace's Ideas
+# list (never a chat card). The suggesting agent and workspace come from the turn, never the model.
+SUGGEST_IDEA_SCHEMA = {
+    "name": "suggest_idea",
+    "description": "Add an idea to this company's Ideas list (the person sees it there, not in chat). "
+                   "Use it only when you notice a concrete, company-specific job during real work "
+                   "(\"14 reviews have no reply\"), never a generic or routine one. You will own it.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "The outcome, short: 'Answer the 14 open Shopify reviews'."},
+            "description": {"type": "string",
+                            "description": "Why it matters for this company and what you will do, in one or "
+                                           "two sentences. Promise the action, never the result."},
+            "deliverables": {"type": "array", "items": {"type": "string"}, "maxItems": 3,
+                             "description": "Up to three short lines the person will have."},
+            "size": {"type": "string", "enum": ["project", "task", "quick"],
+                     "description": "project: many steps over days; task: one errand; quick: answered in one go."},
+        },
+        "required": ["title", "description", "deliverables", "size"],
+    },
+}
+SUGGEST_NO_TURN = "suggest_idea works only inside a Lightbulb turn."
+
+
+def _suggest_idea(args: dict, *, session_id: str = "", **_kw) -> str:
+    ctx = turn_context.read(session_id)
+    if not ctx or not ctx.get("agentId") or not ctx.get("hookToken"):
+        return SUGGEST_NO_TURN
+    body = {
+        "agentId": ctx["agentId"],
+        "title": str(args.get("title") or "").strip(),
+        "why": str(args.get("description") or "").strip(),
+        "deliverables": [str(d).strip() for d in (args.get("deliverables") or []) if str(d).strip()][:3],
+        "size": args.get("size"),
+    }
+    url = f"{ctx['apiUrl'].rstrip('/')}/api/v1/internal/ideas/suggestions/{ctx['ownerId']}"
+    try:
+        result = _post(url, ctx["hookToken"], body)
+    except urllib.error.HTTPError as exc:
+        return f"Idea not added: HTTP {exc.code}."
+    except Exception as exc:  # noqa: BLE001
+        return f"Idea not added: {type(exc).__name__}."
+    status = result.get("status")
+    if status == "added":
+        return "Added to the Ideas list. Do not post it in chat; the person sees it under the 💡."
+    if status == "duplicate":
+        return "Already in the Ideas list: nothing added."
+    if status == "cap":
+        return "The Ideas list already has 10 suggestions: nothing added."
+    return json.dumps(result)
+
+
 # Task 12: hire_suggestion tool
 # parseHireSuggestion (HireCard.tsx:38-78) matches this string EXACTLY and returns null on
 # any mismatch, which degrades the card to a plain tool pill with no error anywhere. It is
@@ -653,6 +706,8 @@ def register(ctx) -> None:
     ctx.register_hook("transform_tool_result", website_logins.transform_tool_result)
     ctx.register_tool("send_room_message", "lightbulb", SEND_SCHEMA, _send_room_message,
                       description=SEND_SCHEMA["description"], emoji="💬")
+    ctx.register_tool("suggest_idea", "lightbulb", SUGGEST_IDEA_SCHEMA, _suggest_idea,
+                      description=SUGGEST_IDEA_SCHEMA["description"], emoji="💡")
     ctx.register_tool("hire_suggestion", "lightbulb", HIRE_SCHEMA, _hire_suggestion,
                       description=HIRE_SCHEMA["description"], emoji="🧑‍💼")
     ctx.register_tool("request_approval", "lightbulb", APPROVAL_SCHEMA, _request_approval,

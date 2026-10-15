@@ -1,6 +1,7 @@
 id: chase-overdue-invoices
 owner_role: finance
 kind: everyday
+size: task
 business_types: [any]
 title: "Every overdue invoice chased with a pay link"
 why: "Cash owed to you comes in sooner when someone asks politely and on time."

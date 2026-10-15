@@ -1,6 +1,7 @@
 id: inbox-triage
 owner_role: customer_operations
 kind: everyday
+size: task
 business_types: [any]
 title: "Your inbox triaged and routine mail answered"
 why: "You read only what needs you; the rest is answered or filed."

@@ -5,7 +5,7 @@
 // then agency jobs, then everyday). A row opens the idea's detail in the pane; Let's do it starts
 // it and opens the DM in the main view, and the pane stays, showing the idea as running.
 import { useState } from "react";
-import { ideaProgress, orderIdeas, type RunningIdea } from "@lightbulb/shared";
+import { orderIdeas, runningLine, type RunningIdea } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { IdeaDetail, IdeaListRow } from "@/components/ideas/IdeaCard";
 import { useIdeas } from "@/hooks/useIdeas";
@@ -15,12 +15,11 @@ import "@/components/ideas/ideas.css";
 
 /** Open goes to the starter's own DM with the agent, so only the starter gets it. */
 function RunningRow({ item, mine }: { item: RunningIdea; mine: boolean }) {
-  const progress = ideaProgress(item.progress);
   return <li className="idea-row">
     <div>
       <div className="idea-row__title">{item.title}</div>
       <div className="idea-row__meta">
-        {[item.agentName, progress ? `${progress.done} of ${progress.total} tasks done` : "Planning",
+        {[item.agentName, runningLine(item),
           mine ? null : `Started by ${item.starterName}`].filter(Boolean).join(" · ")}
       </div>
     </div>

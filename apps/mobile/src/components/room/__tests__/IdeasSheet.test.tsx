@@ -2,7 +2,8 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react-nativ
 import type { Idea } from "@lightbulb/shared";
 import type { ReactNode } from "react";
 
-jest.mock("@clerk/expo", () => ({ useAuth: () => ({ userId: "user-a", orgId: "org-a" }) }), { virtual: true });
+let mockOrg = "org-a"; // a fresh org gives a test its own /ideas cache entry
+jest.mock("@clerk/expo", () => ({ useAuth: () => ({ userId: "user-a", orgId: mockOrg }) }), { virtual: true });
 // The native sheet is iOS-only; its content is what this test reads.
 jest.mock("../../ui/BottomSheet", () => ({
   BottomSheet: ({ visible, children }: { visible: boolean; children: ReactNode }) => (visible ? children : null),
@@ -10,7 +11,7 @@ jest.mock("../../ui/BottomSheet", () => ({
 jest.mock("expo-symbols", () => ({ SymbolView: () => null }));
 
 const idea = (id: string, agentId: string, agentName: string): Idea => ({
-  id, ownerRole: "growth", kind: "agency", businessTypes: ["any"], title: `Title ${id}`, why: `Why ${id}`,
+  id, ownerRole: "growth", kind: "agency", size: "project", businessTypes: ["any"], title: `Title ${id}`, why: `Why ${id}`,
   deliverables: [`${id} one`, `${id} two`, `${id} three`], ourTurnaround: "about 2 days", yourPart: "about 5 minutes",
   agentId, agentName,
 });
@@ -18,10 +19,10 @@ const mockClient = {
   listIdeas: jest.fn(async () => ({
     ideas: [idea("a", "eng", "Engineering"), idea("b", "growth", "Growth"), idea("r", "fin", "Finance"),
       idea("t", "fin", "Finance")],
-    running: [{ ideaId: "r", title: "Title r", agentId: "fin", agentName: "Finance", roomId: "room-r", projectId: "p",
-      starterId: "user-a", starterName: "A", createdAt: null },
-    { ideaId: "t", title: "Title t", agentId: "fin", agentName: "Finance", roomId: "room-t", projectId: "p-t",
-      starterId: "user-b", starterName: "B", createdAt: null }],
+    running: [{ ideaId: "r", title: "Title r", size: "project", agentId: "fin", agentName: "Finance", roomId: "room-r",
+      projectId: "p", issueId: null, starterId: "user-a", starterName: "A", createdAt: null },
+    { ideaId: "t", title: "Title t", size: "task", agentId: "fin", agentName: "Finance", roomId: "room-t",
+      projectId: null, issueId: "i-t", starterId: "user-b", starterName: "B", createdAt: null, progress: { in_progress: 1 } }],
   })),
   startIdea: jest.fn(async () => ({ roomId: "room-b", projectId: "p-b" })),
   dismissIdea: jest.fn(async () => {}),
@@ -42,7 +43,8 @@ beforeEach(() => jest.clearAllMocks());
 it("shows running ideas on top: the viewer's own opens its DM, a teammate's says who started it", async () => {
   const onStarted = await renderSheet();
   expect(await screen.findByText("Running")).toBeTruthy();
-  expect(screen.getByText("Finance · Planning · Started by B")).toBeTruthy();
+  expect(screen.getByText("Finance · In progress · Started by B")).toBeTruthy();
+  expect(screen.getByText("Finance · Planning")).toBeTruthy();
   await fireEvent.press(screen.getByRole("button", { name: "Open: Title r" }));
   expect(onStarted).toHaveBeenCalledWith("room-r");
   expect(screen.queryByRole("button", { name: "Open: Title t" })).toBeNull();
@@ -87,4 +89,16 @@ it("shows the server's reason when Let's do it fails", async () => {
   await fireEvent.press(screen.getByRole("button", { name: "Let's do it" }));
   expect(await screen.findByText("Work did not answer. Try Start again in a moment.")).toBeTruthy();
   expect(onStarted).not.toHaveBeenCalled();
+});
+
+it("marks an agent's suggestion For you, and its detail has no effort line", async () => {
+  mockOrg = "org-suggestions";
+  mockClient.listIdeas.mockResolvedValueOnce({
+    ideas: [{ ...idea("s1", "growth", "Growth"), suggested: true, ourTurnaround: undefined, yourPart: undefined }],
+    running: [],
+  } as never);
+  await render(<IdeasSheet visible onClose={jest.fn()} onStarted={jest.fn()} />);
+  expect(await screen.findByText("For you")).toBeTruthy();
+  await fireEvent.press(screen.getByRole("button", { name: "Title s1" }));
+  expect(screen.queryByText(/Your team:/)).toBeNull();
 });

@@ -2749,13 +2749,15 @@ async def count_voice_edit(owner_id: str, agent_id: str, kind: str, limit: int) 
         raise
 
 
-# ---- Ideas (spec 2026-10-14 §4.4): dismissals and starts, per workspace -------------------
+# ---- Ideas (spec 2026-10-14 §4.4): dismissals, suggestions and starts, per workspace -------------------
 # Rows under the owner's partition. Neither the projector (MSG#/LIVE#) nor the Pipe reads IDEA#.
 
 IDEA_DISMISSED_PREFIX = "IDEA#DISMISSED#"
+#: An agent's suggest_idea for this workspace (spec 2026-10-14 §4.4): listed in Ideas only.
+IDEA_SUGGESTED_PREFIX = "IDEA#SUGGESTED#"
 #: A "starting" claim older than this is a crashed attempt: the next Start takes it over. Above
 #: any request timeout; and a takeover of a slow live attempt is still safe, since every step
-#: replays (the project by the claim's ``startToken`` idempotency key, the DM line by its key).
+#: replays (the project or task by the claim's ``startToken`` idempotency key, the DM message by its key).
 IDEA_CLAIM_STALE_S = 300
 IDEA_START_PREFIX = "IDEA#START#"
 
@@ -2774,6 +2776,18 @@ async def dismiss_idea(owner_id: str, idea_id: str) -> None:
 async def dismissed_ideas(owner_id: str) -> set[str]:
     rows = await _query(owner_pk(owner_id), begins_with=IDEA_DISMISSED_PREFIX)
     return {row["sk"].removeprefix(IDEA_DISMISSED_PREFIX) for row in rows}
+
+
+async def put_suggested_idea(owner_id: str, item: dict[str, Any]) -> None:
+    await run_in_thread(
+        _table().put_item,
+        Item={"pk": owner_pk(owner_id), "sk": f"{IDEA_SUGGESTED_PREFIX}{item['ideaId']}", **item},
+        ConditionExpression="attribute_not_exists(sk)",
+    )
+
+
+async def suggested_ideas(owner_id: str) -> list[dict]:
+    return await _query(owner_pk(owner_id), begins_with=IDEA_SUGGESTED_PREFIX)
 
 
 async def claim_idea_start(owner_id: str, idea_id: str, user_id: str) -> tuple[bool, dict]:
@@ -2826,16 +2840,16 @@ async def update_idea_start(owner_id: str, idea_id: str, user_id: str, fields: d
     )
 
 
-async def close_idea_start(owner_id: str, idea_id: str, user_id: str, project_id: str) -> None:
-    """Forget a start whose project finished, so the idea can be started again. Fenced on the
-    project id: a racing Start that already replaced it is left alone."""
+async def close_idea_start(owner_id: str, idea_id: str, user_id: str, start_token: str) -> None:
+    """Forget a finished start (its project or task done, or a quick one), so the idea can be
+    started again. Fenced on the claim's token: a racing Start that already replaced it is left alone."""
     try:
         await run_in_thread(
             _table().delete_item,
             Key=_idea_start_key(owner_id, idea_id, user_id),
-            ConditionExpression="#s = :open AND projectId = :p",
+            ConditionExpression="#s = :open AND startToken = :t",
             ExpressionAttributeNames={"#s": "state"},
-            ExpressionAttributeValues={":open": "open", ":p": project_id},
+            ExpressionAttributeValues={":open": "open", ":t": start_token},
         )
     except ClientError as exc:
         if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":

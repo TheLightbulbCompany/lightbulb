@@ -1,6 +1,7 @@
 id: answer-support-email
 owner_role: customer_operations
 kind: everyday
+size: task
 business_types: [any]
 title: "Customer emails answered from your help docs"
 why: "Customers get a correct answer fast, and you see only what needs you."

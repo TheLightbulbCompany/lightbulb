@@ -1,5 +1,5 @@
 import { useAuth } from "@clerk/expo";
-import { ideaEffortLine, ideaProgress, orderIdeas, useIdeas, type Idea } from "@lightbulb/shared";
+import { ideaEffortLine, orderIdeas, runningLine, useIdeas, type Idea } from "@lightbulb/shared";
 import { SymbolView } from "expo-symbols";
 import { useState } from "react";
 import { ActionSheetIOS, ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
@@ -91,7 +91,7 @@ export function IdeasSheet({ visible, onClose, agentId, onStarted }: IdeasSheetP
                 </View>
               ))}
             </View>
-            <Text style={[styles.why, { color: palette.fgSoft }]}>{ideaEffortLine(open)}</Text>
+            {ideaEffortLine(open) ? <Text style={[styles.why, { color: palette.fgSoft }]}>{ideaEffortLine(open)}</Text> : null}
             <View style={styles.actions}>
               <Pressable accessibilityRole="button" accessibilityLabel="More options" onPress={() => more(open)}
                 style={({ pressed }) => [styles.more, { borderColor: palette.edge }, pressed && styles.dim]}>
@@ -114,8 +114,7 @@ export function IdeasSheet({ visible, onClose, agentId, onStarted }: IdeasSheetP
                   <Text style={[styles.section, { color: palette.fgMute }]}>Running</Text>
                   {running.map((item) => {
                     const mine = item.starterId === userId && !!item.roomId;
-                    const progress = ideaProgress(item.progress);
-                    const meta = [item.agentName, progress ? `${progress.done} of ${progress.total} tasks done` : "Planning",
+                    const meta = [item.agentName, runningLine(item),
                       mine ? null : `Started by ${item.starterName}`].filter(Boolean).join(" · ");
                     return (
                       // Only the starter opens it: the DM is theirs with the agent.
@@ -136,6 +135,7 @@ export function IdeasSheet({ visible, onClose, agentId, onStarted }: IdeasSheetP
                   style={({ pressed }) => [styles.row, index > 0 && { borderTopColor: palette.edge, borderTopWidth: StyleSheet.hairlineWidth }, pressed && styles.dim]}>
                   <Avatar name={idea.agentName} kind="agent" size={28} palette={palette} />
                   <View style={styles.rowText}>
+                    {idea.suggested ? <Text style={[styles.forYou, { color: palette.fgMute }]}>For you</Text> : null}
                     <Text numberOfLines={2} style={[styles.title, { color: palette.fg }]}>{idea.title}</Text>
                     <Text numberOfLines={3} style={[styles.why, { color: palette.fgMute }]}>{idea.why}</Text>
                   </View>
@@ -174,4 +174,5 @@ const styles = StyleSheet.create({
   running: { gap: spacing.sm, paddingBottom: spacing.md },
   runningRow: { gap: 2 },
   section: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18 },
+  forYou: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18 },
 });

@@ -20,7 +20,7 @@ import { IdeasDockPanel } from "@/components/workspace/panels/IdeasDockPanel";
 import { WelcomeIdea } from "../IdeaCard";
 
 const idea = (id: string, agentId: string, agentName: string, kind: Idea["kind"] = "agency"): Idea => ({
-  id, ownerRole: "growth", kind, businessTypes: ["any"], title: `Title ${id}`, why: `Why ${id}`,
+  id, ownerRole: "growth", kind, size: kind === "agency" ? "project" : "task", businessTypes: ["any"], title: `Title ${id}`, why: `Why ${id}`,
   deliverables: [`${id} one`, `${id} two`, `${id} three`], ourTurnaround: "about 2 days", yourPart: "about 5 minutes",
   agentId, agentName,
 });
@@ -28,10 +28,12 @@ const idea = (id: string, agentId: string, agentName: string, kind: Idea["kind"]
 const catalog: IdeasResponse = {
   ideas: [idea("a", "eng", "Engineering"), idea("b", "growth", "Growth"), idea("c", "eng", "Engineering"),
     idea("d", "growth", "Growth"), idea("e", "fin", "Finance", "everyday")],
-  running: [{ ideaId: "z", title: "Running job", agentId: "fin", agentName: "Finance", roomId: "room-z", projectId: "p-z",
-    starterId: "u1", starterName: "Mira", createdAt: null, progress: { done: 2, todo: 3, cancelled: 1 } },
-  { ideaId: "y", title: "Teammate job", agentId: "eng", agentName: "Engineering", roomId: "room-y", projectId: "p-y",
-    starterId: "u2", starterName: "Sam", createdAt: null }],
+  running: [{ ideaId: "z", title: "Running job", size: "project", agentId: "fin", agentName: "Finance", roomId: "room-z",
+    projectId: "p-z", issueId: null, starterId: "u1", starterName: "Mira", createdAt: null, progress: { done: 2, todo: 3, cancelled: 1 } },
+  { ideaId: "y", title: "Teammate job", size: "project", agentId: "eng", agentName: "Engineering", roomId: "room-y",
+    projectId: "p-y", issueId: null, starterId: "u2", starterName: "Sam", createdAt: null },
+  { ideaId: "x", title: "One errand", size: "task", agentId: "fin", agentName: "Finance", roomId: "room-x",
+    projectId: null, issueId: "i-x", starterId: "u1", starterName: "Mira", createdAt: null, progress: { in_progress: 1 } }],
 };
 
 function renderPanel(params: Record<string, string> = {}) {
@@ -77,6 +79,26 @@ describe("Ideas pane: the list", () => {
     expect(screen.queryByRole("button", { name: "Open: Teammate job" })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Open: Running job" }));
     expect(controller.openMessagePanel).toHaveBeenCalledWith("room-z");
+  });
+});
+
+describe("Ideas pane: sizes and suggestions", () => {
+  it("shows a running task with its status, beside a project's tasks done", async () => {
+    renderPanel();
+    expect(await screen.findByText("Finance · In progress")).toBeInTheDocument();
+    expect(screen.getByText("Finance · 2 of 5 tasks done")).toBeInTheDocument();
+  });
+
+  it("marks an agent's suggestion For you; its detail has no effort line", async () => {
+    const suggestion: Idea = { ...idea("s-1", "growth", "Growth"), suggested: true, ourTurnaround: undefined, yourPart: undefined };
+    client.listIdeas.mockResolvedValue({ ...catalog, ideas: [suggestion, ...catalog.ideas] });
+    renderPanel();
+    await waitFor(() => expect(rowTitles()).toHaveLength(6));
+    expect(row("Title s-1").textContent).toContain("For you");
+    expect(row("Title a").textContent).not.toContain("For you");
+    await userEvent.click(row("Title s-1"));
+    expect(screen.queryByText(/Your team:/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Let's do it" })).toBeInTheDocument();
   });
 });
 
@@ -127,8 +149,8 @@ describe("Ideas pane: the detail", () => {
     await waitFor(() => expect(rowTitles()).toHaveLength(5));
     await userEvent.click(row("Title a"));
     client.listIdeas.mockResolvedValue({ ...catalog, running: [...catalog.running,
-      { ideaId: "a", title: "Title a", agentId: "eng", agentName: "Engineering", roomId: "room-a", projectId: "p-a",
-        starterId: "u1", starterName: "Mira", createdAt: null }] });
+      { ideaId: "a", title: "Title a", size: "project", agentId: "eng", agentName: "Engineering", roomId: "room-a",
+        projectId: "p-a", issueId: null, starterId: "u1", starterName: "Mira", createdAt: null }] });
     await userEvent.click(screen.getByRole("button", { name: "Let's do it" }));
     await waitFor(() => expect(controller.openMessagePanel).toHaveBeenCalledWith("room-a"));
     expect(notifyApiError).not.toHaveBeenCalled();

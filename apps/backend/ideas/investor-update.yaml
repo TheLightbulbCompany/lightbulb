@@ -1,6 +1,7 @@
 id: investor-update
 owner_role: finance
 kind: agency
+size: project
 business_types: [software]
 title: "A monthly financial model and investor update"
 why: "Investors hear from you every month with numbers that tie out."

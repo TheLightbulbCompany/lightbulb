@@ -1,6 +1,7 @@
 id: landing-page-checkout
 owner_role: engineering
 kind: agency
+size: project
 business_types: [any]
 title: "A landing page for your offer, with signup or checkout working"
 why: "One page that explains the offer and takes the signup or the payment, measured from day one."

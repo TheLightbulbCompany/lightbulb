@@ -1,6 +1,7 @@
 id: claim-refund
 owner_role: finance
 kind: everyday
+size: task
 business_types: [any]
 title: "A credit or refund the company is owed, claimed"
 why: "Late deliveries, overcharges and outage credits go unclaimed unless someone asks."

@@ -1,6 +1,7 @@
 id: monthly-receipts-package
 owner_role: finance
 kind: everyday
+size: task
 business_types: [any]
 title: "Monthly: receipts and W-9s collected and sent to your accountant"
 why: "Your accountant gets a complete package every month, without you hunting through email."

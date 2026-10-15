@@ -1,6 +1,7 @@
 id: sales-tax-registration
 owner_role: finance
 kind: agency
+size: project
 business_types: [store, software]
 title: "Registered for sales tax where you likely owe it (you confirm)"
 why: "Know where you likely have nexus and register before it becomes a penalty. Priced per state."

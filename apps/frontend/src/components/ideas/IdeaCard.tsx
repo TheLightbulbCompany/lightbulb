@@ -21,6 +21,7 @@ export function IdeaListRow({ idea, onOpen }: { idea: Idea; onOpen: (ideaId: str
       onClick={() => onOpen(idea.id)}>
       <Identity name={idea.agentName} avatarOnly size="sm" />
       <span className="idea-item__text">
+        {idea.suggested && <span className="idea-item__for-you">For you</span>}
         <span id={`${id}-title`} className="idea-item__title">{idea.title}</span>
         <span id={`${id}-why`} className="idea-item__why">{idea.why}</span>
       </span>
@@ -50,7 +51,7 @@ export function IdeaDetail({ idea, onBack, onStart, onDismiss }: {
         {idea.deliverables.map((line) => <li key={line}><span>{line}</span><Check size={16} aria-hidden="true" /></li>)}
       </ul>
     </section>
-    <p className="idea-detail__effort">{ideaEffortLine(idea)}</p>
+    {ideaEffortLine(idea) && <p className="idea-detail__effort">{ideaEffortLine(idea)}</p>}
     <div className="idea-detail__actions">
       <DropdownMenu>
         <DropdownMenuTrigger asChild>

@@ -142,6 +142,20 @@ describe("Ideas pane: the detail", () => {
     expect(await screen.findByRole("article", { name: "Title d" })).toBeInTheDocument();
   });
 
+  it("a failed Let's do it keeps the detail open with the reason, and pressing it again works", async () => {
+    client.startIdea.mockRejectedValueOnce(new Error("Work did not answer. Try again in a moment."));
+    renderPanel();
+    await waitFor(() => expect(rowTitles()).toHaveLength(5));
+    await userEvent.click(row("Title b"));
+    await userEvent.click(screen.getByRole("button", { name: "Let's do it" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Work did not answer. Try again in a moment.");
+    expect(screen.getByRole("article", { name: "Title b" })).toBeInTheDocument();
+    expect(controller.openMessagePanel).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Let's do it" }));
+    await waitFor(() => expect(controller.openMessagePanel).toHaveBeenCalledWith("room-b"));
+    await waitFor(() => expect(screen.queryByRole("article", { name: "Title b" })).not.toBeInTheDocument());
+  });
+
   it("a second Start of an idea already starting opens its DM without an error", async () => {
     const { notifyApiError } = await import("@/lib/notify");
     client.startIdea.mockRejectedValueOnce(Object.assign(new Error("This idea is already starting."), { status: 409 }));

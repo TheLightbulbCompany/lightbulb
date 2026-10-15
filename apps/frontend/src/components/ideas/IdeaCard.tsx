@@ -33,13 +33,16 @@ export function IdeaListRow({ idea, onOpen }: { idea: Idea; onOpen: (ideaId: str
 export function IdeaDetail({ idea, onBack, onStart, onDismiss }: {
   idea: Idea;
   onBack: () => void;
-  onStart: (ideaId: string) => Promise<void>;
+  /** Null once the DM is open; otherwise what went wrong (shown here, Let's do it stays). */
+  onStart: (ideaId: string) => Promise<string | null>;
   onDismiss: (ideaId: string) => void;
 }) {
   const [starting, setStarting] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
   const start = async () => {
     setStarting(true); // stays pressed until the DM opens: a second click cannot start twice
-    try { await onStart(idea.id); } finally { setStarting(false); }
+    setFailed(null);
+    try { setFailed(await onStart(idea.id)); } finally { setStarting(false); }
   };
   return <article className="idea-detail" aria-label={idea.title}>
     <button type="button" className="idea-detail__back" onClick={onBack}><ArrowLeft size={16} aria-hidden="true" />All ideas</button>
@@ -52,6 +55,7 @@ export function IdeaDetail({ idea, onBack, onStart, onDismiss }: {
       </ul>
     </section>
     {ideaEffortLine(idea) && <p className="idea-detail__effort">{ideaEffortLine(idea)}</p>}
+    {failed && <p role="alert" className="idea-detail__error">{failed}</p>}
     <div className="idea-detail__actions">
       <DropdownMenu>
         <DropdownMenuTrigger asChild>

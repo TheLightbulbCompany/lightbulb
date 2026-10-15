@@ -50,6 +50,7 @@
 .idea-detail__included li { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--fg-soft); }
 .idea-detail__included svg { flex: none; color: var(--fg-mute); }
 .idea-detail__effort { margin: 0; font-size: var(--text-ui); color: var(--fg-soft); }
+.idea-detail__error { margin: 0; font-size: var(--text-ui); color: var(--err); }
 .idea-detail__actions { display: flex; gap: 8px; }
 .idea-detail__go { flex: 1; }
 .idea-welcome { display: grid; gap: 4px; margin-top: 8px; max-width: 36rem; }

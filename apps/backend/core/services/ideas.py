@@ -123,7 +123,10 @@ class Suggestion(BaseModel):
     @field_validator("title", "why")
     @classmethod
     def _one_line(cls, value: str) -> str:
-        return " ".join(value.split())
+        line = " ".join(value.split())
+        if len(line) < 3:  # "   " passes min_length, then normalises to ""
+            raise ValueError("needs at least three visible characters")
+        return line
 
     @field_validator("deliverables")
     @classmethod

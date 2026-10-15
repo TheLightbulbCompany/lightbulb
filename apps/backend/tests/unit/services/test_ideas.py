@@ -514,3 +514,20 @@ async def test_list_and_start_read_the_roster_once(paperclip, monkeypatch):
     calls.clear()
     await ideas.start(AUTH, added["id"])
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("field", ["title", "why"])
+def test_a_suggestion_with_blank_text_is_refused(field):
+    good = {
+        "agent_id": "a",
+        "title": "Answer the reviews",
+        "why": "They have no reply.",
+        "deliverables": ["x"],
+        "size": "task",
+    }
+    with pytest.raises(ValueError):
+        ideas.Suggestion(**{**good, field: "     "})
+    with pytest.raises(ValueError):
+        ideas.Suggestion(**{**good, field: " \n a \t "})
+    with pytest.raises(ValueError):
+        ideas.Suggestion(**{**good, "deliverables": ["  "]})

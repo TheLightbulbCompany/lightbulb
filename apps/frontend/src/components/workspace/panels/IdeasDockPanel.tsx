@@ -49,7 +49,11 @@ export function IdeasDockPanel({ id, params }: PanelProps) {
   if (open) {
     return <div className="ideas-pane">
       <IdeaDetail idea={open} onBack={close} onDismiss={dismiss}
-        onStart={async (ideaId) => { await startAndOpen(ideaId); close(); }} />
+        onStart={async (ideaId) => {
+          const failed = await startAndOpen(ideaId);
+          if (!failed) close(); // only once the DM is open: a failure keeps the detail, to retry
+          return failed;
+        }} />
     </div>;
   }
   return <div className="ideas-pane">

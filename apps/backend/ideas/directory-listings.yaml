@@ -3,6 +3,7 @@ owner_role: growth
 kind: everyday
 size: task
 business_types: [any]
+emoji: "📍"
 title: "Listed in the right directories, Google Business profile claimed"
 why: "People who look you up find the same, correct details everywhere."
 deliverables:

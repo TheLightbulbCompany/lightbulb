@@ -3,6 +3,7 @@ owner_role: growth
 kind: agency
 size: project
 business_types: [store]
+emoji: "🎯"
 title: "Meta Pixel, Conversions API and your first campaigns set up"
 why: "Facebook and Instagram ads that measure purchases correctly from the start."
 deliverables:

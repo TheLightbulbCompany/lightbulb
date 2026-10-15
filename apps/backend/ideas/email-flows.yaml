@@ -3,6 +3,7 @@ owner_role: growth
 kind: agency
 size: project
 business_types: [store]
+emoji: "🔁"
 title: "Welcome, abandoned-cart and post-purchase emails switched on"
 why: "The emails that recover carts and bring buyers back, running without you."
 deliverables:

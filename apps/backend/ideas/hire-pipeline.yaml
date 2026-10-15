@@ -3,6 +3,7 @@ owner_role: ceo
 kind: agency
 size: project
 business_types: [any]
+emoji: "🤝"
 title: "A hiring pipeline: job posted, 50 candidates sourced, interviews offered"
 why: "A full candidate pipeline without paying a recruiter's fee."
 deliverables:

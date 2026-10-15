@@ -1,18 +1,39 @@
 /* Ideas: the pane, the proposal card and the plan card. Tokens only (brandTokens.test); borders, no shadows; 4px grid. */
 
-.ideas-pane { display: flex; flex-direction: column; gap: 16px; padding: 16px; color: var(--fg); }
-.ideas-pane__heading { margin: 0 0 8px; font-size: var(--text-caption); font-weight: 600; color: var(--fg-mute); }
+.ideas-pane { display: flex; flex-direction: column; gap: 24px; padding: 16px; color: var(--fg); }
+.ideas-pane__heading { margin: 0 0 4px; font-size: var(--text-caption); font-weight: 600; color: var(--fg-mute); }
 .ideas-pane__notice { font-size: var(--text-ui); color: var(--fg-mute); }
 
-/* The list, like Muse's Ideas tab: no cards, no borders but a hairline between rows. */
+/* The idea's picture: its emoji on a soft tint of its section's colour (the people palette, so
+   no new colours). Sections: For you yellow, Money green, Grow magenta, Run the day blue, Build cyan. */
+.idea-tile {
+  --tint: var(--person-yellow);
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--tint) 14%, transparent);
+  font-size: 20px;
+  line-height: 1;
+}
+.idea-tile--money { --tint: var(--person-green); }
+.idea-tile--grow { --tint: var(--person-magenta); }
+.idea-tile--run { --tint: var(--person-blue); }
+.idea-tile--build { --tint: var(--person-cyan); }
+.idea-tile--large { width: 64px; height: 64px; border-radius: 16px; font-size: 32px; }
+
+/* The list: no cards, no borders but a hairline between rows. */
 .idea-list { margin: 0; padding: 0; list-style: none; }
 .idea-item + .idea-item { border-top: 1px solid var(--plane-edge); }
 .idea-item__button {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
   gap: 12px;
   width: 100%;
-  padding: 12px 0;
+  padding: 10px 0;
   text-align: left;
   color: var(--fg);
 }
@@ -21,9 +42,8 @@
 .idea-item__text { display: grid; gap: 4px; min-width: 0; }
 .idea-item__title,
 .idea-item__why { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
-.idea-item__for-you { font-size: var(--text-caption); color: var(--fg-mute); }
 .idea-item__title { font-weight: 600; -webkit-line-clamp: 2; line-clamp: 2; }
-.idea-item__why { font-size: var(--text-ui); color: var(--fg-mute); -webkit-line-clamp: 3; line-clamp: 3; }
+.idea-item__why { font-size: var(--text-ui); color: var(--fg-mute); -webkit-line-clamp: 2; line-clamp: 2; }
 
 /* The idea opened: title, why, what's included, the effort, Let's do it. */
 .idea-detail { display: grid; gap: 12px; }
@@ -31,6 +51,7 @@
 .idea-detail__back:hover { color: var(--fg); }
 .idea-detail__title { margin: 0; font-size: 1.125rem; line-height: 1.3; font-weight: 700; }
 .idea-detail__why { margin: 0; color: var(--fg-soft); }
+.idea-detail__who { display: flex; align-items: center; gap: 8px; margin: 0; font-size: var(--text-ui); color: var(--fg-soft); }
 .idea-detail__included { border-top: 1px solid var(--plane-edge); padding-top: 12px; }
 .idea-detail__heading { margin: 0 0 8px; font-weight: 600; }
 .idea-detail__included ul { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }

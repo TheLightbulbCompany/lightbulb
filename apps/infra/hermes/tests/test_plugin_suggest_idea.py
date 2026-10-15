@@ -33,6 +33,8 @@ def test_posts_to_this_owners_suggestions_as_the_turns_agent(tmp_path, monkeypat
     assert body == {"agentId": "growth", "title": "Answer the 14 open reviews",
                     "why": "Fourteen reviews have no reply.",
                     "deliverables": ["Every review answered", "Refunds flagged", "a"], "size": "task"}
+    lightbulb._suggest_idea({**ARGS, "emoji": " ⭐ "}, session_id=SESSION)
+    assert calls[1][2]["emoji"] == "⭐"
 
 
 @pytest.mark.parametrize("status, words", [("duplicate", "Already in the Ideas list"), ("cap", "10 suggestions")])

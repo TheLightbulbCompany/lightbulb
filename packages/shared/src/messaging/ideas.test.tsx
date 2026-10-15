@@ -6,10 +6,10 @@ import type { ReactNode } from "react";
 
 import type { ApiMethods } from "../api/client";
 import { createMessagingClient } from "./client";
-import { ideaEffortLine, orderIdeas, useIdeas, type Idea, type IdeasClient } from "./ideas";
+import { ideaSections, orderIdeas, useIdeas, type Idea, type IdeasClient } from "./ideas";
 
-const idea = (id: string, agentId: string, agentName = agentId): Idea => ({
-  id, ownerRole: "growth", kind: "agency", size: "project", businessTypes: ["any"], title: `T ${id}`, why: "w",
+const idea = (id: string, agentId: string, agentName = agentId, ownerRole = "growth"): Idea => ({
+  id, ownerRole, emoji: "💡", kind: "agency", size: "project", businessTypes: ["any"], title: `T ${id}`, why: "w",
   deliverables: ["a", "b", "c"], ourTurnaround: "about 2 days", yourPart: "about 5 minutes", agentId, agentName,
 });
 
@@ -32,12 +32,13 @@ describe("ideas helpers", () => {
     expect(orderIdeas(list, null).map((i) => i.id)).toEqual(["a", "b", "c", "d"]);
   });
 
-  it("has no effort line for a suggestion without one", () => {
-    expect(ideaEffortLine({})).toBeNull();
-  });
-
-  it("writes the effort line without prices", () => {
-    expect(ideaEffortLine(idea("a", "x"))).toBe("Your team: about 2 days · You: about 5 minutes");
+  it("sorts ideas into sections by their role, suggestions first, keeping the order inside", () => {
+    const list = [idea("e1", "x", "x", "engineering"), idea("f1", "x", "x", "finance"), idea("c1", "x", "x", "ceo"),
+      { ...idea("s1", "x", "x", "growth"), suggested: true }, idea("o1", "x", "x", "customer_operations"),
+      idea("f2", "x", "x", "finance")];
+    expect(ideaSections(list).map((s) => [s.title, s.ideas.map((i) => i.id)])).toEqual([
+      ["For you", ["s1"]], ["Money", ["f1", "f2"]], ["Run the day", ["c1", "o1"]], ["Build", ["e1"]],
+    ]);
   });
 });
 

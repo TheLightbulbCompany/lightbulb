@@ -3,6 +3,7 @@ owner_role: ceo
 kind: everyday
 size: task
 business_types: [any]
+emoji: "⏰"
 title: "Deadline sweep: domain, SSL and annual report renewed before due"
 why: "A lapsed domain or a missed state filing costs far more than the fee."
 deliverables:

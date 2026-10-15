@@ -3,6 +3,7 @@ owner_role: engineering
 kind: agency
 size: project
 business_types: [store]
+emoji: "🛍️"
 title: "Your Shopify store set up with your first 50 products"
 why: "A store ready to sell: products, shipping, tax and policies done."
 deliverables:

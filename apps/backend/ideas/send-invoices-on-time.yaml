@@ -3,6 +3,7 @@ owner_role: finance
 kind: everyday
 size: task
 business_types: [services, software]
+emoji: "📤"
 title: "Each invoice sent on its billing date"
 why: "Invoices that go out late get paid late."
 deliverables:

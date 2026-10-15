@@ -151,6 +151,7 @@ SUGGEST_IDEA_SCHEMA = {
                              "description": "Up to three short lines the person will have."},
             "size": {"type": "string", "enum": ["project", "task", "quick"],
                      "description": "project: many steps over days; task: one errand; quick: answered in one go."},
+            "emoji": {"type": "string", "description": "One emoji that pictures the outcome, shown beside the title."},
         },
         "required": ["title", "description", "deliverables", "size"],
     },
@@ -169,6 +170,8 @@ def _suggest_idea(args: dict, *, session_id: str = "", **_kw) -> str:
         "deliverables": [str(d).strip() for d in (args.get("deliverables") or []) if str(d).strip()][:3],
         "size": args.get("size"),
     }
+    if str(args.get("emoji") or "").strip():
+        body["emoji"] = str(args["emoji"]).strip()
     url = f"{ctx['apiUrl'].rstrip('/')}/api/v1/internal/ideas/suggestions/{ctx['ownerId']}"
     try:
         result = _post(url, ctx["hookToken"], body)

@@ -1,11 +1,12 @@
 "use client";
 
-// Ideas in the right pane (spec 2026-10-14 §4.4; calm like Muse's Ideas tab, owner 2026-10-15):
-// every idea as one row (the DM agent's first, then agents' suggestions, agency jobs, everyday).
+// Ideas in the right pane (spec 2026-10-14 §4.4; owner 2026-10-15): every idea as one row, in
+// sections that show the team's range (For you, Money, Grow, Run the day, Build); inside one,
+// the DM agent's first, then agency jobs, then everyday.
 // A row opens the idea's detail in the pane; Let's do it starts it and opens the DM in the main
 // view. A started idea leaves the list (owner: once you say Let's do it, you are doing the work).
 import { useState } from "react";
-import { orderIdeas } from "@lightbulb/shared";
+import { ideaSections, orderIdeas } from "@lightbulb/shared";
 import { IdeaDetail, IdeaListRow } from "@/components/ideas/IdeaCard";
 import { useIdeas } from "@/hooks/useIdeas";
 import { updatePanelParams } from "../workspaceController";
@@ -42,10 +43,10 @@ export function IdeasDockPanel({ id, params }: PanelProps) {
     {error ? <p role="alert" className="ideas-pane__notice">
       Couldn&apos;t load ideas · <button type="button" className="underline" onClick={() => void refresh()}>Retry</button>
     </p> : null}
-    {shown.length > 0 && <section aria-labelledby="ideas-all">
-      <h2 id="ideas-all" className="ideas-pane__heading">Ideas</h2>
-      <ul className="idea-list">{shown.map((idea) => <IdeaListRow key={idea.id} idea={idea} onOpen={setOpenId} />)}</ul>
-    </section>}
+    {ideaSections(shown).map((section) => <section key={section.key} aria-labelledby={`ideas-${section.key}`}>
+      <h2 id={`ideas-${section.key}`} className="ideas-pane__heading">{section.title}</h2>
+      <ul className="idea-list">{section.ideas.map((idea) => <IdeaListRow key={idea.id} idea={idea} onOpen={setOpenId} />)}</ul>
+    </section>)}
     {!loading && !error && shown.length === 0 &&
       <p className="ideas-pane__notice">No ideas right now.</p>}
   </div>;

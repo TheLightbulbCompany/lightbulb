@@ -19,6 +19,8 @@ export interface Idea {
   /** project: a project in Work; task: one task in Work; quick: answered in one go. */
   size: IdeaSize;
   businessTypes: string[];
+  /** The idea's picture in the list; an agent's suggestion without one has 💡. */
+  emoji: string;
   title: string;
   why: string;
   deliverables: string[];
@@ -47,9 +49,33 @@ export interface IdeaStart {
 
 export type IdeasClient = Pick<MessagingClient, "listIdeas" | "startIdea" | "dismissIdea">;
 
-/** The card's one effort line; null when the idea has none (an agent's suggestion). */
-export const ideaEffortLine = (idea: Pick<Idea, "ourTurnaround" | "yourPart">): string | null =>
-  idea.ourTurnaround && idea.yourPart ? `Your team: ${idea.ourTurnaround} · You: ${idea.yourPart}` : null;
+export type IdeaSectionKey = "for-you" | "money" | "grow" | "run" | "build";
+
+/** The list's sections, in order (owner, 2026-10-15: show the team's range, not a flat menu).
+ *  An agent's suggestion is "For you"; a catalog idea's section follows the role that owns it. */
+const SECTIONS: { key: IdeaSectionKey; title: string; roles: readonly string[] }[] = [
+  { key: "for-you", title: "For you", roles: [] },
+  { key: "money", title: "Money", roles: ["finance"] },
+  { key: "grow", title: "Grow", roles: ["growth"] },
+  { key: "run", title: "Run the day", roles: ["customer_operations", "ceo"] },
+  { key: "build", title: "Build", roles: ["engineering"] },
+];
+
+export interface IdeaSection {
+  key: IdeaSectionKey;
+  title: string;
+  ideas: Idea[];
+}
+
+export const ideaSectionKey = (idea: Pick<Idea, "suggested" | "ownerRole">): IdeaSectionKey =>
+  (!idea.suggested && SECTIONS.find((s) => s.roles.includes(idea.ownerRole ?? ""))?.key) || "for-you";
+
+/** The ideas in their sections, each keeping the given order; empty sections left out. */
+export function ideaSections(ideas: readonly Idea[]): IdeaSection[] {
+  return SECTIONS
+    .map(({ key, title }) => ({ key, title, ideas: ideas.filter((idea) => ideaSectionKey(idea) === key) }))
+    .filter((section) => section.ideas.length > 0);
+}
 
 /** The server's order (agency jobs first), with `agentId`'s ideas moved to the front (opened from its DM). */
 export function orderIdeas(ideas: readonly Idea[], agentId?: string | null): Idea[] {

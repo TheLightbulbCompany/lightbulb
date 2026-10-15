@@ -3,6 +3,7 @@ owner_role: ceo
 kind: everyday
 size: task
 business_types: [any]
+emoji: "⚖️"
 title: "Three quotes collected and your pick asked to book"
 why: "Insurance, cleaners, accountants or movers compared for you, then requested."
 deliverables:

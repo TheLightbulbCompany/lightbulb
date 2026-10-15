@@ -1596,7 +1596,7 @@ async def _run_message_action(
         author = msg["author"]
         if author["kind"] == "agent" and (meta or {}).get("kind") == "channel":
             # Replying to an agent should reach it, as tapping Reply in the thread would.
-            if await messaging_repo.get_member(room_id, "agent", author["id"]):
+            if await messaging.room_agent(room_id, author["id"], meta):  # a feed author is not seated
                 mentions = [messaging.MemberRef(kind="agent", id=author["id"])]
         # Scoped to user + item so a client key can never replay someone else's send.
         basis = str(body.idempotency_key) if body.idempotency_key else f"text|{text}"

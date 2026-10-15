@@ -24,7 +24,7 @@ from core.observability.product_analytics import (
     capture_once_per_owner_per_day,
     capture_product_event,
 )
-from core.repositories import billing_repo, container_repo
+from core.repositories import billing_repo, container_repo, user_repo
 from core.services.provision_dispatch import dispatch_provision
 from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.paperclip_admin_session import get_admin_session_cookie
@@ -35,7 +35,7 @@ from core.services.paperclip_provisioning import (
     build_paperclip_provisioning,
     close_paperclip_provisioning,
 )
-from core.services.paperclip_agent_lifecycle import pause_owner_automation, resume_owner_automation
+from core.services.paperclip_agent_lifecycle import _rows, pause_owner_automation, resume_owner_automation
 from core.services.provision_gate import evaluate_provision_gate, should_arm_nightly_ceo
 from core.services.trial_cap import utc_today
 
@@ -242,6 +242,110 @@ def ceo_agent_id(row) -> str | None:
     return (row.starter_agent_ids or {}).get("ceo") or (row.seeded_agent_ids or [None])[0]
 
 
+#: The feed's schedule (spec 2026-10-14 §4.2): three CEO routines a day, in the owner's local time.
+FEED_ROUTINE_HOURS = (8, 13, 18)
+#: How long one reconcile holds the right to attach a feed routine's schedule trigger.
+FEED_TRIGGER_CLAIM_S = 120
+FEED_ROUTINE_DESCRIPTION = (
+    "Scheduled feed post. Look at what happened since the last scheduled feed post: rooms, Work, "
+    "runs, sessions and connected tools. Read the feed's recent posts first and never repeat one; "
+    "the feed's topic is the team's brief. If one thing matters, post ONE feed post about it:\n\n"
+    'printf \'%s\' "<post>" | /app/skills/lightbulb/scripts/lightbulb-post.sh --feed --why "<why it matters>"\n\n'
+    "You may also research the web for news relevant to the company and the brief. "
+    "If nothing matters, post nothing. How to write a post: the lightbulb skill's references/feed.md."
+)
+
+
+def feed_routine_title(hour: int) -> str:
+    return f"Feed post {hour:02d}:00"
+
+
+async def _feed_timezone(row) -> str:
+    """The workspace creator's own ``users.timezone`` when they set one, else UTC."""
+    user_id = getattr(row, "provisioner_user_id", "") or ""
+    tz = (await user_repo.get(user_id) or {}).get("timezone") if user_id else None
+    return tz if user_repo.valid_timezone(tz) else "UTC"
+
+
+async def _ensure_feed_routines(admin, cookie: str, owner_id: str, row, ceo_id: str) -> None:
+    """Create the three feed routines once per owner, assigned to the CEO.
+
+    Matched by title + assignee (any status: an owner's pause or archive is theirs to keep);
+    created under a stable per-owner ``Idempotency-Key`` so two racing reconciles converge.
+    Trigger creates carry no key upstream, so a routine left without its schedule trigger (a
+    crash between the two calls) gets it on the next reconcile. Created only on the entitled
+    branch: a paused owner gets none until resumed, and ``pause_owner_automation`` pauses them
+    with every other active routine. Never raises: the feed must not fail a provision."""
+    try:
+        routines = _rows(await admin.list_routines(session_cookie=cookie, company_id=row.company_id), "routines")
+        by_id = {r.get("id"): r for r in routines}
+        existing = {r.get("title"): r for r in routines if r.get("assigneeAgentId") == ceo_id}
+
+        def settled(routine: dict) -> bool:
+            return routine.get("status") == "archived" or any(
+                t.get("kind") == "schedule" for t in routine.get("triggers") or []
+            )
+
+        timezone = None
+        for hour in FEED_ROUTINE_HOURS:
+            title = feed_routine_title(hour)
+            routine = existing.get(title)
+            if routine is not None and settled(routine):
+                continue
+            if routine is None:
+                try:
+                    routine = await admin.create_routine(
+                        session_cookie=cookie,
+                        company_id=row.company_id,
+                        body={
+                            "title": title,
+                            "description": FEED_ROUTINE_DESCRIPTION,
+                            "assigneeAgentId": ceo_id,
+                            "concurrencyPolicy": "coalesce_if_active",
+                            "catchUpPolicy": "skip_missed",
+                        },
+                        idempotency_key=f"lightbulb-feed-routine:v1:{owner_id}:{hour:02d}",
+                    )
+                except PaperclipApiError as exc:
+                    # The key's routine was deleted by the owner: Paperclip refuses the replay.
+                    if exc.status_code == 409 and "idempotency_target_missing" in str(exc.body or ""):
+                        continue
+                    raise
+                # A replay of a routine the owner since renamed or reassigned: theirs to keep.
+                if routine.get("id") in by_id and settled(by_id[routine["id"]]):
+                    continue
+            # Trigger creates carry no idempotency key upstream: overlapping reconciles take turns
+            # under a short claim, and the holder re-reads the routine before it adds one. The claim
+            # just lapses after a success (the trigger is then in every later list).
+            claim = f"feed-trigger:{owner_id}:{hour:02d}"
+            if not await container_repo.try_claim_pass(claim, interval_s=FEED_TRIGGER_CLAIM_S):
+                continue  # another reconcile is attaching it; the next one checks again
+            try:
+                if settled(await admin.get_routine(session_cookie=cookie, routine_id=routine["id"])):
+                    continue
+                timezone = timezone or await _feed_timezone(row)
+                await admin.create_routine_trigger(
+                    session_cookie=cookie,
+                    routine_id=routine["id"],
+                    body={
+                        "kind": "schedule",
+                        "cronExpression": f"0 {hour} * * *",
+                        "timezone": timezone,
+                        "enabled": True,
+                    },
+                )
+            except PaperclipApiError as exc:
+                await container_repo.release_pass(claim)
+                if exc.status_code != 404:  # deleted since the list: the owner's choice
+                    raise
+            except Exception:
+                await container_repo.release_pass(claim)  # let the next reconcile retry at once
+                raise
+    except Exception:  # noqa: BLE001 -- retried by the next reconcile
+        put_metric("feed.routines", dimensions={"status": "error"})
+        logger.exception("feed routines: ensure failed for owner %s", owner_id)
+
+
 async def arm_nightly_ceo(owner_id: str) -> str:
     """Idempotently arm the CEO's Paperclip timer heartbeat (and the specialists').
 
@@ -302,6 +406,8 @@ async def arm_nightly_ceo(owner_id: str) -> str:
             specialists = [agent_id for key, agent_id in starters.items() if key != "ceo" and agent_id]
             admin = provisioning._admin
             admin_cookie = await get_admin_session_cookie(admin._http)
+
+            await _ensure_feed_routines(admin, admin_cookie, owner_id, row, ceo_id)
 
             async def put(agent_id: str, heartbeat: dict) -> None:
                 await admin.set_agent_heartbeat(session_cookie=admin_cookie, agent_id=agent_id, heartbeat=heartbeat)
@@ -457,6 +563,12 @@ async def _ensure_paperclip_for_owner(
                 except Exception:  # noqa: BLE001 — partial retries reconcile again
                     room_id = None
                     logger.exception("ensure_user_ready: default room creation failed for owner=%s", owner_id)
+                try:
+                    from core.services.messaging import ensure_feed_room
+
+                    await ensure_feed_room(owner_id, owner_user_id)
+                except Exception:  # noqa: BLE001 -- the Activity page's first read creates it
+                    logger.exception("ensure_user_ready: feed room creation failed for owner=%s", owner_id)
                 if room_id:
                     # The owner's welcome, from the CEO, now that #general exists. Once-only via
                     # send_to_owner's first-contact claim, so a re-run here sends nothing.

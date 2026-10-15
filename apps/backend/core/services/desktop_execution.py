@@ -798,6 +798,7 @@ async def authorize_run(
     session by id, so a caller-chosen family from a hook token must never reach it.
     """
     from core.repositories import messaging_repo
+    from core.services import messaging
 
     if any(not isinstance(v, str) or not _ID.fullmatch(v) for v in (owner_id, run_id, agent_id)):
         raise DesktopError("run_forbidden", 403)
@@ -883,7 +884,7 @@ async def authorize_run(
     if (
         not room
         or room.get("ownerId") != owner_id
-        or not await messaging_repo.get_member(room_id, "agent", agent_id)
+        or not await messaging.room_agent(room_id, agent_id, room)  # the feed: a roster author
         or await messaging_repo.has_foreign_members(room_id, owner_id)
     ):
         raise DesktopError("run_forbidden", 403)

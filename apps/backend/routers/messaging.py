@@ -799,6 +799,12 @@ async def get_link_preview(
     return preview
 
 
+@router.get("/messaging/feed", response_model=service.FeedResponse)
+async def get_feed(auth: AuthContext = Depends(get_current_user)):
+    """The workspace feed (Activity): ensured on first read, the caller seated; ``{roomId, topic}``."""
+    return await service.get_feed(auth)
+
+
 @router.get("/messaging/live-config", response_model=LiveConfig)
 async def live_config(auth: AuthContext = Depends(get_current_user)):
     owner_id = resolve_owner_id(auth)
@@ -1173,7 +1179,7 @@ async def _resolved_run(auth: AuthContext, run_id: str) -> tuple[str, dict]:
     if row is None:
         raise ApiProblem("RUN_NOT_FOUND", "Run not found.")
     await service.require_room_member(owner_id, auth.user_id, row["roomId"])
-    if await messaging_repo.get_member(row["roomId"], "agent", row["agentId"]) is None:
+    if await service.room_agent(row["roomId"], row["agentId"]) is None:
         raise ApiProblem("RUN_NOT_ACTIVE", "The run's agent is no longer in this room.")
     return owner_id, row
 
@@ -1292,7 +1298,7 @@ async def _subagent_scope(auth: AuthContext, room_id: str, agent_id: str | None 
     meta, _ = await service.require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
     if agent_id is not None:
         agent_id = service.validate_uuid(agent_id, label="agent ID")
-        if await messaging_repo.get_member(room_id, "agent", agent_id) is None:
+        if await service.room_agent(room_id, agent_id, meta) is None:  # the feed: a roster author
             raise ApiProblem("SUBAGENT_NOT_FOUND", "That agent is not in this room.")
     return meta["ownerId"]
 
@@ -1369,6 +1375,14 @@ async def post_agent_post(owner_id: str, body: AgentPostRequest, request: Reques
     room, then writes through the same canonical agent writer as ``agent-messages``."""
     await _require_hook_token(owner_id, request)
     return await service.post_agent_message(owner_id, body)
+
+
+@router.get("/messaging/feed/u/{owner_id}")
+async def agent_feed(owner_id: str, request: Request):
+    """The feed's brief and latest posts for an agent outside a room turn (hook token):
+    ``lightbulb-api.sh GET /api/v1/messaging/feed/u/$ISOL8_OWNER_ID``."""
+    await _require_hook_token(owner_id, request)
+    return await service.agent_feed(owner_id)
 
 
 @router.get(

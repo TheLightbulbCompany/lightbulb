@@ -102,10 +102,19 @@ async def test_removal_notices_go_to_each_humans_home_stream(monkeypatch):
 async def test_revoking_an_org_membership_only_touches_rooms_where_that_org_is_home(monkeypatch):
     foreign = _human("user_v", VENDOR)
     discovered = [{"meta": META, "member": foreign}]
-    monkeypatch.setattr(messaging.messaging_repo, "list_rooms_for_member", AsyncMock(return_value=discovered))
-    monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value=foreign))
+    # Each revoke lists twice: before and after the stream goes off (the removal empties the second).
+    monkeypatch.setattr(
+        messaging.messaging_repo, "list_rooms_for_member", AsyncMock(side_effect=[discovered, [], discovered, []])
+    )
+    # Seated in META's room only: revoke also sweeps #general and the feed by id (no seat there).
+    monkeypatch.setattr(
+        messaging.messaging_repo,
+        "get_member",
+        AsyncMock(side_effect=lambda room_id, *_: foreign if room_id == META["roomId"] else None),
+    )
     monkeypatch.setattr(messaging.messaging_repo, "get_room", AsyncMock(return_value=META))
     monkeypatch.setattr(messaging.messaging_repo, "deactivate_user_stream", AsyncMock())
+    monkeypatch.setattr(messaging.messaging_repo, "release_autojoin", AsyncMock())
     removed = AsyncMock(return_value=META)
     monkeypatch.setattr(messaging, "_remove_member_with_notices", removed)
 

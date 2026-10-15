@@ -892,6 +892,19 @@ class PushTests(unittest.TestCase):
         self.assertEqual(urlopen.call_count, 1)
         self.assertEqual(sorted(m["to"] for m in json.loads(urlopen.call_args.args[0].data)), ["tok-carol"])
 
+    def test_feed_room_posts_push_nobody_but_still_deliver_live(self):
+        """The workspace feed (id derived from the owner, as messaging_repo.feed_room_id does)
+        sends no phone push and no desktop banner; the room event and the hints still go out."""
+        feed = str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-feed-room|{OWNER_ID}"))
+        world = {(pk.replace(ROOM_ID, feed), sk): row for (pk, sk), row in push_world().items()}
+        message = {**push_message(), "pk": f"ROOM#{feed}", "roomId": feed}
+        publish, urlopen = self.project(world, message)
+        urlopen.assert_not_called()
+        payloads = {c.args[0]: c.args[1].get("payload") for c in publish.call_args_list}
+        self.assertTrue(all("push" not in (p or {}) for p in payloads.values()))
+        self.assertIn(f"/ws/{WORKSPACE_ID}/rooms/{feed}/{DELIVERY_KEY}", payloads)
+        self.assertIn(f"/ws/{WORKSPACE_ID}/users/{BOB_KEY}", payloads)
+
     def test_muted_member_collects_no_token_and_dm_title_is_the_author(self):
         _, urlopen = self.project(push_world(kind="dm", muted=(BOB_ID,)))
         messages = json.loads(urlopen.call_args.args[0].data)

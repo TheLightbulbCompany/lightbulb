@@ -207,3 +207,14 @@ async def test_chat_never_steers_into_a_voice_run(monkeypatch):
 
     monkeypatch.setattr(work.messaging_repo, "_query", query)
     assert await work.messaging_repo.list_open_runs_for_room("owner_test", ROOM) == []
+
+
+@pytest.mark.asyncio
+async def test_a_target_outside_the_member_list_still_appears_in_participants(monkeypatch):
+    """A feed author is woken without a seat; the bridge requires the target in participants."""
+    _wire_dispatch(monkeypatch, created=True, redispatched=None)
+    worker = OpenClawWorkWorker(sqs_client=FakeSqs())
+    monkeypatch.setattr(worker, "_post", AsyncMock(return_value=httpx.Response(202, json={"status": "accepted"})))
+    author = {**MEMBER, "kind": "agent", "listenMode": "mentions"}
+    await worker._dispatch_message(META, author, {"messageId": "m1"}, "user_request")
+    assert author in work.build_ingress_body.await_args.kwargs["members"]

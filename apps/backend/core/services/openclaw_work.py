@@ -29,7 +29,9 @@ from core.services.messaging import (
     canonical_message,
     human_emails,
     json_body_size,
+    is_feed_room,
     make_live_event,
+    room_agent,
     with_human_handles,
 )
 
@@ -396,7 +398,15 @@ class OpenClawWorkWorker:
         through = pointer["throughSeq"]
         cursor = await messaging_repo.get_agent_delivery(room_id, agent_id)
         if cursor is None:
-            return
+            # The feed's agents are authors, never seated, so a seat never made their cursor: the
+            # first wake starts it just before itself (FIFO per room+agent keeps the order).
+            meta = await messaging_repo.get_room(room_id)
+            if not (meta and is_feed_room(meta) and await room_agent(room_id, agent_id, meta)):
+                return
+            await messaging_repo.ensure_agent_delivery(room_id, agent_id, through - 1)
+            cursor = await messaging_repo.get_agent_delivery(room_id, agent_id)
+            if cursor is None:
+                return
         expected = int(cursor["lastSeq"])
         if through <= expected:
             return
@@ -410,7 +420,7 @@ class OpenClawWorkWorker:
             seq = int(message["messageSeq"])
             if seq <= expected:
                 continue
-            member = await messaging_repo.get_member(room_id, "agent", agent_id)
+            member = await room_agent(room_id, agent_id, meta)
             if member is None:
                 if not await messaging_repo.advance_agent_delivery(room_id, agent_id, expected, through):
                     latest = await messaging_repo.get_agent_delivery(room_id, agent_id)
@@ -454,7 +464,7 @@ class OpenClawWorkWorker:
             return drop("room_gone")
         if meta.get("archivedAt"):
             return drop("archived")
-        member = await messaging_repo.get_member(room_id, "agent", agent_id)
+        member = await room_agent(room_id, agent_id, meta)
         if member is None:
             return drop("not_member")
         message = await messaging_repo.get_message_by_id(room_id, row["triggerMessageId"])
@@ -498,6 +508,8 @@ class OpenClawWorkWorker:
             raise WorkRetry("gateway token unavailable")
         room_members = await messaging_repo.list_members(meta["roomId"])
         members = with_human_handles(room_members, await human_emails(room_members))
+        if not any(row.get("kind") == "agent" and row.get("id") == member["id"] for row in members):
+            members.append(member)  # a feed author is not seated; the bridge needs it in participants
         from core.services import local_sessions
 
         # live_sessions_for_room withholds the summary itself for a room shared
@@ -625,7 +637,7 @@ class OpenClawWorkWorker:
                 return False
         # The earlier read chose the work; this one is deliberately adjacent to
         # the side effect so queued work cannot outlive membership revocation.
-        if await messaging_repo.get_member(meta["roomId"], "agent", member["id"]) is None:
+        if await room_agent(meta["roomId"], member["id"], meta) is None:
             return False
         if (
             follow_up is None
@@ -787,7 +799,7 @@ class OpenClawWorkWorker:
         if not live:
             return False
         run = max(live, key=lambda row: row.get("dispatchedAt") or "")
-        if await messaging_repo.get_member(meta["roomId"], "agent", member["id"]) is None:
+        if await room_agent(meta["roomId"], member["id"], meta) is None:
             return False  # adjacent to the side effect: queued work must not outlive membership
         ambient = event_kind == "room_event"
         kind = "ambient" if ambient and run.get("eventKind") == "room_event" else "addressed"

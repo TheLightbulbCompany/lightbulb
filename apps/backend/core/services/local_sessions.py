@@ -22,7 +22,7 @@ from core.dynamodb import run_in_thread, utc_now_iso
 from core.observability.product_analytics import capture_product_event
 from core.observability.session_analytics import capture_session_event
 from core.repositories import container_repo, local_sessions_repo as repo, messaging_repo
-from core.services.messaging import ApiProblem, ContractModel, require_room_member, validate_uuid
+from core.services.messaging import ApiProblem, ContractModel, require_room_member, room_agent, validate_uuid
 from core.services.local_session_grants import AgentInvocation
 
 STATUSES = Literal["idle", "busy", "waiting-approval", "unknown", "offline", "ended"]
@@ -664,7 +664,7 @@ async def require_caller(auth: Caller, room: str) -> None:
         or not meta
         or meta.get("deletedAt")  # a deleted room keeps its member rows; its turns act for no one
         or meta.get("ownerId") != owner
-        or await messaging_repo.get_member(room, "agent", auth.agent_id) is None
+        or await room_agent(room, auth.agent_id, meta) is None  # the feed: a roster author
         # An agent answers everyone in the room, and a shared room's foreign
         # members must never hear this workspace's sessions.
         or await messaging_repo.has_foreign_members(room, owner)

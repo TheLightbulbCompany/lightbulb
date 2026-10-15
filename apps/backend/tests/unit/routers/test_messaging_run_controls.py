@@ -56,6 +56,8 @@ def _common(row=ROW, response=None, member_error=None, member={"id": AGENT_ID}, 
         patch("routers.messaging.messaging_repo.get_run", new_callable=AsyncMock, return_value=row),
         patch("routers.messaging.service.require_room_member", new_callable=AsyncMock, side_effect=member_error),
         patch("routers.messaging.messaging_repo.get_member", new_callable=AsyncMock, return_value=member),
+        # A missing seat makes the gate read the room (only the feed stands agents in): an ordinary one.
+        patch("routers.messaging.messaging_repo.get_room", AsyncMock(return_value={"ownerId": "o"})),
         patch(
             "core.services.openclaw_work.messaging_repo.get_message_by_id",
             new_callable=AsyncMock,

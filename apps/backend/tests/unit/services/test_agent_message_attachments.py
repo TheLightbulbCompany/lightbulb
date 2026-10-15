@@ -43,7 +43,9 @@ def created(monkeypatch) -> MagicMock:
     }
     create = AsyncMock(return_value=(item, False))
     monkeypatch.setattr(
-        messaging.messaging_repo, "get_room", AsyncMock(return_value={"ownerId": OWNER, "kind": "channel"})
+        messaging.messaging_repo,
+        "get_room",
+        AsyncMock(return_value={"roomId": ROOM, "ownerId": OWNER, "kind": "channel"}),
     )
     monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(return_value={"kind": "agent", "id": AGENT}))
     monkeypatch.setattr(messaging, "load_agent_roster", AsyncMock(return_value=[{"id": AGENT, "name": "Friday"}]))

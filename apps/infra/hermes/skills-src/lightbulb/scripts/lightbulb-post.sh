@@ -6,15 +6,18 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: lightbulb-post.sh [--room <roomId> | --user <userId> | --handle <handle>] [--issue <issueId>]
-                         [--as <agent_id>] [--event-id <id>]          (message body on stdin)
+Usage: lightbulb-post.sh [--feed | --room <roomId> | --user <userId> | --handle <handle>] [--issue <issueId>]
+                         [--why "<reason>"] [--as <agent_id>] [--event-id <id>]   (message body on stdin)
 Target, first that applies:
   --room    that room (you must already be a member); a room id, or '#name' for the
             channel of that name you are in
+  --feed    the workspace feed (Activity); see references/feed.md
   --user / --handle   that workspace member's DM with you (created if missing)
   --issue   the DM of the human who created that Paperclip issue
   (none)    the workspace's #general channel
 Options:
+  --why "<reason>"  "Why I created this post": one or two plain sentences, <= 280 characters.
+                    Required with --feed: a feed post without it is refused.
   --as <agent_id>   post as this agent (default: $PAPERCLIP_AGENT_ID, else your workspace-<id> cwd)
   --event-id <id>   idempotency key; a retry with the same key replays instead of doubling.
                     Default: a hash of agent + target + body.
@@ -34,10 +37,12 @@ need_val() { [[ $# -ge 2 && -n "${2:-}" ]] || die "Option $1 needs a value."; }
 
 agent_id="${PAPERCLIP_AGENT_ID:-}"
 case "$PWD" in */workspace-*) [[ -n "$agent_id" ]] || agent_id="${PWD##*/workspace-}" ;; esac
-room=""; user=""; handle=""; issue=""; event_id=""
+room=""; user=""; handle=""; issue=""; event_id=""; feed=""; why=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --room) need_val "$@"; room="$2"; shift 2 ;;
+    --feed) feed=1; shift ;;
+    --why) need_val "$@"; why="$2"; shift 2 ;;
     --user) need_val "$@"; user="$2"; shift 2 ;;
     --handle) need_val "$@"; handle="$2"; shift 2 ;;
     --issue) need_val "$@"; issue="$2"; shift 2 ;;
@@ -48,13 +53,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$agent_id" ]] || die 'Cannot tell which agent you are: pass --as <agent_id>.'
-n=0; for t in "$room" "$user" "$handle"; do [[ -n "$t" ]] && n=$((n+1)); done
-[[ $n -le 1 ]] || die 'Pick at most one of --room, --user, --handle.'
+n=0; for t in "$feed" "$room" "$user" "$handle"; do [[ -n "$t" ]] && n=$((n+1)); done
+[[ $n -le 1 ]] || die 'Pick at most one of --feed, --room, --user, --handle.'
+[[ -z "$feed" || -n "${why//[[:space:]]/}" ]] || { usage >&2; die '--feed needs --why "<why it matters>".'; }
 body="$(cat)"; [[ -n "${body//[[:space:]]/}" ]] || die 'Empty body: pipe the message text on stdin.'
 
 sha() { if command -v sha256sum >/dev/null; then sha256sum; else shasum -a 256; fi | cut -c1-32; }
 # Event ids are owner-wide on the backend, so every key is scoped to the posting agent.
-[[ -n "$event_id" ]] || event_id="$(printf '%s\n%s\n%s\n%s\n%s\n%s' "$agent_id" "$room" "$user" "$handle" "$issue" "$body" | sha)"
+[[ -n "$event_id" ]] || event_id="$(printf '%s\n%s\n%s\n%s\n%s\n%s%s' "$agent_id" "${feed:+feed}$room" "$user" "$handle" "$issue" "$body" "${why:+$'\n'why:$why}" | sha)"
 event_id="post:${agent_id}:${event_id}"
 
 api="${ISOL8_API_URL%/}/api/v1/internal/messaging"
@@ -64,7 +70,10 @@ if [[ "$seen" == 200 ]]; then printf 'Already posted: event %s was sent before; 
 
 payload="$(jq -nc --arg e "$event_id" --arg a "$agent_id" --arg t "$body" \
   --arg room "$room" --arg user "$user" --arg handle "$handle" --arg issue "$issue" \
+  --arg feed "$feed" --arg why "$why" \
   '{eventId:$e, agentId:$a, text:$t}
+   + (if $feed != "" then {feed:true} else {} end)
+   + (if $why != "" then {postReason:$why} else {} end)
    + (if $room == "" then {} elif ($room|startswith("#")) then {roomName:$room} else {roomId:$room} end)
    + (if $user != "" then {userId:$user} else {} end)
    + (if $handle != "" then {handle:$handle} else {} end)

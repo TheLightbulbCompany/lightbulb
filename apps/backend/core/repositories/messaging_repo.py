@@ -296,6 +296,12 @@ def vendor_room_id(owner_id: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-vendor-room|{owner_id}"))
 
 
+def feed_room_id(owner_id: str) -> str:
+    """The workspace's one feed channel (Activity). Mirrored by the messaging projector
+    (apps/infra/lambda/messaging-projector/index.py ``_is_feed_room``): edit both together."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-feed-room|{owner_id}"))
+
+
 def meeting_room_id(owner_id: str, uid: str) -> str:
     """The channel a calendar invite (by its UID) opens in the owner's workspace."""
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-meeting|{owner_id}|{uid}"))
@@ -522,6 +528,20 @@ async def get_message_by_id(room_id: str, message_id: str) -> dict | None:
 
 async def get_agent_delivery(room_id: str, agent_id: str) -> dict | None:
     return await _get(room_pk(room_id), delivery_sk(agent_id))
+
+
+async def ensure_agent_delivery(room_id: str, agent_id: str, last_seq: int) -> None:
+    """Create an agent's delivery cursor at ``last_seq`` if it has none. For the feed, whose agents
+    are authors and so get no cursor from a seat: their first wake starts it just before itself."""
+    try:
+        await run_in_thread(
+            _table().put_item,
+            Item={"pk": room_pk(room_id), "sk": delivery_sk(agent_id), "agentId": agent_id, "lastSeq": int(last_seq)},
+            ConditionExpression="attribute_not_exists(sk)",
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
 
 
 async def get_read_row(room_id: str, user_id: str) -> dict | None:
@@ -981,6 +1001,8 @@ async def create_message(
     addressing: dict | None = None,
     in_reply_to: str | None = None,
     progress: bool = False,
+    post_reason: str | None = None,
+    author_member_check: bool = True,
 ) -> tuple[dict, bool]:
     """Strong-read ``META.lastSeq`` then conditionally transact: bump META, put
     the immutable ``MSG``, put the ``IDEMP`` receipt, put one ``WORK#MESSAGE``
@@ -992,6 +1014,8 @@ async def create_message(
     a durable replay returns the original message; a changed body raises
     ``IdempotencyConflict``; losing the author-membership race raises
     ``MessageForbidden`` (not retried — the author is gone, not racing).
+    ``author_member_check=False`` drops that check for an author who is not a member by design:
+    an agent writing the workspace feed (its authors are the roster, its members only people).
 
     Returns ``(message, replayed)``. ``replayed`` is True when a durable
     receipt already existed and NOTHING was written — the agent path is built
@@ -1006,6 +1030,7 @@ async def create_message(
     target_ids = [t["agentId"] for t in dispatch_targets]
     # A platform notice (author kind "system") has no MEMBER row to check.
     system = author["kind"] == "system"
+    checked = (not system or acting_human_id) and author_member_check
     # Writers to one room in this process take turns here instead of racing for the
     # same lastSeq in DynamoDB; only writers on OTHER backend tasks still conflict.
     async with _room_append_lock(room_id):
@@ -1062,6 +1087,9 @@ async def create_message(
             if progress:
                 # A mid-run progress line: clients keep the run card running under it.
                 message["progress"] = True
+            if post_reason:
+                # A feed post's "Why I created this post" line.
+                message["postReason"] = post_reason
             if agent_hop is not None:
                 # The agent-reply cap reads the trigger's hop (messaging.create_agent_message).
                 message["agentHop"] = agent_hop
@@ -1126,7 +1154,7 @@ async def create_message(
                     }
                 },
             ]
-            if system and not acting_human_id:
+            if not checked:
                 del items[1]  # the author MEMBER check
             source_condition_start = len(items)
             items.extend(extra_conditions or [])
@@ -1227,11 +1255,7 @@ async def create_message(
                     and ((await _get(session_key["pk"], "META")) or {}).get("removedAt")
                 ):
                     raise RoomNotFound(room_id) from exc
-                if (
-                    (not system or acting_human_id)
-                    and len(reasons) > 1
-                    and reasons[1].get("Code") == "ConditionalCheckFailed"
-                ):
+                if checked and len(reasons) > 1 and reasons[1].get("Code") == "ConditionalCheckFailed":
                     # The author's own MEMBER row is gone: not a sequence race, don't retry.
                     raise MessageForbidden("Only a current room member can send this message.") from exc
                 if any(

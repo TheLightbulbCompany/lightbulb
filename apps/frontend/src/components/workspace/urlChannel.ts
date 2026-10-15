@@ -4,6 +4,7 @@
 import {
   describePanel,
   durableParamsFor,
+  opensInPane,
   ONE_SHOT_PARAMS,
   NON_COMMAND_PARAMS,
   type PanelDescriptor,
@@ -36,6 +37,25 @@ export function takePane(all: Record<string, string>): PaneCommand | undefined {
   }
   const descriptor = key ? describePanel(key, params) : null;
   return key && descriptor ? { key, params, descriptor } : undefined;
+}
+
+/** `target` (a Chat view: ?panel=chat&room=…) keeps the pane the current URL shows beside it:
+ *  its `pane` part, or a plain `?panel=<pane key>` (the pane with Chat as the place). */
+export function withPane(target: string, currentSearch: string): string {
+  const current = toParams(currentSearch);
+  const out = toParams(target);
+  if (current.has(PANE_PARAM)) {
+    current.forEach((v, k) => { if (k === PANE_PARAM || k.startsWith(PANE_PREFIX)) out.set(k, v); });
+    return out.toString();
+  }
+  const command = parseCommand(currentSearch);
+  const key = current.get("panel");
+  if (!command || !key || !opensInPane(command.descriptor)) return target;
+  const params: Record<string, string> = {};
+  const skip = new Set<string>([...ONE_SHOT_PARAMS, ...NON_COMMAND_PARAMS, "panel"]);
+  current.forEach((v, k) => { if (!skip.has(k)) params[k] = v; });
+  appendPane(out, key, params);
+  return out.toString();
 }
 
 /** `panel=<main>&…&pane=<key>&pane.<k>=…` */

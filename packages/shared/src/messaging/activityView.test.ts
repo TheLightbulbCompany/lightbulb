@@ -175,4 +175,13 @@ describe("activityView", () => {
     expect(attentionActivityCount([approval, failedRun, mention], "2026-09-26T00:00:00Z")).toBe(2);
     expect(attentionActivityCount([approval, mention], "2026-09-01T00:00:00Z")).toBe(2);
   });
+
+  it("the badge counts needs you, mentions and DMs; thread replies, reactions and finished sessions never", () => {
+    const unseen = "2026-09-01T00:00:00Z";
+    const dm = item({ id: "dm:1", kind: "dm" });
+    const thread = item({ id: "thread_reply:1", kind: "thread_reply" });
+    const reaction = item({ id: "reaction:1", kind: "reaction" });
+    const finished = item({ id: "session:f1", kind: "session", subtype: "finished" });
+    expect(attentionActivityCount([approval, mention, dm, thread, reaction, finished], unseen)).toBe(3);
+  });
 });

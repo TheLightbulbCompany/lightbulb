@@ -22,6 +22,7 @@ import {
   _resetControllerForTests,
 } from "../workspaceController";
 import { MESSAGES_PANEL_ID } from "../panelRegistry";
+import { recordChatView, resetChatView } from "../chatHistory";
 
 vi.mock("@/lib/shellNav", () => ({
   pushSearchParams: vi.fn(),
@@ -197,6 +198,16 @@ describe("the right pane", () => {
     expect(String(vi.mocked(replaceSearchParams).mock.calls[0][0])).toBe("");
     expect(openBrowserPane()).toBe(true);
     expect(String(vi.mocked(pushSearchParams).mock.calls.at(-1)?.[0])).toBe("panel=browser");
+  });
+
+  it("with Chat as the place, a pushed pane URL keeps the room or session on screen", () => {
+    recordChatView({ roomId: "r-launch", sessionId: null }, false);
+    openPanel("browser", {}, { pushUrl: true });
+    expect(String(vi.mocked(pushSearchParams).mock.calls.at(-1)?.[0])).toBe("panel=chat&room=r-launch&pane=browser");
+    recordChatView({ roomId: "r-launch", sessionId: "s-1" }, false);
+    openPanel("file-viewer", { path: "/a.md" }, { pushUrl: true });
+    expect(String(vi.mocked(pushSearchParams).mock.calls.at(-1)?.[0])).toBe("panel=chat&session=s-1&pane=file-viewer&pane.path=%2Fa.md");
+    resetChatView();
   });
 
   it("a pushed URL names the place and the pane beside it", () => {

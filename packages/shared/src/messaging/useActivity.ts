@@ -48,10 +48,15 @@ export function unseenActivityCount(items: readonly ActivityItem[], seenUpTo: st
   return Math.min(UNSEEN_CAP, items.filter((item) => time(item.createdAt) > floor).length);
 }
 
-/** The badge after `seenUpTo`, stock-Paperclip style: every "needs you" item plus the unseen rest. */
+/** What badges while unseen besides "needs you" (the server's rule): mentions, DMs and Paperclip items.
+ *  A thread reply, a reaction or a finished session never does. */
+const BADGES_WHILE_UNSEEN: readonly string[] = ["mention", "dm", "paperclip"];
+
+/** The badge after `seenUpTo`: every "needs you" item plus unseen mentions, DMs and Paperclip items. */
 export function attentionActivityCount(items: readonly ActivityItem[], seenUpTo: string): number {
   const pinned = items.filter(isNeedsYou);
-  return Math.min(UNSEEN_CAP, pinned.length + unseenActivityCount(items.filter((item) => !isNeedsYou(item)), seenUpTo));
+  const rest = items.filter((item) => !isNeedsYou(item) && BADGES_WHILE_UNSEEN.includes(item.kind));
+  return Math.min(UNSEEN_CAP, pinned.length + unseenActivityCount(rest, seenUpTo));
 }
 
 /** The newest `createdAt` (the `upTo` for mark-seen), or null for an empty feed. */
@@ -177,7 +182,7 @@ export function useActivity(client: ActivityClient, platform: ActivityPlatform, 
   return {
     items,
     unseenCount: pages[0]?.unseenCount ?? 0,
-    /** The rail/tab badge: open approvals and failed runs always, the rest while unseen. */
+    /** The rail/tab badge: every needs-you item, plus unseen mentions, DMs and Paperclip items. */
     attentionCount: pages[0]?.attentionCount ?? pages[0]?.unseenCount ?? 0,
     paperclipAvailable: pages[0]?.sources.paperclip !== "unavailable",
     loading: isLoading,

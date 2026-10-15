@@ -737,6 +737,8 @@ export interface ActivityItem {
   roomId: string | null;
   messageId: string | null;
   threadRootMessageId: string | null;
+  /** Message items: the room's kind ("in a DM" without parsing labels). Absent from an older server. */
+  roomKind?: RoomKind | null;
   actor: ActivityActor;
   createdAt: string;
   state: "open" | "done" | "resolved";

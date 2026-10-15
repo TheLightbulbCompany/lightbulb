@@ -26,6 +26,22 @@ describe("chatViewSearch", () => {
   });
 });
 
+describe("planChatHistoryWrite — the pane beside the conversation", () => {
+  it("keeps a two-slot pane part when another room is picked", () => {
+    expect(planChatHistoryWrite(room("r1"), room("r2"), "?panel=chat&room=r1&pane=browser"))
+      .toEqual({ push: "panel=chat&room=r2&pane=browser" });
+  });
+
+  it("turns a plain pane URL (Chat as the place) into the room plus that pane", () => {
+    expect(planChatHistoryWrite(room("r1"), room("r2"), "?panel=file-viewer&path=%2Fa.md"))
+      .toEqual({ push: "panel=chat&room=r2&pane=file-viewer&pane.path=%2Fa.md" });
+  });
+
+  it("adds no pane when the URL names a place", () => {
+    expect(planChatHistoryWrite(room("r1"), room("r2"), "?panel=teams-issues")).toEqual({ push: "panel=chat&room=r2" });
+  });
+});
+
 describe("planChatHistoryWrite", () => {
   it("does nothing when the URL already shows the view (a Back replay)", () => {
     expect(planChatHistoryWrite(room("r1"), room("r2"), "?panel=chat&room=r2")).toBeNull();

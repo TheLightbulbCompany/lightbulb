@@ -24,7 +24,7 @@ vi.mock("next/navigation", () => ({ useSearchParams: () => null }));
 // The real controller; the panels are stand-ins (their own tests cover them).
 vi.mock("../panels/ChatPanel", () => ({
   ChatPanel: ({ params }: { params: Record<string, string> }) => (
-    <section aria-label="Conversation" data-agent={params.agentId}><textarea aria-label="Message" /></section>
+    <section aria-label="Conversation" data-agent={params.agentId} data-room={params.roomId}><textarea aria-label="Message" /></section>
   ),
 }));
 vi.mock("../panelComponents", () => ({
@@ -223,6 +223,13 @@ it("applies the URL's command on mount: a retired alias opens Activity, a detail
   renderReady();
   expect(screen.getByTestId("panel-teams")).toHaveTextContent("teams-issue-detail:ADM-9");
   expect(screen.getByRole("region", { name: "Task" })).toBeInTheDocument();
+});
+
+it("restores the room and the Browser beside it from ?panel=chat&room=…&pane=browser on reload", () => {
+  window.history.replaceState(null, "", "/chat?panel=chat&room=r-launch&pane=browser");
+  renderReady();
+  expect(screen.getByRole("region", { name: "Conversation" })).toHaveAttribute("data-room", "r-launch");
+  expect(screen.getByRole("region", { name: "Browser" })).toBeInTheDocument();
 });
 
 it("restores both the place and the pane from a two-slot URL on reload", () => {

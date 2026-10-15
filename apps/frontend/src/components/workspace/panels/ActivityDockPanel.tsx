@@ -133,6 +133,7 @@ export function ActivityDockPanel({ params }: PanelProps) {
           agents={roster}
           focusId={params.focus ?? null}
           filter={isForYouFilter(params.filter) ? params.filter : "all"}
+          onFilterChange={(filter) => openPanel("activity", filter === "all" ? {} : { filter }, { pushUrl: true })}
         />
       </div>
       <div className="activity-page__feed">

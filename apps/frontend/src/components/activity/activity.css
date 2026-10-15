@@ -53,45 +53,72 @@
 /* --- For you ------------------------------------------------------------ */
 
 .for-you__title { font-size: var(--text-ui); font-weight: 600; padding-bottom: 8px; }
-.for-you__count { font-weight: 400; color: var(--fg-mute); font-variant-numeric: tabular-nums; }
 .for-you__notice { padding-bottom: 8px; font-size: var(--text-caption); color: var(--fg-mute); }
 .for-you__empty { padding: 24px 0; font-size: var(--text-ui); color: var(--fg-mute); }
+.for-you__loading { padding: 8px 0; font-size: var(--text-caption); color: var(--fg-mute); }
+.for-you__sentinel { height: 4px; }
 
-.for-you-group { padding: 8px 0; border-top: 1px solid var(--plane-edge); }
-.for-you-group__title {
-  padding-bottom: 4px;
+/* The chips: Slack's Activity filters. Borders only. */
+.for-you__chips { display: flex; flex-wrap: wrap; gap: 4px; padding-bottom: 8px; }
+.for-you__chip {
+  padding: 0 12px;
+  min-height: 24px;
+  border: 1px solid var(--plane-edge);
+  border-radius: 12px;
   font-size: var(--text-caption);
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
   color: var(--fg-soft);
 }
-.for-you-group__count { font-weight: 400; color: var(--fg-mute); font-variant-numeric: tabular-nums; }
+.for-you__chip:hover { color: var(--fg); }
+.for-you__chip[aria-pressed="true"] { border-color: var(--fg); color: var(--fg); font-weight: 600; }
+.for-you__unread { margin-left: auto; }
 
+/* One row per item: avatar, who · where · when, two lines of the message, the action, the dot. */
+.for-you__list { border-top: 1px solid var(--plane-edge); }
+.for-you-entry { border-bottom: 1px solid var(--plane-edge); }
 .for-you-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
+  grid-template-columns: minmax(0, 1fr) auto 8px;
+  align-items: start;
   gap: 8px;
-  min-height: 32px;
-  padding: 4px 0;
+  padding: 8px 0;
 }
-.for-you-row__line {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+.for-you-row__open {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
   text-align: left;
+}
+.for-you-row__body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.for-you-row__head {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+  font-size: var(--text-ui);
+  color: var(--fg-mute);
+}
+.for-you-row__head strong { font-weight: 600; color: var(--fg); white-space: nowrap; }
+.for-you-row__where { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.for-you-row__time { flex: none; margin-left: auto; font-size: var(--text-caption); }
+.for-you-row__text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
   font-size: var(--text-ui);
   color: var(--fg-soft);
 }
-.for-you-row__line strong { font-weight: 600; color: var(--fg); }
+.for-you-entry[data-unread] .for-you-row__text { color: var(--fg); }
 .for-you-row__controls { display: flex; gap: 4px; }
 .for-you-row__open:hover strong, .for-you-row__open:focus-visible strong { text-decoration: underline; text-underline-offset: 2px; }
+.for-you-row__dot { width: 8px; height: 8px; margin-top: 8px; border-radius: 50%; }
+.for-you-entry[data-unread] .for-you-row__dot { background: var(--link); }
 
 .for-you-entry[data-highlighted] > .for-you-row { background: var(--plane-selected); }
-.for-you-entry__below { padding: 4px 0 8px 28px; }
-.for-you-entry__error { padding-left: 28px; font-size: var(--text-caption); color: var(--alert); }
-.for-you-source__items { padding-left: 28px; }
+.for-you-entry__below { padding: 0 0 8px 28px; }
+.for-you-entry__error { padding: 0 0 8px 28px; font-size: var(--text-caption); color: var(--alert); }
 
 .for-you__more { padding: 4px 0; font-size: var(--text-caption); color: var(--link); }
 .for-you__more:hover { text-decoration: underline; text-underline-offset: 2px; }

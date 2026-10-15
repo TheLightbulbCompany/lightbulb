@@ -1,12 +1,13 @@
 /**
  * The Activity page's arrangement, pure so it is tested on its own: "For you"
- * (what needs this person, by verb, one row per source) and the team feed's
+ * (one row per item, newest first, Slack's Activity tab) and the team feed's
  * dividers (new since you looked, then days).
  */
 import { activityRowParts, approvalActivityId, interactionActivityId, isNeedsYou, type ActivityItem, type CanonicalRoomMessage } from "@lightbulb/shared";
 import type { FailedRunGroup } from "@/components/teams/inbox/lib/groupFailedRuns";
 import type { AttentionItem } from "@/components/teams/shared/types";
 
+/** `reply`: a message (mention, DM, thread reply). `decide` / `do`: needs you. */
 export type ForYouVerb = "decide" | "reply" | "do";
 
 export type ForYouSource =
@@ -21,69 +22,30 @@ export interface ForYouEntry {
   sourceId: string;
   sourceName: string;
   sourceKind: "human" | "agent" | "system";
-  /** What the item is (`approval`, `mention`, `failed_run`…): names a collapsed row's items. */
+  /** What the item is (`approval`, `mention`, `failed_run`…): what the chips filter on. */
   kind: string;
+  /** "in #general", "in a DM", "in Work"; null when there is no place to name. */
+  where: string | null;
+  /** The message or the request, shown on up to two lines. */
   text: string;
+  /** ISO time the row shows and sorts by. */
+  at: string;
+  /** The server's read state; only Activity items carry one. */
+  unread: boolean;
   source: ForYouSource;
 }
 
-/** One line in a group: a source's items, collapsed ("Anna · 3 messages") when there are several. */
-export interface ForYouRow {
-  key: string;
-  sourceName: string;
-  sourceKind: ForYouEntry["sourceKind"];
-  sourceId: string;
-  entries: ForYouEntry[];
-}
-
-export interface ForYouGroup {
-  verb: ForYouVerb;
-  label: string;
-  count: number;
-  rows: ForYouRow[];
-}
-
-const LABELS: Record<ForYouVerb, string> = { decide: "Decide", reply: "Reply", do: "Do" };
-/** What a collapsed row counts when its items are mixed: "3 decisions", "3 to do". */
-const VERB_NOUNS: Record<ForYouVerb, [one: string, many: string]> = {
-  decide: ["decision", "decisions"],
-  reply: ["message", "messages"],
-  do: ["thing to do", "things to do"],
-};
-
-/** …and when they are all one kind: "3 approvals", "3 messages", "3 failed runs". */
-const KIND_NOUNS: Record<string, [one: string, many: string]> = {
-  approval: ["approval", "approvals"],
-  interaction: ["question", "questions"],
-  agent_ask: ["question", "questions"],
-  decision: ["question", "questions"],
-  mention: ["message", "messages"],
-  dm: ["message", "messages"],
-  thread_reply: ["message", "messages"],
-  assigned_issue: ["task", "tasks"],
-  failed_run: ["failed run", "failed runs"],
-  join_request: ["request", "requests"],
-  login: ["login request", "login requests"],
-  extension: ["extension request", "extension requests"],
-};
-
-/** "3 approvals" when every item names the same thing, else the verb's word ("3 things to do"). */
-export function rowSummary(row: ForYouRow): string {
-  const nouns = row.entries.map((entry) => KIND_NOUNS[entry.kind]);
-  const same = nouns.every((noun) => noun && noun[1] === nouns[0]?.[1]);
-  const [one, many] = same ? nouns[0]! : VERB_NOUNS[row.entries[0].verb];
-  return `${row.entries.length} ${row.entries.length === 1 ? one : many}`;
-}
+const MESSAGE_KINDS: readonly string[] = ["mention", "dm", "thread_reply"];
 
 /**
- * DECIDE: approvals and agents' questions. REPLY: mentions, DMs and thread replies not yet
- * read. DO: assigned tasks and the rest of "needs you" (session, browser and
- * extension asks). Anything else (a reaction, a finished run, a decided approval) is not
- * for you to act on: null.
+ * REPLY: open mentions, DMs and thread replies, read or not (the Unread toggle and the dot
+ * say which). DECIDE: approvals and agents' questions. DO: assigned tasks and the rest of
+ * "needs you" (session, browser and extension asks). Anything else (a reaction, a finished
+ * run, a decided approval, a mention marked done) is not for you: null.
  */
 export function activityVerb(item: ActivityItem): ForYouVerb | null {
   if (item.state !== "open") return null;
-  if (item.kind === "mention" || item.kind === "dm" || item.kind === "thread_reply") return item.read ? null : "reply";
+  if (MESSAGE_KINDS.includes(item.kind)) return "reply";
   if (item.kind === "paperclip" && item.subtype === "assigned_issue") return "do";
   // Failed runs come from the Inbox's own list (every failure, with Retry and Dismiss), not this one.
   if (item.kind === "paperclip" && item.subtype === "failed_run") return null;
@@ -107,8 +69,24 @@ const ATTENTION_VERBS: Partial<Record<AttentionItem["sourceKind"], ForYouVerb>> 
   recovery_action: "do",
 };
 
-function activityEntry(item: ActivityItem, verb: ForYouVerb): ForYouEntry {
+/** Where it happened, Slack-style. The server names a 1:1 DM's room "your conversation". */
+function activityWhere(item: ActivityItem): string | null {
+  const room = item.summary.links.find((link) => link.kind === "room");
+  if (item.kind === "dm") return room && room.label !== "your conversation" ? `in ${room.label}` : "in a DM";
+  if (item.kind === "paperclip") return "in Work";
+  if (item.kind === "session") return "in a session";
+  return room && room.label !== "Room" ? `in ${room.label}` : null;
+}
+
+/** A message's own words; an ask's sentence after its actor ("needs your approval · Pilot X"). */
+function activityText(item: ActivityItem): string {
   const parts = activityRowParts(item);
+  if (MESSAGE_KINDS.includes(item.kind)) return item.summary.preview?.text ?? parts.snippet ?? item.summary.title;
+  if (!parts.lead) return item.summary.title;
+  return [parts.rest === ":" ? null : parts.rest, parts.snippet].filter(Boolean).join(" · ") || item.summary.title;
+}
+
+function activityEntry(item: ActivityItem, verb: ForYouVerb): ForYouEntry {
   return {
     id: item.id,
     verb,
@@ -116,9 +94,10 @@ function activityEntry(item: ActivityItem, verb: ForYouVerb): ForYouEntry {
     sourceName: item.actor.name,
     sourceKind: item.actor.kind,
     kind: item.subtype ?? item.kind,
-    // "Ann · <her message>", "Finance · Pilot X auto-replies"; a sentence that does not
-    // start with the actor ("LB-12 is assigned to you") is shown whole.
-    text: parts.lead ? parts.snippet ?? parts.rest : item.summary.title,
+    where: activityWhere(item),
+    text: activityText(item),
+    at: item.createdAt,
+    unread: !item.read,
     source: { type: "activity", item },
   };
 }
@@ -132,7 +111,10 @@ function attentionEntry(item: AttentionItem, verb: ForYouVerb): ForYouEntry {
     sourceName: name,
     sourceKind: item.originAgentName ? "agent" : "system",
     kind: item.sourceKind,
+    where: "in Work",
     text: item.subject.title ?? item.whyNow,
+    at: item.activityAt,
+    unread: false,
     source: { type: "attention", item },
   };
 }
@@ -157,12 +139,17 @@ function failedRunEntry(group: FailedRunGroup, agentName: (id: string | null | u
     sourceName: agentName(run.agentId),
     sourceKind: "agent",
     kind: "failed_run",
+    where: "in Work",
     text: `${run.failureReason || "Heartbeat run failed"}${group.count > 1 ? ` ×${group.count}` : ""}`,
+    at: run.startedAt ?? "",
+    unread: false,
     source: { type: "failed_runs", group },
   };
 }
 
-/** Everything For you lists, in the sources' own order (needs-you first, then newest). */
+const when = (iso: string) => Date.parse(iso) || 0;
+
+/** Everything For you lists, one row per item, newest first (as Slack's Activity). */
 export function forYouEntries(
   activity: readonly ActivityItem[],
   attention: readonly AttentionItem[],
@@ -183,45 +170,40 @@ export function forYouEntries(
     if (verb && !(twin && listed.has(twin))) entries.push(attentionEntry(item, verb));
   }
   for (const group of failedRuns) entries.push(failedRunEntry(group, agentName));
-  return entries;
+  return entries.sort((a, b) => when(b.at) - when(a.at));
 }
 
 /**
  * What For you shows: everything, or one slice. `needs-you` is the actionable part
- * (decisions, tasks, failed runs, requests: no plain replies); the others are one kind of
+ * (decisions, tasks, failed runs, requests: no plain messages); the others are one kind of
  * message. The same values back the filter chips and the `?panel=activity&filter=` link.
  */
 export type ForYouFilter = "all" | "needs-you" | "mentions" | "threads" | "dms";
-export const FOR_YOU_FILTERS: readonly ForYouFilter[] = ["all", "needs-you", "mentions", "threads", "dms"];
+export const FOR_YOU_FILTERS: readonly { id: ForYouFilter; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "needs-you", label: "Needs you" },
+  { id: "mentions", label: "Mentions" },
+  { id: "threads", label: "Threads" },
+  { id: "dms", label: "DMs" },
+];
 
 export function isForYouFilter(value: unknown): value is ForYouFilter {
-  return FOR_YOU_FILTERS.includes(value as ForYouFilter);
+  return FOR_YOU_FILTERS.some((filter) => filter.id === value);
 }
 
-export function filterForYou(entries: readonly ForYouEntry[], filter: ForYouFilter): ForYouEntry[] {
+/**
+ * One chip's slice. `unreadOnly` (the Unread toggle) keeps unread messages and every
+ * needs-you item: an open ask is still waiting on you after you have seen it.
+ */
+export function filterForYou(entries: readonly ForYouEntry[], filter: ForYouFilter, unreadOnly = false): ForYouEntry[] {
+  const shown = unreadOnly ? entries.filter((entry) => entry.unread || entry.verb !== "reply") : entries;
   switch (filter) {
-    case "needs-you": return entries.filter((entry) => entry.verb !== "reply");
-    case "mentions": return entries.filter((entry) => entry.kind === "mention");
-    case "threads": return entries.filter((entry) => entry.kind === "thread_reply");
-    case "dms": return entries.filter((entry) => entry.kind === "dm");
-    default: return entries.slice();
+    case "needs-you": return shown.filter((entry) => entry.verb !== "reply");
+    case "mentions": return shown.filter((entry) => entry.kind === "mention");
+    case "threads": return shown.filter((entry) => entry.kind === "thread_reply");
+    case "dms": return shown.filter((entry) => entry.kind === "dm");
+    default: return shown.slice();
   }
-}
-
-/** Groups by verb (Decide, Reply, Do; empty ones dropped), then one row per source within a verb. */
-export function groupForYou(entries: readonly ForYouEntry[]): ForYouGroup[] {
-  return (["decide", "reply", "do"] as const).flatMap((verb) => {
-    const rows = new Map<string, ForYouRow>();
-    for (const entry of entries) {
-      if (entry.verb !== verb) continue;
-      const row = rows.get(entry.sourceId);
-      if (row) row.entries.push(entry);
-      else rows.set(entry.sourceId, { key: `${verb}:${entry.sourceId}`, sourceName: entry.sourceName, sourceKind: entry.sourceKind, sourceId: entry.sourceId, entries: [entry] });
-    }
-    const list = [...rows.values()];
-    const count = list.reduce((sum, row) => sum + row.entries.length, 0);
-    return count ? [{ verb, label: LABELS[verb], count, rows: list }] : [];
-  });
 }
 
 // --- The team feed ---------------------------------------------------------

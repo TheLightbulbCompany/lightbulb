@@ -384,7 +384,14 @@ export function MessagingWorkspaceProvider({
     workspaceSections(workspaceSessions.sessions, userId, humanName).flatMap((section) =>
       section.data.map((session) => ({ session, ownerName: section.title, own: section.key === userId, unread: sessionUnread(session, seen) }))),
     [workspaceSessions.sessions, userId, humanName, seen]);
-  const participants: RoomParticipant[] = useMemo(() => rooms.activeRoom?.members.map(decorate) ?? [], [rooms.activeRoom, decorate]);
+  const members: RoomParticipant[] = useMemo(() => rooms.activeRoom?.members.map(decorate) ?? [], [rooms.activeRoom, decorate]);
+  // The feed seats only people; its agents are authors on the roster. They are added here so a
+  // Discuss reply can @mention one (by name: an unseated agent has no handle in the room).
+  const feedRoster = rooms.activeRoom?.feed ? agentRoster?.agents : undefined;
+  const participants: RoomParticipant[] = useMemo(() => feedRoster ? [...members, ...feedRoster
+    .filter((agent) => !members.some((member) => member.kind === "agent" && member.id === agent.id))
+    .map((agent) => decorate({ kind: "agent", id: agent.id, displayName: agent.name, mentionHandle: null,
+      role: "member", listenMode: null, joinedAt: "", joinedSeq: 0 }))] : members, [members, feedRoster, decorate]);
   const sessionCandidates = useMemo(() => sessionMentionCandidates(
     workspaceSessions.sessions.filter((session) => session.kind !== "background"),
   ), [workspaceSessions.sessions]);

@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useCallback, useEffect, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, EMPTY_ROOM_SUBAGENTS, type RoomDetail } from "@lightbulb/shared";
+import { ApiError, EMPTY_ROOM_SUBAGENTS, resolveTypedMentions, type RoomDetail } from "@lightbulb/shared";
 import type { RoomDirectoryProps } from "../RoomDirectory";
 import type { RoomPanelProps } from "../RoomPanel";
 import { RoomComposer } from "../RoomComposer";
@@ -949,6 +949,14 @@ it("loads shared sessions on a cold start with Tasks focused", async () => {
   state.resourceSource.client.listWorkspaceSessions.mockResolvedValue({ sessions: [liveSession("mine", "owner")] });
   render(<MessagingWorkspaceProvider subscribeToRoom={false}><MessagingDirectory /></MessagingWorkspaceProvider>);
   await waitFor(() => expect(directory.sessions).toHaveLength(1));
+});
+
+it("lets a feed Discuss reply @mention any roster agent, though agents are not seated in the feed", () => {
+  const feed: RoomDetail = { ...room, roomId: "feed-1", kind: "channel", name: "feed", feed: true, members: [room.members[0]] };
+  mocks.rooms.mockReturnValue({ ...state, rooms: [], activeRoomId: feed.roomId, activeRoom: feed });
+  compose();
+  expect(panel.participants.map((member) => [member.id, member.mentionHandle])).toEqual([["owner", null], ["agent-friday", null], ["agent-atlas", null]]);
+  expect(resolveTypedMentions("@Atlas can you check this?", panel.participants)).toEqual([{ kind: "agent", id: "agent-atlas" }]);
 });
 
 it("keeps history action inputs stable while the provider draft or live run changes", () => {

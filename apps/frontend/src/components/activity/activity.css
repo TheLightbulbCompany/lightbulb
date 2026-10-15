@@ -1,219 +1,171 @@
-/* Activity: a dense, calm list in the Slack shape. Tokens only (brandTokens.test). */
+/* Activity: For you beside the team feed. Tokens only (brandTokens.test); borders, no shadows; 4px grid. */
 
-.activity-feed {
+.activity-page {
+  container: activity / inline-size;
   display: flex;
+  flex-direction: column;
   height: 100%;
-  flex-direction: column;
-  background: var(--cream);
-  color: var(--midnight);
+  background: var(--plane-pane);
+  color: var(--fg);
 }
 
-.activity-feed__header {
-  display: flex;
-  align-items: baseline;
-  gap: 0.5rem;
-  padding: 0.875rem 1rem 0.5rem;
-}
-.activity-feed__header h2 {
-  font-size: 1.0625rem;
-  font-weight: 600;
-  line-height: 1.3;
-}
-
-.activity-feed__link {
-  margin-left: auto;
-  font-size: 0.75rem;
-  color: var(--midnight-muted);
-  text-underline-offset: 2px;
-}
-.activity-feed__link:hover { color: var(--midnight); text-decoration: underline; }
-
-.activity-feed__chips {
-  display: flex;
-  gap: 0.375rem;
-  overflow-x: auto;
-  padding: 0 1rem 0.625rem;
-  border-bottom: 1px solid var(--edge);
-  scrollbar-width: none;
-}
-
-.activity-chip {
-  display: inline-flex;
-  flex-shrink: 0;
-  align-items: center;
-  gap: 0.375rem;
-  height: 1.75rem;
-  padding: 0 0.75rem;
-  border: 1px solid var(--edge);
-  border-radius: 999px;
-  font-size: 0.8125rem;
-  color: var(--midnight-soft);
-  transition: background-color 120ms ease-out, color 120ms ease-out;
-}
-.activity-chip:hover { background: var(--cream-deep); color: var(--midnight); }
-.activity-chip[aria-pressed="true"] {
-  background: var(--midnight);
-  border-color: var(--midnight);
-  color: var(--cream);
-}
-.activity-chip__count {
-  min-width: 1.125rem;
-  padding: 0 0.3125rem;
-  border-radius: 999px;
-  background: var(--bulb);
-  color: var(--midnight);
-  font-size: 0.6875rem;
-  font-weight: 600;
-  line-height: 1.125rem;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
-
-.activity-feed__notice {
-  padding: 0.5rem 1rem 0;
-  font-size: 0.75rem;
-  color: var(--midnight-muted);
-}
-
-.activity-feed__list { flex: 1; overflow-y: auto; padding-bottom: 1rem; }
-.activity-feed__empty { padding: 2.5rem 1.5rem; text-align: center; font-size: 0.875rem; color: var(--midnight-muted); }
-
-.activity-section__title {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-  padding: 0.75rem 1rem 0.25rem;
-  background: var(--cream);
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--midnight-soft);
-}
-.activity-section__count {
-  font-weight: 400;
-  color: var(--midnight-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-/* dot gutter | avatar | body | time */
-.activity-row {
-  position: relative;
+.activity-page__columns {
   display: grid;
-  grid-template-columns: 0.75rem 1.5rem minmax(0, 1fr) auto;
-  column-gap: 0.625rem;
-  align-items: start;
-  padding: 0.5rem 1rem 0.5rem 0.5rem;
-  cursor: default;
-  outline: none;
-  transition: background-color 120ms ease-out;
-}
-.activity-row:hover { background: var(--cream-deep); }
-.activity-row:focus-visible { background: var(--cream-deep); box-shadow: inset 2px 0 0 var(--midnight); }
-.activity-row[data-highlighted] { background: var(--cream-deeper); }
-.activity-row[data-resolved] { opacity: 0.66; }
-
-.activity-row__dot {
-  width: 0.4375rem;
-  height: 0.4375rem;
-  margin: 0.5rem auto 0;
-  border-radius: 999px;
-}
-.activity-row[data-unread] .activity-row__dot { background: var(--info); }
-.activity-row[data-pinned] .activity-row__dot { background: var(--bulb); }
-
-.activity-row__avatar { padding-top: 0.0625rem; }
-
-.activity-row__body { display: flex; min-width: 0; flex-direction: column; gap: 0.125rem; }
-
-.activity-row__line {
-  font-size: 0.875rem;
-  line-height: 1.4;
-  color: var(--midnight-soft);
-  overflow-wrap: anywhere;
-}
-.activity-row__line strong { font-weight: 600; color: var(--midnight); }
-.activity-row[data-unread] .activity-row__line { color: var(--midnight); }
-.activity-row__where { color: var(--midnight-muted); }
-.activity-row__where-link { color: inherit; text-underline-offset: 2px; }
-.activity-row__where-link:hover { color: var(--midnight); text-decoration: underline; }
-
-.activity-row__snippet {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 1;
-  overflow: hidden;
-  font-size: 0.8125rem;
-  line-height: 1.4;
-  color: var(--midnight-muted);
-}
-.activity-row__snippet[data-lines="2"] { -webkit-line-clamp: 2; color: var(--midnight-soft); }
-
-.activity-row__time {
-  padding-top: 0.125rem;
-  font-size: 0.75rem;
-  color: var(--midnight-muted);
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
+  grid-template-columns: 340px minmax(0, 1fr);
+  gap: 24px;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 0 16px;
 }
 
-.activity-row__meta { font-size: 0.75rem; color: var(--midnight-muted); }
-.activity-row__error { font-size: 0.75rem; color: var(--err); }
-
-.activity-row__decide { display: flex; flex-wrap: wrap; gap: 0.375rem; padding-top: 0.375rem; }
-
-/* Quick actions float over the time on hover or keyboard focus, Slack-style. */
-.activity-row__actions {
-  position: absolute;
-  top: 0.25rem;
-  right: 0.75rem;
-  display: flex;
-  gap: 0.125rem;
-  padding: 0.125rem;
-  border: 1px solid var(--edge);
-  border-radius: 8px;
-  background: var(--cream);
-  box-shadow: 0 2px 8px -2px color-mix(in srgb, var(--midnight) 18%, transparent);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 100ms ease-out;
-}
-.activity-row:hover .activity-row__actions,
-.activity-row:focus-within .activity-row__actions {
-  opacity: 1;
-  pointer-events: auto;
-}
-.activity-row__quick { height: 1.625rem; padding: 0 0.5rem; font-size: 0.75rem; }
-@media (hover: none) {
-  .activity-row__actions { position: static; grid-column: 3 / -1; opacity: 1; pointer-events: auto; border: 0; box-shadow: none; padding: 0.25rem 0 0; background: transparent; }
+/* Each column scrolls on its own: For you never pushes the feed. */
+.activity-page__for-you,
+.activity-page__feed {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 0 24px;
 }
 
-.activity-detail {
-  display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
-  margin-top: 0.375rem;
-  padding: 0.5rem 0.625rem;
-  border: 1px solid var(--edge);
-  border-radius: 8px;
-  background: var(--cream-deep);
+.activity-page__tabs { display: none; }
+
+@container activity (max-width: 900px) {
+  .activity-page__columns { grid-template-columns: minmax(0, 1fr); }
+  .activity-page__tabs {
+    display: flex;
+    gap: 4px;
+    padding: 8px 16px 0;
+    border-bottom: 1px solid var(--plane-edge);
+  }
+  .activity-page__tabs button {
+    padding: 4px 12px 8px;
+    border-bottom: 2px solid transparent;
+    font-size: var(--text-ui);
+    color: var(--fg-soft);
+  }
+  .activity-page__tabs button[aria-selected="true"] { border-bottom-color: var(--fg); color: var(--fg); font-weight: 600; }
+  .activity-page[data-tab="for-you"] .activity-page__feed,
+  .activity-page[data-tab="feed"] .activity-page__for-you { display: none; }
 }
-.activity-detail__to { font-size: 0.75rem; color: var(--midnight-muted); }
-.activity-detail__text { white-space: pre-wrap; font-size: 0.8125rem; line-height: 1.45; color: var(--midnight); }
-.activity-detail__fields { display: flex; flex-direction: column; gap: 0.375rem; }
-.activity-detail__fields dt {
-  font-size: 0.625rem;
+
+/* --- For you ------------------------------------------------------------ */
+
+.for-you__title { font-size: var(--text-ui); font-weight: 600; padding-bottom: 8px; }
+.for-you__count { font-weight: 400; color: var(--fg-mute); font-variant-numeric: tabular-nums; }
+.for-you__notice { padding-bottom: 8px; font-size: var(--text-caption); color: var(--fg-mute); }
+.for-you__empty { padding: 24px 0; font-size: var(--text-ui); color: var(--fg-mute); }
+
+.for-you-group { padding: 8px 0; border-top: 1px solid var(--plane-edge); }
+.for-you-group__title {
+  padding-bottom: 4px;
+  font-size: var(--text-caption);
   font-weight: 600;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--midnight-muted);
+  color: var(--fg-soft);
 }
-.activity-detail__fields [data-tone="warn"] dt { color: var(--warn); }
-.activity-detail__fields dd { font-size: 0.8125rem; line-height: 1.45; color: var(--midnight); }
+.for-you-group__count { font-weight: 400; color: var(--fg-mute); font-variant-numeric: tabular-nums; }
 
-.activity-form { display: flex; flex-direction: column; gap: 0.5rem; padding-top: 0.375rem; }
-
-@media (prefers-reduced-motion: reduce) {
-  .activity-chip, .activity-row, .activity-row__actions { transition: none; }
+.for-you-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 0;
 }
+.for-you-row__line {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: left;
+  font-size: var(--text-ui);
+  color: var(--fg-soft);
+}
+.for-you-row__line strong { font-weight: 600; color: var(--fg); }
+.for-you-row__open:hover strong, .for-you-row__open:focus-visible strong { text-decoration: underline; text-underline-offset: 2px; }
+
+.for-you-entry[data-highlighted] > .for-you-row { background: var(--plane-selected); }
+.for-you-entry__below { padding: 4px 0 8px 28px; }
+.for-you-entry__error { padding-left: 28px; font-size: var(--text-caption); color: var(--alert); }
+.for-you-source__items { padding-left: 28px; }
+
+.for-you__more { padding: 4px 0; font-size: var(--text-caption); color: var(--link); }
+.for-you__more:hover { text-decoration: underline; text-underline-offset: 2px; }
+
+.for-you-form { display: flex; flex-direction: column; gap: 8px; }
+.for-you-form__hint { font-size: var(--text-caption); color: var(--fg-soft); }
+.for-you-form__field {
+  width: 100%;
+  padding: 4px 8px;
+  border: 1px solid var(--plane-edge);
+  border-radius: 4px;
+  background: var(--plane-pane);
+  color: var(--fg);
+  font-size: var(--text-ui);
+}
+.for-you-form__buttons { display: flex; gap: 8px; }
+
+/* --- Team feed ---------------------------------------------------------- */
+
+.team-feed__brief {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--plane-edge);
+}
+.team-feed__brief-label {
+  font-size: var(--text-caption);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-mute);
+}
+.team-feed__brief-text { flex: 1; min-width: 0; font-size: var(--text-ui); color: var(--fg-soft); }
+.team-feed__brief-input {
+  flex-basis: 100%;
+  padding: 4px 8px;
+  border: 1px solid var(--plane-edge);
+  border-radius: 4px;
+  background: var(--plane-pane);
+  color: var(--fg);
+  font-size: var(--text-ui);
+}
+.team-feed__brief-buttons { display: flex; gap: 8px; }
+.team-feed__error { flex-basis: 100%; font-size: var(--text-caption); color: var(--alert); }
+.team-feed__empty { padding: 24px 0; font-size: var(--text-ui); color: var(--fg-mute); }
+
+.team-feed__list { display: flex; flex-direction: column; gap: 8px; }
+.team-feed__divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 16px;
+  font-size: var(--text-caption);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-mute);
+}
+.team-feed__divider::after { content: ""; flex: 1; border-top: 1px solid var(--plane-edge); }
+.team-feed__divider[data-new] { color: var(--fg); }
+
+/* A post: the room message parts, with a little more air than chat. */
+.feed-post { padding: 12px 0; }
+.feed-post:hover, .feed-post:focus-within { background: transparent; }
+.feed-post__title { font-weight: 600; color: var(--fg); }
+.feed-post__footer { display: flex; align-items: center; gap: 4px; padding-top: 4px; margin-left: -10px; }
+.feed-post__age { padding-left: 4px; font-size: var(--text-caption); color: var(--fg-mute); }
+.feed-post__why-toggle {
+  display: inline-flex;
+  padding: 4px;
+  border-radius: 4px;
+  color: var(--fg-mute);
+}
+.feed-post__why-toggle:hover, .feed-post__why-toggle[aria-expanded="true"] { color: var(--fg); }
+.feed-post__why { padding-top: 4px; font-size: var(--text-caption); color: var(--fg-soft); }
+.feed-post__why span { display: block; font-weight: 600; color: var(--fg); }

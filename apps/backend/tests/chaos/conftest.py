@@ -114,6 +114,13 @@ def _create_tables(resource):
         [{"AttributeName": "state", "KeyType": "HASH"}],
         [{"AttributeName": "state", "AttributeType": "S"}],
     )
+    # setup-requests: PK id — the PUBLIC /request-setup form writes a row once
+    # the body is valid, so the fuzzer needs the table to reach a 2xx.
+    _make(
+        f"{_PREFIX}setup-requests",
+        [{"AttributeName": "id", "KeyType": "HASH"}],
+        [{"AttributeName": "id", "AttributeType": "S"}],
+    )
     # containers: PK owner_id + status-index — the container hook routes read
     # the owner's hook_token before anything else.
     _make(

@@ -16,7 +16,6 @@ import hmac
 import html
 import json
 import logging
-import os
 import secrets
 import tarfile
 import tempfile
@@ -415,9 +414,9 @@ async def _email_owner(row: dict, label: str) -> None:
 
 # ponytail: counted, not locked: two viewers racing for the last seat both get in, and a viewer
 # who stops renewing keeps an open subscription uncounted until the page closes.
-# ponytail: dev runs the load-test ceiling (T18, scripts/load/k6/link_viewers.js); prod stays at 20
-# until that test's number is set for both.
-MAX_LINK_VIEWERS = 20 if os.environ.get("ENVIRONMENT") == "prod" else 100
+# T18 load test on dev, 2026-10-15 (scripts/load/k6/link_viewers.js): 100 viewers on one link held
+# p95 frame latency ~300 ms and 99.99% delivery; the backend did not reach its ceiling.
+MAX_LINK_VIEWERS = 100
 # A lease connects once and subscribes once (the authorizer consumes it), so every connection
 # and every subscription costs a seat taken here, and a link gives out at most this many per ten minutes: what bounds the sockets a link
 # holder can pile up on one channel (AppSync never asks the authorizer again once a subscription

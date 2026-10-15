@@ -17,10 +17,6 @@ export const ACTIVITY_FILTERS: readonly { id: ActivityFilter; label: string }[] 
   { id: "agents", label: "Agents’ work" },
 ];
 
-export function isActivityFilter(value: unknown): value is ActivityFilter {
-  return ACTIVITY_FILTERS.some((filter) => filter.id === value);
-}
-
 /** Pinned and always on the badge (the server's `needs_you`): an open approval, an agent's pending question,
  * a failed run, one of your shared sessions still waiting for you, or a teammate asking to join one. */
 export function isNeedsYou(item: ActivityItem): boolean {

@@ -130,6 +130,17 @@ describe("useRooms platform seams", () => {
     expect(messaging.listMessages).not.toHaveBeenCalled();
   });
 
+  it("leaves the workspace feed out of the list (no row, no unread, no auto-pick) but opens it by id", async () => {
+    const feed = { ...room, roomId: "feed-1", feed: true, unreadCount: 7, lastMessageAt: "2026-09-12T00:00:00Z" };
+    messaging.listRooms.mockResolvedValue({ rooms: [feed, room], sections: [] });
+    messaging.getRoom.mockImplementation(async (roomId) => (roomId === feed.roomId ? feed : room));
+    const { result } = renderHook(() => useRooms(platform()), { wrapper });
+    await waitFor(() => expect(result.current.activeRoomId).toBe(room.roomId));
+    expect(result.current.rooms.map((r) => r.roomId)).toEqual([room.roomId]);
+    act(() => result.current.selectRoom(feed.roomId));
+    await waitFor(() => expect(result.current.activeRoom?.roomId).toBe(feed.roomId));
+  });
+
   it("opens a room the list does not carry (a hidden session chat) through its detail", async () => {
     messaging.listRooms.mockResolvedValue({ rooms: [], sections: [] });
     const { result } = renderHook(() => useRooms(platform(), { autoSelect: false }), { wrapper });

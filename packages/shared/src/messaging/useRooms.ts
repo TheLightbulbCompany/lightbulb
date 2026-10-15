@@ -297,7 +297,9 @@ export function useRooms(platform: RoomsPlatform, options: UseRoomsOptions = {})
     store.refreshedRevision = connectionRevision;
     void mutateRooms();
   }, [connectionRevision, liveConnected, mutateRooms, store]);
-  const rooms = roomsData?.rooms ?? NO_ROOMS;
+  // The workspace feed is read on Activity, never as a conversation: it is in no list, no
+  // unread count and no auto-pick. An explicit select (Discuss) still opens it by id.
+  const rooms = useMemo(() => roomsData?.rooms.filter((room) => !room.feed) ?? NO_ROOMS, [roomsData]);
   const sections = roomsData?.sections ?? NO_SECTIONS;
   /**
    * Members per room, for the sidebar.

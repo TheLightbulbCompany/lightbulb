@@ -19,11 +19,12 @@ interface TokenEntry {
 // look mentioned and notify nobody.
 // A human answers to their handle AND their display name: rows that predate
 // server-side human handles carry mentionHandle: null and are still addressed
-// by name.
+// by name. So does an agent with no handle in this room: a feed author, which
+// is on the roster but never seated (only seated members carry a handle).
 function tokenEntries(participants: readonly MentionTarget[]): TokenEntry[] {
   return participants
     .flatMap((participant) =>
-      [participant.mentionHandle, participant.kind === "human" ? participant.displayName : null]
+      [participant.mentionHandle, participant.kind === "human" || !participant.mentionHandle ? participant.displayName : null]
         .map((token, index) => ({ participant, token, isHandle: index === 0 })))
     .filter((entry): entry is TokenEntry => !!entry.token)
     // Longest token first so @Aden Kim beats @Aden; on a tie the handle wins,

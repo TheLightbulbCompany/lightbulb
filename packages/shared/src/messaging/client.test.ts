@@ -107,12 +107,14 @@ describe("messaging HTTP client", () => {
     const { client, methods } = setup();
     await client.getLiveConfig();
     await client.listRooms();
+    await client.getFeed();
     await client.getRoom(roomId);
     await client.listMessages(roomId, 42, 100);
     await client.getRunStatus("run-1");
     expect(methods.get.mock.calls).toEqual([
       ["/messaging/live-config"],
       ["/messaging/rooms"],
+      ["/messaging/feed"],
       [`/messaging/rooms/${roomId}`],
       [`/messaging/rooms/${roomId}/messages?afterSeq=42&limit=100`, { signal: expect.any(AbortSignal) }],
       ["/messaging/runs/run-1"],

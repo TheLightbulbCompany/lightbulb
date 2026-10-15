@@ -44,10 +44,11 @@ export function useApprovalMutations() {
     [post, revalidate],
   );
 
-  /** Ask the agent to change it: the approval stays open as `revision_requested`. */
+  /** Ask the agent to change it, saying what (`decisionNote`, as the Activity action sends):
+   *  the approval stays open as `revision_requested`. */
   const requestRevision = useCallback(
-    async (approvalId: string) => {
-      await post(`/approvals/${approvalId}/request-revision`, {});
+    async (approvalId: string, note: string) => {
+      await post(`/approvals/${approvalId}/request-revision`, { decisionNote: note });
       revalidate();
     },
     [post, revalidate],

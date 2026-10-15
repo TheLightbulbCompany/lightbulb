@@ -7,6 +7,7 @@
 import { createContext, useEffect, useState } from "react";
 import { useIdeas, type IdeasClient, type IdeasResponse } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
 import { useApprovalMutations } from "@/components/teams/inbox/hooks/useApprovalMutations";
 import type { Approval } from "@/components/teams/shared/types";
@@ -42,20 +43,33 @@ const STATUS_LINE: Record<string, string> = {
 export function PlanApprovalCard({ approval }: { approval: Approval }) {
   const { approve, requestRevision } = useApprovalMutations();
   const [busy, setBusy] = useState(false);
-  const run = async (fn: (id: string) => Promise<void>, fallback: string) => {
+  // Change something asks what, first: the agent revises from that note.
+  const [note, setNote] = useState<string | null>(null);
+  const run = async (fn: () => Promise<void>, fallback: string) => {
     setBusy(true);
-    try { await fn(approval.id); } catch (err) { notifyApiError(err, fallback); } finally { setBusy(false); }
+    try { await fn(); } catch (err) { notifyApiError(err, fallback); } finally { setBusy(false); }
   };
   return <section className="plan-card" aria-label="Plan for approval">
     <div className="plan-card__head">{payloadText(approval, "title")}</div>
     <div className="plan-card__body"><MarkdownView skipHtml>{payloadText(approval, "summary")}</MarkdownView></div>
     <div className="plan-card__foot">
       {/* Only a pending plan is decided here: after Change something the agent files a new one. */}
-      {approval.status === "pending" ? <>
-        <Button type="button" size="sm" disabled={busy} onClick={() => void run(approve, "The plan could not be approved. Try again.")}>Approve plan</Button>
-        <Button type="button" size="sm" variant="outline" disabled={busy}
-          onClick={() => void run(requestRevision, "The change request did not go through. Try again.")}>Change something</Button>
-      </> : <span>{STATUS_LINE[approval.status] ?? approval.status}</span>}
+      {approval.status !== "pending" ? <span>{STATUS_LINE[approval.status] ?? approval.status}</span>
+        : note === null ? <>
+          <Button type="button" size="sm" disabled={busy}
+            onClick={() => void run(() => approve(approval.id), "The plan could not be approved. Try again.")}>Approve plan</Button>
+          <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => setNote("")}>Change something</Button>
+        </> : <form className="plan-card__change" onSubmit={(event) => {
+          event.preventDefault();
+          if (note.trim()) void run(() => requestRevision(approval.id, note.trim()), "The change request did not go through. Try again.");
+        }}>
+          <Textarea aria-label="What should change?" placeholder="What should change?" autoFocus maxLength={2000}
+            value={note} disabled={busy} onChange={(event) => setNote(event.target.value)} />
+          <div className="plan-card__actions">
+            <Button type="submit" size="sm" disabled={busy || !note.trim()}>Send</Button>
+            <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => setNote(null)}>Cancel</Button>
+          </div>
+        </form>}
     </div>
   </section>;
 }

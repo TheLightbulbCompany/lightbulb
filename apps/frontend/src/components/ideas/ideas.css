@@ -65,3 +65,5 @@
   font-size: var(--text-ui);
   color: var(--fg-mute);
 }
+.plan-card__change { display: grid; gap: 8px; width: 100%; }
+.plan-card__actions { display: flex; gap: 8px; }

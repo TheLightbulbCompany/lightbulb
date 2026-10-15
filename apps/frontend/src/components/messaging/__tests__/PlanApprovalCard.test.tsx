@@ -38,8 +38,25 @@ describe("the plan card in the DM", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Approve plan" }));
     expect(teams.post).toHaveBeenCalledWith("/approvals/ap-1/approve", {});
+  });
+
+  it("Change something asks what should change, sends that note, and Cancel goes back", async () => {
+    teams.approval = plan("pending");
+    render(<RoomAppLinks text={message} />);
     await userEvent.click(screen.getByRole("button", { name: "Change something" }));
-    await waitFor(() => expect(teams.post).toHaveBeenCalledWith("/approvals/ap-1/request-revision", {}));
+    const box = screen.getByRole("textbox", { name: "What should change?" });
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    await userEvent.type(box, "   ");
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "Approve plan" })).toBeInTheDocument();
+    expect(teams.post).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Change something" }));
+    await userEvent.type(screen.getByRole("textbox", { name: "What should change?" }), "Start with the import, not the workflows");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(teams.post).toHaveBeenCalledWith(
+      "/approvals/ap-1/request-revision", { decisionNote: "Start with the import, not the workflows" }));
   });
 
   it("after changes were asked, shows a status line and no buttons (the agent files a new plan)", () => {

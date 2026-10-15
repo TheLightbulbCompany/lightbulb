@@ -34,7 +34,8 @@ function RunningRow({ item, mine }: { item: RunningIdea; mine: boolean }) {
 export function IdeasDockPanel({ params }: PanelProps) {
   const { ideas, running, loading, error, refresh, startAndOpen, dismiss, userId } = useIdeas();
   const [teammate, setTeammate] = useState<string | null>(null);
-  const runningIds = new Set(running.map((r) => r.ideaId));
+  // A start is per person: a teammate running an idea leaves it startable in your own DM.
+  const runningIds = new Set(running.filter((r) => r.starterId === userId).map((r) => r.ideaId));
   const ordered = orderIdeas(ideas.filter((idea) => !runningIds.has(idea.id)), params.agent);
   const shown = teammate ? ordered.filter((idea) => idea.agentId === teammate) : ordered;
   const shownRunning = teammate ? running.filter((r) => r.agentId === teammate) : running;

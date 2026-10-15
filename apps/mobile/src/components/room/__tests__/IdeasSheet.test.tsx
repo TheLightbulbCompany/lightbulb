@@ -16,9 +16,12 @@ const idea = (id: string, agentId: string, agentName: string): Idea => ({
 });
 const mockClient = {
   listIdeas: jest.fn(async () => ({
-    ideas: [idea("a", "eng", "Engineering"), idea("b", "growth", "Growth"), idea("r", "fin", "Finance")],
+    ideas: [idea("a", "eng", "Engineering"), idea("b", "growth", "Growth"), idea("r", "fin", "Finance"),
+      idea("t", "fin", "Finance")],
     running: [{ ideaId: "r", title: "Title r", agentId: "fin", agentName: "Finance", roomId: "room-r", projectId: "p",
-      starterId: "user-a", starterName: "A", createdAt: null }],
+      starterId: "user-a", starterName: "A", createdAt: null },
+    { ideaId: "t", title: "Title t", agentId: "fin", agentName: "Finance", roomId: "room-t", projectId: "p-t",
+      starterId: "user-b", starterName: "B", createdAt: null }],
   })),
   startIdea: jest.fn(async () => ({ roomId: "room-b", projectId: "p-b" })),
   dismissIdea: jest.fn(async () => {}),
@@ -32,12 +35,13 @@ const renderSheet = async (onStarted = jest.fn()) => {
   return onStarted;
 };
 
-it("lists ideas as cards, the DM agent's first, running ones left out, with no price", async () => {
+it("lists ideas as cards, the DM agent's first, the viewer's running ones left out, with no price", async () => {
   await renderSheet();
   expect(await screen.findByText("Title b")).toBeTruthy();
   const titles = screen.getAllByText(/^Title /).map((node) => node.props.children);
-  expect(titles).toEqual(["Title b", "Title a"]);
-  expect(screen.getAllByText("Your team: about 2 days · You: about 5 minutes")).toHaveLength(2);
+  // A teammate's start of "t" leaves it startable here (a start is per person).
+  expect(titles).toEqual(["Title b", "Title a", "Title t"]);
+  expect(screen.getAllByText("Your team: about 2 days · You: about 5 minutes")).toHaveLength(3);
   expect(screen.queryByText(/\$/)).toBeNull();
 });
 

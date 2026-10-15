@@ -28,7 +28,8 @@ export function IdeasSheet({ visible, onClose, agentId, onStarted }: IdeasSheetP
   const { ideas, running, loading, error, start } = useIdeas(messaging, visible && userId ? `${userId}:${orgId ?? userId}` : null);
   const [starting, setStarting] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
-  const runningIds = new Set(running.map((r) => r.ideaId));
+  // A start is per person: a teammate running an idea leaves it startable in your own DM.
+  const runningIds = new Set(running.filter((r) => r.starterId === userId).map((r) => r.ideaId));
   const shown = orderIdeas(ideas.filter((idea) => !runningIds.has(idea.id)), agentId);
 
   const onStart = async (idea: Idea) => {

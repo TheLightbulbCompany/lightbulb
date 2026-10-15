@@ -79,6 +79,16 @@ describe("Ideas pane", () => {
     expect(screen.queryByRole("button", { name: "Open: Teammate job" })).not.toBeInTheDocument();
   });
 
+  it("keeps a proposal a teammate is running, and hides one the viewer is running", async () => {
+    client.listIdeas.mockResolvedValue({ ...catalog, running: [
+      { ...catalog.running[1], ideaId: "a" },
+      { ...catalog.running[0], ideaId: "b" },
+    ] });
+    renderPanel();
+    await screen.findAllByRole("article");
+    expect(cards()).toEqual(["Title a", "Title c", "Title d"]);
+  });
+
   it("a second Start of an idea already starting opens its DM without an error", async () => {
     const { notifyApiError } = await import("@/lib/notify");
     client.startIdea.mockRejectedValueOnce(Object.assign(new Error("This idea is already starting."), { status: 409 }));

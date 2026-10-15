@@ -109,15 +109,20 @@ async def test_list_is_agency_first_then_by_title_with_agents_and_no_prices(work
 
 
 @pytest.mark.asyncio
-async def test_dismissed_ideas_and_ideas_without_an_agent_are_left_out(workspace, monkeypatch):
+async def test_dismissed_ideas_are_left_out_and_a_missing_starter_falls_back_to_the_ceo(workspace, monkeypatch):
     await ideas.dismiss(AUTH, "website-rebuild")
-    roster = [{"id": a, "name": r.title()} for r, a in STARTERS.items() if r != "growth"]
+    roster = [
+        {"id": a, "name": r.title(), "role": r, "reportsTo": None if r == "ceo" else STARTERS["ceo"]}
+        for r, a in STARTERS.items()
+        if r != "growth"
+    ]
     monkeypatch.setattr(messaging, "load_agent_roster", lambda _owner: asyncio.sleep(0, result=roster))
     body = await ideas.list_ideas(AUTH)
-    ids = {c["id"] for c in body["ideas"]}
-    assert "website-rebuild" not in ids and body["anyDismissed"] is True
-    assert not ids & {i.id for i in ideas.catalog().values() if i.owner_role == "growth"}
-    assert "books-cleanup" in ids
+    by_id = {c["id"]: c for c in body["ideas"]}
+    assert "website-rebuild" not in by_id and body["anyDismissed"] is True
+    growth = [i.id for i in ideas.catalog().values() if i.owner_role == "growth"]
+    assert growth and all(by_id[g]["agentId"] == STARTERS["ceo"] for g in growth)
+    assert by_id["books-cleanup"]["agentId"] == STARTERS["finance"]
 
 
 @pytest.mark.asyncio
@@ -549,3 +554,38 @@ async def test_a_quick_idea_is_hidden_for_a_day_after_it_is_started(paperclip, m
 
     monkeypatch.setattr(ideas, "datetime", Later)
     assert "claim-refund" in _ids(await ideas.list_ideas(AUTH))
+
+
+# ---- workspaces older than the starter roster -------------------------------------------------
+
+FRIDAY = "20000000-0000-4000-8000-000000000001"
+ATLAS = "20000000-0000-4000-8000-000000000002"
+
+
+@pytest.fixture
+def founder_workspace(table, monkeypatch):  # noqa: F811
+    """No starter roster: Friday leads, Atlas reports to Friday."""
+    from core.repositories.paperclip_repo import PaperclipRepo
+
+    row = SimpleNamespace(status="active", starter_agent_ids=None, onboarding_goal_id=None)
+    roster = [
+        {"id": ATLAS, "name": "Atlas", "role": "general", "reportsTo": FRIDAY},
+        {"id": FRIDAY, "name": "Friday", "role": "general", "reportsTo": None},
+    ]
+    monkeypatch.setattr(PaperclipRepo, "resolve_owner_row", AsyncMock(return_value=row))
+    monkeypatch.setattr(messaging, "load_agent_roster", lambda _owner: asyncio.sleep(0, result=roster))
+
+
+@pytest.mark.asyncio
+async def test_a_workspace_without_starters_gives_every_idea_to_its_top_agent(founder_workspace):
+    listed = await ideas.list_ideas(AUTH)
+    assert len(listed["ideas"]) == len(ideas.catalog())
+    assert {card["agentId"] for card in listed["ideas"]} == {FRIDAY}
+    assert {card["agentName"] for card in listed["ideas"]} == {"Friday"}
+
+
+def test_the_top_agent_is_the_ceo_else_the_one_reporting_to_nobody_else_the_first():
+    assert ideas._top_agent([{"id": "a", "reportsTo": None}, {"id": "b", "role": "ceo", "reportsTo": "a"}]) == "b"
+    assert ideas._top_agent([{"id": "a", "reportsTo": "b"}, {"id": "b", "reportsTo": None}]) == "b"
+    assert ideas._top_agent([{"id": "a", "reportsTo": "b"}, {"id": "b", "reportsTo": "a"}]) == "a"
+    assert ideas._top_agent([]) is None

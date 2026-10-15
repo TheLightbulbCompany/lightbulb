@@ -1,0 +1,39 @@
+id: local-listings-reviews
+owner_role: growth
+kind: agency
+business_types: [services, store]
+title: "Listed on 40 directories, Google profile filled, reviews asked for"
+why: "Local customers find you with the same name, address and phone everywhere."
+deliverables:
+  - "40 directory listings with matching details"
+  - "Your Google Business Profile completed"
+  - "A review request sent to your last 50 customers"
+agency_price_low: 500
+agency_price_high: 3300
+price_unit: one_time
+agency_turnaround: "2-4 weeks"
+our_turnaround: "About a week"
+your_part: "Record the Google verification video and approve the review email"
+guide: |
+  # Listed on 40 directories, Google profile filled, reviews asked for
+
+  ## Steps
+  1. Confirm the exact business name, address, phone, hours and categories (one confirmation).
+  2. Pick 40 directories that fit the business and the area. List them on the task.
+  3. Submit or claim each listing in the live browser with the same details. CAPTCHA and phone checks go to the person in the live browser.
+  4. Fill the Google Business Profile: categories, hours, services, photos the company has, description.
+  5. Google verification (often a video) is the person's step; tell them up front.
+  6. Write the review request email. After approval, send it to the last 50 customers.
+
+  ## Decisions to ask
+  - Approve the business details and the directory list.
+  - Approve the review email and who gets it.
+
+  ## Done proves
+  - A list of the live listing URLs.
+  - The Google profile shown as verified and complete.
+  - The review email sent: count sent.
+
+  ## Honesty limits
+  - Promise listings live and requests sent, never a rank or a number of reviews.
+  - Never write or buy reviews.

@@ -1,0 +1,30 @@
+id: unused-software-seats
+owner_role: finance
+kind: everyday
+business_types: [any]
+title: "Unused software seats removed and unused tools cancelled"
+why: "Seats for people who left and tools nobody opens add up every month."
+deliverables:
+  - "Every paid tool and seat listed with its cost"
+  - "Unused seats and tools identified"
+  - "Each approved removal done, saving reported"
+our_turnaround: "A few days"
+your_part: "Approve each removal and sign in to each tool"
+guide: |
+  # Unused software seats removed and unused tools cancelled
+
+  ## Steps
+  1. List paid tools from card statements and receipts in email.
+  2. For each, find seat count and last activity per seat (admin pages, in the live browser after the person signs in).
+  3. Mark seats of people who left and tools with no recent use.
+  4. Ask for approval of each removal (one checkbox confirmation).
+  5. Remove the approved seats and cancel the approved tools. Export any data first.
+
+  ## Decisions to ask
+  - Each removal.
+
+  ## Done proves
+  - Confirmations from each tool, and the monthly saving posted to the feed.
+
+  ## Honesty limits
+  - Never remove a seat or cancel a tool without approval. Export data before cancelling.

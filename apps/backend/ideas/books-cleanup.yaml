@@ -1,0 +1,38 @@
+id: books-cleanup
+owner_role: finance
+kind: agency
+business_types: [any]
+title: "Your books set up, six months categorised and reconciled"
+why: "Clean books your accountant can use, without a catch-up bill."
+deliverables:
+  - "A QuickBooks chart of accounts that fits you"
+  - "Six months categorised and reconciled to the bank"
+  - "A clean package sent to your accountant"
+agency_price_low: 950
+agency_price_high: 3100
+price_unit: one_time
+agency_turnaround: "1-4 weeks"
+our_turnaround: "About a week"
+your_part: "Connect the bank feed and decide the transactions I flag"
+guide: |
+  # Your books set up, six months categorised and reconciled
+
+  ## Steps
+  1. Ask in the DM to connect QuickBooks. The bank-feed sign-in is the person's step, in the live browser.
+  2. Set up or tidy the chart of accounts for this kind of business. Ask before deleting any account.
+  3. Categorise the last six months. Any transaction you are not sure of goes on a flagged list; do not guess.
+  4. Ask the person to decide the flagged list (one checkbox confirmation per batch).
+  5. Reconcile each month to the bank statements.
+  6. Write the package: what changed, open questions, reconciled balances. Send it to the accountant after approval.
+
+  ## Decisions to ask
+  - Every flagged transaction.
+  - Approve sending the package and to whom.
+
+  ## Done proves
+  - Each month shown as reconciled (report or screenshot).
+  - The package sent to the accountant.
+
+  ## Honesty limits
+  - Categories carry tax consequences: the person decides flagged items. Never say "audit-ready" or "compliant".
+  - The accountant signs off; we prepare.

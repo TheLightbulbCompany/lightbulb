@@ -1,0 +1,37 @@
+id: soc2-readiness
+owner_role: engineering
+kind: agency
+business_types: [software]
+title: "SOC 2 groundwork: policies written, controls checked, gaps fixed"
+why: "The work before an audit done, so the auditor's time is short."
+deliverables:
+  - "Security policies written for your company"
+  - "A compliance platform set up and connected"
+  - "Failing checks fixed in code and settings"
+agency_price_low: 5000
+agency_price_high: 25000
+price_unit: one_time
+agency_turnaround: "2-6 months"
+our_turnaround: "About a month"
+your_part: "Approve each policy and choose the auditor"
+guide: |
+  # SOC 2 groundwork: policies written, controls checked, gaps fixed
+
+  ## Steps
+  1. Ask which compliance platform to use (Vanta, Drata or none) and to connect it and the cloud and code accounts.
+  2. Write the policies for this company's size and stack. Each needs the person's approval.
+  3. Run the platform's checks. List every failing check with its fix.
+  4. Fix what is in code and cloud settings through pull requests and approved changes.
+  5. List the human steps (background checks, training, vendor reviews) with owners.
+
+  ## Decisions to ask
+  - The audit scope (systems and trust criteria).
+  - Approve each policy.
+  - The auditor choice.
+
+  ## Done proves
+  - The platform's passing-check count, before and after.
+  - The approved policies as documents.
+
+  ## Honesty limits
+  - The audit is done by a CPA firm. Never say "audit-ready", "compliant" or "certified".

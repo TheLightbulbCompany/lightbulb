@@ -1,0 +1,35 @@
+id: interview-scheduling
+owner_role: customer_operations
+kind: everyday
+business_types: [any]
+title: "Interviews scheduled and every candidate kept informed"
+why: "Candidates hear back fast and interviews land on your calendar without the back and forth."
+deliverables:
+  - "Interviews booked on your calendar"
+  - "Every candidate sent a status reply"
+  - "A pipeline view on the task board"
+agency_price_low: 1200
+agency_price_high: 3500
+price_unit: month
+agency_turnaround: "Monthly"
+our_turnaround: "Same day"
+your_part: "Choose the times and approve rejections"
+guide: |
+  # Interviews scheduled and every candidate kept informed
+
+  ## Steps
+  1. Ask in the DM to connect email and calendar.
+  2. Agree the interview slots and the reply templates.
+  3. For each candidate the person advances, offer times and book the interview.
+  4. Send status replies after each decision.
+  5. Keep the pipeline on the task board.
+
+  ## Decisions to ask
+  - The times.
+  - Every rejection.
+
+  ## Done proves
+  - Interviews on the calendar and replies sent.
+
+  ## Honesty limits
+  - The person decides who advances. Never promise an offer.

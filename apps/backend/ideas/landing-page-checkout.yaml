@@ -1,0 +1,41 @@
+id: landing-page-checkout
+owner_role: engineering
+kind: agency
+business_types: [any]
+title: "A landing page for your offer, with signup or checkout working"
+why: "One page that explains the offer and takes the signup or the payment, measured from day one."
+deliverables:
+  - "A landing page for one offer, live on your domain"
+  - "Signup or Stripe checkout wired and tested"
+  - "Proof the conversion event fires"
+agency_price_low: 2500
+agency_price_high: 30000
+price_unit: one_time
+agency_turnaround: "1-2 weeks"
+our_turnaround: "2-3 days"
+your_part: "Approve the words and press publish (about 15 minutes)"
+guide: |
+  # A landing page for your offer, with signup or checkout working
+
+  ## Steps
+  1. Ask in the DM which offer the page is for, its price, and who it is for, if the brief does not say.
+  2. Check what is connected: the repository or site builder, Stripe, and analytics. Ask for what is missing.
+  3. Write the page: headline, the problem, the offer, proof the company already has, price, one call to action.
+  4. Build it from the existing brand. Wire the call to action to signup or a Stripe Checkout link in test mode.
+  5. Add the conversion event (signup completed or checkout completed) to the analytics the company uses.
+  6. Share a preview. After the words are approved, the person publishes or approves the publish.
+  7. Make one test signup or test-mode payment and confirm the event arrives.
+
+  ## Decisions to ask
+  - The offer, price and audience, if not known.
+  - Approve the words (one confirmation with the preview link).
+  - Switch Stripe to live keys: the person's step.
+
+  ## Done proves
+  - The live page URL.
+  - A test signup or test payment that went through.
+  - The conversion event seen in analytics (screenshot or query result).
+
+  ## Honesty limits
+  - Promise a working page and a measured event, never a conversion rate.
+  - An A/B test needs traffic; do not promise test results.

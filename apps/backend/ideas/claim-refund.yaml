@@ -1,0 +1,30 @@
+id: claim-refund
+owner_role: finance
+kind: everyday
+business_types: [any]
+title: "A credit or refund the company is owed, claimed"
+why: "Late deliveries, overcharges and outage credits go unclaimed unless someone asks."
+deliverables:
+  - "Charges and incidents that qualify, found"
+  - "The claim sent with evidence"
+  - "The credit or refund confirmed"
+our_turnaround: "A few days"
+your_part: "Approve the claim text"
+guide: |
+  # A credit or refund the company is owed, claimed
+
+  ## Steps
+  1. Look for qualifying cases: late deliveries, double charges, price above the agreed one, service outages with SLA credits.
+  2. Read the vendor's terms for the claim rule and deadline.
+  3. Draft the claim with the evidence (order, dates, terms quoted).
+  4. Ask for approval, then send from your mailbox or the vendor's form in the live browser.
+  5. Follow up until the vendor answers.
+
+  ## Decisions to ask
+  - Approve the claim text.
+
+  ## Done proves
+  - The vendor's confirmation of the credit or refund, with the amount.
+
+  ## Honesty limits
+  - Claim only what the terms support. Never overstate the facts.

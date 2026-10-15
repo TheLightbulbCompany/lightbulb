@@ -1,0 +1,42 @@
+id: website-rebuild
+owner_role: engineering
+kind: agency
+business_types: [any]
+title: "Your website rebuilt in code and live on your domain"
+why: "A fast site you can change in minutes, without paying an agency for every edit."
+deliverables:
+  - "A new site in code, with a preview link to review"
+  - "Live on your domain, every old page redirected"
+  - "Every page's words approved by you"
+agency_price_low: 3000
+agency_price_high: 15000
+price_unit: one_time
+agency_turnaround: "2-6 weeks"
+our_turnaround: "About a week"
+your_part: "Approve the words and the DNS change (about 20 minutes)"
+guide: |
+  # Your website rebuilt in code and live on your domain
+
+  ## Steps
+  1. Read the current site: every page, its words, images, forms and links. List every URL (sitemap, then a crawl).
+  2. Ask in the DM for what you need: the repository or permission to create one, the hosting account, and the domain registrar sign-in (in the live browser only).
+  3. Build the site in code from the company's existing brand (logo, colours, fonts). Keep the copy unless the person asks for new words.
+  4. Deploy a preview and share the link. Ask for the words and layout to be approved.
+  5. Write the redirect map: every old URL to its new page. No old URL may 404.
+  6. After approval, point the domain at the new site. The DNS change is the person's approval.
+  7. Check every old URL, every form and the page speed on the live domain.
+
+  ## Decisions to ask
+  - Approve the words on each page (one confirmation with the preview link).
+  - Approve the DNS change, with the exact records you will change.
+  - Keep or drop each page the old site had that the new one does not.
+
+  ## Done proves
+  - The live URL on the company's domain serves the new site.
+  - Every old URL redirects (list the checked URLs and their status codes).
+  - Forms deliver: one test submission arrives.
+
+  ## Honesty limits
+  - Promise "built from your existing brand", never "agency-grade design".
+  - The DNS change and any domain purchase are the person's step; name them in the plan.
+  - Do not promise rankings or traffic.

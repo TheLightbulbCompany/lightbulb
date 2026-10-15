@@ -1,0 +1,36 @@
+id: seo-audit-fixes
+owner_role: engineering
+kind: agency
+business_types: [any]
+title: "An SEO audit, with the fixes shipped in one pull request"
+why: "Agencies sell the report; you get the problems fixed on the site itself."
+deliverables:
+  - "An audit of titles, schema, sitemap, redirects and speed"
+  - "The fixes in one pull request"
+  - "Before and after checks on the live site"
+agency_price_low: 1200
+agency_price_high: 15000
+price_unit: one_time
+agency_turnaround: "1-3 weeks"
+our_turnaround: "2-3 days"
+your_part: "Review and merge one pull request"
+guide: |
+  # An SEO audit, with the fixes shipped in one pull request
+
+  ## Steps
+  1. Ask for access to the site's repository (GitHub) if it is not connected.
+  2. Crawl the site: titles, meta descriptions, headings, canonical tags, structured data, sitemap, robots.txt, broken links, redirects, page speed.
+  3. Write the audit as a document on the task: each problem, the page, and the fix.
+  4. Fix what is in the code in one pull request. List anything outside the code (for example a CMS setting) for the person.
+  5. After merge and deploy, re-run the checks on the live site.
+
+  ## Decisions to ask
+  - Approve the pull request (the merge is the person's).
+  - Any change to page URLs (redirects needed).
+
+  ## Done proves
+  - The merged pull request.
+  - The before and after check results.
+
+  ## Honesty limits
+  - Never promise a rank or traffic. Links come from relationships; we do not buy them.

@@ -1871,7 +1871,8 @@ def is_session_room(meta: dict) -> bool:
 def _deny_vendor_human_change(meta: dict, kind: str) -> None:
     # A session chat's people follow session read access (spec 2026-10-07 decision 2).
     # The feed's people are the workspace's: only a workspace join/removal changes them.
-    if kind == "human" and (is_vendor_room(meta) or is_session_room(meta) or is_feed_room(meta)):
+    # The feed's membership (people only; agents are its authors) is Lightbulb's alone, every kind.
+    if is_feed_room(meta) or (kind == "human" and (is_vendor_room(meta) or is_session_room(meta))):
         raise ApiProblem("ROOM_FORBIDDEN", "Membership of this channel is managed by Lightbulb.")
 
 
@@ -2132,7 +2133,14 @@ async def ensure_feed_room(owner_id: str, requester_user_id: str | None = None) 
             # A racing create won (another roster, or a create from before this rule): same room.
             if await messaging_repo.get_room(room_id) is None:
                 raise
-    # Every current teammate, before the welcome: a room with a message is the "done" signal.
+    # Every current teammate, before the welcome: a room with a message is the "done" signal. Read
+    # again now the room exists: one who joined after the read above found no room to join.
+    try:
+        people = await clerk_admin.list_organization_members(owner_id, strict=True)
+    except Exception as exc:
+        raise ApiProblem(
+            "RUNTIME_UNAVAILABLE", "Workspace members are unavailable.", retryable=True, retry_after=3
+        ) from exc
     for row in people:
         try:
             await join_feed_room(owner_id, row["user_id"])
@@ -4859,6 +4867,9 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
                     message_id=line["messageId"], room_id=line["roomId"], created_at=line["createdAt"]
                 )
     feed = is_feed_room({**meta, "roomId": room_id})
+    if feed and request.thread_root_message_id is None and request.post_reason is None:
+        # Every feed post says why (lightbulb-post.sh --why); Discuss replies need none.
+        raise ApiProblem("INVALID_REQUEST", "A feed post needs postReason: why it matters.")
     member = await room_agent(room_id, agent_id, meta)
     if member is None:
         raise ApiProblem("MEMBER_NOT_FOUND", "Agent is not a current room member.")
@@ -4948,6 +4959,9 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
         request.text,
         str(request.reply_to_message_id) if request.reply_to_message_id else None,
         str(request.thread_root_message_id) if request.thread_root_message_id else None,
+        # Only when set, so a reason-less message hashes as it always did: a changed reason under
+        # one eventId is a conflict, never a silent replay of the first.
+        *([request.post_reason] if request.post_reason else []),
     )
     try:
         item, replayed = await messaging_repo.create_message(

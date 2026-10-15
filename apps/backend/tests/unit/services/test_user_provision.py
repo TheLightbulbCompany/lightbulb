@@ -1121,6 +1121,8 @@ def _arm_provisioning(row):
     fake._admin.list_routines = AsyncMock(return_value=[])
     fake._admin.create_routine = AsyncMock(side_effect=lambda **kw: {"id": f"r-{kw['idempotency_key'][-2:]}"})
     fake._admin.create_routine_trigger = AsyncMock(return_value={})
+    # The trigger holder re-reads the routine first (no trigger yet, unless a test says so).
+    fake._admin.get_routine = AsyncMock(side_effect=lambda **kw: {"id": kw["routine_id"], "triggers": []})
     # The shared pause/resume seam (paperclip_agent_lifecycle), patched in by _arm.
     fake.pause_automation = AsyncMock(return_value={"agent_ids": [], "routine_ids": []})
     fake.resume_automation = AsyncMock(return_value={"heartbeats_resumed": 0, "routines_resumed": 0})
@@ -1160,6 +1162,8 @@ async def _arm(provisioning, account, owner_id="org_p"):
         patch("core.services.user_provision.get_admin_session_cookie", AsyncMock(return_value="admin-cookie")),
         patch("core.services.user_provision.pause_owner_automation", provisioning.pause_automation),
         patch("core.services.user_provision.resume_owner_automation", provisioning.resume_automation),
+        patch("core.services.user_provision.container_repo.try_claim_pass", AsyncMock(return_value=True)),
+        patch("core.services.user_provision.container_repo.release_pass", AsyncMock()),
     ):
         return await arm_nightly_ceo(owner_id)
 
@@ -1624,3 +1628,48 @@ async def test_a_feed_routine_failure_never_fails_the_arm():
     provisioning = _arm_provisioning(_company_row(starter_ids={"ceo": "ceo1"}))
     provisioning._admin.list_routines.side_effect = RuntimeError("paperclip down")
     assert await _arm(provisioning, _paid_account()) == "armed"
+
+
+@pytest.mark.asyncio
+async def test_overlapping_reconciles_attach_each_feed_trigger_once(monkeypatch):
+    """Trigger creates carry no idempotency key upstream: two reconciles that both list a routine
+    without its trigger must not both add one. A short per-owner+hour claim serializes the add,
+    and the holder re-reads the routine first."""
+    import asyncio
+
+    triggers: dict[str, list] = {}
+    routines = [
+        {"id": f"r{h}", "title": user_provision.feed_routine_title(h), "assigneeAgentId": "ceo1", "status": "active"}
+        for h in user_provision.FEED_ROUTINE_HOURS
+    ]
+
+    async def add_trigger(*, routine_id, body, **_):
+        await asyncio.sleep(0)
+        triggers.setdefault(routine_id, []).append(body)
+
+    async def get_routine(*, routine_id, **_):
+        await asyncio.sleep(0)
+        return {"id": routine_id, "triggers": list(triggers.get(routine_id, []))}
+
+    claims: set[str] = set()
+
+    async def claim(name, *, interval_s):
+        await asyncio.sleep(0)
+        if name in claims:
+            return False
+        claims.add(name)
+        return True
+
+    admin = MagicMock()
+    admin.list_routines = AsyncMock(return_value=routines)
+    admin.create_routine_trigger = add_trigger
+    admin.get_routine = get_routine
+    monkeypatch.setattr(user_provision.container_repo, "try_claim_pass", claim)
+    monkeypatch.setattr(user_provision.container_repo, "release_pass", AsyncMock())
+    monkeypatch.setattr(user_provision, "_feed_timezone", AsyncMock(return_value="UTC"))
+    row = _company_row(starter_ids={"ceo": "ceo1"})
+    await asyncio.gather(
+        user_provision._ensure_feed_routines(admin, "c", "org_p", row, "ceo1"),
+        user_provision._ensure_feed_routines(admin, "c", "org_p", row, "ceo1"),
+    )
+    assert {routine_id: len(added) for routine_id, added in triggers.items()} == {"r8": 1, "r13": 1, "r18": 1}

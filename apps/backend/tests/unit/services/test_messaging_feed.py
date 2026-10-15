@@ -802,3 +802,84 @@ async def test_the_work_consumer_wakes_a_feed_author_it_never_seated(crowded):
     member, message = dispatched.await_args.args[1], dispatched.await_args.args[2]
     assert member["id"] == growth and message["messageSeq"] == seq
     assert int((await repo.get_agent_delivery(FEED, growth))["lastSeq"]) == seq
+
+
+# ---- Codex re-review at 1539bbf72 -----
+
+
+def _agent_message(event_id, *, root=None, reason=None, text="**Paid**"):
+    return messaging.AgentMessageRequest.model_validate(
+        {
+            "eventId": event_id,
+            "roomId": FEED,
+            "agentId": CEO,
+            "text": text,
+            "replyToMessageId": None,
+            "threadRootMessageId": root,
+            **({"postReason": reason} if reason is not None else {}),
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_direct_top_level_feed_post_needs_a_reason_but_a_discuss_reply_does_not(crowded):
+    await messaging.ensure_feed_room(OWNER, "user_A")
+    for reason in (None, "   "):
+        with pytest.raises(messaging.ApiProblem) as exc:
+            await messaging.create_agent_message(OWNER, _agent_message("e-none", reason=reason))
+        assert exc.value.error.code == "INVALID_REQUEST"
+    root = (await repo.list_messages(FEED, 0, 10))[0][0]["messageId"]
+    await messaging.create_agent_message(OWNER, _agent_message("e-reply", root=root, text="Thanks"))
+
+
+@pytest.mark.asyncio
+async def test_a_changed_reason_under_one_event_id_is_a_conflict_not_a_replay(crowded):
+    await messaging.ensure_feed_room(OWNER, "user_A")
+    first = await messaging.create_agent_message(OWNER, _agent_message("e-1", reason="Money in."))
+    assert (await messaging.create_agent_message(OWNER, _agent_message("e-1", reason="Money in."))).message_id == (
+        first.message_id
+    )
+    with pytest.raises(messaging.ApiProblem) as exc:
+        await messaging.create_agent_message(OWNER, _agent_message("e-1", reason="A customer replied."))
+    assert exc.value.error.code == "IDEMPOTENCY_CONFLICT"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["agent", "human"])
+async def test_nobody_changes_feed_membership_by_hand(crowded, kind):
+    from core.auth import AuthContext
+
+    await messaging.ensure_feed_room(OWNER, "user_A")
+    auth = AuthContext(user_id="user_A", org_id=OWNER)  # the feed's owner
+    member_id = CEO if kind == "agent" else "user_05"
+    listen = "active" if kind == "agent" else None
+    with pytest.raises(messaging.ApiProblem) as exc:
+        await messaging.upsert_member(
+            auth,
+            FEED,
+            messaging.UpsertRoomMemberRequest(kind=kind, id=member_id, role="member", listen_mode=listen),
+        )
+    assert exc.value.error.code == "ROOM_FORBIDDEN"
+    with pytest.raises(messaging.ApiProblem) as exc:
+        await messaging.remove_member(auth, FEED, kind, member_id)
+    assert exc.value.error.code == "ROOM_FORBIDDEN"
+    assert await repo.get_member(FEED, "agent", CEO) is None
+
+
+@pytest.mark.asyncio
+async def test_a_teammate_who_joins_while_the_feed_is_being_made_is_seated(crowded, monkeypatch):
+    """C joins Clerk after the creator's snapshot but before the room exists: C's own webhook
+    join no-ops (no room yet), so the creation seats everyone Clerk lists once the room exists."""
+    late = {"user_id": "user_late"}
+    reads = {"n": 0}
+
+    async def members(*_args, **_kwargs):
+        reads["n"] += 1
+        if reads["n"] == 1:
+            assert await messaging.join_feed_room(OWNER, "user_late") is False  # the webhook, too early
+            return PEOPLE
+        return [*PEOPLE, late]
+
+    monkeypatch.setattr(messaging.clerk_admin, "list_organization_members", members)
+    await messaging.ensure_feed_room(OWNER, "user_A")
+    assert await repo.get_member(FEED, "human", "user_late") is not None

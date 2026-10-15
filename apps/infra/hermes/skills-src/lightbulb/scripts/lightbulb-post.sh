@@ -60,7 +60,7 @@ body="$(cat)"; [[ -n "${body//[[:space:]]/}" ]] || die 'Empty body: pipe the mes
 
 sha() { if command -v sha256sum >/dev/null; then sha256sum; else shasum -a 256; fi | cut -c1-32; }
 # Event ids are owner-wide on the backend, so every key is scoped to the posting agent.
-[[ -n "$event_id" ]] || event_id="$(printf '%s\n%s\n%s\n%s\n%s\n%s' "$agent_id" "${feed:+feed}$room" "$user" "$handle" "$issue" "$body" | sha)"
+[[ -n "$event_id" ]] || event_id="$(printf '%s\n%s\n%s\n%s\n%s\n%s%s' "$agent_id" "${feed:+feed}$room" "$user" "$handle" "$issue" "$body" "${why:+$'\n'why:$why}" | sha)"
 event_id="post:${agent_id}:${event_id}"
 
 api="${ISOL8_API_URL%/}/api/v1/internal/messaging"

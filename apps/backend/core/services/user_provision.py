@@ -244,6 +244,8 @@ def ceo_agent_id(row) -> str | None:
 
 #: The feed's schedule (spec 2026-10-14 §4.2): three CEO routines a day, in the owner's local time.
 FEED_ROUTINE_HOURS = (8, 13, 18)
+#: How long one reconcile holds the right to attach a feed routine's schedule trigger.
+FEED_TRIGGER_CLAIM_S = 120
 FEED_ROUTINE_DESCRIPTION = (
     "Scheduled feed post. Look at what happened since the last scheduled feed post: rooms, Work, "
     "runs, sessions and connected tools. Read the feed's recent posts first and never repeat one; "
@@ -312,8 +314,16 @@ async def _ensure_feed_routines(admin, cookie: str, owner_id: str, row, ceo_id: 
                 # A replay of a routine the owner since renamed or reassigned: theirs to keep.
                 if routine.get("id") in by_id and settled(by_id[routine["id"]]):
                     continue
-            timezone = timezone or await _feed_timezone(row)
+            # Trigger creates carry no idempotency key upstream: overlapping reconciles take turns
+            # under a short claim, and the holder re-reads the routine before it adds one. The claim
+            # just lapses after a success (the trigger is then in every later list).
+            claim = f"feed-trigger:{owner_id}:{hour:02d}"
+            if not await container_repo.try_claim_pass(claim, interval_s=FEED_TRIGGER_CLAIM_S):
+                continue  # another reconcile is attaching it; the next one checks again
             try:
+                if settled(await admin.get_routine(session_cookie=cookie, routine_id=routine["id"])):
+                    continue
+                timezone = timezone or await _feed_timezone(row)
                 await admin.create_routine_trigger(
                     session_cookie=cookie,
                     routine_id=routine["id"],
@@ -325,8 +335,12 @@ async def _ensure_feed_routines(admin, cookie: str, owner_id: str, row, ceo_id: 
                     },
                 )
             except PaperclipApiError as exc:
+                await container_repo.release_pass(claim)
                 if exc.status_code != 404:  # deleted since the list: the owner's choice
                     raise
+            except Exception:
+                await container_repo.release_pass(claim)  # let the next reconcile retry at once
+                raise
     except Exception:  # noqa: BLE001 -- retried by the next reconcile
         put_metric("feed.routines", dimensions={"status": "error"})
         logger.exception("feed routines: ensure failed for owner %s", owner_id)

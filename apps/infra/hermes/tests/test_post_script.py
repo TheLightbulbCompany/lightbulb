@@ -86,3 +86,9 @@ def test_why_rides_any_post_and_feed_is_one_target(tmp_path):
 def test_feed_without_why_is_refused_with_a_usage_message(tmp_path):
     proc, sent, _ = _run(tmp_path, "--feed")
     assert proc.returncode != 0 and sent is None and "--why" in proc.stderr
+
+
+def test_a_changed_reason_is_a_new_post(tmp_path):
+    first = _run(tmp_path, "--feed", "--why", "Money in.")[1]["eventId"]
+    assert _run(tmp_path, "--feed", "--why", "Money in.")[1]["eventId"] == first  # a retry replays
+    assert _run(tmp_path, "--feed", "--why", "A customer replied.")[1]["eventId"] != first

@@ -17,7 +17,7 @@ Target, first that applies:
   (none)    the workspace's #general channel
 Options:
   --why "<reason>"  "Why I created this post": one or two plain sentences, <= 280 characters.
-                    Always pass it with --feed.
+                    Required with --feed: a feed post without it is refused.
   --as <agent_id>   post as this agent (default: $PAPERCLIP_AGENT_ID, else your workspace-<id> cwd)
   --event-id <id>   idempotency key; a retry with the same key replays instead of doubling.
                     Default: a hash of agent + target + body.
@@ -55,6 +55,7 @@ done
 [[ -n "$agent_id" ]] || die 'Cannot tell which agent you are: pass --as <agent_id>.'
 n=0; for t in "$feed" "$room" "$user" "$handle"; do [[ -n "$t" ]] && n=$((n+1)); done
 [[ $n -le 1 ]] || die 'Pick at most one of --feed, --room, --user, --handle.'
+[[ -z "$feed" || -n "${why//[[:space:]]/}" ]] || { usage >&2; die '--feed needs --why "<why it matters>".'; }
 body="$(cat)"; [[ -n "${body//[[:space:]]/}" ]] || die 'Empty body: pipe the message text on stdin.'
 
 sha() { if command -v sha256sum >/dev/null; then sha256sum; else shasum -a 256; fi | cut -c1-32; }

@@ -13,6 +13,7 @@ def test_feed_ensures_the_room_seats_the_caller_and_returns_its_brief(client, mo
         patch(f"{SERVICE}.ensure_feed_room", AsyncMock(return_value=FEED)) as ensure,
         patch(f"{SERVICE}.join_feed_room", AsyncMock(return_value=True)) as join,
         patch(f"{SERVICE}.messaging_repo.get_room", AsyncMock(return_value={"roomId": FEED, "topic": "Money only."})),
+        patch(f"{SERVICE}.messaging_repo.get_member", AsyncMock(return_value={"kind": "human"})),
     ):
         response = client.get("/api/v1/messaging/feed")
     assert response.status_code == 200, response.text

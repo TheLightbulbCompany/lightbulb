@@ -106,9 +106,10 @@ DEFAULT_ROOM_NAME = "general"
 FEED_ROOM_NAME = "feed"
 FEED_DEFAULT_TOPIC = "Keep us posted on customers, money and what the team finished. Skip engineering details."
 FEED_POST_REASON_MAX_CHARS = 280
-# ponytail: roster agents seated when the feed is made, CEO first; the rest of the room's 32
-# seats stay for people. A later hire is seated on its first feed post.
-FEED_AGENT_SEATS = 16
+# People are seated first: this many of the room's seats are kept for humans (prod Clerk caps an
+# org at 20 members), and agents, CEO first, take only what is left -- so a teammate who joins
+# later always has a seat. A later hire is seated on its first feed post while a seat is free.
+FEED_HUMAN_SEATS = 20
 #: The CEO's one welcome post in the feed (idempotent, like #general's).
 FEED_WELCOME = (
     "**This is our feed.** When something here matters to you (money in or out, a customer, "
@@ -1926,7 +1927,10 @@ async def _autojoin(owner_id: str, room_id: str, user_id: str) -> bool:
             return False  # a removed member: only the membership webhook's rejoin turns them back on
         meta = await messaging_repo.upsert_member(room_id=room_id, owner_id=owner_id, member=member)
     except messaging_repo.MemberLimitExceeded:
-        # Keep the marker: a full room must not turn every poll into a retry.
+        # Keep the marker: a full room must not turn every poll into a retry. Not for the feed: a
+        # person always belongs there, and get_feed fails loudly until a seat frees.
+        if room_id == messaging_repo.feed_room_id(owner_id):
+            await messaging_repo.release_autojoin(room_id, user_id)
         logger.warning("room %s full; %s not added for owner %s", room_id, user_id, owner_id)
         return False
     except Exception:
@@ -2101,7 +2105,8 @@ async def ensure_feed_room(owner_id: str, requester_user_id: str | None = None) 
         if not owner_user_id:
             raise ApiProblem("ROOM_NOT_FOUND", "This workspace has no active member to own a feed.")
         handles = mention_handles(roster)
-        seated = [ceo_id, *(agent_id for agent_id in agents if agent_id != ceo_id)][:FEED_AGENT_SEATS]
+        agent_seats = _feed_agent_seats_free(human_count=len(people), agent_count=0)
+        seated = [ceo_id, *(agent_id for agent_id in agents if agent_id != ceo_id)][:agent_seats]
         members = [
             {
                 "kind": "human",
@@ -2179,6 +2184,11 @@ async def get_feed(auth: AuthContext) -> FeedResponse:
     if room_id is None:
         raise ApiProblem("RUNTIME_UNAVAILABLE", "The feed is not ready yet.", retryable=True, retry_after=3)
     await join_feed_room(owner_id, auth.user_id)
+    if await messaging_repo.get_member(room_id, "human", auth.user_id) is None:
+        # Never report a feed the reader is not in (a full room, or a removal racing this read).
+        logger.error("feed seat missing owner=%s user=%s", owner_id, auth.user_id)
+        put_metric("messaging.feed.human_unseated")
+        raise ApiProblem("MEMBER_LIMIT", "You could not be added to this workspace's feed.")
     meta = await messaging_repo.get_room(room_id) or {}
     return FeedResponse(room_id=room_id, topic=meta.get("topic"))
 
@@ -2216,11 +2226,21 @@ async def agent_feed(owner_id: str) -> dict[str, Any]:
     }
 
 
+def _feed_agent_seats_free(*, human_count: int, agent_count: int) -> int:
+    """Feed seats an agent may still take: humans keep ``FEED_HUMAN_SEATS`` (or all they hold)."""
+    return messaging_repo.MAX_ROOM_MEMBERS - max(FEED_HUMAN_SEATS, human_count) - agent_count
+
+
 async def _seat_feed_agent(owner_id: str, room_id: str, agent_id: str) -> None:
     """Seat an agent hired after the feed was made, on ``mentions``, at most once (the
-    ``AUTOJOIN#`` marker): one an admin removed stays out and its post is refused."""
+    ``AUTOJOIN#`` marker): one an admin removed stays out and its post is refused. With no seat
+    left after the people's, the post is refused with ``MEMBER_LIMIT``."""
     if await messaging_repo.get_member(room_id, "agent", agent_id) is not None:
         return
+    members = await messaging_repo.list_members(room_id)
+    kinds = [row.get("kind") for row in members]
+    if _feed_agent_seats_free(human_count=kinds.count("human"), agent_count=kinds.count("agent")) <= 0:
+        raise ApiProblem("MEMBER_LIMIT", "The feed has no free seat for this agent; its seats go to people first.")
     member = await _resolved_member(
         owner_id,
         CreateRoomMember(kind="agent", id=agent_id, role="member", listen_mode="mentions"),
@@ -2230,8 +2250,9 @@ async def _seat_feed_agent(owner_id: str, room_id: str, agent_id: str) -> None:
         return
     try:
         meta = await messaging_repo.upsert_member(room_id=room_id, owner_id=owner_id, member=member)
-    except messaging_repo.MemberLimitExceeded:
-        return  # keep the marker; the post is refused as not a member
+    except messaging_repo.MemberLimitExceeded as exc:
+        await messaging_repo.release_autojoin(room_id, agent_id)  # a seat freed later can take it
+        raise ApiProblem("MEMBER_LIMIT", "The feed has no free seat for this agent.") from exc
     except Exception:
         await messaging_repo.release_autojoin(room_id, agent_id)
         raise
@@ -4015,6 +4036,9 @@ async def create_human_message(
     ``expected_room_revision`` fences the write: a room changed since that read (e.g. a DM turned
     into a group DM) refuses with MESSAGE_CONFLICT instead of posting to the new audience."""
     meta, sender = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
+    if is_feed_room(meta) and request.thread_root_message_id is None:
+        # The feed's posts are the agents'; people answer them in Discuss (a thread reply).
+        raise ApiProblem("ROOM_FORBIDDEN", "Reply to a feed post in Discuss; only agents post to the feed.")
     owner_id = meta["ownerId"]  # room-scoped writes are keyed on the ROOM owner, never the caller's workspace
     mentions = await _validate_mentions(room_id, request.mentions)
     members = await messaging_repo.list_members(room_id)
@@ -5236,6 +5260,8 @@ class AgentPostRequest(ContractModel):
     def one_target(self) -> "AgentPostRequest":
         if sum(x is not None for x in (self.room_id, self.room_name, self.user_id, self.handle)) + self.feed > 1:
             raise ValueError("name at most one of feed, roomId, roomName, userId, handle")
+        if self.feed and self.post_reason is None:
+            raise ValueError("a feed post needs postReason: why it matters")
         return self
 
 

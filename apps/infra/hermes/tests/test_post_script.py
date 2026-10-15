@@ -81,3 +81,8 @@ def test_why_rides_any_post_and_feed_is_one_target(tmp_path):
     assert sent["postReason"] == "A customer asked." and "feed" not in sent
     assert _run(tmp_path, "--feed", "--room", "r9")[0].returncode != 0
     assert _run(tmp_path, "--why")[0].returncode != 0
+
+
+def test_feed_without_why_is_refused_with_a_usage_message(tmp_path):
+    proc, sent, _ = _run(tmp_path, "--feed")
+    assert proc.returncode != 0 and sent is None and "--why" in proc.stderr

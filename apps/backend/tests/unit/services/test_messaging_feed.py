@@ -610,3 +610,75 @@ async def test_a_failed_marker_release_never_hides_the_undo_error(workspace, mon
     with pytest.raises(Exception) as exc:
         await messaging.join_feed_room(OWNER, "user_C")
     assert "revision" in str(exc.value)  # the undo's TransactionCanceledException, not "release"
+
+
+# ---- Codex review on #4145: human top-level posts, the member cap, --why with --feed -----
+
+
+@pytest.mark.asyncio
+async def test_a_human_top_level_post_in_the_feed_is_refused_but_a_discuss_reply_is_allowed(workspace):
+    from core.auth import AuthContext
+
+    await messaging.ensure_feed_room(OWNER, "user_A")
+    auth = AuthContext(user_id="user_A", org_id=OWNER)
+    welcome = (await repo.list_messages(FEED, 0, 10))[0][0]
+
+    def request(root):
+        return messaging.CreateMessageRequest(
+            client_message_id=uuid.uuid4(), text="hello", reply_to_message_id=None, thread_root_message_id=root
+        )
+
+    with pytest.raises(messaging.ApiProblem) as exc:
+        await messaging.create_human_message(auth, FEED, request(None))
+    assert exc.value.error.code == "ROOM_FORBIDDEN"
+    reply = await messaging.create_human_message(auth, FEED, request(uuid.UUID(welcome["messageId"])))
+    assert reply.text == "hello"
+
+
+BIG_ROSTER = {**STARTERS, **{f"hire{i}": f"20000000-0000-4000-8000-{i:012d}" for i in range(10)}}  # 16 agents
+PEOPLE = [{"user_id": "user_A"}, *({"user_id": f"user_{i:02d}"} for i in range(19))]  # 20 humans
+
+
+@pytest.fixture
+def crowded(workspace, monkeypatch):
+    roster = [{"id": agent_id, "name": key.title()} for key, agent_id in BIG_ROSTER.items()]
+    monkeypatch.setattr(messaging, "load_agent_roster", lambda _owner: asyncio.sleep(0, result=roster))
+    monkeypatch.setattr(messaging.clerk_admin, "list_organization_members", AsyncMock(return_value=PEOPLE))
+
+
+@pytest.mark.asyncio
+async def test_twenty_humans_are_all_seated_and_agents_take_the_seats_left(crowded):
+    assert await messaging.ensure_feed_room(OWNER, "user_A") == FEED
+    members = await repo.list_members(FEED)
+    assert {row["id"] for row in members if row["kind"] == "human"} == {row["user_id"] for row in PEOPLE}
+    agents = [row["id"] for row in members if row["kind"] == "agent"]
+    assert len(agents) == repo.MAX_ROOM_MEMBERS - len(PEOPLE) == 12 and CEO in agents
+
+
+@pytest.mark.asyncio
+async def test_a_human_who_cannot_be_seated_fails_the_feed_read_loudly(crowded):
+    from core.auth import AuthContext
+
+    await messaging.ensure_feed_room(OWNER, "user_A")
+    with pytest.raises(messaging.ApiProblem) as exc:
+        await messaging.get_feed(AuthContext(user_id="user_late", org_id=OWNER))  # the room is full
+    assert exc.value.error.code == "MEMBER_LIMIT"
+
+
+@pytest.mark.asyncio
+async def test_an_agent_with_no_free_feed_seat_is_refused_clearly(crowded):
+    await messaging.ensure_feed_room(OWNER, "user_A")
+    seated = {row["id"] for row in await repo.list_members(FEED)}
+    unseated = next(agent_id for agent_id in BIG_ROSTER.values() if agent_id not in seated)
+    with pytest.raises(messaging.ApiProblem) as exc:
+        await messaging.resolve_agent_post_room(OWNER, _post(feed=True, postReason="why", agentId=unseated))
+    assert exc.value.error.code == "MEMBER_LIMIT"
+
+
+def test_a_feed_post_requires_a_reason():
+    with pytest.raises(ValidationError):
+        _post(feed=True)
+    with pytest.raises(ValidationError):
+        _post(feed=True, postReason="   ")  # blank is no reason
+    assert _post(feed=True, postReason="why").post_reason == "why"
+    assert _post().post_reason is None  # other targets keep it optional

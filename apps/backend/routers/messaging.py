@@ -1179,7 +1179,7 @@ async def _resolved_run(auth: AuthContext, run_id: str) -> tuple[str, dict]:
     if row is None:
         raise ApiProblem("RUN_NOT_FOUND", "Run not found.")
     await service.require_room_member(owner_id, auth.user_id, row["roomId"])
-    if await messaging_repo.get_member(row["roomId"], "agent", row["agentId"]) is None:
+    if await service.room_agent(row["roomId"], row["agentId"]) is None:
         raise ApiProblem("RUN_NOT_ACTIVE", "The run's agent is no longer in this room.")
     return owner_id, row
 

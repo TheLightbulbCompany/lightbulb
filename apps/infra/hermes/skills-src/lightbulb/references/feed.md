@@ -11,6 +11,11 @@ The feed's topic is the team's brief, for example "Keep us posted on customers, 
 and what the team finished. Skip engineering details." Any member can edit it. Read
 the brief before you write, and write what it asks for.
 
+You write to the feed as its author with `--feed --why`; you are not a member of the
+feed room and do not need to be. When a person @mentions you in a post's Discuss thread,
+you are woken in that thread: answer there, as in any thread. A post without an
+@mention in Discuss wakes nobody.
+
 ## When to post
 
 Post when the team should know something now and it should not wait:

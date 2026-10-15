@@ -92,10 +92,8 @@ async def test_ensure_feed_room_twice_makes_one_room_with_one_welcome(workspace)
     members = await repo.list_members(FEED)
     # Every workspace human (the creator and the teammate seated through the AUTOJOIN marker).
     assert {row["id"] for row in members if row["kind"] == "human"} == {"user_A", "user_B"}
-    # Every roster agent, on mentions: a plain post wakes nobody, an @mention does.
-    assert {row["id"]: row["listenMode"] for row in members if row["kind"] == "agent"} == {
-        agent_id: "mentions" for agent_id in STARTERS.values()
-    }
+    # Agents are the feed's authors, not its members: nobody but people sits in the room.
+    assert not [row for row in members if row["kind"] == "agent"]
     messages, _ = await repo.list_messages(FEED, 0, 100)
     assert len(messages) == 1
     assert messages[0]["author"]["id"] == CEO
@@ -224,19 +222,6 @@ async def test_feed_true_targets_the_feed_room_with_its_reason(created, monkeypa
     ensure.assert_awaited_once_with(OWNER)
     assert created.call_args.kwargs["room_id"] == FEED
     assert created.call_args.kwargs["post_reason"] == "Revenue is the brief's first ask."
-
-
-@pytest.mark.asyncio
-async def test_feed_seats_an_agent_hired_after_the_room_was_made(created, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(messaging, "ensure_feed_room", AsyncMock(return_value=FEED))
-    monkeypatch.setattr(messaging.messaging_repo, "get_member", AsyncMock(side_effect=[None, {"id": AGENT}]))
-    monkeypatch.setattr(messaging.messaging_repo, "claim_autojoin", AsyncMock(return_value=True))
-    upsert = AsyncMock(return_value={"roomId": FEED, "revision": 2})
-    monkeypatch.setattr(messaging.messaging_repo, "upsert_member", upsert)
-    monkeypatch.setattr(messaging, "_publish_room_metadata", AsyncMock())
-    await messaging.post_agent_message(OWNER, _post(feed=True, postReason="why"))
-    assert upsert.call_args.kwargs["member"]["listenMode"] == "mentions"
-    assert created.call_args.kwargs["room_id"] == FEED
 
 
 def test_feed_is_a_target_like_the_others():
@@ -370,6 +355,7 @@ async def test_the_agent_read_returns_top_level_posts_only(workspace):
         source_agent_id=CEO,
         client_message_id=None,
         thread_root_seq=welcome["messageSeq"],
+        author_member_check=False,  # an agent writes the feed as an author
     )
     feed = await messaging.agent_feed(OWNER)
     assert [p["text"] for p in feed["posts"]] == [messaging.FEED_WELCOME]
@@ -647,32 +633,144 @@ def crowded(workspace, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_twenty_humans_are_all_seated_and_agents_take_the_seats_left(crowded):
+async def test_twenty_humans_are_all_seated_and_no_agent_sits_in_the_feed(crowded):
     assert await messaging.ensure_feed_room(OWNER, "user_A") == FEED
     members = await repo.list_members(FEED)
     assert {row["id"] for row in members if row["kind"] == "human"} == {row["user_id"] for row in PEOPLE}
-    agents = [row["id"] for row in members if row["kind"] == "agent"]
-    assert len(agents) == repo.MAX_ROOM_MEMBERS - len(PEOPLE) == 12 and CEO in agents
+    assert not [row for row in members if row["kind"] == "agent"]
 
 
 @pytest.mark.asyncio
-async def test_a_human_who_cannot_be_seated_fails_the_feed_read_loudly(crowded):
+async def test_a_human_who_cannot_be_seated_fails_the_feed_read_loudly(crowded, monkeypatch):
     from core.auth import AuthContext
 
     await messaging.ensure_feed_room(OWNER, "user_A")
+    monkeypatch.setattr(
+        messaging.messaging_repo, "upsert_member", AsyncMock(side_effect=repo.MemberLimitExceeded("full"))
+    )
     with pytest.raises(messaging.ApiProblem) as exc:
-        await messaging.get_feed(AuthContext(user_id="user_late", org_id=OWNER))  # the room is full
+        await messaging.get_feed(AuthContext(user_id="user_late", org_id=OWNER))
     assert exc.value.error.code == "MEMBER_LIMIT"
+
+
+# ---- owner redesign: agents are the feed's AUTHORS, not its members -----
+
+
+async def _work_rows(table):  # noqa: F811
+    return [row for row in table.scan()["Items"] if str(row["sk"]).startswith("WORK#MESSAGE")]
 
 
 @pytest.mark.asyncio
-async def test_an_agent_with_no_free_feed_seat_is_refused_clearly(crowded):
+async def test_a_roster_agent_outside_the_room_posts_to_the_feed(crowded):
     await messaging.ensure_feed_room(OWNER, "user_A")
-    seated = {row["id"] for row in await repo.list_members(FEED)}
-    unseated = next(agent_id for agent_id in BIG_ROSTER.values() if agent_id not in seated)
+    hire = BIG_ROSTER["hire3"]
+    receipt = await messaging.post_agent_message(OWNER, _post(feed=True, postReason="why", agentId=hire, text="**Up**"))
+    assert str(receipt.room_id) == FEED
+    assert await repo.get_member(FEED, "agent", hire) is None  # posted as an author, never seated
+    posts = (await messaging.agent_feed(OWNER))["posts"]
+    assert posts[-1]["text"] == "**Up**" and posts[-1]["postReason"] == "why"
+
+
+@pytest.mark.asyncio
+async def test_another_owners_agent_cannot_post_to_the_feed(crowded):
+    await messaging.ensure_feed_room(OWNER, "user_A")
+    stranger = "30000000-0000-4000-8000-000000000001"
     with pytest.raises(messaging.ApiProblem) as exc:
-        await messaging.resolve_agent_post_room(OWNER, _post(feed=True, postReason="why", agentId=unseated))
-    assert exc.value.error.code == "MEMBER_LIMIT"
+        await messaging.post_agent_message(OWNER, _post(feed=True, postReason="why", agentId=stranger))
+    assert exc.value.error.code == "MEMBER_NOT_FOUND"
+
+
+def _human_reply(root, mentions=()):
+    return messaging.CreateMessageRequest(
+        client_message_id=uuid.uuid4(),
+        text="what about churn?",
+        mentions=[messaging.MemberRef(kind="agent", id=agent_id) for agent_id in mentions],
+        reply_to_message_id=None,
+        thread_root_message_id=root,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_discuss_reply_that_mentions_an_agent_wakes_exactly_that_agent(crowded, table):  # noqa: F811
+    from core.auth import AuthContext
+
+    await messaging.ensure_feed_room(OWNER, "user_A")
+    root = uuid.UUID((await repo.list_messages(FEED, 0, 10))[0][0]["messageId"])
+    auth = AuthContext(user_id="user_A", org_id=OWNER)
+    await messaging.create_human_message(auth, FEED, _human_reply(root, [BIG_ROSTER["growth"]]))
+    rows = await _work_rows(table)
+    assert [row["sk"].rsplit("#", 1)[-1] for row in rows] == [BIG_ROSTER["growth"]]
+    assert rows[0]["pk"] == f"ROOM#{FEED}"
+
+
+@pytest.mark.asyncio
+async def test_plain_feed_posts_wake_nobody(crowded, table):  # noqa: F811
+    from core.auth import AuthContext
+
+    await messaging.ensure_feed_room(OWNER, "user_A")
+    root = uuid.UUID((await repo.list_messages(FEED, 0, 10))[0][0]["messageId"])
+    await messaging.create_human_message(AuthContext(user_id="user_A", org_id=OWNER), FEED, _human_reply(root))
+    await messaging.post_agent_message(OWNER, _post(feed=True, postReason="why", agentId=CEO, text="@growth look"))
+    assert await _work_rows(table) == []
+
+
+@pytest.mark.asyncio
+async def test_a_non_member_agents_discuss_reply_is_accepted_in_its_thread(crowded):
+    await messaging.ensure_feed_room(OWNER, "user_A")
+    root = (await repo.list_messages(FEED, 0, 10))[0][0]["messageId"]
+    agent = BIG_ROSTER["growth"]
+    receipt = await messaging.create_agent_message(
+        OWNER,
+        messaging.AgentMessageRequest.model_validate(
+            {
+                "eventId": "reply-1",
+                "roomId": FEED,
+                "agentId": agent,
+                "text": "Churn is flat.",
+                "replyToMessageId": None,
+                "threadRootMessageId": root,
+            }
+        ),
+    )
+    stored = await repo.get_message_by_id(FEED, str(receipt.message_id))
+    assert stored["threadRootMessageId"] == root and stored["author"]["id"] == agent
+    # Another room still requires membership, exactly as before.
+    other = messaging.default_room_id(OWNER)
+    with pytest.raises(messaging.ApiProblem):
+        await messaging.create_agent_message(
+            OWNER,
+            messaging.AgentMessageRequest.model_validate(
+                {
+                    "eventId": "x",
+                    "roomId": other,
+                    "agentId": agent,
+                    "text": "hi",
+                    "replyToMessageId": None,
+                    "threadRootMessageId": None,
+                }
+            ),
+        )
+
+
+def test_the_feed_rule_wakes_only_mentioned_roster_agents_in_a_thread():
+    roster = {CEO, STARTERS["growth"]}
+    mention = [{"kind": "agent", "id": STARTERS["growth"]}, {"kind": "agent", "id": "not-on-roster"}]
+    pick = messaging.select_dispatch_targets
+    assert pick([], mention, None, room_kind="channel", feed_roster=roster, in_thread=True) == [
+        {"agentId": STARTERS["growth"], "eventKind": "user_request"}
+    ]
+    assert pick([], mention, None, room_kind="channel", feed_roster=roster, in_thread=False) == []
+    assert pick([], [], None, room_kind="channel", feed_roster=roster, in_thread=True) == []
+    assert pick([], mention, STARTERS["growth"], room_kind="channel", feed_roster=roster, in_thread=True) == []
+
+
+@pytest.mark.asyncio
+async def test_room_agent_stands_in_a_roster_agent_for_the_feed_only(crowded):
+    await messaging.ensure_feed_room(OWNER, "user_A")
+    stand_in = await messaging.room_agent(FEED, CEO)
+    assert (stand_in["kind"], stand_in["id"], stand_in["listenMode"]) == ("agent", CEO, "mentions")
+    assert await messaging.room_agent(FEED, "30000000-0000-4000-8000-000000000001") is None
+    assert await messaging.room_agent(messaging.default_room_id(OWNER), CEO) is None
 
 
 def test_a_feed_post_requires_a_reason():
@@ -682,3 +780,25 @@ def test_a_feed_post_requires_a_reason():
         _post(feed=True, postReason="   ")  # blank is no reason
     assert _post(feed=True, postReason="why").post_reason == "why"
     assert _post().post_reason is None  # other targets keep it optional
+
+
+@pytest.mark.asyncio
+async def test_the_work_consumer_wakes_a_feed_author_it_never_seated(crowded):
+    from core.auth import AuthContext
+    from core.services import openclaw_work as work
+
+    await messaging.ensure_feed_room(OWNER, "user_A")
+    root = uuid.UUID((await repo.list_messages(FEED, 0, 10))[0][0]["messageId"])
+    growth = BIG_ROSTER["growth"]
+    await messaging.create_human_message(
+        AuthContext(user_id="user_A", org_id=OWNER), FEED, _human_reply(root, [growth])
+    )
+    seq = int((await repo.get_room(FEED))["lastSeq"])
+    worker = work.OpenClawWorkWorker(sqs_client=None)
+    dispatched = AsyncMock(return_value=True)
+    worker._dispatch_message = dispatched
+    await worker._room_dispatch({"roomId": FEED, "agentId": growth, "throughSeq": seq})
+    dispatched.assert_awaited_once()
+    member, message = dispatched.await_args.args[1], dispatched.await_args.args[2]
+    assert member["id"] == growth and message["messageSeq"] == seq
+    assert int((await repo.get_agent_delivery(FEED, growth))["lastSeq"]) == seq

@@ -84,6 +84,7 @@ async def test_get_run_status_reports_terminal_when_the_agent_left_the_room():
         ),
         patch("routers.messaging.service.require_room_member", new_callable=AsyncMock),
         patch("routers.messaging.messaging_repo.get_member", new_callable=AsyncMock, return_value=None),
+        patch("routers.messaging.messaging_repo.get_room", AsyncMock(return_value={"ownerId": "o"})),  # not the feed
     ):
         result = await get_run_status("run-1", auth=_auth())
 

@@ -17,6 +17,7 @@ import uuid
 from urllib.parse import quote
 from pathlib import PurePath
 from datetime import datetime, timedelta, timezone
+from collections.abc import Collection
 from typing import Any, Literal
 
 from botocore.exceptions import ClientError
@@ -106,10 +107,8 @@ DEFAULT_ROOM_NAME = "general"
 FEED_ROOM_NAME = "feed"
 FEED_DEFAULT_TOPIC = "Keep us posted on customers, money and what the team finished. Skip engineering details."
 FEED_POST_REASON_MAX_CHARS = 280
-# People are seated first: this many of the room's seats are kept for humans (prod Clerk caps an
-# org at 20 members), and agents, CEO first, take only what is left -- so a teammate who joins
-# later always has a seat. A later hire is seated on its first feed post while a seat is free.
-FEED_HUMAN_SEATS = 20
+# Only people sit in the feed; agents are its AUTHORS (roster-checked, never seated), so the room's
+# 32-seat cap is the workspace's people alone. See ``room_agent``.
 #: The CEO's one welcome post in the feed (idempotent, like #general's).
 FEED_WELCOME = (
     "**This is our feed.** When something here matters to you (money in or out, a customer, "
@@ -2071,9 +2070,9 @@ async def ensure_feed_room(owner_id: str, requester_user_id: str | None = None) 
 
     Modelled on ``ensure_default_room``: a room with a message returns at once (one consistent
     ``get_room``), so the Activity page can call it on every read and a workspace that predates
-    the feed gets it lazily, with no backfill. Every roster agent sits on ``mentions`` (a plain
-    post wakes nobody); every workspace human is seated through the ``AUTOJOIN#`` marker, so a
-    later teammate joins the same way. Its owner is chosen by ``_feed_owner`` (the requester only
+    the feed gets it lazily, with no backfill. Only people sit in it: every workspace human is
+    seated through the ``AUTOJOIN#`` marker, so a later teammate joins the same way. Agents are its
+    authors, never members (``room_agent``). Its owner is chosen by ``_feed_owner`` (the requester only
     as a last resort): the create receipt is per creator, so one identity lets racing callers
     converge. Returns None until the company is active; raises ``ROOM_NOT_FOUND`` (404) for a
     workspace with no active human, and a retryable 503 while Clerk cannot be read."""
@@ -2104,9 +2103,6 @@ async def ensure_feed_room(owner_id: str, requester_user_id: str | None = None) 
         owner_user_id = await _feed_owner(owner_id, company, people, requester_user_id)
         if not owner_user_id:
             raise ApiProblem("ROOM_NOT_FOUND", "This workspace has no active member to own a feed.")
-        handles = mention_handles(roster)
-        agent_seats = _feed_agent_seats_free(human_count=len(people), agent_count=0)
-        seated = [ceo_id, *(agent_id for agent_id in agents if agent_id != ceo_id)][:agent_seats]
         members = [
             {
                 "kind": "human",
@@ -2115,18 +2111,7 @@ async def ensure_feed_room(owner_id: str, requester_user_id: str | None = None) 
                 "mentionHandle": None,
                 "role": "owner",
                 "listenMode": None,
-            },
-            *(
-                {
-                    "kind": "agent",
-                    "id": agent_id,
-                    "displayName": agents[agent_id]["name"],
-                    "mentionHandle": handles[agent_id],
-                    "role": "member",
-                    "listenMode": "mentions",
-                }
-                for agent_id in seated
-            ),
+            }
         ]
         await messaging_repo.ensure_user_stream(owner_id, owner_user_id)
         normalized = [{key: member.get(key) for key in ("kind", "id", "role", "listenMode")} for member in members]
@@ -2168,6 +2153,7 @@ async def ensure_feed_room(owner_id: str, requester_user_id: str | None = None) 
         dispatch_targets=[],
         source_agent_id=ceo_id,
         client_message_id=None,
+        author_member_check=False,  # the CEO writes the feed as an author, never a member
     )
     return room_id
 
@@ -2226,37 +2212,32 @@ async def agent_feed(owner_id: str) -> dict[str, Any]:
     }
 
 
-def _feed_agent_seats_free(*, human_count: int, agent_count: int) -> int:
-    """Feed seats an agent may still take: humans keep ``FEED_HUMAN_SEATS`` (or all they hold)."""
-    return messaging_repo.MAX_ROOM_MEMBERS - max(FEED_HUMAN_SEATS, human_count) - agent_count
+async def room_agent(room_id: str, agent_id: str, meta: dict | None = None) -> dict | None:
+    """The agent's MEMBER row in this room -- or, in the feed, a roster-backed stand-in.
 
-
-async def _seat_feed_agent(owner_id: str, room_id: str, agent_id: str) -> None:
-    """Seat an agent hired after the feed was made, on ``mentions``, at most once (the
-    ``AUTOJOIN#`` marker): one an admin removed stays out and its post is refused. With no seat
-    left after the people's, the post is refused with ``MEMBER_LIMIT``."""
-    if await messaging_repo.get_member(room_id, "agent", agent_id) is not None:
-        return
-    members = await messaging_repo.list_members(room_id)
-    kinds = [row.get("kind") for row in members]
-    if _feed_agent_seats_free(human_count=kinds.count("human"), agent_count=kinds.count("agent")) <= 0:
-        raise ApiProblem("MEMBER_LIMIT", "The feed has no free seat for this agent; its seats go to people first.")
-    member = await _resolved_member(
-        owner_id,
-        CreateRoomMember(kind="agent", id=agent_id, role="member", listen_mode="mentions"),
-        await load_agent_roster(owner_id),
-    )
-    if not await messaging_repo.claim_autojoin(room_id, agent_id):
-        return
-    try:
-        meta = await messaging_repo.upsert_member(room_id=room_id, owner_id=owner_id, member=member)
-    except messaging_repo.MemberLimitExceeded as exc:
-        await messaging_repo.release_autojoin(room_id, agent_id)  # a seat freed later can take it
-        raise ApiProblem("MEMBER_LIMIT", "The feed has no free seat for this agent.") from exc
-    except Exception:
-        await messaging_repo.release_autojoin(room_id, agent_id)
-        raise
-    await _publish_room_metadata(meta)
+    The feed seats only people; agents are its authors. Every door that asks "may this agent act
+    in this room" (posting, a Discuss turn's dispatch, its run) asks here, so the feed admits
+    exactly this owner's roster and every other room keeps its membership rule. ``meta`` saves
+    the room read when the caller holds it; the room is read only when there is no member row."""
+    member = await messaging_repo.get_member(room_id, "agent", agent_id)
+    if member is not None:
+        return member
+    meta = {**(meta or await messaging_repo.get_room(room_id) or {}), "roomId": room_id}
+    if not is_feed_room(meta):
+        return None
+    roster = await load_agent_roster(meta["ownerId"])
+    row = next((agent for agent in roster if agent["id"] == agent_id), None)
+    if row is None:
+        return None
+    return {
+        "kind": "agent",
+        "id": agent_id,
+        "displayName": row["name"],
+        "mentionHandle": mention_handles(roster)[agent_id],
+        "role": "member",
+        "listenMode": "mentions",
+        "ownerId": meta["ownerId"],
+    }
 
 
 def _display_name_from_membership(row: dict) -> str:
@@ -3961,9 +3942,19 @@ def select_dispatch_targets(
     source_agent_id: str | None,
     *,
     room_kind: str | None = None,
+    feed_roster: Collection[str] | None = None,
+    in_thread: bool = False,
 ) -> list[dict]:
-    """``mentions`` carries the agents a message speaks to: its @mentions plus ``address``'s agents."""
+    """``mentions`` carries the agents a message speaks to: its @mentions plus ``address``'s agents.
+    ``feed_roster`` marks the feed (its roster's agent ids): see the feed rule below."""
     mentioned = {ref["id"] for ref in mentions if ref.get("kind") == "agent"}
+    if feed_roster is not None:
+        # The feed: agents are authors, not members. Only a Discuss (thread) reply that @mentions
+        # a roster agent wakes it, as a user_request; a plain post wakes nobody.
+        if not in_thread:
+            return []
+        woken = sorted((mentioned & set(feed_roster)) - {source_agent_id})
+        return [{"agentId": agent_id, "eventKind": "user_request"} for agent_id in woken]
     targets: dict[str, EventKind] = {}
     for member in sorted(members, key=lambda row: (row.get("kind", ""), row.get("id", ""))):
         if member.get("kind") != "agent" or member.get("id") == source_agent_id:
@@ -4040,7 +4031,17 @@ async def create_human_message(
         # The feed's posts are the agents'; people answer them in Discuss (a thread reply).
         raise ApiProblem("ROOM_FORBIDDEN", "Reply to a feed post in Discuss; only agents post to the feed.")
     owner_id = meta["ownerId"]  # room-scoped writes are keyed on the ROOM owner, never the caller's workspace
-    mentions = await _validate_mentions(room_id, request.mentions)
+    feed_roster = None
+    if is_feed_room(meta):
+        # Agents are the feed's authors, not members: an @mention names one on this owner's roster.
+        feed_roster = {row["id"] for row in await load_agent_roster(owner_id)}
+        named = [ref for ref in request.mentions if ref.kind == "agent"]
+        if any(ref.id not in feed_roster for ref in named):
+            raise ApiProblem("MEMBER_NOT_FOUND", "Mentioned agent is not in this workspace.")
+        people = await _validate_mentions(room_id, [ref for ref in request.mentions if ref.kind != "agent"])
+        mentions = sorted([*people, *({"kind": "agent", "id": ref.id} for ref in named)], key=lambda r: r["id"])
+    else:
+        mentions = await _validate_mentions(room_id, request.mentions)
     members = await messaging_repo.list_members(room_id)
     session_ids = list(dict.fromkeys(request.session_mentions))
     session_target_labels: dict[str, str] = {}
@@ -4091,7 +4092,7 @@ async def create_human_message(
         else {"kind": "human", "id": auth.user_id, "displayName": await human_display_name(auth.user_id)}
     )
     addressing = None
-    if meta.get("kind") != "dm":
+    if meta.get("kind") != "dm" and feed_roster is None:
         # Who the text speaks to (routing v2 §3.1). Chat never holds: an unfinished message routes
         # anyway, and its continuation reaches the run as a steer.
         addressing = await address(
@@ -4104,6 +4105,8 @@ async def create_human_message(
         mentions + [{"kind": "agent", "id": a} for a in (addressing or {}).get("agents", [])],
         None,
         room_kind=meta.get("kind"),
+        feed_roster=feed_roster,
+        in_thread=request.thread_root_message_id is not None,
     )
     if native_source_id:
         # A native agent's deliberate post does not wake every ambient listener.
@@ -4453,7 +4456,7 @@ async def announce_run(row: dict, state: Literal["working", "idle"]) -> None:
     from core.services import live_events
 
     try:
-        member = await messaging_repo.get_member(row["roomId"], "agent", row["agentId"])
+        member = await room_agent(row["roomId"], row["agentId"])  # the feed's authors are not members
         name = (member or {}).get("displayName") or "Agent"
         expires_at = (
             datetime.now(timezone.utc) + timedelta(seconds=messaging_repo.RUN_HEARTBEAT_TIMEOUT_S)
@@ -4777,7 +4780,7 @@ async def require_agent_in_live_room(owner_id: str, room_id: str, agent_id: str)
         raise ApiProblem("ROOM_NOT_FOUND", "Room not found.")
     if meta.get("archivedAt"):
         raise ApiProblem("ROOM_ARCHIVED", ROOM_ARCHIVED_MESSAGE)
-    if await messaging_repo.get_member(room_id, "agent", agent_id) is None:
+    if await room_agent(room_id, agent_id, meta) is None:
         raise ApiProblem("MEMBER_NOT_FOUND", "Agent is not a current room member.")
 
 
@@ -4855,7 +4858,8 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
                 return AgentMessageReceiptResponse(
                     message_id=line["messageId"], room_id=line["roomId"], created_at=line["createdAt"]
                 )
-    member = await messaging_repo.get_member(room_id, "agent", agent_id)
+    feed = is_feed_room({**meta, "roomId": room_id})
+    member = await room_agent(room_id, agent_id, meta)
     if member is None:
         raise ApiProblem("MEMBER_NOT_FOUND", "Agent is not a current room member.")
     roster = {row["id"]: row for row in await load_agent_roster(owner_id)}
@@ -4877,7 +4881,16 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
     # A progress line is not a turn in the conversation: no targets means no WORK rows, no Jev
     # decision, and nothing for the reply cap below to cut or announce.
     targets = (
-        [] if request.progress else select_dispatch_targets(members, mentions, agent_id, room_kind=meta.get("kind"))
+        []
+        if request.progress
+        else select_dispatch_targets(
+            members,
+            mentions,
+            agent_id,
+            room_kind=meta.get("kind"),
+            feed_roster=set(roster) if feed else None,
+            in_thread=request.thread_root_message_id is not None,
+        )
     )
     room_kind = _room_kind(meta)
     # Stamp the producing run when the container names it: clients retire the
@@ -4962,6 +4975,7 @@ async def create_agent_message(owner_id: str, request: AgentMessageRequest) -> A
             silent=request.progress,
             progress=request.progress,
             post_reason=request.post_reason,
+            author_member_check=not feed,  # the feed's agents are authors (roster-checked above)
         )
     except messaging_repo.ExtraConditionFailed as exc:  # "don't post that" landed before the commit
         put_metric("voice.huddle.late_answer_suppressed")
@@ -5368,8 +5382,7 @@ async def resolve_agent_post_room(owner_id: str, request: AgentPostRequest) -> s
         room_id = await ensure_feed_room(owner_id)
         if room_id is None:
             raise ApiProblem("ACTION_UNAVAILABLE", "This workspace has no feed yet.")
-        await _seat_feed_agent(owner_id, room_id, agent_id)
-        return room_id
+        return room_id  # the agent writes as an author; create_agent_message checks the roster
     if request.room_name is not None:
         # Routine descriptions name a channel ("Post results to: #sales"); only channels the
         # agent is already in qualify -- a post never joins a room.

@@ -446,7 +446,9 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  the schedule (08:00/13:00/18:00, owner's users.timezone else UTC, CEO-assigned "Feed post
                                  HH:00" routines) is core/services/user_provision.py FEED_ROUTINE_HOURS /
                                  FEED_ROUTINE_DESCRIPTION / _ensure_feed_routines; no push for feed posts is
-                                 apps/infra/lambda/messaging-projector/index.py _is_feed_room. Spec 2026-10-14 §4.2.
+                                 apps/infra/lambda/messaging-projector/index.py _is_feed_room. Agents are the feed's
+                                 authors, never members: messaging.room_agent (roster stand-in) and the feed rule in
+                                 select_dispatch_targets (a Discuss @mention wakes that agent). Spec 2026-10-14 §4.2.
   - Chat vs document ........ references/chat-vs-document.md + SKILL.md (non-negotiable + routing row)
                               First-run result contract ("The first run" section, pointed at from SKILL.md's
                                  deliverable bullet and company-and-plans.md, because the first room turn can run

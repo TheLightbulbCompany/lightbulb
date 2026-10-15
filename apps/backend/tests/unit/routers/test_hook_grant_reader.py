@@ -144,3 +144,26 @@ def test_stopped_or_expired_run_rejected(client, state):
         )
     assert response.status_code == 403
     handle.assert_not_awaited()
+
+
+def test_a_feed_authors_run_reports_without_a_seat(client):
+    """The feed's agents are authors, never seated: the grant asks messaging.room_agent, which
+    stands a roster agent in for the feed (and answers None for anyone else)."""
+    with ExitStack() as stack:
+        for context in _state():
+            stack.enter_context(context)
+        stack.enter_context(patch("core.services.hook_grants.messaging_repo.get_member", AsyncMock(return_value=None)))
+        stack.enter_context(patch("core.services.messaging.room_agent", AsyncMock(return_value={"id": AGENT})))
+        handle = stack.enter_context(
+            patch(
+                "routers.messaging.service.handle_run_event",
+                AsyncMock(return_value=RunEventResponse(run_id=RUN, status="applied")),
+            )
+        )
+        response = client.post(
+            f"/api/v1/internal/messaging/runs/{OWNER}/events",
+            json=BODY,
+            headers={"Authorization": f"Bearer {grant()}"},
+        )
+    assert response.status_code == 200
+    handle.assert_awaited_once()

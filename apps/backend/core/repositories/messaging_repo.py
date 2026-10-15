@@ -530,6 +530,20 @@ async def get_agent_delivery(room_id: str, agent_id: str) -> dict | None:
     return await _get(room_pk(room_id), delivery_sk(agent_id))
 
 
+async def ensure_agent_delivery(room_id: str, agent_id: str, last_seq: int) -> None:
+    """Create an agent's delivery cursor at ``last_seq`` if it has none. For the feed, whose agents
+    are authors and so get no cursor from a seat: their first wake starts it just before itself."""
+    try:
+        await run_in_thread(
+            _table().put_item,
+            Item={"pk": room_pk(room_id), "sk": delivery_sk(agent_id), "agentId": agent_id, "lastSeq": int(last_seq)},
+            ConditionExpression="attribute_not_exists(sk)",
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+
 async def get_read_row(room_id: str, user_id: str) -> dict | None:
     return await _get(room_pk(room_id), read_sk(user_id))
 
@@ -988,6 +1002,7 @@ async def create_message(
     in_reply_to: str | None = None,
     progress: bool = False,
     post_reason: str | None = None,
+    author_member_check: bool = True,
 ) -> tuple[dict, bool]:
     """Strong-read ``META.lastSeq`` then conditionally transact: bump META, put
     the immutable ``MSG``, put the ``IDEMP`` receipt, put one ``WORK#MESSAGE``
@@ -999,6 +1014,8 @@ async def create_message(
     a durable replay returns the original message; a changed body raises
     ``IdempotencyConflict``; losing the author-membership race raises
     ``MessageForbidden`` (not retried — the author is gone, not racing).
+    ``author_member_check=False`` drops that check for an author who is not a member by design:
+    an agent writing the workspace feed (its authors are the roster, its members only people).
 
     Returns ``(message, replayed)``. ``replayed`` is True when a durable
     receipt already existed and NOTHING was written — the agent path is built
@@ -1013,6 +1030,7 @@ async def create_message(
     target_ids = [t["agentId"] for t in dispatch_targets]
     # A platform notice (author kind "system") has no MEMBER row to check.
     system = author["kind"] == "system"
+    checked = (not system or acting_human_id) and author_member_check
     # Writers to one room in this process take turns here instead of racing for the
     # same lastSeq in DynamoDB; only writers on OTHER backend tasks still conflict.
     async with _room_append_lock(room_id):
@@ -1136,7 +1154,7 @@ async def create_message(
                     }
                 },
             ]
-            if system and not acting_human_id:
+            if not checked:
                 del items[1]  # the author MEMBER check
             source_condition_start = len(items)
             items.extend(extra_conditions or [])
@@ -1237,11 +1255,7 @@ async def create_message(
                     and ((await _get(session_key["pk"], "META")) or {}).get("removedAt")
                 ):
                     raise RoomNotFound(room_id) from exc
-                if (
-                    (not system or acting_human_id)
-                    and len(reasons) > 1
-                    and reasons[1].get("Code") == "ConditionalCheckFailed"
-                ):
+                if checked and len(reasons) > 1 and reasons[1].get("Code") == "ConditionalCheckFailed":
                     # The author's own MEMBER row is gone: not a sequence race, don't retry.
                     raise MessageForbidden("Only a current room member can send this message.") from exc
                 if any(

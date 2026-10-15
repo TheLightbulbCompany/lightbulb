@@ -69,10 +69,13 @@ async def require_run_event(token: str, owner_id: str, container: dict, run_id: 
         or run["deadlineAt"] <= int(time.time())
     ):
         raise HTTPException(403, detail="hook grant run unavailable")
+    from core.services import messaging  # lazy: messaging imports the routers' world
+
     room = await messaging_repo.get_room(claims["roomId"])
     if (
         not room
         or room.get("ownerId") != owner_id
-        or not await messaging_repo.get_member(claims["roomId"], "agent", claims["agentId"])
+        # The feed's agents are authors, never seated: room_agent stands a roster agent in.
+        or not await messaging.room_agent(claims["roomId"], claims["agentId"], room)
     ):
         raise HTTPException(403, detail="hook grant room unavailable")

@@ -122,3 +122,136 @@ async def test_an_activity_reply_to_a_feed_authors_post_mentions_it(monkeypatch,
     request = send.await_args.args[2]
     assert [ref.id for ref in request.mentions] == ([author] if mentioned else [])
     assert str(request.thread_root_message_id) == message_id
+
+
+# ---- negative tests (security review): refusal on the REAL room_agent path, never mocked -----
+
+FIRED = "10000000-0000-4000-8000-000000000009"  # was on the roster; the roster no longer has it
+OTHER = "org_other"
+
+
+def _run(agent, room=FEED):
+    return {"ownerId": OWNER, "runId": RUN, "agentId": agent, "roomId": room, "status": "started"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent", [STRANGER, FIRED])
+async def test_run_controls_refuse_a_non_roster_agents_feed_run(monkeypatch, agent):
+    from core.auth import AuthContext
+    from routers import messaging as router
+
+    monkeypatch.setattr(messaging_repo, "get_run", AsyncMock(return_value=_run(agent)))
+    with pytest.raises(ApiProblem) as exc:
+        await router._resolved_run(AuthContext(user_id=USER, org_id=OWNER), RUN)
+    assert exc.value.error.code == "RUN_NOT_ACTIVE"
+    monkeypatch.setattr(messaging_repo, "get_run", AsyncMock(return_value=_run(AUTHOR)))
+    assert (await router._resolved_run(AuthContext(user_id=USER, org_id=OWNER), RUN))[1]["agentId"] == AUTHOR
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent", [STRANGER, FIRED])
+async def test_the_live_room_check_refuses_a_non_roster_agent_in_the_feed(agent):
+    with pytest.raises(ApiProblem) as exc:
+        await messaging.require_agent_in_live_room(OWNER, FEED, agent)
+    assert exc.value.error.code == "MEMBER_NOT_FOUND"
+    await messaging.require_agent_in_live_room(OWNER, FEED, AUTHOR)  # the control: a roster author passes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent", [STRANGER, FIRED])
+async def test_the_work_consumer_drops_a_first_wake_for_a_non_roster_agent(monkeypatch, agent):
+    from core.services import openclaw_work as work
+
+    monkeypatch.setattr(
+        messaging_repo, "get_room", AsyncMock(return_value={"roomId": FEED, "ownerId": OWNER, "lastSeq": 3})
+    )
+    monkeypatch.setattr(messaging_repo, "get_agent_delivery", AsyncMock(return_value=None))
+    ensure = AsyncMock()
+    monkeypatch.setattr(messaging_repo, "ensure_agent_delivery", ensure)
+    worker = work.OpenClawWorkWorker(sqs_client=None)
+    worker._dispatch_message = AsyncMock()
+    await worker._room_dispatch({"roomId": FEED, "agentId": agent, "throughSeq": 3})
+    worker._dispatch_message.assert_not_awaited()
+    ensure.assert_not_awaited()  # no cursor is started for an agent the roster does not hold
+
+
+@pytest.mark.asyncio
+async def test_the_work_consumer_skips_an_agent_fired_after_its_cursor_started(monkeypatch):
+    from core.services import openclaw_work as work
+
+    monkeypatch.setattr(
+        messaging_repo, "get_room", AsyncMock(return_value={"roomId": FEED, "ownerId": OWNER, "lastSeq": 3})
+    )
+    monkeypatch.setattr(messaging_repo, "get_agent_delivery", AsyncMock(return_value={"lastSeq": 2}))
+    message = {"messageSeq": 3, "dispatchTargets": [{"agentId": FIRED, "eventKind": "user_request"}]}
+    monkeypatch.setattr(messaging_repo, "list_messages_between", AsyncMock(return_value=[message]))
+    advance = AsyncMock(return_value=True)
+    monkeypatch.setattr(messaging_repo, "advance_agent_delivery", advance)
+    worker = work.OpenClawWorkWorker(sqs_client=None)
+    worker._dispatch_message = AsyncMock()
+    await worker._room_dispatch({"roomId": FEED, "agentId": FIRED, "throughSeq": 3})
+    worker._dispatch_message.assert_not_awaited()
+    advance.assert_awaited_once_with(FEED, FIRED, 2, 3)  # the queued row drops as for a removed member
+
+
+# A feed-shaped row of ANOTHER workspace (its id is that workspace's feed id, its owner that owner):
+# the authenticated owner never gets a stand-in or a pass, at any gate.
+OTHER_FEED = messaging_repo.feed_room_id(OTHER)
+
+
+@pytest.fixture
+def foreign_feed(monkeypatch):
+    monkeypatch.setattr(
+        messaging_repo,
+        "get_room",
+        AsyncMock(return_value={"roomId": OTHER_FEED, "ownerId": OTHER, "kind": "channel", "lastSeq": 3}),
+    )
+
+
+@pytest.mark.asyncio
+async def test_room_agent_never_stands_in_for_a_row_whose_owner_differs():
+    # Our feed's id, but the row says another workspace owns it: not our feed, no stand-in.
+    assert await messaging.room_agent(FEED, AUTHOR, {"ownerId": OTHER, "kind": "channel"}) is None
+
+
+@pytest.mark.asyncio
+async def test_every_gate_refuses_another_workspaces_feed(monkeypatch, foreign_feed):
+    import time
+
+    from core.auth import AuthContext
+    from core.services import desktop_execution, local_sessions, subagents
+    from core.services.local_session_grants import AgentInvocation
+    from routers import messaging as router
+
+    with pytest.raises(ApiProblem):
+        await messaging.require_agent_in_live_room(OWNER, OTHER_FEED, AUTHOR)
+    with pytest.raises(ApiProblem):
+        await subagents.room_and_agent(OWNER, f"agent:{AUTHOR}:lightbulb:channel:{OTHER_FEED}")
+    with pytest.raises(ApiProblem):
+        await local_sessions.require_caller(
+            AgentInvocation(
+                owner_id=OWNER, room_id=OTHER_FEED, agent_id=AUTHOR, expires_at=int(time.time()) + 60, invocation_id="i"
+            ),
+            OTHER_FEED,
+        )
+    run = {**_run(AUTHOR, OTHER_FEED), "eventKind": "user_request", "triggerMessageId": "m1"}
+    monkeypatch.setattr(messaging_repo, "get_run", AsyncMock(return_value=run))
+    with pytest.raises(desktop_execution.DesktopError):
+        await desktop_execution.authorize_run(OWNER, RUN, AUTHOR, "room", active=True)
+    with pytest.raises(ApiProblem):  # our human is not a member of their room
+        await router._resolved_run(AuthContext(user_id=USER, org_id=OWNER), RUN)
+    with pytest.raises(ApiProblem) as exc:
+        await messaging.create_agent_message(
+            OWNER,
+            messaging.AgentMessageRequest.model_validate(
+                {
+                    "eventId": "e",
+                    "roomId": OTHER_FEED,
+                    "agentId": AUTHOR,
+                    "text": "hi",
+                    "replyToMessageId": None,
+                    "threadRootMessageId": None,
+                }
+            ),
+        )
+    assert exc.value.error.code == "ROOM_NOT_FOUND"

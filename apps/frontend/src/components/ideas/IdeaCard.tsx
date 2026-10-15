@@ -67,9 +67,9 @@ export function IdeaRow({ idea, onStart, onDismiss }: { idea: Idea } & IdeaActio
 /** Under the CEO's welcome: the top idea as a proposal, and where the rest are. It goes for good
  *  once the workspace has started or hidden an idea: it is a first step, not a banner. */
 export function WelcomeIdea() {
-  const { ideas, running, anyDismissed, startAndOpen, dismiss } = useIdeas();
+  const { ideas, running, anyStarted, anyDismissed, startAndOpen, dismiss } = useIdeas();
   const top = orderIdeas(ideas)[0];
-  if (!top || running.length > 0 || anyDismissed) return null;
+  if (!top || running.length > 0 || anyStarted || anyDismissed) return null;
   return <div className="idea-welcome">
     <IdeaCard idea={top} onStart={startAndOpen} onDismiss={dismiss} />
     <p className="idea-welcome__pointer">More ideas are under the 💡 at the top of any conversation.</p>

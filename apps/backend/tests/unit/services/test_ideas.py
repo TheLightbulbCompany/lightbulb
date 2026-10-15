@@ -93,7 +93,8 @@ async def test_list_is_agency_first_then_by_title_with_agents_and_no_prices(work
     assert set(first) == {"id", "ownerRole", "title", "why", "deliverables", "ourTurnaround", "yourPart", "kind",
                           "businessTypes", "agentId", "agentName"}  # fmt: skip
     # No prices in the app (owner, 2026-10-15): they stay in the YAML for marketing only.
-    assert set(body) == {"ideas", "running", "anyDismissed"} and body["anyDismissed"] is False
+    assert set(body) == {"ideas", "running", "anyStarted", "anyDismissed"}
+    assert body["anyStarted"] is False and body["anyDismissed"] is False
     assert first["agentId"] == STARTERS[first["ownerRole"]]
 
 
@@ -135,6 +136,7 @@ def paperclip(workspace, monkeypatch):
     monkeypatch.setattr(task_board, "_context", AsyncMock(return_value=ctx))
     monkeypatch.setattr(paperclip_admin_client, "shared_admin_client", lambda: admin)
     monkeypatch.setattr(hermes_profiles, "write_profile_file", AsyncMock())
+    monkeypatch.setattr(ideas, "_approvals_cache", {})
     return admin
 
 
@@ -339,7 +341,7 @@ def _approval(id_, at, *, agent="agent-g", title="Plan: Your CRM", projects=None
 
 
 def test_no_plan_until_the_agent_files_one():
-    assert ideas.plan_for(START, []) is None
+    assert ideas.plan_for(START, [], allow_untagged=True) is None
     others = [
         _approval("before", "2026-10-15T09:59:59Z"),
         _approval("other-agent", "2026-10-15T11:00:00Z", agent="agent-x"),
@@ -347,17 +349,18 @@ def test_no_plan_until_the_agent_files_one():
         _approval("strategy", "2026-10-15T11:00:00Z", kind="approve_ceo_strategy"),
         _approval("other-project", "2026-10-15T11:00:00Z", projects=["p-2"]),
     ]
-    assert ideas.plan_for(START, others) is None
+    assert ideas.plan_for(START, others, allow_untagged=True) is None
 
 
 def test_the_newest_plan_wins_and_a_plan_naming_the_project_wins_over_one_naming_none():
-    found = ideas.plan_for(START, [_approval("old", "2026-10-15T11:00:00Z"), _approval("new", "2026-10-15T12:00:00Z")])
+    both = [_approval("old", "2026-10-15T11:00:00Z"), _approval("new", "2026-10-15T12:00:00Z")]
+    found = ideas.plan_for(START, both, allow_untagged=True)
     assert found == {"approvalId": "new", "status": "pending", "title": "Plan: Your CRM"}
     tagged = [
         _approval("tagged", "2026-10-15T11:00:00Z", projects=["p-1"]),
         _approval("untagged", "2026-10-15T12:00:00Z"),
     ]
-    assert ideas.plan_for(START, tagged)["approvalId"] == "tagged"
+    assert ideas.plan_for(START, tagged, allow_untagged=True)["approvalId"] == "tagged"
 
 
 @pytest.mark.asyncio
@@ -374,8 +377,44 @@ async def test_get_carries_each_starts_plan(paperclip):
     assert paperclip.list_approvals.await_count == 1
 
     paperclip.list_approvals = AsyncMock(return_value={"approvals": []})
+    ideas._approvals_cache.clear()
     [item] = (await ideas.list_ideas(AUTH))["running"]
     assert item["plan"] is None
+
+
+@pytest.mark.asyncio
+async def test_two_starts_with_one_agent_take_only_the_plan_that_names_their_project(paperclip):
+    books = await ideas.start(AUTH, "books-cleanup")
+    refund = await ideas.start(AUTH, "claim-refund")
+    finance = STARTERS["finance"]
+    paperclip.list_approvals = AsyncMock(return_value=[_approval("untagged", "2999-01-01T00:00:00Z", agent=finance)])
+    running = (await ideas.list_ideas(AUTH))["running"]
+    assert [r["plan"] for r in running] == [None, None]  # it could be either idea's: neither shows it
+
+    ideas._approvals_cache.clear()
+    paperclip.list_approvals = AsyncMock(
+        return_value=[_approval("tagged", "2999-01-01T00:00:00Z", agent=finance, projects=[refund["projectId"]])]
+    )
+    plans = {r["projectId"]: r["plan"] for r in (await ideas.list_ideas(AUTH))["running"]}
+    assert plans[books["projectId"]] is None
+    assert plans[refund["projectId"]]["approvalId"] == "tagged"
+
+
+@pytest.mark.asyncio
+async def test_the_approvals_list_is_read_once_per_few_seconds_per_company(paperclip):
+    await ideas.start(AUTH, "books-cleanup")
+    paperclip.list_approvals = AsyncMock(return_value=[])
+    await ideas.list_ideas(AUTH)
+    await ideas.list_ideas(AUTH)
+    assert paperclip.list_approvals.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_any_start_hides_the_welcome_even_after_its_project_finished(paperclip):
+    started = await ideas.start(AUTH, "books-cleanup")
+    paperclip.list_projects.return_value = [{"id": started["projectId"], "status": "completed"}]
+    body = await ideas.list_ideas(AUTH)
+    assert body["running"] == [] and body["anyStarted"] is True
 
 
 @pytest.mark.asyncio

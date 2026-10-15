@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import time
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -123,28 +124,33 @@ async def list_ideas(auth: AuthContext) -> dict:
     dismissed = await messaging_repo.dismissed_ideas(owner_id)
     shown = [i for i in catalog().values() if i.id not in dismissed and i.owner_role in agents]
     shown.sort(key=lambda i: (i.kind != "agency", i.title))
+    rows = [
+        r for r in await messaging_repo.open_idea_starts(owner_id) if r["ideaId"] in catalog() and r.get("projectId")
+    ]
     return {
         "ideas": [_card(i, agents[i.owner_role]) for i in shown],
-        "running": await _running(auth, owner_id, agents),
-        # The CEO welcome's proposal shows only until the workspace has started or hidden one.
+        "running": await _running(auth, rows, agents),
+        # The CEO welcome's proposal shows only until the workspace has started (running or
+        # finished: a start stays recorded until it is started again) or hidden an idea.
+        "anyStarted": bool(rows),
         "anyDismissed": bool(dismissed),
     }
 
 
-async def _running(auth: AuthContext, owner_id: str, agents: dict[str, dict]) -> list[dict]:
+async def _running(auth: AuthContext, rows: list[dict], agents: dict[str, dict]) -> list[dict]:
+    from collections import Counter
+
     from core.services import messaging
 
     names = {a["id"]: a["name"] for a in agents.values()}
-    rows = [
-        r for r in await messaging_repo.open_idea_starts(owner_id) if r["ideaId"] in catalog() and r.get("projectId")
-    ]
     if not rows:
         return []
     statuses, progress, approvals = await _work_progress(auth, [r["projectId"] for r in rows])
+    rows = [r for r in rows if statuses.get(r["projectId"]) not in CLOSED_PROJECT_STATUSES]
+    # A plan naming no project can only be told apart when its agent runs one start.
+    starts_per_agent = Counter(r.get("agentId") for r in rows)
     running = []
     for r in rows:
-        if statuses.get(r["projectId"]) in CLOSED_PROJECT_STATUSES:
-            continue
         item = {
             "ideaId": r["ideaId"],
             "title": catalog()[r["ideaId"]].title,
@@ -159,7 +165,7 @@ async def _running(auth: AuthContext, owner_id: str, agents: dict[str, dict]) ->
         if r["projectId"] in progress:
             item["progress"] = progress[r["projectId"]]
         if approvals is not None:
-            item["plan"] = plan_for(r, approvals)
+            item["plan"] = plan_for(r, approvals, allow_untagged=starts_per_agent[r.get("agentId")] == 1)
         running.append(item)
     return running
 
@@ -172,11 +178,13 @@ def _parse_time(value: object) -> datetime | None:
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
-def plan_for(start: dict, approvals: list[dict]) -> dict | None:
+def plan_for(start: dict, approvals: list[dict], *, allow_untagged: bool) -> dict | None:
     """The plan the start's agent filed for it (references/ideas.md: ``request_approval`` titled
     "Plan: …"): a board approval by that agent, created after the start. One that names projects
     (``payload.projectIds``, stamped by the plugin from the linked tasks) counts only for those
-    projects and wins over one that names none. Newest wins. None before the agent has filed one."""
+    projects and wins over one that names none. One naming none (an older runtime, a plan filed
+    with no task) counts only when ``allow_untagged``: the agent has this one open start, so it
+    cannot belong to another idea. Newest wins. None before the agent has filed one."""
     started = _parse_time(start.get("createdAt"))
     if started is None:
         return None
@@ -199,8 +207,27 @@ def plan_for(start: dict, approvals: list[dict]) -> dict | None:
                 tagged.append((created, a, title))
         else:
             untagged.append((created, a, title))
-    found = max(tagged or untagged, key=lambda c: c[0], default=None)
+    found = max(tagged or (untagged if allow_untagged else []), key=lambda c: c[0], default=None)
     return found and {"approvalId": found[1]["id"], "status": found[1].get("status"), "title": found[2]}
+
+
+_APPROVALS_TTL_S = 5
+# ponytail: per-process dict, one entry per company that read Ideas; bounded by company count.
+_approvals_cache: dict[str, tuple[float, list[dict]]] = {}
+
+
+async def _company_approvals(admin, session_cookie: str, company_id: str) -> list[dict]:
+    """The company's approvals, cached ~5 s per process so the DM's plan poll and the pane share
+    one read. The fork's list takes only a single ``status`` filter and no limit; a plan's card
+    needs every status (approved, revision requested), so the whole list is read."""
+    hit = _approvals_cache.get(company_id)
+    if hit and time.monotonic() - hit[0] < _APPROVALS_TTL_S:
+        return hit[1]
+    listed = await admin.list_approvals(session_cookie=session_cookie, company_id=company_id)
+    found = listed if isinstance(listed, list) else (listed or {}).get("approvals") or []
+    approvals = [a for a in found if isinstance(a, dict) and "id" in a]
+    _approvals_cache[company_id] = (time.monotonic(), approvals)
+    return approvals
 
 
 async def _work_progress(
@@ -231,9 +258,7 @@ async def _work_progress(
         logger.info("ideas: Work progress unavailable", exc_info=True)
         return {}, {}, None
     try:
-        listed = await admin.list_approvals(session_cookie=ctx.session_cookie, company_id=ctx.company_id)
-        found_approvals = listed if isinstance(listed, list) else (listed or {}).get("approvals") or []
-        approvals = [a for a in found_approvals if isinstance(a, dict) and "id" in a]
+        approvals = await _company_approvals(admin, ctx.session_cookie, ctx.company_id)
     except Exception:  # noqa: BLE001 -- the plan is optional on this read
         logger.info("ideas: approvals unavailable", exc_info=True)
         approvals = None

@@ -73,12 +73,13 @@ function PlanById({ id }: { id: string }) {
 export function DmIdeaPlan({ client, scope, roomId, userId, onPlan }: {
   client: IdeasClient; scope: string; roomId: string; userId: string; onPlan: (approvalId: string | null) => void;
 }) {
-  const [since] = useState(() => Date.now());
   const mineIn = (data: IdeasResponse | undefined) =>
     data?.running.find((r) => r.roomId === roomId && r.starterId === userId);
   const { running } = useIdeas(client, scope, (latest) => {
     const mine = mineIn(latest);
-    return mine && !mine.plan && Date.now() - since < PLAN_POLL_FOR_MS ? PLAN_POLL_MS : 0;
+    // The window runs from the Start, not from opening the DM: an old DM never polls again.
+    const started = Date.parse(mine?.createdAt ?? "");
+    return mine && !mine.plan && Date.now() - started < PLAN_POLL_FOR_MS ? PLAN_POLL_MS : 0;
   });
   const approvalId = mineIn({ ideas: [], running })?.plan?.approvalId ?? null;
   useEffect(() => { onPlan(approvalId); }, [approvalId, onPlan]);

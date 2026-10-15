@@ -157,6 +157,12 @@ describe("the CEO welcome's proposal", () => {
     expect(screen.queryByText(/under the 💡/)).not.toBeInTheDocument();
   });
 
+  it("is gone once an idea was started, even after it finished", async () => {
+    client.listIdeas.mockResolvedValue({ ...catalog, running: [], anyStarted: true });
+    await renderWelcomeBesidePane();
+    expect(screen.queryByText(/under the 💡/)).not.toBeInTheDocument();
+  });
+
   it("is gone after an earlier dismiss", async () => {
     client.listIdeas.mockResolvedValue({ ...catalog, running: [], anyDismissed: true });
     await renderWelcomeBesidePane();

@@ -71,8 +71,9 @@ describe("the plan card in the DM", () => {
 });
 
 describe("the plan card from GET /ideas", () => {
-  const running = (plan: IdeaPlan | null): IdeasResponse => ({ ideas: [], running: [{ ideaId: "crm", title: "CRM", agentId: "g", agentName: "Growth",
-    roomId: "dm-1", projectId: "p", starterId: "me", starterName: "Me", createdAt: null, plan }] });
+  const running = (plan: IdeaPlan | null, createdAt: string | null = new Date().toISOString()): IdeasResponse => ({
+    ideas: [], running: [{ ideaId: "crm", title: "CRM", agentId: "g", agentName: "Growth",
+      roomId: "dm-1", projectId: "p", starterId: "me", starterName: "Me", createdAt, plan }] });
 
   it("shows the plan matched to this DM's start without any link, and reports it", async () => {
     teams.approval = plan("pending");
@@ -97,6 +98,22 @@ describe("the plan card from GET /ideas", () => {
       await vi.advanceTimersByTimeAsync(10_500);
       await waitFor(() => expect(client.listIdeas).toHaveBeenCalledTimes(2));
       expect(screen.queryByRole("region", { name: "Plan for approval" })).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops asking five minutes after the Start, however late the DM is opened", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const sixMinutesAgo = new Date(Date.now() - 6 * 60_000).toISOString();
+      const client = { listIdeas: vi.fn(async () => running(null, sixMinutesAgo)), startIdea: vi.fn(), dismissIdea: vi.fn() };
+      render(<SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <DmIdeaPlan client={client} scope="me:org" roomId="dm-1" userId="me" onPlan={vi.fn()} />
+      </SWRConfig>);
+      await waitFor(() => expect(client.listIdeas).toHaveBeenCalledTimes(1));
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(client.listIdeas).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }

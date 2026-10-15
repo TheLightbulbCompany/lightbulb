@@ -46,6 +46,8 @@ export interface IdeaPlan {
 export interface IdeasResponse {
   ideas: Idea[];
   running: RunningIdea[];
+  /** The workspace has started an idea (running or finished). */
+  anyStarted?: boolean;
   /** The workspace has hidden at least one idea. */
   anyDismissed?: boolean;
 }
@@ -125,6 +127,7 @@ export function useIdeas(
   return useMemo(() => ({
     ideas: data?.ideas ?? EMPTY.ideas,
     running: data?.running ?? EMPTY.running,
+    anyStarted: !!data?.anyStarted,
     anyDismissed: !!data?.anyDismissed,
     loading: isLoading,
     error: error as unknown,

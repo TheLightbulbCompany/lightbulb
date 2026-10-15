@@ -181,6 +181,15 @@ describe("the right pane", () => {
     expect(snap().openPanelIds).toEqual([MESSAGES_PANEL_ID, "browser"]);
   });
 
+  it("replacing a URL-named item clears it, and the Browser writes its own URL", () => {
+    window.history.replaceState(null, "", "/chat?panel=file-viewer&path=/a.md");
+    openPanel("file-viewer", { path: "/a.md" });
+    openPanel("teams-issue-detail", { detailId: "ADM-1" });
+    expect(String(vi.mocked(replaceSearchParams).mock.calls[0][0])).toBe("");
+    expect(openBrowserPane()).toBe(true);
+    expect(String(vi.mocked(pushSearchParams).mock.calls.at(-1)?.[0])).toBe("panel=browser");
+  });
+
   it("close clears a URL that named it (in place) and nothing else", () => {
     window.history.replaceState(null, "", "/chat?panel=teams-issue-detail&detailId=ADM-1&utm=x");
     openPanel("teams-issue-detail", { detailId: "ADM-1" });
@@ -228,11 +237,11 @@ describe("useThreadPane (the room's side column)", () => {
   it("claims the pane while open, hands back the host, and folds when something else takes it", () => {
     const host = document.createElement("div");
     const close = vi.fn();
-    const { result, rerender } = renderHook(({ open }) => useThreadPane(open, close), { initialProps: { open: false } });
+    const { result, rerender } = renderHook(({ open }) => useThreadPane(open, close, "Thread · Launch"), { initialProps: { open: false } });
     expect(result.current).toBeNull();
     expect(snap().pane).toBeNull();
     rerender({ open: true });
-    expect(snap().pane?.component).toBe("thread");
+    expect(snap().pane).toMatchObject({ component: "thread", title: "Thread · Launch" });
     act(() => setThreadPaneHost(host));
     expect(result.current).toBe(host);
     act(() => openPanel("browser"));
@@ -244,7 +253,7 @@ describe("useThreadPane (the room's side column)", () => {
 
   it("releases the pane when the column closes, and the pane's close folds the column", () => {
     const close = vi.fn();
-    const { rerender } = renderHook(({ open }) => useThreadPane(open, close), { initialProps: { open: true } });
+    const { rerender } = renderHook(({ open }) => useThreadPane(open, close, "Thread · Launch"), { initialProps: { open: true } });
     expect(snap().pane?.component).toBe("thread");
     rerender({ open: false });
     expect(snap().pane).toBeNull();
@@ -253,9 +262,21 @@ describe("useThreadPane (the room's side column)", () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
+  it("a thread taking the pane clears the URL of what it replaced; a title change only retitles", () => {
+    window.history.replaceState(null, "", "/chat?panel=file-viewer&path=/a.md");
+    openPanel("file-viewer", { path: "/a.md" });
+    const { rerender } = renderHook(({ title }) => useThreadPane(true, vi.fn(), title), { initialProps: { title: "Thread · Launch" } });
+    expect(String(vi.mocked(replaceSearchParams).mock.calls.at(-1)?.[0])).toBe("");
+    rerender({ title: "Details · Launch" });
+    expect(snap().pane).toMatchObject({ component: "thread", title: "Details · Launch" });
+    act(() => openPanel("browser"));
+    rerender({ title: "Thread · Other" }); // still folding: a retitle must not take the pane back
+    expect(snap().pane?.panelId).toBe("browser");
+  });
+
   it("stays inline with no shell mounted", () => {
     _resetControllerForTests();
-    const { result } = renderHook(() => useThreadPane(true, vi.fn()));
+    const { result } = renderHook(() => useThreadPane(true, vi.fn(), "Thread · Launch"));
     expect(result.current).toBeNull();
     expect(snap().pane).toBeNull();
   });

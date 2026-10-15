@@ -891,12 +891,15 @@ react-native, no DOM globals in that package.
 that will mislead you otherwise:
 
 - **`/chat`** is the whole app. It mounts `LiveEventsProvider` and ONE shell at
-  every width: the **dockable workspace shell** (`components/workspace/` — chat,
-  teams, control and file-viewer panels, where the `chat` panel is
-  `panels/ChatPanel.tsx` → `MessagingConversation`). Below 600 px its rail and
+  every width: the **workspace shell** (`components/workspace/`): one main view
+  per place (Chat, Activity, Work, Library on the rail; only Chat has the
+  sidebar) and one right pane (`RightPane.tsx`: a thread, files, the browser, an
+  agent profile, a task detail or mail, one at a time; resizable, width kept per
+  person, with full screen beside a 360 px chat column). The conversation is
+  `panels/ChatPanel.tsx` → `MessagingConversation`. Below 600 px the rail and
   sidebar become a drawer opened from a phone bar (`workspace.css`,
-  `WorkspaceShell`'s `navOpen`); there is no separate phone layout (the old
-  `ChatLayout` was deleted 2026-10-04). Teams
+  `WorkspaceShell`'s `navOpen`) and the pane is a full-screen sheet; there is no
+  separate phone layout (the old `ChatLayout` was deleted 2026-10-04). Teams
   and control are in-shell panels, **not routes** — the legacy `/teams/*` URL tree
   was removed and 404s. The AgentCore browser panel is `panels/BrowserDockPanel.tsx`: it
   gets a workspace-authorized signed URL from `/api/v1/browser/live-view` and connects
@@ -939,11 +942,11 @@ that will mislead you otherwise:
 Per-file tables drift too fast to keep here — run `ls` on the directory you're
 touching. The load-bearing structure:
 
-- `components/workspace/` — the dockable shell: `panelRegistry.ts` /
+- `components/workspace/` — the shell (places + one right pane): `panelRegistry.ts` /
   `panelComponents.ts` map panel keys → components (`PanelKind = chat | teams |
-  control | browser | file-viewer | missing`); `workspaceController.ts` +
-  `layoutStorage.ts` own layout state. Start here for anything "where does X
-  render".
+  control | browser | file-viewer | activity | mail`); `workspaceController.ts`
+  owns the main/pane state and maps every URL `?panel=` onto place + pane. No
+  layout is saved. Start here for anything "where does X render".
 - `components/messaging/` — **the live chat surface**: `MessagingDirectory`
   and `MessagingConversation` over `RoomPanel` / `RoomComposer` / `RoomDirectory`
   / `RoomTimeline`, with `MessagingWorkspaceContext` holding selection and draft

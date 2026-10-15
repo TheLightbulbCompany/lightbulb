@@ -78,7 +78,7 @@ function renderReady() {
   return render(<WorkspaceShell />);
 }
 const shellOf = (view: ReturnType<typeof render>) => view.container.querySelector(".workspace-shell")!;
-const paneOf = () => screen.queryByRole("region", { name: /Files|Browser|Task|Side pane/ });
+const paneOf = () => screen.queryByRole("region", { name: /Files|Browser|Task/ });
 
 it("offers Clerk workspace selection instead of an endless loading shell", () => {
   render(<WorkspaceShell />);
@@ -154,6 +154,19 @@ it("opens one thing in the pane, closes it, and remembers the width per person",
   expect(paneOf()).toHaveStyle({ width: `${stored}px` });
   fireEvent.click(screen.getByRole("button", { name: "Close pane" }));
   expect(paneOf()).toBeNull();
+});
+
+it("the resize separator reports its value, and a cancelled drag still keeps its width", () => {
+  renderReady();
+  act(() => openPanel("file-viewer"));
+  const separator = screen.getByRole("separator", { name: "Resize the pane" });
+  expect(separator).toHaveAttribute("aria-orientation", "vertical");
+  expect(separator).toHaveAttribute("aria-valuemin", "320");
+  expect(separator).toHaveAttribute("aria-valuenow");
+  expect(separator).toHaveAttribute("aria-valuemax");
+  fireEvent.pointerDown(separator, { pointerId: 1 });
+  fireEvent(separator, new Event("pointercancel"));
+  expect(Number(window.localStorage.getItem(paneWidthKey("user_1")))).toBeGreaterThanOrEqual(320);
 });
 
 it("opens the Browser at half the width, and still opens when storage throws", () => {

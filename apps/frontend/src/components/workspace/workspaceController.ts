@@ -154,14 +154,23 @@ function nextParams(current: Slot | null, descriptor: PanelDescriptor, extra?: R
   return merged;
 }
 
-function show(descriptor: PanelDescriptor, extra?: Record<string, string>): void {
+/** A pane item the URL named is gone from the pane: clear it in place, so a refresh can't reopen it. */
+function clearPaneFromUrl(previous: Slot | null): void {
+  if (!previous) return;
+  const cleared = clearPanelFromUrl(window.location.search, previous.panelId);
+  if (cleared !== null) replaceSearchParams(new URLSearchParams(cleared));
+}
+
+function show(descriptor: PanelDescriptor, extra?: Record<string, string>, clearReplacedPane = false): void {
   if (!_attached) return;
   if (descriptor.component === "chat") {
     _chatParams = nextParams({ panelId: MESSAGES_PANEL_ID, component: "chat", title: "", params: _chatParams }, descriptor, extra);
     _main = null;
     _fullScreen = false;
   } else if (opensInPane(descriptor)) {
-    // One thing at a time: whatever the pane showed is replaced.
+    // One thing at a time: whatever the pane showed is replaced (and leaves the URL, unless
+    // this open writes its own).
+    if (clearReplacedPane && _pane && _pane.panelId !== descriptor.panelId) clearPaneFromUrl(_pane);
     _pane = { panelId: descriptor.panelId, component: descriptor.component, title: descriptor.title, params: nextParams(_pane, descriptor, extra) };
   } else {
     _main = { panelId: descriptor.panelId, component: descriptor.component, title: descriptor.title, params: nextParams(_main, descriptor, extra) };
@@ -179,7 +188,7 @@ export function openPanel(
   const descriptor = describePanel(panelKey, params);
   if (!descriptor) return;
   if (descriptor.component === "chat" && descriptor.params.agentId) openChatPanel(descriptor.params.agentId);
-  else show(descriptor, opts.oneShots);
+  else show(descriptor, opts.oneShots, !opts.pushUrl);
   if (opts.pushUrl) {
     pushSearchParams(new URLSearchParams(buildPanelUrl(panelKey, params).split("?")[1]));
   }
@@ -208,8 +217,7 @@ function dropPane(): void {
 /** The pane's close: a URL that named what it showed is cleared in place, so refresh can't reopen it. */
 export function closePane(): void {
   if (!_pane) return;
-  const cleared = clearPanelFromUrl(window.location.search, _pane.panelId);
-  if (cleared !== null) replaceSearchParams(new URLSearchParams(cleared));
+  clearPaneFromUrl(_pane);
   dropPane();
 }
 
@@ -306,22 +314,29 @@ const ownsPane = (owner: string) => _pane?.panelId === THREAD_PANE_ID && _pane.p
  * room folds the column with `close`. Returns where to portal the column, or null to keep it
  * inline (no shell mounted, or the pane not the room's yet).
  */
-export function useThreadPane(open: boolean, close: () => void): HTMLElement | null {
+export function useThreadPane(open: boolean, close: () => void, title: string): HTMLElement | null {
   const owner = useId();
   const { ready, pane } = useWorkspaceState();
   const host = useSyncExternalStore(subscribeHost, () => _threadHost, () => null);
   const closeRef = useRef(close);
   useEffect(() => { closeRef.current = close; });
   const mine = pane?.panelId === THREAD_PANE_ID && pane.params.owner === owner;
+  // Claims on opening only: while open, something else may have taken the pane (the column
+  // is folding), and a title change then must not take it back.
+  const wasOpen = useRef(false);
   useEffect(() => {
     if (!ready) return;
-    if (open && !ownsPane(owner)) {
-      _pane = { panelId: THREAD_PANE_ID, component: "thread", title: "", params: { owner } };
+    const opening = open && !wasOpen.current;
+    wasOpen.current = open;
+    if (open && (opening || ownsPane(owner))) {
+      if (ownsPane(owner) && _pane!.title === title) return;
+      if (!ownsPane(owner)) clearPaneFromUrl(_pane);
+      _pane = { panelId: THREAD_PANE_ID, component: "thread", title, params: { owner } };
       commit();
     } else if (!open && ownsPane(owner)) {
       dropPane();
     }
-  }, [open, ready, owner]);
+  }, [open, ready, owner, title]);
   useEffect(() => () => { if (ownsPane(owner)) dropPane(); }, [owner]);
   const wasMine = useRef(false);
   useEffect(() => {
@@ -334,7 +349,8 @@ export function useThreadPane(open: boolean, close: () => void): HTMLElement | n
 /** Show the shared Browser in the pane. False when no shell is mounted (the caller falls back). */
 export function openBrowserPane(): boolean {
   if (!_attached) return false;
-  openPanel(BROWSER_PANEL_ID);
+  // The URL names what the pane shows, so a refresh reopens the Browser.
+  openPanel(BROWSER_PANEL_ID, {}, { pushUrl: true });
   return true;
 }
 

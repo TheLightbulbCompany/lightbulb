@@ -6,7 +6,7 @@
 // remembered per person; the browser opens at half the width. Expand gives it
 // the screen beside a narrow chat column (WorkspaceShell). Below 600 px it is a
 // full-screen sheet over the main view (workspace.css).
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { Maximize2, Minimize2, X } from "lucide-react";
 import type { PanelKind } from "./panelRegistry";
@@ -45,6 +45,16 @@ export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolea
   // The browser always opens at about half the width; its drags are not remembered.
   const remembers = pane.component !== "browser";
   const [width, setWidth] = useState<string>(() => remembers ? `${readPaneWidth(key)}px` : "50%");
+  // The separator's value in px: measured, since the Browser's opening width is a percentage.
+  const paneRef = useRef<HTMLElement>(null);
+  const [measured, setMeasured] = useState({ now: 0, max: 0 });
+  useLayoutEffect(() => {
+    const pane = paneRef.current;
+    if (!pane) return;
+    const now = Math.round(pane.getBoundingClientRect().width);
+    const max = Math.round((pane.parentElement?.getBoundingClientRect().width ?? 0) - MAIN_MIN_WIDTH);
+    setMeasured((prev) => prev.now === now && prev.max === max ? prev : { now, max });
+  }, [width, fullScreen]);
 
   const clampTo = (pane: HTMLElement, px: number) => {
     const room = (pane.parentElement?.getBoundingClientRect().width ?? Infinity) - MAIN_MIN_WIDTH;
@@ -66,13 +76,15 @@ export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolea
       px = clampTo(paneEl, right - next.clientX);
       setWidth(`${px}px`);
     };
+    // A cancelled drag (touch taken by the page, capture lost) still ends, and keeps its width.
+    const ends = ["pointerup", "pointercancel", "lostpointercapture"] as const;
     const up = () => {
       handle.removeEventListener("pointermove", move);
-      handle.removeEventListener("pointerup", up);
-      commit(px);
+      ends.forEach((kind) => handle.removeEventListener(kind, up));
+      commit(clampTo(paneEl, px));
     };
     handle.addEventListener("pointermove", move);
-    handle.addEventListener("pointerup", up);
+    ends.forEach((kind) => handle.addEventListener(kind, up));
   };
   const nudge = (event: React.KeyboardEvent<HTMLDivElement>) => {
     const step = event.key === "ArrowLeft" ? KEY_STEP : event.key === "ArrowRight" ? -KEY_STEP : 0;
@@ -84,10 +96,11 @@ export function RightPane({ pane, fullScreen }: { pane: Slot; fullScreen: boolea
 
   const Panel = pane.component === "thread" ? null : PANEL_COMPONENTS[pane.component as PanelKind];
   return (
-    <section className="workspace-pane" aria-label={pane.title || "Side pane"} data-pane={pane.component}
+    <section ref={paneRef} className="workspace-pane" aria-label={pane.title} data-pane={pane.component}
       style={fullScreen ? undefined : { width }}>
       {!fullScreen && <div className="workspace-pane__resize" role="separator" aria-orientation="vertical"
-        aria-label="Resize the pane" tabIndex={0} onPointerDown={startResize} onKeyDown={nudge} />}
+        aria-label="Resize the pane" tabIndex={0} onPointerDown={startResize} onKeyDown={nudge}
+        aria-valuenow={measured.now} aria-valuemin={PANE_MIN_WIDTH} aria-valuemax={Math.max(PANE_MIN_WIDTH, measured.max)} />}
       <header className="workspace-pane__bar">
         <span className="workspace-pane__title">{pane.title}</span>
         <button type="button" className="workspace-pane__full" aria-label={fullScreen ? "Exit full screen" : "Full screen"}

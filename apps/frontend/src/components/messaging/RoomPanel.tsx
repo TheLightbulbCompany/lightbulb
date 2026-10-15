@@ -579,7 +579,10 @@ function RoomContent({
   }, [onSelectThread, selection?.kind]);
   // In the shell, the side column (thread, tasks, room details) is the right pane's content;
   // when something else takes the pane, the column folds.
-  const sideHost = useThreadPane(showContext, () => { closeDetail(); setContextCollapsed(true); });
+  const counterparts = participants.filter((participant) => participant.kind !== "human" || participant.id !== currentUserId);
+  const roomName = roomDisplayName(visibleRoom, counterparts);
+  const sideTitle = `${showTasks ? "Tasks" : showDetail ? "Thread" : "Details"} · ${roomName}`;
+  const sideHost = useThreadPane(showContext, () => { closeDetail(); setContextCollapsed(true); }, sideTitle);
 
   const openMemberPicker = useCallback(() => {
     closeDetail();
@@ -753,8 +756,6 @@ function RoomContent({
     </article>;
   }
 
-  const counterparts = participants.filter((participant) => participant.kind !== "human" || participant.id !== currentUserId);
-  const roomName = roomDisplayName(visibleRoom, counterparts);
   const dockSide = (column: React.ReactNode) => sideHost ? createPortal(column, sideHost) : column;
   return <section
     className={cn("room-panel", showContext && !sideHost && "room-has-context", showDetail ? "room-has-detail" : "room-has-default-context")} aria-label={roomName}>

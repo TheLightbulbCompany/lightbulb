@@ -1,0 +1,30 @@
+id: deadline-sweep
+owner_role: ceo
+kind: everyday
+business_types: [any]
+title: "Deadline sweep: domain, SSL and annual report renewed before due"
+why: "A lapsed domain or a missed state filing costs far more than the fee."
+deliverables:
+  - "Every renewal and filing date found"
+  - "Each one renewed or filed before due"
+  - "A dated list with reminders on the board"
+our_turnaround: "A few days"
+your_part: "Approve each fee and sign in to the registrar and state portal"
+guide: |
+  # Deadline sweep: domain, SSL and annual report renewed before due
+
+  ## Steps
+  1. Find the dates: domain expiry (WHOIS), SSL certificate expiry, state annual report and franchise tax dates for the company's state.
+  2. Write the list with each due date and fee.
+  3. For anything due within 60 days, ask for approval of the fee.
+  4. Renew or file in the live browser after the person signs in.
+  5. Put the next due dates on the task board as tasks with due dates.
+
+  ## Decisions to ask
+  - Each fee.
+
+  ## Done proves
+  - Renewal and filing confirmations, and the dated tasks on the board.
+
+  ## Honesty limits
+  - Never sign filings for the person. Never say the company is "in good standing" unless the state says so.

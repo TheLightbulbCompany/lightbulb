@@ -116,8 +116,9 @@ FEED_WELCOME = (
     "day three times and post only when something is worth your time.\n\n"
     "The brief at the top says what you want to hear about. Edit it any time. "
     "Press Discuss on a post to talk it through with whoever wrote it.\n\n"
-    "Lightbulb has five places: Chat to talk with us, Activity for this feed and what needs you, "
-    "Work for tasks, Ideas for what we could do next, and Library for what we made."
+    "Lightbulb has four places: Chat to talk with us, Activity for this feed and what needs you, "
+    "Work for tasks, and Library for what we made. For ideas on what we could do next, press the 💡 "
+    "at the top of any conversation."
 )
 # Seeded ONCE per workspace as a CEO-authored message (``ensure_default_room``
 # returns early on any room that already has messages): the first thing a new

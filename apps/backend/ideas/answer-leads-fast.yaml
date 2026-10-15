@@ -1,0 +1,35 @@
+id: answer-leads-fast
+owner_role: customer_operations
+kind: everyday
+business_types: [any]
+title: "Every new lead answered within minutes, with a call offered"
+why: "The first company to reply usually wins the deal."
+deliverables:
+  - "Every new lead answered within minutes"
+  - "Times from your calendar or a booking link sent to each"
+  - "Each lead logged with its status"
+agency_price_low: 1000
+agency_price_high: 3000
+price_unit: month
+agency_turnaround: "Ongoing (priced per appointment setter)"
+our_turnaround: "Within minutes, every day"
+your_part: "Approve the reply template, then each reply until you trust it"
+guide: |
+  # Every new lead answered within minutes and the call booked
+
+  ## Steps
+  1. Ask in the DM to connect the inbox (Gmail or Outlook) and the calendar, and where leads arrive (form, email, CRM).
+  2. Draft the reply template and the questions to qualify a lead.
+  3. Set up a routine that checks for new leads often.
+  4. Reply to each new lead; offer times from the calendar and book the call.
+  5. Log each lead and its status on the task board or the CRM.
+
+  ## Decisions to ask
+  - Approve the template and qualifying questions.
+  - Each reply, until the person says replies can go without approval.
+
+  ## Done proves
+  - Reply times for the first leads, and the times or booking link offered to each.
+
+  ## Honesty limits
+  - Never promise prices, dates or terms the company has not approved.

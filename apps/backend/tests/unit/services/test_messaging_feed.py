@@ -98,8 +98,9 @@ async def test_ensure_feed_room_twice_makes_one_room_with_one_welcome(workspace)
     assert len(messages) == 1
     assert messages[0]["author"]["id"] == CEO
     assert messages[0]["text"] == messaging.FEED_WELCOME
-    for place in ("Chat", "Activity", "Work", "Ideas", "Library", "Discuss"):
+    for place in ("four places", "Chat", "Activity", "Work", "Library", "Discuss", "💡"):
         assert place in messaging.FEED_WELCOME
+    assert "five places" not in messaging.FEED_WELCOME and "Ideas for" not in messaging.FEED_WELCOME
     # The general room is untouched.
     assert await repo.get_room(messaging.default_room_id(OWNER)) is None
 

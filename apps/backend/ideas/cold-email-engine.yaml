@@ -1,0 +1,42 @@
+id: cold-email-engine
+owner_role: growth
+kind: agency
+business_types: [software, services]
+title: "A cold email engine sending to 200 accounts that fit you"
+why: "Outbound that runs every week on its own domains, so your main address stays safe."
+deliverables:
+  - "3 lookalike domains with SPF, DKIM and DMARC"
+  - "Warmed inboxes and a 200-account list"
+  - "A 3-step sequence, replies handled"
+agency_price_low: 2500
+agency_price_high: 7000
+price_unit: month
+agency_turnaround: "Ongoing, after 2-3 weeks of warm-up"
+our_turnaround: "Sending in 2-3 weeks (warm-up)"
+your_part: "Approve the domain spend and each first-email batch"
+guide: |
+  # A cold email engine sending to 200 accounts that fit you
+
+  ## Steps
+  1. Write who the ideal customer is from the brief; ask in the DM only if it is unclear.
+  2. Propose 3 lookalike domains and their cost. Buying them needs the person's card: ask for approval first.
+  3. After purchase, set SPF, DKIM and DMARC on each domain and create the inboxes. Start warm-up.
+  4. Build a 200-account list from public sources, with the reason each account fits.
+  5. Write a 3-step sequence. Personalise the first line per account.
+  6. During warm-up, nothing is sent to the list. After warm-up, send the first batch only after approval.
+  7. Answer replies the same day: book interested people into the calendar, stop on any opt-out.
+
+  ## Decisions to ask
+  - Approve the domains and their cost.
+  - Approve the list and the sequence.
+  - Approve each first-email batch before it goes.
+
+  ## Done proves
+  - DNS records that pass (SPF, DKIM, DMARC check results).
+  - The list as a document on the task.
+  - The first batch sent: count sent, bounces, replies so far.
+
+  ## Honesty limits
+  - Say "sequence sent to 200 accounts", never "20 meetings". We cannot guarantee replies or inbox placement.
+  - Cap the batch; never send at a volume that looks like spam.
+  - Honour every opt-out at once.

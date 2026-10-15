@@ -458,6 +458,17 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  apps/infra/lambda/messaging-projector/index.py _is_feed_room. Agents are the feed's
                                  authors, never members: messaging.room_agent (roster stand-in) and the feed rule in
                                  select_dispatch_targets (a Discuss @mention wakes that agent). Spec 2026-10-14 §4.2.
+  - Ideas (Start) ............ references/ideas.md + SKILL.md routing row
+                              <- backend core/services/ideas.py (start: one Paperclip project named after the idea,
+                                 owner agent as lead, under onboarding_goal_id when recorded, never a new goal,
+                                 created with the fork's body idempotencyKey; write_profile_file puts the
+                                 guide at ideas/<id>.md = "$HERMES_HOME/ideas/<idea>.md"; start_line = the "<name>
+                                 started <title>" system line in the starter's DM with a user_request dispatch
+                                 target) + apps/backend/ideas/*.yaml (each guide's Steps / Decisions / Done proves /
+                                 Honesty limits headings, validated by ideas.Idea) + routers/ideas.py
+                                 (GET /ideas, POST /ideas/{id}/start, POST /ideas/{id}/dismiss). The plan approval is
+                                 plugins/lightbulb request_approval (tasks=[...]); decisions are the paperclip skill's
+                                 references/interactions.md request_confirmation. Spec 2026-10-14 §4.4 and §8.
   - Chat vs document ........ references/chat-vs-document.md + SKILL.md (non-negotiable + routing row)
                               First-run result contract ("The first run" section, pointed at from SKILL.md's
                                  deliverable bullet and company-and-plans.md, because the first room turn can run

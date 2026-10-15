@@ -1,0 +1,31 @@
+id: cancel-or-renegotiate-bill
+owner_role: finance
+kind: everyday
+business_types: [any]
+title: "One recurring bill: cancellation requested or a lower price asked for"
+why: "Most companies pay for something they no longer use or overpay for."
+deliverables:
+  - "Your recurring bills listed with their cost"
+  - "A cancellation requested, or a lower price asked for"
+  - "Any saving the vendor confirms, posted to the feed"
+our_turnaround: "A few days"
+your_part: "Approve the cancel or the new price"
+guide: |
+  # One recurring bill cancelled or renegotiated, saving reported
+
+  ## Steps
+  1. List recurring charges from the bank, card, Stripe or email receipts. Ask the person to connect one if none is.
+  2. Pick the best candidate: unused, duplicated, or priced above the market.
+  3. Find the vendor's cancel path or a cheaper plan. Draft the cancel or the negotiation email.
+  4. Ask for approval, then act: send from your mailbox or cancel in the live browser (the person signs in).
+  5. Confirm the change in writing from the vendor.
+
+  ## Decisions to ask
+  - Which bill to act on.
+  - Approve the cancel or the new price.
+
+  ## Done proves
+  - The request sent and the vendor's answer; a saving the vendor confirmed, posted to the feed.
+
+  ## Honesty limits
+  - Report the saving the vendor confirmed, not an estimate.

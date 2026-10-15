@@ -1,7 +1,7 @@
 import { Redirect } from "expo-router";
 
-// The (app) group's layout enforces auth. Its index resolves the CEO's DM,
-// so a phone opens on a teammate rather than a workspace-shaped inbox.
+// The (app) group's layout enforces auth and bounces unauthenticated users
+// to /(auth)/sign-in, so the root can always target Chats.
 export default function Index() {
-  return <Redirect href="/(app)" />;
+  return <Redirect href="/(app)/(tabs)/chats" />;
 }

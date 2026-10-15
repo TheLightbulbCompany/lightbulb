@@ -14,6 +14,7 @@ import {
   parseCommand,
   commandSignature,
   stripOneShots,
+  takePane,
   type WorkspaceCommand,
 } from "./urlChannel";
 import {
@@ -72,6 +73,7 @@ export function deriveReconcilerAction(
   delete durableParams.panel;
   for (const k of ONE_SHOT_PARAMS) delete durableParams[k];
   for (const k of NON_COMMAND_PARAMS) delete durableParams[k];
+  takePane(durableParams); // the pane rides on command.pane
 
   const panelKey = command.descriptor.component === "chat" ? null : params.get("panel");
 

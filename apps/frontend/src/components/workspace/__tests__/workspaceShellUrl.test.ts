@@ -16,7 +16,7 @@ vi.mock("@/lib/shellNav", () => ({
 import { pushSearchParams, replaceSearchParams } from "@/lib/shellNav";
 
 import { deriveReconcilerAction, isCommandTargetOpen } from "../workspaceShellReconciler";
-import { commandSignature } from "../urlChannel";
+import { clearPanelFromUrl, commandSignature } from "../urlChannel";
 import {
   attachShell,
   getWorkspaceSnapshot,
@@ -29,8 +29,8 @@ import { TeamsPanelRouter } from "@/components/teams/TeamsPanelRouter";
 /** Run a URL the way the shell does: reconcile, then open (no pushUrl: the URL carries it). */
 function navigate(search: string) {
   const d = deriveReconcilerAction(search, null)!;
-  if (d.command?.descriptor.component === "chat") return d;
-  openPanel(d.panelKey!, d.durableParams, { oneShots: d.command!.oneShots });
+  if (d.command?.descriptor.component !== "chat") openPanel(d.panelKey!, d.durableParams, { oneShots: d.command!.oneShots });
+  if (d.command?.pane) openPanel(d.command.pane.key, d.command.pane.params);
   return d;
 }
 
@@ -266,6 +266,24 @@ describe("URL params map onto place + pane", () => {
     const { pane, place } = getWorkspaceSnapshot();
     expect(place).toBe("work");
     expect(pane).toMatchObject({ panelId: paneId, params });
+  });
+
+  it("a URL naming a place and a pane restores both (a reload or a copied link)", () => {
+    const d = navigate("?panel=teams-issues&agent=a-1&pane=teams-issue-detail&pane.detailId=ADM-1");
+    expect(d.durableParams).toEqual({ agent: "a-1" }); // the pane's params stay off the place
+    expect(getWorkspaceSnapshot()).toMatchObject({
+      place: "work",
+      main: { params: { teamsKey: "issues", agent: "a-1" } },
+      pane: { panelId: "teams-issue-detail:ADM-1", params: { teamsKey: "issue-detail", detailId: "ADM-1" } },
+    });
+    // A file's own `agent` binding never collides with the place's agent filter.
+    navigate("?panel=activity&pane=file-viewer&pane.path=/a.md&pane.agent=a-2");
+    expect(getWorkspaceSnapshot()).toMatchObject({ place: "activity", main: { params: {} }, pane: { params: { path: "/a.md", agent: "a-2" } } });
+  });
+
+  it("closing the pane clears only the pane part of a two-slot URL", () => {
+    expect(clearPanelFromUrl("?panel=teams-issues&agent=a-1&pane=browser", "browser")).toBe("panel=teams-issues&agent=a-1");
+    expect(clearPanelFromUrl("?panel=activity&pane=file-viewer&pane.path=%2Fa.md", "file-viewer")).toBe("panel=activity");
   });
 
   it("one pane at a time: a second open replaces the first", () => {

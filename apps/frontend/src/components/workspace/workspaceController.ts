@@ -16,7 +16,7 @@ import {
   DEFAULT_AGENT_SENTINEL,
   type PanelDescriptor,
 } from "./panelRegistry";
-import { buildPanelUrl, clearPanelFromUrl } from "./urlChannel";
+import { appendPane, buildPanelUrl, clearPanelFromUrl } from "./urlChannel";
 
 export type Place = "chat" | "activity" | "work" | "library";
 
@@ -27,6 +27,9 @@ export interface Slot {
   component: PanelDescriptor["component"] | "thread";
   title: string;
   params: Record<string, string>;
+  /** The URL grammar this slot was opened with (key + raw params), so a pushed URL can name
+   *  both slots. None for the thread pane, which has no URL of its own. */
+  url?: { key: string; params: Record<string, string> };
 }
 
 export interface WorkspaceSnapshot {
@@ -163,7 +166,8 @@ function clearPaneFromUrl(previous: Slot | null): void {
   if (cleared !== null) replaceSearchParams(new URLSearchParams(cleared));
 }
 
-function show(descriptor: PanelDescriptor, extra?: Record<string, string>, clearReplacedPane = false): void {
+function show(descriptor: PanelDescriptor, extra?: Record<string, string>, clearReplacedPane = false,
+  url?: Slot["url"]): void {
   if (!_attached) return;
   if (descriptor.component === "chat") {
     _chatParams = nextParams({ panelId: MESSAGES_PANEL_ID, component: "chat", title: "", params: _chatParams }, descriptor, extra);
@@ -173,9 +177,9 @@ function show(descriptor: PanelDescriptor, extra?: Record<string, string>, clear
     // One thing at a time: whatever the pane showed is replaced (and leaves the URL, unless
     // this open writes its own).
     if (clearReplacedPane && _pane && _pane.panelId !== descriptor.panelId) clearPaneFromUrl(_pane);
-    _pane = { panelId: descriptor.panelId, component: descriptor.component, title: descriptor.title, params: nextParams(_pane, descriptor, extra) };
+    _pane = { panelId: descriptor.panelId, component: descriptor.component, title: descriptor.title, params: nextParams(_pane, descriptor, extra), url };
   } else {
-    _main = { panelId: descriptor.panelId, component: descriptor.component, title: descriptor.title, params: nextParams(_main, descriptor, extra) };
+    _main = { panelId: descriptor.panelId, component: descriptor.component, title: descriptor.title, params: nextParams(_main, descriptor, extra), url };
     // Picking a place shows it: a full-screen pane folds back beside it.
     _fullScreen = false;
   }
@@ -190,10 +194,19 @@ export function openPanel(
   const descriptor = describePanel(panelKey, params);
   if (!descriptor) return;
   if (descriptor.component === "chat" && descriptor.params.agentId) openChatPanel(descriptor.params.agentId);
-  else show(descriptor, opts.oneShots, !opts.pushUrl);
+  else show(descriptor, opts.oneShots, !opts.pushUrl, { key: panelKey, params: { ...params } });
   if (opts.pushUrl) {
-    pushSearchParams(new URLSearchParams(buildPanelUrl(panelKey, params).split("?")[1]));
+    pushSearchParams(descriptor.component === "chat" ? new URLSearchParams(buildPanelUrl(panelKey, params).split("?")[1]) : slotsUrl());
   }
+}
+
+/** The URL for what is on screen: the place, plus the pane beside it (Chat as the place: the
+ *  pane alone, the plain `panel=` form). A reload or a copied link restores both. */
+function slotsUrl(): URLSearchParams {
+  const primary = _main?.url ?? _pane?.url;
+  const sp = new URLSearchParams(primary ? buildPanelUrl(primary.key, primary.params).split("?")[1] : "");
+  if (_main?.url && _pane?.url) appendPane(sp, _pane.url.key, _pane.url.params);
+  return sp;
 }
 
 /** Merge a panel's own param change (a one-shot consumed, a filter dismissed); `undefined` deletes. */
@@ -203,9 +216,17 @@ export function updatePanelParams(panelId: string, partial: Record<string, strin
     for (const k of Object.keys(partial)) if (partial[k] === undefined) delete merged[k];
     return merged as Record<string, string>;
   };
+  // A dismissed durable param also leaves the slot's URL grammar, so the next pushed URL
+  // does not bring it back (same-named keys: agent, groupBy, item, path, …).
+  const dropFromUrl = (url: Slot["url"]) => {
+    if (!url) return url;
+    const params = { ...url.params };
+    for (const k of Object.keys(partial)) if (partial[k] === undefined) delete params[k];
+    return { ...url, params };
+  };
   if (panelId === MESSAGES_PANEL_ID) _chatParams = apply(_chatParams);
-  else if (_main?.panelId === panelId) _main = { ..._main, params: apply(_main.params) };
-  else if (_pane?.panelId === panelId) _pane = { ..._pane, params: apply(_pane.params) };
+  else if (_main?.panelId === panelId) _main = { ..._main, params: apply(_main.params), url: dropFromUrl(_main.url) };
+  else if (_pane?.panelId === panelId) _pane = { ..._pane, params: apply(_pane.params), url: dropFromUrl(_pane.url) };
   else return;
   commit();
 }

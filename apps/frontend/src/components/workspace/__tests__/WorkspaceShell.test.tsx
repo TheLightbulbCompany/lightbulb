@@ -225,6 +225,13 @@ it("applies the URL's command on mount: a retired alias opens Activity, a detail
   expect(screen.getByRole("region", { name: "Task" })).toBeInTheDocument();
 });
 
+it("restores both the place and the pane from a two-slot URL on reload", () => {
+  window.history.replaceState(null, "", "/chat?panel=teams-artifacts&pane=browser");
+  renderReady();
+  expect(screen.getByTestId("panel-teams")).toHaveTextContent("teams-artifacts");
+  expect(screen.getByRole("region", { name: "Browser" })).toBeInTheDocument();
+});
+
 it("opens the rail and sidebar as the phone drawer, and closes it on a pick, the backdrop or Escape", () => {
   const view = renderReady();
   const shell = view.container.querySelector(".workspace-shell")!;

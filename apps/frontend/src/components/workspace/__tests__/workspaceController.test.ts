@@ -199,6 +199,21 @@ describe("the right pane", () => {
     expect(String(vi.mocked(pushSearchParams).mock.calls.at(-1)?.[0])).toBe("panel=browser");
   });
 
+  it("a pushed URL names the place and the pane beside it", () => {
+    openPanel("file-viewer", { path: "/a.md" }, { pushUrl: true });
+    expect(String(vi.mocked(pushSearchParams).mock.calls.at(-1)?.[0])).toBe("panel=file-viewer&path=%2Fa.md");
+    openPanel("teams-issues", { groupBy: "status" }, { pushUrl: true });
+    expect(String(vi.mocked(pushSearchParams).mock.calls.at(-1)?.[0]))
+      .toBe("panel=teams-issues&groupBy=status&pane=file-viewer&pane.path=%2Fa.md");
+    openPanel("browser", {}, { pushUrl: true });
+    expect(String(vi.mocked(pushSearchParams).mock.calls.at(-1)?.[0])).toBe("panel=teams-issues&groupBy=status&pane=browser");
+    // A dismissed filter does not come back with the next push.
+    updatePanelParams("teams-work", { groupBy: undefined });
+    openPanel("activity", {}, { pushUrl: true });
+    openPanel("teams-issues", {}, { pushUrl: true });
+    expect(String(vi.mocked(pushSearchParams).mock.calls.at(-1)?.[0])).toBe("panel=teams-issues&pane=browser");
+  });
+
   it("close clears a URL that named it (in place) and nothing else", () => {
     window.history.replaceState(null, "", "/chat?panel=teams-issue-detail&detailId=ADM-1&utm=x");
     openPanel("teams-issue-detail", { detailId: "ADM-1" });

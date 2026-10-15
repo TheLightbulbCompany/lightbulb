@@ -202,6 +202,8 @@ function AuthenticatedWorkspace({ workspaceName }: { workspaceName: string }): R
       // NO pushUrl: the URL already carries this command.
       openPanel(decision.panelKey, decision.durableParams, { oneShots: command.oneShots });
     }
+    // The pane the URL names beside its place (a reload restores both).
+    if (command.pane) openPanel(command.pane.key, command.pane.params);
     // Analytics reports the panel that actually opened, so a retired alias is
     // resolved HERE — decision.panelKey stays raw because describePanel needs
     // the pre-alias key to pick the right view (see the reconciler's doc).

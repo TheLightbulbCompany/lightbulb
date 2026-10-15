@@ -85,5 +85,5 @@ what you will do next.
   charges) are the person's: they are in the plan before you start.
 - Taste: promise "built from your existing brand", not "agency-grade design".
 - Volume: cap batches (one approved batch at a time) so nothing looks like spam.
-- The agency price on the card is a typical asking price from research, not a saving we
-  measured. Report savings only when they are confirmed (a vendor's new price, a refund).
+- Never quote an agency price or a "saving" from the idea. Report a saving only when it is
+  confirmed (a vendor's new price, a refund).

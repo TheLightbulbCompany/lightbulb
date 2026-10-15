@@ -81,19 +81,20 @@ def test_an_invalid_entry_is_refused():
 
 
 @pytest.mark.asyncio
-async def test_list_is_sorted_by_price_with_agents_and_total(workspace):
+async def test_list_is_agency_first_then_by_title_with_agents_and_no_prices(workspace):
     body = await ideas.list_ideas(AUTH)
     cards = body["ideas"]
     assert len(cards) == 35
-    lows = [c["agencyPriceLow"] or 0 for c in cards]
-    assert lows == sorted(lows, reverse=True)
+    assert [(c["kind"] != "agency", c["title"]) for c in cards] == sorted(
+        (c["kind"] != "agency", c["title"]) for c in cards
+    )
+    assert cards[0]["kind"] == "agency" and cards[-1]["kind"] == "everyday"
     first = cards[0]
-    assert set(first) >= {"id", "ownerRole", "title", "why", "deliverables", "agencyPriceLow", "agencyPriceHigh",
-                          "priceUnit", "agencyTurnaround", "ourTurnaround", "yourPart", "kind", "businessTypes",
-                          "agentId", "agentName"}  # fmt: skip
-    assert "guide" not in first
+    assert set(first) == {"id", "ownerRole", "title", "why", "deliverables", "ourTurnaround", "yourPart", "kind",
+                          "businessTypes", "agentId", "agentName"}  # fmt: skip
+    # No prices in the app (owner, 2026-10-15): they stay in the YAML for marketing only.
+    assert set(body) == {"ideas", "running"}
     assert first["agentId"] == STARTERS[first["ownerRole"]]
-    assert body["totalLow"] == sum(c["agencyPriceLow"] for c in cards if c["priceUnit"] == "one_time")
 
 
 @pytest.mark.asyncio
@@ -314,6 +315,6 @@ async def test_get_drops_progress_when_paperclip_fails_and_hides_finished_projec
     assert (await ideas.list_ideas(AUTH))["running"] == []
 
 
-def test_sales_tax_is_priced_per_state_and_left_out_of_the_total():
+def test_sales_tax_is_priced_per_state():
     idea = ideas.catalog()["sales-tax-registration"]
     assert idea.price_unit == "state" and "per state" in idea.why

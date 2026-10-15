@@ -105,23 +105,25 @@ async def _workspace(owner_id: str) -> tuple[object | None, dict[str, dict]]:
     return row, {role: {"id": aid, "name": names[aid]} for role, aid in starters.items() if aid in names}
 
 
+#: Never served: no prices in the app (owner, 2026-10-15). They stay in the YAML for marketing.
+_NOT_SERVED = {"guide", "agency_price_low", "agency_price_high", "price_unit", "agency_turnaround"}
+
+
 def _card(idea: Idea, agent: dict) -> dict:
-    return {**idea.model_dump(by_alias=True, exclude={"guide"}), "agentId": agent["id"], "agentName": agent["name"]}
+    return {**idea.model_dump(by_alias=True, exclude=_NOT_SERVED), "agentId": agent["id"], "agentName": agent["name"]}
 
 
 async def list_ideas(auth: AuthContext) -> dict:
-    """All ideas (no matching yet) whose role has an agent, minus dismissed ones, highest agency
-    price first, unpriced last. ``totalLow`` sums the low prices of the one-off ones shown.
-    ``running`` is the workspace's open starts, with their project's issue counts when Work
+    """All ideas (no matching yet) whose role has an agent, minus dismissed ones, agency jobs
+    first, then by title. No prices (owner, 2026-10-15). ``running`` is the workspace's open starts, with their project's issue counts when Work
     answers (never failing the read when it does not)."""
     owner_id = resolve_owner_id(auth)
     _, agents = await _workspace(owner_id)
     dismissed = await messaging_repo.dismissed_ideas(owner_id)
     shown = [i for i in catalog().values() if i.id not in dismissed and i.owner_role in agents]
-    shown.sort(key=lambda i: -(i.agency_price_low or 0))
+    shown.sort(key=lambda i: (i.kind != "agency", i.title))
     return {
         "ideas": [_card(i, agents[i.owner_role]) for i in shown],
-        "totalLow": sum(i.agency_price_low for i in shown if i.price_unit == "one_time"),
         "running": await _running(auth, owner_id, agents),
     }
 

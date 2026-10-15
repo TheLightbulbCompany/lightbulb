@@ -25,11 +25,11 @@ def test_routes_call_the_service_as_the_member():
     try:
         client = TestClient(app)
         with (
-            patch.object(mod.ideas, "list_ideas", AsyncMock(return_value={"ideas": [], "totalLow": 0})),
+            patch.object(mod.ideas, "list_ideas", AsyncMock(return_value={"ideas": [], "running": []})),
             patch.object(mod.ideas, "start", AsyncMock(return_value={"roomId": "r", "projectId": "p"})) as start,
             patch.object(mod.ideas, "dismiss", AsyncMock()) as dismiss,
         ):
-            assert client.get("/api/v1/ideas").json() == {"ideas": [], "totalLow": 0}
+            assert client.get("/api/v1/ideas").json() == {"ideas": [], "running": []}
             assert client.post("/api/v1/ideas/books-cleanup/start").json() == {"roomId": "r", "projectId": "p"}
             assert client.post("/api/v1/ideas/books-cleanup/dismiss").status_code == 204
         start.assert_awaited_once_with(auth, "books-cleanup")

@@ -38,6 +38,7 @@ import { AVATAR_GUTTER, MetaText, WorkingBubble } from "../../../../components/c
 import { Avatar } from "../../../../components/room/Avatar";
 import { CatchUpSummary } from "../../../../components/room/CatchUpSummary";
 import { SavedDelegations } from "../../../../components/room/DelegateCard";
+import { IdeasSheet } from "../../../../components/room/IdeasSheet";
 import { MessageActionsSheet } from "../../../../components/room/MessageActionsSheet";
 import { LocalMessageRows, MessageGroup } from "../../../../components/room/MessageGroup";
 import { NoticeBanner } from "../../../../components/voice/NoticeBanner";
@@ -415,6 +416,7 @@ function Conversation() {
   // to what the actions leave, or a long name runs underneath them.
   const { width: windowWidth } = useWindowDimensions();
   const [headerActionsWidth, setHeaderActionsWidth] = useState(72);
+  const [ideasOpen, setIdeasOpen] = useState(false);
 
   // On `headerOptions` rather than inline so the blocked-state early return
   // below keeps the header too — a blocked screen with no title and no
@@ -447,6 +449,7 @@ function Conversation() {
           ? () => router.push(`/(app)/room/${roomId}/details?addPeople=1`)
           : undefined}
         voice={headerVoice}
+        onIdeas={room ? () => setIdeasOpen(true) : undefined}
         onLayout={(event) => setHeaderActionsWidth(event.nativeEvent.layout.width)}
       />
     ),
@@ -476,6 +479,15 @@ function Conversation() {
       keyboardVerticalOffset={keyboardOffset}
     >
       {!preview && <Stack.Screen options={headerOptions} />}
+      <IdeasSheet
+        visible={ideasOpen}
+        onClose={() => setIdeasOpen(false)}
+        agentId={dmWithAgent ? others[0]?.id : undefined}
+        onStarted={(startedRoomId) => {
+          setIdeasOpen(false);
+          if (startedRoomId !== roomId) router.push(`/(app)/room/${startedRoomId}`);
+        }}
+      />
       {/* The sheet shows its own copy; this one is for a hidden sheet (UI §8). */}
       {!preview && room && live.roomId === room.roomId && !live.open ? <NoticeBanner style={styles.liveNotice} /> : null}
       {prefsError && (

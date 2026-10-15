@@ -2,7 +2,7 @@
 
 import { createPortal } from "react-dom";
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
-import { ArrowLeft, Check, Chrome, Circle, CircleAlert, FolderOpen, Link, ListChecks, MessagesSquare, PanelRight, Square } from "lucide-react";
+import { ArrowLeft, Check, Chrome, Circle, CircleAlert, FolderOpen, Lightbulb, Link, ListChecks, MessagesSquare, PanelRight, Square } from "lucide-react";
 import type { Components } from "react-markdown";
 import { LISTEN_MODE_LABELS, listenModeOptions, soleChannelOwner, useStatusLoaded, type CreateMessageRequest, type ListenMode, type MemberPrefsRequest, type MemberRef, type UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
@@ -14,6 +14,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Identity } from "@/components/teams/shared/components/Identity";
+import { WelcomeIdea } from "@/components/ideas/IdeaCard";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
 import { roomMarkdown as publicMarkdown } from "./roomMarkdown";
 import { attachmentIdFromHref } from "@/components/teams/shared/lib/attachments";
@@ -635,6 +636,7 @@ function RoomContent({
     }
   }, [onSetReaction, actionable, reactionPending, currentUserId]);
 
+  const welcomeRoom = Boolean(room?.isDefault) && inShell;
   const revealStarter = Boolean(room?.isDefault) && !messages.some((m) => m.author.kind === "human");
   const renderMessage = useCallback((message: RoomMessage, inThread = false, collapsed = false) => {
     const participant = participants.find((member) => member.kind === message.author.kind && member.id === message.author.id);
@@ -706,12 +708,14 @@ function RoomContent({
   const delegationState = delegationsByMessage?.size ? subagents : undefined;
   const renderMainMessage = useCallback((message: RoomMessage, collapsed: boolean) => <>
     {renderMessage(message, false, collapsed)}
+    {/* The CEO's welcome carries the top idea as a proposal and points at the 💡 (spec 2026-10-14 §4.4). */}
+    {welcomeRoom && message.messageSeq === 1 && message.author.kind === "agent" && <WelcomeIdea />}
     {savedDelegations(delegationState, delegationsByMessage?.get(message.messageId))}
     {settledRuns.get(message.messageId)?.map(renderRun)}
   </>,
   // An ended run's card reads nothing renderRun closes over that settledRuns does not carry.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  [renderMessage, settledRuns, delegationState, delegationsByMessage]);
+  [renderMessage, settledRuns, delegationState, delegationsByMessage, welcomeRoom]);
 
   function renderRun(run: RoomRunView) {
     const agent = participants.find((participant) => participant.kind === "agent" && participant.id === run.agentId);
@@ -808,6 +812,9 @@ function RoomContent({
             onClick={() => { closeDetail(); setContextCollapsed(!contextCollapsed); }}><PanelRight aria-hidden="true" /></ViewButton>
           {onLinkToWork && <ViewButton label={roomTasks.length > 0 ? `Tasks · ${roomTasks.length}` : "Tasks"} aria-current={showTasks ? "page" : undefined}
             onClick={event => openDetail("tasks", "tasks", event.currentTarget)}><ListChecks aria-hidden="true" />{roomTasks.length > 0 && <span aria-hidden="true">{roomTasks.length}</span>}</ViewButton>}
+          {/* Ideas: from an agent's DM, that agent's ideas come first. */}
+          {inShell && <ViewButton label="Ideas"
+            onClick={() => { capture("ideas_opened"); openPanel("ideas", composer.focusAgentId ? { agent: composer.focusAgentId } : {}, { pushUrl: true }); }}><Lightbulb aria-hidden="true" /></ViewButton>}
           {/* The shared Browser is offered once a status body has landed (it can only show its
               empty state before), the agent's files always. Both open the right pane. */}
           {inShell && browserAvailable && <ViewButton label="Browser"

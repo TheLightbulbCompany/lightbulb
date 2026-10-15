@@ -3,7 +3,7 @@
 // components map all derive from this file — nothing else may invent a
 // panel id or component name.
 
-export type PanelKind = "chat" | "teams" | "control" | "file-viewer" | "browser" | "activity" | "mail";
+export type PanelKind = "chat" | "teams" | "control" | "file-viewer" | "browser" | "activity" | "mail" | "ideas";
 
 export interface PanelDescriptor {
   panelId: string;
@@ -287,6 +287,12 @@ export function describePanel(
     return { panelId: "mail", component: "mail", title: "Mail", params: params.item ? { item: params.item } : {} };
   }
 
+  // Ideas (spec 2026-10-14 §4.4), opened by the 💡 in a conversation header. Singleton;
+  // `agent` puts that teammate's ideas first (opened from its DM).
+  if (key === "ideas") {
+    return { panelId: "ideas", component: "ideas", title: "Ideas", params: params.agent ? { agent: params.agent } : {} };
+  }
+
   if (key === "agent-inspector") {
     const p: Record<string, string> = { controlKey: "agent-inspector" };
     if (params.agent) p.agentId = params.agent;
@@ -376,6 +382,7 @@ export function durableParamsFor(panelId: string): string[] {
   if (panelId === WORK_PANEL_ID) return ["panel", "agent", "groupBy", "view", "day", "section"];
   if (panelId === "activity") return ["panel", "filter", "focus"];
   if (panelId === "mail") return ["panel", "item"];
+  if (panelId === "ideas") return ["panel", "agent"];
   if (/^teams-(issue|routine|project|goal|case|run)-detail:/.test(panelId)) return ["panel", "detailId"];
   return ["panel"];
 }
@@ -394,6 +401,7 @@ export function clearablePanelParamKeys(panelId: string): string[] {
   if (panelId === WORK_PANEL_ID) return ["agent", "groupBy", "view", "day", "section"];
   if (panelId === "activity") return ["filter", "focus"];
   if (panelId === "mail") return ["item"];
+  if (panelId === "ideas") return ["agent"];
   if (panelId === "file-viewer") return ["path", "agent"];
   if (panelId === "agent-inspector" || panelId === "control:agents") {
     return ["agentId", "initialTab"];
@@ -405,5 +413,5 @@ export function clearablePanelParamKeys(panelId: string): string[] {
 export function opensInPane(descriptor: PanelDescriptor): boolean {
   if (descriptor.component === "teams") return !!descriptor.params.detailId;
   return descriptor.component === "file-viewer" || descriptor.component === "browser"
-    || descriptor.component === "mail" || descriptor.component === "control";
+    || descriptor.component === "mail" || descriptor.component === "control" || descriptor.component === "ideas";
 }

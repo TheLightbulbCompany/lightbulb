@@ -48,6 +48,14 @@ it("offers Browser and Files in the conversation header only inside the shell, e
   expect(getWorkspaceSnapshot().place).toBe("chat");
 });
 
+it("offers Ideas in the conversation header, opening the pane with the DM's agent first", () => {
+  attachShell(() => undefined);
+  render(<RoomPanel {...props} />);
+  fireEvent.click(screen.getByRole("button", { name: "Ideas" }));
+  expect(getWorkspaceSnapshot().pane).toMatchObject({ panelId: "ideas", component: "ideas", params: { agent: "friday" } });
+  expect(getWorkspaceSnapshot().place).toBe("chat");
+});
+
 it("hides Browser until a status body has landed", () => {
   shared.statusLoaded = false;
   attachShell(() => undefined);

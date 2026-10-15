@@ -67,6 +67,14 @@ def test_each_slot_acquire_and_release_logs_its_cost(home, monkeypatch, caplog, 
     assert {"bridge.turn_slot.wait_ms", "bridge.turn_slot.peak_rss_mb"} <= names
 
 
+def test_a_failing_slot_metric_never_leaks_the_slot(home, monkeypatch):
+    monkeypatch.setattr(turn, "_turn_slots", threading.BoundedSemaphore(1))
+    monkeypatch.setattr(turn.sync, "emit_metrics", lambda _m: (_ for _ in ()).throw(BrokenPipeError()))
+    with turn._waiting_turn_lock("ceo", "room-a", None):
+        pass
+    assert turn._turn_slots.acquire(timeout=0.1)
+
+
 def test_each_conversation_gets_its_own_working_directory(home):
     a = turn.conversation_dir("ceo", turn.lightbulb_session_key("ceo", f.ROOM))
     b = turn.conversation_dir("ceo", turn.lightbulb_session_key("ceo", ROOM_B))

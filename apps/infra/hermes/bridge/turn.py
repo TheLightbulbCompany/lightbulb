@@ -2937,17 +2937,19 @@ def _host_stats() -> dict:
 
 
 def _log_slot(event: str, agent_id: str, **timing) -> None:
-    """One log line and one EMF line per turn-slot acquire/release."""
-    # ponytail: reads the semaphore's CPython internals; a counter beside it if that ever moves.
-    in_use = _turn_slots._initial_value - _turn_slots._value
-    stats = {"slots_in_use": in_use, "slots_max": _turn_slots._initial_value, **timing, **_host_stats()}
-    log.info("turn slot %s agent=%s %s", event, agent_id,
-             " ".join(f"{k}={v}" for k, v in stats.items()))
-    units = {"wait_ms": "Milliseconds", "held_ms": "Milliseconds", "load1": "None"}
-    sync.emit_metrics({
-        f"bridge.turn_slot.{k}": (v, units.get(k, "Megabytes" if k.endswith("_mb") else "Count"))
-        for k, v in stats.items()
-    })
+    """One log line and one EMF line per turn-slot acquire/release. Best-effort: a raise here
+    would skip the slot's release and leak a permit."""
+    with contextlib.suppress(Exception):
+        # ponytail: reads the semaphore's CPython internals; a counter beside it if that ever moves.
+        in_use = _turn_slots._initial_value - _turn_slots._value
+        stats = {"slots_in_use": in_use, "slots_max": _turn_slots._initial_value, **timing, **_host_stats()}
+        log.info("turn slot %s agent=%s %s", event, agent_id,
+                 " ".join(f"{k}={v}" for k, v in stats.items()))
+        units = {"wait_ms": "Milliseconds", "held_ms": "Milliseconds", "load1": "None"}
+        sync.emit_metrics({
+            f"bridge.turn_slot.{k}": (v, units.get(k, "Megabytes" if k.endswith("_mb") else "Count"))
+            for k, v in stats.items()
+        })
 
 
 @contextlib.contextmanager

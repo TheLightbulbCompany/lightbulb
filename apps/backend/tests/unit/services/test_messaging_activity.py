@@ -225,6 +225,18 @@ async def test_thread_reply_reaches_the_starter_repliers_and_the_mentioned(world
     assert item["summary"]["title"] == "Friday replied in a thread in #general"
 
 
+@pytest.mark.asyncio
+async def test_thread_replies_never_badge_but_mentions_do(world):
+    room_id = await _room()
+    root = await say(room_id, BOB, "root by bob")
+    await say(room_id, ANN, "first reply @carol", mentions=[USER_C], thread_root=root["messageId"])
+    await say(room_id, AGENT, "friday replies", thread_root=root["messageId"])
+    bob, carol = await feed(USER_B), await feed(USER_C)
+    # Both still count as unseen; only needs-you, mentions and DMs reach the badge.
+    assert bob["unseenCount"] == 2 and bob["attentionCount"] == 0
+    assert carol["unseenCount"] == 2 and carol["attentionCount"] == 1
+
+
 # ---------------------------------------------------------------------------
 # pagination, membership, deletes
 # ---------------------------------------------------------------------------

@@ -71,6 +71,8 @@ PREVIEW_TEXT_CHARS = 600
 FIELD_CHARS = 200
 MAX_FIELDS = 8
 _MESSAGE_KINDS = ("mention", "dm", "thread_reply")
+# The ones the Activity badge counts (owner 2026-10-15: needs you, mentions and DMs).
+_BADGE_MESSAGE_KINDS = ("mention", "dm")
 
 
 # ---------------------------------------------------------------------------
@@ -1499,22 +1501,28 @@ async def list_activity(auth: AuthContext, *, cursor: str | None, limit: int, te
     except BaseException:
         paperclip_task.cancel()
         raise
-    unseen = len(_unseen_message_rows(unseen_rows, gates))
+    unseen_messages = _unseen_message_rows(unseen_rows, gates)
     fetched = await paperclip_task
     paperclip, source = (fetched, "ok") if fetched is not None else ([], "unavailable")
-    unseen += len(_unseen_paperclip(paperclip, seen))
+    unseen_paperclip = len(_unseen_paperclip(paperclip, seen))
+    unseen = len(unseen_messages) + unseen_paperclip
     pinned = [item for item in items + paperclip if needs_you(item)]
-    # Every needs-you item counts whether or not it was seen; the rest count while unseen.
+    # Every needs-you item counts whether or not it was seen; mentions, DMs and Paperclip
+    # items count while unseen. A thread reply (or a reaction) never badges.
     # Session items are not in `unseen` (a finished turn never badges), so a waiting one always
     # counts here. ponytail: only waiting items on this page count; an older one still waiting
     # past 30 newer rows is left off the badge.
-    attention = unseen + sum(
-        1
-        for item in pinned
-        # A login ask badges only the people who can answer it (admins get its actions).
-        if item.kind == "session"
-        or (item.kind in ("login", "extension") and item.actions)
-        or (item.kind not in ("login", "extension") and not _newer_than(item.created_at, seen))
+    attention = (
+        sum(1 for r in unseen_messages if r["kind"] in _BADGE_MESSAGE_KINDS)
+        + unseen_paperclip
+        + sum(
+            1
+            for item in pinned
+            # A login ask badges only the people who can answer it (admins get its actions).
+            if item.kind == "session"
+            or (item.kind in ("login", "extension") and item.actions)
+            or (item.kind not in ("login", "extension") and not _newer_than(item.created_at, seen))
+        )
     )
     rest = sorted([item for item in items + paperclip if not needs_you(item)], key=lambda i: i.created_at, reverse=True)
     # Approvals, then agents' questions, then failed runs; each newest first.

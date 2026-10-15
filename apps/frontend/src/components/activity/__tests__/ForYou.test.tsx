@@ -14,7 +14,7 @@ vi.mock("@/components/teams/inbox/DecisionResolver", () => ({
 
 function setup(over: Partial<ForYouProps> = {}) {
   const props: ForYouProps = {
-    activityItems: [approval, message("m1")], attentionItems: [], loading: false, error: false, paperclipAvailable: true,
+    activityItems: [approval, message("m1")], attentionItems: [], loading: false,
     onRunAction: vi.fn().mockResolvedValue(undefined), onNavigate: vi.fn(), onDismissRuns: vi.fn(), people: [], agents: [], ...over,
   };
   render(<ForYou {...props} />);
@@ -109,6 +109,40 @@ describe("ForYou", () => {
     setup({ activityItems: [message("m1", maya, true), { ...approval, state: "resolved" } as ActivityItem] });
     expect(screen.getByText("You're all caught up.")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "For you" })).toBeInTheDocument();
+  });
+
+  it("never shows the all-clear while a source is loading or failed, and offers Retry", async () => {
+    const onRetry = vi.fn();
+    setup({ activityItems: [], incomplete: true, onRetry });
+    expect(screen.queryByText("You're all caught up.")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Couldn't load some items · Retry");
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onRetry).toHaveBeenCalled();
+  });
+
+  it("says Loading, not all caught up, while any source is still answering", () => {
+    setup({ activityItems: [], loading: true });
+    expect(screen.getByRole("status")).toHaveTextContent("Loading…");
+    expect(screen.queryByText("You're all caught up.")).not.toBeInTheDocument();
+  });
+
+  it("keeps rows from the sources that answered beside the failure line", () => {
+    setup({ activityItems: [message("m1")], incomplete: true });
+    expect(screen.getByText("message m1")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Couldn't load some items");
+  });
+
+  it("loads older Activity pages from Show older", async () => {
+    const onLoadMore = vi.fn();
+    setup({ activityItems: [message("m1")], hasMore: true, onLoadMore });
+    await userEvent.click(screen.getByRole("button", { name: "Show older" }));
+    expect(onLoadMore).toHaveBeenCalled();
+  });
+
+  it("does not claim all caught up while older pages may still hold items", () => {
+    setup({ activityItems: [], hasMore: true, onLoadMore: vi.fn() });
+    expect(screen.queryByText("You're all caught up.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show older" })).toBeInTheDocument();
   });
 
   it("answers an agent's decision with the existing decision card, and opens a blocked task", async () => {

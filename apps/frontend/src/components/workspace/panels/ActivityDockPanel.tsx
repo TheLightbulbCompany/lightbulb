@@ -61,6 +61,9 @@ export function openDiscussion(scope: string, post: CanonicalRoomMessage): void 
 
 type ActivityTab = "for-you" | "feed";
 
+/** useInboxTriage's SWR key (useTeamsApi prefixes /teams), for Retry. */
+const INBOX_RUNS_KEY = "/teams/inbox/runs";
+
 /** Whether the feed column is on screen: both columns when wide, the Feed tab when narrow, never before the layout is measured. */
 export function feedShown(narrow: boolean | null, tab: ActivityTab): boolean {
   return narrow === false || (narrow === true && tab === "feed");
@@ -85,7 +88,7 @@ export function ActivityDockPanel(props: IDockviewPanelProps<{ focus?: string }>
   const scope = orgId ?? userId ?? "signed-out";
   // The Inbox's failed runs, with its local dismissals (same company key as the Inbox panel).
   const { acknowledgedRunIds, ack } = useAcknowledgedRuns(orgId ?? userId ?? null);
-  const { failedRuns, isError: runsError } = useInboxTriage(acknowledgedRunIds);
+  const { failedRuns, isError: runsError, isLoading: runsLoading } = useInboxTriage(acknowledgedRunIds);
   const runGroups = useMemo(() => groupFailedRuns(failedRuns), [failedRuns]);
   // Below 900px (the CSS container query) only one column shows: the feed counts as read
   // only while its tab is the one on screen.
@@ -118,11 +121,13 @@ export function ActivityDockPanel(props: IDockviewPanelProps<{ focus?: string }>
           activityItems={activity.items}
           attentionItems={attention.items}
           failedRuns={runGroups}
-          runsError={runsError}
           onDismissRuns={(ids) => ids.forEach(ack)}
-          loading={activity.loading}
-          error={Boolean(activity.error)}
-          paperclipAvailable={activity.paperclipAvailable}
+          loading={activity.loading || attention.isLoading || runsLoading}
+          incomplete={Boolean(activity.error) || !activity.paperclipAvailable || attention.isError || runsError}
+          onRetry={() => { void activity.refresh(); attention.refresh(); void teams.mutate(INBOX_RUNS_KEY); }}
+          hasMore={activity.hasMore}
+          loadingMore={activity.loadingMore}
+          onLoadMore={activity.loadMore}
           onRunAction={activity.runAction}
           onNavigate={openActivityTarget}
           people={people}

@@ -31,14 +31,19 @@ export interface ForYouProps {
   attentionItems: readonly AttentionItem[];
   /** The Inbox's failed runs, grouped and minus the dismissed ones. */
   failedRuns?: readonly FailedRunGroup[];
-  /** The failed-run read failed: For you cannot vouch that nothing broke. */
-  runsError?: boolean;
+  /** A source (Activity, the attention feed, failed runs) failed or answered only partly:
+   *  For you cannot vouch that nothing is waiting, so it never shows the all-clear. */
+  incomplete?: boolean;
+  /** Re-reads every source; offered beside the "Couldn't load some items" line. */
+  onRetry?: () => void;
+  /** Older Activity pages exist (unread messages and asks past the first page). */
+  hasMore?: boolean;
+  loadingMore?: boolean;
+  onLoadMore?: () => void;
   /** Dismiss: acknowledges every run in a group, as the Inbox did. */
   onDismissRuns?: (runIds: string[]) => void;
+  /** Any source is still loading its first answer. */
   loading: boolean;
-  error: boolean;
-  /** False when the Paperclip half of Activity could not be read this time. */
-  paperclipAvailable: boolean;
   onRunAction: (itemId: string, actionId: string, request: { note?: string; value?: string }) => Promise<unknown>;
   onNavigate: (target: ActivityTarget) => void;
   /** Workspace humans and agents, for a `person` input. The server validates the pick. */
@@ -56,7 +61,7 @@ const VISIBLE_ROWS = 3;
  * a group shows its top 3 rows, then "N more". Every button is the item's own action.
  */
 export function ForYou(props: ForYouProps) {
-  const { activityItems, attentionItems, failedRuns, loading, error, paperclipAvailable, focusId, agents } = props;
+  const { activityItems, attentionItems, failedRuns, loading, incomplete, focusId, agents } = props;
   const entries = useMemo(() => forYouEntries(activityItems, attentionItems, failedRuns,
     (id) => agents.find((agent) => agent.id === id)?.name ?? "An agent"), [activityItems, attentionItems, failedRuns, agents]);
   const groups = useMemo(() => groupForYou(entries), [entries]);
@@ -70,18 +75,17 @@ export function ForYou(props: ForYouProps) {
 
   return <section className="for-you" aria-labelledby="for-you-title">
     <h2 id="for-you-title" className="for-you__title">For you{entries.length > 0 && <span className="for-you__count"> · {entries.length} open</span>}</h2>
-    {!paperclipAvailable && <p role="status" className="for-you__notice">
-      Company approvals and tasks couldn&apos;t load right now. Messages are up to date.
+    {incomplete && <p role="alert" className="for-you__notice">
+      Couldn&apos;t load some items{props.onRetry && <> · <button type="button" className="for-you__more" onClick={props.onRetry}>Retry</button></>}
     </p>}
-    {props.runsError && <p role="status" className="for-you__notice">Couldn&apos;t check for failed runs just now.</p>}
     <div ref={listRef}>
-      {error && entries.length === 0
-        ? <p role="alert" className="for-you__empty">Couldn&apos;t load what needs you. Try again in a moment.</p>
-        : loading && entries.length === 0
-          ? <p role="status" className="for-you__empty">Loading…</p>
-          : groups.length === 0
-            ? <p className="for-you__empty">You&apos;re all caught up.</p>
-            : groups.map((group) => <ForYouGroupView key={group.verb} group={group} agentMap={agentMap} {...props} />)}
+      {groups.length > 0
+        ? groups.map((group) => <ForYouGroupView key={group.verb} group={group} agentMap={agentMap} {...props} />)
+        // The all-clear only when every source answered: a failed or pending read could hide a decision.
+        : loading ? <p role="status" className="for-you__empty">Loading…</p>
+          : !incomplete && !props.hasMore && <p className="for-you__empty">You&apos;re all caught up.</p>}
+      {props.hasMore && props.onLoadMore && <button type="button" className="for-you__more" disabled={props.loadingMore}
+        onClick={props.onLoadMore}>{props.loadingMore ? "Loading…" : "Show older"}</button>}
     </div>
   </section>;
 }

@@ -142,6 +142,21 @@ describe("the plan card from GET /ideas", () => {
     }
   });
 
+  it("re-reads /ideas right after Change something, so the revision's poll window starts", async () => {
+    teams.approval = plan("pending");
+    const client = { listIdeas: vi.fn(async () => running({ approvalId: "ap-1", status: "pending", title: "Plan: CRM" })),
+      startIdea: vi.fn(), dismissIdea: vi.fn() };
+    render(<SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+      <DmIdeaPlan client={client} scope="me:org" roomId="dm-1" userId="me" onPlan={vi.fn()} />
+    </SWRConfig>);
+    await userEvent.click(await screen.findByRole("button", { name: "Change something" }));
+    await userEvent.type(screen.getByRole("textbox", { name: "What should change?" }), "Smaller first batch");
+    const before = client.listIdeas.mock.calls.length;
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(client.listIdeas.mock.calls.length).toBeGreaterThan(before));
+    expect(teams.post).toHaveBeenCalledWith("/approvals/ap-1/request-revision", { decisionNote: "Smaller first batch" });
+  });
+
   it("keeps asking after Change something until a new pending plan arrives", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {

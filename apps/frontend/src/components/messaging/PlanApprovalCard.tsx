@@ -37,14 +37,18 @@ const STATUS_LINE: Record<string, string> = {
   cancelled: "Plan withdrawn",
 };
 
-export function PlanApprovalCard({ approval }: { approval: Approval }) {
+export function PlanApprovalCard({ approval, onDecided }: {
+  approval: Approval;
+  /** After Approve plan or Change something: the DM re-reads /ideas, so a revision restarts its poll. */
+  onDecided?: () => void;
+}) {
   const { approve, requestRevision } = useApprovalMutations();
   const [busy, setBusy] = useState(false);
   // Change something asks what, first: the agent revises from that note.
   const [note, setNote] = useState<string | null>(null);
   const run = async (fn: () => Promise<void>, fallback: string) => {
     setBusy(true);
-    try { await fn(); } catch (err) { notifyApiError(err, fallback); } finally { setBusy(false); }
+    try { await fn(); onDecided?.(); } catch (err) { notifyApiError(err, fallback); } finally { setBusy(false); }
   };
   return <section className="plan-card" aria-label="Plan for approval">
     <div className="plan-card__head">{payloadText(approval, "title")}</div>
@@ -71,12 +75,12 @@ export function PlanApprovalCard({ approval }: { approval: Approval }) {
   </section>;
 }
 
-function PlanById({ id, status }: { id: string; status: string }) {
+function PlanById({ id, status, onDecided }: { id: string; status: string; onDecided: () => void }) {
   const { read } = useTeamsApi();
   const { data, error, mutate } = read<Approval>(`/approvals/${encodeURIComponent(id)}`);
   // The plan moved on /ideas (decided, revised): read the approval again; a failed read retries too.
   useEffect(() => { void mutate(); }, [status, mutate]);
-  if (data?.id) return <PlanApprovalCard approval={data} />;
+  if (data?.id) return <PlanApprovalCard approval={data} onDecided={onDecided} />;
   if (!error) return null;
   return <section className="plan-card" aria-label="Plan for approval">
     <div className="plan-card__foot" role="alert">
@@ -93,10 +97,10 @@ function PlanById({ id, status }: { id: string; status: string }) {
 export function DmIdeaPlan({ client, scope, roomId, userId, onPlan }: {
   client: IdeasClient; scope: string; roomId: string; userId: string; onPlan: (approvalIds: readonly string[]) => void;
 }) {
-  const { running } = useIdeas(client, scope, (latest) => plansPollMs(myStartsIn(latest, roomId, userId)));
+  const { running, refresh } = useIdeas(client, scope, (latest) => plansPollMs(myStartsIn(latest, roomId, userId)));
   const plans = myStartsIn({ running }, roomId, userId).flatMap((start) => (start.plan ? [start.plan] : []));
   const ids = plans.map((plan) => plan.approvalId).join(",");
   useEffect(() => { onPlan(ids ? ids.split(",") : []); }, [ids, onPlan]);
   useEffect(() => () => onPlan([]), [onPlan]);
-  return <>{plans.map((plan) => <PlanById key={plan.approvalId} id={plan.approvalId} status={plan.status} />)}</>;
+  return <>{plans.map((plan) => <PlanById key={plan.approvalId} id={plan.approvalId} status={plan.status} onDecided={() => void refresh()} />)}</>;
 }

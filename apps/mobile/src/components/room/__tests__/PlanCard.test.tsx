@@ -105,3 +105,16 @@ it("keeps asking /ideas after Change something until a new pending plan arrives"
     jest.useRealTimers();
   }
 });
+
+it("re-reads /ideas right after Change something, so the revision's poll window starts", async () => {
+  mockListIdeas.mockResolvedValue({ ideas: [], running: [{ ideaId: "crm", title: "CRM", agentId: "g", agentName: "Growth",
+    roomId: "dm-1", projectId: "p", starterId: "me", starterName: "Me", createdAt: "2026-01-01T00:00:00Z",
+    plan: { approvalId: "ap-1", status: "pending", title: "Plan: Your CRM set up" } }] });
+  await render(<DmIdeaPlan roomId="dm-1" />);
+  await fireEvent.press(await screen.findByRole("button", { name: "Change something" }));
+  await fireEvent.changeText(screen.getByLabelText("What should change?"), "Smaller first batch");
+  const before = mockListIdeas.mock.calls.length;
+  await fireEvent.press(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(mockListIdeas.mock.calls.length).toBeGreaterThan(before));
+  expect(mockRevise).toHaveBeenCalledWith("ap-1", "Smaller first batch");
+});

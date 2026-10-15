@@ -1,5 +1,6 @@
 // The conversation's tools and side column in the shell's one right pane.
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import type { MessagingClient } from "@lightbulb/shared";
 import { beforeEach, expect, it, vi } from "vitest";
 import { RoomPanel, type RoomPanelProps } from "../RoomPanel";
 import type { RoomMessage, RoomParticipant } from "../types";
@@ -9,6 +10,13 @@ const shared = vi.hoisted(() => ({ statusLoaded: true }));
 vi.mock("@lightbulb/shared", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   useStatusLoaded: () => shared.statusLoaded,
+}));
+const teamsRead = vi.hoisted(() => ({ approvals: {} as Record<string, unknown> }));
+vi.mock("@/hooks/useTeamsApi", () => ({
+  useTeamsApi: () => ({
+    read: (path: string) => ({ data: teamsRead.approvals[path], mutate: vi.fn(), isLoading: false }),
+    post: vi.fn(), mutate: vi.fn(),
+  }),
 }));
 vi.mock("../useMessageSearch", () => ({ useMessageSearch: () => ({ hits: [], state: "idle" }) }));
 vi.mock("@/components/huddle/useRoomHuddle", () => ({ useRoomHuddle: () => ({ userIds: [], available: false }) }));
@@ -54,6 +62,18 @@ it("offers Ideas in the conversation header, opening the pane with the DM's agen
   fireEvent.click(screen.getByRole("button", { name: "Ideas" }));
   expect(getWorkspaceSnapshot().pane).toMatchObject({ panelId: "ideas", component: "ideas", params: { agent: "friday" } });
   expect(getWorkspaceSnapshot().place).toBe("chat");
+});
+
+it("shows the plan the agent filed for the viewer's idea in this DM, from GET /ideas", async () => {
+  teamsRead.approvals["/approvals/ap-1"] = { id: "ap-1", type: "request_board_approval", status: "pending",
+    payload: { title: "Plan: Your CRM", summary: "Three steps." } };
+  const listIdeas = vi.fn(async () => ({ ideas: [], running: [{ ideaId: "crm", title: "CRM", agentId: "friday",
+    agentName: "Friday", roomId: "room", projectId: "p", starterId: "owner", starterName: "Owner", createdAt: null,
+    plan: { approvalId: "ap-1", status: "pending", title: "Plan: Your CRM" } }] }));
+  attachShell(() => undefined);
+  render(<RoomPanel {...props} messagingClient={{ listIdeas } as unknown as MessagingClient} />);
+  expect(await screen.findByRole("region", { name: "Plan for approval" })).toHaveTextContent("Plan: Your CRM");
+  expect(screen.getByRole("button", { name: "Approve plan" })).toBeInTheDocument();
 });
 
 it("hides Browser until a status body has landed", () => {

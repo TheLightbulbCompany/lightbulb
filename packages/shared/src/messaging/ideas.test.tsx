@@ -58,8 +58,10 @@ describe("useIdeas", () => {
     };
     const { result } = renderHook(() => useIdeas(client, "u:o"), { wrapper });
     await waitFor(() => expect(result.current.ideas).toHaveLength(2));
+    expect(result.current.anyDismissed).toBe(false);
     await act(() => result.current.dismiss("a"));
     expect(result.current.ideas.map((i) => i.id)).toEqual(["b"]);
+    expect(result.current.anyDismissed).toBe(true);
     refuse = true;
     await act(async () => { await result.current.dismiss("b").catch(() => {}); });
     expect(result.current.ideas.map((i) => i.id)).toEqual(["b"]);

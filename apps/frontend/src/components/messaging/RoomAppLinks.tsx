@@ -1,10 +1,10 @@
 "use client";
 
-import { useMemo, type MouseEvent, type ReactNode } from "react";
+import { useContext, useMemo, type MouseEvent, type ReactNode } from "react";
 import { Hash, MessageSquareQuote, SquareTerminal } from "lucide-react";
 import { roomDisplayName, sessionLabel } from "@lightbulb/shared";
 import { ApprovalRow } from "@/components/teams/inbox/ApprovalRow";
-import { isPlanApproval, PlanApprovalCard } from "./PlanApprovalCard";
+import { DmPlanContext, isPlanApproval, PlanApprovalCard } from "./PlanApprovalCard";
 import type { Approval } from "@/components/teams/shared/types";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useConnections } from "@/hooks/useConnections";
@@ -87,8 +87,10 @@ function AppLinkCard({ link, ws }: { link: AppLink; ws: MessagingWorkspaceValue 
 function ApprovalCard({ id }: { id: string }) {
   const { read } = useTeamsApi();
   const { data } = read<Approval>(`/approvals/${encodeURIComponent(id)}`);
+  const dmPlan = useContext(DmPlanContext);
   if (!data?.id) return null;
-  if (isPlanApproval(data)) return <PlanApprovalCard approval={data} />;
+  // The DM already shows this plan from GET /ideas (DmIdeaPlan): no second card.
+  if (isPlanApproval(data)) return data.id === dmPlan ? null : <PlanApprovalCard approval={data} />;
   return <section aria-label="Approval in this message" className="editorial-card max-w-xl"><ApprovalRow approval={data} /></section>;
 }
 

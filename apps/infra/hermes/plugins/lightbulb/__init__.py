@@ -505,6 +505,9 @@ def _request_approval(args: dict, *, session_id: str = "", **_kw) -> str:
         payload = {"title": title, "summary": summary}
         if ceo_plan:
             payload["plan"] = summary
+        # Which projects the plan is for: the backend matches an idea's plan to its start by this.
+        if project_ids := sorted({i["projectId"] for i in issues if i.get("projectId")}):
+            payload["projectIds"] = project_ids
         if str(args.get("recommendedAction") or "").strip():
             payload["recommendedAction"] = str(args["recommendedAction"]).strip()
         body = {"type": "approve_ceo_strategy" if ceo_plan else "request_board_approval",

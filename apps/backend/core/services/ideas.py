@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, get_args
@@ -125,6 +126,8 @@ async def list_ideas(auth: AuthContext) -> dict:
     return {
         "ideas": [_card(i, agents[i.owner_role]) for i in shown],
         "running": await _running(auth, owner_id, agents),
+        # The CEO welcome's proposal shows only until the workspace has started or hidden one.
+        "anyDismissed": bool(dismissed),
     }
 
 
@@ -137,7 +140,7 @@ async def _running(auth: AuthContext, owner_id: str, agents: dict[str, dict]) ->
     ]
     if not rows:
         return []
-    statuses, progress = await _work_progress(auth, [r["projectId"] for r in rows])
+    statuses, progress, approvals = await _work_progress(auth, [r["projectId"] for r in rows])
     running = []
     for r in rows:
         if statuses.get(r["projectId"]) in CLOSED_PROJECT_STATUSES:
@@ -155,13 +158,57 @@ async def _running(auth: AuthContext, owner_id: str, agents: dict[str, dict]) ->
         }
         if r["projectId"] in progress:
             item["progress"] = progress[r["projectId"]]
+        if approvals is not None:
+            item["plan"] = plan_for(r, approvals)
         running.append(item)
     return running
 
 
-async def _work_progress(auth: AuthContext, project_ids: list[str]) -> tuple[dict[str, str], dict[str, dict]]:
-    """({project: status}, {project: {issue status: count}}) from Paperclip; empty on any failure,
-    so the Ideas read never fails because Work is slow or the caller has not joined it yet."""
+def _parse_time(value: object) -> datetime | None:
+    try:
+        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def plan_for(start: dict, approvals: list[dict]) -> dict | None:
+    """The plan the start's agent filed for it (references/ideas.md: ``request_approval`` titled
+    "Plan: …"): a board approval by that agent, created after the start. One that names projects
+    (``payload.projectIds``, stamped by the plugin from the linked tasks) counts only for those
+    projects and wins over one that names none. Newest wins. None before the agent has filed one."""
+    started = _parse_time(start.get("createdAt"))
+    if started is None:
+        return None
+    tagged, untagged = [], []
+    for a in approvals:
+        payload = a.get("payload") if isinstance(a.get("payload"), dict) else {}
+        title = str(payload.get("title") or "")
+        created = _parse_time(a.get("createdAt"))
+        if (
+            a.get("type") != "request_board_approval"
+            or a.get("requestedByAgentId") != start.get("agentId")
+            or not title.startswith("Plan:")
+            or created is None
+            or created < started
+        ):
+            continue
+        projects = payload.get("projectIds")
+        if isinstance(projects, list) and projects:
+            if start["projectId"] in projects:
+                tagged.append((created, a, title))
+        else:
+            untagged.append((created, a, title))
+    found = max(tagged or untagged, key=lambda c: c[0], default=None)
+    return found and {"approvalId": found[1]["id"], "status": found[1].get("status"), "title": found[2]}
+
+
+async def _work_progress(
+    auth: AuthContext, project_ids: list[str]
+) -> tuple[dict[str, str], dict[str, dict], list[dict] | None]:
+    """({project: status}, {project: {issue status: count}}, the company's approvals) from Paperclip;
+    empty (approvals None) on any failure, so the Ideas read never fails because Work is slow or
+    the caller has not joined it yet. One approvals list per read, for every start's plan."""
     from collections import Counter
 
     from core.services import task_board
@@ -182,8 +229,16 @@ async def _work_progress(auth: AuthContext, project_ids: list[str]) -> tuple[dic
         )
     except Exception:  # noqa: BLE001 -- progress is optional on this read
         logger.info("ideas: Work progress unavailable", exc_info=True)
-        return {}, {}
-    return statuses, {pid: dict(Counter(i.get("status") for i in found)) for pid, found in zip(project_ids, issues)}
+        return {}, {}, None
+    try:
+        listed = await admin.list_approvals(session_cookie=ctx.session_cookie, company_id=ctx.company_id)
+        found_approvals = listed if isinstance(listed, list) else (listed or {}).get("approvals") or []
+        approvals = [a for a in found_approvals if isinstance(a, dict) and "id" in a]
+    except Exception:  # noqa: BLE001 -- the plan is optional on this read
+        logger.info("ideas: approvals unavailable", exc_info=True)
+        approvals = None
+    counts = {pid: dict(Counter(i.get("status") for i in found)) for pid, found in zip(project_ids, issues)}
+    return statuses, counts, approvals
 
 
 async def dismiss(auth: AuthContext, idea_id: str) -> None:

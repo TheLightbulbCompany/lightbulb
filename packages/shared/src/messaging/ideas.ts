@@ -33,11 +33,21 @@ export interface RunningIdea {
   createdAt: string | null;
   /** Issue status -> count in the idea's project; absent when Work did not answer. */
   progress?: Record<string, number>;
+  /** The plan the agent filed for approval: null before it has, absent when Work did not answer. */
+  plan?: IdeaPlan | null;
+}
+
+export interface IdeaPlan {
+  approvalId: string;
+  status: string;
+  title: string;
 }
 
 export interface IdeasResponse {
   ideas: Idea[];
   running: RunningIdea[];
+  /** The workspace has hidden at least one idea. */
+  anyDismissed?: boolean;
 }
 
 export interface IdeaStart {
@@ -84,11 +94,16 @@ const EMPTY: IdeasResponse = { ideas: [], running: [] };
  * optimistic and puts the idea back when the server refuses; `start` refetches so the idea shows
  * as running.
  */
-export function useIdeas(client: IdeasClient, scope: string | null) {
+export function useIdeas(
+  client: IdeasClient,
+  scope: string | null,
+  /** Poll while this says so (ms; 0 stops), e.g. while a DM waits for its plan. */
+  refreshInterval?: (latest: IdeasResponse | undefined) => number,
+) {
   const { data, error, isLoading, mutate } = useSWR<IdeasResponse>(
     scope ? ["ideas", scope] : null,
     () => client.listIdeas(),
-    { revalidateOnFocus: false },
+    { revalidateOnFocus: false, ...(refreshInterval ? { refreshInterval } : {}) },
   );
   const start = useCallback(async (ideaId: string) => {
     const started = await client.startIdea(ideaId);
@@ -98,9 +113,11 @@ export function useIdeas(client: IdeasClient, scope: string | null) {
   const dismiss = useCallback(async (ideaId: string) => {
     await mutate(async (current) => {
       await client.dismissIdea(ideaId);
-      return current && { ...current, ideas: current.ideas.filter((i) => i.id !== ideaId) };
+      return current && { ...current, ideas: current.ideas.filter((i) => i.id !== ideaId), anyDismissed: true };
     }, {
-      optimisticData: (current) => ({ ...(current ?? EMPTY), ideas: (current ?? EMPTY).ideas.filter((i) => i.id !== ideaId) }),
+      optimisticData: (current) => ({
+        ...(current ?? EMPTY), ideas: (current ?? EMPTY).ideas.filter((i) => i.id !== ideaId), anyDismissed: true,
+      }),
       rollbackOnError: true,
       revalidate: false,
     });
@@ -108,6 +125,7 @@ export function useIdeas(client: IdeasClient, scope: string | null) {
   return useMemo(() => ({
     ideas: data?.ideas ?? EMPTY.ideas,
     running: data?.running ?? EMPTY.running,
+    anyDismissed: !!data?.anyDismissed,
     loading: isLoading,
     error: error as unknown,
     refresh: () => mutate(),

@@ -37,8 +37,9 @@ export function IdeasSheet({ visible, onClose, agentId, onStarted }: IdeasSheetP
     try {
       const { roomId } = await start(idea.id);
       onStarted(roomId);
-    } catch {
-      setStartError("The idea could not start. Try again.");
+    } catch (err) {
+      // The server says why (Work did not answer, already starting): show its words.
+      setStartError(err instanceof Error && err.message ? err.message : "The idea could not start. Try again.");
     } finally {
       setStarting(null);
     }

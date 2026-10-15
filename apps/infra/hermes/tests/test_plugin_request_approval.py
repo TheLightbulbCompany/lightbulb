@@ -96,6 +96,22 @@ def test_everything_else_is_a_request_board_approval(paperclip, me, company_plan
     assert "issueIds" not in body
 
 
+def test_a_plan_carries_the_projects_of_its_linked_tasks(paperclip, monkeypatch):
+    other = "i0000000-0000-4000-8000-000000000007"
+    real = lightbulb._paperclip_call
+
+    def call(method, url, key, body=None, run_id=None):
+        if method == "GET" and url.endswith(("/WAL-6", "/WAL-7")):
+            return {"id": ISSUE if url.endswith("6") else other, "projectId": "p-2" if url.endswith("6") else "p-1"}
+        return real(method, url, key, body, run_id)
+
+    monkeypatch.setattr(lightbulb, "_paperclip_call", call)
+    paperclip["me"] = {"id": ME, "companyId": COMPANY, "role": "growth", "reportsTo": "ceo"}
+    lightbulb._request_approval({"title": "Plan: CRM", "summary": "s", "tasks": ["WAL-6", "WAL-7", "WAL-6"]})
+    [(_, _, body, _)] = _created(paperclip)
+    assert body["payload"]["projectIds"] == ["p-1", "p-2"]
+
+
 def test_an_unknown_task_creates_nothing(paperclip):
     out = lightbulb._request_approval({"title": "t", "summary": "s", "tasks": ["WAL-99"]})
     assert out == "Approval not created: task WAL-99 was not found."

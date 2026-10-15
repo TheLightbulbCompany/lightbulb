@@ -47,3 +47,11 @@ it("Start calls the API and hands back the DM", async () => {
   await waitFor(() => expect(onStarted).toHaveBeenCalledWith("room-b"));
   expect(mockClient.startIdea).toHaveBeenCalledWith("a");
 });
+
+it("shows the server's reason when Start fails", async () => {
+  mockClient.startIdea.mockRejectedValueOnce(new Error("Work did not answer. Try Start again in a moment."));
+  const onStarted = await renderSheet();
+  await fireEvent.press(await screen.findByRole("button", { name: "Start: Title b" }));
+  expect(await screen.findByText("Work did not answer. Try Start again in a moment.")).toBeTruthy();
+  expect(onStarted).not.toHaveBeenCalled();
+});

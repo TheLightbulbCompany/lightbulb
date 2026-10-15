@@ -15,22 +15,24 @@ import "@/components/ideas/ideas.css";
 
 const TOP = 3;
 
-function RunningRow({ item }: { item: RunningIdea }) {
+/** Open goes to the starter's own DM with the agent, so only the starter gets it. */
+function RunningRow({ item, mine }: { item: RunningIdea; mine: boolean }) {
   const progress = ideaProgress(item.progress);
   return <li className="idea-row">
     <div>
       <div className="idea-row__title">{item.title}</div>
       <div className="idea-row__meta">
-        {[item.agentName, progress ? `${progress.done} of ${progress.total} tasks done` : "Planning"].filter(Boolean).join(" · ")}
+        {[item.agentName, progress ? `${progress.done} of ${progress.total} tasks done` : "Planning",
+          mine ? null : `Started by ${item.starterName}`].filter(Boolean).join(" · ")}
       </div>
     </div>
-    {item.roomId && <Button type="button" size="sm" variant="outline" aria-label={`Open: ${item.title}`}
+    {mine && item.roomId && <Button type="button" size="sm" variant="outline" aria-label={`Open: ${item.title}`}
       onClick={() => openMessagePanel(item.roomId!)}>Open</Button>}
   </li>;
 }
 
 export function IdeasDockPanel({ params }: PanelProps) {
-  const { ideas, running, loading, error, refresh, startAndOpen, dismiss } = useIdeas();
+  const { ideas, running, loading, error, refresh, startAndOpen, dismiss, userId } = useIdeas();
   const [teammate, setTeammate] = useState<string | null>(null);
   const runningIds = new Set(running.map((r) => r.ideaId));
   const ordered = orderIdeas(ideas.filter((idea) => !runningIds.has(idea.id)), params.agent);
@@ -49,7 +51,7 @@ export function IdeasDockPanel({ params }: PanelProps) {
     </div>}
     {shownRunning.length > 0 && <section aria-labelledby="ideas-running">
       <h2 id="ideas-running" className="ideas-pane__heading">Running</h2>
-      <ul className="ideas-pane__list">{shownRunning.map((item) => <RunningRow key={`${item.ideaId}:${item.starterId}`} item={item} />)}</ul>
+      <ul className="ideas-pane__list">{shownRunning.map((item) => <RunningRow key={`${item.ideaId}:${item.starterId}`} item={item} mine={item.starterId === userId} />)}</ul>
     </section>}
     {shown.length > 0 && <section aria-label="Proposals" className="ideas-pane__list">
       {shown.slice(0, TOP).map((idea) => <IdeaCard key={idea.id} idea={idea} onStart={startAndOpen} onDismiss={dismiss} />)}

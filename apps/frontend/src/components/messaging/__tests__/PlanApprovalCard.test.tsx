@@ -13,6 +13,9 @@ vi.mock("@/components/teams/inbox/ApprovalRow", () => ({ ApprovalRow: () => <div
 vi.mock("@/lib/notify", () => ({ notifyApiError: vi.fn() }));
 
 import { RoomAppLinks } from "../RoomAppLinks";
+import { DmIdeaPlan, DmPlanContext } from "../PlanApprovalCard";
+import { SWRConfig } from "swr";
+import type { IdeaPlan, IdeasResponse } from "@lightbulb/shared";
 
 const plan = (status: Approval["status"], title = "Plan: Your CRM set up"): Approval => ({
   id: "ap-1", type: "request_board_approval", status,
@@ -39,12 +42,17 @@ describe("the plan card in the DM", () => {
     await waitFor(() => expect(teams.post).toHaveBeenCalledWith("/approvals/ap-1/request-revision", {}));
   });
 
-  it("after changes were asked, keeps Approve plan and says to write the change", () => {
+  it("after changes were asked, shows a status line and no buttons (the agent files a new plan)", () => {
     teams.approval = plan("revision_requested");
     render(<RoomAppLinks text={message} />);
-    expect(screen.getByRole("button", { name: "Approve plan" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Change something" })).not.toBeInTheDocument();
-    expect(screen.getByText(/Say what to change below/)).toBeInTheDocument();
+    expect(screen.getByText("You asked for changes. The plan is being revised.")).toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("draws nothing for a pasted link to the plan the DM already shows", () => {
+    teams.approval = plan("pending");
+    render(<DmPlanContext.Provider value="ap-1"><RoomAppLinks text={message} /></DmPlanContext.Provider>);
+    expect(screen.queryByRole("region", { name: "Plan for approval" })).not.toBeInTheDocument();
   });
 
   it("a decided plan shows its outcome and no buttons", () => {
@@ -59,5 +67,38 @@ describe("the plan card in the DM", () => {
     render(<RoomAppLinks text={message} />);
     expect(screen.getByText("generic approval row")).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Plan for approval" })).not.toBeInTheDocument();
+  });
+});
+
+describe("the plan card from GET /ideas", () => {
+  const running = (plan: IdeaPlan | null): IdeasResponse => ({ ideas: [], running: [{ ideaId: "crm", title: "CRM", agentId: "g", agentName: "Growth",
+    roomId: "dm-1", projectId: "p", starterId: "me", starterName: "Me", createdAt: null, plan }] });
+
+  it("shows the plan matched to this DM's start without any link, and reports it", async () => {
+    teams.approval = plan("pending");
+    const client = { listIdeas: vi.fn(async () => running({ approvalId: "ap-1", status: "pending", title: "Plan: CRM" })),
+      startIdea: vi.fn(), dismissIdea: vi.fn() };
+    const onPlan = vi.fn();
+    render(<SWRConfig value={{ provider: () => new Map() }}>
+      <DmIdeaPlan client={client} scope="me:org" roomId="dm-1" userId="me" onPlan={onPlan} />
+    </SWRConfig>);
+    expect(await screen.findByRole("button", { name: "Approve plan" })).toBeInTheDocument();
+    expect(onPlan).toHaveBeenCalledWith("ap-1");
+  });
+
+  it("asks again while the start has no plan yet", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const client = { listIdeas: vi.fn(async () => running(null)), startIdea: vi.fn(), dismissIdea: vi.fn() };
+      render(<SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <DmIdeaPlan client={client} scope="me:org" roomId="dm-1" userId="me" onPlan={vi.fn()} />
+      </SWRConfig>);
+      await waitFor(() => expect(client.listIdeas).toHaveBeenCalledTimes(1));
+      await vi.advanceTimersByTimeAsync(10_500);
+      await waitFor(() => expect(client.listIdeas).toHaveBeenCalledTimes(2));
+      expect(screen.queryByRole("region", { name: "Plan for approval" })).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

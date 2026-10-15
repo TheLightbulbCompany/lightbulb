@@ -15,6 +15,7 @@ import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { WelcomeIdea } from "@/components/ideas/IdeaCard";
+import { DmIdeaPlan, DmPlanContext } from "./PlanApprovalCard";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
 import { roomMarkdown as publicMarkdown } from "./roomMarkdown";
 import { attachmentIdFromHref } from "@/components/teams/shared/lib/attachments";
@@ -260,6 +261,7 @@ function RoomBoundary(props: RoomPanelProps) {
 
 function RoomContent({
   roomId,
+  ownerScopeId,
   currentUserId,
   room,
   readSeqAtOpen,
@@ -637,6 +639,8 @@ function RoomContent({
   }, [onSetReaction, actionable, reactionPending, currentUserId]);
 
   const welcomeRoom = Boolean(room?.isDefault) && inShell;
+  // An idea started in this DM: its plan card, from GET /ideas (not from a pasted link).
+  const [dmPlanId, setDmPlanId] = useState<string | null>(null);
   const revealStarter = Boolean(room?.isDefault) && !messages.some((m) => m.author.kind === "human");
   const renderMessage = useCallback((message: RoomMessage, inThread = false, collapsed = false) => {
     const participant = participants.find((member) => member.kind === message.author.kind && member.id === message.author.id);
@@ -825,6 +829,7 @@ function RoomContent({
       {(state === "reconnecting" || !liveConnected) && <div className="room-state"><p role="status" aria-label="Room status">Reconnecting live updates. You can keep sending messages.</p>
         {onRetry && <Button variant="outline" onClick={onRetry}>Check for updates</Button>}</div>}
       <div ref={historyRef} className="contents">
+        <DmPlanContext.Provider value={dmPlanId}>
         <RoomTimeline roomId={roomId} messages={mainMessages} readSeq={sentSinceOpen ? null : newLineSeq} ownLastSentSeq={ownLastSentSeq} sendToken={sendToken}
           historyComplete={historyComplete} historyLoading={historyLoading} historyError={historyErrorMessage} onLoadOlder={onLoadOlder}
           targetMessageId={targetMessageId ?? (activeSearchTarget ? activeSearchTarget.messageId : null)}
@@ -841,8 +846,12 @@ function RoomContent({
           {pendingMessages.filter((message) => message.threadRootMessageId === null).map((message) => <article key={message.clientMessageId} className="room-message opacity-60" aria-label={`Pending message from ${viewer?.displayName ?? "You"}`}>
             <Identity name={viewer?.displayName ?? "You"} avatarOnly size="default" /><div className="room-message-content"><div className="room-message-byline"><span className="font-semibold">{viewer?.displayName ?? "You"}</span><span className="text-ui text-muted-foreground">Sending…</span></div><MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{linkifyMentions(message.text, message.mentions, participants)}</MarkdownView></div>
           </article>)}
+          {inShell && visibleRoom?.kind === "dm" && messagingClient && ownerScopeId &&
+            <DmIdeaPlan client={messagingClient} scope={`${currentUserId}:${ownerScopeId}`} roomId={roomId}
+              userId={currentUserId} onPlan={setDmPlanId} />}
           {placeRuns(mainRuns, mainMessages).tail.map(renderRun)}
         </RoomTimeline>
+        </DmPlanContext.Provider>
       </div>
       <p className="room-typing room-typing-live text-ui text-muted-foreground" role="status">{typingMembers.length > 0 ? `${typingMembers.slice(0, 3).map((member) => member.displayName).join(", ")}${typingMembers.length > 3 ? " and others" : ""} ${typingMembers.length === 1 ? "is" : "are"} typing…` : ""}</p>
       {copied && <p role="status" aria-label="Link copied" className="sr-only">Link copied</p>}

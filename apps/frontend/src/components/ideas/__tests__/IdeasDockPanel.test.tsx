@@ -29,7 +29,9 @@ const catalog: IdeasResponse = {
   ideas: [idea("a", "eng", "Engineering"), idea("b", "growth", "Growth"), idea("c", "eng", "Engineering"),
     idea("d", "growth", "Growth"), idea("e", "fin", "Finance")],
   running: [{ ideaId: "z", title: "Running job", agentId: "fin", agentName: "Finance", roomId: "room-z", projectId: "p-z",
-    starterId: "u1", starterName: "Mira", createdAt: null, progress: { done: 2, todo: 3, cancelled: 1 } }],
+    starterId: "u1", starterName: "Mira", createdAt: null, progress: { done: 2, todo: 3, cancelled: 1 } },
+  { ideaId: "y", title: "Teammate job", agentId: "eng", agentName: "Engineering", roomId: "room-y", projectId: "p-y",
+    starterId: "u2", starterName: "Sam", createdAt: null }],
 };
 
 function renderPanel(params: Record<string, string> = {}) {
@@ -71,6 +73,25 @@ describe("Ideas pane", () => {
     expect(openMessagePanel).toHaveBeenCalledWith("room-z");
   });
 
+  it("offers Open only on the viewer's own start; a teammate's says who started it", async () => {
+    renderPanel();
+    expect(await screen.findByText("Engineering · Planning · Started by Sam")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open: Teammate job" })).not.toBeInTheDocument();
+  });
+
+  it("a second Start of an idea already starting opens its DM without an error", async () => {
+    const { notifyApiError } = await import("@/lib/notify");
+    client.startIdea.mockRejectedValueOnce(Object.assign(new Error("This idea is already starting."), { status: 409 }));
+    renderPanel();
+    await screen.findAllByRole("article");
+    client.listIdeas.mockResolvedValue({ ...catalog, running: [...catalog.running,
+      { ideaId: "a", title: "Title a", agentId: "eng", agentName: "Engineering", roomId: "room-a", projectId: "p-a",
+        starterId: "u1", starterName: "Mira", createdAt: null }] });
+    await userEvent.click(within(screen.getAllByRole("article")[0]).getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(openMessagePanel).toHaveBeenCalledWith("room-a"));
+    expect(notifyApiError).not.toHaveBeenCalled();
+  });
+
   it("opened from an agent's DM shows that agent's ideas first", async () => {
     renderPanel({ agent: "growth" });
     await screen.findAllByRole("article");
@@ -109,10 +130,36 @@ describe("Ideas pane", () => {
 });
 
 describe("the CEO welcome's proposal", () => {
-  it("shows the top idea that is not running and points at the 💡", async () => {
+  const renderWelcome = () =>
     render(<SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}><WelcomeIdea /></SWRConfig>);
+
+  it("shows the top idea and points at the 💡; × hides that idea and the proposal", async () => {
+    client.listIdeas.mockResolvedValue({ ...catalog, running: [] });
+    renderWelcome();
     expect(await screen.findByRole("heading", { name: "Title a" })).toBeInTheDocument();
     expect(screen.getAllByRole("article")).toHaveLength(1);
     expect(screen.getByText(/under the 💡/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Not now: Title a" }));
+    expect(client.dismissIdea).toHaveBeenCalledWith("a");
+    expect(screen.queryByRole("article")).not.toBeInTheDocument();
+  });
+
+  // The pane beside it shares the cache: once its cards are on screen, the data has landed.
+  const renderWelcomeBesidePane = async () => {
+    render(<SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+      <WelcomeIdea /><IdeasDockPanel id="ideas" params={{}} />
+    </SWRConfig>);
+    await screen.findAllByRole("article");
+  };
+
+  it("is gone once the workspace has a running idea", async () => {
+    await renderWelcomeBesidePane();
+    expect(screen.queryByText(/under the 💡/)).not.toBeInTheDocument();
+  });
+
+  it("is gone after an earlier dismiss", async () => {
+    client.listIdeas.mockResolvedValue({ ...catalog, running: [], anyDismissed: true });
+    await renderWelcomeBesidePane();
+    expect(screen.queryByText(/under the 💡/)).not.toBeInTheDocument();
   });
 });

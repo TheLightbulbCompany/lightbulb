@@ -51,8 +51,6 @@ def test_the_catalog_loads_and_every_entry_validates():
         if idea.agency_price_low is not None:
             assert 0 < idea.agency_price_low <= idea.agency_price_high
             assert idea.price_unit in ("one_time", "month", "state") and idea.agency_turnaround
-        for heading in ("## Steps", "## Decisions", "## Done proves", "## Honesty limits"):
-            assert heading in idea.guide, (idea.id, heading)
 
 
 def test_no_idea_promises_a_result_it_cannot_guarantee():
@@ -74,7 +72,7 @@ def test_an_invalid_entry_is_refused():
     with pytest.raises(ValueError):
         ideas.Idea.model_validate({**good, "deliverables": ["one", "two"]})
     with pytest.raises(ValueError):
-        ideas.Idea.model_validate({**good, "guide": good["guide"].replace("## Honesty", "## Notes")})
+        ideas.Idea.model_validate({**good, "guide": "steps"})  # no guide any more: an idea is its card
 
 
 # ---- GET /ideas -------------------------------------------------------------------------------
@@ -136,7 +134,6 @@ def paperclip(workspace, monkeypatch):
     monkeypatch.setattr(task_board, "_context", AsyncMock(return_value=ctx))
     monkeypatch.setattr(paperclip_admin_client, "shared_admin_client", lambda: admin)
     monkeypatch.setattr(hermes_profiles, "write_profile_file", AsyncMock())
-    monkeypatch.setattr(ideas, "_approvals_cache", {})
     return admin
 
 
@@ -158,26 +155,20 @@ async def test_start_twice_makes_one_project_one_guide_and_one_line(paperclip):
     # Never a company-level goal: an idea cannot replace the company's default goal.
     paperclip.create_goal.assert_not_awaited()
     assert "goalIds" not in body
-    # The tips, and this start's own record (it outlives the first turn's note), each once.
-    writes = [c.args for c in hermes_profiles.write_profile_file.await_args_list]
-    assert writes[0] == (OWNER, STARTERS["finance"], "ideas/books-cleanup.md", ideas.catalog()["books-cleanup"].guide)
-    assert writes[1][:3] == (OWNER, STARTERS["finance"], f"ideas/starts/{first['projectId']}.md")
-    assert f"`{first['projectId']}`" in writes[1][3] and first["roomId"] in writes[1][3]
-    assert len(writes) == 2
+    # No files in the agent's profile: the message carries the idea and its project link.
+    hermes_profiles.write_profile_file.assert_not_awaited()
     lines = await _lines(first["roomId"])
     assert len(lines) == 1
     idea = ideas.catalog()["books-cleanup"]
-    # The person's own message, like Muse: the idea quoted above "Let's do it!". No instructions or ids.
-    assert lines[0]["author"] == {"kind": "human", "id": "user_A", "displayName": lines[0]["author"]["displayName"]}
-    assert lines[0]["text"] == f"> {idea.title}\n\nLet's do it!"
-    # The agent's context rides in the agent-only note: the idea, what to deliver, tips, this start's project.
-    note = lines[0]["agentNote"]
-    assert idea.why in note and all(d in note for d in idea.deliverables)
-    assert "ideas/books-cleanup.md" in note and "references/ideas.md" in note
-    assert f"`{first['projectId']}`" in note
-    from core.services.messaging import canonical_message
-
-    assert "agentNote" not in canonical_message(lines[0]).model_dump(by_alias=True)
+    # The person's own message: the idea quoted, the ask, and the project tracking it (that link
+    # is how the agent learns where this start's tasks go). No instructions, ids or hidden notes.
+    assert lines[0]["author"]["kind"] == "human" and lines[0]["author"]["id"] == "user_A"
+    assert lines[0]["text"] == (
+        f"> **{idea.title}**\n> {idea.why}\n\nLet's do it!\n"
+        f"Tracked in Work: [{idea.title}]({ideas.project_link(first['projectId'])})"
+    )
+    assert "panel=teams-project-detail&detailId=" + first["projectId"] in lines[0]["text"]
+    assert "agentNote" not in lines[0]
     assert lines[0]["dispatchTargets"] == [{"agentId": STARTERS["finance"], "eventKind": "user_request"}]
     # The line sits in the starter's DM with the owner agent.
     assert await repo.get_member(first["roomId"], "agent", STARTERS["finance"]) is not None
@@ -195,8 +186,18 @@ async def test_a_finished_project_lets_the_idea_start_again(paperclip):
 
 
 @pytest.mark.asyncio
-async def test_a_failed_start_releases_the_claim_and_reuses_its_project(paperclip):
-    hermes_profiles.write_profile_file.side_effect = [RuntimeError("s3 down"), None, None]
+async def test_a_failed_start_releases_the_claim_and_reuses_its_project(paperclip, monkeypatch):
+    # A failure after the project was made (posting the DM message): the next Start reuses it.
+    real = messaging.create_human_message
+    calls = {"n": 0}
+
+    async def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("dynamo down")
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(messaging, "create_human_message", flaky)
     with pytest.raises(RuntimeError):
         await ideas.start(AUTH, "books-cleanup")
     result = await ideas.start(AUTH, "books-cleanup")
@@ -339,159 +340,9 @@ def test_sales_tax_is_priced_per_state():
 # ---- the plan an agent filed for a start ------------------------------------------------------
 
 
-def _soon() -> str:
-    """A moment after a start made in this test (inside the untagged window)."""
-    from datetime import datetime, timedelta, timezone
-
-    return (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat()
-
-
-START = {"agentId": "agent-g", "projectId": "p-1", "createdAt": "2026-10-15T10:00:00+00:00"}
-
-
-def _approval(id_, at, *, agent="agent-g", title="Plan: Your CRM", projects=None, kind="request_board_approval"):
-    payload = {"title": title, "summary": "s", **({"projectIds": projects} if projects is not None else {})}
-    return {
-        "id": id_,
-        "type": kind,
-        "status": "pending",
-        "requestedByAgentId": agent,
-        "createdAt": at,
-        "payload": payload,
-    }
-
-
-def test_no_plan_until_the_agent_files_one():
-    assert ideas.plan_for(START, [], allow_untagged=True) is None
-    others = [
-        _approval("before", "2026-10-15T09:59:59Z"),
-        _approval("other-agent", "2026-10-15T11:00:00Z", agent="agent-x"),
-        _approval("strategy", "2026-10-15T11:00:00Z", kind="approve_ceo_strategy"),
-        _approval("other-project", "2026-10-15T11:00:00Z", projects=["p-2"]),
-    ]
-    assert ideas.plan_for(START, others, allow_untagged=True) is None
-
-
-def test_the_newest_plan_wins_and_a_plan_naming_the_project_wins_over_one_naming_none():
-    both = [_approval("old", "2026-10-15T11:00:00Z"), _approval("new", "2026-10-15T12:00:00Z")]
-    found = ideas.plan_for(START, both, allow_untagged=True)
-    assert found == {"approvalId": "new", "status": "pending", "title": "Plan: Your CRM", "decidedAt": None}
-    tagged = [
-        _approval("tagged", "2026-10-15T11:00:00Z", projects=["p-1"]),
-        _approval("untagged", "2026-10-15T12:00:00Z"),
-    ]
-    assert ideas.plan_for(START, tagged, allow_untagged=True)["approvalId"] == "tagged"
-
-
-def test_a_decided_plan_says_when():
-    asked = {
-        **_approval("ap", "2026-10-15T11:00:00Z"),
-        "status": "revision_requested",
-        "decidedAt": "2026-10-15T11:30:00Z",
-    }
-    assert ideas.plan_for(START, [asked], allow_untagged=True)["decidedAt"] == "2026-10-15T11:30:00Z"
-
-
-@pytest.mark.asyncio
-async def test_get_carries_each_starts_plan(paperclip):
-    started = await ideas.start(AUTH, "books-cleanup")
-    paperclip.list_projects.return_value = [{"id": started["projectId"], "status": "in_progress"}]
-    paperclip.list_approvals = AsyncMock(
-        return_value=[
-            _approval("ap-1", _soon(), agent=STARTERS["finance"], title="Plan: Books"),
-        ]
-    )
-    [item] = (await ideas.list_ideas(AUTH))["running"]
-    assert item["plan"] == {"approvalId": "ap-1", "status": "pending", "title": "Plan: Books", "decidedAt": None}
-    assert paperclip.list_approvals.await_count == 1
-
-    paperclip.list_approvals = AsyncMock(return_value={"approvals": []})
-    ideas._approvals_cache.clear()
-    [item] = (await ideas.list_ideas(AUTH))["running"]
-    assert item["plan"] is None
-
-
-@pytest.mark.asyncio
-async def test_two_starts_with_one_agent_take_only_the_plan_that_names_their_project(paperclip):
-    books = await ideas.start(AUTH, "books-cleanup")
-    refund = await ideas.start(AUTH, "claim-refund")
-    finance = STARTERS["finance"]
-    paperclip.list_approvals = AsyncMock(return_value=[_approval("untagged", _soon(), agent=finance)])
-    running = (await ideas.list_ideas(AUTH))["running"]
-    assert [r["plan"] for r in running] == [None, None]  # it could be either idea's: neither shows it
-
-    ideas._approvals_cache.clear()
-    paperclip.list_approvals = AsyncMock(
-        return_value=[_approval("tagged", "2999-01-01T00:00:00Z", agent=finance, projects=[refund["projectId"]])]
-    )
-    plans = {r["projectId"]: r["plan"] for r in (await ideas.list_ideas(AUTH))["running"]}
-    assert plans[books["projectId"]] is None
-    assert plans[refund["projectId"]]["approvalId"] == "tagged"
-
-
-@pytest.mark.asyncio
-async def test_the_approvals_list_is_read_once_per_few_seconds_per_company(paperclip):
-    await ideas.start(AUTH, "books-cleanup")
-    paperclip.list_approvals = AsyncMock(return_value=[])
-    await ideas.list_ideas(AUTH)
-    await ideas.list_ideas(AUTH)
-    assert paperclip.list_approvals.await_count == 1
-
-
 @pytest.mark.asyncio
 async def test_any_start_hides_the_welcome_even_after_its_project_finished(paperclip):
     started = await ideas.start(AUTH, "books-cleanup")
     paperclip.list_projects.return_value = [{"id": started["projectId"], "status": "completed"}]
     body = await ideas.list_ideas(AUTH)
     assert body["running"] == [] and body["anyStarted"] is True
-
-
-@pytest.mark.asyncio
-async def test_an_approvals_failure_leaves_the_plan_out_and_the_read_answers(paperclip):
-    from core.services.paperclip_admin_client import PaperclipApiError
-
-    await ideas.start(AUTH, "books-cleanup")
-    paperclip.list_approvals = AsyncMock(
-        side_effect=PaperclipApiError("GET /approvals -> 500", status_code=500, body="")
-    )
-    paperclip.list_issues.return_value = [{"status": "done"}]
-    [item] = (await ideas.list_ideas(AUTH))["running"]
-    assert "plan" not in item and item["progress"] == {"done": 1}
-
-
-@pytest.mark.asyncio
-async def test_only_the_woken_agents_turn_reads_the_start_instructions(paperclip):
-    from core.services import openclaw_work
-
-    started = await ideas.start(AUTH, "books-cleanup")
-    [line] = await _lines(started["roomId"])
-    meta = await repo.get_room(started["roomId"])
-    members = [{"kind": "agent", "id": STARTERS["finance"], "displayName": "Finance", "listenMode": "active"}]
-
-    async def body_for(agent_id):
-        return await openclaw_work.build_ingress_body(
-            meta=meta, target_agent_id=agent_id, event_kind="user_request", message=line, members=members
-        )
-
-    woken = (await body_for(STARTERS["finance"]))["message"]["text"]
-    assert woken.startswith(line["text"]) and "ideas/books-cleanup.md" in woken and started["projectId"] in woken
-    assert (await body_for(STARTERS["growth"]))["message"]["text"] == line["text"]
-
-
-def test_any_board_approval_from_the_agent_counts_and_a_pending_one_wins_over_a_newer_decided_one():
-    budget = _approval("budget", "2026-10-15T11:00:00Z", title="Approve the 200-email batch")
-    decided = {**_approval("old-plan", "2026-10-15T12:00:00Z"), "status": "approved"}
-    assert ideas.plan_for(START, [budget, decided], allow_untagged=True)["approvalId"] == "budget"
-    assert ideas.plan_for(START, [decided], allow_untagged=True)["status"] == "approved"
-
-
-def test_an_untagged_approval_counts_only_soon_after_a_lone_start():
-    day_later = _approval("late", "2026-10-16T10:00:01Z", title="Send the batch")
-    assert ideas.plan_for(START, [day_later], allow_untagged=True) is None
-    tagged_late = _approval("tagged-late", "2026-10-20T10:00:00Z", projects=["p-1"])
-    assert ideas.plan_for(START, [tagged_late], allow_untagged=True)["approvalId"] == "tagged-late"
-    # Documented limit: within the window, an untagged approval for the lone-start agent's other
-    # work still shows (the skill tells the agent to pass projectId every time).
-    unrelated = _approval("unrelated", "2026-10-15T12:00:00Z", title="Renew the domain")
-    assert ideas.plan_for(START, [unrelated], allow_untagged=True)["approvalId"] == "unrelated"
-    assert ideas.plan_for(START, [unrelated], allow_untagged=False) is None

@@ -14,23 +14,3 @@ price_unit: one_time
 agency_turnaround: "1-2 weeks"
 our_turnaround: "About a week"
 your_part: "Complete Business verification and approve the budget"
-guide: |
-  # Meta Pixel, Conversions API and your first campaigns set up
-
-  ## Steps
-  1. Ask the person to sign in to Meta Business in the live browser. Business verification is their step.
-  2. Install the Pixel and set up the Conversions API for purchase, add to cart and lead.
-  3. Test each event in Events Manager.
-  4. Build audiences: customers, site visitors, lookalikes.
-  5. Build the first campaigns with the creative the company has. Propose a budget.
-  6. Leave them paused until the person approves.
-
-  ## Decisions to ask
-  - Approve the budget and the creative.
-
-  ## Done proves
-  - Test events received in Events Manager (screenshot).
-  - The campaigns built, launched by the person.
-
-  ## Honesty limits
-  - Never promise sales or return on ad spend. Video creative is not included.

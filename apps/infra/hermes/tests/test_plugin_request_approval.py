@@ -96,34 +96,6 @@ def test_everything_else_is_a_request_board_approval(paperclip, me, company_plan
     assert "issueIds" not in body
 
 
-@pytest.mark.parametrize("projects, stamped", [
-    ({"WAL-6": "p-1", "WAL-7": "p-1"}, ["p-1"]),  # every linked task in one project
-    ({"WAL-6": "p-1", "WAL-7": "p-2"}, None),  # they disagree: name none
-    ({"WAL-6": "p-1", "WAL-7": None}, None),  # one has no project: name none
-])
-def test_a_plan_names_its_project_only_when_its_tasks_agree(paperclip, monkeypatch, projects, stamped):
-    real = lightbulb._paperclip_call
-
-    def call(method, url, key, body=None, run_id=None):
-        ref = url.rsplit("/", 1)[1]
-        if method == "GET" and ref in projects:
-            return {"id": f"id-{ref}", "projectId": projects[ref]}
-        return real(method, url, key, body, run_id)
-
-    monkeypatch.setattr(lightbulb, "_paperclip_call", call)
-    paperclip["me"] = {"id": ME, "companyId": COMPANY, "role": "growth", "reportsTo": "ceo"}
-    lightbulb._request_approval({"title": "Plan: CRM", "summary": "s", "tasks": ["WAL-6", "WAL-7"]})
-    [(_, _, body, _)] = _created(paperclip)
-    assert body["payload"].get("projectIds") == stamped
-
-
-def test_an_explicit_project_is_stamped_with_or_without_tasks(paperclip):
-    paperclip["me"] = {"id": ME, "companyId": COMPANY, "role": "growth", "reportsTo": "ceo"}
-    lightbulb._request_approval({"title": "Send the 40 emails", "summary": "s", "projectId": " p-9 "})
-    [(_, _, body, _)] = _created(paperclip)
-    assert body["payload"]["projectIds"] == ["p-9"]
-
-
 def test_an_unknown_task_creates_nothing(paperclip):
     out = lightbulb._request_approval({"title": "t", "summary": "s", "tasks": ["WAL-99"]})
     assert out == "Approval not created: task WAL-99 was not found."

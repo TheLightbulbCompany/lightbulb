@@ -14,22 +14,3 @@ price_unit: month
 agency_turnaround: "Monthly"
 our_turnaround: "Same day"
 your_part: "Choose the times and approve rejections"
-guide: |
-  # Interviews scheduled and every candidate kept informed
-
-  ## Steps
-  1. Ask in the DM to connect email and calendar.
-  2. Agree the interview slots and the reply templates.
-  3. For each candidate the person advances, offer times and book the interview.
-  4. Send status replies after each decision.
-  5. Keep the pipeline on the task board.
-
-  ## Decisions to ask
-  - The times.
-  - Every rejection.
-
-  ## Done proves
-  - Interview times offered and status replies sent.
-
-  ## Honesty limits
-  - The person decides who advances. Never promise an offer.

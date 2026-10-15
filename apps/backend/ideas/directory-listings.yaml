@@ -14,21 +14,3 @@ price_unit: one_time
 agency_turnaround: "1-2 weeks"
 our_turnaround: "A few days"
 your_part: "Approve the list and the text"
-guide: |
-  # Listed in the right directories, Google Business profile claimed
-
-  ## Steps
-  1. Write the company's standard listing: name, address or area, phone, site, a short description.
-  2. Pick the directories that fit this company. List them on the task.
-  3. Ask for approval of the list and the text.
-  4. Submit to each in the live browser. CAPTCHAs and phone checks go to the person.
-  5. Claim the Google Business profile; verification is the person's step.
-
-  ## Decisions to ask
-  - Approve the directory list and the listing text.
-
-  ## Done proves
-  - The live listing URLs.
-
-  ## Honesty limits
-  - Promise listings live, never a rank or traffic.

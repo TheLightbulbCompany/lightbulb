@@ -1,11 +1,11 @@
-"""Ideas (spec 2026-10-14 §4.4 / §8): jobs a company usually pays an agency for, done by the team.
+"""Ideas (spec 2026-10-14 §4.4): jobs a company usually pays an agency for, done by the team.
 
-The catalog is one YAML file per idea under ``apps/backend/ideas/`` (YAML, not Markdown: the
-image's .dockerignore drops ``*.md``). Each holds the card and the agent's tips. Let's do it seeds
-a project in Work, writes the tips and this start's record into the owner agent's profile, and
-posts the person's own "Let's do it!" in their DM with that agent (the context rides in an
-agent-only note); the agent starts working at once and asks approval only before acting in the
-person's name (skills-src/lightbulb/references/ideas.md).
+An idea is a pre-written request (owner, 2026-10-15). The catalog is one YAML file per idea under
+``apps/backend/ideas/`` (YAML, not Markdown: the image's .dockerignore drops ``*.md``). Let's do it
+makes a project for the start in Work (so a long job is tracked) and posts the person's own message
+in their DM with the idea's agent: the idea quoted, "Let's do it!", and the project's link, which is
+how the agent learns where the job's tasks go. GET /ideas serves the cards and the running starts
+with their progress; POST dismiss hides one.
 """
 
 from __future__ import annotations
@@ -14,8 +14,6 @@ import asyncio
 import hashlib
 import uuid
 import logging
-import time
-from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, get_args
@@ -27,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from pydantic.alias_generators import to_camel
 
 from core.auth import AuthContext, resolve_owner_id
+from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.repositories import messaging_repo
 
@@ -55,7 +54,6 @@ class Idea(BaseModel):
     agency_turnaround: str | None = None
     our_turnaround: str = Field(min_length=1)
     your_part: str = Field(min_length=1)
-    guide: str = Field(min_length=200)
 
     @field_validator("deliverables")
     @classmethod
@@ -71,9 +69,6 @@ class Idea(BaseModel):
             raise ValueError("agency price low/high, unit and turnaround come together or not at all")
         if self.agency_price_low is not None and self.agency_price_low > self.agency_price_high:
             raise ValueError("agency_price_low is above agency_price_high")
-        for heading in ("## Steps", "## Decisions", "## Done", "## Honesty"):
-            if heading not in self.guide:
-                raise ValueError(f"guide is missing {heading!r}")
         return self
 
 
@@ -109,7 +104,7 @@ async def _workspace(owner_id: str) -> tuple[object | None, dict[str, dict]]:
 
 
 #: Never served: no prices in the app (owner, 2026-10-15). They stay in the YAML for marketing.
-_NOT_SERVED = {"guide", "agency_price_low", "agency_price_high", "price_unit", "agency_turnaround"}
+_NOT_SERVED = {"agency_price_low", "agency_price_high", "price_unit", "agency_turnaround"}
 
 
 def _card(idea: Idea, agent: dict) -> dict:
@@ -139,17 +134,13 @@ async def list_ideas(auth: AuthContext) -> dict:
 
 
 async def _running(auth: AuthContext, rows: list[dict], agents: dict[str, dict]) -> list[dict]:
-    from collections import Counter
-
     from core.services import messaging
 
     names = {a["id"]: a["name"] for a in agents.values()}
     if not rows:
         return []
-    statuses, progress, approvals = await _work_progress(auth, [r["projectId"] for r in rows])
+    statuses, progress = await _work_progress(auth, [r["projectId"] for r in rows])
     rows = [r for r in rows if statuses.get(r["projectId"]) not in CLOSED_PROJECT_STATUSES]
-    # A plan naming no project can only be told apart when its agent runs one start.
-    starts_per_agent = Counter(r.get("agentId") for r in rows)
     running = []
     for r in rows:
         item = {
@@ -165,97 +156,13 @@ async def _running(auth: AuthContext, rows: list[dict], agents: dict[str, dict])
         }
         if r["projectId"] in progress:
             item["progress"] = progress[r["projectId"]]
-        if approvals is not None:
-            item["plan"] = plan_for(r, approvals, allow_untagged=starts_per_agent[r.get("agentId")] == 1)
         running.append(item)
     return running
 
 
-def _parse_time(value: object) -> datetime | None:
-    try:
-        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
-
-
-#: An approval naming no project is taken for a lone start only this soon after it.
-UNTAGGED_WINDOW = timedelta(hours=24)
-
-
-def plan_for(start: dict, approvals: list[dict], *, allow_untagged: bool) -> dict | None:
-    """The approval the start's agent filed for it (references/ideas.md: ``request_approval``
-    before acting in the person's name): a board approval by that agent, created after the start,
-    whatever its title. One that names projects (``payload.projectIds``, stamped by the plugin
-    from the linked tasks) counts only for those projects and wins over one that names none. One
-    naming none (an older runtime, an approval filed with no project) counts only when
-    ``allow_untagged`` (the agent has this one open start) and within UNTAGGED_WINDOW of the start.
-    Known limit: inside that window an untagged approval for the lone-start agent's other work
-    still shows on this card; the skill tells the agent to pass the start's project every time.
-    The newest pending one wins; with none pending, the newest (its decision shows). None before
-    the agent has filed one. (The ``plan`` key is the client contract's name for it.)"""
-    started = _parse_time(start.get("createdAt"))
-    if started is None:
-        return None
-    tagged, untagged = [], []
-    for a in approvals:
-        payload = a.get("payload") if isinstance(a.get("payload"), dict) else {}
-        created = _parse_time(a.get("createdAt"))
-        if (
-            a.get("type") != "request_board_approval"
-            or a.get("requestedByAgentId") != start.get("agentId")
-            or created is None
-            or created < started
-        ):
-            continue
-        projects = payload.get("projectIds")
-        if isinstance(projects, list) and projects:
-            if start["projectId"] in projects:
-                tagged.append((created, a))
-        elif created - started < UNTAGGED_WINDOW:
-            untagged.append((created, a))
-    tier = tagged or (untagged if allow_untagged else [])
-    pending = [c for c in tier if c[1].get("status") == "pending"]
-    found = max(pending or tier, key=lambda c: c[0], default=None)
-    if not found:
-        return None
-    approval = found[1]
-    payload = approval.get("payload") if isinstance(approval.get("payload"), dict) else {}
-    # When it was decided (a revision asked): the DM keeps asking for the next one from then.
-    decided = approval.get("decidedAt") or approval.get("updatedAt")
-    return {
-        "approvalId": approval["id"],
-        "status": approval.get("status"),
-        "title": str(payload.get("title") or ""),
-        "decidedAt": decided,
-    }
-
-
-_APPROVALS_TTL_S = 5
-# ponytail: per-process dict, one entry per company that read Ideas; bounded by company count.
-_approvals_cache: dict[str, tuple[float, list[dict]]] = {}
-
-
-async def _company_approvals(admin, session_cookie: str, company_id: str) -> list[dict]:
-    """The company's approvals, cached ~5 s per process so the DM's plan poll and the pane share
-    one read. The fork's list takes only a single ``status`` filter and no limit; a plan's card
-    needs every status (approved, revision requested), so the whole list is read."""
-    hit = _approvals_cache.get(company_id)
-    if hit and time.monotonic() - hit[0] < _APPROVALS_TTL_S:
-        return hit[1]
-    listed = await admin.list_approvals(session_cookie=session_cookie, company_id=company_id)
-    found = listed if isinstance(listed, list) else (listed or {}).get("approvals") or []
-    approvals = [a for a in found if isinstance(a, dict) and "id" in a]
-    _approvals_cache[company_id] = (time.monotonic(), approvals)
-    return approvals
-
-
-async def _work_progress(
-    auth: AuthContext, project_ids: list[str]
-) -> tuple[dict[str, str], dict[str, dict], list[dict] | None]:
-    """({project: status}, {project: {issue status: count}}, the company's approvals) from Paperclip;
-    empty (approvals None) on any failure, so the Ideas read never fails because Work is slow or
-    the caller has not joined it yet. One approvals list per read, for every start's plan."""
+async def _work_progress(auth: AuthContext, project_ids: list[str]) -> tuple[dict[str, str], dict[str, dict]]:
+    """({project: status}, {project: {issue status: count}}) from Paperclip; empty on any failure,
+    so the Ideas read never fails because Work is slow or the caller has not joined it yet."""
     from collections import Counter
 
     from core.services import task_board
@@ -276,14 +183,8 @@ async def _work_progress(
         )
     except Exception:  # noqa: BLE001 -- progress is optional on this read
         logger.info("ideas: Work progress unavailable", exc_info=True)
-        return {}, {}, None
-    try:
-        approvals = await _company_approvals(admin, ctx.session_cookie, ctx.company_id)
-    except Exception:  # noqa: BLE001 -- the plan is optional on this read
-        logger.info("ideas: approvals unavailable", exc_info=True)
-        approvals = None
-    counts = {pid: dict(Counter(i.get("status") for i in found)) for pid, found in zip(project_ids, issues)}
-    return statuses, counts, approvals
+        return {}, {}
+    return statuses, {pid: dict(Counter(i.get("status") for i in found)) for pid, found in zip(project_ids, issues)}
 
 
 async def dismiss(auth: AuthContext, idea_id: str) -> None:
@@ -305,37 +206,17 @@ async def _project_closed(admin, session_cookie: str, project_id: str) -> bool:
     return project.get("status") in CLOSED_PROJECT_STATUSES or bool(project.get("archivedAt"))
 
 
-def start_text(idea: Idea) -> str:
-    """What the person says in the DM when they press Let's do it (like Muse): the idea quoted
-    above "Let's do it!". Everything else is the agent's note."""
-    return f"> {idea.title}\n\nLet's do it!"
+def project_link(project_id: str) -> str:
+    """The project's page in Work, in the app."""
+    return f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel=teams-project-detail&detailId={project_id}"
 
 
-def start_note(idea: Idea, project_id: str) -> str:
-    """For the woken agent only (openclaw_work appends it to its turn's text; people never see
-    it): the idea, what to deliver, the tips, and THIS start's project (two people can start the
-    same idea with the same agent; anything the agent files belongs in this project)."""
-    return "\n".join(
-        [
-            f"[Idea started: {idea.title}] {idea.why}",
-            "Deliver: " + "; ".join(idea.deliverables) + ".",
-            f"Tips for this job: `$HERMES_HOME/ideas/{idea.id}.md`; how to work it: the lightbulb skill's "
-            "`references/ideas.md`.",
-            f"Work project for this start: `{project_id}` (pass it as projectId on every request_approval; "
-            f"this start's record: `$HERMES_HOME/ideas/starts/{project_id}.md`).",
-        ]
-    )
-
-
-def start_record(idea: Idea, project_id: str, room_id: str, who: str) -> str:
-    """``$HERMES_HOME/ideas/starts/<project>.md``: one per start, so two people starting the same
-    idea with the same agent never share one."""
+def start_text(idea: Idea, project_id: str) -> str:
+    """The person's own message when they press Let's do it: the idea quoted, the ask, and the
+    project tracking it. The link is how the agent learns where this start's tasks go (two people
+    can start the same idea with the same agent; each start has its own project)."""
     return (
-        f"# {idea.title}\n\nStarted by {who} in DM room `{room_id}`.\n"
-        f"Work project for this start: `{project_id}` (pass it as projectId on every request_approval).\n"
-        f"Tips: `$HERMES_HOME/ideas/{idea.id}.md`.\n\n{idea.why}\n\nDeliver:\n"
-        + "\n".join(f"- {d}" for d in idea.deliverables)
-        + "\n"
+        f"> **{idea.title}**\n> {idea.why}\n\nLet's do it!\nTracked in Work: [{idea.title}]({project_link(project_id)})"
     )
 
 
@@ -359,7 +240,7 @@ async def start(auth: AuthContext, idea_id: str) -> dict:
 
 
 async def _start(auth: AuthContext, idea_id: str) -> dict:
-    from core.services import hermes_profiles, messaging, task_board
+    from core.services import messaging, task_board
     from core.services.paperclip_admin_client import shared_admin_client
 
     idea = _idea(idea_id)
@@ -403,15 +284,7 @@ async def _start(auth: AuthContext, idea_id: str) -> dict:
             await messaging_repo.update_idea_start(
                 owner_id, idea_id, user_id, {"projectId": project_id, "agentId": agent["id"]}
             )
-        await hermes_profiles.write_profile_file(owner_id, agent["id"], f"ideas/{idea_id}.md", idea.guide)
         room_id = await _usable_dm(owner_id, user_id, agent["id"])
-        # This start's record survives a session reset (the note rides only on the first turn).
-        await hermes_profiles.write_profile_file(
-            owner_id,
-            agent["id"],
-            f"ideas/starts/{project_id}.md",
-            start_record(idea, project_id, room_id, await messaging.human_display_name(user_id)),
-        )
         # The person's own message (via Ideas): it wakes the agent the way any DM message does,
         # and shows live. One per started project: a retry replays it.
         client_id = uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-idea-start|{owner_id}|{idea_id}|{user_id}|{project_id}")
@@ -420,12 +293,11 @@ async def _start(auth: AuthContext, idea_id: str) -> dict:
             room_id,
             messaging.CreateMessageRequest(
                 client_message_id=client_id,
-                text=start_text(idea),
+                text=start_text(idea, project_id),
                 reply_to_message_id=None,
                 thread_root_message_id=None,
             ),
             via="ideas",
-            agent_note=start_note(idea, project_id),
         )
         await messaging_repo.update_idea_start(
             owner_id, idea_id, user_id, {"state": "open", "roomId": room_id, "createdAt": utc_now_iso()}

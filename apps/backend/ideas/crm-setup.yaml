@@ -14,25 +14,3 @@ price_unit: one_time
 agency_turnaround: "2-6 weeks"
 our_turnaround: "About a week"
 your_part: "Approve the import before it runs"
-guide: |
-  # Your CRM set up with every contact imported
-
-  ## Steps
-  1. Ask in the DM which CRM to use (or propose HubSpot's free tier) and to connect it.
-  2. Agree the pipeline stages (one confirmation).
-  3. Collect contacts from the spreadsheets and email the person shares. Merge duplicates.
-  4. Show the import preview: counts, merges and fields. The import runs only after approval.
-  5. Build 3 follow-up workflows (for example new lead, no reply in 5 days, after a won deal).
-  6. Test each workflow on a test contact.
-
-  ## Decisions to ask
-  - Pipeline stages.
-  - Approve the import preview.
-  - Approve each workflow's emails.
-
-  ## Done proves
-  - The contact count in the CRM matches the preview.
-  - Each workflow shown as on, with one test run.
-
-  ## Honesty limits
-  - The import is the risk: never run it without approval, and keep the source files.

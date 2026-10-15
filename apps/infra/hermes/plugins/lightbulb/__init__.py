@@ -390,9 +390,6 @@ APPROVAL_SCHEMA = {
             "recommendedAction": {"type": "string", "description": "What you will do if approved."},
             "companyPlan": {"type": "boolean",
                             "description": "True only when this is your plan or strategy for the whole company."},
-            "projectId": {"type": "string",
-                          "description": "The Work project this decision belongs to. For an idea someone "
-                                         "started, always pass that start's project id (it shows in their DM)."},
         },
         "required": ["title", "summary"],
     },
@@ -508,14 +505,6 @@ def _request_approval(args: dict, *, session_id: str = "", **_kw) -> str:
         payload = {"title": title, "summary": summary}
         if ceo_plan:
             payload["plan"] = summary
-        # Which project the decision is for: the backend shows an idea's approval in the starter's
-        # DM by this. The agent's explicit projectId wins; else the linked tasks' project when they
-        # all agree (a decision spanning projects names none of them).
-        project_ids = {i.get("projectId") for i in issues}
-        if str(args.get("projectId") or "").strip():
-            payload["projectIds"] = [str(args["projectId"]).strip()]
-        elif len(project_ids) == 1 and None not in project_ids:
-            payload["projectIds"] = sorted(project_ids)
         if str(args.get("recommendedAction") or "").strip():
             payload["recommendedAction"] = str(args["recommendedAction"]).strip()
         body = {"type": "approve_ceo_strategy" if ceo_plan else "request_board_approval",

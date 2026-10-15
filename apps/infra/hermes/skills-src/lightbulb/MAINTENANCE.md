@@ -458,22 +458,13 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  apps/infra/lambda/messaging-projector/index.py _is_feed_room. Agents are the feed's
                                  authors, never members: messaging.room_agent (roster stand-in) and the feed rule in
                                  select_dispatch_targets (a Discuss @mention wakes that agent). Spec 2026-10-14 §4.2.
-  - Ideas (Start) ............ references/ideas.md + SKILL.md routing row
-                              <- backend core/services/ideas.py (start: one Paperclip project named after the idea,
-                                 owner agent as lead, under onboarding_goal_id when recorded, never a new goal,
-                                 created with the fork's body idempotencyKey; write_profile_file puts the
-                                 guide at ideas/<id>.md = "$HERMES_HOME/ideas/<idea>.md" and start_record at ideas/starts/<project>.md; start_text = the person's
-                                 own "> <title> / Let's do it!" message (via "ideas", messaging.create_human_message,
-                                 so it wakes the agent like any DM message) and start_note = its agentNote (the idea,
-                                 the deliverables, the tips path, the start's project id), appended to the woken
-                                 agent's turn text by core/services/openclaw_work.py _with_agent_note and never
-                                 served to clients) + apps/backend/ideas/*.yaml (each guide's Steps / Decisions /
-                                 Done proves / Honesty limits headings, validated by ideas.Idea; tips, not required
-                                 steps) + routers/ideas.py (GET /ideas, POST /ideas/{id}/start,
-                                 POST /ideas/{id}/dismiss). No mandatory plan (owner 2026-10-15): request_approval
-                                 (plugins/lightbulb; projectId=, else tasks=[...] in one project, stamps payload.projectIds) only before outside
-                                 actions in the person's name; ideas.plan_for shows the start's newest pending one
-                                 in the DM card. Spec 2026-10-14 §4.4 and §8.
+  - Ideas ................... references/ideas.md + SKILL.md routing row
+                              <- backend core/services/ideas.py (start: one Paperclip project per start named after the
+                                 idea, owner agent as lead, the claim/idempotency rows IDEA#START; start_text = the person's
+                                 own message via "ideas": the idea quoted, "Let's do it!", "Tracked in Work: [<title>](
+                                 project_link)") + apps/backend/ideas/*.yaml + routers/ideas.py (GET /ideas cards + running
+                                 progress, POST /ideas/{id}/start, POST /ideas/{id}/dismiss). Approvals stay in For you.
+                                 Spec 2026-10-14 §4.4.
   - Chat vs document ........ references/chat-vs-document.md + SKILL.md (non-negotiable + routing row)
                               First-run result contract ("The first run" section, pointed at from SKILL.md's
                                  deliverable bullet and company-and-plans.md, because the first room turn can run

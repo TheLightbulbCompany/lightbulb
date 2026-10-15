@@ -14,28 +14,3 @@ price_unit: one_time
 agency_turnaround: "1-4 weeks"
 our_turnaround: "About a week"
 your_part: "Connect payments and approve go-live"
-guide: |
-  # Your Shopify store set up with your first 50 products
-
-  ## Steps
-  1. Ask in the DM to connect Shopify or sign in in the live browser, and for the product list (spreadsheet, supplier links or photos).
-  2. Set up the theme from the brand: logo, colours, fonts, navigation.
-  3. Add the first 50 products: titles, descriptions, prices, variants, images the company has.
-  4. Set shipping zones and rates, tax settings, and the refund, privacy and terms pages.
-  5. Add email capture.
-  6. Payments (Shopify Payments identity checks) are the person's step.
-  7. Place a test order before go-live.
-
-  ## Decisions to ask
-  - Shipping rates and regions.
-  - Approve the product texts (first 5, then the batch).
-  - Approve go-live.
-
-  ## Done proves
-  - The live store URL.
-  - A completed test order.
-  - The product count in the admin.
-
-  ## Honesty limits
-  - Policies are templates the person must check; never say "legal" or "compliant".
-  - Promise "built from your existing brand", not agency-grade design.

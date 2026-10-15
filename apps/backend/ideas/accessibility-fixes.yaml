@@ -14,23 +14,3 @@ price_unit: one_time
 agency_turnaround: "2-6 weeks"
 our_turnaround: "2-3 days"
 your_part: "Review and merge one pull request"
-guide: |
-  # Your site's accessibility problems fixed in one pull request
-
-  ## Steps
-  1. Ask for access to the site's repository if it is not connected.
-  2. Scan every page with an automated checker (axe or Lighthouse). Save the results.
-  3. Fix contrast, form labels, alt text, heading order, focus states and keyboard navigation.
-  4. Open one pull request with the fixes and the scan results.
-  5. After merge, scan the live site again.
-
-  ## Decisions to ask
-  - Colour changes that affect the brand.
-  - Approve the pull request.
-
-  ## Done proves
-  - The merged pull request.
-  - Before and after scan counts.
-
-  ## Honesty limits
-  - Automated scans catch only part of the problems. Never say "compliant", "ADA compliant" or "WCAG certified".

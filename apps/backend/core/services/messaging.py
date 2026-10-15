@@ -4031,7 +4031,6 @@ async def create_human_message(
     via: Literal["lightbulb_mcp", "ideas"] | None = None,
     author_override: dict | None = None,
     expected_room_revision: int | None = None,
-    agent_note: str | None = None,
 ) -> CanonicalMessage:
     """``author_override`` is the hosted MCP's client identity; ``auth`` stays the accountable human.
     ``expected_room_revision`` fences the write: a room changed since that read (e.g. a DM turned
@@ -4180,8 +4179,6 @@ async def create_human_message(
             agent_hop=native_hop if native_source_id else None,
             extra_conditions=native_conditions if native_source_id else None,
             addressing=_stored_addressing(addressing),
-            # For the woken agent only (an idea's start context); no client projection serves it.
-            agent_note=agent_note,
         )
     except messaging_repo.RoomArchived as exc:
         raise ApiProblem("ROOM_ARCHIVED", ROOM_ARCHIVED_MESSAGE) from exc

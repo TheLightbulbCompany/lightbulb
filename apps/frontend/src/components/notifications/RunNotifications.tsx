@@ -278,9 +278,8 @@ export function RunNotifications() {
     ctxRef.current = {
       // Every visible chat panel contributes its agent's key.
       watchedChatKeys: new Set(workspace.visibleChatAgentIds),
-      // A teams panel counts as active only while it is the ACTIVE tab
-      // of some dockview group — open-but-background tabs don't
-      // suppress. See the teamsPanelVisible note in workspaceController.
+      // A teams panel counts as active only while it is on screen (the
+      // place's main view or the pane).
       teamsPanelActive: workspace.teamsPanelVisible,
       visibleRoomId: roomView.visibleRoomId,
     };

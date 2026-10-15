@@ -4,7 +4,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 
 const api = vi.hoisted(() => ({ get: () => Promise.resolve({ active: true, url: "https://signed" }) }));
 vi.mock("@/lib/api", () => ({ useApi: () => api }));
-const controller = vi.hoisted(() => ({ showBrowserBesideChat: vi.fn(), showMacRunInBrowser: vi.fn(() => true) }));
+const controller = vi.hoisted(() => ({ openBrowserPane: vi.fn(), showMacRunInBrowser: vi.fn(() => true) }));
 vi.mock("@/components/workspace/workspaceController", () => controller);
 vi.mock("@/components/workspace/panels/sharedLiveView", () => ({
   useSharedLiveView: () => ({ status: "elsewhere" }),

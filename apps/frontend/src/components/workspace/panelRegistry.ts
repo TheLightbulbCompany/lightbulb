@@ -1,38 +1,34 @@
-// Single source of panel identity for the dockview workspace. The URL
-// reconciler, the controller, the persistence sanitizer, and the shell's
+// Single source of panel identity for the workspace (one main view per place,
+// one right pane). The URL reconciler, the controller and the shell's
 // components map all derive from this file — nothing else may invent a
 // panel id or component name.
 
-export type PanelKind = "chat" | "teams" | "control" | "file-viewer" | "browser" | "activity" | "mail" | "missing";
+export type PanelKind = "chat" | "teams" | "control" | "file-viewer" | "browser" | "activity" | "mail";
 
 export interface PanelDescriptor {
   panelId: string;
   component: PanelKind;
   title: string;
   params: Record<string, string>;
-  renderer?: "always";
 }
 
 export const DEFAULT_AGENT_SENTINEL = "__default__";
 
-// Merged from ControlPanelRouter and TeamsPanelRouter
-// (RETIRED_PANEL_ALIASES) — applied replace-only in the URL resolver so a
-// Back landing on a retired key canonicalizes in place instead of pushing
-// (the old ControlPanelRouter remap pushed, trapping Back on ?panel=credits).
+// Retired panel keys still in old links, mobile builds and notifications: each
+// opens its successor (the URL resolver maps them; nothing is ever saved under them).
 export const RETIRED_PANEL_ALIASES: Readonly<Record<string, string>> = {
   // The Inbox tab folded into Activity's For you (2026-10-15): it, and the keys it had
-  // absorbed, open Activity. A saved Inbox tab is folded into Activity by layoutStorage.
+  // absorbed, open Activity.
   "teams-inbox": "activity",
   "teams-approvals": "activity",
   // Home is no longer a destination (stage-2 rail trim): it, and the keys it
-  // had absorbed, open the viewer's Activity feed. A saved Home tab is folded
-  // into Activity by layoutStorage's sanitizer.
+  // had absorbed, open the viewer's Activity feed.
   "teams-dashboard": "activity",
   "teams-skills": "activity",
   "teams-costs": "activity",
   // Money is ONE page, and Payments/Products/Customers/Spend are its sections.
-  // They alias to its key so the dock (which dedupes by panel id) opens ONE
-  // "Money" tab no matter which of the five keys a link carries. describePanel synthesizes `section` from the RAW key
+  // They alias to its key so Work opens ONE Money page no matter which of the
+  // five keys a link carries. describePanel synthesizes `section` from the RAW key
   // below.
   "teams-payments": "teams-money",
   "teams-products": "teams-money",
@@ -47,8 +43,7 @@ export const RETIRED_PANEL_ALIASES: Readonly<Record<string, string>> = {
 
   // The org chart is the SAME roster read, drawn as a tree — a view of the
   // Agents panel, not a page of its own. Aliased for the same reason as the
-  // four Money keys: the dock dedupes by panel id, so a router-level mapping
-  // would open two tabs both titled "Agents". describePanel synthesizes
+  // four Money keys. describePanel synthesizes
   // `view` from the RAW key below.
   "teams-org-chart": "teams-agents",
   // The Support placeholder was removed (owner ruling) when Cases landed; old
@@ -97,9 +92,7 @@ export const TASKS_GROUP_BY: ReadonlySet<string> = new Set([
 export const AGENTS_VIEWS: ReadonlySet<string> = new Set(["list", "chart"]);
 
 // One-shot intents: copied to the target panel's open params, immediately
-// stripped from the URL, cleared after consumption, excluded from the
-// persisted layout (dockview serializes panel params — an unstripped intent
-// would re-fire its dialog on every restore).
+// stripped from the URL, cleared after consumption.
 export const ONE_SHOT_PARAMS = ["new", "newIssue", "action"] as const;
 
 // Billing-return params: not commands. useCheckoutReturn owns their strips.
@@ -149,9 +142,8 @@ const TEAMS_LIST_KEYS: Readonly<Record<string, string>> = {
   leads: "Leads",
 };
 
-// The Work page: these task-board pages share ONE dock tab, "Work", and a tab
-// strip inside it switches between them (panels/WorkTabs.tsx). Opening any of
-// them re-targets that tab instead of adding a tab per page.
+// The Work place: these task-board pages share ONE main view, "Work", and a tab
+// strip inside it switches between them (panels/WorkTabs.tsx).
 export const WORK_PANEL_ID = "teams-work";
 export const WORK_TEAMS_KEYS = ["issues", "projects", "goals", "routines", "cases", "agents", "money"] as const;
 const WORK_KEY_SET: ReadonlySet<string> = new Set(WORK_TEAMS_KEYS);
@@ -209,17 +201,6 @@ export function settingsHrefFor(search: string): string | null {
   return qs ? `/settings?${qs}` : "/settings";
 }
 
-export const PANEL_COMPONENT_KEYS: ReadonlySet<string> = new Set([
-  "chat",
-  "teams",
-  "control",
-  "file-viewer",
-  "browser",
-  "activity",
-  "mail",
-  "missing",
-]);
-
 // Key-map membership must be OWN-property only (Object.hasOwn): the `in`
 // operator walks the prototype chain, so Object.prototype keys
 // ("constructor", "valueOf", …) in a crafted ?panel URL would pass validation
@@ -249,8 +230,7 @@ export function describePanel(
         panelId: MESSAGES_PANEL_ID,
         component: "chat",
         title: "Chat",
-        params: { agentId },
-        renderer: "always",
+        params: { agentId }
       };
     }
     // Room permalinks (?panel=chat&room=…&message=…): `message` is a durable
@@ -259,15 +239,14 @@ export function describePanel(
     // task-7a's report.
     // A session is workspace-scoped: a `room` riding along (old links) is ignored.
     if (params.session) {
-      return { panelId: MESSAGES_PANEL_ID, component: "chat", title: "Chat", params: { sessionId: params.session }, renderer: "always" };
+      return { panelId: MESSAGES_PANEL_ID, component: "chat", title: "Chat", params: { sessionId: params.session } };
     }
     if (params.room) {
       return {
         panelId: MESSAGES_PANEL_ID,
         component: "chat",
         title: "Chat",
-        params: { roomId: params.room, ...(params.message ? { messageId: params.message } : {}) },
-        renderer: "always",
+        params: { roomId: params.room, ...(params.message ? { messageId: params.message } : {}) }
       };
     }
     return null;
@@ -285,11 +264,8 @@ export function describePanel(
 
   if (key === "browser") {
     // Singleton, no params: an owner has ONE AgentCore Browser profile, and the
-    // panel watches whichever session is live on it — so a second open focuses
-    // the existing panel rather than double-viewing the same stream.
-    // "always": a tab behind Messages stays in the document, so its live view keeps its
-    // DCV display instead of reconnecting (or failing to find its element) on every switch.
-    return { panelId: "browser", component: "browser", title: "Browser", params: {}, renderer: "always" };
+    // pane watches whichever session is live on it.
+    return { panelId: "browser", component: "browser", title: "Browser", params: {} };
   }
 
   // The viewer's Activity feed (mentions, DMs, thread replies, what Paperclip asks of
@@ -318,8 +294,8 @@ export function describePanel(
     return { panelId: "agent-inspector", component: "control", title: "Agent Inspector", params: p };
   }
 
-  // Retired (task-8): a session is a view inside Messages, never its own dock
-  // tab — every "session" URL/link retargets the same chat descriptor a room
+  // Retired (task-8): a session is a view inside Messages, never its own
+  // panel — every "session" URL/link retargets the same chat descriptor a room
   // permalink with ?session= already produces.
   if (key === "session") {
     if (!params.session) return null;
@@ -406,10 +382,10 @@ export function durableParamsFor(panelId: string): string[] {
 
 // PANEL-param keys (descriptor.params space — agentId/initialTab, not the URL
 // grammar's agent/inspectorTab) that a plain re-open of an already-open panel
-// must CLEAR when the fresh descriptor doesn't carry them. dockview's
-// updateParameters merges, so without an explicit `undefined` a stale durable
-// param (an agent filter, an inspector tab) survives an unfiltered navigation
-// — breaking the mobile invariant that plain panel nav drops stale state.
+// must CLEAR when the fresh descriptor doesn't carry them: a re-open merges,
+// so without the clear a stale durable param (an agent filter, an inspector
+// tab) survives an unfiltered navigation — breaking the mobile invariant that
+// plain panel nav drops stale state.
 export function clearablePanelParamKeys(panelId: string): string[] {
   // roomId/messageId included alongside agentId/agentSelection: an agent open
   // must clear a stale room target and vice versa, or the two grammars fight

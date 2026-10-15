@@ -1,6 +1,5 @@
 "use client";
 
-import type { IDockviewPanelProps } from "dockview-react";
 import { TeamsPanelRouter } from "@/components/teams/TeamsPanelRouter";
 import { useTeamsWorkspaceStatus } from "@/hooks/useTeamsApi";
 import {
@@ -10,7 +9,8 @@ import {
 } from "@/components/teams/TeamsStatusOverlays";
 import { replaceSearchParams } from "@/lib/shellNav";
 import { clearDurableParamFromUrl } from "../urlChannel";
-import { useDockPanelParams } from "./useDockPanelParams";
+import type { PanelProps } from "../panelComponents";
+import { updatePanelParams } from "../workspaceController";
 import { WorkTabs } from "./WorkTabs";
 import { isWorkTeamsKey } from "../panelRegistry";
 
@@ -26,7 +26,7 @@ interface TeamsDockPanelParams {
   newIssue?: string; // one-shot
 }
 
-export function TeamsDockPanel(props: IDockviewPanelProps<TeamsDockPanelParams>): React.ReactElement {
+export function TeamsDockPanel(props: PanelProps): React.ReactElement {
   // Real hook shape (useTeamsApi.ts:158-184): a discriminated union keyed on
   // `kind` — "loading" | "ready" | "provisioning" | "subscribe_required" |
   // { kind: "error"; error }. Mirror InlineTeamsPanel.tsx:47-50 EXACTLY:
@@ -34,22 +34,21 @@ export function TeamsDockPanel(props: IDockviewPanelProps<TeamsDockPanelParams>)
   // ready both fall through to the router.
   const status = useTeamsWorkspaceStatus();
 
-  // One-shots re-deliver via updateParameters on an already-open panel —
-  // the hook subscribes to parameter changes (merging dockview's PARTIAL
-  // payloads) so a second ?new=task command re-fires without wiping teamsKey.
-  const params = useDockPanelParams(props);
+  // One-shots re-deliver as fresh params on an already-open panel, so a
+  // second ?new=task command re-fires.
+  const params = props.params as unknown as TeamsDockPanelParams;
 
   if (status.kind === "provisioning") return <ProvisioningOverlay />;
   if (status.kind === "subscribe_required") return <SubscribeOverlay />;
   if (status.kind === "error") return <ErrorOverlay error={status.error} />;
 
   const clearOneShot = (key: "new" | "newIssue") =>
-    props.api.updateParameters({ [key]: undefined });
+    updatePanelParams(props.id, { [key]: undefined });
 
   return (
     // workspace-panel-page (workspace.css): this wrapper IS the panel's
     // scroll container — it collapses editorial-page's viewport min-height
-    // to the dock slot and lets descendants size against the slot (cqh).
+    // to the slot and lets descendants size against the slot (cqh).
     <div className="editorial-page workspace-panel-page h-full overflow-auto">
       {!params.detailId && isWorkTeamsKey(params.teamsKey) && <WorkTabs teamsKey={params.teamsKey} />}
       <TeamsPanelRouter
@@ -66,14 +65,14 @@ export function TeamsDockPanel(props: IDockviewPanelProps<TeamsDockPanelParams>)
         }}
         onConsumeOneShot={clearOneShot}
         onUpdateDurableParam={(key, value) => {
-          props.api.updateParameters({ [key]: value ?? undefined });
+          updatePanelParams(props.id, { [key]: value ?? undefined });
           // Dismissing a durable filter must also strip it from the URL when
           // the current URL command names this panel — otherwise a refresh
           // re-executes the command and resurrects the dismissed filter.
           if (value === null) {
             const cleared = clearDurableParamFromUrl(
               window.location.search,
-              props.api.id,
+              props.id,
               key,
             );
             if (cleared !== null) replaceSearchParams(new URLSearchParams(cleared));

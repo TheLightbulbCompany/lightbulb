@@ -126,9 +126,6 @@ importers:
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
-      dockview-react:
-        specifier: 7.0.2
-        version: 7.0.2(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       livekit-client:
         specifier: ^2.22.3
         version: 2.22.3(@types/dom-mediacapture-record@1.0.22)
@@ -5276,18 +5273,6 @@ packages:
 
   dnssd-advertise@1.1.6:
     resolution: {integrity: sha512-Ndrrf6BMPalkQPd/zubL+4YghH2J9NspapQ09uDXwYbvOPkP0oaqf5CkcwJ0b50kS2O3ul6yVu+jz+RY62Cejg==}
-
-  dockview-core@7.0.2:
-    resolution: {integrity: sha512-i666ndkUdT4U+Bo2Yu3d6KwCJNqe21VJ0oschdgcXucZ5TquzBFX94zcUBEfg4IewTv2BuiPJ7r/2JTGLLv6ig==}
-
-  dockview-react@7.0.2:
-    resolution: {integrity: sha512-tnbRM1C/Ok1n/HXGMF0OWmc6Qlx5pbsSJucxX+3XcuNYkZgKiaNJX3BpdBlSxexjytTI/Xywh0ZNGF3/4Fa9LA==}
-    peerDependencies:
-      react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
-      react-dom: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
-
-  dockview@7.0.2:
-    resolution: {integrity: sha512-QhgbJ7RTFsWvrs1lQZKPGCLTGjKU7kI5ZWX5lwU03arM9lIoQlbfv1b/uQ7V5zTkRw7JDndEqjKMgEFw2I8Kow==}
 
   doctrine@2.1.0:
     resolution: {integrity: sha512-35mSku4ZXK0vfCuHEDAwt55dg2jNajHZ1odvF+8SSr82EsZY4QmXfuWso8oEd8zRhVObSN18aM0CjSdoBX7zIw==}
@@ -15562,18 +15547,6 @@ snapshots:
   diff@4.0.4: {}
 
   dnssd-advertise@1.1.6: {}
-
-  dockview-core@7.0.2: {}
-
-  dockview-react@7.0.2(react-dom@19.2.3(react@19.2.3))(react@19.2.3):
-    dependencies:
-      dockview: 7.0.2
-      react: 19.2.3
-      react-dom: 19.2.3(react@19.2.3)
-
-  dockview@7.0.2:
-    dependencies:
-      dockview-core: 7.0.2
 
   doctrine@2.1.0:
     dependencies:

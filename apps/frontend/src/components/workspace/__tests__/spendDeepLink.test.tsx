@@ -4,18 +4,17 @@
 // rather than at the registry.
 //
 // Registry tests are not enough: they call describePanel directly, while a
-// desktop deep link goes URL → deriveReconcilerAction → openPanel → dockview
-// params → TeamsDockPanel → TeamsPanelRouter. Two deep-link defects have
+// desktop deep link goes URL → deriveReconcilerAction → openPanel → the Work
+// place's params → TeamsDockPanel → TeamsPanelRouter. Two deep-link defects have
 // shipped green because every unit test stopped at describePanel. So this
 // walks the whole seam:
 //
 //   1. the reconciler turns the URL into a teams command for Money,
-//   2. openPanel adds ONE dock panel (id teams-money) carrying section: "spend",
+//   2. openPanel shows ONE Work main view (id teams-work) carrying section: "spend",
 //   3. TeamsPanelRouter MOUNTS Money for it — the absorbed key lands on the
 //      `section` prop, not the "Unknown panel" fallback.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
-import type { DockviewApi } from "dockview-react";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace: vi.fn() }) }));
 
@@ -25,42 +24,8 @@ vi.mock("@/components/teams/panels/MoneyPanel", () => ({
 }));
 
 import { deriveReconcilerAction } from "../workspaceShellReconciler";
-import { openPanel, attachDockviewApi, _resetControllerForTests } from "../workspaceController";
+import { openPanel, attachShell, getWorkspaceSnapshot, _resetControllerForTests } from "../workspaceController";
 import { TeamsPanelRouter } from "@/components/teams/TeamsPanelRouter";
-
-type AddPanelOpts = {
-  id: string;
-  component?: string;
-  title?: string;
-  params?: Record<string, string>;
-};
-
-function makeFakeApi() {
-  const panels = new Map<string, unknown>();
-  const addPanel = vi.fn((opts: AddPanelOpts) => {
-    const panel = {
-      id: opts.id,
-      params: opts.params ?? {},
-      title: opts.title,
-      api: { setActive: vi.fn(), setTitle: vi.fn(), updateParameters: vi.fn() },
-    };
-    panels.set(opts.id, panel);
-    return panel;
-  });
-  const api = {
-    getPanel: (id: string) => panels.get(id),
-    addPanel,
-    onDidActivePanelChange: () => ({ dispose: vi.fn() }),
-    onDidAddPanel: () => ({ dispose: vi.fn() }),
-    onDidRemovePanel: () => ({ dispose: vi.fn() }),
-    onDidLayoutChange: () => ({ dispose: vi.fn() }),
-    panels: [] as unknown[],
-    groups: [] as unknown[],
-    activePanel: undefined,
-  };
-  Object.defineProperty(api, "panels", { get: () => [...panels.values()] });
-  return { api: api as unknown as DockviewApi, addPanel };
-}
 
 beforeEach(() => {
   _resetControllerForTests();
@@ -80,26 +45,22 @@ describe("?panel=teams-spend resolves and mounts through the reconciler seam", (
     });
   });
 
-  it("executing that decision adds ONE Money dock panel carrying section: spend", () => {
-    const { api, addPanel } = makeFakeApi();
-    attachDockviewApi(api, () => undefined);
+  it("executing that decision shows ONE Work view at Money's Spend section", () => {
+    attachShell(() => undefined);
 
     const decision = deriveReconcilerAction("?panel=teams-spend", null)!;
     openPanel(decision.panelKey!, decision.durableParams);
 
-    expect(addPanel).toHaveBeenCalledTimes(1);
-    expect(addPanel.mock.calls[0][0]).toMatchObject({
-      id: "teams-work",
+    expect(getWorkspaceSnapshot().main).toMatchObject({
+      panelId: "teams-work",
       component: "teams",
       params: { teamsKey: "money", section: "spend" },
     });
-    // Re-opening focuses rather than duplicating (the panel id is stable).
-    openPanel(decision.panelKey!, decision.durableParams);
-    expect(addPanel).toHaveBeenCalledTimes(1);
-    // And so does a DIFFERENT absorbed key — one page, one tab. Home links
-    // three of these, so without the shared id it opened three "Money" tabs.
+    expect(getWorkspaceSnapshot().place).toBe("work");
+    // Re-opening, or a DIFFERENT absorbed key, re-targets the same view (one page).
     openPanel("teams-payments", {});
-    expect(addPanel).toHaveBeenCalledTimes(1);
+    expect(getWorkspaceSnapshot().openPanelIds.filter((id) => id === "teams-work")).toHaveLength(1);
+    expect(getWorkspaceSnapshot().main?.params).toMatchObject({ teamsKey: "money", section: "payments" });
   });
 
   it("the latch fires: a second reconcile of the same URL is a no-op", () => {
@@ -130,7 +91,7 @@ describe("?panel=teams-spend resolves and mounts through the reconciler seam", (
     expect(screen.queryByTestId("money-panel")).toBeNull();
   });
 
-  it("?panel=usage opens no dock tab — Usage lives on the Settings page", () => {
+  it("?panel=usage opens nothing here — Usage lives on the Settings page", () => {
     expect(deriveReconcilerAction("?panel=usage", null)!.command).toBeNull();
   });
 });

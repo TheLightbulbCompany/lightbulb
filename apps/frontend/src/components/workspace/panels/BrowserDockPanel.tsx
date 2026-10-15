@@ -19,7 +19,7 @@
 // only tells the backend that a person is using it (throttled), so the agent's
 // browser tools yield to them and the backend saves sign-ins once they go quiet.
 //
-// Watching starts it: while this panel is visible (its dock tab shown and the page not
+// Watching starts it: while this panel is visible (in the pane, and the page not
 // hidden) it posts a viewer heartbeat, which starts the browser when none is running and
 // keeps it from idle-stopping. Hidden, the heartbeat stops and the 30-min idle clock runs.
 // So a stopped browser someone is looking at reads "Starting" with nothing to click. Start
@@ -28,7 +28,6 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
-import type { IDockviewPanelProps } from "dockview-react";
 import { useStatusLoaded } from "@lightbulb/shared";
 import { ApiError, useApi } from "@/lib/api";
 import { usePageVisible } from "@/lib/visibility";
@@ -40,7 +39,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { BrowserExtensionsSection } from "@/components/control/panels/BrowserExtensionsSection";
 import { WebsiteLoginsSection } from "@/components/control/panels/WebsiteLoginsSection";
 import { useIsWorkspaceAdmin } from "@/hooks/useIsWorkspaceAdmin";
-import { selectBrowserMacRun, setBrowserThreadHost, useBrowserMacRun } from "../workspaceController";
+import { selectBrowserMacRun, useBrowserMacRun } from "../workspaceController";
 import { MacRunFrames, macBrowser, usesMacBrowser } from "@/components/messaging/BrowserRunPreview";
 import { useTargets } from "@/components/messaging/NewSessionButton";
 import { useLiveViewHold, useLiveViewWatch } from "./sharedLiveView";
@@ -76,19 +75,6 @@ export const INPUT_THROTTLE_MS = 2_000;
 /** Hold a deploy reload this long after a person last used the stream (the 5 s poll re-renders). */
 const RELOAD_HOLD_MS = 60_000;
 const INACTIVE: LiveViewResponse = { active: false, mode: "idle" };
-/** The thread's share of the panel's height under the browser; the divider's last position. */
-export const THREAD_SHARE_KEY = "lightbulb.browser.threadShare";
-const DEFAULT_THREAD_SHARE = 0.4;
-export const clampThreadShare = (share: number) => Math.min(0.8, Math.max(0.2, share));
-
-function readThreadShare(): number {
-  try {
-    const stored = Number(window.localStorage.getItem(THREAD_SHARE_KEY));
-    return stored ? clampThreadShare(stored) : DEFAULT_THREAD_SHARE;
-  } catch {
-    return DEFAULT_THREAD_SHARE;
-  }
-}
 
 /** A save still running after this reads as failed (with Retry), never an endless spinner. */
 export const SAVE_TIMEOUT_MS = 30_000;
@@ -122,7 +108,7 @@ function Notice({ children }: { children: React.ReactNode }): React.ReactElement
 /** The bar's popovers hold whole Connections sections: bounded to the panel, scrolling inside. */
 const popover = "w-[min(28rem,calc(100vw-2rem))] max-h-[min(32rem,70vh)] overflow-y-auto p-0";
 
-export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps> = {}): React.ReactElement | null {
+export function BrowserDockPanel(): React.ReactElement | null {
   const api = useApi();
   const isAdmin = useIsWorkspaceAdmin();
   const { orgId, userId } = useAuth();
@@ -158,8 +144,6 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
   // A deploy reload would drop the live view under a person who is mid sign-in.
   const [inputAt, setInputAt] = useState(0);
   const { agents } = useAgents();
-  const [threadShare, setThreadShare] = useState(readThreadShare);
-  const split = useRef<HTMLDivElement>(null);
   // The generation whose save has run past SAVE_TIMEOUT_MS (each operation mints a new one).
   const [saveStuck, setSaveStuck] = useState<string | null>(null);
   const savingGeneration = view?.mode === "transition" && view.operation !== "start" ? view.generation ?? null : null;
@@ -174,21 +158,13 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
   // An error is about the state it happened in: once the session changes, it is stale.
   useEffect(() => setControlError(null), [running, view?.sessionId]);
 
-  // The panel is always mounted (renderer "always"), so "visible" is dockview's, not React's.
-  const [panelVisible, setPanelVisible] = useState(panelApi?.isVisible ?? true);
-  useEffect(() => {
-    if (!panelApi) return;
-    setPanelVisible(panelApi.isVisible);
-    const subscription = panelApi.onDidVisibilityChange((event) => setPanelVisible(event.isVisible));
-    return () => subscription.dispose();
-  }, [panelApi]);
-  // Dockview still calls a panel visible when the whole page is backgrounded or minimized.
+  // Mounted only while the pane shows it; the page itself may still be backgrounded.
   const pageVisible = usePageVisible();
 
   // Re-runs (beating at once) when the session comes or goes, so "Starting" is true the moment
   // a watched browser ends, not up to VIEW_HEARTBEAT_MS later.
   useEffect(() => {
-    if (!ready || !panelVisible || showingMac) return;
+    if (!ready || showingMac) return;
     let cancelled = false;
     const beat = async () => {
       if (document.visibilityState !== "visible") return;
@@ -224,7 +200,7 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
       clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [ready, panelVisible, showingMac, api, scope, running]);
+  }, [ready, showingMac, api, scope, running]);
 
   useEffect(() => {
     setView(null);
@@ -317,37 +293,10 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
     }
   };
 
-  // The divider between the browser and a thread docked under it (see setBrowserThreadHost).
-  const resizeSplit = (event: React.PointerEvent<HTMLDivElement>) => {
-    const box = split.current?.getBoundingClientRect();
-    if (!box?.height) return;
-    const target = event.currentTarget;
-    target.setPointerCapture(event.pointerId);
-    let share = threadShare;
-    const move = (next: PointerEvent) => {
-      share = clampThreadShare((box.bottom - next.clientY) / box.height);
-      setThreadShare(share);
-    };
-    const up = () => {
-      target.removeEventListener("pointermove", move);
-      target.removeEventListener("pointerup", up);
-      try { window.localStorage.setItem(THREAD_SHARE_KEY, String(share)); } catch { /* per-viewer convenience only */ }
-    };
-    target.addEventListener("pointermove", move);
-    target.addEventListener("pointerup", up);
-  };
-  const nudgeSplit = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    const step = event.key === "ArrowUp" ? 0.05 : event.key === "ArrowDown" ? -0.05 : 0;
-    if (!step) return;
-    event.preventDefault();
-    const share = clampThreadShare(threadShare + step);
-    setThreadShare(share);
-    try { window.localStorage.setItem(THREAD_SHARE_KEY, String(share)); } catch { /* per-viewer convenience only */ }
-  };
   // The page's one live-view client (sharedLiveView) shows its display in `slot` while this
-  // panel is on screen; hidden behind another tab, the card previews keep it.
+  // panel is on screen; with the pane showing something else, the card previews keep it.
   const [slot, setSlot] = useState<HTMLDivElement | null>(null);
-  const streaming = ready && panelVisible && !showingMac && !!view?.active && !!view.url && view.mode !== "error";
+  const streaming = ready && !showingMac && !!view?.active && !!view.url && view.mode !== "error";
   useLiveViewWatch(streaming ? { url: view?.url as string, sessionId: view?.sessionId, remoteWidth: view?.remoteWidth, remoteHeight: view?.remoteHeight } : null);
   useLiveViewHold(streaming && slot ? { slot, menuHost, busy: pending || view?.mode !== "idle" } : null);
   // Any click, key or scroll in the stream goes straight to the remote browser; this only
@@ -366,28 +315,14 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
     return () => kinds.forEach((kind) => slot.removeEventListener(kind, using, true));
   }, [slot, api]);
 
-  // Browser on top; a thread the room docks here (see setBrowserThreadHost) sits below a
-  // divider, in every state of the panel. The slot comes first in the DOM (a `peer` must
-  // precede what it styles) and is ordered last; while it is empty the divider hides and the
-  // top takes the whole height.
-  const docked = (top: React.ReactNode) => (
-    <div ref={split} className="flex h-full min-h-0 flex-1 flex-col">
-      <div ref={setBrowserThreadHost} data-testid="browser-thread-slot"
-        className="room-context-host peer order-3 flex min-h-0 shrink-0 flex-col overflow-hidden empty:hidden"
-        style={{ flexBasis: `${threadShare * 100}%` }} />
-      <div role="separator" aria-orientation="horizontal" aria-label="Resize the browser and the thread" tabIndex={0}
-        aria-valuenow={Math.round((1 - threadShare) * 100)} aria-valuemin={20} aria-valuemax={80}
-        onPointerDown={resizeSplit} onKeyDown={nudgeSplit}
-        className="order-2 h-1.5 shrink-0 cursor-row-resize border-y border-[var(--edge)] bg-[var(--cream-deep)] peer-empty:hidden" />
-      <div className="relative order-1 min-h-0 flex-1"><div className="absolute inset-0">{top}</div></div>
-    </div>
-  );
+  // Each state fills the pane.
+  const fill = (top: React.ReactNode) => <div className="relative min-h-0 flex-1"><div className="absolute inset-0">{top}</div></div>;
 
   const renderCloud = (): React.ReactElement | null => {
     if (!ready) return null;
-    if (!view) return docked(<Notice>Looking for a live browser session…</Notice>);
+    if (!view) return fill(<Notice>Looking for a live browser session…</Notice>);
     if (view.mode === "error") {
-      return docked(
+      return fill(
         <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-[var(--midnight-muted)]">
           <p role="alert" className="text-err">{view.error || "The shared browser needs to restart."}</p>
           <p className="max-w-sm text-xs">Restarting restores the last saved sign-in state. Any page currently open may be lost.</p>
@@ -400,13 +335,13 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
     }
     if (!view.active || !view.url) {
       if (restarting(view)) {
-        return docked(<Notice>Restarting the browser to load its extensions…</Notice>);
+        return fill(<Notice>Restarting the browser to load its extensions…</Notice>);
       }
       // Someone looking at it is already starting it (the heartbeat above): say so at once and
       // offer nothing to click, because a click could only collide with that start.
-      const watching = panelVisible && pageVisible;
+      const watching = pageVisible;
       if (pending || view.mode === "transition" || (watching && view.endedReason !== "stopped" && !startError)) {
-        return docked(
+        return fill(
           <div data-testid="browser-starting" className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center text-sm text-[var(--midnight-muted)]">
             <p>Starting the browser…</p>
             {(view.endedReason === "idle" || view.endedReason === "expired") && <p className="max-w-sm text-xs">{stoppedMessage(view)}</p>}
@@ -416,7 +351,7 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
       // A person stopped it, or the start failed. Any click here starts a fresh session that
       // restores the saved state: never a dead end.
       const error = controlError || startError || view.error;
-      return docked(
+      return fill(
         <div onClick={() => void mutate("/browser/start")} data-testid="browser-stopped" className="flex h-full cursor-pointer flex-col items-center justify-center gap-3 p-6 text-center text-sm text-[var(--midnight-muted)]">
           <p>{stoppedMessage(view)}</p>
           <p className="max-w-sm text-xs">One browser for the whole workspace. Sign in once and it is saved for everyone, agents included. Click to start it again; the saved state comes back.</p>
@@ -459,7 +394,7 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
           </div>
         </div>
         {controlError && <p role="alert" className="px-3 py-1 text-xs text-err">{controlError}</p>}
-        {docked(ensureDcvMediaShim()
+        {fill(ensureDcvMediaShim()
           ? <div ref={setSlot} className="relative h-full" data-testid="browser-viewer" />
           : <Notice>This device cannot initialize the shared browser viewer.</Notice>)}
         {view.error && <p role="alert" className="px-3 py-2 text-xs text-err">{view.error}</p>}
@@ -495,9 +430,9 @@ export function BrowserDockPanel({ api: panelApi }: Partial<IDockviewPanelProps>
             <p className="flex h-8 shrink-0 items-center truncate border-b border-[var(--edge)] px-3 text-xs text-[var(--midnight-muted)]" data-testid="mac-browser-bar">
               {agentName(macRun.agentId)} · on {macName(macRun)} · click or type to take over; {agentName(macRun.agentId)} waits while you do
             </p>
-            {/* Mounted only while the dock shows this panel on a visible page: the view-tier cast
+            {/* Mounted only while the pane shows this panel on a visible page: the view-tier cast
                 (1280 px, 10 fps) and its frames subscription run only for someone who can see them. */}
-            {docked(panelVisible && pageVisible ? <MacRunFrames runId={macRun.runId} roomId={macRun.roomId} deviceId={macBrowser(macRun)?.deviceId} /> : null)}
+            {fill(pageVisible ? <MacRunFrames runId={macRun.runId} roomId={macRun.roomId} deviceId={macBrowser(macRun)?.deviceId} /> : null)}
           </>
         ) : renderCloud()}
       </div></div>

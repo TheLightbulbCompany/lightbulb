@@ -11,9 +11,7 @@ export interface PanelTabDefinition {
 
 /**
  * `underline` (default) — a hairline rail with a 2px --midnight edge under the
- * active tab. The panel-level idiom, and the one the dock's own tab strip
- * mirrors (see the `.dockview-theme-lightbulb` block in workspace.css), so a
- * panel's tabs and the dock's tabs read as one system.
+ * active tab. The panel-level idiom (the Work place's tabs use it).
  *
  * `pill` — a --cream-deeper track with the active segment lifted out in
  * --cream. For a small, closed set of view switches INSIDE a panel body,

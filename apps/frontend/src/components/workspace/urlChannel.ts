@@ -1,7 +1,6 @@
 // The URL is a ONE-WAY retained command channel (spec §6): inbound ?panel=…
 // is a navigation intent the shell executes as open-or-focus; outbound, only
-// explicit navigations write it. Layout changes never touch it; closing a
-// panel or picking another dock tab only ever CLEARS it, in place.
+// explicit navigations write it. Closing the pane only ever CLEARS it, in place.
 import {
   describePanel,
   durableParamsFor,
@@ -10,9 +9,39 @@ import {
   type PanelDescriptor,
 } from "./panelRegistry";
 
+/** The right pane rides along a place's URL as `pane=<key>` plus `pane.<param>=…`, so a
+ *  reload restores both slots. With Chat as the place, the pane is the plain `panel=` form. */
+export const PANE_PARAM = "pane";
+const PANE_PREFIX = "pane.";
+
+export interface PaneCommand {
+  key: string;
+  params: Record<string, string>;
+  descriptor: PanelDescriptor;
+}
+
 export interface WorkspaceCommand {
   descriptor: PanelDescriptor;
   oneShots: Record<string, string>;
+  pane?: PaneCommand;
+}
+
+/** Splits the pane part (`pane`, `pane.*`) off a URL param bag; the bag keeps the rest. */
+export function takePane(all: Record<string, string>): PaneCommand | undefined {
+  const key = all[PANE_PARAM];
+  const params: Record<string, string> = {};
+  for (const k of Object.keys(all)) {
+    if (k === PANE_PARAM) delete all[k];
+    else if (k.startsWith(PANE_PREFIX)) { params[k.slice(PANE_PREFIX.length)] = all[k]; delete all[k]; }
+  }
+  const descriptor = key ? describePanel(key, params) : null;
+  return key && descriptor ? { key, params, descriptor } : undefined;
+}
+
+/** `panel=<main>&…&pane=<key>&pane.<k>=…` */
+export function appendPane(sp: URLSearchParams, key: string, params: Record<string, string>): void {
+  sp.set(PANE_PARAM, key);
+  for (const [k, v] of Object.entries(params)) sp.set(`${PANE_PREFIX}${k}`, v);
 }
 
 function toParams(search: string): URLSearchParams {
@@ -34,6 +63,7 @@ export function parseCommand(search: string): WorkspaceCommand | null {
     }
   }
   for (const k of NON_COMMAND_PARAMS) delete all[k];
+  const pane = takePane(all);
 
   const panelKey = all.panel;
   delete all.panel;
@@ -42,18 +72,18 @@ export function parseCommand(search: string): WorkspaceCommand | null {
     // Bare ?agent= (marketplace deploy-success) = open that agent's chat.
     if (all.agent) {
       const descriptor = describePanel("chat", { agent: all.agent });
-      return descriptor ? { descriptor, oneShots } : null;
+      return descriptor ? { descriptor, oneShots, ...(pane ? { pane } : {}) } : null;
     }
     // Bare ?room= (the meeting-notes mail links this way) = open that room.
     if (all.room) {
       const descriptor = describePanel("chat", { room: all.room, ...(all.message ? { message: all.message } : {}) });
-      return descriptor ? { descriptor, oneShots } : null;
+      return descriptor ? { descriptor, oneShots, ...(pane ? { pane } : {}) } : null;
     }
     return null;
   }
 
   const descriptor = describePanel(panelKey, all);
-  return descriptor ? { descriptor, oneShots } : null;
+  return descriptor ? { descriptor, oneShots, ...(pane ? { pane } : {}) } : null;
 }
 
 // Stable identity of "what command does this URL carry" — the reconciler's
@@ -95,6 +125,11 @@ export function buildPanelUrl(panelKey: string, params: Record<string, string>):
 // replaceState.
 export function clearPanelFromUrl(search: string, closedPanelId: string): string | null {
   const command = parseCommand(search);
+  if (command?.pane?.descriptor.panelId === closedPanelId) {
+    const params = toParams(search);
+    [...params.keys()].forEach((k) => { if (k === PANE_PARAM || k.startsWith(PANE_PREFIX)) params.delete(k); });
+    return params.toString();
+  }
   if (!command || command.descriptor.panelId !== closedPanelId) return null;
   const params = toParams(search);
   const before = params.toString();
@@ -103,18 +138,6 @@ export function clearPanelFromUrl(search: string, closedPanelId: string): string
   const result = params.toString();
   return result === before ? null : result;
 }
-
-// Picking another dock tab clears the URL-named panel the same way, so a reload
-// or a copied link can't reopen a panel the user already left. Null when the
-// URL names no panel or names the tab picked.
-export function clearUnfocusedPanelFromUrl(search: string, activePanelId: string | null): string | null {
-  const command = parseCommand(search);
-  if (!command || command.descriptor.panelId === activePanelId) return null;
-  return clearPanelFromUrl(search, command.descriptor.panelId);
-}
-
-// All chat URL forms now name Messages directly.
-export { clearPanelFromUrl as clearClosedPanelFromUrl };
 
 // Dismissing a durable panel param (the Tasks agent-filter chip) must also
 // strip that param from the URL when the CURRENT URL command names the same

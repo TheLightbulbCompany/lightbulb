@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { MAIN_MIN_WIDTH, PANE_MIN_WIDTH } from "../RightPane";
 
 // jsdom computes no layout, so this pins the CSS declaration itself.
 describe(".workspace-shell viewport", () => {
@@ -24,5 +25,21 @@ describe(".workspace-shell viewport", () => {
     const phone = css.slice(css.indexOf("@media (max-width: 599px)"));
     expect(phone).toMatch(/\.workspace-shell > :is\(\.workspace-rail, \.cream-sidebar\) \{\s*display:\s*none/);
     expect(phone).toMatch(/\[data-nav-open="true"\] > :is\(\.workspace-rail, \.cream-sidebar\) \{ display: flex; \}/);
+  });
+
+  it("opens the pane as a sheet wherever the main view and the pane cannot both keep their minimums", () => {
+    // jsdom computes no layout: derive the breakpoint from the minimums and the tablet grid.
+    const tablet = css.slice(css.indexOf("@media (max-width: 1000px)"));
+    const [rail, sidebar] = /grid-template-columns:\s*(\d+)px (\d+)px/.exec(tablet)!.slice(1).map(Number);
+    const fits = rail + sidebar + MAIN_MIN_WIDTH + PANE_MIN_WIDTH; // 956
+    const block = css.slice(css.indexOf(`@media (min-width: 600px) and (max-width: ${fits - 1}px)`));
+    expect(block.startsWith("@media")).toBe(true);
+    const sheet = block.slice(0, block.indexOf("}"));
+    expect(sheet).toMatch(/\.workspace-body:not\(\[data-full\]\) > \.workspace-pane \{/);
+    expect(sheet).toMatch(/position:\s*absolute/);
+    expect(sheet).toMatch(/inset:\s*0/);
+    expect(sheet).toMatch(/width:\s*auto !important/);
+    // Full screen is excluded from the sheet, so it still sits beside the chat column.
+    expect(block).toMatch(/\.workspace-body\[data-full\] > \.workspace-view--chat \{ flex: 0 1 360px; \}/);
   });
 });

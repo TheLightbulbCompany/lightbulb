@@ -1068,7 +1068,7 @@
 }
 
 /* Three-panel dock — chat left (full height), Dashboard right-top, Inbox
-   right-bottom, separated by hairline gaps like dockview's sashes. */
+   right-bottom, separated by hairline gaps. */
 .ld-dock {
   flex: 1;
   min-height: 0;
@@ -1103,7 +1103,7 @@
   }
 }
 
-/* Dockview-style tab strip: light-gray container, active tab white. */
+/* Tab strip: light-gray container, active tab white. */
 .ld-tabstrip {
   flex: none;
   display: flex;

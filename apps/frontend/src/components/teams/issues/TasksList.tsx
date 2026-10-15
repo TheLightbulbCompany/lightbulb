@@ -896,7 +896,7 @@ export function TasksList({
   // takes the view back, and the preference is what it always was.
   const [groupingDeepLink, setGroupingDeepLink] = useState(Boolean(initialGroupBy));
   const viewMode = groupingDeepLink ? "list" : storedViewMode;
-  // Re-delivery of the panel param on an already-open panel (dockview merges
+  // Re-delivery of the panel param on an already-open panel (the workspace merges
   // parameters rather than remounting), and the clear a plain Tasks nav sends.
   // Adjust-state-during-render, not an effect — the same pattern IssuesPanel
   // uses for its one-shot.

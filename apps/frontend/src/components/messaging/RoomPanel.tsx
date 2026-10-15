@@ -2,9 +2,9 @@
 
 import { createPortal } from "react-dom";
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
-import { ArrowLeft, Check, Circle, CircleAlert, Link, ListChecks, MessagesSquare, PanelRight, Square } from "lucide-react";
+import { ArrowLeft, Check, Chrome, Circle, CircleAlert, FolderOpen, Link, ListChecks, MessagesSquare, PanelRight, Square } from "lucide-react";
 import type { Components } from "react-markdown";
-import { LISTEN_MODE_LABELS, listenModeOptions, soleChannelOwner, type CreateMessageRequest, type ListenMode, type MemberPrefsRequest, type MemberRef, type UpdateMessageRequest } from "@lightbulb/shared";
+import { LISTEN_MODE_LABELS, listenModeOptions, soleChannelOwner, useStatusLoaded, type CreateMessageRequest, type ListenMode, type MemberPrefsRequest, type MemberRef, type UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
 import { DelegateCard } from "./DelegateCard";
 import { RoomSubagentStrip } from "./RoomSubagentStrip";
@@ -24,7 +24,8 @@ import { cn } from "@/lib/utils";
 import { roomUrlTransform } from "./markdown";
 import { JOIN_LINK_COPIED, joinLinkNote } from "@/hooks/useCopyJoinLink";
 import { copyText, messagePermalink, parseSessionPermalink } from "./messageLinks";
-import { openInviteDialog, openSessionPanel, useBrowserThreadHost } from "@/components/workspace/workspaceController";
+import { openBrowserPane, openInviteDialog, openPanel, openSessionPanel, useThreadPane, useWorkspaceState } from "@/components/workspace/workspaceController";
+import { capture } from "@/lib/analytics";
 import { RunBrowserPreview } from "./BrowserRunPreview";
 import { RoomComposer, type RoomComposerProps } from "./RoomComposer";
 import { RoomDetailsPanel, type DetailsTab } from "./RoomDetailsPanel";
@@ -418,9 +419,9 @@ function RoomContent({
   const contextWasOpen = useRef(false);
   const historyRef = useRef<HTMLDivElement>(null);
   const isNarrow = useSyncExternalStore(subscribeNarrow, getNarrow, getServerNarrow);
-  // While the shared Browser is beside the conversation, the side column (thread, tasks, room
-  // details) renders under it instead of squeezing the room into a third column.
-  const sideHost = useBrowserThreadHost();
+  // The shell's right pane: the room's tools open it (Browser, Files) beside the conversation.
+  const { ready: inShell } = useWorkspaceState();
+  const browserAvailable = useStatusLoaded();
   const visibleRoom = room?.roomId === roomId ? room : undefined;
   const actionable = httpReady && !!visibleRoom;
   // The welcome (seq 1) must be loaded: useRooms keeps only the newest 100, so a long agent-only run hides it.
@@ -576,6 +577,12 @@ function RoomContent({
     if (selection?.kind === "thread") onSelectThread?.(null);
     setSelection(null);
   }, [onSelectThread, selection?.kind]);
+  // In the shell, the side column (thread, tasks, room details) is the right pane's content;
+  // when something else takes the pane, the column folds.
+  const counterparts = participants.filter((participant) => participant.kind !== "human" || participant.id !== currentUserId);
+  const roomName = roomDisplayName(visibleRoom, counterparts);
+  const sideTitle = `${showTasks ? "Tasks" : showDetail ? "Thread" : "Details"} · ${roomName}`;
+  const sideHost = useThreadPane(showContext, () => { closeDetail(); setContextCollapsed(true); }, sideTitle);
 
   const openMemberPicker = useCallback(() => {
     closeDetail();
@@ -749,8 +756,6 @@ function RoomContent({
     </article>;
   }
 
-  const counterparts = participants.filter((participant) => participant.kind !== "human" || participant.id !== currentUserId);
-  const roomName = roomDisplayName(visibleRoom, counterparts);
   const dockSide = (column: React.ReactNode) => sideHost ? createPortal(column, sideHost) : column;
   return <section
     className={cn("room-panel", showContext && !sideHost && "room-has-context", showDetail ? "room-has-detail" : "room-has-default-context")} aria-label={roomName}>
@@ -803,6 +808,12 @@ function RoomContent({
             onClick={() => { closeDetail(); setContextCollapsed(!contextCollapsed); }}><PanelRight aria-hidden="true" /></ViewButton>
           {onLinkToWork && <ViewButton label={roomTasks.length > 0 ? `Tasks · ${roomTasks.length}` : "Tasks"} aria-current={showTasks ? "page" : undefined}
             onClick={event => openDetail("tasks", "tasks", event.currentTarget)}><ListChecks aria-hidden="true" />{roomTasks.length > 0 && <span aria-hidden="true">{roomTasks.length}</span>}</ViewButton>}
+          {/* The shared Browser is offered once a status body has landed (it can only show its
+              empty state before), the agent's files always. Both open the right pane. */}
+          {inShell && browserAvailable && <ViewButton label="Browser"
+            onClick={() => { capture("browser_view_opened"); openBrowserPane(); }}><Chrome aria-hidden="true" /></ViewButton>}
+          {inShell && <ViewButton label="Files"
+            onClick={() => { capture("file_browser_opened"); openPanel("file-viewer", composer.focusAgentId ? { agent: composer.focusAgentId } : {}, { pushUrl: true }); }}><FolderOpen aria-hidden="true" /></ViewButton>}
         </nav>} />
       {(state === "reconnecting" || !liveConnected) && <div className="room-state"><p role="status" aria-label="Room status">Reconnecting live updates. You can keep sending messages.</p>
         {onRetry && <Button variant="outline" onClick={onRetry}>Check for updates</Button>}</div>}

@@ -1,11 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { IDockviewPanelProps } from "dockview-react";
 import { MessagingConversation } from "@/components/messaging/MessagingWorkspace";
 import { useMessagingWorkspace } from "@/components/messaging/MessagingWorkspaceContext";
 import { useAgents } from "@/hooks/useAgents";
-import { useDockPanelParams } from "./useDockPanelParams";
+import type { PanelProps } from "../panelComponents";
 import { DEFAULT_AGENT_SENTINEL } from "../panelRegistry";
 import { syncMessagesPanelAgent } from "../workspaceController";
 import { cancelFocusComposerRequest, releaseFocusComposerRequest } from "@/lib/focusComposerRequest";
@@ -23,14 +22,14 @@ interface ChatPanelParams {
  * Agent parameters are one-shot selection intents for the shared conversation.
  * Room changes must not snap back to the last agent requested by a deep link.
  */
-export function ChatPanel(props: IDockviewPanelProps<ChatPanelParams>): React.ReactElement {
-  const params = useDockPanelParams(props);
+export function ChatPanel(props: PanelProps): React.ReactElement {
+  const params = props.params as ChatPanelParams;
   const { defaultId } = useAgents();
   const { selectAgentDm, roomProps, openMessage, openSession, freshLanding, activeRoomId, sessionFocus } = useMessagingWorkspace();
   const lastRequested = useRef<string | null>(null);
   const navigationRequest = useRef(0);
-  // The agent restored with the saved layout is a cold load, not a pick.
-  const restoredAgent = useRef(props.params.agentId);
+  // The agent the conversation mounted with is a cold load, not a pick.
+  const restoredAgent = useRef<string | undefined>(params.agentId);
   const [focusDestination, setFocusDestination] = useState<{ agentId: string; roomId: string } | null>(null);
   const deliveredDestination = useRef<typeof focusDestination>(null);
   // A room permalink wins over any agent-selection request riding along with

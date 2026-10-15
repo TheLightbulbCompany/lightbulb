@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { useEffect, useReducer } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render } from "@testing-library/react";
 import { DEFAULT_AGENT_SENTINEL, MESSAGES_PANEL_ID } from "../panelRegistry";
@@ -28,21 +29,32 @@ vi.mock("@/components/messaging/MessagingWorkspace", () => ({
 }));
 
 import { ChatPanel } from "../panels/ChatPanel";
-type ChatPanelProps = React.ComponentProps<typeof ChatPanel>;
 
+// The shell hands the panel its params as props; `api.updateParameters` stands in for the
+// controller's merge (undefined deletes) followed by the re-render it causes.
 function makeProps(agentId?: string) {
-  const listeners = new Set<(params: { agentId?: string }) => void>();
-  const api = {
-    id: MESSAGES_PANEL_ID,
-    title: "Chat",
-    setTitle: vi.fn(),
-    onDidParametersChange: (listener: (params: { agentId?: string }) => void) => {
-      listeners.add(listener);
-      return { dispose: () => listeners.delete(listener) };
+  let params: Record<string, string> = agentId ? { agentId } : {};
+  const listeners = new Set<() => void>();
+  return {
+    get params() { return params; },
+    set params(next: Record<string, string>) { params = next; },
+    subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+    api: {
+      setTitle: vi.fn(),
+      updateParameters: (partial: Record<string, string | undefined>) => {
+        const merged: Record<string, string | undefined> = { ...params, ...partial };
+        for (const k of Object.keys(partial)) if (partial[k] === undefined) delete merged[k];
+        params = merged as Record<string, string>;
+        listeners.forEach((listener) => listener());
+      },
     },
-    updateParameters: (params: { agentId?: string }) => listeners.forEach((listener) => listener(params)),
   };
-  return { params: { agentId }, api } as unknown as ChatPanelProps;
+}
+
+function Harness({ props, params }: { props: ReturnType<typeof makeProps>; params?: Record<string, string> }) {
+  const [, force] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => props.subscribe(force), [props]);
+  return <ChatPanel id={MESSAGES_PANEL_ID} params={params ?? props.params} />;
 }
 
 beforeEach(() => {
@@ -60,43 +72,42 @@ describe("ChatPanel", () => {
     activeRoomId = "r1";
     const props = makeProps();
     props.params = { roomId: "r1" };
-    render(<ChatPanel {...props} />);
+    render(<Harness props={props} />);
     expect(openMessage).not.toHaveBeenCalled();
-    act(() => props.api.updateParameters({ roomId: "r1", messageId: "m1" } as never));
+    act(() => props.api.updateParameters({ roomId: "r1", messageId: "m1" }));
     expect(openMessage).toHaveBeenLastCalledWith("r1", "m1");
-    act(() => props.api.updateParameters({ roomId: "r2", messageId: undefined } as never));
+    act(() => props.api.updateParameters({ roomId: "r2", messageId: undefined }));
     expect(openMessage).toHaveBeenLastCalledWith("r2", null);
   });
 
   it("consumes session intents including explicit repeats without falling into agent selection", () => {
     const props = makeProps();
     props.params = { sessionId: "s1", sessionIntent: "1" };
-    const view = render(<ChatPanel {...props} />);
+    const view = render(<Harness props={props} />);
     expect(openSession).toHaveBeenLastCalledWith("s1");
-    view.rerender(<ChatPanel {...props} />);
+    view.rerender(<Harness props={props} />);
     expect(openSession).toHaveBeenCalledTimes(1);
     act(() => props.api.updateParameters({ sessionId: "s1", sessionIntent: "2" }));
     expect(openSession).toHaveBeenCalledTimes(2);
     expect(selectAgentDm).not.toHaveBeenCalled();
     expect(openMessage).not.toHaveBeenCalled();
   });
-  // A reload with ?panel=chat&session= in the URL: the shell applies the URL command right after
-  // it restores the layout, before this panel has mounted. Dockview then renders the panel once with
-  // the restored params and again with the command's, and fires no parameters-changed event for it.
+  // A reload with ?panel=chat&session= in the URL: the shell applies the URL command after the
+  // panel has mounted with its default params, so the panel sees the command as new props.
   it("opens the session a URL command set before the panel mounted", () => {
     const props = makeProps("agent-a");
-    const view = render(<ChatPanel {...props} />);
+    const view = render(<Harness props={props} />);
     expect(openSession).not.toHaveBeenCalled();
-    view.rerender(<ChatPanel {...props} params={{ sessionId: "s-reload", sessionIntent: "1" }} />);
+    view.rerender(<Harness props={props} params={{ sessionId: "s-reload", sessionIntent: "1" }} />);
     expect(openSession).toHaveBeenLastCalledWith("s-reload");
   });
 
   it("resolves the sentinel when the default roster arrives", () => {
     const props = makeProps(DEFAULT_AGENT_SENTINEL);
-    const view = render(<ChatPanel {...props} />);
+    const view = render(<Harness props={props} />);
     expect(selectAgentDm).not.toHaveBeenCalled();
     defaultId = "agent-ceo";
-    view.rerender(<ChatPanel {...props} />);
+    view.rerender(<Harness props={props} />);
     expect(selectAgentDm).toHaveBeenCalledExactlyOnceWith("agent-ceo", false); // the default-agent fallback is not a pick
     expect(props.api.setTitle).not.toHaveBeenCalled();
   });
@@ -104,7 +115,7 @@ describe("ChatPanel", () => {
   it("lands a fresh workspace in #general, never the default agent's DM", () => {
     defaultId = "agent-ceo";
     freshLanding = true;
-    render(<ChatPanel {...makeProps(DEFAULT_AGENT_SENTINEL)} />);
+    render(<Harness props={makeProps(DEFAULT_AGENT_SENTINEL)} />);
     expect(selectAgentDm).not.toHaveBeenCalled();
   });
 
@@ -112,31 +123,31 @@ describe("ChatPanel", () => {
     defaultId = "agent-ceo";
     freshLanding = null;
     const props = makeProps(DEFAULT_AGENT_SENTINEL);
-    const view = render(<ChatPanel {...props} />);
+    const view = render(<Harness props={props} />);
     expect(selectAgentDm).not.toHaveBeenCalled();
     freshLanding = false; // a returning workspace
-    view.rerender(<ChatPanel {...props} />);
+    view.rerender(<Harness props={props} />);
     expect(selectAgentDm).toHaveBeenCalledExactlyOnceWith("agent-ceo", false);
   });
 
   it("opens an explicit agent even in a fresh workspace", () => {
     freshLanding = true;
     const props = makeProps();
-    render(<ChatPanel {...props} />);
+    render(<Harness props={props} />);
     act(() => props.api.updateParameters({ agentId: "agent-friday" }));
     expect(selectAgentDm).toHaveBeenCalledExactlyOnceWith("agent-friday", true);
   });
 
   it("keeps an explicit agent deep link while the roster catches up", () => {
     const props = makeProps();
-    render(<ChatPanel {...props} />);
+    render(<Harness props={props} />);
     act(() => props.api.updateParameters({ agentId: "agent-late" }));
     expect(selectAgentDm).toHaveBeenCalledExactlyOnceWith("agent-late", true);
   });
 
-  it("treats the agent restored with the layout as a cold load, not a pick", () => {
+  it("treats the agent the conversation mounted with as a cold load, not a pick", () => {
     const props = makeProps("a1");
-    render(<ChatPanel {...props} />);
+    render(<Harness props={props} />);
     expect(selectAgentDm).toHaveBeenCalledExactlyOnceWith("a1", false);
     act(() => props.api.updateParameters({ agentId: "a2" }));
     expect(selectAgentDm).toHaveBeenLastCalledWith("a2", true);
@@ -149,31 +160,31 @@ describe("ChatPanel", () => {
     requestFocusComposer("agent-friday", "hello");
     deferFocusComposerRequest("agent-friday");
     const props = makeProps();
-    const view = render(<ChatPanel {...props} />);
+    const view = render(<Harness props={props} />);
     act(() => props.api.updateParameters({ agentId: "agent-friday" }));
-    act(() => props.api.updateParameters({ agentId: undefined, roomId: "r1" } as never));
+    act(() => props.api.updateParameters({ agentId: undefined, roomId: "r1" }));
     expect(openMessage).not.toHaveBeenCalled();
     const focused = vi.fn();
     window.addEventListener("getstarted:focus-composer", focused);
     await act(async () => { resolve("dm-1"); });
     roomProps = { roomId: "dm-1", composer: {} };
-    view.rerender(<ChatPanel {...props} />);
+    view.rerender(<Harness props={props} />);
     window.removeEventListener("getstarted:focus-composer", focused);
     expect(focused).toHaveBeenCalledTimes(1);
   });
 
-  it("retargets a mounted conversation on Dockview parameter changes", () => {
+  it("retargets a mounted conversation on parameter changes", () => {
     const props = makeProps("agent-friday");
-    render(<ChatPanel {...props} />);
+    render(<Harness props={props} />);
     act(() => props.api.updateParameters({ agentId: "agent-atlas" }));
     expect(selectAgentDm.mock.calls).toEqual([["agent-friday", false], ["agent-atlas", true]]);
   });
 
   it("does not snap room selection back when the selector changes identity", () => {
     const props = makeProps("agent-friday");
-    const view = render(<ChatPanel {...props} />);
+    const view = render(<Harness props={props} />);
     selectAgentDm = vi.fn().mockResolvedValue(undefined);
-    view.rerender(<ChatPanel {...props} />);
+    view.rerender(<Harness props={props} />);
     expect(selectAgentDm).not.toHaveBeenCalled();
     act(() => props.api.updateParameters({ agentId: undefined }));
     expect(selectAgentDm).not.toHaveBeenCalled();
@@ -182,14 +193,14 @@ describe("ChatPanel", () => {
   });
 
   it("leaves generic room selection to the shared owner", () => {
-    render(<ChatPanel {...makeProps()} />);
+    render(<Harness props={makeProps()} />);
     expect(selectAgentDm).not.toHaveBeenCalled();
   });
 
   it("allows a failed agent selection to retry after clearing the target", async () => {
     selectAgentDm.mockRejectedValueOnce(new Error("Unavailable"));
     const props = makeProps("agent-friday");
-    render(<ChatPanel {...props} />);
+    render(<Harness props={props} />);
     await act(async () => {});
     act(() => props.api.updateParameters({ agentId: undefined }));
     act(() => props.api.updateParameters({ agentId: "agent-friday" }));
@@ -200,7 +211,7 @@ describe("ChatPanel", () => {
     selectAgentDm.mockRejectedValueOnce(new Error("Unavailable"));
     requestFocusComposer("agent-friday", "Do not replay later");
     deferFocusComposerRequest("agent-friday");
-    render(<ChatPanel {...makeProps("agent-friday")} />);
+    render(<Harness props={makeProps("agent-friday")} />);
 
     await act(async () => {});
 
@@ -211,11 +222,11 @@ describe("ChatPanel", () => {
     let rejectOld!: (error: Error) => void;
     selectAgentDm.mockImplementationOnce(() => new Promise<void>((_, reject) => { rejectOld = reject; }));
     const props = makeProps("agent-friday");
-    const view = render(<ChatPanel {...props} />);
+    const view = render(<Harness props={props} />);
     act(() => props.api.updateParameters({ agentId: "agent-atlas" }));
     await act(async () => { rejectOld(new Error("Old request failed")); });
     selectAgentDm = vi.fn().mockResolvedValue(undefined);
-    view.rerender(<ChatPanel {...props} />);
+    view.rerender(<Harness props={props} />);
     expect(selectAgentDm).not.toHaveBeenCalled();
   });
 });

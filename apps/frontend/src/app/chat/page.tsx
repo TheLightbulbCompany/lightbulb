@@ -25,7 +25,7 @@ function WorkspaceShellLoading() {
 }
 
 // The one shell, at every width (phones get its rail and sidebar as a drawer).
-// The dock is browser-only (dockview measures the DOM), so the server renders
+// The shell is browser-only (it reads window.location and storage), so the server renders
 // the loader and the shell mounts on the client.
 const WorkspaceShell = dynamic(
   () => import("@/components/workspace/WorkspaceShell").then((m) => m.WorkspaceShell),

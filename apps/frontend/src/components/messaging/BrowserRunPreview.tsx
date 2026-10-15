@@ -14,7 +14,7 @@ import { browsingSite, frameText, type RoomRunView } from "@lightbulb/shared";
 import { useApi } from "@/lib/api";
 import { usePageVisible } from "@/lib/visibility";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
-import { showBrowserBesideChat, showMacRunInBrowser } from "@/components/workspace/workspaceController";
+import { openBrowserPane, showMacRunInBrowser } from "@/components/workspace/workspaceController";
 import { BrowserFrameView } from "@/components/workspace/panels/BrowserFrameView";
 import { LiveViewMirror, useLiveViewWatch, useSharedLiveView } from "@/components/workspace/panels/sharedLiveView";
 
@@ -97,12 +97,12 @@ export function MacRunFrames({ runId, deviceId, roomId }: { runId: string; devic
 /** "Friday is browsing on <device name>" (UX #6, falling back to "a Mac"): the one tab the
  * agent drives there, as a small thumbnail for everyone reading the room. Frames flow only
  * while someone watches and the run is active. A click shows it large and interactive in the
- * Browser panel (or full screen on mobile). */
+ * Browser pane (or full screen with no shell mounted). */
 export function MacBrowserPreview({ agentName, runId, roomId, deviceId, deviceName, site }: {
   agentName: string; runId: string; roomId?: string; deviceId?: string; deviceName?: string; site?: string | null;
 }): React.ReactElement {
   const label = `${agentName} is browsing${site ? ` ${site}` : ""} on ${deviceName || "a Mac"}`;
-  // With no dock mounted: the same frames, full screen.
+  // With no shell mounted: the same frames, full screen.
   const [fullScreen, setFullScreen] = useState(false);
   const open = () => { if (!showMacRunInBrowser(runId)) setFullScreen(true); };
   // The thumbnail's frames heartbeat runs only while someone can see it: the page is showing and
@@ -167,7 +167,7 @@ export function BrowserRunPreview({ agentName, site, runId }: { agentName: strin
   useLiveViewWatch(source);
 
   const label = `${agentName} is browsing${site ? ` ${site}` : ""}`;
-  const open = () => showBrowserBesideChat({ focus: true, asTabWhenNarrow: true });
+  const open = () => { openBrowserPane(); };
   return (
     <div className="mt-1.5 flex flex-col gap-1.5" data-testid="browser-run-preview">
       <button type="button" onClick={open} className="flex w-fit items-center gap-1.5 text-caption text-[var(--midnight-muted)] hover:text-[var(--midnight)]">

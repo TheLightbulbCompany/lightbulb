@@ -2,7 +2,6 @@
 
 import "@/components/activity/activity.css";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { IDockviewPanelProps } from "dockview-react";
 import { useAuth } from "@clerk/nextjs";
 import { newestActivityAt, type CanonicalRoomMessage } from "@lightbulb/shared";
 import { ForYou, type ActivityTarget } from "@/components/activity/ForYou";
@@ -19,7 +18,7 @@ import { useLiveEvents } from "@/hooks/useLiveEvents";
 import { pageVisible } from "@/hooks/useRooms";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { openPanel } from "../workspaceController";
-import { useDockPanelParams } from "./useDockPanelParams";
+import type { PanelProps } from "../panelComponents";
 
 const TEAMS_DETAIL: Partial<Record<ActivityTarget["kind"], string>> = {
   issue: "teams-issue-detail",
@@ -71,8 +70,7 @@ export function feedShown(narrow: boolean | null, tab: ActivityTab): boolean {
 }
 
 /** Activity: For you on the left, the team feed on the right; tabs below ~900px. */
-export function ActivityDockPanel(props: IDockviewPanelProps<{ focus?: string; filter?: string }>) {
-  const params = useDockPanelParams(props);
+export function ActivityDockPanel({ params }: PanelProps) {
   const { userId, orgId } = useAuth();
   const live = useLiveEvents();
   const activity = useActivity();

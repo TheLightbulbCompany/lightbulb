@@ -63,7 +63,7 @@ export interface IssuesPanelProps {
 // and detail routes are unchanged.
 //
 // The panel is prop-driven: each shell (mobile /chat page, desktop dock) reads
-// its own channel (URL vs dockview params) and feeds `agentFilter` / `newTask`
+// its own channel (URL vs workspace slot params) and feeds `agentFilter` / `newTask`
 // down, and strips its channel via the consume callbacks. With all props
 // absent the panel renders its unfiltered, no-dialog default (standalone/test).
 export function IssuesPanel({
@@ -130,7 +130,7 @@ export function IssuesPanel({
   // company with no goals yet has no goal link to arrive by, so that was the
   // whole first-goal path.
   const [liveGroupBy, setLiveGroupBy] = useState<TasksGroupBy>(initialGroupBy ?? "none");
-  // Mirrors TasksList's own re-delivery sync (dockview merges params onto an
+  // Mirrors TasksList's own re-delivery sync (the workspace merges params onto an
   // open panel rather than remounting it), so the two cannot drift.
   const [prevInitialGroupBy, setPrevInitialGroupBy] = useState(initialGroupBy);
   if (initialGroupBy !== prevInitialGroupBy) {

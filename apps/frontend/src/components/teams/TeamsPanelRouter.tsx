@@ -133,7 +133,7 @@ export interface TeamsPanelRouterProps {
   panel: string;
   detailId?: string | null;
   // Params the shell feeds each panel, read from its own channel (URL on
-  // mobile, dockview params on desktop): { agent?, newIssue?, new? }. Retired
+  // mobile, the workspace slot params on desktop): { agent?, newIssue?, new? }. Retired
   // panel keys are resolved to their live surface by the shell/registry before
   // reaching here — this router no longer rewrites the URL for aliases.
   panelParams?: Record<string, string>;

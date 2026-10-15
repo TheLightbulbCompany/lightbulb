@@ -55,7 +55,7 @@ export function AgentsListPanel({ initialView }: AgentsListPanelProps = {}) {
   const [viewDeepLink, setViewDeepLink] = useState<AgentsViewMode | null>(initialView ?? null);
   const view = viewDeepLink ?? storedView;
   // Adjust-state-during-render, not an effect — the same pattern TasksList
-  // uses for its `?groupBy` re-delivery: dockview merges parameters into an
+  // uses for its `?groupBy` re-delivery: the workspace merges parameters into an
   // open panel instead of remounting it, and a plain sidebar nav clears them.
   const [prevInitialView, setPrevInitialView] = useState(initialView);
   if (initialView !== prevInitialView) {

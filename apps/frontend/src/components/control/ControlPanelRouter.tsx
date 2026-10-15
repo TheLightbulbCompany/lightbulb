@@ -18,7 +18,7 @@ function PanelSkeleton() {
 
 interface ControlPanelRouterProps {
   panel: string;
-  // Params the shell feeds the panels from its dockview params:
+  // Params the shell feeds the panels from its slot params:
   // { agentId?, initialTab? }.
   panelParams?: Record<string, string>;
 }

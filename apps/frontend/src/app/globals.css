@@ -1482,8 +1482,8 @@
  *
  * The /chat transcript keeps every message in the DOM for the life of the
  * session. Per-streaming-frame reflow is cheap (a chunk only dirties the tail
- * message's subtree), but any change that invalidates ALL layout — a dockview
- * panel resize, a web-font finishing load, browser zoom — is O(number of
+ * message's subtree), but any change that invalidates ALL layout — a pane
+ * resize, a web-font finishing load, browser zoom — is O(number of
  * messages): measured at ~24ms (≈1.5 dropped frames) on a 1000-message
  * transcript. content-visibility:auto lets the browser skip layout + paint for
  * off-screen groups, flattening that ~40x, while keeping every node in the DOM

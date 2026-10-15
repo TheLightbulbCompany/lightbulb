@@ -1,5 +1,5 @@
 // Pure decision core of WorkspaceShell's URL reconciler, extracted so the
-// ordering subtleties are testable without a dockview render
+// ordering subtleties are testable without a shell render
 // (workspaceShellUrl.test.ts pins them).
 //
 // The ordering contract (spec §6):

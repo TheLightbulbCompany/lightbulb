@@ -6,6 +6,6 @@ export default function AuthLayout() {
   // finishes it. Treated as signed out, sign-in would never move on.
   const { isSignedIn, isLoaded } = useAuth({ treatPendingAsSignedOut: false });
   if (!isLoaded) return null;
-  if (isSignedIn) return <Redirect href="/(app)" />;
+  if (isSignedIn) return <Redirect href="/(app)/(tabs)/chats" />;
   return <Stack screenOptions={{ headerShown: false }} />;
 }

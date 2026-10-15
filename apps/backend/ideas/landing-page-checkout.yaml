@@ -8,8 +8,8 @@ deliverables:
   - "A landing page for one offer, live on your domain"
   - "Signup or Stripe checkout wired and tested"
   - "Proof the conversion event fires"
-agency_price_low: 2500
-agency_price_high: 30000
+agency_price_low: 300
+agency_price_high: 2500
 price_unit: one_time
 agency_turnaround: "1-2 weeks"
 our_turnaround: "2-3 days"

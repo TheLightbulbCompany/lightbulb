@@ -3,7 +3,7 @@ owner_role: customer_operations
 kind: everyday
 business_types: [any]
 title: "After each meeting, the recap sent and action items on the board"
-why: "Nothing agreed in a meeting gets lost."
+why: "Nothing decided in a meeting gets lost."
 deliverables:
   - "A recap of each meeting"
   - "Action items as tasks with owners"

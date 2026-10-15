@@ -10,11 +10,31 @@ from fastapi import HTTPException
 from core.auth import AuthContext
 from core.repositories import messaging_repo as repo
 from core.services import hermes_profiles, ideas, messaging, task_board
-from tests.unit.repositories.test_messaging_repo import table  # noqa: F401
-from tests.unit.services.test_agent_message_attachments import OWNER
-from tests.unit.services.test_messaging_feed import STARTERS, workspace  # noqa: F401
+from tests.unit.repositories.test_messaging_repo import table  # noqa: F401  (the moto messaging table)
 
+OWNER = "org_1"
+STARTERS = {
+    "ceo": "10000000-0000-4000-8000-000000000001",
+    "engineering": "10000000-0000-4000-8000-000000000002",
+    "finance": "10000000-0000-4000-8000-000000000003",
+    "growth": "10000000-0000-4000-8000-000000000004",
+    "analytics": "10000000-0000-4000-8000-000000000005",
+    "customer_operations": "10000000-0000-4000-8000-000000000006",
+}
 AUTH = AuthContext(user_id="user_A", org_id=OWNER, org_role="org:member")
+
+
+@pytest.fixture
+def workspace(table, monkeypatch):  # noqa: F811
+    """An active workspace with the six starters on the roster; people resolve by id."""
+    from core.repositories.paperclip_repo import PaperclipRepo
+
+    row = SimpleNamespace(status="active", starter_agent_ids=STARTERS, onboarding_goal_id=None)
+    roster = [{"id": agent_id, "name": key.title()} for key, agent_id in STARTERS.items()]
+    monkeypatch.setattr(PaperclipRepo, "resolve_owner_row", AsyncMock(return_value=row))
+    monkeypatch.setattr(messaging, "load_agent_roster", lambda _owner: asyncio.sleep(0, result=roster))
+    monkeypatch.setattr(messaging, "human_display_name", lambda user: asyncio.sleep(0, result=f"Name {user}"))
+    monkeypatch.setattr(messaging, "_validate_human_in_owner", AsyncMock())
 
 
 # ---- the catalog ------------------------------------------------------------------------------
@@ -30,7 +50,7 @@ def test_the_catalog_loads_and_every_entry_validates():
         assert len(idea.deliverables) == 3
         if idea.agency_price_low is not None:
             assert 0 < idea.agency_price_low <= idea.agency_price_high
-            assert idea.price_unit in ("one_time", "month") and idea.agency_turnaround
+            assert idea.price_unit in ("one_time", "month", "state") and idea.agency_turnaround
         for heading in ("## Steps", "## Decisions", "## Done proves", "## Honesty limits"):
             assert heading in idea.guide, (idea.id, heading)
 
@@ -39,7 +59,7 @@ def test_no_idea_promises_a_result_it_cannot_guarantee():
     """Research section C: promise the action, never the result."""
     for idea in ideas.catalog().values():
         card = " ".join([idea.title, idea.why, *idea.deliverables]).lower()
-        for word in ("guarantee", "compliant", "audit-ready", "#1", "rank first"):
+        for word in ("guarantee", "compliant", "audit-ready", "#1", "rank first", "booked", "confirmed", "agreed"):
             assert word not in card, (idea.id, word)
 
 
@@ -61,7 +81,7 @@ def test_an_invalid_entry_is_refused():
 
 
 @pytest.mark.asyncio
-async def test_list_is_sorted_by_price_with_agents_and_total(workspace):  # noqa: F811
+async def test_list_is_sorted_by_price_with_agents_and_total(workspace):
     body = await ideas.list_ideas(AUTH)
     cards = body["ideas"]
     assert len(cards) == 35
@@ -77,7 +97,7 @@ async def test_list_is_sorted_by_price_with_agents_and_total(workspace):  # noqa
 
 
 @pytest.mark.asyncio
-async def test_dismissed_ideas_and_ideas_without_an_agent_are_left_out(workspace, monkeypatch):  # noqa: F811
+async def test_dismissed_ideas_and_ideas_without_an_agent_are_left_out(workspace, monkeypatch):
     await ideas.dismiss(AUTH, "website-rebuild")
     roster = [{"id": a, "name": r.title()} for r, a in STARTERS.items() if r != "growth"]
     monkeypatch.setattr(messaging, "load_agent_roster", lambda _owner: asyncio.sleep(0, result=roster))
@@ -88,7 +108,7 @@ async def test_dismissed_ideas_and_ideas_without_an_agent_are_left_out(workspace
 
 
 @pytest.mark.asyncio
-async def test_unknown_ids_are_404(workspace):  # noqa: F811
+async def test_unknown_ids_are_404(workspace):
     for call in (ideas.dismiss(AUTH, "nope"), ideas.start(AUTH, "nope")):
         with pytest.raises(HTTPException) as err:
             await call
@@ -99,14 +119,15 @@ async def test_unknown_ids_are_404(workspace):  # noqa: F811
 
 
 @pytest.fixture
-def paperclip(workspace, monkeypatch):  # noqa: F811
+def paperclip(workspace, monkeypatch):
     from core.services import paperclip_admin_client
 
     admin = SimpleNamespace(
-        create_goal=AsyncMock(side_effect=lambda **_: {"id": f"goal-{admin.create_goal.await_count}"}),
+        create_goal=AsyncMock(),
         create_project=AsyncMock(side_effect=lambda **_: {"id": f"project-{admin.create_project.await_count}"}),
         get_project=AsyncMock(return_value={"status": "in_progress"}),
-        delete_goal=AsyncMock(),
+        list_projects=AsyncMock(return_value=[]),
+        list_issues=AsyncMock(return_value=[]),
     )
     ctx = SimpleNamespace(owner_id=OWNER, company_id="company-1", session_cookie="cookie")
     monkeypatch.setattr(task_board, "_context", AsyncMock(return_value=ctx))
@@ -129,6 +150,10 @@ async def test_start_twice_makes_one_project_one_guide_and_one_line(paperclip):
     assert paperclip.create_project.await_count == 1
     body = paperclip.create_project.await_args.kwargs["body"]
     assert (body["name"], body["leadAgentId"]) == (ideas.catalog()["books-cleanup"].title, STARTERS["finance"])
+    assert body["idempotencyKey"].startswith("lightbulb-idea-project:v1:") and len(body["idempotencyKey"]) <= 255
+    # Never a company-level goal: an idea cannot replace the company's default goal.
+    paperclip.create_goal.assert_not_awaited()
+    assert "goalIds" not in body
     hermes_profiles.write_profile_file.assert_awaited_once_with(
         OWNER, STARTERS["finance"], "ideas/books-cleanup.md", ideas.catalog()["books-cleanup"].guide
     )
@@ -188,3 +213,107 @@ async def test_each_member_gets_their_own_start(paperclip):
     a = await ideas.start(AUTH, "books-cleanup")
     b = await ideas.start(AuthContext(user_id="user_B", org_id=OWNER, org_role="org:member"), "books-cleanup")
     assert a["projectId"] != b["projectId"] and a["roomId"] != b["roomId"]
+
+
+@pytest.mark.asyncio
+async def test_the_project_joins_the_onboarding_goal_when_there_is_one(paperclip, monkeypatch):
+    from core.repositories.paperclip_repo import PaperclipRepo
+
+    row = SimpleNamespace(status="active", starter_agent_ids=STARTERS, onboarding_goal_id="goal-onboarding")
+    monkeypatch.setattr(PaperclipRepo, "resolve_owner_row", AsyncMock(return_value=row))
+    await ideas.start(AUTH, "books-cleanup")
+    assert paperclip.create_project.await_args.kwargs["body"]["goalIds"] == ["goal-onboarding"]
+    paperclip.create_goal.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_crash_after_the_project_create_replays_the_same_project_key(paperclip, monkeypatch):
+    real = repo.update_idea_start
+    calls = []
+
+    async def flaky(owner, idea, user, fields):
+        calls.append(fields)
+        if len(calls) == 1:  # the projectId write is lost: the process "dies" right after the create
+            raise RuntimeError("crash")
+        return await real(owner, idea, user, fields)
+
+    monkeypatch.setattr(repo, "update_idea_start", flaky)
+    with pytest.raises(RuntimeError):
+        await ideas.start(AUTH, "books-cleanup")
+    await ideas.start(AUTH, "books-cleanup")
+    keys = [c.kwargs["body"]["idempotencyKey"] for c in paperclip.create_project.await_args_list]
+    assert len(keys) == 2 and keys[0] == keys[1]  # the fork replays the first project for the same key
+
+
+@pytest.mark.asyncio
+async def test_start_unarchives_an_archived_dm(paperclip):
+    room_id = await messaging._agent_dm_room_id(OWNER, "user_A", STARTERS["finance"])
+    await repo.patch_room_meta(room_id, {"archivedAt": "2026-10-14T00:00:00Z", "archivedBy": "user_A"})
+    result = await ideas.start(AUTH, "books-cleanup")
+    assert result["roomId"] == room_id
+    assert not (await repo.get_room(room_id)).get("archivedAt")
+    assert len(await _lines(room_id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_paperclip_failure_is_a_clean_502_and_frees_the_claim(paperclip):
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    paperclip.create_project.side_effect = PaperclipApiError("POST /projects -> 503", status_code=503, body="")
+    with pytest.raises(HTTPException) as err:
+        await ideas.start(AUTH, "books-cleanup")
+    assert err.value.status_code == 502 and "Try Start again" in err.value.detail
+    won, _ = await repo.claim_idea_start(OWNER, "books-cleanup", "user_A")
+    assert won
+
+
+@pytest.mark.asyncio
+async def test_a_repeat_start_answers_with_the_stored_ids_when_paperclip_is_down(paperclip):
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    first = await ideas.start(AUTH, "books-cleanup")
+    paperclip.get_project.side_effect = PaperclipApiError("GET /projects -> 500", status_code=500, body="")
+    assert await ideas.start(AUTH, "books-cleanup") == first
+
+
+@pytest.mark.asyncio
+async def test_get_lists_running_starts_with_progress(paperclip):
+    started = await ideas.start(AUTH, "books-cleanup")
+    paperclip.list_projects.return_value = [{"id": started["projectId"], "status": "in_progress"}]
+    paperclip.list_issues.return_value = [{"status": "todo"}, {"status": "done"}, {"status": "done"}]
+    running = (await ideas.list_ideas(AUTH))["running"]
+    assert running == [
+        {
+            "ideaId": "books-cleanup",
+            "title": ideas.catalog()["books-cleanup"].title,
+            "agentId": STARTERS["finance"],
+            "agentName": "Finance",
+            "roomId": started["roomId"],
+            "projectId": started["projectId"],
+            "starterId": "user_A",
+            "starterName": "Name user_A",
+            "createdAt": running[0]["createdAt"],
+            "progress": {"todo": 1, "done": 2},
+        }
+    ]
+    assert running[0]["createdAt"]
+    assert paperclip.list_issues.await_args.kwargs["params"]["projectId"] == started["projectId"]
+
+
+@pytest.mark.asyncio
+async def test_get_drops_progress_when_paperclip_fails_and_hides_finished_projects(paperclip, monkeypatch):
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    started = await ideas.start(AUTH, "books-cleanup")
+    paperclip.list_issues.side_effect = PaperclipApiError("GET /issues -> 500", status_code=500, body="")
+    running = (await ideas.list_ideas(AUTH))["running"]
+    assert running[0]["projectId"] == started["projectId"] and "progress" not in running[0]
+
+    paperclip.list_issues.side_effect = None
+    paperclip.list_projects.return_value = [{"id": started["projectId"], "status": "completed"}]
+    assert (await ideas.list_ideas(AUTH))["running"] == []
+
+
+def test_sales_tax_is_priced_per_state_and_left_out_of_the_total():
+    idea = ideas.catalog()["sales-tax-registration"]
+    assert idea.price_unit == "state" and "per state" in idea.why

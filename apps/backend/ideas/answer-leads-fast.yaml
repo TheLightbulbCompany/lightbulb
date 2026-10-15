@@ -2,16 +2,16 @@ id: answer-leads-fast
 owner_role: customer_operations
 kind: everyday
 business_types: [any]
-title: "Every new lead answered within minutes and the call booked"
+title: "Every new lead answered within minutes, with a call offered"
 why: "The first company to reply usually wins the deal."
 deliverables:
   - "Every new lead answered within minutes"
-  - "Calls booked on your calendar"
+  - "Times from your calendar or a booking link sent to each"
   - "Each lead logged with its status"
 agency_price_low: 1000
 agency_price_high: 3000
 price_unit: month
-agency_turnaround: "Ongoing"
+agency_turnaround: "Ongoing (priced per appointment setter)"
 our_turnaround: "Within minutes, every day"
 your_part: "Approve the reply template, then each reply until you trust it"
 guide: |
@@ -29,7 +29,7 @@ guide: |
   - Each reply, until the person says replies can go without approval.
 
   ## Done proves
-  - Reply times for the first leads, and booked calls on the calendar.
+  - Reply times for the first leads, and the times or booking link offered to each.
 
   ## Honesty limits
   - Never promise prices, dates or terms the company has not approved.

@@ -457,8 +457,9 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  authors, never members: messaging.room_agent (roster stand-in) and the feed rule in
                                  select_dispatch_targets (a Discuss @mention wakes that agent). Spec 2026-10-14 §4.2.
   - Ideas (Start) ............ references/ideas.md + SKILL.md routing row
-                              <- backend core/services/ideas.py (start: seed_goal_and_project names the goal and
-                                 project after the idea with the owner agent as lead; write_profile_file puts the
+                              <- backend core/services/ideas.py (start: one Paperclip project named after the idea,
+                                 owner agent as lead, under onboarding_goal_id when recorded, never a new goal,
+                                 created with the fork's body idempotencyKey; write_profile_file puts the
                                  guide at ideas/<id>.md = "$HERMES_HOME/ideas/<idea>.md"; start_line = the "<name>
                                  started <title>" system line in the starter's DM with a user_request dispatch
                                  target) + apps/backend/ideas/*.yaml (each guide's Steps / Decisions / Done proves /

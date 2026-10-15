@@ -4,7 +4,7 @@ An idea is a job a company usually pays an agency for (a site rebuilt, books cle
 up, a launch run), done by the team as real actions, never a report. When a person
 presses Start on an idea, Lightbulb:
 
-- makes a goal and a project for it in Work, with you as the lead;
+- makes a project for it in Work, with you as the lead (under the company's goal when it has one);
 - puts the idea's guide in your profile at `$HERMES_HOME/ideas/<idea>.md`;
 - posts one line in your DM with that person ("Priya started …") that wakes you.
 

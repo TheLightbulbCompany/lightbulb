@@ -2,12 +2,12 @@ id: hire-pipeline
 owner_role: ceo
 kind: agency
 business_types: [any]
-title: "A hiring pipeline: job posted, 50 candidates sourced, interviews booked"
-why: "Candidates in your calendar without paying a recruiter's fee."
+title: "A hiring pipeline: job posted, 50 candidates sourced, interviews offered"
+why: "A full candidate pipeline without paying a recruiter's fee."
 deliverables:
   - "The job post written and published"
   - "50 candidates sourced, every applicant answered"
-  - "Interviews booked on your calendar"
+  - "Interview invites sent to the ones you pick"
 agency_price_low: 3000
 agency_price_high: 8000
 price_unit: one_time
@@ -33,7 +33,7 @@ guide: |
   ## Done proves
   - The live job post link.
   - The candidate list as a document.
-  - Interviews on the calendar.
+  - Interview invites sent to the candidates the person picked.
 
   ## Honesty limits
   - The person interviews and decides. Never promise a hire.

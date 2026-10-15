@@ -9,7 +9,7 @@ deliverables:
   - "The fixes in one pull request"
   - "Before and after checks on the live site"
 agency_price_low: 1200
-agency_price_high: 15000
+agency_price_high: 2500
 price_unit: one_time
 agency_turnaround: "1-3 weeks"
 our_turnaround: "2-3 days"

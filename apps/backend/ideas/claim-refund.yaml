@@ -7,7 +7,7 @@ why: "Late deliveries, overcharges and outage credits go unclaimed unless someon
 deliverables:
   - "Charges and incidents that qualify, found"
   - "The claim sent with evidence"
-  - "The credit or refund confirmed"
+  - "The vendor's answer reported"
 our_turnaround: "A few days"
 your_part: "Approve the claim text"
 guide: |
@@ -24,7 +24,7 @@ guide: |
   - Approve the claim text.
 
   ## Done proves
-  - The vendor's confirmation of the credit or refund, with the amount.
+  - The claim sent (a copy on the task) and the vendor's answer, with any amount granted.
 
   ## Honesty limits
   - Claim only what the terms support. Never overstate the facts.

@@ -2753,12 +2753,15 @@ async def count_voice_edit(owner_id: str, agent_id: str, kind: str, limit: int) 
 # Rows under the owner's partition. Neither the projector (MSG#/LIVE#) nor the Pipe reads IDEA#.
 
 IDEA_DISMISSED_PREFIX = "IDEA#DISMISSED#"
-#: A "starting" claim older than this is a crashed attempt: the next Start takes it over.
-IDEA_CLAIM_STALE_S = 120
+#: A "starting" claim older than this is a crashed attempt: the next Start takes it over. Above
+#: any request timeout; and a takeover of a slow live attempt is still safe, since every step
+#: replays (the project by the claim's ``startToken`` idempotency key, the DM line by its key).
+IDEA_CLAIM_STALE_S = 300
+IDEA_START_PREFIX = "IDEA#START#"
 
 
 def _idea_start_key(owner_id: str, idea_id: str, user_id: str) -> dict:
-    return {"pk": owner_pk(owner_id), "sk": f"IDEA#START#{idea_id}#{user_id}"}
+    return {"pk": owner_pk(owner_id), "sk": f"{IDEA_START_PREFIX}{idea_id}#{user_id}"}
 
 
 async def dismiss_idea(owner_id: str, idea_id: str) -> None:
@@ -2782,10 +2785,21 @@ async def claim_idea_start(owner_id: str, idea_id: str, user_id: str) -> tuple[b
         response = await run_in_thread(
             _table().update_item,
             Key=_idea_start_key(owner_id, idea_id, user_id),
-            UpdateExpression="SET #s = :starting, claimedAt = :now",
+            # startToken is minted once per claim and kept across takeovers: it keys the project.
+            UpdateExpression=(
+                "SET #s = :starting, claimedAt = :now, ideaId = :idea, userId = :user, "
+                "startToken = if_not_exists(startToken, :token)"
+            ),
             ConditionExpression="attribute_not_exists(pk) OR (#s = :starting AND claimedAt < :stale)",
             ExpressionAttributeNames={"#s": "state"},
-            ExpressionAttributeValues={":starting": "starting", ":now": now, ":stale": now - IDEA_CLAIM_STALE_S},
+            ExpressionAttributeValues={
+                ":starting": "starting",
+                ":now": now,
+                ":stale": now - IDEA_CLAIM_STALE_S,
+                ":idea": idea_id,
+                ":user": user_id,
+                ":token": uuid.uuid4().hex,
+            },
             ReturnValues="ALL_NEW",
         )
     except ClientError as exc:
@@ -2794,6 +2808,12 @@ async def claim_idea_start(owner_id: str, idea_id: str, user_id: str) -> tuple[b
         row = await _get(**_idea_start_key(owner_id, idea_id, user_id))
         return False, row or {"state": "starting"}  # deleted in between: answer "in flight"
     return True, _plain(response["Attributes"])
+
+
+async def open_idea_starts(owner_id: str) -> list[dict]:
+    """The workspace's started ideas (every starter), oldest key first."""
+    rows = await _query(owner_pk(owner_id), begins_with=IDEA_START_PREFIX)
+    return [row for row in rows if row.get("state") == "open"]
 
 
 async def update_idea_start(owner_id: str, idea_id: str, user_id: str, fields: dict[str, Any]) -> None:

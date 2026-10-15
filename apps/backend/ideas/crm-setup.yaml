@@ -9,7 +9,7 @@ deliverables:
   - "Contacts imported from spreadsheets and email, duplicates merged"
   - "3 follow-up workflows switched on"
 agency_price_low: 2000
-agency_price_high: 7000
+agency_price_high: 5000
 price_unit: one_time
 agency_turnaround: "2-6 weeks"
 our_turnaround: "About a week"

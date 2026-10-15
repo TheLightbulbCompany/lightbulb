@@ -2,12 +2,12 @@ id: cancel-or-renegotiate-bill
 owner_role: finance
 kind: everyday
 business_types: [any]
-title: "One recurring bill cancelled or renegotiated, saving reported"
+title: "One recurring bill: cancellation requested or a lower price asked for"
 why: "Most companies pay for something they no longer use or overpay for."
 deliverables:
   - "Your recurring bills listed with their cost"
-  - "One cancelled or a lower price agreed"
-  - "The saving reported to the feed"
+  - "A cancellation requested, or a lower price asked for"
+  - "Any saving the vendor confirms, posted to the feed"
 our_turnaround: "A few days"
 your_part: "Approve the cancel or the new price"
 guide: |
@@ -25,7 +25,7 @@ guide: |
   - Approve the cancel or the new price.
 
   ## Done proves
-  - The vendor's confirmation, and the saving per month or year posted to the feed.
+  - The request sent and the vendor's answer; a saving the vendor confirmed, posted to the feed.
 
   ## Honesty limits
   - Report the saving the vendor confirmed, not an estimate.

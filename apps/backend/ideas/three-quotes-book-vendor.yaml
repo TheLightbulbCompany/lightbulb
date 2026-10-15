@@ -2,12 +2,12 @@ id: three-quotes-book-vendor
 owner_role: ceo
 kind: everyday
 business_types: [any]
-title: "Three quotes collected and the vendor booked"
-why: "Insurance, cleaners, accountants or movers compared for you, then booked."
+title: "Three quotes collected and your pick asked to book"
+why: "Insurance, cleaners, accountants or movers compared for you, then requested."
 deliverables:
   - "Three vendors found and contacted"
   - "Quotes compared side by side"
-  - "The one you pick, booked"
+  - "A booking request sent to the one you pick"
 our_turnaround: "About a week"
 your_part: "Choose the vendor and approve the booking"
 guide: |
@@ -25,7 +25,7 @@ guide: |
   - The choice and the booking.
 
   ## Done proves
-  - The comparison table and the vendor's booking confirmation.
+  - The comparison table, the booking request sent, and the vendor's reply.
 
   ## Honesty limits
   - Payment and signing contracts are the person's. Never accept terms on their behalf.

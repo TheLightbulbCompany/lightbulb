@@ -156,6 +156,12 @@ async def _workspace(owner_id: str) -> tuple[object | None, dict[str, dict], dic
     names = await _roster(owner_id)
     starters = (row.starter_agent_ids if row else None) or {}
     agents = {role: {"id": aid, "name": names[aid]} for role, aid in starters.items() if aid in names}
+    # A workspace older than the starter roster (or one missing a starter) gives the idea to its
+    # top agent, who decides whether a teammate should do the work (owner, 2026-10-15).
+    top = getattr(names, "top", None)
+    if top:
+        for role in get_args(Role):
+            agents.setdefault(role, {"id": top, "name": names[top]})
     return row, agents, names
 
 
@@ -182,10 +188,32 @@ def _suggestion_card(row: dict, names: dict[str, str]) -> dict:
     }
 
 
+class _Roster(dict):
+    """Agent id -> name, plus ``top``: the agent at the head of the org chart."""
+
+    top: str | None = None
+
+
+def _top_agent(rows: list[dict]) -> str | None:
+    """The CEO if there is one, else an agent that reports to nobody, else the first agent."""
+    for pick in (
+        lambda a: a.get("role") == "ceo",
+        lambda a: not a.get("reportsTo"),
+        lambda a: True,
+    ):
+        found = [a["id"] for a in rows if pick(a)]
+        if found:
+            return found[0]
+    return None
+
+
 async def _roster(owner_id: str) -> dict[str, str]:
     from core.services import messaging
 
-    return {a["id"]: a["name"] for a in await messaging.load_agent_roster(owner_id)}
+    rows = await messaging.load_agent_roster(owner_id)
+    names = _Roster((a["id"], a["name"]) for a in rows)
+    names.top = _top_agent(rows)
+    return names
 
 
 async def _suggestions(owner_id: str, names: dict[str, str]) -> list[dict]:

@@ -6,6 +6,7 @@ import type { IDockviewPanelProps } from "dockview-react";
 import { useAuth } from "@clerk/nextjs";
 import { newestActivityAt, type CanonicalRoomMessage } from "@lightbulb/shared";
 import { ForYou, type ActivityTarget } from "@/components/activity/ForYou";
+import { isForYouFilter } from "@/components/activity/activityPage";
 import { TeamFeed } from "@/components/activity/TeamFeed";
 import { draftKey, readDraft, writeDraft } from "@/components/messaging/drafts";
 import { useAcknowledgedRuns } from "@/components/teams/inbox/hooks/useAcknowledgedRuns";
@@ -70,7 +71,7 @@ export function feedShown(narrow: boolean | null, tab: ActivityTab): boolean {
 }
 
 /** Activity: For you on the left, the team feed on the right; tabs below ~900px. */
-export function ActivityDockPanel(props: IDockviewPanelProps<{ focus?: string }>) {
+export function ActivityDockPanel(props: IDockviewPanelProps<{ focus?: string; filter?: string }>) {
   const params = useDockPanelParams(props);
   const { userId, orgId } = useAuth();
   const live = useLiveEvents();
@@ -133,6 +134,7 @@ export function ActivityDockPanel(props: IDockviewPanelProps<{ focus?: string }>
           people={people}
           agents={roster}
           focusId={params.focus ?? null}
+          filter={isForYouFilter(params.filter) ? params.filter : "all"}
         />
       </div>
       <div className="activity-page__feed">

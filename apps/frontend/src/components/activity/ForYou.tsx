@@ -8,7 +8,7 @@ import { useRunRetry } from "@/components/teams/inbox/FailedRunRow";
 import type { FailedRunGroup } from "@/components/teams/inbox/lib/groupFailedRuns";
 import type { AttentionItem, CompanyAgent } from "@/components/teams/shared/types";
 import { agentTint } from "@/lib/agentTint";
-import { forYouEntries, groupForYou, rowSummary, type ForYouEntry, type ForYouGroup, type ForYouRow } from "./activityPage";
+import { filterForYou, forYouEntries, groupForYou, rowSummary, type ForYouFilter, type ForYouEntry, type ForYouGroup, type ForYouRow } from "./activityPage";
 
 export interface ActivityTarget { kind: ActivityLinkKind; id: string; roomId: string | null }
 export interface ActivityPerson { value: string; label: string }
@@ -42,6 +42,8 @@ export interface ForYouProps {
   onLoadMore?: () => void;
   /** Dismiss: acknowledges every run in a group, as the Inbox did. */
   onDismissRuns?: (runIds: string[]) => void;
+  /** Which slice to show (the `?panel=activity&filter=` link; later the filter chips). */
+  filter?: ForYouFilter;
   /** Any source is still loading its first answer. */
   loading: boolean;
   onRunAction: (itemId: string, actionId: string, request: { note?: string; value?: string }) => Promise<unknown>;
@@ -62,8 +64,9 @@ const VISIBLE_ROWS = 3;
  */
 export function ForYou(props: ForYouProps) {
   const { activityItems, attentionItems, failedRuns, loading, incomplete, focusId, agents } = props;
-  const entries = useMemo(() => forYouEntries(activityItems, attentionItems, failedRuns,
-    (id) => agents.find((agent) => agent.id === id)?.name ?? "An agent"), [activityItems, attentionItems, failedRuns, agents]);
+  const filter = props.filter ?? "all";
+  const entries = useMemo(() => filterForYou(forYouEntries(activityItems, attentionItems, failedRuns,
+    (id) => agents.find((agent) => agent.id === id)?.name ?? "An agent"), filter), [activityItems, attentionItems, failedRuns, agents, filter]);
   const groups = useMemo(() => groupForYou(entries), [entries]);
   const agentMap = useMemo(() => new Map(props.agents.map((agent) => [agent.id, agent])), [props.agents]);
   const listRef = useRef<HTMLDivElement>(null);
@@ -135,6 +138,7 @@ function ForYouRowView({ row, focusId, ...rest }: { row: ForYouRow; agentMap: Ma
 function entryTarget(entry: ForYouEntry): ActivityTarget | null {
   if (entry.source.type === "activity") return rowTarget(entry.source.item);
   if (entry.source.type === "failed_runs") return { kind: "run", id: entry.source.group.representative.id, roomId: null };
+  if (entry.source.item.sourceKind === "approval") return { kind: "approval", id: entry.source.item.approval?.id ?? entry.source.item.subject.id, roomId: null };
   const issue = entry.source.item.relatedIssue;
   return issue ? { kind: "issue", id: issue.id, roomId: null } : null;
 }
@@ -233,7 +237,9 @@ function ItemEntry({ entry, highlighted, onRunAction, onNavigate, people, agentM
       if (open) below = <DecisionResolver decisionId={item.subject.id} originIssue={item.relatedIssue}
         agentMap={agentMap} originAgentName={item.originAgentName} />;
     } else if (target) {
-      control = <button type="button" className={button} onClick={() => onNavigate(target)}>Open</button>;
+      // An approval or question (shown from here when Activity could not list it) is decided on its own page.
+      const decides = item.sourceKind === "approval" || item.sourceKind === "issue_thread_interaction";
+      control = <button type="button" className={button} onClick={() => onNavigate(target)}>{decides ? "Review" : "Open"}</button>;
     }
   }
 

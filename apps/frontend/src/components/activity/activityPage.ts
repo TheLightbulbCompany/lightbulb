@@ -3,7 +3,7 @@
  * (what needs this person, by verb, one row per source) and the team feed's
  * dividers (new since you looked, then days).
  */
-import { activityRowParts, isNeedsYou, type ActivityItem, type CanonicalRoomMessage } from "@lightbulb/shared";
+import { activityRowParts, approvalActivityId, interactionActivityId, isNeedsYou, type ActivityItem, type CanonicalRoomMessage } from "@lightbulb/shared";
 import type { FailedRunGroup } from "@/components/teams/inbox/lib/groupFailedRuns";
 import type { AttentionItem } from "@/components/teams/shared/types";
 
@@ -93,11 +93,13 @@ export function activityVerb(item: ActivityItem): ForYouVerb | null {
 }
 
 /**
- * The Teams attention kinds the Activity feed does not carry itself. Approvals and agents'
- * questions (`issue_thread_interaction`) are already Activity items, so they are left out
- * here rather than shown twice.
+ * The Teams attention kinds For you lists. Approvals and agents' questions
+ * (`issue_thread_interaction`) are normally Activity items too: those are kept from the
+ * attention feed only when Activity does not carry them (see `forYouEntries`).
  */
 const ATTENTION_VERBS: Partial<Record<AttentionItem["sourceKind"], ForYouVerb>> = {
+  approval: "decide",
+  issue_thread_interaction: "decide",
   decision: "decide",
   join_request: "do",
   review: "do",
@@ -135,6 +137,17 @@ function attentionEntry(item: AttentionItem, verb: ForYouVerb): ForYouEntry {
   };
 }
 
+/** The Activity item id the same approval or question carries there, or null. */
+function activityTwinId(item: AttentionItem): string | null {
+  if (item.sourceKind === "approval") return approvalActivityId(item.approval?.id ?? item.subject.id);
+  if (item.sourceKind === "issue_thread_interaction") {
+    const issueId = item.interaction?.issueId ?? item.relatedIssue?.id;
+    const interactionId = item.interaction?.id ?? item.subject.id;
+    return issueId ? interactionActivityId(issueId, interactionId) : null;
+  }
+  return null;
+}
+
 function failedRunEntry(group: FailedRunGroup, agentName: (id: string | null | undefined) => string): ForYouEntry {
   const run = group.representative;
   return {
@@ -161,12 +174,38 @@ export function forYouEntries(
     const verb = activityVerb(item);
     if (verb) entries.push(activityEntry(item, verb));
   }
+  // An approval or question already listed by Activity is shown once; when Activity's
+  // Paperclip half is unavailable the attention feed's copy is the only one, so it stays.
+  const listed = new Set(activity.map((item) => item.id));
   for (const item of attention) {
     const verb = ATTENTION_VERBS[item.sourceKind];
-    if (verb) entries.push(attentionEntry(item, verb));
+    const twin = activityTwinId(item);
+    if (verb && !(twin && listed.has(twin))) entries.push(attentionEntry(item, verb));
   }
   for (const group of failedRuns) entries.push(failedRunEntry(group, agentName));
   return entries;
+}
+
+/**
+ * What For you shows: everything, or one slice. `needs-you` is the actionable part
+ * (decisions, tasks, failed runs, requests: no plain replies); the others are one kind of
+ * message. The same values back the filter chips and the `?panel=activity&filter=` link.
+ */
+export type ForYouFilter = "all" | "needs-you" | "mentions" | "threads" | "dms";
+export const FOR_YOU_FILTERS: readonly ForYouFilter[] = ["all", "needs-you", "mentions", "threads", "dms"];
+
+export function isForYouFilter(value: unknown): value is ForYouFilter {
+  return FOR_YOU_FILTERS.includes(value as ForYouFilter);
+}
+
+export function filterForYou(entries: readonly ForYouEntry[], filter: ForYouFilter): ForYouEntry[] {
+  switch (filter) {
+    case "needs-you": return entries.filter((entry) => entry.verb !== "reply");
+    case "mentions": return entries.filter((entry) => entry.kind === "mention");
+    case "threads": return entries.filter((entry) => entry.kind === "thread_reply");
+    case "dms": return entries.filter((entry) => entry.kind === "dm");
+    default: return entries.slice();
+  }
 }
 
 /** Groups by verb (Decide, Reply, Do; empty ones dropped), then one row per source within a verb. */

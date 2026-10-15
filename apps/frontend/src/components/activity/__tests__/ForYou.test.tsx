@@ -132,6 +132,19 @@ describe("ForYou", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Couldn't load some items");
   });
 
+  it("shows only the actionable items under the needs-you filter", () => {
+    setup({ activityItems: [approval, message("m1")], filter: "needs-you" });
+    expect(screen.getByRole("heading", { name: "For you · 1 open" })).toBeInTheDocument();
+    expect(screen.queryByText("message m1")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Review" })).toBeInTheDocument();
+  });
+
+  it("reviews an approval from the attention feed on its own page when Activity could not list it", async () => {
+    const props = setup({ activityItems: [], attentionItems: [{ ...attention("x3", "approval"), subject: { ...attention("x3", "approval").subject, id: "ap-7" } }] });
+    await userEvent.click(within(group("Decide")).getByRole("button", { name: "Review" }));
+    expect(props.onNavigate).toHaveBeenCalledWith({ kind: "approval", id: "ap-7", roomId: null });
+  });
+
   it("loads older Activity pages from Show older", async () => {
     const onLoadMore = vi.fn();
     setup({ activityItems: [message("m1")], hasMore: true, onLoadMore });

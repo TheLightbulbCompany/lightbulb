@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dayLabel, feedTimeline, forYouEntries, groupForYou, rowSummary, splitPost } from "../activityPage";
+import { dayLabel, feedTimeline, filterForYou, forYouEntries, groupForYou, rowSummary, splitPost } from "../activityPage";
 import { approval, ask, assigned, attention, failedRun, loginAsk, maya, message, post, runGroup } from "./fixtures";
 
 describe("For you", () => {
@@ -7,7 +7,7 @@ describe("For you", () => {
     const entries = forYouEntries(
       [approval, ask, message("m1"), message("m2", maya, true), message("d1", maya, false, "dm"), failedRun, assigned, loginAsk,
         { ...approval, id: "paperclip:approval:done", state: "resolved" }],
-      [attention("x1", "decision"), attention("x2", "blocker_attention"), attention("x3", "approval"), attention("x4", "issue_thread_interaction")],
+      [attention("x1", "decision"), attention("x2", "blocker_attention")],
       [runGroup("g1", "friday", ["r1", "r2"])],
       (id) => (id === "friday" ? "Friday" : "An agent"),
     );
@@ -18,13 +18,38 @@ describe("For you", () => {
       ["dm:d1", "reply"],
       ["paperclip:assigned_issue:i9", "do"],
       ["login:abc", "do"],
-      // Approvals and agents' questions come from Activity already: not listed twice.
       ["attention:x1", "decide"],
       ["attention:x2", "do"],
       // Failed runs come from the Inbox's own list (every failure, grouped), not Activity's latest-per-agent.
       ["failed_run:g1", "do"],
     ]);
     expect(entries.at(-1)).toMatchObject({ sourceName: "Friday", text: "Timed out ×2" });
+  });
+
+  it("lists an approval or question from the attention feed only when Activity does not (its Paperclip half was down)", () => {
+    const sameApproval = { ...attention("x3", "approval"), subject: { ...attention("x3", "approval").subject, id: "a1" } };
+    const sameAsk = { ...attention("x4", "issue_thread_interaction"),
+      subject: { ...attention("x4", "issue_thread_interaction").subject, id: "int-1" },
+      relatedIssue: { ...attention("x4", "issue_thread_interaction").relatedIssue!, id: "iss-4" } };
+    // Healthy: Activity lists both, so the attention copies are dropped by id.
+    expect(forYouEntries([approval, ask], [sameApproval, sameAsk]).map((entry) => entry.id))
+      .toEqual(["paperclip:approval:a1", "paperclip:interaction:iss-4:int-1"]);
+    // Paperclip unavailable: Activity has no Paperclip rows, and the attention feed's copies stand in.
+    expect(forYouEntries([message("m1")], [sameApproval, sameAsk]).map((entry) => [entry.id, entry.verb])).toEqual([
+      ["mention:m1", "reply"], ["attention:x3", "decide"], ["attention:x4", "decide"],
+    ]);
+  });
+
+  it("filters to the actionable items for needs-you, and to one kind of message for the others", () => {
+    const entries = forYouEntries([approval, message("m1"), message("t1", maya, false, "thread_reply"), message("d1", maya, false, "dm"), assigned, loginAsk],
+      [attention("x2", "blocker_attention")], [runGroup("g1")]);
+    expect(filterForYou(entries, "needs-you").map((entry) => entry.id)).toEqual([
+      "paperclip:approval:a1", "paperclip:assigned_issue:i9", "login:abc", "attention:x2", "failed_run:g1",
+    ]);
+    expect(filterForYou(entries, "mentions").map((entry) => entry.id)).toEqual(["mention:m1"]);
+    expect(filterForYou(entries, "threads").map((entry) => entry.id)).toEqual(["thread_reply:t1"]);
+    expect(filterForYou(entries, "dms").map((entry) => entry.id)).toEqual(["dm:d1"]);
+    expect(filterForYou(entries, "all")).toHaveLength(entries.length);
   });
 
   it("reads like a one-line row: the source, then what it is", () => {

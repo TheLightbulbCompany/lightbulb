@@ -99,6 +99,8 @@ async def main(argv: list[str] | None = None) -> int:
         # A busy owner may have a moved env but its old profile (an env drift, or --respec):
         # re-run it with --respec (the env no longer reads as drift) or it breaks on cold start.
         failed += result == "updated-session-busy"
+        # A concurrent roll may have built its spec from the row before this cap landed: re-run.
+        failed += args.max_concurrent_turns is not None and result == "update-in-progress"
     return 1 if failed else 0
 
 

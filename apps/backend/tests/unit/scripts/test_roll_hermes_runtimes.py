@@ -26,6 +26,12 @@ async def test_the_cap_is_stored_then_rolled(wired, value, stored):
 
 
 @pytest.mark.asyncio
+async def test_a_cap_change_that_meets_a_concurrent_roll_exits_1(wired, monkeypatch):
+    monkeypatch.setattr(script, "roll_runtime_image", AsyncMock(return_value="update-in-progress"))
+    assert await script.main(["--owner-id", "org_a", "--max-concurrent-turns", "6"]) == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "argv",
     [

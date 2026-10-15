@@ -28,6 +28,8 @@ const mockClient = {
 };
 jest.mock("../../../providers/live-events", () => ({ useLiveEvents: () => ({ messaging: mockClient }) }));
 
+import { ActionSheetIOS } from "react-native";
+import { act } from "@testing-library/react-native";
 import { IdeasSheet } from "../IdeasSheet";
 
 const renderSheet = async (onStarted = jest.fn()) => {
@@ -35,27 +37,45 @@ const renderSheet = async (onStarted = jest.fn()) => {
   return onStarted;
 };
 
-it("lists ideas as cards, the DM agent's first, the viewer's running ones left out, with no price", async () => {
+beforeEach(() => jest.clearAllMocks());
+
+it("lists every idea as one row (the DM agent's first, the viewer's running ones out), with no price or Start", async () => {
   await renderSheet();
-  expect(await screen.findByText("Title b")).toBeTruthy();
-  const titles = screen.getAllByText(/^Title /).map((node) => node.props.children);
+  expect(await screen.findByRole("button", { name: "Title b" })).toBeTruthy();
+  const rows = screen.getAllByRole("button").map((node) => node.props.accessibilityLabel);
   // A teammate's start of "t" leaves it startable here (a start is per person).
-  expect(titles).toEqual(["Title b", "Title a", "Title t"]);
-  expect(screen.getAllByText("Your team: about 2 days · You: about 5 minutes")).toHaveLength(3);
-  expect(screen.queryByText(/\$/)).toBeNull();
+  expect(rows).toEqual(["Title b", "Title a", "Title t"]);
+  expect(screen.getByText("Why a")).toBeTruthy();
+  expect(screen.queryByText(/\$|Start$|can do this for you/)).toBeNull();
 });
 
-it("Start calls the API and hands back the DM", async () => {
+it("a row opens the detail: what's included (read-only), the effort, Let's do it hands back the DM", async () => {
   const onStarted = await renderSheet();
-  await fireEvent.press(await screen.findByRole("button", { name: "Start: Title a" }));
+  await fireEvent.press(await screen.findByRole("button", { name: "Title a" }));
+  expect(screen.getByText("What's included")).toBeTruthy();
+  expect(screen.getByText("a one")).toBeTruthy();
+  expect(screen.getByText("Your team: about 2 days · You: about 5 minutes")).toBeTruthy();
+  await fireEvent.press(screen.getByRole("button", { name: "Let's do it" }));
   await waitFor(() => expect(onStarted).toHaveBeenCalledWith("room-b"));
   expect(mockClient.startIdea).toHaveBeenCalledWith("a");
 });
 
-it("shows the server's reason when Start fails", async () => {
+it("… → Not interested hides the idea", async () => {
+  const sheet = jest.spyOn(ActionSheetIOS, "showActionSheetWithOptions").mockImplementation(() => {});
+  await renderSheet();
+  await fireEvent.press(await screen.findByRole("button", { name: "Title a" }));
+  await fireEvent.press(screen.getByRole("button", { name: "More options" }));
+  const [options, callback] = sheet.mock.calls.at(-1)!;
+  expect(options.options).toEqual(["Not interested", "Cancel"]);
+  await act(async () => { callback(0); });
+  expect(mockClient.dismissIdea).toHaveBeenCalledWith("a");
+});
+
+it("shows the server's reason when Let's do it fails", async () => {
   mockClient.startIdea.mockRejectedValueOnce(new Error("Work did not answer. Try Start again in a moment."));
   const onStarted = await renderSheet();
-  await fireEvent.press(await screen.findByRole("button", { name: "Start: Title b" }));
+  await fireEvent.press(await screen.findByRole("button", { name: "Title b" }));
+  await fireEvent.press(screen.getByRole("button", { name: "Let's do it" }));
   expect(await screen.findByText("Work did not answer. Try Start again in a moment.")).toBeTruthy();
   expect(onStarted).not.toHaveBeenCalled();
 });

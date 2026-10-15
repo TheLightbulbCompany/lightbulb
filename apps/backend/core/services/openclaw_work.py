@@ -199,6 +199,16 @@ def _public_message(row: dict[str, Any]) -> dict[str, Any]:
     return message
 
 
+def _with_agent_note(public: dict[str, Any], row: dict[str, Any], target_agent_id: str) -> dict[str, Any]:
+    """The woken agent's turn reads the people's text plus the message's agent-only note (an
+    idea start's instructions and ids). Only for an agent the message dispatches to; history
+    and every client projection leave the note out."""
+    note = row.get("agentNote")
+    if note and any(t.get("agentId") == target_agent_id for t in row.get("dispatchTargets") or []):
+        public["text"] = f"{public['text']}\n\n{note}"
+    return public
+
+
 async def room_history(meta: dict[str, Any], before_seq: int, *, root: str | None = None) -> list[dict[str, Any]]:
     """The room's last messages before ``before_seq`` (public shape), plus the whole thread
     ``root`` when it began before that window. Room turns and voice runs share it."""
@@ -253,7 +263,7 @@ async def build_ingress_body(
             "revision": int(meta["revision"]),
         },
         "sender": message["author"],
-        "message": _public_message(message),
+        "message": _with_agent_note(_public_message(message), message, target_agent_id),
         "mentions": message.get("mentions") or [],
         "participants": ingress_participants(members),
         "recentHistory": await room_history(meta, before, root=message.get("threadRootMessageId")),

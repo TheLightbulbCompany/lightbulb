@@ -1,77 +1,82 @@
 "use client";
 
-// The idea as a proposal (spec 2026-10-14 §4.4): who does it, the outcome as the headline, why,
-// three checkmarks, one effort line, one Start, a quiet × for "not now". No prices anywhere.
-import { useState } from "react";
-import { Check, X } from "lucide-react";
+// Ideas, calm like Muse's Ideas tab (owner, 2026-10-15): a list of rows (the agent's avatar, a
+// bold title, a few grey lines of why) and, on a row, a detail view with what's included, the
+// effort line, "Let's do it" (Start) and a "…" menu with "Not interested" (dismiss). No prices.
+import { useId, useState } from "react";
+import { ArrowLeft, Check, MoreHorizontal } from "lucide-react";
 import { ideaEffortLine, orderIdeas, type Idea } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { useIdeas } from "@/hooks/useIdeas";
+import { openPanel } from "@/components/workspace/workspaceController";
 import "./ideas.css";
 
-export interface IdeaActions {
+/** One idea in the list: the whole row opens it. */
+export function IdeaListRow({ idea, onOpen }: { idea: Idea; onOpen: (ideaId: string) => void }) {
+  const id = useId();
+  return <li className="idea-item">
+    <button type="button" className="idea-item__button" aria-labelledby={`${id}-title`} aria-describedby={`${id}-why`}
+      onClick={() => onOpen(idea.id)}>
+      <Identity name={idea.agentName} avatarOnly size="sm" />
+      <span className="idea-item__text">
+        <span id={`${id}-title`} className="idea-item__title">{idea.title}</span>
+        <span id={`${id}-why`} className="idea-item__why">{idea.why}</span>
+      </span>
+    </button>
+  </li>;
+}
+
+/** The idea opened: what it is, what's included, the effort, Let's do it, and "…" → Not interested. */
+export function IdeaDetail({ idea, onBack, onStart, onDismiss }: {
+  idea: Idea;
+  onBack: () => void;
   onStart: (ideaId: string) => Promise<void>;
   onDismiss: (ideaId: string) => void;
-}
-
-/** Start stays pressed until the DM opens, so a second click cannot start twice. */
-function useStarting(onStart: IdeaActions["onStart"]) {
+}) {
   const [starting, setStarting] = useState(false);
-  return [starting, async (ideaId: string) => {
-    setStarting(true);
-    try { await onStart(ideaId); } finally { setStarting(false); }
-  }] as const;
-}
-
-export function IdeaCard({ idea, onStart, onDismiss }: { idea: Idea } & IdeaActions) {
-  const [starting, start] = useStarting(onStart);
-  return <article className="idea-card" aria-label={idea.title}>
-    <div className="idea-card__who">
-      <Identity name={idea.agentName} avatarOnly size="sm" />
-      <span>{idea.agentName} can do this for you</span>
-      <button type="button" className="idea-card__dismiss" aria-label={`Not now: ${idea.title}`} title="Not now"
-        onClick={() => onDismiss(idea.id)}><X size={16} aria-hidden="true" /></button>
-    </div>
-    <h3 className="idea-card__title">{idea.title}</h3>
-    <p className="idea-card__why">{idea.why}</p>
-    <ul className="idea-card__checks">
-      {idea.deliverables.map((line) => <li key={line}><Check size={14} aria-hidden="true" />{line}</li>)}
-    </ul>
-    <div className="idea-card__foot">
-      <span className="idea-card__effort">{ideaEffortLine(idea)}</span>
-      <Button type="button" size="sm" disabled={starting} onClick={() => void start(idea.id)}>
-        {starting ? "Starting…" : "Start"}
+  const start = async () => {
+    setStarting(true); // stays pressed until the DM opens: a second click cannot start twice
+    try { await onStart(idea.id); } finally { setStarting(false); }
+  };
+  return <article className="idea-detail" aria-label={idea.title}>
+    <button type="button" className="idea-detail__back" onClick={onBack}><ArrowLeft size={16} aria-hidden="true" />All ideas</button>
+    <h2 className="idea-detail__title">{idea.title}</h2>
+    <p className="idea-detail__why">{idea.why}</p>
+    <section className="idea-detail__included" aria-labelledby={`included-${idea.id}`}>
+      <h3 id={`included-${idea.id}`} className="idea-detail__heading">What&apos;s included</h3>
+      <ul>
+        {idea.deliverables.map((line) => <li key={line}><span>{line}</span><Check size={16} aria-hidden="true" /></li>)}
+      </ul>
+    </section>
+    <p className="idea-detail__effort">{ideaEffortLine(idea)}</p>
+    <div className="idea-detail__actions">
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button type="button" variant="outline" size="icon" aria-label="More options"><MoreHorizontal aria-hidden="true" /></Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start">
+          <DropdownMenuItem onSelect={() => { onDismiss(idea.id); onBack(); }}>Not interested</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <Button type="button" className="idea-detail__go" disabled={starting} onClick={() => void start()}>
+        {starting ? "Starting…" : "Let's do it"}
       </Button>
     </div>
   </article>;
 }
 
-/** One line: an idea past the top three. */
-export function IdeaRow({ idea, onStart, onDismiss }: { idea: Idea } & IdeaActions) {
-  const [starting, start] = useStarting(onStart);
-  return <li className="idea-row">
-    <div>
-      <div className="idea-row__title">{idea.title}</div>
-      <div className="idea-row__meta">{idea.agentName} · {ideaEffortLine(idea)}</div>
-    </div>
-    <div className="idea-row__actions">
-      <Button type="button" size="sm" variant="outline" disabled={starting} aria-label={`Start: ${idea.title}`}
-        onClick={() => void start(idea.id)}>{starting ? "Starting…" : "Start"}</Button>
-      <button type="button" className="idea-card__dismiss" aria-label={`Not now: ${idea.title}`} title="Not now"
-        onClick={() => onDismiss(idea.id)}><X size={14} aria-hidden="true" /></button>
-    </div>
-  </li>;
-}
-
-/** Under the CEO's welcome: the top idea as a proposal, and where the rest are. It goes for good
+/** Under the CEO's welcome: the top idea as one row, and the way to the rest. It goes for good
  *  once the workspace has started or hidden an idea: it is a first step, not a banner. */
 export function WelcomeIdea() {
-  const { ideas, running, anyStarted, anyDismissed, startAndOpen, dismiss } = useIdeas();
+  const { ideas, running, anyStarted, anyDismissed } = useIdeas();
   const top = orderIdeas(ideas)[0];
   if (!top || running.length > 0 || anyStarted || anyDismissed) return null;
   return <div className="idea-welcome">
-    <IdeaCard idea={top} onStart={startAndOpen} onDismiss={dismiss} />
-    <p className="idea-welcome__pointer">More ideas are under the 💡 at the top of any conversation.</p>
+    <ul className="idea-list">
+      <IdeaListRow idea={top} onOpen={(ideaId) => openPanel("ideas", { idea: ideaId }, { pushUrl: true })} />
+    </ul>
+    <button type="button" className="idea-welcome__all" onClick={() => openPanel("ideas", {}, { pushUrl: true })}>See all ideas</button>
   </div>;
 }

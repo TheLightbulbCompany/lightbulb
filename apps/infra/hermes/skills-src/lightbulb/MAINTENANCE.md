@@ -462,13 +462,18 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- backend core/services/ideas.py (start: one Paperclip project named after the idea,
                                  owner agent as lead, under onboarding_goal_id when recorded, never a new goal,
                                  created with the fork's body idempotencyKey; write_profile_file puts the
-                                 guide at ideas/<id>.md = "$HERMES_HOME/ideas/<idea>.md"; start_line = the "<name>
-                                 started <title>" system line in the starter's DM with a user_request dispatch
-                                 target) + apps/backend/ideas/*.yaml (each guide's Steps / Decisions / Done proves /
-                                 Honesty limits headings, validated by ideas.Idea) + routers/ideas.py
-                                 (GET /ideas, POST /ideas/{id}/start, POST /ideas/{id}/dismiss). The plan approval is
-                                 plugins/lightbulb request_approval (tasks=[...]); decisions are the paperclip skill's
-                                 references/interactions.md request_confirmation. Spec 2026-10-14 §4.4 and §8.
+                                 guide at ideas/<id>.md = "$HERMES_HOME/ideas/<idea>.md"; start_text = the person's
+                                 own "> <title> / Let's do it!" message (via "ideas", messaging.create_human_message,
+                                 so it wakes the agent like any DM message) and start_note = its agentNote (the idea,
+                                 the deliverables, the tips path, the start's project id), appended to the woken
+                                 agent's turn text by core/services/openclaw_work.py _with_agent_note and never
+                                 served to clients) + apps/backend/ideas/*.yaml (each guide's Steps / Decisions /
+                                 Done proves / Honesty limits headings, validated by ideas.Idea; tips, not required
+                                 steps) + routers/ideas.py (GET /ideas, POST /ideas/{id}/start,
+                                 POST /ideas/{id}/dismiss). No mandatory plan (owner 2026-10-15): request_approval
+                                 (plugins/lightbulb, tasks=[...] stamps payload.projectIds) only before outside
+                                 actions in the person's name; ideas.plan_for shows the start's newest pending one
+                                 in the DM card. Spec 2026-10-14 §4.4 and §8.
   - Chat vs document ........ references/chat-vs-document.md + SKILL.md (non-negotiable + routing row)
                               First-run result contract ("The first run" section, pointed at from SKILL.md's
                                  deliverable bullet and company-and-plans.md, because the first room turn can run

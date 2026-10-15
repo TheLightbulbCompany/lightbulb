@@ -9,10 +9,10 @@ import { useLiveEvents } from "../../providers/live-events";
 import { MessageMarkdown } from "../chat/MessageMarkdown";
 
 const STATUS_LINE: Record<string, string> = {
-  revision_requested: "You asked for changes. The plan is being revised.",
-  approved: "Plan approved",
-  rejected: "Plan not approved",
-  cancelled: "Plan withdrawn",
+  revision_requested: "You asked for changes.",
+  approved: "Approved",
+  rejected: "Not approved",
+  cancelled: "Withdrawn",
 };
 
 const text = (approval: TeamsApproval, key: string) => {
@@ -41,7 +41,7 @@ export function DmIdeaPlan({ roomId }: { roomId: string }) {
   );
 }
 
-/** The plan with Approve plan / Change something while pending; a status line once decided. */
+/** The approval with Approve / Change something while pending; a status line once decided. */
 export function PlanCard({ approvalId, planStatus, onDecided }: {
   approvalId: string;
   /** The plan's status on /ideas: a change (decided, revised) reads the approval again. */
@@ -83,8 +83,8 @@ export function PlanCard({ approvalId, planStatus, onDecided }: {
 
   if (!approval) {
     return loadFailed ? (
-      <View accessibilityLabel="Plan for approval" style={[styles.card, styles.row, { borderColor: palette.edge }]}>
-        <Text accessibilityRole="alert" style={[styles.meta, { color: palette.fgMute }]}>{"Couldn't load the plan ·"}</Text>
+      <View accessibilityLabel="Approval" style={[styles.card, styles.row, { borderColor: palette.edge }]}>
+        <Text accessibilityRole="alert" style={[styles.meta, { color: palette.fgMute }]}>{"Couldn't load the approval ·"}</Text>
         <Pressable accessibilityRole="button" accessibilityLabel="Retry" onPress={() => void load()}>
           <Text style={[styles.meta, styles.retry, { color: palette.fg }]}>Retry</Text>
         </Pressable>
@@ -110,14 +110,14 @@ export function PlanCard({ approvalId, planStatus, onDecided }: {
   );
 
   return (
-    <View accessibilityLabel="Plan for approval" style={[styles.card, { borderColor: palette.edge }]}>
+    <View accessibilityLabel="Approval" style={[styles.card, { borderColor: palette.edge }]}>
       <Text style={[styles.title, { color: palette.fg }]}>{text(approval, "title")}</Text>
       <MessageMarkdown text={text(approval, "summary")} palette={palette} />
       {approval.status !== "pending" ? (
         <Text style={[styles.meta, { color: palette.fgMute }]}>{STATUS_LINE[approval.status] ?? approval.status}</Text>
       ) : note === null ? (
         <View style={styles.row}>
-          {button("Approve plan", () => void run(() => approveApproval(config, approvalId), "The plan could not be approved. Try again."), true)}
+          {button("Approve", () => void run(() => approveApproval(config, approvalId), "It could not be approved. Try again."), true)}
           {button("Change something", () => setNote(""), false)}
         </View>
       ) : (

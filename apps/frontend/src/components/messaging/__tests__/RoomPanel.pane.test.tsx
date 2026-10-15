@@ -72,8 +72,8 @@ it("shows the plan the agent filed for the viewer's idea in this DM, from GET /i
     plan: { approvalId: "ap-1", status: "pending", title: "Plan: Your CRM" } }] }));
   attachShell(() => undefined);
   render(<RoomPanel {...props} messagingClient={{ listIdeas } as unknown as MessagingClient} />);
-  expect(await screen.findByRole("region", { name: "Plan for approval" })).toHaveTextContent("Plan: Your CRM");
-  expect(screen.getByRole("button", { name: "Approve plan" })).toBeInTheDocument();
+  expect(await screen.findByRole("region", { name: "Approval" })).toHaveTextContent("Plan: Your CRM");
+  expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
 });
 
 it("hides Browser until a status body has landed", () => {

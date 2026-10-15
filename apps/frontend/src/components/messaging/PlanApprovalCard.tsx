@@ -1,8 +1,9 @@
 "use client";
 
-// An idea's plan, inside the starter's DM with the agent (spec 2026-10-14 §4.4). The agent files it
-// with `request_approval(title="Plan: <idea>")`; GET /ideas matches it to the start (`plan` on the
-// running start), so the card does not depend on the agent pasting the link. Approve plan /
+// An idea's approval, inside the starter's DM with the agent (spec 2026-10-14 §4.4). The agent
+// files one with `request_approval` only before acting in the person's name; GET /ideas matches the
+// start's newest pending one (`plan` on the running start), so the card does not depend on the
+// agent pasting the link. Approve /
 // Change something are the approval's own actions.
 import { createContext, useEffect, useState } from "react";
 import { myStartsIn, notePlanDecision, plansPollMs, useIdeas, type IdeasClient } from "@lightbulb/shared";
@@ -31,15 +32,15 @@ export function isPlanApproval(approval: Approval): boolean {
 export const DmPlanContext = createContext<readonly string[]>([]);
 
 const STATUS_LINE: Record<string, string> = {
-  revision_requested: "You asked for changes. The plan is being revised.",
-  approved: "Plan approved",
-  rejected: "Plan not approved",
-  cancelled: "Plan withdrawn",
+  revision_requested: "You asked for changes.",
+  approved: "Approved",
+  rejected: "Not approved",
+  cancelled: "Withdrawn",
 };
 
 export function PlanApprovalCard({ approval, onDecided }: {
   approval: Approval;
-  /** After Approve plan or Change something: the DM re-reads /ideas, so a revision restarts its poll. */
+  /** After Approve or Change something: the DM re-reads /ideas, so a revision restarts its poll. */
   onDecided?: () => void;
 }) {
   const { approve, requestRevision } = useApprovalMutations();
@@ -50,7 +51,7 @@ export function PlanApprovalCard({ approval, onDecided }: {
     setBusy(true);
     try { await fn(); onDecided?.(); } catch (err) { notifyApiError(err, fallback); } finally { setBusy(false); }
   };
-  return <section className="plan-card" aria-label="Plan for approval">
+  return <section className="plan-card" aria-label="Approval">
     <div className="plan-card__head">{payloadText(approval, "title")}</div>
     <div className="plan-card__body"><MarkdownView skipHtml>{payloadText(approval, "summary")}</MarkdownView></div>
     <div className="plan-card__foot">
@@ -58,7 +59,7 @@ export function PlanApprovalCard({ approval, onDecided }: {
       {approval.status !== "pending" ? <span>{STATUS_LINE[approval.status] ?? approval.status}</span>
         : note === null ? <>
           <Button type="button" size="sm" disabled={busy}
-            onClick={() => void run(() => approve(approval.id), "The plan could not be approved. Try again.")}>Approve plan</Button>
+            onClick={() => void run(() => approve(approval.id), "It could not be approved. Try again.")}>Approve</Button>
           <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => setNote("")}>Change something</Button>
         </> : <form className="plan-card__change" onSubmit={(event) => {
           event.preventDefault();
@@ -82,9 +83,9 @@ function PlanById({ id, status, onDecided }: { id: string; status: string; onDec
   useEffect(() => { void mutate(); }, [status, mutate]);
   if (data?.id) return <PlanApprovalCard approval={data} onDecided={onDecided} />;
   if (!error) return null;
-  return <section className="plan-card" aria-label="Plan for approval">
+  return <section className="plan-card" aria-label="Approval">
     <div className="plan-card__foot" role="alert">
-      Couldn&apos;t load the plan · <Button type="button" size="sm" variant="outline" onClick={() => void mutate()}>Retry</Button>
+      Couldn&apos;t load the approval · <Button type="button" size="sm" variant="outline" onClick={() => void mutate()}>Retry</Button>
     </div>
   </section>;
 }

@@ -142,7 +142,7 @@ def paperclip(workspace, monkeypatch):
 
 async def _lines(room_id):
     messages, _ = await repo.list_messages(room_id, 0, 100)
-    return [m for m in messages if m["author"]["kind"] == "system"]
+    return [m for m in messages if m.get("via") == "ideas"]
 
 
 @pytest.mark.asyncio
@@ -163,10 +163,18 @@ async def test_start_twice_makes_one_project_one_guide_and_one_line(paperclip):
     )
     lines = await _lines(first["roomId"])
     assert len(lines) == 1
-    assert lines[0]["text"].startswith("Name user_A started **Your books set up")
-    assert "ideas/books-cleanup.md" in lines[0]["text"] and "references/ideas.md" in lines[0]["text"]
-    # This start's own project and DM: two starts of one idea with one agent stay apart.
-    assert f"Project `{first['projectId']}`, room `{first['roomId']}`." in lines[0]["text"]
+    idea = ideas.catalog()["books-cleanup"]
+    # The person's own message, like Muse: the idea quoted above "Let's do it!". No instructions or ids.
+    assert lines[0]["author"] == {"kind": "human", "id": "user_A", "displayName": lines[0]["author"]["displayName"]}
+    assert lines[0]["text"] == f"> {idea.title}\n\nLet's do it!"
+    # The agent's context rides in the agent-only note: the idea, what to deliver, tips, this start's project.
+    note = lines[0]["agentNote"]
+    assert idea.why in note and all(d in note for d in idea.deliverables)
+    assert "ideas/books-cleanup.md" in note and "references/ideas.md" in note
+    assert f"`{first['projectId']}`" in note
+    from core.services.messaging import canonical_message
+
+    assert "agentNote" not in canonical_message(lines[0]).model_dump(by_alias=True)
     assert lines[0]["dispatchTargets"] == [{"agentId": STARTERS["finance"], "eventKind": "user_request"}]
     # The line sits in the starter's DM with the owner agent.
     assert await repo.get_member(first["roomId"], "agent", STARTERS["finance"]) is not None
@@ -347,7 +355,6 @@ def test_no_plan_until_the_agent_files_one():
     others = [
         _approval("before", "2026-10-15T09:59:59Z"),
         _approval("other-agent", "2026-10-15T11:00:00Z", agent="agent-x"),
-        _approval("not-a-plan", "2026-10-15T11:00:00Z", title="Approve the budget"),
         _approval("strategy", "2026-10-15T11:00:00Z", kind="approve_ceo_strategy"),
         _approval("other-project", "2026-10-15T11:00:00Z", projects=["p-2"]),
     ]
@@ -439,3 +446,29 @@ async def test_an_approvals_failure_leaves_the_plan_out_and_the_read_answers(pap
     paperclip.list_issues.return_value = [{"status": "done"}]
     [item] = (await ideas.list_ideas(AUTH))["running"]
     assert "plan" not in item and item["progress"] == {"done": 1}
+
+
+@pytest.mark.asyncio
+async def test_only_the_woken_agents_turn_reads_the_start_instructions(paperclip):
+    from core.services import openclaw_work
+
+    started = await ideas.start(AUTH, "books-cleanup")
+    [line] = await _lines(started["roomId"])
+    meta = await repo.get_room(started["roomId"])
+    members = [{"kind": "agent", "id": STARTERS["finance"], "displayName": "Finance", "listenMode": "active"}]
+
+    async def body_for(agent_id):
+        return await openclaw_work.build_ingress_body(
+            meta=meta, target_agent_id=agent_id, event_kind="user_request", message=line, members=members
+        )
+
+    woken = (await body_for(STARTERS["finance"]))["message"]["text"]
+    assert woken.startswith(line["text"]) and "ideas/books-cleanup.md" in woken and started["projectId"] in woken
+    assert (await body_for(STARTERS["growth"]))["message"]["text"] == line["text"]
+
+
+def test_any_board_approval_from_the_agent_counts_and_a_pending_one_wins_over_a_newer_decided_one():
+    budget = _approval("budget", "2026-10-15T11:00:00Z", title="Approve the 200-email batch")
+    decided = {**_approval("old-plan", "2026-10-15T12:00:00Z"), "status": "approved"}
+    assert ideas.plan_for(START, [budget, decided], allow_untagged=True)["approvalId"] == "budget"
+    assert ideas.plan_for(START, [decided], allow_untagged=True)["status"] == "approved"

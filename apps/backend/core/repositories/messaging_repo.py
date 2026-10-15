@@ -1003,6 +1003,7 @@ async def create_message(
     progress: bool = False,
     post_reason: str | None = None,
     author_member_check: bool = True,
+    agent_note: str | None = None,
 ) -> tuple[dict, bool]:
     """Strong-read ``META.lastSeq`` then conditionally transact: bump META, put
     the immutable ``MSG``, put the ``IDEMP`` receipt, put one ``WORK#MESSAGE``
@@ -1090,6 +1091,10 @@ async def create_message(
             if post_reason:
                 # A feed post's "Why I created this post" line.
                 message["postReason"] = post_reason
+            if agent_note:
+                # For the woken agent only: runtime ingress appends it to the text; no client
+                # projection (canonical_message) ever serves it.
+                message["agentNote"] = agent_note
             if agent_hop is not None:
                 # The agent-reply cap reads the trigger's hop (messaging.create_agent_message).
                 message["agentHop"] = agent_hop

@@ -26,6 +26,7 @@ import { CommandPaletteProvider } from "@/components/teams/command-palette/Comma
 import { preloadTeamsPanels } from "@/components/teams/TeamsPanelRouter";
 import { DesktopPermissionsGate } from "@/components/desktop/DesktopPermissionsGate";
 import { ChatHistorySync } from "./ChatHistorySync";
+import { useIdeasFirstOpen } from "./ideasFirstOpen";
 import { useUserSyncOnce } from "@/components/chat/shell/useUserSyncOnce";
 import { useChatThemeAccountSync } from "@/components/chat/shell/useChatThemeAccountSync";
 import { useCheckoutReturn } from "@/components/chat/shell/useCheckoutReturn";
@@ -172,6 +173,7 @@ function AuthenticatedWorkspace({ workspaceName }: { workspaceName: string }): R
   useChatThemeAccountSync(true);
   const { showSubscriptionSuccess } = useCheckoutReturn();
   const { chatReady } = useChatReady();
+  const { userId: viewerId, orgId } = useAuth();
 
   // [reconciler] — pure decision in workspaceShellReconciler; this executes it.
   // Ordering (pinned by workspaceShellUrl.test.ts): signature latch BEFORE
@@ -229,6 +231,9 @@ function AuthenticatedWorkspace({ workspaceName }: { workspaceName: string }): R
   useEffect(() => {
     if (agentsSettled) runReconciler(window.location.search);
   }, [agentsSettled, runReconciler]);
+
+  // After the reconciler: a URL that names a pane keeps it, and Ideas does not replace it.
+  useIdeasFirstOpen(chatReady, viewerId, orgId ?? viewerId);
 
   // [selectAgent listener] — the shell only LISTENS, never dispatches
   // (loop-free by construction; accepts MarketplaceToast's sourceless events

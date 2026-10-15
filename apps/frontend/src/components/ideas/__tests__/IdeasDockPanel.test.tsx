@@ -9,25 +9,25 @@ const client = vi.hoisted(() => ({
   startIdea: vi.fn(),
   dismissIdea: vi.fn(),
 }));
-const openMessagePanel = vi.hoisted(() => vi.fn());
+const controller = vi.hoisted(() => ({ openMessagePanel: vi.fn(), openPanel: vi.fn(), updatePanelParams: vi.fn() }));
 
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ isLoaded: true, userId: "u1", orgId: "o1" }) }));
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => ({ messaging: client }) }));
 vi.mock("@/lib/notify", () => ({ notifyApiError: vi.fn() }));
-vi.mock("@/components/workspace/workspaceController", () => ({ openMessagePanel }));
+vi.mock("@/components/workspace/workspaceController", () => controller);
 
 import { IdeasDockPanel } from "@/components/workspace/panels/IdeasDockPanel";
 import { WelcomeIdea } from "../IdeaCard";
 
-const idea = (id: string, agentId: string, agentName: string): Idea => ({
-  id, ownerRole: "growth", kind: "agency", businessTypes: ["any"], title: `Title ${id}`, why: `Why ${id}`,
+const idea = (id: string, agentId: string, agentName: string, kind: Idea["kind"] = "agency"): Idea => ({
+  id, ownerRole: "growth", kind, businessTypes: ["any"], title: `Title ${id}`, why: `Why ${id}`,
   deliverables: [`${id} one`, `${id} two`, `${id} three`], ourTurnaround: "about 2 days", yourPart: "about 5 minutes",
   agentId, agentName,
 });
 
 const catalog: IdeasResponse = {
   ideas: [idea("a", "eng", "Engineering"), idea("b", "growth", "Growth"), idea("c", "eng", "Engineering"),
-    idea("d", "growth", "Growth"), idea("e", "fin", "Finance")],
+    idea("d", "growth", "Growth"), idea("e", "fin", "Finance", "everyday")],
   running: [{ ideaId: "z", title: "Running job", agentId: "fin", agentName: "Finance", roomId: "room-z", projectId: "p-z",
     starterId: "u1", starterName: "Mira", createdAt: null, progress: { done: 2, todo: 3, cancelled: 1 } },
   { ideaId: "y", title: "Teammate job", agentId: "eng", agentName: "Engineering", roomId: "room-y", projectId: "p-y",
@@ -40,7 +40,8 @@ function renderPanel(params: Record<string, string> = {}) {
   </SWRConfig>);
 }
 
-const cards = () => screen.getAllByRole("article").map((card) => within(card).getByRole("heading").textContent);
+const rowTitles = () => [...document.querySelectorAll(".idea-item__title")].map((el) => el.textContent);
+const row = (title: string) => screen.getByRole("button", { name: title });
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -49,93 +50,88 @@ beforeEach(() => {
   client.dismissIdea.mockResolvedValue(undefined);
 });
 
-describe("Ideas pane", () => {
-  it("shows a proposal: who, outcome, why, three checks, one effort line, Start, and no price", async () => {
+describe("Ideas pane: the list", () => {
+  it("shows every idea as one calm row: avatar, title, why; no cards, kicker, Start, × or chips", async () => {
     renderPanel();
-    const card = (await screen.findAllByRole("article"))[0];
-    expect(within(card).getByText("Engineering can do this for you")).toBeInTheDocument();
-    expect(within(card).getByRole("heading", { name: "Title a" })).toBeInTheDocument();
-    expect(within(card).getByText("Why a")).toBeInTheDocument();
-    expect(within(card).getAllByRole("listitem")).toHaveLength(3);
-    expect(within(card).getByText("Your team: about 2 days · You: about 5 minutes")).toBeInTheDocument();
-    expect(within(card).getByRole("button", { name: "Start" })).toBeInTheDocument();
+    await waitFor(() => expect(rowTitles()).toHaveLength(5));
+    expect(rowTitles()).toEqual(["Title a", "Title b", "Title c", "Title d", "Title e"]);
+    expect(row("Title a")).toHaveAccessibleDescription("Why a");
+    expect(screen.queryByRole("article")).not.toBeInTheDocument();
+    expect(screen.queryByText(/can do this for you/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Start/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Not now/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Teammate" })).not.toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/\$|agency/i);
   });
 
-  it("puts running ideas with progress first, then three proposals, then one-line rows", async () => {
-    renderPanel();
-    expect(await screen.findByText("Running job")).toBeInTheDocument();
-    expect(screen.getByText("Finance · 2 of 5 tasks done")).toBeInTheDocument();
-    expect(cards()).toEqual(["Title a", "Title b", "Title c"]);
-    expect(screen.getByRole("button", { name: "Start: Title d" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Start: Title e" })).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Open: Running job" }));
-    expect(openMessagePanel).toHaveBeenCalledWith("room-z");
+  it("puts the DM agent's ideas first, then agency jobs, then everyday", async () => {
+    renderPanel({ agent: "fin" });
+    await waitFor(() => expect(rowTitles()).toHaveLength(5));
+    expect(rowTitles()).toEqual(["Title e", "Title a", "Title b", "Title c", "Title d"]);
   });
 
-  it("offers Open only on the viewer's own start; a teammate's says who started it", async () => {
+  it("keeps running ideas at the top; Open only on the viewer's own", async () => {
     renderPanel();
-    expect(await screen.findByText("Engineering · Planning · Started by Sam")).toBeInTheDocument();
+    expect(await screen.findByText("Finance · 2 of 5 tasks done")).toBeInTheDocument();
+    expect(screen.getByText("Engineering · Planning · Started by Sam")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Open: Teammate job" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Open: Running job" }));
+    expect(controller.openMessagePanel).toHaveBeenCalledWith("room-z");
+  });
+});
+
+describe("Ideas pane: the detail", () => {
+  it("opens on a row: title, description, what's included with checks, effort, Let's do it; back returns", async () => {
+    renderPanel();
+    await waitFor(() => expect(rowTitles()).toHaveLength(5));
+    await userEvent.click(row("Title b"));
+    const detail = screen.getByRole("article", { name: "Title b" });
+    expect(within(detail).getByRole("heading", { name: "Title b" })).toBeInTheDocument();
+    expect(within(detail).getByText("Why b")).toBeInTheDocument();
+    const included = within(detail).getByRole("region", { name: "What's included" });
+    expect(within(included).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["b one", "b two", "b three"]);
+    expect(within(included).queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(within(detail).getByText("Your team: about 2 days · You: about 5 minutes")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "All ideas" }));
+    expect(rowTitles()).toHaveLength(5);
   });
 
-  it("keeps a proposal a teammate is running, and hides one the viewer is running", async () => {
-    client.listIdeas.mockResolvedValue({ ...catalog, running: [
-      { ...catalog.running[1], ideaId: "a" },
-      { ...catalog.running[0], ideaId: "b" },
-    ] });
+  it("Let's do it starts the idea and opens its DM", async () => {
     renderPanel();
-    await screen.findAllByRole("article");
-    expect(cards()).toEqual(["Title a", "Title c", "Title d"]);
+    await waitFor(() => expect(rowTitles()).toHaveLength(5));
+    await userEvent.click(row("Title b"));
+    await userEvent.click(screen.getByRole("button", { name: "Let's do it" }));
+    await waitFor(() => expect(controller.openMessagePanel).toHaveBeenCalledWith("room-b"));
+    expect(client.startIdea).toHaveBeenCalledWith("b");
+  });
+
+  it("… → Not interested hides the idea", async () => {
+    renderPanel();
+    await waitFor(() => expect(rowTitles()).toHaveLength(5));
+    await userEvent.click(row("Title a"));
+    await userEvent.click(screen.getByRole("button", { name: "More options" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Not interested" }));
+    expect(client.dismissIdea).toHaveBeenCalledWith("a");
+    await waitFor(() => expect(rowTitles()).toEqual(["Title b", "Title c", "Title d", "Title e"]));
+  });
+
+  it("opens straight on the idea a link names", async () => {
+    renderPanel({ idea: "d" });
+    expect(await screen.findByRole("article", { name: "Title d" })).toBeInTheDocument();
   });
 
   it("a second Start of an idea already starting opens its DM without an error", async () => {
     const { notifyApiError } = await import("@/lib/notify");
     client.startIdea.mockRejectedValueOnce(Object.assign(new Error("This idea is already starting."), { status: 409 }));
     renderPanel();
-    await screen.findAllByRole("article");
+    await waitFor(() => expect(rowTitles()).toHaveLength(5));
+    await userEvent.click(row("Title a"));
     client.listIdeas.mockResolvedValue({ ...catalog, running: [...catalog.running,
       { ideaId: "a", title: "Title a", agentId: "eng", agentName: "Engineering", roomId: "room-a", projectId: "p-a",
         starterId: "u1", starterName: "Mira", createdAt: null }] });
-    await userEvent.click(within(screen.getAllByRole("article")[0]).getByRole("button", { name: "Start" }));
-    await waitFor(() => expect(openMessagePanel).toHaveBeenCalledWith("room-a"));
+    await userEvent.click(screen.getByRole("button", { name: "Let's do it" }));
+    await waitFor(() => expect(controller.openMessagePanel).toHaveBeenCalledWith("room-a"));
     expect(notifyApiError).not.toHaveBeenCalled();
-  });
-
-  it("opened from an agent's DM shows that agent's ideas first", async () => {
-    renderPanel({ agent: "growth" });
-    await screen.findAllByRole("article");
-    expect(cards()).toEqual(["Title b", "Title d", "Title a"]);
-  });
-
-  it("filters by teammate", async () => {
-    renderPanel();
-    await screen.findAllByRole("article");
-    await userEvent.click(screen.getByRole("button", { name: "Engineering" }));
-    expect(cards()).toEqual(["Title a", "Title c"]);
-    expect(screen.queryByText("Running job")).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "All" }));
-    expect(cards()).toHaveLength(3);
-  });
-
-  it("Start calls the API and opens the DM it returns; the pane stays", async () => {
-    renderPanel();
-    await screen.findAllByRole("article");
-    await userEvent.click(within(screen.getAllByRole("article")[1]).getByRole("button", { name: "Start" }));
-    await waitFor(() => expect(openMessagePanel).toHaveBeenCalledWith("room-b"));
-    expect(client.startIdea).toHaveBeenCalledWith("b");
-    expect(client.listIdeas).toHaveBeenCalledTimes(2);
-  });
-
-  it("× hides the idea at once and tells the server", async () => {
-    let finish: () => void = () => {};
-    client.dismissIdea.mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
-    renderPanel();
-    await screen.findAllByRole("article");
-    await userEvent.click(screen.getByRole("button", { name: "Not now: Title a" }));
-    expect(cards()).toEqual(["Title b", "Title c", "Title d"]);
-    expect(client.dismissIdea).toHaveBeenCalledWith("a");
-    finish();
   });
 });
 
@@ -143,39 +139,26 @@ describe("the CEO welcome's proposal", () => {
   const renderWelcome = () =>
     render(<SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}><WelcomeIdea /></SWRConfig>);
 
-  it("shows the top idea and points at the 💡; × hides that idea and the proposal", async () => {
+  it("is one calm row with See all ideas, no kicker; the row opens that idea in the pane", async () => {
     client.listIdeas.mockResolvedValue({ ...catalog, running: [] });
     renderWelcome();
-    expect(await screen.findByRole("heading", { name: "Title a" })).toBeInTheDocument();
-    expect(screen.getAllByRole("article")).toHaveLength(1);
-    expect(screen.getByText(/under the 💡/)).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Not now: Title a" }));
-    expect(client.dismissIdea).toHaveBeenCalledWith("a");
-    expect(screen.queryByRole("article")).not.toBeInTheDocument();
+    await waitFor(() => expect(rowTitles()).toEqual(["Title a"]));
+    expect(screen.queryByText(/can do this for you/)).not.toBeInTheDocument();
+    await userEvent.click(row("Title a"));
+    expect(controller.openPanel).toHaveBeenCalledWith("ideas", { idea: "a" }, { pushUrl: true });
+    await userEvent.click(screen.getByRole("button", { name: "See all ideas" }));
+    expect(controller.openPanel).toHaveBeenLastCalledWith("ideas", {}, { pushUrl: true });
   });
 
-  // The pane beside it shares the cache: once its cards are on screen, the data has landed.
-  const renderWelcomeBesidePane = async () => {
-    render(<SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-      <WelcomeIdea /><IdeasDockPanel id="ideas" params={{}} />
-    </SWRConfig>);
-    await screen.findAllByRole("article");
-  };
-
-  it("is gone once the workspace has a running idea", async () => {
-    await renderWelcomeBesidePane();
-    expect(screen.queryByText(/under the 💡/)).not.toBeInTheDocument();
-  });
-
-  it("is gone once an idea was started, even after it finished", async () => {
-    client.listIdeas.mockResolvedValue({ ...catalog, running: [], anyStarted: true });
-    await renderWelcomeBesidePane();
-    expect(screen.queryByText(/under the 💡/)).not.toBeInTheDocument();
-  });
-
-  it("is gone after an earlier dismiss", async () => {
-    client.listIdeas.mockResolvedValue({ ...catalog, running: [], anyDismissed: true });
-    await renderWelcomeBesidePane();
-    expect(screen.queryByText(/under the 💡/)).not.toBeInTheDocument();
+  it("is gone once the workspace has started or hidden an idea", async () => {
+    for (const data of [catalog, { ...catalog, running: [], anyStarted: true }, { ...catalog, running: [], anyDismissed: true }]) {
+      client.listIdeas.mockResolvedValue(data);
+      const view = render(<SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <WelcomeIdea /><IdeasDockPanel id="ideas" params={{}} />
+      </SWRConfig>);
+      await waitFor(() => expect(rowTitles().length).toBeGreaterThan(0));
+      expect(screen.queryByRole("button", { name: "See all ideas" })).not.toBeInTheDocument();
+      view.unmount();
+    }
   });
 });

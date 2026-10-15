@@ -509,7 +509,7 @@ class CanonicalMessage(ContractModel):
     thread_root_message_id: uuid.UUID | None
     created_at: datetime
     run_id: str | None
-    via: Literal["lightbulb_mcp"] | None = None
+    via: Literal["lightbulb_mcp", "ideas"] | None = None
     # An agent reply's trigger message (the `to` edge Jev reads on agent lines); absent otherwise.
     in_reply_to: str | None = None
     # A mid-run progress line, not the run's reply (clients keep the run card); absent otherwise.
@@ -4028,9 +4028,10 @@ async def create_human_message(
     native_provider: str | None = None,
     native_hop: int | None = None,
     native_conditions: list[dict] | None = None,
-    via: Literal["lightbulb_mcp"] | None = None,
+    via: Literal["lightbulb_mcp", "ideas"] | None = None,
     author_override: dict | None = None,
     expected_room_revision: int | None = None,
+    agent_note: str | None = None,
 ) -> CanonicalMessage:
     """``author_override`` is the hosted MCP's client identity; ``auth`` stays the accountable human.
     ``expected_room_revision`` fences the write: a room changed since that read (e.g. a DM turned
@@ -4179,6 +4180,8 @@ async def create_human_message(
             agent_hop=native_hop if native_source_id else None,
             extra_conditions=native_conditions if native_source_id else None,
             addressing=_stored_addressing(addressing),
+            # For the woken agent only (an idea's start context); no client projection serves it.
+            agent_note=agent_note,
         )
     except messaging_repo.RoomArchived as exc:
         raise ApiProblem("ROOM_ARCHIVED", ROOM_ARCHIVED_MESSAGE) from exc

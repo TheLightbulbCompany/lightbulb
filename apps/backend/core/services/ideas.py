@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import uuid
 import logging
 import time
 from datetime import datetime, timezone
@@ -25,7 +26,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from pydantic.alias_generators import to_camel
 
 from core.auth import AuthContext, resolve_owner_id
-from core.constants import SYSTEM_ACTOR_ID
 from core.dynamodb import utc_now_iso
 from core.repositories import messaging_repo
 
@@ -179,24 +179,24 @@ def _parse_time(value: object) -> datetime | None:
 
 
 def plan_for(start: dict, approvals: list[dict], *, allow_untagged: bool) -> dict | None:
-    """The plan the start's agent filed for it (references/ideas.md: ``request_approval`` titled
-    "Plan: …"): a board approval by that agent, created after the start. One that names projects
-    (``payload.projectIds``, stamped by the plugin from the linked tasks) counts only for those
-    projects and wins over one that names none. One naming none (an older runtime, a plan filed
-    with no task) counts only when ``allow_untagged``: the agent has this one open start, so it
-    cannot belong to another idea. Newest wins. None before the agent has filed one."""
+    """The approval the start's agent filed for it (references/ideas.md: ``request_approval``
+    before acting in the person's name): a board approval by that agent, created after the start,
+    whatever its title. One that names projects (``payload.projectIds``, stamped by the plugin
+    from the linked tasks) counts only for those projects and wins over one that names none. One
+    naming none (an older runtime, an approval filed with no task) counts only when
+    ``allow_untagged``: the agent has this one open start, so it cannot belong to another idea.
+    The newest pending one wins; with none pending, the newest (its decision shows). None before
+    the agent has filed one. (The ``plan`` key is the client contract's name for it.)"""
     started = _parse_time(start.get("createdAt"))
     if started is None:
         return None
     tagged, untagged = [], []
     for a in approvals:
         payload = a.get("payload") if isinstance(a.get("payload"), dict) else {}
-        title = str(payload.get("title") or "")
         created = _parse_time(a.get("createdAt"))
         if (
             a.get("type") != "request_board_approval"
             or a.get("requestedByAgentId") != start.get("agentId")
-            or not title.startswith("Plan:")
             or created is None
             or created < started
         ):
@@ -204,16 +204,24 @@ def plan_for(start: dict, approvals: list[dict], *, allow_untagged: bool) -> dic
         projects = payload.get("projectIds")
         if isinstance(projects, list) and projects:
             if start["projectId"] in projects:
-                tagged.append((created, a, title))
+                tagged.append((created, a))
         else:
-            untagged.append((created, a, title))
-    found = max(tagged or (untagged if allow_untagged else []), key=lambda c: c[0], default=None)
+            untagged.append((created, a))
+    tier = tagged or (untagged if allow_untagged else [])
+    pending = [c for c in tier if c[1].get("status") == "pending"]
+    found = max(pending or tier, key=lambda c: c[0], default=None)
     if not found:
         return None
     approval = found[1]
-    # When it was decided (a revision asked): the DM keeps asking for the next plan from then.
+    payload = approval.get("payload") if isinstance(approval.get("payload"), dict) else {}
+    # When it was decided (a revision asked): the DM keeps asking for the next one from then.
     decided = approval.get("decidedAt") or approval.get("updatedAt")
-    return {"approvalId": approval["id"], "status": approval.get("status"), "title": found[2], "decidedAt": decided}
+    return {
+        "approvalId": approval["id"],
+        "status": approval.get("status"),
+        "title": str(payload.get("title") or ""),
+        "decidedAt": decided,
+    }
 
 
 _APPROVALS_TTL_S = 5
@@ -290,13 +298,24 @@ async def _project_closed(admin, session_cookie: str, project_id: str) -> bool:
     return project.get("status") in CLOSED_PROJECT_STATUSES or bool(project.get("archivedAt"))
 
 
-def start_line(who: str, idea: Idea, agent_name: str, project_id: str, room_id: str) -> str:
-    """The wake line. It names THIS start's project and DM: two people can start the same idea
-    with the same agent, and the plan's tasks must land in the right project for its card."""
-    return (
-        f"{who} started **{idea.title}**. {agent_name}: read `$HERMES_HOME/ideas/{idea.id}.md` and "
-        "follow the lightbulb skill's `references/ideas.md`: post the plan for approval here first. "
-        f"Project `{project_id}`, room `{room_id}`."
+def start_text(idea: Idea) -> str:
+    """What the person says in the DM when they press Let's do it (like Muse): the idea quoted
+    above "Let's do it!". Everything else is the agent's note."""
+    return f"> {idea.title}\n\nLet's do it!"
+
+
+def start_note(idea: Idea, project_id: str) -> str:
+    """For the woken agent only (openclaw_work appends it to its turn's text; people never see
+    it): the idea, what to deliver, the tips, and THIS start's project (two people can start the
+    same idea with the same agent; anything the agent files belongs in this project)."""
+    return "\n".join(
+        [
+            f"[Idea started: {idea.title}] {idea.why}",
+            "Deliver: " + "; ".join(idea.deliverables) + ".",
+            f"Tips for this job: `$HERMES_HOME/ideas/{idea.id}.md`; how to work it: the lightbulb skill's "
+            "`references/ideas.md`.",
+            f"Work project for this start: `{project_id}`.",
+        ]
     )
 
 
@@ -366,27 +385,21 @@ async def _start(auth: AuthContext, idea_id: str) -> dict:
             )
         await hermes_profiles.write_profile_file(owner_id, agent["id"], f"ideas/{idea_id}.md", idea.guide)
         room_id = await _usable_dm(owner_id, user_id, agent["id"])
-        text = start_line(await messaging.human_display_name(user_id), idea, agent["name"], project_id, room_id)
-        key = f"idea-start|{idea_id}|{user_id}|{project_id}"  # one line per started project
-        try:
-            await messaging_repo.create_message(
-                room_id=room_id,
-                owner_id=owner_id,
-                idemp_pk=messaging_repo.room_pk(room_id),
-                idemp_sk=messaging_repo.human_idemp_sk(SYSTEM_ACTOR_ID, key),
-                req_hash=messaging_repo.request_hash(key),
-                author={"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": "Lightbulb"},
-                text=text,
-                mentions=[],
+        # The person's own message (via Ideas): it wakes the agent the way any DM message does,
+        # and shows live. One per started project: a retry replays it.
+        client_id = uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-idea-start|{owner_id}|{idea_id}|{user_id}|{project_id}")
+        await messaging.create_human_message(
+            AuthContext(user_id=user_id, org_id=owner_id),
+            room_id,
+            messaging.CreateMessageRequest(
+                client_message_id=client_id,
+                text=start_text(idea),
                 reply_to_message_id=None,
                 thread_root_message_id=None,
-                run_id=None,
-                dispatch_targets=[{"agentId": agent["id"], "eventKind": "user_request"}],
-                source_agent_id=None,
-                client_message_id=None,
-            )
-        except messaging_repo.IdempotencyConflict:
-            pass  # a retried attempt already posted it
+            ),
+            via="ideas",
+            agent_note=start_note(idea, project_id),
+        )
         await messaging_repo.update_idea_start(
             owner_id, idea_id, user_id, {"state": "open", "roomId": room_id, "createdAt": utc_now_iso()}
         )

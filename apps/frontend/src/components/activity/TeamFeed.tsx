@@ -167,7 +167,8 @@ function FeedPost({ post, client, currentUserId, onDiscuss, onChanged }: {
         <span className="font-semibold truncate" title={name}>{name}</span>
         {post.author.kind === "agent" && <span className="room-agent-label">Agent</span>}
       </div>
-      <p className="feed-post__title">{title}</p>
+      {/* The title line is markdown too: the welcome's "**This is our feed.** When …" is bold text, not asterisks. */}
+      <div className="feed-post__title"><MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{title}</MarkdownView></div>
       {body && <MarkdownView skipHtml components={roomMarkdown} urlTransform={roomUrlTransform}>{body}</MarkdownView>}
       <RoomDocumentCards text={post.text} />
       {!!post.attachments?.length && <RoomImageAttachments roomId={post.roomId} attachments={post.attachments}

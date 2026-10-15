@@ -290,7 +290,11 @@ export function describePanel(
   // Ideas (spec 2026-10-14 §4.4), opened by the 💡 in a conversation header. Singleton;
   // `agent` puts that teammate's ideas first (opened from its DM).
   if (key === "ideas") {
-    return { panelId: "ideas", component: "ideas", title: "Ideas", params: params.agent ? { agent: params.agent } : {} };
+    // `idea` opens that idea's detail (the CEO welcome's row links here).
+    const p: Record<string, string> = {};
+    if (params.agent) p.agent = params.agent;
+    if (params.idea) p.idea = params.idea;
+    return { panelId: "ideas", component: "ideas", title: "Ideas", params: p };
   }
 
   if (key === "agent-inspector") {
@@ -382,7 +386,7 @@ export function durableParamsFor(panelId: string): string[] {
   if (panelId === WORK_PANEL_ID) return ["panel", "agent", "groupBy", "view", "day", "section"];
   if (panelId === "activity") return ["panel", "filter", "focus"];
   if (panelId === "mail") return ["panel", "item"];
-  if (panelId === "ideas") return ["panel", "agent"];
+  if (panelId === "ideas") return ["panel", "agent", "idea"];
   if (/^teams-(issue|routine|project|goal|case|run)-detail:/.test(panelId)) return ["panel", "detailId"];
   return ["panel"];
 }
@@ -401,7 +405,7 @@ export function clearablePanelParamKeys(panelId: string): string[] {
   if (panelId === WORK_PANEL_ID) return ["agent", "groupBy", "view", "day", "section"];
   if (panelId === "activity") return ["filter", "focus"];
   if (panelId === "mail") return ["item"];
-  if (panelId === "ideas") return ["agent"];
+  if (panelId === "ideas") return ["agent", "idea"];
   if (panelId === "file-viewer") return ["path", "agent"];
   if (panelId === "agent-inspector" || panelId === "control:agents") {
     return ["agentId", "initialTab"];

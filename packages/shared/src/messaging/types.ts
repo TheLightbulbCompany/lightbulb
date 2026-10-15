@@ -189,7 +189,8 @@ export interface CanonicalRoomMessage {
   threadRootMessageId: string | null;
   createdAt: string;
   runId: string | null;
-  via?: "lightbulb_mcp";
+  /** A person's message a tool posted for them: the hosted MCP, or Let's do it in Ideas. */
+  via?: "lightbulb_mcp" | "ideas";
   /** A mid-run progress line, not the run's reply: the run card stays. Absent otherwise. */
   progress?: boolean;
   /** The agents this message addresses -- an @mention, a name-addressed open

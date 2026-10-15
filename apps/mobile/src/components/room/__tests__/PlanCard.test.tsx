@@ -36,14 +36,14 @@ it("a pending plan offers Approve plan, which approves it", async () => {
   await render(<PlanCard approvalId="ap-1" />);
   expect(await screen.findByText("Plan: Your CRM set up")).toBeTruthy();
   expect(screen.getByText("Import, then three workflows.")).toBeTruthy();
-  await fireEvent.press(screen.getByRole("button", { name: "Approve plan" }));
+  await fireEvent.press(screen.getByRole("button", { name: "Approve" }));
   await waitFor(() => expect(mockApprove).toHaveBeenCalledWith("ap-1"));
 });
 
 it("a decided plan shows its status and no buttons", async () => {
   mockApproval.current = { ...mockApproval.current, status: "revision_requested" };
   await render(<PlanCard approvalId="ap-1" />);
-  expect(await screen.findByText("You asked for changes. The plan is being revised.")).toBeTruthy();
+  expect(await screen.findByText("You asked for changes.")).toBeTruthy();
   expect(screen.queryByRole("button")).toBeNull();
 });
 
@@ -55,7 +55,7 @@ it("Change something needs a note, sends it as the decision note, and Cancel goe
   await fireEvent.changeText(screen.getByLabelText("What should change?"), "   ");
   expect(send().props.accessibilityState.disabled).toBe(true);
   await fireEvent.press(screen.getByRole("button", { name: "Cancel" }));
-  expect(screen.getByRole("button", { name: "Approve plan" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Approve" })).toBeTruthy();
 
   await fireEvent.press(screen.getByRole("button", { name: "Change something" }));
   await fireEvent.changeText(screen.getByLabelText("What should change?"), " Start with the import ");
@@ -68,17 +68,17 @@ it("the DM shows the plan GET /ideas matched to the viewer's start in this room"
     roomId: "dm-1", projectId: "p", starterId: "me", starterName: "Me", createdAt: new Date().toISOString(),
     plan: { approvalId: "ap-1", status: "pending", title: "Plan: Your CRM set up" } }] });
   await render(<DmIdeaPlan roomId="dm-1" />);
-  expect(await screen.findByRole("button", { name: "Approve plan" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Approve" })).toBeTruthy();
   expect(mockGet).toHaveBeenCalledWith("ap-1");
 });
 
 it("a plan that could not be read says so and retries on tap", async () => {
   mockGet.mockRejectedValue(new Error("502"));
   await render(<PlanCard approvalId="ap-1" />);
-  expect(await screen.findByText("Couldn't load the plan ·")).toBeTruthy();
+  expect(await screen.findByText("Couldn't load the approval ·")).toBeTruthy();
   mockGet.mockImplementation(async () => mockApproval.current);
   await fireEvent.press(screen.getByRole("button", { name: "Retry" }));
-  expect(await screen.findByRole("button", { name: "Approve plan" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Approve" })).toBeTruthy();
 });
 
 it("shows one card per own start in the DM, newest first", async () => {
@@ -87,7 +87,7 @@ it("shows one card per own start in the DM, newest first", async () => {
     plan: { approvalId: `ap-${id}`, status: "pending", title: `Plan: ${id}` } });
   mockListIdeas.mockResolvedValue({ ideas: [], running: [start("old", "2026-10-15T09:00:00Z"), start("new", "2026-10-15T10:00:00Z")] });
   await render(<DmIdeaPlan roomId="dm-1" />);
-  await waitFor(() => expect(screen.getAllByRole("button", { name: "Approve plan" })).toHaveLength(2));
+  await waitFor(() => expect(screen.getAllByRole("button", { name: "Approve" })).toHaveLength(2));
   expect([...new Set(mockGet.mock.calls.map(([id]) => id))]).toEqual(["ap-new", "ap-old"]);
 });
 

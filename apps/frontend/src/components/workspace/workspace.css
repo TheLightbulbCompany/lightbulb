@@ -311,6 +311,11 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* The pane's scroll container, for every kind: a panel that does not scroll itself (Ideas,
+     Mail's list, a file) overflowed a body with no overflow and could not be scrolled. A panel
+     that scrolls itself fills the bounded body exactly, so this one never shows a bar. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .workspace-pane__body > * { flex: 1 1 auto; min-height: 0; }
 .workspace-pane__thread { display: flex; flex-direction: column; }

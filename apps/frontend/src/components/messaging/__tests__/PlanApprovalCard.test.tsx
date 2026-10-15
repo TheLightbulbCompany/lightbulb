@@ -38,11 +38,11 @@ describe("the plan card in the DM", () => {
   it("renders the agent's linked plan approval inline with Approve plan and Change something", async () => {
     teams.approval = plan("pending");
     render(<RoomAppLinks text={message} />);
-    expect(screen.getByRole("region", { name: "Plan for approval" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Approval" })).toBeInTheDocument();
     expect(screen.getByText("Plan: Your CRM set up")).toBeInTheDocument();
     expect(screen.getByText(/You approve the import/)).toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole("button", { name: "Approve plan" }));
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
     expect(teams.post).toHaveBeenCalledWith("/approvals/ap-1/approve", {});
   });
 
@@ -55,7 +55,7 @@ describe("the plan card in the DM", () => {
     await userEvent.type(box, "   ");
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
     await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(screen.getByRole("button", { name: "Approve plan" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
     expect(teams.post).not.toHaveBeenCalled();
 
     await userEvent.click(screen.getByRole("button", { name: "Change something" }));
@@ -68,20 +68,20 @@ describe("the plan card in the DM", () => {
   it("after changes were asked, shows a status line and no buttons (the agent files a new plan)", () => {
     teams.approval = plan("revision_requested");
     render(<RoomAppLinks text={message} />);
-    expect(screen.getByText("You asked for changes. The plan is being revised.")).toBeInTheDocument();
+    expect(screen.getByText("You asked for changes.")).toBeInTheDocument();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 
   it("draws nothing for a pasted link to the plan the DM already shows", () => {
     teams.approval = plan("pending");
     render(<DmPlanContext.Provider value={["ap-1"]}><RoomAppLinks text={message} /></DmPlanContext.Provider>);
-    expect(screen.queryByRole("region", { name: "Plan for approval" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Approval" })).not.toBeInTheDocument();
   });
 
   it("a decided plan shows its outcome and no buttons", () => {
     teams.approval = plan("approved");
     render(<RoomAppLinks text={message} />);
-    expect(screen.getByText("Plan approved")).toBeInTheDocument();
+    expect(screen.getByText("Approved")).toBeInTheDocument();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 
@@ -89,7 +89,7 @@ describe("the plan card in the DM", () => {
     teams.approval = plan("pending", "Approve the budget");
     render(<RoomAppLinks text={message} />);
     expect(screen.getByText("generic approval row")).toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "Plan for approval" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Approval" })).not.toBeInTheDocument();
   });
 });
 
@@ -106,7 +106,7 @@ describe("the plan card from GET /ideas", () => {
     render(<SWRConfig value={{ provider: () => new Map() }}>
       <DmIdeaPlan client={client} scope="me:org" roomId="dm-1" userId="me" onPlan={onPlan} />
     </SWRConfig>);
-    expect(await screen.findByRole("button", { name: "Approve plan" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Approve" })).toBeInTheDocument();
     expect(onPlan).toHaveBeenCalledWith(["ap-1"]);
   });
 
@@ -133,7 +133,7 @@ describe("the plan card from GET /ideas", () => {
       render(<SWRConfig value={{ provider: () => new Map() }}>
         <DmIdeaPlan client={client} scope="me:org" roomId="dm-1" userId="me" onPlan={vi.fn()} />
       </SWRConfig>);
-      expect(await screen.findByText(/Couldn.t load the plan/)).toBeInTheDocument();
+      expect(await screen.findByText(/Couldn.t load the approval/)).toBeInTheDocument();
       const before = teams.reread.mock.calls.length;
       await userEvent.click(screen.getByRole("button", { name: "Retry" }));
       expect(teams.reread.mock.calls.length).toBe(before + 1);
@@ -184,7 +184,7 @@ describe("the plan card from GET /ideas", () => {
       await waitFor(() => expect(client.listIdeas).toHaveBeenCalledTimes(1));
       await vi.advanceTimersByTimeAsync(10_500);
       await waitFor(() => expect(client.listIdeas).toHaveBeenCalledTimes(2));
-      expect(screen.queryByRole("region", { name: "Plan for approval" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("region", { name: "Approval" })).not.toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }

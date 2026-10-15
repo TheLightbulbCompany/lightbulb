@@ -219,8 +219,9 @@ describe("panelRegistry", () => {
   it("describes Ideas as a singleton that can put one agent first", () => {
     expect(describePanel("ideas", {})).toEqual({ panelId: "ideas", component: "ideas", title: "Ideas", params: {} });
     expect(describePanel("ideas", { agent: "a1" })?.params).toEqual({ agent: "a1" });
-    expect(durableParamsFor("ideas")).toEqual(["panel", "agent"]);
-    expect(clearablePanelParamKeys("ideas")).toEqual(["agent"]);
+    expect(describePanel("ideas", { idea: "crm-setup" })?.params).toEqual({ idea: "crm-setup" });
+    expect(durableParamsFor("ideas")).toEqual(["panel", "agent", "idea"]);
+    expect(clearablePanelParamKeys("ideas")).toEqual(["agent", "idea"]);
   });
 
   it("describes the money panel with a durable ?day deep link", () => {

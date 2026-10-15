@@ -1,6 +1,7 @@
 id: linkedin-ghostwriting
 owner_role: growth
 kind: agency
+size: project
 business_types: [any]
 title: "Founder LinkedIn posts written in your voice and published weekly"
 why: "A steady presence where your buyers are, without writing every post yourself."
@@ -14,23 +15,3 @@ price_unit: month
 agency_turnaround: "Weekly"
 our_turnaround: "Weekly"
 your_part: "Approve each post (a few minutes a week)"
-guide: |
-  # Founder LinkedIn posts written in your voice and published weekly
-
-  ## Steps
-  1. Ask the person for 5 things they have written (posts, emails, talks). Write a short voice guide.
-  2. Ask to connect LinkedIn or sign in in the live browser.
-  3. Each week, draft 2-3 posts from real company news, customer stories and the founder's views.
-  4. Ask for approval of each post. Publish approved posts on the agreed days.
-  5. Note which posts got replies; use that in the next drafts.
-
-  ## Decisions to ask
-  - Approve the voice guide.
-  - Approve every post.
-
-  ## Done proves
-  - The links of the published posts each week.
-
-  ## Honesty limits
-  - Never invent stories, numbers or customers. Never promise followers or leads.
-  - The voice is the person's: every post is approved.

@@ -1,92 +1,22 @@
-# Ideas: a job the person started
+# Ideas
 
-An idea is a job a company usually pays an agency for (a site rebuilt, books cleaned
-up, a launch run), done by the team as real actions, never a report. When a person
-presses Start on an idea, Lightbulb:
+An idea arrives as the person's own message in your DM: the idea quoted, "Let's do it!",
+and, for bigger jobs, "Tracked in Work: [name](link)". Do it like any request, and start now.
 
-- makes a project for it in Work, with you as the lead (under the company's goal when it has one);
-- puts the idea's guide in your profile at `$HERMES_HOME/ideas/<idea>.md`;
-- posts one line in your DM with that person ("Priya started …") that wakes you. It
-  names this start's project and room ("Project `<id>`, room `<id>`").
+- **"Tracked in Work" links a project:** before you reply, break the work into tasks in that
+  project, each assigned to yourself or a teammate, so it continues after this reply.
+  Assigned tasks wake their agent, and the daily check-ins pick up open ones.
+- **It links a task:** first move the linked task to in_progress (assigned to yourself),
+  then work it and close it with proof.
+- **No link:** answer it in one go.
+- Ask only when you need information, a sign-in (live browser only) or a choice.
+- Anything in the person's name (sending, publishing, paying, submitting) is an approval
+  first (`request_approval`), as always.
+- Post progress, and the finished result with proof, to the feed (`references/feed.md`).
+- Promise the action, never the result.
 
-That DM is where the job lives. Everything below happens there unless it says otherwise.
+## Adding an idea
 
-## 1. Read the guide
-
-Read `$HERMES_HOME/ideas/<idea>.md` first. It has the steps, the decisions to ask, what
-"done" must prove, and the honesty limits for this idea. Read what you know about the
-company (the brief, the feed, connected tools). Do not ask the person what you can find
-out yourself.
-
-## 2. Write the plan for THIS company
-
-One short plan, as a document on a task in **the project the start line names**
-("Project `<id>`"). Two people can start the same idea with you, and each start has its
-own project and DM: always use the project from the line in THIS DM, never one found by
-its title (see `references/chat-vs-document.md`). It says:
-
-- the steps, made specific to this company (its site, its tools, its customers);
-- **every approval the person will give, named up front** (each spend, each public
-  word, each sign-in, each merge), so nothing surprises them mid-way;
-- a finish date;
-- what "done" will prove (the guide's checks: a live URL, a merged pull request,
-  emails sent, a confirmation).
-
-Then file the plan for approval with the **`request_approval`** tool:
-
-```
-request_approval(title="Plan: <idea title>",
-                 summary="<three lines: what you will do, what they approve, the finish date>. Plan: <document link>",
-                 tasks=["<the plan task identifier>"])
-```
-
-In the DM say, in one or two lines, that the plan is waiting for their approval, with
-the link. **Nothing is sent, published, bought or merged before the plan is approved.**
-
-If the person asks to change something, change the plan and file one new approval;
-never a second approval for the same plan while one is open.
-
-## 3. On approval: make the steps tasks
-
-When the approval wakes you, create each step as a task in that same project, assigned
-to whoever does it (you, or a teammate through a task, never a chat ping). The person
-watches progress in Work.
-
-## 4. While you work
-
-- **Decisions** the guide lists (approve these words, this budget, this batch) are
-  Paperclip confirmations on the task (`request_confirmation`; the paperclip skill's
-  `references/interactions.md`). They show in the person's Needs you with one button.
-  Never ask a decision as a chat question.
-- **Tools and sign-ins**: ask in the DM for the tool to connect (Settings → Connections).
-  Sign-ins, codes and identity checks happen only in the live browser
-  (`references/boundaries.md`); never ask for a password or code in chat.
-- **Milestones**: post one feed post when something the person cares about lands (the
-  preview is ready, the listings are live, the first batch went out):
-  `lightbulb-post.sh --feed --why "<why it matters>"` (`references/feed.md`).
-
-## 5. Done only with proof
-
-Run the guide's "Done proves" checks yourself. Then post ONE done post to the feed with
-the evidence (live links, the merged pull request, counts sent, the vendor's
-confirmation, a screenshot link), and say the same in the DM. Close the tasks and set
-the project to completed.
-
-Never say a job is done before its checks pass. If a check fails, say what failed and
-what you will do next.
-
-## Honesty
-
-- Promise the action, never the result: "sequence sent to 200 accounts", never
-  "20 meetings"; "release sent to the wire", never "coverage in TechCrunch"; "listings
-  live", never "rank first".
-- Relationships, rankings, replies and ad returns are not ours to promise.
-- Judgement with legal or tax consequences (books categories, sales-tax nexus,
-  trademarks, SOC 2 scope, hiring decisions) is the person's: name their decision. Never
-  write "compliant", "audit-ready", "certified" or "legal".
-- Identity steps (DNS, payments verification, Google verification, state portals, card
-  charges) are the person's: they are in the plan before you start.
-- Taste: promise "built from your existing brand", not "agency-grade design".
-- Volume: cap batches (one approved batch at a time) so nothing looks like spam.
-- Never quote an agency price or a "saving" from the idea. Report a saving only when it is
-  confirmed (a vendor's new price, a refund).
+Call `suggest_idea` only when you notice a concrete, company-specific job during real work
+("14 reviews have no reply"). Never a generic or routine one, never on a schedule. It goes to
+the Ideas list, not to chat: do not post it in the conversation.

@@ -1,6 +1,7 @@
 id: inbox-triage
 owner_role: customer_operations
 kind: everyday
+size: task
 business_types: [any]
 title: "Your inbox triaged and routine mail answered"
 why: "You read only what needs you; the rest is answered or filed."
@@ -14,22 +15,3 @@ price_unit: month
 agency_turnaround: "Monthly"
 our_turnaround: "Every day"
 your_part: "Approve sends until you trust them"
-guide: |
-  # Your inbox triaged and routine mail answered
-
-  ## Steps
-  1. Ask in the DM to connect the inbox.
-  2. Agree the rules: what to answer, what to file, what always goes to the person.
-  3. Each day, sort new mail, draft answers for routine items, and file the rest.
-  4. Ask for approval of sends until the person says routine sends can go.
-  5. Post one short list of what needs the person.
-
-  ## Decisions to ask
-  - Approve the rules.
-  - Sends, until trusted.
-
-  ## Done proves
-  - The daily list, and the count of mail answered and filed.
-
-  ## Honesty limits
-  - Never send anything that commits the company (prices, dates, contracts) without approval.

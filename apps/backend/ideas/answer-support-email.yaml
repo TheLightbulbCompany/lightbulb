@@ -1,6 +1,7 @@
 id: answer-support-email
 owner_role: customer_operations
 kind: everyday
+size: task
 business_types: [any]
 title: "Customer emails answered from your help docs"
 why: "Customers get a correct answer fast, and you see only what needs you."
@@ -14,22 +15,3 @@ price_unit: month
 agency_turnaround: "Ongoing"
 our_turnaround: "Within the hour, every day"
 your_part: "Approve each reply at first"
-guide: |
-  # Customer emails answered from your help docs
-
-  ## Steps
-  1. Ask in the DM to connect the support inbox and share the help docs.
-  2. Read the docs and the last 50 support emails. Note the common questions.
-  3. For each new email, draft an answer from the docs only.
-  4. Ask for approval of each reply until the person says routine replies can go without it.
-  5. Hand anything outside the docs (refunds, legal, angry customers) to the person with a draft.
-  6. Keep a list of questions the docs do not answer.
-
-  ## Decisions to ask
-  - Each reply at first; refunds and exceptions always.
-
-  ## Done proves
-  - Replies sent and their response times; the docs-gap list as a document.
-
-  ## Honesty limits
-  - Never invent policy. If the docs do not say it, ask.

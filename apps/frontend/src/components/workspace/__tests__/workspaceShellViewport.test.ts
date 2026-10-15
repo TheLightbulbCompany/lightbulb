@@ -43,3 +43,22 @@ describe(".workspace-shell viewport", () => {
     expect(block).toMatch(/\.workspace-body\[data-full\] > \.workspace-view--chat \{ flex: 0 1 360px; \}/);
   });
 });
+
+describe(".workspace-pane__body", () => {
+  const css = readFileSync(resolve(process.cwd(), "src/components/workspace/workspace.css"), "utf8");
+  const rule = (selector: string) => {
+    const start = css.indexOf(`${selector} {`);
+    return css.slice(start, css.indexOf("}", start));
+  };
+
+  it("is a bounded scroll container for every pane kind", () => {
+    // Owner report 2026-10-15: the Ideas pane could not be scrolled with a mouse or trackpad.
+    // jsdom computes no layout: pin the declarations that bound the body and make it scroll.
+    const body = rule(".workspace-pane__body");
+    expect(body).toMatch(/flex:\s*1/);
+    expect(body).toMatch(/min-height:\s*0/);
+    expect(body).toMatch(/overflow-y:\s*auto/);
+    expect(rule(".workspace-pane")).toMatch(/min-height:\s*0/);
+    expect(rule(".workspace-pane__body > *")).toMatch(/min-height:\s*0/);
+  });
+});

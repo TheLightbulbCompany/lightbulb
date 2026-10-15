@@ -1,6 +1,7 @@
 id: meeting-recaps
 owner_role: customer_operations
 kind: everyday
+size: task
 business_types: [any]
 title: "After each meeting, the recap sent and action items on the board"
 why: "Nothing decided in a meeting gets lost."
@@ -14,20 +15,3 @@ price_unit: month
 agency_turnaround: "Monthly"
 our_turnaround: "Within the hour after each meeting"
 your_part: "Approve the recap"
-guide: |
-  # After each meeting, the recap sent and action items on the board
-
-  ## Steps
-  1. Ask in the DM to connect the calendar and how notes or transcripts are available.
-  2. After each meeting, write the recap: decisions, open questions, action items.
-  3. Create each action item as a task with an owner and a due date.
-  4. Ask for approval of the recap, then send it to the attendees.
-
-  ## Decisions to ask
-  - Approve each recap before it is sent.
-
-  ## Done proves
-  - The recap sent and the tasks on the board.
-
-  ## Honesty limits
-  - Write only what was said. Mark anything unclear as a question.

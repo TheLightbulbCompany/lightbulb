@@ -1,69 +1,52 @@
 "use client";
 
-// Ideas in the right pane (spec 2026-10-14 §4.4): running jobs and their progress at the top,
-// then the best three as full proposals, then the rest as one-line rows, filterable by teammate.
-// Opened from an agent's DM (`params.agent`), that agent's ideas come first. Start opens the DM in
-// the main view and the pane stays, showing the idea as running.
+// Ideas in the right pane (spec 2026-10-14 §4.4; calm like Muse's Ideas tab, owner 2026-10-15):
+// every idea as one row (the DM agent's first, then agents' suggestions, agency jobs, everyday).
+// A row opens the idea's detail in the pane; Let's do it starts it and opens the DM in the main
+// view. A started idea leaves the list (owner: once you say Let's do it, you are doing the work).
 import { useState } from "react";
-import { ideaProgress, ideaTeammates, orderIdeas, type RunningIdea } from "@lightbulb/shared";
-import { Button } from "@/components/ui/button";
-import { IdeaCard, IdeaRow } from "@/components/ideas/IdeaCard";
+import { orderIdeas } from "@lightbulb/shared";
+import { IdeaDetail, IdeaListRow } from "@/components/ideas/IdeaCard";
 import { useIdeas } from "@/hooks/useIdeas";
-import { openMessagePanel } from "../workspaceController";
+import { updatePanelParams } from "../workspaceController";
 import type { PanelProps } from "../panelComponents";
 import "@/components/ideas/ideas.css";
 
-const TOP = 3;
+export function IdeasDockPanel({ id, params }: PanelProps) {
+  const { ideas, loading, error, refresh, startAndOpen, dismiss } = useIdeas();
+  // The open idea: from a link (the CEO welcome's row) or a row clicked here.
+  const [openId, setOpenId] = useState<string | null>(params.idea ?? null);
+  const [linked, setLinked] = useState(params.idea);
+  if (params.idea !== linked) {
+    setLinked(params.idea);
+    setOpenId(params.idea ?? null);
+  }
+  const close = () => {
+    setOpenId(null);
+    if (params.idea) updatePanelParams(id, { idea: undefined });
+  };
+  const shown = orderIdeas(ideas, params.agent);
+  const open = openId ? ideas.find((idea) => idea.id === openId) : undefined;
 
-/** Open goes to the starter's own DM with the agent, so only the starter gets it. */
-function RunningRow({ item, mine }: { item: RunningIdea; mine: boolean }) {
-  const progress = ideaProgress(item.progress);
-  return <li className="idea-row">
-    <div>
-      <div className="idea-row__title">{item.title}</div>
-      <div className="idea-row__meta">
-        {[item.agentName, progress ? `${progress.done} of ${progress.total} tasks done` : "Planning",
-          mine ? null : `Started by ${item.starterName}`].filter(Boolean).join(" · ")}
-      </div>
-    </div>
-    {mine && item.roomId && <Button type="button" size="sm" variant="outline" aria-label={`Open: ${item.title}`}
-      onClick={() => openMessagePanel(item.roomId!)}>Open</Button>}
-  </li>;
-}
-
-export function IdeasDockPanel({ params }: PanelProps) {
-  const { ideas, running, loading, error, refresh, startAndOpen, dismiss, userId } = useIdeas();
-  const [teammate, setTeammate] = useState<string | null>(null);
-  // A start is per person: a teammate running an idea leaves it startable in your own DM.
-  const runningIds = new Set(running.filter((r) => r.starterId === userId).map((r) => r.ideaId));
-  const ordered = orderIdeas(ideas.filter((idea) => !runningIds.has(idea.id)), params.agent);
-  const shown = teammate ? ordered.filter((idea) => idea.agentId === teammate) : ordered;
-  const shownRunning = teammate ? running.filter((r) => r.agentId === teammate) : running;
-  const teammates = ideaTeammates(ordered);
-
+  if (open) {
+    return <div className="ideas-pane">
+      <IdeaDetail idea={open} onBack={close} onDismiss={dismiss}
+        onStart={async (ideaId) => {
+          const failed = await startAndOpen(ideaId);
+          if (!failed) close(); // only once the DM is open: a failure keeps the detail, to retry
+          return failed;
+        }} />
+    </div>;
+  }
   return <div className="ideas-pane">
     {error ? <p role="alert" className="ideas-pane__notice">
       Couldn&apos;t load ideas · <button type="button" className="underline" onClick={() => void refresh()}>Retry</button>
     </p> : null}
-    {teammates.length > 1 && <div className="ideas-pane__chips" role="group" aria-label="Teammate">
-      <button type="button" className="ideas-pane__chip" aria-pressed={teammate === null} onClick={() => setTeammate(null)}>All</button>
-      {teammates.map((t) => <button key={t.agentId} type="button" className="ideas-pane__chip" aria-pressed={teammate === t.agentId}
-        onClick={() => setTeammate(t.agentId)}>{t.agentName}</button>)}
-    </div>}
-    {shownRunning.length > 0 && <section aria-labelledby="ideas-running">
-      <h2 id="ideas-running" className="ideas-pane__heading">Running</h2>
-      <ul className="ideas-pane__list">{shownRunning.map((item) => <RunningRow key={`${item.ideaId}:${item.starterId}`} item={item} mine={item.starterId === userId} />)}</ul>
+    {shown.length > 0 && <section aria-labelledby="ideas-all">
+      <h2 id="ideas-all" className="ideas-pane__heading">Ideas</h2>
+      <ul className="idea-list">{shown.map((idea) => <IdeaListRow key={idea.id} idea={idea} onOpen={setOpenId} />)}</ul>
     </section>}
-    {shown.length > 0 && <section aria-label="Proposals" className="ideas-pane__list">
-      {shown.slice(0, TOP).map((idea) => <IdeaCard key={idea.id} idea={idea} onStart={startAndOpen} onDismiss={dismiss} />)}
-    </section>}
-    {shown.length > TOP && <section aria-labelledby="ideas-more">
-      <h2 id="ideas-more" className="ideas-pane__heading">More ideas</h2>
-      <ul className="ideas-pane__list">
-        {shown.slice(TOP).map((idea) => <IdeaRow key={idea.id} idea={idea} onStart={startAndOpen} onDismiss={dismiss} />)}
-      </ul>
-    </section>}
-    {!loading && !error && shown.length === 0 && shownRunning.length === 0 &&
+    {!loading && !error && shown.length === 0 &&
       <p className="ideas-pane__notice">No ideas right now.</p>}
   </div>;
 }

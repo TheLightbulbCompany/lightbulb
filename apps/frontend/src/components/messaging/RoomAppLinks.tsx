@@ -1,10 +1,9 @@
 "use client";
 
-import { useContext, useMemo, type MouseEvent, type ReactNode } from "react";
+import { useMemo, type MouseEvent, type ReactNode } from "react";
 import { Hash, MessageSquareQuote, SquareTerminal } from "lucide-react";
 import { roomDisplayName, sessionLabel } from "@lightbulb/shared";
 import { ApprovalRow } from "@/components/teams/inbox/ApprovalRow";
-import { DmPlanContext, isPlanApproval, PlanApprovalCard } from "./PlanApprovalCard";
 import type { Approval } from "@/components/teams/shared/types";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { useConnections } from "@/hooks/useConnections";
@@ -87,11 +86,7 @@ function AppLinkCard({ link, ws }: { link: AppLink; ws: MessagingWorkspaceValue 
 function ApprovalCard({ id }: { id: string }) {
   const { read } = useTeamsApi();
   const { data } = read<Approval>(`/approvals/${encodeURIComponent(id)}`);
-  const dmPlan = useContext(DmPlanContext);
-  if (!data?.id) return null;
-  // The DM already shows this plan from GET /ideas (DmIdeaPlan): no second card.
-  if (isPlanApproval(data)) return dmPlan.includes(data.id) ? null : <PlanApprovalCard approval={data} />;
-  return <section aria-label="Approval in this message" className="editorial-card max-w-xl"><ApprovalRow approval={data} /></section>;
+  return data?.id ? <section aria-label="Approval in this message" className="editorial-card max-w-xl"><ApprovalRow approval={data} /></section> : null;
 }
 
 /** An agent's `?panel=connections&provider=x` link: the same Connect button the Connections panel shows. */

@@ -1,6 +1,7 @@
 id: send-invoices-on-time
 owner_role: finance
 kind: everyday
+size: task
 business_types: [services, software]
 title: "Each invoice sent on its billing date"
 why: "Invoices that go out late get paid late."
@@ -14,21 +15,3 @@ price_unit: month
 agency_turnaround: "Monthly"
 our_turnaround: "On each billing date"
 your_part: "Approve the amounts"
-guide: |
-  # Each invoice sent on its billing date
-
-  ## Steps
-  1. Ask in the DM to connect Stripe or QuickBooks.
-  2. Build the billing calendar: customer, amount, date, terms.
-  3. Set a routine that drafts each invoice on its date.
-  4. Ask for approval of the amount, then send.
-  5. Record the send on the task board.
-
-  ## Decisions to ask
-  - Approve the amounts, and any change to a customer's terms.
-
-  ## Done proves
-  - Each invoice sent on its date (invoice number and send date).
-
-  ## Honesty limits
-  - Never change a price or terms without approval.

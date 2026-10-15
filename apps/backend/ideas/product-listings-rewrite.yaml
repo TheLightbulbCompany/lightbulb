@@ -1,6 +1,7 @@
 id: product-listings-rewrite
 owner_role: growth
 kind: agency
+size: project
 business_types: [store]
 title: "Your top 50 product listings rewritten and updated"
 why: "Clear titles and bullets that answer buyers' questions, live in your store."
@@ -14,24 +15,3 @@ price_unit: one_time
 agency_turnaround: "1-3 weeks"
 our_turnaround: "3-5 days"
 your_part: "Approve the first 5, then the batch"
-guide: |
-  # Your top 50 product listings rewritten and updated
-
-  ## Steps
-  1. Ask in the DM to connect the store or sign in to Seller Central in the live browser.
-  2. Pick the top 50 products by sales (or ask which ones).
-  3. For each, read the current listing, reviews and competitor listings. Note the buyer questions.
-  4. Rewrite title, bullets, description and backend search terms within the marketplace's rules.
-  5. Ask for approval of the first 5. Apply feedback, then ask for approval of the batch.
-  6. Update the listings. Keep the old text in a document so any change can be undone.
-
-  ## Decisions to ask
-  - Which products, if sales data is not available.
-  - Approve the first 5, then the batch.
-
-  ## Done proves
-  - Every updated listing URL, with old and new text in a document on the task.
-
-  ## Honesty limits
-  - Never promise a sales or rank increase.
-  - No claims the product does not support. Photography is not included.

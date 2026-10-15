@@ -16,7 +16,7 @@ stale text until it was deleted). Hermes tool names are anchored to its
 `CONFIGURABLE_TOOLSETS`
 (`terminal`, `file`, `web`, `memory`, `skills`, `browser`, `secrets`) plus our
 own plugin tools in `apps/infra/hermes/plugins/lightbulb/__init__.py`
-(`send_room_message`, `hire_suggestion`, `request_approval`, `lightbulb_read_rooms`, `lightbulb_local_sessions` — its direct-or-ask
+(`send_room_message`, `hire_suggestion`, `request_approval`, `suggest_idea`, `lightbulb_read_rooms`, `lightbulb_local_sessions` — its direct-or-ask
 send rule is `agent_command` in `apps/backend/core/services/local_sessions.py`).
 
 MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
@@ -458,17 +458,14 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  apps/infra/lambda/messaging-projector/index.py _is_feed_room. Agents are the feed's
                                  authors, never members: messaging.room_agent (roster stand-in) and the feed rule in
                                  select_dispatch_targets (a Discuss @mention wakes that agent). Spec 2026-10-14 §4.2.
-  - Ideas (Start) ............ references/ideas.md + SKILL.md routing row
-                              <- backend core/services/ideas.py (start: one Paperclip project named after the idea,
-                                 owner agent as lead, under onboarding_goal_id when recorded, never a new goal,
-                                 created with the fork's body idempotencyKey; write_profile_file puts the
-                                 guide at ideas/<id>.md = "$HERMES_HOME/ideas/<idea>.md"; start_line = the "<name>
-                                 started <title>" system line in the starter's DM with a user_request dispatch
-                                 target) + apps/backend/ideas/*.yaml (each guide's Steps / Decisions / Done proves /
-                                 Honesty limits headings, validated by ideas.Idea) + routers/ideas.py
-                                 (GET /ideas, POST /ideas/{id}/start, POST /ideas/{id}/dismiss). The plan approval is
-                                 plugins/lightbulb request_approval (tasks=[...]); decisions are the paperclip skill's
-                                 references/interactions.md request_confirmation. Spec 2026-10-14 §4.4 and §8.
+  - Ideas ................... references/ideas.md + SKILL.md routing row
+                              <- backend core/services/ideas.py (catalog size: project | task | quick; start: a Paperclip
+                                 project (project), one todo issue assigned to the agent (task) or nothing (quick), claim and
+                                 idempotency rows IDEA#START; start_text = the person's own message via "ideas": the idea
+                                 quoted, "Let's do it!", "Tracked in Work: [<title>](work_link)" for project/task; suggest =
+                                 suggest_idea's store IDEA#SUGGESTED, deduped by title, SUGGESTION_CAP) + apps/backend/ideas/
+                                 *.yaml + routers/ideas.py (GET /ideas, POST start/dismiss, POST /internal/ideas/suggestions
+                                 hook token) + plugins/lightbulb suggest_idea. Approvals stay in For you. Spec 2026-10-14 §4.4.
   - Chat vs document ........ references/chat-vs-document.md + SKILL.md (non-negotiable + routing row)
                               First-run result contract ("The first run" section, pointed at from SKILL.md's
                                  deliverable bullet and company-and-plans.md, because the first room turn can run

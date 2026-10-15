@@ -1,6 +1,7 @@
 id: google-ads-search
 owner_role: growth
 kind: agency
+size: project
 business_types: [any]
 title: "A Google Ads search campaign built and ready to launch"
 why: "Ads in front of people searching for what you sell, measured from the first click."
@@ -14,25 +15,3 @@ price_unit: one_time
 agency_turnaround: "1-2 weeks"
 our_turnaround: "2-3 days"
 your_part: "Approve the daily budget and press launch"
-guide: |
-  # A Google Ads search campaign built and ready to launch
-
-  ## Steps
-  1. Ask the person to sign in to Google Ads in the live browser (or create the account; billing is theirs).
-  2. Set up conversion tracking for the action that matters (signup, purchase, call). Test it.
-  3. Research keywords from the site and the brief. Build 3 ad groups and a negative list.
-  4. Write the ads (several headlines and descriptions per group).
-  5. Propose a daily budget with the reason.
-  6. Leave the campaign paused until the person approves and launches.
-
-  ## Decisions to ask
-  - Approve the daily budget.
-  - Approve the keywords and ads.
-
-  ## Done proves
-  - A test conversion recorded.
-  - The campaign built (screenshot), launched by the person.
-
-  ## Honesty limits
-  - Never promise clicks, cost per click or return on ad spend.
-  - Spend is the person's money: never raise a budget without approval.

@@ -1,6 +1,7 @@
 id: dependency-prs
 owner_role: engineering
 kind: everyday
+size: task
 business_types: [software]
 title: "Weekly: dependency and security updates reviewed and merged"
 why: "Your app stays patched without an engineer spending a day on it."
@@ -14,21 +15,3 @@ price_unit: month
 agency_turnaround: "Monthly"
 our_turnaround: "Every week"
 your_part: "Approve every merge"
-guide: |
-  # Weekly: dependency and security updates reviewed and merged
-
-  ## Steps
-  1. Ask in the DM to connect GitHub if it is not connected.
-  2. Each week, list open dependency and security pull requests.
-  3. For each, read the changelog, check CI, and note the risk.
-  4. Ask for approval of each merge; merge approved ones.
-  5. Close customer bug issues whose fix has shipped, with the link to the fix.
-
-  ## Decisions to ask
-  - Every merge.
-
-  ## Done proves
-  - Merged pull requests and closed issues, listed each week.
-
-  ## Honesty limits
-  - Never merge without approval or with failing CI.

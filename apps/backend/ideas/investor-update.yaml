@@ -1,6 +1,7 @@
 id: investor-update
 owner_role: finance
 kind: agency
+size: project
 business_types: [software]
 title: "A monthly financial model and investor update"
 why: "Investors hear from you every month with numbers that tie out."
@@ -14,22 +15,3 @@ price_unit: month
 agency_turnaround: "Monthly"
 our_turnaround: "Monthly"
 your_part: "Approve the update and the numbers"
-guide: |
-  # A monthly financial model and investor update
-
-  ## Steps
-  1. Ask in the DM to connect the accounting tool and Stripe.
-  2. Build or update the model: revenue, costs, cash, runway, from real numbers.
-  3. Draft the update: highlights, numbers, lowlights, asks.
-  4. Ask for approval of the numbers and the text.
-  5. Send to the investor list after approval. Repeat monthly.
-
-  ## Decisions to ask
-  - Approve the numbers.
-  - Approve the update and the list.
-
-  ## Done proves
-  - The model as a document, the update sent (count of recipients).
-
-  ## Honesty limits
-  - Never present forecasts as facts. Investor judgement and trust stay with the founder.

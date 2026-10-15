@@ -1,10 +1,13 @@
-"""Ideas (spec 2026-10-14 §4.4 / §8): jobs a company usually pays an agency for, done by the team.
+"""Ideas (spec 2026-10-14 §4.4): a pre-written prompt for a job the team can do.
 
-The catalog is one YAML file per idea under ``apps/backend/ideas/`` (YAML, not Markdown: the
-image's .dockerignore drops ``*.md``). Each holds the card and the agent's guide. Start seeds a
-goal + project in Work, writes the guide into the owner agent's profile, and wakes that agent
-with one system line in the starter's DM; the agent then files its plan for approval
-(skills-src/lightbulb/references/ideas.md).
+Ideas come from the curated catalog (one YAML file per idea under ``apps/backend/ideas/``: YAML,
+not Markdown, because the image's .dockerignore drops ``*.md``) and from ``suggest_idea``: an agent
+adds one for this company when it notices a real reason during its work. Each has a size:
+project (a Work project), task (one Work task assigned to the agent), quick (nothing in Work).
+Let's do it records the start, makes the Work item, and posts the person's own message in their
+DM with the agent: the idea quoted, "Let's do it!", and "Tracked in Work: [name](link)". Nothing
+hidden. GET /ideas serves the cards (no prices); a started idea leaves the list for everyone while
+its Work item is open (a quick one for a day).
 """
 
 from __future__ import annotations
@@ -12,8 +15,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import time
-from datetime import datetime, timezone
+import re
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, get_args
@@ -25,7 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from pydantic.alias_generators import to_camel
 
 from core.auth import AuthContext, resolve_owner_id
-from core.constants import SYSTEM_ACTOR_ID
+from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.repositories import messaging_repo
 
@@ -34,8 +39,18 @@ logger = logging.getLogger(__name__)
 CATALOG_DIR = Path(__file__).resolve().parents[2] / "ideas"
 Role = Literal["ceo", "engineering", "finance", "growth", "analytics", "customer_operations"]
 ROLES = get_args(Role)
+Size = Literal["project", "task", "quick"]
 #: A project in one of these is finished: its idea can be started again.
 CLOSED_PROJECT_STATUSES = frozenset({"completed", "cancelled"})
+#: A task in one of these is finished.
+CLOSED_ISSUE_STATUSES = frozenset({"done", "cancelled"})
+#: A quick idea (nothing in Work) is hidden this long after someone starts it.
+QUICK_HIDDEN = timedelta(hours=24)
+#: A start's project or task was deleted in Work: finished too.
+GONE = "__gone__"
+#: Open agent suggestions per workspace.
+SUGGESTION_CAP = 10
+SUGGESTION_PREFIX = "s-"
 
 
 class Idea(BaseModel):
@@ -44,6 +59,9 @@ class Idea(BaseModel):
     id: str = Field(pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$", max_length=64)
     owner_role: Role
     kind: Literal["agency", "everyday"]
+    #: project: many steps over days (a Work project); task: one errand (one Work task); quick:
+    #: answered in one go (nothing in Work). Spec 2026-10-14 §4.4.
+    size: Literal["project", "task", "quick"]
     business_types: list[Literal["software", "store", "services", "any"]] = Field(min_length=1)
     title: str = Field(min_length=1, max_length=120)
     why: str = Field(min_length=1, max_length=200)
@@ -54,7 +72,6 @@ class Idea(BaseModel):
     agency_turnaround: str | None = None
     our_turnaround: str = Field(min_length=1)
     your_part: str = Field(min_length=1)
-    guide: str = Field(min_length=200)
 
     @field_validator("deliverables")
     @classmethod
@@ -70,9 +87,6 @@ class Idea(BaseModel):
             raise ValueError("agency price low/high, unit and turnaround come together or not at all")
         if self.agency_price_low is not None and self.agency_price_low > self.agency_price_high:
             raise ValueError("agency_price_low is above agency_price_high")
-        for heading in ("## Steps", "## Decisions", "## Done", "## Honesty"):
-            if heading not in self.guide:
-                raise ValueError(f"guide is missing {heading!r}")
         return self
 
 
@@ -88,86 +102,155 @@ def catalog() -> dict[str, Idea]:
     return ideas
 
 
-def _idea(idea_id: str) -> Idea:
-    idea = catalog().get(idea_id)
-    if idea is None:
-        raise HTTPException(status_code=404, detail="Idea not found")
-    return idea
+@dataclass(frozen=True)
+class Job:
+    """What Start needs, from a catalog idea or an agent's suggestion."""
+
+    id: str
+    title: str
+    why: str
+    deliverables: list[str]
+    size: str
+    agent: dict
 
 
-async def _workspace(owner_id: str) -> tuple[object | None, dict[str, dict]]:
-    """The workspace row and role -> {id, name} for the starter roster's live agents only (a
-    removed one has no roster row)."""
+class Suggestion(BaseModel):
+    """An idea an agent added for this company (``suggest_idea``): the same fields as a catalog
+    idea, its size set by the agent, owned by the agent that suggested it."""
+
+    model_config = ConfigDict(extra="forbid", alias_generator=to_camel, populate_by_name=True)
+
+    agent_id: str = Field(min_length=1, max_length=64)
+    title: str = Field(min_length=3, max_length=120)
+    why: str = Field(min_length=3, max_length=400)
+    deliverables: list[str] = Field(min_length=1, max_length=3)
+    size: Size
+
+    @field_validator("title", "why")
+    @classmethod
+    def _one_line(cls, value: str) -> str:
+        line = " ".join(value.split())
+        if len(line) < 3:  # "   " passes min_length, then normalises to ""
+            raise ValueError("needs at least three visible characters")
+        return line
+
+    @field_validator("deliverables")
+    @classmethod
+    def _short_lines(cls, value: list[str]) -> list[str]:
+        lines = [" ".join(line.split()) for line in value]
+        if any(not line or len(line) > 120 for line in lines):
+            raise ValueError("each deliverable is one short line")
+        return lines
+
+
+def _norm(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
+
+
+async def _workspace(owner_id: str) -> tuple[object | None, dict[str, dict], dict[str, str]]:
+    """The workspace row, role -> {id, name} for the starter roster's live agents only (a removed
+    one has no roster row), and agent id -> name for the whole roster: one roster read."""
     from core.repositories.paperclip_repo import PaperclipRepo
-    from core.services import messaging
 
     row = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
-    names = {a["id"]: a["name"] for a in await messaging.load_agent_roster(owner_id)}
+    names = await _roster(owner_id)
     starters = (row.starter_agent_ids if row else None) or {}
-    return row, {role: {"id": aid, "name": names[aid]} for role, aid in starters.items() if aid in names}
+    agents = {role: {"id": aid, "name": names[aid]} for role, aid in starters.items() if aid in names}
+    return row, agents, names
 
 
 #: Never served: no prices in the app (owner, 2026-10-15). They stay in the YAML for marketing.
-_NOT_SERVED = {"guide", "agency_price_low", "agency_price_high", "price_unit", "agency_turnaround"}
+_NOT_SERVED = {"agency_price_low", "agency_price_high", "price_unit", "agency_turnaround"}
 
 
 def _card(idea: Idea, agent: dict) -> dict:
     return {**idea.model_dump(by_alias=True, exclude=_NOT_SERVED), "agentId": agent["id"], "agentName": agent["name"]}
 
 
-async def list_ideas(auth: AuthContext) -> dict:
-    """All ideas (no matching yet) whose role has an agent, minus dismissed ones, agency jobs
-    first, then by title. No prices (owner, 2026-10-15). ``running`` is the workspace's open starts, with their project's issue counts when Work
-    answers (never failing the read when it does not)."""
-    owner_id = resolve_owner_id(auth)
-    _, agents = await _workspace(owner_id)
-    dismissed = await messaging_repo.dismissed_ideas(owner_id)
-    shown = [i for i in catalog().values() if i.id not in dismissed and i.owner_role in agents]
-    shown.sort(key=lambda i: (i.kind != "agency", i.title))
-    rows = [
-        r for r in await messaging_repo.open_idea_starts(owner_id) if r["ideaId"] in catalog() and r.get("projectId")
-    ]
+def _suggestion_card(row: dict, names: dict[str, str]) -> dict:
     return {
-        "ideas": [_card(i, agents[i.owner_role]) for i in shown],
-        "running": await _running(auth, rows, agents),
-        # The CEO welcome's proposal shows only until the workspace has started (running or
-        # finished: a start stays recorded until it is started again) or hidden an idea.
+        "id": row["ideaId"],
+        "title": row["title"],
+        "why": row["why"],
+        "deliverables": row["deliverables"],
+        "size": row["size"],
+        "kind": "everyday",
+        "businessTypes": ["any"],
+        "suggested": True,  # "For you": this agent added it for this company
+        "agentId": row["agentId"],
+        "agentName": names[row["agentId"]],
+    }
+
+
+async def _roster(owner_id: str) -> dict[str, str]:
+    from core.services import messaging
+
+    return {a["id"]: a["name"] for a in await messaging.load_agent_roster(owner_id)}
+
+
+async def _suggestions(owner_id: str, names: dict[str, str]) -> list[dict]:
+    """This workspace's suggestions from agents still on the roster, newest first."""
+    rows = [r for r in await messaging_repo.suggested_ideas(owner_id) if r.get("agentId") in names]
+    return sorted(rows, key=lambda r: r.get("createdAt") or "", reverse=True)
+
+
+async def _job(owner_id: str, idea_id: str, agents: dict[str, dict], names: dict[str, str]) -> Job:
+    """The catalog idea or this workspace's suggestion; 404 for anything else."""
+    idea = catalog().get(idea_id)
+    if idea is not None:
+        agent = agents.get(idea.owner_role)
+        if agent is None:
+            raise HTTPException(status_code=409, detail="No teammate owns this idea in this workspace.")
+        return Job(idea.id, idea.title, idea.why, list(idea.deliverables), idea.size, agent)
+    if idea_id.startswith(SUGGESTION_PREFIX):
+        row = next((r for r in await _suggestions(owner_id, names) if r["ideaId"] == idea_id), None)
+        if row is not None:
+            agent = {"id": row["agentId"], "name": names[row["agentId"]]}
+            return Job(row["ideaId"], row["title"], row["why"], list(row["deliverables"]), row["size"], agent)
+    raise HTTPException(status_code=404, detail="Idea not found")
+
+
+async def list_ideas(auth: AuthContext) -> dict:
+    """Agents' suggestions for this company (newest first), then the catalog ideas whose role has
+    an agent (agency jobs first, then by title), minus dismissed ones and ideas someone in the
+    workspace has started (owner, 2026-10-15: once you say Let's do it, the idea goes away; you are
+    doing the work). No prices (owner, 2026-10-15)."""
+    owner_id = resolve_owner_id(auth)
+    _, agents, names = await _workspace(owner_id)
+    dismissed = await messaging_repo.dismissed_ideas(owner_id)
+    rows = await messaging_repo.open_idea_starts(owner_id)
+    hidden = dismissed | await _started(auth, rows)
+    shown = [i for i in catalog().values() if i.id not in hidden and i.owner_role in agents]
+    shown.sort(key=lambda i: (i.kind != "agency", i.title))
+    suggested = [r for r in await _suggestions(owner_id, names) if r["ideaId"] not in hidden]
+    return {
+        "ideas": [_suggestion_card(r, names) for r in suggested] + [_card(i, agents[i.owner_role]) for i in shown],
+        # The CEO welcome's proposal shows only until the workspace has started (a start stays
+        # recorded until it is started again) or hidden an idea.
         "anyStarted": bool(rows),
         "anyDismissed": bool(dismissed),
     }
 
 
-async def _running(auth: AuthContext, rows: list[dict], agents: dict[str, dict]) -> list[dict]:
-    from collections import Counter
-
-    from core.services import messaging
-
-    names = {a["id"]: a["name"] for a in agents.values()}
-    if not rows:
-        return []
-    statuses, progress, approvals = await _work_progress(auth, [r["projectId"] for r in rows])
-    rows = [r for r in rows if statuses.get(r["projectId"]) not in CLOSED_PROJECT_STATUSES]
-    # A plan naming no project can only be told apart when its agent runs one start.
-    starts_per_agent = Counter(r.get("agentId") for r in rows)
-    running = []
+async def _started(auth: AuthContext, rows: list[dict]) -> set[str]:
+    """Ideas hidden because someone started them: while the start's project or task is open in
+    Work (it comes back once that is finished or deleted), or for QUICK_HIDDEN after a quick one
+    (nothing in Work: it was answered in one go). A Work item that cannot be read counts as open."""
+    issues = await _issue_statuses(auth, [r["issueId"] for r in rows if r.get("issueId")])
+    projects = await _project_statuses(auth, [r["projectId"] for r in rows if r.get("projectId")])
+    now = datetime.now(timezone.utc)
+    started = set()
     for r in rows:
-        item = {
-            "ideaId": r["ideaId"],
-            "title": catalog()[r["ideaId"]].title,
-            "agentId": r.get("agentId"),
-            "agentName": names.get(r.get("agentId")),
-            "roomId": r.get("roomId"),
-            "projectId": r["projectId"],
-            "starterId": r["userId"],
-            "starterName": await messaging.human_display_name(r["userId"]),
-            "createdAt": r.get("createdAt"),
-        }
-        if r["projectId"] in progress:
-            item["progress"] = progress[r["projectId"]]
-        if approvals is not None:
-            item["plan"] = plan_for(r, approvals, allow_untagged=starts_per_agent[r.get("agentId")] == 1)
-        running.append(item)
-    return running
+        if r.get("projectId"):
+            open_ = projects.get(r["projectId"]) not in CLOSED_PROJECT_STATUSES | {GONE}
+        elif r.get("issueId"):
+            open_ = issues.get(r["issueId"]) not in CLOSED_ISSUE_STATUSES | {GONE}
+        else:
+            at = _parse_time(r.get("createdAt"))
+            open_ = at is not None and now - at < QUICK_HIDDEN
+        if open_:
+            started.add(r["ideaId"])
+    return started
 
 
 def _parse_time(value: object) -> datetime | None:
@@ -178,74 +261,42 @@ def _parse_time(value: object) -> datetime | None:
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
-def plan_for(start: dict, approvals: list[dict], *, allow_untagged: bool) -> dict | None:
-    """The plan the start's agent filed for it (references/ideas.md: ``request_approval`` titled
-    "Plan: …"): a board approval by that agent, created after the start. One that names projects
-    (``payload.projectIds``, stamped by the plugin from the linked tasks) counts only for those
-    projects and wins over one that names none. One naming none (an older runtime, a plan filed
-    with no task) counts only when ``allow_untagged``: the agent has this one open start, so it
-    cannot belong to another idea. Newest wins. None before the agent has filed one."""
-    started = _parse_time(start.get("createdAt"))
-    if started is None:
-        return None
-    tagged, untagged = [], []
-    for a in approvals:
-        payload = a.get("payload") if isinstance(a.get("payload"), dict) else {}
-        title = str(payload.get("title") or "")
-        created = _parse_time(a.get("createdAt"))
-        if (
-            a.get("type") != "request_board_approval"
-            or a.get("requestedByAgentId") != start.get("agentId")
-            or not title.startswith("Plan:")
-            or created is None
-            or created < started
-        ):
-            continue
-        projects = payload.get("projectIds")
-        if isinstance(projects, list) and projects:
-            if start["projectId"] in projects:
-                tagged.append((created, a, title))
-        else:
-            untagged.append((created, a, title))
-    found = max(tagged or (untagged if allow_untagged else []), key=lambda c: c[0], default=None)
-    if not found:
-        return None
-    approval = found[1]
-    # When it was decided (a revision asked): the DM keeps asking for the next plan from then.
-    decided = approval.get("decidedAt") or approval.get("updatedAt")
-    return {"approvalId": approval["id"], "status": approval.get("status"), "title": found[2], "decidedAt": decided}
-
-
-_APPROVALS_TTL_S = 5
-# ponytail: per-process dict, one entry per company that read Ideas; bounded by company count.
-_approvals_cache: dict[str, tuple[float, list[dict]]] = {}
-
-
-async def _company_approvals(admin, session_cookie: str, company_id: str) -> list[dict]:
-    """The company's approvals, cached ~5 s per process so the DM's plan poll and the pane share
-    one read. The fork's list takes only a single ``status`` filter and no limit; a plan's card
-    needs every status (approved, revision requested), so the whole list is read."""
-    hit = _approvals_cache.get(company_id)
-    if hit and time.monotonic() - hit[0] < _APPROVALS_TTL_S:
-        return hit[1]
-    listed = await admin.list_approvals(session_cookie=session_cookie, company_id=company_id)
-    found = listed if isinstance(listed, list) else (listed or {}).get("approvals") or []
-    approvals = [a for a in found if isinstance(a, dict) and "id" in a]
-    _approvals_cache[company_id] = (time.monotonic(), approvals)
-    return approvals
-
-
-async def _work_progress(
-    auth: AuthContext, project_ids: list[str]
-) -> tuple[dict[str, str], dict[str, dict], list[dict] | None]:
-    """({project: status}, {project: {issue status: count}}, the company's approvals) from Paperclip;
-    empty (approvals None) on any failure, so the Ideas read never fails because Work is slow or
-    the caller has not joined it yet. One approvals list per read, for every start's plan."""
-    from collections import Counter
-
+async def _issue_statuses(auth: AuthContext, issue_ids: list[str]) -> dict[str, str]:
+    """{issue: status} from Paperclip; a deleted one (404) is GONE, one that could not be read is
+    left out (never failing the read)."""
+    if not issue_ids:
+        return {}
     from core.services import task_board
     from core.services.paperclip_admin_client import shared_admin_client
-    from core.services.paperclip_agent_lifecycle import list_all_issues
+
+    try:
+        ctx = await task_board._context(auth)
+        admin = shared_admin_client()
+        found = await asyncio.gather(
+            *(admin.get_issue(session_cookie=ctx.session_cookie, issue_id=i) for i in issue_ids), return_exceptions=True
+        )
+    except Exception:  # noqa: BLE001 -- progress is optional on this read
+        logger.info("ideas: Work task status unavailable", exc_info=True)
+        return {}
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    statuses = {}
+    for issue_id, found_issue in zip(issue_ids, found):
+        if isinstance(found_issue, PaperclipApiError) and found_issue.status_code == 404:
+            statuses[issue_id] = GONE
+        elif isinstance(found_issue, dict) and found_issue.get("status"):
+            statuses[issue_id] = found_issue["status"]
+    return statuses
+
+
+async def _project_statuses(auth: AuthContext, project_ids: list[str]) -> dict[str, str]:
+    """{project: status} from Paperclip; {} when Work does not answer (never failing the read).
+    A project the list leaves out (deleted, or one this caller cannot list) is read on its own: a
+    404 is GONE; anything else leaves it unknown, which counts as open."""
+    if not project_ids:
+        return {}
+    from core.services import task_board
+    from core.services.paperclip_admin_client import PaperclipApiError, shared_admin_client
 
     try:
         ctx = await task_board._context(auth)
@@ -253,83 +304,142 @@ async def _work_progress(
         projects = await admin.list_projects(session_cookie=ctx.session_cookie, company_id=ctx.company_id)
         rows = projects if isinstance(projects, list) else (projects or {}).get("projects") or []
         statuses = {p["id"]: p.get("status") for p in rows if isinstance(p, dict) and "id" in p}
-        issues = await asyncio.gather(
-            *(
-                list_all_issues(admin, cookie=ctx.session_cookie, company_id=ctx.company_id, params={"projectId": pid})
-                for pid in project_ids
-            )
+        unlisted = [pid for pid in project_ids if pid not in statuses]
+        read = await asyncio.gather(
+            *(admin.get_project(session_cookie=ctx.session_cookie, project_id=pid) for pid in unlisted),
+            return_exceptions=True,
         )
-    except Exception:  # noqa: BLE001 -- progress is optional on this read
-        logger.info("ideas: Work progress unavailable", exc_info=True)
-        return {}, {}, None
-    try:
-        approvals = await _company_approvals(admin, ctx.session_cookie, ctx.company_id)
-    except Exception:  # noqa: BLE001 -- the plan is optional on this read
-        logger.info("ideas: approvals unavailable", exc_info=True)
-        approvals = None
-    counts = {pid: dict(Counter(i.get("status") for i in found)) for pid, found in zip(project_ids, issues)}
-    return statuses, counts, approvals
+    except Exception:  # noqa: BLE001 -- an unknown project counts as open
+        logger.info("ideas: Work projects unavailable", exc_info=True)
+        return {}
+    for pid, found_project in zip(unlisted, read):
+        if isinstance(found_project, PaperclipApiError) and found_project.status_code == 404:
+            statuses[pid] = GONE
+        elif isinstance(found_project, dict):
+            archived = bool(found_project.get("archivedAt"))
+            statuses[pid] = "completed" if archived else found_project.get("status")
+    return statuses
 
 
 async def dismiss(auth: AuthContext, idea_id: str) -> None:
-    _idea(idea_id)
-    await messaging_repo.dismiss_idea(resolve_owner_id(auth), idea_id)
+    owner_id = resolve_owner_id(auth)
+    if idea_id not in catalog():
+        names = await _roster(owner_id)
+        if not any(r["ideaId"] == idea_id for r in await _suggestions(owner_id, names)):
+            raise HTTPException(status_code=404, detail="Idea not found")
+    await messaging_repo.dismiss_idea(owner_id, idea_id)
 
 
-async def _project_closed(admin, session_cookie: str, project_id: str) -> bool:
-    """True when the started project is finished or gone. A Paperclip error reads as "still
-    open": the caller then answers with the stored ids instead of failing."""
+async def suggest(owner_id: str, suggestion: Suggestion) -> dict:
+    """An agent's ``suggest_idea``: stored in this workspace's list only (never a chat card).
+    ``{"status": "added", "id"}``; ``duplicate`` when an idea with the same title is already there
+    (a catalog one, or any suggestion); ``cap`` at SUGGESTION_CAP open suggestions."""
+    names = await _roster(owner_id)
+    if suggestion.agent_id not in names:
+        raise HTTPException(status_code=403, detail="Not an agent on this workspace's team.")
+    title = _norm(suggestion.title)
+    # ponytail: dedupe and the cap are read-then-write, so two suggest_idea calls at the same
+    # moment can store a duplicate title or an 11th suggestion; bounded by the agents' turns
+    # (a handful per day). A per-title conditional row would close it if it ever matters.
+    stored = await _suggestions(owner_id, names)
+    if any(_norm(i.title) == title for i in catalog().values()) or any(_norm(r["title"]) == title for r in stored):
+        return {"status": "duplicate"}
+    dismissed = await messaging_repo.dismissed_ideas(owner_id)
+    if sum(r["ideaId"] not in dismissed for r in stored) >= SUGGESTION_CAP:
+        return {"status": "cap"}
+    idea_id = f"{SUGGESTION_PREFIX}{uuid.uuid4().hex[:12]}"
+    await messaging_repo.put_suggested_idea(
+        owner_id,
+        {
+            "ideaId": idea_id,
+            "agentId": suggestion.agent_id,
+            "title": suggestion.title,
+            "why": suggestion.why,
+            "deliverables": suggestion.deliverables,
+            "size": suggestion.size,
+            "createdAt": utc_now_iso(),
+        },
+    )
+    return {"status": "added", "id": idea_id}
+
+
+async def _closed(admin, session_cookie: str, start: dict) -> bool:
+    """True when the start's Work item is finished or gone, or it had none (quick: done in one
+    go). A Paperclip error reads as "still open": the caller answers with the stored ids."""
     from core.services.paperclip_admin_client import PaperclipApiError
 
     try:
-        project = await admin.get_project(session_cookie=session_cookie, project_id=project_id)
+        if start.get("projectId"):
+            project = await admin.get_project(session_cookie=session_cookie, project_id=start["projectId"])
+            return project.get("status") in CLOSED_PROJECT_STATUSES or bool(project.get("archivedAt"))
+        if start.get("issueId"):
+            issue = await admin.get_issue(session_cookie=session_cookie, issue_id=start["issueId"])
+            return issue.get("status") in CLOSED_ISSUE_STATUSES
     except PaperclipApiError as exc:
         return exc.status_code == 404
     except httpx.HTTPError:
         return False
-    return project.get("status") in CLOSED_PROJECT_STATUSES or bool(project.get("archivedAt"))
+    return True
 
 
-def start_line(who: str, idea: Idea, agent_name: str, project_id: str, room_id: str) -> str:
-    """The wake line. It names THIS start's project and DM: two people can start the same idea
-    with the same agent, and the plan's tasks must land in the right project for its card."""
-    return (
-        f"{who} started **{idea.title}**. {agent_name}: read `$HERMES_HOME/ideas/{idea.id}.md` and "
-        "follow the lightbulb skill's `references/ideas.md`: post the plan for approval here first. "
-        f"Project `{project_id}`, room `{room_id}`."
-    )
+def work_link(kind: str, work_id: str) -> str:
+    """The Work item's page, in the app."""
+    panel = "teams-project-detail" if kind == "project" else "teams-issue-detail"
+    return f"{settings.FRONTEND_URL.rstrip('/')}/chat?panel={panel}&detailId={work_id}"
 
 
-def project_idempotency_key(owner_id: str, idea_id: str, user_id: str, start_token: str) -> str:
-    """Stable per claim: a retry after a crash replays the same Paperclip project (the fork's
-    ``idempotencyKey`` on project create) instead of making a second one."""
+_MARKDOWN_SPECIAL = re.compile(r"([\\`*_\[\]()<>#!|~])")
+
+
+def _md_text(value: str) -> str:
+    """Plain text inside markdown: an agent-written title or description cannot add a link,
+    emphasis or anything else to the person's own message, or break the Work link."""
+    return _MARKDOWN_SPECIAL.sub(r"\\\1", " ".join(value.split()))
+
+
+def start_text(job: Job, tracked: tuple[str, str] | None) -> str:
+    """The person's own message when they press Let's do it: the idea quoted, the ask, and, for a
+    project or a task, the Work item tracking it. The link is how the agent learns where this
+    start's work goes. Nothing hidden."""
+    title = _md_text(job.title)
+    text = f"> **{title}**\n> {_md_text(job.why)}\n\nLet's do it!"
+    if tracked:
+        text += f"\nTracked in Work: [{title}]({work_link(*tracked)})"
+    return text
+
+
+def work_idempotency_key(owner_id: str, idea_id: str, user_id: str, start_token: str) -> str:
+    """Stable per claim: a retry after a crash replays the same Paperclip project or task (the
+    fork's ``idempotencyKey`` on create) instead of making a second one."""
     digest = hashlib.sha256(f"{owner_id}|{idea_id}|{user_id}|{start_token}".encode()).hexdigest()
     return f"lightbulb-idea-project:v1:{digest}"
 
 
 async def start(auth: AuthContext, idea_id: str) -> dict:
-    """Start an idea for the caller; idempotent per (workspace, idea, starter) while the started
-    project is open. Returns ``{roomId, projectId}``. A Paperclip failure is a 502 to retry."""
+    """Start an idea for the caller; idempotent per (workspace, idea, starter) while its Work item
+    is open. Returns ``{roomId, projectId?, issueId?}``. A Paperclip failure is a 502 to retry."""
     from core.services.paperclip_admin_client import PaperclipApiError
 
     try:
         return await _start(auth, idea_id)
     except (PaperclipApiError, httpx.HTTPError) as exc:
         logger.warning("ideas: start %s failed on Paperclip: %s", idea_id, type(exc).__name__)
-        raise HTTPException(status_code=502, detail="Work did not answer. Try Start again in a moment.") from exc
+        raise HTTPException(status_code=502, detail="Work did not answer. Try again in a moment.") from exc
+
+
+def _ids(start: dict) -> dict:
+    return {"roomId": start["roomId"], **{k: start[k] for k in ("projectId", "issueId") if start.get(k)}}
 
 
 async def _start(auth: AuthContext, idea_id: str) -> dict:
-    from core.services import hermes_profiles, messaging, task_board
+    from core.services import messaging, task_board
     from core.services.paperclip_admin_client import shared_admin_client
 
-    idea = _idea(idea_id)
+    row, agents, names = await _workspace(resolve_owner_id(auth))
+    job = await _job(resolve_owner_id(auth), idea_id, agents, names)  # an unknown idea is a 404 first
     ctx = await task_board._context(auth)  # a joined member of this workspace, with a Paperclip session
     owner_id, user_id = ctx.owner_id, auth.user_id
-    row, agents = await _workspace(owner_id)
-    agent = agents.get(idea.owner_role)
-    if agent is None:
-        raise HTTPException(status_code=409, detail="No teammate owns this idea in this workspace.")
+    agent = job.agent
     admin = shared_admin_client()
 
     for _ in range(2):  # a second pass only after a finished start was closed
@@ -338,70 +448,89 @@ async def _start(auth: AuthContext, idea_id: str) -> dict:
             break
         if claim.get("state") != "open":
             raise HTTPException(status_code=409, detail="This idea is already starting.")
-        if not await _project_closed(admin, ctx.session_cookie, claim["projectId"]):
-            return {"roomId": claim["roomId"], "projectId": claim["projectId"]}
-        await messaging_repo.close_idea_start(owner_id, idea_id, user_id, claim["projectId"])
+        if not await _closed(admin, ctx.session_cookie, claim):
+            return _ids(claim)
+        await messaging_repo.close_idea_start(owner_id, idea_id, user_id, claim["startToken"])
     else:
         raise HTTPException(status_code=409, detail="This idea is already starting.")
 
     try:
-        project_id = claim.get("projectId")
-        if not project_id:
-            # Only a project: an idea never makes a company-level goal, so it can never become the
-            # company's default goal. It joins the onboarding goal when the workspace has one.
-            goal_id = getattr(row, "onboarding_goal_id", None)
-            body = {
-                "name": idea.title,
-                "status": "in_progress",
-                "leadAgentId": agent["id"],
-                "idempotencyKey": project_idempotency_key(owner_id, idea_id, user_id, claim["startToken"]),
-                **({"goalIds": [goal_id]} if goal_id else {}),
-            }
-            project = await admin.create_project(
-                session_cookie=ctx.session_cookie, company_id=ctx.company_id, body=body
-            )
-            project_id = project["id"]
-            await messaging_repo.update_idea_start(
-                owner_id, idea_id, user_id, {"projectId": project_id, "agentId": agent["id"]}
-            )
-        await hermes_profiles.write_profile_file(owner_id, agent["id"], f"ideas/{idea_id}.md", idea.guide)
+        key = work_idempotency_key(owner_id, idea_id, user_id, claim["startToken"])
+        tracked: tuple[str, str] | None = None
+        if job.size == "project":
+            project_id = claim.get("projectId")
+            if not project_id:
+                # Only a project: an idea never makes a company-level goal, so it can never become
+                # the company's default goal. It joins the onboarding goal when the workspace has one.
+                goal_id = getattr(row, "onboarding_goal_id", None)
+                body = {
+                    "name": job.title,
+                    "status": "in_progress",
+                    "leadAgentId": agent["id"],
+                    "idempotencyKey": key,
+                    **({"goalIds": [goal_id]} if goal_id else {}),
+                }
+                project = await admin.create_project(
+                    session_cookie=ctx.session_cookie, company_id=ctx.company_id, body=body
+                )
+                project_id = project["id"]
+                await messaging_repo.update_idea_start(owner_id, idea_id, user_id, {"projectId": project_id})
+            tracked = ("project", project_id)
+        elif job.size == "task":
+            issue_id = claim.get("issueId")
+            if not issue_id:
+                body = {
+                    "title": job.title,
+                    "description": job.why + "\n\nWhat's included:\n" + "\n".join(f"- {d}" for d in job.deliverables),
+                    # backlog, not todo: the DM message is the one wake (an assigned todo would wake
+                    # the agent through Paperclip too and run the job twice). The agent moves it to
+                    # in_progress itself (references/ideas.md).
+                    "status": "backlog",
+                    "assigneeAgentId": agent["id"],
+                    "idempotencyKey": key,
+                    # The same title may be started again after a finished task; the key still
+                    # replays a retry's issue instead of making a second one.
+                    "allowDuplicate": True,
+                }
+                issue = await admin.create_issue(
+                    session_cookie=ctx.session_cookie, company_id=ctx.company_id, body=body
+                )
+                issue_id = issue["id"]
+                await messaging_repo.update_idea_start(owner_id, idea_id, user_id, {"issueId": issue_id})
+            tracked = ("task", issue_id)
         room_id = await _usable_dm(owner_id, user_id, agent["id"])
-        text = start_line(await messaging.human_display_name(user_id), idea, agent["name"], project_id, room_id)
-        key = f"idea-start|{idea_id}|{user_id}|{project_id}"  # one line per started project
-        try:
-            await messaging_repo.create_message(
-                room_id=room_id,
-                owner_id=owner_id,
-                idemp_pk=messaging_repo.room_pk(room_id),
-                idemp_sk=messaging_repo.human_idemp_sk(SYSTEM_ACTOR_ID, key),
-                req_hash=messaging_repo.request_hash(key),
-                author={"kind": "system", "id": SYSTEM_ACTOR_ID, "displayName": "Lightbulb"},
-                text=text,
-                mentions=[],
+        # The person's own message (via Ideas): it wakes the agent the way any DM message does,
+        # and shows live. One per start: a retry replays it.
+        client_id = uuid.uuid5(
+            uuid.NAMESPACE_URL, f"lightbulb-idea-start|{owner_id}|{idea_id}|{user_id}|{claim['startToken']}"
+        )
+        await messaging.create_human_message(
+            AuthContext(user_id=user_id, org_id=owner_id),
+            room_id,
+            messaging.CreateMessageRequest(
+                client_message_id=client_id,
+                text=start_text(job, tracked),
                 reply_to_message_id=None,
                 thread_root_message_id=None,
-                run_id=None,
-                dispatch_targets=[{"agentId": agent["id"], "eventKind": "user_request"}],
-                source_agent_id=None,
-                client_message_id=None,
-            )
-        except messaging_repo.IdempotencyConflict:
-            pass  # a retried attempt already posted it
-        await messaging_repo.update_idea_start(
-            owner_id, idea_id, user_id, {"state": "open", "roomId": room_id, "createdAt": utc_now_iso()}
+            ),
+            via="ideas",
         )
+        fields = {"state": "open", "roomId": room_id, "createdAt": utc_now_iso(), "agentId": agent["id"],
+                  "title": job.title, "size": job.size}  # fmt: skip
+        await messaging_repo.update_idea_start(owner_id, idea_id, user_id, fields)
     except BaseException:
         try:  # free the claim at once; the next Start reuses whatever already landed
             await messaging_repo.update_idea_start(owner_id, idea_id, user_id, {"claimedAt": 0})
         except Exception:
             logger.warning("ideas: could not release the start claim %s/%s", owner_id, idea_id, exc_info=True)
         raise
-    return {"roomId": room_id, "projectId": project_id}
+    return _ids({"roomId": room_id, "projectId": tracked[1] if tracked and tracked[0] == "project" else None,
+                 "issueId": tracked[1] if tracked and tracked[0] == "task" else None})  # fmt: skip
 
 
 async def _usable_dm(owner_id: str, user_id: str, agent_id: str) -> str:
     """The starter's DM with the agent, unarchived through the room PATCH path when needed, so
-    the start line can land and the person can answer there."""
+    the person's Let's do it message can land and they can answer there."""
     from core.services import messaging
 
     room_id = await messaging._agent_dm_room_id(owner_id, user_id, agent_id)

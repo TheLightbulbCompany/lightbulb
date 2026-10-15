@@ -55,6 +55,22 @@ describe("TeamFeed", () => {
     await waitFor(() => expect(client.markRead).toHaveBeenCalledWith("feed-1", { lastReadSeq: 3 }));
   });
 
+  it("renders a title line with bold markdown as bold text, never asterisks", async () => {
+    const { client } = setup();
+    client.listMessages.mockResolvedValue({ messages: [
+      post(1, { createdAt: new Date().toISOString(), text: "**This is our feed.** When something here matters, we post it.\nMore." }),
+    ], nextAfterSeq: null });
+    client.getRoom.mockResolvedValue({ ...room, lastMessageSeq: 1 });
+    setup({ client, scope: "org-2" });
+    const title = await waitFor(() => {
+      const found = [...document.querySelectorAll(".feed-post__title")].find((el) => el.textContent?.includes("This is our feed."));
+      expect(found).toBeTruthy();
+      return found!;
+    });
+    expect(title.textContent).not.toContain("**");
+    expect(title.querySelector("strong")).toHaveTextContent("This is our feed.");
+  });
+
   it("keeps Why I created this post closed until the info button opens it", async () => {
     setup();
     await waitFor(() => expect(posts()).toHaveLength(3));

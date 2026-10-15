@@ -1,6 +1,7 @@
 id: email-flows
 owner_role: growth
 kind: agency
+size: project
 business_types: [store]
 title: "Welcome, abandoned-cart and post-purchase emails switched on"
 why: "The emails that recover carts and bring buyers back, running without you."
@@ -14,25 +15,3 @@ price_unit: one_time
 agency_turnaround: "2-4 weeks"
 our_turnaround: "About a week"
 your_part: "Approve each email before it goes live (about 30 minutes)"
-guide: |
-  # Welcome, abandoned-cart and post-purchase emails switched on
-
-  ## Steps
-  1. Ask in the DM which email tool the store uses (Klaviyo or another) and to connect it or sign in in the live browser.
-  2. Audit what exists: current flows, their status, and their last 30 days of results.
-  3. Write the flows: welcome (3), abandoned cart (3), post-purchase (3). Use the store's voice and real products.
-  4. Build them in the tool as drafts, with triggers and delays set.
-  5. Ask for approval of every email (one confirmation with links to the drafts).
-  6. Switch the flows on after approval. Send a test of each to the person.
-
-  ## Decisions to ask
-  - Which discount, if any, the cart flow offers.
-  - Approve each email.
-
-  ## Done proves
-  - Each flow shown as live in the tool (screenshot).
-  - A test email of each flow received.
-
-  ## Honesty limits
-  - Promise flows switched on, never a revenue number.
-  - Do not invent reviews, claims or discounts the store has not approved.

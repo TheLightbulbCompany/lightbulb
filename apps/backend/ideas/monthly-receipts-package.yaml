@@ -1,6 +1,7 @@
 id: monthly-receipts-package
 owner_role: finance
 kind: everyday
+size: task
 business_types: [any]
 title: "Monthly: receipts and W-9s collected and sent to your accountant"
 why: "Your accountant gets a complete package every month, without you hunting through email."
@@ -14,21 +15,3 @@ price_unit: month
 agency_turnaround: "Monthly"
 our_turnaround: "Monthly"
 your_part: "Approve the package"
-guide: |
-  # Monthly: receipts and W-9s collected and sent to your accountant
-
-  ## Steps
-  1. Ask in the DM to connect email and for the accountant's address.
-  2. Each month, collect receipts and invoices from email. Match them to card and bank charges if connected.
-  3. List charges with no receipt; ask the vendor or the person.
-  4. Request missing W-9s from contractors paid this year.
-  5. Ask for approval of the package, then send it to the accountant.
-
-  ## Decisions to ask
-  - Approve the package and any charge without a receipt.
-
-  ## Done proves
-  - The package sent, with the count of receipts and open items.
-
-  ## Honesty limits
-  - Do not classify expenses for tax; the accountant does.

@@ -6,10 +6,10 @@ import type { ReactNode } from "react";
 
 import type { ApiMethods } from "../api/client";
 import { createMessagingClient } from "./client";
-import { ideaEffortLine, ideaProgress, ideaTeammates, myStartsIn, notePlanDecision, orderIdeas, plansPollMs, useIdeas, waitsForPlan, type Idea, type IdeasClient, type RunningIdea } from "./ideas";
+import { ideaEffortLine, orderIdeas, useIdeas, type Idea, type IdeasClient } from "./ideas";
 
 const idea = (id: string, agentId: string, agentName = agentId): Idea => ({
-  id, ownerRole: "growth", kind: "agency", businessTypes: ["any"], title: `T ${id}`, why: "w",
+  id, ownerRole: "growth", kind: "agency", size: "project", businessTypes: ["any"], title: `T ${id}`, why: "w",
   deliverables: ["a", "b", "c"], ourTurnaround: "about 2 days", yourPart: "about 5 minutes", agentId, agentName,
 });
 
@@ -32,51 +32,12 @@ describe("ideas helpers", () => {
     expect(orderIdeas(list, null).map((i) => i.id)).toEqual(["a", "b", "c", "d"]);
   });
 
-  it("lists each teammate once and writes the effort line without prices", () => {
-    expect(ideaTeammates([idea("a", "eng", "Engineering"), idea("b", "growth", "Growth"), idea("c", "eng", "Engineering")]))
-      .toEqual([{ agentId: "eng", agentName: "Engineering" }, { agentId: "growth", agentName: "Growth" }]);
+  it("has no effort line for a suggestion without one", () => {
+    expect(ideaEffortLine({})).toBeNull();
+  });
+
+  it("writes the effort line without prices", () => {
     expect(ideaEffortLine(idea("a", "x"))).toBe("Your team: about 2 days · You: about 5 minutes");
-  });
-
-  it("counts done over every task but cancelled ones", () => {
-    expect(ideaProgress({ done: 2, todo: 3, cancelled: 4 })).toEqual({ done: 2, total: 5 });
-    expect(ideaProgress({})).toBeNull();
-    expect(ideaProgress(undefined)).toBeNull();
-  });
-});
-
-describe("a DM's plans", () => {
-  const NOW = Date.parse("2026-10-15T12:00:00Z");
-  const start = (id: string, createdAt: string, plan?: RunningIdea["plan"], roomId = "dm", starterId = "me"): RunningIdea => ({
-    ideaId: id, title: id, agentId: "g", agentName: "G", roomId, projectId: `p-${id}`, starterId, starterName: "Me", createdAt, plan,
-  });
-
-  it("lists every own start in the DM, newest first", () => {
-    const running = [start("a", "2026-10-15T10:00:00Z"), start("b", "2026-10-15T11:00:00Z"),
-      start("c", "2026-10-15T11:30:00Z", undefined, "other"), start("d", "2026-10-15T11:40:00Z", undefined, "dm", "them")];
-    expect(myStartsIn({ running }, "dm", "me").map((s) => s.ideaId)).toEqual(["b", "a"]);
-  });
-
-  it("waits five minutes for a first plan, and ten after a revision until a new pending plan", () => {
-    expect(waitsForPlan(start("a", "2026-10-15T11:57:00Z"), NOW)).toBe(true);
-    expect(waitsForPlan(start("a", "2026-10-15T11:50:00Z"), NOW)).toBe(false);
-    const revised = (decidedAt: string) => start("a", "2026-10-15T09:00:00Z", { approvalId: "p1", status: "revision_requested", title: "Plan: a", decidedAt });
-    expect(waitsForPlan(revised("2026-10-15T11:55:00Z"), NOW)).toBe(true);
-    expect(waitsForPlan(revised("2026-10-15T11:45:00Z"), NOW)).toBe(false);
-    expect(waitsForPlan(start("a", "2026-10-15T11:59:00Z", { approvalId: "p2", status: "pending", title: "Plan: a" }), NOW)).toBe(false);
-    expect(plansPollMs([start("a", "2026-10-15T09:00:00Z"), revised("2026-10-15T11:55:00Z")], NOW)).toBe(10_000);
-    expect(plansPollMs([start("a", "2026-10-15T09:00:00Z")], NOW)).toBe(0);
-  });
-
-  it("keeps asking while /ideas still shows a plan just decided here as pending (stale read)", () => {
-    const stale = start("a", "2026-10-15T09:00:00Z", { approvalId: "p-stale", status: "pending", title: "Plan: a" });
-    expect(waitsForPlan(stale, NOW)).toBe(false);
-    notePlanDecision("p-stale", NOW - 3_000);
-    expect(waitsForPlan(stale, NOW)).toBe(true);
-    // Settles once /ideas shows the decision or a newer plan, and gives up after ten minutes.
-    expect(waitsForPlan({ ...stale, plan: { ...stale.plan!, status: "approved" } }, NOW)).toBe(false);
-    expect(waitsForPlan({ ...stale, plan: { approvalId: "p-new", status: "pending", title: "Plan: a" } }, NOW)).toBe(false);
-    expect(waitsForPlan(stale, NOW + 11 * 60_000)).toBe(false);
   });
 });
 
@@ -87,7 +48,7 @@ describe("useIdeas", () => {
   it("dismisses optimistically and puts the idea back when the server refuses", async () => {
     let refuse = false;
     const client: IdeasClient = {
-      listIdeas: vi.fn(async () => ({ ideas: [idea("a", "x"), idea("b", "x")], running: [] })),
+      listIdeas: vi.fn(async () => ({ ideas: [idea("a", "x"), idea("b", "x")] })),
       startIdea: vi.fn(async () => ({ roomId: "r", projectId: "p" })),
       dismissIdea: vi.fn(async () => { if (refuse) throw new Error("no"); }),
     };

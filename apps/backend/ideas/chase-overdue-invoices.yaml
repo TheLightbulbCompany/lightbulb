@@ -1,6 +1,7 @@
 id: chase-overdue-invoices
 owner_role: finance
 kind: everyday
+size: task
 business_types: [any]
 title: "Every overdue invoice chased with a pay link"
 why: "Cash owed to you comes in sooner when someone asks politely and on time."
@@ -14,22 +15,3 @@ price_unit: month
 agency_turnaround: "Monthly"
 our_turnaround: "Every week"
 your_part: "Approve each reminder or the batch"
-guide: |
-  # Every overdue invoice chased with a pay link
-
-  ## Steps
-  1. Ask in the DM to connect Stripe or QuickBooks, and email.
-  2. List overdue invoices: customer, amount, days overdue.
-  3. Draft a reminder for each with the pay link; firmer wording only as the age grows.
-  4. Ask for approval of the batch, then send.
-  5. Check weekly; mark paid invoices and send the next reminder only to unpaid ones.
-
-  ## Decisions to ask
-  - Approve each reminder or the batch.
-  - Any customer to skip (a relationship the person handles).
-
-  ## Done proves
-  - Reminders sent (count) and payments received since (amount).
-
-  ## Honesty limits
-  - Never threaten fees or collections the terms do not allow.

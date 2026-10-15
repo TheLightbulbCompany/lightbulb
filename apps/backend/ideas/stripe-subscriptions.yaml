@@ -1,6 +1,7 @@
 id: stripe-subscriptions
 owner_role: engineering
 kind: agency
+size: project
 business_types: [software]
 title: "Subscriptions added to your app, with tests"
 why: "Plans, trials, upgrades and failed-payment emails, so revenue runs on its own."
@@ -14,25 +15,3 @@ price_unit: one_time
 agency_turnaround: "1-3 weeks"
 our_turnaround: "3-5 days"
 your_part: "Merge the pull request and switch on live keys"
-guide: |
-  # Subscriptions added to your app, with tests
-
-  ## Steps
-  1. Ask in the DM to connect GitHub and Stripe if they are not connected.
-  2. Agree the plans and prices (one confirmation).
-  3. Create the products and prices in Stripe test mode.
-  4. Build checkout, upgrade and downgrade, trials, the customer portal link, and webhook handling for subscription changes and failed payments.
-  5. Switch on Stripe's failed-payment emails (dunning).
-  6. Write tests for the webhook paths. Open one pull request.
-  7. After merge, the person switches to live keys.
-
-  ## Decisions to ask
-  - Plans, prices and trial length.
-  - Approve the pull request.
-
-  ## Done proves
-  - The merged pull request with passing tests.
-  - A test-mode subscription created, upgraded and cancelled end to end.
-
-  ## Honesty limits
-  - Live keys and any tax registration are the person's. Do not promise revenue.

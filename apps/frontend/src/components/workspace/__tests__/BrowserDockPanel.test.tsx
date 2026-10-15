@@ -66,14 +66,13 @@ vi.mock("../panels/DirectDcvLiveView", () => ({
 }));
 
 import { ApiError } from "@/lib/api";
-import { BrowserDockPanel, INPUT_THROTTLE_MS, SAVE_TIMEOUT_MS, THREAD_SHARE_KEY, VIEW_HEARTBEAT_MS } from "../panels/BrowserDockPanel";
-import { createPortal } from "react-dom";
+import { BrowserDockPanel, INPUT_THROTTLE_MS, SAVE_TIMEOUT_MS, VIEW_HEARTBEAT_MS } from "../panels/BrowserDockPanel";
 import { SharedLiveViewHost, _resetSharedLiveViewForTests } from "../panels/sharedLiveView";
 import { _resetControllerForTests, selectBrowserMacRun } from "../workspaceController";
 
 // The panel shows the page's one shared live-view client, which the chat page mounts.
-function Panel(props: React.ComponentProps<typeof BrowserDockPanel>): React.ReactElement {
-  return <><SharedLiveViewHost /><BrowserDockPanel {...props} /></>;
+function Panel(): React.ReactElement {
+  return <><SharedLiveViewHost /><BrowserDockPanel /></>;
 }
 
 // RTL's waitFor/findBy* only detect JEST fake timers (`typeof jest !== 'undefined'`
@@ -451,42 +450,11 @@ describe("BrowserDockPanel", () => {
   });
 
 
-  it("docks a thread under the browser, sized by the remembered divider, and gives the height back when it closes", async () => {
-    window.localStorage.setItem(THREAD_SHARE_KEY, "0.3");
-    get.mockResolvedValue({ active: true, url: "https://signed", sessionId: "s1", generation: "g1", mode: "idle" });
-    const Harness = ({ thread }: { thread: boolean }) => {
-      const slot = document.querySelector<HTMLElement>("[data-testid=browser-thread-slot]");
-      return <>{thread && slot && createPortal(<aside aria-label="Thread">replies</aside>, slot)}<Panel /></>;
-    };
-    const { rerender } = render(<Harness thread={false} />);
-    await flush();
-    const slot = screen.getByTestId("browser-thread-slot");
-    const divider = screen.getByRole("separator", { name: /resize the browser and the thread/i });
-    expect(slot.style.flexBasis).toBe("30%");
-    // Empty: the slot and the divider hide, so the browser fills the panel.
-    expect(slot).toHaveClass("empty:hidden");
-    expect(divider).toHaveClass("peer-empty:hidden");
-    expect(slot.matches(":empty")).toBe(true);
-    rerender(<Harness thread />);
-    expect(slot).toHaveTextContent("replies");
-    expect(slot.matches(":empty")).toBe(false);
-    fireEvent.keyDown(divider, { key: "ArrowUp" });
-    expect(slot.style.flexBasis).toBe("35%");
-    expect(window.localStorage.getItem(THREAD_SHARE_KEY)).toBe("0.35");
-    rerender(<Harness thread={false} />); // thread closed
-    expect(slot.matches(":empty")).toBe(true);
-  });
-
-  it("sends the viewer heartbeat only while the page and the dock tab are visible", async () => {
+  it("sends the viewer heartbeat only while the page is visible and the pane shows the browser", async () => {
     get.mockResolvedValue({ active: false, mode: "idle", generation: "g1" });
     post.mockResolvedValue({ active: false, mode: "transition", operation: "start", generation: "g2" });
-    let dockListener: (event: { isVisible: boolean }) => void = () => undefined;
-    const panelApi = {
-      isVisible: true,
-      onDidVisibilityChange: (listener: typeof dockListener) => { dockListener = listener; return { dispose: () => undefined }; },
-    };
     setPageVisibility("visible");
-    render(<Panel api={panelApi as never} />);
+    const view = render(<Panel />);
     await flush();
     expect(viewingCalls()).toBe(1); // opening it starts the browser: no click
     await flush(VIEW_HEARTBEAT_MS);
@@ -499,7 +467,7 @@ describe("BrowserDockPanel", () => {
     await flush();
     expect(viewingCalls()).toBe(3);
 
-    act(() => dockListener({ isVisible: false })); // tabbed away in the dock
+    view.unmount(); // the pane shows something else
     await flush(VIEW_HEARTBEAT_MS * 3);
     expect(viewingCalls()).toBe(3);
   });
@@ -652,27 +620,18 @@ describe("BrowserDockPanel", () => {
     expect(viewingCalls()).toBeGreaterThan(0);
   });
 
-  it("mounts the Mac view only while the dock shows the panel, so no cast runs behind another tab", async () => {
+  it("mounts the Mac view only while the page is visible, so no cast runs for nobody", async () => {
     get.mockResolvedValue({ active: false, mode: "idle" });
     post.mockResolvedValue({ active: false, mode: "idle" });
     state.runs = [{ state: "running", runId: "run-mac", agentId: "agent-friday",
       tools: [{ name: "lightbulb_desktop", args: { action: "use_browser" }, status: "done",
         result: [{ type: "text", text: JSON.stringify({ browser: "mac", deviceId: "mac-1" }) }] }] }];
     act(() => selectBrowserMacRun("run-mac"));
-    let dockListener: (event: { isVisible: boolean }) => void = () => undefined;
-    const panelApi = {
-      isVisible: true,
-      onDidVisibilityChange: (listener: typeof dockListener) => { dockListener = listener; return { dispose: () => undefined }; },
-    };
     setPageVisibility("visible");
-    render(<Panel api={panelApi as never} />);
+    render(<Panel />);
     await flush();
     expect(screen.getByTestId("mac-frames")).toHaveAttribute("data-mac", "mac-1");
-    act(() => dockListener({ isVisible: false })); // tabbed away in the dock
-    expect(screen.queryByTestId("mac-frames")).toBeNull();
-    act(() => dockListener({ isVisible: true }));
-    expect(screen.getByTestId("mac-frames")).toBeInTheDocument();
-    // The whole page backgrounded or minimized: dockview still says visible, the page does not.
+    // The whole page backgrounded or minimized.
     act(() => setPageVisibility("hidden"));
     expect(screen.queryByTestId("mac-frames")).toBeNull();
     act(() => setPageVisibility("visible"));

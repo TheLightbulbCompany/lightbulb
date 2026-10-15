@@ -6,7 +6,7 @@ const get = vi.fn();
 const dock = vi.hoisted(() => ({ show: vi.fn(() => true) }));
 const apiClient = { get };
 vi.mock("@/lib/api", () => ({ useApi: () => apiClient }));
-vi.mock("@/components/workspace/workspaceController", () => ({ showBrowserBesideChat: dock.show }));
+vi.mock("@/components/workspace/workspaceController", () => ({ openBrowserPane: dock.show }));
 
 import { browsingSite } from "@lightbulb/shared";
 import { BrowserRunPreview } from "../BrowserRunPreview";
@@ -57,7 +57,7 @@ describe("BrowserRunPreview", () => {
     expect(dock.show).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: /open the shared browser/i }));
-    expect(dock.show).toHaveBeenLastCalledWith({ focus: true, asTabWhenNarrow: true });
+    expect(dock.show).toHaveBeenCalledTimes(1);
   });
 
   it("watches nothing while no browser session is live", async () => {

@@ -2,39 +2,29 @@
 
 import "./workspace.css";
 import { UserButton } from "@clerk/nextjs";
-import { Bell, Chrome, FolderOpen, HelpCircle, Images, ListTodo, Mail, MessageSquare, Search, Settings } from "lucide-react";
+import { Bell, HelpCircle, Images, ListTodo, MessageSquare, Search, Settings } from "lucide-react";
 import Link from "next/link";
-import { useStatusLoaded } from "@lightbulb/shared";
-import { capture } from "@/lib/analytics";
 import { useActiveTeamRunCount } from "@/components/notifications/teamRunActivity";
 import { useActivity } from "@/hooks/useActivity";
-import { useNewMailCount } from "@/components/mail/useTeamMail";
 import { useSupport } from "@/components/support/SupportProvider";
 import { useCommandPalette } from "@/components/teams/command-palette/CommandPaletteProvider";
 import { recordMessagesNavigation } from "./chatHistory";
 import { HistoryButtons } from "./HistoryButtons";
-import { activateMessagesPanel, openPanel, useWorkspaceState } from "./workspaceController";
-import { describePanel, MESSAGES_PANEL_ID } from "./panelRegistry";
+import { activateMessagesPanel, openPanel, useWorkspaceState, type Place } from "./workspaceController";
 import { ThemeToggles } from "@/components/chat/ThemeToggles";
 
-// Home, Hire, Invite and Connections left the rail: Home folded into Activity
-// (RETIRED_PANEL_ALIASES), Hire is the Agents tab's "Add an AI employee",
-// Invite is the chat sidebar's row, Connections is a Settings section.
-const DESTINATIONS = [
-  { panel: MESSAGES_PANEL_ID, label: "Chat", Icon: MessageSquare },
-  { panel: "activity", label: "Activity", Icon: Bell },
+// The four places, and nothing else (spec 3.1). Browser, Files and Mail open in
+// the right pane (the conversation header, links, ⌘K); Settings is at the bottom.
+const DESTINATIONS: readonly { place: Place; panel: string; label: string; Icon: typeof Bell }[] = [
+  { place: "chat", panel: "chat", label: "Chat", Icon: MessageSquare },
+  { place: "activity", panel: "activity", label: "Activity", Icon: Bell },
   // Every task-board page lives on Work; the rail opens it on Tasks.
-  { panel: "teams-issues", label: "Work", Icon: ListTodo },
-  // Every document and deliverable, one click away (stock Paperclip puts
-  // Artifacts beside Tasks too). Chat's document cards are the usual way in.
-  { panel: "teams-artifacts", label: "Library", Icon: Images },
-  // The workspace's shared agent mailbox. Not "Inbox": that is the company inbox tab.
-  { panel: "mail", label: "Mail", Icon: Mail },
-  { panel: "browser", label: "Browser", Icon: Chrome },
-  { panel: "file-viewer", label: "Files", Icon: FolderOpen },
-] as const;
+  { place: "work", panel: "teams-issues", label: "Work", Icon: ListTodo },
+  // Every document and deliverable (stock Paperclip's Artifacts).
+  { place: "library", panel: "teams-artifacts", label: "Library", Icon: Images },
+];
 
-/** The global rail stays available when Messages hides the dock tabs. */
+/** The global rail: the places, search, history and the account controls. */
 export function WorkspaceHeader({ chatReady = true, onNavigate }: {
   chatReady?: boolean;
   /** A destination was picked: the shell closes the phone drawer. */
@@ -42,44 +32,30 @@ export function WorkspaceHeader({ chatReady = true, onNavigate }: {
 }): React.ReactElement {
   const { openSupport } = useSupport();
   const { setOpen } = useCommandPalette();
-  const { activePanelId } = useWorkspaceState();
+  const { place: current } = useWorkspaceState();
   const activeTeamRunCount = useActiveTeamRunCount();
   // Stock Paperclip's inbox badge: open approvals and failed runs always, the rest while unseen.
   const { attentionCount } = useActivity();
-  const newMail = useNewMailCount();
-  // The Browser panel watches an AgentCore Browser session, so the rail offers
-  // it only once a status body has landed for this workspace — `false` hides
-  // it rather than offering a panel that can only render its empty state.
-  const browserShown = useStatusLoaded();
-  const destinations = browserShown ? DESTINATIONS : DESTINATIONS.filter((d) => d.panel !== "browser");
   return (
     <nav className="workspace-rail" aria-label="Workspace">
       <HistoryButtons />
       <button type="button" className="workspace-rail__search" aria-label="Search messages, agents, issues, and projects" title="Search (⌘/Ctrl K)" onClick={() => { setOpen(true); onNavigate?.(); }}>
         <Search size={20} aria-hidden="true" />
       </button>
-      {destinations.map(({ panel, label, Icon }) => {
-        // The panel KEY is not always the panel ID (Tasks opens the Work tab).
-        // Resolve through the registry so the active marker follows the id the
-        // dock actually uses.
-        const panelId = describePanel(panel, {})?.panelId ?? panel;
+      {DESTINATIONS.map(({ place, panel, label, Icon }) => {
         // Team runs are team work, so their count rides on Work; Activity badges what needs you.
-        const runs = panel === "teams-issues" ? activeTeamRunCount : 0;
-        const unseen = panel === "activity" ? attentionCount : 0;
-        const mail = panel === "mail" ? newMail : 0;
-        const badge = runs || unseen || mail;
+        const runs = place === "work" ? activeTeamRunCount : 0;
+        const unseen = place === "activity" ? attentionCount : 0;
+        const badge = runs || unseen;
         const accessibleLabel = runs
           ? `${label}, ${runs} active team ${runs === 1 ? "run" : "runs"}`
-          : unseen ? `${label}, ${unseen} need${unseen === 1 ? "s" : ""} you`
-            : mail ? `${label}, ${mail} new` : label;
-        // Messaging never needs the container; the other destinations do.
-        return <button key={panel} type="button" aria-label={accessibleLabel} title={accessibleLabel}
-          disabled={!chatReady && panel !== MESSAGES_PANEL_ID && panel !== "mail"}
-          aria-current={activePanelId === panelId ? "page" : undefined}
+          : unseen ? `${label}, ${unseen} need${unseen === 1 ? "s" : ""} you` : label;
+        // Messaging never needs the container; the other places do.
+        return <button key={place} type="button" aria-label={accessibleLabel} title={accessibleLabel}
+          disabled={!chatReady && place !== "chat"}
+          aria-current={current === place ? "page" : undefined}
           onClick={() => {
-            if (panel === "file-viewer") capture("file_browser_opened");
-            if (panel === "browser") capture("browser_view_opened");
-            if (panel === MESSAGES_PANEL_ID) { activateMessagesPanel(); recordMessagesNavigation(); }
+            if (place === "chat") { activateMessagesPanel(); recordMessagesNavigation(); }
             else openPanel(panel, {}, { pushUrl: true });
             onNavigate?.();
           }}>

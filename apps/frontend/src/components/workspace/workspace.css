@@ -11,14 +11,13 @@
   inset: 0;
   /* clip, not hidden: a hidden box is still programmatically scrollable, so
      any stray scrollIntoView/focus reveal can shift the entire shell out of
-     the viewport (dockview keeps a viewport-sized layer clipped below the
-     fold). clip forbids scrolling the shell entirely. */
+     the viewport. clip forbids scrolling the shell entirely. */
   overflow: clip;
 }
 
 
 /* Sidebar chrome: the directory column's frame, header and account footer
-   (and the checkout banner above the dock). */
+   (and the checkout banner above the main view). */
 .cream-sidebar {
   background: var(--plane-sidebar);
   border-right: 1px solid var(--edge);
@@ -160,7 +159,7 @@
 }
 
 /* The header is NOT floating chrome: it is `flex: none` above a sibling
- * content column, and nothing scrolls under it (each dock panel scrolls
+ * content column, and nothing scrolls under it (each view scrolls
  * inside its own slot). So it keeps a hard `--edge` rule — the static
  * structural case the material rules explicitly allow — rather than a
  * scroll-edge fade, which would only be a lie about what is behind it. */
@@ -225,9 +224,9 @@
   padding-bottom: 0;
 }
 
-/* Banners stack at their natural height; the stepper/dock fills the rest.
+/* Banners stack at their natural height; the stepper/body fills the rest.
  * ProvisioningStepper renders its children bare (<>{children}</>), so the
- * dock wrapper is a direct flex child of .workspace-content. */
+ * body is a direct flex child of .workspace-content. */
 .workspace-content {
   flex: 1;
   display: flex;
@@ -236,12 +235,89 @@
   background: var(--cream);
 }
 
-.workspace-dock {
+/* The place's main view and the one right pane, side by side. */
+.workspace-body {
   flex: 1;
+  display: flex;
   min-width: 0;
   min-height: 0;
   background: var(--cream);
 }
+.workspace-view {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.workspace-view[hidden] { display: none; }
+.workspace-view > * { flex: 1 1 auto; min-height: 0; }
+
+.workspace-pane {
+  position: relative;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-width: 320px;
+  /* The main view keeps 360 px (RightPane.MAIN_MIN_WIDTH). */
+  max-width: calc(100% - 360px);
+  min-height: 0;
+  border-left: 1px solid var(--edge);
+  background: var(--cream);
+}
+.workspace-pane__resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  z-index: 1;
+  width: 6px;
+  cursor: col-resize;
+}
+.workspace-pane__resize:hover,
+.workspace-pane__resize:focus-visible { background: var(--edge); outline: none; }
+.workspace-pane__bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 36px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--edge);
+}
+.workspace-pane__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-ui);
+  font-weight: 600;
+  color: var(--midnight);
+}
+.workspace-pane__bar > button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  color: var(--midnight-muted);
+}
+.workspace-pane__bar > button:hover { background: var(--cream-deeper); color: var(--midnight); }
+.workspace-pane__bar > button:focus-visible { outline: 2px solid var(--midnight); outline-offset: 1px; }
+.workspace-pane__body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.workspace-pane__body > * { flex: 1 1 auto; min-height: 0; }
+.workspace-pane__thread { display: flex; flex-direction: column; }
+
+/* Full screen: the pane takes the screen; the conversation folds into a narrow
+   chat column on its left (WorkspaceBody keeps it mounted in every place). */
+.workspace-body[data-full] > .workspace-view--chat { flex: 0 0 360px; }
+.workspace-body[data-full] > .workspace-pane { flex: 1 1 0; max-width: none; }
 
 
 /* ── Panel-content scroll model ──────────────────────────────────────────
@@ -251,30 +327,22 @@
  * IS the panel's scroll container. globals.css gives `.editorial-page`
  * `min-height: 100vh` — correct in the old shell where that div sat inside
  * the scrolling `.main-content`, but fatal here: min-height beats h-full,
- * the wrapper grows taller than its dock slot, and everything below the
- * slot's clip line becomes unreachable.
+ * the wrapper grows taller than its slot, and everything below the slot's
+ * clip line becomes unreachable.
  *
- * Scoped by a class the dock hosts add THEMSELVES (not by `.workspace-dock`
- * ancestry), so the rules hold regardless of where dockview mounts panel
- * content and stay inert outside a dock panel.
+ * Scoped by a class the panels add THEMSELVES, so the rules hold in the main
+ * view and the pane alike and stay inert elsewhere.
  */
 .workspace-panel-page.editorial-page {
-  /* h-full wins: the wrapper is exactly the dock slot, and its
+  /* h-full wins: the wrapper is exactly the slot, and its
    * overflow-auto scrollport equals the visible area. */
   min-height: 0;
   /* Containing block for out-of-flow descendants. Load-bearing, not cosmetic:
-   * dockview gives `.dv-view` (the dock slot) `overflow: auto`, and its
-   * `.dv-groupview` child is position:static. So an absolutely positioned
-   * descendant of a panel — e.g. Tailwind `sr-only`, which is
-   * position:absolute — resolves its containing block past this wrapper all
-   * the way up to `.dv-view`, escaping BOTH this scrollport and the
-   * groupview's overflow:hidden. A 1px hidden file input sitting 4640px down
-   * a long task page then gives the 838px slot 4640px of scrollable
-   * overflow: a second scrollbar that drags the whole group out of view and
-   * exposes the dock background beneath it.
-   * `container-type: size` does NOT cover this — its computed `contain` is
-   * `none`, and it establishes no containing block (measured: removing this
-   * one declaration restores scrollHeight 4640 vs clientHeight 838). */
+   * without it an absolutely positioned descendant (Tailwind `sr-only`, a
+   * hidden file input 4640px down a long task page) resolves its containing
+   * block past this scrollport and gives an ancestor a second scrollbar.
+   * `container-type: size` does NOT cover this — it establishes no
+   * containing block. */
   position: relative;
   /* Size container: descendants size viewport-height regions against the
    * SLOT (100cqh) instead of the viewport. The wrapper's own size is
@@ -284,15 +352,15 @@
 
 /* Panels' own `.editorial-page` roots fill the slot (cream background all
  * the way down on short content) and grow naturally past it — the wrapper
- * scrolls the overflow. Replaces their min-height:100vh inside the dock. */
+ * scrolls the overflow. Replaces their min-height:100vh inside the shell. */
 .workspace-panel-page .editorial-page {
   min-height: 100%;
 }
 
 /* Viewport-height regions → slot-height. Fallback heights (Tailwind
  * `h-[calc(100vh-18rem)]` / `h-[calc(100dvh-16rem)]`) still apply outside
- * a dock panel; the offsets here are those old-shell tunings minus the
- * 3.5rem app header that no longer sits above a dock panel. The Tailwind
+ * a panel; the offsets here are those old-shell tunings minus the
+ * 3.5rem app header that no longer sits above a panel. The Tailwind
  * min-height floors (24rem / 420px) stay active — a too-short slot lets
  * the page grow and the wrapper scroll instead of crushing the region. */
 
@@ -308,94 +376,7 @@
   height: calc(100cqh - 12.5rem);
 }
 
-/* ── Dockview brand theme ────────────────────────────────────────────────
- *
- * The dock ships with `themeLight`, whose off-the-shelf greys (a light-grey
- * strip, a slightly darker hidden-tab fill and near-black text) are the most
- * visible "not ours" surface on the primary screen. The theme object in
- * WorkspaceShell.tsx sets `className` to the two-class string
- * `"dockview-theme-light dockview-theme-lightbulb"` — dockview's Classnames
- * helper splits the string on spaces and puts BOTH on `.dv-shell`, so the
- * stock light theme still defines every `--dv-*` default and this block only
- * repoints the ones that carry colour, tone or rhythm.
- *
- * The `.dv-shell` qualifier is deliberate: it makes this block (0,2,0) beat
- * dockview's own `.dockview-theme-light` (0,1,0) regardless of which
- * stylesheet the bundler emits first.
- *
- * Idiom: the tab strip is a `--cream-deep` rail carrying transparent tabs,
- * with the ACTIVE tab marked by a 2px bottom edge and full-strength
- * `--midnight` text — the same underline grammar as
- * components/teams/shell/PanelTabs.tsx, so the dock strip and the in-panel
- * tab strip read as siblings rather than two unrelated tab systems.
- */
-.dv-shell.dockview-theme-lightbulb {
-  /* Grounds */
-  --dv-group-view-background-color: var(--cream);
-  --dv-tabs-and-actions-container-background-color: var(--cream-deep);
-  /* Tabs sit ON the rail (PanelTabs' `bg-transparent` triggers), so all four
-     group/visibility combinations share the rail's ground. */
-  --dv-activegroup-visiblepanel-tab-background-color: transparent;
-  --dv-activegroup-hiddenpanel-tab-background-color: transparent;
-  --dv-inactivegroup-visiblepanel-tab-background-color: transparent;
-  --dv-inactivegroup-hiddenpanel-tab-background-color: transparent;
-
-  /* Text carries the whole active/inactive signal. The inactive GROUP's own
-     active tab steps down to --midnight-soft so "which group has focus" stays
-     readable without a second colour idiom. */
-  --dv-activegroup-visiblepanel-tab-color: var(--midnight);
-  --dv-activegroup-hiddenpanel-tab-color: var(--midnight-muted);
-  --dv-inactivegroup-visiblepanel-tab-color: var(--midnight-soft);
-  --dv-inactivegroup-hiddenpanel-tab-color: var(--midnight-muted);
-
-  /* Rules and separators */
-  --dv-tab-divider-color: var(--edge);
-  --dv-separator-border: var(--edge);
-  --dv-tabs-container-scrollbar-color: var(--midnight-faint);
-
-  /* Rhythm: 36px strip on a 4px grid under the 48px workspace header;
-     --text-ui is the product's UI step. Family inherits from body. */
-  --dv-tabs-and-actions-container-height: 36px;
-  --dv-tabs-and-actions-container-font-size: var(--text-ui);
-
-  /* Drag affordances. The drop-target wash and the sash highlight are the
-     same midnight at two strengths, so a drag reads as one gesture. */
-  --dv-drag-over-background-color: color-mix(in srgb, var(--midnight) 12%, transparent);
-  --dv-active-sash-color: color-mix(in srgb, var(--midnight) 28%, transparent);
-  --dv-active-sash-transition-duration: var(--dur-fast);
-
-  /* Tab close-button hover chip */
-  --dv-icon-hover-background-color: var(--cream-deeper);
-}
-
-/* Active-tab underline. `::before` (not the `::after` the stock dracula/nord
-   themes use) because `.dv-tab:focus-within::after` already owns that slot.
-   `currentColor` means the rule dims with the tab's own text colour when the
-   group loses focus — one declaration instead of a second selector. */
-.dv-shell.dockview-theme-lightbulb .dv-tab.dv-active-tab {
-  position: relative;
-}
-.dv-shell.dockview-theme-lightbulb .dv-tab.dv-active-tab::before {
-  content: "";
-  position: absolute;
-  inset: auto 0 0 0;
-  height: 2px;
-  background: currentcolor;
-  pointer-events: none;
-}
-
-/* Hover on a hidden tab. Background only: switching tabs is core navigation
-   (100+/day) and must stay instant, so `color` is deliberately NOT in the
-   transition list — only the hover wash animates. */
-.dv-shell.dockview-theme-lightbulb .dv-tab {
-  transition: background-color var(--dur-fast) var(--ease-out);
-}
-.dv-shell.dockview-theme-lightbulb .dv-tab.dv-inactive-tab:hover {
-  background-color: var(--cream-deeper);
-  color: var(--midnight);
-}
-
-/* Global destinations are always reachable, including with dock tabs hidden. */
+/* The rail: the four places, always reachable. */
 .workspace-rail {
   grid-area: rail;
   display: flex;
@@ -465,20 +446,14 @@
 .workspace-shell .sidebar-header { flex: none; }
 .workspace-shell .workspace-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-ui); font-weight: 700; color: var(--midnight); }
 .workspace-shell .sidebar-footer { padding: 12px 16px; }
-.workspace-shell[data-messages-active="true"] .dv-tabs-and-actions-container { display: none; }
-.workspace-shell[data-messages-active="true"] .dockview-theme-lightbulb {
-  --dv-tabs-and-actions-container-height: 0px;
-}
-/* Tasks' Expand / Show beside chat control in its dock group header. */
-.workspace-shell .workspace-dock-actions { display: flex; align-items: center; height: 100%; padding: 0 8px; }
-.workspace-shell .workspace-dock-action {
-  display: grid; place-items: center; width: 24px; height: 24px; border: 0; border-radius: 6px;
-  background: transparent; color: var(--midnight-muted); cursor: pointer;
-}
-.workspace-shell .workspace-dock-action:hover { background: var(--cream); color: var(--midnight); }
-.workspace-shell .workspace-dock-action:focus-visible { outline: 2px solid var(--midnight); outline-offset: 1px; }
 @media (max-width: 1000px) {
   .workspace-shell { grid-template-columns: 56px 220px minmax(0, 1fr); }
+}
+/* Only Chat has a sidebar (and full screen folds it into the chat column). The
+   phone drawer below keeps it in every place. */
+@media (min-width: 600px) {
+  .workspace-shell[data-sidebar="false"] { grid-template-columns: 56px minmax(0, 1fr); grid-template-areas: "rail main"; }
+  .workspace-shell[data-sidebar="false"] > .cream-sidebar { display: none; }
 }
 /* Phone widths: one column. The rail and the sidebar leave the grid and open
    together as a drawer from .workspace-phone-bar (WorkspaceShell's navOpen). */
@@ -522,6 +497,18 @@
     color: var(--midnight-soft);
   }
   .workspace-phone-bar button:focus-visible { outline: 2px solid var(--midnight); outline-offset: -2px; }
+  /* The pane is a full-screen sheet over the main view (under the nav drawer). */
+  .workspace-pane {
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-chrome);
+    width: auto !important;
+    min-width: 0;
+    max-width: none;
+    border-left: 0;
+  }
+  .workspace-pane__resize,
+  .workspace-pane__full { display: none !important; }
 }
 
 /* Back/Forward: two compact arrows in one rail slot. */

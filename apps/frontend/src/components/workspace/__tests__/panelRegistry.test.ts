@@ -7,7 +7,6 @@ import {
   clearablePanelParamKeys,
   DEFAULT_AGENT_SENTINEL,
   MESSAGES_PANEL_ID,
-  PANEL_COMPONENT_KEYS,
   settingsHrefFor,
 } from "../panelRegistry";
 
@@ -129,14 +128,13 @@ describe("panelRegistry", () => {
     expect(describePanel("teams-artifacts", {})?.title).toBe("Library");
   });
 
-  it("describes chat panels with renderer always", () => {
+  it("describes chat panels", () => {
     const d = describePanel("chat", { agent: "a-9" });
     expect(d).toEqual({
       panelId: MESSAGES_PANEL_ID,
       component: "chat",
       title: "Chat",
       params: { agentId: "a-9" },
-      renderer: "always",
     });
   });
 
@@ -192,8 +190,6 @@ describe("panelRegistry", () => {
       component: "browser",
       title: "Browser",
       params: {},
-      // Stays in the document behind other tabs: DCV cannot start a display on a detached element.
-      renderer: "always",
     });
     expect(describePanel("browser", { path: "/ignored" })?.params).toEqual({});
     expect(durableParamsFor("browser")).toEqual(["panel"]);
@@ -292,12 +288,6 @@ describe("panelRegistry", () => {
       .toBeUndefined();
     expect(describePanel("teams-issues", { groupBy: "nonsense" })?.params.groupBy)
       .toBeUndefined();
-  });
-
-  it("registers exactly the component keys the shell's components map will have", () => {
-    expect([...PANEL_COMPONENT_KEYS].sort()).toEqual(
-      ["activity", "browser", "chat", "control", "file-viewer", "mail", "missing", "teams"].sort(),
-    );
   });
 
   it("describePanel('session', …) retargets the Messages (chat) panel — there is no docked session panel", () => {

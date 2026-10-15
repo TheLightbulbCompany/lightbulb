@@ -1,5 +1,5 @@
 // Pins the WorkspaceShell reconciler's URL-logic ordering (pure level — no
-// dockview render):
+// shell render):
 //   1. same signature twice → second call is a no-op (lastApplied latch)
 //   2. the one-shot strip recomputes the latch so the strip's searchParams
 //      churn doesn't re-execute the command
@@ -8,7 +8,6 @@
 //      only pushUrl:true calls may write (spec §6: focus never touches the URL)
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type React from "react";
-import type { DockviewApi } from "dockview-react";
 
 vi.mock("@/lib/shellNav", () => ({
   pushSearchParams: vi.fn(),
@@ -19,73 +18,26 @@ import { pushSearchParams, replaceSearchParams } from "@/lib/shellNav";
 import { deriveReconcilerAction, isCommandTargetOpen } from "../workspaceShellReconciler";
 import { commandSignature } from "../urlChannel";
 import {
-  attachDockviewApi,
+  attachShell,
+  getWorkspaceSnapshot,
   openPanel,
   _resetControllerForTests,
 } from "../workspaceController";
 import { MESSAGES_PANEL_ID, RETIRED_PANEL_ALIASES, describePanel } from "../panelRegistry";
 import { TeamsPanelRouter } from "@/components/teams/TeamsPanelRouter";
 
-// Minimal fake DockviewApi (trimmed copy of workspaceController.test.ts's) —
-// just enough for openPanel's add-or-focus path.
-type Handler<T> = (e: T) => void;
-function makeFakeApi() {
-  const panels = new Map<string, FakePanel>();
-  const activeChange: Handler<{ panel: FakePanel | undefined }>[] = [];
-  let active: FakePanel | undefined;
-  function fire(panel: FakePanel | undefined) {
-    active = panel;
-    activeChange.forEach((h) => h({ panel }));
-  }
-  class FakePanel {
-    title: string | undefined;
-    api = {
-      setActive: vi.fn(() => {
-        fire(this);
-      }),
-      setTitle: vi.fn((t: string) => {
-        this.title = t;
-      }),
-      updateParameters: vi.fn((next: Record<string, string | undefined>) => {
-        for (const [key, value] of Object.entries(next)) {
-          if (value === undefined) delete this.params[key];
-          else this.params[key] = value;
-        }
-      }),
-    };
-    constructor(
-      public id: string,
-      public params: Record<string, string>,
-    ) {}
-  }
-  const api = {
-    getPanel: (id: string) => panels.get(id),
-    addPanel: vi.fn((opts: { id: string; params?: Record<string, string>; title?: string }) => {
-      const p = new FakePanel(opts.id, opts.params ?? {});
-      p.title = opts.title;
-      panels.set(opts.id, p);
-      fire(p);
-      return p;
-    }),
-    onDidActivePanelChange: (h: Handler<{ panel: FakePanel | undefined }>) => {
-      activeChange.push(h);
-      return { dispose: () => activeChange.splice(activeChange.indexOf(h), 1) };
-    },
-    onDidAddPanel: () => ({ dispose: vi.fn() }),
-    onDidRemovePanel: () => ({ dispose: vi.fn() }),
-    onDidLayoutChange: () => ({ dispose: vi.fn() }),
-    panels: [] as unknown[],
-    groups: [] as unknown[],
-  };
-  Object.defineProperty(api, "panels", { get: () => [...panels.values()] });
-  Object.defineProperty(api, "activePanel", { get: () => active });
-  Object.defineProperty(api, "groups", { get: () => [{ activePanel: active }] });
-  return api as unknown as DockviewApi;
+/** Run a URL the way the shell does: reconcile, then open (no pushUrl: the URL carries it). */
+function navigate(search: string) {
+  const d = deriveReconcilerAction(search, null)!;
+  if (d.command?.descriptor.component === "chat") return d;
+  openPanel(d.panelKey!, d.durableParams, { oneShots: d.command!.oneShots });
+  return d;
 }
 
 beforeEach(() => {
   _resetControllerForTests();
   vi.clearAllMocks();
+  attachShell(() => undefined);
 });
 
 describe("deriveReconcilerAction — lastApplied latch", () => {
@@ -191,9 +143,9 @@ describe("deriveReconcilerAction — warm first mount reads live window.location
   });
 });
 
-describe("deriveReconcilerAction — cold-load one-shots apply once when the dock is ready", () => {
-  // The shell runs nothing until the dock is ready, then onReady runs the
-  // reconciler with the latch reset to null; the strip's own URL churn re-runs it.
+describe("deriveReconcilerAction — cold-load one-shots apply once when the shell attaches", () => {
+  // The shell runs nothing until it attaches, then runs the reconciler with the
+  // latch reset to null; the strip's own URL churn re-runs it.
   it("?panel=teams-issues&new=task hands the one-shot to Work once", () => {
     const first = deriveReconcilerAction("?panel=teams-issues&new=task", null)!;
     expect(first.panelKey).toBe("teams-issues");
@@ -248,13 +200,11 @@ describe("isCommandTargetOpen (analytics newness check)", () => {
 // its default view. These walk the WHOLE chain the shell actually executes.
 describe("retired-alias deep links keep their meaning end to end", () => {
   it("?panel=teams-org-chart opens ONE Agents panel with the chart view selected", () => {
-    const api = makeFakeApi();
-    attachDockviewApi(api, () => undefined);
-
-    // 1. reconciler → 2. openPanel → 3. the params dockview mounts the panel with
-    const d = deriveReconcilerAction("?panel=teams-org-chart", null)!;
-    openPanel(d.panelKey!, d.durableParams, { oneShots: d.command!.oneShots });
-    const mounted = api.getPanel("teams-work")!.params as Record<string, string>;
+    // 1. reconciler → 2. openPanel → 3. the params Work's main view mounts with
+    navigate("?panel=teams-org-chart");
+    const { main } = getWorkspaceSnapshot();
+    expect(main?.panelId).toBe("teams-work");
+    const mounted = main!.params;
     expect(mounted).toEqual({ teamsKey: "agents", view: "chart" });
 
     // 4. the router turns those params into the panel's seed view. Invoked
@@ -267,32 +217,77 @@ describe("retired-alias deep links keep their meaning end to end", () => {
     expect(element.props.initialView).toBe("chart");
   });
 
-  it("a stale ?panel=teams-dashboard (Home) opens Activity, not a dead tab", () => {
-    const api = makeFakeApi();
-    attachDockviewApi(api, () => undefined);
-    const d = deriveReconcilerAction("?panel=teams-dashboard", null)!;
-    openPanel(d.panelKey!, d.durableParams);
-    expect(api.getPanel("activity")).toBeDefined();
-    expect(api.getPanel("teams-dashboard")).toBeUndefined();
+  it("a stale ?panel=teams-dashboard (Home) opens the Activity place, not a dead view", () => {
+    navigate("?panel=teams-dashboard");
+    expect(getWorkspaceSnapshot()).toMatchObject({ place: "activity", activePanelId: "activity" });
   });
 
   it("every retired alias still lands on its successor's panel id", () => {
-    const api = makeFakeApi();
-    attachDockviewApi(api, () => undefined);
     for (const [alias, target] of Object.entries(RETIRED_PANEL_ALIASES)) {
-      const d = deriveReconcilerAction(`?panel=${alias}`, null)!;
+      const d = navigate(`?panel=${alias}`);
       expect(d.panelKey).toBe(alias);
-      openPanel(d.panelKey!, d.durableParams);
       const expectedId = describePanel(target, {})!.panelId;
-      expect(api.getPanel(expectedId), `${alias} → ${expectedId}`).toBeDefined();
+      expect(getWorkspaceSnapshot().openPanelIds, `${alias} → ${expectedId}`).toContain(expectedId);
     }
+  });
+  it.each(["teams-inbox", "teams-approvals", "teams-activity", "teams-skills", "teams-costs"])(
+    "?panel=%s opens the Activity place", (alias) => {
+      navigate(`?panel=${alias}`);
+      expect(getWorkspaceSnapshot().place).toBe("activity");
+    });
+});
+
+// The dock is gone: every URL that opened a panel now names a place (the main view) or the
+// one right pane.
+describe("URL params map onto place + pane", () => {
+  it.each([
+    ["?panel=activity&focus=paperclip:approval:a1", "activity", "activity"],
+    ["?panel=teams-issues&groupBy=status", "work", "teams-work"],
+    ["?panel=teams-money&section=spend", "work", "teams-work"],
+    ["?panel=teams-agents&view=chart", "work", "teams-work"],
+    ["?panel=teams-search", "work", "teams-search"],
+    ["?panel=teams-artifacts", "library", "teams-artifacts"],
+  ])("%s → the %s place", (search, place, mainId) => {
+    navigate(search);
+    expect(getWorkspaceSnapshot()).toMatchObject({ place, activePanelId: mainId, pane: null });
+  });
+
+  it.each([
+    ["?panel=teams-issue-detail&detailId=ADM-1", "teams-issue-detail:ADM-1", { teamsKey: "issue-detail", detailId: "ADM-1" }],
+    ["?panel=teams-approval-detail&detailId=ap-1", "teams-approval-detail:ap-1", { teamsKey: "approval-detail", detailId: "ap-1" }],
+    ["?panel=file-viewer&path=/notes.md&agent=a1", "file-viewer", { path: "/notes.md", agent: "a1" }],
+    ["?panel=browser", "browser", {}],
+    ["?panel=mail&item=mail:k1", "mail", { item: "mail:k1" }],
+    ["?panel=agents&agent=a1", "control:agents", { controlKey: "agents", agentId: "a1" }],
+    ["?panel=agent-inspector&agent=a1", "agent-inspector", { controlKey: "agent-inspector", agentId: "a1" }],
+  ])("%s → the pane shows %s, the place stays", (search, paneId, params) => {
+    navigate("?panel=teams-issues");
+    navigate(search);
+    const { pane, place } = getWorkspaceSnapshot();
+    expect(place).toBe("work");
+    expect(pane).toMatchObject({ panelId: paneId, params });
+  });
+
+  it("one pane at a time: a second open replaces the first", () => {
+    navigate("?panel=file-viewer&path=/a.md");
+    navigate("?panel=teams-issue-detail&detailId=ADM-2");
+    expect(getWorkspaceSnapshot().pane?.panelId).toBe("teams-issue-detail:ADM-2");
+    expect(getWorkspaceSnapshot().openPanelIds).not.toContain("file-viewer");
+  });
+
+  it("chat URLs name the Chat place, whose conversation is always mounted", () => {
+    const d = deriveReconcilerAction("?panel=chat&room=r1&message=m1", null)!;
+    expect(d.command?.descriptor).toMatchObject({ panelId: MESSAGES_PANEL_ID, params: { roomId: "r1", messageId: "m1" } });
+    navigate("?panel=teams-issues");
+    openPanel("chat", { room: "r1" });
+    expect(getWorkspaceSnapshot()).toMatchObject({ place: "chat", main: null });
+    expect(getWorkspaceSnapshot().chatParams).toMatchObject({ roomId: "r1" });
   });
 });
 
+
 describe("INVARIANT: panel open/focus writes zero history entries", () => {
   it("open, focus-existing, and reconciler-style executes never touch shellNav", () => {
-    const api = makeFakeApi();
-    attachDockviewApi(api, () => undefined);
 
     openPanel("teams-artifacts"); // add
     openPanel("teams-artifacts"); // focus existing
@@ -306,8 +301,6 @@ describe("INVARIANT: panel open/focus writes zero history entries", () => {
   });
 
   it("only pushUrl:true writes — exactly one push, still zero replaces", () => {
-    const api = makeFakeApi();
-    attachDockviewApi(api, () => undefined);
     openPanel("activity", {}, { pushUrl: true });
     expect(pushSearchParams).toHaveBeenCalledTimes(1);
     expect(replaceSearchParams).not.toHaveBeenCalled();

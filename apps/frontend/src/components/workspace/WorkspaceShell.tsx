@@ -1,24 +1,16 @@
 "use client";
 
-// The dockable-workspace shell, at every width: dock host + URL reconciler +
-// layout persistence + chrome (rail, sidebar, banners, stepper). Below 600 px
-// the rail and the sidebar become one drawer (workspace.css), opened from the
-// phone bar. Mounted by page.tsx inside MarketplaceDrawerProvider.
-import "dockview-react/dist/styles/dockview.css";
+// The workspace shell, at every width: one main view per place (Chat,
+// Activity, Work, Library) and one right pane, plus the URL reconciler and the
+// chrome (rail, sidebar, banners, stepper). Below 600 px the rail and the
+// sidebar become one drawer (workspace.css), opened from the phone bar, and the
+// pane a full-screen sheet. Mounted by page.tsx inside MarketplaceDrawerProvider.
 import { Menu } from "lucide-react";
 import { LogoMark } from "@/components/Logo";
 import "./workspace.css";
-import { constrainGroupHeight } from "./groupConstraints";
-import { DockTab } from "./DockTab";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { OrganizationList, useAuth, useOrganization } from "@clerk/nextjs";
-import {
-  DockviewReact,
-  themeLight,
-  type DockviewReadyEvent,
-  type DockviewTheme,
-} from "dockview-react";
 import { useOnboardingGate } from "@/hooks/useOnboardingGate";
 import { useAgents } from "@/hooks/useAgents";
 import { replaceSearchParams } from "@/lib/shellNav";
@@ -39,49 +31,31 @@ import { useChatThemeAccountSync } from "@/components/chat/shell/useChatThemeAcc
 import { useCheckoutReturn } from "@/components/chat/shell/useCheckoutReturn";
 import { useChatReady } from "@/components/chat/shell/useChatReady";
 import { PANEL_COMPONENTS } from "./panelComponents";
+import { ChatPanel } from "./panels/ChatPanel";
+import { RightPane } from "./RightPane";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 import { InvitePeopleDialog } from "./InvitePeopleDialog";
-import { TasksHeaderActions } from "./TasksHeaderActions";
-import { buildMissionControlLayout } from "./buildDefaultLayout";
-import { readLayout, writeLayout } from "./layoutStorage";
-import { clearClosedPanelFromUrl } from "./urlChannel";
-import { MESSAGES_PANEL_ID, resolvePanelAlias } from "./panelRegistry";
+import { MESSAGES_PANEL_ID, resolvePanelAlias, type PanelKind } from "./panelRegistry";
 import { deriveReconcilerAction, isCommandTargetOpen } from "./workspaceShellReconciler";
 import {
-  attachDockviewApi,
+  attachShell,
   openPanel,
   openChatPanel,
   openMessagePanel,
   openSessionPanel,
   closeSubjectDeleted,
-  refitSplits,
-  isShellOperationInProgress,
   useWorkspaceState,
   getWorkspaceSnapshot,
   refreshWorkspaceSnapshot,
 } from "./workspaceController";
 
-// Brand dock theme. `className` is a SPACE-SEPARATED list (dockview's
-// Classnames helper splits it and toggles each on `.dv-shell`), so keeping
-// dockview's own `dockview-theme-light` alongside ours means the stock
-// stylesheet still supplies every `--dv-*` default and workspace.css's
-// `.dv-shell.dockview-theme-lightbulb` block only repoints the ~18 that
-// carry colour, tone or rhythm.
-const LIGHTBULB_THEME: DockviewTheme = {
-  ...themeLight,
-  name: "lightbulb",
-  className: `${themeLight.className} dockview-theme-lightbulb`,
-  gap: 4,
-};
-
-// Only a teams DETAIL panel may swap itself for its list via leaveToList —
+// Only a teams DETAIL pane may swap itself for its list via leaveToList —
 // same id grammar as panelRegistry.durableParamsFor.
 const TEAMS_DETAIL_PANEL_ID_RE = /^teams-(issue|routine|project|goal)-detail:/;
 
 // List panel key → its detail panel key, so a self-identifying leaveToList
-// caller (list key + its own detail id) maps to the exact dock panel id
-// without trusting dock focus.
+// caller (list key + its own detail id) maps to the exact panel id.
 const DETAIL_KEY_BY_LIST_KEY: Readonly<Record<string, string>> = {
   "teams-issues": "teams-issue-detail",
   "teams-goals": "teams-goal-detail",
@@ -89,25 +63,10 @@ const DETAIL_KEY_BY_LIST_KEY: Readonly<Record<string, string>> = {
   "teams-routines": "teams-routine-detail",
 };
 
-// The recovery regression unmounts the dock mid-session (ProvisioningStepper
-// swaps its children for the loader) without unmounting WorkspaceShell, so the
-// shell's own effect cleanups never run. This sentinel rides INSIDE the dock
-// element — its unmount cleanup IS the dock's unmount — and is rendered BEFORE
-// DockviewReact so its cleanup (flush + dispose + detach) runs while the
-// dockview api is still alive.
-function DockUnmountSentinel({ onUnmount }: { onUnmount: () => void }): null {
-  const ref = useRef(onUnmount);
-  useEffect(() => {
-    ref.current = onUnmount;
-  });
-  useEffect(() => () => ref.current(), []);
-  return null;
-}
-
 function DesktopMessagingProvider({ children }: { children: React.ReactNode }) {
-  const { messagesVisible, openPanelIds } = useWorkspaceState();
+  const { messagesVisible, browserVisible } = useWorkspaceState();
   return (
-    <MessagingWorkspaceProvider subscribeToRoom={messagesVisible} observeRuns={openPanelIds.includes("browser")}>
+    <MessagingWorkspaceProvider subscribeToRoom={messagesVisible} observeRuns={browserVisible}>
       {children}
     </MessagingWorkspaceProvider>
   );
@@ -134,48 +93,59 @@ export function WorkspaceShell(): React.ReactElement {
     );
   }
   const scopeId = organization.id;
-  return <AuthenticatedWorkspace key={`${userId}:${scopeId}`} scopeId={scopeId} workspaceName={organization.name || "Lightbulb"} />;
+  return <AuthenticatedWorkspace key={`${userId}:${scopeId}`} workspaceName={organization.name || "Lightbulb"} />;
 }
 
-function AuthenticatedWorkspace({ scopeId, workspaceName }: { scopeId: string; workspaceName: string }): React.ReactElement {
-  const { activePanelId, teamsPanelVisible } = useWorkspaceState();
-  const { agents, defaultId, isSettled: agentsSettled } = useAgents();
+/** The place's main view and the right pane. The conversation stays mounted in every place
+ *  (hidden outside Chat), so full screen can fold it into the narrow chat column beside the
+ *  pane with its state intact: the conversation you were in, or the CEO DM by default. */
+function WorkspaceBody(): React.ReactElement {
+  const { place, main, chatParams, pane, fullScreen } = useWorkspaceState();
+  const Main = main ? PANEL_COMPONENTS[main.component as PanelKind] : null;
+  return (
+    <div className="workspace-body" data-full={fullScreen || undefined}>
+      <div className="workspace-view workspace-view--chat" hidden={place !== "chat" && !fullScreen}>
+        <ChatPanel id={MESSAGES_PANEL_ID} params={chatParams} />
+      </div>
+      {main && Main && (
+        <div className="workspace-view" hidden={fullScreen}>
+          <Main key={main.panelId} id={main.panelId} params={main.params} />
+        </div>
+      )}
+      {pane && <RightPane key={pane.panelId} pane={pane} fullScreen={fullScreen} />}
+    </div>
+  );
+}
+
+function AuthenticatedWorkspace({ workspaceName }: { workspaceName: string }): React.ReactElement {
+  const { activePanelId, place, pane, fullScreen } = useWorkspaceState();
+  const { defaultId, isSettled: agentsSettled } = useAgents();
   const defaultIdRef = useRef<string | undefined>(defaultId);
   const agentsSettledRef = useRef(agentsSettled);
   useEffect(() => {
     defaultIdRef.current = defaultId;
     agentsSettledRef.current = agentsSettled;
   });
-  // Roster for the layout restore's dead-panel prune. A value, not a ref, and
-  // it rides in onReady's deps: dockview's onReady fires from the dock's own
-  // mount effect (a CHILD of this component), which runs BEFORE this
-  // component's effects — so a ref synced in an effect would still be empty at
-  // the one moment the restore reads it. Closing over the mount render's value
-  // is what's wanted. Re-creating onReady later is inert: dockview reads the
-  // prop once, in a `[]`-deps mount effect. Empty while unsettled is the
-  // contract sanitizeLayout expects ("roster unknown" → prune nothing).
-  const loadedAgentIds = useMemo(
-    () => (agentsSettled ? agents.map((a) => a.id) : []),
-    [agentsSettled, agents],
-  );
-  // Sentinel re-resolution: the snapshot resolves chat:__default__ through
-  // defaultIdRef at recompute time, and the roster arriving is not a dockview
-  // event — without this, a cold load leaves focusedChatAgentId /
-  // visibleChatAgentIds null (no sidebar highlight, toast
-  // suppression misses the watched run) until some unrelated layout event.
-  // Declared AFTER the ref-sync effect above so the ref is fresh when it runs.
+
+  const searchParams = useSearchParams();
+  const lastAppliedRef = useRef<string | null>(null);
+  // The slots exist while the shell is mounted. Declared BEFORE the reconciler effects so a
+  // (strict-mode) remount re-attaches, and re-applies the URL command, before they run.
+  useEffect(() => {
+    lastAppliedRef.current = null;
+    return attachShell(() => defaultIdRef.current);
+  }, []);
+  // Sentinel re-resolution: the roster arriving is not a slot change.
   useEffect(() => {
     refreshWorkspaceSnapshot();
   }, [defaultId]);
 
-  const searchParams = useSearchParams();
-  const lastAppliedRef = useRef<string | null>(null);
   const [recoveryTriggered, setRecoveryTriggered] = useState(false);
   // Phone widths only: the rail + sidebar drawer. Wider, the CSS ignores it.
   // The drawer is open only at the place it was opened: any navigation (rail,
-  // sidebar, + Task, See work, Inspect, a link) moves the active panel or the
-  // URL, which closes it without each caller remembering to.
-  const navPlace = `${activePanelId}|${searchParams?.toString() ?? ""}`;
+  // sidebar, + Task, a link) moves the main view, the pane or the URL, which
+  // closes it without each caller remembering to.
+  const navPlace = `${activePanelId}|${pane?.panelId ?? ""}|${searchParams?.toString() ?? ""}`;
   const [navOpenAt, setNavOpenAt] = useState<string | null>(null);
   const navOpen = navOpenAt === navPlace;
   const closeNav = useCallback(() => setNavOpenAt(null), []);
@@ -184,12 +154,12 @@ function AuthenticatedWorkspace({ scopeId, workspaceName }: { scopeId: string; w
   useEffect(() => {
     if (!navOpen) return;
     // Keyboard and switch users land in the drawer, not behind its backdrop
-    // (the pane is `inert` while it is open), and return to the menu button.
+    // (the main column is `inert` while it is open), and return to the menu button.
     // The first ENABLED control: Back is first in the rail and is disabled with no history.
     shellRef.current?.querySelector<HTMLElement>(".workspace-rail button:not(:disabled)")?.focus();
     const menuButton = menuButtonRef.current;
     // Widening past the phone breakpoint hides the drawer's backdrop, so
-    // close it there rather than leave the pane inert with no way out.
+    // close it there rather than leave the main column inert with no way out.
     const wide = window.matchMedia?.("(min-width: 600px)");
     wide?.addEventListener("change", closeNav);
     return () => {
@@ -203,38 +173,24 @@ function AuthenticatedWorkspace({ scopeId, workspaceName }: { scopeId: string; w
   const { showSubscriptionSuccess } = useCheckoutReturn();
   const { chatReady } = useChatReady();
 
-  // [BODY 3: reconciler] — pure decision in workspaceShellReconciler; this
-  // executes it. Ordering (pinned by workspaceShellUrl.test.ts): signature
-  // latch BEFORE parse; latch value is the POST-strip signature so the
-  // replaceSearchParams churn below never re-executes the command.
+  // [reconciler] — pure decision in workspaceShellReconciler; this executes it.
+  // Ordering (pinned by workspaceShellUrl.test.ts): signature latch BEFORE
+  // parse; latch value is the POST-strip signature so the replaceSearchParams
+  // churn below never re-executes the command.
   const runReconciler = useCallback((search: string) => {
-    // No dock, no reconcile: while the dock is unmounted (initial gate
-    // render, recovery regression) executing would silently drop the command
-    // AND the strip below would eat one-shots (?new=task) before any panel
-    // exists to receive them. onReady re-runs this after attaching (with the
-    // latch reset), so the pending URL command applies then.
     const snapshot = getWorkspaceSnapshot();
     if (!snapshot.ready) return;
     // Chat commands are deferred (null decision — nothing latched, nothing
     // stripped) while the agent roster is unsettled; the isSettled effect
     // below re-runs this once the default id is knowable.
-    const decision = deriveReconcilerAction(
-      search,
-      lastAppliedRef.current,
-      agentsSettledRef.current,
-    );
+    const decision = deriveReconcilerAction(search, lastAppliedRef.current, agentsSettledRef.current);
     if (!decision) return;
     lastAppliedRef.current = decision.nextSignature;
     const { command } = decision;
     if (!command) return;
-    const wasOpen = isCommandTargetOpen(
-      command,
-      snapshot.openPanelIds,
-    );
+    const wasOpen = isCommandTargetOpen(command, snapshot.openPanelIds);
     if (command.descriptor.component === "chat") {
-      // Room permalinks (?panel=chat&room=…&message=…) carry roomId, not
-      // agentId — openChatPanel no-ops on an undefined agentId, so route
-      // those through openMessagePanel instead.
+      // Room permalinks (?panel=chat&room=…&message=…) carry roomId, not agentId.
       if (command.descriptor.params.sessionId) {
         openSessionPanel(command.descriptor.params.sessionId);
       } else if (command.descriptor.params.roomId) {
@@ -248,7 +204,7 @@ function AuthenticatedWorkspace({ scopeId, workspaceName }: { scopeId: string; w
     }
     // Analytics reports the panel that actually opened, so a retired alias is
     // resolved HERE — decision.panelKey stays raw because describePanel needs
-    // the pre-alias key to pick the right tab (see the reconciler's doc).
+    // the pre-alias key to pick the right view (see the reconciler's doc).
     if (!wasOpen) {
       capture("workspace_panel_opened", {
         panel: decision.panelKey ? resolvePanelAlias(decision.panelKey) : "chat",
@@ -261,135 +217,18 @@ function AuthenticatedWorkspace({ scopeId, workspaceName }: { scopeId: string; w
 
   useEffect(() => {
     // searchParams is the re-run TRIGGER only. Reconcile against the LIVE
-    // window.location.search, not the Next-parsed searchParams: onReady strips
-    // the URL synchronously via replaceSearchParams (History API) BEFORE Next's
-    // searchParams updates, so reading window.location here makes that strip
-    // visible to this effect. A warm first mount then latches out (post-strip
-    // search vs the post-strip signature) instead of re-executing — and re-
-    // opening — the URL command. (Task 11 review handoff.)
+    // window.location.search: a strip via replaceSearchParams (History API)
+    // lands before Next's searchParams update, so this sees the post-strip URL.
     runReconciler(window.location.search);
   }, [searchParams, runReconciler]);
 
   // A chat command that arrived while the roster was unsettled was deferred
-  // (not latched) — re-run the reconciler once useAgents settles so the
-  // pending URL command executes against a knowable default agent id.
-  // Declared AFTER the ref-sync effect above so agentsSettledRef is fresh.
+  // (not latched) — re-run the reconciler once useAgents settles.
   useEffect(() => {
     if (agentsSettled) runReconciler(window.location.search);
   }, [agentsSettled, runReconciler]);
 
-  // [BODY 1 + 2: onReady — attach, restore, URL command, clear-on-close,
-  // persistence] with the teardown mirrored in the dock-unmount sentinel.
-  const detachRef = useRef<(() => void) | null>(null);
-  const disposablesRef = useRef<Array<{ dispose(): void }>>([]);
-  const flushRef = useRef<(() => void) | null>(null);
-
-  const onReady = useCallback(
-    (event: DockviewReadyEvent) => {
-      const api = event.api;
-      detachRef.current = attachDockviewApi(api, () => defaultIdRef.current);
-
-      // Restore the persisted layout, or build Mission Control. A corrupt
-      // blob that survives the sanitizer still must not brick the dock.
-      // Chat panels for agents that no longer exist (post-wipe / reprovision)
-      // are pruned here when the roster is already warm. On a cold load it
-      // isn't, and the restore keeps them — ChatPanel's agent-gone fallback
-      // covers that until the next restore.
-      const saved = readLayout(scopeId, loadedAgentIds);
-      if (saved) {
-        try {
-          api.fromJSON(saved);
-        } catch {
-          api.clear();
-          buildMissionControlLayout(api);
-        }
-      } else {
-        buildMissionControlLayout(api);
-      }
-      // A split saved on a wide window must not come back on a narrow one.
-      // Next frame: the dock has no width until it has laid out.
-      requestAnimationFrame(refitSplits);
-
-      // Floor every group's height so none can be crushed to its tab bar —
-      // both the ones we just restored/built and any added later. See
-      // groupConstraints.ts for why this is two operations, not one.
-      api.groups.forEach((group) => constrainGroupHeight(group));
-      disposablesRef.current.push(
-        api.onDidAddGroup((group) => constrainGroupHeight(group)),
-      );
-
-      // URL wins focus (spec §6 rule 4): execute the current URL command on
-      // top of the restore. Reset the latch first — commands latched while
-      // the dock was unmounted (initial gate render, recovery regression)
-      // were dropped by the null-api guard and must re-apply now.
-      lastAppliedRef.current = null;
-      runReconciler(window.location.search);
-
-      // Clear-on-close: closing the URL-named panel canonicalizes the URL in
-      // place (replace, never push) so refresh can't resurrect it.
-      disposablesRef.current.push(
-        api.onDidRemovePanel((panel) => {
-          if (isShellOperationInProgress()) return;
-          const cleared = clearClosedPanelFromUrl(
-            window.location.search,
-            panel.id,
-          );
-          if (cleared !== null) replaceSearchParams(new URLSearchParams(cleared));
-        }),
-      );
-
-      // Persistence: debounced (500 ms) writes; flush on pagehide, on the
-      // tab going hidden, and on dock unmount (sentinel below).
-      let timer: number | null = null;
-      const write = () => {
-        timer = null;
-        try {
-          writeLayout(scopeId, api.toJSON());
-        } catch {
-          // api mid-teardown — losing the last ≤500ms of layout is fine
-        }
-      };
-      disposablesRef.current.push(
-        api.onDidLayoutChange(() => {
-          if (timer !== null) window.clearTimeout(timer);
-          timer = window.setTimeout(write, 500);
-        }),
-      );
-      const flush = () => {
-        if (timer === null) return;
-        window.clearTimeout(timer);
-        write();
-      };
-      flushRef.current = flush;
-      const onPageHide = () => flush();
-      const onVisibilityChange = () => {
-        if (document.visibilityState === "hidden") flush();
-      };
-      window.addEventListener("pagehide", onPageHide);
-      document.addEventListener("visibilitychange", onVisibilityChange);
-      disposablesRef.current.push({
-        dispose: () => {
-          window.removeEventListener("pagehide", onPageHide);
-          document.removeEventListener("visibilitychange", onVisibilityChange);
-          if (timer !== null) window.clearTimeout(timer);
-        },
-      });
-    },
-    [scopeId, runReconciler, loadedAgentIds],
-  );
-
-  // Dock teardown (unmount OR shell unmount): flush the pending write while
-  // the api is alive, dispose every listener, detach the controller.
-  const teardownDock = useCallback(() => {
-    flushRef.current?.();
-    flushRef.current = null;
-    disposablesRef.current.forEach((d) => d.dispose());
-    disposablesRef.current = [];
-    detachRef.current?.();
-    detachRef.current = null;
-  }, []);
-
-  // [BODY 4: selectAgent listener] — the shell only LISTENS, never dispatches
+  // [selectAgent listener] — the shell only LISTENS, never dispatches
   // (loop-free by construction; accepts MarketplaceToast's sourceless events
   // AND RunNotifications' source:"notification").
   useEffect(() => {
@@ -416,18 +255,14 @@ function AuthenticatedWorkspace({ scopeId, workspaceName }: { scopeId: string; w
 
   const navValue = useMemo(
     () => ({
+      // A detail opens in the right pane (openPanel routes it there).
       openDetail: (panelKey: string, id: string) =>
         openPanel(`teams-${panelKey}`, { detailId: id }, { pushUrl: true }),
       leaveToList: (listPanelKey: string, selfDetailId?: string) => {
-        // Prefer the caller's self-identification: dock focus can move
-        // between clicking Delete and confirming (the confirm dialog is a
-        // portal — peeking another tab meanwhile is easy), so the ACTIVE
-        // panel is not reliably the invoking detail panel.
+        // Prefer the caller's self-identification; the fallback is whichever
+        // detail the pane shows.
         if (selfDetailId) {
-          const detailKey = Object.prototype.hasOwnProperty.call(
-            DETAIL_KEY_BY_LIST_KEY,
-            listPanelKey,
-          )
+          const detailKey = Object.prototype.hasOwnProperty.call(DETAIL_KEY_BY_LIST_KEY, listPanelKey)
             ? DETAIL_KEY_BY_LIST_KEY[listPanelKey]
             : undefined;
           if (detailKey) {
@@ -435,13 +270,9 @@ function AuthenticatedWorkspace({ scopeId, workspaceName }: { scopeId: string; w
             return;
           }
         }
-        // Fallback (no self id): the invoking detail panel is assumed to be
-        // the dock's active panel. Read the live snapshot at call time rather
-        // than subscribing — the shell has no other reactive use for it, and a
-        // subscription here would re-render the whole shell (dock included) on
-        // every dockview event. Guard on the id grammar so a stray call from a
-        // non-detail surface can't close an unrelated panel.
-        const selfPanelId = getWorkspaceSnapshot().activePanelId;
+        // Guard on the id grammar so a stray call from a non-detail surface
+        // can't close an unrelated pane.
+        const selfPanelId = getWorkspaceSnapshot().pane?.panelId;
         if (!selfPanelId || !TEAMS_DETAIL_PANEL_ID_RE.test(selfPanelId)) return;
         closeSubjectDeleted(selfPanelId, listPanelKey);
       },
@@ -449,32 +280,9 @@ function AuthenticatedWorkspace({ scopeId, workspaceName }: { scopeId: string; w
     [],
   );
 
-  // Shared by both stepper branches: same element → the dock never remounts
+  // Shared by both stepper branches: same element → the body never remounts
   // when recoveryTriggered flips (prop-switch ternary, NO key).
-  const dock = (
-    <div className="workspace-dock">
-      <DockUnmountSentinel onUnmount={teardownDock} />
-      <DockviewReact
-        components={PANEL_COMPONENTS}
-        theme={LIGHTBULB_THEME}
-        onReady={onReady}
-        disableFloatingGroups
-        rightHeaderActionsComponent={TasksHeaderActions}
-        defaultTabComponent={DockTab}
-        // Tabs only. This kills BOTH drag backends at the source
-        // (resolveDndCapabilities returns html5:false + pointer:false), which
-        // is why it is one option rather than four handler removals: tab
-        // reorder, cross-group drags, dock-edge drops and the group-void drag
-        // handle all go together, and a dockview upgrade cannot quietly
-        // reintroduce one of them.
-        //
-        // Users cannot split by dragging. The one split is programmatic: Tasks
-        // opens beside Messages (workspaceController.addOrFocus), and its
-        // sash still resizes because sashes are not a drag-and-drop backend.
-        disableDnd
-      />
-    </div>
-  );
+  const body = <WorkspaceBody />;
 
   return (
     <InlineTeamsNavProvider value={navValue}>
@@ -485,13 +293,9 @@ function AuthenticatedWorkspace({ scopeId, workspaceName }: { scopeId: string; w
             <ChatHistorySync />
             <InvitePeopleDialog />
             <div className="workspace-shell" ref={shellRef} data-nav-open={navOpen}
-              onKeyDown={navOpen ? (e) => { if (e.key === "Escape") closeNav(); } : undefined}
-              data-messages-active={
-              // Messages hides the dock tab bars only when it is alone on
-              // screen. With Tasks split beside it, both groups keep their
-              // headers so Tasks' close and Expand controls stay reachable.
-              activePanelId === MESSAGES_PANEL_ID && !teamsPanelVisible
-            }>
+              // Only Chat has a sidebar; full screen folds it into the chat column.
+              data-sidebar={place === "chat" && !fullScreen}
+              onKeyDown={navOpen ? (e) => { if (e.key === "Escape") closeNav(); } : undefined}>
               {/* Before the drawer in the DOM, so the drawer paints over it. */}
               <div className="workspace-nav-backdrop" onClick={closeNav} />
               <WorkspaceHeader chatReady={chatReady} onNavigate={closeNav} />
@@ -517,9 +321,9 @@ function AuthenticatedWorkspace({ scopeId, workspaceName }: { scopeId: string; w
                     </div>
                   )}
                   {recoveryTriggered ? (
-                    <ProvisioningStepper trigger="recovery">{dock}</ProvisioningStepper>
+                    <ProvisioningStepper trigger="recovery">{body}</ProvisioningStepper>
                   ) : (
-                    <ProvisioningStepper>{dock}</ProvisioningStepper>
+                    <ProvisioningStepper>{body}</ProvisioningStepper>
                   )}
                 </div>
               </div>

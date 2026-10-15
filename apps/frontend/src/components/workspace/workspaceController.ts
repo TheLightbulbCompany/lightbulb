@@ -14,8 +14,10 @@ import {
   MESSAGES_PANEL_ID,
   clearablePanelParamKeys,
   DEFAULT_AGENT_SENTINEL,
+  opensInPane,
   type PanelDescriptor,
 } from "./panelRegistry";
+import { currentChatViewSearch } from "./chatHistory";
 import { appendPane, buildPanelUrl, clearPanelFromUrl } from "./urlChannel";
 
 export type Place = "chat" | "activity" | "work" | "library";
@@ -66,12 +68,7 @@ let _fullScreen = false;
 let _snapshot: WorkspaceSnapshot = buildSnapshot(null);
 const _listeners = new Set<() => void>();
 
-/** Which slot a descriptor opens in: lists and feeds are places, one single thing is the pane. */
-export function opensInPane(descriptor: PanelDescriptor): boolean {
-  if (descriptor.component === "teams") return !!descriptor.params.detailId;
-  return descriptor.component === "file-viewer" || descriptor.component === "browser"
-    || descriptor.component === "mail" || descriptor.component === "control";
-}
+export { opensInPane };
 
 export function placeOf(main: Slot | null): Place {
   if (!main) return "chat";
@@ -203,6 +200,14 @@ export function openPanel(
 /** The URL for what is on screen: the place, plus the pane beside it (Chat as the place: the
  *  pane alone, the plain `panel=` form). A reload or a copied link restores both. */
 function slotsUrl(): URLSearchParams {
+  // With Chat as the place, the place is the room or session on screen (?panel=chat&room=…),
+  // so a reload restores the conversation beside the pane, not the default one.
+  const chat = !_main && _pane?.url ? currentChatViewSearch() : null;
+  if (chat && _pane?.url) {
+    const sp = new URLSearchParams(chat);
+    appendPane(sp, _pane.url.key, _pane.url.params);
+    return sp;
+  }
   const primary = _main?.url ?? _pane?.url;
   const sp = new URLSearchParams(primary ? buildPanelUrl(primary.key, primary.params).split("?")[1] : "");
   if (_main?.url && _pane?.url) appendPane(sp, _pane.url.key, _pane.url.params);

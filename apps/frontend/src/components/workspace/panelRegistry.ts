@@ -400,3 +400,10 @@ export function clearablePanelParamKeys(panelId: string): string[] {
   }
   return [];
 }
+
+/** Which slot a descriptor opens in: lists and feeds are places, one single thing is the right pane. */
+export function opensInPane(descriptor: PanelDescriptor): boolean {
+  if (descriptor.component === "teams") return !!descriptor.params.detailId;
+  return descriptor.component === "file-viewer" || descriptor.component === "browser"
+    || descriptor.component === "mail" || descriptor.component === "control";
+}

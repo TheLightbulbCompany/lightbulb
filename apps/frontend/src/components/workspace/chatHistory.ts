@@ -4,7 +4,7 @@
 // it (spec §6: the URL is a one-way command channel). Desktop shell only: the
 // messaging provider is shared with the mobile web shell and must not write URLs.
 import { pushSearchParams, replaceSearchParams } from "@/lib/shellNav";
-import { parseCommand } from "./urlChannel";
+import { parseCommand, withPane } from "./urlChannel";
 
 export interface ChatView {
   roomId: string | null;
@@ -36,8 +36,10 @@ export function planChatHistoryWrite(
   next: ChatView,
   currentSearch: string,
 ): { replace?: string; push?: string } | null {
-  const target = chatViewSearch(next);
-  if (!target || urlShows(currentSearch, next)) return null;
+  const view = chatViewSearch(next);
+  if (!view || urlShows(currentSearch, next)) return null;
+  // The pane beside the conversation stays in the URL, so a reload restores both.
+  const target = withPane(view, currentSearch);
   const p = params(currentSearch);
   // An agent deep link (?agent= or ?panel=chat&agent=) just resolved to this
   // room: same navigation, so it is rewritten in place, not stacked.

@@ -281,6 +281,13 @@ describe("URL params map onto place + pane", () => {
     expect(getWorkspaceSnapshot()).toMatchObject({ place: "activity", main: { params: {} }, pane: { params: { path: "/a.md", agent: "a-2" } } });
   });
 
+  it("a room and the pane beside it restore together (a reload of ?panel=chat&room=…&pane=browser)", () => {
+    const d = navigate("?panel=chat&room=r-launch&pane=browser");
+    expect(d.command?.descriptor.params).toEqual({ roomId: "r-launch" });
+    openPanel("chat", { room: d.command!.descriptor.params.roomId }); // the shell's chat branch
+    expect(getWorkspaceSnapshot()).toMatchObject({ place: "chat", chatParams: { roomId: "r-launch" }, pane: { panelId: "browser" } });
+  });
+
   it("closing the pane clears only the pane part of a two-slot URL", () => {
     expect(clearPanelFromUrl("?panel=teams-issues&agent=a-1&pane=browser", "browser")).toBe("panel=teams-issues&agent=a-1");
     expect(clearPanelFromUrl("?panel=activity&pane=file-viewer&pane.path=%2Fa.md", "file-viewer")).toBe("panel=activity");

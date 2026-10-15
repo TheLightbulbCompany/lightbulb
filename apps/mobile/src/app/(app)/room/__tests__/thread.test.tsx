@@ -246,7 +246,9 @@ describe("thread screen", () => {
     mockRoomId = "room-next";
     mockMessageId = "old-root";
     view.rerender(<Thread />);
-    await waitFor(() => expect(screen.getByText("message 1")).toBeTruthy());
+    // Paging 201 messages back to the root takes several reads: past the default 1 s on a busy
+    // CI runner (it failed there on unrelated branches too).
+    await waitFor(() => expect(screen.getByText("message 1")).toBeTruthy(), { timeout: 5000 });
     expect(mockLive.messaging.listMessages).toHaveBeenCalledWith("room-next", 0, 100, expect.objectContaining({ beforeSeq: 202 }));
     expect(mockLive.messaging.listMessages.mock.calls.some(([roomId, afterSeq, , options]) => roomId === "room-next" && afterSeq === 0 && options?.beforeSeq === undefined)).toBe(true);
   });

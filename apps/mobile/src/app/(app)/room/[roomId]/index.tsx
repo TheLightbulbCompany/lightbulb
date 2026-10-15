@@ -526,7 +526,8 @@ function Conversation() {
           ListHeaderComponent={
             <View>
               {/* An idea this person started here: its plan, under the newest message. */}
-              {dmWithAgent && roomId ? <DmIdeaPlan roomId={roomId} /> : null}
+              {/* Never in a Link preview: a dismissed preview must not poll. */}
+              {dmWithAgent && roomId && !preview ? <DmIdeaPlan roomId={roomId} /> : null}
               <LocalMessageRows
                 rows={rows}
                 onRetry={(clientMessageId) => void retry(clientMessageId)}

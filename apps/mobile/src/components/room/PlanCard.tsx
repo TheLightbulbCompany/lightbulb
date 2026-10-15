@@ -98,7 +98,7 @@ export function PlanCard({ approvalId, onDecided }: { approvalId: string; onDeci
   return (
     <View accessibilityLabel="Plan for approval" style={[styles.card, { borderColor: palette.edge }]}>
       <Text style={[styles.title, { color: palette.fg }]}>{text(approval, "title")}</Text>
-      <MessageMarkdown text={text(approval, "summary")} />
+      <MessageMarkdown text={text(approval, "summary")} palette={palette} />
       {approval.status !== "pending" ? (
         <Text style={[styles.meta, { color: palette.fgMute }]}>{STATUS_LINE[approval.status] ?? approval.status}</Text>
       ) : note === null ? (

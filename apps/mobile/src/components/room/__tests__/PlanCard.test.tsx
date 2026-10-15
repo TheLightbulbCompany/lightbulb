@@ -118,3 +118,12 @@ it("re-reads /ideas right after Change something, so the revision's poll window 
   await waitFor(() => expect(mockListIdeas.mock.calls.length).toBeGreaterThan(before));
   expect(mockRevise).toHaveBeenCalledWith("ap-1", "Smaller first batch");
 });
+
+it("re-reads /ideas when a new agent message lands in the DM", async () => {
+  mockListIdeas.mockResolvedValue({ ideas: [], running: [{ ideaId: "crm", title: "CRM", agentId: "g", agentName: "Growth",
+    roomId: "dm-1", projectId: "p", starterId: "me", starterName: "Me", createdAt: "2026-01-01T00:00:00Z" }] });
+  const view = await render(<DmIdeaPlan roomId="dm-1" agentSeq={4} />);
+  await waitFor(() => expect(mockListIdeas).toHaveBeenCalledTimes(1));
+  await view.rerender(<DmIdeaPlan roomId="dm-1" agentSeq={5} />);
+  await waitFor(() => expect(mockListIdeas).toHaveBeenCalledTimes(2));
+});

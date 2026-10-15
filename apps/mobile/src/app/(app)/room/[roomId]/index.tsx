@@ -527,7 +527,9 @@ function Conversation() {
             <View>
               {/* An idea this person started here: its plan, under the newest message. */}
               {/* Never in a Link preview: a dismissed preview must not poll. */}
-              {dmWithAgent && roomId && !preview ? <DmIdeaPlan roomId={roomId} /> : null}
+              {dmWithAgent && roomId && !preview ? (
+                <DmIdeaPlan roomId={roomId} agentSeq={rooms.messages.findLast((m) => m.author.kind === "agent")?.messageSeq ?? 0} />
+              ) : null}
               <LocalMessageRows
                 rows={rows}
                 onRetry={(clientMessageId) => void retry(clientMessageId)}

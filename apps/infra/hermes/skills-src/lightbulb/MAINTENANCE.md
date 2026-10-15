@@ -462,7 +462,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                               <- backend core/services/ideas.py (start: one Paperclip project named after the idea,
                                  owner agent as lead, under onboarding_goal_id when recorded, never a new goal,
                                  created with the fork's body idempotencyKey; write_profile_file puts the
-                                 guide at ideas/<id>.md = "$HERMES_HOME/ideas/<idea>.md"; start_text = the person's
+                                 guide at ideas/<id>.md = "$HERMES_HOME/ideas/<idea>.md" and start_record at ideas/starts/<project>.md; start_text = the person's
                                  own "> <title> / Let's do it!" message (via "ideas", messaging.create_human_message,
                                  so it wakes the agent like any DM message) and start_note = its agentNote (the idea,
                                  the deliverables, the tips path, the start's project id), appended to the woken
@@ -471,7 +471,7 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  Done proves / Honesty limits headings, validated by ideas.Idea; tips, not required
                                  steps) + routers/ideas.py (GET /ideas, POST /ideas/{id}/start,
                                  POST /ideas/{id}/dismiss). No mandatory plan (owner 2026-10-15): request_approval
-                                 (plugins/lightbulb, tasks=[...] stamps payload.projectIds) only before outside
+                                 (plugins/lightbulb; projectId=, else tasks=[...] in one project, stamps payload.projectIds) only before outside
                                  actions in the person's name; ideas.plan_for shows the start's newest pending one
                                  in the DM card. Spec 2026-10-14 §4.4 and §8.
   - Chat vs document ........ references/chat-vs-document.md + SKILL.md (non-negotiable + routing row)

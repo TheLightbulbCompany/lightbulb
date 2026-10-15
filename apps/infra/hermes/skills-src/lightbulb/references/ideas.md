@@ -13,7 +13,8 @@ People see only that message. Your turn also carries a note only you see: the id
 what to deliver, the tips file, and **this start's Work project id**.
 Two people can start the same idea with you; each start has its own project and DM.
 Anything you file for this job goes in the project the note names, never one found by
-its title.
+its title. The same record stays in `$HERMES_HOME/ideas/starts/<project id>.md` (who
+started it, the DM, the deliverables), so read it there if the note has scrolled away.
 
 ## Start working right away
 
@@ -35,11 +36,13 @@ wait for. Say in one or two lines what you are doing first, then do it.
 Use the **`request_approval`** tool only before an action in the outside world, in the
 person's name: sending a batch of emails, publishing or posting publicly, spending or
 taking a payment, submitting a form to a vendor or an authority, merging to their live
-site. Link the task it is about so it lands on this start:
+site. **Always pass this start's project id** (`projectId`): it is how the approval shows
+in the person's DM with Approve / Change something. Link the task it is about too:
 
 ```
 request_approval(title="<the action, e.g. Send the 40 follow-up emails>",
                  summary="<what goes out, to whom, and what it costs if anything>",
+                 projectId="<this start's Work project id>",
                  tasks=["<the task identifier in this start's project>"])
 ```
 

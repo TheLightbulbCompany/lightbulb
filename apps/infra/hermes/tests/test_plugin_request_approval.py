@@ -117,6 +117,13 @@ def test_a_plan_names_its_project_only_when_its_tasks_agree(paperclip, monkeypat
     assert body["payload"].get("projectIds") == stamped
 
 
+def test_an_explicit_project_is_stamped_with_or_without_tasks(paperclip):
+    paperclip["me"] = {"id": ME, "companyId": COMPANY, "role": "growth", "reportsTo": "ceo"}
+    lightbulb._request_approval({"title": "Send the 40 emails", "summary": "s", "projectId": " p-9 "})
+    [(_, _, body, _)] = _created(paperclip)
+    assert body["payload"]["projectIds"] == ["p-9"]
+
+
 def test_an_unknown_task_creates_nothing(paperclip):
     out = lightbulb._request_approval({"title": "t", "summary": "s", "tasks": ["WAL-99"]})
     assert out == "Approval not created: task WAL-99 was not found."

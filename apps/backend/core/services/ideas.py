@@ -1,10 +1,11 @@
 """Ideas (spec 2026-10-14 §4.4 / §8): jobs a company usually pays an agency for, done by the team.
 
 The catalog is one YAML file per idea under ``apps/backend/ideas/`` (YAML, not Markdown: the
-image's .dockerignore drops ``*.md``). Each holds the card and the agent's guide. Start seeds a
-goal + project in Work, writes the guide into the owner agent's profile, and wakes that agent
-with one system line in the starter's DM; the agent then files its plan for approval
-(skills-src/lightbulb/references/ideas.md).
+image's .dockerignore drops ``*.md``). Each holds the card and the agent's tips. Let's do it seeds
+a project in Work, writes the tips and this start's record into the owner agent's profile, and
+posts the person's own "Let's do it!" in their DM with that agent (the context rides in an
+agent-only note); the agent starts working at once and asks approval only before acting in the
+person's name (skills-src/lightbulb/references/ideas.md).
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import hashlib
 import uuid
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, get_args
@@ -178,13 +179,19 @@ def _parse_time(value: object) -> datetime | None:
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
+#: An approval naming no project is taken for a lone start only this soon after it.
+UNTAGGED_WINDOW = timedelta(hours=24)
+
+
 def plan_for(start: dict, approvals: list[dict], *, allow_untagged: bool) -> dict | None:
     """The approval the start's agent filed for it (references/ideas.md: ``request_approval``
     before acting in the person's name): a board approval by that agent, created after the start,
     whatever its title. One that names projects (``payload.projectIds``, stamped by the plugin
     from the linked tasks) counts only for those projects and wins over one that names none. One
-    naming none (an older runtime, an approval filed with no task) counts only when
-    ``allow_untagged``: the agent has this one open start, so it cannot belong to another idea.
+    naming none (an older runtime, an approval filed with no project) counts only when
+    ``allow_untagged`` (the agent has this one open start) and within UNTAGGED_WINDOW of the start.
+    Known limit: inside that window an untagged approval for the lone-start agent's other work
+    still shows on this card; the skill tells the agent to pass the start's project every time.
     The newest pending one wins; with none pending, the newest (its decision shows). None before
     the agent has filed one. (The ``plan`` key is the client contract's name for it.)"""
     started = _parse_time(start.get("createdAt"))
@@ -205,7 +212,7 @@ def plan_for(start: dict, approvals: list[dict], *, allow_untagged: bool) -> dic
         if isinstance(projects, list) and projects:
             if start["projectId"] in projects:
                 tagged.append((created, a))
-        else:
+        elif created - started < UNTAGGED_WINDOW:
             untagged.append((created, a))
     tier = tagged or (untagged if allow_untagged else [])
     pending = [c for c in tier if c[1].get("status") == "pending"]
@@ -314,8 +321,21 @@ def start_note(idea: Idea, project_id: str) -> str:
             "Deliver: " + "; ".join(idea.deliverables) + ".",
             f"Tips for this job: `$HERMES_HOME/ideas/{idea.id}.md`; how to work it: the lightbulb skill's "
             "`references/ideas.md`.",
-            f"Work project for this start: `{project_id}`.",
+            f"Work project for this start: `{project_id}` (pass it as projectId on every request_approval; "
+            f"this start's record: `$HERMES_HOME/ideas/starts/{project_id}.md`).",
         ]
+    )
+
+
+def start_record(idea: Idea, project_id: str, room_id: str, who: str) -> str:
+    """``$HERMES_HOME/ideas/starts/<project>.md``: one per start, so two people starting the same
+    idea with the same agent never share one."""
+    return (
+        f"# {idea.title}\n\nStarted by {who} in DM room `{room_id}`.\n"
+        f"Work project for this start: `{project_id}` (pass it as projectId on every request_approval).\n"
+        f"Tips: `$HERMES_HOME/ideas/{idea.id}.md`.\n\n{idea.why}\n\nDeliver:\n"
+        + "\n".join(f"- {d}" for d in idea.deliverables)
+        + "\n"
     )
 
 
@@ -385,6 +405,13 @@ async def _start(auth: AuthContext, idea_id: str) -> dict:
             )
         await hermes_profiles.write_profile_file(owner_id, agent["id"], f"ideas/{idea_id}.md", idea.guide)
         room_id = await _usable_dm(owner_id, user_id, agent["id"])
+        # This start's record survives a session reset (the note rides only on the first turn).
+        await hermes_profiles.write_profile_file(
+            owner_id,
+            agent["id"],
+            f"ideas/starts/{project_id}.md",
+            start_record(idea, project_id, room_id, await messaging.human_display_name(user_id)),
+        )
         # The person's own message (via Ideas): it wakes the agent the way any DM message does,
         # and shows live. One per started project: a retry replays it.
         client_id = uuid.uuid5(uuid.NAMESPACE_URL, f"lightbulb-idea-start|{owner_id}|{idea_id}|{user_id}|{project_id}")

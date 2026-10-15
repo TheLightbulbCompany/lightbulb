@@ -1,6 +1,6 @@
 import { useAuth } from "@clerk/expo";
 import { myStartsIn, notePlanDecision, plansPollMs, useIdeas } from "@lightbulb/shared";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { fonts, radii, spacing, useChatPalette } from "../../config/theme";
@@ -21,16 +21,28 @@ const text = (approval: TeamsApproval, key: string) => {
 };
 
 /**
- * The plans of the viewer's own ideas started in this agent DM (the web's DmIdeaPlan), newest
+ * The approvals of the viewer's own ideas started in this agent DM (the web's DmIdeaPlan), newest
  * first, one card per start: GET /ideas matches each to its start, so none needs a link in a
- * message. Polls (bounded) while a start waits for its first plan, or for a new one after
- * Change something.
+ * message. Re-reads /ideas on each new agent message here, and polls (bounded) after Start and
+ * after Change something.
  */
-export function DmIdeaPlan({ roomId }: { roomId: string }) {
+export function DmIdeaPlan({ roomId, agentSeq = 0 }: {
+  roomId: string;
+  /** The newest agent message's seq in this DM: a new one may come with a new approval. */
+  agentSeq?: number;
+}) {
   const { userId, orgId } = useAuth();
   const { messaging } = useLiveEvents();
   const { running, refresh } = useIdeas(messaging, userId ? `${userId}:${orgId ?? userId}` : null,
     (latest) => plansPollMs(myStartsIn(latest, roomId, userId)));
+  // The agent asks approval whenever it reaches an outside action, hours later too: each new
+  // message from it re-reads /ideas once (the room's live events already bring it; no polling).
+  const seenSeq = useRef(agentSeq);
+  useEffect(() => {
+    if (agentSeq === seenSeq.current) return;
+    seenSeq.current = agentSeq;
+    void refresh();
+  }, [agentSeq, refresh]);
   const plans = myStartsIn({ running }, roomId, userId).flatMap((start) => (start.plan ? [start.plan] : []));
   return (
     <>

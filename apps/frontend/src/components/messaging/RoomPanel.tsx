@@ -641,6 +641,7 @@ function RoomContent({
   const welcomeRoom = Boolean(room?.isDefault) && inShell;
   // An idea started in this DM: its plan card, from GET /ideas (not from a pasted link).
   const [dmPlanIds, setDmPlanIds] = useState<readonly string[]>([]);
+  const lastAgentSeq = messages.findLast((m) => m.author.kind === "agent")?.messageSeq ?? 0;
   const revealStarter = Boolean(room?.isDefault) && !messages.some((m) => m.author.kind === "human");
   const renderMessage = useCallback((message: RoomMessage, inThread = false, collapsed = false) => {
     const participant = participants.find((member) => member.kind === message.author.kind && member.id === message.author.id);
@@ -848,7 +849,7 @@ function RoomContent({
           </article>)}
           {inShell && visibleRoom?.kind === "dm" && messagingClient && ownerScopeId &&
             <DmIdeaPlan client={messagingClient} scope={`${currentUserId}:${ownerScopeId}`} roomId={roomId}
-              userId={currentUserId} onPlan={setDmPlanIds} />}
+              userId={currentUserId} agentSeq={lastAgentSeq} onPlan={setDmPlanIds} />}
           {placeRuns(mainRuns, mainMessages).tail.map(renderRun)}
         </RoomTimeline>
         </DmPlanContext.Provider>

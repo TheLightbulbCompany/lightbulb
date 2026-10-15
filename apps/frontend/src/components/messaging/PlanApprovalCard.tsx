@@ -5,7 +5,7 @@
 // start's newest pending one (`plan` on the running start), so the card does not depend on the
 // agent pasting the link. Approve /
 // Change something are the approval's own actions.
-import { createContext, useEffect, useState } from "react";
+import { createContext, useEffect, useRef, useState } from "react";
 import { myStartsIn, notePlanDecision, plansPollMs, useIdeas, type IdeasClient } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -23,7 +23,8 @@ const payloadText = (approval: Approval, key: string) => {
   return typeof value === "string" ? value : "";
 };
 
-/** A board approval titled "Plan: …" is an idea's plan (references/ideas.md in the lightbulb skill). */
+/** A board approval titled "Plan: …": a pasted link to one renders this card (older ideas filed a
+ *  plan; an idea's other approvals show in its DM from GET /ideas). */
 export function isPlanApproval(approval: Approval): boolean {
   return approval.type === "request_board_approval" && payloadText(approval, "title").startsWith(PLAN_PREFIX);
 }
@@ -91,14 +92,25 @@ function PlanById({ id, status, onDecided }: { id: string; status: string; onDec
 }
 
 /**
- * The plans of the viewer's own ideas started in this DM, from GET /ideas, newest first: one card
- * per start. Polls (bounded) while a start waits for its first plan or for a new one after
- * Change something; reports the shown approvals so a pasted link to one is not drawn twice.
+ * The approvals of the viewer's own ideas started in this DM, from GET /ideas, newest first: one
+ * card per start. Re-reads /ideas on each new agent message here, and polls (bounded) after Start
+ * and after Change something; reports the shown approvals so a pasted link to one is not drawn twice.
  */
-export function DmIdeaPlan({ client, scope, roomId, userId, onPlan }: {
-  client: IdeasClient; scope: string; roomId: string; userId: string; onPlan: (approvalIds: readonly string[]) => void;
+export function DmIdeaPlan({ client, scope, roomId, userId, agentSeq, onPlan }: {
+  client: IdeasClient; scope: string; roomId: string; userId: string;
+  /** The newest agent message's seq in this DM: a new one may come with a new approval. */
+  agentSeq: number;
+  onPlan: (approvalIds: readonly string[]) => void;
 }) {
   const { running, refresh } = useIdeas(client, scope, (latest) => plansPollMs(myStartsIn(latest, roomId, userId)));
+  // The agent asks approval whenever it reaches an outside action, hours later too: each new
+  // message from it re-reads /ideas once (the live room event the DM already gets; no polling).
+  const seenSeq = useRef(agentSeq);
+  useEffect(() => {
+    if (agentSeq === seenSeq.current) return;
+    seenSeq.current = agentSeq;
+    void refresh();
+  }, [agentSeq, refresh]);
   const plans = myStartsIn({ running }, roomId, userId).flatMap((start) => (start.plan ? [start.plan] : []));
   const ids = plans.map((plan) => plan.approvalId).join(",");
   useEffect(() => { onPlan(ids ? ids.split(",") : []); }, [ids, onPlan]);

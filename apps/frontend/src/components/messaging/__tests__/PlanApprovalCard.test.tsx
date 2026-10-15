@@ -72,6 +72,13 @@ describe("the plan card in the DM", () => {
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 
+  it("draws no second card of any kind for a pasted link to an approval the DM already shows", () => {
+    teams.approval = plan("pending", "Send the 40 follow-up emails");
+    render(<DmPlanContext.Provider value={["ap-1"]}><RoomAppLinks text={message} /></DmPlanContext.Provider>);
+    expect(screen.queryByText("generic approval row")).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Approval" })).not.toBeInTheDocument();
+  });
+
   it("draws nothing for a pasted link to the plan the DM already shows", () => {
     teams.approval = plan("pending");
     render(<DmPlanContext.Provider value={["ap-1"]}><RoomAppLinks text={message} /></DmPlanContext.Provider>);
@@ -104,7 +111,7 @@ describe("the plan card from GET /ideas", () => {
       startIdea: vi.fn(), dismissIdea: vi.fn() };
     const onPlan = vi.fn();
     render(<SWRConfig value={{ provider: () => new Map() }}>
-      <DmIdeaPlan client={client} scope="me:org" roomId="dm-1" userId="me" onPlan={onPlan} />
+      <DmIdeaPlan client={client} scope="me:org" roomId="dm-1" userId="me" agentSeq={0} onPlan={onPlan} />
     </SWRConfig>);
     expect(await screen.findByRole("button", { name: "Approve" })).toBeInTheDocument();
     expect(onPlan).toHaveBeenCalledWith(["ap-1"]);
@@ -119,7 +126,7 @@ describe("the plan card from GET /ideas", () => {
     const client = { listIdeas: vi.fn(async () => two), startIdea: vi.fn(), dismissIdea: vi.fn() };
     const onPlan = vi.fn();
     render(<SWRConfig value={{ provider: () => new Map() }}>
-      <DmIdeaPlan client={client} scope="me:org" roomId="dm-1" userId="me" onPlan={onPlan} />
+      <DmIdeaPlan client={client} scope="me:org" roomId="dm-1" userId="me" agentSeq={0} onPlan={onPlan} />
     </SWRConfig>);
     await waitFor(() => expect(onPlan).toHaveBeenCalledWith(["ap-new", "ap-old"]));
   });
@@ -131,7 +138,7 @@ describe("the plan card from GET /ideas", () => {
       const client = { listIdeas: vi.fn(async () => running({ approvalId: "ap-1", status: "pending", title: "Plan: CRM" })),
         startIdea: vi.fn(), dismissIdea: vi.fn() };
       render(<SWRConfig value={{ provider: () => new Map() }}>
-        <DmIdeaPlan client={client} scope="me:org" roomId="dm-1" userId="me" onPlan={vi.fn()} />
+        <DmIdeaPlan client={client} scope="me:org" roomId="dm-1" userId="me" agentSeq={0} onPlan={vi.fn()} />
       </SWRConfig>);
       expect(await screen.findByText(/Couldn.t load the approval/)).toBeInTheDocument();
       const before = teams.reread.mock.calls.length;
@@ -147,7 +154,7 @@ describe("the plan card from GET /ideas", () => {
     const client = { listIdeas: vi.fn(async () => running({ approvalId: "ap-1", status: "pending", title: "Plan: CRM" })),
       startIdea: vi.fn(), dismissIdea: vi.fn() };
     render(<SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-      <DmIdeaPlan client={client} scope="me:org" roomId="dm-1" userId="me" onPlan={vi.fn()} />
+      <DmIdeaPlan client={client} scope="me:org" roomId="dm-1" userId="me" agentSeq={0} onPlan={vi.fn()} />
     </SWRConfig>);
     await userEvent.click(await screen.findByRole("button", { name: "Change something" }));
     await userEvent.type(screen.getByRole("textbox", { name: "What should change?" }), "Smaller first batch");
@@ -157,6 +164,20 @@ describe("the plan card from GET /ideas", () => {
     expect(teams.post).toHaveBeenCalledWith("/approvals/ap-1/request-revision", { decisionNote: "Smaller first batch" });
   });
 
+  it("re-reads /ideas when a new agent message lands in the DM, with no polling", async () => {
+    const old = new Date(Date.now() - 60 * 60_000).toISOString(); // past the first window: no poll
+    const client = { listIdeas: vi.fn(async () => running(null, old)), startIdea: vi.fn(), dismissIdea: vi.fn() };
+    const tree = (agentSeq: number) => <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+      <DmIdeaPlan client={client} scope="me:org" roomId="dm-1" userId="me" agentSeq={agentSeq} onPlan={vi.fn()} />
+    </SWRConfig>;
+    const view = render(tree(4));
+    await waitFor(() => expect(client.listIdeas).toHaveBeenCalledTimes(1));
+    view.rerender(tree(4));
+    expect(client.listIdeas).toHaveBeenCalledTimes(1);
+    view.rerender(tree(5));
+    await waitFor(() => expect(client.listIdeas).toHaveBeenCalledTimes(2));
+  });
+
   it("keeps asking after Change something until a new pending plan arrives", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
@@ -164,7 +185,7 @@ describe("the plan card from GET /ideas", () => {
         "2026-01-01T00:00:00Z");
       const client = { listIdeas: vi.fn(async () => revised), startIdea: vi.fn(), dismissIdea: vi.fn() };
       render(<SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-        <DmIdeaPlan client={client} scope="me:org" roomId="dm-1" userId="me" onPlan={vi.fn()} />
+        <DmIdeaPlan client={client} scope="me:org" roomId="dm-1" userId="me" agentSeq={0} onPlan={vi.fn()} />
       </SWRConfig>);
       await waitFor(() => expect(client.listIdeas).toHaveBeenCalledTimes(1));
       await vi.advanceTimersByTimeAsync(10_500);
@@ -179,7 +200,7 @@ describe("the plan card from GET /ideas", () => {
     try {
       const client = { listIdeas: vi.fn(async () => running(null)), startIdea: vi.fn(), dismissIdea: vi.fn() };
       render(<SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-        <DmIdeaPlan client={client} scope="me:org" roomId="dm-1" userId="me" onPlan={vi.fn()} />
+        <DmIdeaPlan client={client} scope="me:org" roomId="dm-1" userId="me" agentSeq={0} onPlan={vi.fn()} />
       </SWRConfig>);
       await waitFor(() => expect(client.listIdeas).toHaveBeenCalledTimes(1));
       await vi.advanceTimersByTimeAsync(10_500);
@@ -196,7 +217,7 @@ describe("the plan card from GET /ideas", () => {
       const sixMinutesAgo = new Date(Date.now() - 6 * 60_000).toISOString();
       const client = { listIdeas: vi.fn(async () => running(null, sixMinutesAgo)), startIdea: vi.fn(), dismissIdea: vi.fn() };
       render(<SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-        <DmIdeaPlan client={client} scope="me:org" roomId="dm-1" userId="me" onPlan={vi.fn()} />
+        <DmIdeaPlan client={client} scope="me:org" roomId="dm-1" userId="me" agentSeq={0} onPlan={vi.fn()} />
       </SWRConfig>);
       await waitFor(() => expect(client.listIdeas).toHaveBeenCalledTimes(1));
       await vi.advanceTimersByTimeAsync(30_000);

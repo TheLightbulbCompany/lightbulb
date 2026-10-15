@@ -39,10 +39,19 @@ const renderSheet = async (onStarted = jest.fn()) => {
 
 beforeEach(() => jest.clearAllMocks());
 
+it("shows running ideas on top: the viewer's own opens its DM, a teammate's says who started it", async () => {
+  const onStarted = await renderSheet();
+  expect(await screen.findByText("Running")).toBeTruthy();
+  expect(screen.getByText("Finance · Planning · Started by B")).toBeTruthy();
+  await fireEvent.press(screen.getByRole("button", { name: "Open: Title r" }));
+  expect(onStarted).toHaveBeenCalledWith("room-r");
+  expect(screen.queryByRole("button", { name: "Open: Title t" })).toBeNull();
+});
+
 it("lists every idea as one row (the DM agent's first, the viewer's running ones out), with no price or Start", async () => {
   await renderSheet();
   expect(await screen.findByRole("button", { name: "Title b" })).toBeTruthy();
-  const rows = screen.getAllByRole("button").map((node) => node.props.accessibilityLabel);
+  const rows = screen.getAllByRole("button").map((node) => node.props.accessibilityLabel).filter((l) => !l.startsWith("Open:"));
   // A teammate's start of "t" leaves it startable here (a start is per person).
   expect(rows).toEqual(["Title b", "Title a", "Title t"]);
   expect(screen.getByText("Why a")).toBeTruthy();

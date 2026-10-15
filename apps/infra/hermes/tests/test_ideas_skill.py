@@ -21,6 +21,8 @@ def test_the_skill_routes_a_started_idea_to_the_ideas_reference(tmp_path):
     assert "a note only you see" in ideas and "the project the note names" in ideas
     # Approvals only before outside actions in the person's name, linked to this start's task.
     assert "only before an action in the outside world" in ideas and "tasks=[" in ideas
+    assert "Always pass this start's project id" in ideas and 'projectId="' in ideas
+    assert "$HERMES_HOME/ideas/starts/<project id>.md" in ideas
     assert "only in the live browser" in ideas
     assert "--feed --why" in ideas and "Done only with proof" in ideas
     assert "Promise the action, never the result" in ideas
@@ -28,3 +30,4 @@ def test_the_skill_routes_a_started_idea_to_the_ideas_reference(tmp_path):
     # The backend's agent note points at the same two files.
     service = (BACKEND / "core/services/ideas.py").read_text()
     assert "$HERMES_HOME/ideas/{idea.id}.md" in service and "references/ideas.md" in service
+    assert "$HERMES_HOME/ideas/starts/{project_id}.md" in service and 'f"ideas/starts/{project_id}.md"' in service

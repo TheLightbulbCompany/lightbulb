@@ -19,6 +19,7 @@ def test_the_skill_routes_a_started_idea_to_the_ideas_reference(tmp_path):
     assert 'request_approval(title="Plan: <idea title>"' in ideas and "tasks=[" in ideas
     assert "request_confirmation" in ideas and "--feed --why" in ideas
     assert "Nothing is sent, published, bought or merged before the plan is approved" in ideas
+    assert "the project the start line names" in ideas
     assert "Promise the action, never the result" in ideas
     assert "ideas.md" in (HERMES / "skills-src/lightbulb/MAINTENANCE.md").read_text()
     # The backend's wake line points at the same two files.

@@ -85,7 +85,8 @@ export function ForYou(props: ForYouProps) {
   }, [focusShown, focusId]);
 
   // Infinite scroll: the sentinel past the last row asks for the next page. A fresh observer
-  // per page reports a sentinel still in view, so a filter that hides a whole page keeps going.
+  // per page, and per filter / Unread change, reports a sentinel still in view, so a filter
+  // that leaves no matching rows on the loaded pages keeps going.
   const sentinelRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const sentinel = sentinelRef.current;
@@ -95,7 +96,7 @@ export function ForYou(props: ForYouProps) {
     }, { rootMargin: "200px" });
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [hasMore, loadingMore, onLoadMore, activityItems]);
+  }, [hasMore, loadingMore, onLoadMore, activityItems, filter, unreadOnly, entries.length]);
 
   const open = (id: string, target: ActivityTarget) => {
     setOpened((current) => (current.has(id) ? current : new Set(current).add(id)));

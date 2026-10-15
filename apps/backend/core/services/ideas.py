@@ -285,10 +285,13 @@ async def _project_closed(admin, session_cookie: str, project_id: str) -> bool:
     return project.get("status") in CLOSED_PROJECT_STATUSES or bool(project.get("archivedAt"))
 
 
-def start_line(who: str, idea: Idea, agent_name: str) -> str:
+def start_line(who: str, idea: Idea, agent_name: str, project_id: str, room_id: str) -> str:
+    """The wake line. It names THIS start's project and DM: two people can start the same idea
+    with the same agent, and the plan's tasks must land in the right project for its card."""
     return (
         f"{who} started **{idea.title}**. {agent_name}: read `$HERMES_HOME/ideas/{idea.id}.md` and "
-        "follow the lightbulb skill's `references/ideas.md`: post the plan for approval here first."
+        "follow the lightbulb skill's `references/ideas.md`: post the plan for approval here first. "
+        f"Project `{project_id}`, room `{room_id}`."
     )
 
 
@@ -358,7 +361,7 @@ async def _start(auth: AuthContext, idea_id: str) -> dict:
             )
         await hermes_profiles.write_profile_file(owner_id, agent["id"], f"ideas/{idea_id}.md", idea.guide)
         room_id = await _usable_dm(owner_id, user_id, agent["id"])
-        text = start_line(await messaging.human_display_name(user_id), idea, agent["name"])
+        text = start_line(await messaging.human_display_name(user_id), idea, agent["name"], project_id, room_id)
         key = f"idea-start|{idea_id}|{user_id}|{project_id}"  # one line per started project
         try:
             await messaging_repo.create_message(

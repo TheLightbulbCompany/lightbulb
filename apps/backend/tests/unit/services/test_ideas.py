@@ -165,6 +165,8 @@ async def test_start_twice_makes_one_project_one_guide_and_one_line(paperclip):
     assert len(lines) == 1
     assert lines[0]["text"].startswith("Name user_A started **Your books set up")
     assert "ideas/books-cleanup.md" in lines[0]["text"] and "references/ideas.md" in lines[0]["text"]
+    # This start's own project and DM: two starts of one idea with one agent stay apart.
+    assert f"Project `{first['projectId']}`, room `{first['roomId']}`." in lines[0]["text"]
     assert lines[0]["dispatchTargets"] == [{"agentId": STARTERS["finance"], "eventKind": "user_request"}]
     # The line sits in the starter's DM with the owner agent.
     assert await repo.get_member(first["roomId"], "agent", STARTERS["finance"]) is not None

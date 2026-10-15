@@ -96,20 +96,25 @@ def test_everything_else_is_a_request_board_approval(paperclip, me, company_plan
     assert "issueIds" not in body
 
 
-def test_a_plan_carries_the_projects_of_its_linked_tasks(paperclip, monkeypatch):
-    other = "i0000000-0000-4000-8000-000000000007"
+@pytest.mark.parametrize("projects, stamped", [
+    ({"WAL-6": "p-1", "WAL-7": "p-1"}, ["p-1"]),  # every linked task in one project
+    ({"WAL-6": "p-1", "WAL-7": "p-2"}, None),  # they disagree: name none
+    ({"WAL-6": "p-1", "WAL-7": None}, None),  # one has no project: name none
+])
+def test_a_plan_names_its_project_only_when_its_tasks_agree(paperclip, monkeypatch, projects, stamped):
     real = lightbulb._paperclip_call
 
     def call(method, url, key, body=None, run_id=None):
-        if method == "GET" and url.endswith(("/WAL-6", "/WAL-7")):
-            return {"id": ISSUE if url.endswith("6") else other, "projectId": "p-2" if url.endswith("6") else "p-1"}
+        ref = url.rsplit("/", 1)[1]
+        if method == "GET" and ref in projects:
+            return {"id": f"id-{ref}", "projectId": projects[ref]}
         return real(method, url, key, body, run_id)
 
     monkeypatch.setattr(lightbulb, "_paperclip_call", call)
     paperclip["me"] = {"id": ME, "companyId": COMPANY, "role": "growth", "reportsTo": "ceo"}
-    lightbulb._request_approval({"title": "Plan: CRM", "summary": "s", "tasks": ["WAL-6", "WAL-7", "WAL-6"]})
+    lightbulb._request_approval({"title": "Plan: CRM", "summary": "s", "tasks": ["WAL-6", "WAL-7"]})
     [(_, _, body, _)] = _created(paperclip)
-    assert body["payload"]["projectIds"] == ["p-1", "p-2"]
+    assert body["payload"].get("projectIds") == stamped
 
 
 def test_an_unknown_task_creates_nothing(paperclip):

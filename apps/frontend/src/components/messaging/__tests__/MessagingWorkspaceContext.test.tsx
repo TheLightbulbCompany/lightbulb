@@ -959,6 +959,16 @@ it("lets a feed Discuss reply @mention any roster agent, though agents are not s
   expect(resolveTypedMentions("@Atlas can you check this?", panel.participants)).toEqual([{ kind: "agent", id: "agent-atlas" }]);
 });
 
+it("offers the feed none of a channel's managed actions, only its topic (the brief)", () => {
+  const feed: RoomDetail = { ...room, roomId: "feed-1", kind: "channel", name: "feed", feed: true, members: [room.members[0]] };
+  mocks.rooms.mockReturnValue({ ...state, rooms: [], activeRoomId: feed.roomId, activeRoom: feed });
+  compose();
+  for (const action of ["onRenameRoom", "onLeaveRoom", "onSetArchived", "onDeleteRoom", "onAddMember", "onRemoveMember", "onCopyJoinLink"] as const) {
+    expect(panel[action], action).toBeUndefined();
+  }
+  expect(panel.onSetTopic).toEqual(expect.any(Function));
+});
+
 it("keeps history action inputs stable while the provider draft or live run changes", () => {
   // The real provider makes these callbacks: a RoomPanel-only fixture with
   // stable functions would miss provider churn that defeats history's memo.

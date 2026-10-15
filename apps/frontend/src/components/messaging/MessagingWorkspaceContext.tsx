@@ -387,7 +387,8 @@ export function MessagingWorkspaceProvider({
   const members: RoomParticipant[] = useMemo(() => rooms.activeRoom?.members.map(decorate) ?? [], [rooms.activeRoom, decorate]);
   // The feed seats only people; its agents are authors on the roster. They are added here so a
   // Discuss reply can @mention one (by name: an unseated agent has no handle in the room).
-  const feedRoster = rooms.activeRoom?.feed ? agentRoster?.agents : undefined;
+  const activeFeed = Boolean(rooms.activeRoom?.feed);
+  const feedRoster = activeFeed ? agentRoster?.agents : undefined;
   const participants: RoomParticipant[] = useMemo(() => feedRoster ? [...members, ...feedRoster
     .filter((agent) => !members.some((member) => member.kind === "agent" && member.id === agent.id))
     .map((agent) => decorate({ kind: "agent", id: agent.id, displayName: agent.name, mentionHandle: null,
@@ -904,27 +905,31 @@ export function MessagingWorkspaceProvider({
     onMarkUnreadFrom: markUnreadFrom,
     onSetPrefs: async (prefs) => { if (rooms.activeRoomId) await rooms.setRoomPrefs(rooms.activeRoomId, prefs); },
     // A group chat's creator holds no powers there, so anyone may leave or archive one.
-    onLeaveRoom: rooms.activeRoom?.kind === "group-dm" || rooms.activeRoom?.kind === "channel"
+    // The workspace feed is Lightbulb-managed: its people follow the workspace and its name is
+    // fixed, so it offers no leave, archive, delete, rename, member or join-link controls; any
+    // member may still edit its topic (the team's brief).
+    onLeaveRoom: !activeFeed && (rooms.activeRoom?.kind === "group-dm" || rooms.activeRoom?.kind === "channel")
       ? async () => { if (rooms.activeRoomId) await rooms.leaveRoom(rooms.activeRoomId); } : undefined,
-    ...(rooms.activeRoom?.kind === "group-dm" || (rooms.activeRoom?.kind === "channel" && ["owner", "admin"].includes(viewerRole))
+    ...(!activeFeed && (rooms.activeRoom?.kind === "group-dm" || (rooms.activeRoom?.kind === "channel" && ["owner", "admin"].includes(viewerRole)))
       ? { onSetArchived: async (archived: boolean) => { await rooms.updateRoom({ archived }); } } : {}),
     // Only the channel's owner -- not an admin -- may delete it (the backend enforces the same).
-    ...(rooms.activeRoom?.kind === "channel" && viewerRole === "owner"
+    ...(!activeFeed && rooms.activeRoom?.kind === "channel" && viewerRole === "owner"
       ? { onDeleteRoom: async () => { if (rooms.activeRoomId) await rooms.deleteRoom(rooms.activeRoomId); } } : {}),
-    ...(rooms.activeRoom && rooms.activeRoom.kind !== "dm" && ["owner", "admin"].includes(viewerRole) ? {
-      onRenameRoom: async (name: string) => { await rooms.updateRoom({ name }); },
-      onSetTopic: async (topic: string | null) => { await rooms.updateRoom({ topic }); },
-    } : {}),
-    ...(rooms.activeRoom && !rooms.activeRoom.shared
+    ...(activeFeed ? { onSetTopic: async (topic: string | null) => { await rooms.updateRoom({ topic }); } }
+      : rooms.activeRoom && rooms.activeRoom.kind !== "dm" && ["owner", "admin"].includes(viewerRole) ? {
+        onRenameRoom: async (name: string) => { await rooms.updateRoom({ name }); },
+        onSetTopic: async (topic: string | null) => { await rooms.updateRoom({ topic }); },
+      } : {}),
+    ...(!activeFeed && rooms.activeRoom && !rooms.activeRoom.shared
       && (rooms.activeRoom.kind !== "channel" || ["owner", "admin"].includes(viewerRole)) ? {
       addMemberCandidates: directoryParticipants.filter((candidate) => !rooms.activeRoom!.members.some(
         (member) => member.kind === candidate.kind && member.id === candidate.id,
       )),
       onAddMember: addMember,
     } : {}),
-    ...(rooms.activeRoom?.kind === "channel" && ["owner", "admin"].includes(viewerRole)
+    ...(!activeFeed && rooms.activeRoom?.kind === "channel" && ["owner", "admin"].includes(viewerRole)
       ? { onRemoveMember: rooms.removeMember } : {}),
-    ...(rooms.activeRoom && rooms.activeRoom.kind !== "dm" ? { onCopyJoinLink: copyJoinLink } : {}),
+    ...(!activeFeed && rooms.activeRoom && rooms.activeRoom.kind !== "dm" ? { onCopyJoinLink: copyJoinLink } : {}),
     openAddPeople: addPeopleRoomId !== null && addPeopleRoomId === rooms.activeRoomId,
     onAddPeopleOpened: () => setAddPeopleRoomId(null),
     onAbortRun: (runId) => rooms.abortRun(runId),

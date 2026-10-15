@@ -61,6 +61,11 @@ export function openDiscussion(scope: string, post: CanonicalRoomMessage): void 
 
 type ActivityTab = "for-you" | "feed";
 
+/** Whether the feed column is on screen: both columns when wide, the Feed tab when narrow, never before the layout is measured. */
+export function feedShown(narrow: boolean | null, tab: ActivityTab): boolean {
+  return narrow === false || (narrow === true && tab === "feed");
+}
+
 /** Activity: For you on the left, the team feed on the right; tabs below ~900px. */
 export function ActivityDockPanel(props: IDockviewPanelProps<{ focus?: string }>) {
   const params = useDockPanelParams(props);
@@ -85,7 +90,8 @@ export function ActivityDockPanel(props: IDockviewPanelProps<{ focus?: string }>
   // Below 900px (the CSS container query) only one column shows: the feed counts as read
   // only while its tab is the one on screen.
   const pageRef = useRef<HTMLDivElement>(null);
-  const [narrow, setNarrow] = useState(false);
+  // Unknown until the first measurement: a hidden feed must not count as read in between.
+  const [narrow, setNarrow] = useState<boolean | null>(null);
   useEffect(() => {
     const page = pageRef.current;
     if (!page || typeof ResizeObserver === "undefined") return;
@@ -126,7 +132,7 @@ export function ActivityDockPanel(props: IDockviewPanelProps<{ focus?: string }>
       </div>
       <div className="activity-page__feed">
         <TeamFeed client={live.messaging} scope={scope} currentUserId={userId ?? ""}
-          onDiscuss={(post) => openDiscussion(scope, post)} isVisible={pageVisible} active={!narrow || tab === "feed"} />
+          onDiscuss={(post) => openDiscussion(scope, post)} isVisible={pageVisible} active={feedShown(narrow, tab)} />
       </div>
     </div>
   </div>;

@@ -108,10 +108,12 @@ function ForYouRowView({ row, focusId, ...rest }: { row: ForYouRow; agentMap: Ma
   const focused = Boolean(focusId && row.entries.some((entry) => entry.id === focusId));
   // A row a notification points at starts open; Hide still closes it.
   const [expanded, setExpanded] = useState(focused);
-  // Activity is a persistent dock tab, so focus can arrive after mount.
-  useEffect(() => {
+  // Activity is a persistent dock tab, so focus can arrive after mount: open the row when it does.
+  const [wasFocused, setWasFocused] = useState(focused);
+  if (focused !== wasFocused) {
+    setWasFocused(focused);
     if (focused) setExpanded(true);
-  }, [focused]);
+  }
   if (row.entries.length === 1) return <EntryRow entry={row.entries[0]} highlighted={focused} {...rest} />;
   return <li className="for-you-source" data-expanded={expanded || undefined}>
     <div className="for-you-row">

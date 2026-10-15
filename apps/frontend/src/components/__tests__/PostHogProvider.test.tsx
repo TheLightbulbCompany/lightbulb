@@ -357,6 +357,7 @@ describe("PostHogProvider", () => {
     render(
       <mod.PostHogProvider>
         <a href="/request-setup?utm_source=x" data-cta-id="hero_setup" data-surface="hero"><span>Request a guided setup</span></a>
+        {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- a plain DOM link is the fixture */}
         <a href="/sign-up">Start free</a>
       </mod.PostHogProvider>,
     );
@@ -375,7 +376,7 @@ describe("PostHogProvider", () => {
     const mod = await import("../PostHogProvider");
     render(
       <mod.PostHogProvider>
-        <a href="/request-setup">a customer's private words</a>
+        <a href="/request-setup">a customer&apos;s private words</a>
       </mod.PostHogProvider>,
     );
     screen.getByText("a customer's private words").click();

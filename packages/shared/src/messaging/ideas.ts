@@ -41,7 +41,36 @@ export interface IdeaPlan {
   approvalId: string;
   status: string;
   title: string;
+  /** When it was decided (e.g. a revision asked); null while pending. */
+  decidedAt?: string | null;
 }
+
+/** The DM's plan polling: ask this often while a start waits for a (new) plan. */
+export const PLAN_POLL_MS = 10_000;
+/** No plan yet: for this long after the Start. */
+const PLAN_FIRST_FOR_MS = 5 * 60_000;
+/** Changes asked: for this long after the revision, until the agent files a new pending plan. */
+const PLAN_REVISED_FOR_MS = 10 * 60_000;
+
+/** The viewer's own running starts in this DM, newest first: one plan card each. */
+export function myStartsIn(data: Pick<IdeasResponse, "running"> | undefined, roomId: string, userId: string | null | undefined): RunningIdea[] {
+  return (data?.running ?? [])
+    .filter((r) => r.roomId === roomId && r.starterId === userId)
+    .sort((a, b) => (Date.parse(b.createdAt ?? "") || 0) - (Date.parse(a.createdAt ?? "") || 0));
+}
+
+/** Whether the DM should keep asking for this start's plan: before the first one, and after a
+ *  revision request until a newer pending plan replaces it. Both windows are bounded. */
+export function waitsForPlan(start: RunningIdea, now = Date.now()): boolean {
+  const since = (iso: string | null | undefined) => now - (Date.parse(iso ?? "") || -Infinity);
+  if (!start.plan) return since(start.createdAt) < PLAN_FIRST_FOR_MS;
+  if (start.plan.status === "revision_requested") return since(start.plan.decidedAt ?? start.createdAt) < PLAN_REVISED_FOR_MS;
+  return false;
+}
+
+/** The refresh interval for a DM's starts: PLAN_POLL_MS while any of them waits, else 0. */
+export const plansPollMs = (starts: readonly RunningIdea[], now = Date.now()) =>
+  starts.some((start) => waitsForPlan(start, now)) ? PLAN_POLL_MS : 0;
 
 export interface IdeasResponse {
   ideas: Idea[];

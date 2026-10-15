@@ -3,9 +3,15 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Approval } from "@/components/teams/shared/types";
 
-const teams = vi.hoisted(() => ({ approval: null as Approval | null, post: vi.fn(), mutate: vi.fn() }));
+const teams = vi.hoisted(() => ({
+  approval: null as Approval | null, error: null as Error | null, post: vi.fn(), mutate: vi.fn(), reread: vi.fn(),
+}));
 vi.mock("@/hooks/useTeamsApi", () => ({
-  useTeamsApi: () => ({ read: () => ({ data: teams.approval }), post: teams.post, mutate: teams.mutate }),
+  useTeamsApi: () => ({
+    read: (path: string) => ({ data: teams.approval?.id && path.endsWith(teams.approval.id) ? teams.approval : undefined,
+      error: teams.error, mutate: teams.reread }),
+    post: teams.post, mutate: teams.mutate,
+  }),
 }));
 vi.mock("@/hooks/useConnections", () => ({ useConnections: () => ({ connections: [] }) }));
 vi.mock("@/hooks/useIsWorkspaceAdmin", () => ({ useIsWorkspaceAdmin: () => true }));
@@ -68,7 +74,7 @@ describe("the plan card in the DM", () => {
 
   it("draws nothing for a pasted link to the plan the DM already shows", () => {
     teams.approval = plan("pending");
-    render(<DmPlanContext.Provider value="ap-1"><RoomAppLinks text={message} /></DmPlanContext.Provider>);
+    render(<DmPlanContext.Provider value={["ap-1"]}><RoomAppLinks text={message} /></DmPlanContext.Provider>);
     expect(screen.queryByRole("region", { name: "Plan for approval" })).not.toBeInTheDocument();
   });
 
@@ -101,7 +107,56 @@ describe("the plan card from GET /ideas", () => {
       <DmIdeaPlan client={client} scope="me:org" roomId="dm-1" userId="me" onPlan={onPlan} />
     </SWRConfig>);
     expect(await screen.findByRole("button", { name: "Approve plan" })).toBeInTheDocument();
-    expect(onPlan).toHaveBeenCalledWith("ap-1");
+    expect(onPlan).toHaveBeenCalledWith(["ap-1"]);
+  });
+
+  it("shows one card per start of the viewer in this DM, newest first", async () => {
+    teams.approval = null;
+    const two: IdeasResponse = { ideas: [], running: [
+      { ...running({ approvalId: "ap-old", status: "pending", title: "Plan: Old" }, "2026-10-15T09:00:00Z").running[0], ideaId: "old", projectId: "p-old" },
+      { ...running({ approvalId: "ap-new", status: "pending", title: "Plan: New" }, "2026-10-15T10:00:00Z").running[0], ideaId: "new", projectId: "p-new" },
+    ] };
+    const client = { listIdeas: vi.fn(async () => two), startIdea: vi.fn(), dismissIdea: vi.fn() };
+    const onPlan = vi.fn();
+    render(<SWRConfig value={{ provider: () => new Map() }}>
+      <DmIdeaPlan client={client} scope="me:org" roomId="dm-1" userId="me" onPlan={onPlan} />
+    </SWRConfig>);
+    await waitFor(() => expect(onPlan).toHaveBeenCalledWith(["ap-new", "ap-old"]));
+  });
+
+  it("a plan that could not be read says so and retries on tap", async () => {
+    teams.approval = null;
+    teams.error = new Error("502");
+    try {
+      const client = { listIdeas: vi.fn(async () => running({ approvalId: "ap-1", status: "pending", title: "Plan: CRM" })),
+        startIdea: vi.fn(), dismissIdea: vi.fn() };
+      render(<SWRConfig value={{ provider: () => new Map() }}>
+        <DmIdeaPlan client={client} scope="me:org" roomId="dm-1" userId="me" onPlan={vi.fn()} />
+      </SWRConfig>);
+      expect(await screen.findByText(/Couldn.t load the plan/)).toBeInTheDocument();
+      const before = teams.reread.mock.calls.length;
+      await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+      expect(teams.reread.mock.calls.length).toBe(before + 1);
+    } finally {
+      teams.error = null;
+    }
+  });
+
+  it("keeps asking after Change something until a new pending plan arrives", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const revised = running({ approvalId: "ap-1", status: "revision_requested", title: "Plan: CRM", decidedAt: new Date().toISOString() },
+        "2026-01-01T00:00:00Z");
+      const client = { listIdeas: vi.fn(async () => revised), startIdea: vi.fn(), dismissIdea: vi.fn() };
+      render(<SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <DmIdeaPlan client={client} scope="me:org" roomId="dm-1" userId="me" onPlan={vi.fn()} />
+      </SWRConfig>);
+      await waitFor(() => expect(client.listIdeas).toHaveBeenCalledTimes(1));
+      await vi.advanceTimersByTimeAsync(10_500);
+      await waitFor(() => expect(client.listIdeas).toHaveBeenCalledTimes(2));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("asks again while the start has no plan yet", async () => {

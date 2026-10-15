@@ -160,7 +160,7 @@ export {
   useActivity,
 } from "./messaging/useActivity";
 export type { ActivityClient, ActivityPlatform, UseActivityOptions, UseActivityResult } from "./messaging/useActivity";
-export { ideaEffortLine, ideaProgress, ideaTeammates, orderIdeas, useIdeas } from "./messaging/ideas";
+export { ideaEffortLine, ideaProgress, ideaTeammates, myStartsIn, orderIdeas, PLAN_POLL_MS, plansPollMs, useIdeas, waitsForPlan } from "./messaging/ideas";
 export type { Idea, IdeaPlan, IdeaStart, IdeasClient, IdeasResponse, RunningIdea } from "./messaging/ideas";
 export {
   ACTIVITY_EMPTY_COPY,

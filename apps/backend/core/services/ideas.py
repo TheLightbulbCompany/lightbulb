@@ -208,7 +208,12 @@ def plan_for(start: dict, approvals: list[dict], *, allow_untagged: bool) -> dic
         else:
             untagged.append((created, a, title))
     found = max(tagged or (untagged if allow_untagged else []), key=lambda c: c[0], default=None)
-    return found and {"approvalId": found[1]["id"], "status": found[1].get("status"), "title": found[2]}
+    if not found:
+        return None
+    approval = found[1]
+    # When it was decided (a revision asked): the DM keeps asking for the next plan from then.
+    decided = approval.get("decidedAt") or approval.get("updatedAt")
+    return {"approvalId": approval["id"], "status": approval.get("status"), "title": found[2], "decidedAt": decided}
 
 
 _APPROVALS_TTL_S = 5

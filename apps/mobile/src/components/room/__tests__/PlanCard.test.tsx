@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 
-jest.mock("@clerk/expo", () => ({ useAuth: () => ({ userId: "me", orgId: "org", getToken: async () => "t" }) }), { virtual: true });
+// A fresh org per test: the /ideas SWR cache is global here, keyed by user and org.
+let mockOrg = 0;
+jest.mock("@clerk/expo", () => ({ useAuth: () => ({ userId: "me", orgId: `org-${mockOrg}`, getToken: async () => "t" }) }), { virtual: true });
 jest.mock("../../chat/MessageMarkdown", () => {
   const { Text } = jest.requireActual("react-native");
   return { MessageMarkdown: ({ text }: { text: string }) => <Text>{text}</Text> };
@@ -25,6 +27,7 @@ jest.mock("../../../providers/live-events", () => ({
 import { DmIdeaPlan, PlanCard } from "../PlanCard";
 
 beforeEach(() => {
+  mockOrg += 1;
   jest.clearAllMocks();
   mockApproval.current = { ...mockApproval.current, status: "pending" };
 });
@@ -67,4 +70,38 @@ it("the DM shows the plan GET /ideas matched to the viewer's start in this room"
   await render(<DmIdeaPlan roomId="dm-1" />);
   expect(await screen.findByRole("button", { name: "Approve plan" })).toBeTruthy();
   expect(mockGet).toHaveBeenCalledWith("ap-1");
+});
+
+it("a plan that could not be read says so and retries on tap", async () => {
+  mockGet.mockRejectedValue(new Error("502"));
+  await render(<PlanCard approvalId="ap-1" />);
+  expect(await screen.findByText("Couldn't load the plan ·")).toBeTruthy();
+  mockGet.mockImplementation(async () => mockApproval.current);
+  await fireEvent.press(screen.getByRole("button", { name: "Retry" }));
+  expect(await screen.findByRole("button", { name: "Approve plan" })).toBeTruthy();
+});
+
+it("shows one card per own start in the DM, newest first", async () => {
+  const start = (id: string, createdAt: string) => ({ ideaId: id, title: id, agentId: "g", agentName: "Growth", roomId: "dm-1",
+    projectId: `p-${id}`, starterId: "me", starterName: "Me", createdAt,
+    plan: { approvalId: `ap-${id}`, status: "pending", title: `Plan: ${id}` } });
+  mockListIdeas.mockResolvedValue({ ideas: [], running: [start("old", "2026-10-15T09:00:00Z"), start("new", "2026-10-15T10:00:00Z")] });
+  await render(<DmIdeaPlan roomId="dm-1" />);
+  await waitFor(() => expect(screen.getAllByRole("button", { name: "Approve plan" })).toHaveLength(2));
+  expect([...new Set(mockGet.mock.calls.map(([id]) => id))]).toEqual(["ap-new", "ap-old"]);
+});
+
+it("keeps asking /ideas after Change something until a new pending plan arrives", async () => {
+  jest.useFakeTimers();
+  try {
+    mockListIdeas.mockResolvedValue({ ideas: [], running: [{ ideaId: "crm", title: "CRM", agentId: "g", agentName: "Growth",
+      roomId: "dm-1", projectId: "p", starterId: "me", starterName: "Me", createdAt: "2026-01-01T00:00:00Z",
+      plan: { approvalId: "ap-1", status: "revision_requested", title: "Plan: CRM", decidedAt: new Date().toISOString() } }] });
+    await render(<DmIdeaPlan roomId="dm-1" />);
+    await waitFor(() => expect(mockListIdeas).toHaveBeenCalledTimes(1));
+    await jest.advanceTimersByTimeAsync(10_500);
+    await waitFor(() => expect(mockListIdeas).toHaveBeenCalledTimes(2));
+  } finally {
+    jest.useRealTimers();
+  }
 });

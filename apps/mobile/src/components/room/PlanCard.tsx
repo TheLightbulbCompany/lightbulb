@@ -1,5 +1,5 @@
 import { useAuth } from "@clerk/expo";
-import { useIdeas, type IdeasResponse } from "@lightbulb/shared";
+import { myStartsIn, plansPollMs, useIdeas } from "@lightbulb/shared";
 import { useCallback, useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
@@ -7,10 +7,6 @@ import { fonts, radii, spacing, useChatPalette } from "../../config/theme";
 import { approveApproval, getApproval, requestApprovalRevision, useTeamsConfig, type TeamsApproval } from "../../lib/teamsData";
 import { useLiveEvents } from "../../providers/live-events";
 import { MessageMarkdown } from "../chat/MessageMarkdown";
-
-/** While the viewer's start in this DM has no plan yet: ask again this often, for this long after Start. */
-const PLAN_POLL_MS = 10_000;
-const PLAN_POLL_FOR_MS = 5 * 60_000;
 
 const STATUS_LINE: Record<string, string> = {
   revision_requested: "You asked for changes. The plan is being revised.",
@@ -25,41 +21,50 @@ const text = (approval: TeamsApproval, key: string) => {
 };
 
 /**
- * The plan of the viewer's own idea started in this agent DM (the web's DmIdeaPlan): GET /ideas
- * matches it to the start, so it needs no link in a message. Polls while the start has no plan,
- * for five minutes from the Start.
+ * The plans of the viewer's own ideas started in this agent DM (the web's DmIdeaPlan), newest
+ * first, one card per start: GET /ideas matches each to its start, so none needs a link in a
+ * message. Polls (bounded) while a start waits for its first plan, or for a new one after
+ * Change something.
  */
 export function DmIdeaPlan({ roomId }: { roomId: string }) {
   const { userId, orgId } = useAuth();
   const { messaging } = useLiveEvents();
-  const mineIn = useCallback((data: IdeasResponse | undefined) =>
-    data?.running.find((r) => r.roomId === roomId && r.starterId === userId), [roomId, userId]);
-  const { running, refresh } = useIdeas(messaging, userId ? `${userId}:${orgId ?? userId}` : null, (latest) => {
-    const mine = mineIn(latest);
-    const started = Date.parse(mine?.createdAt ?? "");
-    return mine && !mine.plan && Date.now() - started < PLAN_POLL_FOR_MS ? PLAN_POLL_MS : 0;
-  });
-  const plan = mineIn({ ideas: [], running })?.plan;
-  return plan ? <PlanCard approvalId={plan.approvalId} onDecided={() => void refresh()} /> : null;
+  const { running, refresh } = useIdeas(messaging, userId ? `${userId}:${orgId ?? userId}` : null,
+    (latest) => plansPollMs(myStartsIn(latest, roomId, userId)));
+  const plans = myStartsIn({ running }, roomId, userId).flatMap((start) => (start.plan ? [start.plan] : []));
+  return (
+    <>
+      {plans.map((plan) => (
+        <PlanCard key={plan.approvalId} approvalId={plan.approvalId} planStatus={plan.status} onDecided={() => void refresh()} />
+      ))}
+    </>
+  );
 }
 
 /** The plan with Approve plan / Change something while pending; a status line once decided. */
-export function PlanCard({ approvalId, onDecided }: { approvalId: string; onDecided?: () => void }) {
+export function PlanCard({ approvalId, planStatus, onDecided }: {
+  approvalId: string;
+  /** The plan's status on /ideas: a change (decided, revised) reads the approval again. */
+  planStatus?: string;
+  onDecided?: () => void;
+}) {
   const palette = useChatPalette();
   const config = useTeamsConfig();
   const [approval, setApproval] = useState<TeamsApproval | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
 
   const load = useCallback(async () => {
     try {
       setApproval(await getApproval(config, approvalId));
+      setLoadFailed(false);
     } catch {
-      // The card waits for the next read; the plan is also in Activity.
+      setLoadFailed(true);
     }
   }, [config, approvalId]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(); }, [load, planStatus]);
 
   const run = async (fn: () => Promise<void>, fallback: string) => {
     setBusy(true);
@@ -76,7 +81,16 @@ export function PlanCard({ approvalId, onDecided }: { approvalId: string; onDeci
     }
   };
 
-  if (!approval) return null;
+  if (!approval) {
+    return loadFailed ? (
+      <View accessibilityLabel="Plan for approval" style={[styles.card, styles.row, { borderColor: palette.edge }]}>
+        <Text accessibilityRole="alert" style={[styles.meta, { color: palette.fgMute }]}>{"Couldn't load the plan ·"}</Text>
+        <Pressable accessibilityRole="button" accessibilityLabel="Retry" onPress={() => void load()}>
+          <Text style={[styles.meta, styles.retry, { color: palette.fg }]}>Retry</Text>
+        </Pressable>
+      </View>
+    ) : null;
+  }
   const trimmed = note?.trim() ?? "";
   const button = (label: string, onPress: () => void, primary: boolean, disabled = busy) => (
     <Pressable
@@ -142,4 +156,5 @@ const styles = StyleSheet.create({
   button: { borderRadius: radii.sm, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm },
   buttonText: { fontFamily: fonts.sansMedium, fontSize: 13, lineHeight: 18 },
   dim: { opacity: 0.6 },
+  retry: { fontFamily: fonts.sansMedium, textDecorationLine: "underline" },
 });

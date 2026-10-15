@@ -277,8 +277,11 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  e.g. InlineTeamsPanel.tsx)
   - Workspace rail + Activity references/surfaces.md ("Workspace rail" and "Activity" rows)
                               <- apps/frontend/src/components/workspace/WorkspaceHeader.tsx (DESTINATIONS: rail order and labels);
-                                 apps/frontend/src/components/workspace/panelRegistry.ts (teams-dashboard → activity alias);
-                                 packages/shared/src/messaging/activityView.ts (ACTIVITY_FILTERS chips);
+                                 apps/frontend/src/components/workspace/panelRegistry.ts (teams-dashboard, teams-inbox,
+                                 teams-approvals, teams-activity → activity aliases);
+                                 apps/frontend/src/components/activity/activityPage.ts (For you: Decide/Reply/Do groups,
+                                 same-source rows) + ForYou.tsx (one button per row, Review for decisions) + TeamFeed.tsx
+                                 (brief, posts, Discuss); apps/frontend/src/components/workspace/panels/ActivityDockPanel.tsx;
                                  apps/frontend/src/components/teams/panels/AgentsListPanel.tsx (Add an AI employee);
                                  apps/frontend/src/components/messaging/RoomDirectory.tsx (Invite someone row at the bottom of the chat sidebar)
   - Library ................. references/surfaces.md
@@ -324,9 +327,8 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  RoomDetails.tsx + PickerSheet.tsx (mobile Add people flow); apps/backend/core/services/
                                  messaging.py (server authorization and in-place DM conversion); messageLinks.ts
                                  (roomPermalink copy-link format); RoomDetailsPanel.tsx (Members/Pins/Files/Links/About)
-  - Inbox page .............. apps/frontend/src/components/teams/inbox/InboxPage.tsx (the three bands);
-                              InboxNeedsYou/InboxHappeningNow/InboxRecently.tsx;
-                              apps/frontend/src/components/workspace/panelRegistry.ts (INBOX_SECTIONS + the teams-activity alias)
+  - Inbox (retired) ......... references/surfaces.md ("Inbox (retired)" row) <- panelRegistry.ts RETIRED_PANEL_ALIASES
+                              (teams-inbox/teams-approvals/teams-activity → activity); its items are For you's
   - Tasks groupings ......... apps/frontend/src/components/teams/issues/TasksList.tsx (TASKS_GROUP_BY / GROUP_OPTIONS);
                               panelRegistry.ts (the groupBy param; teams-goals/teams-projects are their own
                               TEAMS_LIST_KEYS panels, not aliases, since 2026-09-24)

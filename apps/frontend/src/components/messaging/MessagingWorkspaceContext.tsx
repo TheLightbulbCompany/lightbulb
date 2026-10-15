@@ -896,7 +896,8 @@ export function MessagingWorkspaceProvider({
     selectedThreadId: threadId,
     onSelectParticipant: selectMessageParticipant,
     onRetry: () => void rooms.refreshRoom(),
-    ...(canManageResponses ? { onListenModeChange: (agentId: string, mode: ListenMode) => void changeListenMode(agentId, mode) } : {}),
+    // Feed authors are not seated, so the feed has no listen modes to change (the service refuses membership edits).
+    ...(canManageResponses && !activeFeed ? { onListenModeChange: (agentId: string, mode: ListenMode) => void changeListenMode(agentId, mode) } : {}),
     billing: billingAccount,
     onSetReaction: rooms.setReaction,
     onUpdateMessage: rooms.updateMessage,

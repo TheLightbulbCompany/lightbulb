@@ -963,7 +963,7 @@ it("offers the feed none of a channel's managed actions, only its topic (the bri
   const feed: RoomDetail = { ...room, roomId: "feed-1", kind: "channel", name: "feed", feed: true, members: [room.members[0]] };
   mocks.rooms.mockReturnValue({ ...state, rooms: [], activeRoomId: feed.roomId, activeRoom: feed });
   compose();
-  for (const action of ["onRenameRoom", "onLeaveRoom", "onSetArchived", "onDeleteRoom", "onAddMember", "onRemoveMember", "onCopyJoinLink"] as const) {
+  for (const action of ["onRenameRoom", "onLeaveRoom", "onSetArchived", "onDeleteRoom", "onAddMember", "onRemoveMember", "onCopyJoinLink", "onListenModeChange"] as const) {
     expect(panel[action], action).toBeUndefined();
   }
   expect(panel.onSetTopic).toEqual(expect.any(Function));

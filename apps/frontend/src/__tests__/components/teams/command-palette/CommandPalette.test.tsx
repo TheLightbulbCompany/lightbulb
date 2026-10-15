@@ -22,8 +22,9 @@ beforeEach(() => {
 test("renders 'Navigate' group with the IA nav actions on open with empty query", () => {
   render(<CommandPalette open onOpenChange={vi.fn()} />);
   expect(screen.getByText("Navigate")).toBeInTheDocument();
-  expect(screen.getByText("Inbox")).toBeInTheDocument();
   expect(screen.getByText("Activity")).toBeInTheDocument();
+  // The Inbox tab folded into Activity's For you: it is no longer offered.
+  expect(screen.queryByText("Inbox")).not.toBeInTheDocument();
   // The org chart is a view of the Agents panel now, so "Agents" is the row.
   expect(screen.getByText("Agents")).toBeInTheDocument();
   expect(screen.getByText("Settings")).toBeInTheDocument();
@@ -32,9 +33,12 @@ test("renders 'Navigate' group with the IA nav actions on open with empty query"
 test("typing in search filters nav actions", () => {
   render(<CommandPalette open onOpenChange={vi.fn()} />);
   const input = screen.getByPlaceholderText(/search messages/i);
-  fireEvent.change(input, { target: { value: "inbo" } });
-  expect(screen.getByText("Inbox")).toBeInTheDocument();
+  fireEvent.change(input, { target: { value: "mai" } });
+  expect(screen.getByText("Mail")).toBeInTheDocument();
   expect(screen.queryByText("Activity")).not.toBeInTheDocument();
+  // The old Inbox word still finds where its items went.
+  fireEvent.change(input, { target: { value: "inbox" } });
+  expect(screen.getByText("Activity")).toBeInTheDocument();
 });
 
 test("ArrowDown moves selection to next row", () => {
@@ -75,8 +79,8 @@ test("clicking a row selects it + navigates", () => {
   const pushStateSpy = vi.spyOn(window.history, "pushState");
   const onOpenChange = vi.fn();
   render(<CommandPalette open onOpenChange={onOpenChange} />);
-  fireEvent.click(screen.getByText("Inbox").closest("[data-cmd-row]")!);
-  expect(pushStateSpy).toHaveBeenCalledWith(null, "", "/chat?panel=teams-inbox");
+  fireEvent.click(screen.getByText("Mail").closest("[data-cmd-row]")!);
+  expect(pushStateSpy).toHaveBeenCalledWith(null, "", "/chat?panel=mail");
   expect(onOpenChange).toHaveBeenCalledWith(false);
 });
 

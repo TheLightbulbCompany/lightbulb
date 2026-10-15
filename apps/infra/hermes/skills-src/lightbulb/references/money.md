@@ -58,7 +58,7 @@ board REJECTED the request, so retrying changes nothing — tell the owner what
 it said, verbatim, and move on.
 
 A 200 is not always a card. Read `status` in the body: `filed` means a
-"Set up <company> on Stripe" card is now in the owner's Inbox — say in your
+"Set up <company> on Stripe" card is now in the owner's Activity (For you) — say in your
 reply that you asked; `connected` means the company already has its Stripe
 account and there is nothing to ask for; `no_company` means the owner has no
 board yet (the platform is still provisioning it) — tell the owner plainly
@@ -92,7 +92,7 @@ once it is done.
 | state | what you do |
 |---|---|
 | `ask` | nothing was filed yet — if it has not moved by your next turn, withdraw it (`DELETE`) and ask again |
-| `awaiting_approval` | the owner has a card in their Inbox — say you asked, keep working |
+| `awaiting_approval` | the owner has a card in their Activity (For you) — say you asked, keep working |
 | `connecting_provider`, `provisioning`, `binding` | in flight — check again on a later turn |
 | `awaiting_user_action` | the owner has something to click — say so ONCE, not every turn; they have the card |
 | `stale` | the owner never came back — mention it once, do not re-file |
@@ -152,7 +152,7 @@ owner — the catalog says what the service is, only you can say what it is for.
 
 You get back `{workflow_id, state, message, reused}` — `reused: true` means the
 same ask is already open and nothing new was filed. It puts an approval card in
-the owner's Inbox. **The card is never a gate:** keep working on everything that
+the owner's Activity (For you). **The card is never a gate:** keep working on everything that
 does not need the account, and say in your reply that you asked.
 
 **Step 3 — check back on a later turn.** Every status read moves your request

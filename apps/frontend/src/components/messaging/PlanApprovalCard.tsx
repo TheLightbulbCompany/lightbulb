@@ -5,7 +5,7 @@
 // running start), so the card does not depend on the agent pasting the link. Approve plan /
 // Change something are the approval's own actions.
 import { createContext, useEffect, useState } from "react";
-import { useIdeas, type IdeasClient, type IdeasResponse } from "@lightbulb/shared";
+import { myStartsIn, notePlanDecision, plansPollMs, useIdeas, type IdeasClient } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
@@ -16,9 +16,6 @@ import { notifyApiError } from "@/lib/notify";
 import "@/components/ideas/ideas.css";
 
 const PLAN_PREFIX = "Plan: ";
-/** While a start in this DM has no plan yet: ask again this often, for at most this long. */
-const PLAN_POLL_MS = 10_000;
-const PLAN_POLL_FOR_MS = 5 * 60_000;
 
 const payloadText = (approval: Approval, key: string) => {
   const value = approval.payload?.[key];
@@ -30,8 +27,8 @@ export function isPlanApproval(approval: Approval): boolean {
   return approval.type === "request_board_approval" && payloadText(approval, "title").startsWith(PLAN_PREFIX);
 }
 
-/** The approval the DM already shows as its plan card: a pasted link to it renders nothing more. */
-export const DmPlanContext = createContext<string | null>(null);
+/** The approvals the DM already shows as plan cards: a pasted link to one renders nothing more. */
+export const DmPlanContext = createContext<readonly string[]>([]);
 
 const STATUS_LINE: Record<string, string> = {
   revision_requested: "You asked for changes. The plan is being revised.",
@@ -40,14 +37,18 @@ const STATUS_LINE: Record<string, string> = {
   cancelled: "Plan withdrawn",
 };
 
-export function PlanApprovalCard({ approval }: { approval: Approval }) {
+export function PlanApprovalCard({ approval, onDecided }: {
+  approval: Approval;
+  /** After Approve plan or Change something: the DM re-reads /ideas, so a revision restarts its poll. */
+  onDecided?: () => void;
+}) {
   const { approve, requestRevision } = useApprovalMutations();
   const [busy, setBusy] = useState(false);
   // Change something asks what, first: the agent revises from that note.
   const [note, setNote] = useState<string | null>(null);
   const run = async (fn: () => Promise<void>, fallback: string) => {
     setBusy(true);
-    try { await fn(); } catch (err) { notifyApiError(err, fallback); } finally { setBusy(false); }
+    try { await fn(); onDecided?.(); } catch (err) { notifyApiError(err, fallback); } finally { setBusy(false); }
   };
   return <section className="plan-card" aria-label="Plan for approval">
     <div className="plan-card__head">{payloadText(approval, "title")}</div>
@@ -74,29 +75,33 @@ export function PlanApprovalCard({ approval }: { approval: Approval }) {
   </section>;
 }
 
-function PlanById({ id }: { id: string }) {
+function PlanById({ id, status, onDecided }: { id: string; status: string; onDecided: () => void }) {
   const { read } = useTeamsApi();
-  const { data } = read<Approval>(`/approvals/${encodeURIComponent(id)}`);
-  return data?.id ? <PlanApprovalCard approval={data} /> : null;
+  const { data, error, mutate } = read<Approval>(`/approvals/${encodeURIComponent(id)}`);
+  // The plan moved on /ideas (decided, revised): read the approval again; a failed read retries too.
+  useEffect(() => { void mutate(); }, [status, mutate]);
+  if (data?.id) return <PlanApprovalCard approval={data} onDecided={onDecided} />;
+  if (!error) return null;
+  return <section className="plan-card" aria-label="Plan for approval">
+    <div className="plan-card__foot" role="alert">
+      Couldn&apos;t load the plan · <Button type="button" size="sm" variant="outline" onClick={() => void mutate()}>Retry</Button>
+    </div>
+  </section>;
 }
 
 /**
- * The plan of the viewer's own idea started in this DM, from GET /ideas. Polls (bounded) while
- * the start has no plan yet; reports the shown approval so a pasted link to it is not drawn twice.
+ * The plans of the viewer's own ideas started in this DM, from GET /ideas, newest first: one card
+ * per start. Polls (bounded) while a start waits for its first plan or for a new one after
+ * Change something; reports the shown approvals so a pasted link to one is not drawn twice.
  */
 export function DmIdeaPlan({ client, scope, roomId, userId, onPlan }: {
-  client: IdeasClient; scope: string; roomId: string; userId: string; onPlan: (approvalId: string | null) => void;
+  client: IdeasClient; scope: string; roomId: string; userId: string; onPlan: (approvalIds: readonly string[]) => void;
 }) {
-  const mineIn = (data: IdeasResponse | undefined) =>
-    data?.running.find((r) => r.roomId === roomId && r.starterId === userId);
-  const { running } = useIdeas(client, scope, (latest) => {
-    const mine = mineIn(latest);
-    // The window runs from the Start, not from opening the DM: an old DM never polls again.
-    const started = Date.parse(mine?.createdAt ?? "");
-    return mine && !mine.plan && Date.now() - started < PLAN_POLL_FOR_MS ? PLAN_POLL_MS : 0;
-  });
-  const approvalId = mineIn({ ideas: [], running })?.plan?.approvalId ?? null;
-  useEffect(() => { onPlan(approvalId); }, [approvalId, onPlan]);
-  useEffect(() => () => onPlan(null), [onPlan]);
-  return approvalId ? <PlanById id={approvalId} /> : null;
+  const { running, refresh } = useIdeas(client, scope, (latest) => plansPollMs(myStartsIn(latest, roomId, userId)));
+  const plans = myStartsIn({ running }, roomId, userId).flatMap((start) => (start.plan ? [start.plan] : []));
+  const ids = plans.map((plan) => plan.approvalId).join(",");
+  useEffect(() => { onPlan(ids ? ids.split(",") : []); }, [ids, onPlan]);
+  useEffect(() => () => onPlan([]), [onPlan]);
+  return <>{plans.map((plan) => <PlanById key={plan.approvalId} id={plan.approvalId} status={plan.status}
+    onDecided={() => { notePlanDecision(plan.approvalId); void refresh(); }} />)}</>;
 }

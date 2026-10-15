@@ -90,7 +90,7 @@ function ApprovalCard({ id }: { id: string }) {
   const dmPlan = useContext(DmPlanContext);
   if (!data?.id) return null;
   // The DM already shows this plan from GET /ideas (DmIdeaPlan): no second card.
-  if (isPlanApproval(data)) return data.id === dmPlan ? null : <PlanApprovalCard approval={data} />;
+  if (isPlanApproval(data)) return dmPlan.includes(data.id) ? null : <PlanApprovalCard approval={data} />;
   return <section aria-label="Approval in this message" className="editorial-card max-w-xl"><ApprovalRow approval={data} /></section>;
 }
 

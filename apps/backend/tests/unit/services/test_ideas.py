@@ -357,12 +357,21 @@ def test_no_plan_until_the_agent_files_one():
 def test_the_newest_plan_wins_and_a_plan_naming_the_project_wins_over_one_naming_none():
     both = [_approval("old", "2026-10-15T11:00:00Z"), _approval("new", "2026-10-15T12:00:00Z")]
     found = ideas.plan_for(START, both, allow_untagged=True)
-    assert found == {"approvalId": "new", "status": "pending", "title": "Plan: Your CRM"}
+    assert found == {"approvalId": "new", "status": "pending", "title": "Plan: Your CRM", "decidedAt": None}
     tagged = [
         _approval("tagged", "2026-10-15T11:00:00Z", projects=["p-1"]),
         _approval("untagged", "2026-10-15T12:00:00Z"),
     ]
     assert ideas.plan_for(START, tagged, allow_untagged=True)["approvalId"] == "tagged"
+
+
+def test_a_decided_plan_says_when():
+    asked = {
+        **_approval("ap", "2026-10-15T11:00:00Z"),
+        "status": "revision_requested",
+        "decidedAt": "2026-10-15T11:30:00Z",
+    }
+    assert ideas.plan_for(START, [asked], allow_untagged=True)["decidedAt"] == "2026-10-15T11:30:00Z"
 
 
 @pytest.mark.asyncio
@@ -375,7 +384,7 @@ async def test_get_carries_each_starts_plan(paperclip):
         ]
     )
     [item] = (await ideas.list_ideas(AUTH))["running"]
-    assert item["plan"] == {"approvalId": "ap-1", "status": "pending", "title": "Plan: Books"}
+    assert item["plan"] == {"approvalId": "ap-1", "status": "pending", "title": "Plan: Books", "decidedAt": None}
     assert paperclip.list_approvals.await_count == 1
 
     paperclip.list_approvals = AsyncMock(return_value={"approvals": []})

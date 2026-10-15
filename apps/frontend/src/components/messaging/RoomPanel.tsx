@@ -640,7 +640,7 @@ function RoomContent({
 
   const welcomeRoom = Boolean(room?.isDefault) && inShell;
   // An idea started in this DM: its plan card, from GET /ideas (not from a pasted link).
-  const [dmPlanId, setDmPlanId] = useState<string | null>(null);
+  const [dmPlanIds, setDmPlanIds] = useState<readonly string[]>([]);
   const revealStarter = Boolean(room?.isDefault) && !messages.some((m) => m.author.kind === "human");
   const renderMessage = useCallback((message: RoomMessage, inThread = false, collapsed = false) => {
     const participant = participants.find((member) => member.kind === message.author.kind && member.id === message.author.id);
@@ -829,7 +829,7 @@ function RoomContent({
       {(state === "reconnecting" || !liveConnected) && <div className="room-state"><p role="status" aria-label="Room status">Reconnecting live updates. You can keep sending messages.</p>
         {onRetry && <Button variant="outline" onClick={onRetry}>Check for updates</Button>}</div>}
       <div ref={historyRef} className="contents">
-        <DmPlanContext.Provider value={dmPlanId}>
+        <DmPlanContext.Provider value={dmPlanIds}>
         <RoomTimeline roomId={roomId} messages={mainMessages} readSeq={sentSinceOpen ? null : newLineSeq} ownLastSentSeq={ownLastSentSeq} sendToken={sendToken}
           historyComplete={historyComplete} historyLoading={historyLoading} historyError={historyErrorMessage} onLoadOlder={onLoadOlder}
           targetMessageId={targetMessageId ?? (activeSearchTarget ? activeSearchTarget.messageId : null)}
@@ -848,7 +848,7 @@ function RoomContent({
           </article>)}
           {inShell && visibleRoom?.kind === "dm" && messagingClient && ownerScopeId &&
             <DmIdeaPlan client={messagingClient} scope={`${currentUserId}:${ownerScopeId}`} roomId={roomId}
-              userId={currentUserId} onPlan={setDmPlanId} />}
+              userId={currentUserId} onPlan={setDmPlanIds} />}
           {placeRuns(mainRuns, mainMessages).tail.map(renderRun)}
         </RoomTimeline>
         </DmPlanContext.Provider>

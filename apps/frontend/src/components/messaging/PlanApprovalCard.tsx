@@ -5,7 +5,7 @@
 // running start), so the card does not depend on the agent pasting the link. Approve plan /
 // Change something are the approval's own actions.
 import { createContext, useEffect, useState } from "react";
-import { myStartsIn, plansPollMs, useIdeas, type IdeasClient } from "@lightbulb/shared";
+import { myStartsIn, notePlanDecision, plansPollMs, useIdeas, type IdeasClient } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { MarkdownView } from "@/components/teams/shared/components/MarkdownView";
@@ -102,5 +102,6 @@ export function DmIdeaPlan({ client, scope, roomId, userId, onPlan }: {
   const ids = plans.map((plan) => plan.approvalId).join(",");
   useEffect(() => { onPlan(ids ? ids.split(",") : []); }, [ids, onPlan]);
   useEffect(() => () => onPlan([]), [onPlan]);
-  return <>{plans.map((plan) => <PlanById key={plan.approvalId} id={plan.approvalId} status={plan.status} onDecided={() => void refresh()} />)}</>;
+  return <>{plans.map((plan) => <PlanById key={plan.approvalId} id={plan.approvalId} status={plan.status}
+    onDecided={() => { notePlanDecision(plan.approvalId); void refresh(); }} />)}</>;
 }

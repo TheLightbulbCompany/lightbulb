@@ -6,7 +6,7 @@ import type { ReactNode } from "react";
 
 import type { ApiMethods } from "../api/client";
 import { createMessagingClient } from "./client";
-import { ideaEffortLine, ideaProgress, ideaTeammates, myStartsIn, orderIdeas, plansPollMs, useIdeas, waitsForPlan, type Idea, type IdeasClient, type RunningIdea } from "./ideas";
+import { ideaEffortLine, ideaProgress, ideaTeammates, myStartsIn, notePlanDecision, orderIdeas, plansPollMs, useIdeas, waitsForPlan, type Idea, type IdeasClient, type RunningIdea } from "./ideas";
 
 const idea = (id: string, agentId: string, agentName = agentId): Idea => ({
   id, ownerRole: "growth", kind: "agency", businessTypes: ["any"], title: `T ${id}`, why: "w",
@@ -66,6 +66,17 @@ describe("a DM's plans", () => {
     expect(waitsForPlan(start("a", "2026-10-15T11:59:00Z", { approvalId: "p2", status: "pending", title: "Plan: a" }), NOW)).toBe(false);
     expect(plansPollMs([start("a", "2026-10-15T09:00:00Z"), revised("2026-10-15T11:55:00Z")], NOW)).toBe(10_000);
     expect(plansPollMs([start("a", "2026-10-15T09:00:00Z")], NOW)).toBe(0);
+  });
+
+  it("keeps asking while /ideas still shows a plan just decided here as pending (stale read)", () => {
+    const stale = start("a", "2026-10-15T09:00:00Z", { approvalId: "p-stale", status: "pending", title: "Plan: a" });
+    expect(waitsForPlan(stale, NOW)).toBe(false);
+    notePlanDecision("p-stale", NOW - 3_000);
+    expect(waitsForPlan(stale, NOW)).toBe(true);
+    // Settles once /ideas shows the decision or a newer plan, and gives up after ten minutes.
+    expect(waitsForPlan({ ...stale, plan: { ...stale.plan!, status: "approved" } }, NOW)).toBe(false);
+    expect(waitsForPlan({ ...stale, plan: { approvalId: "p-new", status: "pending", title: "Plan: a" } }, NOW)).toBe(false);
+    expect(waitsForPlan(stale, NOW + 11 * 60_000)).toBe(false);
   });
 });
 

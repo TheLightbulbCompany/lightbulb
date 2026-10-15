@@ -1,5 +1,5 @@
 import { useAuth } from "@clerk/expo";
-import { myStartsIn, plansPollMs, useIdeas } from "@lightbulb/shared";
+import { myStartsIn, notePlanDecision, plansPollMs, useIdeas } from "@lightbulb/shared";
 import { useCallback, useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
@@ -35,7 +35,7 @@ export function DmIdeaPlan({ roomId }: { roomId: string }) {
   return (
     <>
       {plans.map((plan) => (
-        <PlanCard key={plan.approvalId} approvalId={plan.approvalId} planStatus={plan.status} onDecided={() => void refresh()} />
+        <PlanCard key={plan.approvalId} approvalId={plan.approvalId} planStatus={plan.status} onDecided={() => { notePlanDecision(plan.approvalId); void refresh(); }} />
       ))}
     </>
   );

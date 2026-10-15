@@ -59,13 +59,26 @@ export function myStartsIn(data: Pick<IdeasResponse, "running"> | undefined, roo
     .sort((a, b) => (Date.parse(b.createdAt ?? "") || 0) - (Date.parse(a.createdAt ?? "") || 0));
 }
 
-/** Whether the DM should keep asking for this start's plan: before the first one, and after a
- *  revision request until a newer pending plan replaces it. Both windows are bounded. */
+// Plans this person just decided here (approvalId -> when). GET /ideas may still say `pending`
+// for a few seconds (the server caches approvals ~5 s), which would read as settled and stop the
+// poll before the decision shows.
+// ponytail: per-page map, never pruned; one entry per decision made in this session.
+const decidedHere = new Map<string, number>();
+
+/** Call after Approve plan / Change something succeeds: the DM keeps asking until /ideas shows it. */
+export function notePlanDecision(approvalId: string, now = Date.now()): void {
+  decidedHere.set(approvalId, now);
+}
+
+/** Whether the DM should keep asking for this start's plan: before the first one, after a
+ *  revision request until a newer pending plan replaces it, and while /ideas still shows a plan
+ *  this person just decided as pending. Every window is bounded. */
 export function waitsForPlan(start: RunningIdea, now = Date.now()): boolean {
   const since = (iso: string | null | undefined) => now - (Date.parse(iso ?? "") || -Infinity);
   if (!start.plan) return since(start.createdAt) < PLAN_FIRST_FOR_MS;
   if (start.plan.status === "revision_requested") return since(start.plan.decidedAt ?? start.createdAt) < PLAN_REVISED_FOR_MS;
-  return false;
+  const decided = decidedHere.get(start.plan.approvalId);
+  return start.plan.status === "pending" && decided !== undefined && now - decided < PLAN_REVISED_FOR_MS;
 }
 
 /** The refresh interval for a DM's starts: PLAN_POLL_MS while any of them waits, else 0. */

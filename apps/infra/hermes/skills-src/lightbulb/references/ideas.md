@@ -7,7 +7,7 @@ and, for bigger jobs, "Tracked in Work: [name](link)". Do it like any request, a
 Compare each Need that names a connector (not the built in `mailbox`, `browser` or `meet`) with
 `connected_integrations` in `$HERMES_HOME/lightbulb-facts.json`. If a connector is missing, ask once, for all of it, posted to the DM named in the task's **From** section with
 `lightbulb-post.sh --room <roomId>`: each service with its Connect link (`lightbulb-connect.sh link
-<provider>`), and for a write you cannot get, what you will hand over as text instead. Then keep doing every part that needs nothing. When the person connects a service,
+<provider>`), and for a write you cannot get, what you will hand over as text instead. The person's record already links the Work item: never paste a Paperclip URL. Then keep doing every part that needs nothing; when only the connect is left, set the task `blocked` (owner you, unblock = the connect) before the turn ends, or Paperclip re-runs you every 30 s. When the person connects a service,
 Paperclip wakes you with a comment on the task; carry on.
 
 - **The link is a task:** it is assigned to you and this run is it; work it and close it with proof.

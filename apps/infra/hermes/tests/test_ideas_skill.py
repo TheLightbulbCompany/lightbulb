@@ -41,6 +41,9 @@ def test_the_skill_routes_ideas_to_a_short_reference(tmp_path):
     assert "from any Work run" in ideas and "request_approval titled" in ideas and "continue when the approval wakes you" in ideas
     assert "assigned to you and this run is it" in ideas and "after checking each task's proof" in ideas
     assert "lightbulb-connect.sh link" in ideas and "comment on the task" in ideas
+    # Waiting on a connect: the task is `blocked`, or Paperclip re-dispatches the run every 30 s (dev, ISS-10).
+    assert "set the task `blocked`" in ideas and "re-runs you every 30 s" in ideas
+    assert "never paste a Paperclip URL" in ideas
     assert "sign-in (live browser only)" in ideas and "`request_approval`" in ideas
     assert "to the feed" in ideas
     # suggest_idea: concrete and company-specific only; never in chat, never on a schedule.

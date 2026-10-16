@@ -29,7 +29,9 @@ def test_the_skill_routes_ideas_to_a_short_reference(tmp_path):
     # The box's limits.
     assert "30 minutes" in ideas and "50 a day" in ideas and "no phone" in ideas
     # Browser steps from a run with no room go back to the DM.
-    assert "hand browser steps back to the DM" in ideas
+    assert "request_approval titled" in ideas and "continue when the approval wakes you" in ideas
+    assert "assigned to you and this run is it" in ideas and "after checking each task's proof" in ideas
+    assert "lightbulb-connect.sh link" in ideas and "comment on the task" in ideas
     assert "sign-in (live browser only)" in ideas and "`request_approval`" in ideas
     assert "to the feed" in ideas
     # suggest_idea: concrete and company-specific only; never in chat, never on a schedule.

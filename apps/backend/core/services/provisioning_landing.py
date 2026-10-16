@@ -46,6 +46,7 @@ Nothing here logs a credential value.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from core.repositories import integrations_repo
@@ -54,19 +55,38 @@ from core.services.credentials import integration_secret_store
 logger = logging.getLogger(__name__)
 
 
+async def _roster(owner_id: str) -> list[str]:
+    from core.services.credentials.hermes_cli import _roster as roster
+
+    return await roster(owner_id)
+
+
+def _patch_profile_env(owner_id: str, agent_id: str, env: dict[str, str]) -> None:
+    from core.services.hermes_profiles import patch_profile_env_and_config
+
+    patch_profile_env_and_config(owner_id, agent_id, env, {})
+
+
 async def land_credentials(*, owner_id: str, resource: dict, env: dict[str, str]) -> None:
-    """Refused: there is no delivery mechanism for a landed credential on this runtime.
-
-    It used to write the values into ``openclaw.json["env"]["vars"]`` under the config lock,
-    and the profile ``.env`` / secret-scope equivalent is deliberately out of scope. Refusing
-    the WHOLE landing -- rather than persisting the secret and the pointer and then failing to
-    deliver -- is what keeps the workflow from going "active" over a credential nothing can
-    reach. The Stripe Projects rail is off by default anyway
-    (``STRIPE_PROVISIONING_ENABLED``).
-    """
-    from core.services.provisioning_workflow import WorkflowRefused
-
-    raise WorkflowRefused("unsupported_on_agentcore", "Provisioning services for this workspace isn't available yet")
+    """Three writes, in the module docstring's order: the provider's blob in Secrets Manager
+    (merged, so a second resource of the same provider keeps the first's keys), the pointer row,
+    then the values into every roster profile's ``.env`` (spec 2026-10-15 §2.10), the same path a
+    connector's secret takes. A profile write that fails raises AFTER the first two landed, so a
+    retry finds the credential and the pointer and only has to deliver again."""
+    provider = resource["provider"]
+    if env:
+        secret_key = integrations_repo.projects_key(provider)
+        blob = dict(await integration_secret_store.get(owner_id, secret_key) or {})
+        blob.update(env)
+        await integration_secret_store.put(owner_id, secret_key, blob)
+    await integrations_repo.record_provider_resource(owner_id, provider, resource)
+    if not env:
+        return
+    for agent_id in await _roster(owner_id):
+        await asyncio.to_thread(_patch_profile_env, owner_id, agent_id, env)
+    logger.info(
+        "provisioning: landed %s/%s for owner=%s keys=%s", provider, resource.get("resource_id"), owner_id, sorted(env)
+    )
 
 
 async def revoke_credentials(*, owner_id: str, provider: str, resource_id: str) -> bool:

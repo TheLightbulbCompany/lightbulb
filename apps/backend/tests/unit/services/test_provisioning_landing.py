@@ -19,28 +19,71 @@ RES = {
 }
 
 
+POINTER = {
+    "resource_id": "res-1",
+    "provider": "resend",
+    "service": "email",
+    "resource_name": "Acme mail",
+    "status": "active",
+    "env_keys": ["RESEND_API_KEY"],
+    "dashboard_url": None,
+    "level": "company",
+    "workflow_id": "wf-1",
+    "project_id": "proj-1",
+}
+
+
+@pytest.fixture
+def stores(monkeypatch):
+    secret = {}
+    monkeypatch.setattr(mod.integration_secret_store, "get", AsyncMock(side_effect=lambda o, k: secret.get((o, k))))
+    monkeypatch.setattr(
+        mod.integration_secret_store,
+        "put",
+        AsyncMock(side_effect=lambda o, k, blob: secret.__setitem__((o, k), dict(blob)) or "arn"),
+    )
+    pointer = AsyncMock(return_value=[POINTER])
+    monkeypatch.setattr(mod.integrations_repo, "record_provider_resource", pointer)
+    patched = []
+    monkeypatch.setattr(mod, "_roster", AsyncMock(return_value=["agent-a", "agent-b"]))
+    monkeypatch.setattr(mod, "_patch_profile_env", lambda o, a, env: patched.append((a, dict(env))))
+    return secret, pointer, patched
+
+
 @pytest.mark.asyncio
-async def test_land_refuses_unconditionally_before_any_write():
-    """The landing was a locked RMW into ``openclaw.json["env"]["vars"]``, and the profile
-    ``.env``/secret-scope equivalent is deliberately out of scope. Refusing the WHOLE landing --
-    rather than persisting the secret and the pointer and then failing to deliver -- is what
-    keeps a workflow from going "active" over a credential nothing can reach.
+async def test_landing_writes_secret_pointer_and_every_profile_env(stores):
+    secret, pointer, patched = stores
+    await mod.land_credentials(owner_id="o1", resource=POINTER, env={"RESEND_API_KEY": "re_123"})
+    assert secret[("o1", mod.integrations_repo.projects_key("resend"))] == {"RESEND_API_KEY": "re_123"}
+    pointer.assert_awaited_once_with("o1", "resend", POINTER)
+    assert patched == [("agent-a", {"RESEND_API_KEY": "re_123"}), ("agent-b", {"RESEND_API_KEY": "re_123"})]
 
-    It used to refuse only for an AgentCore owner; there is one runtime, so it always refuses
-    and nothing is written first."""
-    from core.services.provisioning_workflow import WorkflowRefused
 
-    with (
-        patch.object(mod.integration_secret_store, "get", AsyncMock()) as sm_get,
-        patch.object(mod.integration_secret_store, "put", AsyncMock()) as sm_put,
-        patch.object(mod.integrations_repo, "record_provider_resource", AsyncMock()) as record,
-    ):
-        with pytest.raises(WorkflowRefused) as exc:
-            await mod.land_credentials(owner_id="org_a", resource=RES, env={"X": "1"})
-    assert exc.value.code == "unsupported_on_agentcore"
-    sm_get.assert_not_awaited()
-    sm_put.assert_not_awaited()
-    record.assert_not_awaited()
+@pytest.mark.asyncio
+async def test_landing_merges_into_the_providers_existing_blob(stores):
+    secret, _, _ = stores
+    secret[("o1", mod.integrations_repo.projects_key("resend"))] = {"RESEND_OTHER": "x"}
+    await mod.land_credentials(owner_id="o1", resource=POINTER, env={"RESEND_API_KEY": "re_123"})
+    assert secret[("o1", mod.integrations_repo.projects_key("resend"))] == {
+        "RESEND_OTHER": "x",
+        "RESEND_API_KEY": "re_123",
+    }
+
+
+@pytest.mark.asyncio
+async def test_landing_with_no_env_still_records_the_pointer_and_touches_no_profile(stores):
+    secret, pointer, patched = stores
+    await mod.land_credentials(owner_id="o1", resource={**POINTER, "env_keys": []}, env={})
+    assert not secret and patched == [] and pointer.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_profile_write_failure_is_raised_after_the_secret_and_pointer_landed(stores, monkeypatch):
+    secret, pointer, _ = stores
+    monkeypatch.setattr(mod, "_patch_profile_env", lambda o, a, env: (_ for _ in ()).throw(FileNotFoundError(a)))
+    with pytest.raises(FileNotFoundError):
+        await mod.land_credentials(owner_id="o1", resource=POINTER, env={"RESEND_API_KEY": "re_123"})
+    assert secret and pointer.await_count == 1
 
 
 REVOKE_RES = {"resource_id": "res_1", "provider": "posthog", "env_keys": ["K"]}

@@ -1,5 +1,5 @@
-import type { ReactNode } from "react";
-import type { Components } from "react-markdown";
+import type { ComponentType, ReactNode } from "react";
+import type { Components, ExtraProps } from "react-markdown";
 import { CARD_FENCE } from "@lightbulb/shared";
 import { markdownComponents } from "@/components/teams/shared/components/MarkdownView";
 import { OpenUICard } from "./openui/OpenUICard";
@@ -11,11 +11,14 @@ import { useMessagingWorkspaceOptional } from "./MessagingWorkspaceContext";
 import { openAppLink } from "./RoomAppLinks";
 
 const CARD_CLASS = `language-${CARD_FENCE}`;
-const DefaultCode = markdownComponents.code!;
-const DefaultPre = markdownComponents.pre!;
+type CodeProps = React.ComponentProps<"code"> & ExtraProps;
+type PreProps = React.ComponentProps<"pre"> & ExtraProps;
+// They are plain function components in MarkdownView; cast once so the fallback is renderable.
+const DefaultCode = markdownComponents.code as ComponentType<CodeProps>;
+const DefaultPre = markdownComponents.pre as ComponentType<PreProps>;
 
 /** An agent's card fence. Without a CardContext (a person's message, a transcript) it stays code. */
-function CodeOrCard(props: React.ComponentProps<typeof DefaultCode>) {
+function CodeOrCard(props: CodeProps) {
   const ctx = useCardContext();
   const { className, children } = props as { className?: string; children?: ReactNode };
   if (ctx && typeof className === "string" && className.split(" ").includes(CARD_CLASS)) {
@@ -25,7 +28,7 @@ function CodeOrCard(props: React.ComponentProps<typeof DefaultCode>) {
 }
 
 /** react-markdown wraps block code in <pre>; a card must not inherit the code box. */
-function PreOrCard(props: React.ComponentProps<typeof DefaultPre>) {
+function PreOrCard(props: PreProps) {
   const ctx = useCardContext();
   const node = (props as { node?: { children?: { type: string; properties?: { className?: unknown } }[] } }).node;
   const first = node?.children?.find((c) => c.type === "element");

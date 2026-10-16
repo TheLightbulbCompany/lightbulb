@@ -8,6 +8,7 @@ import json
 import shutil
 import sqlite3
 import sys
+import threading
 import types
 from contextlib import nullcontext
 
@@ -74,15 +75,30 @@ class FakeDB:
 
 
 class HandleCache:
-    """gateway.session_db_recovery.RecoverableHandleCache, minus the backoff."""
+    """gateway.session_db_recovery.RecoverableHandleCache, minus the backoff: single-flight per
+    path, so a get while another thread's open is in flight answers None (session_db_recovery.py:86
+    on the pinned tag), as does a failed open."""
 
     def __init__(self):
-        self.handles = {}
+        self.handles, self.opening, self.lock = {}, set(), threading.Lock()
 
     def get(self, path, opener):
-        if path not in self.handles:
-            self.handles[path] = opener()
-        return self.handles[path]
+        with self.lock:
+            if path in self.handles:
+                return self.handles[path]
+            if path in self.opening:
+                return None
+            self.opening.add(path)
+        try:
+            handle = opener()
+        except Exception:
+            return None
+        finally:
+            with self.lock:
+                self.opening.discard(path)
+        with self.lock:
+            self.handles[path] = handle
+        return handle
 
 
 #: What the fake AIAgent's next run_conversation calls return (or raise), in order; then "ok".
@@ -192,6 +208,42 @@ def test_one_shared_handle_per_profile_for_the_process(hermes, home):
     _run_paperclip()
     _run_paperclip()
     assert len(acquired) == 1 and built[0].kw["session_db"] is built[1].kw["session_db"]
+
+
+def test_two_first_turns_of_one_agent_at_once_both_get_the_session_db(hermes, home, monkeypatch):
+    """Dev pilot: one agent's two conversations starting at once in a fresh microVM. The first
+    turn's open (with its retention pass) was in flight, so the second read the cache's None as
+    "state.db unavailable" and failed. The second must wait for that open instead."""
+    _acquired, built, _dbs = hermes
+    real_acquire = sys.modules["hermes_state_registry"].acquire
+    opening, release = threading.Event(), threading.Event()
+
+    def slow_acquire(path):
+        opening.set()
+        release.wait(5)
+        return real_acquire(path)
+
+    monkeypatch.setitem(sys.modules, "hermes_state_registry", types.SimpleNamespace(acquire=slow_acquire))
+    room_b = {"id": "33333333-3333-4333-8333-333333333333", "name": "b", "kind": "channel", "revision": 1}
+    outcomes = []
+
+    def turn_in(room):
+        try:
+            outcomes.append(turn._run_hermes("ceo", f.ingress(**({"room": room} if room else {})), None)[0])
+        except Exception as exc:  # noqa: BLE001 -- the failure under test
+            outcomes.append(repr(exc))
+
+    first = threading.Thread(target=turn_in, args=(None,))
+    first.start()
+    assert opening.wait(5)
+    second = threading.Thread(target=turn_in, args=(room_b,))
+    second.start()
+    second.join(0.5)  # it either failed already or waits for the open
+    release.set()
+    first.join(5)
+    second.join(5)
+    assert outcomes == ["completed", "completed"]
+    assert len(built) == 2 and built[0].kw["session_db"] is built[1].kw["session_db"]
 
 
 def test_aiagent_is_built_in_exactly_one_place():

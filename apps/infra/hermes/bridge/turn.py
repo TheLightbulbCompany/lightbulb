@@ -3019,6 +3019,12 @@ def profile_toolsets() -> tuple[list[str] | None, list[str] | None]:
 #: post-turn writers (title, token deltas). Restore never replaces state.db after the first acquire
 #: (_pull_changed_objects skips SQLite files), so no generation retires.
 _session_dbs = None
+#: Per agent: the cache is single-flight and answers None to a get while another thread's open is
+#: in flight, so a concurrent first turn waits here for that open instead of failing as "state.db
+#: unavailable" (dev pilot 10-15: two conversations of one agent starting at once in a fresh
+#: microVM, one failed 4.4 s and one 36.7 s in, behind the first open's retention pass).
+_session_db_opens: dict[str, threading.Lock] = {}
+_session_db_opens_guard = threading.Lock()
 
 
 def _session_db(agent_id: str):
@@ -3040,15 +3046,18 @@ def _session_db(agent_id: str):
         from hermes_state_registry import acquire
     except ImportError:
         return None
-    if _session_dbs is None:
-        _session_dbs = RecoverableHandleCache()
+    with _session_db_opens_guard:
+        if _session_dbs is None:
+            _session_dbs = RecoverableHandleCache()
+        opening = _session_db_opens.setdefault(agent_id, threading.Lock())
 
     def open_db():
         db = acquire(_profile_dir(agent_id) / "state.db")
         log.info("state.db maintenance %s: %s", agent_id, db.maybe_auto_prune_and_vacuum())
         return db
 
-    db = _session_dbs.get(_profile_dir(agent_id) / "state.db", open_db)
+    with opening:
+        db = _session_dbs.get(_profile_dir(agent_id) / "state.db", open_db)
     if db is None:
         log.warning("state.db unavailable for %s; this turn is not recorded", agent_id)
     return db

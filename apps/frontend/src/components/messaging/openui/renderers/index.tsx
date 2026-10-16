@@ -1,6 +1,8 @@
 import type { ComponentType } from "react";
 import type { CardName } from "@lightbulb/shared";
 import { Button as UiButton } from "@/components/ui/button";
+import { BarChartView, LineChartView } from "./charts";
+import { CalloutView, ColView, EditableTableView, ImageView, MetricView, SourcesView, StepsView, TableView } from "./show";
 import { useCardPress, type RenderProps, type SubComponent } from "./shared";
 
 export type { RenderProps, SubComponent } from "./shared";
@@ -34,4 +36,14 @@ export const RENDERERS: Partial<Record<CardName, ComponentType<RenderProps<never
   Stack: StackView as ComponentType<RenderProps<never>>,
   Buttons: ButtonsView as ComponentType<RenderProps<never>>,
   Text: TextView as ComponentType<RenderProps<never>>,
+  Callout: CalloutView as ComponentType<RenderProps<never>>,
+  Metric: MetricView as ComponentType<RenderProps<never>>,
+  Table: TableView as ComponentType<RenderProps<never>>,
+  Col: ColView as ComponentType<RenderProps<never>>,
+  EditableTable: EditableTableView as ComponentType<RenderProps<never>>,
+  Steps: StepsView as ComponentType<RenderProps<never>>,
+  Sources: SourcesView as ComponentType<RenderProps<never>>,
+  Image: ImageView as ComponentType<RenderProps<never>>,
+  BarChart: BarChartView as ComponentType<RenderProps<never>>,
+  LineChart: LineChartView as ComponentType<RenderProps<never>>,
 };

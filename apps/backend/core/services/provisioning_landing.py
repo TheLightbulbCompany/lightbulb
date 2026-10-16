@@ -53,6 +53,15 @@ from core.services.credentials import integration_secret_store
 
 logger = logging.getLogger(__name__)
 
+# ponytail: in-process only -- two backend tasks in different processes could still race the
+# blob's read-merge-write; a DynamoDB conditional lock is the upgrade.
+_provider_locks: dict[tuple[str, str], asyncio.Lock] = {}
+
+
+def _provider_lock(owner_id: str, provider: str) -> asyncio.Lock:
+    return _provider_locks.setdefault((owner_id, provider), asyncio.Lock())
+
+
 # Names the runtime owns: a provider credential must never shadow them in a profile's ``.env``.
 RESERVED_ENV_PREFIXES = ("PAPERCLIP_", "MCP_", "GOG_", "LIGHTBULB_", "ISOL8_", "OPENCLAW_", "HERMES_", "AWS_")
 RESERVED_ENV_NAMES = frozenset({"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"})
@@ -82,16 +91,17 @@ async def land_credentials(*, owner_id: str, resource: dict, env: dict[str, str]
 
             raise WorkflowRefused("reserved_env_name", f"Provider credential name {name!r} is reserved on this runtime")
     provider = resource["provider"]
-    if env:
-        secret_key = integrations_repo.projects_key(provider)
-        blob = dict(await integration_secret_store.get(owner_id, secret_key) or {})
-        blob.update(env)
-        await integration_secret_store.put(owner_id, secret_key, blob)
-    await integrations_repo.record_provider_resource(owner_id, provider, resource)
-    if not env:
-        return
-    for agent_id in await _roster(owner_id):
-        await asyncio.to_thread(_patch_profile_env, owner_id, agent_id, env)
+    async with _provider_lock(owner_id, provider):
+        if env:
+            secret_key = integrations_repo.projects_key(provider)
+            blob = dict(await integration_secret_store.get(owner_id, secret_key) or {})
+            blob.update(env)
+            await integration_secret_store.put(owner_id, secret_key, blob)
+        await integrations_repo.record_provider_resource(owner_id, provider, resource)
+        if not env:
+            return
+        for agent_id in await _roster(owner_id):
+            await asyncio.to_thread(_patch_profile_env, owner_id, agent_id, env)
     logger.info(
         "provisioning: landed %s/%s for owner=%s keys=%s", provider, resource.get("resource_id"), owner_id, sorted(env)
     )
@@ -129,15 +139,16 @@ async def revoke_credentials(*, owner_id: str, provider: str, resource_id: str) 
     env_keys = [k for k in (target.get("env_keys") or []) if k not in still_used]
 
     if env_keys:
-        secret_key = integrations_repo.projects_key(provider)
-        blob = await integration_secret_store.get(owner_id, secret_key)
-        if blob is not None:
-            for key in env_keys:
-                blob.pop(key, None)
-            if blob:
-                await integration_secret_store.put(owner_id, secret_key, blob)
-            else:
-                await integration_secret_store.delete(owner_id, secret_key)
+        async with _provider_lock(owner_id, provider):
+            secret_key = integrations_repo.projects_key(provider)
+            blob = await integration_secret_store.get(owner_id, secret_key)
+            if blob is not None:
+                for key in env_keys:
+                    blob.pop(key, None)
+                if blob:
+                    await integration_secret_store.put(owner_id, secret_key, blob)
+                else:
+                    await integration_secret_store.delete(owner_id, secret_key)
         # Clear the same names from every roster profile's ``.env`` (an empty value deletes the
         # key), so the agent stops holding the revoked secret.
         for agent_id in await _roster(owner_id):

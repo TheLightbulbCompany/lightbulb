@@ -112,7 +112,7 @@ only one who can manage it; one ChatGPT account per workspace), or **BYO API
 key** (owner's Anthropic/OpenAI key, billed by that provider).
 
 **Never state the owner's plan or provider from memory.** Read
-`~/.openclaw/lightbulb-facts.json` — Lightbulb keeps it current:
+`$HERMES_HOME/lightbulb-facts.json` — Lightbulb keeps it current:
 
 ```json
 {

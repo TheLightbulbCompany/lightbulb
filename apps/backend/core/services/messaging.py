@@ -4156,6 +4156,7 @@ async def create_human_message(
         if native_source_id
         else messaging_repo.human_idemp_sk(auth.user_id, str(request.client_message_id))
     )
+    effective_targets = targets if wake else []  # what is stored is what telemetry reports
     try:
         item, replayed = await messaging_repo.create_message(
             room_id=room_id,
@@ -4169,7 +4170,7 @@ async def create_human_message(
             reply_to_message_id=str(request.reply_to_message_id) if request.reply_to_message_id else None,
             thread_root_message_id=str(request.thread_root_message_id) if request.thread_root_message_id else None,
             run_id=None,
-            dispatch_targets=targets if wake else [],
+            dispatch_targets=effective_targets,
             source_agent_id=None,
             client_message_id=str(request.client_message_id),
             via=via,
@@ -4203,13 +4204,13 @@ async def create_human_message(
     if not replayed:
         _publish_message_created_soon(item)
         agent_mentions = sum(1 for ref in mentions if ref.get("kind") == "agent")
-        _emit_dispatch_targets(targets, room_kind, "session" if native_source_id else "human")
+        _emit_dispatch_targets(effective_targets, room_kind, "session" if native_source_id else "human")
         put_metric(
             "messaging.message.created",
             dimensions={
                 "author_kind": "session" if native_source_id else "human",
                 "room_kind": room_kind,
-                "has_targets": "true" if targets else "false",
+                "has_targets": "true" if effective_targets else "false",
             },
         )
         if not native_source_id:

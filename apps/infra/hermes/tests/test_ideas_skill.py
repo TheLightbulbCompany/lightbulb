@@ -55,3 +55,21 @@ def test_the_skill_routes_ideas_to_a_short_reference(tmp_path):
     assert "except idea work" in (out / "paperclip/SKILL.md").read_text()
     plugin = (HERMES / "plugins/lightbulb/plugin.yaml").read_text()
     assert "- suggest_idea" in plugin
+
+
+def test_the_built_skills_point_at_the_hermes_facts_file(tmp_path):
+    out = tmp_path / "skills"
+    subprocess.run([str(HERMES / "build-skills.sh"), str(out)], check=True, capture_output=True)
+    ideas = (out / "lightbulb/references/ideas.md").read_text()
+    assert "$HERMES_HOME/lightbulb-facts.json" in ideas and ".openclaw/" not in ideas
+    stale = [str(p) for p in out.rglob("*") if p.is_file() and "~/.openclaw/lightbulb-facts.json" in p.read_text()]
+    assert stale == []
+
+
+def test_the_skill_sources_carry_no_openclaw_facts_path():
+    stale = [
+        str(p)
+        for p in (HERMES / "skills-src").rglob("*.md")
+        if p.name != "MAINTENANCE.md" and "openclaw/lightbulb-facts" in p.read_text()
+    ]
+    assert stale == []

@@ -5,7 +5,7 @@ and, for bigger jobs, "Tracked in Work: [name](link)". Do it like any request, a
 
 **First, the Work item.** Read the Work item's **Needs** and **Done means** before anything else.
 Compare each Need that names a connector (not the built in `mailbox`, `browser` or `meet`) with
-`connected_integrations` in `~/.openclaw/lightbulb-facts.json`. If a connector is missing, ask once, for all of it, posted to the DM named in the task's **From** section with
+`connected_integrations` in `$HERMES_HOME/lightbulb-facts.json`. If a connector is missing, ask once, for all of it, posted to the DM named in the task's **From** section with
 `lightbulb-post.sh --room <roomId>`: each service with its Connect link (`lightbulb-connect.sh link
 <provider>`), and for a write you cannot get, what you will hand over as text instead. Then keep doing every part that needs nothing. When the person connects a service,
 Paperclip wakes you with a comment on the task; carry on.

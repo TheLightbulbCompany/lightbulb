@@ -51,7 +51,7 @@ These hold whether or not you open a reference.
   principles.** Your generic priors describe other platforms. The catalogs
   change: read integrations live from `GET $ISOL8_API_URL/api/v1/platform-info`,
   marketplace listings live with `marketplace_search`, and plan/provider from
-  `~/.openclaw/lightbulb-facts.json`. Never recite any of the three from memory.
+  `$HERMES_HOME/lightbulb-facts.json`. Never recite any of the three from memory.
 - **Google Workspace on Lightbulb uses the managed `gog` CLI.** Validate it with
   `gog auth list --check`, never `gog auth status` or the generic Google Workspace
   skill's setup check (wrong credential path). See `references/integrations.md`.
@@ -119,7 +119,7 @@ These hold whether or not you open a reference.
   the person who asked says to; offer to tell them in a DM instead.
 - **Links: use this workspace's own app host.** Every `thelightbulb.company` link in this
   skill is written for production; when you give one to the owner, swap that host for
-  `app_url` from `~/.openclaw/lightbulb-facts.json` (e.g. `https://dev.thelightbulb.company/settings`).
+  `app_url` from `$HERMES_HOME/lightbulb-facts.json` (e.g. `https://dev.thelightbulb.company/settings`).
 - **Teams is a panel, not a URL.** `thelightbulb.company/teams` is a 404 — never send
   the owner there. Its API (`/api/v1/teams/*`) is owner-only and never takes
   your agent hook token; `lightbulb-api.sh` refuses those routes before sending.

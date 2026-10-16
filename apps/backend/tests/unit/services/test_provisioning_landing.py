@@ -76,6 +76,26 @@ async def test_landing_merges_into_the_providers_existing_blob(stores):
 
 
 @pytest.mark.asyncio
+async def test_concurrent_landings_for_one_provider_keep_both_keys(stores, monkeypatch):
+    import asyncio
+
+    secret, _, _ = stores
+    real_get = mod.integration_secret_store.get
+
+    async def slow_get(o, k):
+        blob = await real_get(o, k)
+        await asyncio.sleep(0)  # yield between read and write, as a real store would
+        return blob
+
+    monkeypatch.setattr(mod.integration_secret_store, "get", slow_get)
+    await asyncio.gather(
+        mod.land_credentials(owner_id="o1", resource=POINTER, env={"A_KEY": "a"}),
+        mod.land_credentials(owner_id="o1", resource=POINTER, env={"B_KEY": "b"}),
+    )
+    assert secret[("o1", mod.integrations_repo.projects_key("resend"))] == {"A_KEY": "a", "B_KEY": "b"}
+
+
+@pytest.mark.asyncio
 async def test_landing_with_no_env_still_records_the_pointer_and_touches_no_profile(stores):
     secret, pointer, patched = stores
     await mod.land_credentials(owner_id="o1", resource={**POINTER, "env_keys": []}, env={})

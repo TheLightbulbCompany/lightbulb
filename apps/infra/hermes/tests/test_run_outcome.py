@@ -245,3 +245,22 @@ def test_a_voice_run_is_never_offered_silence():
     request = {"voice": {"roomKind": "channel", "speaker": {"id": "u1", "name": "Aden"}}, "participants": []}
     body = turn._voice_body({"roomId": "room-1", "agentId": "ceo", "callId": "call-1"}, request)
     assert "eventKind" not in body and "[SILENT]" not in turn._observe_prompt("ceo", body)
+
+
+def test_a_chatgpt_oauth_agent_gets_hermes_credential_pool(monkeypatch):
+    """Hermes recovers an expired ChatGPT token only through the pool (ISOA-837, 2026-10-15):
+    the bridge resolves it the way Hermes's own runners do and hands it to AIAgent."""
+    import sys
+    import types
+    calls = []
+    pool = object()
+    fake = types.ModuleType("hermes_cli.runtime_provider")
+    fake.resolve_runtime_provider = lambda **kw: calls.append(kw) or {"credential_pool": pool}
+    monkeypatch.setitem(sys.modules, "hermes_cli", types.ModuleType("hermes_cli"))
+    monkeypatch.setitem(sys.modules, "hermes_cli.runtime_provider", fake)
+    assert turn._credential_pool("openai-codex", "gpt-5.6-sol") is pool
+    assert calls == [{"requested": "openai-codex", "target_model": "gpt-5.6-sol"}]
+    # The managed gate and BYO keys keep Hermes's pool-less behaviour.
+    assert turn._credential_pool("custom", "m") is None and turn._credential_pool("", "") is None
+    fake.resolve_runtime_provider = lambda **kw: (_ for _ in ()).throw(RuntimeError("no store"))
+    assert turn._credential_pool("openai-codex", "m") is None  # never fails the turn

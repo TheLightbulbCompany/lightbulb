@@ -86,7 +86,8 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
     attachments: message.attachments ?? [], answered: cardAnswer,
     onReply: onCardReply && actionable ? (replyText: string) => onCardReply({ text: replyText, agentId: message.author.id, messageId: message.messageId, threadRootMessageId: message.threadRootMessageId }) : undefined,
     attachmentUrl: onAttachmentUrl,
-  }, [message, cardAnswer, onCardReply, actionable, onAttachmentUrl]);
+  }, [message.messageId, message.roomId, message.author.kind, message.author.id, message.threadRootMessageId, message.deletedAt, message.attachments,
+    cardAnswer, onCardReply, actionable, onAttachmentUrl]);
   const name = participant?.displayName || message.author.displayName || "Unknown author";
   const timestamp = !Number.isNaN(Date.parse(message.createdAt)) ? message.createdAt : undefined;
   const time = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";

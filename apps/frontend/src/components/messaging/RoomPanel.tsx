@@ -641,6 +641,16 @@ function RoomContent({
 
   const welcomeRoom = Boolean(room?.isDefault) && inShell;
   const revealStarter = Boolean(room?.isDefault) && !messages.some((m) => m.author.kind === "human");
+  // One pass per message list, so a keystroke (which re-renders the panel) re-scans nothing.
+  const cardAnswers = useMemo(() => {
+    const answers = new Map<string, string>();
+    for (const m of messages) {
+      if (m.author.kind !== "agent") continue;
+      const answer = cardAnswerFor(messages, m);
+      if (answer !== null) answers.set(m.messageId, answer);
+    }
+    return answers;
+  }, [messages]);
   const renderMessage = useCallback((message: RoomMessage, inThread = false, collapsed = false) => {
     const participant = participants.find((member) => member.kind === message.author.kind && member.id === message.author.id);
     const mentionsMe = message.mentions.some((mention) => mention.kind === "human" && mention.id === currentUserId);
@@ -658,7 +668,7 @@ function RoomContent({
       onToggleReaction={onSetReaction && !message.deletedAt ? (emoji) => void toggleReaction(message, emoji) : undefined}
       onOpenThread={(button) => openDetail("thread", message.messageId, button)}
       onSelectParticipant={onSelectParticipant} onUpdateMessage={onUpdateMessage} onDownloadAttachment={onDownloadAttachment} onAttachmentUrl={onAttachmentUrl}
-      onCardReply={onCardReply} cardAnswer={message.author.kind === "agent" ? cardAnswerFor(messages, message) : null}
+      onCardReply={onCardReply} cardAnswer={cardAnswers.get(message.messageId) ?? null}
       sessions={visibleSessions} onOpenSession={openSessionPanel}
       menuExtras={!message.deletedAt && (onSetPin || (onMarkUnreadFrom && !inThread)) ? <>
         {/* disabled/aria-busy reflect messageActionPending -- shared across every message's
@@ -697,7 +707,7 @@ function RoomContent({
     return body(message.text);
   }, [revealStarter, participants, currentUserId, repliesByRoot, threadActivity, receipts, id, actionable, editTarget, searchTarget,
     quickReactions, reactionPending, reactionError, onSetReaction, toggleReaction, openDetail,
-    onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onCardReply, messages, onSetPin, onMarkUnreadFrom,
+    onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onCardReply, cardAnswers, onSetPin, onMarkUnreadFrom,
     messageActionPending, runMessageAction, pinnedMessageIds, copied, copyError, roomId, visibleSessions]);
   // A run that ended without a saved reply (stopped, failed, no reply) stays where it happened,
   // after the message it followed; only live runs ride the tail below the newest message.

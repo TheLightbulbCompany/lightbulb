@@ -98,12 +98,18 @@ export function SourcesView({ props }: RenderProps<{ sources: { title: string; u
 export function ImageView({ props }: RenderProps<{ fileName: string; alt: string }>) {
   const ctx = useCardContext();
   const attachment = ctx?.attachments.find((a) => a.fileName === props.fileName && a.contentType.startsWith("image/"));
-  const [url, setUrl] = useState<string | null>(null);
+  // Keyed on ids, not objects: a re-render with a fresh context must not refetch the URL.
+  // The URL is stored with its attachment id, so a changed attachment reads as "no URL yet".
+  const [loaded, setLoaded] = useState<{ id: string; url: string } | null>(null);
+  const attachmentId = attachment?.id;
+  const roomId = ctx?.roomId;
+  const attachmentUrl = ctx?.attachmentUrl;
   useEffect(() => {
     let live = true;
-    if (attachment && ctx?.attachmentUrl) void ctx.attachmentUrl(ctx.roomId, attachment.id).then((r) => { if (live) setUrl(r.url); }).catch(() => {});
+    if (attachmentId && roomId && attachmentUrl) void attachmentUrl(roomId, attachmentId).then((r) => { if (live) setLoaded({ id: attachmentId, url: r.url }); }).catch(() => {});
     return () => { live = false; };
-  }, [attachment, ctx]);
+  }, [attachmentId, roomId, attachmentUrl]);
+  const url = loaded && loaded.id === attachmentId ? loaded.url : null;
   if (!attachment || !url) return <span className="text-muted-foreground text-caption">{props.alt}</span>;
   // eslint-disable-next-line @next/next/no-img-element -- a presigned attachment URL, not a page asset
   return <img src={url} alt={props.alt} className="max-w-full rounded-sm" />;

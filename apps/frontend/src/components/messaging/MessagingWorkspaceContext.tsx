@@ -867,16 +867,18 @@ export function MessagingWorkspaceProvider({
   const markUnreadFrom = useCallback(async (fromSeq: number) => {
     if (unreadRoomId) await markRoomUnread(unreadRoomId, fromSeq);
   }, [unreadRoomId, markRoomUnread]);
+  // Stable identity: a fresh function per render would re-render every message on each keystroke.
+  const onCardReply = useCallback(async (reply: CardReply) => {
+    await sendRoomMessage({
+      clientMessageId: crypto.randomUUID(),
+      text: reply.text,
+      mentions: [{ kind: "agent", id: reply.agentId }],
+      replyToMessageId: reply.messageId,
+      threadRootMessageId: reply.threadRootMessageId,
+    });
+  }, [sendRoomMessage]);
   const roomProps: RoomPanelProps | null = rooms.activeRoomId ? {
-    onCardReply: async (reply: CardReply) => {
-      await sendRoomMessage({
-        clientMessageId: crypto.randomUUID(),
-        text: reply.text,
-        mentions: [{ kind: "agent", id: reply.agentId }],
-        replyToMessageId: reply.messageId,
-        threadRootMessageId: reply.threadRootMessageId,
-      });
-    },
+    onCardReply,
     ownerScopeId: scope,
     currentUserId: userId ?? "",
     roomId: rooms.activeRoomId,

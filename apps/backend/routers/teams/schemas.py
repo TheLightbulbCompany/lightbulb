@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 from pydantic.alias_generators import to_camel
 
 
@@ -648,17 +648,32 @@ class CreateWorkProductBody(_Strict):
 _RECOVERY_ACTION_ID = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 
 
+_ReconciliationEvidence = Annotated[str, StringConstraints(strip_whitespace=True, min_length=20, max_length=12000)]
+
+
+class ExecutionReconciliationBody(_Strict):
+    """Upstream ``executionReconciliation`` (``.strict()``): the stopped run, and
+    what it got done before it stopped. Paperclip checks the run is the recovery
+    source and is no longer running."""
+
+    run_id: str = Field(pattern=_RECOVERY_ACTION_ID)
+    provider_stopped: Literal[True]
+    action_outcome: Literal["completed", "not_performed", "mixed"]
+    outcome_evidence: _ReconciliationEvidence
+    workspace_repair_evidence: Optional[_ReconciliationEvidence] = None
+
+
 class ResolveIssueRecoveryActionBody(_Strict):
     """Body for ``POST /teams/issues/{id}/recovery-actions/resolve``.
 
     Mirrors upstream's ``resolveIssueRecoveryActionSchema`` (``.strict()``,
-    packages/shared/src/validators/issue.ts @ v2026.916.1-isol8.2), including its
-    outcome ↔ ``sourceIssueStatus`` pairing. ``executionReconciliation`` is
-    deliberately NOT accepted: it is the provider-stopped evidence attestation
-    for reconciliation-class causes, and the ported card hides itself for those
-    (``requiresExecutionReconciliation``) — so nothing here ever sends it.
+    packages/shared/src/validators/issue.ts @ v2026.1012.0-isol8.1), including its
+    outcome ↔ ``sourceIssueStatus`` pairing. ``executionReconciliation`` is the
+    person's answer to "did the stopped run finish what it was doing?" for a
+    reconciliation-class cause; the route takes it only from a human session.
     """
 
+    execution_reconciliation: Optional[ExecutionReconciliationBody] = None
     action_id: Optional[str] = Field(default=None, pattern=_RECOVERY_ACTION_ID)
     outcome: str = Field(pattern=r"^(restored|false_positive|blocked|cancelled)$")
     source_issue_status: str = Field(pattern=r"^(todo|done|in_review|blocked)$")

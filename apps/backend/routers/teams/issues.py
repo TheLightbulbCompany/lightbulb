@@ -19,6 +19,7 @@ from fastapi.responses import StreamingResponse
 # subclasses); isinstance-check against the base so it matches both.
 from starlette.datastructures import UploadFile
 
+from core.auth import AuthContext, get_human_session
 from core.services import handoff_analytics
 from core.services.paperclip_admin_client import ISSUE_ID_PATTERN
 
@@ -419,12 +420,19 @@ async def resolve_issue_recovery_action(
     issue_id: CompanyIssueId,
     body: ResolveIssueRecoveryActionBody,
     ctx: TeamsContext = Depends(_ctx),
+    _human: AuthContext = Depends(get_human_session),
 ):
     """Record the human's decision on a boarded recovery (Try again / Mark done /
-    Send for review / False positive). Maps to upstream
+    Send for review / False positive, or Resume a stopped run with
+    ``executionReconciliation``). Maps to upstream
     ``POST /api/issues/{id}/recovery-actions/resolve``; Paperclip's own 4xx reason
     (stale action, board-only outcome) reaches the caller via main.py's
-    ``PaperclipApiError`` handler."""
+    ``PaperclipApiError`` handler.
+
+    Only a first-party Clerk session (a person in the web, desktop or phone app)
+    may answer: an OAuth/tool token gets 403, so an agent can never attest its
+    own stopped run. The member's Paperclip session makes the actor that person
+    (a board user), which upstream requires for a reconciliation."""
     return await _agents._admin().resolve_issue_recovery_action(
         issue_id=issue_id,
         body=body.model_dump(exclude_none=True, by_alias=True),

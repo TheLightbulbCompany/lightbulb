@@ -653,6 +653,9 @@ export interface ExecutionBlocker {
   agentId: string | null;
   cause: string;
   nextAction: string;
+  /** Paperclip's continuation candidates; the server rechecks on the call. */
+  canContinue?: boolean;
+  canRetry?: boolean;
 }
 
 /** Full heartbeat-run row for the run-detail panel (upstream

@@ -67,8 +67,10 @@ These hold whether or not you open a reference.
   briefs, notes and other working files in that folder: your profile is saved, except
   `.scratch/`. A repository is cloned once, partially, at `$HERMES_HOME/.run/<repo>`.
   `.scratch/` and `/tmp` are not saved but sit on the one ~4 GB disk all teammates share
-  until the microVM is recycled: keep ONE worktree under `$HERMES_HOME/.scratch/wt`,
-  and remove it when the task ends. Small projects may install what they need. Do not
+  until the microVM is recycled: keep one worktree per task under `$HERMES_HOME/.scratch/wt`.
+  A Paperclip task's worktree (`task-<issueId>/<repo>`) is made for you, kept across
+  that task's runs and removed when the task closes; never remove it yourself. Remove one
+  you made when its work is pushed. Small projects may install what they need. Do not
   install dependencies or run test suites for a large repository
   (TheLightbulbCompany/lightbulb's one install is 2.4 GB and stalled the workspace twice):
   push the branch and read the CI result (`references/software-projects.md`).

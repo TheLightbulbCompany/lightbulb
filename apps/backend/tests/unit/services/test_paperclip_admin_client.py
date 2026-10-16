@@ -192,6 +192,31 @@ async def test_create_agent_passes_adapter_type_and_config(client_factory):
     assert "idempotencyKey" not in body
     assert "idempotencyReplayOnly" not in body
     assert captured["idempotency_key"] == "agent-create-1"
+    assert "runtimeConfig" not in body  # no cap for a non-engineer
+
+
+async def test_create_engineer_is_born_with_the_run_cap(client_factory):
+    bodies = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        bodies.append(_json.loads(req.read().decode()))
+        return httpx.Response(201, json={"id": "agent_1"})
+
+    client = client_factory(handler)
+    for runtime_config in (None, {"heartbeat": {"enabled": True}}):
+        await client.create_agent(
+            session_cookie="s",
+            company_id="co",
+            name="Forge",
+            role="engineer",
+            adapter_type="hermes_gateway",
+            adapter_config={},
+            runtime_config=runtime_config,
+        )
+    assert [b["runtimeConfig"] for b in bodies] == [
+        {"heartbeat": {"maxConcurrentRuns": 2}},
+        {"heartbeat": {"enabled": True, "maxConcurrentRuns": 2}},
+    ]
 
 
 async def test_create_agent_replay_only_reuses_the_same_header_key(client_factory):

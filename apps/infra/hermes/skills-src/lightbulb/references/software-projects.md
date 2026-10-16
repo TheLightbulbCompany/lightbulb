@@ -63,8 +63,12 @@ removed from the saved copy at your next save.
   (unlike `/tmp`, your file tools can write there). `.scratch/` is never saved,
   but it is on the one ~4 GB disk every teammate shares, and it is emptied only
   when the microVM is recycled; your shell can write `/tmp`, which is the same
-  disk. So keep **ONE worktree in total**, and remove it when the task ends, not
-  when the PR merges. Your shell starts in the conversation's folder, so name the
+  disk. So keep **one worktree per task**. A Paperclip task's is made for you at
+  `$HERMES_HOME/.scratch/wt/task-<issueId>/REPO` on branch `task/<first 8 of the
+  issue id>`: work there, continue from its commits on the task's next run, and
+  leave it alone at the end (it is removed when the task closes or its merged branch
+  is deleted). For work outside a Paperclip task, make your own and remove it when
+  the work is pushed. Your shell starts in the conversation's folder, so name the
   clone in every command (`C="$HERMES_HOME/.run/REPO"`):
   `git -C "$C" fetch origin main`, then
   `git -C "$C" worktree add "$HERMES_HOME/.scratch/wt/REPO" -b BRANCH origin/main`;

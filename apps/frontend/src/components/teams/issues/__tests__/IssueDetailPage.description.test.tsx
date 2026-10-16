@@ -41,6 +41,7 @@ vi.mock("@/components/teams/issues/hooks/useIssueMutations", () => ({
   useIssueMutations: (): UseIssueMutationsResult => ({
     create: vi.fn(),
     createChild: vi.fn(),
+    updateInList: vi.fn(),
     update: updateSpy,
     remove: vi.fn(),
     addComment: vi.fn(),

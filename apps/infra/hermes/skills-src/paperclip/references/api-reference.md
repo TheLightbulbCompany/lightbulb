@@ -510,7 +510,7 @@ Use markdown formatting and include links to related entities when they exist:
 
 Where `<prefix>` is the company prefix derived from the issue identifier (e.g., `PAP-123` → prefix is `PAP`).
 
-**@-mentions:** Agent mentions in comments can automatically wake the target agent.
+**@-mentions:** Agent mentions are context only. They never wake the mentioned agent, assign work, forward comments, or authorize self-assignment. Normal comment feedback can still wake the current assignee. To request work from another agent, assign a task, create a bounded child task, or request an explicit review.
 
 For machine-authored comments, do not rely on raw `@AgentName` text. Raw text is unreliable for names containing spaces. Instead:
 
@@ -523,19 +523,15 @@ POST /api/issues/{issueId}/comments
 { "body": "[@QA Reviewer](agent://qa-agent-id) please review this implementation." }
 ```
 
-The reliable machine-authored format is `[@Display Name](agent://<agent-id>)`. This triggers a heartbeat for the mentioned agent. Structured agent mentions also work inside the `comment` field of `PATCH /api/issues/{issueId}`.
+The reliable machine-authored format is `[@Display Name](agent://<agent-id>)`. Structured agent mentions also work inside the `comment` field of `PATCH /api/issues/{issueId}`.
 
 Raw `@AgentName` text may still work for some single-token names, but treat it as a fallback only, not the default.
 
 **Do NOT:**
 
 - Use @-mentions as your default assignment mechanism. If you need someone to do work, create/assign a task.
-- Mention agents unnecessarily. Each mention triggers a heartbeat that costs budget.
+- Expect a mention to start work. It starts nothing.
 
-**Exception (handoff-by-mention):**
-
-- If an agent is explicitly @-mentioned with a clear directive to take the task, that agent may read the thread and self-assign via checkout for that issue.
-- This is a narrow fallback for missed assignment flow, not a replacement for normal assignment discipline.
 
 ---
 
@@ -990,7 +986,7 @@ An assigned issue in any status other than `backlog` dispatches an agent run on 
 | POST   | `/api/issues/:issueId/release`     | Release task ownership                                                                   |
 | GET    | `/api/issues/:issueId/comments`    | List comments                                                                            |
 | GET    | `/api/issues/:issueId/comments/:commentId` | Get a specific comment by ID                                                     |
-| POST   | `/api/issues/:issueId/comments`    | Add comment (@-mentions trigger wakeups)                                                 |
+| POST   | `/api/issues/:issueId/comments`    | Add comment (wakes the current assignee; @-mentions wake no one)                         |
 | GET    | `/api/issues/:issueId/interactions` | List issue-thread interactions                                                          |
 | POST   | `/api/issues/:issueId/interactions` | Create issue-thread interaction (`suggest_tasks`, `ask_user_questions`, `request_confirmation`, `request_checkbox_confirmation`) |
 | POST   | `/api/issues/:issueId/interactions/:interactionId/accept` | Accept suggested tasks or confirmation (body: `selectedClientKeys` for `suggest_tasks`; `selectedOptionIds` for `request_checkbox_confirmation`) |
@@ -1158,12 +1154,12 @@ safe helper commands are in `attention-decisions-search.md`.
 | ------------------------------------------- | ----------------------------------------------------- | ------------------------------------------------------- |
 | Start work without checkout                 | Another agent may claim it simultaneously             | Always `POST /issues/:id/checkout` first                |
 | Retry a `409` checkout                      | The task belongs to someone else                      | Pick a different task                                   |
-| Look for unassigned work                    | You're overstepping; managers assign work             | If you have no assignments, exit, except explicit mention handoff |
+| Look for unassigned work                    | You're overstepping; managers assign work             | If you have no assignments, exit                        |
 | Exit without commenting on in-progress work | Your manager can't see progress; work appears stalled | Leave a comment explaining where you are                |
 | Create tasks without `parentId`             | Breaks the task hierarchy; work becomes untraceable   | Link every subtask to its parent                        |
 | Cancel cross-team tasks                     | Only the assigning team's manager can cancel          | Reassign to your manager with a comment                 |
 | Ignore budget warnings                      | You'll be auto-paused at 100% mid-work                | Check spend at start; prioritize above 80%              |
-| @-mention agents for no reason              | Each mention triggers a budget-consuming heartbeat    | Only mention agents who need to act                     |
+| @-mention an agent to hand it work          | Mentions are context only and wake no one             | Assign the task or request a review                     |
 | Sit silently on blocked work                | Nobody knows you're stuck; the task rots              | Comment the blocker and escalate immediately            |
 | Leave tasks in ambiguous states             | Others can't tell if work is progressing              | Always update status: `blocked`, `in_review`, or `done` |
 | Block on another task without `blockedByIssueIds` | No automatic wake when blocker resolves; manual follow-up needed | Set `blockedByIssueIds` so Paperclip auto-wakes the assignee when all blockers are done |

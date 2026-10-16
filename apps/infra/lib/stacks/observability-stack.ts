@@ -2470,10 +2470,11 @@ def handler(event, context):
     // it is the honest statement of "below the desiredCount floor of 1"
     // (paperclip-stack.ts) and covers the case where ECS does report a 0.
     //
-    // 3 × 1 min: PaperclipStack sets minHealthyPercent=100, so a healthy rolling
-    // deploy never drops to zero tasks and cannot trip this. Three consecutive
-    // minutes rides out a single CloudWatch delivery gap while still catching a
-    // silently-dead container long before a user hits Teams.
+    // 3 × 1 min: PaperclipStack stops the old task before starting the new one
+    // (minHealthyPercent=0), so a deploy has a short zero-task gap; three
+    // consecutive minutes rides out that gap and a single CloudWatch delivery
+    // gap while still catching a silently-dead container long before a user
+    // hits Teams. A slow deploy can still trip it once; it clears on its own.
     this.createAlarm({
       id: "W65",
       name: "paperclip-no-running-task",

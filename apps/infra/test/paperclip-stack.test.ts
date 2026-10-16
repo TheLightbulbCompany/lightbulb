@@ -243,6 +243,9 @@ describe("PaperclipStack — Fargate service shape", () => {
           Enable: true,
           Rollback: true,
         }),
+        // Old task stops before the new one starts (no overlap on schema/locks).
+        MinimumHealthyPercent: 0,
+        MaximumPercent: 100,
       }),
       NetworkConfiguration: Match.objectLike({
         AwsvpcConfiguration: Match.objectLike({

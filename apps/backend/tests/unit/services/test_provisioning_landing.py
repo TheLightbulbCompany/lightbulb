@@ -35,6 +35,7 @@ POINTER = {
 
 @pytest.fixture(autouse=True)
 def _no_profiles(monkeypatch):
+    mod._provider_locks.clear()  # locks bind to the test's event loop
     monkeypatch.setattr(mod, "_roster", AsyncMock(return_value=[]))
 
 

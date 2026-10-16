@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any
+from typing import Any, Final
 
 import httpx
 
@@ -61,8 +61,8 @@ async def resolve_agent_adapter(owner_id: str) -> tuple[str, dict]:
     )
 
 
-async def list_hermes_gateway_agents(owner_id: str) -> tuple[str | None, list[str]]:
-    """The owner's active Paperclip company id and its ``hermes_gateway`` agent ids -- what
+async def list_hermes_gateway_agents(owner_id: str) -> tuple[str | None, list[dict]]:
+    """The owner's active Paperclip company id and its ``hermes_gateway`` agents -- what
     ``sync_agent_adapter_config`` would patch. ``(None, [])`` when no company exists yet."""
     company_id = await resolve_company_id_for_owner(
         owner_id=owner_id, repo=PaperclipRepo(table_name="paperclip-companies")
@@ -73,7 +73,23 @@ async def list_hermes_gateway_agents(owner_id: str) -> tuple[str | None, list[st
         admin = PaperclipAdminClient(http_client=http)
         cookie = await get_admin_session_cookie(http)
         agents = _rows(await admin.list_agents(session_cookie=cookie, company_id=company_id), "agents")
-    return company_id, [a["id"] for a in agents if a.get("adapterType") == HERMES_GATEWAY_TYPE and a.get("id")]
+    return company_id, [a for a in agents if a.get("adapterType") == HERMES_GATEWAY_TYPE and a.get("id")]
+
+
+#: Paperclip runs a coding agent starts at once (``runtimeConfig.heartbeat.maxConcurrentRuns``, Paperclip's
+#: default 20). Each task gets its own worktree on the workspace's one 2 vCPU microVM, and a coding turn
+#: that builds or tests is what saturates it (owner ruling 2026-10-16); a third task queues in Paperclip.
+CODING_MAX_CONCURRENT_RUNS: Final[int] = 2
+
+
+def _coding_runtime_config(agent: dict) -> dict | None:
+    """The engineer's runtimeConfig with the run cap, or None when it already has it (or is no engineer).
+    The WHOLE runtimeConfig: Paperclip's PATCH replaces it wholesale (see ``set_agent_heartbeat``)."""
+    runtime_config = dict(agent.get("runtimeConfig") or {})
+    heartbeat = dict(runtime_config.get("heartbeat") or {})
+    if agent.get("role") != "engineer" or heartbeat.get("maxConcurrentRuns") == CODING_MAX_CONCURRENT_RUNS:
+        return None
+    return {**runtime_config, "heartbeat": {**heartbeat, "maxConcurrentRuns": CODING_MAX_CONCURRENT_RUNS}}
 
 
 async def sync_agent_adapter_config(owner_id: str) -> int:
@@ -94,24 +110,24 @@ async def sync_agent_adapter_config(owner_id: str) -> int:
     The token is read CONSISTENTLY here, right before the PATCHes, so two concurrent provisions
     converge on the row's latest token (last writer wins with the current value, never a stale
     one a caller captured). Idempotent. Returns the number patched (0 without a company).
+    An engineer also gets its run cap (``CODING_MAX_CONCURRENT_RUNS``) in the same PATCH.
     **Raises** on failure: a half-synced workspace looks healthy.
     """
-    company_id, agent_ids = await list_hermes_gateway_agents(owner_id)
-    if not agent_ids:
+    company_id, agents = await list_hermes_gateway_agents(owner_id)
+    if not agents:
         return 0
     row = await container_repo.get_by_owner_id(owner_id, consistent=True) or {}
     adapter_config = build_hermes_gateway_adapter_config(owner_id, hook_token=row.get("hook_token") or "")
     async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
         admin = PaperclipAdminClient(http_client=http)
         cookie = await get_admin_session_cookie(http)
-        for agent_id in agent_ids:
-            await admin.patch_agent(
-                session_cookie=cookie,
-                agent_id=agent_id,
-                body={"adapterConfig": adapter_config, "replaceAdapterConfig": True},
-            )
-    logger.info("sync_agent_adapter_config: owner=%s company=%s patched=%d", owner_id, company_id, len(agent_ids))
-    return len(agent_ids)
+        for agent in agents:
+            body = {"adapterConfig": adapter_config, "replaceAdapterConfig": True}
+            if (runtime_config := _coding_runtime_config(agent)) is not None:
+                body["runtimeConfig"] = runtime_config
+            await admin.patch_agent(session_cookie=cookie, agent_id=agent["id"], body=body)
+    logger.info("sync_agent_adapter_config: owner=%s company=%s patched=%d", owner_id, company_id, len(agents))
+    return len(agents)
 
 
 _ISSUE_PAGE_SIZE = 1000

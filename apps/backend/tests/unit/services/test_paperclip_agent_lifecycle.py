@@ -197,6 +197,36 @@ async def test_sync_is_a_noop_without_a_company(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_sync_caps_an_engineers_concurrent_runs_and_keeps_its_runtime_config(monkeypatch):
+    hb = {"enabled": True, "intervalSec": 86400}
+    admin = _wire_sync(
+        monkeypatch,
+        agents=[
+            {
+                "id": "forge",
+                "role": "engineer",
+                "adapterType": lifecycle.HERMES_GATEWAY_TYPE,
+                "runtimeConfig": {"aiConnection": {"x": 1}, "heartbeat": hb},
+            },
+            {
+                "id": "done",
+                "role": "engineer",
+                "adapterType": lifecycle.HERMES_GATEWAY_TYPE,
+                "runtimeConfig": {"heartbeat": {"maxConcurrentRuns": 2}},
+            },
+            {"id": "ceo", "role": "ceo", "adapterType": lifecycle.HERMES_GATEWAY_TYPE, "runtimeConfig": {}},
+        ],
+    )
+
+    await lifecycle.sync_agent_adapter_config("org_1")
+
+    patched = {c.kwargs["agent_id"]: c.kwargs["body"] for c in admin.patch_agent.await_args_list}
+    assert patched["forge"]["runtimeConfig"] == {"aiConnection": {"x": 1}, "heartbeat": {**hb, "maxConcurrentRuns": 2}}
+    assert "runtimeConfig" not in patched["done"]  # already capped: no runtimeConfig rewrite
+    assert "runtimeConfig" not in patched["ceo"]
+
+
+@pytest.mark.asyncio
 async def test_sync_raises_on_a_failed_patch(monkeypatch):
     admin = _wire_sync(monkeypatch, agents=[{"id": "a1", "adapterType": lifecycle.HERMES_GATEWAY_TYPE}])
     admin.patch_agent.side_effect = RuntimeError("paperclip 503")

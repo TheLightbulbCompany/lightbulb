@@ -1,9 +1,12 @@
 """PR 3 (AgentCore workspace memory): the bundled provider, its enablement, and health."""
 import importlib
+import io
+import json
 import pathlib
 import re
 import sys
 import types
+import urllib.parse
 
 import pytest
 
@@ -190,10 +193,121 @@ def test_sanitized_session_id_fits_the_api_pattern(mod):
         assert re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9-_]*", sid) and len(sid) <= 100
 
 
-def test_no_tools_and_a_short_prompt_line(mod):
+def test_one_search_tool_and_a_short_prompt_line(mod):
     p = mod.AgentCoreMemoryProvider()
-    assert p.get_tool_schemas() == []
-    assert "shared" in p.system_prompt_block() and "\n" not in p.system_prompt_block()
+    (schema,) = p.get_tool_schemas()
+    assert schema["name"] == "workspace_memory_search" and schema["parameters"]["required"] == ["query"]
+    block = p.system_prompt_block()
+    assert "shared" in block and "workspace_memory_search" in block and "\n" not in block
+
+
+# ---- the search tool: recall the agent asks for by topic --------------------------------
+def test_search_tool_reads_both_dm_scopes_with_a_bigger_top_k(mod):
+    client = FakeClient(by_ns={PRIVATE_NS: ["p1"], TEAM_NS: ["Demos 5-8 are recorded in Supademo"]})
+    out = json.loads(provider(mod, client, **DM).handle_tool_call("workspace_memory_search", {"query": "demo videos"}))
+    assert out == {"results": ["p1", "Demos 5-8 are recorded in Supademo"]}
+    assert {c[1]["searchCriteria"]["topK"] for c in client.calls} == {10}
+    assert all(c[1]["searchCriteria"]["searchQuery"] == "demo videos" for c in client.calls)
+
+
+@pytest.mark.parametrize("args", [{}, {"query": "  "}, None])
+def test_search_tool_needs_a_query(mod, args):
+    client = FakeClient()
+    assert "error" in json.loads(provider(mod, client).handle_tool_call("workspace_memory_search", args))
+    assert client.calls == []
+
+
+def test_search_tool_answers_an_error_not_an_exception_when_memory_is_off(mod, monkeypatch):
+    p = provider(mod, FakeClient())
+    monkeypatch.delenv("AGENTCORE_MEMORY_ID")
+    p._memory_id = ""
+    assert "error" in json.loads(p.handle_tool_call("workspace_memory_search", {"query": "demos"}))
+
+
+def test_near_duplicate_facts_take_one_slot(mod):
+    """Prod 2026-10-15: one outreach preference stored three times filled 3 of 5 recall slots."""
+    pref = "Leonardo Gordon prefers to send only 3-5 carefully personalized outreach messages"
+    client = FakeClient(records=[pref + " (2026-10-13)", pref + ", from his founder account", pref, "other fact"])
+    assert provider(mod, client).prefetch("outreach?").splitlines() == [f"- {pref} (2026-10-13)", "- other fact"]
+
+
+# ---- the live task board -----------------------------------------------------------------
+class FakeBoard:
+    """urlopen stand-in for Paperclip's GET /api/companies/{id}/issues."""
+
+    def __init__(self, doing=(), done=(), fail=False):
+        self.rows, self.fail, self.urls = {"in_progress": list(doing), "done": list(done)}, fail, []
+
+    def __call__(self, req, timeout=None):
+        self.urls.append((req.full_url, req.get_header("Authorization"), timeout))
+        if self.fail:
+            raise TimeoutError("timed out")
+        status = urllib.parse.parse_qs(urllib.parse.urlparse(req.full_url).query)["status"][0]
+        return io.BytesIO(json.dumps(self.rows[status]).encode())
+
+
+@pytest.fixture
+def board(mod, monkeypatch):
+    for k, v in {"PAPERCLIP_API_URL": "http://pc.local/", "PAPERCLIP_API_KEY": "pk-agent",
+                 "PAPERCLIP_COMPANY_ID": "co-1"}.items():
+        monkeypatch.setenv(k, v)
+    mod._BOARD.clear()
+    fake = FakeBoard(doing=[{"identifier": "ISOA-837", "title": "Daily Gauge brief"}],
+                     done=[{"identifier": "ISOA-591", "title": "40-second\nproduct demo video",
+                            "updatedAt": "2026-10-02T10:00:00Z"}])
+    monkeypatch.setattr(mod.urllib.request, "urlopen", fake)
+    return fake
+
+
+def test_board_lists_in_progress_and_recently_done_with_the_agents_key(mod, board):
+    text = mod.board_snapshot()
+    assert "In progress: ISOA-837 Daily Gauge brief" in text
+    assert "Done in the last 14 days: ISOA-591 40-second product demo video (2026-10-02)" in text
+    (doing, done) = board.urls
+    assert doing[0].startswith("http://pc.local/api/companies/co-1/issues?") and doing[1] == "Bearer pk-agent"
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(done[0]).query)
+    assert query["status"] == ["done"] and query["sortField"] == ["updated"] and "updatedSince" in query
+    assert doing[2] <= 2.0
+
+
+def test_an_old_completion_edited_lately_is_not_recently_done(mod, board):
+    board.rows["done"].append({"identifier": "ISOA-12", "title": "Old work", "completedAt": "2026-01-02T00:00:00Z",
+                               "updatedAt": "2099-01-01T00:00:00Z"})
+    assert "ISOA-12" not in mod.board_snapshot()
+
+
+def test_board_is_read_once_per_window(mod, board):
+    assert mod.board_snapshot() == mod.board_snapshot()
+    assert len(board.urls) == 2
+
+
+def test_a_failed_board_read_is_empty_and_retried_next_turn(mod, board):
+    board.fail = True
+    assert mod.board_snapshot() == ""
+    board.fail = False
+    assert "ISOA-837" in mod.board_snapshot()
+
+
+def test_no_paperclip_identity_means_no_board_and_no_request(mod, board, monkeypatch):
+    monkeypatch.delenv("PAPERCLIP_COMPANY_ID")
+    assert mod.board_snapshot() == "" and board.urls == []
+
+
+def test_prefetch_carries_recall_then_the_board(mod, board):
+    out = provider(mod, FakeClient(records=["Prasiddha is creating 7 demo videos"])).prefetch("what next?")
+    recall, snapshot = out.split("\n\n")
+    assert recall == "- Prasiddha is creating 7 demo videos"
+    assert snapshot.startswith("Task board right now") and "ISOA-591" in snapshot
+
+
+def test_a_trivial_prompt_reads_neither_memory_nor_board(mod, board):
+    client = FakeClient()
+    assert provider(mod, client).prefetch("thanks") == "" and client.calls == [] and board.urls == []
+
+
+def test_pre_compress_asks_the_summary_to_keep_finished_work_and_gives_it_the_board(mod, board):
+    out = provider(mod, FakeClient()).on_pre_compress([{"role": "user", "content": "hi"}])
+    assert out.startswith(mod.KEEP_NOTE) and "ISOA-591" in out
 
 
 # ---- scopes: a 1:1 DM with a person is private to them; everything else is team -------------

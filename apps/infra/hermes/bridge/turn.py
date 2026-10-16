@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import resource
 import shutil
 import sys
 import threading
@@ -2917,6 +2918,40 @@ def _acquire_unless_aborted(lock, run_id: str | None, on_wait=None) -> bool:
     return True
 
 
+def _host_stats() -> dict:
+    """Memory (MB) and 1-min load from /proc, and peak RSS (MB, self + children) -- what a slot
+    costs, to size LIGHTBULB_MAX_CONCURRENT_TURNS. /proc is Linux only; off it those keys are
+    missing."""
+    stats = {}
+    with contextlib.suppress(OSError, KeyError, ValueError):
+        mem = dict(ln.split(":", 1) for ln in Path("/proc/meminfo").read_text().splitlines())
+        stats["mem_available_mb"] = int(mem["MemAvailable"].split()[0]) // 1024
+        stats["mem_total_mb"] = int(mem["MemTotal"].split()[0]) // 1024
+    with contextlib.suppress(OSError, ValueError):
+        stats["load1"] = float(Path("/proc/loadavg").read_text().split()[0])
+    # ru_maxrss is KB on Linux; CHILDREN is the largest reaped child, not their sum.
+    rss_kb = (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+              + resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)
+    stats["peak_rss_mb"] = rss_kb // 1024
+    return stats
+
+
+def _log_slot(event: str, agent_id: str, **timing) -> None:
+    """One log line and one EMF line per turn-slot acquire/release. Best-effort: a raise here
+    would skip the slot's release and leak a permit."""
+    with contextlib.suppress(Exception):
+        # ponytail: reads the semaphore's CPython internals; a counter beside it if that ever moves.
+        in_use = _turn_slots._initial_value - _turn_slots._value
+        stats = {"slots_in_use": in_use, "slots_max": _turn_slots._initial_value, **timing, **_host_stats()}
+        log.info("turn slot %s agent=%s %s", event, agent_id,
+                 " ".join(f"{k}={v}" for k, v in stats.items()))
+        units = {"wait_ms": "Milliseconds", "held_ms": "Milliseconds", "load1": "None"}
+        sync.emit_metrics({
+            f"bridge.turn_slot.{k}": (v, units.get(k, "Megabytes" if k.endswith("_mb") else "Count"))
+            for k, v in stats.items()
+        })
+
+
 @contextlib.contextmanager
 def _waiting_turn_lock(agent_id: str, session_key: str, run_id: str | None, on_wait=None):
     """This conversation's turn lock, then a microVM-wide turn slot -- in that order, so a turn
@@ -2936,16 +2971,19 @@ def _waiting_turn_lock(agent_id: str, session_key: str, run_id: str | None, on_w
         yield
         return
     try:
+        asked = time.monotonic()
         if not _acquire_unless_aborted(_turn_slots, run_id, once):
             yield
             return
         # Once it has a slot: a turn still waiting for one has started nothing, so it is not a
         # long job a newer message should run beside (_side_session).
-        _lock_since[(agent_id, session_key)] = time.monotonic()
+        _lock_since[(agent_id, session_key)] = got = time.monotonic()
+        _log_slot("acquired", agent_id, wait_ms=round((got - asked) * 1000))
         try:
             yield
         finally:
             _turn_slots.release()
+            _log_slot("released", agent_id, held_ms=round((time.monotonic() - got) * 1000))
     finally:
         _lock_since.pop((agent_id, session_key), None)
         lock.release()

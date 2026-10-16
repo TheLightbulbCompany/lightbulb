@@ -489,10 +489,10 @@ def _change_stamp(path: Path) -> int:
     return max(stamps, default=0)
 
 
-def _emit_restore_metric(seconds: float, objects: int, free_mb: float) -> None:
-    """One CloudWatch EMF line per cold restore. Raw JSON on stdout: CloudWatch extracts EMF only
-    from a log event that IS the JSON, so the logger's "[bridge] " prefix would hide it. Runtime log
-    groups are per runtime, so a CDK metric filter cannot target them; EMF works in any group.
+def emit_metrics(metrics: dict[str, tuple[float, str]]) -> None:
+    """One CloudWatch EMF line ({name: (value, unit)}). Raw JSON on stdout: CloudWatch extracts EMF
+    only from a log event that IS the JSON, so the logger's "[bridge] " prefix would hide it. Runtime
+    log groups are per runtime, so a CDK metric filter cannot target them; EMF works in any group.
     The env comes from the bucket name (lightbulb-<env>-openclaw-replicas) -- the bridge has no
     env variable of its own."""
     parts = (S3_BUCKET or "").split("-")
@@ -506,23 +506,26 @@ def _emit_restore_metric(seconds: float, objects: int, free_mb: float) -> None:
                         {
                             "Namespace": "LightbulbAI",
                             "Dimensions": [["env", "service"]],
-                            "Metrics": [
-                                {"Name": "bridge.restore.seconds", "Unit": "Seconds"},
-                                {"Name": "bridge.restore.objects", "Unit": "Count"},
-                                {"Name": "bridge.restore.disk_free_mb", "Unit": "Megabytes"},
-                            ],
+                            "Metrics": [{"Name": n, "Unit": u} for n, (_v, u) in metrics.items()],
                         }
                     ],
                 },
                 "env": env,
                 "service": "hermes-bridge",
-                "bridge.restore.seconds": round(seconds, 3),
-                "bridge.restore.objects": objects,
-                "bridge.restore.disk_free_mb": round(free_mb),
+                **{n: v for n, (v, _u) in metrics.items()},
             }
         ),
         flush=True,
     )
+
+
+def _emit_restore_metric(seconds: float, objects: int, free_mb: float) -> None:
+    """One EMF line per cold restore."""
+    emit_metrics({
+        "bridge.restore.seconds": (round(seconds, 3), "Seconds"),
+        "bridge.restore.objects": (objects, "Count"),
+        "bridge.restore.disk_free_mb": (round(free_mb), "Megabytes"),
+    })
 
 
 #: Hermes's durable lease tables in state.db (hermes_state_common.py:506-520).

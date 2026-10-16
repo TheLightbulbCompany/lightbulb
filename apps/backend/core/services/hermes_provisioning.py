@@ -118,6 +118,7 @@ def build_hermes_runtime_env(
     managed_gate_url: str = "",
     managed_model_id: str = "",
     memory_id: str = "",
+    max_concurrent_turns: int | None = None,
 ) -> dict[str, str]:
     """The bridge's environment (M4-R19). Identifiers ONLY — every credential lives in the ONE
     Secrets Manager boot secret ``boot_secret_id`` names; nothing here is a bearer, a hook token,
@@ -153,6 +154,9 @@ def build_hermes_runtime_env(
     # ignores it.
     if memory_id:
         env["AGENTCORE_MEMORY_ID"] = memory_id
+    # The bridge's per-microVM turn cap; absent keeps the image default (4).
+    if max_concurrent_turns:
+        env["LIGHTBULB_MAX_CONCURRENT_TURNS"] = str(int(max_concurrent_turns))
     if managed_gate_url:
         env["LIGHTBULB_MANAGED_GATE_URL"] = managed_gate_url
         env["LIGHTBULB_MANAGED_MODEL_ID"] = managed_model_id
@@ -712,6 +716,7 @@ def build_runtime_request_for_owner(
     *,
     provider_choice: str,
     browser_profile_id: str = "",
+    max_concurrent_turns: int | None = None,
 ) -> dict:
     """The CreateAgentRuntime/UpdateAgentRuntime spec for ``owner_id`` on the CURRENTLY configured
     image (N2/M4-R40's one spec-building path, lifted out of ``provision_hermes_runtime`` so
@@ -748,6 +753,7 @@ def build_runtime_request_for_owner(
             managed_gate_url=openrouter_gate_url() if managed_model_id else "",
             managed_model_id=managed_model_id,
             memory_id=settings.AGENTCORE_MEMORY_ID,
+            max_concurrent_turns=max_concurrent_turns,
         ),
     )
 
@@ -825,6 +831,7 @@ async def _wait_for_idle_session(owner_id: str) -> bool:
 _OPTIONAL_ENV_KEYS = frozenset(
     {
         "AGENTCORE_MEMORY_ID",
+        "LIGHTBULB_MAX_CONCURRENT_TURNS",
         "LIGHTBULB_MANAGED_GATE_URL",
         "LIGHTBULB_MANAGED_MODEL_ID",
         "AGENT_BROWSER_PROVIDER",
@@ -906,7 +913,11 @@ async def roll_runtime_image(
 
     await ensure_owner_memory_policy(owner_id)
     request = build_runtime_request_for_owner(
-        owner_id, role_arn, browser_profile_id=browser_profile_id, provider_choice=provider_choice
+        owner_id,
+        role_arn,
+        browser_profile_id=browser_profile_id,
+        provider_choice=provider_choice,
+        max_concurrent_turns=row.get("max_concurrent_turns"),
     )
     actual = await run_in_thread(_runtime_description, arn)
     current = _image_of(actual)
@@ -1485,7 +1496,11 @@ async def provision_hermes_runtime(owner_id: str) -> str:
         # update-on-drift) -- the managed gate URL is a real (cached) SSM read, not free to call
         # on every idempotent poll-and-reuse pass.
         return build_runtime_request_for_owner(
-            owner_id, role_arn, browser_profile_id=browser_profile_id, provider_choice=provider_choice
+            owner_id,
+            role_arn,
+            browser_profile_id=browser_profile_id,
+            provider_choice=provider_choice,
+            max_concurrent_turns=row.get("max_concurrent_turns"),
         )
 
     if arn:

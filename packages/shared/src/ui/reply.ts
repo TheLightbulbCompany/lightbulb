@@ -8,6 +8,8 @@ export interface CardReply {
   messageId: string;
   /** The card's own thread, copied so the answer lands where the card is. */
   threadRootMessageId: string | null;
+  /** One id per (card, text) until it lands, so a retry after an uncertain send never posts twice. */
+  clientMessageId: string;
 }
 
 export function choiceReply(picked: readonly string[]): string {

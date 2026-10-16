@@ -870,7 +870,7 @@ export function MessagingWorkspaceProvider({
   // Stable identity: a fresh function per render would re-render every message on each keystroke.
   const onCardReply = useCallback(async (reply: CardReply) => {
     await sendRoomMessage({
-      clientMessageId: crypto.randomUUID(),
+      clientMessageId: reply.clientMessageId,
       text: reply.text,
       mentions: [{ kind: "agent", id: reply.agentId }],
       replyToMessageId: reply.messageId,

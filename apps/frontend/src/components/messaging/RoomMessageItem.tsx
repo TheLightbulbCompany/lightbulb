@@ -84,7 +84,7 @@ export function RoomMessageItem({ id, message, text, participant, currentUserId,
   const cardContext = useMemo<CardContextValue | null>(() => message.author.kind !== "agent" || message.deletedAt ? null : {
     messageId: message.messageId, roomId: message.roomId, authorId: message.author.id, threadRootMessageId: message.threadRootMessageId,
     attachments: message.attachments ?? [], answered: cardAnswer,
-    onReply: onCardReply && actionable ? (replyText: string) => onCardReply({ text: replyText, agentId: message.author.id, messageId: message.messageId, threadRootMessageId: message.threadRootMessageId }) : undefined,
+    onReply: onCardReply && actionable ? (replyText: string, clientMessageId: string) => onCardReply({ text: replyText, agentId: message.author.id, messageId: message.messageId, threadRootMessageId: message.threadRootMessageId, clientMessageId }) : undefined,
     attachmentUrl: onAttachmentUrl,
   }, [message.messageId, message.roomId, message.author.kind, message.author.id, message.threadRootMessageId, message.deletedAt, message.attachments,
     cardAnswer, onCardReply, actionable, onAttachmentUrl]);

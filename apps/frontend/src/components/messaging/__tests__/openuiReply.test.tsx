@@ -23,7 +23,7 @@ it("a press posts the label as the person, mentioning the agent, in reply to the
   const onCardReply = vi.fn().mockResolvedValue(undefined);
   render(<RoomMessageItem {...itemProps(agentMessage(), { onCardReply, cardAnswer: null })} />);
   await userEvent.click(await screen.findByRole("button", { name: "Studio" }));
-  expect(onCardReply).toHaveBeenCalledWith({ text: "Studio", agentId: "agent-1", messageId: "card", threadRootMessageId: null });
+  expect(onCardReply).toHaveBeenCalledWith({ text: "Studio", agentId: "agent-1", messageId: "card", threadRootMessageId: null, clientMessageId: expect.any(String) });
 });
 
 it("thread cards answer in the thread", async () => {
@@ -65,4 +65,14 @@ it("a failed send unlocks the card and says so", async () => {
   expect(onCardReply).toHaveBeenCalledTimes(1);
   await userEvent.click(screen.getByRole("button", { name: "Studio" }));
   expect(onCardReply).toHaveBeenCalledTimes(2);
+});
+
+it("a retry reuses the client id", async () => {
+  const onCardReply = vi.fn().mockRejectedValueOnce(new Error("timeout")).mockResolvedValueOnce(undefined);
+  render(<RoomMessageItem {...itemProps(agentMessage(), { onCardReply, cardAnswer: null })} />);
+  await userEvent.click(await screen.findByRole("button", { name: "Studio" }));
+  await screen.findByRole("alert");
+  await userEvent.click(screen.getByRole("button", { name: "Studio" }));
+  expect(onCardReply).toHaveBeenCalledTimes(2);
+  expect(onCardReply.mock.calls[1][0].clientMessageId).toBe(onCardReply.mock.calls[0][0].clientMessageId);
 });

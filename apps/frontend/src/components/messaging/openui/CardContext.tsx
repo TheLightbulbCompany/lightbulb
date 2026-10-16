@@ -17,8 +17,8 @@ export interface CardContextValue {
   attachments: readonly MessageAttachment[];
   /** The person's answer once one exists: controls disable and show it. */
   answered: string | null;
-  /** Posts `text` as the person in reply to this card. Absent in a read-only place. */
-  onReply?: (text: string) => Promise<void>;
+  /** Posts `text` as the person in reply to this card; a retry passes the same id. Absent in a read-only place. */
+  onReply?: (text: string, clientMessageId: string) => Promise<void>;
   attachmentUrl?: (roomId: string, attachmentId: string) => Promise<{ url: string }>;
 }
 

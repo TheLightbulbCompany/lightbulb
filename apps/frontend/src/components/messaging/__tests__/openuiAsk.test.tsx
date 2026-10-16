@@ -13,7 +13,7 @@ it("a single Choice posts on the press", async () => {
   wrap('root = Stack([q])\nq = Choice("Which plan first?", ["Starter", "Studio"])', { onReply });
   expect(screen.getByText("Which plan first?")).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Studio" }));
-  expect(onReply).toHaveBeenCalledWith("Studio");
+  expect(onReply).toHaveBeenCalledWith("Studio", expect.any(String));
 });
 
 it("a multi Choice posts the picks on Done", async () => {
@@ -23,7 +23,7 @@ it("a multi Choice posts the picks on Done", async () => {
   await userEvent.click(screen.getByRole("checkbox", { name: "Push" }));
   expect(onReply).not.toHaveBeenCalled();
   await userEvent.click(screen.getByRole("button", { name: "Done" }));
-  expect(onReply).toHaveBeenCalledWith("Email, Push");
+  expect(onReply).toHaveBeenCalledWith("Email, Push", expect.any(String));
 });
 
 it("options are bounded", () => {
@@ -39,7 +39,7 @@ it("FollowUps are chips that post their text", async () => {
   const onReply = vi.fn().mockResolvedValue(undefined);
   wrap('root = Stack([f])\nf = FollowUps(["Show me the numbers", "Draft the email"])', { onReply });
   await userEvent.click(screen.getByRole("button", { name: "Draft the email" }));
-  expect(onReply).toHaveBeenCalledWith("Draft the email");
+  expect(onReply).toHaveBeenCalledWith("Draft the email", expect.any(String));
 });
 
 it("a Form posts Label: value lines", async () => {
@@ -49,7 +49,7 @@ it("a Form posts Label: value lines", async () => {
   await userEvent.selectOptions(screen.getByRole("combobox", { name: "Plan" }), "Studio");
   await userEvent.type(screen.getByLabelText("Start"), "2026-11-01");
   await userEvent.click(screen.getByRole("button", { name: "Book" }));
-  expect(onReply).toHaveBeenCalledWith("Name: Ada\nPlan: Studio\nStart: 2026-11-01");
+  expect(onReply).toHaveBeenCalledWith("Name: Ada\nPlan: Studio\nStart: 2026-11-01", expect.any(String));
 });
 
 it("an answered Choice shows the pick", () => {
@@ -63,7 +63,7 @@ it("a Button posts exactly its label", async () => {
   const onReply = vi.fn().mockResolvedValue(undefined);
   wrap('root = Stack([b])\nb = Buttons([Button("Yes", "primary"), Button("No", "secondary")])', { onReply });
   await userEvent.click(screen.getByRole("button", { name: "Yes" }));
-  expect(onReply).toHaveBeenCalledWith("Yes");
+  expect(onReply).toHaveBeenCalledWith("Yes", expect.any(String));
 });
 
 it("an answered FollowUps card marks the chip it posted", () => {

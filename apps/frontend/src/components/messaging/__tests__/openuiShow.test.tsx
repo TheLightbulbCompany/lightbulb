@@ -39,7 +39,7 @@ it("EditableTable submits the edited rows as a markdown table", async () => {
   await userEvent.clear(cell);
   await userEvent.type(cell, "59");
   await userEvent.click(screen.getByRole("button", { name: "Send prices" }));
-  expect(onReply).toHaveBeenCalledWith("| Plan | Price |\n| --- | --- |\n| Starter | 59 |");
+  expect(onReply).toHaveBeenCalledWith("| Plan | Price |\n| --- | --- |\n| Starter | 59 |", expect.any(String));
 });
 
 it("Image shows only the message's own attachment", async () => {

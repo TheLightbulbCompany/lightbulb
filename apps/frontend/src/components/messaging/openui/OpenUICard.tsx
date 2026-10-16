@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { Renderer, type OpenUIError } from "@openuidev/react-lang";
 import { CARD_MAX_BYTES } from "@lightbulb/shared";
 import { capture } from "@/lib/analytics";
@@ -22,12 +22,23 @@ export function OpenUICard({ program }: { program: string }) {
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState<string | null>(null);
   const answered = ctx?.answered ?? sent;
+  // text → clientMessageId, kept until that text lands: a failed send may still have
+  // reached the server, so the retry must reuse the id the server dedupes on.
+  const clientIds = useRef(new Map<string, string>());
   const press = useCallback((text: string) => {
     const reply = text.trim();
     if (!ctx?.onReply || pending || answered !== null || !reply) return;
+    let clientMessageId = clientIds.current.get(reply);
+    if (!clientMessageId) {
+      clientMessageId = crypto.randomUUID();
+      clientIds.current.set(reply, clientMessageId);
+    }
     setPending(true);
     setError(null);
-    ctx.onReply(reply).then(() => setSent(reply), () => setError("Couldn't send your reply. Try again.")).finally(() => setPending(false));
+    ctx.onReply(reply, clientMessageId).then(() => {
+      clientIds.current.delete(reply);
+      setSent(reply);
+    }, () => setError("Couldn't send your reply. Try again.")).finally(() => setPending(false));
   }, [ctx, pending, answered]);
   const pressValue = useMemo(() => ({ press, disabled: !ctx?.onReply || pending || answered !== null, answered }), [press, ctx, pending, answered]);
   const onError = useCallback((errors: OpenUIError[]) => {

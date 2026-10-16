@@ -9,15 +9,14 @@ import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable"
 import { cn } from "@/lib/utils";
 import { StatusIcon } from "@/components/teams/shared/components/StatusIcon";
 import { KanbanCard, type KanbanAgent } from "@/components/teams/inbox/KanbanCard";
-import type { Issue } from "@/components/teams/shared/types";
+import type { CompanyMember, Issue } from "@/components/teams/shared/types";
 
 export interface KanbanColumnProps {
   status: string;
   issues: Issue[];
   agents?: KanbanAgent[];
+  members?: CompanyMember[];
   liveIssueIds?: Set<string>;
-  columns?: readonly string[];
-  onStatusChange?: (id: string, status: string) => void;
 }
 
 function statusLabel(status: string): string {
@@ -28,9 +27,8 @@ export function KanbanColumn({
   status,
   issues,
   agents,
+  members,
   liveIssueIds,
-  columns,
-  onStatusChange,
 }: KanbanColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
 
@@ -79,9 +77,8 @@ export function KanbanColumn({
               key={issue.id}
               issue={issue}
               agents={agents}
+              members={members}
               isLive={liveIssueIds?.has(issue.id)}
-              columns={columns}
-              onStatusChange={onStatusChange}
             />
           ))}
         </SortableContext>

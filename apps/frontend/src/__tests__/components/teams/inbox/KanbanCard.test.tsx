@@ -63,7 +63,7 @@ describe("KanbanCard", () => {
     );
   });
 
-  it("renders agent name when assigneeAgentId resolves", () => {
+  it("shows the assigned agent as a named avatar", () => {
     render(
       wrap(
         <KanbanCard
@@ -72,7 +72,30 @@ describe("KanbanCard", () => {
         />,
       ),
     );
-    expect(screen.getByText("Atlas")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Atlas" })).toHaveAttribute("title", "Atlas");
+  });
+
+  it("shows a human assignee by their member name (assigneeUserId is the Paperclip id)", () => {
+    render(
+      wrap(
+        <KanbanCard
+          issue={{ ...baseIssue, assigneeUserId: "pc-user-1" }}
+          agents={[]}
+          members={[{ userId: "user_clerk", paperclipUserId: "pc-user-1", name: "Leo Park" }]}
+        />,
+      ),
+    );
+    expect(screen.getByRole("img", { name: "Leo Park" })).toHaveTextContent("LP");
+  });
+
+  it("marks an unassigned task with an empty circle", () => {
+    render(wrap(<KanbanCard issue={baseIssue} agents={[]} />));
+    expect(screen.getByRole("img", { name: "Unassigned" })).toBeInTheDocument();
+  });
+
+  it("has no per-card status picker — dragging changes status", () => {
+    render(wrap(<KanbanCard issue={baseIssue} agents={[]} />));
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
   });
 });
 

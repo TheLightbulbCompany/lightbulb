@@ -3,7 +3,9 @@
 // Ported from upstream Paperclip's KanbanBoard
 // (paperclip/ui/src/components/KanbanBoard.tsx) (MIT, (c) 2025 Paperclip AI).
 // 7-column board with drag-to-change-status. Order-within-column is not
-// persisted; drag-end only patches `status`.
+// persisted; drag-end only patches `status`. The move is optimistic: the host's
+// `onUpdateIssue` writes the new status into its cached list before the PATCH
+// returns (see `updateIssueInList`), so the card stays where it was dropped.
 
 "use client";
 
@@ -21,7 +23,8 @@ import {
 import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import { KanbanColumn } from "@/components/teams/inbox/KanbanColumn";
 import { KanbanCardOverlay, type KanbanAgent } from "@/components/teams/inbox/KanbanCard";
-import type { Issue } from "@/components/teams/shared/types";
+import { notifyApiError } from "@/lib/notify";
+import type { CompanyMember, Issue } from "@/components/teams/shared/types";
 
 export const BOARD_STATUSES = [
   "backlog",
@@ -38,8 +41,11 @@ export type BoardStatus = (typeof BOARD_STATUSES)[number];
 export interface KanbanBoardProps {
   issues: Issue[];
   agents?: KanbanAgent[];
+  members?: CompanyMember[];
   liveIssueIds?: Set<string>;
-  onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
+  /** A returned promise that rejects means the move failed: the host has
+   * already rolled its cache back, and the board says so in a toast. */
+  onUpdateIssue: (id: string, data: Record<string, unknown>) => void | Promise<unknown>;
 }
 
 /**
@@ -102,6 +108,7 @@ export function __test_handleDragEnd(
 export function KanbanBoard({
   issues,
   agents,
+  members,
   liveIssueIds,
   onUpdateIssue,
 }: KanbanBoardProps) {
@@ -131,7 +138,15 @@ export function KanbanBoard({
 
   function handleDragEnd(event: DragEndEvent) {
     setActiveId(null);
-    __test_handleDragEnd(issues, onUpdateIssue, event, columns);
+    __test_handleDragEnd(
+      issues,
+      (id, data) =>
+        void Promise.resolve(onUpdateIssue(id, data)).catch((e) =>
+          notifyApiError(e, "Couldn't move the task. Try again."),
+        ),
+      event,
+      columns,
+    );
   }
 
   return (
@@ -147,15 +162,17 @@ export function KanbanBoard({
             status={status}
             issues={columnIssues[status] ?? []}
             agents={agents}
+            members={members}
             liveIssueIds={liveIssueIds}
-            columns={columns}
-            onStatusChange={(id, s) => onUpdateIssue(id, { status: s })}
           />
         ))}
       </div>
-      <DragOverlay>
+      {/* No drop animation: the default flies the overlay back to the card's
+          pre-drop slot, which read as the card snapping back before landing. The
+          optimistic move already renders it in the target column. */}
+      <DragOverlay dropAnimation={null}>
         {activeIssue ? (
-          <KanbanCardOverlay issue={activeIssue} agents={agents} />
+          <KanbanCardOverlay issue={activeIssue} agents={agents} members={members} />
         ) : null}
       </DragOverlay>
     </DndContext>

@@ -75,7 +75,7 @@ export function IssuesPanel({
   onAgentFilterCleared,
 }: IssuesPanelProps = {}) {
   const { read } = useTeamsApi();
-  const { update } = useIssueMutations();
+  const { updateInList } = useIssueMutations();
   // The /issues BFF takes no server agent filter for this surface, so we filter
   // client-side on `assigneeAgentId` (the inbox does the same).
   const agentFilter = agentFilterProp ?? null;
@@ -99,10 +99,11 @@ export function IssuesPanel({
   // upstream (the list is capped by `limit`, so dropping rows client-side
   // would just return fewer real tasks), which makes it part of the SWR key.
   const [showRoutineTasks, setShowRoutineTasks] = useState(false);
-  const { data, isLoading, error, mutate } = read<{ issues: Issue[] }>(
-    showRoutineTasks ? "/issues" : "/issues?excludeRoutineExecutions=true",
-    { refreshInterval: 30_000, revalidateOnFocus: true },
-  );
+  const issuesPath = showRoutineTasks ? "/issues" : "/issues?excludeRoutineExecutions=true";
+  const { data, isLoading, error, mutate } = read<{ issues: Issue[] }>(issuesPath, {
+    refreshInterval: 30_000,
+    revalidateOnFocus: true,
+  });
   // NewIssueDialog renders Project + Assignee pickers only when these arrays
   // are non-empty (its defaults are []). TasksList also resolves assignee /
   // status-circle names from the roster, and feeds agents to the board.
@@ -203,13 +204,13 @@ export function IssuesPanel({
     onAgentFilterCleared?.();
   };
 
-  // TasksList's inline status circle + board drag both patch the issue; route
-  // them through the same mutation hook the rest of the issues surface uses,
-  // then revalidate this panel's /issues read so the change shows immediately.
+  // TasksList's inline status circle + board drag both patch the issue. The
+  // patch lands in this panel's cached /issues read before the PATCH returns
+  // (so a dropped card stays put), rolls back if it fails, then revalidates.
   // Returns the promise so TasksList's Hide can wait for the write before
   // showing its Undo toast (and see a failure if the PATCH rejects).
   const handleUpdateIssue = (id: string, dataPatch: Record<string, unknown>) =>
-    update(id, dataPatch as IssueUpdateInput).then(() => mutate());
+    updateInList(issuesPath, id, dataPatch as IssueUpdateInput);
 
   if (error)
     return (
@@ -309,6 +310,7 @@ export function IssuesPanel({
       <TasksList
         issues={filtered}
         agents={agentsData?.agents ?? []}
+        members={membersData?.members ?? []}
         goals={goalsData?.goals ?? []}
         initialGroupBy={initialGroupBy}
         onGroupByChange={setLiveGroupBy}

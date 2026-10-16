@@ -76,6 +76,7 @@ import {
   type IssueFilterState,
 } from "@/components/teams/shared/lib/issueFilters";
 import type {
+  CompanyMember,
   ExternalObjectSummary,
   Goal,
   IssueBlockerAttention,
@@ -113,6 +114,8 @@ type Agent = NonNullable<KanbanBoardProps["agents"]>[number];
 export interface TasksListProps {
   issues: Issue[];
   agents?: Agent[];
+  /** `/members` roster — names a human assignee on board cards. */
+  members?: CompanyMember[];
   /** Company goals, so a goal group heading reads as a TITLE, not an id. */
   goals?: Goal[];
   /**
@@ -866,6 +869,7 @@ function TaskRow({
 export function TasksList({
   issues,
   agents,
+  members,
   goals,
   initialGroupBy,
   onGroupByChange,
@@ -1173,6 +1177,7 @@ export function TasksList({
           <KanbanBoard
             issues={sorted}
             agents={agents}
+            members={members}
             liveIssueIds={liveIssueIds}
             onUpdateIssue={onUpdateIssue}
           />

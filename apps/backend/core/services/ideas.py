@@ -702,9 +702,9 @@ async def resume_after_connect(owner_id: str, provider_key: str) -> int:
                 # A project's own task when we stored it and it is still open; else its first open
                 # task with an assignee.
                 target = row.get("firstIssueId") or row.get("issueId")
-                if row.get("firstIssueId"):
+                if target:  # firstIssueId or the task start's issueId: skip it when already closed
                     try:
-                        first = await admin.get_issue(session_cookie=cookie, issue_id=row["firstIssueId"])
+                        first = await admin.get_issue(session_cookie=cookie, issue_id=target)
                         if (first or {}).get("status") in CLOSED_ISSUE_STATUSES:
                             target = None
                     except PaperclipApiError as exc:

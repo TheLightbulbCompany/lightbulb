@@ -819,3 +819,12 @@ async def test_a_failed_comment_releases_the_reservation(commenting):
     assert await ideas.resume_after_connect(OWNER, "google") == 0
     assert not (await ideas.messaging_repo.open_idea_starts(OWNER))[0].get("resumed")
     assert await ideas.resume_after_connect(OWNER, "google") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_closed_task_start_gets_no_comment_and_stays_unmarked(commenting):
+    await ideas.start(AUTH, "inbox-triage")
+    commenting.get_issue = AsyncMock(return_value={"status": "done"})
+    assert await ideas.resume_after_connect(OWNER, "google") == 0
+    commenting.add_issue_comment.assert_not_awaited()
+    assert not (await ideas.messaging_repo.open_idea_starts(OWNER))[0].get("resumed")

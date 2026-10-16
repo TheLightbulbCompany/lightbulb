@@ -14,11 +14,20 @@ describe("cardAnswerFor", () => {
       msg({ messageId: "x", author: { kind: "agent", id: "b", displayName: "B" }, replyToMessageId: "card", text: "agent noise" }),
       msg({ messageId: "y", author: { kind: "human", id: "u", displayName: "U" }, replyToMessageId: "card", text: "Studio" }),
       msg({ messageId: "z", author: { kind: "human", id: "u", displayName: "U" }, replyToMessageId: "card", text: "Starter" })];
-    expect(cardAnswerFor(messages, "card")).toBe("Studio");
+    expect(cardAnswerFor(messages, card)).toBe("Studio");
   });
   it("ignores deleted replies and other messages", () => {
     const messages = [card, msg({ messageId: "y", author: { kind: "human", id: "u", displayName: "U" }, replyToMessageId: "card", text: "Studio", deletedAt: "2026-10-16T01:00:00Z" })];
-    expect(cardAnswerFor(messages, "card")).toBeNull();
-    expect(cardAnswerFor(messages, "other")).toBeNull();
+    expect(cardAnswerFor(messages, card)).toBeNull();
+    expect(cardAnswerFor(messages, { messageId: "other", threadRootMessageId: null })).toBeNull();
+  });
+  it("a reply typed in the card's thread is not the answer", () => {
+    const messages = [card, msg({ messageId: "t", author: { kind: "human", id: "u", displayName: "U" }, replyToMessageId: "card", threadRootMessageId: "card", text: "chatting" })];
+    expect(cardAnswerFor(messages, card)).toBeNull();
+  });
+  it("a click on a thread card is its answer", () => {
+    const threadCard = msg({ messageId: "card", threadRootMessageId: "root-7" });
+    const messages = [threadCard, msg({ messageId: "y", author: { kind: "human", id: "u", displayName: "U" }, replyToMessageId: "card", threadRootMessageId: "root-7", text: "Studio" })];
+    expect(cardAnswerFor(messages, threadCard)).toBe("Studio");
   });
 });

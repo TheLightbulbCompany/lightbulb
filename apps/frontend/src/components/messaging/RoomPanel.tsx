@@ -658,7 +658,7 @@ function RoomContent({
       onToggleReaction={onSetReaction && !message.deletedAt ? (emoji) => void toggleReaction(message, emoji) : undefined}
       onOpenThread={(button) => openDetail("thread", message.messageId, button)}
       onSelectParticipant={onSelectParticipant} onUpdateMessage={onUpdateMessage} onDownloadAttachment={onDownloadAttachment} onAttachmentUrl={onAttachmentUrl}
-      onCardReply={onCardReply} cardAnswer={message.author.kind === "agent" ? cardAnswerFor(messages, message.messageId) : null}
+      onCardReply={onCardReply} cardAnswer={message.author.kind === "agent" ? cardAnswerFor(messages, message) : null}
       sessions={visibleSessions} onOpenSession={openSessionPanel}
       menuExtras={!message.deletedAt && (onSetPin || (onMarkUnreadFrom && !inThread)) ? <>
         {/* disabled/aria-busy reflect messageActionPending -- shared across every message's

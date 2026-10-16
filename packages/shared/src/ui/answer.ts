@@ -3,9 +3,15 @@ import type { CanonicalRoomMessage } from "../messaging/types";
 /**
  * The text of the first human reply to a card, or null while unanswered. Both clients
  * hold the room's messages, so no server field is needed: a click posts with
- * `replyToMessageId` = the card's id (reply.ts), and this reads it back.
+ * `replyToMessageId` = the card's id and the card's own thread root (reply.ts), and this
+ * reads it back. The root must match too: a message typed in a top-level card's thread
+ * also carries `replyToMessageId` = the card (the thread root), but it is not an answer.
  */
-export function cardAnswerFor(messages: readonly CanonicalRoomMessage[], messageId: string): string | null {
-  const reply = messages.find((m) => m.author.kind === "human" && m.replyToMessageId === messageId && !m.deletedAt);
+export function cardAnswerFor(
+  messages: readonly CanonicalRoomMessage[],
+  card: { messageId: string; threadRootMessageId: string | null },
+): string | null {
+  const reply = messages.find((m) => m.author.kind === "human" && !m.deletedAt
+    && m.replyToMessageId === card.messageId && m.threadRootMessageId === card.threadRootMessageId);
   return reply ? reply.text : null;
 }

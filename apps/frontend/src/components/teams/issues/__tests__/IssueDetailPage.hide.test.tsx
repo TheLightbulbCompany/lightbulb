@@ -19,7 +19,6 @@ vi.mock("@/components/teams/issues/hooks/useIssueMutations", () => ({
     remove: vi.fn(),
     addComment: vi.fn(),
     monitorCheckNow: vi.fn(),
-    updateInList: vi.fn(),
   }),
 }));
 

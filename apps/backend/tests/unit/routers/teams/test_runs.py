@@ -248,22 +248,32 @@ def test_cancel_run_also_stops_the_hermes_turn(client, monkeypatch):
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
     monkeypatch.setattr(messaging.container_repo, "get_by_owner_id", AsyncMock(return_value={"gateway_token": "g"}))
     monkeypatch.setattr(messaging.settings, "PAPERCLIP_INTERNAL_URL", "http://pc:3100/")
-    runtime = AsyncMock(side_effect=RuntimeError("parked"))  # a failure never fails the cancel
+    # the launch scope was the run (a timer run that checked out iss_1 later): issue scope 404s first
+    runtime = AsyncMock(side_effect=[MagicMock(status_code=404), MagicMock(status_code=200)])
     monkeypatch.setattr(messaging, "_paperclip_hermes_runtime_response", runtime)
 
     r = client.post("/api/v1/teams/heartbeat-runs/run_1/cancel", headers={"Authorization": "Bearer x"})
 
     assert r.status_code == 200 and r.json()["status"] == "cancelled"
-    (container, path), kwargs = runtime.await_args
-    assert path == "/internal/paperclip/v1/runs/run_1/stop" and kwargs["method"] == "POST"
-    assert kwargs["json_body"]["identity"] == {
-        "runId": "run_1",
-        "companyId": "co_abc",
-        "agentId": "agt_1",
-        "sessionId": "paperclip:company:co_abc:agent:agt_1:issue:iss_1",
-        "paperclipApiUrl": "http://pc:3100",
-        "issueId": "iss_1",
-    }
+    sent = [c.kwargs["json_body"]["identity"] for c in runtime.await_args_list]
+    assert {c.args[1] for c in runtime.await_args_list} == {"/internal/paperclip/v1/runs/run_1/stop"}
+    assert sent == [
+        {
+            "runId": "run_1",
+            "companyId": "co_abc",
+            "agentId": "agt_1",
+            "sessionId": "paperclip:company:co_abc:agent:agt_1:issue:iss_1",
+            "paperclipApiUrl": "http://pc:3100",
+            "issueId": "iss_1",
+        },
+        {
+            "runId": "run_1",
+            "companyId": "co_abc",
+            "agentId": "agt_1",
+            "sessionId": "paperclip:company:co_abc:agent:agt_1:run:run_1",
+            "paperclipApiUrl": "http://pc:3100",
+        },
+    ]
 
 
 def test_record_watchdog_decision(client, monkeypatch):

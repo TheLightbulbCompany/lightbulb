@@ -1541,27 +1541,36 @@ async def stop_paperclip_hermes_run(owner_id: str, run_id: str, request: Request
 
 async def stop_paperclip_hermes_turn(owner_id: str, run: dict) -> None:
     """Best-effort stop of the Hermes turn behind Paperclip heartbeat ``run``, through the same
-    runtime route the adapter's own stop uses. The identity is rebuilt the way the adapter's
-    ``issue`` session key strategy names it; the bridge answers only a full identity match."""
-    issue_id = (run.get("contextSnapshot") or {}).get("issueId")
-    scope = f"issue:{issue_id}" if issue_id else f"run:{run['id']}"
-    identity = {
-        "runId": run["id"],
-        "companyId": run.get("companyId"),
-        "agentId": run.get("agentId"),
-        "sessionId": f"paperclip:company:{run.get('companyId')}:agent:{run.get('agentId')}:{scope}",
-        "paperclipApiUrl": (settings.PAPERCLIP_INTERNAL_URL or "").rstrip("/"),
-        **({"issueId": issue_id} if issue_id else {}),
-    }
+    runtime route the adapter's own stop uses. The bridge answers only the exact identity the run
+    was launched with, and the run row does not keep it: the adapter's ``issue`` strategy named the
+    session from the launch-time task, but a timer run that checks out an issue later gets that
+    issue in its snapshot. So each candidate scope is tried in turn until the bridge knows one
+    (404 = not this identity)."""
+    snapshot = run.get("contextSnapshot") or {}
+    scopes = dict.fromkeys(
+        [*(f"issue:{i}" for i in (snapshot.get("taskId"), snapshot.get("issueId")) if i), f"run:{run['id']}"]
+    )
     try:
         container = await container_repo.get_by_owner_id(owner_id)
-        await _paperclip_hermes_runtime_response(
-            container,
-            f"/internal/paperclip/v1/runs/{run['id']}/stop",
-            method="POST",
-            json_body={"identity": identity},
-            raw=True,
-        )
+        for scope in scopes:
+            identity = {
+                "runId": run["id"],
+                "companyId": run.get("companyId"),
+                "agentId": run.get("agentId"),
+                "sessionId": f"paperclip:company:{run.get('companyId')}:agent:{run.get('agentId')}:{scope}",
+                "paperclipApiUrl": (settings.PAPERCLIP_INTERNAL_URL or "").rstrip("/"),
+                **({"issueId": scope[6:]} if scope.startswith("issue:") else {}),
+            }
+            response = await _paperclip_hermes_runtime_response(
+                container,
+                f"/internal/paperclip/v1/runs/{run['id']}/stop",
+                method="POST",
+                json_body={"identity": identity},
+                raw=True,
+            )
+            if response.status_code != 404:
+                return
+        logger.warning("hermes turn stop: the runtime knows no identity for run=%s", run.get("id"))
     except Exception:  # noqa: BLE001 -- the Paperclip cancel already landed; a parked runtime has no turn
         logger.warning("hermes turn stop failed run=%s", run.get("id"), exc_info=True)
 

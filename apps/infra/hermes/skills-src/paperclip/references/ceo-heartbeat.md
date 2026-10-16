@@ -103,7 +103,7 @@ Status quick guide:
 ## 8. Exit
 
 - Comment on any in_progress work before exiting.
-- If no assignments and no valid mention-handoff, exit cleanly.
+- If no assignments, exit cleanly.
 
 ---
 
@@ -121,7 +121,7 @@ Status quick guide:
 - Always use the Paperclip skill for coordination.
 - Always include `X-Paperclip-Run-Id` header on mutating API calls.
 - Comment in concise markdown: status line + bullets + links.
-- Self-assign via checkout only when explicitly @-mentioned.
+- Never self-assign; @-mentions are context only.
 
 ---
 
@@ -202,8 +202,8 @@ nudge, or flag) carries a one-line reason comment -- never a bare status flip.
    not a general license to cancel human to-dos outside this checklist.
 4. **Nudge stalled.** An agent-assigned `todo`/`in_progress` issue with no run
    and no comment in the last 48h, and no active recovery action already
-   pending on it -> ONE comment mentioning the assignee (a mention wakes
-   them). Do not nudge the same issue twice within 7 days -- check its last
+   pending on it -> ONE comment on the issue (a comment wakes the current
+   assignee; a mention alone wakes no one). Do not nudge the same issue twice within 7 days -- check its last
    comment's timestamp and author first.
 5. **Flag human-needed.** Anything left that needs an actual human decision
    (a PR waiting on a merge, a spend or policy call, a pending approval, a

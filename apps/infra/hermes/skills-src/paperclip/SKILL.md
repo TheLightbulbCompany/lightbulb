@@ -59,13 +59,13 @@ Paths are relative to `/app/skills/paperclip/`.
 ## Critical Rules
 
 - **Never retry a 409.** **Never look for unassigned work** — no assignments, exit.
-- **Self-assign only for an explicit @-mention handoff**, by checkout.
+- **Never self-assign.** Work comes by assignment or review request.
 - **"Send it back to me"** from a board user: `assigneeAgentId: null`, `assigneeUserId: <their id>`, usually `in_review`.
 - **Do concrete work, then leave a next action**: done, remaining, owner.
 - **Prefer child issues over polling.** **Never cancel cross-team tasks** — reassign to your manager.
 - **Use first-class blockers** (`blockedByIssueIds`).
 - **Never park an issue in `blocked` without a named owner and a concrete unblock action.** The owner in `unblockDescriptor` is **you** (`owner: {agentId: $PAPERCLIP_AGENT_ID}`) — naming another agent, a user, or the board 403s for agents. On a blocked task with no news, don't re-comment.
-- **@-mentions** cost budget; write `[@Agent Name](agent://<agent-id>)`. **Budget** pauses at 100%; above 80%, critical work only.
+- **@-mentions** are context only (they wake no one); write `[@Agent Name](agent://<agent-id>)`. **Budget** pauses at 100%; above 80%, critical work only.
 - **Escalate** via `chainOfCommand`, never to an open ancestor's creator (`409 delegation_cycle`); to a human, by a card on your own issue.
 - **Never leave a follow-up or blocker issue unassigned.**
 - **Handoffs go through issues, not chat.** Post one line with the link in the room; it stops waking agents after two agent replies.

@@ -618,8 +618,13 @@ export class PaperclipStack extends cdk.Stack {
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
       assignPublicIp: false,
       circuitBreaker: { rollback: true },
-      minHealthyPercent: 100,
-      maxHealthyPercent: 200,
+      // Stop the old task BEFORE the new one starts: no old + new overlap.
+      // The new task migrates the shared Aurora schema on boot, and since
+      // upstream v2026.1012.0 restore/agent-file locks are OS file locks that
+      // old and new processes must never share (doc/workspace-restore-locks.md).
+      // Costs ~1-2 min of Paperclip downtime per task-def change.
+      minHealthyPercent: 0,
+      maxHealthyPercent: 100,
       enableExecuteCommand: true,
       cloudMapOptions: {
         cloudMapNamespace: props.cloudMapNamespace,

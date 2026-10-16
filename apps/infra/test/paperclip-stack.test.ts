@@ -247,6 +247,8 @@ describe("PaperclipStack — Fargate service shape", () => {
         MinimumHealthyPercent: 0,
         MaximumPercent: 100,
       }),
+      // Required by ECS for maximumPercent <= 100.
+      AvailabilityZoneRebalancing: "DISABLED",
       NetworkConfiguration: Match.objectLike({
         AwsvpcConfiguration: Match.objectLike({
           AssignPublicIp: "DISABLED",

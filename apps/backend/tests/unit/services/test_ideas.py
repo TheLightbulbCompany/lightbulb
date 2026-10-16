@@ -729,13 +729,15 @@ async def test_without_a_first_task_the_projects_open_agent_tasks_get_the_commen
     commenting.list_issues = AsyncMock(
         return_value={
             "issues": [
-                {"id": "t1", "status": "todo", "assigneeAgentId": "a1"},
                 {"id": "t2", "status": "done", "assigneeAgentId": "a1"},
                 {"id": "t3", "status": "todo", "assigneeAgentId": None},
+                {"id": "t1", "status": "todo", "assigneeAgentId": "a1"},
+                {"id": "t4", "status": "todo", "assigneeAgentId": "a1"},
             ]
         }
     )
     assert await ideas.resume_after_connect(OWNER, "x") == 1
+    assert commenting.add_issue_comment.await_count == 1
     assert commenting.add_issue_comment.await_args.kwargs["issue_id"] == "t1"
 
 
@@ -744,3 +746,16 @@ async def test_connecting_an_unneeded_service_does_nothing(commenting):
     await ideas.start(AUTH, "inbox-triage")
     assert await ideas.resume_after_connect(OWNER, "linear") == 0
     commenting.add_issue_comment.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_one_failing_start_does_not_block_the_next(commenting):
+    first = await ideas.start(AUTH, "inbox-triage")
+    second = await ideas.start(AUTH, "answer-leads-fast")
+    commenting.add_issue_comment = AsyncMock(side_effect=[RuntimeError("down"), None])
+    assert await ideas.resume_after_connect(OWNER, "google") == 1
+    assert commenting.add_issue_comment.await_count == 2
+    marked = {r["issueId"]: r.get("resumed") for r in await ideas.messaging_repo.open_idea_starts(OWNER)}
+    assert sorted(v for v in marked.values() if v) == [["google"]]
+    assert len([v for v in marked.values() if not v]) == 1
+    assert {first["issueId"], second["issueId"]} == set(marked)

@@ -678,22 +678,34 @@ async def resume_after_connect(owner_id: str, provider_key: str) -> int:
         cookie = await get_admin_session_cookie(http)
         ws = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
         for row in waiting:
-            # A project's own task when we stored it; else its open tasks that have an assignee.
-            targets = [row.get("firstIssueId") or row.get("issueId")]
-            if not targets[0] and row.get("projectId") and ws is not None:
-                listed = await admin.list_issues(
-                    session_cookie=cookie,
-                    company_id=ws.company_id,
-                    params={"projectId": row["projectId"], "status": "todo,in_progress,in_review,blocked"},
+            try:
+                # A project's own task when we stored it; else its first open task with an assignee.
+                target = row.get("firstIssueId") or row.get("issueId")
+                if not target and row.get("projectId") and ws is not None:
+                    listed = await admin.list_issues(
+                        session_cookie=cookie,
+                        company_id=ws.company_id,
+                        params={"projectId": row["projectId"], "status": "todo,in_progress,in_review,blocked"},
+                    )
+                    rows = listed if isinstance(listed, list) else (listed.get("issues") or listed.get("items") or [])
+                    target = next(
+                        (
+                            i["id"]
+                            for i in rows
+                            if i.get("assigneeAgentId") and i.get("status") not in CLOSED_ISSUE_STATUSES
+                        ),
+                        None,
+                    )
+                if target:
+                    await admin.add_issue_comment(session_cookie=cookie, issue_id=target, body={"body": text})
+                    posted += 1
+                # One comment per start: marked as soon as it lands, so a retry never repeats it.
+                await messaging_repo.update_idea_start(
+                    owner_id,
+                    row["ideaId"],
+                    row["userId"],
+                    {"resumed": sorted({*(row.get("resumed") or []), provider_key})},
                 )
-                rows = listed if isinstance(listed, list) else (listed.get("issues") or listed.get("items") or [])
-                targets = [
-                    i["id"] for i in rows if i.get("assigneeAgentId") and i.get("status") not in CLOSED_ISSUE_STATUSES
-                ]
-            for issue_id in filter(None, targets):
-                await admin.add_issue_comment(session_cookie=cookie, issue_id=issue_id, body={"body": text})
-                posted += 1
-            await messaging_repo.update_idea_start(
-                owner_id, row["ideaId"], row["userId"], {"resumed": sorted({*(row.get("resumed") or []), provider_key})}
-            )
+            except Exception:  # noqa: BLE001 - one bad start never blocks the rest
+                logger.warning("ideas: resume failed owner=%s idea=%s", owner_id, row.get("ideaId"), exc_info=True)
     return posted

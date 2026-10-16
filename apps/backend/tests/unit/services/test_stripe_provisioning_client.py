@@ -28,7 +28,7 @@ async def test_request_sends_context_and_preview_version():
     method, url, options, body = raw.call_args.args
     assert (method, url) == ("get", "/v2/provisioning/eligibility")
     assert options["stripe_context"] == "acct_1"
-    assert options["stripe_version"] == "unsafe-development"
+    assert options["stripe_version"] == "2026-09-30.preview"
     assert body is None
 
 

@@ -387,3 +387,9 @@ ISOL8-LOCAL EDITS (deliberate; re-apply on re-vendor).
       attachments only. Observed dev 2026-10-14: Growth said "the full doc is
       WAL-4's issue thread" and the Library said "Nothing made yet".
       Re-apply on re-vendor.
+  27. Comment style is for issues only (references/comment-style.md, the
+      paragraph under the heading): a chat message (room reply, DM,
+      lightbulb-post.sh) is never shaped like an issue comment. It pairs with
+      bridge/turn.py CHAT_STYLE. Observed prod 2026-10-15: Pulse posted
+      status-line, heading and table reports to GTM Strategy. Re-apply on
+      re-vendor.

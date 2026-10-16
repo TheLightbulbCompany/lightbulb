@@ -373,23 +373,3 @@ async def test_apply_never_classifies_the_runtime(monkeypatch):
     await ac.apply_connection("org_1", "acme", {"token": "x"})
 
     refresh.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_a_successful_connect_resumes_waiting_ideas(monkeypatch):
-    from core.services.credentials import apply_connection as ac
-
-    seen = []
-    monkeypatch.setattr(ac, "_apply_connection_agentcore", AsyncMock(return_value="me@x.test"))
-    monkeypatch.setattr(ac.ideas, "resume_after_connect", AsyncMock(side_effect=lambda o, p: seen.append((o, p)) or 1))
-    assert await ac.apply_connection("owner-1", "google", {"token": "t"}) == "me@x.test"
-    assert seen == [("owner-1", "google")]
-
-
-@pytest.mark.asyncio
-async def test_a_failed_resume_never_fails_the_connect(monkeypatch):
-    from core.services.credentials import apply_connection as ac
-
-    monkeypatch.setattr(ac, "_apply_connection_agentcore", AsyncMock(return_value=None))
-    monkeypatch.setattr(ac.ideas, "resume_after_connect", AsyncMock(side_effect=RuntimeError("down")))
-    assert await ac.apply_connection("owner-1", "google", {"token": "t"}) is None

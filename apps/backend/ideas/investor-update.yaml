@@ -10,6 +10,14 @@ deliverables:
   - "A financial model updated from your accounts"
   - "A monthly investor update drafted"
   - "Sent to your investor list after approval"
+needs:
+  - {service: stripe, access: read}
+  - {service: quickbooks, access: read}
+  - {service: google, access: write}
+browser: []
+person:
+  - "Approve the numbers and the text"
+done_means: "The model is updated with numbers that tie to Stripe and QuickBooks, and the update was sent after approval, linked on the task."
 agency_price_low: 1600
 agency_price_high: 5000
 price_unit: month

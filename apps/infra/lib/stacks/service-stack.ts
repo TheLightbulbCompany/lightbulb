@@ -114,6 +114,16 @@ export interface SecretNames {
   sesIngestSecret: string;
 }
 
+/**
+ * The Stripe Projects rail master switch, from the deploy job's environment
+ * (a per-env repo variable). Off ⇒ the backend refuses `start()` and the
+ * frontend hides the Connect door. Unset = off.
+ */
+export function stripeProvisioningEnabled(env: "dev" | "prod", vars: NodeJS.ProcessEnv = process.env): boolean {
+  const v = env === "dev" ? vars.STRIPE_PROVISIONING_ENABLED_DEV : vars.STRIPE_PROVISIONING_ENABLED_PROD;
+  return v === "true";
+}
+
 export interface ServiceStackProps extends cdk.StackProps {
   environment: string;
   /** Product root domain (see lib/domains.ts). Defaults to ROOT_DOMAIN. */
@@ -234,16 +244,6 @@ export interface ServiceStackProps extends cdk.StackProps {
    * onboarding for stripeProjectsDeveloperConfig.
    */
   stripeAccountsV2Version?: string;
-  /**
-   * Whether the Stripe Projects provisioning rail is offered. DEFAULT FALSE:
-   * every state-changing /v2/provisioning call returns 500 until Stripe
-   * ships delegated account creation + hosted KYC (their word, 2026-09-03),
-   * so an approved workflow parks permanently. Off ⇒ the backend refuses
-   * `start()` and the frontend hides the Connect door and the two panels
-   * (Accounts, Domain & Site) that only render the rail's output. The v1
-   * Money surface is unaffected. Flip per env once a write succeeds.
-   */
-  stripeProvisioningEnabled?: boolean;
 }
 
 /**
@@ -1784,9 +1784,9 @@ export class ServiceStack extends cdk.Stack {
       // Accounts v2 API version pin for the company account/account-link
       // calls. Empty ⇒ the SDK's own default.
       STRIPE_ACCOUNTS_V2_VERSION: props.stripeAccountsV2Version ?? "",
-      // Provisioning rail master switch — see the stripeProvisioningEnabled
-      // prop doc. Off in both envs until Stripe's write endpoints work.
-      STRIPE_PROVISIONING_ENABLED: String(props.stripeProvisioningEnabled ?? false),
+      // Provisioning rail master switch: off unless the owner sets the
+      // STRIPE_PROVISIONING_ENABLED_{DEV,PROD} repo variable to "true".
+      STRIPE_PROVISIONING_ENABLED: String(stripeProvisioningEnabled(env === "dev" ? "dev" : "prod")),
       // Dev keeps timer heartbeats off (spend): arm_nightly_ceo leaves them alone.
       NIGHTLY_CEO_HEARTBEATS_ENABLED: env === "dev" ? "false" : "true",
       // PostHog server-side reads for the admin Activity tab.

@@ -51,13 +51,13 @@ BILLING row, `lightbulb-prod-billing-accounts`).
 ## Step 2 — ask Stripe what exists
 
 All three carry the same two headers. The account id is the owner's
-**connected** account; `unsafe-development` is the preview pin.
+**connected** account; `2026-09-30.preview` is the preview pin.
 
 ```bash
 CTX=acct_…            # billing row: company_stripe_account_id
 H=(-H "Authorization: Bearer $STRIPE_SECRET_KEY"
    -H "Stripe-Context: $CTX"
-   -H "Stripe-Version: unsafe-development")
+   -H "Stripe-Version: 2026-09-30.preview")
 
 # Every resource in the company's project — match on the row's `resource_name`,
 # which is unique per workflow (`{service_id}-{last 6 of workflow_id}`).

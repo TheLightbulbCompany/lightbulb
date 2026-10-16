@@ -10,6 +10,12 @@ deliverables:
   - "An automated scan of every page"
   - "Contrast, labels, alt text and keyboard fixes in one pull request"
   - "Before and after scan results"
+needs:
+  - {service: github, access: write}
+browser: ["the site"]
+person:
+  - "Merge the pull request"
+done_means: "The PR is merged and a re-scan of every page shows no remaining contrast, label, alt or keyboard errors."
 agency_price_low: 1500
 agency_price_high: 7500
 price_unit: one_time

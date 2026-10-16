@@ -1539,6 +1539,42 @@ async def stop_paperclip_hermes_run(owner_id: str, run_id: str, request: Request
     return _paperclip_hermes_status_or_lost(response, run_id, identity["sessionId"])
 
 
+async def stop_paperclip_hermes_turn(owner_id: str, run: dict) -> None:
+    """Best-effort stop of the Hermes turn behind Paperclip heartbeat ``run``, through the same
+    runtime route the adapter's own stop uses. The bridge answers only the exact identity the run
+    was launched with, and the run row does not keep it: the adapter's ``issue`` strategy named the
+    session from the launch-time task, but a timer run that checks out an issue later gets that
+    issue in its snapshot. So each candidate scope is tried in turn until the bridge knows one
+    (404 = not this identity)."""
+    snapshot = run.get("contextSnapshot") or {}
+    scopes = dict.fromkeys(
+        [*(f"issue:{i}" for i in (snapshot.get("taskId"), snapshot.get("issueId")) if i), f"run:{run['id']}"]
+    )
+    try:
+        container = await container_repo.get_by_owner_id(owner_id)
+        for scope in scopes:
+            identity = {
+                "runId": run["id"],
+                "companyId": run.get("companyId"),
+                "agentId": run.get("agentId"),
+                "sessionId": f"paperclip:company:{run.get('companyId')}:agent:{run.get('agentId')}:{scope}",
+                "paperclipApiUrl": (settings.PAPERCLIP_INTERNAL_URL or "").rstrip("/"),
+                **({"issueId": scope[6:]} if scope.startswith("issue:") else {}),
+            }
+            response = await _paperclip_hermes_runtime_response(
+                container,
+                f"/internal/paperclip/v1/runs/{run['id']}/stop",
+                method="POST",
+                json_body={"identity": identity},
+                raw=True,
+            )
+            if response.status_code != 404:
+                return
+        logger.warning("hermes turn stop: the runtime knows no identity for run=%s", run.get("id"))
+    except Exception:  # noqa: BLE001 -- the Paperclip cancel already landed; a parked runtime has no turn
+        logger.warning("hermes turn stop failed run=%s", run.get("id"), exc_info=True)
+
+
 _HERMES_SESSION_RE = re.compile(
     r"\Apaperclip:company:([A-Za-z0-9-]+):agent:([A-Za-z0-9-]+):(issue|run):([A-Za-z0-9-]+)\Z"
 )

@@ -41,7 +41,7 @@ from core.services.credentials import (
 from core.services.credentials.apply_connection import RuntimeUnsupportedError
 from core.services.credentials import hermes_cli
 from core.services.credentials.mcp_server import reconcile_integrations
-from core.services import paperclip_github_token
+from core.services import ideas, paperclip_github_token
 from core.services.google_identity import seed_agent_google_identity
 from core.services.owner_facts import write_owner_facts
 from core.services import owner_lifecycle
@@ -604,6 +604,7 @@ async def connect_paste(provider: str, body: PasteBody, auth: AuthContext = Depe
             )
         await integrations_repo.put_status(owner_id, provider, "connected")
     await write_owner_facts(owner_id)  # best-effort: refresh the agents' connected_integrations manifest
+    await _resume_ideas(owner_id, provider)
     return {"status": "connected", "provider": provider}
 
 
@@ -785,7 +786,18 @@ async def aws_complete(provider: str, body: AwsCompleteBody, auth: AuthContext =
                 status_code=502,
                 detail="failed to apply the AWS connection to your container; please retry",
             )
+    await _resume_ideas(owner_id, provider)
     return {"status": "connected", "provider": provider}
+
+
+async def _resume_ideas(owner_id: str, provider: str) -> None:
+    """Wake the idea starts waiting on this service, once it reads connected and the facts list it.
+    Best-effort and outside the revoke fence: a slow Paperclip must not spend the lease, and a
+    connect never fails because a nudge did."""
+    try:
+        await ideas.resume_after_connect(owner_id, provider)
+    except Exception:
+        logger.warning("ideas: resume after connect failed owner=%s provider=%s", owner_id, provider, exc_info=True)
 
 
 async def _seed_identity_best_effort(owner_id: str, agent_id: str) -> None:
@@ -1235,6 +1247,7 @@ async def oauth_callback(
         # written before the guard -- land back on the connections page with a
         # retryable error instead of a raw 500.
         return _done("error=busy", origin)
+    await _resume_ideas(owner_id, prov)
     if prov == "github":
         # Hand Paperclip the same token (its GITHUB_TOKEN company secret), so the PRs and
         # issues a task mentions resolve authenticated. Best-effort and AFTER the guard: the

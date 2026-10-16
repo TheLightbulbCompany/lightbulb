@@ -12,3 +12,11 @@ deliverables:
   - "The vendor's answer reported"
 our_turnaround: "A few days"
 your_part: "Approve the claim text"
+needs:
+  - {service: stripe, access: read}
+  - {service: quickbooks, access: read}
+  - {service: google, access: write}
+browser: ["the vendor's claim form"]
+person:
+  - "Approve the claim text"
+done_means: "The claim was sent with evidence and the vendor's answer, or the credit, is linked on the task."

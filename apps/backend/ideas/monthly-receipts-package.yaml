@@ -10,6 +10,13 @@ deliverables:
   - "Receipts collected from email"
   - "Missing W-9s requested from vendors"
   - "The package sent to your accountant"
+needs:
+  - {service: google, access: write}
+  - {service: quickbooks, access: read}
+browser: ["vendor portals"]
+person:
+  - "Approve the package"
+done_means: "Every receipt for the month is in one folder, missing W-9s were requested, and the package was sent to the accountant."
 agency_price_low: 150
 agency_price_high: 500
 price_unit: month

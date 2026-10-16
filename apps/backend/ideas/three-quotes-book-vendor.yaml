@@ -12,3 +12,13 @@ deliverables:
   - "A booking request sent to the one you pick"
 our_turnaround: "About a week"
 your_part: "Choose the vendor and approve the booking"
+needs:
+  - {service: parallel, access: read}
+  - {service: mailbox, access: read}
+  - {service: google, access: write}
+browser: []
+person:
+  - "Choose the vendor"
+  - "Approve the booking"
+  - "Phone-only vendors"
+done_means: "Three quotes are compared on the task, and the chosen vendor confirmed the booking in writing."

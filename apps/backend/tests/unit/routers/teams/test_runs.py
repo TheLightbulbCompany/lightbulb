@@ -205,7 +205,10 @@ def test_get_run_events_passes_after_seq_and_limit(client, monkeypatch):
 
 def test_cancel_run(client, monkeypatch):
     """`POST /teams/heartbeat-runs/{id}/cancel` proxies upstream cancel and
-    returns the cancelled run row verbatim."""
+    returns the cancelled run row verbatim. A queued run has no turn: the runtime is not called."""
+    import routers.messaging as messaging
+
+    monkeypatch.setattr(messaging, "stop_paperclip_hermes_turn", AsyncMock(side_effect=AssertionError("woke runtime")))
     admin = MagicMock()
     admin.get_heartbeat_run = AsyncMock(return_value={"id": "run_1", "companyId": "co_abc"})
     admin.cancel_heartbeat_run = AsyncMock(return_value={"id": "run_1", "status": "cancelled"})
@@ -223,6 +226,54 @@ def test_cancel_run(client, monkeypatch):
         run_id="run_1",
         session_cookie="cookie",
     )
+
+
+def test_cancel_run_also_stops_the_hermes_turn(client, monkeypatch):
+    """Paperclip's cancel never reaches the hermes_gateway adapter, so the BFF stops the turn on
+    the runtime itself, with the identity the adapter's issue session key names."""
+    import routers.messaging as messaging
+    from routers.teams import agents as agents_mod
+
+    admin = MagicMock()
+    admin.get_heartbeat_run = AsyncMock(
+        return_value={
+            "id": "run_1",
+            "status": "running",
+            "companyId": "co_abc",
+            "agentId": "agt_1",
+            "contextSnapshot": {"issueId": "iss_1"},
+        }
+    )
+    admin.cancel_heartbeat_run = AsyncMock(return_value={"id": "run_1", "status": "cancelled"})
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(messaging.container_repo, "get_by_owner_id", AsyncMock(return_value={"gateway_token": "g"}))
+    monkeypatch.setattr(messaging.settings, "PAPERCLIP_INTERNAL_URL", "http://pc:3100/")
+    # the launch scope was the run (a timer run that checked out iss_1 later): issue scope 404s first
+    runtime = AsyncMock(side_effect=[MagicMock(status_code=404), MagicMock(status_code=200)])
+    monkeypatch.setattr(messaging, "_paperclip_hermes_runtime_response", runtime)
+
+    r = client.post("/api/v1/teams/heartbeat-runs/run_1/cancel", headers={"Authorization": "Bearer x"})
+
+    assert r.status_code == 200 and r.json()["status"] == "cancelled"
+    sent = [c.kwargs["json_body"]["identity"] for c in runtime.await_args_list]
+    assert {c.args[1] for c in runtime.await_args_list} == {"/internal/paperclip/v1/runs/run_1/stop"}
+    assert sent == [
+        {
+            "runId": "run_1",
+            "companyId": "co_abc",
+            "agentId": "agt_1",
+            "sessionId": "paperclip:company:co_abc:agent:agt_1:issue:iss_1",
+            "paperclipApiUrl": "http://pc:3100",
+            "issueId": "iss_1",
+        },
+        {
+            "runId": "run_1",
+            "companyId": "co_abc",
+            "agentId": "agt_1",
+            "sessionId": "paperclip:company:co_abc:agent:agt_1:run:run_1",
+            "paperclipApiUrl": "http://pc:3100",
+        },
+    ]
 
 
 def test_record_watchdog_decision(client, monkeypatch):
@@ -314,3 +365,19 @@ def test_agent_runs_404_for_another_companys_agent(client, admin, agent):
 def test_agent_runs_bad_input_is_422(client, admin, url):
     assert client.get(url, headers=H).status_code == 422
     admin.get_agent.assert_not_awaited()
+
+
+def test_cancel_of_a_run_that_just_ended_does_not_wake_the_runtime(client, monkeypatch):
+    import routers.messaging as messaging
+    from routers.teams import agents as agents_mod
+
+    admin = MagicMock()
+    admin.get_heartbeat_run = AsyncMock(return_value={"id": "run_1", "status": "running", "companyId": "co_abc"})
+    admin.cancel_heartbeat_run = AsyncMock(return_value=None)  # finished between the read and the cancel
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(messaging, "stop_paperclip_hermes_turn", AsyncMock(side_effect=AssertionError("woke runtime")))
+
+    assert (
+        client.post("/api/v1/teams/heartbeat-runs/run_1/cancel", headers={"Authorization": "Bearer x"}).status_code
+        == 200
+    )

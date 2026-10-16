@@ -78,7 +78,7 @@ Read the current catalog live:
   — returns the current integrations (each with its `actor` rail) and channels
   you can offer to connect.
 - What YOU already have connected: read `connected_integrations` in
-  `~/.openclaw/lightbulb-facts.json` first. It lists each connected provider
+  `$HERMES_HOME/lightbulb-facts.json` first. It lists each connected provider
   with its rail (`mcp`, `cli`, `skill`, `oauth` or `projects`) and carries names only,
   never a credential. If a listed integration then fails, verify it by its
   rail: an MCP integration by its tools in your toolset, a CLI integration by

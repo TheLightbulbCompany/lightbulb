@@ -10,6 +10,14 @@ deliverables:
   - "A list of directories that fit you"
   - "The company submitted to each"
   - "Your Google Business profile claimed"
+needs:
+  - {service: mailbox, access: read}
+browser: ["each directory", "Google Business Profile"]
+person:
+  - "Approve the list and the text"
+  - "Type CAPTCHAs"
+  - "Google verification"
+done_means: "Each directory on the approved list has a live listing URL on the task, and the Google Business Profile is claimed."
 agency_price_low: 200
 agency_price_high: 800
 price_unit: one_time

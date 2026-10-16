@@ -44,6 +44,15 @@ def _owner_lifecycle_lease(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def ideas_nudge(monkeypatch):
+    """Every connect door nudges waiting idea starts after it lands; stub the nudge so no test
+    reaches Paperclip, and hand the mock to the tests that assert on it."""
+    mock = AsyncMock(return_value=0)
+    monkeypatch.setattr(connections.ideas, "resume_after_connect", mock)
+    return mock
+
+
+@pytest.fixture(autouse=True)
 def hermes_clear(monkeypatch):
     """``hermes_cli.clear`` reads the owner's roster and talks to S3. Every disconnect
     door calls it, and no test in this file is about that projection, so stub it once and
@@ -868,6 +877,44 @@ class TestConnectPaste:
 
         # Happy path never deletes the just-stored secret.
         mock_store.delete.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections._validate_token", new_callable=AsyncMock)
+    async def test_a_successful_connect_resumes_waiting_ideas_after_it_reads_connected(
+        self, mock_validate, mock_repo, mock_store, mock_apply, async_client, ideas_nudge, monkeypatch
+    ):
+        mock_validate.return_value = True
+        order: list[str] = []
+        mock_store.put = AsyncMock()
+        mock_apply.apply_connection = AsyncMock(side_effect=lambda *a, **k: order.append("apply"))
+        mock_repo.put_status = AsyncMock(side_effect=lambda *a, **k: order.append("put_status"))
+        monkeypatch.setattr(connections, "write_owner_facts", AsyncMock(side_effect=lambda *a: order.append("facts")))
+        ideas_nudge.side_effect = lambda o, p: order.append(f"resume {o} {p}")
+
+        response = await async_client.post("/api/v1/connections/vercel_cli", json={"token": "vc_test_abc123"})
+        assert response.status_code == 200
+        assert order == ["apply", "put_status", "facts", "resume org_test_456 vercel_cli"]
+
+    @pytest.mark.asyncio
+    @patch("routers.connections.apply_connection")
+    @patch("routers.connections.integration_secret_store")
+    @patch("routers.connections.integrations_repo")
+    @patch("routers.connections._validate_token", new_callable=AsyncMock)
+    async def test_a_failed_resume_never_fails_the_connect(
+        self, mock_validate, mock_repo, mock_store, mock_apply, async_client, ideas_nudge
+    ):
+        mock_validate.return_value = True
+        mock_store.put = AsyncMock()
+        mock_apply.apply_connection = AsyncMock()
+        mock_repo.put_status = AsyncMock()
+        ideas_nudge.side_effect = RuntimeError("down")
+
+        response = await async_client.post("/api/v1/connections/vercel_cli", json={"token": "vc_test_abc123"})
+        assert response.status_code == 200 and response.json()["status"] == "connected"
+        ideas_nudge.assert_awaited_once()
 
     @pytest.mark.asyncio
     @patch("routers.connections.apply_connection")

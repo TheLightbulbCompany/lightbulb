@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 import type { CanonicalRoomMessage } from "@lightbulb/shared";
@@ -41,7 +41,7 @@ it("one press, one message", async () => {
   await userEvent.click(button);
   await userEvent.click(button);
   expect(onCardReply).toHaveBeenCalledTimes(1);
-  resolve();
+  await act(async () => { resolve(); });
 });
 
 it("an answered card shows the pick and disables its controls", async () => {

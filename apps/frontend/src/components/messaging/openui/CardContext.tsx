@@ -27,9 +27,3 @@ export const CardContext = createContext<CardContextValue | null>(null);
 export function useCardContext(): CardContextValue | null {
   return useContext(CardContext);
 }
-
-/** True when a control may post: there is a reply path and nobody answered yet. */
-export function useCardLive(): boolean {
-  const ctx = useCardContext();
-  return !!ctx?.onReply && ctx.answered === null;
-}

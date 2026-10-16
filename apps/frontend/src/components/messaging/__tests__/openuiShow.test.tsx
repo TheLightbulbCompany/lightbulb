@@ -52,7 +52,13 @@ it("Image shows only the message's own attachment", async () => {
 });
 
 it("charts carry a title and an accessible summary", () => {
-  render(<CardContext.Provider value={ctx()}><OpenUICard program={'root = Stack([c])\nc = BarChart(["Jan", "Feb"], [10, 20], "Signups")'} /></CardContext.Provider>);
-  expect(screen.getByRole("figure", { name: "Signups" })).toBeInTheDocument();
-  expect(screen.getByText("Jan 10, Feb 20")).toBeInTheDocument();
+  // jsdom has no layout, so recharts warns that its container is 0x0; that is expected here.
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    render(<CardContext.Provider value={ctx()}><OpenUICard program={'root = Stack([c])\nc = BarChart(["Jan", "Feb"], [10, 20], "Signups")'} /></CardContext.Provider>);
+    expect(screen.getByRole("figure", { name: "Signups" })).toBeInTheDocument();
+    expect(screen.getByText("Jan 10, Feb 20")).toBeInTheDocument();
+  } finally {
+    warn.mockRestore();
+  }
 });

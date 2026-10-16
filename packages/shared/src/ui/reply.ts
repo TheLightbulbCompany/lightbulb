@@ -24,7 +24,7 @@ export function formReply(fields: readonly { label: string; value: string }[]): 
     .join("\n");
 }
 
-const cell = (value: string) => value.replace(/\|/g, "\\|").replace(/\n/g, " ").trim();
+const cell = (value: string) => value.replace(/\|/g, "\\|").replace(/\r?\n/g, " ").trim();
 
 export function tableReply(columns: readonly string[], rows: readonly (readonly string[])[]): string {
   const line = (cells: readonly string[]) => `| ${cells.map(cell).join(" | ")} |`;

@@ -51,6 +51,16 @@ it("Image shows only the message's own attachment", async () => {
   expect(screen.getByText("Remote")).toBeInTheDocument();
 });
 
+it("an in-app source opens in the shell, an external one in a new tab", () => {
+  render(<CardContext.Provider value={ctx()}><OpenUICard program={'root = Stack([src])\nsrc = Sources([{title: "The plan", url: "/ISOA/issues/ISOA-12#document-plan"}, {title: "Stripe docs", url: "https://stripe.com/docs"}])'} /></CardContext.Provider>);
+  const inApp = screen.getByRole("link", { name: "The plan" });
+  expect(inApp.getAttribute("href")).toMatch(/^\/chat/);
+  expect(inApp).not.toHaveAttribute("target");
+  const ext = screen.getByRole("link", { name: "Stripe docs" });
+  expect(ext).toHaveAttribute("href", "https://stripe.com/docs");
+  expect(ext).toHaveAttribute("target", "_blank");
+});
+
 it("charts carry a title and an accessible summary", () => {
   // jsdom has no layout, so recharts warns that its container is 0x0; that is expected here.
   const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

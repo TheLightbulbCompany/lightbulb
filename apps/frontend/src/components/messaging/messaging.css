@@ -750,3 +750,9 @@ button.native-session-panel-row:hover .native-session-panel-activity { color: va
 
 /* Readable only, while the picture is wider than the box: says where the rest of each line is. */
 .session-terminal-hint { margin-right: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-caption); line-height: 20px; color: color-mix(in srgb, var(--terminal-fg) 65%, var(--terminal-bg)); }
+
+/* Agent cards (an ```openui-lang fence). Tokens only: the brand scanner rejects literals. */
+.openui-card { margin-top: 0.5rem; border: 1px solid var(--edge); border-radius: 0.5rem; background: var(--plane-raised); padding: 0.75rem; max-width: 40rem; }
+.openui-stack { display: grid; gap: 0.625rem; }
+.openui-card[data-answered] .openui-live { opacity: 0.7; }
+.openui-answer { color: var(--fg-soft); }

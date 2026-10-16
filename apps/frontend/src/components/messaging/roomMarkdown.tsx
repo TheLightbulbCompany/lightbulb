@@ -1,10 +1,38 @@
 import type { ReactNode } from "react";
 import type { Components } from "react-markdown";
+import { CARD_FENCE } from "@lightbulb/shared";
+import { markdownComponents } from "@/components/teams/shared/components/MarkdownView";
+import { OpenUICard } from "./openui/OpenUICard";
+import { useCardContext } from "./openui/CardContext";
 import { attachmentIdFromHref } from "@/components/teams/shared/lib/attachments";
 import { safeHref } from "@/components/teams/shared/lib/safeHref";
 import { appLinkTarget, type AppLink } from "./appLinks";
 import { useMessagingWorkspaceOptional } from "./MessagingWorkspaceContext";
 import { openAppLink } from "./RoomAppLinks";
+
+const CARD_CLASS = `language-${CARD_FENCE}`;
+const DefaultCode = markdownComponents.code!;
+const DefaultPre = markdownComponents.pre!;
+
+/** An agent's card fence. Without a CardContext (a person's message, a transcript) it stays code. */
+function CodeOrCard(props: React.ComponentProps<typeof DefaultCode>) {
+  const ctx = useCardContext();
+  const { className, children } = props as { className?: string; children?: ReactNode };
+  if (ctx && typeof className === "string" && className.split(" ").includes(CARD_CLASS)) {
+    return <OpenUICard program={String(children ?? "").replace(/\n$/, "")} />;
+  }
+  return <DefaultCode {...props} />;
+}
+
+/** react-markdown wraps block code in <pre>; a card must not inherit the code box. */
+function PreOrCard(props: React.ComponentProps<typeof DefaultPre>) {
+  const ctx = useCardContext();
+  const node = (props as { node?: { children?: { type: string; properties?: { className?: unknown } }[] } }).node;
+  const first = node?.children?.find((c) => c.type === "element");
+  const cls = Array.isArray(first?.properties?.className) ? (first!.properties!.className as unknown[]).join(" ") : "";
+  if (ctx && cls.split(" ").includes(CARD_CLASS)) return <>{(props as { children?: ReactNode }).children}</>;
+  return <DefaultPre {...props} />;
+}
 
 /** Public conversation text: no remote images, raw HTML, or privileged attachment routing. */
 export const roomMarkdown: Partial<Components> = {
@@ -27,6 +55,8 @@ export const roomMarkdown: Partial<Components> = {
   },
   img: ({ alt }) => <span className="text-muted-foreground">{alt || "Image omitted"}</span>,
   blockquote: ({ children }) => <blockquote className="border-l border-border pl-3 my-2 text-muted-foreground">{children}</blockquote>,
+  code: CodeOrCard,
+  pre: PreOrCard,
 };
 
 function AppAnchor({ link, children }: { link: AppLink; children: ReactNode }) {

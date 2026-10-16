@@ -1,6 +1,6 @@
 # Cards, artifacts and documents: design
 
-Date: 2026-10-16. Status: for owner review. Research behind it: the OpenUI evaluation in this session (facts in the "Mechanisms" section), `docs/research/2026-10-13-employee-voice-and-consumer-agents.md` (the reply rules), and the current Paperclip base `v2026.1012.0-isol8.2` (promoted to prod 2026-10-16, #4188).
+Date: 2026-10-16. Status: approved by the owner 2026-10-16. Research behind it: the OpenUI evaluation in this session (facts in the "Mechanisms" section), `docs/research/2026-10-13-employee-voice-and-consumer-agents.md` (the reply rules), and the current Paperclip base `v2026.1012.0-isol8.2` (promoted to prod 2026-10-16, #4188).
 
 Three tracks, one spec, because they meet in the same two places: the message in chat and the right pane.
 
@@ -109,6 +109,7 @@ Subagent-driven, one PR each, CI green and Codex reviewed before merge, dev on m
 5. **Comments and versions surfaced** in the pane, with the wake verified.
 6. **The editor.**
 7. **Phone:** the card renderer, the fence rules, the document header, system viewers for files. One OTA.
+8. **Phone editing (secondary):** a plain markdown editor on the task screen, saving a revision through the same write with the same conflict handling. One OTA.
 
 ## 5. How we confirm it works
 
@@ -125,8 +126,8 @@ On dev, in Chrome, as a founder account, with receipts on each PR:
 
 ## 6. Open decisions
 
-1. **Scripts in HTML previews.** On, inside the sandbox, so charts and mockups work. Off means static pages only.
-2. **Editing on the phone.** Not in this spec; the phone reads, comments and opens viewers. Say if the editor must reach the phone in the same train.
+1. **Scripts in HTML previews.** Decided 2026-10-16: on, inside the sandbox, so charts and mockups work.
+2. **Editing on the phone.** Decided 2026-10-16: in scope as a secondary step after the web editor (rollout step 8): a plain markdown text editor on the task screen, saving through the same revision write; the rich editor stays web-only.
 3. **Charts and diagrams on the phone.** Charts fall back to a table and diagrams to code until a native chart library is chosen.
 4. **Buttons and FollowUps** both exist because one is an answer and the other a suggestion. Collapse to one if the distinction does not earn its signature line.
 5. **Live data cards** (OpenUI queries against an allowlist of our read routes) are phase two.

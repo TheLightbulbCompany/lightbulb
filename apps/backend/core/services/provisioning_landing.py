@@ -53,13 +53,14 @@ from core.services.credentials import integration_secret_store
 
 logger = logging.getLogger(__name__)
 
-# ponytail: in-process only -- two backend tasks in different processes could still race the
-# blob's read-merge-write; a DynamoDB conditional lock is the upgrade.
-_provider_locks: dict[tuple[str, str], asyncio.Lock] = {}
+# ponytail: in-process only; a cross-process guard (a DynamoDB conditional lock) is the upgrade if
+# two backend tasks ever land for one owner at once. One lock per owner, not per provider: the
+# profile ``.env`` patch is an unguarded read-rewrite shared by every provider.
+_owner_locks: dict[str, asyncio.Lock] = {}
 
 
-def _provider_lock(owner_id: str, provider: str) -> asyncio.Lock:
-    return _provider_locks.setdefault((owner_id, provider), asyncio.Lock())
+def _lock_for(owner_id: str) -> asyncio.Lock:
+    return _owner_locks.setdefault(owner_id, asyncio.Lock())
 
 
 # Names the runtime owns: a provider credential must never shadow them in a profile's ``.env``.
@@ -91,7 +92,7 @@ async def land_credentials(*, owner_id: str, resource: dict, env: dict[str, str]
 
             raise WorkflowRefused("reserved_env_name", f"Provider credential name {name!r} is reserved on this runtime")
     provider = resource["provider"]
-    async with _provider_lock(owner_id, provider):
+    async with _lock_for(owner_id):
         if env:
             secret_key = integrations_repo.projects_key(provider)
             blob = dict(await integration_secret_store.get(owner_id, secret_key) or {})
@@ -131,7 +132,7 @@ async def revoke_credentials(*, owner_id: str, provider: str, resource_id: str) 
     config-patch failure can still find the pointer's ``env_keys`` to finish
     the job.
     """
-    async with _provider_lock(owner_id, provider):  # whole revoke: the snapshot must stay fresh
+    async with _lock_for(owner_id):  # whole revoke: the snapshot must stay fresh
         resources = await integrations_repo.list_provider_resources(owner_id, provider)
         target = next((r for r in resources if r.get("resource_id") == resource_id), None)
         if target is None:

@@ -35,7 +35,7 @@ POINTER = {
 
 @pytest.fixture(autouse=True)
 def _no_profiles(monkeypatch):
-    mod._provider_locks.clear()  # locks bind to the test's event loop
+    mod._owner_locks.clear()  # locks bind to the test's event loop
     monkeypatch.setattr(mod, "_roster", AsyncMock(return_value=[]))
 
 
@@ -367,3 +367,34 @@ async def test_a_landing_during_a_revoke_keeps_its_value(stores, monkeypatch):
     assert secret[("o1", key)] == {"K": "new"}
     assert patched[-1][1] == {"K": "new"}
     assert [r["resource_id"] for r in rows] == ["res-new"]
+
+
+@pytest.mark.asyncio
+async def test_landings_for_two_providers_of_one_owner_never_interleave(stores, monkeypatch):
+    import asyncio
+
+    secret, _, patched = stores
+    events: list[tuple[str, str]] = []
+    real_get = mod.integration_secret_store.get
+
+    async def slow_get(o, k):
+        events.append(("start", k))
+        await asyncio.sleep(0)
+        return await real_get(o, k)
+
+    monkeypatch.setattr(mod.integration_secret_store, "get", slow_get)
+    monkeypatch.setattr(
+        mod, "_patch_profile_env", lambda o, a, env: (events.append(("end", a)), patched.append((a, dict(env))))
+    )
+    await asyncio.gather(
+        mod.land_credentials(owner_id="o1", resource=POINTER, env={"RESEND_API_KEY": "r"}),
+        mod.land_credentials(owner_id="o1", resource={**POINTER, "provider": "vercel"}, env={"VERCEL_TOKEN": "v"}),
+    )
+    assert secret[("o1", mod.integrations_repo.projects_key("resend"))] == {"RESEND_API_KEY": "r"}
+    assert secret[("o1", mod.integrations_repo.projects_key("vercel"))] == {"VERCEL_TOKEN": "v"}
+    assert sorted(patched, key=repr) == sorted(
+        [(a, {k: v}) for a in ("agent-a", "agent-b") for k, v in (("RESEND_API_KEY", "r"), ("VERCEL_TOKEN", "v"))],
+        key=repr,
+    )
+    # One landing finishes both profile writes before the other reads its blob.
+    assert [e[0] for e in events] == ["start", "end", "end", "start", "end", "end"]

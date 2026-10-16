@@ -23,7 +23,7 @@ def test_the_skill_routes_ideas_to_a_short_reference(tmp_path):
     assert "`--project <id>` and `--status todo`" in ideas
     assert "one-line next action" in ideas
     # A step only a person can do is a task for the person, never a question in chat.
-    assert "`--assignee-user`" in ideas and "blocked by that task" in ideas
+    assert "--assignee-user <userId>" in ideas and "blocked by that task" in ideas
     # Done means proof.
     assert "one line per deliverable with a link" in ideas and "**Done means**" in ideas
     # The box's limits.

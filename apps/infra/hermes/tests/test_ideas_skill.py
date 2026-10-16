@@ -14,11 +14,22 @@ def test_the_skill_routes_ideas_to_a_short_reference(tmp_path):
     row = next(line for line in skill.splitlines() if "`references/ideas.md`" in line)
     assert row.startswith("|") and "suggest_idea" in row
     ideas = (out / "lightbulb/references/ideas.md").read_text()
-    assert len(ideas.splitlines()) < 30  # short, by owner ruling
+    assert len(ideas.splitlines()) < 40
     assert "Do it like any request" in ideas
-    # A project: break it into assigned tasks first, so it continues after the reply.
-    assert "break the work into tasks in that\n  project, each assigned to yourself or a teammate" in ideas
-    assert "first move the linked task to in_progress (assigned to yourself),\n  then work it and close it with proof" in ideas
+    # Pre-flight: needs against what is connected, one ask for everything missing.
+    assert "Read the Work item's **Needs**" in ideas and "ask once, for all of it" in ideas
+    assert "`connected_integrations`" in ideas
+    # Statuses: project tasks filed in the project as todo.
+    assert "`--project <id>` and `--status todo`" in ideas
+    assert "one-line next action" in ideas
+    # A step only a person can do is a task for the person, never a question in chat.
+    assert "`--assignee-user`" in ideas and "blocked by that task" in ideas
+    # Done means proof.
+    assert "one line per deliverable with a link" in ideas and "**Done means**" in ideas
+    # The box's limits.
+    assert "30 minutes" in ideas and "50 a day" in ideas and "no phone" in ideas
+    # Browser steps from a run with no room go back to the DM.
+    assert "hand browser steps back to the DM" in ideas
     assert "sign-in (live browser only)" in ideas and "`request_approval`" in ideas
     assert "to the feed" in ideas
     # suggest_idea: concrete and company-specific only; never in chat, never on a schedule.

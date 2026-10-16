@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any, Final
+from typing import Any
 
 import httpx
 
@@ -32,6 +32,7 @@ from core.services.paperclip_admin_session import get_admin_session_cookie
 from core.services.paperclip_adapter_config import (
     HERMES_GATEWAY_TYPE,
     build_hermes_gateway_adapter_config,
+    coding_runtime_config,
 )
 from core.services.paperclip_meta import PaperclipMeta, resolve_create_agent_fields
 from core.services.paperclip_openclaw_pairing import resolve_company_id_for_owner
@@ -76,22 +77,6 @@ async def list_hermes_gateway_agents(owner_id: str) -> tuple[str | None, list[di
     return company_id, [a for a in agents if a.get("adapterType") == HERMES_GATEWAY_TYPE and a.get("id")]
 
 
-#: Paperclip runs a coding agent starts at once (``runtimeConfig.heartbeat.maxConcurrentRuns``, Paperclip's
-#: default 20). Each task gets its own worktree on the workspace's one 2 vCPU microVM, and a coding turn
-#: that builds or tests is what saturates it (owner ruling 2026-10-16); a third task queues in Paperclip.
-CODING_MAX_CONCURRENT_RUNS: Final[int] = 2
-
-
-def _coding_runtime_config(agent: dict) -> dict | None:
-    """The engineer's runtimeConfig with the run cap, or None when it already has it (or is no engineer).
-    The WHOLE runtimeConfig: Paperclip's PATCH replaces it wholesale (see ``set_agent_heartbeat``)."""
-    runtime_config = dict(agent.get("runtimeConfig") or {})
-    heartbeat = dict(runtime_config.get("heartbeat") or {})
-    if agent.get("role") != "engineer" or heartbeat.get("maxConcurrentRuns") == CODING_MAX_CONCURRENT_RUNS:
-        return None
-    return {**runtime_config, "heartbeat": {**heartbeat, "maxConcurrentRuns": CODING_MAX_CONCURRENT_RUNS}}
-
-
 async def sync_agent_adapter_config(owner_id: str) -> int:
     """Rewrite every ``hermes_gateway`` agent's FULL adapter config from today's builder.
 
@@ -123,7 +108,7 @@ async def sync_agent_adapter_config(owner_id: str) -> int:
         cookie = await get_admin_session_cookie(http)
         for agent in agents:
             body = {"adapterConfig": adapter_config, "replaceAdapterConfig": True}
-            if (runtime_config := _coding_runtime_config(agent)) is not None:
+            if (runtime_config := coding_runtime_config(agent.get("role"), agent.get("runtimeConfig"))) is not None:
                 body["runtimeConfig"] = runtime_config
             await admin.patch_agent(session_cookie=cookie, agent_id=agent["id"], body=body)
     logger.info("sync_agent_adapter_config: owner=%s company=%s patched=%d", owner_id, company_id, len(agents))

@@ -95,6 +95,7 @@ from typing import Any, Awaitable, Callable, Optional
 import httpx
 
 from core.observability.metrics import put_metric
+from core.services.paperclip_adapter_config import coding_runtime_config
 
 # A Paperclip issue id is a UUID or an LB-12-style identifier (`_` admitted for test ids).
 # Pinning it keeps a percent-decoded `?`/`&`/`/` from rewriting the fixed upstream path an id
@@ -748,6 +749,8 @@ class PaperclipAdminClient:
             body["reportsTo"] = reports_to
         if budget_monthly_cents:
             body["budgetMonthlyCents"] = budget_monthly_cents
+        # An engineer is born with its run cap; the reconcile's adapter sync covers a later role change.
+        runtime_config = coding_runtime_config(role, runtime_config) or runtime_config
         if runtime_config is not None:
             body["runtimeConfig"] = runtime_config
         if idempotency_replay_only:

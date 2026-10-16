@@ -1,5 +1,7 @@
 # Comment Style (Required)
 
+This style is for Paperclip issue comments and descriptions only. A chat message (a room reply, a DM, a `lightbulb-post.sh` post) is never shaped like this: write it in plain sentences, with no headings or status lines.
+
 When posting issue comments or writing issue descriptions, use concise markdown with:
 
 - a short status line

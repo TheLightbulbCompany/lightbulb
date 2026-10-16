@@ -482,7 +482,9 @@ def work_description(job: Job, *, origin: dict | None = None) -> str:
     run, not bound to the DM, so this is how it reaches the person (``lightbulb-post.sh --room``)
     and assigns them a step."""
     text = job.why + "\n\nWhat's included:\n" + "\n".join(f"- {d}" for d in job.deliverables)
-    needs = [f"- {n.service} ({n.access})" for n in job.needs]
+    # Connector keys can be linked; built-in services (mailbox, browser, meet) never are.
+    needs = [f"- {n.service} ({n.access})" for n in job.needs if n.service not in PLATFORM_SERVICES]
+    needs += [f"- {n.service} (built in)" for n in job.needs if n.service in PLATFORM_SERVICES]
     needs += [f"- browser: {site}" for site in job.browser]
     needs += [f"- you: {step}" for step in job.person]
     if needs:
@@ -674,7 +676,7 @@ async def resume_after_connect(owner_id: str, provider_key: str) -> int:
     the assignee through Paperclip's own comment wake (spec 2026-10-15 §2.3). No approval card,
     no extra step. Idempotent per (start, provider). Returns the number of comments posted."""
     from core.services.credentials import registry
-    from core.services.paperclip_admin_client import shared_admin_client
+    from core.services.paperclip_admin_client import PaperclipApiError, shared_admin_client
 
     waiting = []
     for row in await messaging_repo.open_idea_starts(owner_id):
@@ -697,8 +699,18 @@ async def resume_after_connect(owner_id: str, provider_key: str) -> int:
         ws = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
         for row in waiting:
             try:
-                # A project's own task when we stored it; else its first open task with an assignee.
+                # A project's own task when we stored it and it is still open; else its first open
+                # task with an assignee.
                 target = row.get("firstIssueId") or row.get("issueId")
+                if row.get("firstIssueId"):
+                    try:
+                        first = await admin.get_issue(session_cookie=cookie, issue_id=row["firstIssueId"])
+                        if (first or {}).get("status") in CLOSED_ISSUE_STATUSES:
+                            target = None
+                    except PaperclipApiError as exc:
+                        if exc.status_code != 404:
+                            raise
+                        target = None
                 if not target and row.get("projectId") and ws is not None:
                     listed = await admin.list_issues(
                         session_cookie=cookie,
@@ -714,16 +726,17 @@ async def resume_after_connect(owner_id: str, provider_key: str) -> int:
                         ),
                         None,
                     )
-                if target:
+                if not target:
+                    continue  # nothing open to wake: leave it unmarked so a later connect can nudge
+                # Reserve before posting: a racing connect finds it taken and posts nothing.
+                if not await messaging_repo.claim_idea_resume(owner_id, row["ideaId"], row["userId"], provider_key):
+                    continue
+                try:
                     await admin.add_issue_comment(session_cookie=cookie, issue_id=target, body={"body": text})
-                    posted += 1
-                # One comment per start: marked as soon as it lands, so a retry never repeats it.
-                await messaging_repo.update_idea_start(
-                    owner_id,
-                    row["ideaId"],
-                    row["userId"],
-                    {"resumed": sorted({*(row.get("resumed") or []), provider_key})},
-                )
+                except Exception:
+                    await messaging_repo.release_idea_resume(owner_id, row["ideaId"], row["userId"], provider_key)
+                    raise
+                posted += 1
             except Exception:  # noqa: BLE001 - one bad start never blocks the rest
                 logger.warning("ideas: resume failed owner=%s idea=%s", owner_id, row.get("ideaId"), exc_info=True)
     return posted

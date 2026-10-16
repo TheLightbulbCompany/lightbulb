@@ -21,6 +21,8 @@ def test_the_skill_routes_ideas_to_a_short_reference(tmp_path):
     # Pre-flight: needs against what is connected, one ask for everything missing.
     assert "Read the Work item's **Needs**" in ideas and "ask once, for all of it" in ideas
     assert "`connected_integrations`" in ideas
+    # Built-in services are never linked.
+    assert "built in" in ideas
     # The run is not bound to the DM: it reaches the person through the room named in From.
     assert "lightbulb-post.sh --room <roomId>" in ideas and "**From**" in ideas
     # The DM record of a tracked idea is never a second start.

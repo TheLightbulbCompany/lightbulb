@@ -773,3 +773,49 @@ async def test_one_failing_start_does_not_block_the_next(commenting):
     assert sorted(v for v in marked.values() if v) == [["google"]]
     assert len([v for v in marked.values() if not v]) == 1
     assert {first["issueId"], second["issueId"]} == set(marked)
+
+
+@pytest.mark.asyncio
+async def test_built_in_services_are_not_rendered_as_connectable(paperclip):
+    await ideas.start(AUTH, "answer-leads-fast")
+    body = paperclip.create_issue.await_args.kwargs["body"]["description"]
+    assert "- mailbox (built in)" in body and "- mailbox (read)" not in body
+
+
+@pytest.mark.asyncio
+async def test_a_closed_first_task_falls_back_to_the_projects_open_task(commenting):
+    await ideas.start(AUTH, "launch-run")
+    commenting.get_issue = AsyncMock(return_value={"status": "done"})
+    commenting.list_issues = AsyncMock(return_value=[{"id": "t1", "status": "todo", "assigneeAgentId": "a1"}])
+    assert await ideas.resume_after_connect(OWNER, "x") == 1
+    assert commenting.add_issue_comment.await_args.kwargs["issue_id"] == "t1"
+
+
+@pytest.mark.asyncio
+async def test_a_closed_first_task_and_no_open_one_posts_nothing_and_stays_unmarked(commenting):
+    await ideas.start(AUTH, "launch-run")
+    commenting.get_issue = AsyncMock(return_value={"status": "cancelled"})
+    commenting.list_issues = AsyncMock(return_value=[])
+    assert await ideas.resume_after_connect(OWNER, "x") == 0
+    commenting.add_issue_comment.assert_not_awaited()
+    assert not (await ideas.messaging_repo.open_idea_starts(OWNER))[0].get("resumed")
+
+
+@pytest.mark.asyncio
+async def test_a_reserved_provider_is_not_commented_again(commenting):
+    started = await ideas.start(AUTH, "inbox-triage")
+    row = (await ideas.messaging_repo.open_idea_starts(OWNER))[0]
+    assert await ideas.messaging_repo.claim_idea_resume(OWNER, row["ideaId"], row["userId"], "google")
+    assert not await ideas.messaging_repo.claim_idea_resume(OWNER, row["ideaId"], row["userId"], "google")
+    assert await ideas.resume_after_connect(OWNER, "google") == 0
+    commenting.add_issue_comment.assert_not_awaited()
+    assert started["issueId"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_comment_releases_the_reservation(commenting):
+    await ideas.start(AUTH, "inbox-triage")
+    commenting.add_issue_comment = AsyncMock(side_effect=[RuntimeError("down"), None])
+    assert await ideas.resume_after_connect(OWNER, "google") == 0
+    assert not (await ideas.messaging_repo.open_idea_starts(OWNER))[0].get("resumed")
+    assert await ideas.resume_after_connect(OWNER, "google") == 1

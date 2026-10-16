@@ -345,6 +345,9 @@ async def test_a_landing_during_a_revoke_keeps_its_value(stores, monkeypatch):
 
     monkeypatch.setattr(mod.integrations_repo, "list_provider_resources", slow_list)
     monkeypatch.setattr(
+        mod.integration_secret_store, "delete", AsyncMock(side_effect=lambda o, k: secret.pop((o, k), None))
+    )
+    monkeypatch.setattr(
         mod.integrations_repo, "record_provider_resource", AsyncMock(side_effect=lambda o, p, r: rows.append(r))
     )
     monkeypatch.setattr(

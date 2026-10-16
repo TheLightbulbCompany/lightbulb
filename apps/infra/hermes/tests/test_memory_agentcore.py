@@ -270,6 +270,12 @@ def test_board_lists_in_progress_and_recently_done_with_the_agents_key(mod, boar
     assert doing[2] <= 2.0
 
 
+def test_an_old_completion_edited_lately_is_not_recently_done(mod, board):
+    board.rows["done"].append({"identifier": "ISOA-12", "title": "Old work", "completedAt": "2026-01-02T00:00:00Z",
+                               "updatedAt": "2099-01-01T00:00:00Z"})
+    assert "ISOA-12" not in mod.board_snapshot()
+
+
 def test_board_is_read_once_per_window(mod, board):
     assert mod.board_snapshot() == mod.board_snapshot()
     assert len(board.urls) == 2

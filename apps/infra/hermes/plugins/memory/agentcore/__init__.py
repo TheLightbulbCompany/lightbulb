@@ -158,7 +158,9 @@ def board_snapshot() -> str:
     since = datetime.fromtimestamp(time.time() - _BOARD_DONE_DAYS * 86400, timezone.utc).isoformat()
     try:
         doing = _issues(base, key, company, status="in_progress")
-        done = _issues(base, key, company, status="done", updatedSince=since)
+        # updatedSince also matches an old completion edited since: keep those finished in the window.
+        done = [i for i in _issues(base, key, company, status="done", updatedSince=since)
+                if str(i.get("completedAt") or i.get("updatedAt") or "") >= since[:10]]
     except Exception as exc:  # the board is a hint: unreachable means no hint, never a failed turn
         logger.warning("agentcore memory board read failed: %s", exc)
         return ""

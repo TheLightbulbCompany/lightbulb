@@ -338,3 +338,7 @@ export {
   delegationIdOf,
 } from "./messaging/subagents";
 export type { RoomSubagents, SubagentProgress, SubagentStatus } from "./messaging/subagents";
+export {
+  CARD_COMPONENTS, CARD_FENCE, CARD_MAX_BYTES, CARD_MAX_OPTIONS, CARD_ROOT, cardLibrary,
+} from "./ui/library";
+export type { CardName } from "./ui/library";

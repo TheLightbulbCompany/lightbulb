@@ -24,7 +24,7 @@ from collections import namedtuple
 from pathlib import Path
 
 from bridge import API, HOME, HOOK_TOKEN, OWNER, now
-from bridge import sync, browser_control, website_logins
+from bridge import sync, browser_control, website_logins, worktrees
 from bridge.sync import restore_profile, save_profile, _profile_dir, pin_profile_defaults
 
 log = logging.getLogger("bridge")
@@ -789,6 +789,13 @@ def _paperclip_heartbeat(run_id: str, stop: threading.Event, lock: threading.Loc
             if stop.is_set():
                 return
             _put_running_record(run_id)
+
+
+def _live_issues(agent_id: str) -> set[str]:
+    """Issues this agent has a Paperclip run open for in this process: the reaper leaves their worktrees."""
+    with _RUNS_LOCK:
+        return {e["identity"]["issueId"] for e in RUNS.values() if e.get("kind") == "paperclip" and e.get("state") != "ended"
+                and e["identity"].get("agentId") == agent_id and e["identity"].get("issueId")}
 
 
 def paperclip_run_aborted(run_id: str) -> bool:
@@ -2803,8 +2810,8 @@ def _repo_rule(agent_id: str) -> str:
     return (
         f"A repository is cloned once, partially, at {_profile_dir(agent_id)}/.run/<repo>; branches get "
         f"worktrees under {_profile_dir(agent_id)}/.scratch/wt, which is never saved. That disk (~4 GB) is "
-        "shared with every teammate and emptied only when the workspace restarts, so keep one worktree in "
-        "total. Small projects may install what they need. Do not install dependencies or run test suites "
+        "shared with every teammate and emptied only when the workspace restarts, so keep one worktree per "
+        "task (a Paperclip task's is made for you) and remove yours when the work is merged. Small projects may install what they need. Do not install dependencies or run test suites "
         "for a large repository (TheLightbulbCompany/lightbulb's one install is 2.4 GB and stalled the "
         "workspace twice): push the branch and read the CI result."
     )
@@ -3804,6 +3811,16 @@ def _run_native_paperclip(identity: dict, request: dict, conversation: str | Non
         sync.ensure_profile(agent_id)
         # See _run_hermes's own call: normalize BEFORE _terminal_scope below installs, not after.
         sync.normalize_profile_backends(agent_id)
+    task_worktrees = []
+    if identity.get("issueId"):  # one worktree per issue; closed tasks' go first, so the disk check sees the space
+        refused = None
+        try:
+            worktrees.reap(agent_id, _live_issues(agent_id))
+            task_worktrees, refused = worktrees.prepare(agent_id, identity["issueId"])
+        except Exception:  # noqa: BLE001 -- a git hiccup never costs the task its run
+            log.warning("task worktree setup failed run=%s", run_id, exc_info=True)
+        if refused:
+            return "failed", refused, "", dict(ZERO_USAGE)
     env = {
         "PAPERCLIP_API_URL": identity["paperclipApiUrl"],
         "PAPERCLIP_AGENT_ID": agent_id,
@@ -3837,7 +3854,8 @@ def _run_native_paperclip(identity: dict, request: dict, conversation: str | Non
             try:
                 # the clone rule rides every prompt, a Paperclip issue's too (Codex on #3798): with only
                 # Hermes's github skill in view, an issue run clones into its conversation folder
-                system = with_profile_agents_md(agent_id, f"{request['instructions']}\n\n{_repo_rule(agent_id)}\n{CHAT_STYLE}")
+                rules = "\n\n".join(filter(None, (_repo_rule(agent_id), identity.get("issueId") and worktrees.prompt_line(agent_id, identity["issueId"], task_worktrees))))
+                system = with_profile_agents_md(agent_id, f"{request['instructions']}\n\n{rules}\n{CHAT_STYLE}")
                 if conversation:
                     # As _converse runs a room key: its own transcript, observed rows split out.
                     text = f"{BOUND_WAKE_HEADER.format(issue=identity.get('issueId'))}\n\n{request['input']}"

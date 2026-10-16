@@ -65,5 +65,21 @@ def build_hermes_gateway_adapter_config(owner_id: str, *, hook_token: str) -> di
     return config
 
 
+#: Paperclip runs a coding agent starts at once (``runtimeConfig.heartbeat.maxConcurrentRuns``, Paperclip's
+#: default 20). Each task gets its own worktree on the workspace's one 2 vCPU microVM, and a coding turn
+#: that builds or tests is what saturates it (owner ruling 2026-10-16); a third task queues in Paperclip.
+CODING_MAX_CONCURRENT_RUNS: Final[int] = 2
+
+
+def coding_runtime_config(role: str | None, runtime_config: dict | None) -> dict | None:
+    """``runtime_config`` with the engineer run cap, or None when it already has it (or ``role`` is no
+    engineer). Always the WHOLE runtimeConfig: Paperclip's PATCH replaces it wholesale."""
+    runtime_config = dict(runtime_config or {})
+    heartbeat = dict(runtime_config.get("heartbeat") or {})
+    if role != "engineer" or heartbeat.get("maxConcurrentRuns") == CODING_MAX_CONCURRENT_RUNS:
+        return None
+    return {**runtime_config, "heartbeat": {**heartbeat, "maxConcurrentRuns": CODING_MAX_CONCURRENT_RUNS}}
+
+
 class AdapterConfigError(Exception):
     """Raised when adapter-config inputs fail validation."""

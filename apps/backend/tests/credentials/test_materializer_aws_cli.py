@@ -72,10 +72,11 @@ def test_token_file_holds_owner_and_plaintext_token(tmp_path, monkeypatch):
     assert tok == {"owner_id": "org_x", "token": "tok_plain_abc"}
 
 
-def test_helper_bakes_api_base_and_no_placeholders(tmp_path, monkeypatch):
+def test_helper_prefers_runtime_api_base_with_baked_fallback_and_no_placeholders(tmp_path, monkeypatch):
     aws_dir = _write(tmp_path, monkeypatch)
     helper = (aws_dir / aws_cli.HELPER_FILENAME).read_text()
-    assert 'const API_BASE = "https://api-test.isol8.co";' in helper
+    assert "process.env.ISOL8_API_URL || process.env.PUBLIC_API_BASE" in helper
+    assert '|| "https://api-test.isol8.co"' in helper
     assert "__API_BASE__" not in helper
 
 

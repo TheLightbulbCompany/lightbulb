@@ -326,3 +326,40 @@ async def test_revoke_clears_the_revoked_keys_from_every_profile_but_not_a_survi
     patched.clear()
     assert await mod.revoke_credentials(owner_id="o1", provider="resend", resource_id="res-1")
     assert patched == [("agent-a", {"RESEND_API_KEY": ""}), ("agent-b", {"RESEND_API_KEY": ""})]
+
+
+@pytest.mark.asyncio
+async def test_a_landing_during_a_revoke_keeps_its_value(stores, monkeypatch):
+    import asyncio
+
+    secret, _, patched = stores
+    key = mod.integrations_repo.projects_key("resend")
+    secret[("o1", key)] = {"K": "old"}
+    rows = [{"resource_id": "res-old", "provider": "resend", "env_keys": ["K"]}]
+    new = {**POINTER, "resource_id": "res-new", "env_keys": ["K"]}
+
+    async def slow_list(o, p):
+        snapshot = list(rows)
+        await asyncio.sleep(0)  # a landing could slip in between snapshot and trim
+        return snapshot
+
+    monkeypatch.setattr(mod.integrations_repo, "list_provider_resources", slow_list)
+    monkeypatch.setattr(
+        mod.integrations_repo, "record_provider_resource", AsyncMock(side_effect=lambda o, p, r: rows.append(r))
+    )
+    monkeypatch.setattr(
+        mod.integrations_repo,
+        "remove_provider_resource",
+        AsyncMock(
+            side_effect=lambda o, p, rid: (
+                rows[:] and rows.__setitem__(slice(None), [r for r in rows if r["resource_id"] != rid])
+            )
+        ),
+    )
+    await asyncio.gather(
+        mod.revoke_credentials(owner_id="o1", provider="resend", resource_id="res-old"),
+        mod.land_credentials(owner_id="o1", resource=new, env={"K": "new"}),
+    )
+    assert secret[("o1", key)] == {"K": "new"}
+    assert patched[-1][1] == {"K": "new"}
+    assert [r["resource_id"] for r in rows] == ["res-new"]

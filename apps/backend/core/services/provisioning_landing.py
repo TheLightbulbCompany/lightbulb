@@ -131,15 +131,17 @@ async def revoke_credentials(*, owner_id: str, provider: str, resource_id: str) 
     config-patch failure can still find the pointer's ``env_keys`` to finish
     the job.
     """
-    resources = await integrations_repo.list_provider_resources(owner_id, provider)
-    target = next((r for r in resources if r.get("resource_id") == resource_id), None)
-    if target is None:
-        return False
-    still_used = {name for r in resources if r.get("resource_id") != resource_id for name in r.get("env_keys") or []}
-    env_keys = [k for k in (target.get("env_keys") or []) if k not in still_used]
+    async with _provider_lock(owner_id, provider):  # whole revoke: the snapshot must stay fresh
+        resources = await integrations_repo.list_provider_resources(owner_id, provider)
+        target = next((r for r in resources if r.get("resource_id") == resource_id), None)
+        if target is None:
+            return False
+        still_used = {
+            name for r in resources if r.get("resource_id") != resource_id for name in r.get("env_keys") or []
+        }
+        env_keys = [k for k in (target.get("env_keys") or []) if k not in still_used]
 
-    if env_keys:
-        async with _provider_lock(owner_id, provider):
+        if env_keys:
             secret_key = integrations_repo.projects_key(provider)
             blob = await integration_secret_store.get(owner_id, secret_key)
             if blob is not None:
@@ -149,12 +151,12 @@ async def revoke_credentials(*, owner_id: str, provider: str, resource_id: str) 
                     await integration_secret_store.put(owner_id, secret_key, blob)
                 else:
                     await integration_secret_store.delete(owner_id, secret_key)
-        # Clear the same names from every roster profile's ``.env`` (an empty value deletes the
-        # key), so the agent stops holding the revoked secret.
-        for agent_id in await _roster(owner_id):
-            await asyncio.to_thread(_patch_profile_env, owner_id, agent_id, {k: "" for k in env_keys})
+            # Clear the same names from every roster profile's ``.env`` (an empty value deletes the
+            # key), so the agent stops holding the revoked secret.
+            for agent_id in await _roster(owner_id):
+                await asyncio.to_thread(_patch_profile_env, owner_id, agent_id, {k: "" for k in env_keys})
 
-    await integrations_repo.remove_provider_resource(owner_id, provider, resource_id)
+        await integrations_repo.remove_provider_resource(owner_id, provider, resource_id)
     logger.info("provisioning: revoked %s/%s for owner=%s", provider, resource_id, owner_id)
     return True
 

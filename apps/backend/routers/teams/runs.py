@@ -161,7 +161,9 @@ async def cancel_run(run_id: RunId, ctx: TeamsContext = Depends(_ctx)):
         run_id=run_id,
         session_cookie=ctx.session_cookie,
     )
-    if run.get("status") == "running":  # a queued run has no turn, and the call would wake a parked runtime
+    # Only a run that was running AND that this cancel stopped has a turn: a queued run has none, and
+    # one that ended meanwhile answers null; calling anyway would wake a parked runtime.
+    if run.get("status") == "running" and (cancelled or {}).get("status") == "cancelled":
         from routers.messaging import stop_paperclip_hermes_turn
 
         await stop_paperclip_hermes_turn(ctx.owner_id, run)

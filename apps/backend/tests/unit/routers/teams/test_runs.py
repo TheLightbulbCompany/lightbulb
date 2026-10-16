@@ -355,3 +355,19 @@ def test_agent_runs_404_for_another_companys_agent(client, admin, agent):
 def test_agent_runs_bad_input_is_422(client, admin, url):
     assert client.get(url, headers=H).status_code == 422
     admin.get_agent.assert_not_awaited()
+
+
+def test_cancel_of_a_run_that_just_ended_does_not_wake_the_runtime(client, monkeypatch):
+    import routers.messaging as messaging
+    from routers.teams import agents as agents_mod
+
+    admin = MagicMock()
+    admin.get_heartbeat_run = AsyncMock(return_value={"id": "run_1", "status": "running", "companyId": "co_abc"})
+    admin.cancel_heartbeat_run = AsyncMock(return_value=None)  # finished between the read and the cancel
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(messaging, "stop_paperclip_hermes_turn", AsyncMock(side_effect=AssertionError("woke runtime")))
+
+    assert (
+        client.post("/api/v1/teams/heartbeat-runs/run_1/cancel", headers={"Authorization": "Bearer x"}).status_code
+        == 200
+    )

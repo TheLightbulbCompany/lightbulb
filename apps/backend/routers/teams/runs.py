@@ -147,16 +147,24 @@ async def get_run_events(
 
 
 @router.post("/heartbeat-runs/{run_id}/cancel")
-async def cancel_run(run_id: CompanyRunId, ctx: TeamsContext = Depends(_ctx)):
-    """Cancel a queued/running heartbeat run.
+async def cancel_run(run_id: RunId, ctx: TeamsContext = Depends(_ctx)):
+    """Cancel a queued/running heartbeat run, and stop its Hermes turn.
 
     Maps to upstream ``POST /api/heartbeat-runs/{runId}/cancel``. Stopping a
     run never *starts* spend, so no trial-runway gate here (unlike wakeup).
+    Paperclip's cancel never reaches the hermes_gateway adapter, whose only stop
+    is its own timeout (fork ``gateway/server/execute.ts``), so the turn kept
+    running on the runtime after a cancel (dev 2026-10-16): stop it here too.
     """
-    return await _agents._admin().cancel_heartbeat_run(
+    run = await _require_company_run(run_id, ctx)
+    cancelled = await _agents._admin().cancel_heartbeat_run(
         run_id=run_id,
         session_cookie=ctx.session_cookie,
     )
+    from routers.messaging import stop_paperclip_hermes_turn
+
+    await stop_paperclip_hermes_turn(ctx.owner_id, run)
+    return cancelled
 
 
 @router.post("/heartbeat-runs/{run_id}/watchdog-decisions")

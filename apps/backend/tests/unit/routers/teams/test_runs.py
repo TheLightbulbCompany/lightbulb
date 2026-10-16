@@ -225,6 +225,38 @@ def test_cancel_run(client, monkeypatch):
     )
 
 
+def test_cancel_run_also_stops_the_hermes_turn(client, monkeypatch):
+    """Paperclip's cancel never reaches the hermes_gateway adapter, so the BFF stops the turn on
+    the runtime itself, with the identity the adapter's issue session key names."""
+    import routers.messaging as messaging
+    from routers.teams import agents as agents_mod
+
+    admin = MagicMock()
+    admin.get_heartbeat_run = AsyncMock(
+        return_value={"id": "run_1", "companyId": "co_abc", "agentId": "agt_1", "contextSnapshot": {"issueId": "iss_1"}}
+    )
+    admin.cancel_heartbeat_run = AsyncMock(return_value={"id": "run_1", "status": "cancelled"})
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(messaging.container_repo, "get_by_owner_id", AsyncMock(return_value={"gateway_token": "g"}))
+    monkeypatch.setattr(messaging.settings, "PAPERCLIP_INTERNAL_URL", "http://pc:3100/")
+    runtime = AsyncMock(side_effect=RuntimeError("parked"))  # a failure never fails the cancel
+    monkeypatch.setattr(messaging, "_paperclip_hermes_runtime_response", runtime)
+
+    r = client.post("/api/v1/teams/heartbeat-runs/run_1/cancel", headers={"Authorization": "Bearer x"})
+
+    assert r.status_code == 200 and r.json()["status"] == "cancelled"
+    (container, path), kwargs = runtime.await_args
+    assert path == "/internal/paperclip/v1/runs/run_1/stop" and kwargs["method"] == "POST"
+    assert kwargs["json_body"]["identity"] == {
+        "runId": "run_1",
+        "companyId": "co_abc",
+        "agentId": "agt_1",
+        "sessionId": "paperclip:company:co_abc:agent:agt_1:issue:iss_1",
+        "paperclipApiUrl": "http://pc:3100",
+        "issueId": "iss_1",
+    }
+
+
 def test_record_watchdog_decision(client, monkeypatch):
     """Forwards the camelCase decision body verbatim; returns the row."""
     admin = MagicMock()

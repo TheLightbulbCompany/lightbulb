@@ -12,3 +12,12 @@ deliverables:
   - "Each approved removal done, saving reported"
 our_turnaround: "A few days"
 your_part: "Approve each removal and sign in to each tool"
+needs:
+  - {service: quickbooks, access: read}
+  - {service: stripe, access: read}
+  - {service: google, access: read}
+browser: ["each tool's admin"]
+person:
+  - "Sign in to each tool"
+  - "Approve each removal"
+done_means: "Every paid tool is listed with its unused seats, and each approved removal is confirmed with the new monthly cost."

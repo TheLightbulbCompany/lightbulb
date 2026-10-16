@@ -10,6 +10,15 @@ deliverables:
   - "A nexus check across states from your sales"
   - "Registration forms filled for each state you confirm"
   - "A list of registrations and filing dates"
+needs:
+  - {service: stripe, access: read}
+  - {service: shopify, access: read}
+  - {service: quickbooks, access: read}
+browser: ["each state portal"]
+person:
+  - "Identity checks and signatures"
+  - "The fees"
+done_means: "The nexus analysis is on the task, and each registration is confirmed by the state or assigned to the person."
 agency_price_low: 299
 agency_price_high: 403
 price_unit: state

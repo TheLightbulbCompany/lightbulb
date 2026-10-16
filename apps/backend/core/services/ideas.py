@@ -55,6 +55,17 @@ SUGGESTION_PREFIX = "s-"
 DEFAULT_EMOJI = "💡"
 
 
+#: Services an idea uses that are not connectors: the team mailbox, the shared browser, Meet.
+PLATFORM_SERVICES = frozenset({"mailbox", "browser", "meet"})
+
+
+class Need(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    service: str = Field(pattern=r"^[a-z0-9_]+$", max_length=40)
+    access: Literal["read", "write"] = "read"
+
+
 class Idea(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, alias_generator=to_camel, populate_by_name=True)
 
@@ -70,6 +81,14 @@ class Idea(BaseModel):
     title: str = Field(min_length=1, max_length=120)
     why: str = Field(min_length=1, max_length=200)
     deliverables: list[str] = Field(min_length=3, max_length=3)
+    #: What the idea uses (spec 2026-10-15 §2.1): connector keys from providers.yaml or a
+    #: platform service, each read or write; websites worked in the shared browser; steps only
+    #: a person can do. Rendered into the Work item, never into the DM message.
+    needs: list[Need] = Field(default_factory=list)
+    browser: list[str] = Field(default_factory=list)
+    person: list[str] = Field(default_factory=list)
+    #: One line a check can read; the agent proves it before `done`.
+    done_means: str = Field(min_length=1, max_length=200)
     agency_price_low: int | None = Field(default=None, gt=0)
     agency_price_high: int | None = Field(default=None, gt=0)
     price_unit: Literal["one_time", "month", "state"] | None = None  # state: per US state
@@ -171,7 +190,16 @@ async def _workspace(owner_id: str) -> tuple[object | None, dict[str, dict], dic
 
 
 #: Never served: no prices in the app (owner, 2026-10-15). They stay in the YAML for marketing.
-_NOT_SERVED = {"agency_price_low", "agency_price_high", "price_unit", "agency_turnaround"}
+_NOT_SERVED = {
+    "agency_price_low",
+    "agency_price_high",
+    "price_unit",
+    "agency_turnaround",
+    "needs",
+    "browser",
+    "person",
+    "done_means",
+}
 
 
 def _card(idea: Idea, agent: dict) -> dict:

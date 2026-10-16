@@ -10,6 +10,15 @@ deliverables:
   - "A new site in code, with a preview link to review"
   - "Live on your domain, every old page redirected"
   - "Every page's words approved by you"
+needs:
+  - {service: github, access: write}
+  - {service: vercel_cli, access: write}
+  - {service: cloudflare, access: write}
+browser: ["the old site"]
+person:
+  - "Approve the words"
+  - "Approve the DNS change"
+done_means: "The new site is live on the domain, every old URL redirects, and the before/after links are on the task."
 agency_price_low: 3000
 agency_price_high: 8000
 price_unit: one_time

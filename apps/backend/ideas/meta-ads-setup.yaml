@@ -10,6 +10,15 @@ deliverables:
   - "Pixel and Conversions API sending events"
   - "Audiences built from your customers and site"
   - "First campaigns ready to launch"
+needs:
+  - {service: meta_ads, access: write}
+  - {service: shopify, access: read}
+  - {service: github, access: write}
+browser: []
+person:
+  - "Meta Business verification"
+  - "Approve the budget"
+done_means: "The Pixel and Conversions API fire on a test order, and the first campaigns exist in Ads Manager, linked on the task."
 agency_price_low: 1000
 agency_price_high: 10000
 price_unit: one_time

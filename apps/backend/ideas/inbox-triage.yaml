@@ -10,6 +10,12 @@ deliverables:
   - "Every new email sorted by what it needs"
   - "Routine mail answered"
   - "A short daily list of what needs you"
+needs:
+  - {service: google, access: write}
+browser: []
+person:
+  - "Approve sends until you trust them"
+done_means: "Every email from the period is labelled, routine ones are answered, and the needs-you list was posted in the DM."
 agency_price_low: 1200
 agency_price_high: 3500
 price_unit: month

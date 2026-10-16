@@ -10,6 +10,15 @@ deliverables:
   - "Product Hunt page and 100 directory submissions"
   - "A press release on the wire and a launch email"
   - "Launch posts on X and LinkedIn"
+needs:
+  - {service: x, access: write}
+  - {service: google, access: write}
+browser: ["Product Hunt", "the directories", "the press wire"]
+person:
+  - "Product Hunt account and CAPTCHA"
+  - "The wire fee"
+  - "Approve every public word"
+done_means: "The Product Hunt page, the directory listings, the press release and the posts are live, each URL on the task."
 agency_price_low: 2500
 agency_price_high: 10000
 price_unit: one_time

@@ -10,6 +10,14 @@ deliverables:
   - "Plans, trials and upgrades in your app"
   - "Failed-payment emails and the customer portal"
   - "Webhooks handled and covered by tests"
+needs:
+  - {service: github, access: write}
+  - {service: stripe, access: write}
+browser: []
+person:
+  - "Merge the pull request"
+  - "Switch on live keys"
+done_means: "Plans, trials, upgrades, the portal and webhooks work in test mode with passing tests, and the PR is merged."
 agency_price_low: 2200
 agency_price_high: 4500
 price_unit: one_time

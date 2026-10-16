@@ -593,3 +593,27 @@ def test_the_top_agent_is_the_ceo_else_the_one_reporting_to_nobody_else_the_firs
     assert ideas._top_agent([{"id": "a", "reportsTo": "b"}, {"id": "b", "reportsTo": None}]) == "b"
     assert ideas._top_agent([{"id": "a", "reportsTo": "b"}, {"id": "b", "reportsTo": "a"}]) == "a"
     assert ideas._top_agent([]) is None
+
+
+def test_every_idea_has_needs_and_done_means():
+    for idea in ideas.catalog().values():
+        assert idea.needs or idea.browser or idea.person, idea.id
+        assert idea.done_means and len(idea.done_means) <= 200, idea.id
+        for need in idea.needs:
+            assert need.access in ("read", "write"), idea.id
+
+
+def test_every_need_names_a_known_service():
+    from core.services.credentials import registry
+
+    for idea in ideas.catalog().values():
+        for need in idea.needs:
+            if need.service in ideas.PLATFORM_SERVICES:
+                continue
+            registry.get_provider(need.service)  # raises for an unknown key
+
+
+@pytest.mark.asyncio
+async def test_needs_and_done_means_are_not_served(paperclip):
+    first = (await ideas.list_ideas(AUTH))["ideas"][0]
+    assert "needs" not in first and "doneMeans" not in first and "person" not in first

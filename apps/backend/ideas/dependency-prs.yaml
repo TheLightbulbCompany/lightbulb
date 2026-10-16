@@ -10,6 +10,12 @@ deliverables:
   - "Dependency and security pull requests reviewed"
   - "Safe ones tested and ready to merge"
   - "Fixed customer bugs closed"
+needs:
+  - {service: github, access: write}
+browser: []
+person:
+  - "Approve every merge"
+done_means: "Every open dependency and security PR has a review comment and a safe/unsafe verdict, and the approved ones are merged."
 agency_price_low: 100
 agency_price_high: 1000
 price_unit: month

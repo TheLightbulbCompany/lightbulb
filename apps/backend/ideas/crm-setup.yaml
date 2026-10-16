@@ -10,6 +10,14 @@ deliverables:
   - "Pipeline stages that match how you sell"
   - "Contacts imported from spreadsheets and email, duplicates merged"
   - "3 follow-up workflows switched on"
+needs:
+  - {service: attio, access: write}
+  - {service: google, access: read}
+  - {service: apollo, access: read}
+browser: []
+person:
+  - "Approve the import"
+done_means: "Every contact is in the CRM with no duplicates, the stages exist, and three workflows run, each linked on the task."
 agency_price_low: 2000
 agency_price_high: 5000
 price_unit: one_time

@@ -91,6 +91,19 @@ async def test_a_profile_write_failure_is_raised_after_the_secret_and_pointer_la
     assert secret and pointer.await_count == 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["PAPERCLIP_API_KEY", "AWS_SECRET_ACCESS_KEY", "OPENROUTER_API_KEY"])
+async def test_a_reserved_env_name_is_refused_before_any_write(stores, name):
+    from core.services.provisioning_workflow import WorkflowRefused
+
+    secret, pointer, patched = stores
+    with pytest.raises(WorkflowRefused) as refused:
+        await mod.land_credentials(owner_id="o1", resource=POINTER, env={"RESEND_API_KEY": "re_1", name: "x"})
+    assert refused.value.code == "reserved_env_name"
+    assert not secret and pointer.await_count == 0 and patched == []
+    mod.integration_secret_store.get.assert_not_awaited()
+
+
 REVOKE_RES = {"resource_id": "res_1", "provider": "posthog", "env_keys": ["K"]}
 
 

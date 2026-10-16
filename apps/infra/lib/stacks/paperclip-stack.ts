@@ -625,6 +625,9 @@ export class PaperclipStack extends cdk.Stack {
       // Costs ~1-2 min of Paperclip downtime per task-def change.
       minHealthyPercent: 0,
       maxHealthyPercent: 100,
+      // ECS refuses maximumPercent <= 100 while AZ rebalancing is on (the
+      // Fargate default); it has nothing to rebalance with one task anyway.
+      availabilityZoneRebalancing: ecs.AvailabilityZoneRebalancing.DISABLED,
       enableExecuteCommand: true,
       cloudMapOptions: {
         cloudMapNamespace: props.cloudMapNamespace,

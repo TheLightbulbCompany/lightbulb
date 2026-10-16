@@ -4,7 +4,7 @@
 
 **Goal:** An idea started with Let's do it ends done with proof, waiting on one clear ask, or stuck with a reason — never silently stopped.
 
-**Architecture:** Each idea carries `needs` and `done_means`, rendered into its Work item. The backend backstops a stranded start and resumes work when a needed service is connected. The bridge gives Work-started runs their DM room for sign-in asks. The agent's helper and instruction file get the flags and rules to file work that wakes, hand person-steps over, and prove done. Stripe Projects lands credentials on AgentCore.
+**Architecture:** Each idea carries `needs` and `done_means`, rendered into its Work item. Tasks from ideas start in `todo` so Paperclip runs them; the backend resumes work when a needed service is connected. The bridge gives Work-started runs their DM room for sign-in asks. The agent's helper and instruction file get the flags and rules to file work that wakes, hand person-steps over, and prove done. Stripe Projects lands credentials on AgentCore.
 
 **Tech Stack:** Python 3.12 (FastAPI backend, Hermes bridge), bash (`paperclip-api.sh`), YAML catalog, pytest; the Paperclip fork is used through `PaperclipAdminClient` only.
 
@@ -25,7 +25,7 @@
 
 1. An idea whose `needs` names a provider key that is not in the registry: the connect wake would never match. Task 1's `test_every_need_names_a_known_service` pins it.
 2. A connect for a provider two open starts need: both get exactly one comment each, and a second connect of the same provider adds none. Task 4's idempotency test pins it.
-3. A task idea whose first DM turn already moved the task out of backlog before the 10-minute look: the look must not touch it. Task 3's "already moved" test pins it.
+3. A tracked idea's DM message must never start a second run beside Paperclip's; a quick idea's message must still start one. Task 3's two wake tests pin it.
 4. A Paperclip run with no bound conversation still passes `None` as the room (a delegated task), so nothing regresses to posting in a wrong room. Task 5's second test pins it.
 5. `land_credentials` with an empty `env` (a provider that returned no access configuration) must still write the pointer and not raise on `patch_profile_env_and_config` with nothing to merge. Task 8's empty-env test pins it.
 
@@ -327,163 +327,105 @@ git commit -m "ideas: the Work item carries Needs and Done means"
 
 ---
 
-### Task 3: A task idea never strands (the 10-minute look)
+### Task 3: Tasks from ideas are created in `todo`; the DM message does not wake (owner ruling 2026-10-16)
 
 **Files:**
-- Modify: `apps/backend/core/services/ideas.py` (new `_look_later`, called at the end of `_start`)
-- Test: `apps/backend/tests/unit/services/test_ideas.py`
+- Modify: `apps/backend/core/services/ideas.py` (`_start`: the task body's status; a first task inside a project; `wake=False` on the DM message)
+- Modify: `apps/backend/core/services/messaging.py:4022-4110` (`create_human_message` gains `wake: bool = True`)
+- Test: `apps/backend/tests/unit/services/test_ideas.py`, and the messaging test file that covers `create_human_message` (find it with `git grep -l "create_human_message" apps/backend/tests`)
 
 **Interfaces:**
-- Produces: `BACKSTOP_DELAY_S = 600`; `async def backstop(owner_id, idea_id, user_id, start_token) -> str` returning `"moved"`, `"planned"`, `"left"` or `"gone"`.
+- Consumes: `work_description(job)` from Task 2; `work_idempotency_key(...)` (`key`) already computed in `_start`.
+- Produces: `create_human_message(auth, room_id, request, *, via=..., wake: bool = True)`; a project start's first task id stored on the start row as `firstIssueId`.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```python
 @pytest.mark.asyncio
-async def test_backstop_moves_a_task_idea_still_in_backlog_to_todo(paperclip, monkeypatch):
-    paperclip.patch_issue = AsyncMock()
-    start = await ideas.start(AUTH, "inbox-triage")
-    row = (await messaging_repo.open_idea_starts(OWNER))[0]
-    assert await ideas.backstop(OWNER, "inbox-triage", AUTH.user_id, row["startToken"]) == "moved"
-    paperclip.patch_issue.assert_awaited_once()
-    assert paperclip.patch_issue.await_args.kwargs["body"] == {"status": "todo"}
-    assert paperclip.patch_issue.await_args.kwargs["issue_id"] == start["issueId"]
-
-
-@pytest.mark.asyncio
-async def test_backstop_leaves_a_task_the_agent_already_moved(paperclip):
-    paperclip.patch_issue = AsyncMock()
-    paperclip.get_issue = AsyncMock(return_value={"status": "in_progress"})
+async def test_a_task_idea_is_created_in_todo_and_assigned(paperclip):
     await ideas.start(AUTH, "inbox-triage")
-    row = (await messaging_repo.open_idea_starts(OWNER))[0]
-    assert await ideas.backstop(OWNER, "inbox-triage", AUTH.user_id, row["startToken"]) == "left"
-    paperclip.patch_issue.assert_not_awaited()
+    body = paperclip.create_issue.await_args.kwargs["body"]
+    assert body["status"] == "todo" and body["assigneeAgentId"] == STARTERS["customer_operations"]
 
 
 @pytest.mark.asyncio
-async def test_backstop_files_a_plan_task_for_a_project_with_no_open_task(paperclip):
-    paperclip.list_issues = AsyncMock(return_value={"issues": []})
+async def test_a_project_idea_gets_one_todo_task_inside_it(paperclip):
     start = await ideas.start(AUTH, "launch-run")
-    row = (await messaging_repo.open_idea_starts(OWNER))[0]
-    assert await ideas.backstop(OWNER, "launch-run", AUTH.user_id, row["startToken"]) == "planned"
     body = paperclip.create_issue.await_args.kwargs["body"]
     assert body["projectId"] == start["projectId"] and body["status"] == "todo"
-    assert body["title"] == "Plan this project: Your launch run: Product Hunt, 100 directories, press release and posts"
+    assert body["title"] == ideas.catalog()["launch-run"].title
+    assert body["assigneeAgentId"] == STARTERS["growth"]
+    assert body["idempotencyKey"].endswith(":task") and "## Done means" in body["description"]
+    row = (await messaging_repo.open_idea_starts(OWNER))[0]
+    assert row["firstIssueId"] == "issue-1"
 
 
 @pytest.mark.asyncio
-async def test_backstop_is_a_noop_after_the_start_was_closed_or_replaced(paperclip):
+async def test_the_dm_record_for_a_tracked_idea_does_not_wake_the_agent(paperclip, monkeypatch):
+    calls = []
+    real = ideas.messaging.create_human_message
+    async def spy(*a, **kw):
+        calls.append(kw.get("wake", True))
+        return await real(*a, **kw)
+    monkeypatch.setattr(ideas.messaging, "create_human_message", spy)
     await ideas.start(AUTH, "inbox-triage")
-    assert await ideas.backstop(OWNER, "inbox-triage", AUTH.user_id, "not-the-token") == "gone"
+    assert calls == [False]
 
 
 @pytest.mark.asyncio
-async def test_start_schedules_the_look(paperclip, monkeypatch):
-    seen = []
-    monkeypatch.setattr(ideas, "_schedule_backstop", lambda *a: seen.append(a))
-    await ideas.start(AUTH, "inbox-triage")
-    assert seen and seen[0][:3] == (OWNER, "inbox-triage", AUTH.user_id)
+async def test_a_quick_idea_still_wakes_the_agent_from_the_dm(paperclip, monkeypatch):
+    calls = []
+    real = ideas.messaging.create_human_message
+    async def spy(*a, **kw):
+        calls.append(kw.get("wake", True))
+        return await real(*a, **kw)
+    monkeypatch.setattr(ideas.messaging, "create_human_message", spy)
+    await ideas.start(AUTH, QUICK_IDEA_ID)   # any catalog idea with size quick; if none exists, use a suggestion with size "quick" the way the existing suggestion tests do
+    assert calls == [True]
 ```
 
-The `paperclip` fixture's `list_issues` returns `[]` today; the project test overrides it to the dict shape the admin client returns (`{"issues": [...]}`). Check `PaperclipAdminClient.list_issues` and match the real shape.
+In the messaging test file, add one test that `create_human_message(..., wake=False)` stores the message (it is listed by `messaging_repo.list_messages`) but does not call the dispatch step, and that the default still does. Find the dispatch step by reading `create_human_message`: it is the call that enqueues room work for the agent (grep `_dispatch_targets` and the enqueue it feeds in `messaging.py`); monkeypatch that function with an `AsyncMock` and assert `await_count` is 0 with `wake=False` and 1 with the default. Reuse that file's existing fixtures for a room with one agent member.
 
 - [ ] **Step 2: Run them to verify they fail**
 
-Run: `cd apps/backend && uv run pytest -q tests/unit/services/test_ideas.py -k backstop`
-Expected: FAIL (`backstop` not defined).
+Run: `cd apps/backend && uv run pytest -q tests/unit/services/test_ideas.py -k "todo_and_assigned or todo_task_inside or does_not_wake or still_wakes"`
+Expected: FAIL (status is backlog; no task inside the project; `wake` not accepted).
 
 - [ ] **Step 3: Implement**
 
-In `ideas.py`:
+In `messaging.create_human_message`, add `wake: bool = True` to the keyword parameters, document it in the docstring ("False stores and shows the message but does not dispatch the agent: an Ideas record whose work Paperclip already started"), and wrap the dispatch step in `if wake:`. Nothing else in the function changes: the message is stored, published to the room's live channel, and counted as before.
+
+In `ideas._start`:
+- the task body: `"status": "todo"`, and replace the backlog comment with: `# todo: Paperclip starts the run at once, like any assigned task (owner, 2026-10-16). The DM message below is the person's record and does not wake.`
+- after the project is created (inside `if not project_id:` is wrong — do it whenever the start row has no `firstIssueId`):
 
 ```python
-#: A task idea is born in backlog so the DM is the one wake. If nothing moved it by then, the
-#: DM turn failed or forgot, and nothing else ever picks backlog up (spec 2026-10-15 §2.7).
-BACKSTOP_DELAY_S = 600
-_looks: set[asyncio.Task] = set()
-
-
-def _schedule_backstop(owner_id: str, idea_id: str, user_id: str, start_token: str) -> None:
-    # ponytail: in-process timer, lost if the backend restarts inside the delay (the same
-    # accepted limit as paperclip_escalation's check). A durable delay if it ever matters.
-    task = asyncio.create_task(_look_later(owner_id, idea_id, user_id, start_token))
-    _looks.add(task)
-    task.add_done_callback(_looks.discard)
-
-
-async def _look_later(owner_id: str, idea_id: str, user_id: str, start_token: str) -> None:
-    await asyncio.sleep(BACKSTOP_DELAY_S)
-    try:
-        outcome = await backstop(owner_id, idea_id, user_id, start_token)
-        put_metric("ideas.backstop", dimensions={"outcome": outcome})
-    except Exception:
-        put_metric("ideas.backstop", dimensions={"outcome": "error"})
-        logger.exception("ideas backstop failed owner=%s idea=%s", owner_id, idea_id)
-
-
-async def backstop(owner_id: str, idea_id: str, user_id: str, start_token: str) -> str:
-    """One look at a start 10 minutes in: a backlog task is moved to todo (that wakes the agent in
-    its own issue session); a project with no open task gets one todo task for its lead. Fenced
-    on the start token, so a closed or replaced start is left alone."""
-    from core.services.paperclip_admin_client import shared_admin_client
-
-    row = await messaging_repo.get_idea_start(owner_id, idea_id, user_id)
-    if not row or row.get("startToken") != start_token or row.get("state") != "open":
-        return "gone"
-    admin = shared_admin_client()
-    async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
-        cookie = await get_admin_session_cookie(http)
-        if row.get("issueId"):
-            issue = await admin.get_issue(session_cookie=cookie, issue_id=row["issueId"]) or {}
-            if issue.get("status") != "backlog":
-                return "left"
-            await admin.patch_issue(session_cookie=cookie, issue_id=row["issueId"], body={"status": "todo"})
-            return "moved"
-        if row.get("projectId"):
-            ws = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
-            listed = await admin.list_issues(session_cookie=cookie, company_id=ws.company_id,
-                                             params={"projectId": row["projectId"], "status": "todo,in_progress,in_review,blocked"})
-            if listed.get("issues"):
-                return "left"
-            await admin.create_issue(session_cookie=cookie, company_id=ws.company_id, body={
-                "title": f"Plan this project: {row['title']}",
-                "description": "Break this project into tasks, each assigned and filed as todo in this project, "
-                               "then leave a one-line next action.",
-                "status": "todo",
-                "assigneeAgentId": row["agentId"],
-                "projectId": row["projectId"],
-                "idempotencyKey": f"lightbulb-idea-plan:v1:{start_token}",
-            })
-            return "planned"
-    return "left"
+            if not claim.get("firstIssueId"):
+                first = await admin.create_issue(
+                    session_cookie=ctx.session_cookie, company_id=ctx.company_id, body={
+                        "title": job.title,
+                        "description": work_description(job),
+                        "status": "todo",
+                        "assigneeAgentId": agent["id"],
+                        "projectId": project_id,
+                        "idempotencyKey": f"{key}:task",
+                        "allowDuplicate": True,
+                    })
+                await messaging_repo.update_idea_start(owner_id, idea_id, user_id, {"firstIssueId": first["id"]})
 ```
 
-Imports: `from core.observability.metrics import put_metric`, `from core.services.paperclip_admin_session import get_admin_session_cookie`, `from core.repositories.paperclip_repo import PaperclipRepo` (already imported inside `_workspace`; lift it to module level). Add `messaging_repo.get_idea_start(owner_id, idea_id, user_id)` next to `open_idea_starts`:
-
-```python
-async def get_idea_start(owner_id: str, idea_id: str, user_id: str) -> dict | None:
-    return await _get(**_idea_start_key(owner_id, idea_id, user_id))
-```
-
-At the end of `_start`'s `try` block, after `update_idea_start(... fields)`:
-
-```python
-        if tracked:
-            _schedule_backstop(owner_id, idea_id, user_id, claim["startToken"])
-```
-
-The admin client's `shared_admin_client()` may already carry an http client and cookie handling; if `get_issue`/`patch_issue` take the cookie as above (they do in `paperclip_escalation.py:92-95`), keep this shape; the `paperclip` test fixture needs `patch_issue` added as an `AsyncMock()` (do that in the fixture so other tests keep working).
+- the DM message: `via="ideas", wake=tracked is None`.
 
 - [ ] **Step 4: Run the tests**
 
-Run: `cd apps/backend && uv run pytest -q tests/unit/services/test_ideas.py`
+Run: `cd apps/backend && uv run pytest -q tests/unit/services/test_ideas.py tests/unit/routers/test_ideas_route.py <messaging test file>`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/backend/core/services/ideas.py apps/backend/core/repositories/messaging_repo.py apps/backend/tests/unit/services/test_ideas.py
-git commit -m "ideas: a task idea still in backlog after 10 minutes is moved to todo"
+git add apps/backend/core/services/ideas.py apps/backend/core/services/messaging.py apps/backend/tests
+git commit -m "ideas: tasks from ideas start in todo; the DM message is a record, not a wake"
 ```
 
 ---
@@ -805,7 +747,6 @@ git commit -m "paperclip helper: --project and --assignee-user on create and sub
 
 **Files:**
 - Modify: `apps/infra/hermes/skills-src/lightbulb/references/ideas.md` (rewrite; stays under 40 lines)
-- Modify: `apps/infra/hermes/skills-src/paperclip/SKILL.md:27` (the backlog sentence)
 - Test: `apps/infra/hermes/tests/test_ideas_skill.py`
 
 **Interfaces:**
@@ -824,7 +765,6 @@ Replace the body of `test_the_skill_routes_ideas_to_a_short_reference` after the
     assert "`connected_integrations`" in ideas
     # Statuses: project tasks filed in the project as todo; a task idea is checked out first.
     assert "`--project <id>` and `--status todo`" in ideas
-    assert "`checkout` it first" in ideas
     assert "one-line next action" in ideas
     # A step only a person can do is a task for the person, never a question in chat.
     assert "`--assignee-user`" in ideas and "blocked by that task" in ideas
@@ -841,8 +781,6 @@ Replace the body of `test_the_skill_routes_ideas_to_a_short_reference` after the
     assert "plan" not in ideas.lower().replace("plan this project", "") and "$HERMES_HOME/ideas" not in ideas
     service = (BACKEND / "core/services/ideas.py").read_text()
     assert "Let's do it!" in service and "Tracked in Work: [" in service
-    skill = (HERMES / "skills-src/paperclip/SKILL.md").read_text()
-    assert "except idea work" in skill
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
@@ -865,8 +803,7 @@ missing, ask once, for all of it, in your reply: each service with its Connect l
 text instead. Then keep doing every part that needs nothing. When the person connects a service,
 Paperclip wakes you with a comment on the task; carry on.
 
-- **The link is a task:** `checkout` it first (that binds it to this DM and starts it), work it, and
-  close it with proof.
+- **The link is a task:** it is assigned to you and this run is it; work it and close it with proof.
 - **The link is a project:** file every task inside it with `--project <id>` and `--status todo`,
   each assigned to yourself or a teammate (the id is the link's `detailId`). Work the first one now.
   You close the project only after checking each task's proof.
@@ -894,8 +831,6 @@ Call `suggest_idea` only when you notice a concrete, company-specific job during
 the Ideas list, not to chat: do not post it in the conversation.
 ```
 
-In `paperclip/SKILL.md` line 27, append to the backlog sentence: ` (except idea work: a task that continues an idea is filed as todo, see references/ideas.md)`.
-
 - [ ] **Step 4: Run the test**
 
 Run: `cd apps/infra/hermes && python -m pytest -q tests/test_ideas_skill.py`
@@ -904,7 +839,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/infra/hermes/skills-src/lightbulb/references/ideas.md apps/infra/hermes/skills-src/paperclip/SKILL.md apps/infra/hermes/tests/test_ideas_skill.py
+git add apps/infra/hermes/skills-src/lightbulb/references/ideas.md apps/infra/hermes/tests/test_ideas_skill.py
 git commit -m "ideas skill: pre-flight on Needs, todo in the project, person-step tasks, proof, limits"
 ```
 
@@ -1111,8 +1046,8 @@ git commit -m "stripe projects: public API version check; prod switch from a rep
 
 On the dev workspace, as the dev founder:
 1. Start `inbox-triage` with Google disconnected. Expect: the agent's reply lists Google with a Connect link and does not pretend to read mail. Connect Google on Connections. Expect within 2 minutes: a comment "Google is connected…" on the task and a new run.
-2. Start `inbox-triage` and stop the agent's first turn at once (Stop). Expect after 10 minutes: the task is `todo` and a run started (the backstop).
-3. Start `launch-run`. Expect: tasks filed inside the project as `todo`; or, after 10 minutes with none, a "Plan this project" task.
+2. Start `inbox-triage`. Expect within 1 minute: one run from the `todo` task on the board, your message in the DM with the Work link, and no second run in the DM.
+3. Start `launch-run`. Expect: one `todo` task inside the project carrying the idea, a run on it, and further tasks filed inside the project as `todo`.
 4. From the DM, have the agent open a site that asks for a code on a task it checked out. Expect: the "go to the Browser panel" line in the DM.
 5. With `STRIPE_PROVISIONING_ENABLED=true` on dev, ask the agent for a Resend account through the rail; approve the card. Expect: the workflow reaches `active` and `RESEND_API_KEY` is present in the agent's shell on the next turn (`printenv RESEND_API_KEY | cut -c1-4`).
 

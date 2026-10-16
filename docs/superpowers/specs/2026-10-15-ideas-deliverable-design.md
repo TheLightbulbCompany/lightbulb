@@ -34,9 +34,9 @@ The helper gets `--assignee-user <userId>`. The Ideas instruction says: identity
 
 The helper's `create` and `subtask` get `--project <id>`. The Ideas instruction says: for a project idea, file each task inside the project with `--status todo`, assigned, and leave a one-line "next action" comment after each unit of work. The Paperclip skill's "backlog is the normal case" gets an exception for idea work.
 
-### 2.7 A task idea never strands
+### 2.7 Tasks from ideas run the Paperclip way (owner, 2026-10-16)
 
-A task idea is born in backlog so the DM is the only wake. If it is still backlog 10 minutes after the start, the backend moves it to `todo`, which wakes the agent. A project idea with no open task 10 minutes after the start gets one `todo` task "Plan this project" for the lead.
+A task idea creates an assigned **`todo`** task, and Paperclip starts the run at once, the way it starts any assigned task. A project idea creates the project and one assigned `todo` task inside it that carries the idea, so the lead starts on it and files the rest. The person's DM message is still posted as their record, with the Work link, but it no longer wakes the agent: one run, not two. A quick idea stays as today: the DM message is the work. No backlog, no timer.
 
 ### 2.8 Done means proof
 
@@ -56,7 +56,7 @@ Three lines in the Ideas instruction: turns are 30 minutes, so work in units and
 - Render: `ideas.py` adds "Needs" and "Done means" sections to the task or project description it already writes. Suggested ideas (`suggest_idea`) may carry `needs` and `done_means`; without them the sections are omitted.
 - Connect wake: `apply_connection` success → `open_idea_starts(owner)` → match provider against each idea's `needs` → `add_issue_comment` on the task, or on each open agent task of the project. Idempotent per (start token, provider).
 - Room for codes: `_run_paperclip_session(identity, request, conversation)` passes the conversation's room id into `prompt_scope` and the turn context, replacing the two `None`s at `turn.py:3804-3806`.
-- Backstop: every start schedules one delayed look 10 minutes later, in process, the way `paperclip_escalation` schedules its check. The look PATCHes `{status: "todo"}` on a task still in backlog, or creates the plan task on a project with no open task. One attempt; a failure is a log line and a metric; a backend restart inside the delay loses the look (the same accepted limit as the escalation check).
+- Statuses at start: the task body carries `status: "todo"`; the project gets a first task `{title, description: work_description, status: "todo", assigneeAgentId, projectId, idempotencyKey: <key>:task}`. `create_human_message` takes `wake=False` for a tracked start, which stores and shows the message but skips the agent dispatch; a quick idea keeps the default.
 - Helper flags: `--assignee-user` sends `assigneeUserId`; `--project` sends `projectId` on create and subtask.
 - Landing: `land_credentials` → `integration_secret_store.put`, `integrations_repo` pointer row, then `patch_profile_env_and_config(owner, agent, env, {})` for every roster agent, then the bridge's profile re-pull as for connectors.
 

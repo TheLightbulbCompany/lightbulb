@@ -3499,6 +3499,29 @@ def memory_pre_tool_call(tool_name: str = "", args: dict | None = None, **_kw):
     return None
 
 
+def _credential_pool(provider: str, model: str):
+    """The provider's credential pool, resolved as Hermes's own gateway and one-shot runner do
+    (``resolve_runtime_provider(...)["credential_pool"]``, hermes_cli/oneshot.py) -- or None.
+
+    Without it Hermes has no native recovery for an expired OAuth token: its 401 path refreshes
+    the pool entry that issued the failing key (syncing a token another turn already rotated
+    into auth.json first), and the only pool-less fallback refuses a rotated token as an
+    "account swap". Prod 2026-10-15 23:17Z: three ChatGPT-OAuth turns died at their token's
+    expiry that way (ISOA-837).
+
+    Only for ChatGPT OAuth (``openai-codex``), the one refresh-token grant a workspace stages:
+    on the managed gate and BYO keys a pool would add Hermes's 429 benching to a cap the gate
+    already enforces, and they have no token to refresh."""
+    if provider != "openai-codex":
+        return None
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        return resolve_runtime_provider(requested=provider, target_model=model or None).get("credential_pool")
+    except Exception:  # noqa: BLE001 -- no pool is Hermes's own pool-less behaviour, never a failed turn
+        log.warning("credential pool resolution failed provider=%s", provider, exc_info=True)
+        return None
+
+
 def _construct_agent(agent_id: str, body: dict, frames, session_key: str, **limits):
     """The one place that builds a real Hermes AIAgent. Home-scoping is the CALLER's job now
     (_run_hermes's `_hermes_home_scope`, held across construction AND run_conversation — see
@@ -3553,6 +3576,7 @@ def _construct_agent(agent_id: str, body: dict, frames, session_key: str, **limi
         "gateway_session_key": session_key,
         "enabled_toolsets": enabled_toolsets,
         "disabled_toolsets": disabled_toolsets,
+        "credential_pool": _credential_pool(provider, model),
         **callbacks,
         # CALL_RUN_LIMITS on a voice turn, the compaction agent's own (_construct_compaction_agent);
         # every other turn passes none. Last, so the compaction agent can narrow the toolsets.

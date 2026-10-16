@@ -457,3 +457,15 @@ def test_subtask_can_file_into_a_project(tmp_path):
                     responses=[[201, {"id": ISSUE}]])
     body = json.loads(calls[0]["body"])
     assert body["projectId"] == "proj-1" and body["assigneeUserId"] == "user-9" and body["status"] == "todo"
+
+
+@helper
+def test_subtask_in_a_project_with_an_agent_assignee_starts_it(tmp_path):
+    calls = _helper(tmp_path, ["subtask", "company-1", "--title", "One directory", "--parent", ISSUE,
+                               "--project", "proj-1", "--assignee", AGENT, "--status", "todo"],
+                    responses=[[201, {"id": ISSUE, "status": "backlog"}], [200, {"id": ISSUE, "status": "todo"}]])
+    create, start = calls
+    body = json.loads(create["body"])
+    assert body["projectId"] == "proj-1" and body["assigneeAgentId"] == AGENT and body["status"] == "backlog"
+    assert start == {**start, "method": "PATCH", "url": f"http://pc/api/issues/{ISSUE}", "bound": True}
+    assert json.loads(start["body"]) == {"status": "todo"}

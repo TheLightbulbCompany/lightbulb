@@ -98,7 +98,6 @@ Subcommands (markdown / freeform text is read from stdin where noted):
   subtask <companyId> --title T --parent <id> [--goal <id>] [--status S]
           [--priority P] [--assignee <agentId>] [--blocked-by "id1,id2"]
           [--inherit-workspace <issueId>] [--billing-code CODE]
-         [--project <id>] [--assignee-user <userId>]
           [--project <id>] [--assignee-user <userId>]
       POST /api/companies/{companyId}/issues
       body: { title, parentId, goalId?, description?, status?, priority?,

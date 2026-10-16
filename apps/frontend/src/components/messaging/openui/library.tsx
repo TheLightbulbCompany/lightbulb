@@ -1,7 +1,8 @@
 "use client";
 
 import { createLibrary, defineComponent } from "@openuidev/react-lang";
-import { CARD_COMPONENTS, CARD_ROOT, type CardName } from "@lightbulb/shared";
+import { CARD_ROOT, type CardName } from "@lightbulb/shared";
+import { CARD_COMPONENTS } from "@lightbulb/shared/cards";
 import { RENDERERS } from "./renderers";
 
 const Empty = () => null;

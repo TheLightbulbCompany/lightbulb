@@ -1,8 +1,7 @@
-import type { ComponentType, ReactNode } from "react";
+import { lazy, Suspense, type ComponentType, type ReactNode } from "react";
 import type { Components, ExtraProps } from "react-markdown";
 import { CARD_FENCE } from "@lightbulb/shared";
 import { markdownComponents } from "@/components/teams/shared/components/MarkdownView";
-import { OpenUICard } from "./openui/OpenUICard";
 import { useCardContext } from "./openui/CardContext";
 import { attachmentIdFromHref } from "@/components/teams/shared/lib/attachments";
 import { safeHref } from "@/components/teams/shared/lib/safeHref";
@@ -16,13 +15,17 @@ type PreProps = React.ComponentProps<"pre"> & ExtraProps;
 // They are plain function components in MarkdownView; cast once so the fallback is renderable.
 const DefaultCode = markdownComponents.code as ComponentType<CodeProps>;
 const DefaultPre = markdownComponents.pre as ComponentType<PreProps>;
+// OpenUI, its parser and recharts load only when a card is first drawn, not with /chat.
+const OpenUICard = lazy(() => import("./openui/OpenUICard").then((m) => ({ default: m.OpenUICard })));
 
 /** An agent's card fence. Without a CardContext (a person's message, a transcript) it stays code. */
 function CodeOrCard(props: CodeProps) {
   const ctx = useCardContext();
   const { className, children } = props as { className?: string; children?: ReactNode };
   if (ctx && typeof className === "string" && className.split(" ").includes(CARD_CLASS)) {
-    return <OpenUICard program={String(children ?? "").replace(/\n$/, "")} />;
+    return <Suspense fallback={<DefaultCode {...props} />}>
+      <OpenUICard program={String(children ?? "").replace(/\n$/, "")} />
+    </Suspense>;
   }
   return <DefaultCode {...props} />;
 }

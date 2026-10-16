@@ -11,13 +11,8 @@
  */
 import { createLibrary, defineComponent } from "@openuidev/lang-core";
 import { z } from "zod/v4";
+import { CARD_ROOT } from "./constants";
 
-export const CARD_FENCE = "openui-lang";
-export const CARD_ROOT = "Stack";
-/** A fence past this renders as code, never a card. */
-export const CARD_MAX_BYTES = 16 * 1024;
-/** A Choice shows at most this many options; the rest fold under "+N more". */
-export const CARD_MAX_OPTIONS = 8;
 
 export const Text = defineComponent({
   name: "Text", description: "A line or paragraph of prose.",

@@ -1,6 +1,7 @@
 import { createParser } from "@openuidev/lang-core";
 import { describe, expect, it } from "vitest";
-import { CARD_COMPONENTS, CARD_ROOT, cardLibrary } from "./library";
+import { CARD_ROOT } from "./constants";
+import { CARD_COMPONENTS, cardLibrary } from "./library";
 
 const parse = (program: string) => createParser(cardLibrary.toJSONSchema(), CARD_ROOT).parse(program);
 

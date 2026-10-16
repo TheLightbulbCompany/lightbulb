@@ -86,3 +86,11 @@ def test_per_turn_fields_move_to_the_user_message():
     assert ctx["message"]["threadRootMessageId"] == ROOT
     assert ctx["sessions"] == [{"sessionId": "s1"}] and ctx["media"] == ["/mnt/x.png"]
     assert rest == "Prez: ship it"
+
+
+def test_typed_room_turns_and_paperclip_runs_write_chat_like_a_person_but_mail_and_calls_do_not():
+    body = f.ingress()
+    assert turn.CHAT_STYLE in turn.system_prompt(body, "ceo")
+    assert turn.CHAT_STYLE in turn.system_prompt({**body, "eventKind": "paperclip_run"}, "ceo")
+    assert turn.CHAT_STYLE not in turn.system_prompt({**body, "eventKind": "agent_mail"}, "ceo")
+    assert turn.CHAT_STYLE not in turn.system_prompt(body, "ceo", spoken=True)

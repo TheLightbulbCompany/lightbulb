@@ -13,23 +13,30 @@ def test_the_skill_routes_ideas_to_a_short_reference(tmp_path):
     skill = (out / "lightbulb/SKILL.md").read_text()
     row = next(line for line in skill.splitlines() if "`references/ideas.md`" in line)
     assert row.startswith("|") and "suggest_idea" in row
+    # A Paperclip run never sees "Let's do it!": the Work task's own sections route here too.
+    assert "Needs" in row and "Done means" in row
     ideas = (out / "lightbulb/references/ideas.md").read_text()
     assert len(ideas.splitlines()) < 40
     assert "Do it like any request" in ideas
     # Pre-flight: needs against what is connected, one ask for everything missing.
     assert "Read the Work item's **Needs**" in ideas and "ask once, for all of it" in ideas
     assert "`connected_integrations`" in ideas
+    # The run is not bound to the DM: it reaches the person through the room named in From.
+    assert "lightbulb-post.sh --room <roomId>" in ideas and "**From**" in ideas
+    # The DM record of a tracked idea is never a second start.
+    assert "never start it again" in ideas
     # Statuses: project tasks filed in the project as todo.
     assert "`--project <id>` and `--status todo`" in ideas
     assert "one-line next action" in ideas
     # A step only a person can do is a task for the person, never a question in chat.
     assert "--assignee-user <userId>" in ideas and "blocked by that task" in ideas
+    assert "user id in **From**" in ideas
     # Done means proof.
     assert "one line per deliverable with a link" in ideas and "**Done means**" in ideas
     # The box's limits.
     assert "30 minutes" in ideas and "50 a day" in ideas and "no phone" in ideas
-    # Browser steps from a run with no room go back to the DM.
-    assert "request_approval titled" in ideas and "continue when the approval wakes you" in ideas
+    # Browser steps from any Work run go through an approval.
+    assert "from any Work run" in ideas and "request_approval titled" in ideas and "continue when the approval wakes you" in ideas
     assert "assigned to you and this run is it" in ideas and "after checking each task's proof" in ideas
     assert "lightbulb-connect.sh link" in ideas and "comment on the task" in ideas
     assert "sign-in (live browser only)" in ideas and "`request_approval`" in ideas
@@ -42,5 +49,7 @@ def test_the_skill_routes_ideas_to_a_short_reference(tmp_path):
     # The backend's message carries the phrases the reference keys on.
     service = (BACKEND / "core/services/ideas.py").read_text()
     assert "Let's do it!" in service and "Tracked in Work: [" in service
+    # Idea work is filed as todo, the one exception to the backlog default.
+    assert "except idea work" in (out / "paperclip/SKILL.md").read_text()
     plugin = (HERMES / "plugins/lightbulb/plugin.yaml").read_text()
     assert "- suggest_idea" in plugin

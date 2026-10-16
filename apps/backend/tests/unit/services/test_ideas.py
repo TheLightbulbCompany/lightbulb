@@ -150,7 +150,9 @@ def paperclip(workspace, monkeypatch):
         create_issue=AsyncMock(side_effect=lambda **_: {"id": f"issue-{admin.create_issue.await_count}"}),
         get_issue=AsyncMock(return_value={"status": "backlog"}),
     )
-    ctx = SimpleNamespace(owner_id=OWNER, company_id="company-1", session_cookie="cookie")
+    ctx = SimpleNamespace(
+        owner_id=OWNER, company_id="company-1", session_cookie="cookie", paperclip_user_id="pc-user-1"
+    )
     monkeypatch.setattr(task_board, "_context", AsyncMock(return_value=ctx))
     monkeypatch.setattr(paperclip_admin_client, "shared_admin_client", lambda: admin)
     monkeypatch.setattr(hermes_profiles, "write_profile_file", AsyncMock())
@@ -477,6 +479,7 @@ async def test_a_suggestion_starts_like_a_catalog_idea_with_its_agent(paperclip)
     started = await ideas.start(AUTH, added["id"])
     assert started["projectId"] == "project-1"
     assert paperclip.create_project.await_args.kwargs["body"]["leadAgentId"] == STARTERS["growth"]
+    assert paperclip.create_issue.await_args.kwargs["body"]["description"].endswith(_from(started))
     [line] = await _lines(started["roomId"])
     assert line["text"].startswith("> **Answer the 14 open Shopify reviews**")
     # Started: it leaves the list while its project is open.
@@ -662,24 +665,35 @@ def test_every_need_names_a_known_service():
 @pytest.mark.asyncio
 async def test_needs_and_done_means_are_not_served(paperclip):
     first = (await ideas.list_ideas(AUTH))["ideas"][0]
-    assert "needs" not in first and "doneMeans" not in first and "person" not in first
+    assert not {"needs", "browser", "person", "doneMeans"} & first.keys()
+
+
+def _from(start: dict) -> str:
+    return (
+        f"## From\nStarted from Ideas by Name {AUTH.user_id}. Their DM with you: room `{start['roomId']}`. "
+        "Their Paperclip user id: `pc-user-1`."
+    )
 
 
 @pytest.mark.asyncio
 async def test_a_task_idea_carries_needs_and_done_means_in_work(paperclip):
-    await ideas.start(AUTH, "inbox-triage")
+    start = await ideas.start(AUTH, "inbox-triage")
     body = paperclip.create_issue.await_args.kwargs["body"]
     assert "## Needs\n" in body["description"] and "- google (write)" in body["description"]
     assert "Approve sends until you trust them" in body["description"]
-    assert body["description"].rstrip().endswith("## Done means\n" + ideas.catalog()["inbox-triage"].done_means)
+    done = "## Done means\n" + ideas.catalog()["inbox-triage"].done_means
+    assert body["description"].endswith(done + "\n\n" + _from(start))
 
 
 @pytest.mark.asyncio
 async def test_a_project_idea_carries_needs_and_done_means_in_work(paperclip):
-    await ideas.start(AUTH, "launch-run")
+    start = await ideas.start(AUTH, "launch-run")
     body = paperclip.create_project.await_args.kwargs["body"]
     assert "## Needs\n" in body["description"] and "Product Hunt" in body["description"]
     assert "## Done means" in body["description"]
+    assert body["description"].endswith(_from(start))
+    first_task = paperclip.create_issue.await_args.kwargs["body"]
+    assert first_task["description"].endswith(_from(start))
 
 
 def test_work_description_is_plain_for_a_suggestion_without_needs():

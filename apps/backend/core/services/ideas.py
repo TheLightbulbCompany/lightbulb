@@ -475,9 +475,12 @@ def _md_text(value: str) -> str:
     return _MARKDOWN_SPECIAL.sub(r"\\\1", " ".join(value.split()))
 
 
-def work_description(job: Job) -> str:
+def work_description(job: Job, *, origin: dict | None = None) -> str:
     """The Work item's text: the why, what's included, and (catalog ideas) what it needs and what
-    done means. The agent reads these here; the DM message stays the plain prompt."""
+    done means. The agent reads these here; the DM message stays the plain prompt. ``origin``
+    (``name``, ``roomId``, ``paperclipUserId``) adds a **From** section: the idea's run is a Work
+    run, not bound to the DM, so this is how it reaches the person (``lightbulb-post.sh --room``)
+    and assigns them a step."""
     text = job.why + "\n\nWhat's included:\n" + "\n".join(f"- {d}" for d in job.deliverables)
     needs = [f"- {n.service} ({n.access})" for n in job.needs]
     needs += [f"- browser: {site}" for site in job.browser]
@@ -486,6 +489,12 @@ def work_description(job: Job) -> str:
         text += "\n\n## Needs\n" + "\n".join(needs)
     if job.done_means:
         text += "\n\n## Done means\n" + job.done_means
+    if origin:
+        text += (
+            f"\n\n## From\nStarted from Ideas by {' '.join(origin['name'].split())}. "
+            f"Their DM with you: room `{origin['roomId']}`. "
+            f"Their Paperclip user id: `{origin['paperclipUserId']}`."
+        )
     return text
 
 
@@ -547,8 +556,18 @@ async def _start(auth: AuthContext, idea_id: str) -> dict:
         raise HTTPException(status_code=409, detail="This idea is already starting.")
 
     try:
+        room_id = await _usable_dm(owner_id, user_id, agent["id"])
         key = work_idempotency_key(owner_id, idea_id, user_id, claim["startToken"])
         tracked: tuple[str, str] | None = None
+        try:
+            name = await messaging.human_display_name(user_id)
+        except Exception:  # noqa: BLE001 - a missing name never blocks the start
+            name = ""
+        origin = {
+            "name": name if name and name != user_id else "the person",
+            "roomId": room_id,
+            "paperclipUserId": ctx.paperclip_user_id,
+        }
         if job.size == "project":
             project_id = claim.get("projectId")
             if not project_id:
@@ -557,7 +576,7 @@ async def _start(auth: AuthContext, idea_id: str) -> dict:
                 goal_id = getattr(row, "onboarding_goal_id", None)
                 body = {
                     "name": job.title,
-                    "description": work_description(job),
+                    "description": work_description(job, origin=origin),
                     "status": "in_progress",
                     "leadAgentId": agent["id"],
                     "idempotencyKey": key,
@@ -574,7 +593,7 @@ async def _start(auth: AuthContext, idea_id: str) -> dict:
                     company_id=ctx.company_id,
                     body={
                         "title": job.title,
-                        "description": work_description(job),
+                        "description": work_description(job, origin=origin),
                         "status": "todo",
                         "assigneeAgentId": agent["id"],
                         "projectId": project_id,
@@ -589,7 +608,7 @@ async def _start(auth: AuthContext, idea_id: str) -> dict:
             if not issue_id:
                 body = {
                     "title": job.title,
-                    "description": work_description(job),
+                    "description": work_description(job, origin=origin),
                     # todo: Paperclip starts the run at once, like any assigned task (owner,
                     # 2026-10-16). The DM message below is the person's record and does not wake.
                     "status": "todo",
@@ -605,7 +624,6 @@ async def _start(auth: AuthContext, idea_id: str) -> dict:
                 issue_id = issue["id"]
                 await messaging_repo.update_idea_start(owner_id, idea_id, user_id, {"issueId": issue_id})
             tracked = ("task", issue_id)
-        room_id = await _usable_dm(owner_id, user_id, agent["id"])
         # The person's own message (via Ideas), shown live. Work tracked in Paperclip already woke
         # the agent, so it is a record; a quick idea has no task, so this message is the wake.
         # One per start: a retry replays it.

@@ -878,7 +878,9 @@ export function MessagingWorkspaceProvider({
     });
   }, [sendRoomMessage]);
   const roomProps: RoomPanelProps | null = rooms.activeRoomId ? {
-    onCardReply,
+    // Feed cards are read-only: the spec excludes cards in feed posts, and the backend
+    // refuses a top-level human message in a feed room.
+    ...(activeFeed ? {} : { onCardReply }),
     ownerScopeId: scope,
     currentUserId: userId ?? "",
     roomId: rooms.activeRoomId,

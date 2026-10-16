@@ -130,10 +130,10 @@ async def revoke_credentials(*, owner_id: str, provider: str, resource_id: str) 
                 await integration_secret_store.put(owner_id, secret_key, blob)
             else:
                 await integration_secret_store.delete(owner_id, secret_key)
-        # No config to scrub: the plaintext copy used to live in the owner's openclaw.json
-        # ``env.vars`` on EFS, and nothing writes an equivalent on this runtime (see
-        # ``land_credentials``, which now refuses). The Secrets Manager copy above is the
-        # only one there is, and it is gone.
+        # Clear the same names from every roster profile's ``.env`` (an empty value deletes the
+        # key), so the agent stops holding the revoked secret.
+        for agent_id in await _roster(owner_id):
+            await asyncio.to_thread(_patch_profile_env, owner_id, agent_id, {k: "" for k in env_keys})
 
     await integrations_repo.remove_provider_resource(owner_id, provider, resource_id)
     logger.info("provisioning: revoked %s/%s for owner=%s", provider, resource_id, owner_id)

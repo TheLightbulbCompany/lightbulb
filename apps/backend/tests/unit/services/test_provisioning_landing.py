@@ -33,6 +33,11 @@ POINTER = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _no_profiles(monkeypatch):
+    monkeypatch.setattr(mod, "_roster", AsyncMock(return_value=[]))
+
+
 @pytest.fixture
 def stores(monkeypatch):
     secret = {}
@@ -275,3 +280,16 @@ async def test_summary_returns_only_this_rails_pointers():
         assert await mod.provisioning_summary("org_a") == []
     with patch.object(mod.integrations_repo, "list_for_owner", AsyncMock(side_effect=RuntimeError("ddb down"))):
         assert await mod.provisioning_summary("org_a") == []
+
+
+@pytest.mark.asyncio
+async def test_revoke_clears_the_revoked_keys_from_every_profile_but_not_a_survivors(stores, monkeypatch):
+    secret, _, patched = stores
+    first = {**POINTER, "env_keys": ["RESEND_API_KEY", "RESEND_SHARED"]}
+    survivor = {**POINTER, "resource_id": "res-2", "env_keys": ["RESEND_SHARED"]}
+    await mod.land_credentials(owner_id="o1", resource=first, env={"RESEND_API_KEY": "re_1", "RESEND_SHARED": "s"})
+    monkeypatch.setattr(mod.integrations_repo, "list_provider_resources", AsyncMock(return_value=[first, survivor]))
+    monkeypatch.setattr(mod.integrations_repo, "remove_provider_resource", AsyncMock())
+    patched.clear()
+    assert await mod.revoke_credentials(owner_id="o1", provider="resend", resource_id="res-1")
+    assert patched == [("agent-a", {"RESEND_API_KEY": ""}), ("agent-b", {"RESEND_API_KEY": ""})]

@@ -617,3 +617,28 @@ def test_every_need_names_a_known_service():
 async def test_needs_and_done_means_are_not_served(paperclip):
     first = (await ideas.list_ideas(AUTH))["ideas"][0]
     assert "needs" not in first and "doneMeans" not in first and "person" not in first
+
+
+@pytest.mark.asyncio
+async def test_a_task_idea_carries_needs_and_done_means_in_work(paperclip):
+    await ideas.start(AUTH, "inbox-triage")
+    body = paperclip.create_issue.await_args.kwargs["body"]
+    assert "## Needs\n" in body["description"] and "- google (write)" in body["description"]
+    assert "Approve sends until you trust them" in body["description"]
+    assert body["description"].rstrip().endswith("## Done means\n" + ideas.catalog()["inbox-triage"].done_means)
+
+
+@pytest.mark.asyncio
+async def test_a_project_idea_carries_needs_and_done_means_in_work(paperclip):
+    await ideas.start(AUTH, "launch-run")
+    body = paperclip.create_project.await_args.kwargs["body"]
+    assert "## Needs\n" in body["description"] and "Product Hunt" in body["description"]
+    assert "## Done means" in body["description"]
+
+
+def test_work_description_is_plain_for_a_suggestion_without_needs():
+    job = ideas.Job(
+        "s-1", "Answer reviews", "Fourteen reviews wait.", ["Every review answered"], "task", {"id": "a", "name": "A"}
+    )
+    text = ideas.work_description(job)
+    assert text == "Fourteen reviews wait.\n\nWhat's included:\n- Every review answered"

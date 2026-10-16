@@ -17,7 +17,7 @@ import hashlib
 import logging
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -135,6 +135,10 @@ class Job:
     deliverables: list[str]
     size: str
     agent: dict
+    needs: list[Need] = field(default_factory=list)
+    browser: list[str] = field(default_factory=list)
+    person: list[str] = field(default_factory=list)
+    done_means: str | None = None
 
 
 class Suggestion(BaseModel):
@@ -263,7 +267,18 @@ async def _job(owner_id: str, idea_id: str, agents: dict[str, dict], names: dict
         agent = agents.get(idea.owner_role)
         if agent is None:
             raise HTTPException(status_code=409, detail="No teammate owns this idea in this workspace.")
-        return Job(idea.id, idea.title, idea.why, list(idea.deliverables), idea.size, agent)
+        return Job(
+            idea.id,
+            idea.title,
+            idea.why,
+            list(idea.deliverables),
+            idea.size,
+            agent,
+            list(idea.needs),
+            list(idea.browser),
+            list(idea.person),
+            idea.done_means,
+        )
     if idea_id.startswith(SUGGESTION_PREFIX):
         row = next((r for r in await _suggestions(owner_id, names) if r["ideaId"] == idea_id), None)
         if row is not None:
@@ -460,6 +475,20 @@ def _md_text(value: str) -> str:
     return _MARKDOWN_SPECIAL.sub(r"\\\1", " ".join(value.split()))
 
 
+def work_description(job: Job) -> str:
+    """The Work item's text: the why, what's included, and (catalog ideas) what it needs and what
+    done means. The agent reads these here; the DM message stays the plain prompt."""
+    text = job.why + "\n\nWhat's included:\n" + "\n".join(f"- {d}" for d in job.deliverables)
+    needs = [f"- {n.service} ({n.access})" for n in job.needs]
+    needs += [f"- browser: {site}" for site in job.browser]
+    needs += [f"- you: {step}" for step in job.person]
+    if needs:
+        text += "\n\n## Needs\n" + "\n".join(needs)
+    if job.done_means:
+        text += "\n\n## Done means\n" + job.done_means
+    return text
+
+
 def start_text(job: Job, tracked: tuple[str, str] | None) -> str:
     """The person's own message when they press Let's do it: the idea quoted, the ask, and, for a
     project or a task, the Work item tracking it. The link is how the agent learns where this
@@ -528,6 +557,7 @@ async def _start(auth: AuthContext, idea_id: str) -> dict:
                 goal_id = getattr(row, "onboarding_goal_id", None)
                 body = {
                     "name": job.title,
+                    "description": work_description(job),
                     "status": "in_progress",
                     "leadAgentId": agent["id"],
                     "idempotencyKey": key,
@@ -544,7 +574,7 @@ async def _start(auth: AuthContext, idea_id: str) -> dict:
             if not issue_id:
                 body = {
                     "title": job.title,
-                    "description": job.why + "\n\nWhat's included:\n" + "\n".join(f"- {d}" for d in job.deliverables),
+                    "description": work_description(job),
                     # backlog, not todo: the DM message is the one wake (an assigned todo would wake
                     # the agent through Paperclip too and run the job twice). The agent moves it to
                     # in_progress itself (references/ideas.md).

@@ -40,14 +40,14 @@ export function ChoiceView({ props }: RenderProps<{ question: string; options: s
   );
 }
 
-type ButtonProps = { label: string; reply?: string; variant?: "primary" | "secondary" };
+type ButtonProps = { label: string; variant?: "primary" | "secondary" };
 
 export function ButtonsView({ props }: RenderProps<{ buttons: SubComponent<ButtonProps>[] }>) {
   const { press, disabled, answered } = useCardPress();
   return (
     <div className="flex flex-wrap gap-2 openui-live" role="group">
       {props.buttons.map((b, i) => {
-        const text = (b.props.reply ?? b.props.label).trim();
+        const text = b.props.label.trim();
         return <UiButton key={`${b.props.label}-${i}`} type="button" size="sm" variant={b.props.variant === "secondary" ? "outline" : "default"}
           disabled={disabled} aria-pressed={answered !== null && answered === text} onClick={() => press(text)}>{b.props.label}</UiButton>;
       })}

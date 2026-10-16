@@ -58,3 +58,10 @@ it("an answered Choice shows the pick", () => {
   expect(within(group).getByRole("button", { name: "Studio" })).toHaveAttribute("aria-pressed", "true");
   expect(within(group).getByRole("button", { name: "Starter" })).toBeDisabled();
 });
+
+it("a Button posts exactly its label", async () => {
+  const onReply = vi.fn().mockResolvedValue(undefined);
+  wrap('root = Stack([b])\nb = Buttons([Button("Yes", "primary"), Button("No", "secondary")])', { onReply });
+  await userEvent.click(screen.getByRole("button", { name: "Yes" }));
+  expect(onReply).toHaveBeenCalledWith("Yes");
+});

@@ -68,8 +68,8 @@ export const Choice = defineComponent({
   props: z.object({ question: z.string(), options: z.array(z.string()), multi: z.boolean().optional() }), component: null,
 });
 export const Button = defineComponent({
-  name: "Button", description: "One labelled reply; pressing it posts `reply` (or the label) as the person's message.",
-  props: z.object({ label: z.string(), reply: z.string().optional(), variant: z.enum(["primary", "secondary"]).optional() }), component: null,
+  name: "Button", description: "One labelled reply; pressing it posts the label as the person's message.",
+  props: z.object({ label: z.string(), variant: z.enum(["primary", "secondary"]).optional() }), component: null,
 });
 export const Buttons = defineComponent({
   name: "Buttons", description: "A row of Buttons.",

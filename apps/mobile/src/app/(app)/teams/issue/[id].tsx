@@ -29,6 +29,7 @@ import {
 import { IssueRunsSection } from "../../../../components/teams/IssueRunsSection";
 import { PickerSheet, type PickerOption } from "../../../../components/teams/PickerSheet";
 import { ReasonSheet } from "../../../../components/teams/ReasonSheet";
+import { ResumeStoppedRunCard } from "../../../../components/teams/ResumeStoppedRunCard";
 import { chatPalette, fonts, radii, spacing, type ChatPalette } from "../../../../config/theme";
 import {
   BOARD_STATUSES,
@@ -39,6 +40,7 @@ import {
   humanizeStatus,
   looksLikeMarkdown,
   memberName,
+  needsResumeAnswer,
   priorityColor,
   resolveAssignee,
   statusColors,
@@ -312,6 +314,7 @@ export default function IssueDetailScreen() {
     rejectInteraction,
     respondInteraction,
     reviewWorkProduct,
+    resumeStoppedRun,
   } = useTeamsIssue(id);
   const { user } = useUser();
   const currentUserId = user?.id ?? null;
@@ -368,6 +371,7 @@ export default function IssueDetailScreen() {
         onRejectInteraction={rejectInteraction}
         onRespondInteraction={respondInteraction}
         onReviewWorkProduct={reviewWorkProduct}
+        onResumeStoppedRun={resumeStoppedRun}
       />
     );
   }
@@ -421,6 +425,7 @@ function ReadyBody({
   onRejectInteraction,
   onRespondInteraction,
   onReviewWorkProduct,
+  onResumeStoppedRun,
 }: {
   state: {
     issue: IssueDetail;
@@ -452,6 +457,7 @@ function ReadyBody({
   onRejectInteraction: (id: string, reason?: string) => void;
   onRespondInteraction: (id: string, answers: InteractionAnswer[]) => void;
   onReviewWorkProduct: (id: string, verdict: "approved" | "changes_requested") => void;
+  onResumeStoppedRun: (body: Record<string, unknown>) => Promise<string | null>;
 }) {
   const scheme = useColorScheme() === "dark" ? "dark" : "light";
   const styles = SHEETS[scheme];
@@ -552,6 +558,10 @@ function ReadyBody({
           </Text>
         </Pressable>
       </View>
+
+      {needsResumeAnswer(issue.executionBlocker) ? (
+        <ResumeStoppedRunCard blocker={issue.executionBlocker} onResume={onResumeStoppedRun} />
+      ) : null}
 
       {/* Properties — status/priority/agent are tappable → picker sheets. */}
       <View style={styles.card}>

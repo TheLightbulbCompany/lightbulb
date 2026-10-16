@@ -75,6 +75,47 @@ export interface IssueDetail {
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
   createdByUserId?: string | null;
+  /** Why execution stopped (Paperclip's ExecutionBlocker); drives ResumeStoppedRunCard. */
+  executionBlocker?: ExecutionBlocker | null;
+}
+
+export interface ExecutionBlocker {
+  recoveryActionId: string | null;
+  runId: string | null;
+  agentId: string | null;
+  cause: string;
+  nextAction: string;
+  canContinue?: boolean;
+  canRetry?: boolean;
+}
+
+/** Paperclip's EXECUTION_RECONCILIATION_CAUSES (packages/shared execution-projection.ts
+ * @ v2026.1012.0-isol8.1): these refuse a generic Retry and need the person's answer. */
+const EXECUTION_RECONCILIATION_CAUSES = new Set([
+  "uncertain_provider_action",
+  "uncertain_external_action",
+  "uncertain_control_plane_action",
+  "completed_action_context_missing",
+  "continuation_evidence_incomplete",
+  "execution_finalization_deadline_exceeded",
+  "execution_recovery_budget_exhausted",
+  "provider_effect_inventory_unavailable",
+  "provider_failure_meaning_unverified",
+  "provider_ownership_unverified",
+  "native_provider_terminal_failed",
+  "native_event_replay_conflict",
+  "native_session_cleanup_quarantined",
+  "native_session_retry_exhausted",
+  "native_restart_recovery_blocked",
+  "native_continuation_requires_reconciliation",
+  "legacy_execution_requires_reconciliation",
+]);
+
+/** A stopped run Paperclip will only continue after the person says what it got done
+ * (web ExecutionBlockerNotice parity). */
+export function needsResumeAnswer(b: ExecutionBlocker | null | undefined): b is ExecutionBlocker {
+  return !!b && EXECUTION_RECONCILIATION_CAUSES.has(b.cause) && !!b.recoveryActionId && !!b.runId &&
+    !b.canRetry && !b.canContinue;
 }
 
 /** A comment from `GET /teams/issues/{id}/comments`. */
@@ -1113,10 +1154,30 @@ export function useTeamsIssue(issueId: string | undefined) {
     [config, issueId, load],
   );
 
+  // Resume a stopped run (web ExecutionBlockerNotice parity): resolve the recovery
+  // action with the person's executionReconciliation; Paperclip starts the new run.
+  const resumeStoppedRun = useCallback(
+    async (body: Record<string, unknown>): Promise<string | null> => {
+      if (!issueId) return null;
+      try {
+        await createApiClient(config).post(
+          `/teams/issues/${encodeURIComponent(issueId)}/recovery-actions/resolve`,
+          body,
+        );
+        await load();
+        return null;
+      } catch (err) {
+        return purchaseSafeMessage(err, "Couldn’t resume the task.");
+      }
+    },
+    [config, issueId, load],
+  );
+
   return {
     state,
     retry: load,
     reload: load,
+    resumeStoppedRun,
     setStatus,
     setPriority,
     setAssignee,

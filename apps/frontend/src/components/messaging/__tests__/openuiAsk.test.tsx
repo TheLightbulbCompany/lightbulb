@@ -65,3 +65,10 @@ it("a Button posts exactly its label", async () => {
   await userEvent.click(screen.getByRole("button", { name: "Yes" }));
   expect(onReply).toHaveBeenCalledWith("Yes");
 });
+
+it("an answered FollowUps card marks the chip it posted", () => {
+  wrap('root = Stack([f])\nf = FollowUps(["Show me the numbers", "Draft the email"])', { onReply: vi.fn(), answered: "Draft the email" });
+  expect(screen.getByRole("button", { name: "Draft the email" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("button", { name: "Show me the numbers" })).toHaveAttribute("aria-pressed", "false");
+  expect(screen.getByText("You picked Draft the email.")).toBeInTheDocument();
+});

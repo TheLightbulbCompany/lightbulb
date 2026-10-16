@@ -51,6 +51,7 @@ export function ButtonsView({ props }: RenderProps<{ buttons: SubComponent<Butto
         return <UiButton key={`${b.props.label}-${i}`} type="button" size="sm" variant={b.props.variant === "secondary" ? "outline" : "default"}
           disabled={disabled} aria-pressed={answered !== null && answered === text} onClick={() => press(text)}>{b.props.label}</UiButton>;
       })}
+      {answered !== null && <p className="text-caption openui-answer">You picked {answered}.</p>}
     </div>
   );
 }
@@ -59,10 +60,12 @@ export function ButtonsView({ props }: RenderProps<{ buttons: SubComponent<Butto
 export function ButtonView() { return null; }
 
 export function FollowUpsView({ props }: RenderProps<{ replies: string[] }>) {
-  const { press, disabled } = useCardPress();
+  const { press, disabled, answered } = useCardPress();
   return (
     <div className="flex flex-wrap gap-2 openui-live" role="group" aria-label="Suggested replies">
-      {props.replies.map((r) => <UiButton key={r} type="button" size="sm" variant="outline" disabled={disabled} onClick={() => press(r)}>{r}</UiButton>)}
+      {props.replies.map((r) => <UiButton key={r} type="button" size="sm" variant="outline" disabled={disabled}
+        aria-pressed={answered !== null && answered === r} onClick={() => press(r)}>{r}</UiButton>)}
+      {answered !== null && <p className="text-caption openui-answer">You picked {answered}.</p>}
     </div>
   );
 }

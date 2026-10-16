@@ -205,7 +205,10 @@ def test_get_run_events_passes_after_seq_and_limit(client, monkeypatch):
 
 def test_cancel_run(client, monkeypatch):
     """`POST /teams/heartbeat-runs/{id}/cancel` proxies upstream cancel and
-    returns the cancelled run row verbatim."""
+    returns the cancelled run row verbatim. A queued run has no turn: the runtime is not called."""
+    import routers.messaging as messaging
+
+    monkeypatch.setattr(messaging, "stop_paperclip_hermes_turn", AsyncMock(side_effect=AssertionError("woke runtime")))
     admin = MagicMock()
     admin.get_heartbeat_run = AsyncMock(return_value={"id": "run_1", "companyId": "co_abc"})
     admin.cancel_heartbeat_run = AsyncMock(return_value={"id": "run_1", "status": "cancelled"})
@@ -233,7 +236,13 @@ def test_cancel_run_also_stops_the_hermes_turn(client, monkeypatch):
 
     admin = MagicMock()
     admin.get_heartbeat_run = AsyncMock(
-        return_value={"id": "run_1", "companyId": "co_abc", "agentId": "agt_1", "contextSnapshot": {"issueId": "iss_1"}}
+        return_value={
+            "id": "run_1",
+            "status": "running",
+            "companyId": "co_abc",
+            "agentId": "agt_1",
+            "contextSnapshot": {"issueId": "iss_1"},
+        }
     )
     admin.cancel_heartbeat_run = AsyncMock(return_value={"id": "run_1", "status": "cancelled"})
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)

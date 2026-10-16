@@ -146,7 +146,7 @@ is posted to the room as a progress line.
   now.** A system line such as "You've used today's free allowance. It resets
   tomorrow." may be hours old and already cleared. Before you tell a person that
   anything is blocked, waiting or capped, check the current state: read
-  `~/.openclaw/lightbulb-facts.json` again (plan, provider), or make a fresh call
+  `$HERMES_HOME/lightbulb-facts.json` again (plan, provider), or make a fresh call
   (the task's status, the approval's status). You are running this turn, so the
   model allowance is not stopping you now. If a teammate's work is waiting, say
   what it is waiting on today (a task status, an open approval), or say nothing.

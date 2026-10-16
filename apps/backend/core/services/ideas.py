@@ -17,7 +17,7 @@ import hashlib
 import logging
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -33,6 +33,8 @@ from core.auth import AuthContext, resolve_owner_id
 from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.repositories import messaging_repo
+from core.repositories.paperclip_repo import PaperclipRepo
+from core.services.paperclip_admin_session import get_admin_session_cookie
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,17 @@ SUGGESTION_PREFIX = "s-"
 DEFAULT_EMOJI = "💡"
 
 
+#: Services an idea uses that are not connectors: the team mailbox, the shared browser, Meet.
+PLATFORM_SERVICES = frozenset({"mailbox", "browser", "meet"})
+
+
+class Need(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    service: str = Field(pattern=r"^[a-z0-9_]+$", max_length=40)
+    access: Literal["read", "write"] = "read"
+
+
 class Idea(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, alias_generator=to_camel, populate_by_name=True)
 
@@ -70,6 +83,14 @@ class Idea(BaseModel):
     title: str = Field(min_length=1, max_length=120)
     why: str = Field(min_length=1, max_length=200)
     deliverables: list[str] = Field(min_length=3, max_length=3)
+    #: What the idea uses (spec 2026-10-15 §2.1): connector keys from providers.yaml or a
+    #: platform service, each read or write; websites worked in the shared browser; steps only
+    #: a person can do. Rendered into the Work item, never into the DM message.
+    needs: list[Need] = Field(default_factory=list)
+    browser: list[str] = Field(default_factory=list)
+    person: list[str] = Field(default_factory=list)
+    #: One line a check can read; the agent proves it before `done`.
+    done_means: str = Field(min_length=1, max_length=200)
     agency_price_low: int | None = Field(default=None, gt=0)
     agency_price_high: int | None = Field(default=None, gt=0)
     price_unit: Literal["one_time", "month", "state"] | None = None  # state: per US state
@@ -116,6 +137,10 @@ class Job:
     deliverables: list[str]
     size: str
     agent: dict
+    needs: list[Need] = field(default_factory=list)
+    browser: list[str] = field(default_factory=list)
+    person: list[str] = field(default_factory=list)
+    done_means: str | None = None
 
 
 class Suggestion(BaseModel):
@@ -155,8 +180,6 @@ def _norm(title: str) -> str:
 async def _workspace(owner_id: str) -> tuple[object | None, dict[str, dict], dict[str, str]]:
     """The workspace row, role -> {id, name} for the starter roster's live agents only (a removed
     one has no roster row), and agent id -> name for the whole roster: one roster read."""
-    from core.repositories.paperclip_repo import PaperclipRepo
-
     row = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
     names = await _roster(owner_id)
     starters = (row.starter_agent_ids if row else None) or {}
@@ -171,7 +194,16 @@ async def _workspace(owner_id: str) -> tuple[object | None, dict[str, dict], dic
 
 
 #: Never served: no prices in the app (owner, 2026-10-15). They stay in the YAML for marketing.
-_NOT_SERVED = {"agency_price_low", "agency_price_high", "price_unit", "agency_turnaround"}
+_NOT_SERVED = {
+    "agency_price_low",
+    "agency_price_high",
+    "price_unit",
+    "agency_turnaround",
+    "needs",
+    "browser",
+    "person",
+    "done_means",
+}
 
 
 def _card(idea: Idea, agent: dict) -> dict:
@@ -235,7 +267,18 @@ async def _job(owner_id: str, idea_id: str, agents: dict[str, dict], names: dict
         agent = agents.get(idea.owner_role)
         if agent is None:
             raise HTTPException(status_code=409, detail="No teammate owns this idea in this workspace.")
-        return Job(idea.id, idea.title, idea.why, list(idea.deliverables), idea.size, agent)
+        return Job(
+            idea.id,
+            idea.title,
+            idea.why,
+            list(idea.deliverables),
+            idea.size,
+            agent,
+            list(idea.needs),
+            list(idea.browser),
+            list(idea.person),
+            idea.done_means,
+        )
     if idea_id.startswith(SUGGESTION_PREFIX):
         row = next((r for r in await _suggestions(owner_id, names) if r["ideaId"] == idea_id), None)
         if row is not None:
@@ -432,6 +475,31 @@ def _md_text(value: str) -> str:
     return _MARKDOWN_SPECIAL.sub(r"\\\1", " ".join(value.split()))
 
 
+def work_description(job: Job, *, origin: dict | None = None) -> str:
+    """The Work item's text: the why, what's included, and (catalog ideas) what it needs and what
+    done means. The agent reads these here; the DM message stays the plain prompt. ``origin``
+    (``name``, ``roomId``, ``paperclipUserId``) adds a **From** section: the idea's run is a Work
+    run, not bound to the DM, so this is how it reaches the person (``lightbulb-post.sh --room``)
+    and assigns them a step."""
+    text = job.why + "\n\nWhat's included:\n" + "\n".join(f"- {d}" for d in job.deliverables)
+    # Connector keys can be linked; built-in services (mailbox, browser, meet) never are.
+    needs = [f"- {n.service} ({n.access})" for n in job.needs if n.service not in PLATFORM_SERVICES]
+    needs += [f"- {n.service} (built in)" for n in job.needs if n.service in PLATFORM_SERVICES]
+    needs += [f"- browser: {site}" for site in job.browser]
+    needs += [f"- you: {step}" for step in job.person]
+    if needs:
+        text += "\n\n## Needs\n" + "\n".join(needs)
+    if job.done_means:
+        text += "\n\n## Done means\n" + job.done_means
+    if origin:
+        text += (
+            f"\n\n## From\nStarted from Ideas by {' '.join(origin['name'].split())}. "
+            f"Their DM with you: room `{origin['roomId']}`. "
+            f"Their Paperclip user id: `{origin['paperclipUserId']}`."
+        )
+    return text
+
+
 def start_text(job: Job, tracked: tuple[str, str] | None) -> str:
     """The person's own message when they press Let's do it: the idea quoted, the ask, and, for a
     project or a task, the Work item tracking it. The link is how the agent learns where this
@@ -490,8 +558,18 @@ async def _start(auth: AuthContext, idea_id: str) -> dict:
         raise HTTPException(status_code=409, detail="This idea is already starting.")
 
     try:
+        room_id = await _usable_dm(owner_id, user_id, agent["id"])
         key = work_idempotency_key(owner_id, idea_id, user_id, claim["startToken"])
         tracked: tuple[str, str] | None = None
+        try:
+            name = await messaging.human_display_name(user_id)
+        except Exception:  # noqa: BLE001 - a missing name never blocks the start
+            name = ""
+        origin = {
+            "name": name if name and name != user_id else "the person",
+            "roomId": room_id,
+            "paperclipUserId": ctx.paperclip_user_id,
+        }
         if job.size == "project":
             project_id = claim.get("projectId")
             if not project_id:
@@ -500,6 +578,7 @@ async def _start(auth: AuthContext, idea_id: str) -> dict:
                 goal_id = getattr(row, "onboarding_goal_id", None)
                 body = {
                     "name": job.title,
+                    "description": work_description(job, origin=origin),
                     "status": "in_progress",
                     "leadAgentId": agent["id"],
                     "idempotencyKey": key,
@@ -510,17 +589,31 @@ async def _start(auth: AuthContext, idea_id: str) -> dict:
                 )
                 project_id = project["id"]
                 await messaging_repo.update_idea_start(owner_id, idea_id, user_id, {"projectId": project_id})
+            if not claim.get("firstIssueId"):  # the project's one task, carrying the idea
+                first = await admin.create_issue(
+                    session_cookie=ctx.session_cookie,
+                    company_id=ctx.company_id,
+                    body={
+                        "title": job.title,
+                        "description": work_description(job, origin=origin),
+                        "status": "todo",
+                        "assigneeAgentId": agent["id"],
+                        "projectId": project_id,
+                        "idempotencyKey": f"{key}:task",
+                        "allowDuplicate": True,
+                    },
+                )
+                await messaging_repo.update_idea_start(owner_id, idea_id, user_id, {"firstIssueId": first["id"]})
             tracked = ("project", project_id)
         elif job.size == "task":
             issue_id = claim.get("issueId")
             if not issue_id:
                 body = {
                     "title": job.title,
-                    "description": job.why + "\n\nWhat's included:\n" + "\n".join(f"- {d}" for d in job.deliverables),
-                    # backlog, not todo: the DM message is the one wake (an assigned todo would wake
-                    # the agent through Paperclip too and run the job twice). The agent moves it to
-                    # in_progress itself (references/ideas.md).
-                    "status": "backlog",
+                    "description": work_description(job, origin=origin),
+                    # todo: Paperclip starts the run at once, like any assigned task (owner,
+                    # 2026-10-16). The DM message below is the person's record and does not wake.
+                    "status": "todo",
                     "assigneeAgentId": agent["id"],
                     "idempotencyKey": key,
                     # The same title may be started again after a finished task; the key still
@@ -533,9 +626,9 @@ async def _start(auth: AuthContext, idea_id: str) -> dict:
                 issue_id = issue["id"]
                 await messaging_repo.update_idea_start(owner_id, idea_id, user_id, {"issueId": issue_id})
             tracked = ("task", issue_id)
-        room_id = await _usable_dm(owner_id, user_id, agent["id"])
-        # The person's own message (via Ideas): it wakes the agent the way any DM message does,
-        # and shows live. One per start: a retry replays it.
+        # The person's own message (via Ideas), shown live. Work tracked in Paperclip already woke
+        # the agent, so it is a record; a quick idea has no task, so this message is the wake.
+        # One per start: a retry replays it.
         client_id = uuid.uuid5(
             uuid.NAMESPACE_URL, f"lightbulb-idea-start|{owner_id}|{idea_id}|{user_id}|{claim['startToken']}"
         )
@@ -549,6 +642,7 @@ async def _start(auth: AuthContext, idea_id: str) -> dict:
                 thread_root_message_id=None,
             ),
             via="ideas",
+            wake=tracked is None,
         )
         fields = {"state": "open", "roomId": room_id, "createdAt": utc_now_iso(), "agentId": agent["id"],
                   "title": job.title, "size": job.size}  # fmt: skip
@@ -575,3 +669,74 @@ async def _usable_dm(owner_id: str, user_id: str, agent_id: str) -> str:
             AuthContext(user_id=user_id, org_id=owner_id), room_id, messaging.PatchRoomRequest(archived=False)
         )
     return room_id
+
+
+async def resume_after_connect(owner_id: str, provider_key: str) -> int:
+    """A service was connected: one comment on each open idea start that needs it, which wakes
+    the assignee through Paperclip's own comment wake (spec 2026-10-15 §2.3). No approval card,
+    no extra step. Idempotent per (start, provider). Returns the number of comments posted."""
+    from core.services.credentials import registry
+    from core.services.paperclip_admin_client import PaperclipApiError, shared_admin_client
+
+    waiting = []
+    for row in await messaging_repo.open_idea_starts(owner_id):
+        idea = catalog().get(row.get("ideaId", ""))
+        if idea is None or provider_key in (row.get("resumed") or []):
+            continue
+        if any(n.service == provider_key for n in idea.needs):
+            waiting.append(row)
+    if not waiting:
+        return 0
+    try:
+        label = registry.get_provider(provider_key).display_name
+    except Exception:  # noqa: BLE001
+        label = provider_key.replace("_", " ").title()
+    text = f"{label} is connected. Carry on with this; ask again only if something else is missing."
+    admin = shared_admin_client()
+    posted = 0
+    async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
+        cookie = await get_admin_session_cookie(http)
+        ws = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
+        for row in waiting:
+            try:
+                # A project's own task when we stored it and it is still open; else its first open
+                # task with an assignee.
+                target = row.get("firstIssueId") or row.get("issueId")
+                if target:  # firstIssueId or the task start's issueId: skip it when already closed
+                    try:
+                        first = await admin.get_issue(session_cookie=cookie, issue_id=target)
+                        if (first or {}).get("status") in CLOSED_ISSUE_STATUSES:
+                            target = None
+                    except PaperclipApiError as exc:
+                        if exc.status_code != 404:
+                            raise
+                        target = None
+                if not target and row.get("projectId") and ws is not None:
+                    listed = await admin.list_issues(
+                        session_cookie=cookie,
+                        company_id=ws.company_id,
+                        params={"projectId": row["projectId"], "status": "todo,in_progress,in_review,blocked"},
+                    )
+                    rows = listed if isinstance(listed, list) else (listed.get("issues") or listed.get("items") or [])
+                    target = next(
+                        (
+                            i["id"]
+                            for i in rows
+                            if i.get("assigneeAgentId") and i.get("status") not in CLOSED_ISSUE_STATUSES
+                        ),
+                        None,
+                    )
+                if not target:
+                    continue  # nothing open to wake: leave it unmarked so a later connect can nudge
+                # Reserve before posting: a racing connect finds it taken and posts nothing.
+                if not await messaging_repo.claim_idea_resume(owner_id, row["ideaId"], row["userId"], provider_key):
+                    continue
+                try:
+                    await admin.add_issue_comment(session_cookie=cookie, issue_id=target, body={"body": text})
+                except Exception:
+                    await messaging_repo.release_idea_resume(owner_id, row["ideaId"], row["userId"], provider_key)
+                    raise
+                posted += 1
+            except Exception:  # noqa: BLE001 - one bad start never blocks the rest
+                logger.warning("ideas: resume failed owner=%s idea=%s", owner_id, row.get("ideaId"), exc_info=True)
+    return posted

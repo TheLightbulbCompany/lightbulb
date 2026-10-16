@@ -29,7 +29,7 @@ def workspace(table, monkeypatch):  # noqa: F811
     """An active workspace with the six starters on the roster; people resolve by id."""
     from core.repositories.paperclip_repo import PaperclipRepo
 
-    row = SimpleNamespace(status="active", starter_agent_ids=STARTERS, onboarding_goal_id=None)
+    row = SimpleNamespace(status="active", starter_agent_ids=STARTERS, onboarding_goal_id=None, company_id="company-1")
     roster = [{"id": agent_id, "name": key.title()} for key, agent_id in STARTERS.items()]
     monkeypatch.setattr(PaperclipRepo, "resolve_owner_row", AsyncMock(return_value=row))
     monkeypatch.setattr(messaging, "load_agent_roster", lambda _owner: asyncio.sleep(0, result=roster))
@@ -150,7 +150,9 @@ def paperclip(workspace, monkeypatch):
         create_issue=AsyncMock(side_effect=lambda **_: {"id": f"issue-{admin.create_issue.await_count}"}),
         get_issue=AsyncMock(return_value={"status": "backlog"}),
     )
-    ctx = SimpleNamespace(owner_id=OWNER, company_id="company-1", session_cookie="cookie")
+    ctx = SimpleNamespace(
+        owner_id=OWNER, company_id="company-1", session_cookie="cookie", paperclip_user_id="pc-user-1"
+    )
     monkeypatch.setattr(task_board, "_context", AsyncMock(return_value=ctx))
     monkeypatch.setattr(paperclip_admin_client, "shared_admin_client", lambda: admin)
     monkeypatch.setattr(hermes_profiles, "write_profile_file", AsyncMock())
@@ -189,7 +191,7 @@ async def test_start_twice_makes_one_project_one_guide_and_one_line(paperclip):
     )
     assert "panel=teams-project-detail&detailId=" + first["projectId"] in lines[0]["text"]
     assert "agentNote" not in lines[0]
-    assert lines[0]["dispatchTargets"] == [{"agentId": STARTERS["finance"], "eventKind": "user_request"}]
+    assert lines[0]["dispatchTargets"] == []  # a record: the project's todo task is the wake
     # The line sits in the starter's DM with the owner agent.
     assert await repo.get_member(first["roomId"], "agent", STARTERS["finance"]) is not None
     assert (await repo.get_room(first["roomId"]))["kind"] == "dm"
@@ -334,7 +336,7 @@ async def test_any_start_hides_the_welcome_even_after_its_project_finished(paper
 
 
 @pytest.mark.asyncio
-async def test_a_task_idea_makes_one_backlog_task_assigned_to_the_agent_and_links_it(paperclip):
+async def test_a_task_idea_makes_one_todo_task_assigned_to_the_agent_and_links_it(paperclip):
     idea = ideas.catalog()["claim-refund"]
     assert idea.size == "task"
     first = await ideas.start(AUTH, "claim-refund")
@@ -342,8 +344,8 @@ async def test_a_task_idea_makes_one_backlog_task_assigned_to_the_agent_and_link
     assert first == again == {"roomId": first["roomId"], "issueId": "issue-1"}
     paperclip.create_project.assert_not_awaited()
     body = paperclip.create_issue.await_args.kwargs["body"]
-    # backlog: the DM message is the one wake; the same title may come again after a finished task.
-    assert body["title"] == idea.title and body["status"] == "backlog" and body["allowDuplicate"] is True
+    # todo: Paperclip starts it; the same title may come again after a finished task.
+    assert body["title"] == idea.title and body["status"] == "todo" and body["allowDuplicate"] is True
     assert body["assigneeAgentId"] == STARTERS["finance"]
     assert idea.why in body["description"] and all(d in body["description"] for d in idea.deliverables)
     assert body["idempotencyKey"].startswith("lightbulb-idea-project:v1:")
@@ -353,6 +355,52 @@ async def test_a_task_idea_makes_one_backlog_task_assigned_to_the_agent_and_link
         f"Tracked in Work: [{idea.title}]({ideas.work_link('task', 'issue-1')})"
     )
     assert "panel=teams-issue-detail&detailId=issue-1" in line["text"]
+
+
+@pytest.mark.asyncio
+async def test_a_task_idea_is_created_in_todo_and_assigned(paperclip):
+    await ideas.start(AUTH, "inbox-triage")
+    body = paperclip.create_issue.await_args.kwargs["body"]
+    assert body["status"] == "todo" and body["assigneeAgentId"] == STARTERS["customer_operations"]
+
+
+@pytest.mark.asyncio
+async def test_a_project_idea_gets_one_todo_task_inside_it(paperclip):
+    start = await ideas.start(AUTH, "launch-run")
+    body = paperclip.create_issue.await_args.kwargs["body"]
+    assert body["projectId"] == start["projectId"] and body["status"] == "todo"
+    assert body["title"] == ideas.catalog()["launch-run"].title
+    assert body["assigneeAgentId"] == STARTERS["growth"]
+    assert body["idempotencyKey"].endswith(":task") and "## Done means" in body["description"]
+    row = (await repo.open_idea_starts(OWNER))[0]
+    assert row["firstIssueId"] == "issue-1"
+
+
+def _spy_wake(monkeypatch):
+    calls = []
+    real = messaging.create_human_message
+
+    async def spy(*a, **kw):
+        calls.append(kw.get("wake", True))
+        return await real(*a, **kw)
+
+    monkeypatch.setattr(messaging, "create_human_message", spy)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_the_dm_record_for_a_tracked_idea_does_not_wake_the_agent(paperclip, monkeypatch):
+    calls = _spy_wake(monkeypatch)
+    await ideas.start(AUTH, "inbox-triage")
+    assert calls == [False]
+
+
+@pytest.mark.asyncio
+async def test_a_quick_idea_still_wakes_the_agent_from_the_dm(paperclip, monkeypatch):
+    calls = _spy_wake(monkeypatch)
+    added = await ideas.suggest(OWNER, _suggestion(size="quick"))
+    await ideas.start(AUTH, added["id"])
+    assert calls == [True]
 
 
 @pytest.mark.asyncio
@@ -431,6 +479,7 @@ async def test_a_suggestion_starts_like_a_catalog_idea_with_its_agent(paperclip)
     started = await ideas.start(AUTH, added["id"])
     assert started["projectId"] == "project-1"
     assert paperclip.create_project.await_args.kwargs["body"]["leadAgentId"] == STARTERS["growth"]
+    assert paperclip.create_issue.await_args.kwargs["body"]["description"].endswith(_from(started))
     [line] = await _lines(started["roomId"])
     assert line["text"].startswith("> **Answer the 14 open Shopify reviews**")
     # Started: it leaves the list while its project is open.
@@ -593,3 +642,189 @@ def test_the_top_agent_is_the_ceo_else_the_one_reporting_to_nobody_else_the_firs
     assert ideas._top_agent([{"id": "a", "reportsTo": "b"}, {"id": "b", "reportsTo": None}]) == "b"
     assert ideas._top_agent([{"id": "a", "reportsTo": "b"}, {"id": "b", "reportsTo": "a"}]) == "a"
     assert ideas._top_agent([]) is None
+
+
+def test_every_idea_has_needs_and_done_means():
+    for idea in ideas.catalog().values():
+        assert idea.needs or idea.browser or idea.person, idea.id
+        assert idea.done_means and len(idea.done_means) <= 200, idea.id
+        for need in idea.needs:
+            assert need.access in ("read", "write"), idea.id
+
+
+def test_every_need_names_a_known_service():
+    from core.services.credentials import registry
+
+    for idea in ideas.catalog().values():
+        for need in idea.needs:
+            if need.service in ideas.PLATFORM_SERVICES:
+                continue
+            registry.get_provider(need.service)  # raises for an unknown key
+
+
+@pytest.mark.asyncio
+async def test_needs_and_done_means_are_not_served(paperclip):
+    first = (await ideas.list_ideas(AUTH))["ideas"][0]
+    assert not {"needs", "browser", "person", "doneMeans"} & first.keys()
+
+
+def _from(start: dict) -> str:
+    return (
+        f"## From\nStarted from Ideas by Name {AUTH.user_id}. Their DM with you: room `{start['roomId']}`. "
+        "Their Paperclip user id: `pc-user-1`."
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_task_idea_carries_needs_and_done_means_in_work(paperclip):
+    start = await ideas.start(AUTH, "inbox-triage")
+    body = paperclip.create_issue.await_args.kwargs["body"]
+    assert "## Needs\n" in body["description"] and "- google (write)" in body["description"]
+    assert "Approve sends until you trust them" in body["description"]
+    done = "## Done means\n" + ideas.catalog()["inbox-triage"].done_means
+    assert body["description"].endswith(done + "\n\n" + _from(start))
+
+
+@pytest.mark.asyncio
+async def test_a_project_idea_carries_needs_and_done_means_in_work(paperclip):
+    start = await ideas.start(AUTH, "launch-run")
+    body = paperclip.create_project.await_args.kwargs["body"]
+    assert "## Needs\n" in body["description"] and "Product Hunt" in body["description"]
+    assert "## Done means" in body["description"]
+    assert body["description"].endswith(_from(start))
+    first_task = paperclip.create_issue.await_args.kwargs["body"]
+    assert first_task["description"].endswith(_from(start))
+
+
+def test_work_description_is_plain_for_a_suggestion_without_needs():
+    job = ideas.Job(
+        "s-1", "Answer reviews", "Fourteen reviews wait.", ["Every review answered"], "task", {"id": "a", "name": "A"}
+    )
+    text = ideas.work_description(job)
+    assert text == "Fourteen reviews wait.\n\nWhat's included:\n- Every review answered"
+
+
+# ---- connecting a service resumes the work ------------------------------------------------------
+
+
+@pytest.fixture
+def commenting(paperclip, monkeypatch):
+    paperclip.add_issue_comment = AsyncMock()
+    monkeypatch.setattr(ideas, "get_admin_session_cookie", AsyncMock(return_value="cookie"))
+    return paperclip
+
+
+@pytest.mark.asyncio
+async def test_connecting_a_needed_service_comments_on_the_waiting_task_once(commenting):
+    first = await ideas.start(AUTH, "inbox-triage")  # needs google
+    second = await ideas.start(AUTH, "answer-leads-fast")  # needs google too
+    await ideas.start(AUTH, "dependency-prs")  # needs github only
+    assert await ideas.resume_after_connect(OWNER, "google") == 2
+    commented = {c.kwargs["issue_id"] for c in commenting.add_issue_comment.await_args_list}
+    assert commented == {first["issueId"], second["issueId"]}
+    text = commenting.add_issue_comment.await_args.kwargs["body"]["body"]
+    assert text.startswith("Google") and "connected" in text
+    assert await ideas.resume_after_connect(OWNER, "google") == 0  # idempotent per start
+
+
+@pytest.mark.asyncio
+async def test_connecting_a_service_comments_on_the_projects_own_task(commenting):
+    started = await ideas.start(AUTH, "launch-run")  # needs x
+    assert await ideas.resume_after_connect(OWNER, "x") == 1
+    assert commenting.add_issue_comment.await_args.kwargs["issue_id"] == "issue-1"
+    assert started["projectId"]
+
+
+@pytest.mark.asyncio
+async def test_without_a_first_task_the_projects_open_agent_tasks_get_the_comment(commenting):
+    await ideas.start(AUTH, "launch-run")
+    row = (await ideas.messaging_repo.open_idea_starts(OWNER))[0]
+    await ideas.messaging_repo.update_idea_start(OWNER, row["ideaId"], row["userId"], {"firstIssueId": ""})
+    commenting.list_issues = AsyncMock(
+        return_value={
+            "issues": [
+                {"id": "t2", "status": "done", "assigneeAgentId": "a1"},
+                {"id": "t3", "status": "todo", "assigneeAgentId": None},
+                {"id": "t1", "status": "todo", "assigneeAgentId": "a1"},
+                {"id": "t4", "status": "todo", "assigneeAgentId": "a1"},
+            ]
+        }
+    )
+    assert await ideas.resume_after_connect(OWNER, "x") == 1
+    assert commenting.add_issue_comment.await_count == 1
+    assert commenting.add_issue_comment.await_args.kwargs["issue_id"] == "t1"
+
+
+@pytest.mark.asyncio
+async def test_connecting_an_unneeded_service_does_nothing(commenting):
+    await ideas.start(AUTH, "inbox-triage")
+    assert await ideas.resume_after_connect(OWNER, "linear") == 0
+    commenting.add_issue_comment.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_one_failing_start_does_not_block_the_next(commenting):
+    first = await ideas.start(AUTH, "inbox-triage")
+    second = await ideas.start(AUTH, "answer-leads-fast")
+    commenting.add_issue_comment = AsyncMock(side_effect=[RuntimeError("down"), None])
+    assert await ideas.resume_after_connect(OWNER, "google") == 1
+    assert commenting.add_issue_comment.await_count == 2
+    marked = {r["issueId"]: r.get("resumed") for r in await ideas.messaging_repo.open_idea_starts(OWNER)}
+    assert sorted(v for v in marked.values() if v) == [["google"]]
+    assert len([v for v in marked.values() if not v]) == 1
+    assert {first["issueId"], second["issueId"]} == set(marked)
+
+
+@pytest.mark.asyncio
+async def test_built_in_services_are_not_rendered_as_connectable(paperclip):
+    await ideas.start(AUTH, "answer-leads-fast")
+    body = paperclip.create_issue.await_args.kwargs["body"]["description"]
+    assert "- mailbox (built in)" in body and "- mailbox (read)" not in body
+
+
+@pytest.mark.asyncio
+async def test_a_closed_first_task_falls_back_to_the_projects_open_task(commenting):
+    await ideas.start(AUTH, "launch-run")
+    commenting.get_issue = AsyncMock(return_value={"status": "done"})
+    commenting.list_issues = AsyncMock(return_value=[{"id": "t1", "status": "todo", "assigneeAgentId": "a1"}])
+    assert await ideas.resume_after_connect(OWNER, "x") == 1
+    assert commenting.add_issue_comment.await_args.kwargs["issue_id"] == "t1"
+
+
+@pytest.mark.asyncio
+async def test_a_closed_first_task_and_no_open_one_posts_nothing_and_stays_unmarked(commenting):
+    await ideas.start(AUTH, "launch-run")
+    commenting.get_issue = AsyncMock(return_value={"status": "cancelled"})
+    commenting.list_issues = AsyncMock(return_value=[])
+    assert await ideas.resume_after_connect(OWNER, "x") == 0
+    commenting.add_issue_comment.assert_not_awaited()
+    assert not (await ideas.messaging_repo.open_idea_starts(OWNER))[0].get("resumed")
+
+
+@pytest.mark.asyncio
+async def test_a_reserved_provider_is_not_commented_again(commenting):
+    started = await ideas.start(AUTH, "inbox-triage")
+    row = (await ideas.messaging_repo.open_idea_starts(OWNER))[0]
+    assert await ideas.messaging_repo.claim_idea_resume(OWNER, row["ideaId"], row["userId"], "google")
+    assert not await ideas.messaging_repo.claim_idea_resume(OWNER, row["ideaId"], row["userId"], "google")
+    assert await ideas.resume_after_connect(OWNER, "google") == 0
+    commenting.add_issue_comment.assert_not_awaited()
+    assert started["issueId"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_comment_releases_the_reservation(commenting):
+    await ideas.start(AUTH, "inbox-triage")
+    commenting.add_issue_comment = AsyncMock(side_effect=[RuntimeError("down"), None])
+    assert await ideas.resume_after_connect(OWNER, "google") == 0
+    assert not (await ideas.messaging_repo.open_idea_starts(OWNER))[0].get("resumed")
+    assert await ideas.resume_after_connect(OWNER, "google") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_closed_task_start_gets_no_comment_and_stays_unmarked(commenting):
+    await ideas.start(AUTH, "inbox-triage")
+    commenting.get_issue = AsyncMock(return_value={"status": "done"})
+    assert await ideas.resume_after_connect(OWNER, "google") == 0
+    commenting.add_issue_comment.assert_not_awaited()
+    assert not (await ideas.messaging_repo.open_idea_starts(OWNER))[0].get("resumed")

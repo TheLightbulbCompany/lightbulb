@@ -3803,6 +3803,9 @@ def _run_native_paperclip(identity: dict, request: dict, conversation: str | Non
     agent_id = identity["agentId"]
     run_id = identity["runId"]
     session_id = conversation or identity["sessionId"]
+    # A run in the room conversation that owns the issue can ask that room for a sign-in or a
+    # code (spec 2026-10-15 §2.4); a run in the issue's own session has nobody to ask (no_room).
+    room_id = conversation.rsplit(":", 1)[-1] if conversation and ROOM_SESSION_RE.match(conversation) else None
     try:
         import run_agent  # noqa: F401
     except ImportError:
@@ -3837,10 +3840,10 @@ def _run_native_paperclip(identity: dict, request: dict, conversation: str | Non
     # same scope.
     browser_lease = browser_control.begin_turn(str(run_id), agent_id, None, "paperclip")
     # Same-session Paperclip retries must not replace another active desktop ledger.
-    logins = website_logins.prompt_scope(agent_id, None, None, lambda: paperclip_run_aborted(run_id))
+    logins = website_logins.prompt_scope(agent_id, room_id, None, lambda: paperclip_run_aborted(run_id))
     token = identity.get("localSessionToken")
     ctx = token and {"apiUrl": API, "ownerId": OWNER, "hookToken": HOOK_TOKEN, "agentId": agent_id,
-                     "runId": run_id, "sessionKey": session_id, "roomId": None,
+                     "runId": run_id, "sessionKey": session_id, "roomId": room_id,
                      "localSessionToken": token, "family": "paperclip"}
     # Paperclip runs need the same brokered MCP bearers as room turns. Without
     # this scope, ${MCP_POSTHOG_ACCESS_TOKEN} stays literal and PostHog returns 401.

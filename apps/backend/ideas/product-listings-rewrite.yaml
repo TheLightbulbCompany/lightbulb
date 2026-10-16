@@ -10,6 +10,14 @@ deliverables:
   - "New titles, bullets and descriptions for 50 products"
   - "Updated in your store or Seller Central"
   - "A before and after list for every product"
+needs:
+  - {service: shopify, access: write}
+  - {service: parallel, access: read}
+browser: ["Seller Central"]
+person:
+  - "Grant write scopes"
+  - "Approve the first 5, then the batch"
+done_means: "The top 50 listings are rewritten and updated, with a before/after list on the task."
 agency_price_low: 2500
 agency_price_high: 15000
 price_unit: one_time

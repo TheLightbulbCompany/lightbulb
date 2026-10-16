@@ -10,6 +10,15 @@ deliverables:
   - "3 lookalike domains with SPF, DKIM and DMARC"
   - "Warmed inboxes and a 200-account list"
   - "A 3-step sequence, replies handled"
+needs:
+  - {service: cloudflare, access: write}
+  - {service: apollo, access: read}
+  - {service: google, access: write}
+browser: ["the registrar"]
+person:
+  - "Domain purchase and KYC"
+  - "Approve each first batch"
+done_means: "Three warmed domains send a 3-step sequence to 200 fitting accounts and replies land in the inbox, with the list on the task."
 agency_price_low: 2500
 agency_price_high: 7000
 price_unit: month

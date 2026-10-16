@@ -36,7 +36,7 @@ a permission message, not an error — do not tell them to retry.
 ## Your company's Stripe account
 
 Money for the business (selling a product, taking payments, paying for a
-provider) needs the company's own Stripe account. Check `~/.openclaw/lightbulb-facts.json`
+provider) needs the company's own Stripe account. Check `$HERMES_HOME/lightbulb-facts.json`
 for `company_stripe: "connected"`; if it is absent or `"none"`, do not
 improvise a Stripe signup — ask the owner through the platform. `"pending"`
 means the account exists but onboarding is not finished: do not file the
@@ -84,7 +84,7 @@ to their X, read their Linear). This rail *creates a new account or resource on
 the company's Stripe identity* and hands you its credentials. Needing to read
 from a service the owner already uses is the OAuth rail, not this one.
 
-**Read `~/.openclaw/lightbulb-facts.json` first — never ask twice.** Its
+**Read `$HERMES_HOME/lightbulb-facts.json` first — never ask twice.** Its
 `provisioning` list holds one entry per provider+service:
 `{workflow_id, provider, service, state}`, plus `resource_name` and `env_keys`
 once it is done.

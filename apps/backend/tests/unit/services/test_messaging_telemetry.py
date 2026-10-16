@@ -177,6 +177,30 @@ async def _send_agent(text: str = "done", reply_to: str | None = None, run_id: s
 
 
 @pytest.mark.asyncio
+async def test_wake_false_stores_the_message_without_dispatching_the_agent(monkeypatch, telemetry):
+    put_metric, _ = telemetry
+    members = [_human_member(), _agent_member()]
+    created = _message(1, {"kind": "human", "id": USER, "displayName": "Owner"})
+    create = _wire_human_message(monkeypatch, members, created, room_kind="dm")
+    request = messaging.CreateMessageRequest(
+        clientMessageId=uuid.uuid4(), text="record", mentions=[], replyToMessageId=None, threadRootMessageId=None
+    )
+    auth = AuthContext(user_id=USER, org_id=OWNER)
+
+    await messaging.create_human_message(auth, ROOM, request, wake=False)
+    quiet_dims = [m["dimensions"] for m in _metrics(put_metric, "messaging.message.created")]
+    quiet_dispatch = [m["dimensions"] for m in _metrics(put_metric, "messaging.dispatch.targets")]
+    await messaging.create_human_message(auth, ROOM, request)
+
+    quiet, woken = (call.kwargs["dispatch_targets"] for call in create.await_args_list)
+    assert quiet == [] and [t["agentId"] for t in woken] == [AGENT]
+    # Telemetry follows what was stored: no targets for the quiet message, one for the default.
+    assert [d["has_targets"] for d in quiet_dims] == ["false"]
+    assert [d["count_bucket"] for d in quiet_dispatch] == ["0"]
+    assert [m["dimensions"]["has_targets"] for m in _metrics(put_metric, "messaging.message.created")][1:] == ["true"]
+
+
+@pytest.mark.asyncio
 async def test_human_message_with_a_dispatch_target_reports_created_and_dispatch(monkeypatch, telemetry):
     put_metric, capture = telemetry
     members = [_human_member(), _agent_member()]

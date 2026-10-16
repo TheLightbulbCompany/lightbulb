@@ -25,7 +25,7 @@ directory (`/app/skills/lightbulb/`).
 | `references/platform-primitives.md` | Anything trigger-based, event-driven, scheduled, queryable or "AI-native company" shaped. **Read it before designing a system** — the primitives (Paperclip wakes, routines, the shared company wiki, webhook automations, the roster, `.run/`) already exist and a greenfield design duplicates them. |
 | `references/platform-primitives.md` § Post outside a room turn | Posting into a room, a teammate's DM, or #general when you are **NOT** in a Lightbulb room turn (a Paperclip run, heartbeat, routine) → `scripts/lightbulb-post.sh`. Inside a room turn, keep using your reply / the room tools. |
 | `references/feed.md` | Posting to the workspace feed (Activity): when a post is worth it, one thing per post, `--feed --why`, the brief, and the CEO's scheduled feed posts. |
-| `references/ideas.md` | Someone sends you an **idea** (a quoted idea, "Let's do it!", maybe "Tracked in Work: …"), or you notice a concrete job worth adding with `suggest_idea`. On a linked project, break it into assigned tasks first. |
+| `references/ideas.md` | Someone sends you an **idea** (a quoted idea, "Let's do it!", maybe "Tracked in Work: …"); a Work task whose description has **Needs** and **Done means** sections, or you notice a concrete job worth adding with `suggest_idea`. On a linked project, break it into assigned tasks first. |
 | `references/chat-vs-document.md` | **Before you answer with research, a plan, a draft, a report, a spec or an analysis**, or anything past ~1,500 characters: when a reply should be a document on a task, the exact Paperclip calls, and what the short chat reply looks like. |
 | `references/platform-primitives.md` § Other rooms | Someone asks about another channel, DM or group chat ("what did we decide in #launch?", "check our recent conversations") → `lightbulb_read_rooms`, with the asker's own access. |
 | `references/platform-primitives.md` § Human-shared local sessions | Messaging or stopping a person's Claude Code/Codex session: direct only on its owner's request, else one approval ask. |
@@ -51,7 +51,7 @@ These hold whether or not you open a reference.
   principles.** Your generic priors describe other platforms. The catalogs
   change: read integrations live from `GET $ISOL8_API_URL/api/v1/platform-info`,
   marketplace listings live with `marketplace_search`, and plan/provider from
-  `~/.openclaw/lightbulb-facts.json`. Never recite any of the three from memory.
+  `$HERMES_HOME/lightbulb-facts.json`. Never recite any of the three from memory.
 - **Google Workspace on Lightbulb uses the managed `gog` CLI.** Validate it with
   `gog auth list --check`, never `gog auth status` or the generic Google Workspace
   skill's setup check (wrong credential path). See `references/integrations.md`.
@@ -119,7 +119,7 @@ These hold whether or not you open a reference.
   the person who asked says to; offer to tell them in a DM instead.
 - **Links: use this workspace's own app host.** Every `thelightbulb.company` link in this
   skill is written for production; when you give one to the owner, swap that host for
-  `app_url` from `~/.openclaw/lightbulb-facts.json` (e.g. `https://dev.thelightbulb.company/settings`).
+  `app_url` from `$HERMES_HOME/lightbulb-facts.json` (e.g. `https://dev.thelightbulb.company/settings`).
 - **Teams is a panel, not a URL.** `thelightbulb.company/teams` is a 404 — never send
   the owner there. Its API (`/api/v1/teams/*`) is owner-only and never takes
   your agent hook token; `lightbulb-api.sh` refuses those routes before sending.

@@ -10,6 +10,13 @@ deliverables:
   - "Interview times offered to the candidates you pick"
   - "Every candidate sent a status reply"
   - "A pipeline view on the task board"
+needs:
+  - {service: google, access: write}
+browser: []
+person:
+  - "Choose the times"
+  - "Approve rejections"
+done_means: "Every candidate has an offered slot or a status reply, and the pipeline board matches the inbox."
 agency_price_low: 1200
 agency_price_high: 3500
 price_unit: month

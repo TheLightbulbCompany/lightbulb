@@ -24,7 +24,7 @@ Injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_API_URL`; on 
 
 ### Creating work for someone else — always say the status
 
-**An assigned issue in any status but `backlog` STARTS AN AGENT RUN now**, re-dispatched every ~30s until `blocked`. Every assigned `create`/`subtask` passes `--status`: `backlog` = filed, no run (the normal case; all planning output); `todo` = start now (spends money). Omitting it is not neutral: the API would pick `todo`; the helper sends `backlog` only as a backstop.
+**An assigned issue in any status but `backlog` STARTS AN AGENT RUN now**, re-dispatched every ~30s until `blocked`. Every assigned `create`/`subtask` passes `--status`: `backlog` = filed, no run (the normal case; all planning output) (except idea work: a task that continues an idea, or any task in an idea's project, is filed with --status todo so it runs; see lightbulb references/ideas.md); `todo` = start now (spends money). Omitting it is not neutral: the API would pick `todo`; the helper sends `backlog` only as a backstop.
 
 ## Webchat and interactive sessions (no run id)
 

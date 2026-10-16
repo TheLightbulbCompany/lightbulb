@@ -10,6 +10,13 @@ deliverables:
   - "A billing calendar of every customer"
   - "Each invoice drafted on its date"
   - "Sent after you approve the amount"
+needs:
+  - {service: quickbooks, access: write}
+  - {service: stripe, access: read}
+browser: []
+person:
+  - "Approve the amounts"
+done_means: "Every invoice due in the period was sent on its billing date after approval, each with its sent timestamp."
 agency_price_low: 150
 agency_price_high: 500
 price_unit: month

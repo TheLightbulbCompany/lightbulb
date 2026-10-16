@@ -681,7 +681,7 @@ declares.
 The rail itself is **backend-owned** — the platform key never leaves the backend
 and no container ever holds it. `core/services/stripe_provisioning.py` is the
 only module that speaks `/v2/provisioning` (platform key + `Stripe-Context:
-acct_…` + `Stripe-Version: unsafe-development`, a preview contract that can
+acct_…` + `Stripe-Version: 2026-09-30.preview`, a preview contract that can
 change under us); `provisioning_workflow.py` is the state machine and a
 `provisioning-workflows` row is the durable memory. Four invariants hold it up:
 

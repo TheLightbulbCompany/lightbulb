@@ -10,6 +10,12 @@ deliverables:
   - "An audit of titles, schema, sitemap, redirects and speed"
   - "The fixes in one pull request"
   - "Before and after checks on the live site"
+needs:
+  - {service: github, access: write}
+browser: ["the site"]
+person:
+  - "Merge the pull request"
+done_means: "The audit is on the task, the PR with the fixes is merged, and the before/after numbers are posted."
 agency_price_low: 1200
 agency_price_high: 2500
 price_unit: one_time

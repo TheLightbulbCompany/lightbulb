@@ -92,7 +92,7 @@ class WorkflowRefused(RuntimeError):
     """A refusal the caller renders: ``not_eligible``, ``requirements_pending``,
     ``service_unavailable``, ``invalid_configuration``,
     ``no_company_stripe_account``, ``no_company``, ``cannot_cancel``,
-    ``needs_review_first``, ``unsupported_on_agentcore`` (raised by
+    ``needs_review_first``, ``reserved_env_name`` (raised by
     ``provisioning_landing.land_credentials``, not this module -- imported
     locally there to avoid a circular import)."""
 

@@ -1,8 +1,11 @@
 """Stripe Provisioning API client — platform key + Stripe-Context.
 
 Allowlisted private preview; every request carries
-``Stripe-Version: unsafe-development`` and "the contract can change"
-(spec.txt header; guide's Private preview note). The platform key acts on every
+``Stripe-Version: 2026-09-30.preview`` and "the contract can change"
+(spec.txt header; guide's Private preview note). Docs check 2026-10-16:
+docs.stripe.com/provisioning still says private preview, allowlisted, and now
+names ``2026-09-30.preview`` (not ``unsafe-development``); docs.stripe.com/projects
+is the CLI page and carries no version or date. The platform key acts on every
 connected account by changing one header, so it never leaves this process and
 this module is the ONLY place that speaks to ``/v2/provisioning``.
 
@@ -42,7 +45,7 @@ from core.config import settings
 logger = logging.getLogger(__name__)
 
 BASE = "/v2/provisioning"
-PROVISIONING_VERSION = "unsafe-development"
+PROVISIONING_VERSION = "2026-09-30.preview"
 # Stripe's message is surfaced to the caller but never logged; on the
 # non-object-response path it embeds the whole raw body, so it is capped.
 _MAX_MESSAGE_CHARS = 200

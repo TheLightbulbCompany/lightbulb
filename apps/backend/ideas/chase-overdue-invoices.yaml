@@ -10,6 +10,14 @@ deliverables:
   - "Every overdue invoice listed with its age"
   - "A reminder with a pay link sent for each"
   - "Payments matched as they arrive"
+needs:
+  - {service: quickbooks, access: write}
+  - {service: stripe, access: read}
+  - {service: google, access: write}
+browser: []
+person:
+  - "Approve each reminder"
+done_means: "Every overdue invoice has a reminder with a pay link sent after approval, each with its sent timestamp on the task."
 agency_price_low: 150
 agency_price_high: 500
 price_unit: month

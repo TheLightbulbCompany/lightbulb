@@ -10,6 +10,15 @@ deliverables:
   - "Every support email answered from your docs"
   - "Hard cases handed to you with a draft"
   - "Gaps in your docs listed"
+needs:
+  - {service: google, access: write}
+  - {service: notion, access: read}
+  - {service: intercom, access: read}
+browser: []
+person:
+  - "Point at the help docs"
+  - "Approve the first replies"
+done_means: "Every customer email in the period has a reply grounded in the help docs, and a list of doc gaps is on the task."
 agency_price_low: 2500
 agency_price_high: 4500
 price_unit: month

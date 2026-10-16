@@ -66,13 +66,13 @@ def test_reap_removes_closed_and_deleted_tasks_and_leaves_open_and_live_ones(clo
         worktrees.prepare("forge", issue)
     status = {A: "done", B: "in_progress", c: "gone"}
 
-    assert sorted(worktrees.reap("forge", set(), status=lambda _agent, issue: status[issue])) == sorted([A, c])
+    assert sorted(worktrees.reap("forge", set, status=lambda _agent, issue: status[issue])) == sorted([A, c])
     left = sorted(p.name for p in worktrees._root("forge").iterdir())
     assert left == [f"task-{B}"]
     assert A not in git(clone, "worktree", "list")
 
     worktrees.prepare("forge", A)  # reopened
-    assert worktrees.reap("forge", {A}, status=lambda *_: "cancelled") == [B]  # A has a live run
+    assert worktrees.reap("forge", lambda: {A}, status=lambda *_: "cancelled") == [B]  # A has a live run
 
 
 def test_reap_removes_a_task_whose_branch_was_merged_and_deleted_upstream(clone):
@@ -80,7 +80,7 @@ def test_reap_removes_a_task_whose_branch_was_merged_and_deleted_upstream(clone)
     git(path, "push", "-q", "-u", "origin", name)
     git(clone, "push", "-q", "origin", f":{name}")  # the PR merged with --delete-branch
 
-    assert worktrees.reap("forge", set(), status=lambda *_: "in_review") == [A]
+    assert worktrees.reap("forge", set, status=lambda *_: "in_review") == [A]
 
 
 def test_no_clone_means_no_worktree_and_the_prompt_says_where_to_make_it(home):
@@ -99,9 +99,9 @@ def test_reap_keeps_a_task_while_any_of_its_repos_branches_is_live(clone, tmp_pa
         git(task / repo, "push", "-q", "-u", "origin", name)
     git(clone, "push", "-q", "origin", f":{name}")  # app's PR merged; lib's is still open
 
-    assert worktrees.reap("forge", set(), status=lambda *_: "in_progress") == []
+    assert worktrees.reap("forge", set, status=lambda *_: "in_progress") == []
     git(clone.parent / "lib", "push", "-q", "origin", f":{name}")
-    assert worktrees.reap("forge", set(), status=lambda *_: "in_progress") == [A]
+    assert worktrees.reap("forge", set, status=lambda *_: "in_progress") == [A]
 
 
 def test_a_refused_task_run_fails_with_the_disk_message(home, monkeypatch):
@@ -113,3 +113,11 @@ def test_a_refused_task_run_fails_with_the_disk_message(home, monkeypatch):
 
     outcome, error, output, _ = turn._run_native_paperclip(identity, {"input": "x", "instructions": "y"})
     assert (outcome, output) == ("failed", "") and error.startswith("Not started: the workspace disk")
+
+
+def test_reap_spares_a_task_whose_run_started_while_it_was_fetching(clone):
+    worktrees.prepare("forge", A)
+    calls = iter([set(), {A}])  # not live at the scan, live by the time it would be removed
+
+    assert worktrees.reap("forge", lambda: next(calls), status=lambda *_: "done") == []
+    assert (worktrees._root("forge") / f"task-{A}").exists()

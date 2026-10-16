@@ -3815,7 +3815,7 @@ def _run_native_paperclip(identity: dict, request: dict, conversation: str | Non
     if identity.get("issueId"):  # one worktree per issue; closed tasks' go first, so the disk check sees the space
         refused = None
         try:
-            worktrees.reap(agent_id, _live_issues(agent_id))
+            worktrees.reap(agent_id, lambda: _live_issues(agent_id))
             task_worktrees, refused = worktrees.prepare(agent_id, identity["issueId"])
         except Exception:  # noqa: BLE001 -- a git hiccup never costs the task its run
             log.warning("task worktree setup failed run=%s", run_id, exc_info=True)

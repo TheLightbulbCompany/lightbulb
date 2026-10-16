@@ -438,3 +438,22 @@ def test_a_wake_for_an_issue_a_call_took_waits_for_that_calls_turn(routed, monke
     lock.release()
     worker.join(2)
     assert routed["conversation"] == ROOM_KEY
+
+
+@helper
+def test_create_can_file_into_a_project_and_assign_a_person(tmp_path):
+    calls = _helper(tmp_path, ["create", "company-1", "--title", "Sign the form", "--project", "proj-1",
+                               "--assignee-user", "user-9"],
+                    responses=[[201, {"id": ISSUE}]])
+    body = json.loads(calls[0]["body"])
+    assert body["projectId"] == "proj-1" and body["assigneeUserId"] == "user-9"
+    assert "assigneeAgentId" not in body and body["status"] == "todo"
+
+
+@helper
+def test_subtask_can_file_into_a_project(tmp_path):
+    calls = _helper(tmp_path, ["subtask", "company-1", "--title", "One directory", "--parent", ISSUE,
+                               "--project", "proj-1", "--assignee-user", "user-9"],
+                    responses=[[201, {"id": ISSUE}]])
+    body = json.loads(calls[0]["body"])
+    assert body["projectId"] == "proj-1" and body["assigneeUserId"] == "user-9" and body["status"] == "todo"

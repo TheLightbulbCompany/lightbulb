@@ -98,10 +98,13 @@ Subcommands (markdown / freeform text is read from stdin where noted):
   subtask <companyId> --title T --parent <id> [--goal <id>] [--status S]
           [--priority P] [--assignee <agentId>] [--blocked-by "id1,id2"]
           [--inherit-workspace <issueId>] [--billing-code CODE]
+         [--project <id>] [--assignee-user <userId>]
+          [--project <id>] [--assignee-user <userId>]
       POST /api/companies/{companyId}/issues
       body: { title, parentId, goalId?, description?, status?, priority?,
               assigneeAgentId?, blockedByIssueIds?,
-              inheritExecutionWorkspaceFromIssueId?, billingCode? }
+              inheritExecutionWorkspaceFromIssueId?, billingCode?,
+              projectId?, assigneeUserId? }
       Reads an optional markdown description from stdin.
       STATUS: backlog|todo|in_progress|in_review|done|blocked|cancelled
       With --assignee and no --status, sends an EXPLICIT backlog (see
@@ -110,10 +113,12 @@ Subcommands (markdown / freeform text is read from stdin where noted):
   create <companyId> --title T [--goal <id>] [--status S]
          [--priority P] [--assignee <agentId>] [--blocked-by "id1,id2"]
          [--inherit-workspace <issueId>] [--billing-code CODE]
+         [--project <id>] [--assignee-user <userId>]
       POST /api/companies/{companyId}/issues   (top-level issue; no parentId)
       body: { title, goalId?, description?, status?, priority?,
               assigneeAgentId?, blockedByIssueIds?,
-              inheritExecutionWorkspaceFromIssueId?, billingCode? }
+              inheritExecutionWorkspaceFromIssueId?, billingCode?,
+              projectId?, assigneeUserId? }
       Reads an optional markdown description from stdin.
       STATUS: backlog|todo|in_progress|in_review|done|blocked|cancelled
       With --assignee and no --status, sends an EXPLICIT backlog (see
@@ -215,6 +220,8 @@ Assigning work (create / subtask):
   Filing work to someone and starting it right now are different acts, and the
   second one spends money — ask for it with `--status todo`, never by omission.
   Creates with no assignee are unchanged: `status` stays omitted.
+  `--assignee-user` files a task for a person (it shows in their Inbox); it
+  never starts a run.
 
 Examples:
   scripts/paperclip-api.sh comment "$PAPERCLIP_TASK_ID" <<'MD'
@@ -857,7 +864,7 @@ cmd_subtask() {
   shift || true
   [[ -n "$company_id" ]] || die 'subtask: missing <companyId>.'
   local title="" parent="" goal="" status="" priority="" assignee="" blocked_by=""
-  local inherit_workspace="" billing_code=""
+  local inherit_workspace="" billing_code="" project="" assignee_user=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --title) title="${2:-}"; shift 2 ;;
@@ -869,6 +876,8 @@ cmd_subtask() {
       --blocked-by) blocked_by="${2:-}"; shift 2 ;;
       --inherit-workspace) inherit_workspace="${2:-}"; shift 2 ;;
       --billing-code) billing_code="${2:-}"; shift 2 ;;
+      --project) project="${2:-}"; shift 2 ;;
+      --assignee-user) assignee_user="${2:-}"; shift 2 ;;
       --dry-run) dry_run=1; shift ;;
       *) die "subtask: unknown argument: $1" ;;
     esac
@@ -878,7 +887,12 @@ cmd_subtask() {
   [[ -n "$parent" ]] || printf 'subtask: warning — no --parent set; subtasks should set parentId.\n' >&2
   [[ -n "$goal" ]] || printf 'subtask: warning — no --goal set; subtasks should set goalId.\n' >&2
 
-  status="$(resolve_create_status subtask "$status" "$assignee")"
+  # A person's task never starts a run, so only an agent assignee forces backlog.
+  if [[ -n "$assignee_user" && -z "$assignee" ]]; then
+    status="${status:-todo}"
+  else
+    status="$(resolve_create_status subtask "$status" "$assignee")"
+  fi
 
   local description
   description="$(read_stdin)"
@@ -895,7 +909,9 @@ cmd_subtask() {
       --arg assigneeAgentId "$assignee" \
       --arg blockedBy "$blocked_by" \
       --arg inheritWorkspace "$inherit_workspace" \
-      --arg billingCode "$billing_code" '
+      --arg billingCode "$billing_code" \
+      --arg projectId "$project" \
+      --arg assigneeUserId "$assignee_user" '
       {title: $title}
       + (if $parentId == "" then {} else {parentId: $parentId} end)
       + (if $goalId == "" then {} else {goalId: $goalId} end)
@@ -909,6 +925,8 @@ cmd_subtask() {
          end)
       + (if $inheritWorkspace == "" then {} else {inheritExecutionWorkspaceFromIssueId: $inheritWorkspace} end)
       + (if $billingCode == "" then {} else {billingCode: $billingCode} end)
+      + (if $projectId == "" then {} else {projectId: $projectId} end)
+      + (if $assigneeUserId == "" then {} else {assigneeUserId: $assigneeUserId} end)
     '
   )"
   send POST "$(api_base)/companies/$company_id/issues" "$payload"
@@ -919,7 +937,7 @@ cmd_create() {
   shift || true
   [[ -n "$company_id" ]] || die 'create: missing <companyId>.'
   local title="" goal="" status="" priority="" assignee="" blocked_by=""
-  local inherit_workspace="" billing_code=""
+  local inherit_workspace="" billing_code="" project="" assignee_user=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --title) title="${2:-}"; shift 2 ;;
@@ -930,6 +948,8 @@ cmd_create() {
       --blocked-by) blocked_by="${2:-}"; shift 2 ;;
       --inherit-workspace) inherit_workspace="${2:-}"; shift 2 ;;
       --billing-code) billing_code="${2:-}"; shift 2 ;;
+      --project) project="${2:-}"; shift 2 ;;
+      --assignee-user) assignee_user="${2:-}"; shift 2 ;;
       --dry-run) dry_run=1; shift ;;
       *) die "create: unknown argument: $1" ;;
     esac
@@ -937,7 +957,12 @@ cmd_create() {
 
   [[ -n "$title" ]] || die 'create: --title is required.'
 
-  status="$(resolve_create_status create "$status" "$assignee")"
+  # A person's task never starts a run, so only an agent assignee forces backlog.
+  if [[ -n "$assignee_user" && -z "$assignee" ]]; then
+    status="${status:-todo}"
+  else
+    status="$(resolve_create_status create "$status" "$assignee")"
+  fi
 
   local description
   description="$(read_stdin)"
@@ -953,7 +978,9 @@ cmd_create() {
       --arg assigneeAgentId "$assignee" \
       --arg blockedBy "$blocked_by" \
       --arg inheritWorkspace "$inherit_workspace" \
-      --arg billingCode "$billing_code" '
+      --arg billingCode "$billing_code" \
+      --arg projectId "$project" \
+      --arg assigneeUserId "$assignee_user" '
       {title: $title}
       + (if $goalId == "" then {} else {goalId: $goalId} end)
       + (if $description == "" then {} else {description: $description} end)
@@ -966,6 +993,8 @@ cmd_create() {
          end)
       + (if $inheritWorkspace == "" then {} else {inheritExecutionWorkspaceFromIssueId: $inheritWorkspace} end)
       + (if $billingCode == "" then {} else {billingCode: $billingCode} end)
+      + (if $projectId == "" then {} else {projectId: $projectId} end)
+      + (if $assigneeUserId == "" then {} else {assigneeUserId: $assigneeUserId} end)
     '
   )"
   send POST "$(api_base)/companies/$company_id/issues" "$payload"

@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from core.dynamodb import run_in_thread
+from core.services import ideas
 from core.services.credentials import registry
 
 logger = logging.getLogger(__name__)
@@ -190,4 +191,9 @@ async def apply_connection(owner_id: str, provider_key: str, credential: dict[st
         # Nothing reaches the runtime. The credential's only custodian is
         # Secrets Manager, written by the caller via `_retains_secret`.
         return None
-    return await _apply_connection_agentcore(owner_id, provider_key, p, credential)
+    result = await _apply_connection_agentcore(owner_id, provider_key, p, credential)
+    try:
+        await ideas.resume_after_connect(owner_id, provider_key)
+    except Exception:  # best-effort: a connect never fails because a nudge did
+        logger.warning("ideas: resume after connect failed owner=%s provider=%s", owner_id, provider_key, exc_info=True)
+    return result

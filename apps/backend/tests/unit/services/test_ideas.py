@@ -29,7 +29,7 @@ def workspace(table, monkeypatch):  # noqa: F811
     """An active workspace with the six starters on the roster; people resolve by id."""
     from core.repositories.paperclip_repo import PaperclipRepo
 
-    row = SimpleNamespace(status="active", starter_agent_ids=STARTERS, onboarding_goal_id=None)
+    row = SimpleNamespace(status="active", starter_agent_ids=STARTERS, onboarding_goal_id=None, company_id="company-1")
     roster = [{"id": agent_id, "name": key.title()} for key, agent_id in STARTERS.items()]
     monkeypatch.setattr(PaperclipRepo, "resolve_owner_row", AsyncMock(return_value=row))
     monkeypatch.setattr(messaging, "load_agent_roster", lambda _owner: asyncio.sleep(0, result=roster))
@@ -688,3 +688,59 @@ def test_work_description_is_plain_for_a_suggestion_without_needs():
     )
     text = ideas.work_description(job)
     assert text == "Fourteen reviews wait.\n\nWhat's included:\n- Every review answered"
+
+
+# ---- connecting a service resumes the work ------------------------------------------------------
+
+
+@pytest.fixture
+def commenting(paperclip, monkeypatch):
+    paperclip.add_issue_comment = AsyncMock()
+    monkeypatch.setattr(ideas, "get_admin_session_cookie", AsyncMock(return_value="cookie"))
+    return paperclip
+
+
+@pytest.mark.asyncio
+async def test_connecting_a_needed_service_comments_on_the_waiting_task_once(commenting):
+    first = await ideas.start(AUTH, "inbox-triage")  # needs google
+    second = await ideas.start(AUTH, "answer-leads-fast")  # needs google too
+    await ideas.start(AUTH, "dependency-prs")  # needs github only
+    assert await ideas.resume_after_connect(OWNER, "google") == 2
+    commented = {c.kwargs["issue_id"] for c in commenting.add_issue_comment.await_args_list}
+    assert commented == {first["issueId"], second["issueId"]}
+    text = commenting.add_issue_comment.await_args.kwargs["body"]["body"]
+    assert text.startswith("Google") and "connected" in text
+    assert await ideas.resume_after_connect(OWNER, "google") == 0  # idempotent per start
+
+
+@pytest.mark.asyncio
+async def test_connecting_a_service_comments_on_the_projects_own_task(commenting):
+    started = await ideas.start(AUTH, "launch-run")  # needs x
+    assert await ideas.resume_after_connect(OWNER, "x") == 1
+    assert commenting.add_issue_comment.await_args.kwargs["issue_id"] == "issue-1"
+    assert started["projectId"]
+
+
+@pytest.mark.asyncio
+async def test_without_a_first_task_the_projects_open_agent_tasks_get_the_comment(commenting):
+    await ideas.start(AUTH, "launch-run")
+    row = (await ideas.messaging_repo.open_idea_starts(OWNER))[0]
+    await ideas.messaging_repo.update_idea_start(OWNER, row["ideaId"], row["userId"], {"firstIssueId": ""})
+    commenting.list_issues = AsyncMock(
+        return_value={
+            "issues": [
+                {"id": "t1", "status": "todo", "assigneeAgentId": "a1"},
+                {"id": "t2", "status": "done", "assigneeAgentId": "a1"},
+                {"id": "t3", "status": "todo", "assigneeAgentId": None},
+            ]
+        }
+    )
+    assert await ideas.resume_after_connect(OWNER, "x") == 1
+    assert commenting.add_issue_comment.await_args.kwargs["issue_id"] == "t1"
+
+
+@pytest.mark.asyncio
+async def test_connecting_an_unneeded_service_does_nothing(commenting):
+    await ideas.start(AUTH, "inbox-triage")
+    assert await ideas.resume_after_connect(OWNER, "linear") == 0
+    commenting.add_issue_comment.assert_not_awaited()

@@ -33,6 +33,8 @@ from core.auth import AuthContext, resolve_owner_id
 from core.config import settings
 from core.dynamodb import utc_now_iso
 from core.repositories import messaging_repo
+from core.repositories.paperclip_repo import PaperclipRepo
+from core.services.paperclip_admin_session import get_admin_session_cookie
 
 logger = logging.getLogger(__name__)
 
@@ -178,8 +180,6 @@ def _norm(title: str) -> str:
 async def _workspace(owner_id: str) -> tuple[object | None, dict[str, dict], dict[str, str]]:
     """The workspace row, role -> {id, name} for the starter roster's live agents only (a removed
     one has no roster row), and agent id -> name for the whole roster: one roster read."""
-    from core.repositories.paperclip_repo import PaperclipRepo
-
     row = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
     names = await _roster(owner_id)
     starters = (row.starter_agent_ids if row else None) or {}
@@ -649,3 +649,51 @@ async def _usable_dm(owner_id: str, user_id: str, agent_id: str) -> str:
             AuthContext(user_id=user_id, org_id=owner_id), room_id, messaging.PatchRoomRequest(archived=False)
         )
     return room_id
+
+
+async def resume_after_connect(owner_id: str, provider_key: str) -> int:
+    """A service was connected: one comment on each open idea start that needs it, which wakes
+    the assignee through Paperclip's own comment wake (spec 2026-10-15 §2.3). No approval card,
+    no extra step. Idempotent per (start, provider). Returns the number of comments posted."""
+    from core.services.credentials import registry
+    from core.services.paperclip_admin_client import shared_admin_client
+
+    waiting = []
+    for row in await messaging_repo.open_idea_starts(owner_id):
+        idea = catalog().get(row.get("ideaId", ""))
+        if idea is None or provider_key in (row.get("resumed") or []):
+            continue
+        if any(n.service == provider_key for n in idea.needs):
+            waiting.append(row)
+    if not waiting:
+        return 0
+    try:
+        label = registry.get_provider(provider_key).display_name
+    except Exception:  # noqa: BLE001
+        label = provider_key.replace("_", " ").title()
+    text = f"{label} is connected. Carry on with this; ask again only if something else is missing."
+    admin = shared_admin_client()
+    posted = 0
+    async with httpx.AsyncClient(base_url=settings.PAPERCLIP_INTERNAL_URL, timeout=15.0) as http:
+        cookie = await get_admin_session_cookie(http)
+        ws = await PaperclipRepo(table_name="paperclip-companies").resolve_owner_row(owner_id)
+        for row in waiting:
+            # A project's own task when we stored it; else its open tasks that have an assignee.
+            targets = [row.get("firstIssueId") or row.get("issueId")]
+            if not targets[0] and row.get("projectId") and ws is not None:
+                listed = await admin.list_issues(
+                    session_cookie=cookie,
+                    company_id=ws.company_id,
+                    params={"projectId": row["projectId"], "status": "todo,in_progress,in_review,blocked"},
+                )
+                rows = listed if isinstance(listed, list) else (listed.get("issues") or listed.get("items") or [])
+                targets = [
+                    i["id"] for i in rows if i.get("assigneeAgentId") and i.get("status") not in CLOSED_ISSUE_STATUSES
+                ]
+            for issue_id in filter(None, targets):
+                await admin.add_issue_comment(session_cookie=cookie, issue_id=issue_id, body={"body": text})
+                posted += 1
+            await messaging_repo.update_idea_start(
+                owner_id, row["ideaId"], row["userId"], {"resumed": sorted({*(row.get("resumed") or []), provider_key})}
+            )
+    return posted

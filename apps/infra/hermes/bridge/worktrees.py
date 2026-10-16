@@ -119,7 +119,8 @@ def reap(agent_id: str, live_issues: set[str], status=issue_status) -> list[str]
             issue_id = task.name[5:]
             track = [_git(agent_id, c, "for-each-ref", "--format=%(upstream:track)", f"refs/heads/{branch(issue_id)}").stdout.strip()
                      for c in clones if (task / c.name).exists()]
-            if not ("[gone]" in track or status(agent_id, issue_id) in (*CLOSED, "gone")):
+            merged = bool(track) and all(t == "[gone]" for t in track)  # every repo's branch, not just one
+            if not (merged or status(agent_id, issue_id) in (*CLOSED, "gone")):
                 continue
             for clone in clones:
                 _git(agent_id, clone, "worktree", "remove", "--force", str(task / clone.name))
@@ -131,9 +132,12 @@ def reap(agent_id: str, live_issues: set[str], status=issue_status) -> list[str]
     return reaped
 
 
-def prompt_line(worktrees: list[tuple[Path, str]]) -> str:
-    if not worktrees:
-        return ""
+def prompt_line(agent_id: str, issue_id: str, worktrees: list[tuple[Path, str]]) -> str:
+    if not worktrees:  # no clone yet: the agent clones, then makes the worktree where the next run expects it
+        task = _root(agent_id) / f"task-{issue_id}"
+        return (f"If this task needs a repository, clone it first, then make this task's worktree with "
+                f'`git -C <clone> worktree add "{task}/<repo>" -b {branch(issue_id)} origin/HEAD` and work only '
+                "there: the task's next runs continue in it.")
     where = "; ".join(f"{path} (branch {name})" for path, name in worktrees)
     return (f"This task's worktree: {where}. Work only there; it and its branch stay yours across this task's runs, "
             "so if it already has commits, continue from them. Commit and push often. A new branch starts at the "

@@ -34,7 +34,7 @@ def test_each_issue_gets_its_own_worktree_and_branch(clone):
     assert (a_branch, b_branch) == ("task/aaaaaaaa", "task/bbbbbbbb")
     assert git(a, "branch", "--show-current") == a_branch
     assert git(b, "branch", "--show-current") == b_branch
-    assert "task's worktree" in worktrees.prompt_line([(a, a_branch)])
+    assert "task's worktree" in worktrees.prompt_line("forge", A, [(a, a_branch)])
 
 
 def test_the_next_run_resumes_the_same_branch_with_its_commits(clone):
@@ -83,8 +83,25 @@ def test_reap_removes_a_task_whose_branch_was_merged_and_deleted_upstream(clone)
     assert worktrees.reap("forge", set(), status=lambda *_: "in_review") == [A]
 
 
-def test_no_clone_means_no_worktree(home):
+def test_no_clone_means_no_worktree_and_the_prompt_says_where_to_make_it(home):
     assert worktrees.prepare("forge", A) == ([], None)
+    line = worktrees.prompt_line("forge", A, [])
+    assert f"/.scratch/wt/task-{A}/<repo>" in line and "-b task/aaaaaaaa" in line
+
+
+def test_reap_keeps_a_task_while_any_of_its_repos_branches_is_live(clone, tmp_path):
+    lib_origin = tmp_path / "lib.git"
+    subprocess.run(["git", "clone", "-q", "--bare", str(tmp_path / "origin.git"), str(lib_origin)], check=True)
+    subprocess.run(["git", "clone", "-q", str(lib_origin), str(clone.parent / "lib")], check=True)
+    task = worktrees._root("forge") / f"task-{A}"
+    name = dict((p.name, n) for p, n in worktrees.prepare("forge", A)[0])["app"]
+    for repo in ("app", "lib"):
+        git(task / repo, "push", "-q", "-u", "origin", name)
+    git(clone, "push", "-q", "origin", f":{name}")  # app's PR merged; lib's is still open
+
+    assert worktrees.reap("forge", set(), status=lambda *_: "in_progress") == []
+    git(clone.parent / "lib", "push", "-q", "origin", f":{name}")
+    assert worktrees.reap("forge", set(), status=lambda *_: "in_progress") == [A]
 
 
 def test_a_refused_task_run_fails_with_the_disk_message(home, monkeypatch):

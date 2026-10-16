@@ -3835,7 +3835,7 @@ def _run_native_paperclip(identity: dict, request: dict, conversation: str | Non
             try:
                 # the clone rule rides every prompt, a Paperclip issue's too (Codex on #3798): with only
                 # Hermes's github skill in view, an issue run clones into its conversation folder
-                rules = "\n\n".join(filter(None, (_repo_rule(agent_id), worktrees.prompt_line(task_worktrees))))
+                rules = "\n\n".join(filter(None, (_repo_rule(agent_id), identity.get("issueId") and worktrees.prompt_line(agent_id, identity["issueId"], task_worktrees))))
                 system = with_profile_agents_md(agent_id, f"{request['instructions']}\n\n{rules}")
                 if conversation:
                     # As _converse runs a room key: its own transcript, observed rows split out.

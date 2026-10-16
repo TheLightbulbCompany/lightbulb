@@ -100,14 +100,16 @@ def issue_status(agent_id: str, issue_id: str) -> str | None:
         return None
 
 
-def reap(agent_id: str, live_issues: set[str], status=issue_status) -> list[str]:
+def reap(agent_id: str, live_issues, status=issue_status) -> list[str]:
     """Remove the task worktrees whose issue is done, cancelled or deleted, or whose branch was merged
     and deleted upstream (`[gone]` after a prune-fetch). Runs at the start of each of the agent's
-    issue runs, so orphans from a previous process go at the first one; `live_issues` are skipped.
+    issue runs, so orphans from a previous process go at the first one. `live_issues()` (issues with an
+    open run) is asked again under the lock right before each removal: a run registers before it can
+    `prepare`, and `prepare` takes the same lock, so a run that started during the fetch is never reaped.
     ponytail: lazy -- a closed task's worktree waits for the agent's next issue run, which is also
     the only moment the disk guard needs the space."""
     root = _root(agent_id)
-    tasks = [p for p in root.glob("task-*") if p.is_dir() and p.name[5:] not in live_issues] if root.is_dir() else []
+    tasks = [p for p in root.glob("task-*") if p.is_dir() and p.name[5:] not in live_issues()] if root.is_dir() else []
     if not tasks:
         return []
     clones = _clones(agent_id)
@@ -120,7 +122,7 @@ def reap(agent_id: str, live_issues: set[str], status=issue_status) -> list[str]
             track = [_git(agent_id, c, "for-each-ref", "--format=%(upstream:track)", f"refs/heads/{branch(issue_id)}").stdout.strip()
                      for c in clones if (task / c.name).exists()]
             merged = bool(track) and all(t == "[gone]" for t in track)  # every repo's branch, not just one
-            if not (merged or status(agent_id, issue_id) in (*CLOSED, "gone")):
+            if not (merged or status(agent_id, issue_id) in (*CLOSED, "gone")) or issue_id in live_issues():
                 continue
             for clone in clones:
                 _git(agent_id, clone, "worktree", "remove", "--force", str(task / clone.name))

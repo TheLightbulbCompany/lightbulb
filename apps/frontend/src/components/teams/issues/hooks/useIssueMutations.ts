@@ -16,6 +16,9 @@ import type {
 const SWR_PREFIX = "/teams";
 const swrKey = (path: string) => `${SWR_PREFIX}${path}`;
 
+/** In-flight `updateInList` writes per list path (see there). */
+const pendingListWrites = new Map<string, Set<Promise<unknown>>>();
+
 export interface UseIssueMutationsResult {
   create: (input: IssueCreateInput) => Promise<Issue>;
   createChild: (parentId: string, input: IssueCreateInput) => Promise<Issue>;
@@ -73,17 +76,32 @@ export function useIssueMutations(): UseIssueMutationsResult {
   // equivalent of cancelQueries), so the 30 s refresh can't land mid-flight and
   // undo the move. On failure the cache rolls back and the promise rejects; on
   // either outcome the list revalidates against the server.
+  //
+  // Several moves can be in flight on one list. Each optimistic patch stacks on
+  // what is DISPLAYED (not the last committed list), and each write's mutation
+  // settles only after every earlier write to the list has: SWR revalidates
+  // only for the newest mutation, so that refetch must not run while an older
+  // PATCH is still out, or it reads back the older card's old status.
   const updateInList = useCallback(
     async (listPath: string, issueId: string, input: IssueUpdateInput): Promise<void> => {
-      await mutate(swrKey(listPath), update(issueId, input), {
+      const pending = pendingListWrites.get(listPath) ?? new Set<Promise<unknown>>();
+      pendingListWrites.set(listPath, pending);
+      const earlier = [...pending];
+      const write = update(issueId, input);
+      pending.add(write);
+      const settled = write.finally(async () => {
+        await Promise.allSettled(earlier);
+        pending.delete(write);
+      });
+      await mutate(swrKey(listPath), settled, {
         // The list read is `{ issues }` or a bare array (the project read
         // accepts both); anything else is left alone.
-        optimisticData: (current: unknown) => {
+        optimisticData: (_committed: unknown, displayed: unknown) => {
           const patchIn = (list: Issue[]) =>
             list.map((i) => (i.id === issueId ? ({ ...i, ...input } as Issue) : i));
-          if (Array.isArray(current)) return patchIn(current as Issue[]);
-          const body = current as { issues?: Issue[] } | undefined;
-          return body?.issues ? { ...body, issues: patchIn(body.issues) } : current;
+          if (Array.isArray(displayed)) return patchIn(displayed as Issue[]);
+          const body = displayed as { issues?: Issue[] } | undefined;
+          return body?.issues ? { ...body, issues: patchIn(body.issues) } : displayed;
         },
         rollbackOnError: true,
         populateCache: false,

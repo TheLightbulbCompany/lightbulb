@@ -16,13 +16,21 @@ vi.mock("@/hooks/useTeamsApi", () => ({
 import { useIssueMutations } from "../useIssueMutations";
 
 const KEY = "/teams/issues";
-let serverStatus: Issue["status"] = "todo";
+let server: Record<string, Issue["status"]> = {};
 const fetcher = async () => ({
-  issues: [{ id: "a", title: "A", status: serverStatus, priority: null } as Issue],
+  issues: Object.entries(server).map(
+    ([id, status]) => ({ id, title: id, status, priority: null }) as Issue,
+  ),
 });
 
+function deferred() {
+  let finish!: () => void;
+  const promise = new Promise((r) => (finish = () => r({})));
+  return { promise, finish };
+}
+
 function setup() {
-  serverStatus = "todo";
+  server = { a: "todo", b: "todo" };
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>{children}</SWRConfig>
   );
@@ -32,7 +40,8 @@ function setup() {
   );
 }
 
-const statusOf = (r: ReturnType<typeof setup>["result"]) => r.current.list.data?.issues[0].status;
+const statusOf = (r: ReturnType<typeof setup>["result"], id = "a") =>
+  r.current.list.data?.issues.find((i) => i.id === id)?.status;
 
 describe("useIssueMutations.updateInList", () => {
   it("moves the card at once and keeps it there through a refetch that lands mid-flight", async () => {
@@ -53,7 +62,7 @@ describe("useIssueMutations.updateInList", () => {
     });
     expect(statusOf(result)).toBe("done");
 
-    serverStatus = "done";
+    server.a = "done";
     await act(async () => {
       finish();
       await done;
@@ -74,5 +83,42 @@ describe("useIssueMutations.updateInList", () => {
     });
     expect(outcome).toBeInstanceOf(Error);
     expect(statusOf(result)).toBe("todo");
+  });
+
+  it("keeps two in-flight moves, whichever PATCH returns first", async () => {
+    const { result } = setup();
+    await waitFor(() => expect(statusOf(result)).toBe("todo"));
+
+    const first = deferred();
+    const second = deferred();
+    patch.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    let moves!: Promise<void>[];
+    act(() => {
+      moves = [
+        result.current.mutations.updateInList("/issues", "a", { status: "done" }),
+        result.current.mutations.updateInList("/issues", "b", { status: "blocked" }),
+      ];
+    });
+    // The second move stacks on the first instead of undoing it.
+    expect(statusOf(result, "a")).toBe("done");
+    expect(statusOf(result, "b")).toBe("blocked");
+
+    // The second PATCH lands first; the server has not applied the first yet.
+    server.b = "blocked";
+    await act(async () => {
+      second.finish();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(statusOf(result, "a")).toBe("done");
+
+    server.a = "done";
+    await act(async () => {
+      first.finish();
+      await Promise.all(moves);
+    });
+    await waitFor(() => {
+      expect(statusOf(result, "a")).toBe("done");
+      expect(statusOf(result, "b")).toBe("blocked");
+    });
   });
 });

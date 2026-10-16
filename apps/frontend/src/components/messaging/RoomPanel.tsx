@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
 import { ArrowLeft, Check, Chrome, Circle, CircleAlert, FolderOpen, Lightbulb, Link, ListChecks, MessagesSquare, PanelRight, Square } from "lucide-react";
 import type { Components } from "react-markdown";
-import { LISTEN_MODE_LABELS, listenModeOptions, soleChannelOwner, useStatusLoaded, type CreateMessageRequest, type ListenMode, type MemberPrefsRequest, type MemberRef, type UpdateMessageRequest } from "@lightbulb/shared";
+import { cardAnswerFor, LISTEN_MODE_LABELS, listenModeOptions, soleChannelOwner, useStatusLoaded, type CardReply, type CreateMessageRequest, type ListenMode, type MemberPrefsRequest, type MemberRef, type UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
 import { DelegateCard } from "./DelegateCard";
 import { RoomSubagentStrip } from "./RoomSubagentStrip";
@@ -122,6 +122,8 @@ export interface RoomPanelProps {
   onLinkToWork?: () => void;
   onDownloadAttachment?: (roomId: string, attachmentId: string) => Promise<Blob>;
   onAttachmentUrl?: (roomId: string, attachmentId: string) => Promise<{ url: string }>;
+  /** A card's click: posts the person's answer in reply to the card (MessagingWorkspaceContext builds it). */
+  onCardReply?: (reply: CardReply) => Promise<void>;
 }
 
 const NO_PINNED_MESSAGES: readonly string[] = [];
@@ -314,6 +316,7 @@ function RoomContent({
   onLinkToWork,
   onDownloadAttachment,
   onAttachmentUrl,
+  onCardReply,
 }: RoomPanelProps) {
   const id = useId();
   // token increments on every selection (even of the same result) so RoomTimeline
@@ -655,6 +658,7 @@ function RoomContent({
       onToggleReaction={onSetReaction && !message.deletedAt ? (emoji) => void toggleReaction(message, emoji) : undefined}
       onOpenThread={(button) => openDetail("thread", message.messageId, button)}
       onSelectParticipant={onSelectParticipant} onUpdateMessage={onUpdateMessage} onDownloadAttachment={onDownloadAttachment} onAttachmentUrl={onAttachmentUrl}
+      onCardReply={onCardReply} cardAnswer={cardAnswerFor(messages, message.messageId)}
       sessions={visibleSessions} onOpenSession={openSessionPanel}
       menuExtras={!message.deletedAt && (onSetPin || (onMarkUnreadFrom && !inThread)) ? <>
         {/* disabled/aria-busy reflect messageActionPending -- shared across every message's
@@ -693,7 +697,7 @@ function RoomContent({
     return body(message.text);
   }, [revealStarter, participants, currentUserId, repliesByRoot, threadActivity, receipts, id, actionable, editTarget, searchTarget,
     quickReactions, reactionPending, reactionError, onSetReaction, toggleReaction, openDetail,
-    onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onSetPin, onMarkUnreadFrom,
+    onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onCardReply, messages, onSetPin, onMarkUnreadFrom,
     messageActionPending, runMessageAction, pinnedMessageIds, copied, copyError, roomId, visibleSessions]);
   // A run that ended without a saved reply (stopped, failed, no reply) stays where it happened,
   // after the message it followed; only live runs ride the tail below the newest message.

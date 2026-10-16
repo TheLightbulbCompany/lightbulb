@@ -36,9 +36,9 @@ describe("ResumeStoppedRunCard", () => {
     const onResume = jest.fn().mockResolvedValue(null);
     await render(<ResumeStoppedRunCard blocker={STOPPED} onResume={onResume} />);
     expect(screen.getByText("This run was stopped. Did it finish what it was doing?")).toBeTruthy();
-    fireEvent.press(screen.getByLabelText(label));
-    if (note) fireEvent.changeText(screen.getByLabelText("Note for the agent (optional)"), note);
-    fireEvent.press(screen.getByLabelText("Resume"));
+    await fireEvent.press(screen.getByLabelText(label));
+    if (note) await fireEvent.changeText(screen.getByLabelText("Note for the agent (optional)"), note);
+    await fireEvent.press(screen.getByLabelText("Resume"));
     await waitFor(() => expect(onResume).toHaveBeenCalledTimes(1));
     expect(onResume).toHaveBeenCalledWith({
       actionId: "recovery",
@@ -51,10 +51,10 @@ describe("ResumeStoppedRunCard", () => {
   it("does nothing until an answer is chosen, and shows Paperclip's refusal", async () => {
     const onResume = jest.fn().mockResolvedValue("The previous provider is still running.");
     await render(<ResumeStoppedRunCard blocker={STOPPED} onResume={onResume} />);
-    fireEvent.press(screen.getByLabelText("Resume"));
+    await fireEvent.press(screen.getByLabelText("Resume"));
     expect(onResume).not.toHaveBeenCalled();
-    fireEvent.press(screen.getByLabelText("Partly"));
-    fireEvent.press(screen.getByLabelText("Resume"));
+    await fireEvent.press(screen.getByLabelText("Partly"));
+    await fireEvent.press(screen.getByLabelText("Resume"));
     expect(await screen.findByText("The previous provider is still running.")).toBeTruthy();
   });
 });

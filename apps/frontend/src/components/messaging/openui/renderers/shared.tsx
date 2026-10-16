@@ -1,6 +1,4 @@
-import { useState, type ReactNode } from "react";
-import { useTriggerAction } from "@openuidev/react-lang";
-import { useCardContext, useCardLive } from "../CardContext";
+import { createContext, useContext, type ReactNode } from "react";
 
 /** Props every renderer receives from OpenUI: the parsed props plus `renderNode` for children. */
 export interface RenderProps<P = Record<string, unknown>> {
@@ -16,16 +14,7 @@ export interface SubComponent<P = Record<string, unknown>> {
   partial: boolean;
 }
 
-/** A press posts once: the button locks while its reply is in flight or once the card is answered. */
-export function useCardPress() {
-  const ctx = useCardContext();
-  const live = useCardLive();
-  const trigger = useTriggerAction();
-  const [busy, setBusy] = useState(false);
-  const press = (text: string) => {
-    if (!live || busy) return;
-    setBusy(true);
-    trigger(text);
-  };
-  return { press, disabled: !live || busy, answered: ctx?.answered ?? null };
-}
+export interface CardPress { press: (text: string) => void; disabled: boolean; answered: string | null }
+/** Provided by OpenUICard, which owns the in-flight, error and sent state. */
+export const CardPressContext = createContext<CardPress>({ press: () => {}, disabled: true, answered: null });
+export const useCardPress = (): CardPress => useContext(CardPressContext);

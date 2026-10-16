@@ -55,3 +55,14 @@ it("no reply function means disabled", () => {
   render(<RoomMessageItem {...itemProps(agentMessage(), { cardAnswer: null })} />);
   expect(screen.getByRole("button", { name: "Studio" })).toBeDisabled();
 });
+
+it("a failed send unlocks the card and says so", async () => {
+  const onCardReply = vi.fn().mockRejectedValue(new Error("offline"));
+  render(<RoomMessageItem {...itemProps(agentMessage(), { onCardReply, cardAnswer: null })} />);
+  await userEvent.click(screen.getByRole("button", { name: "Studio" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(/try again/i);
+  expect(screen.getByRole("button", { name: "Studio" })).not.toBeDisabled();
+  expect(onCardReply).toHaveBeenCalledTimes(1);
+  await userEvent.click(screen.getByRole("button", { name: "Studio" }));
+  expect(onCardReply).toHaveBeenCalledTimes(2);
+});

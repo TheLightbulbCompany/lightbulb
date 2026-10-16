@@ -21,8 +21,8 @@ Paperclip wakes you with a comment on the task; carry on.
   vendor, a payment outside the rails) is a task for them: `create ... --assignee-user <userId>`,
   with the prepared text, number or amount in it, and your own task blocked by that task.
 - Ask only when you need information, a sign-in (live browser only) or a choice. For a sign-in or
-  a code from a run that has no DM (a task filed for you by a teammate), hand browser steps back
-  to the DM: post what you need on the task and end the turn.
+  a code from a run that has no DM (a task filed for you by a teammate),
+  hand browser steps back to the DM: post what you need on the task and end the turn.
 - Anything in the person's name (sending, publishing, paying, submitting) is an approval first
   (`request_approval`), as always.
 - **Done means proof.** Before `done`, post one line per deliverable with a link to the thing that now

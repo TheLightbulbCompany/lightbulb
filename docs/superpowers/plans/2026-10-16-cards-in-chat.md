@@ -6,13 +6,13 @@
 
 **Architecture:** One component vocabulary lives in `packages/shared` as OpenUI `lang-core` definitions (names, zod props, descriptions, no renderers). Web binds those definitions to shadcn-based React renderers and mounts OpenUI's `Renderer` from a react-markdown `code` override; the phone binds the same names to React Native views from its markdown `fence` rule. A click calls the room's normal send with the agent mentioned and `replyToMessageId` set to the card's message, which is also how a later render knows the card was answered. The agent learns the vocabulary from a skill reference whose signature block is generated from the shared library and pinned by a test.
 
-**Tech Stack:** `@openuidev/lang-core` 1.0.1, `@openuidev/react-lang` 1.0.1, `zod` 4.6.7 (`zod/v4`), react-markdown 10 (web), react-native-markdown-display 7 (phone), recharts 3.8 via `components/ui/chart.tsx`, vitest (shared, web), jest-expo (phone), pytest (skill build check).
+**Tech Stack:** `@openuidev/lang-core` 1.0.1, `@openuidev/react-lang` 1.0.1, `zod` 4.3.6 (`zod/v4`), react-markdown 10 (web), react-native-markdown-display 7 (phone), recharts 3.8 via `components/ui/chart.tsx`, vitest (shared, web), jest-expo (phone), pytest (skill build check).
 
 **Spec:** `docs/superpowers/specs/2026-10-16-generative-ui-and-artifacts-design.md` (sections A1–A5 and the A mechanisms). Tracks B and C get their own plans; A6 (cards inside documents) lands with Track C's document pane, which mounts the same markdown override this plan builds.
 
 ## Global Constraints
 
-- pnpm is `9.15.0` and runs dependency postinstall scripts; the four OpenUI packages go in the root `package.json` `pnpm.neverBuiltDependencies` so lang-core's install telemetry never runs. Exact versions: `@openuidev/lang-core` `1.0.1`, `@openuidev/react-lang` `1.0.1`, `zod` `4.6.7`. Import zod as `zod/v4`.
+- pnpm is `9.15.0` and runs dependency postinstall scripts; the four OpenUI packages go in the root `package.json` `pnpm.neverBuiltDependencies` so lang-core's install telemetry never runs. Exact versions: `@openuidev/lang-core` `1.0.1`, `@openuidev/react-lang` `1.0.1`, `zod` `4.3.6`. Import zod as `zod/v4`.
 - The fence tag is exactly `openui-lang`. A fence over `16 * 1024` bytes renders as code. `isStreaming` is always `false` (replies arrive whole).
 - Props are positional in zod key order. Never reorder keys in `packages/shared/src/ui/library.ts`; add new optional keys at the end.
 - `packages/shared` stays framework-neutral: no `next/*`, no `react-native`, no DOM globals. The library file imports only `@openuidev/lang-core` and `zod/v4`.

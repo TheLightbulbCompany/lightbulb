@@ -568,6 +568,21 @@ async def _start(auth: AuthContext, idea_id: str) -> dict:
                 )
                 project_id = project["id"]
                 await messaging_repo.update_idea_start(owner_id, idea_id, user_id, {"projectId": project_id})
+            if not claim.get("firstIssueId"):  # the project's one task, carrying the idea
+                first = await admin.create_issue(
+                    session_cookie=ctx.session_cookie,
+                    company_id=ctx.company_id,
+                    body={
+                        "title": job.title,
+                        "description": work_description(job),
+                        "status": "todo",
+                        "assigneeAgentId": agent["id"],
+                        "projectId": project_id,
+                        "idempotencyKey": f"{key}:task",
+                        "allowDuplicate": True,
+                    },
+                )
+                await messaging_repo.update_idea_start(owner_id, idea_id, user_id, {"firstIssueId": first["id"]})
             tracked = ("project", project_id)
         elif job.size == "task":
             issue_id = claim.get("issueId")
@@ -575,10 +590,9 @@ async def _start(auth: AuthContext, idea_id: str) -> dict:
                 body = {
                     "title": job.title,
                     "description": work_description(job),
-                    # backlog, not todo: the DM message is the one wake (an assigned todo would wake
-                    # the agent through Paperclip too and run the job twice). The agent moves it to
-                    # in_progress itself (references/ideas.md).
-                    "status": "backlog",
+                    # todo: Paperclip starts the run at once, like any assigned task (owner,
+                    # 2026-10-16). The DM message below is the person's record and does not wake.
+                    "status": "todo",
                     "assigneeAgentId": agent["id"],
                     "idempotencyKey": key,
                     # The same title may be started again after a finished task; the key still
@@ -592,8 +606,9 @@ async def _start(auth: AuthContext, idea_id: str) -> dict:
                 await messaging_repo.update_idea_start(owner_id, idea_id, user_id, {"issueId": issue_id})
             tracked = ("task", issue_id)
         room_id = await _usable_dm(owner_id, user_id, agent["id"])
-        # The person's own message (via Ideas): it wakes the agent the way any DM message does,
-        # and shows live. One per start: a retry replays it.
+        # The person's own message (via Ideas), shown live. Work tracked in Paperclip already woke
+        # the agent, so it is a record; a quick idea has no task, so this message is the wake.
+        # One per start: a retry replays it.
         client_id = uuid.uuid5(
             uuid.NAMESPACE_URL, f"lightbulb-idea-start|{owner_id}|{idea_id}|{user_id}|{claim['startToken']}"
         )
@@ -607,6 +622,7 @@ async def _start(auth: AuthContext, idea_id: str) -> dict:
                 thread_root_message_id=None,
             ),
             via="ideas",
+            wake=tracked is None,
         )
         fields = {"state": "open", "roomId": room_id, "createdAt": utc_now_iso(), "agentId": agent["id"],
                   "title": job.title, "size": job.size}  # fmt: skip

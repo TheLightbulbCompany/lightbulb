@@ -4031,8 +4031,11 @@ async def create_human_message(
     via: Literal["lightbulb_mcp", "ideas"] | None = None,
     author_override: dict | None = None,
     expected_room_revision: int | None = None,
+    wake: bool = True,
 ) -> CanonicalMessage:
     """``author_override`` is the hosted MCP's client identity; ``auth`` stays the accountable human.
+    ``wake=False`` stores and shows the message but dispatches no agent: an Ideas record whose work
+    Paperclip already started.
     ``expected_room_revision`` fences the write: a room changed since that read (e.g. a DM turned
     into a group DM) refuses with MESSAGE_CONFLICT instead of posting to the new audience."""
     meta, sender = await require_room_member(resolve_owner_id(auth), auth.user_id, room_id)
@@ -4166,7 +4169,7 @@ async def create_human_message(
             reply_to_message_id=str(request.reply_to_message_id) if request.reply_to_message_id else None,
             thread_root_message_id=str(request.thread_root_message_id) if request.thread_root_message_id else None,
             run_id=None,
-            dispatch_targets=targets,
+            dispatch_targets=targets if wake else [],
             source_agent_id=None,
             client_message_id=str(request.client_message_id),
             via=via,

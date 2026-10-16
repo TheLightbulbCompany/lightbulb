@@ -189,7 +189,7 @@ async def test_start_twice_makes_one_project_one_guide_and_one_line(paperclip):
     )
     assert "panel=teams-project-detail&detailId=" + first["projectId"] in lines[0]["text"]
     assert "agentNote" not in lines[0]
-    assert lines[0]["dispatchTargets"] == [{"agentId": STARTERS["finance"], "eventKind": "user_request"}]
+    assert lines[0]["dispatchTargets"] == []  # a record: the project's todo task is the wake
     # The line sits in the starter's DM with the owner agent.
     assert await repo.get_member(first["roomId"], "agent", STARTERS["finance"]) is not None
     assert (await repo.get_room(first["roomId"]))["kind"] == "dm"
@@ -334,7 +334,7 @@ async def test_any_start_hides_the_welcome_even_after_its_project_finished(paper
 
 
 @pytest.mark.asyncio
-async def test_a_task_idea_makes_one_backlog_task_assigned_to_the_agent_and_links_it(paperclip):
+async def test_a_task_idea_makes_one_todo_task_assigned_to_the_agent_and_links_it(paperclip):
     idea = ideas.catalog()["claim-refund"]
     assert idea.size == "task"
     first = await ideas.start(AUTH, "claim-refund")
@@ -342,8 +342,8 @@ async def test_a_task_idea_makes_one_backlog_task_assigned_to_the_agent_and_link
     assert first == again == {"roomId": first["roomId"], "issueId": "issue-1"}
     paperclip.create_project.assert_not_awaited()
     body = paperclip.create_issue.await_args.kwargs["body"]
-    # backlog: the DM message is the one wake; the same title may come again after a finished task.
-    assert body["title"] == idea.title and body["status"] == "backlog" and body["allowDuplicate"] is True
+    # todo: Paperclip starts it; the same title may come again after a finished task.
+    assert body["title"] == idea.title and body["status"] == "todo" and body["allowDuplicate"] is True
     assert body["assigneeAgentId"] == STARTERS["finance"]
     assert idea.why in body["description"] and all(d in body["description"] for d in idea.deliverables)
     assert body["idempotencyKey"].startswith("lightbulb-idea-project:v1:")
@@ -353,6 +353,52 @@ async def test_a_task_idea_makes_one_backlog_task_assigned_to_the_agent_and_link
         f"Tracked in Work: [{idea.title}]({ideas.work_link('task', 'issue-1')})"
     )
     assert "panel=teams-issue-detail&detailId=issue-1" in line["text"]
+
+
+@pytest.mark.asyncio
+async def test_a_task_idea_is_created_in_todo_and_assigned(paperclip):
+    await ideas.start(AUTH, "inbox-triage")
+    body = paperclip.create_issue.await_args.kwargs["body"]
+    assert body["status"] == "todo" and body["assigneeAgentId"] == STARTERS["customer_operations"]
+
+
+@pytest.mark.asyncio
+async def test_a_project_idea_gets_one_todo_task_inside_it(paperclip):
+    start = await ideas.start(AUTH, "launch-run")
+    body = paperclip.create_issue.await_args.kwargs["body"]
+    assert body["projectId"] == start["projectId"] and body["status"] == "todo"
+    assert body["title"] == ideas.catalog()["launch-run"].title
+    assert body["assigneeAgentId"] == STARTERS["growth"]
+    assert body["idempotencyKey"].endswith(":task") and "## Done means" in body["description"]
+    row = (await repo.open_idea_starts(OWNER))[0]
+    assert row["firstIssueId"] == "issue-1"
+
+
+def _spy_wake(monkeypatch):
+    calls = []
+    real = messaging.create_human_message
+
+    async def spy(*a, **kw):
+        calls.append(kw.get("wake", True))
+        return await real(*a, **kw)
+
+    monkeypatch.setattr(messaging, "create_human_message", spy)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_the_dm_record_for_a_tracked_idea_does_not_wake_the_agent(paperclip, monkeypatch):
+    calls = _spy_wake(monkeypatch)
+    await ideas.start(AUTH, "inbox-triage")
+    assert calls == [False]
+
+
+@pytest.mark.asyncio
+async def test_a_quick_idea_still_wakes_the_agent_from_the_dm(paperclip, monkeypatch):
+    calls = _spy_wake(monkeypatch)
+    added = await ideas.suggest(OWNER, _suggestion(size="quick"))
+    await ideas.start(AUTH, added["id"])
+    assert calls == [True]
 
 
 @pytest.mark.asyncio

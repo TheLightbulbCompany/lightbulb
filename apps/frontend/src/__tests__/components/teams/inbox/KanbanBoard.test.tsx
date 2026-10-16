@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { KanbanBoard, BOARD_STATUSES, boardColumns, __test_handleDragEnd } from "@/components/teams/inbox/KanbanBoard";
 import type { Issue } from "@/components/teams/shared/types";
 
@@ -119,5 +119,10 @@ describe("KanbanBoard", () => {
       { active: { id: "a" }, over: { id: "b" } } as any,
     );
     expect(onUpdateIssue).toHaveBeenCalledWith("a", { status: "done" });
+  });
+
+  it("has no per-card status dropdowns", () => {
+    render(<KanbanBoard issues={[i("a", "todo"), i("b", "done")]} onUpdateIssue={vi.fn()} />);
+    expect(screen.queryAllByRole("combobox")).toHaveLength(0);
   });
 });

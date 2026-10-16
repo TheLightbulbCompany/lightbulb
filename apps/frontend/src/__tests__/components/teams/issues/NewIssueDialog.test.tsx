@@ -18,6 +18,7 @@ beforeEach(() => {
     create: mockCreate,
     createChild: vi.fn(),
     update: vi.fn(),
+    updateInList: vi.fn(),
     addComment: vi.fn(),
     remove: vi.fn(),
     monitorCheckNow: vi.fn(),

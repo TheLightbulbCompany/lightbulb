@@ -13,7 +13,8 @@ import { useInlineTeamsNav } from "@/components/chat/InlineTeamsNav";
 import { PriorityIcon } from "@/components/teams/shared/components/PriorityIcon";
 import { Identity } from "@/components/teams/shared/components/Identity";
 import { LiveRunDot } from "@/components/teams/shared/components/LiveRunDot";
-import type { Issue } from "@/components/teams/shared/types";
+import { agentTint } from "@/lib/agentTint";
+import type { CompanyMember, Issue } from "@/components/teams/shared/types";
 
 export interface KanbanAgent {
   id: string;
@@ -23,17 +24,65 @@ export interface KanbanAgent {
 export interface KanbanCardProps {
   issue: Issue;
   agents?: KanbanAgent[];
+  /** `/members` roster, to name a human assignee (`assigneeUserId` holds the
+   * member's Paperclip user id, not the Clerk id). */
+  members?: CompanyMember[];
   isLive?: boolean;
-  // Keyboard/screen-reader alternative to dragging between columns.
-  columns?: readonly string[];
-  onStatusChange?: (id: string, status: string) => void;
 }
 
 interface CardContentProps {
   issue: Issue;
   agents?: KanbanAgent[];
+  members?: CompanyMember[];
   isLive?: boolean;
   isDragging?: boolean;
+}
+
+// Linear-style assignee mark: a 20px circle in the card's top-right. Agents get
+// the same tinted initials the messaging roster uses (the agent wire shape has
+// no avatar URL — `icon` is an opaque picker name), people get their photo or
+// initials, and an unassigned task gets a dashed empty circle, so every card
+// answers "whose is this?" at a glance. The full name rides on aria-label +
+// title (Identity's avatarOnly mode).
+function CardAssignee({
+  issue,
+  agents,
+  members,
+}: Pick<CardContentProps, "issue" | "agents" | "members">) {
+  if (issue.assigneeAgentId) {
+    const name =
+      agents?.find((a) => a.id === issue.assigneeAgentId)?.name ?? "Unknown agent";
+    return (
+      <Identity
+        name={name}
+        avatarOnly
+        size="xs"
+        tint={agentTint(issue.assigneeAgentId)}
+        className="shrink-0"
+      />
+    );
+  }
+  if (issue.assigneeUserId) {
+    const member = members?.find((m) => m.paperclipUserId === issue.assigneeUserId);
+    return (
+      <Identity
+        name={member?.name || member?.email || "Unknown person"}
+        avatarUrl={member?.imageUrl}
+        avatarOnly
+        size="xs"
+        className="shrink-0"
+      />
+    );
+  }
+  return (
+    <span
+      role="img"
+      aria-label="Unassigned"
+      title="Unassigned"
+      className="size-5 shrink-0 rounded-full border border-dashed"
+      style={{ borderColor: "var(--midnight-muted)" }}
+    />
+  );
 }
 
 // Always link by `id` — the rest of the inbox/panels surface (InboxPage,
@@ -43,12 +92,8 @@ function issueHref(issue: Issue): string {
   return teamsDetailUrl("issue", issue.id);
 }
 
-function CardContent({ issue, agents, isLive, isDragging }: CardContentProps) {
+function CardContent({ issue, agents, members, isLive, isDragging }: CardContentProps) {
   const nav = useInlineTeamsNav();
-  const agentName = (id: string | null | undefined): string | null => {
-    if (!id || !agents) return null;
-    return agents.find((a) => a.id === id)?.name ?? null;
-  };
 
   return (
     <Link
@@ -97,37 +142,28 @@ function CardContent({ issue, agents, isLive, isDragging }: CardContentProps) {
         {isLive && (
           <LiveRunDot testId="kanban-card-live-dot" className="mt-0.5" />
         )}
+        <span className="ml-auto flex shrink-0">
+          <CardAssignee issue={issue} agents={agents} members={members} />
+        </span>
       </div>
       <p
-        className="text-ui leading-snug line-clamp-2 mb-2"
+        className={cn("text-ui leading-snug line-clamp-2", issue.priority && "mb-2")}
         style={{ color: "var(--midnight)" }}
       >
         {issue.title}
       </p>
-      <div className="flex items-center gap-2">
-        {issue.priority && <PriorityIcon priority={issue.priority} />}
-        {issue.assigneeAgentId &&
-          (() => {
-            const name = agentName(issue.assigneeAgentId);
-            return name ? (
-              <Identity name={name} size="xs" />
-            ) : (
-              <span
-                className="text-caption font-mono"
-                style={{ color: "var(--midnight-muted)" }}
-              >
-                {issue.assigneeAgentId.slice(0, 8)}
-              </span>
-            );
-          })()}
-      </div>
+      {issue.priority && (
+        <div className="flex items-center gap-2">
+          <PriorityIcon priority={issue.priority} />
+        </div>
+      )}
     </Link>
   );
 }
 
 // Sortable card rendered inside a column. Registers a draggable instance
 // with dnd-kit keyed by issue.id.
-export function KanbanCard({ issue, agents, isLive, columns, onStatusChange }: KanbanCardProps) {
+export function KanbanCard({ issue, agents, members, isLive }: KanbanCardProps) {
   const {
     attributes,
     listeners,
@@ -152,8 +188,9 @@ export function KanbanCard({ issue, agents, isLive, columns, onStatusChange }: K
         isDragging && "opacity-30",
       )}
     >
-      {/* Sortable role/tabIndex live here so the status <select> below is a
-          sibling, not nested inside a role="button". */}
+      {/* Drag (pointer or keyboard: focus, Space, arrows, Space) is how a
+          card changes status on the board — no per-card status picker, same
+          as upstream. The detail view still has the full status menu. */}
       <div
         {...attributes}
         {...listeners}
@@ -162,24 +199,11 @@ export function KanbanCard({ issue, agents, isLive, columns, onStatusChange }: K
         <CardContent
           issue={issue}
           agents={agents}
+          members={members}
           isLive={isLive}
           isDragging={isDragging}
         />
       </div>
-      {columns && onStatusChange && (
-        <select
-          aria-label={`Status of ${issue.title}`}
-          value={issue.status}
-          className="mt-2 w-full rounded border bg-transparent text-caption"
-          onChange={(e) => onStatusChange(issue.id, e.target.value)}
-        >
-          {columns.map((s) => (
-            <option key={s} value={s}>
-              {s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
-            </option>
-          ))}
-        </select>
-      )}
     </div>
   );
 }
@@ -187,13 +211,13 @@ export function KanbanCard({ issue, agents, isLive, columns, onStatusChange }: K
 // Presentational-only variant for the DragOverlay. Does NOT call useSortable
 // so it can't double-register the active card's id and confuse dnd-kit's
 // collision detection.
-export function KanbanCardOverlay({ issue, agents, isLive }: KanbanCardProps) {
+export function KanbanCardOverlay({ issue, agents, members, isLive }: KanbanCardProps) {
   return (
     <div
       data-kanban-card-overlay={issue.id}
       className="editorial-card p-2.5 cursor-grab shadow-lg ring-1"
     >
-      <CardContent issue={issue} agents={agents} isLive={isLive} />
+      <CardContent issue={issue} agents={agents} members={members} isLive={isLive} />
     </div>
   );
 }

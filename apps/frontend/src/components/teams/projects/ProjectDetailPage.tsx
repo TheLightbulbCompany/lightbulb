@@ -143,16 +143,16 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
     );
   }
 
-  // TasksList's inline status circle + board drag patch the issue; route them
-  // through the issues mutation hook, then revalidate this project's scoped
-  // issues read so the change shows immediately.
-  const handleUpdateIssue = (id: string, patch: Record<string, unknown>) => {
-    void issueMutations
-      .update(id, patch as IssueUpdateInput)
-      .then(() =>
-        mutate(`/teams${teamsQueryKeys.issuesByProject(projectId)}`),
-      );
-  };
+  // TasksList's inline status circle + board drag patch the issue. The patch
+  // lands in this project's cached issues read at once (keyed by the resolved
+  // uuid, as useProjectDetail reads it), rolls back on failure, then
+  // revalidates. Returned so the board can report a failed move.
+  const handleUpdateIssue = (id: string, patch: Record<string, unknown>) =>
+    issueMutations.updateInList(
+      teamsQueryKeys.issuesByProject(project.id),
+      id,
+      patch as IssueUpdateInput,
+    );
 
   const tabs = [
     { value: "overview", label: "Overview" },
@@ -230,6 +230,7 @@ export function ProjectDetailPage({ projectId }: ProjectDetailPageProps) {
         <TasksList
           issues={issues}
           agents={agents}
+          members={membersResp?.members ?? []}
           liveIssueIds={liveIssueIds}
           externalObjectSummaries={externalObjectSummaries}
           currentUserId={paperclipUserIdOf(membersResp?.members, user?.id)}

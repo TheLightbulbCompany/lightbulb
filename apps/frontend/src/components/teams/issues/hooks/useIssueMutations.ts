@@ -20,6 +20,8 @@ export interface UseIssueMutationsResult {
   create: (input: IssueCreateInput) => Promise<Issue>;
   createChild: (parentId: string, input: IssueCreateInput) => Promise<Issue>;
   update: (issueId: string, input: IssueUpdateInput) => Promise<Issue>;
+  /** `update`, shown at once in the cached `{ issues }` read at `listPath`. */
+  updateInList: (listPath: string, issueId: string, input: IssueUpdateInput) => Promise<void>;
   remove: (issueId: string) => Promise<void>;
   addComment: (issueId: string, body: string) => Promise<IssueComment>;
   /** Trigger an immediate monitor re-check (independent of nextCheckAt). */
@@ -64,6 +66,33 @@ export function useIssueMutations(): UseIssueMutationsResult {
     [patch, mutate],
   );
 
+  // Optimistic: the patch lands in the cached list synchronously, before the
+  // PATCH is sent, so a board drop stays in the target column instead of
+  // snapping back until a refetch. SWR drops any revalidation of `listPath`
+  // that started before the write finished (its MUTATION timestamps — the
+  // equivalent of cancelQueries), so the 30 s refresh can't land mid-flight and
+  // undo the move. On failure the cache rolls back and the promise rejects; on
+  // either outcome the list revalidates against the server.
+  const updateInList = useCallback(
+    async (listPath: string, issueId: string, input: IssueUpdateInput): Promise<void> => {
+      await mutate(swrKey(listPath), update(issueId, input), {
+        // The list read is `{ issues }` or a bare array (the project read
+        // accepts both); anything else is left alone.
+        optimisticData: (current: unknown) => {
+          const patchIn = (list: Issue[]) =>
+            list.map((i) => (i.id === issueId ? ({ ...i, ...input } as Issue) : i));
+          if (Array.isArray(current)) return patchIn(current as Issue[]);
+          const body = current as { issues?: Issue[] } | undefined;
+          return body?.issues ? { ...body, issues: patchIn(body.issues) } : current;
+        },
+        rollbackOnError: true,
+        populateCache: false,
+        revalidate: true,
+      });
+    },
+    [mutate, update],
+  );
+
   const remove = useCallback(
     async (issueId: string): Promise<void> => {
       await del(`/issues/${issueId}`);
@@ -93,5 +122,5 @@ export function useIssueMutations(): UseIssueMutationsResult {
     [post],
   );
 
-  return { create, createChild, update, remove, addComment, monitorCheckNow };
+  return { create, createChild, update, updateInList, remove, addComment, monitorCheckNow };
 }

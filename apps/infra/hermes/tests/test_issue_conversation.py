@@ -345,6 +345,39 @@ def test_a_turn_in_the_room_conversation_uses_its_lock_transcript_and_folder(mon
     assert seen["run"]["user_message"].endswith(REQUEST["input"]) and "Nothing you write in this turn is posted to the room" in seen["run"]["user_message"]
 
 
+def _native_stubs(monkeypatch, seen):
+    monkeypatch.setattr(turn.sync, "ensure_profile", lambda _agent: None)
+    monkeypatch.setattr(turn.sync, "normalize_profile_backends", lambda _agent: None)
+    monkeypatch.setattr(turn, "_room_history", lambda agent: ([], None))
+
+    class Agent:
+        model = ""
+        session_input_tokens = session_output_tokens = session_cache_read_tokens = session_cache_write_tokens = 0
+
+        def run_conversation(self, **kw):
+            return {"api_calls": 1, "final_response": "ok"}
+
+    monkeypatch.setattr(turn, "_construct_agent", lambda *a, **k: Agent())
+    real_scope = turn.website_logins.prompt_scope
+    monkeypatch.setattr(turn.website_logins, "prompt_scope",
+                        lambda agent_id, room_id, thread_root, aborted: (seen.append((room_id, thread_root)), real_scope(agent_id, room_id, thread_root, aborted))[1])
+
+
+def test_a_turn_in_the_bound_room_gives_the_sign_in_prompts_that_room(monkeypatch):
+    seen = []
+    _native_stubs(monkeypatch, seen)
+    turn.register_paperclip_run(IDENTITY, REQUEST)
+    assert turn._run_native_paperclip(IDENTITY, REQUEST, ROOM_KEY)[0] == "completed"
+    assert seen == [(ROOM, None)]
+
+
+def test_a_turn_in_the_issue_session_still_has_no_room_for_prompts(monkeypatch):
+    seen = []
+    _native_stubs(monkeypatch, seen)
+    turn.register_paperclip_run(IDENTITY, REQUEST)
+    assert turn._run_native_paperclip(IDENTITY, REQUEST, None)[0] == "completed"
+    assert seen == [(None, None)]
+
 @helper
 def test_a_call_or_side_session_binds_the_issue_to_its_room(tmp_path):
     """The shell runs on the call's or side session's own key; the bridge names the room beside it."""

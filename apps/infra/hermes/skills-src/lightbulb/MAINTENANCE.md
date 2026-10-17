@@ -481,6 +481,13 @@ MAINTENANCE (Lightbulb engineers): every claim in this skill is anchored to
                                  apps/frontend/src/components/messaging/RoomDocumentCards.tsx +
                                  packages/shared/src/messaging/documentLinks.ts (the card the link becomes);
                                  plugins/lightbulb/__init__.py OWN_THREAD_REFUSAL (why no mid-turn acknowledgement)
+  - Cards in chat ........... references/ui.md
+                              <- packages/shared/src/ui/library.ts (the vocabulary; the signatures block is GENERATED and pinned by
+                                 packages/shared/src/ui/reference.test.ts: refresh with
+                                 `OPENUI_REFERENCE_WRITE=1 pnpm -F @lightbulb/shared exec vitest run src/ui/reference.test.ts`),
+                                 apps/frontend/src/components/messaging/openui/ (web renderers, press -> reply),
+                                 apps/mobile/src/components/chat/openui/ (phone; lands with the mobile PR). SKILL.md: the "Ask with a card"
+                                 non-negotiable and "How you reply in chat" (docs/research/2026-10-13-employee-voice-and-consumer-agents.md rung 1).
   - Hook-token calls ........ SKILL.md (the non-negotiable) + references/money.md (the status tables)
                               <- /app/skills/lightbulb/scripts/lightbulb-api.sh — every OPENCLAW_HOOK_TOKEN call goes through a script on disk;
                                  apps/infra/hermes/plugins/lightbulb/__init__.py (_register_redaction) masks that header including $VAR refs,

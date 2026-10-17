@@ -116,7 +116,7 @@ from core.repositories import (
     user_repo,
 )
 from core.repositories.paperclip_repo import PaperclipIdentity, PaperclipRepo
-from core.services import clerk_admin, company_stripe, message_search
+from core.services import clerk_admin, company_stripe, message_search, sendblue
 from core.services.billing_service import delete_stripe_customer
 from core.services.paperclip_api_key import (
     delete_owner_agent_key_secrets,
@@ -130,6 +130,18 @@ from core.services.paperclip_provisioning import build_paperclip_provisioning, c
 from core.services.paperclip_user_delete import BOOTSTRAP_EMAILS, delete_paperclip_user
 
 logger = logging.getLogger(__name__)
+
+
+async def release_text_lines(rows: list[dict]) -> int:
+    """Deprovision the Sendblue line of every ``kind == "text"`` row, best effort."""
+    lines = [r["address"] for r in rows if r.get("kind") == "text"]
+    for number in lines:
+        try:
+            await sendblue.deprovision_line(number)
+        except Exception as exc:
+            logger.warning("wipe: could not release text line %s: %s", number, exc)
+    return len(lines)
+
 
 # "refused" = a guard kept the resource on purpose (a shared workspace company).
 # Neither a success nor a failure, and never a delete.
@@ -1127,8 +1139,12 @@ async def wipe_account(owner_id: str, *, actor_admin_id: str, account_emails: li
     await _step(steps, system="oauth_tokens", action="revoke_user_oauth", fn=_s9h)
 
     async def _s9i() -> str:
+        released = await release_text_lines(await agent_email_repo.query_by_owner(owner_id))
         addresses = await agent_email_repo.delete_all_for_owner(owner_id)
-        return f"deleted {len(addresses)} agent email address(es): {', '.join(addresses) or 'none'}"
+        return (
+            f"deleted {len(addresses)} agent email address(es): {', '.join(addresses) or 'none'}"
+            f", released {released} text line(s)"
+        )
 
     await _step(steps, system="agent_email_addresses", action="delete_all_for_owner", fn=_s9i)
 

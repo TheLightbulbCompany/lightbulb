@@ -41,6 +41,7 @@ ALLOWLIST = {
     ("GET", "/teams/agents/{agent_id}/runs"): _INLINE,
     ("GET", "/teams/heartbeat-runs/{run_id}"): _INLINE,
     ("GET", "/teams/runs/{run_id}"): _INLINE,
+    ("POST", "/teams/heartbeat-runs/{run_id}/cancel"): _INLINE,
     ("GET", "/teams/local-sessions/{session_id}/work-link"): _SESSION,
     ("PATCH", "/teams/local-sessions/{session_id}/work-link"): _SESSION,
 }

@@ -422,6 +422,8 @@ async def test_create_agent_through_bff_sends_canonical_adapter(
         "reportsTo",
         "budgetMonthlyCents",
         "permissions",
+        # Backend-built, never client-supplied: the engineer run cap (paperclip_adapter_config).
+        "runtimeConfig",
     }
     extra_top_level = set(upstream_body.keys()) - allowed_top_level
     assert not extra_top_level, f"unexpected top-level fields in upstream create_agent body: {extra_top_level}"

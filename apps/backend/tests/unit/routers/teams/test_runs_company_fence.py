@@ -35,7 +35,7 @@ async def test_company_run_passes_own_run():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("run", [{"id": "r1", "companyId": "co2"}, {"id": "r1"}, None])
-@pytest.mark.parametrize("call", [runs_mod._company_run, runs_mod.get_run, agents_mod.get_run])
+@pytest.mark.parametrize("call", [runs_mod._company_run, runs_mod.get_run, agents_mod.get_run, runs_mod.cancel_run])
 async def test_run_fence_404s_foreign_or_missing(run, call):
     with patch("routers.teams.agents._admin", return_value=_admin(run)):
         with pytest.raises(HTTPException) as exc:
@@ -52,7 +52,7 @@ async def test_get_run_returns_own_run(call):
 
 
 def test_every_per_run_route_is_fenced():
-    """Each ``{run_id}`` route depends on the fence, or is a get_run that fences inline (tested above)."""
+    """Each ``{run_id}`` route depends on the fence, or fences inline (tested above)."""
     unfenced = {
         (r.path, r.endpoint.__name__)
         for router in (runs_mod.router, agents_mod.router)
@@ -60,4 +60,9 @@ def test_every_per_run_route_is_fenced():
         if "{run_id}" in getattr(r, "path", "")
         and not any(d.call is runs_mod._company_run for d in r.dependant.dependencies)
     }
-    assert unfenced == {("/heartbeat-runs/{run_id}", "get_run"), ("/runs/{run_id}", "get_run")}
+    assert unfenced == {
+        ("/heartbeat-runs/{run_id}", "get_run"),
+        ("/runs/{run_id}", "get_run"),
+        # Fences inline: it needs the run row to know whether a Hermes turn is left to stop.
+        ("/heartbeat-runs/{run_id}/cancel", "cancel_run"),
+    }

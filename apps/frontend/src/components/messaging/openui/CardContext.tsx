@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useMemo, useState } from "react";
 import { ApiError, type MessageAttachment } from "@lightbulb/shared";
 
 /**
@@ -52,28 +52,42 @@ export function useCardPressState(onReply: OnReply | undefined, answer: string |
   // (`retry` tells the controls which one that is); if it had landed, the replay returns it.
   // A send the server rejected (an ApiError under 500) landed nothing: the id is dropped
   // and the next press may choose anything with a fresh one.
-  const attempt = useRef<{ id: string; text: string } | null>(null);
+  const [attempt, setAttempt] = useState<{ id: string; text: string } | null>(null);
+  // Once the canonical reply has landed, whatever this client still holds of the send goes: the local
+  // marker, but also a pinned retry or an error from a POST that timed out after the server had committed
+  // it. `answered` then follows the room: closed while the reply exists, open again if it is deleted.
+  // (State adjusted during render on a prop change, the React-documented form; an effect would re-render once more.)
+  const [seenAnswer, setSeenAnswer] = useState<string | null>(null);
+  if (answer !== seenAnswer) {
+    setSeenAnswer(answer);
+    if (answer !== null) {
+      setAttempt(null);
+      setSent(null);
+      setRetry(null);
+      setError(null);
+    }
+  }
   const press = useCallback((text: string) => {
     if (!onReply || pending || answered !== null) return;
-    const current = attempt.current ?? { id: crypto.randomUUID(), text: text.trim() };
+    const current = attempt ?? { id: crypto.randomUUID(), text: text.trim() };
     if (!current.text) return;
-    attempt.current = current;
+    setAttempt(current);
     setPending(true);
     setError(null);
     onReply(current.text, current.id).then(() => {
-      attempt.current = null;
+      setAttempt(null);
       setRetry(null);
       setSent(current.text);
     }, (e: unknown) => {
       if (e instanceof ApiError && e.status < 500) {
-        attempt.current = null;
+        setAttempt(null);
         setRetry(null);
       } else {
         setRetry(current.text);
       }
       setError("Couldn't send your reply. Try again.");
     }).finally(() => setPending(false));
-  }, [onReply, pending, answered]);
+  }, [onReply, pending, answered, attempt]);
   // One object per state change, so the message's context value (and every card under it) stays put across unrelated re-renders.
   return useMemo(() => ({ press: onReply ? press : undefined, pending, error, answered, retry }), [onReply, press, pending, error, answered, retry]);
 }

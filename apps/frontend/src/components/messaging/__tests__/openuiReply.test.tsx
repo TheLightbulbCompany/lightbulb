@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeAll, expect, it, vi } from "vitest";
 import { ApiError, type CanonicalRoomMessage } from "@lightbulb/shared";
@@ -119,4 +119,18 @@ it("a send the server rejected frees the card: another choice goes out with a fr
   expect(onCardReply).toHaveBeenCalledTimes(2);
   expect(onCardReply.mock.calls[1][0].text).toBe("Starter");
   expect(onCardReply.mock.calls[1][0].clientMessageId).not.toBe(onCardReply.mock.calls[0][0].clientMessageId);
+});
+
+it("a canonical answer clears whatever the card still held of the send; deleting the reply reopens it", async () => {
+  const onCardReply = vi.fn().mockRejectedValueOnce(new Error("timeout"));
+  const view = render(<RoomMessageItem {...itemProps(agentMessage(), { onCardReply, cardAnswer: null })} />);
+  await userEvent.click(await screen.findByRole("button", { name: "Studio" }));
+  await screen.findByRole("alert");
+  expect(screen.getByRole("button", { name: "Starter" })).toBeDisabled();
+  view.rerender(<RoomMessageItem {...itemProps(agentMessage(), { onCardReply, cardAnswer: "Studio" })} />);
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  expect(screen.getByRole("button", { name: "Studio" })).toHaveAttribute("aria-pressed", "true");
+  view.rerender(<RoomMessageItem {...itemProps(agentMessage(), { onCardReply, cardAnswer: null })} />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Starter" })).not.toBeDisabled());
+  expect(screen.getByRole("button", { name: "Studio" })).not.toBeDisabled();
 });

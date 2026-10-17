@@ -27,6 +27,7 @@ function Card({ text, onReply, answered = null, messageId = "card" }: { text: st
 }
 
 beforeEach(_resetCardAttemptsForTests);
+afterEach(() => jest.restoreAllMocks());
 
 it("renders a Choice from an agent's fence and posts the press", async () => {
   const onReply = jest.fn().mockResolvedValue(undefined);

@@ -59,7 +59,7 @@ plan = Select("plan", "Plan", ["Studio", "Starter"])
 
 ## Signatures
 
-`?` marks an optional argument; leave trailing optional ones out. A child in `[...]` is
+A child in `[...]` is
 written inline (`Col("Plan", ["A"])`) or as a named line referenced by name.
 
 <!-- openui:signatures:start -->

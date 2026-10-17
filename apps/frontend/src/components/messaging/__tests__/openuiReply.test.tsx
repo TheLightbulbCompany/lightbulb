@@ -76,3 +76,9 @@ it("a retry reuses the client id", async () => {
   expect(onCardReply).toHaveBeenCalledTimes(2);
   expect(onCardReply.mock.calls[1][0].clientMessageId).toBe(onCardReply.mock.calls[0][0].clientMessageId);
 });
+
+it("a feed post's fence stays code", () => {
+  render(<RoomMessageItem {...itemProps(agentMessage(), { onCardReply: vi.fn(), cardAnswer: null, cardsEnabled: false })} />);
+  expect(screen.getByText(/root = Stack/).closest("pre")).not.toBeNull();
+  expect(screen.queryByRole("button", { name: "Studio" })).toBeNull();
+});

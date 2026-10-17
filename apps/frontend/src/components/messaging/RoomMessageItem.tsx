@@ -57,6 +57,8 @@ interface RoomMessageItemProps {
   onCardReply?: (reply: CardReply) => Promise<void>;
   /** The first human reply to this message, when it carries a card. */
   cardAnswer?: string | null;
+  /** False in the feed: the fence stays a code block. */
+  cardsEnabled?: boolean;
   /** The sessions this viewer can open: a referenced session resolves its live status here. */
   sessions?: readonly LocalSession[];
   onOpenSession?: (sessionId: string) => void;
@@ -80,14 +82,14 @@ function SessionCard({ sessionId, label, session, onOpen }: {
   </span>;
 }
 
-export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, lastReplyAt, threadParticipants = [], workingNames = [], receipt, highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onCardReply, cardAnswer = null, sessions = [], onOpenSession, toolbarExtras, menuExtras, personColor }: RoomMessageItemProps): ReactElement {
-  const cardContext = useMemo<CardContextValue | null>(() => message.author.kind !== "agent" || message.deletedAt ? null : {
+export function RoomMessageItem({ id, message, text, participant, currentUserId, actionable, inThread, collapsed, startEditing, onEditingClosed, replyCount, lastReplyAt, threadParticipants = [], workingNames = [], receipt, highlighted, mentionsViewer, markdown, urlTransform, quickReactions, reactionPending, reactionError, onToggleReaction, onOpenThread, onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onCardReply, cardAnswer = null, cardsEnabled = true, sessions = [], onOpenSession, toolbarExtras, menuExtras, personColor }: RoomMessageItemProps): ReactElement {
+  const cardContext = useMemo<CardContextValue | null>(() => !cardsEnabled || message.author.kind !== "agent" || message.deletedAt ? null : {
     messageId: message.messageId, roomId: message.roomId, authorId: message.author.id, threadRootMessageId: message.threadRootMessageId,
     attachments: message.attachments ?? [], answered: cardAnswer,
     onReply: onCardReply && actionable ? (replyText: string, clientMessageId: string) => onCardReply({ text: replyText, agentId: message.author.id, messageId: message.messageId, threadRootMessageId: message.threadRootMessageId, clientMessageId }) : undefined,
     attachmentUrl: onAttachmentUrl,
   }, [message.messageId, message.roomId, message.author.kind, message.author.id, message.threadRootMessageId, message.deletedAt, message.attachments,
-    cardAnswer, onCardReply, actionable, onAttachmentUrl]);
+    cardAnswer, onCardReply, actionable, onAttachmentUrl, cardsEnabled]);
   const name = participant?.displayName || message.author.displayName || "Unknown author";
   const timestamp = !Number.isNaN(Date.parse(message.createdAt)) ? message.createdAt : undefined;
   const time = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";

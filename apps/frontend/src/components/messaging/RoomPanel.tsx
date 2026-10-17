@@ -28,6 +28,7 @@ import { copyText, messagePermalink, parseSessionPermalink } from "./messageLink
 import { openBrowserPane, openInviteDialog, openPanel, openSessionPanel, useThreadPane, useWorkspaceState } from "@/components/workspace/workspaceController";
 import { capture } from "@/lib/analytics";
 import { RunBrowserPreview } from "./BrowserRunPreview";
+import { cardControls } from "./cardControls";
 import { RoomComposer, type RoomComposerProps } from "./RoomComposer";
 import { RoomDetailsPanel, type DetailsTab } from "./RoomDetailsPanel";
 import { RoomHeader } from "./RoomHeader";
@@ -642,6 +643,7 @@ function RoomContent({
   const welcomeRoom = Boolean(room?.isDefault) && inShell;
   const revealStarter = Boolean(room?.isDefault) && !messages.some((m) => m.author.kind === "human");
   // One pass per message list, so a keystroke (which re-renders the panel) re-scans nothing.
+  const { cardsEnabled, repliesEnabled } = cardControls(room);
   const cardAnswers = useMemo(() => {
     const answers = new Map<string, string>();
     for (const m of messages) {
@@ -668,7 +670,7 @@ function RoomContent({
       onToggleReaction={onSetReaction && !message.deletedAt ? (emoji) => void toggleReaction(message, emoji) : undefined}
       onOpenThread={(button) => openDetail("thread", message.messageId, button)}
       onSelectParticipant={onSelectParticipant} onUpdateMessage={onUpdateMessage} onDownloadAttachment={onDownloadAttachment} onAttachmentUrl={onAttachmentUrl}
-      onCardReply={onCardReply} cardAnswer={cardAnswers.get(message.messageId) ?? null}
+      cardsEnabled={cardsEnabled} onCardReply={repliesEnabled ? onCardReply : undefined} cardAnswer={cardAnswers.get(message.messageId) ?? null}
       sessions={visibleSessions} onOpenSession={openSessionPanel}
       menuExtras={!message.deletedAt && (onSetPin || (onMarkUnreadFrom && !inThread)) ? <>
         {/* disabled/aria-busy reflect messageActionPending -- shared across every message's
@@ -707,7 +709,7 @@ function RoomContent({
     return body(message.text);
   }, [revealStarter, participants, currentUserId, repliesByRoot, threadActivity, receipts, id, actionable, editTarget, searchTarget,
     quickReactions, reactionPending, reactionError, onSetReaction, toggleReaction, openDetail,
-    onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onCardReply, cardAnswers, onSetPin, onMarkUnreadFrom,
+    onSelectParticipant, onUpdateMessage, onDownloadAttachment, onAttachmentUrl, onCardReply, cardsEnabled, repliesEnabled, cardAnswers, onSetPin, onMarkUnreadFrom,
     messageActionPending, runMessageAction, pinnedMessageIds, copied, copyError, roomId, visibleSessions]);
   // A run that ended without a saved reply (stopped, failed, no reply) stays where it happened,
   // after the message it followed; only live runs ride the tail below the newest message.

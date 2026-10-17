@@ -39,6 +39,12 @@ it("renders a Choice from an agent's fence and posts the press", async () => {
   expect(onReply).toHaveBeenCalledWith("Studio", expect.any(String));
 });
 
+it("mounts no DOM element: the Renderer's default slot wraps the tree in a div, which crashes on device", async () => {
+  const view = await render(<Card text={CHOICE} onReply={jest.fn()} />);
+  await screen.findByRole("button", { name: "Studio" });
+  expect(JSON.stringify(view.toJSON())).not.toMatch(/"type":"(div|span|button|section)"/);
+});
+
 it("a fence with no card context stays code", async () => {
   await render(<MessageMarkdown text={fence('root = Stack([t])\nt = Text("hi")')} palette={chatPalette.light} />);
   expect(screen.getByText(/root = Stack/)).toBeTruthy();

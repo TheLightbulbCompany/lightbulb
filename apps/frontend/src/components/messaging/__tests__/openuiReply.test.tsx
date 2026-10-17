@@ -134,3 +134,15 @@ it("a canonical answer clears whatever the card still held of the send; deleting
   await waitFor(() => expect(screen.getByRole("button", { name: "Starter" })).not.toBeDisabled());
   expect(screen.getByRole("button", { name: "Studio" })).not.toBeDisabled();
 });
+
+it("a POST that settles after the canonical answer landed writes nothing back", async () => {
+  let finish: () => void = () => {};
+  const onCardReply = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+  const view = render(<RoomMessageItem {...itemProps(agentMessage(), { onCardReply, cardAnswer: null })} />);
+  await userEvent.click(await screen.findByRole("button", { name: "Studio" }));
+  view.rerender(<RoomMessageItem {...itemProps(agentMessage(), { onCardReply, cardAnswer: "Studio" })} />);
+  await act(async () => { finish(); });
+  view.rerender(<RoomMessageItem {...itemProps(agentMessage(), { onCardReply, cardAnswer: null })} />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Starter" })).not.toBeDisabled());
+  expect(screen.getByRole("button", { name: "Studio" })).not.toBeDisabled();
+});

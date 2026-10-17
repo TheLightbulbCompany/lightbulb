@@ -254,3 +254,70 @@ async def test_add_meeting_is_an_idempotent_set_add(agent_email_table):
 async def test_add_meeting_never_raises(agent_email_table):
     await repo.add_meeting("nobody@acme.isol8.co", "m1")  # no row: the condition fails, logged only
     assert await repo.get_by_address("nobody@acme.isol8.co") is None
+
+
+# ---- the text line: a kind="text" row keyed by its E.164 number ----
+
+
+async def _async(value):
+    return value
+
+
+async def test_put_text_line_item_and_condition(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    item = await repo.put_text_line(number="+15551230000", owner_id="org_1", agent_id="agent_1")
+    kwargs = table.put_item.call_args.kwargs
+    assert kwargs["ConditionExpression"] == "attribute_not_exists(address)"
+    assert kwargs["Item"] == item
+    assert item == {
+        "address": "+15551230000",
+        "owner_id": "org_1",
+        "agent_id": "agent_1",
+        "kind": "text",
+        "status": "active",
+        "created_at": item["created_at"],
+        "human_threads": {},
+    }
+    assert item["created_at"]
+
+
+async def test_put_text_line_refuses_existing(monkeypatch):
+    table = MagicMock()
+    table.put_item.side_effect = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "PutItem")
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    assert await repo.put_text_line(number="+15551230000", owner_id="o", agent_id="a") is None
+
+
+async def test_text_line_for_owner_filters_kind(monkeypatch):
+    rows = [{"address": "agents@x.co", "owner_id": "o"}, {"address": "+1555", "owner_id": "o", "kind": "text"}]
+    monkeypatch.setattr(repo, "query_by_owner", lambda owner_id: _async(rows))
+    assert (await repo.text_line_for_owner("o"))["address"] == "+1555"
+    monkeypatch.setattr(repo, "query_by_owner", lambda owner_id: _async(rows[:1]))
+    assert await repo.text_line_for_owner("o") is None
+
+
+async def test_set_thread_mode_human_sets_and_agent_removes(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    await repo.set_thread_mode("+1555", "+15559998888", "human")
+    kwargs = table.update_item.call_args.kwargs
+    assert kwargs["Key"] == {"address": "+1555"}
+    assert kwargs["UpdateExpression"] == "SET human_threads.#c = :iso"
+    assert kwargs["ExpressionAttributeNames"] == {"#c": "+15559998888"}
+    assert kwargs["ExpressionAttributeValues"][":iso"]
+    assert kwargs["ConditionExpression"] == "attribute_exists(address)"
+    await repo.set_thread_mode("+1555", "a@b.co", "agent")
+    kwargs = table.update_item.call_args.kwargs
+    assert kwargs["UpdateExpression"] == "REMOVE human_threads.#c"
+    assert kwargs["ExpressionAttributeNames"] == {"#c": "a@b.co"}
+    assert "ExpressionAttributeValues" not in kwargs
+
+
+async def test_set_business_phone(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    await repo.set_business_phone("+1555", "+15550001111")
+    kwargs = table.update_item.call_args.kwargs
+    assert kwargs["UpdateExpression"] == "SET business_phone = :p"
+    assert kwargs["ExpressionAttributeValues"] == {":p": "+15550001111"}

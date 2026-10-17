@@ -12,6 +12,7 @@ Prefix-convention table (``core.dynamodb.get_table``), matching
 """
 
 import logging
+from typing import Literal
 
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
@@ -191,6 +192,57 @@ async def update_settings(
             return None
         raise
     return resp.get("Attributes")
+
+
+async def put_text_line(*, number: str, owner_id: str, agent_id: str) -> dict | None:
+    """Create the workspace's texting-line row, keyed by its E.164 number. A CREATE, never an
+    overwrite; None when the number already has a row."""
+    item = {
+        "address": number,
+        "owner_id": owner_id,
+        "agent_id": agent_id,
+        "kind": "text",
+        "status": "active",
+        "created_at": utc_now_iso(),
+        "human_threads": {},
+    }
+    try:
+        await run_in_thread(_get_table().put_item, Item=item, ConditionExpression="attribute_not_exists(address)")
+        return item
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return None
+        raise
+
+
+async def text_line_for_owner(owner_id: str) -> dict | None:
+    return next((r for r in await query_by_owner(owner_id) if r.get("kind") == "text"), None)
+
+
+async def set_business_phone(number: str, phone: str) -> None:
+    await run_in_thread(
+        _get_table().update_item,
+        Key={"address": number},
+        UpdateExpression="SET business_phone = :p",
+        ConditionExpression="attribute_exists(address)",
+        ExpressionAttributeValues={":p": phone},
+    )
+
+
+async def set_thread_mode(number: str, customer: str, mode: Literal["human", "agent"]) -> None:
+    """``human`` marks a customer's thread as taken over by a person; ``agent`` hands it back.
+    ``customer`` is a phone number or an email address, so it goes in as a name placeholder."""
+    kwargs: dict = {
+        "Key": {"address": number},
+        "ConditionExpression": "attribute_exists(address)",
+        "ExpressionAttributeNames": {"#c": customer},
+    }
+    if mode == "human":
+        kwargs["UpdateExpression"] = "SET human_threads.#c = :iso"
+        kwargs["ExpressionAttributeValues"] = {":iso": utc_now_iso()}
+    else:
+        kwargs["UpdateExpression"] = "REMOVE human_threads.#c"
+    await run_in_thread(_get_table().update_item, **kwargs)
 
 
 async def add_meeting(address: str, meeting_id: str) -> None:

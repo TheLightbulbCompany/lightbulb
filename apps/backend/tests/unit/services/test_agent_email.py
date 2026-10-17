@@ -240,6 +240,11 @@ def test_strictest_ignores_alias_rows():
     assert ae.strictest([{"send_to_anyone": True, "verified_senders": []}, alias])["send_to_anyone"] is True
 
 
+def test_strictest_ignores_text_rows():
+    text = {"address": "+15551230000", "kind": "text", "owner_id": "o"}
+    assert ae.strictest([{"send_to_anyone": True, "verified_senders": []}, text])["send_to_anyone"] is True
+
+
 # ---- mail_changed: the Mail panel's live nudge ----
 
 import asyncio  # noqa: E402

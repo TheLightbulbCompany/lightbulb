@@ -41,6 +41,9 @@ export interface BillingAccount {
   // seat_price_usd a month for each member past them. Optional for old fixtures.
   seat_price_usd?: number;
   included_members?: number;
+  // The Front desk add-on: whether this workspace has it, and its monthly price. Optional for old fixtures.
+  front_desk?: boolean;
+  front_desk_price_usd?: number;
   managed_markup?: string | null;
   // The managed model's per-key daily limit tripped today (UTC); clears at the rollover.
   capped_today?: boolean;

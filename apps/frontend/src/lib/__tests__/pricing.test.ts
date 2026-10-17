@@ -3,8 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { getPricing, markupPercent, ordinal, pricingFaq, teamMonthlyUsd } from "../pricing";
 
 const json = (body: unknown) => new Response(JSON.stringify(body));
-const API = { workspace_price_usd: 50, included_members: 5, seat_price_usd: 20, trial_days: 30, managed_markup: "1.2" };
-const P = { teamPriceUsd: 50, includedMembers: 5, seatPriceUsd: 20, trialDays: 30, managedMarkup: "1.2" };
+const API = { workspace_price_usd: 50, included_members: 5, seat_price_usd: 20, trial_days: 30, managed_markup: "1.2", front_desk_price_usd: 100 };
+const P = { teamPriceUsd: 50, includedMembers: 5, seatPriceUsd: 20, trialDays: 30, managedMarkup: "1.2", frontDeskPriceUsd: 100 };
 
 afterEach(() => vi.unstubAllGlobals());
 

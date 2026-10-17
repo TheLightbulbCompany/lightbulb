@@ -425,6 +425,18 @@ describe("ServiceStack — clean handoff / rolling deploy", () => {
     });
   });
 
+  test("backend task definition carries STRIPE_FRONT_DESK_PRICE_ID", () => {
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Environment: Match.arrayWith([
+            Match.objectLike({ Name: "STRIPE_FRONT_DESK_PRICE_ID" }),
+          ]),
+        }),
+      ]),
+    });
+  });
+
   test("dev reads the testing catalog partition, prod reads prod", () => {
     // The provisioning rail reads the catalog AND writes resources into it, so
     // a dev backend pointed at the prod partition would create real provider

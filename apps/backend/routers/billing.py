@@ -134,6 +134,7 @@ async def get_public_prices(response: Response):
         "workspace_price_usd": settings.WORKSPACE_PRICE_USD,
         "included_members": SEATS_INCLUDED,
         "seat_price_usd": settings.SEAT_PRICE_USD,
+        "front_desk_price_usd": settings.FRONT_DESK_PRICE_USD,
         "trial_days": billing_repo._TRIAL_LOCAL_DURATION_SECONDS // 86400,
         # The one billed copy is repo-root openrouter-pricing.json, fed in by CDK.
         "managed_markup": settings.OPENROUTER_MARKUP or None,
@@ -195,6 +196,8 @@ async def get_billing_account(
         base_price_usd=settings.BASE_PRICE_USD,
         ultra_price_usd=settings.ULTRA_PRICE_USD,
         seat_price_usd=settings.SEAT_PRICE_USD,
+        front_desk=bool(account.get("front_desk")) if account else False,
+        front_desk_price_usd=settings.FRONT_DESK_PRICE_USD,
         included_members=SEATS_INCLUDED,
         managed_markup=settings.OPENROUTER_MARKUP or None,
         subscription_source=(account.get("subscription_source") if account else None),

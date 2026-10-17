@@ -605,6 +605,10 @@ async def handle_subscription_state(event: dict[str, Any], billing_service: Bill
             put_metric("billing.seat_sync", dimensions={"outcome": "error"})
             logger.exception("Seat sync failed for owner %s; Stripe will redeliver", account["owner_id"])
             raise
+    # The Front desk line follows the item, for every status (a canceled subscription releases it).
+    from core.services.text_lines import sync_front_desk
+
+    await sync_front_desk(account["owner_id"], status=new_status, items=event_data["items"]["data"])
     return None
 
 

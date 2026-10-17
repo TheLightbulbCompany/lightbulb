@@ -215,6 +215,20 @@ async def put_text_line(*, number: str, owner_id: str, agent_id: str) -> dict | 
         raise
 
 
+async def delete_text_line(number: str) -> None:
+    """Delete a texting-line row; the condition means it can never delete a mail address row."""
+    try:
+        await run_in_thread(
+            _get_table().delete_item,
+            Key={"address": number},
+            ConditionExpression="kind = :text",
+            ExpressionAttributeValues={":text": "text"},
+        )
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            raise
+
+
 async def text_line_for_owner(owner_id: str) -> dict | None:
     return next((r for r in await query_by_owner(owner_id) if r.get("kind") == "text"), None)
 

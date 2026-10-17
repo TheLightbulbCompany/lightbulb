@@ -1222,3 +1222,16 @@ async def test_resubscribe_after_expiry_derives_active_from_the_new_expiry(dynam
     table_row = dynamodb_table.get_item(Key={"owner_id": "user_exp4"})["Item"]
     assert table_row["subscription_status"] == "active"
     assert (await billing_repo.get_by_owner_id("user_exp4"))["subscription_status"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_front_desk_claim_is_single_flight(dynamodb_table):
+    from core.repositories import billing_repo
+
+    await billing_repo.create_if_not_exists("org_fd", "cus_fd")
+    assert await billing_repo.claim_front_desk("org_fd") is True
+    assert await billing_repo.claim_front_desk("org_fd") is False
+    await billing_repo.set_front_desk("org_fd", False)
+    assert (await billing_repo.get_by_owner_id("org_fd"))["front_desk"] is False
+    assert await billing_repo.claim_front_desk("org_fd") is True
+    assert await billing_repo.claim_front_desk("ghost") is False

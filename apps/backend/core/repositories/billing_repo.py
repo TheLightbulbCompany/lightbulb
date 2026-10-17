@@ -1177,6 +1177,34 @@ async def set_founding_team(owner_id: str) -> None:
     )
 
 
+async def set_front_desk(owner_id: str, value: bool) -> None:
+    """Record whether the workspace's texting line exists (the Front desk add-on)."""
+    await run_in_thread(
+        _get_table().update_item,
+        Key={"owner_id": owner_id},
+        UpdateExpression="SET front_desk = :v, updated_at = :u",
+        ExpressionAttributeValues={":v": bool(value), ":u": utc_now_iso()},
+        ConditionExpression="attribute_exists(owner_id)",
+    )
+
+
+async def claim_front_desk(owner_id: str) -> bool:
+    """Single-flight claim before buying a line: False when another delivery holds it."""
+    try:
+        await run_in_thread(
+            _get_table().update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET front_desk = :v, updated_at = :u",
+            ExpressionAttributeValues={":v": True, ":f": False, ":u": utc_now_iso()},
+            ConditionExpression="attribute_exists(owner_id) AND (attribute_not_exists(front_desk) OR front_desk = :f)",
+        )
+        return True
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return False
+        raise
+
+
 async def set_nightly_ceo_opted_out(owner_id: str, opted_out: bool) -> None:
     """Set/clear the durable nightly-CEO opt-out flag.
 

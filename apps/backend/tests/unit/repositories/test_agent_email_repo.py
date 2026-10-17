@@ -321,3 +321,23 @@ async def test_set_business_phone(monkeypatch):
     kwargs = table.update_item.call_args.kwargs
     assert kwargs["UpdateExpression"] == "SET business_phone = :p"
     assert kwargs["ExpressionAttributeValues"] == {":p": "+15550001111"}
+
+
+async def test_delete_text_line_is_conditional_on_kind(monkeypatch):
+    table = MagicMock()
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    await repo.delete_text_line("+1555")
+    kwargs = table.delete_item.call_args.kwargs
+    assert kwargs["Key"] == {"address": "+1555"}
+    assert kwargs["ConditionExpression"] == "kind = :text"
+    assert kwargs["ExpressionAttributeValues"] == {":text": "text"}
+
+
+async def test_delete_text_line_swallows_a_mail_row_or_missing(monkeypatch):
+    table = MagicMock()
+    table.delete_item.side_effect = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "DeleteItem")
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    await repo.delete_text_line("agents@x.co")
+    table.delete_item.side_effect = ClientError({"Error": {"Code": "InternalServerError"}}, "DeleteItem")
+    with pytest.raises(ClientError):
+        await repo.delete_text_line("+1555")

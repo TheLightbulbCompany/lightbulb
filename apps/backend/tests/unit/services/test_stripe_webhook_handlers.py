@@ -95,6 +95,14 @@ def reconcile_dispatch(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def front_desk_sync(monkeypatch):
+    """The Front desk line sync buys a real number; no handler test may reach it unasked."""
+    sync = AsyncMock(return_value="absent")
+    monkeypatch.setattr("core.services.text_lines.sync_front_desk", sync)
+    return sync
+
+
+@pytest.fixture(autouse=True)
 def company_stripe_request(monkeypatch):
     """Entering a live paid status also ASKS the owner to connect the company's
     Stripe account. Stub the DISPATCHER (not the coroutine) for every test here
@@ -1021,3 +1029,21 @@ async def test_a_stale_trialing_event_after_the_trial_is_ignored(mock_repo, prio
     """A reordered trialing delivery must not put a post-trial workspace back on its trial (T05)."""
     await _run_state(mock_repo, prior, "trialing")
     mock_repo.set_subscription.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["active", "canceled"])
+async def test_subscription_handler_calls_sync_front_desk_after_seats(mock_repo, monkeypatch, status):
+    calls = MagicMock()
+    seats = AsyncMock()
+    front_desk = AsyncMock()
+    calls.attach_mock(seats, "seats")
+    calls.attach_mock(front_desk, "front_desk")
+    monkeypatch.setattr("core.services.billing_service.sync_seat_quantity", seats)
+    monkeypatch.setattr("core.services.text_lines.sync_front_desk", front_desk)
+    event = _subscription_event(status=status)
+    with patch.object(handlers, "stripe"):
+        await handlers.handle_subscription_state(event, MagicMock())
+    front_desk.assert_awaited_once_with("org_x", status=status, items=event["data"]["object"]["items"]["data"])
+    if status == "active":
+        assert [c[0] for c in calls.mock_calls] == ["seats", "front_desk"]

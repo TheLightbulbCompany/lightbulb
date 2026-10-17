@@ -7,6 +7,7 @@ import { ApiError } from "@lightbulb/shared";
 const mockGet = vi.fn();
 const mockDownload = vi.fn();
 vi.mock("@/lib/api", () => ({ useApi: () => ({ get: mockGet, downloadBlob: mockDownload }) }));
+vi.mock("@/hooks/useBilling", () => ({ useBilling: () => ({ account: null, refresh: vi.fn() }) }));
 vi.mock("@clerk/nextjs", () => ({ useOrganization: () => ({ organization: { id: "org_1" } }) }));
 const live = { onEvent: vi.fn(() => () => {}) };
 vi.mock("@/hooks/useLiveEvents", () => ({ useLiveEvents: () => live }));

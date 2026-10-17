@@ -4,10 +4,14 @@ import "@/components/messaging/messaging.css";
 import "./mail.css";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Check, Copy, Mail, RefreshCw } from "lucide-react";
+import { useOrganization } from "@clerk/nextjs";
+import { useSWRConfig } from "swr";
 import { agentDisplayName, ApiError } from "@lightbulb/shared";
 
 import { Button } from "@/components/ui/button";
 import { useAgents } from "@/hooks/useAgents";
+import { useBilling } from "@/hooks/useBilling";
+import { useApi } from "@/lib/api";
 import { navigateShell, replaceSearchParams } from "@/lib/shellNav";
 import { buildPanelUrl, clearDurableParamFromUrl } from "@/components/workspace/urlChannel";
 import { MailList } from "./MailList";
@@ -21,7 +25,7 @@ import {
   type MailEntry,
   type MailFilter,
 } from "./mailModel";
-import { advanceSeen, readSeen, useTeamMail, useTextLine } from "./useTeamMail";
+import { advanceSeen, isTextLineKey, readSeen, useTeamMail, useTextLine } from "./useTeamMail";
 
 const WIDE_PX = 840;
 
@@ -76,6 +80,28 @@ export function MailPanel({ item, visible = true }: { item: string | null; visib
   const { orgId, inbox, noAddress, address, loadedAt: now } = useTeamMail();
   const { agents } = useAgents();
   const line = useTextLine(orgId);
+  const isAdmin = useOrganization().membership?.role === "org:admin";
+  const api = useApi();
+  const { mutate: mutateGlobal } = useSWRConfig();
+  const { account, refresh: refreshBilling } = useBilling();
+  const [buying, setBuying] = useState(false);
+  const [buyStatus, setBuyStatus] = useState<string | null>(null);
+  const price = account?.front_desk_price_usd;
+  const buyNumber = async () => {
+    setBuying(true);
+    setBuyStatus(null);
+    try {
+      const res = (await api.post("/billing/front-desk", { return_to: "web" })) as { status: string; url?: string };
+      if (res.status === "checkout" && res.url) {
+        window.location.assign(res.url);
+        return; // leaving the page: stay disabled
+      }
+      await Promise.all([mutateGlobal(isTextLineKey), refreshBilling()]);
+    } catch (e) {
+      setBuyStatus(e instanceof ApiError ? String(e.status) : "failed");
+    }
+    setBuying(false);
+  };
   const [filter, setFilter] = useState<MailFilter>("all");
 
   const pages = inbox.data;
@@ -161,6 +187,12 @@ export function MailPanel({ item, visible = true }: { item: string | null; visib
       <CopyButton text={teamAddress} />
     </span>}
     {line.data?.number && <span className="mail-panel__number">{line.data.number}</span>}
+    {isAdmin && line.data === null && <>
+      <Button type="button" variant="ghost" size="sm" disabled={buying} onClick={() => void buyNumber()}>
+        {typeof price === "number" ? `Get a phone number · $${price}/month` : "Get a phone number"}
+      </Button>
+      {buyStatus && <span role="status" className="mail-panel__number">{buyStatus}</span>}
+    </>}
     <span className="mail-panel__actions">
       <button type="button" className="mail-link" onClick={() => navigateShell(buildPanelUrl("agents", {}))}>Settings</button>
       <Button type="button" variant="ghost" size="sm" aria-label="Refresh mail" disabled={inbox.isValidating}

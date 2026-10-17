@@ -600,6 +600,11 @@ function BillingPanel() {
                 </span>
               )}
             </div>
+            {account?.front_desk && (
+              <div className="settings-card-desc">
+                Front desk{typeof account.front_desk_price_usd === "number" ? ` · $${account.front_desk_price_usd}/month` : ""}
+              </div>
+            )}
             <div className="settings-card-desc">
               {subscriptionStatus === "trialing"
                 ? trialEndLabel

@@ -248,6 +248,9 @@ async def create_workspace_checkout(
         raise BillingServiceError("Stored subscription was not found in the customer subscription list")
 
     if subscription is not None:
+        if front_desk:
+            # The in-place plan change below would silently drop the add-on.
+            raise BillingServiceError("already_subscribed")
         sub_id = subscription.get("id") or sub_id
         # The seat item rides along untouched; only the plan item swaps price.
         items = [i for i in subscription["items"]["data"] if not _is_seat_item(i)]

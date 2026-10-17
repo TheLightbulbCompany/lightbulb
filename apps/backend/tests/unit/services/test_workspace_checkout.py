@@ -88,7 +88,7 @@ async def test_workspace_checkout_return_to_app_uses_universal_link_urls(monkeyp
     assert kwargs["origin_context"] == "mobile_app"
     assert kwargs["metadata"]["return_to"] == "app"
     # A web and an app retry in one bucket must never share a Stripe idempotency key.
-    assert kwargs["idempotency_key"].endswith(":app")
+    assert kwargs["idempotency_key"].endswith(":app:fd0")
 
 
 @pytest.mark.asyncio
@@ -111,7 +111,7 @@ async def test_workspace_checkout_return_to_web_default_is_unchanged(monkeypatch
     assert kwargs["cancel_url"] == f"{billing_service.settings.FRONTEND_URL}/settings?panel=billing&checkout=cancel"
     assert "origin_context" not in kwargs
     assert kwargs["metadata"]["return_to"] == "web"
-    assert kwargs["idempotency_key"].endswith(":web")
+    assert kwargs["idempotency_key"].endswith(":web:fd0")
 
 
 @pytest.mark.asyncio

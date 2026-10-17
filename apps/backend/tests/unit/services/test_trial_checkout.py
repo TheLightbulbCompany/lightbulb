@@ -143,6 +143,34 @@ async def test_checkout_without_front_desk_is_unchanged(monkeypatch, checkout):
 
 
 @pytest.mark.asyncio
+async def test_front_desk_checkout_refuses_a_live_subscription(monkeypatch, checkout):
+    monkeypatch.setattr(billing_service.settings, "STRIPE_FRONT_DESK_PRICE_ID", "price_fd")
+    row = {"owner_id": "org_1", "stripe_customer_id": "cus_1"}
+    monkeypatch.setattr(billing_service.billing_repo, "get_by_owner_id", AsyncMock(return_value=row))
+    live = {
+        "id": "sub_1",
+        "status": "active",
+        "customer": "cus_1",
+        "metadata": {"workspace_id": "org_1", "owner_id": "org_1"},
+        "items": {"data": [{"id": "si_1", "price": {"id": "price_workspace"}}]},
+    }
+    monkeypatch.setattr(
+        billing_service.stripe.Subscription,
+        "list",
+        MagicMock(return_value=MagicMock(auto_paging_iter=lambda: iter([live]))),
+    )
+    modify = MagicMock()
+    monkeypatch.setattr(billing_service.stripe.Subscription, "modify", modify)
+
+    with pytest.raises(billing_service.BillingServiceError, match="already_subscribed"):
+        await billing_service.create_workspace_checkout(
+            owner_id="org_1", clerk_user_id="user_1", plan="workspace", front_desk=True
+        )
+    modify.assert_not_called()
+    checkout.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_front_desk_checkout_refuses_without_a_price(monkeypatch, checkout):
     monkeypatch.setattr(billing_service.settings, "STRIPE_FRONT_DESK_PRICE_ID", "")
     with pytest.raises(billing_service.BillingServiceError, match="front_desk_price_unconfigured"):

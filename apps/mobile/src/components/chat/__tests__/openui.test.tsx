@@ -1,8 +1,12 @@
+import { Linking } from "react-native";
+import { router } from "expo-router";
 import { ApiError } from "@lightbulb/shared";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { chatPalette } from "../../../config/theme";
 import { MessageMarkdown } from "../MessageMarkdown";
 import { _resetCardAttemptsForTests, CardReplyContext, useCardPressState, type OnReply } from "../openui/CardReplyContext";
+
+jest.mock("expo-router", () => ({ router: { push: jest.fn() } }));
 
 // Native randomUUID is absent under jest (the other suites mock it too); a counter keeps ids distinct.
 let mockN = 0;
@@ -108,4 +112,15 @@ it("the local marker yields to the canonical answer: deleting the reply reopens 
   expect(screen.getByText("You picked Studio.")).toBeTruthy();
   await view.rerender(<Card text={CHOICE} onReply={onReply} messageId="m3" answered={null} />);
   await waitFor(() => expect(screen.getByRole("button", { name: "Starter", disabled: false })).toBeTruthy());
+});
+
+it("Sources open a native screen, the web, or nothing", async () => {
+  const open = jest.spyOn(Linking, "openURL").mockResolvedValue(true);
+  await render(<Card text={fence('root = Stack([s])\ns = Sources([{ title: "Session", url: "https://thelightbulb.company/chat?panel=session&session=s1" }, { title: "Docs", url: "https://example.com/d" }, { title: "Bad", url: "javascript:alert(1)" }])')} />);
+  await fireEvent.press(screen.getByText("Session"));
+  expect(router.push).toHaveBeenCalledWith({ pathname: "/(app)/session/[sessionId]", params: { sessionId: "s1" } });
+  await fireEvent.press(screen.getByText("Docs"));
+  expect(open).toHaveBeenCalledWith("https://example.com/d");
+  expect(screen.getByText("Bad")).toBeTruthy();
+  expect(screen.queryByRole("link", { name: "Bad" })).toBeNull();
 });

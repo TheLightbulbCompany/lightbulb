@@ -1,9 +1,14 @@
 import { createLibrary, defineComponent } from "@openuidev/react-lang";
 import { CARD_MAX_OPTIONS, CARD_ROOT, choiceReply, formReply, tableReply, type CardName } from "@lightbulb/shared";
 import { CARD_COMPONENTS } from "@lightbulb/shared/cards";
+import { router } from "expo-router";
 import { useState, type ReactNode } from "react";
 import { Linking, Pressable, Text, TextInput, View } from "react-native";
+import { WEB_ORIGIN } from "../../../config/domain";
 import { fonts, spacing, type ChatPalette } from "../../../config/theme";
+import { activityMobileHref } from "../../../lib/activityLink";
+import { paperclipMobileHref } from "../../../lib/paperclipLink";
+import { sessionMobileHref } from "../../../lib/sessionLink";
 import { useCardReply } from "./CardReplyContext";
 
 // Palette and font names are the ones `ChatPalette` / `fonts` in config/theme.ts define.
@@ -88,9 +93,15 @@ const R = {
     <View style={{ gap: spacing.xs }}>{props.steps.map((s, i) => <Prose key={i} soft={s.status === "done"}>{s.status === "done" ? "✓ " : s.status === "doing" ? "› " : "○ "}{s.label}</Prose>)}</View>
   ),
   Sources: ({ props }: RP<{ sources: { title: string; url: string }[] }>) => (
-    <View style={{ gap: spacing.xs }}>{props.sources.map((s, i) => /^https?:\/\//.test(s.url)
-      ? <Text key={i} accessibilityRole="link" style={{ color: palette.link, textDecorationLine: "underline" }} onPress={() => { void Linking.openURL(s.url); }}>{s.title}</Text>
-      : <Prose key={i} soft>{s.title}</Prose>)}</View>
+    <View style={{ gap: spacing.xs }}>{props.sources.map((s, i) => {
+      // Same order as MessageMarkdown's link rule: a native screen first, then the web, else inert text.
+      const native = sessionMobileHref(s.url) ?? activityMobileHref(s.url) ?? paperclipMobileHref(s.url);
+      const web = native ? null : /^https?:\/\//.test(s.url) ? s.url : s.url.startsWith("/") ? `${WEB_ORIGIN}${s.url}` : null;
+      return native || web
+        ? <Text key={i} accessibilityRole="link" style={{ color: palette.link, textDecorationLine: "underline" }}
+            onPress={() => { if (native) router.push(native); else void Linking.openURL(web!); }}>{s.title}</Text>
+        : <Prose key={i} soft>{s.title}</Prose>;
+    })}</View>
   ),
   Image: ({ props }: RP<{ fileName: string; alt: string }>) => <Prose soft>{props.alt}</Prose>, // attachments already render under the bubble; the card names the picture
   Choice: ({ props }: RP<{ question: string; options: string[]; multi?: boolean }>) => {

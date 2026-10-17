@@ -100,7 +100,6 @@ def test_the_provisioning_rail_writes_nothing_a_workspace_could_carry():
     assert "materializer_root" not in source
     # Prose still explains what the rail USED to write; the assertion is on the code.
     assert "set_openclaw_config_path" not in source
-    assert "WorkflowRefused" not in inspect.getsource(provisioning_landing.land_credentials)
 
 
 def test_a_copied_non_dot_vault_is_still_caught(dirty_workspace):

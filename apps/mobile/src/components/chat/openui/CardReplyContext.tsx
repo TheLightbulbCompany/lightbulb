@@ -84,8 +84,11 @@ export function useCardPressState(
     if (answer !== null && state !== IDLE) write(key, IDLE);
   }, [answer, state, key]);
   const press = useCallback((text: string) => {
-    if (!onReply || state.pending || answered !== null) return;
-    const attempt = state.id ? { id: state.id, text: state.text } : { id: randomUUID(), text: text.trim() };
+    // Read the store, not the rendered snapshot: two presses in one frame both see the idle render,
+    // and the second must find the first's attempt already written rather than mint a second id.
+    const cur = read(key);
+    if (!onReply || cur.pending || (answer ?? cur.sent) !== null) return;
+    const attempt = cur.id ? { id: cur.id, text: cur.text } : { id: randomUUID(), text: text.trim() };
     if (!attempt.text) return;
     write(key, { ...attempt, pending: true, error: null, sent: null });
     // A completion applies only to the attempt it belongs to: a canonical answer that arrived first has
@@ -97,7 +100,7 @@ export function useCardPressState(
         ? { ...IDLE, error: ERR }
         : { ...attempt, pending: false, error: ERR, sent: null }),
     );
-  }, [key, onReply, state, answered]);
+  }, [key, onReply, answer]);
   const retry = !state.pending && state.id ? state.text : null;
   return useMemo(
     () => ({ press: onReply ? press : undefined, pending: state.pending, error: state.error, answered, retry }),

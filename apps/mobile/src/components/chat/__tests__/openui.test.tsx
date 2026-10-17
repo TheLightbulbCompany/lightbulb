@@ -1,7 +1,7 @@
 import { Linking } from "react-native";
 import { router } from "expo-router";
 import { ApiError } from "@lightbulb/shared";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { chatPalette } from "../../../config/theme";
 import { MessageMarkdown } from "../MessageMarkdown";
 import { _resetCardAttemptsForTests, CardReplyContext, useCardPressState, type OnReply } from "../openui/CardReplyContext";
@@ -77,6 +77,22 @@ it("a rejected send frees the card: the other option is open and the id is new",
   await waitFor(() => expect(onReply).toHaveBeenCalledTimes(2));
   expect(onReply.mock.calls[1][0]).toBe("Starter");
   expect(onReply.mock.calls[1][1]).not.toBe(onReply.mock.calls[0][1]);
+});
+
+it("two presses in one frame post once: the second finds the first's attempt in the store", async () => {
+  const onReply = jest.fn().mockResolvedValue(undefined);
+  let press: ((text: string) => void) | undefined;
+  function Probe() {
+    press = useCardPressState("m7", "user_alice", onReply, null).press;
+    return null;
+  }
+  await render(<Probe />);
+  await act(async () => {
+    press?.("Studio");
+    press?.("Starter");
+  });
+  expect(onReply).toHaveBeenCalledTimes(1);
+  expect(onReply).toHaveBeenCalledWith("Studio", expect.any(String));
 });
 
 it("survives the row unmounting: the pinned attempt is replayed unchanged", async () => {

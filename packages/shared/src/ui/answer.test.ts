@@ -39,4 +39,16 @@ describe("cardAnswersFor", () => {
       msg({ messageId: "y", author: human, replyToMessageId: "c1", text: "Studio" })];
     expect([...cardAnswersFor(messages)]).toEqual([["c1", "Studio"]]);
   });
+  it("agrees with cardAnswerFor on threads: a thread's chatter is no answer, a thread card's click is", () => {
+    const human = { kind: "human" as const, id: "u", displayName: "U" };
+    const top = msg({ messageId: "top" });
+    const inThread = msg({ messageId: "tc", threadRootMessageId: "root-7" });
+    const messages = [top, inThread,
+      msg({ messageId: "chat", author: human, replyToMessageId: "top", threadRootMessageId: "top", text: "chatting" }),
+      msg({ messageId: "y", author: human, replyToMessageId: "tc", threadRootMessageId: "root-7", text: "Starter" }),
+      msg({ messageId: "z", author: human, replyToMessageId: "tc", threadRootMessageId: "root-7", text: "Studio" })];
+    const map = cardAnswersFor(messages);
+    expect([...map]).toEqual([["tc", "Starter"]]);
+    for (const card of [top, inThread]) expect(map.get(card.messageId) ?? null).toBe(cardAnswerFor(messages, card));
+  });
 });

@@ -43,21 +43,20 @@ export function useCardPressState(onReply: OnReply | undefined, answer: string |
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState<string | null>(null);
   const answered = answer ?? sent;
-  // text -> clientMessageId, kept until that text lands: a failed send may still have
-  // reached the server, so the retry must reuse the id the server dedupes on.
-  const clientIds = useRef(new Map<string, string>());
+  // ONE clientMessageId per message until a send is confirmed, whatever text each press carries:
+  // a failed POST may still have committed, and the server dedupes on (user, clientMessageId),
+  // so a different choice after a failure must replay the same id rather than post a second answer.
+  // If the first did commit, the replay returns it and the room's reply then shows the real answer.
+  const clientId = useRef<string | null>(null);
   const press = useCallback((text: string) => {
     const reply = text.trim();
     if (!onReply || pending || answered !== null || !reply) return;
-    let clientMessageId = clientIds.current.get(reply);
-    if (!clientMessageId) {
-      clientMessageId = crypto.randomUUID();
-      clientIds.current.set(reply, clientMessageId);
-    }
+    const clientMessageId = clientId.current ?? crypto.randomUUID();
+    clientId.current = clientMessageId;
     setPending(true);
     setError(null);
     onReply(reply, clientMessageId).then(() => {
-      clientIds.current.delete(reply);
+      clientId.current = null;
       setSent(reply);
     }, () => setError("Couldn't send your reply. Try again.")).finally(() => setPending(false));
   }, [onReply, pending, answered]);

@@ -95,3 +95,14 @@ it("two fences in one reply share one answer", async () => {
   await userEvent.click(screen.getByRole("button", { name: "Alpha" }));
   expect(onCardReply).toHaveBeenCalledTimes(1);
 });
+
+it("after a failure, a different choice carries the same client id", async () => {
+  const onCardReply = vi.fn().mockRejectedValueOnce(new Error("timeout")).mockResolvedValueOnce(undefined);
+  render(<RoomMessageItem {...itemProps(agentMessage(), { onCardReply, cardAnswer: null })} />);
+  await userEvent.click(await screen.findByRole("button", { name: "Studio" }));
+  await screen.findByRole("alert");
+  await userEvent.click(screen.getByRole("button", { name: "Starter" }));
+  expect(onCardReply).toHaveBeenCalledTimes(2);
+  expect(onCardReply.mock.calls[1][0].clientMessageId).toBe(onCardReply.mock.calls[0][0].clientMessageId);
+  expect(onCardReply.mock.calls[1][0].text).toBe("Starter");
+});

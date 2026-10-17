@@ -254,7 +254,7 @@ export function MessageGroup({
       : undefined,
     [onCardReply, authorInRoom, message.author.id, message.messageId, message.threadRootMessageId],
   );
-  const cardPress = useCardPressState(cardReply, cardAnswer);
+  const cardPress = useCardPressState(message.messageId, cardReply, cardAnswer);
   const cardContext = useMemo<CardReplyValue | null>(
     () => !cardsEnabled || message.author.kind !== "agent" || deleted ? null : {
       messageId: message.messageId, roomId: message.roomId, authorId: message.author.id,

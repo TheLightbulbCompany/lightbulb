@@ -1,6 +1,6 @@
 import { ApiError, type MessageAttachment } from "@lightbulb/shared";
 import { randomUUID } from "expo-crypto";
-import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useMemo, useSyncExternalStore } from "react";
 
 /**
  * The phone twin of the web CardContext: what a card needs from the message it sits in.
@@ -31,41 +31,63 @@ export const useCardReply = () => useContext(CardReplyContext);
 
 export type OnReply = (text: string, clientMessageId: string) => Promise<void>;
 
+const ERR = "Couldn't send your reply. Try again.";
+
+/** `id === ""` means no attempt is pinned (idle, or the server rejected the last one). */
+type Attempt = { id: string; text: string; pending: boolean; error: string | null; sent: string | null };
+const IDLE: Attempt = { id: "", text: "", pending: false, error: null, sent: null };
+
+// The press state lives ABOVE the row: the room list is a FlatList, so a row that scrolls out of
+// the window unmounts, and a pinned attempt kept in the row would die with it. Scrolling back and
+// pressing would then mint a new id while the first send may have committed. Keyed by messageId.
+const attempts = new Map<string, Attempt>();
+const listeners = new Map<string, Set<() => void>>();
+const read = (messageId: string): Attempt => attempts.get(messageId) ?? IDLE;
+const write = (messageId: string, next: Attempt) => {
+  attempts.set(messageId, next);
+  listeners.get(messageId)?.forEach((cb) => cb());
+};
+const subscribe = (messageId: string, cb: () => void) => {
+  const set = listeners.get(messageId) ?? new Set<() => void>();
+  set.add(cb);
+  listeners.set(messageId, set);
+  return () => { set.delete(cb); };
+};
+export function _resetCardAttemptsForTests() {
+  attempts.clear();
+  listeners.clear();
+}
+
 /**
  * One press state per message: in flight, failed, or sent. `answer` is the room's reply once
- * it has landed. Same rules as the web's useCardPressState: an unconfirmed send is replayed
- * unchanged (same id, same text, other options wait); a rejected one (ApiError < 500) frees the id.
+ * it has landed. Same rules as the web: an unconfirmed send is replayed unchanged (same id, same
+ * text, other options wait); a rejected one (ApiError < 500) frees the id.
  */
 export function useCardPressState(
+  messageId: string,
   onReply: OnReply | undefined,
   answer: string | null,
 ): Pick<CardReplyValue, "press" | "pending" | "error" | "answered" | "retry"> {
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [sent, setSent] = useState<string | null>(null);
-  const [retry, setRetry] = useState<string | null>(null);
-  const answered = answer ?? sent;
-  const attempt = useRef<{ id: string; text: string } | null>(null);
+  const state = useSyncExternalStore(
+    useCallback((cb: () => void) => subscribe(messageId, cb), [messageId]),
+    () => read(messageId),
+  );
+  const answered = answer ?? state.sent;
   const press = useCallback((text: string) => {
-    if (!onReply || pending || answered !== null) return;
-    const current = attempt.current ?? { id: randomUUID(), text: text.trim() };
-    if (!current.text) return;
-    attempt.current = current;
-    setPending(true);
-    setError(null);
-    onReply(current.text, current.id).then(() => {
-      attempt.current = null;
-      setRetry(null);
-      setSent(current.text);
-    }, (e: unknown) => {
-      if (e instanceof ApiError && e.status < 500) {
-        attempt.current = null;
-        setRetry(null);
-      } else {
-        setRetry(current.text);
-      }
-      setError("Couldn't send your reply. Try again.");
-    }).finally(() => setPending(false));
-  }, [onReply, pending, answered]);
-  return useMemo(() => ({ press: onReply ? press : undefined, pending, error, answered, retry }), [onReply, press, pending, error, answered, retry]);
+    if (!onReply || state.pending || answered !== null) return;
+    const attempt = state.id ? { id: state.id, text: state.text } : { id: randomUUID(), text: text.trim() };
+    if (!attempt.text) return;
+    write(messageId, { ...attempt, pending: true, error: null, sent: null });
+    onReply(attempt.text, attempt.id).then(
+      () => write(messageId, { ...IDLE, sent: attempt.text }),
+      (e: unknown) => write(messageId, e instanceof ApiError && e.status < 500
+        ? { ...IDLE, error: ERR }
+        : { ...attempt, pending: false, error: ERR, sent: null }),
+    );
+  }, [messageId, onReply, state, answered]);
+  const retry = !state.pending && state.id ? state.text : null;
+  return useMemo(
+    () => ({ press: onReply ? press : undefined, pending: state.pending, error: state.error, answered, retry }),
+    [onReply, press, state.pending, state.error, answered, retry],
+  );
 }

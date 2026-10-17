@@ -4,11 +4,13 @@ The backend sends a text only as a reply to a stored inbound text row, always fr
 line and always as the line's agent.
 """
 
+import re
 import uuid
 from typing import Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
@@ -22,7 +24,8 @@ from routers.sendblue_inbound import _business_name
 
 router = APIRouter()
 
-DISCLOSURE = "(Automated assistant for {business})"
+DISCLOSURE_PREFIX = "(Automated assistant for"
+DISCLOSURE = DISCLOSURE_PREFIX + " {business})"
 
 
 async def _text_row(owner_id: str, key: str) -> tuple[str, dict] | None:
@@ -44,7 +47,9 @@ async def send_reply(*, owner_id: str, reply_key: str, text: str, by_human: bool
     if not line:
         return "no_line"
     customer = row["from_addr"]
-    if not await has_sent_to(address, customer):
+    if not by_human and customer in (line.get("human_threads") or {}):
+        return "human_thread"
+    if not by_human and not await has_sent_to(address, customer, text_prefix=DISCLOSURE_PREFIX):
         text = f"{DISCLOSURE.format(business=await _business_name(owner_id))} {text}"
     try:
         resp = await send_text(from_number=line["address"], to_number=customer, content=text)
@@ -85,8 +90,10 @@ async def hook_send(owner_id: str, body: AgentSend, request: Request) -> dict:
 
 
 @router.post("/u/{owner_id}/business-phone")
-async def hook_business_phone(owner_id: str, body: BusinessPhone, request: Request) -> dict:
+async def hook_business_phone(owner_id: str, body: BusinessPhone, request: Request):
     await _require_hook_token(owner_id, request)
+    if not re.fullmatch(r"\+[1-9]\d{6,14}", body.phone):
+        return JSONResponse(status_code=400, content={"status": "bad_phone"})
     line = await text_line_for_owner(owner_id)
     if not line:
         raise HTTPException(status_code=404, detail="no_line")

@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from core.config import settings
 from core.observability.metrics import put_metric
@@ -85,6 +85,11 @@ class SendblueInbound(BaseModel):
     opted_out: bool = False
     date_sent: str = ""
 
+    @field_validator("*", mode="before")
+    @classmethod
+    def _null_is_default(cls, v, info):
+        return cls.model_fields[info.field_name].default if v is None else v
+
 
 def _final(status: str, *, code: int = 200):
     try:
@@ -130,6 +135,8 @@ async def handle_sendblue_inbound(body: SendblueInbound, request: Request):
             return _final("dropped_unknown_line")
         owner_id, agent_id = line["owner_id"], line["agent_id"]
         customer = body.from_number or body.number
+        if not customer:
+            return _final("dropped_no_sender")
         address = await team_address(owner_id)
         if not address:
             return _final("dropped_no_address")
@@ -154,6 +161,15 @@ async def handle_sendblue_inbound(body: SendblueInbound, request: Request):
             return _final("stored_human_thread")
 
         if await trial_block_reason(owner_id):
+            if not await try_consume_stranger_wake(
+                owner_id,
+                sender_key=stranger_key(customer),
+                day=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                owner_cap=TEXT_WAKES_PER_OWNER_PER_DAY,
+                sender_cap=1,
+                attr_prefix="text_paused",
+            ):
+                return _final("stored_capped_quiet")
             try:
                 reply = paused_autoreply(await _business_name(owner_id), line.get("business_phone"))
                 await send_text(from_number=line["address"], to_number=customer, content=reply)

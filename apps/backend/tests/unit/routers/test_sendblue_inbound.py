@@ -164,6 +164,33 @@ def test_capped_owner_gets_paused_autoreply(client, seams):
     seams["deliver_to_agent"].assert_not_called()
 
 
+def test_capped_owner_is_told_once_per_day(client, seams):
+    seams["trial_block_reason"].return_value = "daily_cap"
+    seen = set()
+
+    async def consume(owner_id, *, sender_key, attr_prefix, **_):
+        if (attr_prefix, sender_key) in seen:
+            return False
+        seen.add((attr_prefix, sender_key))
+        return True
+
+    seams["try_consume_stranger_wake"].side_effect = consume
+    assert _post(client).json() == {"status": "capped_notified"}
+    assert _post(client, message_handle="h2").json() == {"status": "stored_capped_quiet"}
+    seams["send_text"].assert_awaited_once()
+    assert seams["try_consume_stranger_wake"].await_args.kwargs["attr_prefix"] == "text_paused"
+
+
+def test_null_fields_do_not_422(client, seams):
+    r = _post(client, service=None, to_number=None, date_sent=None, sendblue_number=LINE)
+    assert r.json() == {"status": "delivered"}
+
+
+def test_empty_sender_is_dropped(client, seams):
+    assert _post(client, from_number="", number="").json() == {"status": "dropped_no_sender"}
+    seams["put_message"].assert_not_called()
+
+
 @pytest.mark.parametrize("exc", [SendblueError(500, "x"), httpx.ConnectError("x")])
 def test_capped_send_failure_is_dropped_over_cap(client, seams, exc):
     seams["trial_block_reason"].return_value = "daily_cap"

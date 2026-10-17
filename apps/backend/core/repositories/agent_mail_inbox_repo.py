@@ -70,13 +70,17 @@ async def find_by_message_id(address: str, message_id: str) -> dict | None:
     return None
 
 
-async def has_sent_to(address: str, to: str) -> bool:
-    """True when the agent has already sent something to ``to`` from this address."""
+async def has_sent_to(address: str, to: str, *, text_prefix: str | None = None) -> bool:
+    """True when the agent has already sent something to ``to`` from this address.
+
+    ``text_prefix`` narrows it to rows whose text begins with it (the text disclosure marker)."""
     # ponytail: a filtered scan of one 30-day partition; an index if a line ever carries thousands of threads.
     kwargs = {
         "KeyConditionExpression": Key("address").eq(_normalize(address)),
         "FilterExpression": Attr("direction").eq("out") & Attr("to").eq(to),
     }
+    if text_prefix:
+        kwargs["FilterExpression"] &= Attr("text").begins_with(text_prefix)
     while True:
         resp = await run_in_thread(_get_table().query, **kwargs)
         if resp.get("Items"):

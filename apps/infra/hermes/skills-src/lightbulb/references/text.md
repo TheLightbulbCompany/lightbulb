@@ -18,11 +18,13 @@ echo "Tuesday at 3 works. Does that suit you?" | /app/skills/lightbulb/scripts/l
 
 Keep it short. Ask one question at a time. A failed send exits 1 and says why.
 
+If it says a person has taken the thread over, stop: do not try again in that thread.
+
 You can only reply to someone who texted first. There is no `--to`; the Reply-Key is the only address.
 
 ## The business phone
 
-`lightbulb-text.sh set-business-phone <E.164>` records the business's listed phone (for example `+15551234567`). The paused autoreply uses it to tell customers where else to reach the business.
+`lightbulb-text.sh set-business-phone <E.164>` records the business's listed phone (for example `+15551234567`). The paused autoreply uses it to tell customers where else to reach the business. The number must look like `+15551234567`; anything else exits 1 with "Not saved".
 
 ## Where texts show
 

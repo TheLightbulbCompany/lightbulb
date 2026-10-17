@@ -176,6 +176,7 @@ def test_inbox_lists_with_keys_and_truncates(client):
     assert body["address"] == "agents@acme.isol8.co"
     assert body["messages"][0]["key"] == "agents@acme.isol8.co/2026#m1"
     assert len(body["messages"][0]["text"]) == 8000
+    assert body["messages"][0]["channel"] == "mail"
 
 
 def test_inbox_without_address_is_empty(client):

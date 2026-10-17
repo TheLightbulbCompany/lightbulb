@@ -48,7 +48,9 @@ async def test_reply_sends_from_the_line_to_the_customer_and_records_it(m):
 async def test_first_reply_carries_the_disclosure_once(m):
     m["has_sent_to"].return_value = False
     await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi")
-    m["has_sent_to"].assert_awaited_once_with("team@acme.thelightbulb.company", "+15559870000")
+    m["has_sent_to"].assert_awaited_once_with(
+        "team@acme.thelightbulb.company", "+15559870000", text_prefix=agent_text.DISCLOSURE_PREFIX
+    )
     assert m["send_text"].await_args.kwargs["content"] == "(Automated assistant for Acme) hi"
     assert m["put_sent"].await_args.kwargs["text"] == "(Automated assistant for Acme) hi"
 
@@ -98,3 +100,35 @@ async def test_disabled_sends_nothing(m, monkeypatch):
     monkeypatch.setattr(agent_text, "enabled", lambda: False)
     assert await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi") == "disabled"
     m["send_text"].assert_not_awaited()
+
+
+async def test_agent_reply_on_human_thread_is_refused(m):
+    m["text_line_for_owner"].return_value = dict(LINE, human_threads={"+15559870000": "t"})
+    assert await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi") == "human_thread"
+    m["send_text"].assert_not_awaited()
+
+
+async def test_human_reply_on_human_thread_still_sends(m):
+    m["text_line_for_owner"].return_value = dict(LINE, human_threads={"+15559870000": "t"})
+    assert await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi", by_human=True) == "sent"
+
+
+async def test_human_reply_never_carries_the_disclosure(m):
+    m["has_sent_to"].return_value = False
+    await agent_text.send_reply(owner_id=OWNER, reply_key=KEY, text="hi", by_human=True)
+    assert m["send_text"].await_args.kwargs["content"] == "hi"
+    m["has_sent_to"].assert_not_awaited()
+
+
+def test_business_phone_rejects_non_e164(client, monkeypatch):
+    monkeypatch.setattr(agent_text, "_require_hook_token", AsyncMock())
+    monkeypatch.setattr(agent_text, "text_line_for_owner", AsyncMock(return_value=LINE))
+    save = AsyncMock()
+    monkeypatch.setattr(agent_text, "set_business_phone", save)
+    for bad in ["555-1234", "+0123456789", "+1555", "call me"]:
+        r = client.post(f"/api/v1/agent-text/u/{OWNER}/business-phone", json={"phone": bad})
+        assert r.status_code == 400 and r.json() == {"status": "bad_phone"}
+    save.assert_not_awaited()
+    r = client.post(f"/api/v1/agent-text/u/{OWNER}/business-phone", json={"phone": "+15551234567"})
+    assert r.status_code == 200
+    save.assert_awaited_once_with(LINE["address"], "+15551234567")

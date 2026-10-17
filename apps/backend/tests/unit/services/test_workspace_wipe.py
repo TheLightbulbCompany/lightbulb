@@ -1038,4 +1038,4 @@ async def test_deprovision_failure_does_not_abort(ws_mocks):
     with patch("core.services.account_wipe.sendblue.deprovision_line", new=deprovision):
         out = await workspace_wipe._agent_email_run(SimpleNamespace(org_id=ORG_ID, email_rows=[TEXT_ROW]))
     ws_mocks.agent_email_delete.assert_awaited_once_with(ORG_ID)
-    assert "released 1 text line(s)" in out
+    assert "released 0 text line(s)" in out and "FAILED to release: +15550001111" in out

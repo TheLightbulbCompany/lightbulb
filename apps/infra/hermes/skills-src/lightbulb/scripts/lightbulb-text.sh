@@ -44,6 +44,7 @@ call() { # method path json
   local out code
   out="$(curl -sS -w $'\n%{http_code}' -X "$1" "${auth[@]}" -d "$3" "$2")"
   code="${out##*$'\n'}"; out="${out%$'\n'*}"
+  [[ "$out" != *'"bad_phone"'* ]] || die 'Not saved: give the number as +1XXXXXXXXXX.'
   [[ "$code" -ge 200 && "$code" -lt 300 ]] || { printf 'HTTP %s: %s\n' "$code" "$out" >&2; exit 1; }
   printf '%s' "$out"
 }
@@ -59,6 +60,7 @@ case "$cmd" in
     case "$status" in
       sent) echo 'Text sent.' ;;
       bad_reply_key) die 'Not sent: that Reply-Key is not a text you received.' ;;
+      human_thread) die 'Not sent: a person has taken this thread over.' ;;
       no_line) die 'Not sent: this workspace has no text number.' ;;
       disabled) die 'Not sent: texting is not configured.' ;;
       send_failed) die 'Not sent: the carrier declined it; try again later.' ;;

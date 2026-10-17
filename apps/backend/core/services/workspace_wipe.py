@@ -108,6 +108,7 @@ from core.repositories.paperclip_repo import PaperclipRepo
 from core.services import clerk_admin, company_stripe, message_search
 from core.services.account_wipe import (
     release_text_lines,
+    text_release_note,
     WipeReport,
     WipeStep,
     _archive_metronome_customer,
@@ -740,11 +741,10 @@ def _agent_email_preview(snap: WorkspaceSnapshot) -> tuple[bool, str]:
 # TTL — the repo has no delete and list_messages caps at 50 per call. Add a
 # delete-by-address to agent_mail_inbox_repo if TTL expiry is not enough.
 async def _agent_email_run(snap: WorkspaceSnapshot) -> str:
-    released = await release_text_lines(snap.email_rows)
+    released, failed = await release_text_lines(snap.email_rows)
     addresses = await agent_email_repo.delete_all_for_owner(snap.org_id)
-    return (
-        f"deleted {len(addresses)} agent email address(es): {', '.join(addresses) or 'none'}"
-        f", released {released} text line(s)"
+    return f"deleted {len(addresses)} agent email address(es): {', '.join(addresses) or 'none'}" + text_release_note(
+        released, failed
     )
 
 

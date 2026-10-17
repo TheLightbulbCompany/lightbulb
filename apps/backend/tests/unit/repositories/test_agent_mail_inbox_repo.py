@@ -230,3 +230,14 @@ async def test_has_sent_to_true_on_first_out_row_to_that_number(monkeypatch):
 
     table.query.side_effect = [{"Items": []}]
     assert await repo.has_sent_to("a@b.c", "+15559999999") is False
+
+
+@pytest.mark.asyncio
+async def test_disclosure_ignores_rows_without_the_prefix(monkeypatch):
+    table = MagicMock()
+    table.query.return_value = {"Items": []}
+    monkeypatch.setattr(repo, "_get_table", lambda: table)
+    await repo.has_sent_to("a@b.c", "+1555", text_prefix="(Automated")
+    assert "BeginsWith" in str(table.query.call_args.kwargs["FilterExpression"].get_expression())
+    await repo.has_sent_to("a@b.c", "+1555")
+    assert "BeginsWith" not in str(table.query.call_args.kwargs["FilterExpression"].get_expression())

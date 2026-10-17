@@ -1500,3 +1500,4 @@ async def test_deprovision_failure_does_not_abort(wipe_mocks):
     wipe_mocks.agent_email_delete.assert_awaited_once_with(OWNER_ID)
     step = next(s for s in report.steps if s.system == "agent_email_addresses")
     assert step.status == "ok"
+    assert "released 0 text line(s)" in step.detail and "FAILED to release: +15550001111" in step.detail

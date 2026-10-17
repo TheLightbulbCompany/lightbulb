@@ -11,7 +11,7 @@ SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "skills-src/lightbulb/scr
 pytestmark = pytest.mark.skipif(not shutil.which("jq"), reason="the script needs jq")
 
 
-def _run(tmp_path, *args, body="Tuesday works", answer='{"status":"sent"}'):
+def _run(tmp_path, *args, body="Tuesday works", answer='{"status":"sent"}', code=200):
     log = tmp_path / "curl.json"
     fake = tmp_path / "bin" / "curl"
     fake.parent.mkdir(exist_ok=True)
@@ -20,10 +20,10 @@ def _run(tmp_path, *args, body="Tuesday works", answer='{"status":"sent"}'):
         'while [[ $# -gt 0 ]]; do case "$1" in -d) printf "%s" "$2" > "$LOG"; shift 2;; '
         '-w|-X|-H) shift 2;; *) url="$1"; shift;; esac; done\n'
         'printf "%s" "$url" > "$LOG.url"\n'
-        "printf '%s\\n200' \"$ANSWER\"\n"
+        "printf '%s\\n%s' \"$ANSWER\" \"$CODE\"\n"
     )
     fake.chmod(0o755)
-    env = {**os.environ, "PATH": f"{fake.parent}:{os.environ['PATH']}", "LOG": str(log), "ANSWER": answer,
+    env = {**os.environ, "PATH": f"{fake.parent}:{os.environ['PATH']}", "LOG": str(log), "ANSWER": answer, "CODE": str(code),
            "PAPERCLIP_AGENT_ID": "agent-1", "OPENCLAW_HOOK_TOKEN": "t",
            "ISOL8_API_URL": "https://api.x/", "ISOL8_OWNER_ID": "org_1"}
     proc = subprocess.run(["bash", str(SCRIPT), *args], input=body, env=env, capture_output=True, text=True)
@@ -43,6 +43,7 @@ def test_not_sent_statuses_exit_1(tmp_path):
     for status, msg in [("bad_reply_key", "Not sent: that Reply-Key is not a text you received."),
                         ("no_line", "Not sent: this workspace has no text number."),
                         ("disabled", "Not sent: texting is not configured."),
+                        ("human_thread", "Not sent: a person has taken this thread over."),
                         ("send_failed", "Not sent: the carrier declined it; try again later."),
                         ("weird", "Not sent (status: weird).")]:
         proc, _, _ = _run(tmp_path, "send", "--reply", "rk1", answer=json.dumps({"status": status}))
@@ -54,6 +55,11 @@ def test_set_business_phone_posts_phone(tmp_path):
     assert proc.returncode == 0
     assert url == "https://api.x/api/v1/agent-text/u/org_1/business-phone"
     assert sent == {"phone": "+15551234567"}
+
+
+def test_bad_phone_is_explained(tmp_path):
+    proc, _, _ = _run(tmp_path, "set-business-phone", "555", answer='{"status":"bad_phone"}', code=400)
+    assert proc.returncode == 1 and "Not saved: give the number as +1XXXXXXXXXX." in proc.stderr
 
 
 def test_send_without_reply_exits_2(tmp_path):

@@ -214,7 +214,8 @@ def test_cast_starts_on_the_runs_tab_throttles_to_the_latest_and_stays_private(c
     assert _wait(lambda: len(frames) == 2)
     assert [f["jpegBase64"] for f in frames] == ["frame0", "frame2"]
     assert frames[0] == {"seq": 1, "jpegBase64": "frame0", "w": 1280, "h": 800}
-    assert len([m for _, m, _ in chrome.inputs if m == "Page.screencastFrameAck"]) == 3
+    # The ack is fire-and-forget on the loop (asyncio.ensure_future), so it lands after the frame does.
+    assert _wait(lambda: len([m for _, m, _ in chrome.inputs if m == "Page.screencastFrameAck"]) == 3)
     a.quiet()
     b.quiet()  # neither the mux's attach nor its frames reached a run's client
 

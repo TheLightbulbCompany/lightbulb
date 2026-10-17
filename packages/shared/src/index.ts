@@ -342,6 +342,6 @@ export { CARD_FENCE, CARD_MAX_BYTES, CARD_MAX_OPTIONS, CARD_ROOT } from "./ui/co
 // Type only: the vocabulary (and OpenUI's parser) is `@lightbulb/shared/cards`, so the
 // barrel never loads lang-core.
 export type { CardName } from "./ui/library";
-export { choiceReply, formReply, tableReply } from "./ui/reply";
+export { cardReplyRequest, choiceReply, formReply, tableReply } from "./ui/reply";
 export type { CardReply } from "./ui/reply";
-export { cardAnswerFor } from "./ui/answer";
+export { cardAnswerFor, cardAnswersFor } from "./ui/answer";

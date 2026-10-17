@@ -15,3 +15,14 @@ export function cardAnswerFor(
     && m.replyToMessageId === card.messageId && m.threadRootMessageId === card.threadRootMessageId);
   return reply ? reply.text : null;
 }
+
+/** Every answered card in one pass over the room: card message id -> the answer's text. */
+export function cardAnswersFor(messages: readonly CanonicalRoomMessage[]): Map<string, string> {
+  const answers = new Map<string, string>();
+  for (const m of messages) {
+    if (m.author.kind !== "agent") continue;
+    const answer = cardAnswerFor(messages, m);
+    if (answer !== null) answers.set(m.messageId, answer);
+  }
+  return answers;
+}

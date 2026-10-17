@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CanonicalRoomMessage } from "../messaging/types";
-import { cardAnswerFor } from "./answer";
+import { cardAnswerFor, cardAnswersFor } from "./answer";
 
 const msg = (over: Partial<CanonicalRoomMessage>): CanonicalRoomMessage => ({
   messageId: "m", roomId: "r", messageSeq: 1, roomRevision: 1, author: { kind: "agent", id: "a", displayName: "A" },
@@ -29,5 +29,14 @@ describe("cardAnswerFor", () => {
     const threadCard = msg({ messageId: "card", threadRootMessageId: "root-7" });
     const messages = [threadCard, msg({ messageId: "y", author: { kind: "human", id: "u", displayName: "U" }, replyToMessageId: "card", threadRootMessageId: "root-7", text: "Studio" })];
     expect(cardAnswerFor(messages, threadCard)).toBe("Studio");
+  });
+});
+
+describe("cardAnswersFor", () => {
+  it("maps every answered agent message in one pass and skips the rest", () => {
+    const human = { kind: "human" as const, id: "u", displayName: "U" };
+    const messages = [msg({ messageId: "c1" }), msg({ messageId: "c2" }), msg({ messageId: "h", author: human, text: "hi" }),
+      msg({ messageId: "y", author: human, replyToMessageId: "c1", text: "Studio" })];
+    expect([...cardAnswersFor(messages)]).toEqual([["c1", "Studio"]]);
   });
 });

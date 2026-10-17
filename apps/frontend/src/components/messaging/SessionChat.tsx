@@ -1,9 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PanelRightClose } from "lucide-react";
 import { useAuth } from "@clerk/nextjs";
-import { ApiError, personColor, type CreateMessageRequest, type RoomDetail } from "@lightbulb/shared";
+import { ApiError, cardAnswersFor, cardReplyRequest, personColor, type CardReply, type CreateMessageRequest, type RoomDetail } from "@lightbulb/shared";
 import { Button } from "@/components/ui/button";
 import { useRooms } from "@/hooks/useRooms";
 import { roomUrlTransform } from "./markdown";
@@ -15,6 +15,7 @@ import type { RoomMessage, RoomParticipant } from "./types";
 import "./messaging.css";
 
 const NO_REACTIONS: readonly string[] = [];
+const NO_MESSAGES: readonly RoomMessage[] = [];
 
 /**
  * The session's chat (PR #3807): people talk beside the terminal,
@@ -80,21 +81,27 @@ export function SessionChat({ sessionId, sessionOwnerId, openChat, onClose, onRo
 
   const room = roomId && rooms.activeRoom?.roomId === roomId ? rooms.activeRoom : undefined;
   const members = (room?.members ?? []) as RoomParticipant[];
-  const messages = roomId && rooms.activeRoomId === roomId ? rooms.messages : [];
+  const messages = roomId && rooms.activeRoomId === roomId ? rooms.messages : NO_MESSAGES;
+  // An agent's card answers here as in a room: the press posts as the person, addressed to the agent, under the card.
+  const onCardReply = useCallback(async (reply: CardReply) => { await sendMessage(cardReplyRequest(reply)); }, [sendMessage]);
+  const cardAnswers = useMemo(() => cardAnswersFor(messages), [messages]);
   const archived = Boolean(room?.archivedAt);
   // The header count and the sidebar row are the session list's: it is read again once the cursor
   // has moved, never before (the refetch a new message triggers races the read and still counts it).
   const lastReadSeq = room?.lastReadSeq;
   useEffect(() => { if (lastReadSeq !== undefined) onRead?.(); }, [lastReadSeq, onRead]);
   const me = userId ?? "";
-  const renderMessage = (message: RoomMessage, collapsed: boolean) => <RoomMessageItem key={message.messageId}
-    id={`session-chat-${message.messageId}`} message={message} text={message.text}
-    participant={members.find((m) => m.kind === message.author.kind && m.id === message.author.id)}
+  const renderMessage = (message: RoomMessage, collapsed: boolean) => {
+    const participant = members.find((m) => m.kind === message.author.kind && m.id === message.author.id);
+    return <RoomMessageItem key={message.messageId}
+    id={`session-chat-${message.messageId}`} message={message} text={message.text} participant={participant}
+    onCardReply={participant ? onCardReply : undefined} cardAnswer={cardAnswers.get(message.messageId) ?? null}
     currentUserId={me} actionable={!archived} inThread={false} collapsed={collapsed} replyCount={0} highlighted={false}
     mentionsViewer={message.mentions.some((m) => m.kind === "human" && m.id === me)}
     markdown={roomMarkdown} urlTransform={roomUrlTransform} quickReactions={NO_REACTIONS} reactionPending={false} reactionError={false}
     onDownloadAttachment={rooms.downloadAttachment} onAttachmentUrl={rooms.attachmentUrl}
     personColor={message.author.kind === "human" ? personColor(message.author.id, sessionOwnerId) : undefined} />;
+  };
 
   return <aside className="session-chat" aria-label="Session chat">
     <header className="room-context-header">

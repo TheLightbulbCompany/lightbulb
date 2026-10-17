@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { canChangeListenMode, markSessionsSeen, resolveTypedMentions, runView, sessionArchived, sessionMentionCandidates, sessionUnread, useWorkspaceSessions, workspaceSections, type CardReply, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
+import { canChangeListenMode, cardReplyRequest, markSessionsSeen, resolveTypedMentions, runView, sessionArchived, sessionMentionCandidates, sessionUnread, useWorkspaceSessions, workspaceSections, type CardReply, type CreateMessageRequest, type ListenMode, type MemberRef, type RoomMember, type SessionSource, type RoomSummary } from "@lightbulb/shared";
 import { useRooms } from "@/hooks/useRooms";
 import { useCopyJoinLink } from "@/hooks/useCopyJoinLink";
 import { useBilling } from "@/hooks/useBilling";
@@ -868,15 +868,7 @@ export function MessagingWorkspaceProvider({
     if (unreadRoomId) await markRoomUnread(unreadRoomId, fromSeq);
   }, [unreadRoomId, markRoomUnread]);
   // Stable identity: a fresh function per render would re-render every message on each keystroke.
-  const onCardReply = useCallback(async (reply: CardReply) => {
-    await sendRoomMessage({
-      clientMessageId: reply.clientMessageId,
-      text: reply.text,
-      mentions: [{ kind: "agent", id: reply.agentId }],
-      replyToMessageId: reply.messageId,
-      threadRootMessageId: reply.threadRootMessageId,
-    });
-  }, [sendRoomMessage]);
+  const onCardReply = useCallback(async (reply: CardReply) => { await sendRoomMessage(cardReplyRequest(reply)); }, [sendRoomMessage]);
   const roomProps: RoomPanelProps | null = rooms.activeRoomId ? {
     onCardReply,
     ownerScopeId: scope,

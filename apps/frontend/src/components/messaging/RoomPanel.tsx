@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
 import { ArrowLeft, Check, Chrome, Circle, CircleAlert, FolderOpen, Lightbulb, Link, ListChecks, MessagesSquare, PanelRight, Square } from "lucide-react";
 import type { Components } from "react-markdown";
-import { cardAnswerFor, LISTEN_MODE_LABELS, listenModeOptions, soleChannelOwner, useStatusLoaded, type CardReply, type CreateMessageRequest, type ListenMode, type MemberPrefsRequest, type MemberRef, type UpdateMessageRequest } from "@lightbulb/shared";
+import { cardAnswersFor, LISTEN_MODE_LABELS, listenModeOptions, soleChannelOwner, useStatusLoaded, type CardReply, type CreateMessageRequest, type ListenMode, type MemberPrefsRequest, type MemberRef, type UpdateMessageRequest } from "@lightbulb/shared";
 import { ToolActivityTrace } from "@/components/chat/ToolActivityTrace";
 import { DelegateCard } from "./DelegateCard";
 import { RoomSubagentStrip } from "./RoomSubagentStrip";
@@ -644,15 +644,7 @@ function RoomContent({
   const revealStarter = Boolean(room?.isDefault) && !messages.some((m) => m.author.kind === "human");
   // One pass per message list, so a keystroke (which re-renders the panel) re-scans nothing.
   const { cardsEnabled, repliesEnabled } = cardControls(room);
-  const cardAnswers = useMemo(() => {
-    const answers = new Map<string, string>();
-    for (const m of messages) {
-      if (m.author.kind !== "agent") continue;
-      const answer = cardAnswerFor(messages, m);
-      if (answer !== null) answers.set(m.messageId, answer);
-    }
-    return answers;
-  }, [messages]);
+  const cardAnswers = useMemo(() => cardAnswersFor(messages), [messages]);
   const renderMessage = useCallback((message: RoomMessage, inThread = false, collapsed = false) => {
     const participant = participants.find((member) => member.kind === message.author.kind && member.id === message.author.id);
     const mentionsMe = message.mentions.some((mention) => mention.kind === "human" && mention.id === currentUserId);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { choiceReply, formReply, tableReply } from "./reply";
+import { cardReplyRequest, choiceReply, formReply, tableReply } from "./reply";
 
 describe("card replies read as something the person would type", () => {
   it("joins picks with commas and trims", () => {
@@ -16,4 +16,9 @@ describe("card replies read as something the person would type", () => {
       "| Plan | Price |\n| --- | --- |\n| Starter | 49 |\n| Pro \\| Team | 149 |",
     );
   });
+});
+
+it("cardReplyRequest posts the words as the person, addressed to the card's author, under the card", () => {
+  expect(cardReplyRequest({ text: "Studio", agentId: "a1", messageId: "card", threadRootMessageId: "root", clientMessageId: "c1" }))
+    .toEqual({ clientMessageId: "c1", text: "Studio", mentions: [{ kind: "agent", id: "a1" }], replyToMessageId: "card", threadRootMessageId: "root" });
 });

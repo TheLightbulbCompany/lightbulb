@@ -19,8 +19,8 @@ const CHOICE = fence('root = Stack([q])\nq = Choice("Which plan first?", ["Start
 const ctx = (over = {}) => ({ messageId: "card", roomId: "room", authorId: "agent-1", threadRootMessageId: null, attachments: [], answered: null, pending: false, error: null, retry: null, ...over });
 
 // The press state is the message's (MessageGroup holds it); this stands in for the message.
-function Card({ text, onReply, answered = null, messageId = "card" }: { text: string; onReply?: OnReply; answered?: string | null; messageId?: string }) {
-  const press = useCardPressState(messageId, onReply, answered);
+function Card({ text, onReply, answered = null, messageId = "card", viewerId = "user_alice" }: { text: string; onReply?: OnReply; answered?: string | null; messageId?: string; viewerId?: string }) {
+  const press = useCardPressState(messageId, viewerId, onReply, answered);
   return (
     <CardReplyContext.Provider value={{ ...ctx(), ...press }}>
       <MessageMarkdown text={text} palette={chatPalette.light} />
@@ -139,6 +139,21 @@ it("a POST that settles after the canonical answer landed writes nothing back", 
   await view.rerender(<Card text={CHOICE} onReply={onReply} messageId="m6" answered={null} />);
   await waitFor(() => expect(screen.getByRole("button", { name: "Starter", disabled: false })).toBeTruthy());
   expect(screen.getByRole("button", { name: "Studio", disabled: false })).toBeTruthy();
+});
+
+it("a pinned attempt belongs to the person who pressed: the next member in this process starts clean", async () => {
+  const onReply = jest.fn().mockRejectedValueOnce(new Error("timeout"));
+  const first = await render(<Card text={CHOICE} onReply={onReply} messageId="m7" viewerId="user_alice" />);
+  await fireEvent.press(screen.getByRole("button", { name: "Studio" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Starter", disabled: true })).toBeTruthy());
+  await first.unmount();
+  const second = jest.fn().mockResolvedValue(undefined);
+  await render(<Card text={CHOICE} onReply={second} messageId="m7" viewerId="user_bob" />);
+  expect(screen.getByRole("button", { name: "Starter", disabled: false })).toBeTruthy();
+  await fireEvent.press(screen.getByRole("button", { name: "Starter" }));
+  await waitFor(() => expect(second).toHaveBeenCalledTimes(1));
+  expect(second.mock.calls[0][0]).toBe("Starter");
+  expect(second.mock.calls[0][1]).not.toBe(onReply.mock.calls[0][1]);
 });
 
 it("Sources open a native screen, the web, or nothing", async () => {

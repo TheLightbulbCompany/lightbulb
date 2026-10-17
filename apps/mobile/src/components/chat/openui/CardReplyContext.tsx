@@ -65,35 +65,39 @@ export function _resetCardAttemptsForTests() {
  */
 export function useCardPressState(
   messageId: string,
+  viewerId: string,
   onReply: OnReply | undefined,
   answer: string | null,
 ): Pick<CardReplyValue, "press" | "pending" | "error" | "answered" | "retry"> {
+  // Keyed by (viewer, message): a pinned attempt belongs to the person who pressed it, so after a
+  // sign-out the next member in this app process starts clean instead of replaying their text and id.
+  const key = `${viewerId}\u0000${messageId}`;
   const state = useSyncExternalStore(
-    useCallback((cb: () => void) => subscribe(messageId, cb), [messageId]),
-    () => read(messageId),
+    useCallback((cb: () => void) => subscribe(key, cb), [key]),
+    () => read(key),
   );
   const answered = answer ?? state.sent;
   // Once the canonical reply has landed, `answered` follows it (closed while it exists, open again if it is
   // deleted) and whatever this client still holds of the send goes: the local marker, but also a pinned
   // retry or an error from a POST that timed out after the server had committed it.
   useEffect(() => {
-    if (answer !== null && state !== IDLE) write(messageId, IDLE);
-  }, [answer, state, messageId]);
+    if (answer !== null && state !== IDLE) write(key, IDLE);
+  }, [answer, state, key]);
   const press = useCallback((text: string) => {
     if (!onReply || state.pending || answered !== null) return;
     const attempt = state.id ? { id: state.id, text: state.text } : { id: randomUUID(), text: text.trim() };
     if (!attempt.text) return;
-    write(messageId, { ...attempt, pending: true, error: null, sent: null });
+    write(key, { ...attempt, pending: true, error: null, sent: null });
     // A completion applies only to the attempt it belongs to: a canonical answer that arrived first has
     // already cleared the entry, and a late POST result must not write a stale marker back.
-    const settle = (next: Attempt) => { if (read(messageId).id === attempt.id) write(messageId, next); };
+    const settle = (next: Attempt) => { if (read(key).id === attempt.id) write(key, next); };
     onReply(attempt.text, attempt.id).then(
       () => settle({ ...IDLE, sent: attempt.text }),
       (e: unknown) => settle(e instanceof ApiError && e.status < 500
         ? { ...IDLE, error: ERR }
         : { ...attempt, pending: false, error: ERR, sent: null }),
     );
-  }, [messageId, onReply, state, answered]);
+  }, [key, onReply, state, answered]);
   const retry = !state.pending && state.id ? state.text : null;
   return useMemo(
     () => ({ press: onReply ? press : undefined, pending: state.pending, error: state.error, answered, retry }),

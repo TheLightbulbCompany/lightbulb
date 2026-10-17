@@ -134,7 +134,7 @@ const R = {
         <Row>{shown.map((o) => <Chip key={o} label={o} disabled={disabled || retry !== null} pressed={answered !== null ? answeredSet.has(o) : picked.includes(o)}
           onPress={() => setPicked((cur) => cur.includes(o) ? cur.filter((p) => p !== o) : [...cur, o])} />)}</Row>
         {answered === null ? <Row><Chip label="Done" disabled={disabled || (retry === null && picked.length === 0)} onPress={() => press(choiceReply(picked))} /></Row> : null}
-      </> : <Row>{shown.map((o) => <Chip key={o} label={o} disabled={disabled || (retry !== null && retry !== o)} pressed={answered === o} onPress={() => press(o)} />)}</Row>}
+      </> : <Row>{shown.map((o) => <Chip key={o} label={o} disabled={disabled || (retry !== null && retry !== o.trim())} pressed={answered === o.trim()} onPress={() => press(o)} />)}</Row>}
       {props.options.length > shown.length ? <Prose soft>+{props.options.length - shown.length} more</Prose> : null}
       {answered !== null ? <Answer>You picked {answered}.</Answer> : null}
     </View>;
@@ -153,7 +153,7 @@ const R = {
   FollowUps: ({ props }: RP<{ replies: string[] }>) => {
     const { press, disabled, answered, retry } = usePress();
     return <View style={{ gap: spacing.sm }}>
-      <Row>{props.replies.map((r) => <Chip key={r} label={r} disabled={disabled || (retry !== null && retry !== r)} pressed={answered === r} onPress={() => press(r)} />)}</Row>
+      <Row>{props.replies.map((r) => <Chip key={r} label={r} disabled={disabled || (retry !== null && retry !== r.trim())} pressed={answered === r.trim()} onPress={() => press(r)} />)}</Row>
       {answered !== null ? <Answer>You picked {answered}.</Answer> : null}
     </View>;
   },

@@ -74,6 +74,18 @@ it("an unconfirmed send pins the retry: the other option waits and the replay is
   expect(onReply.mock.calls[1]).toEqual(onReply.mock.calls[0]);
 });
 
+it("a padded label still replays its own pinned attempt (the press stores the trimmed text)", async () => {
+  const padded = fence('root = Stack([q])\nq = Choice("Which plan first?", [" Starter ", " Studio "])');
+  const onReply = jest.fn().mockRejectedValueOnce(new Error("network")).mockResolvedValue(undefined);
+  await render(<Card text={padded} onReply={onReply} messageId="m8" />);
+  await fireEvent.press(screen.getByRole("button", { name: "Studio" }));
+  await waitFor(() => expect(screen.getByText(/Couldn't send/)).toBeTruthy());
+  expect(screen.getByRole("button", { name: "Starter", disabled: true })).toBeTruthy();
+  await fireEvent.press(screen.getByRole("button", { name: "Studio", disabled: false }));
+  await waitFor(() => expect(onReply).toHaveBeenCalledTimes(2));
+  expect(onReply.mock.calls[1]).toEqual(onReply.mock.calls[0]);
+});
+
 it("a rejected send frees the card: the other option is open and the id is new", async () => {
   const onReply = jest.fn().mockRejectedValueOnce(new ApiError(400, {}, "bad")).mockResolvedValue(undefined);
   await render(<Card text={CHOICE} onReply={onReply} />);

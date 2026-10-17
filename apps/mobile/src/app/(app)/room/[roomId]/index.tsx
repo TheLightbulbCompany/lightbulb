@@ -2,6 +2,7 @@ import { useAuth } from "@clerk/expo";
 import { SymbolView } from "expo-symbols";
 import {
   buildTimeline,
+  cardAnswersFor,
   lastOwnMessageId,
   liveMarker,
   roomDisplayName,
@@ -59,7 +60,8 @@ import { useReadBack } from "../../../../lib/readBack";
 import { useDraftKey } from "../../../../lib/composerDraft";
 import { memberName } from "../../../../lib/localSessions";
 import { usePresence } from "../../../../lib/presence";
-import { useMobileRooms, useSendDrafts, useTypingReport } from "../../../../lib/rooms";
+import { cardControls } from "../../../../lib/cardControls";
+import { cardReplySender, useMobileRooms, useSendDrafts, useTypingReport } from "../../../../lib/rooms";
 import { typingLine } from "../../../../lib/typingLine";
 
 /** RoomHeader.tsx's own copy — the same two strings the room list shows. */
@@ -333,10 +335,13 @@ function Conversation() {
     authorName: viewer?.displayName ?? "You",
     threadRootMessageId: null,
   });
-  const sendAndCatchUp = useCallback<typeof send>((message) => {
+  const sendAndCatchUp = useCallback<typeof send>((message, options) => {
     setSentSinceOpen(true);
-    return send(message);
+    return send(message, options);
   }, [send]);
+  const { cardsEnabled, repliesEnabled } = cardControls(room);
+  const onCardReply = useMemo(() => cardReplySender(sendAndCatchUp), [sendAndCatchUp]);
+  const cardAnswers = useMemo(() => cardAnswersFor(rooms.messages), [rooms.messages]);
   const reportTyping = useTypingReport(rooms.setTyping, focused);
   const typingText = typingLine(rooms.typingMembers.filter((member) => member.userId !== userId));
 
@@ -635,6 +640,9 @@ function Conversation() {
                   attachmentUrl={rooms.attachmentUrl}
                   members={members ?? []}
                   sessionCandidates={sessionCandidates}
+                  cardsEnabled={cardsEnabled}
+                  onCardReply={repliesEnabled ? onCardReply : undefined}
+                  cardAnswer={cardAnswers.get(item.message.messageId) ?? null}
                 />
                 <SavedDelegations state={rooms.subagents} entry={rooms.delegationsByMessage.get(item.message.messageId)} />
                 {placed.after.get(item.message.messageId)?.map((run) => (

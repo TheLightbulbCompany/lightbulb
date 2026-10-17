@@ -1,6 +1,7 @@
 import { useAuth } from "@clerk/expo";
 import {
   buildTimeline,
+  cardAnswersFor,
   lastOwnMessageId,
   roomDisplayName,
   placeRuns,
@@ -30,7 +31,8 @@ import { claimRoomTarget } from "../../../../../lib/activeAgent";
 import { useDraftKey } from "../../../../../lib/composerDraft";
 import { memberName } from "../../../../../lib/localSessions";
 import { usePushedScreenKeyboardOffset } from "../../../../../lib/keyboardOffset";
-import { useMobileRooms, useSendDrafts, useTypingReport } from "../../../../../lib/rooms";
+import { cardControls } from "../../../../../lib/cardControls";
+import { cardReplySender, useMobileRooms, useSendDrafts, useTypingReport } from "../../../../../lib/rooms";
 import { typingLine } from "../../../../../lib/typingLine";
 
 /**
@@ -150,6 +152,9 @@ export default function ThreadScreen() {
     authorName: viewer?.displayName ?? "You",
     threadRootMessageId: messageId ?? null,
   });
+  const { cardsEnabled, repliesEnabled } = cardControls(rooms.activeRoom);
+  const onCardReply = useMemo(() => cardReplySender(send), [send]);
+  const cardAnswers = useMemo(() => cardAnswersFor(rooms.messages), [rooms.messages]);
   const reportTyping = useTypingReport(rooms.setTyping, focused);
   const typingText = typingLine(rooms.typingMembers.filter((member) => member.userId !== userId));
 
@@ -280,6 +285,9 @@ export default function ThreadScreen() {
                 attachmentUrl={rooms.attachmentUrl}
                 members={members ?? []}
                 sessionCandidates={sessionCandidates}
+                cardsEnabled={cardsEnabled}
+                onCardReply={repliesEnabled ? onCardReply : undefined}
+                cardAnswer={cardAnswers.get(root.messageId) ?? null}
               />
               <View style={[styles.hairline, { backgroundColor: palette.edge }]} />
               {replies.length > 0 && (
@@ -345,6 +353,9 @@ export default function ThreadScreen() {
                 attachmentUrl={rooms.attachmentUrl}
                 members={members ?? []}
                 sessionCandidates={sessionCandidates}
+                cardsEnabled={cardsEnabled}
+                onCardReply={repliesEnabled ? onCardReply : undefined}
+                cardAnswer={cardAnswers.get(item.message.messageId) ?? null}
               />
               <SavedDelegations state={rooms.subagents} entry={rooms.delegationsByMessage.get(item.message.messageId)} />
               {placed.after.get(item.message.messageId)?.map((run) => (

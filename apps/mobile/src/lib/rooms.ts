@@ -1,7 +1,9 @@
 import { useAuth, useOrganization } from "@clerk/expo";
 import {
   useRooms,
+  cardReplyRequest,
   type CanonicalRoomMessage,
+  type CardReply,
   type CreateMessageRequest,
   type OptimisticRoomMessage,
   type RoomsPlatform,
@@ -77,6 +79,17 @@ export interface LocalMessageRow {
 }
 
 /** What a composer produces: the message minus every id only the send rail knows. */
+/** A card's reply is its own message: its stable id, the card as the reply target, the card's own thread. */
+export type SendOptions = Partial<Pick<CreateMessageRequest, "clientMessageId" | "replyToMessageId" | "threadRootMessageId">>;
+
+/** The one builder for a card press: the shared request fields, sent through the room's own `send`. */
+export const cardReplySender =
+  (send: (draft: ComposedMessage, options?: SendOptions) => Promise<void>) =>
+  (reply: CardReply): Promise<void> => {
+    const { text, mentions, ...ids } = cardReplyRequest(reply);
+    return send({ text, mentions }, ids);
+  };
+
 export type ComposedMessage = Omit<
   CreateMessageRequest,
   "clientMessageId" | "replyToMessageId" | "threadRootMessageId"
@@ -174,7 +187,7 @@ export function useSendDrafts(
   }: { authorId: string; authorName: string; threadRootMessageId?: string | null },
 ): {
   canSend: boolean;
-  send: (draft: ComposedMessage) => Promise<void>;
+  send: (draft: ComposedMessage, options?: SendOptions) => Promise<void>;
   retry: (clientMessageId: string) => Promise<void>;
   rows: LocalMessageRow[];
 } {
@@ -187,8 +200,12 @@ export function useSendDrafts(
     [],
   );
   const send = useCallback(
-    async (draft: ComposedMessage) => {
-      if (!activeRoomId || !httpReady) return;
+    async (draft: ComposedMessage, options?: SendOptions) => {
+      // A card press must hear the outcome (its retry rules read it), so it throws where a composer send stays quiet.
+      if (!activeRoomId || !httpReady) {
+        if (options) throw new Error("Conversation is not ready.");
+        return;
+      }
       // The composer resolves text, mentions and attachment ids; WHICH timeline
       // the message lands on is this hook's to say alone, because the composer
       // is the same component on both screens and cannot know which mounted it.
@@ -197,6 +214,7 @@ export function useSendDrafts(
         clientMessageId: randomUUID(),
         replyToMessageId: threadRootMessageId,
         threadRootMessageId,
+        ...options,
       };
       // De-duped on clientMessageId, which also makes a constant-uuid test
       // environment safe.
@@ -208,8 +226,13 @@ export function useSendDrafts(
       try {
         await sendMessage(request);
         settled(request.clientMessageId);
-      } catch {
+      } catch (error) {
         // sendState now reads rejected/uncertain, which is what draws the row.
+        // A card press owns its own retry (the card keeps the id and replays it), so no second "Not sent" row.
+        if (options) {
+          settled(request.clientMessageId);
+          throw error;
+        }
       }
     },
     [activeRoomId, httpReady, threadRootMessageId, sendMessage, settled],

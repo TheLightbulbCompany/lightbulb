@@ -27,7 +27,8 @@ Not a card: a sign-off, a spend, a launch, a public post. Those are approvals, w
 - One fence per reply, with a sentence or two of your own before it. Never a fence in a
   feed post, in mail, or in a thread under a message that is not yours.
 - `root = Stack([...])` is always the first line. Arguments are positional, in the order
-  of the signature; strings in double quotes; leave trailing optional arguments out.
+  of the signature; strings in double quotes; leave trailing optional arguments out. Never
+  `name=value`: a multi-pick is `Choice("Which channels?", ["Email", "LinkedIn"], true)`.
 - A `Choice` has two to six options of at most forty characters, and asks one thing. Put
   what you recommend first.
 - Only what you can act on: never offer an option you would not do, and never a button

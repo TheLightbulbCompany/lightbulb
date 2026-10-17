@@ -542,6 +542,11 @@ def _is_seat_item(item: dict) -> bool:
     return bool(settings.STRIPE_SEAT_PRICE_ID) and (item.get("price") or {}).get("id") == settings.STRIPE_SEAT_PRICE_ID
 
 
+def _is_front_desk_item(item: dict) -> bool:
+    price_id = settings.STRIPE_FRONT_DESK_PRICE_ID
+    return bool(price_id) and (item.get("price") or {}).get("id") == price_id
+
+
 async def seats_for_workspace(owner_id: str) -> int:
     """Billable seats: human members past :data:`SEATS_INCLUDED`.
 

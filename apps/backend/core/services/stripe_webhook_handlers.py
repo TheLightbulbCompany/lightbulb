@@ -35,7 +35,7 @@ from core.dynamodb import utc_now_iso
 from core.observability.metrics import put_metric, timing
 from core.observability.product_analytics import capture_product_event
 from core.repositories import billing_repo
-from core.services.billing_service import BillingService
+from core.services.billing_service import BillingService, _is_front_desk_item
 
 logger = logging.getLogger(__name__)
 
@@ -309,8 +309,9 @@ def _workspace_plan_from_subscription_items(event_data: dict[str, Any]) -> str |
     items = [
         item
         for item in (event_data.get("items") or {}).get("data") or []
-        # The per-member seat item (T04) is the one allowed second item.
+        # The per-member seat item (T04) and the Front desk add-on are the allowed extra items.
         if not (seat_price and ((item or {}).get("price") or {}).get("id") == seat_price)
+        and not _is_front_desk_item(item or {})
     ]
     if len(items) != 1:
         reason = "missing_or_multiple_items"

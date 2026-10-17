@@ -171,6 +171,22 @@ def test_subscription_events_accept_the_seat_item(monkeypatch):
     assert stripe_webhook_handlers._workspace_plan_from_subscription_items(event) == "standard"
 
 
+def test_subscription_events_accept_the_front_desk_item(monkeypatch):
+    monkeypatch.setattr(stripe_webhook_handlers.settings, "STRIPE_WORKSPACE_PRICE_ID", "price_workspace")
+    monkeypatch.setattr(stripe_webhook_handlers.settings, "STRIPE_SEAT_PRICE_ID", "price_seat")
+    monkeypatch.setattr(stripe_webhook_handlers.settings, "STRIPE_FRONT_DESK_PRICE_ID", "price_fd")
+    event = {
+        "items": {
+            "data": [
+                {"price": {"id": "price_workspace", "recurring": {"interval": "month"}}},
+                {"price": {"id": "price_seat", "recurring": {"interval": "month"}}},
+                {"price": {"id": "price_fd", "recurring": {"interval": "month"}}},
+            ]
+        }
+    }
+    assert stripe_webhook_handlers._workspace_plan_from_subscription_items(event) == "standard"
+
+
 @pytest.mark.asyncio
 async def test_membership_seat_sync_failure_raises_for_redelivery(monkeypatch):
     from routers import webhooks

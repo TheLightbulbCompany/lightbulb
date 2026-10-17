@@ -14,6 +14,11 @@ describe("one plan pricing", () => {
     expect(await getPricing()).toEqual(P);
   });
 
+  it("keeps the other prices when the API has no front desk price yet", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json({ ...API, front_desk_price_usd: undefined })));
+    expect(await getPricing()).toEqual({ ...P, frontDeskPriceUsd: null });
+  });
+
   it("returns null, never a guessed number, when the API is unreachable or malformed", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("down", { status: 503 })));
     expect(await getPricing()).toBeNull();

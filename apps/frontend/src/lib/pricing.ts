@@ -10,8 +10,8 @@ export type Pricing = {
   includedMembers: number;
   seatPriceUsd: number;
   trialDays: number;
-  /** The Front desk add-on (a texting number), a month. */
-  frontDeskPriceUsd: number;
+  /** The Front desk add-on (a texting number), a month. null while the backend rolls and has not sent it yet. */
+  frontDeskPriceUsd: number | null;
   /** Managed AI is billed at the model provider's price times this (openrouter-pricing.json). */
   managedMarkup: string;
 };
@@ -31,7 +31,7 @@ export async function getPricing(): Promise<Pricing | null> {
     });
     if (!res.ok) return null;
     const body = (await res.json()) as Record<string, unknown>;
-    const n = (k: string) => (typeof body[k] === "number" ? (body[k] as number) : null);
+    const n = (k: string) => (typeof body[k] === "number" && Number.isFinite(body[k]) ? (body[k] as number) : null);
     const [team, included, seat, trial, frontDesk] = [
       n("workspace_price_usd"),
       n("included_members"),
@@ -40,7 +40,7 @@ export async function getPricing(): Promise<Pricing | null> {
       n("front_desk_price_usd"),
     ];
     const markup = typeof body.managed_markup === "string" ? body.managed_markup : null;
-    if (team === null || included === null || seat === null || trial === null || frontDesk === null || markup === null) return null;
+    if (team === null || included === null || seat === null || trial === null || markup === null) return null;
     return { teamPriceUsd: team, includedMembers: included, seatPriceUsd: seat, trialDays: trial, frontDeskPriceUsd: frontDesk, managedMarkup: markup };
   } catch {
     return null;

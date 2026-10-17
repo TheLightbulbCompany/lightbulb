@@ -78,3 +78,16 @@ it("an answered FollowUps card marks the chip it posted", () => {
   expect(screen.getByRole("button", { name: "Show me the numbers" })).toHaveAttribute("aria-pressed", "false");
   expect(screen.getByText("You picked Draft the email.")).toBeInTheDocument();
 });
+
+it("while an unanswered multi-pick is retried, its boxes freeze and Done replays it as sent", async () => {
+  const onReply = vi.fn().mockRejectedValueOnce(new Error("timeout")).mockResolvedValueOnce(undefined);
+  wrap('root = Stack([q])\nq = Choice("Which channels?", ["Email", "SMS"], true)', { onReply });
+  await userEvent.click(screen.getByRole("checkbox", { name: "Email" }));
+  await userEvent.click(screen.getByRole("button", { name: "Done" }));
+  await screen.findByRole("alert");
+  expect(screen.getByRole("checkbox", { name: "SMS" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Done" })).not.toBeDisabled();
+  await userEvent.click(screen.getByRole("button", { name: "Done" }));
+  expect(onReply).toHaveBeenCalledTimes(2);
+  expect(onReply.mock.calls[1]).toEqual(onReply.mock.calls[0]);
+});

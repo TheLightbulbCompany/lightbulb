@@ -22,7 +22,7 @@ export function ChoiceView({ props }: RenderProps<{ question: string; options: s
           {shown.map((o) => {
             const checked = answered !== null ? answeredSet.has(o) : picked.includes(o);
             return <label key={o} className="flex items-center gap-2 text-ui">
-              <Checkbox checked={checked} disabled={disabled} aria-label={o}
+              <Checkbox checked={checked} disabled={disabled || retry !== null} aria-label={o}
                 onCheckedChange={(v) => setPicked((cur) => v ? [...cur, o] : cur.filter((p) => p !== o))} />
               {o}
             </label>;
@@ -73,7 +73,9 @@ export function FollowUpsView({ props }: RenderProps<{ replies: string[] }>) {
 type FieldProps = { name: string; label: string; placeholder?: string; options?: string[] };
 
 export function FormView({ props }: RenderProps<{ title: string; fields: SubComponent<FieldProps>[]; submit?: string }>) {
-  const { press, disabled, answered } = useCardPress();
+  const { press, disabled, answered, retry } = useCardPress();
+  // While an unanswered submit is being retried, the fields freeze: the retry replays what was sent, not an edit.
+  const frozen = disabled || retry !== null;
   const base = useId();
   const [values, setValues] = useState<Record<string, string>>({});
   const set = (name: string, value: string) => setValues((cur) => ({ ...cur, [name]: value }));
@@ -87,13 +89,13 @@ export function FormView({ props }: RenderProps<{ title: string; fields: SubComp
         return <div key={f.props.name} className="grid gap-1">
           <label htmlFor={id} className="text-caption text-muted-foreground">{f.props.label}</label>
           {f.typeName === "Select"
-            ? <select id={id} className="room-input" value={value} disabled={disabled} onChange={(e) => set(f.props.name, e.target.value)}>
+            ? <select id={id} className="room-input" value={value} disabled={frozen} onChange={(e) => set(f.props.name, e.target.value)}>
                 <option value="">Choose…</option>
                 {(f.props.options ?? []).map((o) => <option key={o} value={o}>{o}</option>)}
               </select>
             : f.typeName === "DatePicker"
-              ? <UiInput id={id} type="date" value={value} disabled={disabled} onChange={(e) => set(f.props.name, e.target.value)} />
-              : <UiInput id={id} type="text" placeholder={f.props.placeholder} value={value} disabled={disabled} onChange={(e) => set(f.props.name, e.target.value)} />}
+              ? <UiInput id={id} type="date" value={value} disabled={frozen} onChange={(e) => set(f.props.name, e.target.value)} />
+              : <UiInput id={id} type="text" placeholder={f.props.placeholder} value={value} disabled={frozen} onChange={(e) => set(f.props.name, e.target.value)} />}
         </div>;
       })}
       {answered === null

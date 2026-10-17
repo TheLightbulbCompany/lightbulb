@@ -49,7 +49,7 @@ export function TableView({ props }: RenderProps<{ columns: SubComponent<ColProp
 export function ColView() { return null; }
 
 export function EditableTableView({ props }: RenderProps<{ columns: string[]; rows: string[][]; submit?: string }>) {
-  const { press, disabled, answered } = useCardPress();
+  const { press, disabled, answered, retry } = useCardPress();
   const [rows, setRows] = useState<string[][]>(() => props.rows.map((r) => props.columns.map((_, i) => r[i] ?? "")));
   const edit = (r: number, c: number, value: string) => setRows((cur) => cur.map((row, ri) => ri === r ? row.map((cell, ci) => ci === c ? value : cell) : row));
   return (
@@ -58,7 +58,7 @@ export function EditableTableView({ props }: RenderProps<{ columns: string[]; ro
         <TableHeader><TableRow>{props.columns.map((c) => <TableHead key={c}>{c}</TableHead>)}</TableRow></TableHeader>
         <TableBody>
           {rows.map((row, r) => <TableRow key={r}>{row.map((cell, c) => <TableCell key={c}>
-            <UiInput aria-label={`${props.columns[c]}, row ${r + 1}`} value={cell} disabled={disabled} onChange={(e) => edit(r, c, e.target.value)} />
+            <UiInput aria-label={`${props.columns[c]}, row ${r + 1}`} value={cell} disabled={disabled || retry !== null} onChange={(e) => edit(r, c, e.target.value)} />
           </TableCell>)}</TableRow>)}
         </TableBody>
       </UiTable>
